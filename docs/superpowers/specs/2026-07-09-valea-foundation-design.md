@@ -166,6 +166,17 @@ resources; the first arrive with the queue (Phase 3).
   raw classes) with a **new warm light palette** — calm, trustworthy, warm,
   low-hype (brief §20). Risk-level visual system (neutral / amber / red-orange)
   defined as tokens now, used by cards. Dark mode deferred.
+- **Visual direction** (from the 2026-07-09 mockups; a detailed design system
+  follows later and lands as token values, not restructuring): warm cream/ivory
+  surfaces, deep green primary (buttons, active nav), amber for holds/medium
+  risk, red-orange for high-risk/irreversible ("SENDS AN EMAIL", "Approving
+  sends it"); serif display face for the cockpit greeting and page titles, sans
+  for body/UI; monospace only for file paths and the `>_ Open the hood` footer
+  line. Mockup elements **not** in Phase 1 (deferred to their owning phases):
+  nav badge counts, Suggested Focus panel, Needs a Decision section, calendar
+  holds, week toggle, Ask-about-your-day input, Files browser with
+  friendly/raw workflow view. The nav section is labeled **Knowledge** (decided
+  against the "Memory" label some mockups use).
 - Clients: legend's `api.ts` fetch wrapper + `socket.ts` phoenix client,
   retargeted at the valea endpoints.
 
