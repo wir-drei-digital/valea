@@ -4,9 +4,19 @@ defmodule Valea.App.ConfigTest do
   alias Valea.App.Config
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "valea-app-#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-app-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
     System.put_env("VALEA_APP_DIR", dir)
-    on_exit(fn -> System.delete_env("VALEA_APP_DIR") end)
+
+    on_exit(fn ->
+      File.rm_rf!(dir)
+      System.delete_env("VALEA_APP_DIR")
+    end)
+
     %{dir: dir}
   end
 

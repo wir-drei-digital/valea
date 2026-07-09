@@ -4,7 +4,14 @@ defmodule Valea.Workspace.ScaffoldTest do
   alias Valea.Workspace.Scaffold
 
   defp tmp_target do
-    Path.join(System.tmp_dir!(), "valea-ws-#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-ws-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
   end
 
   test "create scaffolds the full template tree" do

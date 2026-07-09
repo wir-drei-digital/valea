@@ -4,12 +4,18 @@ defmodule Valea.Workspace.ManagerTest do
   alias Valea.Workspace.Manager
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "valea-app-#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-app-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
 
     on_exit(fn ->
       Manager.close()
+      File.rm_rf!(dir)
       System.delete_env("VALEA_APP_DIR")
     end)
 
@@ -56,7 +62,10 @@ defmodule Valea.Workspace.ManagerTest do
     real_migrations_path = Application.get_env(:valea, :migrations_path)
 
     bad_migrations_dir =
-      Path.join(System.tmp_dir!(), "valea-bad-migrations-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "valea-bad-migrations-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(bad_migrations_dir)
 
