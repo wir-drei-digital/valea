@@ -7,8 +7,9 @@ defmodule Valea.Application do
     children = [
       ValeaWeb.Telemetry,
       {Phoenix.PubSub, name: Valea.PubSub},
-      # Workspace supervisor added in Task 7 (Repo starts under it when a
-      # workspace opens — the app boots workspace-less by design).
+      # Repo starts under here when a workspace opens — the app boots
+      # workspace-less by design; there is no database until then.
+      Valea.Workspace.Supervisor,
       ValeaWeb.Endpoint
     ]
 
