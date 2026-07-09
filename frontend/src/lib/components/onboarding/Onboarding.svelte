@@ -96,7 +96,7 @@
   </div>
 
   {#if openError}
-    <p class="text-center text-[12.5px] text-warn-ink">{openError}</p>
+    <p role="alert" class="text-center text-[12.5px] text-warn-ink">{openError}</p>
   {/if}
 
   {#if workspaceStore.recent.length > 0}

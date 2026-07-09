@@ -25,6 +25,17 @@
     }
   }
 
+  function mapErrorCode(code: string): string {
+    switch (code) {
+      case 'target_not_empty':
+        return 'That folder already has files in it. Pick an empty spot for a new workspace.';
+      case 'not_a_workspace':
+        return "This folder doesn't look like a Valea workspace.";
+      default:
+        return 'Something went wrong while creating the workspace. Try again.';
+    }
+  }
+
   async function submit() {
     error = null;
     if (!parentDir.trim()) {
@@ -41,7 +52,7 @@
     submitting = false;
 
     if (!result.ok) {
-      error = result.error;
+      error = mapErrorCode(result.error);
       return;
     }
 
@@ -89,7 +100,7 @@
       </div>
 
       {#if error}
-        <p class="text-[12.5px] text-warn-ink">{error}</p>
+        <p role="alert" class="text-[12.5px] text-warn-ink">{error}</p>
       {/if}
     </div>
 

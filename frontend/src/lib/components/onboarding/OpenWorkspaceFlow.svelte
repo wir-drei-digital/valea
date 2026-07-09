@@ -64,7 +64,7 @@
     opening = false;
 
     if (!result.ok) {
-      error = "This folder doesn't look like a Valea workspace.";
+      error = "Couldn't open this workspace. Try again.";
       inspection = null;
       return;
     }
@@ -105,6 +105,6 @@
   {/if}
 
   {#if error}
-    <p class="text-[12.5px] text-warn-ink">{error}</p>
+    <p role="alert" class="text-[12.5px] text-warn-ink">{error}</p>
   {/if}
 </div>
