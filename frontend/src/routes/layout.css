@@ -1,1 +1,144 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
+
+/* ── Raw tokens — Paper & ink (docs/DESIGN_SYSTEM.md is canonical) ── */
+:root {
+  /* paper */
+  --paper-canvas: #e9e3d6;
+  --paper-surface: #fbf8f1;
+  --paper-card: #fffefa;
+  --paper-panel: #f7f2e7;
+  --paper-sidebar: #f3eee2;
+  --paper-track: #eee8d9;
+  --paper-pill: #ece5d2;
+  --paper-nav-active: #e7dfca;
+  --paper-border: #e6decb;
+  --paper-hairline: #efe9da;
+  --paper-chip-border: #e0d7c1;
+  --paper-button-border: #d8cfb9;
+  /* ink */
+  --ink-heading: #29251e;
+  --ink-body: #3d3b30;
+  --ink-secondary: #57503f;
+  --ink-subtitle: #6e6656;
+  --ink-meta: #948a75;
+  --ink-overline: #a89085;
+  /* green — acts */
+  --act: #2f5d48;
+  --act-hover: #244938;
+  --act-tint: #e6ede2;
+  --act-dot: #2f8a5b;
+  /* amber — suggests */
+  --suggest-ink: #8f6e1f;
+  --suggest-dash: #c9a24b;
+  --suggest-tint: #f4e8d2;
+  --suggest-bg: #f9f2e3;
+  --suggest-border: #e8d9b5;
+  /* terracotta — warns */
+  --warn-ink: #b4512e;
+  --warn-dot: #c0793f;
+  --warn-tint: #f6e7de;
+  --warn-border: #ebd5c6;
+  --warn-checkbox: #e0bda9;
+
+  /* ── shadcn semantic mapping (the seam) ── */
+  --background: var(--paper-surface);
+  --foreground: var(--ink-body);
+  --card: var(--paper-card);
+  --card-foreground: var(--ink-body);
+  --popover: var(--paper-card);
+  --popover-foreground: var(--ink-body);
+  --primary: var(--act);
+  --primary-foreground: #fffefa;
+  --secondary: var(--paper-pill);
+  --secondary-foreground: var(--ink-secondary);
+  --muted: var(--paper-track);
+  --muted-foreground: var(--ink-meta);
+  --accent: var(--paper-nav-active);
+  --accent-foreground: var(--ink-heading);
+  --destructive: var(--warn-ink);
+  --destructive-foreground: #fffefa;
+  --border: var(--paper-border);
+  --input: var(--paper-button-border);
+  --ring: var(--act);
+  --radius: 0.75rem; /* 12px cards */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  /* raw palettes as tailwind colors: bg-paper-card, text-ink-meta, ... */
+  --color-paper-canvas: var(--paper-canvas);
+  --color-paper-surface: var(--paper-surface);
+  --color-paper-card: var(--paper-card);
+  --color-paper-panel: var(--paper-panel);
+  --color-paper-sidebar: var(--paper-sidebar);
+  --color-paper-track: var(--paper-track);
+  --color-paper-pill: var(--paper-pill);
+  --color-paper-nav-active: var(--paper-nav-active);
+  --color-paper-border: var(--paper-border);
+  --color-paper-hairline: var(--paper-hairline);
+  --color-paper-chip-border: var(--paper-chip-border);
+  --color-paper-button-border: var(--paper-button-border);
+  --color-ink-heading: var(--ink-heading);
+  --color-ink-body: var(--ink-body);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-subtitle: var(--ink-subtitle);
+  --color-ink-meta: var(--ink-meta);
+  --color-ink-overline: var(--ink-overline);
+  --color-act: var(--act);
+  --color-act-hover: var(--act-hover);
+  --color-act-tint: var(--act-tint);
+  --color-act-dot: var(--act-dot);
+  --color-suggest-ink: var(--suggest-ink);
+  --color-suggest-dash: var(--suggest-dash);
+  --color-suggest-tint: var(--suggest-tint);
+  --color-suggest-bg: var(--suggest-bg);
+  --color-suggest-border: var(--suggest-border);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-dot: var(--warn-dot);
+  --color-warn-tint: var(--warn-tint);
+  --color-warn-border: var(--warn-border);
+  --color-warn-checkbox: var(--warn-checkbox);
+  /* type */
+  --font-display: 'Newsreader Variable', georgia, serif;
+  --font-sans: 'Instrument Sans Variable', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  /* shadows (design system geometry) */
+  --shadow-card: 0 1px 2px rgba(42, 38, 32, 0.05);
+  --shadow-window: 0 24px 60px rgba(42, 38, 32, 0.28);
+}
+
+@layer base {
+  body {
+    background: var(--paper-surface);
+    color: var(--ink-body);
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+}
+
+@utility text-overline {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-overline);
+}
