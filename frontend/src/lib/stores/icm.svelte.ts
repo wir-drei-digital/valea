@@ -52,9 +52,23 @@ export class IcmStore {
 
 export const icmStore = new IcmStore(api);
 
-// Keep the tree fresh when the backend reports icm/ changes on disk.
-joinWorkspaceEvents({
-  onIcmChanged: () => {
-    void icmStore.refetch();
-  }
-});
+let icmEventsWired = false;
+
+/**
+ * Joins `workspace:events` and keeps the tree fresh when the backend reports
+ * icm/ changes on disk. Explicit (not import-time) so that merely importing
+ * this module never opens a socket as a side effect; idempotent so repeated
+ * calls are safe.
+ *
+ * Not called anywhere yet — the root layout wiring lands in task 18.
+ */
+export function wireIcmEvents(): void {
+  if (icmEventsWired) return;
+  icmEventsWired = true;
+
+  joinWorkspaceEvents({
+    onIcmChanged: () => {
+      void icmStore.refetch();
+    }
+  });
+}

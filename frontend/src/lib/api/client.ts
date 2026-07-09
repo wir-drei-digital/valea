@@ -32,10 +32,27 @@ type Envelope<T> = { success: true; data: T } | { success: false; errors: AshRpc
 function toApiResult<T>(envelope: Envelope<T>): ApiResult<T> {
   if (envelope.success) return { ok: true, data: envelope.data };
 
+  // Channel-level (non-RPC) failures — e.g. the synthesized `channel_timeout`
+  // envelope below, or a raw Phoenix channel error payload — don't carry the
+  // full `AshRpcError` shape guaranteed by the backend. They're intentionally
+  // normalized lossily to 'unknown_error' when neither `type` nor `message`
+  // is present, rather than trying to reconstruct a richer error.
   const first = envelope.errors[0];
   const error = first?.type || first?.message || 'unknown_error';
   return { ok: false, error };
 }
+
+/** Synthesized `AshRpcError` for a channel push that never got a response. */
+const channelTimeoutError: AshRpcError = {
+  type: 'channel_timeout',
+  message: 'channel_timeout',
+  shortMessage: 'channel_timeout',
+  vars: {},
+  fields: [],
+  path: []
+};
+
+const channelTimeoutEnvelope: Envelope<never> = { success: false, errors: [channelTimeoutError] };
 
 /**
  * True when the socket is connected and the shared rpc channel has finished
@@ -71,58 +88,63 @@ function runRpc<T>(
 }
 
 // The generated `*Channel` functions are push-and-callback style (they call
-// `resultHandler`/`errorHandler` rather than returning a promise), so each is
-// wrapped into a promise here to match the HTTP functions' shape.
+// `resultHandler`/`errorHandler`/`timeoutHandler` rather than returning a
+// promise), so each is wrapped into a promise here to match the HTTP
+// functions' shape. `wrapChannelCall` is the one place all three handlers are
+// defined — every call site below just supplies the generated function.
+//
+// A `timeoutHandler` is mandatory: without one, the generated push helper
+// only `console.error`s on a Phoenix channel "timeout" reply and the
+// promise below would never settle, hanging every awaiting store forever.
+function wrapChannelCall<T>(
+  run: (handlers: {
+    resultHandler: (result: Envelope<T>) => void;
+    errorHandler: (error: AshRpcError) => void;
+    timeoutHandler: () => void;
+  }) => void
+): Promise<Envelope<T>> {
+  return new Promise<Envelope<T>>((resolve) => {
+    run({
+      resultHandler: resolve,
+      errorHandler: (error) => resolve({ success: false, errors: [error] }),
+      timeoutHandler: () => resolve(channelTimeoutEnvelope)
+    });
+  });
+}
 
 function callGetWorkspaceChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    getWorkspaceChannel({ channel, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => getWorkspaceChannel({ channel, ...handlers }));
 }
 
 function callCreateWorkspaceChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { parentDir: string; name: string }
 ) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    createWorkspaceChannel({ channel, input, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => createWorkspaceChannel({ channel, input, ...handlers }));
 }
 
 function callOpenWorkspaceChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    openWorkspaceChannel({ channel, input, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => openWorkspaceChannel({ channel, input, ...handlers }));
 }
 
 function callRecentWorkspacesChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    recentWorkspacesChannel({ channel, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => recentWorkspacesChannel({ channel, ...handlers }));
 }
 
 function callInspectWorkspaceChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    inspectWorkspaceChannel({ channel, input, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => inspectWorkspaceChannel({ channel, input, ...handlers }));
 }
 
 function callIcmTreeChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    icmTreeChannel({ channel, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => icmTreeChannel({ channel, ...handlers }));
 }
 
 function callIcmPageChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    icmPageChannel({ channel, input, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => icmPageChannel({ channel, input, ...handlers }));
 }
 
 function callCockpitTodayChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return new Promise<Envelope<unknown>>((resolve) => {
-    cockpitTodayChannel({ channel, resultHandler: resolve, errorHandler: (error) => resolve({ success: false, errors: [error] }) });
-  });
+  return wrapChannelCall((handlers) => cockpitTodayChannel({ channel, ...handlers }));
 }
 
 export const api = {
