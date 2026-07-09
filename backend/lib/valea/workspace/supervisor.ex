@@ -1,8 +1,8 @@
 defmodule Valea.Workspace.Supervisor do
   @moduledoc """
   Owns everything whose lifetime is 'while a workspace is open': the Repo and
-  (Task 9) the ICM watcher run under the DynamicSupervisor; the Manager
-  decides when they start and stop.
+  the ICM watcher run under the DynamicSupervisor; the Manager decides when
+  they start and stop.
   """
   use Supervisor
 

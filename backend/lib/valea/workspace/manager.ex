@@ -1,9 +1,9 @@
 defmodule Valea.Workspace.Manager do
   @moduledoc """
   The open-workspace lifecycle. The app boots workspace-less; this GenServer
-  opens/creates workspaces, starting the Repo against {workspace}/app.sqlite
-  and running migrations. Loud, specific failures — a workspace is never
-  presented as healthy when half-opened.
+  opens/creates workspaces, starting the Repo against {workspace}/app.sqlite,
+  running migrations, and starting the ICM file watcher. Loud, specific
+  failures — a workspace is never presented as healthy when half-opened.
   """
   use GenServer
 
@@ -89,9 +89,9 @@ defmodule Valea.Workspace.Manager do
   # Starts children one at a time, tracking every started pid. If any step
   # fails, everything already started so far is rolled back before the
   # error is returned, so a half-opened workspace is never left running
-  # under a name a future open/create could mistake for success. (Task 9's
-  # file watcher child slots in here as another step, accumulating onto
-  # `started`.)
+  # under a name a future open/create could mistake for success. The ICM
+  # file watcher is one more step here, accumulating onto `started` after
+  # the repo.
   defp open_workspace(path, state) do
     case start_repo(path) do
       {:ok, repo_pid} -> open_workspace(path, state, [repo_pid])
@@ -101,16 +101,28 @@ defmodule Valea.Workspace.Manager do
 
   defp open_workspace(path, state, started) do
     case migrate() do
-      :ok ->
+      :ok -> open_workspace_watcher(path, state, started)
+      {:error, reason} -> rollback_with(started, reason)
+    end
+  end
+
+  defp open_workspace_watcher(path, state, started) do
+    case start_watcher(path) do
+      {:ok, watcher_pid} ->
+        started = started ++ [watcher_pid]
         info = %{path: path, name: Path.basename(path)}
         Config.record_opened(path, info.name)
         Phoenix.PubSub.broadcast(Valea.PubSub, "workspace", {:workspace_opened, info})
         {:ok, %{state | workspace: info, children: started}}
 
       {:error, reason} ->
-        rollback(started)
-        {:error, reason}
+        rollback_with(started, reason)
     end
+  end
+
+  defp rollback_with(started, reason) do
+    rollback(started)
+    {:error, reason}
   end
 
   defp rollback(pids) do
@@ -137,6 +149,16 @@ defmodule Valea.Workspace.Manager do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
       {:error, reason} -> {:error, {:repo_start_failed, reason}}
+    end
+  end
+
+  defp start_watcher(workspace_path) do
+    spec = {Valea.ICM.Watcher, Path.join(workspace_path, "icm")}
+
+    case DynamicSupervisor.start_child(Valea.Workspace.DynamicSupervisor, spec) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      {:error, reason} -> {:error, {:watcher_start_failed, reason}}
     end
   end
 
