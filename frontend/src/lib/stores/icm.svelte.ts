@@ -1,6 +1,6 @@
 import { api, type Api } from '../api/client';
 import type { IcmNode } from '../shell/nav';
-import { joinWorkspaceEvents } from '../socket';
+import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 
 type IcmApi = Pick<Api, 'icmTree'>;
 
@@ -70,13 +70,21 @@ let icmEventsWired = false;
  * this module never opens a socket as a side effect; idempotent so repeated
  * calls are safe.
  *
- * Not called anywhere yet — the root layout wiring lands in task 18.
+ * `onWorkspace` is an optional pass-through so the root layout can wire its
+ * own workspace open/close handling through this SAME join rather than
+ * opening a second one. Phoenix's JS client tags every push with the
+ * joining channel's `join_ref` and only delivers it to the client-side
+ * `Channel` object with a matching ref (see
+ * `phoenix/assets/js/phoenix/channel.js#isMember`) — two independent
+ * `socket.channel('workspace:events', {})` joins to the same topic race,
+ * and only one reliably receives pushes. One join, wired here, avoids that.
  */
-export function wireIcmEvents(): void {
+export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) return;
   icmEventsWired = true;
 
   joinWorkspaceEvents({
+    onWorkspace,
     onIcmChanged: () => {
       void icmStore.refetch();
     }
