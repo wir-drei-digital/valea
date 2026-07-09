@@ -1,0 +1,43 @@
+id: weekly_admin_review
+name: Weekly Admin Review
+description: Reviews the week's open admin items and drafts follow-up actions.
+enabled: true
+trigger:
+  type: manual
+  source: schedule.weekly
+sources:
+  - id: pricing
+    type: icm
+    path: icm/Pricing/Current Pricing.md
+  - id: payment_terms
+    type: icm
+    path: icm/Policies/Payment Terms.md
+  - id: cancellation_policy
+    type: icm
+    path: icm/Policies/Cancellation Policy.md
+steps:
+  - id: gather_open_items
+    instruction: Gather open admin items from the past week (queue, unpaid invoices, unresolved threads).
+  - id: summarize
+    instruction: Summarize what needs attention and why.
+  - id: draft_actions
+    instruction: >
+      Draft suggested follow-up actions, referencing payment and
+      cancellation policy where relevant.
+  - id: create_approval_item
+    instruction: Create a pending approval item. Do not act automatically.
+outputs:
+  - type: approval_item
+    schema: queue_item
+approval:
+  required: true
+  reason: Admin actions must be reviewed before anything is sent or applied.
+  actions:
+    - create_email_draft
+    - send_email
+risk_level: medium
+audit:
+  log_sources: true
+  log_inputs: true
+  log_outputs: true
+  log_agent: true

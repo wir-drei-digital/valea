@@ -1,0 +1,20 @@
+account: mara@example.com
+imap:
+  host: imap.example.com
+  port: 993
+  ssl: true
+  username_env: MAIL_USERNAME
+  password_env: MAIL_APP_PASSWORD
+smtp:
+  host: smtp.example.com
+  port: 587
+  starttls: true
+  username_env: MAIL_USERNAME
+  password_env: MAIL_APP_PASSWORD
+folders:
+  review: "AI/Review"
+  processed: "AI/Processed"
+  drafted: "AI/Drafted"
+safety:
+  send_directly: false
+  create_drafts_only: true

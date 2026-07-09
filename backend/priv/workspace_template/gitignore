@@ -1,0 +1,5 @@
+app.sqlite
+app.sqlite-*
+secrets/
+*.log.tmp
+.agent-runs/

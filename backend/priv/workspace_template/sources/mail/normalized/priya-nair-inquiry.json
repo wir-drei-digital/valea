@@ -1,0 +1,10 @@
+{
+  "id": "email_priya_nair_inquiry",
+  "source": "mock_email",
+  "from": { "name": "Priya Nair", "email": "priya@example.com" },
+  "to": [{ "name": "Mara Lindt", "email": "mara@example.com" }],
+  "subject": "Question about leadership coaching",
+  "date": "2026-07-09T06:58:00Z",
+  "body_text": "Hi Mara, I found your work through a colleague. I run a small team and have been struggling with prioritization and leadership decisions. Do you offer coaching for this kind of situation? Best, Priya",
+  "source_ref": "email://mock/priya-nair-inquiry"
+}
