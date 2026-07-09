@@ -1,29 +1,113 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api/client';
+  import { AppShell, Sidebar } from '$lib/components/shell';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { icmStore } from '$lib/stores/icm.svelte';
+  import { icmToNav } from '$lib/shell/nav';
+  import { normalizeCockpitToday, splitTrustClause, type CockpitToday } from '$lib/today/cockpit';
+  import PreparedItemCard from '$lib/components/today/PreparedItemCard.svelte';
+  import ScheduleList from '$lib/components/today/ScheduleList.svelte';
+  import OpenLoops from '$lib/components/today/OpenLoops.svelte';
+  import AwayList from '$lib/components/today/AwayList.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
-  import { Badge } from '$lib/components/ui/badge/index.js';
+  import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+
+  let today: CockpitToday | null = $state(null);
+  let failed = $state(false);
+  let loading = $state(true);
+
+  async function load() {
+    loading = true;
+    failed = false;
+    const result = await api.cockpitToday();
+    if (result.ok) {
+      today = normalizeCockpitToday(result.data as Record<string, any>);
+    } else {
+      failed = true;
+    }
+    loading = false;
+  }
+
+  onMount(() => {
+    void load();
+    // First render of the shared sidebar — populate the ICM tree once here;
+    // live refetch wiring (workspace:events) lands with Task 18.
+    void icmStore.refetch();
+  });
+
+  const icmNav = $derived(icmToNav(icmStore.nodes));
+  const trust = $derived.by(() => splitTrustClause(today?.summary ?? ''));
 </script>
 
-<div class="mx-auto flex max-w-2xl flex-col gap-6 p-10">
-  <p class="text-overline">Wednesday, July 9</p>
+<AppShell>
+  {#snippet sidebar()}
+    <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {icmNav} />
+  {/snippet}
 
-  <h1 class="font-display text-[32px] text-ink-heading">Good morning, Mara.</h1>
+  {#snippet main()}
+    {#if loading}
+      <div class="flex flex-col gap-6" aria-hidden="true">
+        <div class="flex flex-col gap-3">
+          <Skeleton class="h-3 w-44" />
+          <Skeleton class="h-9 w-72" />
+          <Skeleton class="h-4 w-full max-w-[520px]" />
+        </div>
+        <div class="grid grid-cols-1 gap-8 min-[900px]:grid-cols-[2fr_3fr]">
+          <div class="flex flex-col gap-3">
+            <Skeleton class="h-3 w-32" />
+            <Skeleton class="h-40 w-full" />
+          </div>
+          <div class="flex flex-col gap-3">
+            <Skeleton class="h-3 w-36" />
+            <Skeleton class="h-44 w-full rounded-xl" />
+            <Skeleton class="h-44 w-full rounded-xl" />
+          </div>
+        </div>
+      </div>
+    {:else if failed || !today}
+      <div class="flex flex-col items-start gap-3 py-10">
+        <p class="text-ink-body text-[13.5px]">
+          Couldn't load your day. The backend may still be starting.
+        </p>
+        <Button variant="outline" size="sm" onclick={() => void load()}>Retry</Button>
+      </div>
+    {:else}
+      <header class="flex flex-col gap-2">
+        <p class="text-overline">{today.dateLabel}</p>
+        <h1 class="font-display text-ink-heading text-[36px] leading-tight font-medium">
+          {today.greeting}
+        </h1>
+        <p class="text-ink-body max-w-[560px] text-[14px]">
+          {trust.lead}<strong class="text-ink-heading">{trust.trust}</strong>
+        </p>
+      </header>
 
-  <p class="text-ink-body">
-    Three drafts are ready for review, and your calendar has one open hold
-    waiting on a reply. Everything else is caught up.
-  </p>
+      <div class="mt-8 grid grid-cols-1 gap-x-8 gap-y-10 min-[900px]:grid-cols-[2fr_3fr]">
+        <section>
+          <p class="text-overline mb-2">Today's schedule</p>
+          <ScheduleList items={today.schedule} />
+        </section>
 
-  <p class="font-mono text-ink-meta text-[11px]">icm/clients/mara/notes.md</p>
+        <section>
+          <p class="text-overline mb-3">Prepared for you · {today.preparedItems.length}</p>
+          <div class="flex flex-col gap-4">
+            {#each today.preparedItems as item (item.title)}
+              <PreparedItemCard {item} />
+            {/each}
+          </div>
+        </section>
+      </div>
 
-  <div class="flex flex-wrap gap-3">
-    <Button variant="default">Approve — put in my Gmail drafts</Button>
-    <Button variant="outline">Snooze</Button>
-    <Button variant="destructive">Read, then send…</Button>
-  </div>
+      <section class="mt-10">
+        <p class="text-overline mb-2">Open loops</p>
+        <OpenLoops loops={today.openLoops} />
+      </section>
 
-  <div class="flex flex-wrap gap-2">
-    <Badge class="bg-act-tint text-act border-transparent">Reply drafted</Badge>
-    <Badge class="bg-suggest-tint text-suggest-ink border-transparent">Update suggested</Badge>
-    <Badge class="bg-warn-tint text-warn-ink border-transparent">Sends an email</Badge>
-  </div>
-</div>
+      <section class="mt-10 pb-6">
+        <p class="text-overline mb-3">While you were away</p>
+        <AwayList items={today.whileYouWereAway} />
+      </section>
+    {/if}
+  {/snippet}
+</AppShell>
