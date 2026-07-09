@@ -51,4 +51,41 @@ defmodule Valea.Workspace.ManagerTest do
     :ok = Manager.close()
     assert {:ok, ^info} = Manager.open(info.path)
   end
+
+  test "migration failure reaps the started repo instead of orphaning it", %{parent: parent} do
+    real_migrations_path = Application.get_env(:valea, :migrations_path)
+
+    bad_migrations_dir =
+      Path.join(System.tmp_dir!(), "valea-bad-migrations-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(bad_migrations_dir)
+
+    File.write!(Path.join(bad_migrations_dir, "20990101000000_bad_migration.exs"), """
+    defmodule Valea.BadMigration do
+      use Ecto.Migration
+      def up, do: raise "boom"
+      def down, do: :ok
+    end
+    """)
+
+    on_exit(fn ->
+      Application.put_env(:valea, :migrations_path, real_migrations_path)
+      File.rm_rf!(bad_migrations_dir)
+    end)
+
+    Application.put_env(:valea, :migrations_path, bad_migrations_dir)
+
+    assert {:error, {:migration_failed, _}} = Manager.create(parent, "Bad")
+    assert Process.whereis(Valea.Repo) == nil
+    assert {:error, :no_workspace} = Manager.current()
+
+    Application.put_env(:valea, :migrations_path, real_migrations_path)
+
+    assert {:ok, %{name: "Good"} = info} = Manager.create(parent, "Good")
+    assert {:ok, ^info} = Manager.current()
+
+    assert [[_seq, _name, file_path]] = Valea.Repo.query!("PRAGMA database_list").rows
+    assert Path.basename(Path.dirname(file_path)) == "Good"
+    assert Path.basename(file_path) == "app.sqlite"
+  end
 end

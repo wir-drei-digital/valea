@@ -82,15 +82,41 @@ defmodule Valea.Workspace.Manager do
 
       true ->
         state = do_close(state)
-
-        with {:ok, repo_pid} <- start_repo(path),
-             :ok <- migrate() do
-          info = %{path: path, name: Path.basename(path)}
-          Config.record_opened(path, info.name)
-          Phoenix.PubSub.broadcast(Valea.PubSub, "workspace", {:workspace_opened, info})
-          {:ok, %{state | workspace: info, children: [repo_pid]}}
-        end
+        open_workspace(path, state)
     end
+  end
+
+  # Starts children one at a time, tracking every started pid. If any step
+  # fails, everything already started so far is rolled back before the
+  # error is returned, so a half-opened workspace is never left running
+  # under a name a future open/create could mistake for success. (Task 9's
+  # file watcher child slots in here as another step, accumulating onto
+  # `started`.)
+  defp open_workspace(path, state) do
+    case start_repo(path) do
+      {:ok, repo_pid} -> open_workspace(path, state, [repo_pid])
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp open_workspace(path, state, started) do
+    case migrate() do
+      :ok ->
+        info = %{path: path, name: Path.basename(path)}
+        Config.record_opened(path, info.name)
+        Phoenix.PubSub.broadcast(Valea.PubSub, "workspace", {:workspace_opened, info})
+        {:ok, %{state | workspace: info, children: started}}
+
+      {:error, reason} ->
+        rollback(started)
+        {:error, reason}
+    end
+  end
+
+  defp rollback(pids) do
+    Enum.each(pids, fn pid ->
+      DynamicSupervisor.terminate_child(Valea.Workspace.DynamicSupervisor, pid)
+    end)
   end
 
   defp do_close(%{workspace: nil} = state), do: state
@@ -115,7 +141,9 @@ defmodule Valea.Workspace.Manager do
   end
 
   defp migrate do
-    path = Ecto.Migrator.migrations_path(Valea.Repo)
+    path =
+      Application.get_env(:valea, :migrations_path) || Ecto.Migrator.migrations_path(Valea.Repo)
+
     Ecto.Migrator.run(Valea.Repo, path, :up, all: true)
     :ok
   rescue
