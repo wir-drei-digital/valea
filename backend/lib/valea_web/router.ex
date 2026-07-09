@@ -10,7 +10,11 @@ defmodule ValeaWeb.Router do
     get "/health", HealthController, :show
   end
 
-  # ash_typescript RPC routes added in Task 11.
+  scope "/rpc", ValeaWeb do
+    pipe_through :api
+    post "/run", RpcController, :run
+    post "/validate", RpcController, :validate
+  end
 
   # SPA catch-all (static build baked into priv/static in `just build`).
   scope "/", ValeaWeb do

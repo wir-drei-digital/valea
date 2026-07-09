@@ -37,6 +37,7 @@ defmodule ValeaWeb.Endpoint do
   if code_reloading? do
     plug Phoenix.CodeReloader
     # No Phoenix.Ecto.CheckRepoStatus: Valea.Repo only runs while a workspace is open.
+    plug AshPhoenix.Plug.CheckCodegenStatus
   end
 
   plug Plug.RequestId

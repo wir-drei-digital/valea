@@ -49,8 +49,14 @@ config :spark,
     ]
   ]
 
-# Filled in Task 11.
-config :valea, ash_domains: []
+config :valea, ash_domains: [Valea.Api]
+
+config :ash_typescript,
+  output_file: "../frontend/src/lib/api/ash_rpc.ts",
+  run_endpoint: "/rpc/run",
+  validate_endpoint: "/rpc/validate",
+  input_field_formatter: :camel_case,
+  output_field_formatter: :camel_case
 
 # Configure the endpoint
 config :valea, ValeaWeb.Endpoint,
