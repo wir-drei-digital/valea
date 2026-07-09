@@ -68,6 +68,16 @@ export class IcmStore {
     this.nodes = (data.nodes ?? []).map(normalizeNode);
     this.loaded = true;
   }
+
+  /**
+   * Clears the tree back to its cold-start shape. Called on every
+   * workspace-change push so a stale tree from the previous workspace can
+   * never be mistaken for the new one's — see `wireIcmEvents` below.
+   */
+  reset(): void {
+    this.nodes = [];
+    this.loaded = false;
+  }
 }
 
 export const icmStore = new IcmStore(api);
@@ -105,7 +115,21 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
   icmEventsWired = true;
 
   joinWorkspaceEvents({
-    onWorkspace,
+    onWorkspace: (payload) => {
+      // The store owns its own coherence: on every workspace change
+      // (close, open, or switch), the previous workspace's tree is no
+      // longer valid, so drop it before anything else runs. When the new
+      // workspace is open, immediately refetch so `loaded` reflects the
+      // NEW tree rather than sitting on the stale one. This must happen
+      // before the external `onWorkspace` callback so downstream
+      // consumers (e.g. route guards reacting to `workspaceStore`) never
+      // observe a `loaded: true` tree that belongs to the old workspace.
+      icmStore.reset();
+      if (payload.open) {
+        void icmStore.refetch();
+      }
+      onWorkspace?.(payload);
+    },
     onIcmChanged: () => {
       void icmStore.refetch();
     }

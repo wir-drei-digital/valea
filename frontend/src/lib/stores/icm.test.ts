@@ -192,3 +192,44 @@ describe('IcmStore.loaded', () => {
     expect(call).toBe(2);
   });
 });
+
+describe('IcmStore.reset', () => {
+  it('empties nodes and clears loaded', async () => {
+    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore({
+      icmTree: async () => ({ ok: true, data: { nodes: [raw] } }) as ApiResult<any>
+    });
+
+    await store.refetch();
+    expect(store.loaded).toBe(true);
+    expect(store.nodes).toHaveLength(1);
+
+    store.reset();
+
+    expect(store.loaded).toBe(false);
+    expect(store.nodes).toEqual([]);
+  });
+
+  it('is safe to call before any refetch has resolved', () => {
+    const store = new IcmStore({ icmTree: async () => ({ ok: true, data: { nodes: [] } }) as ApiResult<any> });
+
+    store.reset();
+
+    expect(store.loaded).toBe(false);
+    expect(store.nodes).toEqual([]);
+  });
+
+  it('allows a subsequent refetch to repopulate the tree after reset', async () => {
+    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore({
+      icmTree: async () => ({ ok: true, data: { nodes: [raw] } }) as ApiResult<any>
+    });
+
+    await store.refetch();
+    store.reset();
+    await store.refetch();
+
+    expect(store.loaded).toBe(true);
+    expect(store.nodes).toHaveLength(1);
+  });
+});
