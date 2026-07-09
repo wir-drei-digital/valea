@@ -144,6 +144,19 @@ resources; the first arrive with the queue (Phase 3).
 
 ## Frontend
 
+- **Shell layout primitives** (reusable across the whole app, built in Phase 1):
+  the design system's four-column grid — **Sidebar 236px · optional ListPane
+  250–340px · Main (content max 560–660) · optional Rail 290–340px** — becomes
+  an `AppShell` component family. Each route declares which columns it uses:
+  Today = main + rail (later), Mail = list pane (message list) + main, Files =
+  list pane (file tree) + main + rail, Chat = list pane (sessions) + main.
+  Built on **shadcn-svelte** primitives (Sidebar, Resizable, Scroll Area;
+  Item/Empty/Badge/Separator for pane content), themed via the token → shadcn
+  semantic-variable mapping. `ListPane` ships with reusable slots (header,
+  optional filter, scrollable row list, footer card) so Mail/Files/Chat adopt
+  it in their phases without new layout code. In Phase 1 the ListPane is
+  exercised by the Knowledge route (folder's page list) so the primitive is
+  proven, even though its heavy users arrive later.
 - **Shell** (brief §11): left sidebar — workspace identity block; Main: Today,
   Mail, Calendar, Chat, Tasks; Assistant: Workflows, Knowledge, Files; System:
   Sources, Audit log; footer: `● All local · synced HH:MM` status line +
