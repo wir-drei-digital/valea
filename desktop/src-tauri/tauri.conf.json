@@ -1,0 +1,46 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Valea",
+  "version": "0.1.0",
+  "identifier": "digital.wirdrei.valea",
+  "build": {
+    "frontendDist": "../../frontend/build",
+    "devUrl": "http://localhost:4273",
+    "beforeDevCommand": "cd ../frontend && bun run dev",
+    "beforeBuildCommand": "cd ../frontend && PUBLIC_API_URL=http://localhost:4817 PUBLIC_WS_URL=ws://localhost:4817/socket bun run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Valea",
+        "width": 1100,
+        "height": 750,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 18, "y": 24 }
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": ["binaries/valea-server"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}
