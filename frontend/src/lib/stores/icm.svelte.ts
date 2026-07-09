@@ -44,6 +44,15 @@ function normalizeNode(raw: Record<string, any>): IcmNode {
 
 export class IcmStore {
   nodes: IcmNode[] = $state([]);
+  /**
+   * True once the first `refetch()` call has resolved successfully. `nodes`
+   * starts empty and stays empty until the async refetch resolves (SSR is
+   * off, so this is the default state on a cold/direct/refreshed load), so
+   * callers must not treat an empty `nodes` as "path not found" until this
+   * flips true — otherwise pages that exist flash a false not-found while
+   * the tree is still loading.
+   */
+  loaded = $state(false);
 
   #api: IcmApi;
 
@@ -57,6 +66,7 @@ export class IcmStore {
 
     const data = result.data as { nodes?: Record<string, any>[] };
     this.nodes = (data.nodes ?? []).map(normalizeNode);
+    this.loaded = true;
   }
 }
 
@@ -70,17 +80,28 @@ let icmEventsWired = false;
  * this module never opens a socket as a side effect; idempotent so repeated
  * calls are safe.
  *
- * `onWorkspace` is an optional pass-through so the root layout can wire its
- * own workspace open/close handling through this SAME join rather than
+ * SINGLE CALL SITE: this is wired from the root layout (`src/routes/+layout.svelte`)
+ * only. `onWorkspace` is an optional pass-through so the root layout can wire
+ * its own workspace open/close handling through this SAME join rather than
  * opening a second one. Phoenix's JS client tags every push with the
  * joining channel's `join_ref` and only delivers it to the client-side
  * `Channel` object with a matching ref (see
  * `phoenix/assets/js/phoenix/channel.js#isMember`) — two independent
  * `socket.channel('workspace:events', {})` joins to the same topic race,
  * and only one reliably receives pushes. One join, wired here, avoids that.
+ * Because of that constraint, a second call site passing its own
+ * `onWorkspace` would have that handler silently dropped (see below) — if a
+ * future call site genuinely needs a different `onWorkspace` handler, this
+ * function needs to grow support for multiple subscribers instead of being
+ * called again.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
-  if (icmEventsWired) return;
+  if (icmEventsWired) {
+    if (onWorkspace) {
+      console.warn('[icm] wireIcmEvents already wired; additional onWorkspace handler ignored');
+    }
+    return;
+  }
   icmEventsWired = true;
 
   joinWorkspaceEvents({

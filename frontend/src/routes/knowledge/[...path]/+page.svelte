@@ -4,6 +4,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { api } from '$lib/api/client';
   import { encodePath, type IcmNode } from '$lib/shell/nav';
+  import { Skeleton } from '$lib/components/ui/skeleton';
 
   // Route params arrive URL-encoded per segment (e.g. `Tone%20%26%20Voice`);
   // decode each segment rather than the whole param so a literal `%2F` in a
@@ -86,7 +87,13 @@
   {/snippet}
 
   {#snippet main()}
-    {#if !node}
+    {#if !icmStore.loaded}
+      <div class="flex flex-col gap-3" data-testid="knowledge-loading-skeleton">
+        <Skeleton class="h-6 w-1/3" />
+        <Skeleton class="h-4 w-2/3" />
+        <Skeleton class="h-4 w-1/2" />
+      </div>
+    {:else if !node}
       <p class="text-ink-body text-[13.5px]">This page doesn't exist anymore.</p>
     {:else if node.type === 'folder'}
       <header class="flex flex-col gap-2">

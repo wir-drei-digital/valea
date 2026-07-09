@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeIcmNode } from './icm.svelte';
+import { normalizeIcmNode, IcmStore } from './icm.svelte';
 import type { IcmNode } from '../shell/nav';
+import type { ApiResult } from '../api/client';
 
 describe('normalizeIcmNode', () => {
   it('normalizes snake_case page_count from the wire', () => {
@@ -141,5 +142,53 @@ describe('normalizeIcmNode', () => {
     const result = normalizeIcmNode(raw);
 
     expect(result.pageCount).toBe(10);
+  });
+});
+
+describe('IcmStore.loaded', () => {
+  it('starts false before any refetch resolves', () => {
+    const store = new IcmStore({ icmTree: async () => ({ ok: true, data: { nodes: [] } }) as ApiResult<any> });
+
+    expect(store.loaded).toBe(false);
+    expect(store.nodes).toEqual([]);
+  });
+
+  it('flips true after a successful refetch, alongside populated nodes', async () => {
+    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore({
+      icmTree: async () => ({ ok: true, data: { nodes: [raw] } }) as ApiResult<any>
+    });
+
+    await store.refetch();
+
+    expect(store.loaded).toBe(true);
+    expect(store.nodes).toHaveLength(1);
+  });
+
+  it('stays false when the fetch fails, so callers keep showing the loading state', async () => {
+    const store = new IcmStore({
+      icmTree: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any>
+    });
+
+    await store.refetch();
+
+    expect(store.loaded).toBe(false);
+  });
+
+  it('remains true on subsequent refetches (never reverts to a loading state)', async () => {
+    let call = 0;
+    const store = new IcmStore({
+      icmTree: async () => {
+        call += 1;
+        return { ok: true, data: { nodes: [] } } as ApiResult<any>;
+      }
+    });
+
+    await store.refetch();
+    expect(store.loaded).toBe(true);
+
+    await store.refetch();
+    expect(store.loaded).toBe(true);
+    expect(call).toBe(2);
   });
 });
