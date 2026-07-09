@@ -12,6 +12,7 @@
   --paper-track: #eee8d9;
   --paper-pill: #ece5d2;
   --paper-nav-active: #e7dfca;
+  --paper-tree-active: #eee5cf;
   --paper-border: #e6decb;
   --paper-hairline: #efe9da;
   --paper-chip-border: #e0d7c1;
@@ -92,6 +93,7 @@
   --color-paper-track: var(--paper-track);
   --color-paper-pill: var(--paper-pill);
   --color-paper-nav-active: var(--paper-nav-active);
+  --color-paper-tree-active: var(--paper-tree-active);
   --color-paper-border: var(--paper-border);
   --color-paper-hairline: var(--paper-hairline);
   --color-paper-chip-border: var(--paper-chip-border);

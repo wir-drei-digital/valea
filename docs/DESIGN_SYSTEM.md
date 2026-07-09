@@ -36,6 +36,7 @@ value here disagrees with the PDF, the PDF wins.
 | control track | `#EEE8D9` | segmented-control / pill tracks |
 | status pill | `#ECE5D2` | status pill, ownership card |
 | nav active | `#E7DFCA` | active nav item fill |
+| tree active | `#EEE5CF` | ICM tree active row |
 | border | `#E6DECB` | card borders |
 | hairline / row | `#EFE9DA` | row separators |
 | chip border | `#E0D7C1` | chips, tree guide line |

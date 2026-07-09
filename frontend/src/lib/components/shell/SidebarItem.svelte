@@ -5,17 +5,20 @@
     label,
     href,
     icon: Icon,
-    active = false
+    active = false,
+    currentPage = false
   }: {
     label: string;
     href: string;
     icon: NavIcon;
     active?: boolean;
+    currentPage?: boolean;
   } = $props();
 </script>
 
 <a
   {href}
+  aria-current={currentPage ? 'page' : undefined}
   class={[
     'flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13.5px] transition-colors',
     active

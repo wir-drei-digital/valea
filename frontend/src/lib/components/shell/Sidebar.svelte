@@ -52,7 +52,9 @@
             label={item.label}
             href={item.href}
             icon={item.icon}
-            active={page.url.pathname === item.href}
+            active={page.url.pathname === item.href ||
+              (item.href !== '/' && page.url.pathname.startsWith(item.href + '/'))}
+            currentPage={page.url.pathname === item.href}
           />
           {#if item.id === 'knowledge'}
             <div class="mt-0.5 mb-1 ml-[17px] border-l border-paper-chip-border pl-2">

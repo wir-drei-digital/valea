@@ -15,6 +15,13 @@
   function toggle(item: NavTreeItem) {
     open[item.href] = !isOpen(item);
   }
+
+  // Ancestor folders (current path nested under this folder) get the lighter
+  // nav-active treatment; only the exact page/folder match gets the deeper
+  // tree-active fill (§7: "Tree active row uses the deeper #EEE5CF").
+  function isAncestor(item: NavTreeItem) {
+    return activePath.startsWith(item.href + '/');
+  }
 </script>
 
 <ul class="flex flex-col gap-0.5">
@@ -24,9 +31,14 @@
         <button
           type="button"
           onclick={() => toggle(node)}
+          aria-current={activePath === node.href ? 'page' : undefined}
           class={[
             'flex w-full items-center gap-1 rounded-md px-2 py-[3px] text-left text-[12.5px] transition-colors hover:bg-paper-pill',
-            activePath === node.href ? 'bg-paper-nav-active text-ink-heading' : 'text-ink-secondary'
+            activePath === node.href
+              ? 'bg-paper-tree-active text-ink-heading'
+              : isAncestor(node)
+                ? 'bg-paper-nav-active text-ink-heading'
+                : 'text-ink-secondary'
           ]}
         >
           <ChevronRight
@@ -46,9 +58,10 @@
       {:else}
         <a
           href={node.href}
+          aria-current={activePath === node.href ? 'page' : undefined}
           class={[
             'flex items-center gap-1 rounded-md px-2 py-[3px] text-[12.5px] transition-colors hover:bg-paper-pill',
-            activePath === node.href ? 'bg-paper-nav-active text-ink-heading' : 'text-ink-secondary'
+            activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
           ]}
         >
           <span class="flex-1 truncate">{node.label}</span>
