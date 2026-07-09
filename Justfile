@@ -58,6 +58,6 @@ desktop-bundle: package-backend
 # Run all checks (fails if the generated RPC client is stale)
 test:
     cd backend && mix test
-    cd backend && mix ash_typescript.codegen && git diff --exit-code ../frontend/src/lib/api/ash_rpc.ts || (echo "STALE GENERATED CLIENT — commit the regenerated ash_rpc.ts" && exit 1)
+    cd backend && mix ash_typescript.codegen && git diff --exit-code ../frontend/src/lib/api/ || (echo "STALE GENERATED CLIENT — commit the regenerated files" && exit 1)
     cd frontend && bun run check
     cd frontend && bun run test
