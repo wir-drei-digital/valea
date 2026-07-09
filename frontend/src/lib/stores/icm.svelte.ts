@@ -5,22 +5,28 @@ import { joinWorkspaceEvents } from '../socket';
 type IcmApi = Pick<Api, 'icmTree'>;
 
 /**
- * Normalizes a raw RPC tree node (camelCased by the backend's field
- * formatter, e.g. `page_count` -> `pageCount`) into `IcmNode`. Folder/page
- * distinction and field names already line up with `IcmNode`, but this keeps
- * the mapping explicit and defends against `Record<string, any>` typing
- * (`InferIcmTreeResult`) drifting from the shape at runtime.
+ * Normalizes a raw RPC tree node into `IcmNode`. The backend returns plain
+ * :map objects that bypass ash_typescript's camelCase formatter, so fields
+ * arrive snake_case (e.g., `page_count`, not `pageCount`). This function
+ * handles both formats for robustness while mapping to the canonical
+ * camelCase `IcmNode` structure. Folder/page distinction already line up,
+ * but this keeps the mapping explicit and defends against `Record<string, any>`
+ * typing (`InferIcmTreeResult`) drifting from the shape at runtime.
  */
-function normalizeNode(raw: Record<string, any>): IcmNode {
+export function normalizeIcmNode(raw: Record<string, any>): IcmNode {
   const type: IcmNode['type'] = raw.type === 'folder' ? 'folder' : 'page';
 
   if (type === 'folder') {
+    const pageCount = typeof raw.page_count === 'number'
+      ? raw.page_count
+      : (typeof raw.pageCount === 'number' ? raw.pageCount : 0);
+
     return {
       name: raw.name,
       path: raw.path,
       type,
-      children: Array.isArray(raw.children) ? raw.children.map(normalizeNode) : [],
-      pageCount: typeof raw.pageCount === 'number' ? raw.pageCount : 0
+      children: Array.isArray(raw.children) ? raw.children.map(normalizeIcmNode) : [],
+      pageCount
     };
   }
 
@@ -30,6 +36,10 @@ function normalizeNode(raw: Record<string, any>): IcmNode {
     type,
     uri: raw.uri
   };
+}
+
+function normalizeNode(raw: Record<string, any>): IcmNode {
+  return normalizeIcmNode(raw);
 }
 
 export class IcmStore {
