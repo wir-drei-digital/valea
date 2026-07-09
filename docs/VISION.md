@@ -80,6 +80,17 @@ hood", "Why this?". Never: hype language, glowing AI effects, "automated for
 you" without explanation, vanity-metric dashboards. Plain language first;
 technical detail is one toggle away, never the default.
 
+## First run
+
+Onboarding is the principles made tangible: *"Welcome. Your business runs on a
+folder you own."* A fresh instance offers two paths — **set it up in
+conversation** (about 15 minutes of talking; the assistant builds the workspace
+as you go, and you approve each page it writes; nothing connects without
+asking) or **open an existing workspace** (from a consultant handoff, a backup,
+or another machine — everything picks up where it left off). The trust bar
+states the deal plainly: runs on this machine, keys stay in the system
+keychain, export or walk away with the folder anytime.
+
 ## The daily loop we're building toward
 
 1. Overnight/morning: workflows watch the admin streams (mail moved to

@@ -149,7 +149,7 @@ pattern from day one.
 - Plain controllers only where RPC is wrong: `GET /api/health` (sidecar port
   polling from Tauri).
 - Errors follow ash_typescript's structured error shape; the frontend maps the
-  workspace-not-open error to the welcome screen.
+  workspace-not-open error to the onboarding screen.
 
 Data-layer-backed Ash resources first arrive with the queue (Phase 3) and plug
 into the same RPC surface.
@@ -179,8 +179,26 @@ into the same RPC surface.
   title/path/raw content preview (full viewer/editor is Phase 2); Mail,
   Calendar, Chat, Tasks, Workflows, Files, Sources, Audit log are calm
   empty-state stubs ("coming soon" in Valea's voice, no dead controls).
-- **Welcome screen** when no workspace is open: create workspace (Tauri folder
-  dialog for parent dir + name), open existing, recent list.
+- **Onboarding screen** when no workspace is open (per the 2026-07-09 welcome
+  mockup): "Welcome. Your business runs on a folder you own." with two cards —
+  - **Start fresh — "Set it up in conversation"** (green primary card). The
+    conversational setup itself needs the chat assistant (Phase 6+); until
+    then the button opens a **guided create-workspace step** (name + location
+    via Tauri folder dialog → seeded template → straight into the app). Card
+    copy ships as designed; only the behavior behind the button is the
+    fallback.
+  - **Continue — "Open an existing workspace"**: folder drop zone + "Choose
+    folder…" (Tauri dialog). Before opening, show a lightweight inspection
+    summary ("we'll show you what's inside before anything runs"): detected
+    `icm/` · `workflows/` · `queue/` · `logs/` and page counts, then open.
+    Git-remote restore is deferred (not MVP).
+  - **Trust bar** footer: "Runs on this Mac — nothing leaves it during setup" ·
+    keychain note (copy only; secrets handling arrives with mail config,
+    Phase 4) · "Export or walk away with the folder anytime" · monospace
+    `>_ What's in a workspace?` opening a plain explanation of the folder
+    structure.
+  - A recent-workspaces list appears on the screen once at least one workspace
+    is known (returning users who closed their workspace).
 - **Today cockpit**: renders `/api/cockpit/today` — greeting/summary/trust
   statement, schedule list, prepared-item cards (title, summary, used-sources
   chips, primary/secondary action buttons — actions disabled/no-op this phase),
@@ -211,7 +229,7 @@ into the same RPC surface.
 ## Error handling
 
 - Backend API errors use the `{"error": msg}` envelope; workspace-not-open is a
-  distinct error code the frontend maps to the welcome screen.
+  distinct error code the frontend maps to the onboarding screen.
 - Workspace create refuses to scaffold into a non-empty target; open refuses a
   folder without the workspace marker structure; both surface the specific
   reason.
@@ -233,7 +251,8 @@ into the same RPC surface.
 
 ## Acceptance (brief Phase 1 "done when")
 
-1. User launches the app with no prior state → welcome screen.
+1. User launches the app with no prior state → onboarding screen ("Your
+   business runs on a folder you own", two cards + trust bar).
 2. Creates a workspace → full seeded tree on disk (ICM pages, workflows,
    prompts, queue dirs, mock email, configs, `.gitignore`).
 3. Knowledge nav shows the seeded ICM folders/pages.
