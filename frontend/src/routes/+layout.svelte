@@ -5,7 +5,21 @@
   import '@fontsource/ibm-plex-mono/400.css';
   import '@fontsource/ibm-plex-mono/500.css';
   import './layout.css';
+  import { onMount } from 'svelte';
+  import Onboarding from '$lib/components/onboarding/Onboarding.svelte';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+
   let { children } = $props();
+
+  onMount(() => {
+    workspaceStore.refresh();
+  });
 </script>
 
-{@render children()}
+{#if workspaceStore.state === 'loading'}
+  <div class="flex min-h-screen items-center justify-center bg-paper-surface"></div>
+{:else if workspaceStore.state === 'none'}
+  <Onboarding />
+{:else}
+  {@render children()}
+{/if}
