@@ -163,20 +163,22 @@ resources; the first arrive with the queue (Phase 3).
   reusable component the brief specifies (§11), fed by seed data.
 - **Theming**: legend's two-layer token architecture (raw tokens → shadcn
   semantic variable mapping; primitives compose tokens, feature code never uses
-  raw classes) with a **new warm light palette** — calm, trustworthy, warm,
-  low-hype (brief §20). Risk-level visual system (neutral / amber / red-orange)
-  defined as tokens now, used by cards. Dark mode deferred.
-- **Visual direction** (from the 2026-07-09 mockups; a detailed design system
-  follows later and lands as token values, not restructuring): warm cream/ivory
-  surfaces, deep green primary (buttons, active nav), amber for holds/medium
-  risk, red-orange for high-risk/irreversible ("SENDS AN EMAIL", "Approving
-  sends it"); serif display face for the cockpit greeting and page titles, sans
-  for body/UI; monospace only for file paths and the `>_ Open the hood` footer
-  line. Mockup elements **not** in Phase 1 (deferred to their owning phases):
-  nav badge counts, Suggested Focus panel, Needs a Decision section, calendar
-  holds, week toggle, Ask-about-your-day input, Files browser with
-  friendly/raw workflow view. The nav section is labeled **Knowledge** (decided
-  against the "Memory" label some mockups use).
+  raw classes) implementing the **"Paper & ink" design system** —
+  [docs/DESIGN_SYSTEM.md](../../DESIGN_SYSTEM.md) (canonical:
+  `docs/design/cockpit-design-system-v1.pdf`), followed as closely as
+  possible. Phase 1 lays the full foundation: paper/ink/green/amber/terracotta
+  palettes as tokens, the three faces bundled locally (Newsreader / Instrument
+  Sans / IBM Plex Mono), 4px-grid spacing + radii + shadows, the 236px sidebar
+  spec, nav item states, ICM tree metrics, status pill, and the `>_ Open the
+  hood` footer row. Components Phase 1 actually ships: sidebar/nav, prepared
+  item card (approval-card anatomy), section overlines, page header
+  (overline date → Newsreader greeting → subtitle). Light only; dark deferred.
+- Mockup/design-system elements **not** in Phase 1 (deferred to their owning
+  phases): nav badge counts, Suggested Focus panel, Needs a Decision section
+  + consequence card, suggestion card, calendar event vocabulary, chat
+  bubbles, rail cards, assistant strip, friendly/raw workflow view, Files
+  browser. The nav section is labeled **Knowledge** (product decision; the
+  design system PDF says "Memory").
 - Clients: legend's `api.ts` fetch wrapper + `socket.ts` phoenix client,
   retargeted at the valea endpoints.
 
