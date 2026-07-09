@@ -63,9 +63,10 @@ valea/
 Burrito build scripts (incl. pinned zig auto-provisioning), Tauri sidecar
 lifecycle (`main.rs`: spawn sidecar, poll port, show window, kill on exit; dev
 builds skip the sidecar), Justfile recipes, frontend design-token architecture +
-shadcn-svelte setup, `api.ts`/`socket.ts` clients, `.tool-versions`, the
-"migrations run on boot in releases, detected by absence of Mix" rule, SQLite
-via AshSqlite with `require_atomic? false` on custom update actions.
+shadcn-svelte setup, `api.ts`/`socket.ts` clients, `.tool-versions`, SQLite via AshSqlite with `require_atomic? false` on custom
+update actions. Legend's "migrations run on boot in releases" rule does **not**
+carry over: because the database lives inside the workspace, migrations run at
+workspace open in every environment (see Workspace model).
 
 **Deleted:** all legend domains — agents/sessions, signals/MCP, library,
 devices/remote/federation, harnesses, runtimes, sprites, tunnels, storage, the
@@ -99,7 +100,8 @@ off the whole folder). Legend's app-data-DB model doesn't fit, so:
     seed failure); a workspace is never presented as healthy when half-seeded.
 - **Workspace template** (`backend/priv/workspace_template/`) contains the full
   brief §4 tree: seed ICM pages (§5: Founder Coaching Package, Email Tone
-  Guide, No Medical Advice, plus the other named pages with sensible content),
+  Guide, No Medical Advice verbatim; every other page named in the §4 tree gets
+  short brief-consistent content),
   the four workflow YAMLs (§6), prompt files, `queue/{pending,approved,rejected,applied}/`,
   `logs/audit.jsonl` (empty), `sources/` including the Priya Nair mock email
   (§18) under `sources/mail/normalized/`, `config/{mail,calendar,harnesses}.yaml`,
