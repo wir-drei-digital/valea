@@ -56,7 +56,9 @@ config :ash_typescript,
   run_endpoint: "/rpc/run",
   validate_endpoint: "/rpc/validate",
   input_field_formatter: :camel_case,
-  output_field_formatter: :camel_case
+  output_field_formatter: :camel_case,
+  generate_phx_channel_rpc_actions: true,
+  phoenix_import_path: "phoenix"
 
 # Configure the endpoint
 config :valea, ValeaWeb.Endpoint,

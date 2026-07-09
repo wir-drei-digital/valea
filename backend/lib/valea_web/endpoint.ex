@@ -1,10 +1,9 @@
 defmodule ValeaWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :valea
 
-  # socket "/socket", ValeaWeb.UserSocket,
-  #   websocket: [connect_info: [:peer_data]],
-  #   longpoll: false
-  # enabled in Task 12
+  socket "/socket", ValeaWeb.UserSocket,
+    websocket: true,
+    longpoll: false
 
   # The session will be stored in the cookie and signed,
   # this means its contents can be read but not tampered with.
