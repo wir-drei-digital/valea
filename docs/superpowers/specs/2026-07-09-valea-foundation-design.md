@@ -63,7 +63,8 @@ valea/
 Burrito build scripts (incl. pinned zig auto-provisioning), Tauri sidecar
 lifecycle (`main.rs`: spawn sidecar, poll port, show window, kill on exit; dev
 builds skip the sidecar), Justfile recipes, frontend design-token architecture +
-shadcn-svelte setup, `api.ts`/`socket.ts` clients, `.tool-versions`, SQLite via AshSqlite with `require_atomic? false` on custom
+shadcn-svelte setup, the `socket.ts` phoenix client (the fetch client is
+replaced by the ash_typescript generated client — see API surface), `.tool-versions`, SQLite via AshSqlite with `require_atomic? false` on custom
 update actions. Legend's "migrations run on boot in releases" rule does **not**
 carry over: because the database lives inside the workspace, migrations run at
 workspace open in every environment (see Workspace model).
@@ -124,23 +125,34 @@ off the whole folder). Legend's app-data-DB model doesn't fit, so:
   hardcoded backend module. Live data replaces it in Phases 3–5; the wiring
   (endpoint → frontend rendering) is real from day one.
 
-### API surface
+### API surface — ash_typescript RPC + Phoenix channels
 
-Plain Phoenix controllers with the uniform `{"error": msg}` envelope:
+The API layer is **`ash_typescript`** (pinned, 0.17.x at time of writing): Ash
+actions exposed as typed RPC, with a generated TypeScript client giving
+end-to-end type safety. No AshJsonApi, no hand-maintained client types. This
+replaces legend's plain-controller + hand-typed `api.ts` pattern — one API
+pattern from day one.
 
-- `GET  /api/health`
-- `GET  /api/workspace` — current workspace or 404-style "no workspace open"
-- `POST /api/workspace/create` `{parent_dir, name}`
-- `POST /api/workspace/open` `{path}`
-- `GET  /api/workspace/recent`
-- `GET  /api/icm/tree`
-- `GET  /api/icm/page?path=...` — raw markdown + metadata (viewer UI is Phase 2)
-- `GET  /api/cockpit/today`
+- Phase 1 operations are **Ash generic actions** on data-layer-less resources
+  (the domain stays file-backed), exposed via `typescript_rpc`:
+  - `Workspace`: `current`, `create(parent_dir, name)`, `open(path)`, `recent`
+  - `ICM`: `tree`, `page(path)` — raw markdown + metadata (viewer UI is Phase 2)
+  - `Cockpit`: `today`
+- **Transport: Phoenix channels** (ash_typescript's channel RPC) over one
+  socket, which also carries the realtime events channel `workspace:events` —
+  pushes `icm_changed` (frontend refetches the tree) and
+  `workspace_opened`/`workspace_closed`. HTTP RPC endpoint stays available as
+  the fallback transport.
+- Codegen is part of the build: `mix ash.codegen` writes the typed client into
+  `frontend/src/lib/api/` (committed); `just test` fails if the generated
+  client is stale.
+- Plain controllers only where RPC is wrong: `GET /api/health` (sidecar port
+  polling from Tauri).
+- Errors follow ash_typescript's structured error shape; the frontend maps the
+  workspace-not-open error to the welcome screen.
 
-One channel: `workspace:events` — pushes `icm_changed` (frontend refetches the
-tree) and `workspace_opened`/`workspace_closed`. Ash stays configured
-(deps, repo, JSON:API router wiring ready) but Phase 1 ships zero Ash
-resources; the first arrive with the queue (Phase 3).
+Data-layer-backed Ash resources first arrive with the queue (Phase 3) and plug
+into the same RPC surface.
 
 ## Frontend
 
@@ -192,8 +204,9 @@ resources; the first arrive with the queue (Phase 3).
   bubbles, rail cards, assistant strip, friendly/raw workflow view, Files
   browser. The nav section is labeled **Knowledge** (product decision; the
   design system PDF says "Memory").
-- Clients: legend's `api.ts` fetch wrapper + `socket.ts` phoenix client,
-  retargeted at the valea endpoints.
+- Clients: the **generated ash_typescript client** (`src/lib/api/`, channel
+  transport) for all operations + legend's `socket.ts` phoenix client for the
+  socket lifecycle and the `workspace:events` channel.
 
 ## Error handling
 
