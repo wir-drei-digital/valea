@@ -118,6 +118,22 @@ defmodule Valea.Workspace.Manager do
     case start_watcher(path) do
       {:ok, watcher_pid} ->
         started = started ++ [watcher_pid]
+        open_workspace_migrate(path, state, started)
+
+      {:error, reason} ->
+        rollback_with(started, reason, state)
+    end
+  end
+
+  # Brings an existing workspace up to the current on-disk shape (new
+  # marker dirs, converted workflow pages, managed Claude settings) before
+  # it is presented as open. Runs after the repo/watcher are up (so it acts
+  # on a fully mounted workspace) and before the open broadcast, so a
+  # failure here rolls back exactly like a failed repo or watcher start —
+  # never leaving a half-open workspace behind.
+  defp open_workspace_migrate(path, state, started) do
+    case Valea.Workspace.Migration.migrate(path) do
+      {:ok, _version} ->
         info = %{path: path, name: Path.basename(path)}
         Config.record_opened(path, info.name)
         Phoenix.PubSub.broadcast(Valea.PubSub, "workspace", {:workspace_opened, info})

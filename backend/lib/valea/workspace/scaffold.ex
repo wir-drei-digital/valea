@@ -5,7 +5,7 @@ defmodule Valea.Workspace.Scaffold do
   plain, readable files.
   """
 
-  @marker_dirs ~w(icm queue logs)
+  @marker_dirs ~w(icm queue logs queue/staging queue/processing)
 
   def template_dir, do: Path.join(:code.priv_dir(:valea), "workspace_template")
 
@@ -36,6 +36,9 @@ defmodule Valea.Workspace.Scaffold do
       # template ships the gitignore un-dotted so tooling never ignores
       # template files; the real workspace gets the dotted name
       File.rename(Path.join(target, "gitignore"), Path.join(target, ".gitignore"))
+      # Managed Claude settings exist from the moment a workspace is
+      # scaffolded; Migration keeps them in sync on every subsequent open.
+      Valea.Agents.ClaudeSettings.write!(target)
       :ok
     else
       {:error, reason} -> {:error, reason}
