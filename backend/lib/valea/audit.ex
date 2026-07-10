@@ -10,7 +10,7 @@ defmodule Valea.Audit do
   def start_link(cfg), do: GenServer.start_link(__MODULE__, cfg, name: __MODULE__)
 
   def append(type, fields \\ %{}) do
-    GenServer.call(__MODULE__, {:append, type, fields})
+    GenServer.cast(__MODULE__, {:append, type, fields})
   end
 
   def entries(limit) do
@@ -25,7 +25,7 @@ defmodule Valea.Audit do
   end
 
   @impl true
-  def handle_call({:append, type, fields}, _from, state) do
+  def handle_cast({:append, type, fields}, state) do
     entry =
       %{
         "ts" => DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -34,12 +34,18 @@ defmodule Valea.Audit do
       }
       |> Map.merge(fields)
 
-    case File.write(state.path, Jason.encode!(entry) <> "\n", [:append]) do
-      :ok -> :ok
-      {:error, reason} -> Logger.error("audit append failed: #{inspect(reason)}")
+    case Jason.encode(entry) do
+      {:ok, json} ->
+        case File.write(state.path, json <> "\n", [:append]) do
+          :ok -> :ok
+          {:error, reason} -> Logger.error("audit append failed: #{inspect(reason)}")
+        end
+
+      {:error, reason} ->
+        Logger.error("audit append failed to encode entry: #{inspect(reason)}")
     end
 
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
   @impl true
