@@ -3,6 +3,12 @@
 // `pushEvent` but never actually importing/depending on LiveView) has been
 // renamed to the framework-neutral `onAction` — a plain optional callback of
 // shape `(event: string, payload: object) => void`.
+// Adapted (2026-07-10, Task 7): the hardcoded mark-button row has been
+// trimmed to bold/italic/strike (+ the separate link button below it), per
+// this phase's spec of "bold/italic/strike/link only". Underline was removed
+// because the underline extension is not installed — `toggleMark('underline')`
+// throws (`getMarkType` errors on an unknown mark name) the instant the
+// button is clicked. Code was removed as out of scope for this phase.
 // @ts-nocheck
 import { Plugin, PluginKey } from "@tiptap/pm/state"
 import { Extension } from "@tiptap/core"
@@ -26,13 +32,7 @@ function createMenuElement(editor, extras, onAction) {
   const buttons = [
     { label: "B", mark: "bold", style: "font-weight:700" },
     { label: "I", mark: "italic", style: "font-style:italic" },
-    { label: "U", mark: "underline", style: "text-decoration:underline" },
     { label: "S", mark: "strike", style: "text-decoration:line-through" },
-    {
-      label: "&lt;/&gt;",
-      mark: "code",
-      style: "font-family:monospace;font-size:0.75rem",
-    },
   ]
 
   buttons.forEach(({ label, mark, style }) => {

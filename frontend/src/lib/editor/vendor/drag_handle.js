@@ -1,4 +1,8 @@
 // Vendored from tiptap_phoenix (assets/js/extensions/drag_handle.js) on 2026-07-10 — framework-agnostic, no LiveView coupling.
+// Adapted (2026-07-10, Task 7): the "Turn into → Toggle" context-menu item has
+// been removed. It called `.setDetails()`, but the details/details-summary/
+// details-content extensions are not installed in this app — calling that
+// chain method throws a TypeError as soon as the item is clicked.
 // @ts-nocheck
 import { Extension } from "@tiptap/core"
 import { Plugin, PluginKey } from "@tiptap/pm/state"
@@ -142,22 +146,6 @@ function createContextMenu(editor, blockPos, onAction) {
           icon: "&lt;&gt;",
           action: () =>
             editor.chain().focus().setTextSelection(blockPos + 1).setCodeBlock().run(),
-        },
-        {
-          label: "Toggle",
-          icon: "&#9654;",
-          action: () =>
-            editor.chain().focus().setTextSelection(blockPos + 1).setDetails().command(({ tr, state }) => {
-              const { $from } = state.selection
-              for (let d = $from.depth; d > 0; d--) {
-                const node = $from.node(d)
-                if (node.type.name === "details") {
-                  tr.setNodeMarkup($from.before(d), undefined, { ...node.attrs, open: true })
-                  return true
-                }
-              }
-              return true
-            }).run(),
         },
       ],
     },
