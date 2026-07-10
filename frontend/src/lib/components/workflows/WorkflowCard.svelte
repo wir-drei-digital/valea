@@ -53,11 +53,15 @@
         {workflow.triggerSource}
       </span>
     {/if}
-    <span
-      class="inline-flex items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold tracking-[0.04em] uppercase {riskClasses}"
-    >
-      {workflow.riskLevel ?? 'unknown'} risk
-    </span>
+    {#if workflow.enabled}
+      <!-- One accent at a time (§1): a disabled card already carries the
+           neutral "Not active yet" badge, so the risk accent is suppressed. -->
+      <span
+        class="inline-flex items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold tracking-[0.04em] uppercase {riskClasses}"
+      >
+        {workflow.riskLevel ?? 'unknown'} risk
+      </span>
+    {/if}
     {#if typeof workflow.sourceCount === 'number'}
       <span class="border-paper-chip-border bg-paper-track text-ink-secondary inline-flex items-center rounded-full border px-2 py-0.5 text-[11.5px]">
         {workflow.sourceCount} source{workflow.sourceCount === 1 ? '' : 's'}
