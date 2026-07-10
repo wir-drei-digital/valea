@@ -98,17 +98,25 @@ defmodule Valea.Workflows.Runner do
   defp ensure_enabled(%{enabled: true}), do: :ok
   defp ensure_enabled(_wf), do: {:error, :workflow_disabled}
 
+  # Containment-gated: `resolve_real/2` rejects any `..`/symlink traversal
+  # that would escape `workspace` (realpath semantics, mirroring
+  # `PermissionPolicy`), and the read goes through the RESOLVED absolute
+  # path so the check actually gates what gets read.
   defp read_workflow(workspace, workflow_path) do
-    case File.read(Path.join(workspace, workflow_path)) do
-      {:ok, bytes} -> {:ok, bytes}
-      {:error, _reason} -> {:error, :not_found}
+    with {:ok, real} <- Valea.Paths.resolve_real(workflow_path, workspace),
+         {:ok, bytes} <- File.read(real) do
+      {:ok, bytes}
+    else
+      _ -> {:error, :not_found}
     end
   end
 
   defp read_input(workspace, input_path) do
-    case File.read(Path.join(workspace, input_path)) do
-      {:ok, bytes} -> {:ok, bytes}
-      {:error, _reason} -> {:error, :input_not_found}
+    with {:ok, real} <- Valea.Paths.resolve_real(input_path, workspace),
+         {:ok, bytes} <- File.read(real) do
+      {:ok, bytes}
+    else
+      _ -> {:error, :input_not_found}
     end
   end
 
@@ -160,13 +168,25 @@ defmodule Valea.Workflows.Runner do
 
       {:error, reason} ->
         File.rm_rf(staging_dir)
+
+        # `workflow_run_started` was already audited above — every started
+        # run must have a terminus, so compensate with a paired
+        # `workflow_run_finished` before returning the error.
+        audit("workflow_run_finished", %{
+          "run_id" => run_id,
+          "outcome" => "start_failed",
+          "reason" => inspect(reason)
+        })
+
         {:error, reason}
     end
   end
 
+  # `yyyymmddThhmmssZ-xxxxxx`: whole-second UTC basic timestamp (no
+  # fractional seconds) + a 6-hex-char random suffix (3 random bytes).
   defp generate_run_id do
-    stamp = DateTime.utc_now() |> DateTime.to_iso8601(:basic)
-    suffix = :crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower)
+    stamp = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(:basic)
+    suffix = :crypto.strong_rand_bytes(3) |> Base.encode16(case: :lower)
     stamp <> "-" <> suffix
   end
 

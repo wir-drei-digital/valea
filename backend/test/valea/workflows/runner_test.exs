@@ -30,6 +30,39 @@ defmodule Valea.Workflows.RunnerTest do
     assert {:error, :not_found} = Runner.run("icm/Workflows/Nonexistent.md", @input_path)
   end
 
+  test "run/2 with an input_path that traverses out of the workspace -> input_not_found" do
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+    assert {:error, :input_not_found} =
+             Runner.run(@wf_path, "../../../../../../../../etc/passwd")
+  end
+
+  test "run/2 with a workflow_path that lexically starts with icm/Workflows/ but traverses out of it -> not_found",
+       %{workspace: workspace} do
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+    File.write!(Path.join(workspace, "icm/Offers/escaped.md"), "# Escaped\n")
+
+    assert {:error, :not_found} =
+             Runner.run("icm/Workflows/../Offers/escaped.md", @input_path)
+  end
+
+  test "run/2 when the harness is unavailable: workflow_run_started audit is paired with a start_failed workflow_run_finished audit" do
+    Valea.App.Config.set_harness_command(["no-such-binary-zzz"])
+
+    assert {:error, :harness_unavailable} = Runner.run(@wf_path, @input_path)
+
+    {:ok, entries} = Valea.Audit.entries(20)
+    chain = entries |> Enum.reverse() |> Enum.map(& &1["type"])
+
+    assert Enum.take(chain, -2) == ["workflow_run_started", "workflow_run_finished"]
+
+    started = Enum.find(entries, &(&1["type"] == "workflow_run_started"))
+    finished = Enum.find(entries, &(&1["type"] == "workflow_run_finished"))
+
+    assert started["run_id"] == finished["run_id"]
+    assert finished["outcome"] == "start_failed"
+  end
+
   test "happy path: pending queue item created, staging removed, audit chain", %{
     workspace: workspace
   } do

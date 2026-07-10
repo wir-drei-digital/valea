@@ -52,6 +52,18 @@ defmodule Valea.WorkflowsTest do
     assert {:error, :not_found} = Workflows.get("icm/Offers/Founder Coaching Package.md")
   end
 
+  test "get/1 with a path containing .. that escapes the workspace returns not_found" do
+    assert {:error, :not_found} =
+             Workflows.get("icm/Workflows/../../../../../../../../etc/passwd")
+  end
+
+  test "get/1 with a path that lexically starts with icm/Workflows/ but traverses out of it (while staying inside the workspace) returns not_found",
+       %{workspace: workspace} do
+    File.write!(Path.join(workspace, "icm/Offers/escaped.md"), "# Escaped\n")
+
+    assert {:error, :not_found} = Workflows.get("icm/Workflows/../Offers/escaped.md")
+  end
+
   test "a Workflows/ page without frontmatter is not a contract: list/0 skips it, get/1 -> not_found",
        %{workspace: workspace} do
     path = Path.join(workspace, "icm/Workflows/No Frontmatter.md")

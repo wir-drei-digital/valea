@@ -40,6 +40,8 @@ defmodule Valea.Workflows do
   def get(icm_rel_path) do
     with {:ok, %{path: workspace}} <- Manager.current(),
          true <- valid_workflow_path?(icm_rel_path),
+         {:ok, real} <- Valea.Paths.resolve_real(icm_rel_path, workspace),
+         true <- under_workflows_dir?(real, workspace),
          abs <- Path.join(workspace, icm_rel_path),
          true <- File.regular?(abs),
          %{} = wf <- parse(abs, workspace) do
@@ -49,8 +51,24 @@ defmodule Valea.Workflows do
     end
   end
 
+  # Cheap lexical pre-filter — NOT the containment check. A path can lexically
+  # start with "icm/Workflows/" and end in ".md" while still traversing out
+  # via "..", so this only short-circuits the obviously-wrong case before the
+  # real `resolve_real/2` + `under_workflows_dir?/2` checks below.
   defp valid_workflow_path?(path) do
     String.starts_with?(path, @dir <> "/") and String.ends_with?(path, ".md")
+  end
+
+  # Confirms the realpath-resolved target is actually inside icm/Workflows/,
+  # not merely inside the workspace — a path like
+  # "icm/Workflows/../Offers/x.md" resolves within the workspace (so a bare
+  # workspace-containment check would pass it) but lands outside the
+  # Workflows directory and must still be rejected.
+  defp under_workflows_dir?(real, workspace) do
+    case Valea.Paths.resolve_real(@dir, workspace) do
+      {:ok, dir_real} -> real == dir_real or String.starts_with?(real, dir_real <> "/")
+      _ -> false
+    end
   end
 
   defp workflow_files(workspace) do
