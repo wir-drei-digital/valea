@@ -4,9 +4,11 @@
   import { AppShell, Sidebar } from '$lib/components/shell';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
+  import { queueStore } from '$lib/stores/queue.svelte';
   import { icmToNav } from '$lib/shell/nav';
   import { normalizeCockpitToday, splitTrustClause, type CockpitToday } from '$lib/today/cockpit';
   import PreparedItemCard from '$lib/components/today/PreparedItemCard.svelte';
+  import InquiryTriageCard from '$lib/components/today/InquiryTriageCard.svelte';
   import ScheduleList from '$lib/components/today/ScheduleList.svelte';
   import OpenLoops from '$lib/components/today/OpenLoops.svelte';
   import AwayList from '$lib/components/today/AwayList.svelte';
@@ -34,6 +36,12 @@
     // First render of the shared sidebar — populate the ICM tree once here;
     // live refetch wiring (workspace:events) lands with Task 18.
     void icmStore.refetch();
+    // Populates queueStore.items on first load so a reload after a previous
+    // "Prepare a reply" run picks the InquiryTriageCard straight into its
+    // approval-card state instead of flashing the seeded idle card first.
+    // Live updates after this are pushed via `queue_changed` (wired at the
+    // shared `workspace:events` join — see `wireIcmEvents` in `icm.svelte.ts`).
+    void queueStore.refetch();
   });
 
   const icmNav = $derived(icmToNav(icmStore.nodes));
@@ -93,7 +101,11 @@
           <p class="text-overline mb-3">Prepared for you · {today.preparedItems.length}</p>
           <div class="flex flex-col gap-4">
             {#each today.preparedItems as item (item.title)}
-              <PreparedItemCard {item} />
+              {#if item.title === 'Priya Nair · new inquiry'}
+                <InquiryTriageCard {item} />
+              {:else}
+                <PreparedItemCard {item} />
+              {/if}
             {/each}
           </div>
         </section>

@@ -1,6 +1,7 @@
 import { api, type Api } from '../api/client';
 import type { IcmNode } from '../shell/nav';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
+import { wireQueueEvents } from './queue.svelte';
 
 type IcmApi = Pick<Api, 'icmTree'>;
 
@@ -104,6 +105,14 @@ let icmEventsWired = false;
  * future call site genuinely needs a different `onWorkspace` handler, this
  * function needs to grow support for multiple subscribers instead of being
  * called again.
+ *
+ * CARRY-FORWARD (T19): also wires `wireQueueEvents` onto the SAME channel
+ * this join returns, right here — not a second call site. `wireQueueEvents`
+ * takes an already-joined channel rather than joining its own for exactly
+ * this reason (see its doc comment in `queue.svelte.ts`): a second
+ * independent `workspace:events` join races this one and only one
+ * reliably receives pushes, so `queue_changed` has to ride the same join
+ * `icm_changed` does.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -114,7 +123,7 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
   }
   icmEventsWired = true;
 
-  joinWorkspaceEvents({
+  const channel = joinWorkspaceEvents({
     onWorkspace: (payload) => {
       // The store owns its own coherence: on every workspace change
       // (close, open, or switch), the previous workspace's tree is no
@@ -134,4 +143,6 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
       void icmStore.refetch();
     }
   });
+
+  wireQueueEvents(channel);
 }
