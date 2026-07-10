@@ -51,6 +51,9 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    // Ignore Enter while an IME composition is active — CJK input confirms a
+    // candidate with Enter, which must not send the message.
+    if (e.isComposing) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
