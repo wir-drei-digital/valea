@@ -107,6 +107,53 @@ defmodule ValeaWeb.IcmRpcTest do
 
       assert inspect(errors) =~ "page_changed"
     end
+
+    test "a stale generation surfaces workspace_changed and does not save" do
+      assert %{"success" => true, "data" => page} =
+               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "save_icm_page",
+                 %{
+                   "path" => "Offers/Discovery Call.md",
+                   "prosemirror" => page["prosemirror"],
+                   "baseHash" => page["hash"],
+                   "generation" => 999_999
+                 },
+                 ["hash", "savedAt"]
+               )
+
+      assert inspect(errors) =~ "workspace_changed"
+
+      # Untouched: re-fetching still shows the original hash.
+      assert %{"success" => true, "data" => refetched} =
+               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+
+      assert refetched["hash"] == page["hash"]
+    end
+
+    test "a matching generation saves normally" do
+      assert %{"success" => true, "data" => %{"generation" => generation}} =
+               rpc("get_workspace", %{})
+
+      assert %{"success" => true, "data" => page} =
+               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+
+      assert %{"success" => true, "data" => saved} =
+               rpc(
+                 "save_icm_page",
+                 %{
+                   "path" => "Offers/Discovery Call.md",
+                   "prosemirror" => page["prosemirror"],
+                   "baseHash" => page["hash"],
+                   "generation" => generation
+                 },
+                 ["hash", "savedAt"]
+               )
+
+      assert is_binary(saved["hash"])
+    end
   end
 
   describe "create/rename/delete/references" do

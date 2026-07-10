@@ -5,6 +5,20 @@
 
 
 
+// Agents Schema
+export type AgentsResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type AgentsAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Cockpit Schema
 export type CockpitResourceSchema = {
   __type: "Resource";
@@ -33,6 +47,20 @@ export type ICMAttributesOnlySchema = {
 };
 
 
+// Queue Schema
+export type QueueResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type QueueAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Workspace Schema
 export type WorkspaceResourceSchema = {
   __type: "Resource";
@@ -47,6 +75,15 @@ export type WorkspaceAttributesOnlySchema = {
 };
 
 
+export type AgentsFilterInput = {
+  and?: Array<AgentsFilterInput>;
+  or?: Array<AgentsFilterInput>;
+  not?: Array<AgentsFilterInput>;
+
+
+
+
+};
 export type CockpitFilterInput = {
   and?: Array<CockpitFilterInput>;
   or?: Array<CockpitFilterInput>;
@@ -65,6 +102,15 @@ export type ICMFilterInput = {
 
 
 };
+export type QueueFilterInput = {
+  and?: Array<QueueFilterInput>;
+  or?: Array<QueueFilterInput>;
+  not?: Array<QueueFilterInput>;
+
+
+
+
+};
 export type WorkspaceFilterInput = {
   and?: Array<WorkspaceFilterInput>;
   or?: Array<WorkspaceFilterInput>;
@@ -74,6 +120,10 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
+
+
 
 
 

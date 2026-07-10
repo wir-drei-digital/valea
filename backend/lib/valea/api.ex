@@ -31,11 +31,29 @@ defmodule Valea.Api do
     resource Valea.Api.Cockpit do
       rpc_action(:cockpit_today, :today)
     end
+
+    resource Valea.Api.Agents do
+      rpc_action(:create_agent_session, :create_session)
+      rpc_action(:list_agent_sessions, :list_sessions)
+      rpc_action(:run_workflow, :run_workflow)
+      rpc_action(:harness_doctor, :harness_doctor)
+      rpc_action(:list_workflows, :list_workflows)
+    end
+
+    resource Valea.Api.Queue do
+      rpc_action(:list_queue_items, :list_items)
+      rpc_action(:get_queue_item, :get_item)
+      rpc_action(:approve_queue_item, :approve_item)
+      rpc_action(:reject_queue_item, :reject_item)
+      rpc_action(:list_audit_entries, :list_audit_entries)
+    end
   end
 
   resources do
     resource Valea.Api.Workspace
     resource Valea.Api.ICM
     resource Valea.Api.Cockpit
+    resource Valea.Api.Agents
+    resource Valea.Api.Queue
   end
 end

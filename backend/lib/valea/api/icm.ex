@@ -29,6 +29,7 @@ defmodule Valea.Api.ICM do
   end
 
   alias Valea.Api.Error
+  alias Valea.Workspace.Manager
 
   actions do
     action :tree, :map do
@@ -60,16 +61,26 @@ defmodule Valea.Api.ICM do
       argument :path, :string, allow_nil?: false
       argument :prosemirror, :map, allow_nil?: false
       argument :base_hash, :string, allow_nil?: false
+      # Optional so the editor store can adopt the generation guard (T21)
+      # without a second codegen round: `nil` (the pre-T15 caller shape)
+      # skips the check entirely; once present, a stale generation is
+      # rejected BEFORE the write via `check_generation/1` — same guard the
+      # Agents/Queue mutating actions use, just optional here for transition
+      # compatibility.
+      argument :generation, :integer, allow_nil?: true, default: nil
 
       run fn input, _ctx ->
         %{path: path, prosemirror: pm, base_hash: base_hash} = input.arguments
+        # `Map.get/3` (not a destructure) — ash_typescript only puts keys the
+        # caller actually sent into `input.arguments`, so an omitted optional
+        # argument is ABSENT, not `nil`, despite the `default: nil` above.
+        generation = Map.get(input.arguments, :generation)
 
-        case Valea.ICM.save_page(path, pm, base_hash) do
-          {:ok, %{hash: hash, saved_at: saved_at}} ->
-            {:ok, %{hash: hash, saved_at: saved_at}}
-
-          {:error, reason} ->
-            {:error, error_for(reason)}
+        with :ok <- check_generation_if_present(generation),
+             {:ok, %{hash: hash, saved_at: saved_at}} <- Valea.ICM.save_page(path, pm, base_hash) do
+          {:ok, %{hash: hash, saved_at: saved_at}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
         end
       end
     end
@@ -174,6 +185,11 @@ defmodule Valea.Api.ICM do
   def error_for(:no_workspace), do: Error.new("workspace_not_open")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
   def error_for(reason), do: Error.new(inspect(reason))
+
+  # `nil` (no generation supplied) skips the check entirely — see the
+  # `save_page` argument doc above.
+  defp check_generation_if_present(nil), do: :ok
+  defp check_generation_if_present(generation), do: Manager.check_generation(generation)
 
   defp stringify(nodes) when is_list(nodes), do: Enum.map(nodes, &stringify/1)
 

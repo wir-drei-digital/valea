@@ -214,6 +214,350 @@ export async function executeActionChannelPush<T>(
 
 
 
+export type CreateAgentSessionInput = {
+  kind: string;
+  generation: number;
+};
+
+export type CreateAgentSessionFields = UnifiedFieldSelection<{id: string, __type: "TypedMap", __primitiveFields: "id"}>[];
+
+export type InferCreateAgentSessionResult<
+  Fields extends CreateAgentSessionFields | undefined,
+> = InferResult<{id: string, __type: "TypedMap", __primitiveFields: "id"}, Fields>;
+
+export type CreateAgentSessionResult<Fields extends CreateAgentSessionFields | undefined = undefined> = | { success: true; data: InferCreateAgentSessionResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function createAgentSession<Fields extends CreateAgentSessionFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateAgentSessionInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateAgentSessionResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_agent_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateAgentSessionResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function createAgentSessionChannel<Fields extends CreateAgentSessionFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateAgentSessionInput;
+  fields: Fields;
+  resultHandler: (result: CreateAgentSessionResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateAgentSessionResult<Fields>>(
+    config.channel,
+    {
+    action: "create_agent_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type HarnessDoctorFields = UnifiedFieldSelection<{ok: boolean, checks: Array<{id: string, status: string, detail: string, remedy: string | null, __type: "TypedMap", __primitiveFields: "id" | "status" | "detail" | "remedy"}>, __type: "TypedMap", __primitiveFields: "ok"}>[];
+
+export type InferHarnessDoctorResult<
+  Fields extends HarnessDoctorFields | undefined,
+> = InferResult<{ok: boolean, checks: Array<{id: string, status: string, detail: string, remedy: string | null, __type: "TypedMap", __primitiveFields: "id" | "status" | "detail" | "remedy"}>, __type: "TypedMap", __primitiveFields: "ok"}, Fields>;
+
+export type HarnessDoctorResult<Fields extends HarnessDoctorFields | undefined = undefined> = | { success: true; data: InferHarnessDoctorResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function harnessDoctor<Fields extends HarnessDoctorFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<HarnessDoctorResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "harness_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<HarnessDoctorResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function harnessDoctorChannel<Fields extends HarnessDoctorFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: HarnessDoctorResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<HarnessDoctorResult<Fields>>(
+    config.channel,
+    {
+    action: "harness_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListAgentSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListAgentSessionsResult<
+  Fields extends ListAgentSessionsFields | undefined,
+> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListAgentSessionsResult<Fields extends ListAgentSessionsFields | undefined = undefined> = | { success: true; data: InferListAgentSessionsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listAgentSessions<Fields extends ListAgentSessionsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListAgentSessionsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_agent_sessions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListAgentSessionsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listAgentSessionsChannel<Fields extends ListAgentSessionsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListAgentSessionsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListAgentSessionsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_agent_sessions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListWorkflowsFields = UnifiedFieldSelection<{workflows: Array<{path: string, name: string, description: string | null, enabled: boolean, triggerSource: string | null, riskLevel: string | null, sourceCount: number, steps: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "name" | "description" | "enabled" | "triggerSource" | "riskLevel" | "sourceCount" | "steps"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListWorkflowsResult<
+  Fields extends ListWorkflowsFields | undefined,
+> = InferResult<{workflows: Array<{path: string, name: string, description: string | null, enabled: boolean, triggerSource: string | null, riskLevel: string | null, sourceCount: number, steps: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "name" | "description" | "enabled" | "triggerSource" | "riskLevel" | "sourceCount" | "steps"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListWorkflowsResult<Fields extends ListWorkflowsFields | undefined = undefined> = | { success: true; data: InferListWorkflowsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listWorkflows<Fields extends ListWorkflowsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListWorkflowsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_workflows",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListWorkflowsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listWorkflowsChannel<Fields extends ListWorkflowsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListWorkflowsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListWorkflowsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_workflows",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RunWorkflowInput = {
+  path: string;
+  input: string;
+  generation: number;
+};
+
+export type RunWorkflowFields = UnifiedFieldSelection<{runId: string, sessionId: string, __type: "TypedMap", __primitiveFields: "runId" | "sessionId"}>[];
+
+export type InferRunWorkflowResult<
+  Fields extends RunWorkflowFields | undefined,
+> = InferResult<{runId: string, sessionId: string, __type: "TypedMap", __primitiveFields: "runId" | "sessionId"}, Fields>;
+
+export type RunWorkflowResult<Fields extends RunWorkflowFields | undefined = undefined> = | { success: true; data: InferRunWorkflowResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function runWorkflow<Fields extends RunWorkflowFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RunWorkflowInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RunWorkflowResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "run_workflow",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RunWorkflowResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function runWorkflowChannel<Fields extends RunWorkflowFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RunWorkflowInput;
+  fields: Fields;
+  resultHandler: (result: RunWorkflowResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RunWorkflowResult<Fields>>(
+    config.channel,
+    {
+    action: "run_workflow",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type InferCockpitTodayResult = Record<string, any>;
 
 export type CockpitTodayResult = | { success: true; data: InferCockpitTodayResult; }
@@ -765,6 +1109,7 @@ export type SaveIcmPageInput = {
   path: string;
   prosemirror: Record<string, any>;
   baseHash: string;
+  generation?: number | null;
 };
 
 export type SaveIcmPageFields = UnifiedFieldSelection<{hash: string, savedAt: string, __type: "TypedMap", __primitiveFields: "hash" | "savedAt"}>[];
@@ -826,6 +1171,367 @@ export async function saveIcmPageChannel<Fields extends SaveIcmPageFields | unde
     config.channel,
     {
     action: "save_icm_page",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ApproveQueueItemInput = {
+  runId: string;
+  revision: string;
+  generation: number;
+};
+
+export type ApproveQueueItemFields = UnifiedFieldSelection<{draftPath: string, __type: "TypedMap", __primitiveFields: "draftPath"}>[];
+
+export type InferApproveQueueItemResult<
+  Fields extends ApproveQueueItemFields | undefined,
+> = InferResult<{draftPath: string, __type: "TypedMap", __primitiveFields: "draftPath"}, Fields>;
+
+export type ApproveQueueItemResult<Fields extends ApproveQueueItemFields | undefined = undefined> = | { success: true; data: InferApproveQueueItemResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function approveQueueItem<Fields extends ApproveQueueItemFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ApproveQueueItemInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ApproveQueueItemResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "approve_queue_item",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ApproveQueueItemResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function approveQueueItemChannel<Fields extends ApproveQueueItemFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ApproveQueueItemInput;
+  fields: Fields;
+  resultHandler: (result: ApproveQueueItemResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ApproveQueueItemResult<Fields>>(
+    config.channel,
+    {
+    action: "approve_queue_item",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type GetQueueItemInput = {
+  runId: string;
+};
+
+export type GetQueueItemFields = UnifiedFieldSelection<{item: Record<string, any>, revision: string, __type: "TypedMap", __primitiveFields: "item" | "revision"}>[];
+
+export type InferGetQueueItemResult<
+  Fields extends GetQueueItemFields | undefined,
+> = InferResult<{item: Record<string, any>, revision: string, __type: "TypedMap", __primitiveFields: "item" | "revision"}, Fields>;
+
+export type GetQueueItemResult<Fields extends GetQueueItemFields | undefined = undefined> = | { success: true; data: InferGetQueueItemResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function getQueueItem<Fields extends GetQueueItemFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GetQueueItemInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GetQueueItemResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "get_queue_item",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GetQueueItemResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function getQueueItemChannel<Fields extends GetQueueItemFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GetQueueItemInput;
+  fields: Fields;
+  resultHandler: (result: GetQueueItemResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GetQueueItemResult<Fields>>(
+    config.channel,
+    {
+    action: "get_queue_item",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListAuditEntriesInput = {
+  limit: number;
+};
+
+export type ListAuditEntriesFields = UnifiedFieldSelection<{entries: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "entries"}>[];
+
+export type InferListAuditEntriesResult<
+  Fields extends ListAuditEntriesFields | undefined,
+> = InferResult<{entries: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "entries"}, Fields>;
+
+export type ListAuditEntriesResult<Fields extends ListAuditEntriesFields | undefined = undefined> = | { success: true; data: InferListAuditEntriesResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function listAuditEntries<Fields extends ListAuditEntriesFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListAuditEntriesInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListAuditEntriesResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_audit_entries",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListAuditEntriesResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function listAuditEntriesChannel<Fields extends ListAuditEntriesFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListAuditEntriesInput;
+  fields: Fields;
+  resultHandler: (result: ListAuditEntriesResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListAuditEntriesResult<Fields>>(
+    config.channel,
+    {
+    action: "list_audit_entries",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListQueueItemsFields = UnifiedFieldSelection<{items: Array<{runId: string, title: string | null, summary: string | null, kind: string | null, riskLevel: string | null, createdAt: string | null, workflow: string | null, valid: boolean, error: string | null, __type: "TypedMap", __primitiveFields: "runId" | "title" | "summary" | "kind" | "riskLevel" | "createdAt" | "workflow" | "valid" | "error"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListQueueItemsResult<
+  Fields extends ListQueueItemsFields | undefined,
+> = InferResult<{items: Array<{runId: string, title: string | null, summary: string | null, kind: string | null, riskLevel: string | null, createdAt: string | null, workflow: string | null, valid: boolean, error: string | null, __type: "TypedMap", __primitiveFields: "runId" | "title" | "summary" | "kind" | "riskLevel" | "createdAt" | "workflow" | "valid" | "error"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListQueueItemsResult<Fields extends ListQueueItemsFields | undefined = undefined> = | { success: true; data: InferListQueueItemsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function listQueueItems<Fields extends ListQueueItemsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListQueueItemsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_queue_items",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListQueueItemsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function listQueueItemsChannel<Fields extends ListQueueItemsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListQueueItemsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListQueueItemsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_queue_items",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RejectQueueItemInput = {
+  runId: string;
+  revision: string;
+  generation: number;
+};
+
+export type RejectQueueItemFields = UnifiedFieldSelection<{rejected: boolean, __type: "TypedMap", __primitiveFields: "rejected"}>[];
+
+export type InferRejectQueueItemResult<
+  Fields extends RejectQueueItemFields | undefined,
+> = InferResult<{rejected: boolean, __type: "TypedMap", __primitiveFields: "rejected"}, Fields>;
+
+export type RejectQueueItemResult<Fields extends RejectQueueItemFields | undefined = undefined> = | { success: true; data: InferRejectQueueItemResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function rejectQueueItem<Fields extends RejectQueueItemFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RejectQueueItemInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RejectQueueItemResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "reject_queue_item",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RejectQueueItemResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function rejectQueueItemChannel<Fields extends RejectQueueItemFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RejectQueueItemInput;
+  fields: Fields;
+  resultHandler: (result: RejectQueueItemResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RejectQueueItemResult<Fields>>(
+    config.channel,
+    {
+    action: "reject_queue_item",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

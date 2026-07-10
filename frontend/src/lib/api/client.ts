@@ -28,7 +28,27 @@ import {
   icmEntryReferences as httpIcmEntryReferences,
   icmEntryReferencesChannel,
   cockpitToday as httpCockpitToday,
-  cockpitTodayChannel
+  cockpitTodayChannel,
+  createAgentSession as httpCreateAgentSession,
+  createAgentSessionChannel,
+  listAgentSessions as httpListAgentSessions,
+  listAgentSessionsChannel,
+  runWorkflow as httpRunWorkflow,
+  runWorkflowChannel,
+  harnessDoctor as httpHarnessDoctor,
+  harnessDoctorChannel,
+  listWorkflows as httpListWorkflows,
+  listWorkflowsChannel,
+  listQueueItems as httpListQueueItems,
+  listQueueItemsChannel,
+  getQueueItem as httpGetQueueItem,
+  getQueueItemChannel,
+  approveQueueItem as httpApproveQueueItem,
+  approveQueueItemChannel,
+  rejectQueueItem as httpRejectQueueItem,
+  rejectQueueItemChannel,
+  listAuditEntries as httpListAuditEntries,
+  listAuditEntriesChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -37,7 +57,17 @@ import type {
   CreateIcmFolderFields,
   RenameIcmEntryFields,
   DeleteIcmEntryFields,
-  IcmEntryReferencesFields
+  IcmEntryReferencesFields,
+  CreateAgentSessionFields,
+  ListAgentSessionsFields,
+  RunWorkflowFields,
+  HarnessDoctorFields,
+  ListWorkflowsFields,
+  ListQueueItemsFields,
+  GetQueueItemFields,
+  ApproveQueueItemFields,
+  RejectQueueItemFields,
+  ListAuditEntriesFields
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -195,6 +225,122 @@ const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
 // runtime knowledge overriding an incomplete generated type, not a guess.
 const icmEntryReferencesFields = [{ workflows: ['file', 'name'] }] as unknown as IcmEntryReferencesFields;
 
+const createAgentSessionFields: CreateAgentSessionFields = ['id'];
+const runWorkflowFields: RunWorkflowFields = ['runId', 'sessionId'];
+const getQueueItemFields: GetQueueItemFields = ['item', 'revision'];
+const approveQueueItemFields: ApproveQueueItemFields = ['draftPath'];
+const rejectQueueItemFields: RejectQueueItemFields = ['rejected'];
+const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
+
+// Same anonymous-embedded-map-array codegen gap as `icmEntryReferencesFields`
+// above (see its comment) — each of these nests field selection into an
+// `Array<TypedMap>` action-return field, which `ComplexFieldSelection` can't
+// express, so the generated `Fields` type collapses to `never` for the
+// literal. The backend actions accept these exact nested literals (verified
+// by the passing `agents_rpc_test.exs` / `queue_rpc_test.exs` suites).
+const listAgentSessionsFields = [
+  { sessions: ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live'] }
+] as unknown as ListAgentSessionsFields;
+const harnessDoctorFields = [
+  'ok',
+  { checks: ['id', 'status', 'detail', 'remedy'] }
+] as unknown as HarnessDoctorFields;
+const listWorkflowsFields = [
+  {
+    workflows: [
+      'path',
+      'name',
+      'description',
+      'enabled',
+      'triggerSource',
+      'riskLevel',
+      'sourceCount',
+      'steps'
+    ]
+  }
+] as unknown as ListWorkflowsFields;
+const listQueueItemsFields = [
+  { items: ['runId', 'title', 'summary', 'kind', 'riskLevel', 'createdAt', 'workflow', 'valid', 'error'] }
+] as unknown as ListQueueItemsFields;
+
+function callCreateAgentSessionChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { kind: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    createAgentSessionChannel({ channel, input, fields: createAgentSessionFields, ...handlers })
+  );
+}
+
+function callListAgentSessionsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    listAgentSessionsChannel({ channel, fields: listAgentSessionsFields, ...handlers })
+  );
+}
+
+function callRunWorkflowChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string; input: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    runWorkflowChannel({ channel, input, fields: runWorkflowFields, ...handlers })
+  );
+}
+
+function callHarnessDoctorChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    harnessDoctorChannel({ channel, fields: harnessDoctorFields, ...handlers })
+  );
+}
+
+function callListWorkflowsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    listWorkflowsChannel({ channel, fields: listWorkflowsFields, ...handlers })
+  );
+}
+
+function callListQueueItemsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    listQueueItemsChannel({ channel, fields: listQueueItemsFields, ...handlers })
+  );
+}
+
+function callGetQueueItemChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { runId: string }
+) {
+  return wrapChannelCall((handlers) =>
+    getQueueItemChannel({ channel, input, fields: getQueueItemFields, ...handlers })
+  );
+}
+
+function callApproveQueueItemChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { runId: string; revision: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    approveQueueItemChannel({ channel, input, fields: approveQueueItemFields, ...handlers })
+  );
+}
+
+function callRejectQueueItemChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { runId: string; revision: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    rejectQueueItemChannel({ channel, input, fields: rejectQueueItemFields, ...handlers })
+  );
+}
+
+function callListAuditEntriesChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { limit: number }
+) {
+  return wrapChannelCall((handlers) =>
+    listAuditEntriesChannel({ channel, input, fields: listAuditEntriesFields, ...handlers })
+  );
+}
+
 function callSaveIcmPageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { path: string; prosemirror: Record<string, any>; baseHash: string }
@@ -292,6 +438,43 @@ export function normalizeIcmPage(raw: Record<string, any>): IcmPageData {
   };
 }
 
+/**
+ * Raw `queue_item/v1` envelope — the shape `Valea.Workflows.Runner` writes
+ * to `queue/pending/<run_id>.json` and `get_queue_item` hands back. Its
+ * field names stay SNAKE_CASE and `approval`/`payload` stay untouched
+ * nested maps: `get_item`'s `item` field is deliberately unconstrained on
+ * the backend (see `Valea.Api.Queue`'s moduledoc) so this whole envelope —
+ * including the workflow-authored `payload` — rides through byte-for-byte,
+ * the same raw-delivery contract `IcmPageData.frontmatter` uses.
+ */
+export type QueueItemEnvelope = {
+  schema: string;
+  run_id: string;
+  session_id: string;
+  workflow: string;
+  workflow_hash: string;
+  input: string;
+  input_hash: string;
+  risk_level: string;
+  approval: Record<string, unknown>;
+  created_at: string;
+  payload: Record<string, unknown>;
+};
+
+/**
+ * Raw audit log entry (`{root}/logs/audit.jsonl`). Every entry carries
+ * `ts`/`type`/`generation`; the rest of the fields vary by `type` (see
+ * `Valea.Audit`'s callers), so `list_audit_entries` delivers entries
+ * unconstrained/raw rather than forcing a union type this client would have
+ * to keep in lockstep with every audited event shape.
+ */
+export type AuditEntry = {
+  ts: string;
+  type: string;
+  generation: number | null;
+  [key: string]: unknown;
+};
+
 export const api = {
   getWorkspace: () => runRpc(callGetWorkspaceChannel, () => httpGetWorkspace(withAuth({}))),
 
@@ -372,6 +555,85 @@ export const api = {
     runRpc(
       (channel) => callIcmEntryReferencesChannel(channel, { path }),
       () => httpIcmEntryReferences(withAuth({ input: { path }, fields: icmEntryReferencesFields }))
+    ),
+
+  // Mutating wrappers below take `generation` as a plain argument rather
+  // than reading it off a store — this module stays store-free (see the
+  // header comment). The T16+ stores are responsible for sourcing it from
+  // the open workspace and passing it in.
+
+  createAgentSession: (kind: string, generation: number) =>
+    runRpc(
+      (channel) => callCreateAgentSessionChannel(channel, { kind, generation }),
+      () =>
+        httpCreateAgentSession(
+          withAuth({ input: { kind, generation }, fields: createAgentSessionFields })
+        )
+    ),
+
+  listAgentSessions: () =>
+    runRpc(callListAgentSessionsChannel, () =>
+      httpListAgentSessions(withAuth({ fields: listAgentSessionsFields }))
+    ),
+
+  runWorkflow: (path: string, input: string, generation: number) =>
+    runRpc(
+      (channel) => callRunWorkflowChannel(channel, { path, input, generation }),
+      () =>
+        httpRunWorkflow(withAuth({ input: { path, input, generation }, fields: runWorkflowFields }))
+    ),
+
+  harnessDoctor: () =>
+    runRpc(callHarnessDoctorChannel, () => httpHarnessDoctor(withAuth({ fields: harnessDoctorFields }))),
+
+  listWorkflows: () =>
+    runRpc(callListWorkflowsChannel, () => httpListWorkflows(withAuth({ fields: listWorkflowsFields }))),
+
+  listQueueItems: () =>
+    runRpc(callListQueueItemsChannel, () =>
+      httpListQueueItems(withAuth({ fields: listQueueItemsFields }))
+    ),
+
+  getQueueItem: (runId: string) =>
+    runRpc(
+      (channel) => callGetQueueItemChannel(channel, { runId }),
+      () => httpGetQueueItem(withAuth({ input: { runId }, fields: getQueueItemFields }))
+    ).then(
+      (result): ApiResult<{ item: QueueItemEnvelope; revision: string }> => {
+        if (!result.ok) return result;
+        const data = result.data as Record<string, any>;
+        return { ok: true, data: { item: data.item as QueueItemEnvelope, revision: data.revision as string } };
+      }
+    ),
+
+  approveQueueItem: (runId: string, revision: string, generation: number) =>
+    runRpc(
+      (channel) => callApproveQueueItemChannel(channel, { runId, revision, generation }),
+      () =>
+        httpApproveQueueItem(
+          withAuth({ input: { runId, revision, generation }, fields: approveQueueItemFields })
+        )
+    ),
+
+  rejectQueueItem: (runId: string, revision: string, generation: number) =>
+    runRpc(
+      (channel) => callRejectQueueItemChannel(channel, { runId, revision, generation }),
+      () =>
+        httpRejectQueueItem(
+          withAuth({ input: { runId, revision, generation }, fields: rejectQueueItemFields })
+        )
+    ),
+
+  listAuditEntries: (limit: number) =>
+    runRpc(
+      (channel) => callListAuditEntriesChannel(channel, { limit }),
+      () => httpListAuditEntries(withAuth({ input: { limit }, fields: listAuditEntriesFields }))
+    ).then(
+      (result): ApiResult<{ entries: AuditEntry[] }> => {
+        if (!result.ok) return result;
+        const data = result.data as Record<string, any>;
+        return { ok: true, data: { entries: data.entries as AuditEntry[] } };
+      }
     )
 };
 
