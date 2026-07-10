@@ -24,7 +24,14 @@ export type NavIcon = Component<Record<string, unknown>>;
 
 export type NavItem = { id: string; label: string; href: string; icon: NavIcon };
 export type NavSection = { label: string | null; items: NavItem[] };
-export type NavTreeItem = { label: string; href: string; count?: number; children?: NavTreeItem[] };
+export type NavTreeItem = {
+  label: string;
+  href: string;
+  /** Raw (undecoded, unencoded) icm/ path — what the CRUD API calls expect. */
+  path: string;
+  count?: number;
+  children?: NavTreeItem[];
+};
 
 export function mainNav(): NavSection[] {
   return [
@@ -66,9 +73,10 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
       ? {
           label: n.name,
           href: `/knowledge/${encodePath(n.path)}`,
+          path: n.path,
           count: n.pageCount,
           children: icmToNav(n.children ?? [])
         }
-      : { label: n.name, href: `/knowledge/${encodePath(n.path)}` }
+      : { label: n.name, href: `/knowledge/${encodePath(n.path)}`, path: n.path }
   );
 }

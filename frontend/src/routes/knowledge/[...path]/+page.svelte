@@ -7,10 +7,21 @@
   import { api } from '$lib/api/client';
   import { encodePath, type IcmNode } from '$lib/shell/nav';
   import { Skeleton } from '$lib/components/ui/skeleton';
+  import { Button } from '$lib/components/ui/button/index.js';
   import PageEditor from '$lib/components/editor/PageEditor.svelte';
   import PageMeta from '$lib/components/editor/PageMeta.svelte';
   import ConflictBanner from '$lib/components/editor/ConflictBanner.svelte';
   import { PageEditorStore } from '$lib/stores/page-editor.svelte';
+  import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
+  import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
+
+  let newEntryMode: 'page' | 'folder' = $state('page');
+  let newEntryOpen = $state(false);
+
+  function openNew(mode: 'page' | 'folder') {
+    newEntryMode = mode;
+    newEntryOpen = true;
+  }
 
   // Route params arrive URL-encoded per segment (e.g. `Tone%20%26%20Voice`);
   // decode each segment rather than the whole param so a literal `%2F` in a
@@ -223,20 +234,38 @@
         <ul class="flex flex-col py-1">
           {#if node?.type === 'folder'}
             {#each node.children ?? [] as child (child.path)}
-              <li>
+              <li class="group relative">
                 <a
                   href={`/knowledge/${encodePath(child.path)}`}
-                  class="flex items-center gap-2 px-3 py-2 text-[13px] text-ink-body transition-colors hover:bg-paper-pill"
+                  class="flex items-center gap-2 py-2 pr-9 pl-3 text-[13px] text-ink-body transition-colors hover:bg-paper-pill"
                 >
                   <span class="min-w-0 flex-1 truncate">{child.name}</span>
                   {#if child.type === 'folder'}
                     <span class="text-ink-meta text-[11px] tabular-nums">{child.pageCount ?? 0}</span>
                   {/if}
                 </a>
+                <EntryMenu
+                  path={child.path}
+                  name={child.name}
+                  isFolder={child.type === 'folder'}
+                  class="absolute top-1/2 right-1.5 -translate-y-1/2"
+                />
               </li>
             {/each}
           {/if}
         </ul>
+      {/snippet}
+      {#snippet footer()}
+        {#if node?.type === 'folder'}
+          <div class="flex gap-2">
+            <Button type="button" variant="outline" size="sm" class="flex-1" onclick={() => openNew('page')}>
+              New page
+            </Button>
+            <Button type="button" variant="outline" size="sm" class="flex-1" onclick={() => openNew('folder')}>
+              New folder
+            </Button>
+          </div>
+        {/if}
       {/snippet}
     </ListPane>
   {/snippet}
@@ -321,3 +350,5 @@
     {/if}
   {/snippet}
 </AppFrame>
+
+<NewEntryDialog mode={newEntryMode} parentPath={decodedPath} bind:open={newEntryOpen} />

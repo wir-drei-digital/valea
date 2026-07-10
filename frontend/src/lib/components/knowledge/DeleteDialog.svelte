@@ -1,0 +1,126 @@
+<script lang="ts">
+  // Delete confirmation for a page or folder. Pages fetch their reference
+  // list on open so the warning can name the workflows that would break;
+  // folders skip the fetch (see RenameDialog's note — the backend's
+  // reference search is a substring match, not a real folder-scoped query)
+  // and show a fixed caution line instead.
+  import * as Dialog from '$lib/components/ui/dialog/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
+  import { api } from '$lib/api/client';
+  import { encodePath } from '$lib/shell/nav';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
+
+  let {
+    path,
+    name,
+    isFolder,
+    open = $bindable(false)
+  }: { path: string; name: string; isFolder: boolean; open?: boolean } = $props();
+
+  let submitting = $state(false);
+  let error = $state<string | null>(null);
+  let loadingRefs = $state(false);
+  let referencedWorkflows = $state<{ file: string; name: string }[]>([]);
+
+  $effect(() => {
+    if (open) {
+      error = null;
+      submitting = false;
+      referencedWorkflows = [];
+
+      if (isFolder) {
+        loadingRefs = false;
+      } else {
+        loadingRefs = true;
+        void api.icmEntryReferences(path).then((result) => {
+          loadingRefs = false;
+          if (result.ok) {
+            const data = result.data as { workflows: { file: string; name: string }[] };
+            referencedWorkflows = data.workflows;
+          }
+        });
+      }
+    }
+  });
+
+  function mapError(code: string): string {
+    switch (code) {
+      case 'not_found':
+        return 'That file is already gone.';
+      default:
+        return 'Something went wrong. Try again.';
+    }
+  }
+
+  async function submit() {
+    error = null;
+    submitting = true;
+    const result = await api.deleteIcmEntry(path);
+    submitting = false;
+
+    if (!result.ok) {
+      error = mapError(result.error);
+      return;
+    }
+
+    open = false;
+
+    // Deleting the entry the reader currently has open (or, for a folder,
+    // any page nested under it) leaves the URL pointing at nothing — send
+    // them back to the Knowledge root rather than showing a dead page.
+    const encoded = `/knowledge/${encodePath(path)}`;
+    const current = page.url.pathname;
+    if (current === encoded || (isFolder && current.startsWith(`${encoded}/`))) {
+      void goto('/knowledge');
+    }
+  }
+</script>
+
+<Dialog.Root bind:open>
+  <Dialog.Content class="sm:max-w-sm">
+    <Dialog.Header>
+      <Dialog.Title class="font-display text-[19px] text-ink-heading">Delete "{name}"</Dialog.Title>
+      <Dialog.Description class="text-ink-body">
+        <span class="font-mono text-[12px]">icm/{path}</span>
+      </Dialog.Description>
+    </Dialog.Header>
+
+    <div class="flex flex-col gap-3">
+      {#if isFolder}
+        <p class="text-suggest-ink text-[12.5px]">Workflows may reference pages inside this folder.</p>
+      {:else if loadingRefs}
+        <p class="text-ink-meta text-[12.5px]">Checking workflow references…</p>
+      {:else if referencedWorkflows.length}
+        <ul class="flex flex-col gap-1">
+          {#each referencedWorkflows as workflow (workflow.file)}
+            <li class="text-suggest-ink text-[12.5px]">{workflow.name} reads this page — it will fail to find it.</li>
+          {/each}
+        </ul>
+      {/if}
+
+      <p class="text-ink-body text-[13.5px]">
+        {isFolder
+          ? 'This removes the folder and everything in it from your workspace folder.'
+          : 'This removes the file from your workspace folder.'}
+      </p>
+
+      {#if error}
+        <p role="alert" class="text-[12.5px] text-warn-ink">{error}</p>
+      {/if}
+    </div>
+
+    <Dialog.Footer>
+      <Button type="button" variant="outline" onclick={() => (open = false)} disabled={submitting}>Cancel</Button>
+      <Button
+        type="button"
+        variant="outline"
+        class="border-warn-border text-warn-ink hover:bg-warn-tint hover:text-warn-ink"
+        onclick={submit}
+        disabled={submitting}
+      >
+        {submitting ? 'Deleting…' : 'Delete'}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
