@@ -20,6 +20,7 @@ defmodule Valea.Api.ICM do
         case Valea.ICM.tree() do
           {:ok, nodes} -> {:ok, %{"nodes" => stringify(nodes)}}
           {:error, :no_workspace} -> {:error, Error.new("workspace_not_open")}
+          {:error, reason} -> {:error, Error.new(to_string(reason))}
         end
       end
     end

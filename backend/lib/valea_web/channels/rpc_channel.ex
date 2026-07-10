@@ -12,4 +12,8 @@ defmodule ValeaWeb.RpcChannel do
   def handle_in("validate", params, socket) do
     {:reply, {:ok, AshTypescript.Rpc.validate_action(:valea, socket, params)}, socket}
   end
+
+  def handle_in(event, _payload, socket) do
+    {:reply, {:error, %{reason: "unknown event: " <> event}}, socket}
+  end
 end
