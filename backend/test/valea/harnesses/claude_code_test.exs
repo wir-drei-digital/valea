@@ -42,4 +42,29 @@ defmodule Valea.Harnesses.ClaudeCodeTest do
   after
     Valea.App.Config.set_harness_command(["claude-agent-acp"])
   end
+
+  test "empty harness_command config -> harness_unavailable, never raises", %{dir: dir} do
+    File.mkdir_p!(dir)
+
+    File.write!(
+      Path.join(dir, "config.json"),
+      Jason.encode!(%{"harness_command" => [], "harness_command_approved" => true})
+    )
+
+    assert {:error, :harness_unavailable} = ClaudeCode.acp_command(%{})
+  end
+
+  test "a directory as the absolute cmd -> harness_unavailable (not File.exists?)", %{dir: dir} do
+    Valea.App.Config.set_harness_command([dir])
+    assert {:error, :harness_unavailable} = ClaudeCode.acp_command(%{})
+  after
+    Valea.App.Config.set_harness_command(["claude-agent-acp"])
+  end
+
+  test "a relative cmd is rejected even if it happens to resolve" do
+    Valea.App.Config.set_harness_command(["./x"])
+    assert {:error, :harness_unavailable} = ClaudeCode.acp_command(%{})
+  after
+    Valea.App.Config.set_harness_command(["claude-agent-acp"])
+  end
 end

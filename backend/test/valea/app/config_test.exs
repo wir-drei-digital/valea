@@ -95,4 +95,8 @@ defmodule Valea.App.ConfigTest do
     Config.set_harness_command(["claude-agent-acp"])
     assert Config.harness_command_approved?() == true
   end
+
+  test "set_harness_command rejects an empty list" do
+    assert_raise FunctionClauseError, fn -> apply(Config, :set_harness_command, [[]]) end
+  end
 end

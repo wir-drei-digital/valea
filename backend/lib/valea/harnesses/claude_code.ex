@@ -13,18 +13,26 @@ defmodule Valea.Harnesses.ClaudeCode do
 
   @impl true
   def acp_command(opts \\ %{}) do
-    [cmd | args] = Valea.App.Config.harness_command()
+    case Valea.App.Config.harness_command() do
+      [cmd | args] when is_binary(cmd) ->
+        resolve(cmd, args, opts)
 
+      _ ->
+        {:error, :harness_unavailable}
+    end
+  end
+
+  defp resolve(cmd, args, opts) do
     resolved = if String.starts_with?(cmd, "/"), do: cmd, else: System.find_executable(cmd)
 
     case resolved do
-      nil ->
-        {:error, :harness_unavailable}
-
-      abs ->
-        if File.exists?(abs),
+      abs when is_binary(abs) ->
+        if String.starts_with?(abs, "/") and File.regular?(abs),
           do: {:ok, %CommandSpec{cmd: abs, args: args, env: opts[:env] || %{}}},
           else: {:error, :harness_unavailable}
+
+      _ ->
+        {:error, :harness_unavailable}
     end
   end
 end

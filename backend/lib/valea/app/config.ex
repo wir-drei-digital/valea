@@ -72,7 +72,7 @@ defmodule Valea.App.Config do
   to `false` on every change away from the default; setting it back to the
   default restores its implicit approval.
   """
-  def set_harness_command(cmd) when is_list(cmd) do
+  def set_harness_command(cmd) when is_list(cmd) and cmd != [] do
     approved = cmd == @default_harness_command
 
     write(%{
