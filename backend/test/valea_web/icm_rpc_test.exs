@@ -37,26 +37,56 @@ defmodule ValeaWeb.IcmRpcTest do
   end
 
   describe "save_icm_page" do
-    test "round-trips a page: load, then save with the loaded hash" do
+    test "mutates and persists: load, append paragraph, save, re-fetch, verify" do
+      # Load the original page
       assert %{"success" => true, "data" => page} =
                rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
 
-      assert is_binary(page["hash"])
-      assert %{"type" => "doc"} = page["prosemirror"]
+      original_hash = page["hash"]
+      assert is_binary(original_hash)
+      assert %{"type" => "doc", "content" => content} = page["prosemirror"]
+      assert is_list(content)
 
+      # Mutate: append a paragraph node to the prosemirror content
+      new_paragraph = %{
+        "type" => "paragraph",
+        "content" => [%{"type" => "text", "text" => "Added by rpc test."}]
+      }
+
+      mutated_prosemirror = %{
+        "type" => "doc",
+        "content" => content ++ [new_paragraph]
+      }
+
+      # Save with the original hash and mutated prosemirror
       assert %{"success" => true, "data" => saved} =
                rpc(
                  "save_icm_page",
                  %{
                    "path" => "Offers/Discovery Call.md",
-                   "prosemirror" => page["prosemirror"],
-                   "baseHash" => page["hash"]
+                   "prosemirror" => mutated_prosemirror,
+                   "baseHash" => original_hash
                  },
                  ["hash", "savedAt"]
                )
 
-      assert is_binary(saved["hash"])
+      saved_hash = saved["hash"]
+      assert is_binary(saved_hash)
       assert is_binary(saved["savedAt"])
+      # Hash must differ after mutation
+      assert saved_hash != original_hash
+
+      # Re-fetch the page to verify persistence
+      assert %{"success" => true, "data" => refetched} =
+               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+
+      # Verify the content was persisted and contains the added text
+      refetched_content = refetched["content"]
+      assert is_binary(refetched_content)
+      assert refetched_content =~ "Added by rpc test."
+
+      # Verify the hash matches the saved hash
+      assert refetched["hash"] == saved_hash
     end
 
     test "stale base hash surfaces page_changed" do
@@ -88,6 +118,17 @@ defmodule ValeaWeb.IcmRpcTest do
                )
 
       assert path == "Offers/New Offer.md"
+    end
+
+    test "create_icm_page at root level (empty parentPath) succeeds" do
+      assert %{"success" => true, "data" => %{"path" => path}} =
+               rpc(
+                 "create_icm_page",
+                 %{"parentPath" => "", "name" => "Root Test"},
+                 ["path"]
+               )
+
+      assert path == "Root Test.md"
     end
 
     test "create_icm_folder returns the new path" do

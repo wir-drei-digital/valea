@@ -70,7 +70,7 @@ defmodule Valea.Api.ICM do
     action :create_page, :map do
       constraints fields: [path: [type: :string, allow_nil?: false]]
 
-      argument :parent_path, :string, allow_nil?: false
+      argument :parent_path, :string, allow_nil?: false, constraints: [allow_empty?: true]
       argument :name, :string, allow_nil?: false
 
       run fn input, _ctx ->
@@ -84,7 +84,7 @@ defmodule Valea.Api.ICM do
     action :create_folder, :map do
       constraints fields: [path: [type: :string, allow_nil?: false]]
 
-      argument :parent_path, :string, allow_nil?: false
+      argument :parent_path, :string, allow_nil?: false, constraints: [allow_empty?: true]
       argument :name, :string, allow_nil?: false
 
       run fn input, _ctx ->
