@@ -113,8 +113,8 @@ defmodule Valea.ICMWriteTest do
     path
   end
 
-  defp workflow_yaml do
-    File.read!(Path.join(ws_path(), "workflows/new_inquiry_triage.yaml"))
+  defp workflow_page do
+    File.read!(Path.join(ws_path(), "icm/Workflows/New Inquiry Triage.md"))
   end
 
   test "rename a referenced page moves the file and rewrites referencing workflows" do
@@ -124,9 +124,9 @@ defmodule Valea.ICMWriteTest do
     refute File.exists?(Path.join(ws_path(), "icm/Offers/Founder Coaching Package.md"))
     assert File.exists?(Path.join(ws_path(), "icm/Offers/Founder Package.md"))
 
-    yaml = workflow_yaml()
-    assert yaml =~ "icm/Offers/Founder Package.md"
-    refute yaml =~ "icm/Offers/Founder Coaching Package.md"
+    page = workflow_page()
+    assert page =~ "icm/Offers/Founder Package.md"
+    refute page =~ "icm/Offers/Founder Coaching Package.md"
   end
 
   test "rename to an invalid or already-existing name" do
@@ -144,36 +144,38 @@ defmodule Valea.ICMWriteTest do
     refute File.exists?(Path.join(ws_path(), "icm/Offers"))
     assert File.exists?(Path.join(ws_path(), "icm/Offerings/Founder Coaching Package.md"))
 
-    yaml = workflow_yaml()
-    assert yaml =~ "icm/Offerings/Founder Coaching Package.md"
-    refute yaml =~ "icm/Offers/Founder Coaching Package.md"
+    page = workflow_page()
+    assert page =~ "icm/Offerings/Founder Coaching Package.md"
+    refute page =~ "icm/Offers/Founder Coaching Package.md"
   end
 
   test "renaming a folder does not corrupt references to a sibling folder whose name is a prefix superset" do
     {:ok, %{path: "Offers Extra"}} = ICM.create_folder("", "Offers Extra")
     {:ok, %{path: "Offers Extra/Sidecar.md"}} = ICM.create_page("Offers Extra", "Sidecar")
 
-    workflow_path = Path.join(ws_path(), "workflows/new_inquiry_triage.yaml")
+    workflow_path = Path.join(ws_path(), "icm/Workflows/New Inquiry Triage.md")
 
     File.write!(
       workflow_path,
       File.read!(workflow_path) <>
-        "  - id: sidecar\n    type: icm\n    path: icm/Offers Extra/Sidecar.md\n"
+        "\n  - id: sidecar\n    type: icm\n    path: icm/Offers Extra/Sidecar.md\n"
     )
 
     assert {:ok, %{path: "Offerings"}} = ICM.rename("Offers", "Offerings")
 
-    yaml = workflow_yaml()
-    assert yaml =~ "icm/Offerings/Founder Coaching Package.md"
-    assert yaml =~ "icm/Offers Extra/Sidecar.md"
-    refute yaml =~ "icm/Offerings Extra/Sidecar.md"
+    page = workflow_page()
+    assert page =~ "icm/Offerings/Founder Coaching Package.md"
+    assert page =~ "icm/Offers Extra/Sidecar.md"
+    refute page =~ "icm/Offerings Extra/Sidecar.md"
   end
 
   test "renaming a folder rewrites wildcard workflow references to it" do
-    session_prep = fn -> File.read!(Path.join(ws_path(), "workflows/session_prep_brief.yaml")) end
+    session_prep = fn ->
+      File.read!(Path.join(ws_path(), "icm/Workflows/Session Prep Brief.md"))
+    end
 
     post_session = fn ->
-      File.read!(Path.join(ws_path(), "workflows/post_session_followup.yaml"))
+      File.read!(Path.join(ws_path(), "icm/Workflows/Post-Session Follow-up.md"))
     end
 
     assert session_prep.() =~ "icm/Clients/*"
@@ -195,11 +197,11 @@ defmodule Valea.ICMWriteTest do
   end
 
   test "delete a page removes it and leaves workflows untouched" do
-    before_yaml = workflow_yaml()
+    before_page = workflow_page()
 
     assert {:ok, %{deleted: true}} = ICM.delete("Clients/Lea Brunner.md")
     refute File.exists?(Path.join(ws_path(), "icm/Clients/Lea Brunner.md"))
-    assert workflow_yaml() == before_yaml
+    assert workflow_page() == before_page
   end
 
   test "delete a folder recursively removes its contents" do

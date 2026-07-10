@@ -19,12 +19,12 @@ defmodule Valea.Workspace.ScaffoldTest do
     assert :ok = Scaffold.create(target)
 
     for dir <-
-          ~w(icm workflows prompts queue/pending queue/approved queue/rejected queue/applied logs sources/mail/normalized config secrets) do
+          ~w(icm icm/Workflows prompts queue/pending queue/approved queue/rejected queue/applied queue/staging queue/processing logs sources/mail/normalized config secrets) do
       assert File.dir?(Path.join(target, dir)), "missing #{dir}"
     end
 
     assert File.exists?(Path.join(target, "icm/Offers/Founder Coaching Package.md"))
-    assert File.exists?(Path.join(target, "workflows/new_inquiry_triage.yaml"))
+    assert File.exists?(Path.join(target, "icm/Workflows/New Inquiry Triage.md"))
     assert File.exists?(Path.join(target, "sources/mail/normalized/priya-nair-inquiry.json"))
     assert File.exists?(Path.join(target, "logs/audit.jsonl"))
     assert File.exists?(Path.join(target, ".gitignore"))

@@ -1,8 +1,0 @@
-default: mock
-harnesses:
-  mock:
-    kind: builtin
-  claude_code:
-    kind: acp
-    command: claude
-    mode: manual_handoff

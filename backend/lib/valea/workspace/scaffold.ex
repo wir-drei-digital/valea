@@ -5,7 +5,7 @@ defmodule Valea.Workspace.Scaffold do
   plain, readable files.
   """
 
-  @marker_dirs ~w(icm workflows queue logs)
+  @marker_dirs ~w(icm queue logs)
 
   def template_dir, do: Path.join(:code.priv_dir(:valea), "workspace_template")
 
@@ -24,7 +24,7 @@ defmodule Valea.Workspace.Scaffold do
     %{
       valid: valid?(path),
       icm_pages: count_files(Path.join(path, "icm"), "**/*.md"),
-      workflows: count_files(Path.join(path, "workflows"), "*.yaml"),
+      workflows: count_files(Path.join(path, "icm/Workflows"), "*.md"),
       queue_pending: count_files(Path.join(path, "queue/pending"), "*.json"),
       has_audit_log: File.exists?(Path.join(path, "logs/audit.jsonl"))
     }

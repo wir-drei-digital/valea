@@ -404,7 +404,7 @@ defmodule Valea.ICM do
     File.rename!(old_abs, new_abs)
 
     # Workflows can also reference an entire folder via a wildcard glob
-    # (`icm/<folder>/*` — see `priv/workspace_template/workflows/*.yaml`),
+    # (`icm/<folder>/*` — see `priv/workspace_template/icm/Workflows/*.md`),
     # which `collect_md_children` never surfaces (it only walks concrete
     # `.md` files that existed on disk at rename time). Rewrite that exact
     # `icm/<old_rel>/*` needle too, via the same precision-safe full-string

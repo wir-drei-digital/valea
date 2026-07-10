@@ -31,21 +31,21 @@ defmodule Valea.ICM.ReferencesTest do
 
   test "finds workflows referencing a page" do
     {:ok, refs} = References.referencing_workflows("Offers/Founder Coaching Package.md")
-    assert [%{file: "new_inquiry_triage.yaml", name: "New Inquiry Triage"}] = refs
+    assert [%{file: "New Inquiry Triage.md", name: "New Inquiry Triage"}] = refs
 
     {:ok, []} = References.referencing_workflows("Clients/Lea Brunner.md")
   end
 
-  test "rewrite updates the yaml literally and atomically" do
-    # Both new_inquiry_triage.yaml and post_session_followup.yaml reference
+  test "rewrite updates the page literally and atomically" do
+    # Both New Inquiry Triage.md and Post-Session Follow-up.md reference
     # the Email Tone Guide in the seeded workspace template.
-    {:ok, ["new_inquiry_triage.yaml", "post_session_followup.yaml"]} =
+    {:ok, ["New Inquiry Triage.md", "Post-Session Follow-up.md"]} =
       References.rewrite("Tone & Voice/Email Tone Guide.md", "Tone & Voice/Voice Guide.md")
 
-    for file <- ["new_inquiry_triage.yaml", "post_session_followup.yaml"] do
-      yaml = File.read!(Path.join(ws_path(), "workflows/#{file}"))
-      assert yaml =~ "icm/Tone & Voice/Voice Guide.md"
-      refute yaml =~ "icm/Tone & Voice/Email Tone Guide.md"
+    for file <- ["New Inquiry Triage.md", "Post-Session Follow-up.md"] do
+      page = File.read!(Path.join(ws_path(), "icm/Workflows/#{file}"))
+      assert page =~ "icm/Tone & Voice/Voice Guide.md"
+      refute page =~ "icm/Tone & Voice/Email Tone Guide.md"
     end
   end
 
@@ -54,7 +54,7 @@ defmodule Valea.ICM.ReferencesTest do
   end
 
   test "rewrite returns error on write failure" do
-    workflows_dir = Path.join(ws_path(), "workflows")
+    workflows_dir = Path.join(ws_path(), "icm/Workflows")
 
     # Make the workflows directory read-only to force atomic_write to fail
     File.chmod!(workflows_dir, 0o555)
@@ -67,6 +67,6 @@ defmodule Valea.ICM.ReferencesTest do
     # Attempt to rewrite should return an error tuple
     result = References.rewrite("Tone & Voice/Email Tone Guide.md", "Tone & Voice/Voice Guide.md")
     assert {:error, {:rewrite_failed, filename, _reason}} = result
-    assert filename in ["new_inquiry_triage.yaml", "post_session_followup.yaml"]
+    assert filename in ["New Inquiry Triage.md", "Post-Session Follow-up.md"]
   end
 end

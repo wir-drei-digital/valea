@@ -2,13 +2,14 @@ defmodule Valea.ICM.References do
   @moduledoc """
   Finds and rewrites workflow references to icm pages/folders.
 
-  Workflow YAML is treated as opaque text here — sources reference icm
-  content via literal `icm/<rel_path>` strings (see
-  `priv/workspace_template/workflows/*.yaml`), so scanning/rewriting by
-  substring is both simpler and more robust than parsing YAML and chasing
-  its structure. `rewrite/2` is a plain string replace, not aware of YAML
-  syntax, so callers must pass matchable substrings (see the boundary
-  handling in `Valea.ICM.rename/2` for folder renames).
+  Workflow pages are treated as opaque text here — sources reference icm
+  content via literal `icm/<rel_path>` strings inside their YAML
+  frontmatter (see `priv/workspace_template/icm/Workflows/*.md`), so
+  scanning/rewriting by substring is both simpler and more robust than
+  parsing YAML and chasing its structure. `rewrite/2` is a plain string
+  replace, not aware of YAML syntax, so callers must pass matchable
+  substrings (see the boundary handling in `Valea.ICM.rename/2` for folder
+  renames).
   """
 
   alias Valea.Workspace.Manager
@@ -17,12 +18,14 @@ defmodule Valea.ICM.References do
 
   @doc """
   Lists the workflows that reference `rel_path` (an icm-relative path),
-  by scanning every `{workspace}/workflows/*.yaml` for the literal string
+  by scanning every `{workspace}/icm/Workflows/*.md` for the literal string
   `icm/<rel_path>`.
 
   Returns `{:ok, [%{file: filename, name: display_name}]}`, sorted by
-  filename. `display_name` is read from the YAML's top-level `name:` key,
-  falling back to the filename when absent.
+  filename. `display_name` is read from a top-level `name:` line in the
+  page (a legacy YAML convention), falling back to the filename without
+  its extension when absent — which is every current page, since the
+  frontmatter carries no `name:` key.
   """
   def referencing_workflows(rel_path) do
     with {:ok, dir} <- workflows_dir() do
@@ -90,7 +93,7 @@ defmodule Valea.ICM.References do
 
   defp workflow_files(dir) do
     dir
-    |> Path.join("*.yaml")
+    |> Path.join("*.md")
     |> Path.wildcard()
     |> Enum.sort()
   end
@@ -101,7 +104,7 @@ defmodule Valea.ICM.References do
     name =
       case Regex.run(@name_regex, content) do
         [_, captured] -> String.trim(captured)
-        nil -> Path.basename(abs)
+        nil -> abs |> Path.basename() |> Path.rootname()
       end
 
     %{file: Path.basename(abs), name: name}
@@ -122,7 +125,7 @@ defmodule Valea.ICM.References do
 
   defp workflows_dir do
     case Manager.current() do
-      {:ok, %{path: ws}} -> {:ok, Path.join(ws, "workflows")}
+      {:ok, %{path: ws}} -> {:ok, Path.join(ws, "icm/Workflows")}
       {:error, :no_workspace} -> {:error, :no_workspace}
     end
   end
