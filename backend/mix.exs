@@ -50,6 +50,7 @@ defmodule Valea.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.2"},
+      {:mdex, "~> 0.7"},
       {:bandit, "~> 1.5"},
       {:dotenvy, "~> 1.0"},
       {:corsica, "~> 2.1"},
