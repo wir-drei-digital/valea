@@ -10,7 +10,7 @@ import { joinAgentSession } from '../socket';
  */
 export type AcpItem = { seq?: number; id: string; type: string; [k: string]: unknown };
 
-export type AgentSessionStatus = 'connecting' | 'running' | 'exited' | 'failed' | 'ended';
+export type AgentSessionStatus = 'connecting' | 'starting' | 'running' | 'exited' | 'failed' | 'ended';
 
 type JoinFn = (id: string) => Channel;
 
