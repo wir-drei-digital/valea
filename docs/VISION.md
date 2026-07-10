@@ -37,7 +37,12 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
    (offers, pricing, clients, tone of voice, policies, templates, decisions)
    reflected directly in the app navigation. **The AI never "just knows
    things."** It uses visible, editable memory, and every suggestion shows
-   which pages and sources it used.
+   which pages and sources it used. The methodology is formalized in
+   *"Interpretable Context Methodology: Folder Structure as Agent
+   Architecture"* (Van Clief & McDermott, arxiv.org/html/2603.16021v2):
+   Valea's `icm/` is its Layer 3 (stable reference material), the workflow
+   YAMLs' `sources:` lists are Layer 2 stage contracts with inputs tables,
+   and `queue/`/`sources/` are Layer 4 working artifacts behind review gates.
 
 3. **Transparent workflows.** Workflows are inspectable YAML files: trigger,
    sources, steps, outputs, approval requirements, risk level, audit behavior.
@@ -125,17 +130,25 @@ project's proven scaffold. Full decisions per feature live in
 `docs/superpowers/specs/`; the condensed map lives in `docs/ARCHITECTURE.md`
 (created with the foundation implementation).
 
-## Roadmap shape (brief phases → sub-projects)
+## Roadmap shape (reordered 2026-07-10 — prototype first)
 
 1. **Foundation** — app shell, workspace creation/seeding, Today cockpit
-   (seeded), ICM tree in nav. *(spec: 2026-07-09-valea-foundation-design.md)*
-2. **ICM viewer/editor** — read, edit, save memory pages.
-3. **Queue & audit** — approval queue file model, audit JSONL, timeline UI.
-4. **Mail** — IMAP read, AI/Review folder flow, local drafts.
+   (seeded), ICM tree in nav. *(shipped; spec:
+   2026-07-09-valea-foundation-design.md)*
+2. **ICM editor** — Notion-like tiptap editing of memory pages, tree CRUD,
+   deterministic markdown round-trip. *(spec:
+   2026-07-10-icm-editor-design.md)*
+3. **Agent prototype slice** — the full AI-prepares-human-approves loop with
+   zero external integrations: minimal workflow execution on the seeded mock
+   email, AgentHarness seam (Mock + Claude Code), approval queue + audit
+   essentials, prepared card on Today. Adopts the ICM paper's Layer 0/1
+   files (workspace `CLAUDE.md`/`CONTEXT.md`) for the orchestrating agent.
+   After this phase Valea is a demo-able product with no accounts connected.
+4. **Mail** — IMAP read, AI/Review folder flow, local drafts (replaces the
+   mock input).
 5. **Calendar** — CalDAV read / ICS import, today + week views.
-6. **Workflows** — YAML registry, context bundles, mock harness execution.
-7. **Harness abstraction** — AgentHarness seam, Claude Code manual handoff.
-8. **Real agent integration** — Claude Code CLI subprocess / ACP endpoint.
+6. **Workflows & agents, full depth** — registry UI, context bundles,
+   CLI-subprocess/ACP integration, everything the prototype slice deferred.
 
 The MVP is complete when the core acceptance scenario runs end-to-end: open
 app → move Priya's inquiry to AI/Review → run triage workflow → review the
