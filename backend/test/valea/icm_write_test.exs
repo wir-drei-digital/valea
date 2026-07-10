@@ -85,4 +85,18 @@ defmodule Valea.ICMWriteTest do
 
     assert {:error, :outside_workspace} = ICM.create_page("..", "x")
   end
+
+  test "create_page normalizes unicode and trims whitespace into the written path" do
+    {:ok, %{path: path}} = ICM.create_page("", " Café ")
+    assert path == "Café.md"
+    assert path == String.normalize(path, :nfc)
+    assert load(path).title == "Café"
+  end
+
+  test "create under a file parent returns name_invalid, and x. gets a single extension" do
+    assert {:error, :name_invalid} =
+             ICM.create_page("Offers/Founder Coaching Package.md", "Child")
+
+    {:ok, %{path: "Trailing.md"}} = ICM.create_page("", "Trailing.")
+  end
 end

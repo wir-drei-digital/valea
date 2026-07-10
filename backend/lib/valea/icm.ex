@@ -81,14 +81,19 @@ defmodule Valea.ICM do
     end
   end
 
-  defp write_page(abs, pm_map) do
-    with {:ok, markdown} <- ProseMirror.to_markdown(pm_map) do
-      tmp = abs <> ".tmp"
+  defp atomic_write(abs, bytes) do
+    tmp = abs <> ".tmp"
 
-      with :ok <- File.write(tmp, markdown),
-           :ok <- File.rename(tmp, abs) do
-        {:ok, %{hash: sha256_hex(markdown), saved_at: DateTime.to_iso8601(DateTime.utc_now())}}
-      end
+    with :ok <- File.write(tmp, bytes),
+         :ok <- File.rename(tmp, abs) do
+      :ok
+    end
+  end
+
+  defp write_page(abs, pm_map) do
+    with {:ok, markdown} <- ProseMirror.to_markdown(pm_map),
+         :ok <- atomic_write(abs, markdown) do
+      {:ok, %{hash: sha256_hex(markdown), saved_at: DateTime.to_iso8601(DateTime.utc_now())}}
     end
   end
 
@@ -176,12 +181,22 @@ defmodule Valea.ICM do
   - Must be NFC-normalized
   """
   def valid_name?(name) do
+    case normalize_name(name) do
+      {:ok, _} -> true
+      {:error, _} -> false
+    end
+  end
+
+  defp normalize_name(name) do
     normalized = String.normalize(name, :nfc)
     trimmed = String.trim(normalized)
 
-    byte_size(trimmed) > 0 and
-      not String.contains?(trimmed, ["/", "\\"]) and
-      not String.starts_with?(trimmed, ".")
+    cond do
+      byte_size(trimmed) == 0 -> {:error, :name_invalid}
+      String.contains?(trimmed, ["/", "\\"]) -> {:error, :name_invalid}
+      String.starts_with?(trimmed, ".") -> {:error, :name_invalid}
+      true -> {:ok, trimmed}
+    end
   end
 
   defp check_parent_contained(_root, ""), do: :ok
@@ -189,6 +204,27 @@ defmodule Valea.ICM do
   defp check_parent_contained(root, parent_rel_path) do
     case contain(root, parent_rel_path) do
       {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp check_parent_is_directory(parent_abs) do
+    cond do
+      not File.exists?(parent_abs) ->
+        :ok
+
+      File.dir?(parent_abs) ->
+        :ok
+
+      true ->
+        {:error, :name_invalid}
+    end
+  end
+
+  defp ensure_parent_directory(parent_abs) do
+    case File.mkdir_p(parent_abs) do
+      :ok -> :ok
+      {:error, :enotdir} -> {:error, :name_invalid}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -208,21 +244,22 @@ defmodule Valea.ICM do
   - `:no_workspace` - no workspace is currently active
   """
   def create_page(parent_rel_path, name) do
-    with true <- valid_name?(name),
+    with {:ok, normalized_name} <- normalize_name(name),
          {:ok, root} <- icm_root(),
          :ok <- check_parent_contained(root, parent_rel_path),
          parent_abs <- Path.join(root, parent_rel_path),
-         name_with_ext <- ensure_md_extension(name),
+         :ok <- check_parent_is_directory(parent_abs),
+         name_with_ext <- ensure_md_extension(normalized_name),
          abs <- Path.join(parent_abs, name_with_ext),
          {:ok, _} <- contain(root, Path.relative_to(abs, root)),
          false <- File.exists?(abs),
-         :ok <- File.mkdir_p(parent_abs) do
+         :ok <- ensure_parent_directory(parent_abs) do
       title = Path.basename(name_with_ext, ".md")
       content = "# " <> title <> "\n"
 
       write_string_to_file(abs, content) |> format_create_response(abs, root)
     else
-      false -> {:error, :name_invalid}
+      {:error, :name_invalid} -> {:error, :name_invalid}
       {:error, reason} -> {:error, reason}
       true -> {:error, :already_exists}
     end
@@ -241,29 +278,43 @@ defmodule Valea.ICM do
   - `:no_workspace` - no workspace is currently active
   """
   def create_folder(parent_rel_path, name) do
-    with true <- valid_name?(name),
+    with {:ok, normalized_name} <- normalize_name(name),
          {:ok, root} <- icm_root(),
          :ok <- check_parent_contained(root, parent_rel_path),
          parent_abs <- Path.join(root, parent_rel_path),
-         abs <- Path.join(parent_abs, name),
+         :ok <- check_parent_is_directory(parent_abs),
+         abs <- Path.join(parent_abs, normalized_name),
          {:ok, _} <- contain(root, Path.relative_to(abs, root)),
          false <- File.exists?(abs),
-         :ok <- File.mkdir_p(parent_abs),
-         :ok <- File.mkdir(abs) do
+         :ok <- ensure_parent_directory(parent_abs),
+         :ok <- create_directory(abs) do
       rel = Path.relative_to(abs, root)
       {:ok, %{path: rel}}
     else
-      false -> {:error, :name_invalid}
+      {:error, :name_invalid} -> {:error, :name_invalid}
       {:error, reason} -> {:error, reason}
       true -> {:error, :already_exists}
     end
   end
 
+  defp create_directory(path) do
+    case File.mkdir(path) do
+      :ok -> :ok
+      {:error, :enotdir} -> {:error, :name_invalid}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp ensure_md_extension(name) do
-    if String.ends_with?(name, ".md") do
-      name
-    else
-      name <> ".md"
+    cond do
+      String.ends_with?(name, ".md") ->
+        name
+
+      String.ends_with?(name, ".") ->
+        String.slice(name, 0..-2//1) <> ".md"
+
+      true ->
+        name <> ".md"
     end
   end
 
@@ -277,11 +328,9 @@ defmodule Valea.ICM do
   end
 
   defp write_string_to_file(abs, content) do
-    tmp = abs <> ".tmp"
-
-    with :ok <- File.write(tmp, content),
-         :ok <- File.rename(tmp, abs) do
-      {:ok, %{}}
+    case atomic_write(abs, content) do
+      :ok -> {:ok, %{}}
+      {:error, reason} -> {:error, reason}
     end
   end
 end
