@@ -105,6 +105,46 @@ defmodule Valea.Agents.PermissionPolicyTest do
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
   end
 
+  # --- realpath regression at the policy level ---
+  # resolve_real resolves symlinks before ".", so these adversarial inputs
+  # can no longer masquerade as a benign in-workspace path.
+
+  test "read via symlink icm/L -> secrets/ssl then .. -> deny (lands in secrets/)", %{
+    ws: ws,
+    chat: chat
+  } do
+    File.mkdir_p!(Path.join([ws, "secrets", "ssl"]))
+    File.ln_s!(Path.join([ws, "secrets", "ssl"]), Path.join([ws, "icm", "L"]))
+    it = item("read", %{"file_path" => Path.join([ws, "icm", "L", "..", "master.key"])})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
+  end
+
+  test "read via symlink icm/L -> /etc/ssl then .. -> deny (outside host file)", %{
+    ws: ws,
+    chat: chat
+  } do
+    File.ln_s!("/etc/ssl", Path.join([ws, "icm", "L"]))
+    it = item("read", %{"file_path" => Path.join([ws, "icm", "L", "..", "passwd"])})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
+  end
+
+  test "write via symlink staging/L -> /tmp then .. -> NOT allow (escapes write target)", %{
+    ws: ws
+  } do
+    staging = Path.join([ws, "queue", "staging", "r1", "proposal.json"])
+    File.ln_s!("/tmp", Path.join([ws, "queue", "staging", "r1", "L"]))
+    ctx = %{workspace: ws, session_kind: "workflow", write_paths: [staging]}
+
+    it =
+      item("edit", %{
+        "file_path" => Path.join([ws, "queue", "staging", "r1", "L", "..", "proposal.json"])
+      })
+
+    decision = PermissionPolicy.decide(it, ctx)
+    refute match?({:allow, _}, decision)
+    assert decision == {:deny, "reject_once"}
+  end
+
   test "ctx[:read_roots] override extends what auto-allows", %{ws: ws} do
     ctx = %{
       workspace: ws,

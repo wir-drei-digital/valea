@@ -86,4 +86,40 @@ defmodule Valea.PathsTest do
   test "rejects an absolute path outside base", %{base: base} do
     assert {:error, :outside} = Paths.resolve_real("/etc/passwd", base)
   end
+
+  # --- realpath regression: symlinks resolve BEFORE the following ".." ---
+  # A lexical pre-collapse of ".." would vet a DIFFERENT physical file than
+  # the OS opens. These assert the OS-faithful (physical) resolution.
+
+  test "symlink then .. stays inside secrets/ (not lexically icm/)", %{
+    base: base,
+    base_real: base_real
+  } do
+    # icm/L -> <ws>/secrets/ssl ; "icm/L/../master.key"
+    # Lexical: <ws>/icm/master.key (WRONG). Physical: <ws>/secrets/master.key.
+    File.mkdir_p!(Path.join(base, "secrets"))
+    File.ln_s!(Path.join([base, "secrets", "ssl"]), Path.join([base, "icm", "L"]))
+
+    assert {:ok, resolved} = Paths.resolve_real("icm/L/../master.key", base)
+    assert resolved == Path.join([base_real, "secrets", "master.key"])
+    refute resolved == Path.join([base_real, "icm", "master.key"])
+  end
+
+  test "symlink to host dir then .. escapes to a host file -> outside", %{base: base} do
+    # icm/L -> /etc/ssl ; "icm/L/../passwd" -> OS realpath /etc/passwd.
+    File.ln_s!("/etc/ssl", Path.join([base, "icm", "L"]))
+
+    assert {:error, :outside} = Paths.resolve_real("icm/L/../passwd", base)
+  end
+
+  test "write remainder through a symlink to /tmp then .. lands outside base", %{base: base} do
+    # queue/staging/r1/L -> /tmp ; "queue/staging/r1/L/../proposal.json".
+    # Lexically equals the declared write target, physically it is in /tmp's
+    # parent — must NOT resolve back inside base.
+    File.mkdir_p!(Path.join([base, "queue", "staging", "r1"]))
+    File.ln_s!("/tmp", Path.join([base, "queue", "staging", "r1", "L"]))
+
+    assert {:error, :outside} =
+             Paths.resolve_real("queue/staging/r1/L/../proposal.json", base)
+  end
 end
