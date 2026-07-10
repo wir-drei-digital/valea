@@ -18,11 +18,22 @@ defmodule ValeaWeb.SpaController do
   # 'self' covers them; 'unsafe-inline' for styles is required by Svelte's
   # transitions/inline styles. connect-src allows the loopback socket + HTTP
   # RPC the SPA makes back to the sidecar.
+  #
+  # script-src carries 'unsafe-inline' ON PURPOSE. SvelteKit's adapter-static
+  # build boots hydration from an INLINE <script> in index.html, and the strict
+  # policy for it lives in a <meta http-equiv="content-security-policy"> the
+  # build emits with a per-build sha256 hash (see frontend/svelte.config.js
+  # kit.csp). This response header cannot know that per-build hash, so it must
+  # not veto the meta's hashes: a browser enforces the INTERSECTION of header
+  # and meta CSPs, and a hash-based script-src silently drops 'unsafe-inline',
+  # so the effective policy stays hash-gated. Removing script-src here would NOT
+  # help — default-src 'self' would then govern scripts and still block the
+  # inline bootstrap; the permissive script-src is what lets the meta's hashes win.
   defp put_csp(conn) do
     put_resp_header(
       conn,
       "content-security-policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " <>
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " <>
         "connect-src 'self' ws://localhost:* http://localhost:*; img-src 'self' data:; font-src 'self'"
     )
   end
