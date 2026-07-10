@@ -69,7 +69,15 @@ defmodule Valea.ICMWriteTest do
   test "create_page seeds title and appends .md" do
     {:ok, %{path: path}} = ICM.create_page("Decisions", "Pricing Call")
     assert path == "Decisions/Pricing Call.md"
-    assert load(path).content == "# Pricing Call\n"
+    assert load(path).content == "# Pricing Call"
+  end
+
+  test "create_page's seed round-trips byte-identically through the write path (determinism contract)" do
+    {:ok, %{path: path}} = ICM.create_page("Decisions", "Pricing Call")
+    content = load(path).content
+
+    assert {:ok, pm} = ProseMirror.from_markdown(content)
+    assert {:ok, ^content} = ProseMirror.to_markdown(pm)
   end
 
   test "create_page at root, create_folder, duplicate and invalid names" do
@@ -159,6 +167,31 @@ defmodule Valea.ICMWriteTest do
     assert yaml =~ "icm/Offerings/Founder Coaching Package.md"
     assert yaml =~ "icm/Offers Extra/Sidecar.md"
     refute yaml =~ "icm/Offerings Extra/Sidecar.md"
+  end
+
+  test "renaming a folder rewrites wildcard workflow references to it" do
+    session_prep = fn -> File.read!(Path.join(ws_path(), "workflows/session_prep_brief.yaml")) end
+
+    post_session = fn ->
+      File.read!(Path.join(ws_path(), "workflows/post_session_followup.yaml"))
+    end
+
+    assert session_prep.() =~ "icm/Clients/*"
+    assert post_session.() =~ "icm/Clients/*"
+
+    assert {:ok, %{path: "Customers", updated_workflows: updated_workflows}} =
+             ICM.rename("Clients", "Customers")
+
+    assert "Session Prep Brief" in updated_workflows
+    assert "Post-Session Follow-up" in updated_workflows
+
+    refute File.exists?(Path.join(ws_path(), "icm/Clients"))
+    assert File.exists?(Path.join(ws_path(), "icm/Customers"))
+
+    assert session_prep.() =~ "icm/Customers/*"
+    refute session_prep.() =~ "icm/Clients/*"
+    assert post_session.() =~ "icm/Customers/*"
+    refute post_session.() =~ "icm/Clients/*"
   end
 
   test "delete a page removes it and leaves workflows untouched" do

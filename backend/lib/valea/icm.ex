@@ -256,7 +256,12 @@ defmodule Valea.ICM do
          false <- File.exists?(abs),
          :ok <- ensure_parent_directory(parent_abs) do
       title = Path.basename(name_with_ext, ".md")
-      content = "# " <> title <> "\n"
+      # No trailing newline: matches the canonical serializer form
+      # (`ProseMirror.to_markdown/1` never emits a trailing newline), so a
+      # freshly created page round-trips byte-identically through
+      # from_markdown/to_markdown instead of gaining a phantom diff on first
+      # save.
+      content = "# " <> title
 
       write_string_to_file(abs, content) |> format_create_response(abs, root)
     else
@@ -398,7 +403,17 @@ defmodule Valea.ICM do
     child_pairs = collect_md_children(old_abs, root, old_rel, new_rel)
     File.rename!(old_abs, new_abs)
 
-    case rewrite_children(child_pairs) do
+    # Workflows can also reference an entire folder via a wildcard glob
+    # (`icm/<folder>/*` — see `priv/workspace_template/workflows/*.yaml`),
+    # which `collect_md_children` never surfaces (it only walks concrete
+    # `.md` files that existed on disk at rename time). Rewrite that exact
+    # `icm/<old_rel>/*` needle too, via the same precision-safe full-string
+    # mechanism as every other reference — the trailing `/*` keeps this from
+    # ever matching a sibling folder's wildcard (e.g. "Offers" vs.
+    # "Offers Extra").
+    wildcard_pair = {old_rel <> "/*", new_rel <> "/*"}
+
+    case rewrite_children(child_pairs ++ [wildcard_pair]) do
       {:ok, updated_workflows} ->
         {:ok, %{path: new_rel, updated_workflows: updated_workflows}}
 
