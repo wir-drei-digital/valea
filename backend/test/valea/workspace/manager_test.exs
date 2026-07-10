@@ -97,4 +97,61 @@ defmodule Valea.Workspace.ManagerTest do
     assert Path.basename(Path.dirname(file_path)) == "Good"
     assert Path.basename(file_path) == "app.sqlite"
   end
+
+  test "failed switch reports no workspace, not the stale one", %{parent: parent} do
+    # Open workspace A cleanly.
+    {:ok, a} = Manager.create(parent, "A")
+    assert {:ok, ^a} = Manager.current()
+    assert Process.whereis(Valea.Repo)
+
+    # Scaffold a valid target B on disk, then force its open to fail AFTER
+    # A is closed by making migrations blow up.
+    Manager.close()
+    {:ok, b} = Manager.create(parent, "B")
+    Manager.close()
+
+    real_migrations_path = Application.get_env(:valea, :migrations_path)
+
+    bad_migrations_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-bad-migrations-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(bad_migrations_dir)
+
+    File.write!(Path.join(bad_migrations_dir, "20990101000000_bad_migration.exs"), """
+    defmodule Valea.BadSwitchMigration do
+      use Ecto.Migration
+      def up, do: raise "boom"
+      def down, do: :ok
+    end
+    """)
+
+    on_exit(fn ->
+      Application.put_env(:valea, :migrations_path, real_migrations_path)
+      File.rm_rf!(bad_migrations_dir)
+    end)
+
+    # Re-open A cleanly (real migrations), then switch to B with broken ones.
+    assert {:ok, ^a} = Manager.open(a.path)
+    assert {:ok, ^a} = Manager.current()
+
+    Application.put_env(:valea, :migrations_path, bad_migrations_dir)
+    Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
+
+    assert {:error, {:migration_failed, _}} = Manager.open(b.path)
+
+    # The Manager must NOT still claim A (or B) is open with dead children.
+    assert {:error, :no_workspace} = Manager.current()
+    assert Process.whereis(Valea.Repo) == nil
+    # A was truthfully closed on the way into the failed switch.
+    assert_receive {:workspace_closed}
+
+    # Recovery: reopening A with real migrations succeeds.
+    Application.put_env(:valea, :migrations_path, real_migrations_path)
+    assert {:ok, ^a} = Manager.open(a.path)
+    assert {:ok, ^a} = Manager.current()
+    assert Process.whereis(Valea.Repo)
+  end
 end

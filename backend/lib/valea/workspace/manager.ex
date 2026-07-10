@@ -35,7 +35,7 @@ defmodule Valea.Workspace.Manager do
           {:ok, state} ->
             {:noreply, state}
 
-          {:error, _reason} ->
+          {:error, _reason, state} ->
             Config.clear_last_opened()
             {:noreply, state}
         end
@@ -50,14 +50,18 @@ defmodule Valea.Workspace.Manager do
          {:ok, state} <- do_open(target, state) do
       {:reply, {:ok, state.workspace}, state}
     else
+      # Scaffold.create failed before any close — reply with the untouched state.
       {:error, reason} -> {:reply, {:error, reason}, state}
+      # do_open closed the previous workspace before failing — reply with the
+      # closed state so `current/0` never reports a dead workspace as open.
+      {:error, reason, closed_state} -> {:reply, {:error, reason}, closed_state}
     end
   end
 
   def handle_call({:open, path}, _from, state) do
     case do_open(path, state) do
       {:ok, state} -> {:reply, {:ok, state.workspace}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {:error, reason, closed_state} -> {:reply, {:error, reason}, closed_state}
     end
   end
 
@@ -73,12 +77,16 @@ defmodule Valea.Workspace.Manager do
     {:reply, {:ok, ws}, state}
   end
 
+  # On any failure, returns `{:error, reason, state}` where `state` reflects
+  # whether the previous workspace was closed. A failure BEFORE close carries
+  # the untouched state; a failure AFTER close carries the closed state, so a
+  # failed switch never leaves the Manager reporting a dead workspace as open.
   defp do_open(path, state) do
     path = Path.expand(path)
 
     cond do
       not Scaffold.valid?(path) ->
-        {:error, :not_a_workspace}
+        {:error, :not_a_workspace, state}
 
       true ->
         state = do_close(state)
@@ -95,14 +103,14 @@ defmodule Valea.Workspace.Manager do
   defp open_workspace(path, state) do
     case start_repo(path) do
       {:ok, repo_pid} -> open_workspace(path, state, [repo_pid])
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> {:error, reason, state}
     end
   end
 
   defp open_workspace(path, state, started) do
     case migrate() do
       :ok -> open_workspace_watcher(path, state, started)
-      {:error, reason} -> rollback_with(started, reason)
+      {:error, reason} -> rollback_with(started, reason, state)
     end
   end
 
@@ -116,13 +124,13 @@ defmodule Valea.Workspace.Manager do
         {:ok, %{state | workspace: info, children: started}}
 
       {:error, reason} ->
-        rollback_with(started, reason)
+        rollback_with(started, reason, state)
     end
   end
 
-  defp rollback_with(started, reason) do
+  defp rollback_with(started, reason, state) do
     rollback(started)
-    {:error, reason}
+    {:error, reason, state}
   end
 
   defp rollback(pids) do
