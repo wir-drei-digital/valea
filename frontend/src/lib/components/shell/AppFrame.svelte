@@ -12,10 +12,13 @@
   // nav is wired once here since every route needs it.
   let {
     list,
-    main
+    main,
+    onBeforeMutateActive
   }: {
     list?: Snippet;
     main: Snippet;
+    /** Forwarded to `Sidebar`/`IcmTree` — see `IcmTree.svelte`'s doc comment. */
+    onBeforeMutateActive?: () => Promise<void>;
   } = $props();
 
   onMount(() => {
@@ -27,6 +30,6 @@
 
 <AppShell {list} {main}>
   {#snippet sidebar()}
-    <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {icmNav} />
+    <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {icmNav} {onBeforeMutateActive} />
   {/snippet}
 </AppShell>

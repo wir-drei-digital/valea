@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { beforeNavigate } from '$app/navigation';
+  import { beforeNavigate, goto } from '$app/navigation';
   import { onDestroy } from 'svelte';
   import { AppFrame, ListPane } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
@@ -141,27 +141,62 @@
   // refetch, including this page's own save landing on disk), refetch just
   // this page's hash and hand it to the store — `externalChange` already
   // knows how to tell a genuine foreign edit apart from an echo of our own
-  // save (see page-editor.svelte.ts's class doc). Guarded by an in-flight
-  // flag so a burst of tree refetches doesn't pile up overlapping fetches.
+  // save (see page-editor.svelte.ts's class doc).
+  //
+  // Guarded by an in-flight flag so a burst of tree refetches doesn't pile
+  // up overlapping fetches — but a refetch that arrives WHILE a check is
+  // in flight must not be dropped: `externalCheckPending` records that a
+  // fresher check is owed, and the loop below drains it after the current
+  // fetch settles, so the LAST tree event always ends in a completed check
+  // (even if several land back-to-back during one in-flight request).
   let externalCheckInFlight = false;
+  let externalCheckPending = false;
+
+  async function runExternalCheckLoop() {
+    externalCheckInFlight = true;
+    try {
+      do {
+        externalCheckPending = false;
+        const activeStore = store;
+        const path = decodedPath;
+        if (!activeStore) break;
+
+        try {
+          const result = await api.icmPage(path);
+          // Stale if a newer nav (or teardown) has since taken over.
+          if (activeStore !== store || path !== decodedPath) continue;
+
+          if (result.ok) {
+            const data = result.data as PageContent;
+            activeStore.externalChange(data.hash);
+          } else if (result.error === 'not_found') {
+            // The page vanished externally (e.g. deleted/moved outside the
+            // app) — nothing local to lose, so leave quietly rather than
+            // showing a dead page.
+            console.warn(`icm page "${path}" no longer exists; returning to /knowledge`);
+            void goto('/knowledge');
+            break;
+          }
+        } catch {
+          // Network hiccup — not fatal; the next tree event retries.
+        }
+      } while (externalCheckPending);
+    } finally {
+      externalCheckInFlight = false;
+    }
+  }
+
   $effect(() => {
     void icmStore.nodes; // establishes the dependency on tree refetches
-    const activeStore = store;
-    if (!activeStore || externalCheckInFlight) return;
-    const path = decodedPath;
+    void store; // and on the open page changing (nav between knowledge pages)
+    if (!store) return;
 
-    externalCheckInFlight = true;
-    void (async () => {
-      try {
-        const result = await api.icmPage(path);
-        if (result.ok && path === decodedPath) {
-          const data = result.data as PageContent;
-          activeStore.externalChange(data.hash);
-        }
-      } finally {
-        externalCheckInFlight = false;
-      }
-    })();
+    if (externalCheckInFlight) {
+      externalCheckPending = true;
+      return;
+    }
+
+    void runExternalCheckLoop();
   });
 
   // A clean page whose disk copy changed underneath it (`needsReload`) is
@@ -224,7 +259,7 @@
   });
 </script>
 
-<AppFrame>
+<AppFrame onBeforeMutateActive={() => store?.flush() ?? Promise.resolve()}>
   {#snippet list()}
     <ListPane>
       {#snippet header()}
@@ -320,6 +355,12 @@
           </div>
           <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
         </div>
+
+        {#if store.state === 'dirty' && store.error}
+          <p role="alert" class="text-warn-ink text-[12px]">
+            Couldn't save this page. Your changes are still here — retrying on your next edit.
+          </p>
+        {/if}
 
         <h1 class="font-display text-[24px] text-ink-heading">{content.title}</h1>
 

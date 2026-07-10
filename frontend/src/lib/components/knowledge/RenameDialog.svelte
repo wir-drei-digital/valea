@@ -14,13 +14,27 @@
   import { encodePath } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
+  import { withBeforeMutate } from './before-mutate';
 
   let {
     path,
     currentName,
     isFolder,
-    open = $bindable(false)
-  }: { path: string; currentName: string; isFolder: boolean; open?: boolean } = $props();
+    open = $bindable(false),
+    onBeforeMutate
+  }: {
+    path: string;
+    currentName: string;
+    isFolder: boolean;
+    open?: boolean;
+    /**
+     * Awaited before the rename API call fires. Passed by the route when
+     * this dialog targets the currently open page, as `() =>
+     * store.flush()` — flushes a pending debounced edit to the OLD path
+     * first so it isn't lost. Undefined for rows that aren't the open page.
+     */
+    onBeforeMutate?: () => Promise<void>;
+  } = $props();
 
   let name = $state('');
   let submitting = $state(false);
@@ -95,7 +109,7 @@
 
     error = null;
     submitting = true;
-    const result = await api.renameIcmEntry(path, trimmed);
+    const result = await withBeforeMutate(onBeforeMutate, () => api.renameIcmEntry(path, trimmed));
     submitting = false;
 
     if (!result.ok) {

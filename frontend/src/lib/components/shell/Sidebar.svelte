@@ -10,11 +10,14 @@
   let {
     workspaceName,
     icmNav,
-    syncedAt
+    syncedAt,
+    onBeforeMutateActive
   }: {
     workspaceName: string;
     icmNav: NavTreeItem[];
     syncedAt?: string;
+    /** Forwarded to `IcmTree`'s `onBeforeMutate` — see its doc comment. */
+    onBeforeMutateActive?: () => Promise<void>;
   } = $props();
 
   const sections = mainNav();
@@ -58,7 +61,11 @@
           />
           {#if item.id === 'knowledge'}
             <div class="mt-0.5 mb-1 ml-[17px] border-l border-paper-chip-border pl-2">
-              <IcmTree nodes={icmNav} activePath={page.url.pathname} />
+              <IcmTree
+                nodes={icmNav}
+                activePath={page.url.pathname}
+                onBeforeMutate={onBeforeMutateActive}
+              />
             </div>
           {/if}
         {/each}

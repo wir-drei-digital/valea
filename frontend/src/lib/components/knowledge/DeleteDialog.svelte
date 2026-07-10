@@ -10,13 +10,28 @@
   import { encodePath } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
+  import { withBeforeMutate } from './before-mutate';
 
   let {
     path,
     name,
     isFolder,
-    open = $bindable(false)
-  }: { path: string; name: string; isFolder: boolean; open?: boolean } = $props();
+    open = $bindable(false),
+    onBeforeMutate
+  }: {
+    path: string;
+    name: string;
+    isFolder: boolean;
+    open?: boolean;
+    /**
+     * Awaited before the delete API call fires. Passed by the route when
+     * this dialog targets the currently open page, as `() =>
+     * store.flush()` — flushes a pending debounced edit to disk first so a
+     * concurrently-deleted page doesn't erase an unsaved change. Undefined
+     * for rows that aren't the open page.
+     */
+    onBeforeMutate?: () => Promise<void>;
+  } = $props();
 
   let submitting = $state(false);
   let error = $state<string | null>(null);
@@ -58,7 +73,7 @@
 
     error = null;
     submitting = true;
-    const result = await api.deleteIcmEntry(path);
+    const result = await withBeforeMutate(onBeforeMutate, () => api.deleteIcmEntry(path));
     submitting = false;
 
     if (!result.ok) {

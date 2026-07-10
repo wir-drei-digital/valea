@@ -4,7 +4,21 @@
   import IcmTree from './IcmTree.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
 
-  let { nodes, activePath = '' }: { nodes: NavTreeItem[]; activePath?: string } = $props();
+  let {
+    nodes,
+    activePath = '',
+    onBeforeMutate
+  }: {
+    nodes: NavTreeItem[];
+    activePath?: string;
+    /**
+     * Flushes the currently open page's pending edit before a rename/delete
+     * mutate call fires (see route + before-mutate.ts). Only ever wired to
+     * the EntryMenu for the row whose `href` matches `activePath` — every
+     * other row passes nothing through.
+     */
+    onBeforeMutate?: () => Promise<void>;
+  } = $props();
 
   // Folders default open so the tree "mirrors icm/ exactly" (§7) without extra clicks.
   let open = $state<Record<string, boolean>>({});
@@ -57,11 +71,12 @@
             name={node.label}
             isFolder={true}
             class="absolute top-1/2 right-0.5 -translate-y-1/2"
+            onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
           />
         </div>
         {#if isOpen(node) && node.children.length}
           <div class="ml-[17px] border-l border-paper-chip-border pl-2">
-            <IcmTree nodes={node.children} {activePath} />
+            <IcmTree nodes={node.children} {activePath} {onBeforeMutate} />
           </div>
         {/if}
       {:else}
@@ -81,6 +96,7 @@
             name={node.label}
             isFolder={false}
             class="absolute top-1/2 right-0.5 -translate-y-1/2"
+            onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
           />
         </div>
       {/if}

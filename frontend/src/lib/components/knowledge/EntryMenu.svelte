@@ -21,8 +21,21 @@
     path,
     name,
     isFolder,
-    class: className = ''
-  }: { path: string; name: string; isFolder: boolean; class?: string } = $props();
+    class: className = '',
+    onBeforeMutate
+  }: {
+    path: string;
+    name: string;
+    isFolder: boolean;
+    class?: string;
+    /**
+     * Forwarded to RenameDialog/DeleteDialog. Only passed by callers for the
+     * row that IS the currently open page (e.g. the sidebar tree's active
+     * entry) — other rows have no pending edit to flush, so they pass
+     * nothing and the dialogs skip straight to the mutate call.
+     */
+    onBeforeMutate?: () => Promise<void>;
+  } = $props();
 
   let menuOpen = $state(false);
   let renameOpen = $state(false);
@@ -58,5 +71,5 @@
   </DropdownMenu.Content>
 </DropdownMenu.Root>
 
-<RenameDialog {path} currentName={name} {isFolder} bind:open={renameOpen} />
-<DeleteDialog {path} {name} {isFolder} bind:open={deleteOpen} />
+<RenameDialog {path} currentName={name} {isFolder} bind:open={renameOpen} {onBeforeMutate} />
+<DeleteDialog {path} {name} {isFolder} bind:open={deleteOpen} {onBeforeMutate} />
