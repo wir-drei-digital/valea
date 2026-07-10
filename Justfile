@@ -13,6 +13,9 @@ setup:
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Match the backend's dev default (config/runtime.exs) so the browser dev
+    # build sends a token the control-token plug + socket accept.
+    export VITE_VALEA_CONTROL_TOKEN=valea-dev-token
     trap 'kill 0' EXIT
     (cd backend && mix phx.server) &
     (cd frontend && bun run dev) &
@@ -22,6 +25,8 @@ dev:
 dev-desktop:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Tauri spawns the frontend dev server (beforeDevCommand); it inherits this.
+    export VITE_VALEA_CONTROL_TOKEN=valea-dev-token
     trap 'kill 0' EXIT
     (cd backend && mix phx.server) &
     (cd desktop && bun tauri dev) &

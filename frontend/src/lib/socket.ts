@@ -1,14 +1,34 @@
 import { Socket, type Channel } from 'phoenix';
 
+declare global {
+  interface Window {
+    __VALEA_CONTROL_TOKEN?: string;
+  }
+}
+
 /**
- * Lazily-connected singleton Phoenix socket at `/socket`. Local-first app,
- * no auth params — Vite proxies `/socket` to the backend in dev.
+ * Per-launch loopback control token. In production the desktop shell injects
+ * `window.__VALEA_CONTROL_TOKEN` via an init script; in browser dev it comes
+ * from the Vite env, falling back to the backend's fixed dev default. The
+ * backend gates `/rpc/*` and the socket on it (see ValeaWeb.Plugs.ControlToken).
+ */
+export function controlToken(): string {
+  return (
+    (typeof window !== 'undefined' && window.__VALEA_CONTROL_TOKEN) ||
+    import.meta.env.VITE_VALEA_CONTROL_TOKEN ||
+    'valea-dev-token'
+  );
+}
+
+/**
+ * Lazily-connected singleton Phoenix socket at `/socket`. Carries the control
+ * token as a connect param — Vite proxies `/socket` to the backend in dev.
  */
 let socket: Socket | undefined;
 
 export function connectSocket(): Socket {
   if (!socket) {
-    socket = new Socket('/socket', {});
+    socket = new Socket('/socket', { params: { token: controlToken() } });
     socket.connect();
   }
   return socket;

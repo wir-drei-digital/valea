@@ -39,9 +39,19 @@ import type {
   DeleteIcmEntryFields,
   IcmEntryReferencesFields
 } from './ash_rpc';
-import { connectSocket, getRpcChannel } from '../socket';
+import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string };
+
+/**
+ * Injects the per-launch control token header into a generated HTTP RPC
+ * config. The channel transport carries the token via the socket connect
+ * param instead (see `socket.ts`), so only the HTTP fallback path needs this.
+ * The backend rejects `/rpc/*` without a matching header (401).
+ */
+function withAuth<C extends object>(config: C): C & { headers: Record<string, string> } {
+  return { ...config, headers: { 'x-valea-token': controlToken() } };
+}
 
 /**
  * Envelope shape shared by every generated RPC function/channel result:
@@ -283,40 +293,40 @@ export function normalizeIcmPage(raw: Record<string, any>): IcmPageData {
 }
 
 export const api = {
-  getWorkspace: () => runRpc(callGetWorkspaceChannel, () => httpGetWorkspace({})),
+  getWorkspace: () => runRpc(callGetWorkspaceChannel, () => httpGetWorkspace(withAuth({}))),
 
   createWorkspace: (parentDir: string, name: string) =>
     runRpc(
       (channel) => callCreateWorkspaceChannel(channel, { parentDir, name }),
-      () => httpCreateWorkspace({ input: { parentDir, name } })
+      () => httpCreateWorkspace(withAuth({ input: { parentDir, name } }))
     ),
 
   openWorkspace: (path: string) =>
     runRpc(
       (channel) => callOpenWorkspaceChannel(channel, { path }),
-      () => httpOpenWorkspace({ input: { path } })
+      () => httpOpenWorkspace(withAuth({ input: { path } }))
     ),
 
-  recentWorkspaces: () => runRpc(callRecentWorkspacesChannel, () => httpRecentWorkspaces({})),
+  recentWorkspaces: () => runRpc(callRecentWorkspacesChannel, () => httpRecentWorkspaces(withAuth({}))),
 
   inspectWorkspace: (path: string) =>
     runRpc(
       (channel) => callInspectWorkspaceChannel(channel, { path }),
-      () => httpInspectWorkspace({ input: { path } })
+      () => httpInspectWorkspace(withAuth({ input: { path } }))
     ),
 
-  icmTree: () => runRpc(callIcmTreeChannel, () => httpIcmTree({})),
+  icmTree: () => runRpc(callIcmTreeChannel, () => httpIcmTree(withAuth({}))),
 
   icmPage: (path: string) =>
     runRpc(
       (channel) => callIcmPageChannel(channel, { path }),
-      () => httpIcmPage({ input: { path } })
+      () => httpIcmPage(withAuth({ input: { path } }))
     ).then(
       (result): ApiResult<IcmPageData> =>
         result.ok ? { ok: true, data: normalizeIcmPage(result.data as Record<string, any>) } : result
     ),
 
-  cockpitToday: () => runRpc(callCockpitTodayChannel, () => httpCockpitToday({})),
+  cockpitToday: () => runRpc(callCockpitTodayChannel, () => httpCockpitToday(withAuth({}))),
 
   // `prosemirror` is typed `object` (not `Record<string, any>`) so callers —
   // notably `PageEditorStore`, whose `noteChange(getJson: () => object)` gets
@@ -326,40 +336,42 @@ export const api = {
     runRpc(
       (channel) => callSaveIcmPageChannel(channel, { path, prosemirror: prosemirror as Record<string, any>, baseHash }),
       () =>
-        httpSaveIcmPage({
-          input: { path, prosemirror: prosemirror as Record<string, any>, baseHash },
-          fields: saveIcmPageFields
-        })
+        httpSaveIcmPage(
+          withAuth({
+            input: { path, prosemirror: prosemirror as Record<string, any>, baseHash },
+            fields: saveIcmPageFields
+          })
+        )
     ),
 
   createIcmPage: (parentPath: string, name: string) =>
     runRpc(
       (channel) => callCreateIcmPageChannel(channel, { parentPath, name }),
-      () => httpCreateIcmPage({ input: { parentPath, name }, fields: createIcmPageFields })
+      () => httpCreateIcmPage(withAuth({ input: { parentPath, name }, fields: createIcmPageFields }))
     ),
 
   createIcmFolder: (parentPath: string, name: string) =>
     runRpc(
       (channel) => callCreateIcmFolderChannel(channel, { parentPath, name }),
-      () => httpCreateIcmFolder({ input: { parentPath, name }, fields: createIcmFolderFields })
+      () => httpCreateIcmFolder(withAuth({ input: { parentPath, name }, fields: createIcmFolderFields }))
     ),
 
   renameIcmEntry: (path: string, newName: string) =>
     runRpc(
       (channel) => callRenameIcmEntryChannel(channel, { path, newName }),
-      () => httpRenameIcmEntry({ input: { path, newName }, fields: renameIcmEntryFields })
+      () => httpRenameIcmEntry(withAuth({ input: { path, newName }, fields: renameIcmEntryFields }))
     ),
 
   deleteIcmEntry: (path: string) =>
     runRpc(
       (channel) => callDeleteIcmEntryChannel(channel, { path }),
-      () => httpDeleteIcmEntry({ input: { path }, fields: deleteIcmEntryFields })
+      () => httpDeleteIcmEntry(withAuth({ input: { path }, fields: deleteIcmEntryFields }))
     ),
 
   icmEntryReferences: (path: string) =>
     runRpc(
       (channel) => callIcmEntryReferencesChannel(channel, { path }),
-      () => httpIcmEntryReferences({ input: { path }, fields: icmEntryReferencesFields })
+      () => httpIcmEntryReferences(withAuth({ input: { path }, fields: icmEntryReferencesFields }))
     )
 };
 

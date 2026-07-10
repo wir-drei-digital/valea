@@ -32,6 +32,7 @@ defmodule ValeaWeb.IcmRpcTest do
   defp rpc(action, input, fields \\ []) do
     build_conn()
     |> put_req_header("content-type", "application/json")
+    |> put_req_header("x-valea-token", "valea-dev-token")
     |> post("/rpc/run", %{"action" => action, "input" => input, "fields" => fields})
     |> json_response(200)
   end
