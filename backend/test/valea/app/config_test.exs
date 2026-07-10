@@ -21,7 +21,12 @@ defmodule Valea.App.ConfigTest do
   end
 
   test "read returns empty defaults when no file exists" do
-    assert Config.read() == %{"known_workspaces" => [], "last_opened" => nil}
+    assert Config.read() == %{
+             "known_workspaces" => [],
+             "last_opened" => nil,
+             "harness_command" => ["claude-agent-acp"],
+             "harness_command_approved" => true
+           }
   end
 
   test "record_opened persists and read round-trips", %{dir: dir} do
@@ -62,6 +67,32 @@ defmodule Valea.App.ConfigTest do
   test "read tolerates corrupt json (returns defaults, does not raise)", %{dir: dir} do
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, "config.json"), "{nope")
-    assert Config.read() == %{"known_workspaces" => [], "last_opened" => nil}
+
+    assert Config.read() == %{
+             "known_workspaces" => [],
+             "last_opened" => nil,
+             "harness_command" => ["claude-agent-acp"],
+             "harness_command_approved" => true
+           }
+  end
+
+  test "harness_command defaults to claude-agent-acp, implicitly approved" do
+    assert Config.harness_command() == ["claude-agent-acp"]
+    assert Config.harness_command_approved?() == true
+  end
+
+  test "set_harness_command persists and marks approval false when non-default" do
+    Config.set_harness_command(["/usr/bin/custom-acp", "--flag"])
+
+    assert Config.harness_command() == ["/usr/bin/custom-acp", "--flag"]
+    assert Config.harness_command_approved?() == false
+  end
+
+  test "set_harness_command back to the default restores implicit approval" do
+    Config.set_harness_command(["/usr/bin/custom-acp"])
+    assert Config.harness_command_approved?() == false
+
+    Config.set_harness_command(["claude-agent-acp"])
+    assert Config.harness_command_approved?() == true
   end
 end

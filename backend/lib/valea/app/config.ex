@@ -7,7 +7,13 @@ defmodule Valea.App.Config do
   """
 
   @file_name "config.json"
-  @defaults %{"known_workspaces" => [], "last_opened" => nil}
+  @default_harness_command ["claude-agent-acp"]
+  @defaults %{
+    "known_workspaces" => [],
+    "last_opened" => nil,
+    "harness_command" => @default_harness_command,
+    "harness_command_approved" => true
+  }
 
   def dir do
     case System.get_env("VALEA_APP_DIR") do
@@ -48,6 +54,32 @@ defmodule Valea.App.Config do
     read()["known_workspaces"]
     |> Enum.filter(&File.dir?(&1["path"]))
     |> Enum.sort_by(& &1["last_opened_at"], :desc)
+  end
+
+  @doc """
+  The agent harness executable + argv, as `[cmd | args]`. TRUSTED app
+  config only — this is never read from workspace files. Defaults to
+  `["claude-agent-acp"]`, resolved on PATH at spawn time.
+  """
+  def harness_command, do: read()["harness_command"]
+
+  @doc "Whether the current harness_command has been consented to via the UI."
+  def harness_command_approved?, do: read()["harness_command_approved"]
+
+  @doc """
+  Persists the harness command. Any value other than the default
+  (`["claude-agent-acp"]`) requires fresh UI consent, so approval is reset
+  to `false` on every change away from the default; setting it back to the
+  default restores its implicit approval.
+  """
+  def set_harness_command(cmd) when is_list(cmd) do
+    approved = cmd == @default_harness_command
+
+    write(%{
+      read()
+      | "harness_command" => cmd,
+        "harness_command_approved" => approved
+    })
   end
 
   defp write(config) do
