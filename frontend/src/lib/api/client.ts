@@ -15,10 +15,30 @@ import {
   icmTreeChannel,
   icmPage as httpIcmPage,
   icmPageChannel,
+  saveIcmPage as httpSaveIcmPage,
+  saveIcmPageChannel,
+  createIcmPage as httpCreateIcmPage,
+  createIcmPageChannel,
+  createIcmFolder as httpCreateIcmFolder,
+  createIcmFolderChannel,
+  renameIcmEntry as httpRenameIcmEntry,
+  renameIcmEntryChannel,
+  deleteIcmEntry as httpDeleteIcmEntry,
+  deleteIcmEntryChannel,
+  icmEntryReferences as httpIcmEntryReferences,
+  icmEntryReferencesChannel,
   cockpitToday as httpCockpitToday,
   cockpitTodayChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
+import type {
+  SaveIcmPageFields,
+  CreateIcmPageFields,
+  CreateIcmFolderFields,
+  RenameIcmEntryFields,
+  DeleteIcmEntryFields,
+  IcmEntryReferencesFields
+} from './ash_rpc';
 import { connectSocket, getRpcChannel } from '../socket';
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -147,6 +167,76 @@ function callCockpitTodayChannel(channel: NonNullable<ReturnType<typeof channelA
   return wrapChannelCall((handlers) => cockpitTodayChannel({ channel, ...handlers }));
 }
 
+// The generated typed actions below reject an empty/omitted `fields` array
+// with `empty_fields_array` — every call site (channel + HTTP) must pass a
+// complete field list matching what these wrappers report back to callers.
+const saveIcmPageFields: SaveIcmPageFields = ['hash', 'savedAt'];
+const createIcmPageFields: CreateIcmPageFields = ['path'];
+const createIcmFolderFields: CreateIcmFolderFields = ['path'];
+const renameIcmEntryFields: RenameIcmEntryFields = ['path', 'updatedWorkflows'];
+const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
+// Note: the generated `IcmEntryReferencesFields` type can't actually express
+// nested field selection into an `Array<TypedMap>` (a real ash_typescript
+// codegen gap for anonymous embedded-map arrays, not a Resource
+// relationship) — `ComplexFieldSelection` only special-cases Relationship /
+// ComplexCalculation / direct-TypedMap / Union arrays, so `ArrayOf<TypedMap>`
+// falls through to `never`. The backend action itself DOES accept this exact
+// nested literal (confirmed in Task 5), so the assertion below is trusted
+// runtime knowledge overriding an incomplete generated type, not a guess.
+const icmEntryReferencesFields = [{ workflows: ['file', 'name'] }] as unknown as IcmEntryReferencesFields;
+
+function callSaveIcmPageChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string; prosemirror: Record<string, any>; baseHash: string }
+) {
+  return wrapChannelCall((handlers) => saveIcmPageChannel({ channel, input, fields: saveIcmPageFields, ...handlers }));
+}
+
+function callCreateIcmPageChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { parentPath: string; name: string }
+) {
+  return wrapChannelCall((handlers) =>
+    createIcmPageChannel({ channel, input, fields: createIcmPageFields, ...handlers })
+  );
+}
+
+function callCreateIcmFolderChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { parentPath: string; name: string }
+) {
+  return wrapChannelCall((handlers) =>
+    createIcmFolderChannel({ channel, input, fields: createIcmFolderFields, ...handlers })
+  );
+}
+
+function callRenameIcmEntryChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string; newName: string }
+) {
+  return wrapChannelCall((handlers) =>
+    renameIcmEntryChannel({ channel, input, fields: renameIcmEntryFields, ...handlers })
+  );
+}
+
+function callDeleteIcmEntryChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string }
+) {
+  return wrapChannelCall((handlers) =>
+    deleteIcmEntryChannel({ channel, input, fields: deleteIcmEntryFields, ...handlers })
+  );
+}
+
+function callIcmEntryReferencesChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string }
+) {
+  return wrapChannelCall((handlers) =>
+    icmEntryReferencesChannel({ channel, input, fields: icmEntryReferencesFields, ...handlers })
+  );
+}
+
 export const api = {
   getWorkspace: () => runRpc(callGetWorkspaceChannel, () => httpGetWorkspace({})),
 
@@ -178,7 +268,51 @@ export const api = {
       () => httpIcmPage({ input: { path } })
     ),
 
-  cockpitToday: () => runRpc(callCockpitTodayChannel, () => httpCockpitToday({}))
+  cockpitToday: () => runRpc(callCockpitTodayChannel, () => httpCockpitToday({})),
+
+  // `prosemirror` is typed `object` (not `Record<string, any>`) so callers —
+  // notably `PageEditorStore`, whose `noteChange(getJson: () => object)` gets
+  // its JSON straight from the ProseMirror editor — don't need to assert
+  // away the missing index signature just to call this.
+  saveIcmPage: (path: string, prosemirror: object, baseHash: string) =>
+    runRpc(
+      (channel) => callSaveIcmPageChannel(channel, { path, prosemirror: prosemirror as Record<string, any>, baseHash }),
+      () =>
+        httpSaveIcmPage({
+          input: { path, prosemirror: prosemirror as Record<string, any>, baseHash },
+          fields: saveIcmPageFields
+        })
+    ),
+
+  createIcmPage: (parentPath: string, name: string) =>
+    runRpc(
+      (channel) => callCreateIcmPageChannel(channel, { parentPath, name }),
+      () => httpCreateIcmPage({ input: { parentPath, name }, fields: createIcmPageFields })
+    ),
+
+  createIcmFolder: (parentPath: string, name: string) =>
+    runRpc(
+      (channel) => callCreateIcmFolderChannel(channel, { parentPath, name }),
+      () => httpCreateIcmFolder({ input: { parentPath, name }, fields: createIcmFolderFields })
+    ),
+
+  renameIcmEntry: (path: string, newName: string) =>
+    runRpc(
+      (channel) => callRenameIcmEntryChannel(channel, { path, newName }),
+      () => httpRenameIcmEntry({ input: { path, newName }, fields: renameIcmEntryFields })
+    ),
+
+  deleteIcmEntry: (path: string) =>
+    runRpc(
+      (channel) => callDeleteIcmEntryChannel(channel, { path }),
+      () => httpDeleteIcmEntry({ input: { path }, fields: deleteIcmEntryFields })
+    ),
+
+  icmEntryReferences: (path: string) =>
+    runRpc(
+      (channel) => callIcmEntryReferencesChannel(channel, { path }),
+      () => httpIcmEntryReferences({ input: { path }, fields: icmEntryReferencesFields })
+    )
 };
 
 export type Api = typeof api;
