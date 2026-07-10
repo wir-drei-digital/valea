@@ -1,6 +1,7 @@
 defmodule Valea.Workspace.MigrationTest do
   use ExUnit.Case, async: true
 
+  alias Valea.Markdown.ProseMirror
   alias Valea.Workspace.Migration
 
   defp v1_workspace! do
@@ -71,6 +72,26 @@ defmodule Valea.Workspace.MigrationTest do
     assert page =~ "Draft a warm reply."
     # the source yaml is preserved, never deleted
     assert File.exists?(Path.join(root, "workflows/new_inquiry_triage.yaml"))
+  end
+
+  test "generated workflow page is canonical (round-trips byte-identically)" do
+    root = v1_workspace!()
+    assert {:ok, 2} = Migration.migrate(root)
+
+    bytes = File.read!(Path.join(root, "icm/Workflows/New Inquiry Triage.md"))
+    {block, body} = Valea.ICM.split_frontmatter(bytes)
+
+    assert block != "", "expected the generated page to carry a frontmatter block"
+
+    refute String.starts_with?(body, "\n"),
+           "body must not have a blank line right after the closing frontmatter delimiter"
+
+    {:ok, pm} = ProseMirror.from_markdown(body)
+    {:ok, roundtripped} = ProseMirror.to_markdown(pm)
+
+    assert block <> roundtripped == bytes,
+           "generated workflow page does not round-trip byte-identically; opening and " <>
+             "saving it untouched in the editor would rewrite the file"
   end
 
   test "idempotent — second run changes nothing" do

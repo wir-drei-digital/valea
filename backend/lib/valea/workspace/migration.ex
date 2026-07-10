@@ -5,6 +5,8 @@ defmodule Valea.Workspace.Migration do
   overwrites user files; converted sources are left in place.
   """
 
+  alias Valea.Markdown.ProseMirror
+
   @current_version 2
 
   @spec migrate(String.t()) :: {:ok, integer()} | {:error, String.t()}
@@ -71,6 +73,14 @@ defmodule Valea.Workspace.Migration do
     end)
   end
 
+  # Builds a canonical icm/Workflows page: `frontmatter_block <> body` where
+  # `frontmatter_block` is exactly `---\n...\n---\n` (no blank line after,
+  # matching `Valea.ICM.split_frontmatter/1`'s shape) and `body` is run
+  # through the ProseMirror round-trip (from_markdown |> to_markdown) so it
+  # is byte-identical to what the editor would produce for the same content
+  # — one line per block, a blank line between blocks, no manual line-wrap,
+  # no trailing newline. This keeps the determinism contract: opening and
+  # saving an untouched generated page must write nothing.
   defp workflow_page(wf, name) do
     frontmatter =
       %{
@@ -82,6 +92,9 @@ defmodule Valea.Workspace.Migration do
         "audit" => wf["audit"] || %{}
       }
 
+    frontmatter_block =
+      "---\n" <> (frontmatter |> yaml_encode() |> String.trim_trailing()) <> "\n---\n"
+
     steps =
       (wf["steps"] || [])
       |> Enum.with_index(1)
@@ -89,11 +102,7 @@ defmodule Valea.Workspace.Migration do
         "#{i}. #{String.trim(step["instruction"] || step["id"] || "")}"
       end)
 
-    """
-    ---
-    #{frontmatter |> yaml_encode() |> String.trim_trailing()}
-    ---
-
+    raw_body = """
     # #{name}
 
     #{String.trim(wf["description"] || "")}
@@ -111,9 +120,13 @@ defmodule Valea.Workspace.Migration do
 
     ## Outputs
 
-    One `proposal/v1` file at the exact path the run names. Do not send
-    anything.
+    One `proposal/v1` file at the exact path the run names. Do not send anything.
     """
+
+    {:ok, pm} = ProseMirror.from_markdown(raw_body)
+    {:ok, body} = ProseMirror.to_markdown(pm)
+
+    frontmatter_block <> body
   end
 
   # Minimal YAML emitter for the known frontmatter shape (maps, lists,
