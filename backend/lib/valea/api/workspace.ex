@@ -68,6 +68,36 @@ defmodule Valea.Api.Workspace do
         {:ok, Map.new(summary, fn {k, v} -> {to_string(k), v} end)}
       end
     end
+
+    action :runtime_check, :map do
+      constraints fields: [
+                    ok: [type: :boolean, allow_nil?: false],
+                    detail: [type: :string, allow_nil?: false]
+                  ]
+
+      run fn _input, _ctx ->
+        cat = System.find_executable("cat") || "/bin/cat"
+
+        with {:ok, handle} <-
+               Valea.Agents.ProcessRuntime.start(
+                 %{cmd: cat, args: [], env: %{}, cd: System.tmp_dir!()},
+                 self()
+               ),
+             :ok <- Valea.Agents.ProcessRuntime.write(handle, "ping\n") do
+          receive do
+            {:runtime_output, "ping\n"} ->
+              Valea.Agents.ProcessRuntime.stop(handle)
+              {:ok, %{"ok" => true, "detail" => "spawn/echo/kill ok"}}
+          after
+            3_000 ->
+              Valea.Agents.ProcessRuntime.stop(handle)
+              {:ok, %{"ok" => false, "detail" => "no echo within 3s"}}
+          end
+        else
+          {:error, reason} -> {:ok, %{"ok" => false, "detail" => reason}}
+        end
+      end
+    end
   end
 
   defp error_message(:not_a_workspace), do: Error.new("not_a_workspace")

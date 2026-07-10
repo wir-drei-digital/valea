@@ -1202,3 +1202,68 @@ export async function recentWorkspacesChannel(config: {
   );
 }
 
+
+export type RuntimeCheckFields = UnifiedFieldSelection<{ok: boolean, detail: string, __type: "TypedMap", __primitiveFields: "ok" | "detail"}>[];
+
+export type InferRuntimeCheckResult<
+  Fields extends RuntimeCheckFields | undefined,
+> = InferResult<{ok: boolean, detail: string, __type: "TypedMap", __primitiveFields: "ok" | "detail"}, Fields>;
+
+export type RuntimeCheckResult<Fields extends RuntimeCheckFields | undefined = undefined> = | { success: true; data: InferRuntimeCheckResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function runtimeCheck<Fields extends RuntimeCheckFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RuntimeCheckResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "runtime_check",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RuntimeCheckResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function runtimeCheckChannel<Fields extends RuntimeCheckFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: RuntimeCheckResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RuntimeCheckResult<Fields>>(
+    config.channel,
+    {
+    action: "runtime_check",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+

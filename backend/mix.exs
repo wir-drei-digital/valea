@@ -30,7 +30,7 @@ defmodule Valea.MixProject do
   def application do
     [
       mod: {Valea.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:logger, :runtime_tools, :erlexec]
     ]
   end
 
@@ -55,6 +55,7 @@ defmodule Valea.MixProject do
       {:dotenvy, "~> 1.0"},
       {:corsica, "~> 2.1"},
       {:file_system, "~> 1.0"},
+      {:erlexec, "~> 2.0"},
       {:igniter, "~> 0.6", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:burrito, "~> 1.0", runtime: false}

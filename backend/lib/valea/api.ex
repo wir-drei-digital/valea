@@ -14,6 +14,7 @@ defmodule Valea.Api do
       rpc_action(:close_workspace, :close_workspace)
       rpc_action(:recent_workspaces, :recent)
       rpc_action(:inspect_workspace, :inspect_workspace)
+      rpc_action(:runtime_check, :runtime_check)
     end
 
     resource Valea.Api.ICM do
