@@ -109,17 +109,22 @@
 
     error = null;
     submitting = true;
-    const result = await withBeforeMutate(onBeforeMutate, () => api.renameIcmEntry(path, trimmed));
-    submitting = false;
+    try {
+      const result = await withBeforeMutate(onBeforeMutate, () => api.renameIcmEntry(path, trimmed));
 
-    if (!result.ok) {
-      error = mapError(result.error);
-      return;
+      if (!result.ok) {
+        error = mapError(result.error);
+        return;
+      }
+
+      const newPath = (result.data as { path: string; updatedWorkflows: string[] }).path;
+      open = false;
+      navigateIfOpen(newPath);
+    } catch (err) {
+      error = "Couldn't save your latest changes. Fix that first, then try again.";
+    } finally {
+      submitting = false;
     }
-
-    const newPath = (result.data as { path: string; updatedWorkflows: string[] }).path;
-    open = false;
-    navigateIfOpen(newPath);
   }
 
   function onKeydown(event: KeyboardEvent) {

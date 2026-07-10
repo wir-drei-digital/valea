@@ -259,7 +259,17 @@
   });
 </script>
 
-<AppFrame onBeforeMutateActive={() => store?.flush() ?? Promise.resolve()}>
+<AppFrame
+  onBeforeMutateActive={async () => {
+    if (!store) return Promise.resolve();
+    await store.flush();
+    // If the store is still dirty with an error after flushing, throw so the
+    // mutation aborts and the dialog can surface the failure to the user.
+    if (store.state === 'dirty' && store.error) {
+      throw new Error('unsaved_changes');
+    }
+  }}
+>
   {#snippet list()}
     <ListPane>
       {#snippet header()}

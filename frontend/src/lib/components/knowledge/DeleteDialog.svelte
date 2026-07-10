@@ -73,23 +73,28 @@
 
     error = null;
     submitting = true;
-    const result = await withBeforeMutate(onBeforeMutate, () => api.deleteIcmEntry(path));
-    submitting = false;
+    try {
+      const result = await withBeforeMutate(onBeforeMutate, () => api.deleteIcmEntry(path));
 
-    if (!result.ok) {
-      error = mapError(result.error);
-      return;
-    }
+      if (!result.ok) {
+        error = mapError(result.error);
+        return;
+      }
 
-    open = false;
+      open = false;
 
-    // Deleting the entry the reader currently has open (or, for a folder,
-    // any page nested under it) leaves the URL pointing at nothing — send
-    // them back to the Knowledge root rather than showing a dead page.
-    const encoded = `/knowledge/${encodePath(path)}`;
-    const current = page.url.pathname;
-    if (current === encoded || (isFolder && current.startsWith(`${encoded}/`))) {
-      void goto('/knowledge');
+      // Deleting the entry the reader currently has open (or, for a folder,
+      // any page nested under it) leaves the URL pointing at nothing — send
+      // them back to the Knowledge root rather than showing a dead page.
+      const encoded = `/knowledge/${encodePath(path)}`;
+      const current = page.url.pathname;
+      if (current === encoded || (isFolder && current.startsWith(`${encoded}/`))) {
+        void goto('/knowledge');
+      }
+    } catch (err) {
+      error = "Couldn't save your latest changes. Fix that first, then try again.";
+    } finally {
+      submitting = false;
     }
   }
 </script>
