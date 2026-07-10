@@ -26,6 +26,14 @@ defmodule Valea.Queue do
   the item still sitting in `processing/`, and either finishes it (draft
   exists — the write happened, only the final rename+audit did not) or
   returns it to `pending/` (draft absent — nothing observable happened yet).
+
+  `approval_intent` is written with `Valea.Audit.append_sync/2` (a
+  synchronous call) rather than the fire-and-forget `append/2` cast used
+  elsewhere: the intent must be durably on disk BEFORE the draft write, so a
+  crash in the window between claim and execute always leaves a readable
+  trail explaining the orphaned `processing/` item. `action_executed` and
+  `item_approved` stay on the async cast — their relative order is already
+  guaranteed by same-sender-to-same-process FIFO.
   """
 
   alias Valea.Workspace.Manager
@@ -80,7 +88,8 @@ defmodule Valea.Queue do
        nothing;
     2. atomic claim: `File.rename/2` `pending/<run_id>.json` ->
        `processing/<run_id>.json` (already moved/gone -> `:queue_item_gone`);
-    3. audit `approval_intent`;
+    3. audit `approval_intent`, SYNCHRONOUSLY (flushed to disk before step 4
+       runs — see moduledoc);
     4. idempotent execute: write `sources/mail/drafts/<run_id>.md` UNLESS it
        already exists (a replay after a crash between steps 3 and 5 must not
        re-send/re-write);
@@ -97,7 +106,7 @@ defmodule Valea.Queue do
          :ok <- check_revision(bytes, revision),
          {:ok, item} <- decode_for_execute(bytes),
          :ok <- claim(workspace, run_id) do
-      audit("approval_intent", %{"run_id" => run_id})
+      audit_sync("approval_intent", %{"run_id" => run_id})
       ensure_draft(workspace, run_id, item)
       audit("action_executed", %{"run_id" => run_id})
       complete_approval(workspace, run_id)
@@ -383,6 +392,15 @@ defmodule Valea.Queue do
 
   defp audit(type, fields) do
     if Process.whereis(Valea.Audit), do: Valea.Audit.append(type, fields)
+    :ok
+  end
+
+  # Synchronous variant for entries that must be durably on disk before the
+  # caller proceeds (approval_intent, ahead of the draft write — see
+  # moduledoc). Same "never crash callers" contract as audit/2: if the Audit
+  # process isn't up, this is a no-op.
+  defp audit_sync(type, fields) do
+    if Process.whereis(Valea.Audit), do: Valea.Audit.append_sync(type, fields)
     :ok
   end
 end

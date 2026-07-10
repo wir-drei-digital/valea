@@ -13,6 +13,23 @@ defmodule Valea.Audit do
     GenServer.cast(__MODULE__, {:append, type, fields})
   end
 
+  @doc """
+  Synchronous variant of `append/2`: blocks until the entry has been
+  encoded and written (or the failure logged), so callers that need the
+  entry durably on disk before proceeding (e.g. an approval-intent audit
+  that must precede execution) can rely on the write having happened by
+  the time this returns. Same "never crash callers" contract as
+  `append/2` — a call timeout or a dead Audit process is caught and this
+  still returns `:ok`.
+  """
+  def append_sync(type, fields \\ %{}) do
+    GenServer.call(__MODULE__, {:append, type, fields})
+  catch
+    :exit, reason ->
+      Logger.error("audit append_sync failed: #{inspect(reason)}")
+      :ok
+  end
+
   def entries(limit) do
     GenServer.call(__MODULE__, {:entries, limit})
   end
@@ -26,26 +43,14 @@ defmodule Valea.Audit do
 
   @impl true
   def handle_cast({:append, type, fields}, state) do
-    entry =
-      %{
-        "ts" => DateTime.utc_now() |> DateTime.to_iso8601(),
-        "type" => type,
-        "generation" => state.generation
-      }
-      |> Map.merge(fields)
-
-    case Jason.encode(entry) do
-      {:ok, json} ->
-        case File.write(state.path, json <> "\n", [:append]) do
-          :ok -> :ok
-          {:error, reason} -> Logger.error("audit append failed: #{inspect(reason)}")
-        end
-
-      {:error, reason} ->
-        Logger.error("audit append failed to encode entry: #{inspect(reason)}")
-    end
-
+    write_entry(type, fields, state)
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_call({:append, type, fields}, _from, state) do
+    write_entry(type, fields, state)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -69,5 +74,30 @@ defmodule Valea.Audit do
       end
 
     {:reply, {:ok, entries}, state}
+  end
+
+  ## shared write path for handle_cast/handle_call append
+
+  defp write_entry(type, fields, state) do
+    entry =
+      %{
+        "ts" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "type" => type,
+        "generation" => state.generation
+      }
+      |> Map.merge(fields)
+
+    case Jason.encode(entry) do
+      {:ok, json} ->
+        case File.write(state.path, json <> "\n", [:append]) do
+          :ok -> :ok
+          {:error, reason} -> Logger.error("audit append failed: #{inspect(reason)}")
+        end
+
+      {:error, reason} ->
+        Logger.error("audit append failed to encode entry: #{inspect(reason)}")
+    end
+
+    :ok
   end
 end

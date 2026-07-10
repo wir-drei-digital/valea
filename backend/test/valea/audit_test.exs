@@ -60,4 +60,49 @@ defmodule Valea.AuditTest do
     assert length(lines) == 1
     assert Jason.decode!(hd(lines))["type"] == "good_entry"
   end
+
+  test "append_sync/2 has already flushed the entry to disk when it returns — no entries/1 round-trip needed",
+       %{root: root} do
+    :ok = Valea.Audit.append_sync("approval_intent", %{"run_id" => "r-sync"})
+
+    # No call to entries/1 here on purpose: append_sync/2 is a GenServer.call,
+    # so by the time it returns the write has already happened. Read the file
+    # straight off disk.
+    lines =
+      root |> Path.join("logs/audit.jsonl") |> File.read!() |> String.split("\n", trim: true)
+
+    assert length(lines) == 1
+    entry = Jason.decode!(hd(lines))
+    assert entry["type"] == "approval_intent"
+    assert entry["run_id"] == "r-sync"
+  end
+
+  test "append_sync/2 with a non-encodable field never crashes the caller, and the Audit process stays alive",
+       %{root: root} do
+    audit_pid = Process.whereis(Valea.Audit)
+    assert is_pid(audit_pid)
+
+    # A PID is not encodable by Jason.
+    :ok = Valea.Audit.append_sync("bad_entry", %{"pid" => self()})
+
+    assert Process.whereis(Valea.Audit) == audit_pid
+    assert Process.alive?(audit_pid)
+
+    # The bad entry was logged and skipped, not written.
+    lines =
+      case File.read(Path.join(root, "logs/audit.jsonl")) do
+        {:ok, data} -> String.split(data, "\n", trim: true)
+        {:error, :enoent} -> []
+      end
+
+    refute Enum.any?(lines, &(Jason.decode!(&1)["type"] == "bad_entry"))
+
+    # Subsequent sync appends still work.
+    :ok = Valea.Audit.append_sync("good_entry", %{"run_id" => "r-after-bad"})
+
+    lines =
+      root |> Path.join("logs/audit.jsonl") |> File.read!() |> String.split("\n", trim: true)
+
+    assert Enum.any?(lines, &(Jason.decode!(&1)["type"] == "good_entry"))
+  end
 end
