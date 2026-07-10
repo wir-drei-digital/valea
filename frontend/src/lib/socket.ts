@@ -68,6 +68,24 @@ export function getRpcChannel(): Channel | undefined {
   return rpcChannel;
 }
 
+/**
+ * Fresh channel at topic `agent_session:<id>`, one per session — unlike
+ * `getRpcChannel`/`joinWorkspaceEvents`'s shared/singleton channels, callers
+ * (see `AgentSessionStore`) legitimately need one live channel per open
+ * session, so this always creates a new one rather than caching by id.
+ *
+ * Deliberately does NOT call `.join()` — `AgentSessionStore` needs to attach
+ * its `.on(...)` listeners first, then call `.join().receive('ok', ...)`
+ * itself to read the join reply's `{items, cursor, busy, status}` snapshot
+ * (mirroring the donor `acpSession` module this is ported from). The caller
+ * also owns `.leave()` (see `AgentSessionStore.dispose`) — this function
+ * never closes a channel it opens.
+ */
+export function joinAgentSession(id: string): Channel {
+  const sock = connectSocket();
+  return sock.channel(`agent_session:${id}`, {});
+}
+
 export type WorkspaceEventPayload = { open: boolean; name?: string; path?: string; generation?: number };
 
 export function joinWorkspaceEvents(handlers: {
