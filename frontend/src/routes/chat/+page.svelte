@@ -32,6 +32,7 @@
   // whenever the selected id actually changes (a fresh session was created,
   // or the user picked a different one from the list).
   let doctorOverride = $state(false);
+  let startError = $state<string | null>(null);
 
   let store: AgentSessionStore | null = $state(null);
 
@@ -50,6 +51,7 @@
   });
 
   async function startSession(): Promise<void> {
+    startError = null;
     const result = await api.createAgentSession('chat', workspaceStore.generation ?? 0);
     if (result.ok) {
       const data = result.data as { id: string };
@@ -58,6 +60,21 @@
       void goto(`/chat?session=${data.id}`);
     } else if (result.error === 'harness_unavailable') {
       doctorOverride = true;
+    } else {
+      // Any other failure (workspace_not_open, workspace_changed, …) — surface
+      // it calmly instead of a silent no-op on the button.
+      startError = errorMessage(result.error);
+    }
+  }
+
+  function errorMessage(code: string): string {
+    switch (code) {
+      case 'workspace_changed':
+        return 'Your workspace changed. Reopen it and try again.';
+      case 'workspace_not_open':
+        return 'No workspace is open.';
+      default:
+        return 'The session could not be started. Please try again.';
     }
   }
 
@@ -106,6 +123,9 @@
   const starting = $derived.by(
     () => store !== null && (store.status === 'connecting' || store.status === 'starting')
   );
+  // Defensive only: harness_unavailable surfaces synchronously at session
+  // creation (see startSession), so a joined session cannot currently reach
+  // this state — kept as a guard in case that resolution ever moves post-join.
   const sessionDoctor = $derived.by(
     () => store !== null && store.status === 'failed' && store.error === 'harness_unavailable'
   );
@@ -169,7 +189,7 @@
     {:else if !selectedId}
       <EmptyState
         icon={MessageSquare}
-        title="Talk to your assistant"
+        title="Your assistant"
         body="Talk to your assistant about the business — everything it knows is a file in your folder."
       >
         {#snippet actions()}
@@ -181,6 +201,9 @@
           >
             Run checks
           </button>
+          {#if startError}
+            <p class="text-warn-ink text-[12.5px]" role="alert">{startError}</p>
+          {/if}
         {/snippet}
       </EmptyState>
     {:else if sessionDoctor}

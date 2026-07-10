@@ -2,7 +2,8 @@
   // Prompt input dock: autogrow textarea + ConfigChips row. Presentational —
   // takes plain data (`busy`, `configItems`) and callback props; the caller
   // (T18's Chat route) wires the callbacks to an AgentSessionStore
-  // (`onSend` -> `store.prompt`, `onStop` -> `store.stop`, `onSetConfig` ->
+  // (`onSend` -> `store.prompt`, `onStop` -> `store.cancel` (interrupt the
+  // in-flight turn, not kill the session), `onSetConfig` ->
   // `store.setConfigOption`).
   //
   // This store has no client-side prompt queue (unlike the legend donor) —
