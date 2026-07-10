@@ -269,19 +269,30 @@ defmodule Valea.Agents.SessionServer do
   defp policy_decide(state, item) do
     case policy().decide(item, state.policy_ctx) do
       {:allow, kind} ->
-        audit(state, "permission_auto_allowed", %{"item_id" => item["id"]})
+        audit(state, "permission_auto_allowed", permission_audit(item, kind))
         answer_now(state, item["id"], kind)
 
       {:deny, kind} ->
-        audit(state, "permission_auto_denied", %{"item_id" => item["id"]})
+        audit(state, "permission_auto_denied", permission_audit(item, kind))
         answer_now(state, item["id"], kind)
 
       :ask ->
         # The permission item was already appended + broadcast (resolved:false)
         # from the handle_bytes items list — the UI takes over from here.
-        audit(state, "permission_asked", %{"item_id" => item["id"]})
+        audit(state, "permission_asked", permission_audit(item, "ask"))
         state
     end
+  end
+
+  # Forensic record for a policy decision — the security audit trail. Carries
+  # what was decided, on which tool call, and the human-readable title.
+  defp permission_audit(item, decision) do
+    %{
+      "item_id" => item["id"],
+      "title" => item["title"],
+      "kind" => item["kind"],
+      "decision" => decision
+    }
   end
 
   defp answer_now(state, item_id, kind) do
