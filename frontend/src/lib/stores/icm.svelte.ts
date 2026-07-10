@@ -2,6 +2,8 @@ import { api, type Api } from '../api/client';
 import type { IcmNode } from '../shell/nav';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 import { wireQueueEvents } from './queue.svelte';
+import { wireAuditEvents } from './audit.svelte';
+import { workflowsStore } from './workflows.svelte';
 
 type IcmApi = Pick<Api, 'icmTree'>;
 
@@ -113,6 +115,16 @@ let icmEventsWired = false;
  * independent `workspace:events` join races this one and only one
  * reliably receives pushes, so `queue_changed` has to ride the same join
  * `icm_changed` does.
+ *
+ * CARRY-FORWARD (T20): `workflowsStore.refetch()` is called directly from
+ * `onIcmChanged` below, alongside `icmStore.refetch()` — workflow
+ * definitions live under `icm/Workflows/*.md` (see `WorkflowsStore`'s doc
+ * comment in `workflows.svelte.ts`), so any `icm_changed` push that
+ * invalidates the ICM tree invalidates the workflow catalog too. Also wires
+ * `wireAuditEvents` onto the same shared channel, same reasoning as
+ * `wireQueueEvents` above: the audit trail grows on every queue mutation,
+ * so it rides `queue_changed` on this one join rather than opening a
+ * second.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -141,8 +153,10 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
     },
     onIcmChanged: () => {
       void icmStore.refetch();
+      void workflowsStore.refetch();
     }
   });
 
   wireQueueEvents(channel);
+  wireAuditEvents(channel);
 }
