@@ -34,6 +34,14 @@ Product decisions made in brainstorming (v1) and revised after review (v2):
   doctor; workflows become ICM pages at `icm/Workflows/*.md`; multi-ICM =
   workspaces now (switcher ships) + ICM mounts later (recorded in
   VISION.md).
+- **File-first resources (product principle, decided 2026-07-10):** every
+  resource the agent consumes or produces is a plain file in the workspace —
+  today's mock email, proposals, drafts; later synced calendar events and
+  real mail (future integrations are sync-to-files engines writing into
+  `sources/`). The file tree **is** the agent's API: no custom tools, no
+  custom MCP servers — coding harnesses are used at what they do best.
+  `session/new`'s required `mcpServers` param is always `[]` by principle,
+  not by phase limitation.
 - **v2 revisions:** explicit trust model instead of implied confinement;
   managed Claude settings file so operations actually reach Valea's
   permission callback; `allow | deny | ask` policy with hard-deny
@@ -76,7 +84,9 @@ other harnesses read the same truth. Valea deliberately combines the paper's
 Layer 0 (root instructions) and Layer 1 (workspace routing) into one file at
 this workspace size. Content, plain language:
 
-1. **Who you work for & what this folder is** — one paragraph, then the
+1. **Who you work for & what this folder is** — one paragraph stating the
+   file-first deal (everything you work with is a plain file in this
+   folder; you need no other tools), then the
    workspace map: `icm/` is reference memory (read what a job's Inputs
    name — do not slurp the tree); `icm/Workflows/` are your job contracts;
    `sources/` is read-only input; you write **only** where the current job's
@@ -207,8 +217,11 @@ One `proposal/v1` payload at the exact path the run names. Do not send.
 pages are `enabled: false` (their triggers aren't supported by this slice;
 the Workflows UI shows them as "not active yet").
 
-VISION.md principle 3 is amended: workflows are "inspectable markdown
-contracts with a YAML header."
+VISION.md amendments this phase: principle 3 — workflows are "inspectable
+markdown contracts with a YAML header"; principle 5 gains the file-first
+integration rationale (files are the agent's API; no custom tools or MCP
+servers); roadmap items 4–5 (Mail, Calendar) are reworded as sync-to-files
+engines landing in `sources/`; the roadmap gains the ICM-mounts item.
 
 ### harnesses.yaml — removed from the template
 
@@ -583,7 +596,7 @@ any stale save that slips through.
 ICM mounts, memory-update suggestion cards, editing drafts before
 approval, agent edits to `icm/` (and the save_page concurrent-writer
 serialization story), real mail/calendar integration, additional
-harnesses (seam only), MCP server injection into sessions, OS-level
+harnesses (seam only), OS-level
 sandboxing of the agent process (recorded hardening option),
 scheduled/automatic triggers, frontmatter editing in-app, workflow
 authoring UI beyond the ICM editor, multi-account/keychain work.
