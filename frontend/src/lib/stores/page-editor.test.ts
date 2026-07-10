@@ -82,6 +82,38 @@ describe('PageEditorStore', () => {
     expect(save).toHaveBeenCalledTimes(1);
   });
 
+  it('flush() drains fully when a redirty re-arms after the in-flight save it awaited', async () => {
+    let resolveFirst: (v: SaveResult) => void = () => {};
+    const save = vi
+      .fn<(path: string, json: object, baseHash: string) => Promise<SaveResult>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<SaveResult>((resolve) => {
+            resolveFirst = resolve;
+          })
+      )
+      .mockImplementationOnce(async () => ({ ok: true, data: { hash: 'h3', savedAt: 'ts3' } }));
+
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+
+    store.noteChange(() => ({ v: 1 }));
+    void store.flush(); // triggers save #1 immediately (long debounce not reached)
+    expect(store.state).toBe('saving');
+
+    // Redirty while save #1 is in flight — flush() must not stop here.
+    store.noteChange(() => ({ v: 2 }));
+
+    const flushPromise = store.flush(); // joins the in-flight save, then must drain the redirty too
+
+    resolveFirst({ ok: true, data: { hash: 'h2', savedAt: 'ts2' } });
+    await flushPromise;
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2');
+    expect(store.state).toBe('clean');
+    expect(store.hash).toBe('h3');
+  });
+
   it('externalChange while clean sets needsReload without touching state', () => {
     const store = new PageEditorStore(fakeApi({}) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
@@ -184,6 +216,107 @@ describe('PageEditorStore', () => {
     expect(store.hash).toBe('h2');
 
     await wait(15); // the re-armed debounce fires, saving the latest edit
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2');
+    expect(store.state).toBe('clean');
+    expect(store.hash).toBe('h3');
+  });
+
+  it('externalChange during a save that matches the returned hash is our own echo -> clean, no conflict', async () => {
+    let resolveSave: (v: SaveResult) => void = () => {};
+    const save = vi.fn(
+      () =>
+        new Promise<SaveResult>((resolve) => {
+          resolveSave = resolve;
+        })
+    );
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+
+    store.noteChange(() => ({ doc: 1 }));
+    await wait(15); // debounce fires; save is now in flight (unresolved)
+
+    expect(store.state).toBe('saving');
+
+    // The fs-watcher notices our own in-flight write and echoes it back
+    // before the save's own promise resolves.
+    store.externalChange('h2');
+    expect(store.state).toBe('conflict'); // transiently, until the save resolves
+
+    resolveSave({ ok: true, data: { hash: 'h2', savedAt: 'ts2' } });
+    await wait(0);
+
+    expect(store.state).toBe('clean');
+    expect(store.hash).toBe('h2');
+    expect(store.savedAt).toBe('ts2');
+    expect(store.needsReload).toBe(false);
+    expect(store.error).toBe(null);
+  });
+
+  it('externalChange during a save with a different hash is a genuine conflict that survives save completion', async () => {
+    let resolveSave: (v: SaveResult) => void = () => {};
+    const save = vi.fn(
+      () =>
+        new Promise<SaveResult>((resolve) => {
+          resolveSave = resolve;
+        })
+    );
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+
+    store.noteChange(() => ({ doc: 1 }));
+    await wait(15);
+
+    expect(store.state).toBe('saving');
+
+    // A genuinely different write lands on disk mid-save (not our echo).
+    store.externalChange('h-foreign');
+    expect(store.state).toBe('conflict');
+
+    resolveSave({ ok: true, data: { hash: 'h2', savedAt: 'ts2' } });
+    await wait(0);
+
+    // Our write succeeded, but the disk has since diverged again — must not
+    // be clobbered back to clean.
+    expect(store.state).toBe('conflict');
+  });
+
+  it('a redirty during a save that is echoed as a conflict is not lost (full interleaving)', async () => {
+    let resolveFirst: (v: SaveResult) => void = () => {};
+    const save = vi
+      .fn<(path: string, json: object, baseHash: string) => Promise<SaveResult>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<SaveResult>((resolve) => {
+            resolveFirst = resolve;
+          })
+      )
+      .mockImplementationOnce(async () => ({ ok: true, data: { hash: 'h3', savedAt: 'ts3' } }));
+
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+
+    store.noteChange(() => ({ v: 1 }));
+    await wait(15); // debounce fires; S1 is now in flight (unresolved)
+
+    expect(store.state).toBe('saving');
+
+    // The fs-watcher echoes S1's own write while S1 is still in flight.
+    store.externalChange('h2');
+    expect(store.state).toBe('conflict');
+
+    // User types more while S1 is in flight and the store reads as
+    // conflicted — this must be remembered as a redirty, not discarded.
+    store.noteChange(() => ({ v: 2 }));
+    expect(store.state).toBe('conflict'); // unaffected by noteChange while a save is in flight
+
+    // S1 resolves with h2, matching the echoed hash — recognized as our own
+    // write, not a foreign change.
+    resolveFirst({ ok: true, data: { hash: 'h2', savedAt: 'ts2' } });
+    await wait(0);
+
+    expect(store.state).toBe('dirty'); // redirty wins; not clobbered to clean
+    expect(store.hash).toBe('h2');
+
+    await wait(15); // the re-armed debounce fires, saving the redirtied edit
 
     expect(save).toHaveBeenCalledTimes(2);
     expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2');

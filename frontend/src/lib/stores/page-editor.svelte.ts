@@ -17,9 +17,12 @@ type PageEditorApi = Pick<Api, 'saveIcmPage' | 'icmPage'>;
  *
  * State transitions:
  *  - `noteChange` marks the page dirty and (re-)arms a debounce timer. If a
- *    save is already in flight, the change is remembered (`#redirtied`)
- *    rather than lost — the in-flight save's completion notices the redirty
- *    and moves to `'dirty'` (re-arming) instead of `'clean'`.
+ *    save is already in flight — keyed off `#saving` (the promise), not the
+ *    public `state`, since `state` may have been flipped to `'conflict'` by
+ *    `externalChange` while the save is still outstanding — the change is
+ *    remembered (`#redirtied`) rather than lost. The in-flight save's
+ *    completion notices the redirty and moves to `'dirty'` (re-arming)
+ *    instead of clobbering to `'clean'`/leaving `'conflict'` untouched.
  *  - The debounce timer only fires a save while still `'dirty'` — a stale
  *    timer left over from a change that was superseded by `flush()` or
  *    `resolveKeepMine()` is a no-op.
@@ -30,7 +33,13 @@ type PageEditorApi = Pick<Api, 'saveIcmPage' | 'icmPage'>;
  *    changed on disk (e.g. another window saved it, or a PubSub push):
  *    while `'clean'` it just flags `needsReload`; while `'dirty'`/`'saving'`
  *    it's a genuine conflict between the user's in-progress edit and the new
- *    disk state.
+ *    disk state — UNLESS it fires while a save is in flight and turns out to
+ *    be that very save's own echo (the fs-watcher noticing our own write).
+ *    That's detected by remembering the hash `externalChange` saw
+ *    (`#pendingExternalHash`) and comparing it, on save completion, to the
+ *    hash the save itself returned: equal means echo (resolve the conflict,
+ *    adopt the hash), different means a genuine foreign change (leave the
+ *    conflict in place — do not clobber it back to `'clean'`).
  */
 export class PageEditorStore {
   state: PageEditorState = $state('clean');
@@ -46,6 +55,7 @@ export class PageEditorStore {
   #getJson: (() => object) | null = null;
   #saving: Promise<void> | null = null;
   #redirtied = false;
+  #pendingExternalHash: string | null = null;
 
   constructor(api: PageEditorApi, path: string, initial: { hash: string }, opts?: { debounceMs?: number }) {
     this.#api = api;
@@ -62,7 +72,7 @@ export class PageEditorStore {
   noteChange(getJson: () => object): void {
     this.#getJson = getJson;
 
-    if (this.state === 'saving') {
+    if (this.#saving !== null) {
       this.#redirtied = true;
     } else {
       this.state = 'dirty';
@@ -73,21 +83,33 @@ export class PageEditorStore {
 
   /**
    * Cancels any pending debounce timer and saves immediately if dirty;
-   * awaits an already in-flight save (and, if that save's completion
-   * re-armed because of a redirty, saves again) so the returned promise only
-   * resolves once nothing is left unsaved.
+   * awaits an already in-flight save, looping (cancel timer, save/await)
+   * for as long as the store keeps coming back dirty with a fresh in-flight
+   * save — e.g. a redirty that re-armed while we were awaiting the previous
+   * save. Bounded because each iteration consumes the latest JSON via
+   * `#getJson`; a genuine save error stops the loop (state stays `'dirty'`
+   * but `error` is set) rather than retrying forever.
    */
   async flush(): Promise<void> {
-    this.#clearTimer();
+    for (;;) {
+      this.#clearTimer();
 
-    if (this.#saving) {
-      await this.#saving;
-    }
+      if (this.#saving) {
+        await this.#saving;
+        continue;
+      }
 
-    this.#clearTimer();
+      if (this.state !== 'dirty') break;
 
-    if (this.state === 'dirty') {
       await this.#save();
+
+      // A genuine save failure leaves the page dirty with `error` set (see
+      // `#save`) — attempt it once here (consistent with a bare dirty page
+      // always getting a save attempt) but don't spin retrying it forever;
+      // the next user edit (or another flush()) will try again. A redirty
+      // that re-armed during a *successful* save clears `error`, so the
+      // loop keeps draining those.
+      if (this.error) break;
     }
   }
 
@@ -96,7 +118,9 @@ export class PageEditorStore {
    * PubSub push from another client). No-ops if the hash already matches
    * (this store's own save just landed). Otherwise: a clean page just needs
    * a reload flag so the route can refetch quietly; a dirty/saving page has
-   * a genuine conflict between the in-progress edit and the new disk state.
+   * a genuine conflict between the in-progress edit and the new disk state —
+   * unless it turns out to be the in-flight save's own echo, detected on
+   * that save's completion (see `#save`).
    */
   externalChange(newHash: string): void {
     if (newHash === this.hash) return;
@@ -104,12 +128,18 @@ export class PageEditorStore {
     if (this.state === 'clean') {
       this.needsReload = true;
     } else if (this.state === 'dirty' || this.state === 'saving') {
+      if (this.#saving) {
+        // Remember the hash so the in-flight save's completion can tell an
+        // echo of its own write apart from a genuine foreign change.
+        this.#pendingExternalHash = newHash;
+      }
       this.state = 'conflict';
     }
   }
 
   /** Caller refetched the page after a reload signal or conflict; adopt it. */
   resolveReload(page: { hash: string; savedAt?: string }): void {
+    this.#clearTimer();
     this.hash = page.hash;
     if (page.savedAt !== undefined) this.savedAt = page.savedAt;
     this.needsReload = false;
@@ -123,6 +153,7 @@ export class PageEditorStore {
    * carries a fresh `baseHash`, then saves the user's own JSON on top.
    */
   async resolveKeepMine(): Promise<void> {
+    this.#clearTimer();
     const result = await this.#api.icmPage(this.#path);
     if (result.ok) {
       const data = result.data as { hash: string };
@@ -172,9 +203,30 @@ export class PageEditorStore {
 
         if (result.ok) {
           const data = result.data as { hash: string; savedAt: string };
-          this.hash = data.hash;
+          const savedHash = data.hash;
+
+          // Was there an externalChange during this save? If so, and its
+          // hash matches what we just saved, it was our own write's echo
+          // (e.g. an fs-watcher noticing the file we just wrote) rather than
+          // a genuine foreign change — resolve the conflict instead of
+          // leaving it stuck.
+          const pendingExternalHash = this.#pendingExternalHash;
+          this.#pendingExternalHash = null;
+          const isOwnEcho = pendingExternalHash !== null && pendingExternalHash === savedHash;
+
+          if (this.state === 'conflict' && !isOwnEcho) {
+            // A genuine foreign change arrived while we were saving. Our
+            // write went through, but the on-disk state has since diverged
+            // again — leave the conflict for the caller to resolve rather
+            // than clobbering it back to 'clean' (and don't adopt a hash
+            // that's already stale relative to that foreign change).
+            return;
+          }
+
+          this.hash = savedHash;
           this.savedAt = data.savedAt;
           this.error = null;
+          this.needsReload = false;
 
           if (this.#redirtied) {
             // A change arrived while this save was in flight — don't mark
