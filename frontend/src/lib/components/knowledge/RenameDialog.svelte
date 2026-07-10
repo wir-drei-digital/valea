@@ -85,7 +85,7 @@
   }
 
   async function submit() {
-    if (confirmDisabled) return;
+    if (submitting || (!isFolder && loadingRefs)) return;
 
     const trimmed = name.trim();
     if (!trimmed) {

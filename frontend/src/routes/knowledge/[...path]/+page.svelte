@@ -248,7 +248,7 @@
                   path={child.path}
                   name={child.name}
                   isFolder={child.type === 'folder'}
-                  class="absolute top-1/2 right-1.5 -translate-y-1/2"
+                  class="absolute top-1/2 right-0.5 -translate-y-1/2"
                 />
               </li>
             {/each}
