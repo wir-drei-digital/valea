@@ -62,4 +62,28 @@ defmodule ValeaWeb.WorkspaceEventsTest do
       ExUnit.AssertionError -> poll_until_pushed(trigger, attempts_left - 1)
     end
   end
+
+  test "queue change pushes queue_changed", %{parent: parent} do
+    {:ok, ws} = Manager.create(parent, "W")
+
+    poll_until_queue_pushed(fn i ->
+      File.write!(Path.join(ws.path, "queue/pending/probe-#{i}.json"), "{}")
+    end)
+  end
+
+  defp poll_until_queue_pushed(trigger, attempts_left \\ 10)
+
+  defp poll_until_queue_pushed(_trigger, 0) do
+    flunk("queue_changed was never pushed after repeated fs writes")
+  end
+
+  defp poll_until_queue_pushed(trigger, attempts_left) do
+    trigger.(attempts_left)
+
+    try do
+      assert_push "queue_changed", %{}, 300
+    rescue
+      ExUnit.AssertionError -> poll_until_queue_pushed(trigger, attempts_left - 1)
+    end
+  end
 end

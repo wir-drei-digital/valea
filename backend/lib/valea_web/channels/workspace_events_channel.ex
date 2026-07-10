@@ -5,6 +5,7 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
   def join("workspace:events", _payload, socket) do
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
     Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
     {:ok, socket}
   end
 
@@ -27,6 +28,11 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
 
   def handle_info({:icm_changed}, socket) do
     push(socket, "icm_changed", %{})
+    {:noreply, socket}
+  end
+
+  def handle_info({:queue_changed}, socket) do
+    push(socket, "queue_changed", %{})
     {:noreply, socket}
   end
 end

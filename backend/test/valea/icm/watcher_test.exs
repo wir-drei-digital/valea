@@ -52,6 +52,30 @@ defmodule Valea.ICM.WatcherTest do
     end
   end
 
+  test "a new file under queue/pending broadcasts queue_changed", %{ws: ws} do
+    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
+
+    poll_until_queue_broadcast(fn i ->
+      File.write!(Path.join(ws.path, "queue/pending/probe-#{i}.json"), "{}")
+    end)
+  end
+
+  defp poll_until_queue_broadcast(trigger, attempts_left \\ 10)
+
+  defp poll_until_queue_broadcast(_trigger, 0) do
+    flunk("queue_changed was never broadcast after repeated fs writes")
+  end
+
+  defp poll_until_queue_broadcast(trigger, attempts_left) do
+    trigger.(attempts_left)
+
+    receive do
+      {:queue_changed} -> :ok
+    after
+      300 -> poll_until_queue_broadcast(trigger, attempts_left - 1)
+    end
+  end
+
   test "watcher dies with the workspace", %{ws: _ws} do
     Manager.close()
     refute Process.whereis(Valea.ICM.Watcher)

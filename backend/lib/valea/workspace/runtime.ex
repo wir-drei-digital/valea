@@ -13,8 +13,11 @@ defmodule Valea.Workspace.Runtime do
   @impl true
   def init(%{root: root, generation: gen}) do
     children = [
-      {Valea.ICM.Watcher, Path.join(root, "icm")},
+      {Valea.ICM.Watcher, {Path.join(root, "icm"), Path.join(root, "queue")}},
       {Valea.Audit, %{root: root, generation: gen}},
+      Supervisor.child_spec({Task, fn -> Valea.Queue.recover(root) end},
+        id: Valea.Queue.Recovery
+      ),
       {DynamicSupervisor, name: Valea.Agents.SessionSupervisor, strategy: :one_for_one}
     ]
 
