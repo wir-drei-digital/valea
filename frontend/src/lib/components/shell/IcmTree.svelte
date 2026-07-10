@@ -35,7 +35,7 @@
             onclick={() => toggle(node)}
             aria-current={activePath === node.href ? 'page' : undefined}
             class={[
-              'flex w-full items-center gap-1 rounded-md py-[3px] pr-8 pl-2 text-left text-[12.5px] transition-colors hover:bg-paper-pill',
+              'flex w-full items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-left text-[12.5px] transition-colors hover:bg-paper-pill',
               activePath === node.href
                 ? 'bg-paper-tree-active text-ink-heading'
                 : isAncestor(node)
@@ -70,7 +70,7 @@
             href={node.href}
             aria-current={activePath === node.href ? 'page' : undefined}
             class={[
-              'flex items-center gap-1 rounded-md py-[3px] pr-8 pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
+              'flex items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
               activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
             ]}
           >

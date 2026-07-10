@@ -54,6 +54,8 @@
   }
 
   async function submit() {
+    if (submitting || loadingRefs) return;
+
     error = null;
     submitting = true;
     const result = await api.deleteIcmEntry(path);
@@ -88,13 +90,13 @@
 
     <div class="flex flex-col gap-3">
       {#if isFolder}
-        <p class="text-suggest-ink text-[12.5px]">Workflows may reference pages inside this folder.</p>
+        <p class="text-warn-ink text-[12.5px]">Workflows may reference pages inside this folder.</p>
       {:else if loadingRefs}
         <p class="text-ink-meta text-[12.5px]">Checking workflow references…</p>
       {:else if referencedWorkflows.length}
         <ul class="flex flex-col gap-1">
           {#each referencedWorkflows as workflow (workflow.file)}
-            <li class="text-suggest-ink text-[12.5px]">{workflow.name} reads this page — it will fail to find it.</li>
+            <li class="text-warn-ink text-[12.5px]">{workflow.name} reads this page — it will fail to find it.</li>
           {/each}
         </ul>
       {/if}
@@ -117,7 +119,7 @@
         variant="outline"
         class="border-warn-border text-warn-ink hover:bg-warn-tint hover:text-warn-ink"
         onclick={submit}
-        disabled={submitting}
+        disabled={submitting || loadingRefs}
       >
         {submitting ? 'Deleting…' : 'Delete'}
       </Button>

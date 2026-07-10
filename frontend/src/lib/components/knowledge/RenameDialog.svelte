@@ -85,6 +85,8 @@
   }
 
   async function submit() {
+    if (confirmDisabled) return;
+
     const trimmed = name.trim();
     if (!trimmed) {
       error = "That name won't work as a file name. Avoid slashes and leading dots.";
