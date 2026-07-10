@@ -1,5 +1,6 @@
 # Scripted ACP adapter for SessionServer integration tests.
-# Scenarios: happy | permission | crash_mid_turn | stderr_noise | hang
+# Scenarios: happy | permission | crash_mid_turn | stderr_noise | hang |
+# workflow_happy
 #
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
@@ -33,8 +34,21 @@ defmodule FakeAdapter do
     reply(id, %{"sessionId" => ctx.session})
   end
 
-  defp handle(%{"method" => "session/prompt", "id" => id}, ctx) do
+  defp handle(%{"method" => "session/prompt", "id" => id, "params" => params}, ctx) do
     case ctx.scenario do
+      "workflow_happy" ->
+        params
+        |> prompt_text()
+        |> staging_path!()
+        |> File.write!(Jason.encode!(workflow_proposal()))
+
+        update(ctx, %{
+          "sessionUpdate" => "agent_message_chunk",
+          "content" => %{"type" => "text", "text" => "Drafted a reply for review."}
+        })
+
+        reply(id, %{"stopReason" => "end_turn"})
+
       "crash_mid_turn" ->
         update(ctx, %{
           "sessionUpdate" => "agent_message_chunk",
@@ -83,6 +97,41 @@ defmodule FakeAdapter do
 
   defp handle(%{"method" => "session/cancel"}, _ctx), do: :ok
   defp handle(_other, _ctx), do: :ok
+
+  # `workflow_happy` never receives its output path as an argument — it reads
+  # the prompt Valea.Workflows.Runner composed and greps out the exact
+  # staging path the run named, matching how a real ACP agent would.
+  defp prompt_text(%{"prompt" => blocks}) when is_list(blocks) do
+    blocks
+    |> Enum.filter(&(is_map(&1) and &1["type"] == "text"))
+    |> Enum.map_join("", &(&1["text"] || ""))
+  end
+
+  defp prompt_text(_params), do: ""
+
+  defp staging_path!(text) do
+    case Regex.run(~r{queue/staging/[^"\s]+/proposal\.json}, text) do
+      [path] -> path
+      nil -> raise "workflow_happy: no queue/staging/.../proposal.json path in prompt"
+    end
+  end
+
+  defp workflow_proposal do
+    %{
+      "schema" => "proposal/v1",
+      "kind" => "email_draft",
+      "title" => "Reply to Priya Nair — coaching inquiry",
+      "summary" => "Good-fit inquiry. Drafted a warm reply proposing a discovery call.",
+      "sources" => ["sources/mail/normalized/priya-nair-inquiry.json"],
+      "proposed_action" => %{
+        "type" => "create_email_draft",
+        "to" => "priya@example.com",
+        "subject" => "Re: Question about leadership coaching",
+        "body_markdown" => "Hi Priya, thanks for reaching out — here's a bit more detail."
+      },
+      "reasoning" => "Classified good-fit because the inquiry matches the founder coaching offer."
+    }
+  end
 
   defp reply(id, result), do: emit(%{"jsonrpc" => "2.0", "id" => id, "result" => result})
 
