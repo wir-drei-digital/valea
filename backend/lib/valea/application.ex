@@ -7,6 +7,10 @@ defmodule Valea.Application do
     children = [
       ValeaWeb.Telemetry,
       {Phoenix.PubSub, name: Valea.PubSub},
+      # App-level: agent sessions register by id here. The session PROCESSES
+      # live under the workspace-scoped Valea.Agents.SessionSupervisor, but the
+      # registry outlives workspace switches so lookups never race a restart.
+      {Registry, keys: :unique, name: Valea.Agents.SessionRegistry},
       # Repo starts under here when a workspace opens — the app boots
       # workspace-less by design; there is no database until then.
       Valea.Workspace.Supervisor,
