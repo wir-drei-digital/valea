@@ -6,6 +6,7 @@ defmodule Valea.ICM do
   against the icm root AFTER expansion, so `..` (or a `~`) can never escape.
   """
 
+  alias Valea.Markdown.ProseMirror
   alias Valea.Workspace.Manager
 
   def uri(rel_path), do: "icm://" <> rel_path
@@ -21,13 +22,21 @@ defmodule Valea.ICM do
          {:ok, abs} <- contain(root, rel_path) do
       case File.read(abs) do
         {:ok, content} ->
-          {:ok,
-           %{
-             path: rel_path,
-             title: title_of(content, abs),
-             uri: uri(rel_path),
-             content: content
-           }}
+          case ProseMirror.from_markdown(content) do
+            {:ok, pm} ->
+              {:ok,
+               %{
+                 path: rel_path,
+                 title: title_of(content, abs),
+                 uri: uri(rel_path),
+                 content: content,
+                 hash: sha256_hex(content),
+                 prosemirror: pm
+               }}
+
+            {:error, reason} ->
+              {:error, {:conversion_failed, reason}}
+          end
 
         {:error, :enoent} ->
           {:error, :not_found}
@@ -36,6 +45,55 @@ defmodule Valea.ICM do
           {:error, reason}
       end
     end
+  end
+
+  @doc """
+  Writes `pm_map` (ProseMirror JSON) back to `rel_path` as markdown, guarded
+  by an optimistic-concurrency check against `base_hash`.
+
+  Returns `{:ok, %{hash: new_hash, saved_at: iso8601}}` on success, or
+  `{:error, :page_changed}` if the file's current content hash doesn't match
+  `base_hash` (someone else — or another process — changed it since it was
+  read), `{:error, :not_found}` if the file doesn't exist,
+  `{:error, :outside_workspace}` / `{:error, :no_workspace}` from the
+  containment chokepoint, or another error tuple on write failure.
+
+  The write is atomic: markdown is written to a `.tmp` sibling file and then
+  renamed over the target, so readers never observe a partial write.
+  """
+  def save_page(rel_path, pm_map, base_hash) do
+    with {:ok, root} <- icm_root(),
+         {:ok, abs} <- contain(root, rel_path),
+         {:ok, current} <- read_for_save(abs) do
+      if sha256_hex(current) == base_hash do
+        write_page(abs, pm_map)
+      else
+        {:error, :page_changed}
+      end
+    end
+  end
+
+  defp read_for_save(abs) do
+    case File.read(abs) do
+      {:ok, content} -> {:ok, content}
+      {:error, :enoent} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp write_page(abs, pm_map) do
+    with {:ok, markdown} <- ProseMirror.to_markdown(pm_map) do
+      tmp = abs <> ".tmp"
+
+      with :ok <- File.write(tmp, markdown),
+           :ok <- File.rename(tmp, abs) do
+        {:ok, %{hash: sha256_hex(markdown), saved_at: DateTime.to_iso8601(DateTime.utc_now())}}
+      end
+    end
+  end
+
+  defp sha256_hex(bytes) do
+    :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
   end
 
   defp icm_root do
