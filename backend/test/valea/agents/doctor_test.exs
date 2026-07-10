@@ -59,13 +59,45 @@ defmodule Valea.Agents.DoctorTest do
     """)
   end
 
-  defp auth_hangs!(dir) do
+  # `exec -a marker` renames the sleeper's argv[0] so the orphan-check test
+  # can find it precisely with `pgrep -f marker`, even though the process
+  # is really just `sleep`. The pid doesn't change — `exec` replaces the
+  # current script process's image in place — so it's still the exact
+  # process the doctor's timeout path must kill.
+  defp auth_hangs!(dir, marker) do
     script!(dir, "acp-auth-hang", """
     case "$1" in
       --version) echo "0.58.1" ;;
-      --cli) sleep 10 ;;
+      --cli) exec -a "#{marker}" sleep 10 ;;
     esac
     """)
+  end
+
+  defp pgrep_count(marker) do
+    case System.cmd("pgrep", ["-f", marker], stderr_to_stdout: true) do
+      {output, 0} -> output |> String.split("\n", trim: true) |> length()
+      {_output, _no_matches} -> 0
+    end
+  end
+
+  # Settle briefly and re-check — belt-and-suspenders around the OS's own
+  # process-table bookkeeping. `:exec.stop/1` (used by Doctor's timeout
+  # path) is documented as synchronous, so this should already be 0 on the
+  # first check; the retries just guard against CI flakiness.
+  defp assert_no_process_matching(marker) do
+    result =
+      Enum.reduce_while(1..10, pgrep_count(marker), fn _, count ->
+        if count == 0 do
+          {:halt, 0}
+        else
+          Process.sleep(50)
+          {:cont, pgrep_count(marker)}
+        end
+      end)
+
+    assert result == 0,
+           "expected no orphaned process matching #{inspect(marker)}, " <>
+             "but pgrep -f found #{result}"
   end
 
   defp fake_node!(dir, version_line) do
@@ -85,6 +117,15 @@ defmodule Valea.Agents.DoctorTest do
     assert %{"id" => "node", "status" => "ok", "remedy" => nil} = check(checks, "node")
     assert %{"id" => "adapter", "status" => "ok", "remedy" => nil} = check(checks, "adapter")
     assert %{"id" => "auth", "status" => "ok", "remedy" => nil} = check(checks, "auth")
+  end
+
+  test "node version with no minor/patch (bare 'v22') -> parses major and passes", %{dir: dir} do
+    node = fake_node!(dir, "v22")
+    Valea.App.Config.set_harness_command([ok_adapter!(dir)])
+
+    assert {:ok, %{checks: checks}} = Doctor.run(%{node: node})
+
+    assert %{"id" => "node", "status" => "ok", "remedy" => nil} = check(checks, "node")
   end
 
   test "node older than 22 -> failed with the node remedy, ok flips false", %{dir: dir} do
@@ -136,9 +177,14 @@ defmodule Valea.Agents.DoctorTest do
   end
 
   @tag timeout: 20_000
-  test "auth hangs past the 5s timeout -> unknown, not failed", %{dir: dir} do
+  test "auth hangs past the 5s timeout -> unknown, not failed, and the hung OS process is killed",
+       %{dir: dir} do
     node = fake_node!(dir, "v22.3.0")
-    Valea.App.Config.set_harness_command([auth_hangs!(dir)])
+    marker = "valea-doctor-test-sleeper-#{System.unique_integer([:positive])}"
+
+    on_exit(fn -> System.cmd("pkill", ["-9", "-f", marker], stderr_to_stdout: true) end)
+
+    Valea.App.Config.set_harness_command([auth_hangs!(dir, marker)])
 
     assert {:ok, %{checks: checks, ok: false}} = Doctor.run(%{node: node})
 
@@ -146,6 +192,12 @@ defmodule Valea.Agents.DoctorTest do
 
     assert %{"status" => "unknown", "remedy" => nil, "detail" => detail} = check(checks, "auth")
     assert detail =~ "could not be determined"
+
+    # The whole point of routing through erlexec's process-group kill: the
+    # sleeping child must not survive as an orphan after Doctor.run/1
+    # returns, or repeated doctor runs against a hung adapter would pile up
+    # zombie `sleep` processes.
+    assert_no_process_matching(marker)
   end
 
   test "adapter unresolvable -> adapter failed, auth is an honest unknown (not failed)", %{

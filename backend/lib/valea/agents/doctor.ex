@@ -85,7 +85,7 @@ defmodule Valea.Agents.Doctor do
   defp node_version_result(output) do
     trimmed = String.trim(output)
 
-    case Regex.run(~r/^v?(\d+)\./, trimmed) do
+    case Regex.run(~r/^v?(\d+)(?:\.|$)/, trimmed) do
       [_, major] ->
         if String.to_integer(major) >= 22 do
           ok("node", "node #{trimmed}")
@@ -179,26 +179,58 @@ defmodule Valea.Agents.Doctor do
 
   # -- shared ------------------------------------------------------------
 
-  # System.cmd has no timeout, so it runs inside a Task that gets killed if
-  # it outlives @timeout_ms. The System.cmd call itself is wrapped in
-  # try/rescue so a spawn error (e.g. enoent) becomes {:error, e} rather
-  # than crashing the task — a crash would surface as `{:exit, reason}`
-  # from Task.yield, which this function does not special-case.
-  defp run_cmd(cmd, args) do
-    task =
-      Task.async(fn ->
-        try do
-          {:ok, System.cmd(cmd, args, stderr_to_stdout: true)}
-        rescue
-          e -> {:error, e}
-        end
-      end)
-
-    case Task.yield(task, @timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      nil -> {:error, :timeout}
+  # Runs cmd/args via erlexec (not System.cmd/Port) so a timeout can
+  # GUARANTEE the OS process tree is gone, not just the BEAM-side handle.
+  # `{:group, 0}` + `:kill_group` puts the child in its own process group;
+  # on timeout `:exec.stop/1` kills that whole group and — per erlexec —
+  # blocks until it has actually exited, so no orphaned `sleep`/shell
+  # descendants survive a hung adapter across repeated doctor runs. This is
+  # the same pattern `Valea.Agents.ProcessRuntime` uses for long-lived
+  # runtime subprocesses.
+  defp run_cmd(cmd, args, timeout_ms \\ @timeout_ms) do
+    if File.exists?(cmd) do
+      exec_and_await(cmd, args, timeout_ms)
+    else
+      {:error, :enoent}
     end
   end
+
+  defp exec_and_await(cmd, args, timeout_ms) do
+    run_opts = [:monitor, :stdout, :stderr, {:group, 0}, :kill_group]
+
+    case :exec.run([cmd | args], run_opts) do
+      {:ok, _pid, os_pid} -> await_exit(os_pid, timeout_ms, [])
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp await_exit(os_pid, timeout_ms, acc) do
+    receive do
+      {:stdout, ^os_pid, data} ->
+        await_exit(os_pid, timeout_ms, [data | acc])
+
+      {:stderr, ^os_pid, data} ->
+        await_exit(os_pid, timeout_ms, [data | acc])
+
+      {:DOWN, ^os_pid, :process, _pid, reason} ->
+        output = acc |> Enum.reverse() |> IO.iodata_to_binary()
+        {:ok, {output, exit_code(reason)}}
+    after
+      timeout_ms ->
+        # Synchronous: does not return until the whole process group has
+        # exited, so the OS process tree is confirmed gone before this
+        # function (and therefore run/1) returns to the caller.
+        :exec.stop(os_pid)
+        {:error, :timeout}
+    end
+  end
+
+  defp exit_code(:normal), do: 0
+  defp exit_code({:exit_status, status}), do: status |> :exec.status() |> status_to_code()
+  defp exit_code(_signal_or_other), do: 1
+
+  defp status_to_code({:status, code}), do: code
+  defp status_to_code({:signal, _sig, _core}), do: 1
 
   defp ok(id, detail), do: %{"id" => id, "status" => "ok", "detail" => detail, "remedy" => nil}
 
