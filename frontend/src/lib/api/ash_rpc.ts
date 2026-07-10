@@ -3,7 +3,7 @@
 
 import { Channel } from "phoenix";
 
-import type { AshRpcError } from "./ash_types";
+import type { AshRpcError, InferResult, UnifiedFieldSelection } from "./ash_types";
 export type * from "./ash_types";
 
 // Helper Functions
@@ -271,6 +271,300 @@ export async function cockpitTodayChannel(config: {
 }
 
 
+export type CreateIcmFolderInput = {
+  parentPath: string;
+  name: string;
+};
+
+export type CreateIcmFolderFields = UnifiedFieldSelection<{path: string, __type: "TypedMap", __primitiveFields: "path"}>[];
+
+export type InferCreateIcmFolderResult<
+  Fields extends CreateIcmFolderFields | undefined,
+> = InferResult<{path: string, __type: "TypedMap", __primitiveFields: "path"}, Fields>;
+
+export type CreateIcmFolderResult<Fields extends CreateIcmFolderFields | undefined = undefined> = | { success: true; data: InferCreateIcmFolderResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function createIcmFolder<Fields extends CreateIcmFolderFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateIcmFolderInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateIcmFolderResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_icm_folder",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateIcmFolderResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function createIcmFolderChannel<Fields extends CreateIcmFolderFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateIcmFolderInput;
+  fields: Fields;
+  resultHandler: (result: CreateIcmFolderResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateIcmFolderResult<Fields>>(
+    config.channel,
+    {
+    action: "create_icm_folder",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type CreateIcmPageInput = {
+  parentPath: string;
+  name: string;
+};
+
+export type CreateIcmPageFields = UnifiedFieldSelection<{path: string, __type: "TypedMap", __primitiveFields: "path"}>[];
+
+export type InferCreateIcmPageResult<
+  Fields extends CreateIcmPageFields | undefined,
+> = InferResult<{path: string, __type: "TypedMap", __primitiveFields: "path"}, Fields>;
+
+export type CreateIcmPageResult<Fields extends CreateIcmPageFields | undefined = undefined> = | { success: true; data: InferCreateIcmPageResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function createIcmPage<Fields extends CreateIcmPageFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateIcmPageInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateIcmPageResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_icm_page",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateIcmPageResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function createIcmPageChannel<Fields extends CreateIcmPageFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateIcmPageInput;
+  fields: Fields;
+  resultHandler: (result: CreateIcmPageResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateIcmPageResult<Fields>>(
+    config.channel,
+    {
+    action: "create_icm_page",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type DeleteIcmEntryInput = {
+  path: string;
+};
+
+export type DeleteIcmEntryFields = UnifiedFieldSelection<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}>[];
+
+export type InferDeleteIcmEntryResult<
+  Fields extends DeleteIcmEntryFields | undefined,
+> = InferResult<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}, Fields>;
+
+export type DeleteIcmEntryResult<Fields extends DeleteIcmEntryFields | undefined = undefined> = | { success: true; data: InferDeleteIcmEntryResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function deleteIcmEntry<Fields extends DeleteIcmEntryFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DeleteIcmEntryInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DeleteIcmEntryResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "delete_icm_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DeleteIcmEntryResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function deleteIcmEntryChannel<Fields extends DeleteIcmEntryFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DeleteIcmEntryInput;
+  fields: Fields;
+  resultHandler: (result: DeleteIcmEntryResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DeleteIcmEntryResult<Fields>>(
+    config.channel,
+    {
+    action: "delete_icm_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type IcmEntryReferencesInput = {
+  path: string;
+};
+
+export type IcmEntryReferencesFields = UnifiedFieldSelection<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferIcmEntryReferencesResult<
+  Fields extends IcmEntryReferencesFields | undefined,
+> = InferResult<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type IcmEntryReferencesResult<Fields extends IcmEntryReferencesFields | undefined = undefined> = | { success: true; data: InferIcmEntryReferencesResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmEntryReferences<Fields extends IcmEntryReferencesFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: IcmEntryReferencesInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<IcmEntryReferencesResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "icm_entry_references",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<IcmEntryReferencesResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmEntryReferencesChannel<Fields extends IcmEntryReferencesFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: IcmEntryReferencesInput;
+  fields: Fields;
+  resultHandler: (result: IcmEntryReferencesResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<IcmEntryReferencesResult<Fields>>(
+    config.channel,
+    {
+    action: "icm_entry_references",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type IcmPageInput = {
   path: string;
 };
@@ -386,6 +680,155 @@ export async function icmTreeChannel(config: {
     {
     action: "icm_tree",
     ...(config.tenant !== undefined && { tenant: config.tenant })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RenameIcmEntryInput = {
+  path: string;
+  newName: string;
+};
+
+export type RenameIcmEntryFields = UnifiedFieldSelection<{path: string, updatedWorkflows: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows"}>[];
+
+export type InferRenameIcmEntryResult<
+  Fields extends RenameIcmEntryFields | undefined,
+> = InferResult<{path: string, updatedWorkflows: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows"}, Fields>;
+
+export type RenameIcmEntryResult<Fields extends RenameIcmEntryFields | undefined = undefined> = | { success: true; data: InferRenameIcmEntryResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function renameIcmEntry<Fields extends RenameIcmEntryFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RenameIcmEntryInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RenameIcmEntryResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "rename_icm_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RenameIcmEntryResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function renameIcmEntryChannel<Fields extends RenameIcmEntryFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RenameIcmEntryInput;
+  fields: Fields;
+  resultHandler: (result: RenameIcmEntryResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RenameIcmEntryResult<Fields>>(
+    config.channel,
+    {
+    action: "rename_icm_entry",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SaveIcmPageInput = {
+  path: string;
+  prosemirror: Record<string, any>;
+  baseHash: string;
+};
+
+export type SaveIcmPageFields = UnifiedFieldSelection<{hash: string, savedAt: string, __type: "TypedMap", __primitiveFields: "hash" | "savedAt"}>[];
+
+export type InferSaveIcmPageResult<
+  Fields extends SaveIcmPageFields | undefined,
+> = InferResult<{hash: string, savedAt: string, __type: "TypedMap", __primitiveFields: "hash" | "savedAt"}, Fields>;
+
+export type SaveIcmPageResult<Fields extends SaveIcmPageFields | undefined = undefined> = | { success: true; data: InferSaveIcmPageResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function saveIcmPage<Fields extends SaveIcmPageFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SaveIcmPageInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SaveIcmPageResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "save_icm_page",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SaveIcmPageResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function saveIcmPageChannel<Fields extends SaveIcmPageFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SaveIcmPageInput;
+  fields: Fields;
+  resultHandler: (result: SaveIcmPageResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SaveIcmPageResult<Fields>>(
+    config.channel,
+    {
+    action: "save_icm_page",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
   },
     config.timeout,
     config

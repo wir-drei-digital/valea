@@ -19,6 +19,12 @@ defmodule Valea.Api do
     resource Valea.Api.ICM do
       rpc_action(:icm_tree, :tree)
       rpc_action(:icm_page, :page)
+      rpc_action(:save_icm_page, :save_page)
+      rpc_action(:create_icm_page, :create_page)
+      rpc_action(:create_icm_folder, :create_folder)
+      rpc_action(:rename_icm_entry, :rename)
+      rpc_action(:delete_icm_entry, :delete)
+      rpc_action(:icm_entry_references, :references)
     end
 
     resource Valea.Api.Cockpit do
