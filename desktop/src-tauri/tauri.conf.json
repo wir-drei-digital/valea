@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "digital.wirdrei.valea",
   "build": {
-    "frontendDist": "../../frontend/build",
+    "frontendDist": "http://localhost:4817",
     "devUrl": "http://localhost:4273",
     "beforeDevCommand": "cd ../frontend && bun run dev",
-    "beforeBuildCommand": "cd ../frontend && PUBLIC_API_URL=http://localhost:4817 PUBLIC_WS_URL=ws://localhost:4817/socket bun run build"
+    "beforeBuildCommand": "cd ../frontend && bun run build"
   },
   "app": {
     "windows": [

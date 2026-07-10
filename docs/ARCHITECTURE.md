@@ -11,12 +11,12 @@ Three serving modes, one Phoenix app:
 ```
 dev            backend :4200 (mix phx.server)  +  frontend :4273 (vite dev)
 dev-desktop    backend :4200                    +  Tauri window (spawns vite dev itself)
-production     desktop sidecar :4817 — Phoenix serves the built SPA as static assets
+production     desktop sidecar :4817 — Phoenix serves the built SPA; window loads it from http://localhost:4817
 ```
 
 - **Backend:** Elixir / Phoenix / Ash, SQLite (AshSqlite). Binds loopback only.
 - **Frontend:** SvelteKit static SPA (Svelte 5 runes, no SSR — ever), Bun, Tailwind v4 + shadcn-svelte.
-- **Desktop:** Tauri v2. `main.rs` spawns the backend as a Burrito-packaged sidecar binary on the fixed port 4817, polls until reachable, then shows the window; kills the sidecar on exit. Dev builds skip the sidecar entirely.
+- **Desktop:** Tauri v2. `main.rs` spawns the backend as a Burrito-packaged sidecar binary on the fixed port 4817, polls until reachable, then shows the window; kills the sidecar on exit. Dev builds skip the sidecar entirely. In production the window loads the SPA **from the sidecar origin** — `tauri.conf.json` sets `build.frontendDist` to the URL `http://localhost:4817` (not a bundled asset dir), where `just package-backend` has baked the SPA into the backend's `priv/static`. Because the window renders same-origin with the backend, the frontend's relative `/rpc/run` and `/socket` URLs reach the sidecar unchanged (no `PUBLIC_API_URL`/`PUBLIC_WS_URL` injection needed). The window is only shown after the port polls ready, so loading from the sidecar origin never races the boot.
 - Web (non-desktop) release: `just build` bakes the SPA into `backend/priv/static` and produces a standalone Phoenix release.
 
 ## Workspace model

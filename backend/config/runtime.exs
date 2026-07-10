@@ -18,6 +18,9 @@ if config_env() == :prod do
   config :valea, ValeaWeb.Endpoint,
     url: [host: "localhost", port: port, scheme: "http"],
     http: [ip: {127, 0, 0, 1}, port: port],
+    # The desktop window loads the SPA same-origin from the sidecar, so
+    # "//localhost" is what actually matches now; the tauri:// entries are kept
+    # as harmless legacy origins.
     check_origin: [
       "//localhost",
       "tauri://localhost",

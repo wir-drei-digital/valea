@@ -51,6 +51,10 @@ defmodule ValeaWeb.Endpoint do
   plug Plug.Head
   plug Plug.Session, @session_options
 
+  # The packaged desktop window now loads the SPA same-origin from the sidecar
+  # (http://localhost:4817), so these tauri:// origins no longer occur in
+  # practice. Kept as a harmless safety net in case the window is ever loaded
+  # from a custom protocol again; drop this plug if that never happens.
   plug Corsica,
     origins: ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"],
     allow_headers: :all,
