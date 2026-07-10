@@ -5,31 +5,28 @@ defmodule Valea.Markdown.DeterminismTest do
 
   @template Path.join(:code.priv_dir(:valea), "workspace_template/icm")
 
-  # Workflow pages carry YAML frontmatter, which the converter does not yet
-  # handle. Task 4 extends the contract to frontmatter pages.
-  @frontmatter_pages [
-    "Workflows/New Inquiry Triage.md",
-    "Workflows/Post-Session Follow-up.md",
-    "Workflows/Session Prep Brief.md",
-    "Workflows/Weekly Admin Review.md"
-  ]
-
+  # Every seed page — including the four Workflows/*.md pages that carry a
+  # leading YAML frontmatter block — must round-trip byte-identically. For a
+  # page with no frontmatter, `Valea.ICM.split_frontmatter/1` returns
+  # `{"", md}` and this degenerates to the original whole-file check; for a
+  # frontmatter page, the block is left untouched (it never goes through the
+  # markdown converter) and only the body is round-tripped.
   for path <-
         Path.wildcard(
           Path.join(Path.join(:code.priv_dir(:valea), "workspace_template/icm"), "**/*.md")
         ),
-      rel = Path.relative_to(path, Path.join(:code.priv_dir(:valea), "workspace_template/icm")),
-      rel not in @frontmatter_pages do
+      rel = Path.relative_to(path, Path.join(:code.priv_dir(:valea), "workspace_template/icm")) do
     test "round-trips seed page #{rel} byte-identically" do
       md = File.read!(unquote(path))
-      {:ok, pm} = ProseMirror.from_markdown(md)
+      {block, body} = Valea.ICM.split_frontmatter(md)
+      {:ok, pm} = ProseMirror.from_markdown(body)
       {:ok, out} = ProseMirror.to_markdown(pm)
       # second pass must be a fixed point even if the first normalizes
       {:ok, pm2} = ProseMirror.from_markdown(out)
       {:ok, out2} = ProseMirror.to_markdown(pm2)
       assert out2 == out
 
-      assert out == md,
+      assert block <> out == md,
              "seed page #{unquote(rel)} does not round-trip byte-identically; " <>
                "either fix the serializer or canonicalize the seed page in the same commit"
     end

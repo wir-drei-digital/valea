@@ -4,7 +4,7 @@
   import { onDestroy } from 'svelte';
   import { AppFrame, ListPane } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
-  import { api } from '$lib/api/client';
+  import { api, type IcmPageData } from '$lib/api/client';
   import { encodePath, type IcmNode } from '$lib/shell/nav';
   import { Skeleton } from '$lib/components/ui/skeleton';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -47,14 +47,7 @@
   const node = $derived(findNode(icmStore.nodes, decodedPath));
   const isPage = $derived(node?.type === 'page');
 
-  type PageContent = {
-    path: string;
-    title: string;
-    uri: string;
-    content: string;
-    hash: string;
-    prosemirror: Record<string, unknown>;
-  };
+  type PageContent = IcmPageData;
 
   let content: PageContent | null = $state(null);
   let loadFailed = $state(false);
@@ -391,6 +384,8 @@
         {#if viewMode === 'raw'}
           <pre class="whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink-body">{rawText}</pre>
         {/if}
+
+        <PageMeta frontmatter={content.frontmatter} />
 
         <div class="bg-paper-pill rounded-xl px-4 py-3">
           <p class="text-[13px] text-ink-body">

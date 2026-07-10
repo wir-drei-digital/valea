@@ -23,7 +23,9 @@ defmodule Valea.ICM do
          {:ok, abs} <- contain(root, rel_path) do
       case File.read(abs) do
         {:ok, content} ->
-          case ProseMirror.from_markdown(content) do
+          {block, body} = split_frontmatter(content)
+
+          case ProseMirror.from_markdown(body) do
             {:ok, pm} ->
               {:ok,
                %{
@@ -32,7 +34,8 @@ defmodule Valea.ICM do
                  uri: uri(rel_path),
                  content: content,
                  hash: sha256_hex(content),
-                 prosemirror: pm
+                 prosemirror: pm,
+                 frontmatter: parse_frontmatter(block)
                }}
 
             {:error, reason} ->
@@ -45,6 +48,38 @@ defmodule Valea.ICM do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  @doc """
+  Splits an optional leading YAML frontmatter block off `input`. Returns
+  `{frontmatter_block, body}` where `frontmatter_block` is `""` when no
+  frontmatter is present (or it's unterminated — treated as ordinary body
+  text), or the exact bytes `"---\\n...\\n---\\n"` (delimiters and the
+  closing newline included) when present. `body` is everything after the
+  block, byte-for-byte — including whatever leading blank line separates it
+  from the closing delimiter in the source file.
+
+  `frontmatter_block <> body == input` always holds.
+  """
+  @spec split_frontmatter(binary()) :: {binary(), binary()}
+  def split_frontmatter("---\n" <> rest = input) do
+    case String.split(rest, "\n---\n", parts: 2) do
+      [yaml, body] -> {"---\n" <> yaml <> "\n---\n", body}
+      _ -> {"", input}
+    end
+  end
+
+  def split_frontmatter(input), do: {"", input}
+
+  defp parse_frontmatter(""), do: nil
+
+  defp parse_frontmatter(block) do
+    yaml = block |> String.trim_leading("---\n") |> String.trim_trailing("---\n")
+
+    case YamlElixir.read_from_string(yaml) do
+      {:ok, map} when is_map(map) -> map
+      _ -> nil
     end
   end
 
@@ -67,7 +102,8 @@ defmodule Valea.ICM do
          {:ok, abs} <- contain(root, rel_path),
          {:ok, current} <- read_for_save(abs) do
       if sha256_hex(current) == base_hash do
-        write_page(abs, pm_map)
+        {block, _old_body} = split_frontmatter(current)
+        write_page(abs, block, pm_map)
       else
         {:error, :page_changed}
       end
@@ -91,10 +127,17 @@ defmodule Valea.ICM do
     end
   end
 
-  defp write_page(abs, pm_map) do
-    with {:ok, markdown} <- ProseMirror.to_markdown(pm_map),
-         :ok <- atomic_write(abs, markdown) do
-      {:ok, %{hash: sha256_hex(markdown), saved_at: DateTime.to_iso8601(DateTime.utc_now())}}
+  defp write_page(abs, frontmatter_block, pm_map) do
+    with {:ok, body} <- ProseMirror.to_markdown(pm_map) do
+      bytes = frontmatter_block <> body
+
+      case atomic_write(abs, bytes) do
+        :ok ->
+          {:ok, %{hash: sha256_hex(bytes), saved_at: DateTime.to_iso8601(DateTime.utc_now())}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 

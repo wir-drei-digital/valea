@@ -13,7 +13,14 @@ defmodule Valea.Api.ICM do
   "Return types and constraints" and ash_typescript
   `advanced/custom-types.md` — "Maps with field constraints ... still generate
   typed objects"). The `:page` action stays unconstrained (Phase-1) but its
-  return map now also carries `hash` + `prosemirror`.
+  return map now also carries `hash`, `prosemirror`, and `frontmatter`
+  (Task 4). `frontmatter` rides along unchanged through the generic
+  `to_string(k)` top-level stringify below — it's already a string-keyed map
+  (parsed by `YamlElixir.read_from_string/1`, which returns string keys), and
+  since the action is unconstrained, ash_typescript never walks into it to
+  camelCase anything. That's intentional: frontmatter keys are user-authored
+  YAML data (workflow contract fields like `risk_level`), not wire-format
+  field names, and must be delivered to the frontend byte-for-byte raw.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 

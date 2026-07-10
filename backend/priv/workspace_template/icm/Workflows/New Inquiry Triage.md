@@ -14,7 +14,6 @@ approval:
   actions: [create_email_draft]
 audit: { log_sources: true, log_inputs: true, log_outputs: true, log_agent: true }
 ---
-
 # New Inquiry Triage
 
 Classifies a new email inquiry and drafts a reply for review.
@@ -30,10 +29,8 @@ Classifies a new email inquiry and drafts a reply for review.
 
 1. Summarize the incoming inquiry in two sentences.
 2. Classify it: good-fit, unclear, not fit, or spam.
-3. Draft a warm reply using the tone guide and the relevant offer. Respect
-   the no-medical-advice policy.
+3. Draft a warm reply using the tone guide and the relevant offer. Respect the no-medical-advice policy.
 
 ## Outputs
 
-One `proposal/v1` file at the exact path the run names, with
-`kind: "email_draft"`. Do not send anything.
+One `proposal/v1` file at the exact path the run names, with `kind: "email_draft"`. Do not send anything.

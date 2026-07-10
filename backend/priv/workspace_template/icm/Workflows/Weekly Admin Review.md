@@ -11,11 +11,9 @@ approval:
   actions: [create_brief]
 audit: { log_sources: true, log_inputs: true, log_outputs: true, log_agent: true }
 ---
-
 # Weekly Admin Review
 
-Summarizes the week's open loops for the owner. Not active yet — scheduled
-triggers arrive in a later phase.
+Summarizes the week's open loops for the owner. Not active yet — scheduled triggers arrive in a later phase.
 
 ## Inputs
 
@@ -26,11 +24,9 @@ triggers arrive in a later phase.
 
 ## Process
 
-1. List open loops: unanswered inquiries, pending approvals, overdue
-   follow-ups.
+1. List open loops: unanswered inquiries, pending approvals, overdue follow-ups.
 2. Write a short review with one suggested next step per loop.
 
 ## Outputs
 
-One `proposal/v1` file at the exact path the run names. Do not send
-anything.
+One `proposal/v1` file at the exact path the run names. Do not send anything.

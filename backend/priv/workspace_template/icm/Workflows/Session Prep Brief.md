@@ -12,11 +12,9 @@ approval:
   actions: [create_brief]
 audit: { log_sources: true, log_inputs: true, log_outputs: true, log_agent: true }
 ---
-
 # Session Prep Brief
 
-Prepares a one-page brief before an upcoming client session. Not active
-yet — calendar sources arrive in a later phase.
+Prepares a one-page brief before an upcoming client session. Not active yet — calendar sources arrive in a later phase.
 
 ## Inputs
 
@@ -32,5 +30,4 @@ yet — calendar sources arrive in a later phase.
 
 ## Outputs
 
-One `proposal/v1` file at the exact path the run names. Do not send
-anything.
+One `proposal/v1` file at the exact path the run names. Do not send anything.

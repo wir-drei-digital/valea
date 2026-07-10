@@ -13,11 +13,9 @@ approval:
   actions: [create_email_draft]
 audit: { log_sources: true, log_inputs: true, log_outputs: true, log_agent: true }
 ---
-
 # Post-Session Follow-up
 
-Drafts a follow-up email after a completed client session. Not active yet —
-calendar sources arrive in a later phase.
+Drafts a follow-up email after a completed client session. Not active yet — calendar sources arrive in a later phase.
 
 ## Inputs
 
@@ -29,10 +27,8 @@ calendar sources arrive in a later phase.
 ## Process
 
 1. Summarize what was discussed and any commitments made.
-2. Draft a warm follow-up email using the tone guide and the client's open
-   commitments.
+2. Draft a warm follow-up email using the tone guide and the client's open commitments.
 
 ## Outputs
 
-One `proposal/v1` file at the exact path the run names, with
-`kind: "email_draft"`. Do not send anything.
+One `proposal/v1` file at the exact path the run names, with `kind: "email_draft"`. Do not send anything.

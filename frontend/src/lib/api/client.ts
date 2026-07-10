@@ -237,6 +237,51 @@ function callIcmEntryReferencesChannel(
   );
 }
 
+/**
+ * Typed shape of an `icm_page` RPC result. The backend action returns an
+ * unconstrained `:map` (`InferIcmPageResult = Record<string, any>` in the
+ * generated client), so this is asserted by `normalizeIcmPage` below rather
+ * than inferred by ash_typescript.
+ *
+ * `frontmatter` is `null` when the page has no leading YAML frontmatter
+ * block, or when it has one that failed to parse (see `Valea.ICM.page/1`) —
+ * either way the raw view (`content`) still shows everything.
+ */
+export type IcmPageData = {
+  path: string;
+  title: string;
+  uri: string;
+  content: string;
+  hash: string;
+  prosemirror: Record<string, unknown>;
+  frontmatter: Record<string, unknown> | null;
+};
+
+/**
+ * Normalizes a raw `icm_page` RPC result. This action's own field names
+ * (`path`, `title`, `content`, `hash`, `prosemirror`, `frontmatter`) contain
+ * no underscores, so — unlike `normalizeIcmNode` in `icm.svelte.ts` — there's
+ * no snake/camel dual-casing to reconcile at this level.
+ *
+ * `frontmatter` is passed through UNTOUCHED, not reshaped key-by-key like
+ * the fields above: its keys and nested structure are user-authored YAML
+ * from the workflow contract (e.g. `risk_level`, `trigger.source`), not
+ * wire-format field names, so camelizing or otherwise renaming them would
+ * corrupt what the page actually says. It rides straight from the backend's
+ * `YamlElixir.read_from_string/1` output (already string-keyed) to the UI.
+ */
+export function normalizeIcmPage(raw: Record<string, any>): IcmPageData {
+  return {
+    path: raw.path,
+    title: raw.title,
+    uri: raw.uri,
+    content: raw.content,
+    hash: raw.hash,
+    prosemirror: raw.prosemirror,
+    frontmatter: raw.frontmatter ?? null
+  };
+}
+
 export const api = {
   getWorkspace: () => runRpc(callGetWorkspaceChannel, () => httpGetWorkspace({})),
 
@@ -266,6 +311,9 @@ export const api = {
     runRpc(
       (channel) => callIcmPageChannel(channel, { path }),
       () => httpIcmPage({ input: { path } })
+    ).then(
+      (result): ApiResult<IcmPageData> =>
+        result.ok ? { ok: true, data: normalizeIcmPage(result.data as Record<string, any>) } : result
     ),
 
   cockpitToday: () => runRpc(callCockpitTodayChannel, () => httpCockpitToday({})),
