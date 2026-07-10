@@ -99,4 +99,82 @@ defmodule Valea.ICMWriteTest do
 
     {:ok, %{path: "Trailing.md"}} = ICM.create_page("", "Trailing.")
   end
+
+  defp ws_path do
+    {:ok, %{path: path}} = Manager.current()
+    path
+  end
+
+  defp workflow_yaml do
+    File.read!(Path.join(ws_path(), "workflows/new_inquiry_triage.yaml"))
+  end
+
+  test "rename a referenced page moves the file and rewrites referencing workflows" do
+    assert {:ok, %{path: "Offers/Founder Package.md", updated_workflows: ["New Inquiry Triage"]}} =
+             ICM.rename("Offers/Founder Coaching Package.md", "Founder Package")
+
+    refute File.exists?(Path.join(ws_path(), "icm/Offers/Founder Coaching Package.md"))
+    assert File.exists?(Path.join(ws_path(), "icm/Offers/Founder Package.md"))
+
+    yaml = workflow_yaml()
+    assert yaml =~ "icm/Offers/Founder Package.md"
+    refute yaml =~ "icm/Offers/Founder Coaching Package.md"
+  end
+
+  test "rename to an invalid or already-existing name" do
+    assert {:error, :name_invalid} =
+             ICM.rename("Offers/Founder Coaching Package.md", "a/b")
+
+    assert {:error, :already_exists} =
+             ICM.rename("Offers/Founder Coaching Package.md", "Discovery Call")
+  end
+
+  test "renaming a folder containing a referenced page rewrites the workflow" do
+    assert {:ok, %{path: "Offerings", updated_workflows: ["New Inquiry Triage"]}} =
+             ICM.rename("Offers", "Offerings")
+
+    refute File.exists?(Path.join(ws_path(), "icm/Offers"))
+    assert File.exists?(Path.join(ws_path(), "icm/Offerings/Founder Coaching Package.md"))
+
+    yaml = workflow_yaml()
+    assert yaml =~ "icm/Offerings/Founder Coaching Package.md"
+    refute yaml =~ "icm/Offers/Founder Coaching Package.md"
+  end
+
+  test "renaming a folder does not corrupt references to a sibling folder whose name is a prefix superset" do
+    {:ok, %{path: "Offers Extra"}} = ICM.create_folder("", "Offers Extra")
+    {:ok, %{path: "Offers Extra/Sidecar.md"}} = ICM.create_page("Offers Extra", "Sidecar")
+
+    workflow_path = Path.join(ws_path(), "workflows/new_inquiry_triage.yaml")
+
+    File.write!(
+      workflow_path,
+      File.read!(workflow_path) <>
+        "  - id: sidecar\n    type: icm\n    path: icm/Offers Extra/Sidecar.md\n"
+    )
+
+    assert {:ok, %{path: "Offerings"}} = ICM.rename("Offers", "Offerings")
+
+    yaml = workflow_yaml()
+    assert yaml =~ "icm/Offerings/Founder Coaching Package.md"
+    assert yaml =~ "icm/Offers Extra/Sidecar.md"
+    refute yaml =~ "icm/Offerings Extra/Sidecar.md"
+  end
+
+  test "delete a page removes it and leaves workflows untouched" do
+    before_yaml = workflow_yaml()
+
+    assert {:ok, %{deleted: true}} = ICM.delete("Clients/Lea Brunner.md")
+    refute File.exists?(Path.join(ws_path(), "icm/Clients/Lea Brunner.md"))
+    assert workflow_yaml() == before_yaml
+  end
+
+  test "delete a folder recursively removes its contents" do
+    assert {:ok, %{deleted: true}} = ICM.delete("Templates")
+    refute File.exists?(Path.join(ws_path(), "icm/Templates"))
+  end
+
+  test "delete a non-existent path returns not_found" do
+    assert {:error, :not_found} = ICM.delete("Offers/Nope.md")
+  end
 end

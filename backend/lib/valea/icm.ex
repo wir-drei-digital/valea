@@ -6,6 +6,7 @@ defmodule Valea.ICM do
   against the icm root AFTER expansion, so `..` (or a `~`) can never escape.
   """
 
+  alias Valea.ICM.References
   alias Valea.Markdown.ProseMirror
   alias Valea.Workspace.Manager
 
@@ -331,6 +332,124 @@ defmodule Valea.ICM do
     case atomic_write(abs, content) do
       :ok -> {:ok, %{}}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Renames a page or folder in place (same parent, new basename), rewriting
+  any workflow references to it (or, for a folder, to anything it contains)
+  along the way.
+
+  Returns `{:ok, %{path: new_rel_path, updated_workflows: [names]}}` where
+  `names` are the display names of the workflows whose references were
+  rewritten (deduplicated, sorted).
+
+  Errors:
+  - `:name_invalid` - the new name fails validation
+  - `:already_exists` - a file or folder already exists at the new path
+  - `:not_found` - nothing exists at `rel_path`
+  - `:outside_workspace` - a path would escape the icm root
+  - `:no_workspace` - no workspace is currently active
+  """
+  def rename(rel_path, new_name) do
+    with {:ok, root} <- icm_root(),
+         {:ok, old_abs} <- contain(root, rel_path),
+         true <- File.exists?(old_abs),
+         {:ok, normalized_name} <- normalize_name(new_name),
+         is_dir <- File.dir?(old_abs),
+         name_with_ext <- rename_target_name(is_dir, normalized_name),
+         new_rel <- join_rel(parent_of(rel_path), name_with_ext),
+         {:ok, new_abs} <- contain(root, new_rel),
+         false <- File.exists?(new_abs) do
+      do_rename(root, rel_path, new_rel, old_abs, new_abs, is_dir)
+    else
+      false -> {:error, :not_found}
+      true -> {:error, :already_exists}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp rename_target_name(true, normalized_name), do: normalized_name
+  defp rename_target_name(false, normalized_name), do: ensure_md_extension(normalized_name)
+
+  defp parent_of(rel_path) do
+    case Path.dirname(rel_path) do
+      "." -> ""
+      other -> other
+    end
+  end
+
+  defp join_rel("", name), do: name
+  defp join_rel(parent, name), do: Path.join(parent, name)
+
+  defp do_rename(root, old_rel, new_rel, old_abs, new_abs, true) do
+    # Collect every .md file under the folder — with its old and new
+    # relative path — BEFORE moving anything on disk. Reference rewrites
+    # then run per-file on the exact `icm/<child path>` string, so a
+    # sibling folder whose name happens to start with the same prefix
+    # (e.g. renaming "Offers" while "Offers Extra" also exists) is never
+    # touched: its files were never in this collected list.
+    child_pairs = collect_md_children(old_abs, root, old_rel, new_rel)
+    File.rename!(old_abs, new_abs)
+    {:ok, %{path: new_rel, updated_workflows: rewrite_children(child_pairs)}}
+  end
+
+  defp do_rename(_root, old_rel, new_rel, old_abs, new_abs, false) do
+    File.rename!(old_abs, new_abs)
+    {:ok, %{path: new_rel, updated_workflows: rewrite_children([{old_rel, new_rel}])}}
+  end
+
+  defp collect_md_children(old_abs, root, old_rel, new_rel) do
+    old_abs
+    |> Path.join("**/*.md")
+    |> Path.wildcard()
+    |> Enum.map(&Path.relative_to(&1, root))
+    |> Enum.sort()
+    |> Enum.map(fn child_old_rel ->
+      suffix = String.trim_leading(child_old_rel, old_rel)
+      {child_old_rel, new_rel <> suffix}
+    end)
+  end
+
+  defp rewrite_children(pairs) do
+    pairs
+    |> Enum.flat_map(fn {old_rel, new_rel} ->
+      {:ok, refs} = References.referencing_workflows(old_rel)
+      {:ok, _updated_files} = References.rewrite(old_rel, new_rel)
+      Enum.map(refs, & &1.name)
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @doc """
+  Deletes a page or folder (recursively). Never touches workflow
+  references — deleting is a destructive action the user drives directly;
+  stale workflow references are left for the user (or a future validation
+  pass) to notice, rather than silently rewritten out from under them.
+
+  Returns `{:ok, %{deleted: true}}`.
+
+  Errors:
+  - `:not_found` - nothing exists at `rel_path`
+  - `:outside_workspace` - path would escape the icm root
+  - `:no_workspace` - no workspace is currently active
+  """
+  def delete(rel_path) do
+    with {:ok, root} <- icm_root(),
+         {:ok, abs} <- contain(root, rel_path) do
+      cond do
+        File.dir?(abs) ->
+          File.rm_rf!(abs)
+          {:ok, %{deleted: true}}
+
+        File.regular?(abs) ->
+          File.rm!(abs)
+          {:ok, %{deleted: true}}
+
+        true ->
+          {:error, :not_found}
+      end
     end
   end
 end
