@@ -20,8 +20,17 @@ defmodule Valea.Api.Workspace do
     action :current, :map do
       run fn _input, _ctx ->
         case Manager.current() do
-          {:ok, info} -> {:ok, %{"open" => true, "path" => info.path, "name" => info.name}}
-          {:error, :no_workspace} -> {:ok, %{"open" => false, "path" => nil, "name" => nil}}
+          {:ok, info} ->
+            {:ok,
+             %{
+               "open" => true,
+               "path" => info.path,
+               "name" => info.name,
+               "generation" => Manager.generation()
+             }}
+
+          {:error, :no_workspace} ->
+            {:ok, %{"open" => false, "path" => nil, "name" => nil, "generation" => nil}}
         end
       end
     end
@@ -32,7 +41,7 @@ defmodule Valea.Api.Workspace do
 
       run fn input, _ctx ->
         case Manager.create(input.arguments.parent_dir, input.arguments.name) do
-          {:ok, info} -> {:ok, %{"open" => true, "path" => info.path, "name" => info.name}}
+          {:ok, info} -> {:ok, opened_payload(info)}
           {:error, reason} -> {:error, error_message(reason)}
         end
       end
@@ -43,7 +52,7 @@ defmodule Valea.Api.Workspace do
 
       run fn input, _ctx ->
         case Manager.open(input.arguments.path) do
-          {:ok, info} -> {:ok, %{"open" => true, "path" => info.path, "name" => info.name}}
+          {:ok, info} -> {:ok, opened_payload(info)}
           {:error, reason} -> {:error, error_message(reason)}
         end
       end
@@ -100,7 +109,17 @@ defmodule Valea.Api.Workspace do
     end
   end
 
+  defp opened_payload(info) do
+    %{
+      "open" => true,
+      "path" => info.path,
+      "name" => info.name,
+      "generation" => Manager.generation()
+    }
+  end
+
   defp error_message(:not_a_workspace), do: Error.new("not_a_workspace")
   defp error_message(:target_not_empty), do: Error.new("target_not_empty")
+  defp error_message(:workspace_changed), do: Error.new("workspace_changed")
   defp error_message(other), do: Error.new(inspect(other))
 end

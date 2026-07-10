@@ -33,7 +33,8 @@ defmodule Valea.Workspace.ManagerTest do
     assert File.exists?(Path.join(info.path, "app.sqlite"))
     assert Process.whereis(Valea.Repo)
     assert Valea.App.Config.read()["last_opened"] == info.path
-    assert_receive {:workspace_opened, ^info}
+    assert_receive {:workspace_opened, ^info, generation}
+    assert generation == Manager.generation()
   end
 
   test "open rejects a non-workspace folder", %{parent: parent} do
@@ -96,6 +97,47 @@ defmodule Valea.Workspace.ManagerTest do
     assert [[_seq, _name, file_path]] = Valea.Repo.query!("PRAGMA database_list").rows
     assert Path.basename(Path.dirname(file_path)) == "Good"
     assert Path.basename(file_path) == "app.sqlite"
+  end
+
+  test "generation increments per open and is nil when closed", %{parent: parent} do
+    # `Manager` is a long-lived singleton, so the counter is monotonic across
+    # the whole test run, not per-test — assert relative movement, not an
+    # absolute value.
+    assert Manager.generation() == nil
+
+    {:ok, a} = Manager.create(parent, "A")
+    first_gen = Manager.generation()
+    assert is_integer(first_gen)
+
+    :ok = Manager.close()
+    assert Manager.generation() == nil
+
+    assert {:ok, ^a} = Manager.open(a.path)
+    assert Manager.generation() == first_gen + 1
+  end
+
+  test "check_generation returns workspace_changed for a stale generation", %{parent: parent} do
+    {:ok, _} = Manager.create(parent, "A")
+    gen = Manager.generation()
+
+    assert :ok = Manager.check_generation(gen)
+    assert {:error, :workspace_changed} = Manager.check_generation(gen - 1)
+
+    :ok = Manager.close()
+    assert {:error, :workspace_changed} = Manager.check_generation(gen)
+  end
+
+  test "switching workspaces stops the previous runtime processes", %{parent: parent} do
+    {:ok, _a} = Manager.create(parent, "A")
+    watcher_pid = Process.whereis(Valea.ICM.Watcher)
+    assert watcher_pid
+
+    {:ok, _b} = Manager.create(parent, "B")
+    refute Process.alive?(watcher_pid)
+
+    new_watcher_pid = Process.whereis(Valea.ICM.Watcher)
+    assert new_watcher_pid
+    assert new_watcher_pid != watcher_pid
   end
 
   test "failed switch reports no workspace, not the stale one", %{parent: parent} do

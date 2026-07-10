@@ -9,8 +9,14 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
   end
 
   @impl true
-  def handle_info({:workspace_opened, info}, socket) do
-    push(socket, "workspace", %{"open" => true, "name" => info.name, "path" => info.path})
+  def handle_info({:workspace_opened, info, generation}, socket) do
+    push(socket, "workspace", %{
+      "open" => true,
+      "name" => info.name,
+      "path" => info.path,
+      "generation" => generation
+    })
+
     {:noreply, socket}
   end
 

@@ -3,6 +3,9 @@ defmodule Valea.ICM.Watcher do
   Watches {workspace}/icm and broadcasts a debounced {:icm_changed} on the
   "icm" PubSub topic. Consumers refetch the tree — events carry no payload
   by design (the tree is cheap to rebuild and the fs events are noisy).
+
+  Started under `Valea.Workspace.Runtime` — it lives and dies with the open
+  workspace, same as the audit writer and agent session supervisor.
   """
   use GenServer
 

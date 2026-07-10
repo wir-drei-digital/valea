@@ -2,8 +2,14 @@ defmodule Valea.Workspace.Manager do
   @moduledoc """
   The open-workspace lifecycle. The app boots workspace-less; this GenServer
   opens/creates workspaces, starting the Repo against {workspace}/app.sqlite,
-  running migrations, and starting the ICM file watcher. Loud, specific
+  running migrations, and starting `Valea.Workspace.Runtime` (the ICM file
+  watcher, audit writer, and agent session supervisor). Loud, specific
   failures — a workspace is never presented as healthy when half-opened.
+
+  Every successful open/create stamps a new `generation` — an integer that
+  increments once per open and is `nil` while closed. RPC actions that touch
+  workspace-bound state guard against acting on a stale generation via
+  `check_generation/1`.
   """
   use GenServer
 
@@ -19,9 +25,19 @@ defmodule Valea.Workspace.Manager do
   def close, do: GenServer.call(__MODULE__, :close)
   def current, do: GenServer.call(__MODULE__, :current)
 
+  @doc "Current workspace generation, or nil when no workspace is open."
+  def generation, do: GenServer.call(__MODULE__, :generation)
+
+  @doc """
+  Guard for RPC actions that must not act on a stale workspace: `:ok` when
+  `g` matches the currently open workspace's generation, otherwise
+  `{:error, :workspace_changed}` (including when no workspace is open).
+  """
+  def check_generation(g), do: GenServer.call(__MODULE__, {:check_generation, g})
+
   @impl true
   def init(_opts) do
-    {:ok, %{workspace: nil, children: []}, {:continue, :auto_open}}
+    {:ok, %{workspace: nil, children: [], generation: 0}, {:continue, :auto_open}}
   end
 
   @impl true
@@ -77,6 +93,28 @@ defmodule Valea.Workspace.Manager do
     {:reply, {:ok, ws}, state}
   end
 
+  def handle_call(:generation, _from, %{workspace: nil} = state) do
+    {:reply, nil, state}
+  end
+
+  def handle_call(:generation, _from, %{generation: gen} = state) do
+    {:reply, gen, state}
+  end
+
+  # A closed workspace never matches any generation — there is nothing
+  # current to stay in sync with.
+  def handle_call({:check_generation, _g}, _from, %{workspace: nil} = state) do
+    {:reply, {:error, :workspace_changed}, state}
+  end
+
+  def handle_call({:check_generation, g}, _from, %{generation: g} = state) do
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:check_generation, _stale}, _from, state) do
+    {:reply, {:error, :workspace_changed}, state}
+  end
+
   # On any failure, returns `{:error, reason, state}` where `state` reflects
   # whether the previous workspace was closed. A failure BEFORE close carries
   # the untouched state; a failure AFTER close carries the closed state, so a
@@ -97,9 +135,9 @@ defmodule Valea.Workspace.Manager do
   # Starts children one at a time, tracking every started pid. If any step
   # fails, everything already started so far is rolled back before the
   # error is returned, so a half-opened workspace is never left running
-  # under a name a future open/create could mistake for success. The ICM
-  # file watcher is one more step here, accumulating onto `started` after
-  # the repo.
+  # under a name a future open/create could mistake for success. The
+  # workspace Runtime (file watcher, audit writer, session supervisor) is
+  # one more step here, accumulating onto `started` after the repo.
   defp open_workspace(path, state) do
     case start_repo(path) do
       {:ok, repo_pid} -> open_workspace(path, state, [repo_pid])
@@ -109,16 +147,23 @@ defmodule Valea.Workspace.Manager do
 
   defp open_workspace(path, state, started) do
     case migrate() do
-      :ok -> open_workspace_watcher(path, state, started)
+      :ok -> open_workspace_runtime(path, state, started)
       {:error, reason} -> rollback_with(started, reason, state)
     end
   end
 
-  defp open_workspace_watcher(path, state, started) do
-    case start_watcher(path) do
-      {:ok, watcher_pid} ->
-        started = started ++ [watcher_pid]
-        open_workspace_migrate(path, state, started)
+  # The generation for this open is tentative until the whole pipeline
+  # succeeds — it is only committed into `state.generation` in
+  # `open_workspace_migrate/4`. A failure after this step still rolls the
+  # Runtime (and whatever it wrote under this generation) back; the
+  # Manager's own counter never advances for an open that didn't finish.
+  defp open_workspace_runtime(path, state, started) do
+    next_generation = state.generation + 1
+
+    case start_runtime(path, next_generation) do
+      {:ok, runtime_pid} ->
+        started = started ++ [runtime_pid]
+        open_workspace_migrate(path, state, started, next_generation)
 
       {:error, reason} ->
         rollback_with(started, reason, state)
@@ -127,17 +172,23 @@ defmodule Valea.Workspace.Manager do
 
   # Brings an existing workspace up to the current on-disk shape (new
   # marker dirs, converted workflow pages, managed Claude settings) before
-  # it is presented as open. Runs after the repo/watcher are up (so it acts
+  # it is presented as open. Runs after the repo/runtime are up (so it acts
   # on a fully mounted workspace) and before the open broadcast, so a
-  # failure here rolls back exactly like a failed repo or watcher start —
+  # failure here rolls back exactly like a failed repo or runtime start —
   # never leaving a half-open workspace behind.
-  defp open_workspace_migrate(path, state, started) do
+  defp open_workspace_migrate(path, state, started, next_generation) do
     case Valea.Workspace.Migration.migrate(path) do
       {:ok, _version} ->
         info = %{path: path, name: Path.basename(path)}
         Config.record_opened(path, info.name)
-        Phoenix.PubSub.broadcast(Valea.PubSub, "workspace", {:workspace_opened, info})
-        {:ok, %{state | workspace: info, children: started}}
+
+        Phoenix.PubSub.broadcast(
+          Valea.PubSub,
+          "workspace",
+          {:workspace_opened, info, next_generation}
+        )
+
+        {:ok, %{state | workspace: info, children: started, generation: next_generation}}
 
       {:error, reason} ->
         rollback_with(started, reason, state)
@@ -176,13 +227,13 @@ defmodule Valea.Workspace.Manager do
     end
   end
 
-  defp start_watcher(workspace_path) do
-    spec = {Valea.ICM.Watcher, Path.join(workspace_path, "icm")}
+  defp start_runtime(workspace_path, generation) do
+    spec = {Valea.Workspace.Runtime, %{root: workspace_path, generation: generation}}
 
     case DynamicSupervisor.start_child(Valea.Workspace.DynamicSupervisor, spec) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
-      {:error, reason} -> {:error, {:watcher_start_failed, reason}}
+      {:error, reason} -> {:error, {:runtime_start_failed, reason}}
     end
   end
 

@@ -1,7 +1,9 @@
 defmodule Valea.Api.Error do
   @moduledoc """
   A Splode error for RPC actions that carries a single machine-readable
-  string the frontend matches on (e.g. `"workspace_not_open"`).
+  string the frontend matches on (e.g. `"workspace_not_open"`,
+  `"workspace_changed"` — the latter surfaces `Valea.Workspace.Manager.check_generation/1`
+  rejecting an action against a stale workspace generation).
 
   Generic Ash actions that return a plain `{:error, "string"}` surface through
   ash_typescript as a generic "unknown_error" with the message discarded, so

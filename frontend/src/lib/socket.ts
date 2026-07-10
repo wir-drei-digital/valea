@@ -48,7 +48,7 @@ export function getRpcChannel(): Channel | undefined {
   return rpcChannel;
 }
 
-export type WorkspaceEventPayload = { open: boolean; name?: string; path?: string };
+export type WorkspaceEventPayload = { open: boolean; name?: string; path?: string; generation?: number };
 
 export function joinWorkspaceEvents(handlers: {
   onWorkspace?: (payload: WorkspaceEventPayload) => void;

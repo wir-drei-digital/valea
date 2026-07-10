@@ -19,6 +19,7 @@ export class WorkspaceStore {
   state: WorkspaceState = $state('loading');
   name: string | null = $state(null);
   path: string | null = $state(null);
+  generation: number | null = $state(null);
   recent: RecentWorkspace[] = $state([]);
 
   #api: WorkspaceApi;
@@ -38,18 +39,26 @@ export class WorkspaceStore {
       this.state = 'none';
       this.name = null;
       this.path = null;
+      this.generation = null;
       return;
     }
 
-    const data = workspaceResult.data as { open: boolean; name: string | null; path: string | null };
+    const data = workspaceResult.data as {
+      open: boolean;
+      name: string | null;
+      path: string | null;
+      generation?: number | null;
+    };
     if (data.open) {
       this.state = 'open';
       this.name = data.name;
       this.path = data.path;
+      this.generation = data.generation ?? null;
     } else {
       this.state = 'none';
       this.name = null;
       this.path = null;
+      this.generation = null;
     }
   }
 
