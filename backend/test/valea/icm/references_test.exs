@@ -52,4 +52,21 @@ defmodule Valea.ICM.ReferencesTest do
   test "rewrite returns empty list when no workflow references the path" do
     {:ok, []} = References.rewrite("Clients/Lea Brunner.md", "Clients/Someone Else.md")
   end
+
+  test "rewrite returns error on write failure" do
+    workflows_dir = Path.join(ws_path(), "workflows")
+
+    # Make the workflows directory read-only to force atomic_write to fail
+    File.chmod!(workflows_dir, 0o555)
+
+    on_exit(fn ->
+      # Restore write permissions before rm_rf cleanup
+      File.chmod!(workflows_dir, 0o755)
+    end)
+
+    # Attempt to rewrite should return an error tuple
+    result = References.rewrite("Tone & Voice/Email Tone Guide.md", "Tone & Voice/Voice Guide.md")
+    assert {:error, {:rewrite_failed, filename, _reason}} = result
+    assert filename in ["new_inquiry_triage.yaml", "post_session_followup.yaml"]
+  end
 end

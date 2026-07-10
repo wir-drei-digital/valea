@@ -44,26 +44,45 @@ defmodule Valea.ICM.References do
   reference `new_rel` instead, by literally replacing `icm/<old_rel>` with
   `icm/<new_rel>` and atomically writing the file back.
 
-  Returns `{:ok, [updated_filenames]}`, sorted.
+  Returns `{:ok, [updated_filenames]}` (sorted) on success, or
+  `{:error, {:rewrite_failed, file_basename, reason}}` if any write fails.
+
+  Note: A rewrite failure leaves already-rewritten files on disk; the caller
+  must surface the error to the user (who can decide whether to retry, rollback
+  via version control, or manually intervene).
   """
   def rewrite(old_rel, new_rel) do
     with {:ok, dir} <- workflows_dir() do
       old_needle = "icm/" <> old_rel
       new_needle = "icm/" <> new_rel
 
-      updated =
+      files_to_rewrite =
         dir
         |> workflow_files()
         |> Enum.filter(fn abs -> File.read!(abs) =~ needle_pattern(old_needle) end)
-        |> Enum.map(fn abs ->
-          content = File.read!(abs)
-          rewritten = String.replace(content, old_needle, new_needle)
-          atomic_write(abs, rewritten)
-          Path.basename(abs)
-        end)
-        |> Enum.sort()
 
-      {:ok, updated}
+      rewrite_all(files_to_rewrite, old_needle, new_needle)
+    end
+  end
+
+  defp rewrite_all(files, old_needle, new_needle) do
+    result =
+      Enum.reduce_while(files, {:ok, []}, fn abs, {:ok, updated} ->
+        content = File.read!(abs)
+        rewritten = String.replace(content, old_needle, new_needle)
+
+        case atomic_write(abs, rewritten) do
+          :ok ->
+            {:cont, {:ok, [Path.basename(abs) | updated]}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:rewrite_failed, Path.basename(abs), reason}}}
+        end
+      end)
+
+    case result do
+      {:ok, updated} -> {:ok, Enum.sort(updated)}
+      error -> error
     end
   end
 

@@ -344,12 +344,18 @@ defmodule Valea.ICM do
   `names` are the display names of the workflows whose references were
   rewritten (deduplicated, sorted).
 
+  If a workflow rewrite fails, returns `{:error, {:rewrite_failed, filename, reason}}`.
+  Note: The file rename itself has already happened at this point; the filesystem
+  is not rolled back. The error is returned to allow the user to decide how to
+  proceed (e.g., via version control recovery or manual intervention).
+
   Errors:
   - `:name_invalid` - the new name fails validation
   - `:already_exists` - a file or folder already exists at the new path
   - `:not_found` - nothing exists at `rel_path`
   - `:outside_workspace` - a path would escape the icm root
   - `:no_workspace` - no workspace is currently active
+  - `{:rewrite_failed, filename, reason}` - a workflow reference rewrite failed
   """
   def rename(rel_path, new_name) do
     with {:ok, root} <- icm_root(),
@@ -391,12 +397,26 @@ defmodule Valea.ICM do
     # touched: its files were never in this collected list.
     child_pairs = collect_md_children(old_abs, root, old_rel, new_rel)
     File.rename!(old_abs, new_abs)
-    {:ok, %{path: new_rel, updated_workflows: rewrite_children(child_pairs)}}
+
+    case rewrite_children(child_pairs) do
+      {:ok, updated_workflows} ->
+        {:ok, %{path: new_rel, updated_workflows: updated_workflows}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp do_rename(_root, old_rel, new_rel, old_abs, new_abs, false) do
     File.rename!(old_abs, new_abs)
-    {:ok, %{path: new_rel, updated_workflows: rewrite_children([{old_rel, new_rel}])}}
+
+    case rewrite_children([{old_rel, new_rel}]) do
+      {:ok, updated_workflows} ->
+        {:ok, %{path: new_rel, updated_workflows: updated_workflows}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp collect_md_children(old_abs, root, old_rel, new_rel) do
@@ -412,14 +432,22 @@ defmodule Valea.ICM do
   end
 
   defp rewrite_children(pairs) do
-    pairs
-    |> Enum.flat_map(fn {old_rel, new_rel} ->
+    Enum.reduce_while(pairs, {:ok, []}, fn {old_rel, new_rel}, {:ok, names} ->
       {:ok, refs} = References.referencing_workflows(old_rel)
-      {:ok, _updated_files} = References.rewrite(old_rel, new_rel)
-      Enum.map(refs, & &1.name)
+
+      case References.rewrite(old_rel, new_rel) do
+        {:ok, _updated_files} ->
+          new_names = Enum.map(refs, & &1.name)
+          {:cont, {:ok, names ++ new_names}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
     end)
-    |> Enum.uniq()
-    |> Enum.sort()
+    |> then(fn
+      {:ok, names} -> {:ok, names |> Enum.uniq() |> Enum.sort()}
+      error -> error
+    end)
   end
 
   @doc """
