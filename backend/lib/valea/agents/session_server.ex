@@ -322,11 +322,37 @@ defmodule Valea.Agents.SessionServer do
 
   defp flush_queue(state), do: state
 
+  # Neither the adapter nor the codec echoes the user's own prompt back on a
+  # fresh (mode: :new) session, so the SessionServer appends it itself — via
+  # the SAME append/broadcast path as codec items, so it lands in the
+  # timeline, transcript, and PubSub in true turn order. Appended here (not in
+  # `send_or_queue`/`enqueue`) so a queued prompt is echoed only once it is
+  # actually SENT, not when it is merely queued.
   defp send_prompt(state, content) do
+    state = append_item(state, user_echo_item(state.seq + 1, content))
     {conn, _items, frames} = Connection.prompt(state.conn, content)
     write_frames(state, frames)
     %{state | conn: conn}
   end
+
+  defp user_echo_item(seq, content) do
+    %{
+      "id" => "user-" <> Integer.to_string(seq),
+      "type" => "message",
+      "role" => "user",
+      "text" => echo_text(content)
+    }
+  end
+
+  defp echo_text(content) when is_binary(content), do: content
+
+  defp echo_text(content) when is_list(content) do
+    content
+    |> Enum.filter(&(is_map(&1) and &1["type"] == "text"))
+    |> Enum.map_join("", &(&1["text"] || ""))
+  end
+
+  defp echo_text(_content), do: ""
 
   defp maybe_enqueue_initial(state, nil), do: state
   defp maybe_enqueue_initial(state, prompt), do: enqueue(state, prompt)

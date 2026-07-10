@@ -3,6 +3,7 @@ defmodule ValeaWeb.UserSocket do
 
   channel "ash_typescript_rpc:*", ValeaWeb.RpcChannel
   channel "workspace:events", ValeaWeb.WorkspaceEventsChannel
+  channel "agent_session:*", ValeaWeb.AgentSessionChannel
 
   @impl true
   def connect(%{"token" => token}, socket, _connect_info) when is_binary(token) do

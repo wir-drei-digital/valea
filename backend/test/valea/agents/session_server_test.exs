@@ -1,6 +1,8 @@
 defmodule Valea.Agents.SessionServerTest do
   use ExUnit.Case, async: false
 
+  import Valea.AgentCase, only: [start_session: 2, start_session: 3]
+
   setup do
     root = Path.join(System.tmp_dir!(), "vses-#{System.os_time(:nanosecond)}")
     File.mkdir_p!(Path.join(root, "logs/sessions"))
@@ -28,49 +30,58 @@ defmodule Valea.Agents.SessionServerTest do
     %{root: root}
   end
 
-  defp fake_cmd(scenario) do
-    elixir = System.find_executable("elixir")
-    jason = Path.expand("_build/test/lib/jason/ebin")
-    script = Path.expand("test/support/fake_adapter.exs")
-    [elixir, "-pa", jason, script, scenario]
-  end
-
-  defp start_session(root, scenario, extra \\ %{}) do
-    Valea.App.Config.set_harness_command(fake_cmd(scenario))
-
-    Valea.Agents.start_session(
-      Map.merge(
-        %{
-          kind: "chat",
-          title: "Test",
-          workspace: root,
-          generation: 1,
-          run: nil,
-          initial_prompt: nil,
-          on_turn_end: nil,
-          policy_ctx: %{workspace: root, session_kind: "chat", write_paths: []}
-        },
-        extra
-      )
-    )
-  end
-
   test "happy path: handshake, prompt, transcript file, turn end", %{root: root} do
     {:ok, %{id: id}} = start_session(root, "happy")
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
 
     :ok = Valea.Agents.SessionServer.prompt(id, "hi")
-    assert_receive {:session_event, _, %{"type" => "message", "text" => text}}, 10_000
+    assert_receive {:session_event, _, %{"type" => "message", "role" => "user"}}, 10_000
+
+    assert_receive {:session_event, _,
+                    %{"type" => "message", "role" => "assistant", "text" => text}},
+                   10_000
+
     assert text =~ "hello"
     assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
 
     {:ok, %{items: items, busy: false}} = Valea.Agents.SessionServer.attach(id)
-    assert Enum.any?(items, &(&1["type"] == "message"))
+    assert Enum.any?(items, &(&1["type"] == "message" and &1["role"] == "assistant"))
 
     transcript = File.read!(Path.join(root, "logs/sessions/#{id}.jsonl"))
     [meta | rest] = String.split(transcript, "\n", trim: true)
     assert %{"schema" => "session/v1", "kind" => "chat"} = Jason.decode!(meta)
-    assert length(rest) >= 2
+    assert length(rest) >= 3
+  end
+
+  test "prompt appends a user echo item first, before the assistant reply", %{root: root} do
+    {:ok, %{id: id}} = start_session(root, "happy")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    :ok = Valea.Agents.SessionServer.prompt(id, "hello there")
+
+    assert_receive {:session_event, echo_seq,
+                    %{
+                      "id" => "user-" <> _,
+                      "type" => "message",
+                      "role" => "user",
+                      "text" => "hello there"
+                    } = echo},
+                   10_000
+
+    assert_receive {:session_event, _, %{"type" => "message", "role" => "assistant"}}, 10_000
+    assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+
+    {:ok, %{items: items}} = Valea.Agents.SessionServer.attach(id)
+    assert List.first(items) == echo
+
+    transcript = File.read!(Path.join(root, "logs/sessions/#{id}.jsonl"))
+
+    lines =
+      transcript
+      |> String.split("\n", trim: true)
+      |> Enum.map(&Jason.decode!/1)
+
+    assert Enum.any?(lines, &(&1 == %{"seq" => echo_seq, "item" => echo}))
   end
 
   test "permission request reaches the timeline as ask; answering resolves it", %{root: root} do
