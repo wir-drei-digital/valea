@@ -65,4 +65,24 @@ defmodule Valea.ICMWriteTest do
     {:ok, %{hash: h2}} = ICM.save_page(page.path, page.prosemirror, page.hash)
     assert h2 == page.hash
   end
+
+  test "create_page seeds title and appends .md" do
+    {:ok, %{path: path}} = ICM.create_page("Decisions", "Pricing Call")
+    assert path == "Decisions/Pricing Call.md"
+    assert load(path).content == "# Pricing Call\n"
+  end
+
+  test "create_page at root, create_folder, duplicate and invalid names" do
+    {:ok, %{path: "Scratch.md"}} = ICM.create_page("", "Scratch")
+    {:ok, %{path: "Projects"}} = ICM.create_folder("", "Projects")
+    assert {:error, :already_exists} = ICM.create_folder("", "Projects")
+    assert {:error, :already_exists} = ICM.create_page("", "Scratch")
+
+    for bad <- ["", "  ", "a/b", "a\\b", ".hidden"] do
+      assert {:error, :name_invalid} = ICM.create_page("", bad)
+      assert {:error, :name_invalid} = ICM.create_folder("", bad)
+    end
+
+    assert {:error, :outside_workspace} = ICM.create_page("..", "x")
+  end
 end

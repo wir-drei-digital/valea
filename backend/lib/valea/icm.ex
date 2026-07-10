@@ -165,4 +165,123 @@ defmodule Valea.ICM do
       _ -> nil
     end) || Path.basename(abs, ".md")
   end
+
+  @doc """
+  Validates a name for pages and folders.
+
+  Rules:
+  - Must be non-empty after trimming
+  - Must not contain `/` or `\`
+  - Must not start with `.`
+  - Must be NFC-normalized
+  """
+  def valid_name?(name) do
+    normalized = String.normalize(name, :nfc)
+    trimmed = String.trim(normalized)
+
+    byte_size(trimmed) > 0 and
+      not String.contains?(trimmed, ["/", "\\"]) and
+      not String.starts_with?(trimmed, ".")
+  end
+
+  defp check_parent_contained(_root, ""), do: :ok
+
+  defp check_parent_contained(root, parent_rel_path) do
+    case contain(root, parent_rel_path) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Creates a new page in the given parent folder.
+
+  Returns `{:ok, %{path: rel_path}} | {:error, reason}` where rel_path is the
+  relative path from the icm root.
+
+  The page is seeded with a markdown title header using the name (without .md extension).
+
+  Errors:
+  - `:name_invalid` - name fails validation
+  - `:already_exists` - a file or folder already exists at that path
+  - `:outside_workspace` - path would escape the icm root
+  - `:no_workspace` - no workspace is currently active
+  """
+  def create_page(parent_rel_path, name) do
+    with true <- valid_name?(name),
+         {:ok, root} <- icm_root(),
+         :ok <- check_parent_contained(root, parent_rel_path),
+         parent_abs <- Path.join(root, parent_rel_path),
+         name_with_ext <- ensure_md_extension(name),
+         abs <- Path.join(parent_abs, name_with_ext),
+         {:ok, _} <- contain(root, Path.relative_to(abs, root)),
+         false <- File.exists?(abs),
+         :ok <- File.mkdir_p(parent_abs) do
+      title = Path.basename(name_with_ext, ".md")
+      content = "# " <> title <> "\n"
+
+      write_string_to_file(abs, content) |> format_create_response(abs, root)
+    else
+      false -> {:error, :name_invalid}
+      {:error, reason} -> {:error, reason}
+      true -> {:error, :already_exists}
+    end
+  end
+
+  @doc """
+  Creates a new folder in the given parent folder.
+
+  Returns `{:ok, %{path: rel_path}} | {:error, reason}` where rel_path is the
+  relative path from the icm root.
+
+  Errors:
+  - `:name_invalid` - name fails validation
+  - `:already_exists` - a file or folder already exists at that path
+  - `:outside_workspace` - path would escape the icm root
+  - `:no_workspace` - no workspace is currently active
+  """
+  def create_folder(parent_rel_path, name) do
+    with true <- valid_name?(name),
+         {:ok, root} <- icm_root(),
+         :ok <- check_parent_contained(root, parent_rel_path),
+         parent_abs <- Path.join(root, parent_rel_path),
+         abs <- Path.join(parent_abs, name),
+         {:ok, _} <- contain(root, Path.relative_to(abs, root)),
+         false <- File.exists?(abs),
+         :ok <- File.mkdir_p(parent_abs),
+         :ok <- File.mkdir(abs) do
+      rel = Path.relative_to(abs, root)
+      {:ok, %{path: rel}}
+    else
+      false -> {:error, :name_invalid}
+      {:error, reason} -> {:error, reason}
+      true -> {:error, :already_exists}
+    end
+  end
+
+  defp ensure_md_extension(name) do
+    if String.ends_with?(name, ".md") do
+      name
+    else
+      name <> ".md"
+    end
+  end
+
+  defp format_create_response({:ok, _}, abs, root) do
+    rel = Path.relative_to(abs, root)
+    {:ok, %{path: rel}}
+  end
+
+  defp format_create_response({:error, reason}, _abs, _root) do
+    {:error, reason}
+  end
+
+  defp write_string_to_file(abs, content) do
+    tmp = abs <> ".tmp"
+
+    with :ok <- File.write(tmp, content),
+         :ok <- File.rename(tmp, abs) do
+      {:ok, %{}}
+    end
+  end
 end
