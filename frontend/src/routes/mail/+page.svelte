@@ -9,7 +9,6 @@
   import { goto } from '$app/navigation';
   import { onMount, untrack } from 'svelte';
   import { AppFrame, ListPane, EmptyState } from '$lib/components/shell';
-  import { Button } from '$lib/components/ui/button/index.js';
   import MailIcon from '@lucide/svelte/icons/mail';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -17,6 +16,7 @@
   import InboxSection from '$lib/components/mail/InboxSection.svelte';
   import SyncStatusLine from '$lib/components/mail/SyncStatusLine.svelte';
   import MessageView from '$lib/components/mail/MessageView.svelte';
+  import SetupPanel from '$lib/components/mail/SetupPanel.svelte';
 
   // `mail_status`/`mail_sync`/`mail_message`/`mailbox_ops` are wired ONCE,
   // at the layout (`wireMailEvents`, called from `wireIcmEvents` in
@@ -111,27 +111,20 @@
         <InboxSection entries={mailStore.inbox} />
       {/snippet}
       {#snippet footer()}
-        <SyncStatusLine status={mailStore.status} onSyncNow={syncNow} />
+        <SyncStatusLine status={mailStore.status} onSyncNow={syncNow} onSettings={() => void goto('/mail?setup=1')} />
       {/snippet}
     </ListPane>
   {/snippet}
 
   {#snippet main()}
     {#if setupRequested}
-      <div class="flex flex-col items-start gap-3 py-10">
-        <p class="text-overline">Mail</p>
-        <h1 class="font-display text-ink-heading text-[21px]">Connect your mailbox</h1>
-        <p class="text-ink-body max-w-[480px] text-[13.5px]">Account setup arrives with the next task.</p>
-        <a href="/mail" class="text-act hover:text-act-hover text-[12.5px] font-semibold">Back &rarr;</a>
-      </div>
+      <SetupPanel />
     {:else if !selectedId}
-      <EmptyState icon={MailIcon} title="Mail" body="Messages you move to AI/Review appear here.">
-        {#snippet actions()}
-          {#if mailStore.status && !mailStore.status.configured}
-            <Button type="button" onclick={() => void goto('/mail?setup=1')}>Connect your mailbox</Button>
-          {/if}
-        {/snippet}
-      </EmptyState>
+      {#if mailStore.status && !mailStore.status.configured}
+        <SetupPanel />
+      {:else}
+        <EmptyState icon={MailIcon} title="Mail" body="Messages you move to AI/Review appear here." />
+      {/if}
     {:else if activeId === selectedId && activeDetail}
       <MessageView message={activeDetail} />
     {:else if loadError}

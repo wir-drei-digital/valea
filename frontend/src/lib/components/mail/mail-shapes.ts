@@ -20,6 +20,7 @@
  */
 
 import type { MailStatus } from '$lib/stores/mail.svelte';
+import type { Api } from '$lib/api/client';
 
 // -- status → dot (DESIGN_SYSTEM §8: "status badges show the assistant's
 // work at a glance") -------------------------------------------------------
@@ -196,4 +197,142 @@ export function syncNowErrorMessage(code: string): string {
     default:
       return 'Could not start a sync. Please try again.';
   }
+}
+
+// -- SetupPanel: account-setup submit flow (mail design spec, §Account
+// setup + doctor / §Credentials) --------------------------------------------
+//
+// `submitMailSetup` is the ONE place that decides the desktop-vs-browser
+// sequencing; `SetupPanel.svelte` just wires it to the real `api`,
+// `keychain.ts`, and `mailStore` — same "extract the orchestration into a
+// plain function so it's unit-testable without a component render harness"
+// split this module already uses for `SyncStatusLine`'s `onSyncNow`.
+
+export type MailSetupApi = Pick<Api, 'setupMailAccount' | 'setMailCredential'>;
+
+export type MailSetupFormInput = {
+  account: string;
+  host: string;
+  port: number;
+  username: string;
+  /** The typed password. Component-local `$state`, never a store field — see `SetupPanel.svelte`. */
+  secret: string;
+  generation: number;
+};
+
+export type MailSetupDeps = {
+  api: MailSetupApi;
+  inDesktop: () => boolean;
+  /**
+   * Refreshes mail status and resolves the just-reloaded `workspaceId` (or
+   * `null` if it still isn't available). Deliberately a fetch-and-return
+   * closure, not a read of some already-cached value: this may be the
+   * workspace's very first mail config, so the only `workspaceId` this
+   * function can trust is one re-fetched AFTER `setupMailAccount` has
+   * already landed — see the doc comment on `submitMailSetup` below.
+   */
+  refreshWorkspaceId: () => Promise<string | null>;
+  keychainSet: (workspaceId: string, username: string, secret: string) => Promise<boolean>;
+};
+
+export type MailSetupOutcome = { ok: true; devMode: boolean } | { ok: false; error: string };
+
+/**
+ * Orchestrates the account-setup submit flow: `setupMailAccount` first
+ * (writes `config/mail.yaml`), then hands the password off over whichever
+ * channel the platform allows.
+ *
+ * Desktop: `refreshWorkspaceId()` is called (and awaited) AFTER
+ * `setupMailAccount` succeeds and BEFORE `keychainSet` — never a
+ * caller-cached status value, since this may be the first mail config the
+ * workspace has ever had. The keychain entry's `username`, by contrast,
+ * comes from `input.username` (the FORM value, i.e. exactly what was just
+ * typed and just saved) rather than from any refreshed status field — that
+ * value is trustworthy the instant `setupMailAccount` resolves, with no
+ * refetch needed. `keychainSet` is best-effort (mirrors `keychain.ts`'s own
+ * contract: it never throws, and a `false`/skipped result never blocks the
+ * RPC handoff below — a failed local keychain write just means recovery
+ * won't silently resupply after the next restart).
+ *
+ * Browser (dev): skips the keychain entirely and goes straight to
+ * `setMailCredential`; the caller renders the "not persisted" note off
+ * `devMode: true`.
+ *
+ * Either path short-circuits with `{ ok: false, error }` the moment
+ * `setupMailAccount` or `setMailCredential` itself fails — the raw error
+ * code from the RPC (map it with `mailSetupErrorMessage` for display).
+ */
+export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetupDeps): Promise<MailSetupOutcome> {
+  const setupResult = await deps.api.setupMailAccount(
+    input.account,
+    input.host,
+    input.port,
+    input.username,
+    input.generation
+  );
+  if (!setupResult.ok) return { ok: false, error: setupResult.error };
+
+  if (deps.inDesktop()) {
+    const workspaceId = await deps.refreshWorkspaceId();
+    if (workspaceId) {
+      await deps.keychainSet(workspaceId, input.username, input.secret);
+    }
+
+    const credResult = await deps.api.setMailCredential(input.secret, input.generation);
+    if (!credResult.ok) return { ok: false, error: credResult.error };
+    return { ok: true, devMode: false };
+  }
+
+  const credResult = await deps.api.setMailCredential(input.secret, input.generation);
+  if (!credResult.ok) return { ok: false, error: credResult.error };
+  return { ok: true, devMode: true };
+}
+
+/** Same error-code vocabulary as `syncNowErrorMessage` (both actions are gated by `Manager.check_generation/1`). */
+export function mailSetupErrorMessage(code: string): string {
+  switch (code) {
+    case 'workspace_not_open':
+      return 'No workspace is open.';
+    case 'workspace_changed':
+      return 'Your workspace changed. Reopen it and try again.';
+    default:
+      return 'Could not save your mail account. Check the details and try again.';
+  }
+}
+
+// -- MailDoctorPanel: check-row shaping (backend: `Valea.Mail.Doctor.run/1`,
+// `mail_doctor`'s `checks` field — UNCONSTRAINED `:map`, see
+// `Valea.Api.Mail`'s moduledoc, so it arrives as loosely-typed
+// `Record<string, any>[]` and must be narrowed defensively, same posture as
+// `attachmentsFromFrontmatter` above) ----------------------------------------
+
+export type MailDoctorCheck = {
+  id: string;
+  label: string;
+  status: string;
+  detail: string;
+  remedy: string | null;
+};
+
+/** Narrows `mail_doctor`'s raw `checks` payload; an entry with no `id` is dropped rather than rendered as a mystery row. */
+export function normalizeMailDoctorChecks(raw: unknown): MailDoctorCheck[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw.flatMap((entry): MailDoctorCheck[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const rec = entry as Record<string, unknown>;
+    const id = typeof rec.id === 'string' ? rec.id : '';
+    if (!id) return [];
+
+    const label = typeof rec.label === 'string' ? rec.label : id;
+    const status = typeof rec.status === 'string' ? rec.status : 'unknown';
+    const detail = typeof rec.detail === 'string' ? rec.detail : '';
+    const remedy = typeof rec.remedy === 'string' ? rec.remedy : null;
+    return [{ id, label, status, detail, remedy }];
+  });
+}
+
+/** Gates the "Create AI folders" button (`Valea.Mail.Doctor`'s `folders` check id) — visible only once it has actually failed, not while gated `"unknown"` behind an earlier check. */
+export function foldersCheckFailed(checks: MailDoctorCheck[]): boolean {
+  return checks.some((check) => check.id === 'folders' && check.status === 'failed');
 }
