@@ -88,9 +88,49 @@ export function joinAgentSession(id: string): Channel {
 
 export type WorkspaceEventPayload = { open: boolean; name?: string; path?: string; generation?: number };
 
+/**
+ * `mail_status` push payload (`ValeaWeb.WorkspaceEventsChannel`'s
+ * `{:mail_status_changed, status}` clause, T13) — `Valea.Mail.Engine.status/0`'s
+ * atom-keyed map, string-keyed via the channel's own `stringify/1`. Unlike
+ * every other push handled here, this one is NOT camelCased by
+ * ash_typescript — the channel builds this payload itself rather than
+ * relaying a generated RPC result, so the field names stay exactly as
+ * `Valea.Mail.Engine.build_status/1` writes them: snake_case (mirrors
+ * `mail_status`'s RPC return — see `MailStatusFields` in `api/ash_rpc.ts`
+ * and the `status: Record<string, any>` comment in `api/client.ts`).
+ * `credential` is `'present' | 'missing'`; `state` is `'idle' | 'inactive'
+ * | 'syncing' | 'auth_failed'` — both left as plain `string` here, same as
+ * the Elixir `@type status` moduledoc note (no singleton-string literal
+ * type in Dialyzer, so the backend doesn't promise a closed set at the
+ * type level either). `stores/mail.svelte.ts`'s `normalizeMailStatus`
+ * narrows/camelCases this into the app-facing `MailStatus` shape.
+ */
+export type MailStatusPush = {
+  configured: boolean;
+  credential: string;
+  state: string;
+  last_sync_at: string | null;
+  last_error: string | null;
+  account: string | null;
+  workspace_id: string | null;
+};
+
+/** `mail_sync` push payload — `{:mail_sync_started}` / `{:mail_sync_finished, ...}`. */
+export type MailSyncPush = { phase: 'started' | 'finished'; newMessages: number };
+
+/** `mail_message` push payload — one mail message file was created/updated on disk (`SyncPass`). */
+export type MailMessagePush = { path: string };
+
+/** `mailbox_ops` push payload — a decided queue item's post-approval mailbox ops changed state. */
+export type MailboxOpsPush = { runId: string };
+
 export function joinWorkspaceEvents(handlers: {
   onWorkspace?: (payload: WorkspaceEventPayload) => void;
   onIcmChanged?: () => void;
+  onMailStatus?: (payload: MailStatusPush) => void;
+  onMailSync?: (payload: MailSyncPush) => void;
+  onMailMessage?: (payload: MailMessagePush) => void;
+  onMailboxOps?: (payload: MailboxOpsPush) => void;
 }): Channel {
   const sock = connectSocket();
   const channel = sock.channel('workspace:events', {});
@@ -100,6 +140,18 @@ export function joinWorkspaceEvents(handlers: {
   }
   if (handlers.onIcmChanged) {
     channel.on('icm_changed', () => handlers.onIcmChanged?.());
+  }
+  if (handlers.onMailStatus) {
+    channel.on('mail_status', (payload: MailStatusPush) => handlers.onMailStatus?.(payload));
+  }
+  if (handlers.onMailSync) {
+    channel.on('mail_sync', (payload: MailSyncPush) => handlers.onMailSync?.(payload));
+  }
+  if (handlers.onMailMessage) {
+    channel.on('mail_message', (payload: MailMessagePush) => handlers.onMailMessage?.(payload));
+  }
+  if (handlers.onMailboxOps) {
+    channel.on('mailbox_ops', (payload: MailboxOpsPush) => handlers.onMailboxOps?.(payload));
   }
 
   channel.join();

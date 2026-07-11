@@ -48,7 +48,29 @@ import {
   rejectQueueItem as httpRejectQueueItem,
   rejectQueueItemChannel,
   listAuditEntries as httpListAuditEntries,
-  listAuditEntriesChannel
+  listAuditEntriesChannel,
+  mailStatus as httpMailStatus,
+  mailStatusChannel,
+  setupMailAccount as httpSetupMailAccount,
+  setupMailAccountChannel,
+  setMailCredential as httpSetMailCredential,
+  setMailCredentialChannel,
+  mailSyncNow as httpMailSyncNow,
+  mailSyncNowChannel,
+  mailDoctor as httpMailDoctor,
+  mailDoctorChannel,
+  createMailFolders as httpCreateMailFolders,
+  createMailFoldersChannel,
+  listMailMessages as httpListMailMessages,
+  listMailMessagesChannel,
+  getMailMessage as httpGetMailMessage,
+  getMailMessageChannel,
+  mailInbox as httpMailInbox,
+  mailInboxChannel,
+  retryMailboxOps as httpRetryMailboxOps,
+  retryMailboxOpsChannel,
+  listDecidedQueueItems as httpListDecidedQueueItems,
+  listDecidedQueueItemsChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -67,7 +89,18 @@ import type {
   GetQueueItemFields,
   ApproveQueueItemFields,
   RejectQueueItemFields,
-  ListAuditEntriesFields
+  ListAuditEntriesFields,
+  MailStatusFields,
+  SetupMailAccountFields,
+  SetMailCredentialFields,
+  MailSyncNowFields,
+  MailDoctorFields,
+  CreateMailFoldersFields,
+  ListMailMessagesFields,
+  GetMailMessageFields,
+  MailInboxFields,
+  RetryMailboxOpsFields,
+  ListDecidedQueueItemsFields
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -263,6 +296,34 @@ const listQueueItemsFields = [
   { items: ['runId', 'title', 'summary', 'kind', 'riskLevel', 'createdAt', 'workflow', 'valid', 'error'] }
 ] as unknown as ListQueueItemsFields;
 
+// Mail (T13/T14). Every top-level boolean-valued field here (`saved`,
+// `accepted`, `started`, `ok`) is delivered under a STRING key by the
+// backend (`Valea.Api.Mail`'s moduledoc documents the same falsy-map-field
+// ash_typescript 0.17.3 workaround `Valea.Api.Queue` uses) — that's a
+// runtime detail only, invisible at this field-selection layer since a JS
+// object key is a string either way; no cast needed for these.
+const mailStatusFields: MailStatusFields = ['status'];
+const setupMailAccountFields: SetupMailAccountFields = ['saved'];
+const setMailCredentialFields: SetMailCredentialFields = ['accepted'];
+const mailSyncNowFields: MailSyncNowFields = ['started'];
+const mailDoctorFields: MailDoctorFields = ['ok', 'checks'];
+const createMailFoldersFields: CreateMailFoldersFields = ['created'];
+const getMailMessageFields: GetMailMessageFields = ['message', 'inbox'];
+const retryMailboxOpsFields: RetryMailboxOpsFields = ['accepted'];
+const listDecidedQueueItemsFields: ListDecidedQueueItemsFields = ['items'];
+
+// Same anonymous-embedded-map-array codegen gap as `listAgentSessionsFields`/
+// `listWorkflowsFields`/`listQueueItemsFields` above (see the comment on
+// `icmEntryReferencesFields`) — `messages`/`entries` are `Array<TypedMap>`
+// action-return fields, which `ComplexFieldSelection` can't express, so the
+// generated `Fields` type collapses to `never` for the literal. The backend
+// actions accept these exact nested literals (verified by the passing
+// `mail_rpc_test.exs` suite).
+const listMailMessagesFields = [
+  { messages: ['msgId', 'fromName', 'fromEmail', 'subject', 'date', 'status', 'hasAttachments', 'uid', 'path'] }
+] as unknown as ListMailMessagesFields;
+const mailInboxFields = [{ entries: ['uid', 'fromText', 'subject', 'date'] }] as unknown as MailInboxFields;
+
 function callCreateAgentSessionChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { kind: string; generation: number }
@@ -338,6 +399,85 @@ function callListAuditEntriesChannel(
 ) {
   return wrapChannelCall((handlers) =>
     listAuditEntriesChannel({ channel, input, fields: listAuditEntriesFields, ...handlers })
+  );
+}
+
+function callMailStatusChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) => mailStatusChannel({ channel, fields: mailStatusFields, ...handlers }));
+}
+
+function callSetupMailAccountChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; host: string; port: number; username: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setupMailAccountChannel({ channel, input, fields: setupMailAccountFields, ...handlers })
+  );
+}
+
+function callSetMailCredentialChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { secret: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setMailCredentialChannel({ channel, input, fields: setMailCredentialFields, ...handlers })
+  );
+}
+
+function callMailSyncNowChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) => mailSyncNowChannel({ channel, input, fields: mailSyncNowFields, ...handlers }));
+}
+
+function callMailDoctorChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) => mailDoctorChannel({ channel, input, fields: mailDoctorFields, ...handlers }));
+}
+
+function callCreateMailFoldersChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    createMailFoldersChannel({ channel, input, fields: createMailFoldersFields, ...handlers })
+  );
+}
+
+function callListMailMessagesChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    listMailMessagesChannel({ channel, fields: listMailMessagesFields, ...handlers })
+  );
+}
+
+function callGetMailMessageChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { msgId: string }
+) {
+  return wrapChannelCall((handlers) =>
+    getMailMessageChannel({ channel, input, fields: getMailMessageFields, ...handlers })
+  );
+}
+
+function callMailInboxChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) => mailInboxChannel({ channel, fields: mailInboxFields, ...handlers }));
+}
+
+function callRetryMailboxOpsChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { runId: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    retryMailboxOpsChannel({ channel, input, fields: retryMailboxOpsFields, ...handlers })
+  );
+}
+
+function callListDecidedQueueItemsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    listDecidedQueueItemsChannel({ channel, fields: listDecidedQueueItemsFields, ...handlers })
   );
 }
 
@@ -642,6 +782,69 @@ export const api = {
         const data = result.data as Record<string, any>;
         return { ok: true, data: { entries: data.entries as AuditEntry[] } };
       }
+    ),
+
+  // Mail (T13/T14). `mailStatus`/`listMailMessages`/`mailInbox`/`getMailMessage`
+  // deliver their `status`/`message` payloads RAW (unconstrained `:map`,
+  // see `MailStatusFields`/`GetMailMessageFields` above) — `stores/mail.svelte.ts`
+  // owns normalizing those into camelCase app-facing shapes, same
+  // raw-delivery split `IcmPageData.frontmatter`/`QueueItemEnvelope` use.
+
+  mailStatus: () => runRpc(callMailStatusChannel, () => httpMailStatus(withAuth({ fields: mailStatusFields }))),
+
+  setupMailAccount: (account: string, host: string, port: number, username: string, generation: number) =>
+    runRpc(
+      (channel) => callSetupMailAccountChannel(channel, { account, host, port, username, generation }),
+      () =>
+        httpSetupMailAccount(
+          withAuth({ input: { account, host, port, username, generation }, fields: setupMailAccountFields })
+        )
+    ),
+
+  setMailCredential: (secret: string, generation: number) =>
+    runRpc(
+      (channel) => callSetMailCredentialChannel(channel, { secret, generation }),
+      () => httpSetMailCredential(withAuth({ input: { secret, generation }, fields: setMailCredentialFields }))
+    ),
+
+  mailSyncNow: (generation: number) =>
+    runRpc(
+      (channel) => callMailSyncNowChannel(channel, { generation }),
+      () => httpMailSyncNow(withAuth({ input: { generation }, fields: mailSyncNowFields }))
+    ),
+
+  mailDoctor: (generation: number) =>
+    runRpc(
+      (channel) => callMailDoctorChannel(channel, { generation }),
+      () => httpMailDoctor(withAuth({ input: { generation }, fields: mailDoctorFields }))
+    ),
+
+  createMailFolders: (generation: number) =>
+    runRpc(
+      (channel) => callCreateMailFoldersChannel(channel, { generation }),
+      () => httpCreateMailFolders(withAuth({ input: { generation }, fields: createMailFoldersFields }))
+    ),
+
+  listMailMessages: () =>
+    runRpc(callListMailMessagesChannel, () => httpListMailMessages(withAuth({ fields: listMailMessagesFields }))),
+
+  getMailMessage: (msgId: string) =>
+    runRpc(
+      (channel) => callGetMailMessageChannel(channel, { msgId }),
+      () => httpGetMailMessage(withAuth({ input: { msgId }, fields: getMailMessageFields }))
+    ),
+
+  mailInbox: () => runRpc(callMailInboxChannel, () => httpMailInbox(withAuth({ fields: mailInboxFields }))),
+
+  retryMailboxOps: (runId: string, generation: number) =>
+    runRpc(
+      (channel) => callRetryMailboxOpsChannel(channel, { runId, generation }),
+      () => httpRetryMailboxOps(withAuth({ input: { runId, generation }, fields: retryMailboxOpsFields }))
+    ),
+
+  listDecidedQueueItems: () =>
+    runRpc(callListDecidedQueueItemsChannel, () =>
+      httpListDecidedQueueItems(withAuth({ fields: listDecidedQueueItemsFields }))
     )
 };
 
