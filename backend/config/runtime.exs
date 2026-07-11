@@ -8,6 +8,22 @@ if System.get_env("PHX_SERVER") do
   config :valea, ValeaWeb.Endpoint, server: true
 end
 
+# Test runs must never touch the developer's real app-data directory
+# (~/Library/Application Support/valea on macOS): Valea.Workspace.Manager
+# auto-opens whatever `last_opened` workspace is recorded there at boot, and
+# a real leftover workspace from manual/browser-preview testing on the same
+# machine collides with named-process tests (e.g. Valea.Workspace.Runtime,
+# started under a fixed name) or simply makes the suite depend on host
+# state. Default to a fresh ephemeral dir per test run unless the caller
+# already set VALEA_APP_DIR explicitly (individual tests still override it
+# per-case via System.put_env for App.Config-specific behavior).
+if config_env() == :test and System.get_env("VALEA_APP_DIR") == nil do
+  System.put_env(
+    "VALEA_APP_DIR",
+    Path.join(System.tmp_dir!(), "valea-test-app-dir-#{System.os_time(:nanosecond)}")
+  )
+end
+
 # Per-launch control token (see ValeaWeb.Plugs.ControlToken). The desktop
 # shell generates a fresh random token each launch and passes it in via env;
 # dev/test fall back to a fixed value so browser dev keeps working. A missing
