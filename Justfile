@@ -63,6 +63,15 @@ desktop-bundle: package-backend
 # Throwaway Dovecot for manual mail E2E (mara / marapass, IMAPS-only,
 # scripts/dovecot/dovecot.conf mounted in place of the image's own config).
 #
+#   - Pinned to the `2.3` tag, not `latest`: as of this writing
+#     `dovecot/dovecot:latest` resolves to Dovecot 2.4, which renamed the
+#     directives this conf uses (`ssl_cert`/`ssl_key` -> `ssl_server_*_file`,
+#     unnamed `passdb { driver = static }` -> named `passdb static { }`,
+#     `mail_location` -> `mail_driver`+`mail_path`, plus new mandatory
+#     `dovecot_config_version`/`dovecot_storage_version` settings) and would
+#     fail to boot against this file. `2.3` is a real, still-published tag
+#     matching the syntax authored here — re-pin (and rewrite the conf) if
+#     that tag is ever pulled.
 #   - Connect from the app: host `localhost`, port `3993`, user `mara`,
 #     password `marapass`. Set these via the mail setup RPC / onboarding UI
 #     (`config/mail.yaml` + the OS keychain), not by hand-editing files.
@@ -93,7 +102,7 @@ mail-dev:
     docker run --rm -p 3993:993 --name valea-dovecot \
       -v "$(pwd)/scripts/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro" \
       -v "$(pwd)/backend/test/fixtures/tls:/etc/dovecot/tls:ro" \
-      dovecot/dovecot:latest
+      dovecot/dovecot:2.3
 
 # Run all checks (fails if the generated RPC client is stale)
 test:
