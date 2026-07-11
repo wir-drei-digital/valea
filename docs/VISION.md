@@ -40,15 +40,19 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
    which pages and sources it used. The methodology is formalized in
    *"Interpretable Context Methodology: Folder Structure as Agent
    Architecture"* (Van Clief & McDermott, arxiv.org/html/2603.16021v2):
-   Valea's `icm/` is its Layer 3 (stable reference material), the workflow
-   YAMLs' `sources:` lists are Layer 2 stage contracts with inputs tables,
-   and `queue/`/`sources/` are Layer 4 working artifacts behind review gates.
+   Valea's root `AGENTS.md`/`CLAUDE.md` are Layer 0/1 (root instructions +
+   routing, deliberately combined into one file at this workspace size),
+   `icm/Workflows/*.md` are Layer 2 stage contracts (hosted inside the
+   reference tree itself — a documented Valea adaptation, not a separate
+   `workflows/` folder), the rest of `icm/` is Layer 3 (stable reference
+   material), and `queue/`/`sources/` are Layer 4 working artifacts behind
+   review gates.
 
-3. **Transparent workflows.** Workflows are inspectable YAML files: trigger,
-   sources, steps, outputs, approval requirements, risk level, audit behavior.
-   Every workflow is readable as a friendly card in the UI *or* as the raw
-   file. Nothing is hidden — Valea must not become a new black box ("Open the
-   hood").
+3. **Transparent workflows.** Workflows are inspectable markdown contracts
+   with a YAML header: trigger, sources, steps, outputs, approval
+   requirements, risk level, audit behavior. Every workflow is readable as a
+   friendly card in the UI *or* as the raw file. Nothing is hidden — Valea
+   must not become a new black box ("Open the hood").
 
 4. **AI prepares; human approves.** The assistant summarizes, classifies,
    drafts, prepares briefs, suggests tasks, and proposes memory updates. It
@@ -62,7 +66,14 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
    Codex, Hermes, Pi, direct API, local models) behind an adapter boundary.
    **The app owns the workspace, context bundles, workflow specs, approval
    queue, audit log, and UI. The harness only executes tasks and returns
-   structured results.**
+   structured results.** This is a **file-first integration** by product
+   principle, not phase limitation: every resource the agent consumes or
+   produces — memory pages, incoming mail, proposals, drafts — is a plain
+   file in the workspace, and the file tree **is** the agent's API. There are
+   no custom tools and no custom MCP servers; coding harnesses are used at
+   what they already do best (read/edit files, run commands), and future
+   integrations (real mail, calendar) are sync-to-files engines, never new
+   tool surfaces the agent must learn.
 
 ## Where the value lives
 
@@ -139,16 +150,28 @@ project's proven scaffold. Full decisions per feature live in
    deterministic markdown round-trip. *(spec:
    2026-07-10-icm-editor-design.md)*
 3. **Agent prototype slice** — the full AI-prepares-human-approves loop with
-   zero external integrations: minimal workflow execution on the seeded mock
-   email, AgentHarness seam (Mock + Claude Code), approval queue + audit
-   essentials, prepared card on Today. Adopts the ICM paper's Layer 0/1
-   files (workspace `CLAUDE.md`/`CONTEXT.md`) for the orchestrating agent.
-   After this phase Valea is a demo-able product with no accounts connected.
-4. **Mail** — IMAP read, AI/Review folder flow, local drafts (replaces the
-   mock input).
-5. **Calendar** — CalDAV read / ICS import, today + week views.
+   zero external integrations: real ACP agent sessions (Claude Code) running
+   in the workspace, chat UI, workflow execution on the seeded mock email,
+   hardened approval queue + audit log, prepared card on Today. Adopts the
+   ICM paper's Layer 0/1 as combined root `AGENTS.md`/`CLAUDE.md` files, and
+   hosts Layer 2 stage contracts as `icm/Workflows/*.md` inside the
+   reference tree itself. After this phase Valea is a demo-able product with
+   no accounts connected. *(shipped, pending merge; spec:
+   2026-07-10-agent-slice-design.md)*
+4. **Mail** — a sync-to-files engine that reads IMAP and normalizes messages
+   into `sources/mail/`, following the AI/Review folder flow (replaces the
+   mock input). No new agent tool surface — the agent still only reads
+   files.
+5. **Calendar** — a sync-to-files engine that reads CalDAV / imports ICS
+   into `sources/calendar/`, today + week views. Same file-first posture as
+   Mail.
 6. **Workflows & agents, full depth** — registry UI, context bundles,
-   CLI-subprocess/ACP integration, everything the prototype slice deferred.
+   additional harnesses beyond Claude Code, everything the prototype slice
+   deferred.
+7. **ICM mounts** — named external ICM roots (shared + personal composition)
+   in workspace config, own top-level Knowledge sections, per-mount
+   writability, namespaced references (`company:icm/…`); the agent slice's
+   policy contexts and root lists are already composition-ready for this.
 
 The MVP is complete when the core acceptance scenario runs end-to-end: open
 app → move Priya's inquiry to AI/Review → run triage workflow → review the
