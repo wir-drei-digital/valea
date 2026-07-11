@@ -23,11 +23,23 @@ defmodule Valea.Mail.Index do
     {:ok, count}
   end
 
+  # No single file may abort the rebuild. Three defenses, all counting the
+  # file as skipped (`false`):
+  #
+  #   * an unparseable file (bad/absent frontmatter) — logged, as before;
+  #   * a parseable file with a nil/blank `id` — `msg_id` is required by the
+  #     Store's Ash create, so without this guard the create RAISES and the
+  #     old `with/else` (which only matched error tuples) let it escape,
+  #     crashing Engine activation for the whole session;
+  #   * any other raise (a Store/validation failure on some other field) —
+  #     caught by the surrounding `rescue`/`catch` so a lone bad row can never
+  #     take down the rest of the mailbox.
   defp index_file(root, path) do
     with {:ok, bytes} <- File.read(path),
-         {:ok, %{frontmatter: frontmatter}} <- MessageFile.parse(bytes) do
+         {:ok, %{frontmatter: frontmatter}} <- MessageFile.parse(bytes),
+         msg_id when is_binary(msg_id) <- present_id(frontmatter["id"]) do
       Store.upsert_message(%{
-        msg_id: frontmatter["id"],
+        msg_id: msg_id,
         message_id: frontmatter["message_id"],
         path: Path.relative_to(path, root),
         from: frontmatter["from"] || %{},
@@ -46,6 +58,28 @@ defmodule Valea.Mail.Index do
         )
 
         false
+
+      nil ->
+        Logger.warning("Valea.Mail.Index: skipping message file #{path}: missing frontmatter id")
+        false
     end
+  rescue
+    e ->
+      Logger.warning("Valea.Mail.Index: skipping message file #{path}: #{Exception.message(e)}")
+
+      false
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Valea.Mail.Index: skipping message file #{path}: #{inspect({kind, reason})}"
+      )
+
+      false
   end
+
+  defp present_id(id) when is_binary(id) do
+    if String.trim(id) == "", do: nil, else: id
+  end
+
+  defp present_id(_id), do: nil
 end

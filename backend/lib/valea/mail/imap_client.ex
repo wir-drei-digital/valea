@@ -193,17 +193,10 @@ defmodule Valea.Mail.ImapClient do
 
   @impl true
   def append(conn, folder, flags, rfc822) do
-    tag = next_tag(conn)
     flags_arg = "(" <> Enum.join(flags, " ") <> ")"
-    {iodata, [literal]} = Wire.encode(tag, ["APPEND", folder, flags_arg, {:literal, rfc822}])
 
-    with :ok <- :ssl.send(conn.socket, iodata),
-         {:ok, _text, rest} <- read_continuation(conn.socket, conn.recv_timeout),
-         :ok <- :ssl.send(conn.socket, literal <> "\r\n"),
-         {:ok, :ok, _text, _untagged} <-
-           read_until_tagged(conn.socket, tag, conn.recv_timeout, rest) do
-      :ok
-    else
+    case send_command(conn, ["APPEND", folder, flags_arg, {:literal, rfc822}]) do
+      {:ok, :ok, _text, _untagged} -> :ok
       {:ok, status, text, _untagged} -> {:error, {status, text}}
       {:error, reason} -> {:error, reason}
     end
@@ -252,8 +245,14 @@ defmodule Valea.Mail.ImapClient do
     end
   end
 
+  # Username AND password go as IMAP synchronizing literals (`{:literal, _}`),
+  # never as bare/quoted args. A literal carries raw bytes verbatim, so a
+  # value containing 8-bit bytes (non-ASCII passwords), spaces, or quotes logs
+  # in correctly — and, critically, never flows through `Wire.encode_arg`,
+  # whose CR/LF/8-bit guard would otherwise raise and land the credential in a
+  # crash report.
   defp login(conn, username, password) do
-    case send_command(conn, ["LOGIN", username, password]) do
+    case send_command(conn, ["LOGIN", {:literal, username}, {:literal, password}]) do
       {:ok, :ok, _text, _untagged} -> {:ok, conn}
       {:ok, :no, _text, _untagged} -> {:error, :auth_failed}
       {:ok, status, text, _untagged} -> {:error, {status, text}}
@@ -400,12 +399,29 @@ defmodule Valea.Mail.ImapClient do
     "A" <> Integer.to_string(:counters.get(conn.tag, 1))
   end
 
+  # Sends a command as its ordered wire segments (`Wire.encode_command/2`),
+  # pausing for a server `{:continuation, _}` before every segment that
+  # follows a literal, then reads through to the tagged response. A
+  # literal-free command is a single segment and issues no continuation wait,
+  # so this is the one code path for every command (LOGIN and APPEND included).
   defp send_command(conn, parts) do
     tag = next_tag(conn)
-    {iodata, []} = Wire.encode(tag, parts)
+    segments = Wire.encode_command(tag, parts)
+    drive_segments(conn.socket, tag, conn.recv_timeout, segments, "")
+  end
 
-    case :ssl.send(conn.socket, iodata) do
-      :ok -> read_until_tagged(conn.socket, tag, conn.recv_timeout)
+  defp drive_segments(socket, tag, timeout, [last], buffer) do
+    case :ssl.send(socket, last) do
+      :ok -> read_until_tagged(socket, tag, timeout, buffer)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp drive_segments(socket, tag, timeout, [segment | rest], buffer) do
+    with :ok <- :ssl.send(socket, segment),
+         {:ok, _text, buffer} <- read_continuation(socket, timeout, buffer) do
+      drive_segments(socket, tag, timeout, rest, buffer)
+    else
       {:error, reason} -> {:error, reason}
     end
   end
@@ -416,7 +432,7 @@ defmodule Valea.Mail.ImapClient do
   # Reads responses off `socket` until the one tagged `tag` arrives,
   # returning its status/text plus every response read before it. `buffer`
   # is purely local to this call (see moduledoc "Conn shape").
-  defp read_until_tagged(socket, tag, timeout, buffer \\ "", acc \\ []) do
+  defp read_until_tagged(socket, tag, timeout, buffer, acc \\ []) do
     case read_until_response(socket, timeout, buffer) do
       {:ok, {:tagged, ^tag, status, text}, _rest} -> {:ok, status, text, Enum.reverse(acc)}
       {:ok, other, rest} -> read_until_tagged(socket, tag, timeout, rest, [other | acc])
@@ -424,7 +440,7 @@ defmodule Valea.Mail.ImapClient do
     end
   end
 
-  defp read_continuation(socket, timeout, buffer \\ "") do
+  defp read_continuation(socket, timeout, buffer) do
     case read_until_response(socket, timeout, buffer) do
       {:ok, {:continuation, text}, rest} -> {:ok, text, rest}
       {:ok, other, _rest} -> {:error, {:unexpected_response, other}}

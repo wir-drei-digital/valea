@@ -69,19 +69,41 @@ defmodule Valea.QueueTest do
   @seed_message "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
 
   # Hand-writes an imap-source message fixture and returns its workspace-relative
-  # path (the seed rule keys on `source:` inside the leading frontmatter block).
-  defp write_imap_message(workspace, suffix) do
+  # path. Carries both `source: imap` and a `uid` — the two frontmatter facts
+  # the op-seeding rule keys on for both draft_append and archive_source.
+  defp write_imap_message(workspace, suffix, opts \\ []) do
     rel = "sources/mail/messages/imap-#{suffix}.md"
     abs = Path.join(workspace, rel)
     File.mkdir_p!(Path.dirname(abs))
+
+    uid_line = if Keyword.get(opts, :uid, true), do: "uid: 4242\n", else: ""
 
     File.write!(abs, """
     ---
     id: imap-#{suffix}
     source: imap
-    subject: "Live inquiry"
+    #{uid_line}subject: "Live inquiry"
     ---
     A genuinely inbound message.
+    """)
+
+    rel
+  end
+
+  # A readable source whose frontmatter is NOT `source: imap` — e.g. a non-mail
+  # ICM workflow that emitted a kind:"email_draft". Must seed all ops "skipped".
+  defp write_icm_source(workspace, suffix) do
+    rel = "sources/icm/#{suffix}.md"
+    abs = Path.join(workspace, rel)
+    File.mkdir_p!(Path.dirname(abs))
+
+    File.write!(abs, """
+    ---
+    id: icm-#{suffix}
+    source: icm
+    subject: "Follow-up"
+    ---
+    A non-mail source.
     """)
 
     rel
@@ -457,6 +479,43 @@ defmodule Valea.QueueTest do
     assert landed["schema"] == "queue_item/v2"
     assert landed["mailbox_ops"]["draft_append"]["status"] == "pending"
     assert landed["mailbox_ops"]["archive_source"]["status"] == "pending"
+  end
+
+  test "approve/2 on a non-mail (ICM) source email_draft lands both ops skipped", %{
+    workspace: workspace
+  } do
+    # A non-mail workflow that emitted a kind:"email_draft" — its source file
+    # is readable but NOT source: imap. The old rule ("any readable non-seed ->
+    # pending") would APPEND a To-less draft to the real Drafts folder and park
+    # archive_source in :source_has_no_uid forever; both must be skipped.
+    id = run_id("icm001")
+    source = write_icm_source(workspace, "icm001")
+    write_pending(workspace, id, %{"source_message" => source})
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "skipped"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "skipped"
+  end
+
+  test "approve/2 on an imap source with no uid: draft_append pending, archive_source skipped", %{
+    workspace: workspace
+  } do
+    # A genuine mail source can still draft a reply, but with no uid there is
+    # nothing to move — archive_source is unsatisfiable, so it is skipped
+    # rather than left permanently failing.
+    id = run_id("nouid1")
+    source = write_imap_message(workspace, "nouid1", uid: false)
+    write_pending(workspace, id, %{"source_message" => source})
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "pending"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "skipped"
   end
 
   test "approve/2 broadcasts {:mailbox_ops_pending, run_id} on the mail_ops topic", %{

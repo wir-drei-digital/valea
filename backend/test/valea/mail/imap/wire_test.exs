@@ -136,4 +136,36 @@ defmodule Valea.Mail.Imap.WireTest do
   test "encode raises on 8-bit byte in a bare argument" do
     assert_raise ArgumentError, fn -> Wire.encode("A7", ["SELECT", <<"bad", 0xFF>>]) end
   end
+
+  test "encode's raise message does not echo the offending value" do
+    err =
+      assert_raise ArgumentError, fn -> Wire.encode("A7", ["SELECT", "s3cr3t\r\ninjected"]) end
+
+    refute err.message =~ "s3cr3t"
+  end
+
+  # -- encode_command: literal-aware segmentation ----------------------------
+
+  test "encode_command with no literals is a single CRLF-terminated segment" do
+    assert [seg] = Wire.encode_command("A2", ["CAPABILITY"])
+    assert IO.iodata_to_binary(seg) == "A2 CAPABILITY\r\n"
+  end
+
+  test "encode_command puts a trailing literal on its own segment (APPEND shape)" do
+    assert [seg0, seg1] =
+             Wire.encode_command("A2", ["APPEND", "Drafts", "(\\Draft)", {:literal, "abc"}])
+
+    assert IO.iodata_to_binary(seg0) == "A2 APPEND \"Drafts\" (\\Draft) {3}\r\n"
+    assert IO.iodata_to_binary(seg1) == "abc\r\n"
+  end
+
+  test "encode_command interleaves two literals with their own continuations (LOGIN shape)" do
+    assert [seg0, seg1, seg2] =
+             Wire.encode_command("A1", ["LOGIN", {:literal, "user"}, {:literal, "pä55"}])
+
+    assert IO.iodata_to_binary(seg0) == "A1 LOGIN {4}\r\n"
+    # "pä55" is 5 bytes (ä is 2), and its raw bytes lead the final segment.
+    assert IO.iodata_to_binary(seg1) == "user {5}\r\n"
+    assert IO.iodata_to_binary(seg2) == "pä55\r\n"
+  end
 end

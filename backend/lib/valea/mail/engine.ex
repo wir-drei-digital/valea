@@ -62,6 +62,7 @@ defmodule Valea.Mail.Engine do
   alias Valea.Mail.Doctor
   alias Valea.Mail.Index
   alias Valea.Mail.MailboxOps
+  alias Valea.Mail.Redact
   alias Valea.Mail.Settings
   alias Valea.Mail.SyncPass
   alias Valea.Queue
@@ -127,7 +128,7 @@ defmodule Valea.Mail.Engine do
   ops), this re-attempts BOTH `"pending"` and `"failed"` ops, since it is an
   explicit, user-driven request. Refuses with the same gate as `sync_now/0`
   (inactive/not-configured/no-credential); the actual work runs in an
-  unlinked task and never blocks this call.
+  linked task and never blocks this call.
   """
   @spec retry_ops(String.t()) :: :ok | {:error, :inactive | :no_credential | :not_configured}
   def retry_ops(run_id) when is_binary(run_id),
@@ -167,6 +168,14 @@ defmodule Valea.Mail.Engine do
 
   @impl true
   def init(%{root: root, generation: generation}) do
+    # Trap exits so the sync/ops tasks can be LINKED (not just monitored):
+    # linking makes them die with this Engine when Runtime tears it down on a
+    # workspace switch — a monitored-only task blocked in :ssl.recv would
+    # otherwise outlive the Engine and write the old workspace's rows into the
+    # new one. Trapping turns a linked task's crash into a handled `{:EXIT, _,
+    # _}` message rather than killing the Engine; the paired monitor still
+    # drives result/cleanup (see `handle_info` below).
+    Process.flag(:trap_exit, true)
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
 
@@ -282,6 +291,12 @@ defmodule Valea.Mail.Engine do
     {:noreply, clear_ops_task(state, {pid, ref})}
   end
 
+  # A LINKED sync/ops task exited (normal completion or crash). Because the
+  # Engine traps exits, the exit signal arrives here as a message; the paired
+  # monitor's `:DOWN` (matched above) is what actually drives result handling
+  # and single-flight cleanup, so the `{:EXIT, _, _}` is intentionally a no-op.
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+
   # -- activation ---------------------------------------------------------
 
   defp activate(state) do
@@ -334,9 +349,9 @@ defmodule Valea.Mail.Engine do
 
   defp any_pending?(_ops), do: false
 
-  # Runs the mailbox ops for `run_id` in a monitored (unlinked) task so a
-  # slow or crashing pass can never block or take down the Engine. Callers
-  # gate on `validate_sync/1`.
+  # Runs the mailbox ops for `run_id` in a linked + monitored task (dies with
+  # the Engine on teardown) so a slow or crashing pass can never block or take
+  # down the Engine. Callers gate on `validate_sync/1`.
   defp maybe_execute_ops(state, run_id) do
     case validate_sync(state) do
       :ok -> execute_ops(state, run_id)
@@ -367,7 +382,7 @@ defmodule Valea.Mail.Engine do
         credential: state.credential
       }
 
-      task = spawn_monitor(fn -> MailboxOps.execute(args) end)
+      task = spawn_linked_task(fn -> MailboxOps.execute(args) end)
       %{state | ops_tasks: Map.put(state.ops_tasks, run_id, task)}
     end
   end
@@ -439,11 +454,14 @@ defmodule Valea.Mail.Engine do
   defp start_pass_unless_running(%{sync_task: nil} = state), do: start_pass(state)
   defp start_pass_unless_running(state), do: state
 
-  # Runs `SyncPass.run/1` in a monitored (unlinked) process so a crashing
-  # pass can never take the Engine down — the `spawn_monitor` result is
-  # tracked so a later `sync_now`/poll no-ops and the result/`:DOWN` message
-  # can be matched back. The credential closure travels into the task and is
-  # only ever called inside `SyncPass`, at the `connect/3` boundary.
+  # Runs `SyncPass.run/1` in a LINKED + monitored process. The link ties the
+  # task's lifetime to the Engine's: a Runtime teardown on a workspace switch
+  # kills the Engine, which kills this task, so a pass blocked in :ssl.recv
+  # can never survive to write the old workspace's data into the new one. The
+  # Engine traps exits, so the task crashing is a handled message, not a
+  # take-down; the monitor still delivers the result/`:DOWN` used for
+  # single-flight tracking. The credential closure travels into the task and
+  # is only ever called inside `SyncPass`, at the `connect/3` boundary.
   defp start_pass(state) do
     broadcast_event({:mail_sync_started})
 
@@ -456,12 +474,20 @@ defmodule Valea.Mail.Engine do
       transport: state.transport
     }
 
-    {pid, ref} =
-      spawn_monitor(fn -> send(parent, {:sync_result, self(), SyncPass.run(args)}) end)
+    task = spawn_linked_task(fn -> send(parent, {:sync_result, self(), SyncPass.run(args)}) end)
 
-    new_state = %{state | sync_task: {pid, ref}, status: "syncing"}
+    new_state = %{state | sync_task: task, status: "syncing"}
     broadcast_status(new_state)
     new_state
+  end
+
+  # Links first (so a task that dies before/at monitor time delivers its exit
+  # to the trapping Engine, not a raise), then monitors — the `{pid, ref}`
+  # pair the existing single-flight/`:DOWN` handling keys on.
+  defp spawn_linked_task(fun) do
+    pid = spawn_link(fun)
+    ref = Process.monitor(pid)
+    {pid, ref}
   end
 
   defp finish_pass(state, {:ok, %{new_messages: new_messages, errors: errors}}) do
@@ -485,13 +511,24 @@ defmodule Valea.Mail.Engine do
     |> tap_broadcast_status()
   end
 
+  # `reason` is a connect failure or a `{:sync_task_down, _}` crash reason.
+  # It is broadcast in `mail_sync_finished` AND stored as `last_error` (pushed
+  # to the UI in every mail_status), so the credential must never survive into
+  # it. `Redact.text/2` scrubs the secret (and its inspect-escaped form) out of
+  # the built string as defense-in-depth behind the literal-LOGIN fix.
   defp finish_pass(state, {:error, reason}) do
-    message = "sync failed: #{inspect(reason)}"
+    message = Redact.text("sync failed: #{inspect(reason)}", current_secret(state))
     broadcast_event({:mail_sync_finished, %{new_messages: 0, errors: [message]}})
 
     %{state | sync_task: nil, status: "idle", last_error: message}
     |> tap_broadcast_status()
   end
+
+  # The raw secret, materialized only here (it already lives in this process's
+  # state) and only to scrub it back out of an error string — never stored,
+  # never returned.
+  defp current_secret(%{credential: fun}) when is_function(fun, 0), do: fun.()
+  defp current_secret(_state), do: nil
 
   defp tap_broadcast_status(state) do
     broadcast_status(state)

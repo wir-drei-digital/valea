@@ -50,6 +50,7 @@ defmodule Valea.Mail.Doctor do
   interpolates it.
   """
 
+  alias Valea.Mail.Redact
   alias Valea.Mail.Settings
 
   @type check :: %{String.t() => String.t() | nil}
@@ -125,7 +126,7 @@ defmodule Valea.Mail.Doctor do
         {:ok, created}
 
       {:error, reason} ->
-        {:error, redact_reason(reason, secret)}
+        {:error, Redact.reason(reason, secret)}
     end
   end
 
@@ -245,7 +246,7 @@ defmodule Valea.Mail.Doctor do
           failed(
             "tls_ok",
             "TLS",
-            redact("Could not connect: #{inspect(reason)}", secret),
+            Redact.text("Could not connect: #{inspect(reason)}", secret),
             @tls_remedy
           )
 
@@ -429,29 +430,6 @@ defmodule Valea.Mail.Doctor do
 
   defp resolve_credential(fun) when is_function(fun, 0), do: fun.()
   defp resolve_credential(secret) when is_binary(secret), do: secret
-
-  # Scrubs the raw secret out of an already-built display string. Only ever
-  # applied to strings derived from a connect error's `reason` term (the one
-  # transport call the credential is actually passed to) — every other
-  # check's text is built from non-secret data (host/username/folder names/
-  # capability strings) and never needs this.
-  defp redact(text, secret) when is_binary(secret) and secret != "",
-    do: String.replace(text, secret, "[redacted]")
-
-  defp redact(text, _secret), do: text
-
-  # `create_folders/1`'s counterpart to `redact/2` for a reason that is
-  # still a term, not a display string: a reason that does not embed the
-  # secret passes through completely untouched (callers can keep matching
-  # on `:econnrefused`-style atoms); one that does is stringified via
-  # `inspect/1` with the secret scrubbed — losing the term's shape is the
-  # acceptable cost of never letting the credential out of this module.
-  defp redact_reason(reason, secret) when is_binary(secret) and secret != "" do
-    text = inspect(reason)
-    if String.contains?(text, secret), do: redact(text, secret), else: reason
-  end
-
-  defp redact_reason(reason, _secret), do: reason
 
   defp safe_logout(transport, conn) do
     transport.logout(conn)

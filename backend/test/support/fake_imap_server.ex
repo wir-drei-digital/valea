@@ -23,6 +23,7 @@ defmodule FakeImapServer do
   @type step ::
           {:send, binary()}
           | {:expect, Regex.t() | binary(), then: [binary()]}
+          | {:expect_command, Regex.t() | binary(), then: [binary()]}
           | {:expect_literal, non_neg_integer(), then: [binary()]}
           | :close
 
@@ -142,6 +143,13 @@ defmodule FakeImapServer do
     run_script(rest, ctx)
   end
 
+  defp run_script([{:expect_command, matcher, then: reply_lines} | rest], ctx) do
+    {command, ctx} = read_command(ctx, "")
+    assert_match!(matcher, command)
+    Enum.each(reply_lines, &send_line(ctx, &1))
+    run_script(rest, ctx)
+  end
+
   defp run_script([{:expect_literal, n, then: reply_lines} | rest], ctx) do
     {_bytes, ctx} = read_exact(ctx, n)
     Enum.each(reply_lines, &send_line(ctx, &1))
@@ -162,6 +170,33 @@ defmodule FakeImapServer do
   defp assert_match!(bin, line) when is_binary(bin) do
     unless bin == line do
       raise "expected client line #{inspect(bin)}, got: #{inspect(line)}"
+    end
+  end
+
+  # Reads one logical command that MAY carry synchronizing literals,
+  # reassembling the argument bytes inline. Whenever a physical line fragment
+  # ends in a `{N}` marker it sends a `+` continuation, reads exactly N raw
+  # bytes (never scanned for structure), then reads the next fragment — so a
+  # LOGIN sent as `A1 LOGIN {4}\r\nuser {4}\r\npass` reassembles to
+  # `A1 LOGIN user pass`. A literal-free command is a single read_line.
+  defp read_command(ctx, acc) do
+    {fragment, ctx} = read_line(ctx)
+
+    case trailing_literal(fragment) do
+      {n, head} ->
+        send_line(ctx, "+ ready for literal")
+        {bytes, ctx} = read_exact(ctx, n)
+        read_command(ctx, acc <> head <> bytes)
+
+      :none ->
+        {acc <> fragment, ctx}
+    end
+  end
+
+  defp trailing_literal(fragment) do
+    case Regex.run(~r/^(.*)\{(\d+)\}$/s, fragment) do
+      [_, head, digits] -> {String.to_integer(digits), head}
+      nil -> :none
     end
   end
 

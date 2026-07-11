@@ -10,7 +10,9 @@ defmodule Valea.Mail.ImapClientTest do
   # test injects a non-default trust root — never by disabling verification.
 
   @cacertfile Path.expand("../../fixtures/tls/ca.pem", __DIR__)
-  @login_re ~r/^A1 LOGIN "user" "pass"$/
+  # LOGIN now sends username + password as IMAP literals, so the fake server
+  # reassembles the logical command with the bare (unquoted) argument bytes.
+  @login_re ~r/^A1 LOGIN user pass$/
 
   defp config(server), do: %{host: "localhost", port: server.port, username: "user"}
 
@@ -26,7 +28,7 @@ defmodule Valea.Mail.ImapClientTest do
   defp handshake_steps(capability_line \\ "IMAP4rev1") do
     [
       {:send, "* OK ready"},
-      {:expect, @login_re, then: ["A1 OK LOGIN completed"]},
+      {:expect_command, @login_re, then: ["A1 OK LOGIN completed"]},
       {:expect, "A2 CAPABILITY",
        then: ["* CAPABILITY #{capability_line}", "A2 OK CAPABILITY completed"]}
     ]
@@ -41,7 +43,7 @@ defmodule Valea.Mail.ImapClientTest do
     # post-login refresh.
     script = [
       {:send, "* OK [CAPABILITY IMAP4rev1 STARTTLS] ready"},
-      {:expect, @login_re, then: ["A1 OK LOGIN completed"]},
+      {:expect_command, @login_re, then: ["A1 OK LOGIN completed"]},
       {:expect, "A2 CAPABILITY",
        then: ["* CAPABILITY IMAP4rev1 MOVE UIDPLUS", "A2 OK CAPABILITY completed"]}
     ]
@@ -59,7 +61,7 @@ defmodule Valea.Mail.ImapClientTest do
   test "auth failure on a NO-tagged LOGIN returns {:error, :auth_failed}" do
     script = [
       {:send, "* OK ready"},
-      {:expect, ~r/^A1 LOGIN "user" "wrong"$/, then: ["A1 NO LOGIN failed"]}
+      {:expect_command, ~r/^A1 LOGIN user wrong$/, then: ["A1 NO LOGIN failed"]}
     ]
 
     server = FakeImapServer.start(script, tls: true)
@@ -67,6 +69,26 @@ defmodule Valea.Mail.ImapClientTest do
     assert {:error, :auth_failed} =
              ImapClient.connect(config(server), "wrong", connect_opts())
 
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "logs in with a non-ASCII password sent as an IMAP literal" do
+    # A password with 8-bit bytes would raise inside Wire.encode_arg's CR/LF/
+    # 8-bit guard if quoted; sent as a literal it must reach the server byte
+    # for byte and authenticate cleanly.
+    password = "pä55wörd"
+
+    script = [
+      {:send, "* OK ready"},
+      {:expect_command, ~r/^A1 LOGIN user #{Regex.escape(password)}$/,
+       then: ["A1 OK LOGIN completed"]},
+      {:expect, "A2 CAPABILITY", then: ["* CAPABILITY IMAP4rev1", "A2 OK CAPABILITY completed"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:ok, conn} = ImapClient.connect(config(server), password, connect_opts())
+    assert {:ok, ["IMAP4rev1"]} = ImapClient.capabilities(conn)
     assert :ok = FakeImapServer.await(server)
   end
 

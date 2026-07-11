@@ -30,7 +30,8 @@ defmodule Valea.Mail.MailboxOps do
   connect failure marks every actionable op `failed` (with the reason) and
   returns; the human's decision is already durable and untouched. Every
   transport error is caught per-op, so one failing op never aborts the batch
-  or crashes the caller (the Engine runs this in an unlinked task). `execute/1`
+  or crashes the caller (the Engine runs this in a linked, monitored task).
+  `execute/1`
   always returns `:ok`.
 
   ## Per-op status machine

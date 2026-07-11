@@ -78,6 +78,64 @@ defmodule Valea.Mail.Imap.Wire do
     {iodata, Enum.reverse(literals_rev)}
   end
 
+  @doc """
+  Encode one IMAP command as the ordered list of wire *segments* the
+  synchronizing-literal dance requires — the general form `encode/2` cannot
+  express when a `{:literal, _}` sits anywhere but the tail.
+
+  `parts` is the same flat argument list `encode/2` accepts. The result is a
+  list of iodata segments: send the first, then before each remaining segment
+  read exactly one `{:continuation, _}` from the server. There are precisely
+  `num_literals + 1` segments — a command with no literals is a single
+  segment. Every non-final segment ends in a `{N}` literal marker + CRLF; the
+  final segment ends in CRLF. Each literal's raw bytes lead the segment that
+  follows its continuation, so ANY byte value (non-ASCII, spaces, quotes,
+  control bytes) is transmitted verbatim rather than quoted — the reason
+  `LOGIN` sends its username and password this way.
+
+  Plain-binary arguments obey the same astring/atom quoting rules and the
+  same CR/LF/8-bit guard as `encode/2`.
+  """
+  @spec encode_command(tag :: binary(), parts :: [binary() | {:literal, binary()}]) :: [iodata()]
+  def encode_command(tag, parts) when is_binary(tag) and is_list(parts) do
+    {[first_run | rest_runs], literals} = split_runs(parts)
+    build_segments([tag, " ", space_join(first_run)], rest_runs, literals, [])
+  end
+
+  # Splits `parts` at each literal into the runs of plain (already-encoded)
+  # tokens between the literals. Returns `{runs, literals}` with
+  # `length(runs) == length(literals) + 1`.
+  defp split_runs(parts) do
+    {runs_rev, current_rev, literals_rev} =
+      Enum.reduce(parts, {[], [], []}, fn
+        {:literal, bin}, {runs, current, literals} when is_binary(bin) ->
+          {[Enum.reverse(current) | runs], [], [bin | literals]}
+
+        bin, {runs, current, literals} when is_binary(bin) ->
+          {runs, [encode_arg(bin) | current], literals}
+      end)
+
+    runs = Enum.reverse([Enum.reverse(current_rev) | runs_rev])
+    {runs, Enum.reverse(literals_rev)}
+  end
+
+  # `lead` is the current segment's bytes before its terminating marker. Each
+  # step closes the current segment with `{N}` for the next literal, then
+  # starts the following segment with that literal's raw bytes.
+  defp build_segments(lead, [next_run | rest_runs], [lit | rest_lits], acc) do
+    segment = [lead, " {", Integer.to_string(byte_size(lit)), "}\r\n"]
+    build_segments([lit, run_prefix(next_run)], rest_runs, rest_lits, [segment | acc])
+  end
+
+  defp build_segments(lead, [], [], acc) do
+    Enum.reverse([[lead, "\r\n"] | acc])
+  end
+
+  defp space_join(tokens), do: Enum.intersperse(tokens, " ")
+
+  defp run_prefix([]), do: []
+  defp run_prefix(tokens), do: [" ", space_join(tokens)]
+
   # -- response boundary scanning (byte-exact, literal-aware) --------------
 
   # Finds the absolute end offset (exclusive) of the first complete
@@ -336,8 +394,11 @@ defmodule Valea.Mail.Imap.Wire do
 
   defp encode_arg(bin) do
     if contains_unsafe_byte?(bin) do
+      # Deliberately does NOT inspect `bin`: this guard fires on exactly the
+      # kind of value (arbitrary bytes) a credential can be, and the message
+      # ends up in crash reports. Send such values as `{:literal, _}` instead.
       raise ArgumentError,
-            "argument contains CR/LF or an 8-bit byte; send it as {:literal, _} instead: #{inspect(bin)}"
+            "argument contains bytes that require a literal; send it as {:literal, _} instead"
     end
 
     if String.starts_with?(bin, "(") or unquoted_safe?(bin) do

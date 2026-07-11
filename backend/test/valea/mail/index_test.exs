@@ -92,6 +92,45 @@ defmodule Valea.Mail.IndexTest do
     assert length(Store.list_messages()) == 2
   end
 
+  test "a parseable file with no frontmatter id is skipped, not fatal", %{root: root} do
+    # Valid frontmatter, valid YAML map — but no `id:` key. `msg_id` is
+    # required by the Store's Ash create, so before the fix the create RAISED
+    # and aborted the whole rebuild (crashing Engine activation for the
+    # session). It must now be counted as a skip, alongside a normal file and a
+    # garbage file.
+    {id, _msg} = write_message_file!(root, "plain.eml", 1, "review")
+
+    File.write!(
+      Path.join(root, "sources/mail/messages/no_id.md"),
+      """
+      ---
+      message_id: "<x@example.com>"
+      subject: "Has frontmatter but no id"
+      status: review
+      source: imap
+      uid: 9
+      ---
+
+      A body without an id in its frontmatter.
+      """
+    )
+
+    File.write!(Path.join(root, "sources/mail/messages/garbage.md"), "no frontmatter here\n")
+
+    log =
+      capture_log(fn ->
+        assert {:ok, 1} = Index.rebuild(root)
+      end)
+
+    assert log =~ "missing frontmatter id"
+    assert log =~ "no_id.md"
+    assert log =~ "skipping unparseable message file"
+
+    # The one valid file still landed; the id-less one did not.
+    assert {:ok, _} = Store.get_message(id)
+    assert length(Store.list_messages()) == 1
+  end
+
   test "an unparseable file does not abort indexing the rest", %{root: root} do
     {id, _msg} = write_message_file!(root, "plain.eml", 1, "review")
 

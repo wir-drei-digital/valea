@@ -39,8 +39,45 @@ defmodule Valea.Mail.EngineTest.HangingTransport do
   def logout(_conn), do: :ok
 end
 
+# A `Transport` double whose `connect/3` returns an error reason that EMBEDS
+# the raw credential — the worst case for the leak-into-`last_error` path. The
+# Engine must scrub it back out before it reaches the status field or a log.
+defmodule Valea.Mail.EngineTest.LeakyConnectTransport do
+  @behaviour Valea.Mail.Transport
+
+  @impl true
+  def connect(_config, credential, _opts) do
+    {:error, {:tls_alert, "handshake failed for " <> credential}}
+  end
+
+  @impl true
+  def capabilities(_conn), do: {:ok, []}
+  @impl true
+  def list_folders(_conn), do: {:ok, []}
+  @impl true
+  def create_folder(_conn, _folder), do: :ok
+  @impl true
+  def select(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1}}
+  @impl true
+  def uid_search(_conn, _criteria), do: {:ok, []}
+  @impl true
+  def uid_fetch_meta(_conn, _uids), do: {:ok, []}
+  @impl true
+  def uid_fetch_headers(_conn, _uids), do: {:ok, []}
+  @impl true
+  def uid_fetch_full(_conn, _uid), do: {:ok, ""}
+  @impl true
+  def uid_move(_conn, _uid, _folder), do: :ok
+  @impl true
+  def append(_conn, _folder, _flags, _rfc822), do: :ok
+  @impl true
+  def logout(_conn), do: :ok
+end
+
 defmodule Valea.Mail.EngineTest do
   use ExUnit.Case, async: false
+
+  import ExUnit.CaptureLog
 
   alias Valea.Mail.Engine
 
@@ -546,6 +583,71 @@ defmodule Valea.Mail.EngineTest do
     assert_receive {:mail_sync_finished, _payload}
     assert Engine.status().state == "idle"
   end
+
+  test "a sync task in flight is killed when the Engine stops (does not outlive it)", %{
+    root: root
+  } do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 41)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 41}
+    )
+
+    :ok = Engine.set_credential("app-password")
+    assert :ok = Engine.sync_now()
+    assert_receive {:connect_called, task_pid}
+    assert Process.alive?(task_pid)
+
+    # Tear the Engine down the way Workspace.Runtime does on a workspace
+    # switch. Because the pass task is LINKED to the Engine, it must die with
+    # it — a merely-monitored task blocked in connect would survive and later
+    # write the OLD workspace's rows into the NEW one.
+    ref = Process.monitor(task_pid)
+    assert :ok = stop_supervised!(Valea.Mail.Engine)
+
+    assert_receive {:DOWN, ^ref, :process, ^task_pid, _reason}, 1_000
+    refute Process.alive?(task_pid)
+  end
+
+  test "a connect failure never leaks the credential into last_error or a log line", %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.LeakyConnectTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+
+    start_engine!(root, 42)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 42}
+    )
+
+    secret = "hunter2-super-secret-XYZ"
+    :ok = Engine.set_credential(secret)
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    log =
+      capture_log(fn ->
+        assert :ok = Engine.sync_now()
+        assert_receive {:mail_sync_finished, %{new_messages: 0, errors: [error]}}, 2_000
+        refute error =~ secret
+      end)
+
+    refute log =~ secret
+    status = Engine.status()
+    assert status.last_error != nil
+    refute status.last_error =~ secret
+  end
 end
 
 # A `Transport` double for the single-flight tests: `connect/3` announces the
@@ -739,6 +841,29 @@ defmodule Valea.Mail.EngineMailboxOpsTest do
     ops = decided_ops(id)
     assert ops["draft_append"]["status"] == "done"
     assert ops["archive_source"]["status"] == "done"
+  end
+
+  test "activation survives a message file with no frontmatter id (index never crashes the Engine)",
+       %{root: root} do
+    # A frontmatter-but-no-id message file makes Index.rebuild's Store create
+    # raise (msg_id is required). Before the fix that raise escaped rebuild/1
+    # and crashed Engine.activate on workspace_opened — the Engine restarted
+    # inert and never re-activated. It must now survive as a skipped file.
+    bad = Path.join([root, "sources", "mail", "messages", "no-id.md"])
+    File.mkdir_p!(Path.dirname(bad))
+
+    File.write!(
+      bad,
+      "---\nmessage_id: \"<x@example.com>\"\nsubject: \"no id\"\nstatus: review\nsource: imap\n---\n\nBody.\n"
+    )
+
+    :ok = Engine.set_credential("app-password")
+    reactivate(root)
+
+    # The synchronous status call is processed after the (async) activation
+    # message, so a crashed-and-restarted-inert Engine would read "inactive".
+    assert Engine.status().state == "idle"
+    assert Process.alive?(Process.whereis(Engine))
   end
 
   test "the recovery scan leaves a failed op alone (it waits for retry)", %{root: root} do

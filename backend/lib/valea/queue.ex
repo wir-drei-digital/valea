@@ -535,21 +535,51 @@ defmodule Valea.Queue do
     end
   end
 
-  # Seed rule: a source message with `source: seed` in its leading frontmatter
-  # block — or a source message that is absent/unreadable — yields "skipped";
-  # any other readable source yields "pending". All named ops share that one
-  # status.
+  # Mailbox-op seeding rule (per-op, allowlist not denylist): an op is
+  # "pending" ONLY for a genuine inbound mail message — `source: imap` in the
+  # source file's frontmatter — and `archive_source` additionally requires a
+  # `uid` to move by. Everything else is "skipped": seed data, an ICM/other
+  # non-mail workflow that merely emitted a kind:"email_draft", and any
+  # absent/unreadable source. This keeps a non-mail draft from being APPENDed
+  # to the real Drafts folder, and keeps a uid-less source from parking
+  # archive_source in a permanent :source_has_no_uid failure.
   defp mailbox_ops_for(workspace, item, op_names) do
-    status = op_status(workspace, item["source_message"])
-    Map.new(op_names, fn name -> {name, %{"status" => status}} end)
+    info = source_op_info(workspace, item["source_message"])
+    Map.new(op_names, fn name -> {name, %{"status" => op_status(name, info)}} end)
   end
 
-  defp op_status(workspace, source_message) do
+  defp op_status("archive_source", %{imap?: true, uid?: true}), do: "pending"
+  defp op_status("archive_source", _info), do: "skipped"
+  defp op_status(_name, %{imap?: true}), do: "pending"
+  defp op_status(_name, _info), do: "skipped"
+
+  defp source_op_info(workspace, source_message) do
     case read_source_message(workspace, source_message) do
-      {:ok, content} -> if seed_source?(content), do: "skipped", else: "pending"
-      :error -> "skipped"
+      {:ok, content} ->
+        fm = frontmatter_map(content)
+        %{imap?: Map.get(fm, "source") == "imap", uid?: present_value?(fm["uid"])}
+
+      :error ->
+        %{imap?: false, uid?: false}
     end
   end
+
+  # Shallow parse of the leading `---`-delimited frontmatter block into a
+  # key => unquoted-scalar map (first occurrence wins) — enough to read
+  # `source:` and `uid:`. Containment/traversal is already enforced by
+  # `read_source_message/2` before we get here.
+  defp frontmatter_map(content) do
+    content
+    |> frontmatter_lines()
+    |> Enum.reduce(%{}, fn line, acc ->
+      case String.split(line, ":", parts: 2) do
+        [key, value] -> Map.put_new(acc, String.trim(key), unquote_value(value))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp present_value?(value), do: is_binary(value) and String.trim(value) != ""
 
   # Containment-gated like Runner's input read: `resolve_real/2` rejects any
   # `..`/symlink traversal escaping the workspace, so an agent-authored
@@ -566,19 +596,6 @@ defmodule Valea.Queue do
   end
 
   defp read_source_message(_workspace, _source_message), do: :error
-
-  # Scans ONLY the leading `---`-delimited frontmatter block for a
-  # `source: seed` key/value (bare or quoted).
-  defp seed_source?(content) do
-    content
-    |> frontmatter_lines()
-    |> Enum.any?(fn line ->
-      case String.split(line, ":", parts: 2) do
-        [key, value] -> String.trim(key) == "source" and unquote_value(value) == "seed"
-        _ -> false
-      end
-    end)
-  end
 
   defp frontmatter_lines(content) do
     case String.split(content, "\n") do
