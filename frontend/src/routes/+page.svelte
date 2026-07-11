@@ -9,6 +9,7 @@
   import { icmToNav } from '$lib/shell/nav';
   import { normalizeCockpitToday, splitTrustClause, mailSummaryLine, type CockpitToday } from '$lib/today/cockpit';
   import { fromLabel, subjectLabel } from '$lib/components/mail/mail-shapes';
+  import { genericSummary } from '$lib/components/today/triage-card';
   import PreparedItemCard from '$lib/components/today/PreparedItemCard.svelte';
   import InquiryTriageCard from '$lib/components/today/InquiryTriageCard.svelte';
   import ScheduleList from '$lib/components/today/ScheduleList.svelte';
@@ -19,11 +20,13 @@
 
   // The seeded cockpit narrative's Priya Nair entry — Task 18 stopped
   // rendering it (and its rich seed copy) inline via `InquiryTriageCard
-  // {item}`; that card is now generalized (`{path, fromName, subject}`
-  // props) and rendered separately below, either once with defaults (not
-  // configured) or once per real review message (configured). This title
-  // is only used to filter that ONE entry back out of the generic
-  // `PreparedItemCard` loop so it doesn't render twice.
+  // {item}`; that card is now generalized (`{path, fromName, summary,
+  // sources}` props) and rendered separately below: once, fed this exact
+  // payload entry's summary/usedSources, when mail isn't configured (so the
+  // seed card looks IDENTICAL to the pre-Task-18 render), or once per real
+  // review message with generic copy when it is. This title also filters
+  // the entry back out of the generic `PreparedItemCard` loop so it doesn't
+  // render twice.
   const SEED_INQUIRY_TITLE = 'Priya Nair · new inquiry';
 
   let today: CockpitToday | null = $state(null);
@@ -33,13 +36,27 @@
   async function load() {
     loading = true;
     failed = false;
+    await refresh();
+    loading = false;
+  }
+
+  // Silent variant of `load()` — refetches/replaces `today` without ever
+  // flashing the skeleton. Used by the `mail_status` subscription below: the
+  // payload's `mail` counts are computed backend-side at request time, and
+  // the Engine activates ASYNCHRONOUSLY after workspace open (its
+  // `mail_summary` reports zero/unconfigured until then — see
+  // `Valea.Cockpit`'s `live_mail_summary/0` doc), so a Today that only ever
+  // loaded once at mount would freeze that pre-activation snapshot forever.
+  async function refresh() {
     const result = await api.cockpitToday();
     if (result.ok) {
       today = normalizeCockpitToday(result.data as Record<string, any>);
-    } else {
+    } else if (loading) {
+      // Only the initial mount-time load surfaces a failure state; a failed
+      // background refresh keeps showing the last good narrative instead of
+      // tearing the whole page down.
       failed = true;
     }
-    loading = false;
   }
 
   onMount(() => {
@@ -59,6 +76,12 @@
     // wired once from `wireIcmEvents`) — same "refetch once on mount, pushes
     // keep it fresh" convention `/mail`'s own `onMount` uses.
     void mailStore.refreshMessages();
+    // Unfreeze the cockpit snapshot on every `mail_status` push (Engine
+    // activation, credential set, settings save, sync finish — each can
+    // change `mail.configured` or the counts). Subscribed via the mail
+    // store rather than a second `channel.on` binding — see
+    // `MailStore#onMailStatus`'s doc comment. Unsubscribed on unmount.
+    return mailStore.onMailStatus(() => void refresh());
   });
 
   const icmNav = $derived(icmToNav(icmStore.nodes));
@@ -66,6 +89,15 @@
 
   const otherPreparedItems = $derived.by(() =>
     (today?.preparedItems ?? []).filter((item) => item.title !== SEED_INQUIRY_TITLE)
+  );
+
+  // The cockpit payload's own Priya Nair entry — its summary/usedSources are
+  // handed to the seed card below so the unconfigured render stays sourced
+  // from the payload (byte-identical to the pre-Task-18 `{item}` render),
+  // with the card's own SEED_* defaults as the fallback if this entry is
+  // ever absent.
+  const seedInquiry = $derived.by(() =>
+    (today?.preparedItems ?? []).find((item) => item.title === SEED_INQUIRY_TITLE)
   );
 
   // Only messages with an indexed path can actually be run through the
@@ -142,11 +174,12 @@
                 <InquiryTriageCard
                   path={message.path}
                   fromName={fromLabel(message)}
-                  subject={subjectLabel(message.subject)}
+                  summary={genericSummary(subjectLabel(message.subject))}
+                  sources={[]}
                 />
               {/each}
             {:else}
-              <InquiryTriageCard />
+              <InquiryTriageCard summary={seedInquiry?.summary} sources={seedInquiry?.usedSources} />
             {/if}
             {#each otherPreparedItems as item (item.title)}
               <PreparedItemCard {item} />

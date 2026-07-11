@@ -7,15 +7,29 @@
  */
 
 /**
- * Defaults for the card's `{path, fromName, subject}` props — the seeded
- * Priya Nair message (`backend/priv/workspace_template/sources/mail/messages/
- * 2026-07-09-priya-nair-seed0001.md`), used verbatim when
- * `cockpit.mail.configured` is `false` (`routes/+page.svelte` renders
- * exactly one card, with no props, in that branch).
+ * Defaults for the card's `{path, fromName, summary, sources}` props — the
+ * seeded Priya Nair message (`backend/priv/workspace_template/sources/mail/
+ * messages/2026-07-09-priya-nair-seed0001.md`) and the cockpit narrative's
+ * matching prepared item (`Valea.Cockpit.today/0`). Used when
+ * `cockpit.mail.configured` is `false`, so the unconfigured Today page
+ * keeps rendering the ORIGINAL seed card exactly as before Task 18: the
+ * rich hand-authored summary plus its four source chips — NOT the generic
+ * templated line the configured multi-card path uses (real synced messages
+ * have no seeded narrative to draw on). `routes/+page.svelte` prefers
+ * passing the live cockpit payload's own summary/usedSources for the seed
+ * card; these constants are the byte-identical fallback (and the pinned
+ * contract in triage-card.test.ts) if that payload entry is ever absent.
  */
 export const SEED_TRIAGE_PATH = 'sources/mail/messages/2026-07-09-priya-nair-seed0001.md';
 export const SEED_TRIAGE_FROM_NAME = 'Priya Nair';
-export const SEED_TRIAGE_SUBJECT = 'Question about leadership coaching';
+export const SEED_TRIAGE_SUMMARY =
+  'Good-fit inquiry — she asked about leadership coaching, which matches your core offer. Draft leads with the discovery call, not the price.';
+export const SEED_TRIAGE_SOURCES = [
+  'her email',
+  'Offers › Founder Coaching',
+  'Tone guide',
+  'Policies › No medical advice'
+];
 
 /**
  * A pending queue item's full envelope carries the workflow's input path
@@ -35,20 +49,26 @@ export function envelopeInputPath(raw: unknown): string | null {
 }
 
 /**
- * The idle card's title/summary, built generically from the reviewed
- * message's from/subject — Task 18 replaced the single hand-authored
- * cockpit-seed copy ("Good-fit inquiry — she asked about leadership
- * coaching...") with this, since arbitrary review messages have no such
- * narrative to draw on. `title` reproduces the ORIGINAL seed title
- * verbatim for the default props ("Priya Nair · new inquiry").
+ * "<fromName> · new inquiry" — the card's title in every non-approval
+ * state. With the default `fromName` this reproduces the ORIGINAL seed
+ * title verbatim ("Priya Nair · new inquiry").
  */
-export function idleCopy(fromName: string, subject: string): { title: string; summary: string } {
-  const title = `${fromName} · new inquiry`;
-  const trimmedSubject = subject.trim();
-  const summary = trimmedSubject
-    ? `New inquiry: "${trimmedSubject}" — read it and prepare a reply.`
+export function triageTitle(fromName: string): string {
+  return `${fromName} · new inquiry`;
+}
+
+/**
+ * The generic one-line summary for a REAL review message's card (the
+ * configured multi-card path on Today) — built from the message's subject,
+ * since arbitrary synced messages carry no hand-authored narrative. The
+ * seed card never uses this: its summary prop defaults to
+ * `SEED_TRIAGE_SUMMARY` (see above).
+ */
+export function genericSummary(subject: string): string {
+  const trimmed = subject.trim();
+  return trimmed
+    ? `New inquiry: "${trimmed}" — read it and prepare a reply.`
     : 'New inquiry — read it and prepare a reply.';
-  return { title, summary };
 }
 
 /** Unchanged from the pre-Task-18 card — `api.runWorkflow`'s error vocabulary. */

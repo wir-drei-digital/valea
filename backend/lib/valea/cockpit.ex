@@ -135,25 +135,62 @@ defmodule Valea.Cockpit do
   # `Valea.Audit.entries/1` uses, for the same reason — no workspace open (or
   # one mid-switch) means `Valea.Mail.Engine` isn't registered, and calling
   # its `GenServer.call/2` anyway would exit `:noproc` and take this whole
-  # RPC/channel call down instead of degrading gracefully. `Store.list_messages/0`
-  # and `Store.inbox_headers/0` both hit the SAME per-workspace `Valea.Repo`
-  # that `Valea.Mail.Engine` only ever activates alongside (both are children
-  # of the same `Valea.Workspace.Runtime`), so the one whereis check covers
-  # both dependencies.
+  # RPC/channel call down instead of degrading gracefully.
+  #
+  # The whereis check does NOT cover `Valea.Mail.Store` (i.e. `Valea.Repo`),
+  # though: the Repo is NOT a `Valea.Workspace.Runtime` child — the Manager
+  # starts it directly under `Valea.Workspace.DynamicSupervisor` BEFORE the
+  # Runtime (`manager.ex`: `start_repo` → `migrate` → `start_runtime`), and
+  # `do_close/1` terminates `state.children` in that same list order, so on
+  # every close/switch the Repo goes down FIRST while the Engine's name is
+  # still registered. A `today/0` call landing in that window (or racing an
+  # Engine crash) passes the whereis guard and then hits a dead Repo — which
+  # is what `live_mail_summary/0`'s rescue/catch is for.
   defp mail_summary do
     if Process.whereis(Valea.Mail.Engine) do
-      review_count =
-        Valea.Mail.Store.list_messages() |> Enum.count(&(&1.status == "review"))
-
-      inbox_count = length(Valea.Mail.Store.inbox_headers())
-
-      %{
-        "review_count" => review_count,
-        "inbox_count" => inbox_count,
-        "configured" => Valea.Mail.Engine.status().configured
-      }
+      live_mail_summary()
     else
-      %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+      zero_mail_summary()
     end
+  end
+
+  # `state: "inactive"` — the Engine is registered but hasn't processed its
+  # `:workspace_opened` activation yet (activation is async in the Engine's
+  # own mailbox; `Index.rebuild/1` only runs there). Counts read this early
+  # would be whatever the previous session left in the cache, so report the
+  # deterministic zero/unconfigured shape instead; activation ends with a
+  # `mail_status` broadcast, and the Today page refetches this payload on
+  # that push (see `+page.svelte`), so the real counts follow immediately.
+  #
+  # rescue/catch: degrade to the zero summary the whereis guard already
+  # promises — deliberately broad, because the failure modes here are "some
+  # dependency of the read is down", not a specific exception type:
+  # `Store.*` raises assorted DB errors (`DBConnection.ConnectionError`,
+  # `Exqlite.Error`, Ash wrappers) when the Repo is down (see the close
+  # ordering note above), and `Engine.status/0` exits `:noproc` if the
+  # Engine dies between the whereis check and the call.
+  defp live_mail_summary do
+    case Valea.Mail.Engine.status() do
+      %{state: "inactive"} ->
+        zero_mail_summary()
+
+      status ->
+        review_count =
+          Valea.Mail.Store.list_messages() |> Enum.count(&(&1.status == "review"))
+
+        %{
+          "review_count" => review_count,
+          "inbox_count" => length(Valea.Mail.Store.inbox_headers()),
+          "configured" => status.configured
+        }
+    end
+  rescue
+    _ -> zero_mail_summary()
+  catch
+    :exit, _ -> zero_mail_summary()
+  end
+
+  defp zero_mail_summary do
+    %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
   end
 end

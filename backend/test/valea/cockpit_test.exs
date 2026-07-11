@@ -170,6 +170,11 @@ defmodule Valea.CockpitTest do
 
     test "reports live review/inbox counts once the account is configured" do
       ws = AgentCase.open_workspace!()
+      # Required, not just belt-and-braces: `mail_summary/0` now reports the
+      # deterministic zero shape while the Engine is still `"inactive"`, so
+      # reading `today/0` before activation would fail this test's live-count
+      # assertion regardless of what the Store already contains.
+      await_engine_active!()
 
       plant_message(ws.path, "extra-review", "review")
       plant_message(ws.path, "extra-processed", "processed")
@@ -196,6 +201,30 @@ defmodule Valea.CockpitTest do
       # 2 = the seeded Priya message + the extra "review" message planted
       # above; the "processed" one doesn't count.
       assert today["mail"] == %{"review_count" => 2, "inbox_count" => 2, "configured" => true}
+    end
+
+    test "degrades to the zero summary when the Repo is down but the Engine is still registered" do
+      AgentCase.open_workspace!()
+      await_engine_active!()
+
+      # The exact window `Valea.Workspace.Manager.do_close/1` opens on every
+      # close/switch: `state.children` is `[repo_pid, runtime_pid]`,
+      # terminated in list order, so the Repo dies FIRST while the Engine (a
+      # Runtime child) is still registered. Reproduce it directly by
+      # terminating the Repo child; `Valea.Workspace.DynamicSupervisor` never
+      # restarts a child it was asked to terminate, so the window stays open
+      # for the assertion below.
+      repo_pid = Process.whereis(Valea.Repo)
+      assert is_pid(repo_pid)
+      :ok = DynamicSupervisor.terminate_child(Valea.Workspace.DynamicSupervisor, repo_pid)
+
+      assert Process.whereis(Valea.Mail.Engine)
+
+      # Must not raise/exit despite `Store.list_messages/0` hitting a dead
+      # Repo — `live_mail_summary/0`'s rescue degrades to the zero shape.
+      {:ok, today} = Valea.Cockpit.today()
+
+      assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
     end
   end
 end

@@ -311,6 +311,29 @@ describe('MailStore.handleMailStatus', () => {
   });
 });
 
+describe('MailStore.onMailStatus', () => {
+  it('notifies subscribers of every mail_status push, alongside the store refetches (Today unfreezes its cockpit snapshot on this)', () => {
+    const store = new MailStore(fakeApi({}) as never);
+    const listener = vi.fn();
+
+    store.onMailStatus(listener);
+    store.handleMailStatus(rawStatus);
+
+    expect(listener).toHaveBeenCalledWith(rawStatus);
+  });
+
+  it('stops notifying once unsubscribed', () => {
+    const store = new MailStore(fakeApi({}) as never);
+    const listener = vi.fn();
+
+    const unsubscribe = store.onMailStatus(listener);
+    unsubscribe();
+    store.handleMailStatus(rawStatus);
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+});
+
 describe('resupplyCredential', () => {
   const configuredMissing: MailStatus = {
     configured: true,

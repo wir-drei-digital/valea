@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { envelopeInputPath, idleCopy, runWorkflowErrorMessage } from './triage-card';
+import {
+  SEED_TRIAGE_FROM_NAME,
+  SEED_TRIAGE_PATH,
+  SEED_TRIAGE_SOURCES,
+  SEED_TRIAGE_SUMMARY,
+  envelopeInputPath,
+  genericSummary,
+  runWorkflowErrorMessage,
+  triageTitle
+} from './triage-card';
 
 describe('envelopeInputPath', () => {
   it('reads the string `input` field off a raw envelope', () => {
@@ -18,20 +27,47 @@ describe('envelopeInputPath', () => {
   });
 });
 
-describe('idleCopy', () => {
-  it('builds the title from fromName, reproducing the original seed title verbatim', () => {
-    const { title } = idleCopy('Priya Nair', 'Question about leadership coaching');
-    expect(title).toBe('Priya Nair · new inquiry');
+// Pins the card's DEFAULT (unconfigured Today) render inputs to the exact
+// pre-Task-18 seed experience: the cockpit narrative's hand-authored Priya
+// summary and its four source chips, sourced from `Valea.Cockpit.today/0`'s
+// seeded prepared item and the seed message file. If any of these drift,
+// the unconfigured seed card silently stops matching the original — which
+// is precisely the regression Task 18's review caught.
+describe('seed defaults', () => {
+  it('pin the original seed card copy verbatim', () => {
+    expect(SEED_TRIAGE_PATH).toBe('sources/mail/messages/2026-07-09-priya-nair-seed0001.md');
+    expect(SEED_TRIAGE_FROM_NAME).toBe('Priya Nair');
+    expect(SEED_TRIAGE_SUMMARY).toBe(
+      'Good-fit inquiry — she asked about leadership coaching, which matches your core offer. Draft leads with the discovery call, not the price.'
+    );
+    expect(SEED_TRIAGE_SOURCES).toEqual([
+      'her email',
+      'Offers › Founder Coaching',
+      'Tone guide',
+      'Policies › No medical advice'
+    ]);
   });
 
-  it('quotes the subject in the summary when present', () => {
-    const { summary } = idleCopy('Priya Nair', 'Question about leadership coaching');
-    expect(summary).toBe('New inquiry: "Question about leadership coaching" — read it and prepare a reply.');
+  it('reproduce the original seed card title through triageTitle', () => {
+    expect(triageTitle(SEED_TRIAGE_FROM_NAME)).toBe('Priya Nair · new inquiry');
+  });
+});
+
+describe('triageTitle', () => {
+  it('builds the title from fromName', () => {
+    expect(triageTitle('Alex Kim')).toBe('Alex Kim · new inquiry');
+  });
+});
+
+describe('genericSummary', () => {
+  it('quotes the subject when present', () => {
+    expect(genericSummary('Question about leadership coaching')).toBe(
+      'New inquiry: "Question about leadership coaching" — read it and prepare a reply.'
+    );
   });
 
-  it('falls back to a subject-less summary when blank', () => {
-    const { summary } = idleCopy('Someone', '   ');
-    expect(summary).toBe('New inquiry — read it and prepare a reply.');
+  it('falls back to a subject-less line when blank', () => {
+    expect(genericSummary('   ')).toBe('New inquiry — read it and prepare a reply.');
   });
 });
 

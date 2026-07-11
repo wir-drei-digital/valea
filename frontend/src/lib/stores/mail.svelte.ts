@@ -130,12 +130,13 @@ export class MailStore {
   #api: MailApi;
 
   /**
-   * `mailbox_ops` push subscribers beyond this store's own `refreshMessages()`
-   * reaction (see `handleMailboxOps` below) — `onMailboxOps`'s doc comment
-   * explains why this exists instead of a route opening its own
-   * `channel.on('mailbox_ops', ...)`.
+   * `mailbox_ops`/`mail_status` push subscribers beyond this store's own
+   * refetch reactions (see `handleMailboxOps`/`handleMailStatus` below) —
+   * `onMailboxOps`'s doc comment explains why these exist instead of routes
+   * opening their own `channel.on(...)` bindings.
    */
   #mailboxOpsListeners = new Set<(payload: MailboxOpsPush) => void>();
+  #mailStatusListeners = new Set<(payload: MailStatusPush) => void>();
 
   constructor(api: MailApi) {
     this.#api = api;
@@ -207,6 +208,7 @@ export class MailStore {
     this.#applyStatus(payload);
     void this.refreshMessages();
     void this.refreshInbox();
+    this.#mailStatusListeners.forEach((listener) => listener(payload));
   }
 
   /**
@@ -261,6 +263,21 @@ export class MailStore {
   onMailboxOps(listener: (payload: MailboxOpsPush) => void): () => void {
     this.#mailboxOpsListeners.add(listener);
     return () => this.#mailboxOpsListeners.delete(listener);
+  }
+
+  /**
+   * Subscribes to `mail_status` pushes — same shape and rationale as
+   * `onMailboxOps` above. The Today page (`routes/+page.svelte`) hooks this
+   * to refetch `cockpit_today`: the payload's `mail` counts are computed
+   * backend-side at request time, and the Engine's async activation (plus
+   * every later credential/settings/sync transition) announces itself with
+   * exactly this push — without the refetch, Today would freeze whatever
+   * pre-activation snapshot (`configured: false`, zero counts) its single
+   * mount-time load happened to catch.
+   */
+  onMailStatus(listener: (payload: MailStatusPush) => void): () => void {
+    this.#mailStatusListeners.add(listener);
+    return () => this.#mailStatusListeners.delete(listener);
   }
 
   #applyStatus(raw: MailStatusPush): void {

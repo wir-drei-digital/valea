@@ -27,8 +27,17 @@
   //      no information in an invalid entry to attribute it to just one.
   //
   // Task 18 generalized this from one hardcoded Priya Nair instance to
-  // `{path, fromName, subject}` props (defaults = the seed message), so
-  // `routes/+page.svelte` can render one of these per mail review message.
+  // `{path, fromName, summary, sources}` props, so `routes/+page.svelte`
+  // can render one of these per mail review message. Every prop defaults to
+  // the SEED values (the Priya Nair message + the cockpit narrative's rich
+  // hand-authored summary and its four source chips), so the unconfigured
+  // Today page — which renders exactly one card, passing at most the
+  // cockpit payload's own byte-identical summary/usedSources — looks
+  // EXACTLY like the pre-Task-18 seed card. The configured multi-card path
+  // passes a generic subject-derived summary (`genericSummary` in
+  // triage-card.ts) and NO sources instead: real synced messages carry no
+  // seeded narrative or source attribution until a run produces one.
+  //
   // Multiple concurrent cards run the SAME workflow against DIFFERENT
   // inputs, so `matching` can no longer be "the first pending item for this
   // workflow" (every card would then converge on whichever run resolves
@@ -42,13 +51,15 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { queueStore } from '$lib/stores/queue.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
+  import SourceChips from './SourceChips.svelte';
   import ApprovalCard from '$lib/components/queue/ApprovalCard.svelte';
   import {
     SEED_TRIAGE_PATH,
     SEED_TRIAGE_FROM_NAME,
-    SEED_TRIAGE_SUBJECT,
+    SEED_TRIAGE_SUMMARY,
+    SEED_TRIAGE_SOURCES,
     envelopeInputPath,
-    idleCopy,
+    triageTitle,
     runWorkflowErrorMessage
   } from './triage-card';
 
@@ -57,10 +68,11 @@
   let {
     path = SEED_TRIAGE_PATH,
     fromName = SEED_TRIAGE_FROM_NAME,
-    subject = SEED_TRIAGE_SUBJECT
-  }: { path?: string; fromName?: string; subject?: string } = $props();
+    summary = SEED_TRIAGE_SUMMARY,
+    sources = SEED_TRIAGE_SOURCES
+  }: { path?: string; fromName?: string; summary?: string; sources?: string[] } = $props();
 
-  const copy = $derived(idleCopy(fromName, subject));
+  const title = $derived(triageTitle(fromName));
 
   let preparing = $state(false);
   let sessionId: string | null = $state(null);
@@ -151,7 +163,7 @@
     >
       Preparing
     </span>
-    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{copy.title}</h3>
+    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{title}</h3>
     <p class="text-ink-body text-[13.5px] leading-normal">
       Drafting a reply — reading her email, your offer, and your tone guide.
     </p>
@@ -173,8 +185,11 @@
     >
       New inquiry
     </span>
-    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{copy.title}</h3>
-    <p class="text-ink-body text-[13.5px] leading-normal">{copy.summary}</p>
+    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{title}</h3>
+    <p class="text-ink-body text-[13.5px] leading-normal">{summary}</p>
+    {#if sources.length > 0}
+      <SourceChips {sources} />
+    {/if}
     <div class="flex flex-wrap items-center gap-2 pt-0.5">
       <Button variant="default" onclick={() => void prepareReply()}>Prepare a reply</Button>
       {#if prepareError}
