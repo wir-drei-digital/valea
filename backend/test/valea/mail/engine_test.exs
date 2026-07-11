@@ -236,6 +236,115 @@ defmodule Valea.Mail.EngineTest do
     assert Engine.retry_ops("some-run-id") == {:error, :no_credential}
   end
 
+  test "doctor/0 on an inert (inactive) engine: config_present fails, everything after it is unknown",
+       %{root: root} do
+    start_engine!(root, 15)
+
+    assert {:ok, %{ok: false, checks: checks}} = Engine.doctor()
+    by_id = Map.new(checks, &{&1["id"], &1})
+    assert by_id["config_present"]["status"] == "failed"
+    assert by_id["workflow_contract"]["status"] == "unknown"
+  end
+
+  test "create_folders/0 refuses on an inert (inactive) engine", %{root: root} do
+    start_engine!(root, 16)
+    assert Engine.create_folders() == {:error, :inactive}
+  end
+
+  test "create_folders/0 refuses when configured but not credentialed", %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+    start_engine!(root, 17)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 17}
+    )
+
+    assert Engine.create_folders() == {:error, :no_credential}
+  end
+
+  # Proves the full wiring, not just the gates: doctor/0 threads the
+  # Engine's real settings/credential/transport into Doctor.run/1 (real
+  # gen_tcp listener for tcp_reachable + FakeMailTransport for the rest),
+  # and create_folders/0 threads the same snapshot into
+  # Doctor.create_folders/1.
+  test "doctor/0 and create_folders/0 against a real, activated engine: full green + folder creation",
+       %{root: root} do
+    {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen_socket)
+
+    acceptor =
+      spawn(fn ->
+        Enum.each(1..2, fn _ ->
+          case :gen_tcp.accept(listen_socket, 5_000) do
+            {:ok, socket} -> :gen_tcp.close(socket)
+            {:error, _} -> :ok
+          end
+        end)
+      end)
+
+    on_exit(fn ->
+      Process.exit(acceptor, :kill)
+      :gen_tcp.close(listen_socket)
+    end)
+
+    Application.put_env(:valea, :mail_transport, FakeMailTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    {:ok, _} = FakeMailTransport.start_link()
+
+    write_settings!(root, "localhost", "mara@example.com")
+    # write_settings!/3 doesn't set a port, so patch it in directly.
+    File.write!(Path.join(root, "config/mail.yaml"), """
+    account: mara@example.com
+    imap:
+      host: localhost
+      port: #{port}
+      username: mara@example.com
+    """)
+
+    # The raw tmp root this test module uses (unlike AgentCase's full
+    # template) has no icm/ tree at all; give workflow_contract something
+    # non-legacy to read so this test proves a genuine full-green run.
+    File.mkdir_p!(Path.join([root, "icm", "Workflows"]))
+
+    File.write!(
+      Path.join([root, "icm", "Workflows", "New Inquiry Triage.md"]),
+      "Inputs: a `sources/mail/messages/*.md` file.\n"
+    )
+
+    start_engine!(root, 18)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 18}
+    )
+
+    :ok = Engine.set_credential("app-password")
+
+    FakeMailTransport.script([
+      {:connect, :_, {:ok, FakeMailTransport}},
+      {:list_folders, :_, {:ok, ["AI/Review", "AI/Processed", "Drafts"]}},
+      {:capabilities, :_, {:ok, ["IMAP4rev1", "MOVE"]}},
+      {:logout, :_, :ok}
+    ])
+
+    assert {:ok, %{ok: true, checks: checks}} = Engine.doctor()
+    assert Enum.all?(checks, &(&1["status"] == "ok"))
+
+    FakeMailTransport.script([
+      {:connect, :_, {:ok, FakeMailTransport}},
+      {:list_folders, :_, {:ok, ["Drafts"]}},
+      {:create_folder, [:_, "AI/Review"], :ok},
+      {:create_folder, [:_, "AI/Processed"], :ok},
+      {:logout, :_, :ok}
+    ])
+
+    assert {:ok, created} = Engine.create_folders()
+    assert Enum.sort(created) == Enum.sort(["AI/Review", "AI/Processed"])
+  end
+
   test "an unsolicited :poll (simulating the timer firing) keeps the engine alive and idle", %{
     root: root
   } do

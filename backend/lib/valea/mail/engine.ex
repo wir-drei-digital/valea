@@ -59,6 +59,7 @@ defmodule Valea.Mail.Engine do
   """
   use GenServer
 
+  alias Valea.Mail.Doctor
   alias Valea.Mail.Index
   alias Valea.Mail.MailboxOps
   alias Valea.Mail.Settings
@@ -118,6 +119,36 @@ defmodule Valea.Mail.Engine do
   def retry_ops(run_id) when is_binary(run_id),
     do: GenServer.call(__MODULE__, {:retry_ops, run_id})
 
+  @doc """
+  Runs the mail connection doctor (mail design spec, §Account setup +
+  doctor) — `Valea.Mail.Doctor.run/1` against a snapshot of the Engine's
+  settings/credential/transport. Never errors: an inactive/unconfigured/
+  uncredentialed Engine, an unreachable server, or a bad password are all
+  *reported* as checks, not raised. The snapshot is fetched via a fast
+  `GenServer.call` (mirroring `status/0`); the actual network probing that
+  follows — which can take several seconds — runs in the calling process,
+  never inside the Engine's own loop.
+  """
+  @spec doctor() :: {:ok, %{checks: [Doctor.check()], ok: boolean}}
+  def doctor, do: Doctor.run(GenServer.call(__MODULE__, :doctor_ctx))
+
+  @doc """
+  Connects and creates whichever of the AI/Review and AI/Processed folders
+  are currently missing on the server — the doctor panel's "Create AI
+  folders" action. Guarded exactly like `sync_now/0`
+  (inactive/not_configured/no_credential), since it needs the same
+  settings + credential to connect. Same non-blocking shape as `doctor/0`:
+  a fast snapshot call, then the connect runs in the caller's process.
+  """
+  @spec create_folders() ::
+          {:ok, [String.t()]} | {:error, :inactive | :not_configured | :no_credential | term()}
+  def create_folders do
+    case GenServer.call(__MODULE__, :doctor_ctx_gated) do
+      {:ok, ctx} -> Doctor.create_folders(ctx)
+      {:error, _reason} = error -> error
+    end
+  end
+
   # -- GenServer --------------------------------------------------------------
 
   @impl true
@@ -165,6 +196,19 @@ defmodule Valea.Mail.Engine do
   def handle_call({:retry_ops, run_id}, _from, state) do
     case validate_sync(state) do
       :ok -> {:reply, :ok, execute_ops(state, run_id)}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # Doctor never gates: it must report on exactly why an inactive/
+  # unconfigured/uncredentialed Engine can't connect, not refuse to run.
+  def handle_call(:doctor_ctx, _from, state), do: {:reply, doctor_ctx(state), state}
+
+  # create_folders DOES gate, same as sync_now/retry_ops — it needs a real
+  # connection to create anything.
+  def handle_call(:doctor_ctx_gated, _from, state) do
+    case validate_sync(state) do
+      :ok -> {:reply, {:ok, doctor_ctx(state)}, state}
       {:error, _reason} = error -> {:reply, error, state}
     end
   end
@@ -310,6 +354,19 @@ defmodule Valea.Mail.Engine do
       {run_id, _tracked} -> %{state | ops_tasks: Map.delete(state.ops_tasks, run_id)}
       nil -> state
     end
+  end
+
+  # Snapshot of exactly the fields `Valea.Mail.Doctor` needs — the same
+  # settings/credential/transport a sync pass would use. Built inside a fast
+  # `handle_call` so the slow network probing that consumes it always runs
+  # outside the Engine's own loop (see `doctor/0`/`create_folders/0`).
+  defp doctor_ctx(state) do
+    %{
+      root: state.root,
+      settings: state.settings,
+      credential: state.credential,
+      transport: state.transport
+    }
   end
 
   defp load_settings(root) do
