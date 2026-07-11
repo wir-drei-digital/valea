@@ -10,6 +10,8 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
+mod keychain;
+
 const BACKEND_PORT: u16 = 4817;
 
 /// Holds the sidecar process so it can be killed on exit.
@@ -32,6 +34,11 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Backend(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![
+            keychain::mail_secret_set,
+            keychain::mail_secret_get,
+            keychain::mail_secret_delete
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 // Dev: the backend runs via `just dev-desktop` / `mix phx.server`
