@@ -308,10 +308,77 @@ defmodule Valea.QueueTest do
     refute File.exists?(processing_path(workspace, id))
     assert File.exists?(approved_path(workspace, id))
 
+    # Finishing the approval stamps the step-6 upgrade the crash skipped:
+    # schema v2 + mailbox_ops (this legacy v1 file has no source_message ->
+    # unreadable -> both ops skipped).
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["schema"] == "queue_item/v2"
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "skipped"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "skipped"
+
     {:ok, entries} = Valea.Audit.entries(50)
     entry = Enum.find(entries, &(&1["type"] == "item_approved" and &1["run_id"] == id))
     assert entry
     assert entry["recovered"] == true
+  end
+
+  test "recover/1 stamps pending mailbox_ops when finishing a crashed approve of an imap-source item, and broadcasts",
+       %{workspace: workspace} do
+    id = run_id("rec2v2")
+    source = write_imap_message(workspace, "rec2v2")
+    # A claimed v2 processing file whose draft was written (step 4 done) but
+    # whose step-6 upgrade-rewrite never ran.
+    write_pending(workspace, id, %{"schema" => "queue_item/v2", "source_message" => source})
+    File.mkdir_p!(Path.dirname(processing_path(workspace, id)))
+    File.rename!(pending_path(workspace, id), processing_path(workspace, id))
+
+    draft_abs = draft_path(workspace, id)
+    File.mkdir_p!(Path.dirname(draft_abs))
+    File.write!(draft_abs, "already executed")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+    Queue.recover(workspace)
+
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["schema"] == "queue_item/v2"
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "pending"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "pending"
+    assert_receive {:mailbox_ops_pending, ^id}
+  end
+
+  test "recover/1 returns a crashed reject (claimed + rewritten, no draft, no rejected file) to pending for re-decision",
+       %{workspace: workspace} do
+    id = run_id("rejcrx")
+    source = write_imap_message(workspace, "rejcrx")
+    write_pending(workspace, id, %{"source_message" => source})
+    {:ok, %{item: item}} = Queue.get(id)
+
+    # Simulate reject dying between its v2 rewrite and the final rename: the
+    # claimed processing file already carries the archive_source-only ops.
+    item2 =
+      item
+      |> Map.put("schema", "queue_item/v2")
+      |> Map.put("mailbox_ops", %{"archive_source" => %{"status" => "pending"}})
+
+    File.mkdir_p!(Path.dirname(processing_path(workspace, id)))
+    File.write!(processing_path(workspace, id), Jason.encode!(item2))
+    File.rm!(pending_path(workspace, id))
+
+    Queue.recover(workspace)
+
+    refute File.exists?(processing_path(workspace, id))
+    refute File.exists?(rejected_path(workspace, id))
+    assert File.exists?(pending_path(workspace, id))
+
+    {:ok, entries} = Valea.Audit.entries(50)
+    assert Enum.any?(entries, &(&1["type"] == "approval_recovered" and &1["run_id"] == id))
+
+    # The re-pended item is fully decidable again — approving re-stamps BOTH ops.
+    {:ok, %{revision: revision}} = Queue.get(id)
+    assert {:ok, _} = Queue.approve(id, revision)
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "pending"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "pending"
   end
 
   test "recover/1 returns an unfinished processing item (no draft) to pending", %{
@@ -416,16 +483,50 @@ defmodule Valea.QueueTest do
     assert_receive {:mailbox_ops_pending, ^id}
 
     refute File.exists?(pending_path(workspace, id))
+    refute File.exists?(processing_path(workspace, id))
     landed = rejected_path(workspace, id) |> File.read!() |> Jason.decode!()
     assert landed["schema"] == "queue_item/v2"
     assert landed["mailbox_ops"]["archive_source"]["status"] == "pending"
     refute Map.has_key?(landed["mailbox_ops"], "draft_append")
   end
 
-  test "recover/1 resolves a reject crash window (pending + rejected both present): rejected wins",
+  test "rejecting twice: the second call is queue_item_gone (rename-is-the-claim)", %{
+    workspace: workspace
+  } do
+    id = run_id("rej2x2")
+    write_pending(workspace, id)
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    assert {:ok, %{}} = Queue.reject(id, revision)
+    assert {:error, :queue_item_gone} = Queue.reject(id, revision)
+    # And an approve after the reject is excluded the same way.
+    assert {:error, :queue_item_gone} = Queue.approve(id, revision)
+  end
+
+  test "a source_message that traverses out of the workspace is treated as unreadable -> ops skipped",
+       %{workspace: workspace} do
+    # A readable imap-looking file OUTSIDE the workspace (two levels up, in
+    # the isolated app dir) — it would seed "pending" ops if the traversal
+    # were followed.
+    outside = [workspace, "..", "..", "outside.md"] |> Path.join() |> Path.expand()
+    File.write!(outside, "---\nsource: imap\n---\nBody.\n")
+
+    id = run_id("escp01")
+    write_pending(workspace, id, %{"source_message" => "../../outside.md"})
+    {:ok, %{revision: revision}} = Queue.get(id)
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "skipped"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "skipped"
+  end
+
+  test "recover/1 resolves a LEGACY reject crash window (pending + rejected both present): rejected wins",
        %{workspace: workspace} do
     id = run_id("crash1")
-    # Simulate a crash after the rejected/ write but before the pending rm.
+    # The original reject flow wrote rejected/ first and removed pending/
+    # second; a crash in between left both. The claim-based reject can no
+    # longer produce this, but recover/1 still sweeps it defensively.
     write_pending(workspace, id)
     File.mkdir_p!(Path.dirname(rejected_path(workspace, id)))
     File.write!(rejected_path(workspace, id), File.read!(pending_path(workspace, id)))

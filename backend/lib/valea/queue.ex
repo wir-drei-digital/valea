@@ -10,19 +10,17 @@ defmodule Valea.Queue do
   currently lives in IS the state machine:
 
       pending -> processing -> approved
-      pending -> rejected
+      pending -> processing -> rejected
 
   The DECIDED envelope carries more than the pending one did: on the way into
   `approved/`/`rejected/` its bytes are upgraded from `queue_item/v1` to
   `queue_item/v2`, stamping the durable `mailbox_ops` intents a later mailbox
-  pass consumes (see `approve/2` step 6 and `reject/2`). approve does this as
-  an in-place atomic rewrite of the ALREADY-CLAIMED `processing/` file (single
-  writer) before the final `approved/` rename, so the rename-is-the-claim
-  guarantee is untouched. reject, having no processing/ hop, instead
-  atomically writes the `rejected/` envelope and THEN removes the `pending/`
-  file — a crash between those two leaves both present, which `recover/1`
-  resolves (rejected is the durable decision, so it wins; the pending
-  duplicate is dropped).
+  pass consumes (see `approve/2` step 6 and `reject/2`). Both decisions do
+  this as an in-place atomic rewrite of the ALREADY-CLAIMED `processing/`
+  file (single writer) before the final rename into the terminal directory,
+  so the rename-is-the-claim guarantee holds for BOTH verbs: a concurrent
+  approve and reject of the same item mutually exclude at the claim, the
+  loser seeing `:queue_item_gone`.
 
   `revision` (sha256 hex of the exact file bytes) is the optimistic-lock
   token: `get/1` hands it out, `approve/2` and `reject/2` re-read the file
@@ -35,11 +33,17 @@ defmodule Valea.Queue do
   steps — `approval_intent` before, `action_executed` after — and is
   idempotent (skips the write if the draft file already exists), so a crash
   between claim and completion is always safe to replay: `recover/1` finds
-  the item still sitting in `processing/`, and either finishes it (draft
-  exists — the write happened, only the upgrade-rewrite+rename+audit did not)
-  or returns it to `pending/` (draft absent — nothing observable happened
-  yet). After the `processing/` sweep, `recover/1` also settles any leftover
-  reject crash window as described above.
+  the item still sitting in `processing/` and decides from the draft. Draft
+  exists — a crashed APPROVE whose execute finished; finish it, INCLUDING the
+  step-6 v2 upgrade the crash may have skipped, so a recovered approval never
+  lands without its `mailbox_ops`. Draft absent — a crashed approve
+  pre-execute OR a crashed reject pre-terminal-rename; both are unobservable
+  outside the queue, so the item is handed back to `pending/` for the human
+  to re-decide (a re-pended reject simply gets decided again — acceptable, as
+  no side effect ever happened). `recover/1` also still sweeps the LEGACY
+  reject crash window (rejected/ and pending/ both present, from the old
+  write-then-remove reject flow): rejected wins, the pending duplicate is
+  dropped.
 
   On approve completion and reject completion (even when the seeded ops are
   all `"skipped"`), a `{:mailbox_ops_pending, run_id}` message is broadcast on
@@ -146,15 +150,25 @@ defmodule Valea.Queue do
   end
 
   @doc """
-  Rejects `run_id`: same revision guard as `approve/2`, then — instead of a
-  bare rename — writes the `queue_item/v2` envelope carrying ONLY an
-  `archive_source` mailbox-op intent (seeded by the same seed rule as
-  `approve/2`) atomically into `rejected/` and removes the `pending/` file.
+  Rejects `run_id` with the same claim discipline as `approve/2`:
 
-  A crash between the `rejected/` write and the `pending/` removal leaves BOTH
-  files present; `recover/1` resolves that window (rejected wins). After the
-  files settle, audits `item_rejected` and broadcasts `{:mailbox_ops_pending,
-  run_id}` on `"mail_ops"` (the consumer no-ops when the sole op is skipped).
+    1. re-read the pending file's bytes and re-hash — mismatch against
+       `revision` returns `{:error, :queue_item_changed}` and touches
+       nothing;
+    2. atomic claim: `File.rename/2` `pending/<run_id>.json` ->
+       `processing/<run_id>.json` (already moved/gone ->
+       `:queue_item_gone`) — this is what makes a concurrent `approve/2`
+       and `reject/2` of the same item mutually exclusive;
+    3. atomically rewrite the claimed file to the `queue_item/v2` envelope
+       carrying ONLY an `archive_source` mailbox-op intent (same seed rule
+       as approve — `"skipped"` for a seed-source or missing/unreadable
+       source message, else `"pending"`);
+    4. `File.rename!` `processing/` -> `rejected/`;
+    5. audit `item_rejected`, broadcast `{:mailbox_ops_pending, run_id}` on
+       `"mail_ops"` (the consumer no-ops when the sole op is skipped).
+
+  A crash before step 4 leaves the item in `processing/` with no draft;
+  `recover/1` hands it back to `pending/` for the human to re-decide.
   """
   @spec reject(String.t(), revision()) ::
           {:ok, %{}}
@@ -164,8 +178,8 @@ defmodule Valea.Queue do
          {:ok, bytes} <- read_pending(workspace, run_id),
          :ok <- check_revision(bytes, revision),
          {:ok, item} <- decode_for_execute(bytes),
-         :ok <- write_rejected(workspace, run_id, item) do
-      File.rm(pending_path(workspace, run_id))
+         :ok <- claim(workspace, run_id) do
+      complete_rejection(workspace, run_id, item)
       audit("item_rejected", %{"run_id" => run_id})
       broadcast_ops(run_id)
       {:ok, %{}}
@@ -174,16 +188,25 @@ defmodule Valea.Queue do
 
   @doc """
   Crash recovery: for every file still sitting in `queue/processing/`
-  (meaning the process died between the claiming rename and the final
-  `approved/` rename), decide its fate from whether the draft was already
-  written:
+  (meaning the process died between the claiming rename and the terminal
+  rename — approve OR reject), decide its fate from whether the draft was
+  already written:
 
-    * draft exists -> the execute step finished, only completion didn't —
-      finish it (rename to `approved/`, audit `item_approved` with
-      `recovered: true`);
-    * draft absent -> nothing observable happened — hand it back to
-      `pending/` (audit `approval_recovered`) so a human can approve/reject
-      it again.
+    * draft exists -> a crashed approve whose execute step finished, only
+      completion didn't — finish it (stamp the step-6 `queue_item/v2` +
+      `mailbox_ops` upgrade if the crash skipped it, rename to `approved/`,
+      audit `item_approved` with `recovered: true`, broadcast
+      `{:mailbox_ops_pending, run_id}`);
+    * draft absent -> a crashed approve pre-execute or a crashed reject
+      pre-terminal-rename — nothing observable happened, so hand it back to
+      `pending/` (audit `approval_recovered`) for a human to approve/reject
+      again.
+
+  Additionally sweeps the LEGACY reject crash window — a `rejected/` file
+  whose run_id still has a `pending/` sibling, left by the old
+  write-rejected-then-remove-pending flow — by dropping the pending duplicate
+  (audit `reject_recovered`). The claim-based reject cannot produce that
+  window anymore.
 
   `workspace` is the plain root path (NOT a `%{path: ...}` map): this runs
   from `Valea.Workspace.Runtime` startup, before `Valea.Workspace.Manager`
@@ -483,14 +506,17 @@ defmodule Valea.Queue do
     File.rename!(processing_path(workspace, run_id), approved_path(workspace, run_id))
   end
 
-  # reject/2: write the queue_item/v2 envelope (only an archive_source op)
-  # into rejected/ atomically. The pending file is removed by the caller
-  # afterwards; a crash in between leaves both present for recover/1.
-  defp write_rejected(workspace, run_id, item) do
+  # reject/2 steps 3-4: same upgrade-then-rename shape as complete_approval,
+  # but with only the archive_source intent and rejected/ as the terminal
+  # directory. Operates on the ALREADY-CLAIMED processing file (single
+  # writer). A crash before the final rename leaves the item in processing/
+  # with no draft — recover_one/2 hands it back to pending/.
+  defp complete_rejection(workspace, run_id, item) do
     item2 = upgrade_envelope(workspace, item, ["archive_source"])
+    atomic_write!(processing_path(workspace, run_id), Jason.encode!(item2))
+
     File.mkdir_p!(rejected_dir(workspace))
-    atomic_write!(rejected_path(workspace, run_id), Jason.encode!(item2))
-    :ok
+    File.rename!(processing_path(workspace, run_id), rejected_path(workspace, run_id))
   end
 
   # v1/v2 -> v2: bump schema and, for an email_draft, stamp the seeded
@@ -525,10 +551,17 @@ defmodule Valea.Queue do
     end
   end
 
+  # Containment-gated like Runner's input read: `resolve_real/2` rejects any
+  # `..`/symlink traversal escaping the workspace, so an agent-authored
+  # source_message can never point the seed decision at a file the workspace
+  # does not own. Unresolvable, outside, and unreadable all collapse to
+  # :error — i.e. "skipped".
   defp read_source_message(workspace, source_message) when is_binary(source_message) do
-    case File.read(Path.join(workspace, source_message)) do
-      {:ok, content} -> {:ok, content}
-      {:error, _reason} -> :error
+    with {:ok, real} <- Valea.Paths.resolve_real(source_message, workspace),
+         {:ok, content} <- File.read(real) do
+      {:ok, content}
+    else
+      _ -> :error
     end
   end
 
@@ -571,20 +604,45 @@ defmodule Valea.Queue do
     run_id = Path.basename(path, ".json")
 
     if File.exists?(draft_path(workspace, run_id)) do
-      File.mkdir_p!(approved_dir(workspace))
-      File.rename!(path, approved_path(workspace, run_id))
-      audit("item_approved", %{"run_id" => run_id, "recovered" => true})
+      finish_recovered_approval(workspace, path, run_id)
     else
+      # Draft absent: a crashed approve that executed nothing observable, or
+      # a crashed reject that never reached its terminal rename. Either way
+      # the human re-decides.
       File.mkdir_p!(pending_dir(workspace))
       File.rename!(path, pending_path(workspace, run_id))
       audit("approval_recovered", %{"run_id" => run_id})
     end
   end
 
-  # A rejected/ file whose run_id STILL has a pending/ sibling is the crash
-  # window between reject/2's rejected-write and its pending-removal. Rejected
-  # is the durable decision (it was written first, atomically), so it wins:
-  # drop the pending duplicate and audit the recovery.
+  # The draft exists, so approve's execute step finished — but the crash may
+  # have hit BEFORE step 6's v2 upgrade, and a bare rename would land an
+  # approved/ envelope with NO mailbox_ops (the mailbox pass and the UI retry
+  # both key off that map, so the ops would be silently dropped forever).
+  # Stamp the upgrade exactly as complete_approval does; re-stamping an
+  # already-upgraded file is idempotent (same seed rule, same source, and no
+  # op outcome can exist yet — update_mailbox_op only touches terminal dirs).
+  # An unreadable/corrupt processing file falls back to the bare rename: the
+  # item reaching its terminal state still beats a perfect envelope.
+  defp finish_recovered_approval(workspace, path, run_id) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, %{} = item} <- Jason.decode(bytes) do
+      item2 = upgrade_envelope(workspace, item, ["draft_append", "archive_source"])
+      atomic_write!(path, Jason.encode!(item2))
+    end
+
+    File.mkdir_p!(approved_dir(workspace))
+    File.rename!(path, approved_path(workspace, run_id))
+    audit("item_approved", %{"run_id" => run_id, "recovered" => true})
+    broadcast_ops(run_id)
+  end
+
+  # LEGACY defensive sweep: the original reject flow wrote rejected/ first
+  # and removed pending/ second, so a crash in between left both. The
+  # claim-based reject/2 above can no longer produce this window (pending is
+  # renamed away before rejected/ is ever written), but a workspace last
+  # touched by the old flow may still carry the pair — rejected is the
+  # durable decision, so it wins and the pending duplicate is dropped.
   defp recover_rejected(workspace, path) do
     run_id = Path.basename(path, ".json")
     pending = pending_path(workspace, run_id)
