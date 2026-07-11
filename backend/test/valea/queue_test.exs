@@ -66,6 +66,27 @@ defmodule Valea.QueueTest do
 
   defp run_id(suffix), do: "20260710T000000Z-#{suffix}"
 
+  @seed_message "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
+
+  # Hand-writes an imap-source message fixture and returns its workspace-relative
+  # path (the seed rule keys on `source:` inside the leading frontmatter block).
+  defp write_imap_message(workspace, suffix) do
+    rel = "sources/mail/messages/imap-#{suffix}.md"
+    abs = Path.join(workspace, rel)
+    File.mkdir_p!(Path.dirname(abs))
+
+    File.write!(abs, """
+    ---
+    id: imap-#{suffix}
+    source: imap
+    subject: "Live inquiry"
+    ---
+    A genuinely inbound message.
+    """)
+
+    rel
+  end
+
   ## list/0 + get/1
 
   test "list/0 returns pending items newest-first with the summary shape", %{workspace: workspace} do
@@ -320,5 +341,194 @@ defmodule Valea.QueueTest do
     assert {:error, :queue_item_gone} = Queue.get("../../etc/passwd")
     assert {:error, :queue_item_gone} = Queue.approve("../../etc/passwd", "whatever")
     assert {:error, :queue_item_gone} = Queue.reject("some/nested/path", "whatever")
+  end
+
+  ## queue_item/v2 — durable mailbox-op intents
+
+  test "approve/2 accepts a legacy v1 envelope (no source_message) end-to-end and upgrades it to v2 with skipped ops",
+       %{workspace: workspace} do
+    id = run_id("v1v1v1")
+    # A hand-written legacy pending file: schema v1, no source_message key.
+    write_pending(workspace, id, %{"schema" => "queue_item/v1"})
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["schema"] == "queue_item/v2"
+    # source_message absent -> unreadable -> both ops skipped.
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "skipped"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "skipped"
+  end
+
+  test "approve/2 on a seed-source item lands a v2 envelope with both ops skipped", %{
+    workspace: workspace
+  } do
+    id = run_id("seed01")
+    write_pending(workspace, id, %{"source_message" => @seed_message})
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["schema"] == "queue_item/v2"
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "skipped"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "skipped"
+  end
+
+  test "approve/2 on an imap-source item lands a v2 envelope with both ops pending", %{
+    workspace: workspace
+  } do
+    id = run_id("imap01")
+    source = write_imap_message(workspace, "imap01")
+    write_pending(workspace, id, %{"source_message" => source})
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    landed = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["schema"] == "queue_item/v2"
+    assert landed["mailbox_ops"]["draft_append"]["status"] == "pending"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "pending"
+  end
+
+  test "approve/2 broadcasts {:mailbox_ops_pending, run_id} on the mail_ops topic", %{
+    workspace: workspace
+  } do
+    id = run_id("bcast1")
+    write_pending(workspace, id, %{"source_message" => @seed_message})
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+    assert {:ok, _} = Queue.approve(id, revision)
+    assert_receive {:mailbox_ops_pending, ^id}
+  end
+
+  test "reject/2 writes only an archive_source intent, upgrades to v2, removes the pending file, broadcasts",
+       %{workspace: workspace} do
+    id = run_id("rej001")
+    source = write_imap_message(workspace, "rej001")
+    write_pending(workspace, id, %{"source_message" => source})
+    {:ok, %{revision: revision}} = Queue.get(id)
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+    assert {:ok, %{}} = Queue.reject(id, revision)
+    assert_receive {:mailbox_ops_pending, ^id}
+
+    refute File.exists?(pending_path(workspace, id))
+    landed = rejected_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert landed["schema"] == "queue_item/v2"
+    assert landed["mailbox_ops"]["archive_source"]["status"] == "pending"
+    refute Map.has_key?(landed["mailbox_ops"], "draft_append")
+  end
+
+  test "recover/1 resolves a reject crash window (pending + rejected both present): rejected wins",
+       %{workspace: workspace} do
+    id = run_id("crash1")
+    # Simulate a crash after the rejected/ write but before the pending rm.
+    write_pending(workspace, id)
+    File.mkdir_p!(Path.dirname(rejected_path(workspace, id)))
+    File.write!(rejected_path(workspace, id), File.read!(pending_path(workspace, id)))
+
+    Queue.recover(workspace)
+
+    refute File.exists?(pending_path(workspace, id))
+    assert File.exists?(rejected_path(workspace, id))
+
+    {:ok, entries} = Valea.Audit.entries(50)
+    assert Enum.any?(entries, &(&1["type"] == "reject_recovered" and &1["run_id"] == id))
+  end
+
+  test "update_mailbox_op/3 rewrites an approved envelope's op in place and broadcasts", %{
+    workspace: workspace
+  } do
+    id = run_id("upd001")
+    source = write_imap_message(workspace, "upd001")
+    write_pending(workspace, id, %{"source_message" => source})
+    {:ok, %{revision: revision}} = Queue.get(id)
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+
+    assert {:ok, updated} =
+             Queue.update_mailbox_op(id, "archive_source", %{"status" => "done"})
+
+    assert updated["mailbox_ops"]["archive_source"]["status"] == "done"
+    assert_receive {:mailbox_ops_updated, ^id}
+
+    on_disk = approved_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert on_disk["mailbox_ops"]["archive_source"]["status"] == "done"
+    # The untouched op is preserved.
+    assert on_disk["mailbox_ops"]["draft_append"]["status"] == "pending"
+  end
+
+  test "update_mailbox_op/3 finds a rejected envelope too and can carry extra keys", %{
+    workspace: workspace
+  } do
+    id = run_id("upd002")
+    source = write_imap_message(workspace, "upd002")
+    write_pending(workspace, id, %{"source_message" => source})
+    {:ok, %{revision: revision}} = Queue.get(id)
+    assert {:ok, %{}} = Queue.reject(id, revision)
+
+    assert {:ok, _} =
+             Queue.update_mailbox_op(id, "archive_source", %{
+               "status" => "error",
+               "error" => "imap timeout"
+             })
+
+    on_disk = rejected_path(workspace, id) |> File.read!() |> Jason.decode!()
+    assert on_disk["mailbox_ops"]["archive_source"]["status"] == "error"
+    assert on_disk["mailbox_ops"]["archive_source"]["error"] == "imap timeout"
+  end
+
+  test "update_mailbox_op/3 on an unknown run_id -> queue_item_gone" do
+    assert {:error, :queue_item_gone} = Queue.update_mailbox_op("nope", "archive_source", %{})
+  end
+
+  ## list_decided/0 + get_decided/1
+
+  test "list_decided/0 returns approved + rejected items newest-first with the decided shape", %{
+    workspace: workspace
+  } do
+    approved_id = run_id("dec001")
+    rejected_id = run_id("dec002")
+
+    write_pending(workspace, approved_id, %{"source_message" => @seed_message})
+    {:ok, %{revision: rev_a}} = Queue.get(approved_id)
+    assert {:ok, _} = Queue.approve(approved_id, rev_a)
+
+    write_pending(workspace, rejected_id, %{"source_message" => @seed_message})
+    {:ok, %{revision: rev_r}} = Queue.get(rejected_id)
+    assert {:ok, _} = Queue.reject(rejected_id, rev_r)
+
+    assert {:ok, [first, second]} = Queue.list_decided()
+    # rejected_id sorts lexically after approved_id -> newest first.
+    assert first.run_id == rejected_id
+    assert first.decided == "rejected"
+    assert second.run_id == approved_id
+    assert second.decided == "approved"
+
+    assert second.title == "Reply to Priya"
+    assert second.kind == "email_draft"
+    assert is_map(second.mailbox_ops)
+    assert is_binary(second.created_at)
+  end
+
+  test "get_decided/1 returns the raw envelope and which dir it lives in", %{workspace: workspace} do
+    id = run_id("dec003")
+    write_pending(workspace, id, %{"source_message" => @seed_message})
+    {:ok, %{revision: revision}} = Queue.get(id)
+    assert {:ok, _} = Queue.approve(id, revision)
+
+    assert {:ok, %{item: item, decided: "approved"}} = Queue.get_decided(id)
+    assert item["run_id"] == id
+    assert item["schema"] == "queue_item/v2"
+  end
+
+  test "get_decided/1 on an undecided run_id -> queue_item_gone", %{workspace: workspace} do
+    id = run_id("dec004")
+    write_pending(workspace, id)
+    assert {:error, :queue_item_gone} = Queue.get_decided(id)
   end
 end

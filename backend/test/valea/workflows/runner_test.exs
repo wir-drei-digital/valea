@@ -76,12 +76,13 @@ defmodule Valea.Workflows.RunnerTest do
     wait_until(fn -> File.exists?(pending_path) end)
 
     item = pending_path |> File.read!() |> Jason.decode!()
-    assert item["schema"] == "queue_item/v1"
+    assert item["schema"] == "queue_item/v2"
     assert item["run_id"] == run_id
     assert item["session_id"] == session_id
     assert item["workflow"] == @wf_path
     assert is_binary(item["workflow_hash"]) and byte_size(item["workflow_hash"]) == 64
     assert item["input"] == @input_path
+    assert item["source_message"] == @input_path
     assert is_binary(item["input_hash"]) and byte_size(item["input_hash"]) == 64
     assert item["risk_level"] == "medium"
     assert item["payload"]["kind"] == "email_draft"

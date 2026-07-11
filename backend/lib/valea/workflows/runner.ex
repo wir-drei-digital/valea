@@ -250,7 +250,7 @@ defmodule Valea.Workflows.Runner do
 
   defp write_pending!(workspace, run_id, run, payload) do
     envelope = %{
-      "schema" => "queue_item/v1",
+      "schema" => "queue_item/v2",
       "run_id" => run["run_id"],
       "session_id" => run["session_id"],
       "workflow" => run["workflow"],
@@ -260,6 +260,10 @@ defmodule Valea.Workflows.Runner do
       "risk_level" => run["risk_level"],
       "approval" => run["approval"],
       "created_at" => run["created_at"],
+      # The source message that triggered this run — the seed for the
+      # post-approval mailbox-op intents Queue.approve/reject stamp onto the
+      # decided envelope (queue_item/v2).
+      "source_message" => run["input"],
       "payload" => payload
     }
 
