@@ -264,9 +264,20 @@ defmodule Valea.Workflows.Runner do
          "body_markdown" => body
        })
        when is_binary(to) and is_binary(subject) and is_binary(body),
-       do: true
+       do: no_control_chars?(to) and no_control_chars?(subject)
 
   defp valid_action?(_action), do: false
+
+  # `to`/`subject` are interpolated straight into the draft's YAML frontmatter
+  # (`Valea.Queue.draft_markdown/2`). A control char — newline, CR, or any
+  # other C0/DEL — would let an agent inject arbitrary frontmatter keys (e.g. a
+  # second `to:`) so the executed draft diverges from what the human approved.
+  # Reject at the proposal boundary so a malformed item never reaches the
+  # queue. `body_markdown` is the frontmatter BODY (below `---`), so it is not
+  # subject to this check.
+  defp no_control_chars?(s) do
+    not Enum.any?(String.to_charlist(s), &(&1 < 0x20 or &1 == 0x7F))
+  end
 
   ## paths
 

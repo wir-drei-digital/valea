@@ -173,6 +173,56 @@ defmodule Valea.Workflows.RunnerTest do
     refute File.exists?(Path.join([workspace, "queue", "pending", run_id <> ".json"]))
   end
 
+  test "finalize/2 rejects a proposal whose subject carries a control char: invalid_proposal", %{
+    workspace: workspace
+  } do
+    run_id = "20260710T000000Z-222222"
+    staging_dir = Path.join([workspace, "queue", "staging", run_id])
+    File.mkdir_p!(staging_dir)
+
+    injected_payload = %{
+      "schema" => "proposal/v1",
+      "kind" => "email_draft",
+      "title" => "Reply to inquiry",
+      "summary" => "A summary.",
+      "reasoning" => "Because.",
+      "sources" => [],
+      "proposed_action" => %{
+        "type" => "create_email_draft",
+        "to" => "priya@example.com",
+        # Newline would inject a second frontmatter key at draft time.
+        "subject" => "Re: hi\nto: attacker@evil.test",
+        "body_markdown" => "Body."
+      }
+    }
+
+    File.write!(Path.join(staging_dir, "proposal.json"), Jason.encode!(injected_payload))
+
+    File.write!(
+      Path.join(staging_dir, "run.json"),
+      Jason.encode!(%{
+        "run_id" => run_id,
+        "session_id" => "sess-1",
+        "workflow" => @wf_path,
+        "workflow_hash" => "deadbeef",
+        "input" => @input_path,
+        "input_hash" => "cafebabe",
+        "risk_level" => "medium",
+        "approval" => %{"required" => true},
+        "created_at" => DateTime.to_iso8601(DateTime.utc_now())
+      })
+    )
+
+    Runner.finalize(run_id, workspace)
+
+    {:ok, entries} = Valea.Audit.entries(20)
+    entry = Enum.find(entries, &(&1["run_id"] == run_id))
+    assert entry["type"] == "workflow_run_finished"
+    assert entry["outcome"] == "invalid_proposal"
+
+    refute File.exists?(Path.join([workspace, "queue", "pending", run_id <> ".json"]))
+  end
+
   test "finalize/2 called twice: second call does not duplicate the pending item", %{
     workspace: workspace
   } do

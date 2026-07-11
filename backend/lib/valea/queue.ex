@@ -287,9 +287,19 @@ defmodule Valea.Queue do
          "body_markdown" => body
        })
        when is_binary(to) and is_binary(subject) and is_binary(body),
-       do: true
+       do: no_control_chars?(to) and no_control_chars?(subject)
 
   defp valid_action?(_action), do: false
+
+  # `to`/`subject` are interpolated straight into the draft's YAML frontmatter
+  # (`draft_markdown/2`). A control char — newline, CR, or any other C0/DEL —
+  # would let a hand-written or agent-authored queue item inject arbitrary
+  # frontmatter keys (e.g. a second `to:`), diverging the executed draft from
+  # what the human approved. Reject at the envelope boundary so `get/approve`
+  # surface `:queue_item_invalid` rather than executing a malformed draft.
+  defp no_control_chars?(s) do
+    not Enum.any?(String.to_charlist(s), &(&1 < 0x20 or &1 == 0x7F))
+  end
 
   defp nonempty_string?(s), do: is_binary(s) and String.trim(s) != ""
 

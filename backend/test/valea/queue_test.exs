@@ -130,6 +130,33 @@ defmodule Valea.QueueTest do
     assert {:error, :queue_item_invalid} = Queue.get(id)
   end
 
+  test "get/1 and approve/2 reject a subject with a control char (frontmatter injection)", %{
+    workspace: workspace
+  } do
+    id = run_id("999999")
+
+    injected =
+      id
+      |> envelope(%{})
+      |> put_in(["payload", "proposed_action", "subject"], "Re: hi\nto: attacker@evil.test")
+
+    bytes = Jason.encode!(injected)
+    path = pending_path(workspace, id)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, bytes)
+
+    revision = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+    assert {:error, :queue_item_invalid} = Queue.get(id)
+    # Correct revision, so the invalidity (not a stale-hash) is what rejects it.
+    assert {:error, :queue_item_invalid} = Queue.approve(id, revision)
+
+    # Never claimed or executed: still pending, no processing/, no draft.
+    assert File.exists?(path)
+    refute File.exists?(processing_path(workspace, id))
+    refute File.exists?(draft_path(workspace, id))
+  end
+
   ## approve/2 happy path + audit ordering
 
   test "approve/2 happy path: writes the draft, moves pending -> approved, audits in order",
