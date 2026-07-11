@@ -66,6 +66,31 @@ defmodule Valea.Mail.Normalizer do
   `String.valid?/1` + scrub for UTF-8/US-ASCII) and RFC 2047 decoding
   itself, uniformly, for both the structured-decode path and the
   headers-only fallback path.
+
+  ## The `encoding: :none` 7-bit filter, and the seven-bit-safe pre-pass
+
+  `encoding: :none` has a second, nastier consequence: mimemail's
+  `decode_body(Type, Body, _InEncoding, none)` clause strips every byte
+  ≥ 0x80 from each leaf part's **wire** bytes *before* the
+  transfer-encoding decode. Quoted-printable and base64 survive only
+  because their wire form happens to be pure ASCII — a body or attachment
+  sent with `Content-Transfer-Encoding: 8bit`/`binary` (or none at all)
+  would silently lose every high byte, with no error and no note.
+
+  The fix is `seven_bit_safe/1`: before handing bytes to
+  `:mimemail.decode/2`, any leaf part whose wire bytes contain a byte
+  ≥ 0x80 is transfer-decoded here (qp via mimemail's own exported
+  decoder, raw CTEs verbatim) and re-encoded as base64, with the part's
+  `Content-Transfer-Encoding` header rewritten to match. The message
+  mimemail then sees is 7-bit clean end to end, so the filter has nothing
+  to drop, and the decoded part bodies come back byte-identical to the
+  original content — which the normal charset pipeline
+  (`decode_charset_bytes/2`) then converts exactly like the QP path. The
+  pre-pass is conservative: messages with no high bytes anywhere are
+  returned untouched (byte-identical), any per-entity ambiguity (no
+  parseable headers, multipart without boundary, dirty base64 wire) leaves
+  that entity untouched, and any raise falls back to the original bytes —
+  worst case is mimemail's old behavior, never something worse.
   """
 
   alias Valea.Mail.Message
@@ -101,14 +126,37 @@ defmodule Valea.Mail.Normalizer do
   Normalizes raw RFC822 bytes into a `%Valea.Mail.Message{}`. Never returns
   an error: a `:mimemail.decode/2` raise (malformed MIME) falls back to
   headers extracted via `parse_headers/1` plus the raw text after the
-  first blank line, with `notes.normalizer_note` set.
+  first blank line, with `notes.normalizer_note` set. The guarantee is
+  structural, not incidental — `do_normalize/1` wraps the whole pipeline
+  (including the fallback itself) in a rescue whose last resort is a
+  minimal message built only from raise-proof operations.
   """
   @spec normalize(binary()) :: {:ok, Message.t()}
   def normalize(rfc822) when is_binary(rfc822) do
+    {:ok, do_normalize(rfc822)}
+  end
+
+  defp do_normalize(rfc822) do
     case try_decode(rfc822) do
-      {:ok, mime} -> {:ok, build_from_mime(mime)}
-      {:error, reason} -> {:ok, build_fallback(rfc822, reason)}
+      {:ok, mime} -> build_from_mime(mime)
+      {:error, reason} -> build_fallback(rfc822, reason)
     end
+  rescue
+    e -> minimal_fallback(rfc822, e)
+  catch
+    kind, reason -> minimal_fallback(rfc822, {kind, reason})
+  end
+
+  # Raise-proof by construction: scrub_utf8/1 and :binary.replace/4 accept
+  # any binary, and describe_reason/1 bottoms out in inspect/1.
+  defp minimal_fallback(rfc822, reason) do
+    %Message{
+      body_text: rfc822 |> normalize_newlines() |> scrub_utf8(),
+      notes: %{
+        normalizer_note:
+          "normalization crashed (#{describe_reason(reason)}); raw bytes preserved as body"
+      }
+    }
   end
 
   @doc """
@@ -137,7 +185,7 @@ defmodule Valea.Mail.Normalizer do
   # -- mimemail decode (never lets an mimemail raise escape) -----------------
 
   defp try_decode(rfc822) do
-    {:ok, :mimemail.decode(rfc822, @mime_options)}
+    {:ok, :mimemail.decode(seven_bit_safe(rfc822), @mime_options)}
   rescue
     e -> {:error, e}
   catch
@@ -145,6 +193,191 @@ defmodule Valea.Mail.Normalizer do
     # which `rescue` already catches as ErlangError — this `catch` is for the
     # rarer :throw/:exit paths in third-party MIME parsing code.
     kind, reason -> {:error, {kind, reason}}
+  end
+
+  # -- seven-bit-safe pre-pass (see moduledoc) --------------------------------
+  #
+  # Re-encodes every leaf part whose wire bytes contain a byte >= 0x80 as
+  # base64 (rewriting its Content-Transfer-Encoding header), so mimemail's
+  # encoding:none 7-bit filter never has anything to drop. Byte-identical
+  # passthrough when the message is already 7-bit clean.
+
+  # Elixir regexes without the `u` modifier run PCRE in 8-bit mode — these
+  # match raw bytes, safe on arbitrary (non-UTF-8) binaries.
+  @high_byte_re ~r/[\x80-\xFF]/
+  @cte_header_re ~r/^content-transfer-encoding:[^\r\n]*(?:\r\n[ \t][^\r\n]*)*\r\n/im
+
+  defp seven_bit_safe(raw) do
+    if has_high_byte?(raw) do
+      {bytes, _changed} = rewrite_entity(raw)
+      bytes
+    else
+      raw
+    end
+  rescue
+    _ -> raw
+  catch
+    _, _ -> raw
+  end
+
+  defp has_high_byte?(bin), do: Regex.match?(@high_byte_re, bin)
+
+  # One MIME entity = header block + body. Returns {bytes, changed?};
+  # changed? == false always returns the input bytes untouched.
+  defp rewrite_entity(raw) do
+    {parsed_headers, body} = :mimemail.parse_headers(raw)
+    header_size = byte_size(raw) - byte_size(body)
+
+    with true <- parsed_headers != [],
+         # parse_headers may reconstruct `body` on odd inputs; only proceed
+         # when it is literally the byte suffix of `raw`, so header bytes can
+         # be carried over verbatim.
+         true <- binary_part(raw, header_size, byte_size(body)) == body do
+      header_bytes = binary_part(raw, 0, header_size)
+
+      parsed_headers
+      |> header_value("Content-Type")
+      |> classify_content_type()
+      |> rewrite_by_type(raw, header_bytes, parsed_headers, body)
+    else
+      _ -> {raw, false}
+    end
+  end
+
+  defp classify_content_type(nil), do: :leaf
+
+  defp classify_content_type(content_type) do
+    [type | _] = String.split(content_type, ";", parts: 2)
+    type = type |> String.trim() |> String.downcase()
+
+    cond do
+      String.starts_with?(type, "multipart/") -> classify_multipart(content_type)
+      type == "message/rfc822" -> :rfc822
+      true -> :leaf
+    end
+  end
+
+  defp classify_multipart(content_type) do
+    case Regex.run(~r/boundary\s*=\s*(?:"([^"]*)"|([^;\s]+))/i, content_type) do
+      [_, boundary] when boundary != "" -> {:multipart, boundary}
+      [_, "", boundary] when boundary != "" -> {:multipart, boundary}
+      # No usable boundary: leave the entity alone; mimemail will raise
+      # no_boundary and normalize/1's fallback path takes over, as before.
+      _ -> :opaque
+    end
+  end
+
+  defp rewrite_by_type({:multipart, boundary}, raw, header_bytes, _headers, body) do
+    case rewrite_multipart_body(body, boundary) do
+      {new_body, true} -> {header_bytes <> new_body, true}
+      {_body, false} -> {raw, false}
+    end
+  end
+
+  defp rewrite_by_type(:rfc822, raw, header_bytes, _headers, body) do
+    case rewrite_entity(body) do
+      {new_body, true} -> {header_bytes <> new_body, true}
+      {_body, false} -> {raw, false}
+    end
+  end
+
+  defp rewrite_by_type(:opaque, raw, _header_bytes, _headers, _body), do: {raw, false}
+
+  defp rewrite_by_type(:leaf, raw, header_bytes, headers, body) do
+    with true <- has_high_byte?(body),
+         {:ok, decoded} <- transfer_decode_for_rewrite(leaf_cte(headers), body) do
+      {rewrite_cte_to_base64(header_bytes) <> Base.encode64(decoded), true}
+    else
+      _ -> {raw, false}
+    end
+  end
+
+  defp leaf_cte(headers) do
+    case header_value(headers, "Content-Transfer-Encoding") do
+      nil -> ""
+      value -> value |> String.trim() |> String.downcase()
+    end
+  end
+
+  defp transfer_decode_for_rewrite("quoted-printable", body),
+    do: {:ok, :mimemail.decode_quoted_printable(body)}
+
+  # base64 wire bytes should never contain a high byte; if they do, the wire
+  # is malformed — leave it for mimemail rather than guess.
+  defp transfer_decode_for_rewrite("base64", _body), do: :skip
+
+  # 7bit / 8bit / binary / absent: the wire bytes ARE the content.
+  defp transfer_decode_for_rewrite(_other, body), do: {:ok, body}
+
+  # Replace (or add) the Content-Transfer-Encoding header inside a verbatim
+  # header block (which normally ends with the blank separator line, i.e.
+  # a "\r\n\r\n" suffix).
+  defp rewrite_cte_to_base64(header_bytes) do
+    stripped = Regex.replace(@cte_header_re, header_bytes, "")
+    new_line = "Content-Transfer-Encoding: base64\r\n"
+
+    cond do
+      # Normal case: insert just before the blank separator line.
+      String.ends_with?(stripped, "\r\n\r\n") ->
+        String.replace_suffix(stripped, "\r\n", "") <> new_line <> "\r\n"
+
+      # Every header line was a CTE header; only the blank separator remains.
+      stripped == "\r\n" ->
+        new_line <> "\r\n"
+
+      # No blank separator line survived (degenerate block): append one.
+      true ->
+        stripped <> new_line <> "\r\n"
+    end
+  end
+
+  # Splits a multipart body on its boundary delimiters, recursing into each
+  # part entity. "\r\n" is prepended before splitting because the delimiter
+  # is defined as CRLF + "--boundary" (RFC 2046) but the very first one may
+  # sit at offset 0; the injected CRLF is trimmed back off the preamble on
+  # reassembly. Only reassembles when a part actually changed.
+  defp rewrite_multipart_body(body, boundary) do
+    delimiter = "\r\n--" <> boundary
+    [preamble | segments] = :binary.split("\r\n" <> body, delimiter, [:global])
+    {rebuilt, changed} = rewrite_segments(segments, delimiter, [], false)
+
+    if changed do
+      {trim_injected_crlf(preamble) <> rebuilt, true}
+    else
+      {body, false}
+    end
+  end
+
+  defp trim_injected_crlf("\r\n" <> rest), do: rest
+  defp trim_injected_crlf(other), do: other
+
+  defp rewrite_segments([], _delimiter, acc, changed) do
+    {acc |> Enum.reverse() |> Enum.join(), changed}
+  end
+
+  defp rewrite_segments([segment | rest], delimiter, acc, changed) do
+    if String.starts_with?(segment, "--") do
+      # Terminator ("--boundary--"): everything from here on — including any
+      # epilogue and stray delimiter-lookalikes inside it — stays verbatim.
+      tail = Enum.join([segment | rest], delimiter)
+      rewrite_segments([], delimiter, [delimiter <> tail | acc], changed)
+    else
+      {chunk, chunk_changed} = rewrite_segment(segment)
+      rewrite_segments(rest, delimiter, [delimiter <> chunk | acc], changed or chunk_changed)
+    end
+  end
+
+  # A part segment = the rest of the boundary line (usually empty, possibly
+  # transport padding), then CRLF, then the part entity.
+  defp rewrite_segment(segment) do
+    case :binary.split(segment, "\r\n") do
+      [boundary_line_rest, entity] ->
+        {new_entity, changed} = rewrite_entity(entity)
+        {boundary_line_rest <> "\r\n" <> new_entity, changed}
+
+      [_no_crlf] ->
+        {segment, false}
+    end
   end
 
   defp build_from_mime({_type, _subtype, headers, _params, _body} = mime) do
@@ -405,9 +638,12 @@ defmodule Valea.Mail.Normalizer do
       {bytes, nil}
     else
       {scrub_utf8(bytes),
-       "declared charset #{inspect(charset)} but bytes were not valid UTF-8; invalid sequences replaced"}
+       "#{describe_charset(charset)} but bytes were not valid UTF-8; invalid sequences replaced"}
     end
   end
+
+  defp describe_charset(nil), do: "no declared charset"
+  defp describe_charset(charset), do: "declared charset #{inspect(charset)}"
 
   defp try_codepagex(bytes, encoding, charset) do
     {Codepagex.to_string!(bytes, encoding), nil}
@@ -415,7 +651,15 @@ defmodule Valea.Mail.Normalizer do
     _ -> {scrub_utf8(bytes), "failed to decode #{inspect(charset)} bytes; replaced with U+FFFD"}
   end
 
-  defp scrub_utf8(bin) do
+  @doc """
+  Replaces every invalid UTF-8 sequence in `bin` with U+FFFD, returning a
+  binary for which `String.valid?/1` holds. Raise-proof for any input.
+  Public because `Valea.Mail.MessageFile` uses the same scrub to keep
+  invalid bytes in header-derived struct fields from ever crashing a
+  frontmatter render — one scrub semantic across the mail modules.
+  """
+  @spec scrub_utf8(binary()) :: String.t()
+  def scrub_utf8(bin) do
     case :unicode.characters_to_binary(bin) do
       b when is_binary(b) ->
         b

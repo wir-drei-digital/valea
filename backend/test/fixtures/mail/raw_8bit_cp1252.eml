@@ -1,0 +1,10 @@
+From: Priya Nair <priya@example.com>
+To: Mara Lindt <mara@example.com>
+Subject: Raw eight bit
+Date: Sat, 18 Jul 2026 09:00:00 +0000
+Message-ID: <raw-8bit-cp1252-001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=windows-1252
+Content-Transfer-Encoding: 8bit
+
+He said “Hello” — that’s all.

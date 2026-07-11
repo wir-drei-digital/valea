@@ -220,6 +220,30 @@ defmodule Valea.Mail.MessageFileTest do
       assert parsed.frontmatter["subject"] == ~s(She said "hi" and used a \\ backslash)
     end
 
+    test "invalid UTF-8 in header-derived values is scrubbed, never raises" do
+      msg = %Message{
+        message_id: <<0x3C, 0xFF, 0xFE, 0x40, 0x3E>>,
+        from: %{name: <<"Bad", 0xC3>>, email: "x@example.com"},
+        subject: "ok"
+      }
+
+      rendered =
+        MessageFile.render(msg, %{
+          msg_id: "2026-01-01-x-deadbeef",
+          uid: nil,
+          status: "review",
+          source: "imap",
+          attachments: []
+        })
+
+      assert String.valid?(rendered)
+      # <0xFF 0xFE @> — each invalid byte becomes U+FFFD; the frontmatter
+      # stays parseable and the value round-trips as the scrubbed string.
+      {:ok, %{frontmatter: frontmatter}} = MessageFile.parse(rendered)
+      assert frontmatter["message_id"] == "<��@>"
+      assert frontmatter["from"]["name"] == "Bad�"
+    end
+
     test "a null byte / DEL in a from name is neutralized, not dropped or left raw" do
       msg = %Message{from: %{name: "Evil\x00\x7Fname", email: "x@example.com"}}
 

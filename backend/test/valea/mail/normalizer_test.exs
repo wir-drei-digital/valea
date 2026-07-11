@@ -96,6 +96,31 @@ defmodule Valea.Mail.NormalizerTest do
     end
   end
 
+  describe "normalize/1 — raw_8bit_cp1252.eml" do
+    test "byte-preserves a raw 8bit windows-1252 body and converts it via Codepagex" do
+      {:ok, msg} = Normalizer.normalize(fixture("raw_8bit_cp1252.eml"))
+
+      # cp1252 smart quotes (0x93/0x94), em dash (0x97), apostrophe (0x92) —
+      # sent as raw high bytes (Content-Transfer-Encoding: 8bit), so this is
+      # the regression case for gen_smtp's encoding:none 7-bit filter, which
+      # silently dropped every one of them before the seven_bit_safe pre-pass.
+      assert msg.body_text == "He said “Hello” — that’s all.\n"
+      assert msg.notes == %{}
+    end
+  end
+
+  describe "normalize/1 — binary_attachment.eml" do
+    test "byte-preserves a Content-Transfer-Encoding: binary attachment exactly" do
+      {:ok, msg} = Normalizer.normalize(fixture("binary_attachment.eml"))
+
+      assert msg.body_text == "Binary attachment below."
+      assert [%{filename: "logo.bin", content: content}] = msg.attachments
+      # 12 bytes incl. >= 0x80 bytes, NUL, a bare LF, and an embedded CRLF.
+      assert content == <<0x89, "PNG", "\r\n", 0x1A, "\n", 0x00, 0x00, 0xFF, 0xFE>>
+      assert byte_size(content) == 12
+    end
+  end
+
   describe "normalize/1 — no_message_id.eml" do
     test "message_id is nil when the header is absent; everything else still parses" do
       {:ok, msg} = Normalizer.normalize(fixture("no_message_id.eml"))
@@ -118,6 +143,13 @@ defmodule Valea.Mail.NormalizerTest do
                "<CAJx1234@mail.example.com>",
                "<threaded-reply-000@mail.example.com>"
              ]
+    end
+  end
+
+  describe "normalize/1 — structural no-error guarantee" do
+    test "returns {:ok, message} even for garbage bytes" do
+      assert {:ok, msg} = Normalizer.normalize(<<0xFF, 0xFE, 0x00>> <> "\r\n\r\n" <> <<0x80>>)
+      assert String.valid?(msg.body_text)
     end
   end
 

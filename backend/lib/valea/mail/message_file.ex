@@ -22,15 +22,20 @@ defmodule Valea.Mail.MessageFile do
   names and emails, message_id, in_reply_to, references, reply_to,
   attachment filenames) is rendered through `yaml_string/1`, which:
 
-    1. replaces every C0 control character (`< 0x20`) and DEL (`0x7F`) —
+    1. scrubs invalid UTF-8 (each bad sequence → U+FFFD, via
+       `Valea.Mail.Normalizer.scrub_utf8/1`) so `render/2` structurally
+       cannot raise on a struct field carrying raw header bytes —
+       regardless of whether the normalizer produced it,
+    2. replaces every C0 control character (`< 0x20`) and DEL (`0x7F`) —
        notably `\\n` and `\\r` — with a plain space, so a header can never
        inject a new YAML line (e.g. a second `status:` key), and
-    2. double-quotes the result, escaping `\\` and `"`.
+    3. double-quotes the result, escaping `\\` and `"`.
 
   A mail header must never be able to break the frontmatter block.
   """
 
   alias Valea.Mail.Message
+  alias Valea.Mail.Normalizer
 
   @status_re ~r/^status:.*$/m
 
@@ -169,20 +174,28 @@ defmodule Valea.Mail.MessageFile do
     for key <- @note_keys, Map.has_key?(notes, key), do: "#{key}: #{yaml_string(notes[key])}"
   end
 
-  # Injection hardening: C0/DEL neutralized to a space (never dropped, so
-  # offsets in error messages/tests stay stable), then `\` and `"` escaped,
-  # then double-quoted. A mail header can therefore never terminate the
-  # string early or inject a sibling YAML key.
+  # Injection hardening: invalid UTF-8 scrubbed first (String.to_charlist/1
+  # in neutralize_control_chars/1 would raise UnicodeConversionError on raw
+  # header bytes otherwise — the guarantee must not depend on the caller
+  # having normalized the field), then C0/DEL neutralized to a space (never
+  # dropped, so offsets in error messages/tests stay stable), then `\` and
+  # `"` escaped, then double-quoted. A mail header can therefore never crash
+  # a render, terminate the string early, or inject a sibling YAML key.
   defp yaml_string(nil), do: "null"
 
   defp yaml_string(value) when is_binary(value) do
     escaped =
       value
+      |> ensure_valid_utf8()
       |> neutralize_control_chars()
       |> String.replace("\\", "\\\\")
       |> String.replace("\"", "\\\"")
 
     "\"#{escaped}\""
+  end
+
+  defp ensure_valid_utf8(value) do
+    if String.valid?(value), do: value, else: Normalizer.scrub_utf8(value)
   end
 
   defp neutralize_control_chars(s) do
