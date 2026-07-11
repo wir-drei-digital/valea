@@ -137,7 +137,8 @@ defmodule Valea.Mail.Engine do
        last_sync_at: nil,
        last_error: nil,
        poll_timer: nil,
-       sync_task: nil
+       sync_task: nil,
+       ops_tasks: %{}
      }}
   end
 
@@ -206,7 +207,14 @@ defmodule Valea.Mail.Engine do
 
   # Stale task chatter (already handled/superseded): ignore.
   def handle_info({:sync_result, _pid, _result}, state), do: {:noreply, state}
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
+
+  # An ops task finished (normal exit or crash): clear its single-flight slot
+  # so a later retry/broadcast for that run_id can run again. Any monitor
+  # that is neither the sync task (matched above) nor an ops task is stale
+  # chatter and leaves the state untouched.
+  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+    {:noreply, clear_ops_task(state, {pid, ref})}
+  end
 
   # -- activation ---------------------------------------------------------
 
@@ -227,7 +235,6 @@ defmodule Valea.Mail.Engine do
 
     broadcast_status(new_state)
     recover_mailbox_ops(new_state)
-    new_state
   end
 
   # Activation recovery scan: any decided item whose mailbox ops are still
@@ -239,8 +246,8 @@ defmodule Valea.Mail.Engine do
   # sync: with no credential the ops simply wait.
   defp recover_mailbox_ops(state) do
     case validate_sync(state) do
-      :ok -> Enum.each(pending_op_run_ids(), &execute_ops(state, &1))
-      {:error, _reason} -> :ok
+      :ok -> Enum.reduce(pending_op_run_ids(), state, &execute_ops(&2, &1))
+      {:error, _reason} -> state
     end
   end
 
@@ -260,10 +267,9 @@ defmodule Valea.Mail.Engine do
 
   defp any_pending?(_ops), do: false
 
-  # Runs the mailbox ops for `run_id` in an unlinked task so a slow or
-  # crashing pass can never block or take down the Engine. `MailboxOps.execute`
-  # is idempotent and self-guarding, so a duplicate trigger (recovery scan +
-  # the pending broadcast, say) is safe. Callers gate on `validate_sync/1`.
+  # Runs the mailbox ops for `run_id` in a monitored (unlinked) task so a
+  # slow or crashing pass can never block or take down the Engine. Callers
+  # gate on `validate_sync/1`.
   defp maybe_execute_ops(state, run_id) do
     case validate_sync(state) do
       :ok -> execute_ops(state, run_id)
@@ -271,17 +277,39 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  # Single-flight PER RUN ID, mirroring the sync pass's pattern: the
+  # executor's UID-SEARCH-before-APPEND idempotence guard is check-then-act —
+  # safe against sequential replays, but two CONCURRENT executions for the
+  # same item (retry racing the approve broadcast, a double-fired retry RPC,
+  # a workspace_opened re-fire during a running batch) would both see an
+  # empty search and both APPEND, landing duplicate drafts under one
+  # Message-ID. So an in-flight task per run_id is tracked in
+  # `state.ops_tasks`; a duplicate trigger while one is live is a no-op, and
+  # the task's `:DOWN` (normal exit or crash — `MailboxOps.execute/1` returns
+  # `:ok` on every handled path, so the monitor is the one completion signal)
+  # clears the slot so a later retry runs.
   defp execute_ops(state, run_id) do
-    args = %{
-      root: state.root,
-      run_id: run_id,
-      transport: state.transport,
-      settings: state.settings,
-      credential: state.credential
-    }
+    if Map.has_key?(state.ops_tasks, run_id) do
+      state
+    else
+      args = %{
+        root: state.root,
+        run_id: run_id,
+        transport: state.transport,
+        settings: state.settings,
+        credential: state.credential
+      }
 
-    spawn(fn -> MailboxOps.execute(args) end)
-    state
+      task = spawn_monitor(fn -> MailboxOps.execute(args) end)
+      %{state | ops_tasks: Map.put(state.ops_tasks, run_id, task)}
+    end
+  end
+
+  defp clear_ops_task(state, task) do
+    case Enum.find(state.ops_tasks, fn {_run_id, tracked} -> tracked == task end) do
+      {run_id, _tracked} -> %{state | ops_tasks: Map.delete(state.ops_tasks, run_id)}
+      nil -> state
+    end
   end
 
   defp load_settings(root) do

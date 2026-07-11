@@ -107,4 +107,21 @@ defmodule Valea.Mail.DraftMimeTest do
     assert {:ok, rfc822} = DraftMime.compose(draft_md(), fm, @run_id, nil)
     assert unfold(rfc822) =~ "From: valea@valea.invalid"
   end
+
+  test "compose/4 quotes a display name with RFC 5322 specials in the To header" do
+    fm = %{"from" => %{"name" => "Nair, Priya (Sales)", "email" => "priya@example.com"}}
+
+    assert {:ok, rfc822} = DraftMime.compose(draft_md(), fm, @run_id, "mara@example.com")
+    assert unfold(rfc822) =~ ~s(To: "Nair, Priya \(Sales\)" <priya@example.com>)
+  end
+
+  test "compose/4 RFC-2047-encodes a non-ASCII display name in the To header" do
+    fm = %{"from" => %{"name" => "Grüße Nair", "email" => "g@example.com"}}
+
+    assert {:ok, rfc822} = DraftMime.compose(draft_md(), fm, @run_id, "mara@example.com")
+    # mimemail re-parses address headers and emits non-ASCII names as
+    # encoded-words — the raw bytes on the wire stay 7-bit clean.
+    assert unfold(rfc822) =~ "To: =?UTF-8?Q?Gr=C3=BC=C3=9Fe_Nair?= <g@example.com>"
+    refute unfold(rfc822) =~ "To: Grüße"
+  end
 end

@@ -360,6 +360,48 @@ defmodule Valea.Mail.EngineTest do
   end
 end
 
+# A `Transport` double for the single-flight tests: `connect/3` announces the
+# ops task's pid to a probe and blocks until released — so a test can prove a
+# second trigger for the same run_id is a no-op WHILE an execution is
+# genuinely in flight. Everything after connect delegates to the shared
+# `FakeMailTransport` (release with `{:ok, FakeMailTransport}` so the conn
+# routes to its script/call log).
+defmodule Valea.Mail.EngineMailboxOpsTest.OpsHangingTransport do
+  @behaviour Valea.Mail.Transport
+
+  @impl true
+  def connect(_config, _credential, _opts) do
+    send(Application.get_env(:valea, :ops_probe), {:ops_connect, self()})
+
+    receive do
+      {:release, result} -> result
+    end
+  end
+
+  @impl true
+  defdelegate capabilities(conn), to: FakeMailTransport
+  @impl true
+  defdelegate list_folders(conn), to: FakeMailTransport
+  @impl true
+  defdelegate create_folder(conn, folder), to: FakeMailTransport
+  @impl true
+  defdelegate select(conn, folder), to: FakeMailTransport
+  @impl true
+  defdelegate uid_search(conn, criteria), to: FakeMailTransport
+  @impl true
+  defdelegate uid_fetch_meta(conn, uids), to: FakeMailTransport
+  @impl true
+  defdelegate uid_fetch_headers(conn, uids), to: FakeMailTransport
+  @impl true
+  defdelegate uid_fetch_full(conn, uid), to: FakeMailTransport
+  @impl true
+  defdelegate uid_move(conn, uid, folder), to: FakeMailTransport
+  @impl true
+  defdelegate append(conn, folder, flags, rfc822), to: FakeMailTransport
+  @impl true
+  defdelegate logout(conn), to: FakeMailTransport
+end
+
 # The mailbox-ops recovery + retry paths need the REAL Engine (started by the
 # workspace Runtime) so `Valea.Queue`/`Valea.Mail.Store` resolve against an
 # actually-open workspace — hence a separate module with its own setup that
@@ -562,5 +604,142 @@ defmodule Valea.Mail.EngineMailboxOpsTest do
     assert_receive {:mailbox_ops_updated, ^id}, 2000
     assert decided_ops(id)["archive_source"]["status"] == "done"
     assert File.read!(source.abs) =~ "status: processed"
+  end
+
+  # Swaps the active Engine's transport for the hanging double and points its
+  # probe at the test process. Returns :ok; used by the single-flight tests.
+  defp install_hanging_transport! do
+    Application.put_env(:valea, :ops_probe, self())
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:valea, :ops_probe) end)
+
+    :sys.replace_state(Process.whereis(Engine), fn state ->
+      %{state | transport: Valea.Mail.EngineMailboxOpsTest.OpsHangingTransport}
+    end)
+
+    :ok
+  end
+
+  defp wait_until(fun, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("condition not met in time")
+
+      true ->
+        Process.sleep(10)
+        do_wait_until(fun, deadline)
+    end
+  end
+
+  test "single-flight per run_id: a second trigger while ops are in flight is a no-op (one APPEND)",
+       %{root: root} do
+    id = "20260710T000000Z-flight1"
+    source = write_source_message(root, "flight1", 74)
+    write_draft(root, id)
+
+    :ok = Engine.set_credential("app-password")
+    # activate BEFORE planting so the recovery scan has nothing to pick up —
+    # only the explicit triggers below drive the ops. The broadcast is async,
+    # so synchronize on a call before planting.
+    reactivate(root)
+    assert Engine.status().state == "idle"
+
+    plant_envelope(
+      root,
+      id,
+      "approved",
+      %{"draft_append" => %{"status" => "pending"}, "archive_source" => %{"status" => "pending"}},
+      source.rel
+    )
+
+    install_hanging_transport!()
+
+    FakeMailTransport.script([
+      {:select, [:_, "Drafts"], {:ok, %{uidvalidity: 1, uidnext: 10}}},
+      {:uid_search, :_, {:ok, []}},
+      {:append, :_, :ok},
+      {:select, [:_, "AI/Review"], {:ok, %{uidvalidity: 1, uidnext: 50}}},
+      {:uid_move, :_, :ok},
+      {:logout, :_, :ok}
+    ])
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+
+    # first trigger: hangs at connect, holding the run_id in flight
+    assert :ok = Engine.retry_ops(id)
+    assert_receive {:ops_connect, task_pid}
+
+    # second trigger while in flight — retry RPC and the approve-broadcast
+    # path both no-op: no second connect
+    assert :ok = Engine.retry_ops(id)
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail_ops", {:mailbox_ops_pending, id})
+    refute_receive {:ops_connect, _another}, 150
+
+    # release: the ONE execution completes both ops against the fake
+    send(task_pid, {:release, {:ok, FakeMailTransport}})
+    assert_receive {:mailbox_ops_updated, ^id}, 2000
+    assert_receive {:mailbox_ops_updated, ^id}, 2000
+
+    ops = decided_ops(id)
+    assert ops["draft_append"]["status"] == "done"
+    assert ops["archive_source"]["status"] == "done"
+
+    # exactly ONE append reached the transport
+    appends = for {:append, args} <- FakeMailTransport.calls(), do: args
+    assert length(appends) == 1
+
+    # and the in-flight slot clears once the task exits
+    wait_until(fn -> :sys.get_state(Process.whereis(Engine)).ops_tasks == %{} end)
+  end
+
+  test "a killed ops task clears the single-flight slot so a later retry runs", %{root: root} do
+    id = "20260710T000000Z-flight2"
+    source = write_source_message(root, "flight2", 75)
+
+    :ok = Engine.set_credential("app-password")
+    reactivate(root)
+    # synchronize with the async activation before planting a pending op —
+    # the recovery scan must not race the plant.
+    assert Engine.status().state == "idle"
+
+    plant_envelope(
+      root,
+      id,
+      "rejected",
+      %{"archive_source" => %{"status" => "pending"}},
+      source.rel
+    )
+
+    install_hanging_transport!()
+
+    assert :ok = Engine.retry_ops(id)
+    assert_receive {:ops_connect, first_pid}
+
+    # kill the in-flight task — the :DOWN must free the run_id's slot
+    Process.exit(first_pid, :kill)
+    wait_until(fn -> :sys.get_state(Process.whereis(Engine)).ops_tasks == %{} end)
+
+    FakeMailTransport.script([
+      {:select, [:_, "AI/Review"], {:ok, %{uidvalidity: 1, uidnext: 50}}},
+      {:uid_move, :_, :ok},
+      {:logout, :_, :ok}
+    ])
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+
+    # a later retry spawns a fresh execution (guard cleared) and completes
+    assert :ok = Engine.retry_ops(id)
+    assert_receive {:ops_connect, second_pid}
+    send(second_pid, {:release, {:ok, FakeMailTransport}})
+
+    assert_receive {:mailbox_ops_updated, ^id}, 2000
+    assert decided_ops(id)["archive_source"]["status"] == "done"
   end
 end

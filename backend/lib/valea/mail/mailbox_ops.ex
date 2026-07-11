@@ -49,6 +49,10 @@ defmodule Valea.Mail.MailboxOps do
   `"skipped"`, `"unsupported"`, and `"done"` are terminal: `execute/1`
   no-ops them (a seed-source item, whose ops the queue seeded `"skipped"`,
   therefore makes zero transport calls — not even a connect).
+
+  The ops are independent by design: a failed `draft_append` does not stop
+  `archive_source` from running (or vice versa) — the draft file persists
+  locally either way, and each op stays individually retryable.
   """
 
   alias Valea.Mail.DraftMime
