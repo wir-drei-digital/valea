@@ -119,6 +119,32 @@ defmodule Valea.Mail.SettingsTest do
       assert {:error, {:invalid, reason}} = Settings.load(root)
       assert reason =~ "port"
     end
+
+    test "zero port", %{root: root} do
+      write_yaml!(root, """
+      account: mara@example.com
+      imap:
+        host: imap.fastmail.com
+        port: 0
+        username: mara@example.com
+      """)
+
+      assert {:error, {:invalid, reason}} = Settings.load(root)
+      assert reason =~ "port"
+    end
+
+    test "negative port", %{root: root} do
+      write_yaml!(root, """
+      account: mara@example.com
+      imap:
+        host: imap.fastmail.com
+        port: -1
+        username: mara@example.com
+      """)
+
+      assert {:error, {:invalid, reason}} = Settings.load(root)
+      assert reason =~ "port"
+    end
   end
 
   describe "load/1 — success" do
@@ -213,6 +239,28 @@ defmodule Valea.Mail.SettingsTest do
 
       # v2's "drafted" key is not v3's "drafts" key, so it's ignored — default wins
       assert settings.folders.drafts == "Drafts"
+    end
+
+    test "non-positive sync overrides fall back to defaults (same as wrong type)", %{root: root} do
+      write_yaml!(root, """
+      account: mara@example.com
+      imap:
+        host: imap.fastmail.com
+        port: 993
+        username: mara@example.com
+      sync:
+        interval_minutes: -5
+        max_message_bytes: -999999
+        inbox_index_limit: 0
+      """)
+
+      assert {:ok, settings} = Settings.load(root)
+
+      assert settings.sync == %{
+               interval_minutes: 5,
+               max_message_bytes: 10_485_760,
+               inbox_index_limit: 200
+             }
     end
   end
 
@@ -344,6 +392,35 @@ defmodule Valea.Mail.SettingsTest do
 
       assert {:ok, settings} = Settings.load(root)
       assert settings.imap.username == ~s(evil"user ssl: false)
+    end
+
+    test "does not crash on invalid UTF-8 input; scrubs to U+FFFD and round-trips", %{root: root} do
+      :ok =
+        Settings.write!(root, %{
+          account: "mara@example.com",
+          host: "imap.fastmail.com",
+          port: 993,
+          username: "abc" <> <<0xFF, 0xFE>> <> "def"
+        })
+
+      assert {:ok, settings} = Settings.load(root)
+      assert String.valid?(settings.imap.username)
+      assert settings.imap.username == "abc��def"
+    end
+
+    test "rejects a non-positive port with a FunctionClauseError", %{root: root} do
+      for bad_port <- [0, -1] do
+        assert_raise FunctionClauseError, fn ->
+          Settings.write!(root, %{
+            account: "mara@example.com",
+            host: "imap.fastmail.com",
+            port: bad_port,
+            username: "mara@example.com"
+          })
+        end
+      end
+
+      refute File.exists?(Path.join(root, "config/mail.yaml"))
     end
   end
 end

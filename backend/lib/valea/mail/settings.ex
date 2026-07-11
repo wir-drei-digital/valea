@@ -20,16 +20,17 @@ defmodule Valea.Mail.Settings do
       `imap.example.com` placeholder. This is the expected state before
       account setup has run; callers show onboarding, not an error.
     * **`{:error, {:invalid, reason}}`** — `imap.host` / `imap.username`
-      are missing entirely or the wrong type, or `imap.port` isn't an
-      integer. This means the file is structurally broken (hand-edited
-      into a bad shape), which is worth surfacing loudly rather than
-      silently treated as "not set up yet".
+      are missing entirely or the wrong type, or `imap.port` isn't a
+      positive integer. This means the file is structurally broken
+      (hand-edited into a bad shape), which is worth surfacing loudly
+      rather than silently treated as "not set up yet".
 
   `imap.port` defaults to `993` when absent (matching the struct default)
-  — only a *present but non-integer* port is `:invalid`.
+  — only a *present but non-positive-integer* port is `:invalid`.
   """
 
   alias __MODULE__
+  alias Valea.Mail.Normalizer
 
   @placeholder_host "imap.example.com"
   @default_port 993
@@ -97,7 +98,7 @@ defmodule Valea.Mail.Settings do
         }) :: :ok
   def write!(root, %{account: account, host: host, port: port, username: username})
       when is_binary(root) and is_binary(account) and is_binary(host) and is_integer(port) and
-             is_binary(username) do
+             port > 0 and is_binary(username) do
     dir = Path.join(root, "config")
     File.mkdir_p!(dir)
     path = Path.join(dir, "mail.yaml")
@@ -134,13 +135,17 @@ defmodule Valea.Mail.Settings do
 
   # Injection hardening, same shape as `Valea.Mail.MessageFile`'s
   # `yaml_string/1`: `account`/`host`/`username` reach here from the
-  # account-setup RPC, i.e. arbitrary user input. Neutralizing control
-  # characters (never dropping them, so a value doesn't silently truncate)
-  # and escaping `\` / `"` before double-quoting means none of them can
-  # ever inject a sibling YAML key or break the block.
+  # account-setup RPC, i.e. arbitrary user input. Invalid UTF-8 is scrubbed
+  # first (each bad sequence → U+FFFD, via `Normalizer.scrub_utf8/1`) so
+  # `String.to_charlist/1` structurally cannot raise on raw bytes; then
+  # every C0 control character and DEL is neutralized to a plain space
+  # (never dropped, so a value doesn't silently truncate) and `\` / `"`
+  # are escaped before double-quoting — none of these values can ever
+  # inject a sibling YAML key, break the block, or crash the write.
   defp yaml_string(value) when is_binary(value) do
     escaped =
       value
+      |> ensure_valid_utf8()
       |> String.to_charlist()
       |> Enum.map(fn c -> if c < 0x20 or c == 0x7F, do: ?\s, else: c end)
       |> List.to_string()
@@ -148,6 +153,10 @@ defmodule Valea.Mail.Settings do
       |> String.replace("\"", "\\\"")
 
     "\"#{escaped}\""
+  end
+
+  defp ensure_valid_utf8(value) do
+    if String.valid?(value), do: value, else: Normalizer.scrub_utf8(value)
   end
 
   defp build(doc) do
@@ -174,7 +183,7 @@ defmodule Valea.Mail.Settings do
       account: Map.get(doc, "account"),
       imap: %{host: host, port: port, username: username},
       folders: merge_typed(@default_folders, Map.get(doc, "folders"), &is_binary/1),
-      sync: merge_typed(@default_sync, Map.get(doc, "sync"), &is_integer/1)
+      sync: merge_typed(@default_sync, Map.get(doc, "sync"), &pos_integer?/1)
     }
   end
 
@@ -188,13 +197,15 @@ defmodule Valea.Mail.Settings do
 
   defp fetch_port(imap) do
     case Map.fetch(imap, "port") do
-      {:ok, v} when is_integer(v) -> {:ok, v}
-      {:ok, _other} -> {:error, {:invalid, "imap.port must be an integer"}}
+      {:ok, v} when is_integer(v) and v > 0 -> {:ok, v}
+      {:ok, _other} -> {:error, {:invalid, "imap.port must be a positive integer"}}
       :error -> {:ok, @default_port}
     end
   end
 
   defp blank?(s), do: String.trim(s) == ""
+
+  defp pos_integer?(v), do: is_integer(v) and v > 0
 
   # Applies `defaults` (an atom-keyed map) with any matching, correctly
   # typed keys from `override` (a string-keyed map, as parsed from YAML)
