@@ -80,6 +80,7 @@ defmodule Valea.Mail.EngineTest do
              last_sync_at: nil,
              last_error: nil,
              account: nil,
+             username: nil,
              workspace_id: nil
            } = Engine.status()
 
@@ -113,6 +114,32 @@ defmodule Valea.Mail.EngineTest do
     assert status.state == "idle"
     assert status.configured == true
     assert status.account == "mara@example.com"
+  end
+
+  test "status exposes the IMAP username distinct from the account label", %{root: root} do
+    # account (display label) deliberately differs from imap.username (the
+    # login) — the frontend's keychain lookup is keyed on the USERNAME
+    # (spec §Credentials: account = workspace_id:username), so status must
+    # surface it separately rather than making callers guess from `account`.
+    File.write!(Path.join(root, "config/mail.yaml"), """
+    account: Mara's mail
+    imap:
+      host: imap.fastmail.com
+      port: 993
+      username: mara@example.com
+    """)
+
+    start_engine!(root, 29)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 29}
+    )
+
+    status = Engine.status()
+    assert status.account == "Mara's mail"
+    assert status.username == "mara@example.com"
   end
 
   test "reads the workspace id from config/workspace.yaml at activation", %{root: root} do

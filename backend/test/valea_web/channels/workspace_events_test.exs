@@ -98,7 +98,8 @@ defmodule ValeaWeb.WorkspaceEventsTest do
          state: "idle",
          last_sync_at: nil,
          last_error: nil,
-         account: "mara@example.com",
+         account: "Mara's mail",
+         username: "mara@example.com",
          workspace_id: "ws-1"
        }}
     )
@@ -107,7 +108,8 @@ defmodule ValeaWeb.WorkspaceEventsTest do
       "configured" => true,
       "credential" => "present",
       "state" => "idle",
-      "account" => "mara@example.com",
+      "account" => "Mara's mail",
+      "username" => "mara@example.com",
       "workspace_id" => "ws-1"
     }
   end

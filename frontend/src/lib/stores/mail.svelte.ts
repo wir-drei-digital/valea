@@ -27,6 +27,14 @@ export type MailStatus = {
   lastError: string | null;
   account: string | null;
   /**
+   * IMAP login (`imap.username` in `config/mail.yaml`) — a DISTINCT field
+   * from `account`, which is only the display label. The OS-keychain entry
+   * is keyed `workspace_id:username` (spec §Credentials), so
+   * `resupplyCredential` below must look secrets up under this, never
+   * under `account` — label and login can freely differ.
+   */
+  username: string | null;
+  /**
    * Persistent workspace UUID (`config/workspace.yaml`, mail design spec
    * §Seed & migration). Not part of anything shown directly in the mail UI,
    * but carried on this type (rather than tracked as separate internal
@@ -82,6 +90,7 @@ export function normalizeMailStatus(raw: MailStatusPush): MailStatus {
     lastSyncAt: raw.last_sync_at,
     lastError: raw.last_error,
     account: raw.account,
+    username: raw.username,
     workspaceId: raw.workspace_id
   };
 }
@@ -229,19 +238,19 @@ export const mailStore = new MailStore(api);
  *
  * No-ops (resolves `false`) outside the desktop app, when the account isn't
  * configured, when the credential is already present, when the status
- * carries no `workspaceId`/`account` to look a secret up under, or when the
- * keychain has nothing stored for that key — every one of these is a
+ * carries no `workspaceId`/`username` to look a secret up under, or when
+ * the keychain has nothing stored for that key — every one of these is a
  * legitimate "can't/don't need to resupply" state, not an error worth
  * surfacing. Self-terminating: a successful resupply flips the Engine's
  * credential to `"present"`, so the next `mail_status` push this causes
  * fails the `credential !== 'missing'` guard instead of looping.
  *
- * `username` for the keychain lookup is `status.account` — `mail_status`
- * doesn't expose the IMAP `username` argument separately from the
- * account/display email `setup_mail_account` was called with
- * (`Valea.Mail.Engine.build_status/1` only surfaces `settings.account`),
- * and the setup flow keychain-stores the credential under that same value,
- * so this is the correct lookup key, not an approximation.
+ * The keychain lookup is keyed on `status.username` — the IMAP login
+ * (`imap.username`), NOT `status.account` (the display label). The keychain
+ * contract is `workspace_id:username` (spec §Credentials, and
+ * `keychainGet`'s own parameter), and the setup flow stores the secret
+ * under the real login — keying on the label would silently find nothing
+ * whenever label and login differ.
  *
  * `apiOverride` defaults to the real `api` singleton but is always passed
  * explicitly by `MailStore` (its own injected `#api`) — same
@@ -254,9 +263,9 @@ export async function resupplyCredential(
 ): Promise<boolean> {
   if (!inDesktop()) return false;
   if (!status.configured || status.credential !== 'missing') return false;
-  if (!status.workspaceId || !status.account) return false;
+  if (!status.workspaceId || !status.username) return false;
 
-  const secret = await keychainGet(status.workspaceId, status.account);
+  const secret = await keychainGet(status.workspaceId, status.username);
   if (secret === null) return false;
 
   const generation = workspaceStore.generation ?? 0;

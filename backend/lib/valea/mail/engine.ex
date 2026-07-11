@@ -81,6 +81,7 @@ defmodule Valea.Mail.Engine do
           last_sync_at: String.t() | nil,
           last_error: String.t() | nil,
           account: String.t() | nil,
+          username: String.t() | nil,
           workspace_id: String.t() | nil
         }
 
@@ -529,6 +530,11 @@ defmodule Valea.Mail.Engine do
       last_sync_at: state.last_sync_at,
       last_error: state.last_error,
       account: state.settings && state.settings.account,
+      # The IMAP login, distinct from `account` (the display label) — the
+      # frontend keys its OS-keychain lookup on `workspace_id:username`
+      # (spec §Credentials), so the login must be surfaced explicitly
+      # rather than approximated from `account`.
+      username: state.settings && state.settings.imap.username,
       workspace_id: state.workspace_id
     }
   end

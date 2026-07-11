@@ -112,6 +112,8 @@ export type MailStatusPush = {
   last_sync_at: string | null;
   last_error: string | null;
   account: string | null;
+  /** IMAP login (`imap.username`), distinct from `account` (the display label) — the keychain lookup key. */
+  username: string | null;
   workspace_id: string | null;
 };
 

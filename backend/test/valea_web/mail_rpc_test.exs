@@ -146,6 +146,7 @@ defmodule ValeaWeb.MailRpcTest do
       assert status["configured"] == false
       assert status["credential"] == "missing"
       assert status["account"] == nil
+      assert status["username"] == nil
       assert is_binary(status["workspace_id"])
     end
   end
@@ -157,11 +158,14 @@ defmodule ValeaWeb.MailRpcTest do
       workspace: workspace,
       generation: generation
     } do
+      # account (display label) deliberately differs from username (the IMAP
+      # login) — status must surface BOTH, since the frontend's keychain
+      # lookup keys on the username (spec §Credentials).
       assert %{"success" => true, "data" => %{"saved" => true}} =
                rpc(
                  "setup_mail_account",
                  %{
-                   "account" => "mara@example.com",
+                   "account" => "Mara's mail",
                    "host" => "imap.fastmail.com",
                    "port" => 993,
                    "username" => "mara@example.com",
@@ -176,7 +180,8 @@ defmodule ValeaWeb.MailRpcTest do
                rpc("mail_status", %{}, ["status"])
 
       assert status["configured"] == true
-      assert status["account"] == "mara@example.com"
+      assert status["account"] == "Mara's mail"
+      assert status["username"] == "mara@example.com"
     end
 
     test "a stale generation surfaces workspace_changed and does not write", %{

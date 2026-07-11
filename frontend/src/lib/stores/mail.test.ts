@@ -1,7 +1,25 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MailStore, resupplyCredential, type MailStatus } from './mail.svelte';
+import { inDesktop, keychainGet } from '../keychain';
+import { workspaceStore } from './workspace.svelte';
 import type { ApiResult } from '../api/client';
 import type { MailStatusPush } from '../socket';
+
+// The keychain seam is mocked at the module boundary (mirrors
+// keychain.test.ts mocking `@tauri-apps/api/core`) so `resupplyCredential`'s
+// desktop path — including WHICH key the secret is looked up under — is
+// drivable from vitest, where no real Tauri bridge exists. Defaults mimic
+// the browser environment (not desktop, nothing stored); desktop-path tests
+// override per-test.
+vi.mock('../keychain', () => ({
+  inDesktop: vi.fn(() => false),
+  keychainGet: vi.fn(async () => null)
+}));
+
+beforeEach(() => {
+  vi.mocked(inDesktop).mockReset().mockReturnValue(false);
+  vi.mocked(keychainGet).mockReset().mockResolvedValue(null);
+});
 
 type StatusResult = ApiResult<{ status: Record<string, any> }>;
 type MessagesResult = ApiResult<{ messages: any[] }>;
@@ -10,13 +28,18 @@ type DetailResult = ApiResult<{ message: Record<string, any>; inbox: boolean }>;
 type SyncResult = ApiResult<{ started: boolean }>;
 type CredentialResult = ApiResult<{ accepted: boolean }>;
 
+// account (display label) deliberately differs from username (the IMAP
+// login) throughout these fixtures — the keychain lookup keys on the
+// USERNAME (spec §Credentials: account = workspace_id:username), and a
+// fixture where the two coincide couldn't catch a mixup between them.
 const rawStatus: MailStatusPush = {
   configured: true,
   credential: 'present',
   state: 'idle',
   last_sync_at: '2026-07-10T12:00:00Z',
   last_error: null,
-  account: 'mara@example.com',
+  account: "Mara's mail",
+  username: 'mara@example.com',
   workspace_id: 'ws-1'
 };
 
@@ -54,7 +77,8 @@ describe('MailStore.refreshStatus', () => {
       state: 'idle',
       lastSyncAt: '2026-07-10T12:00:00Z',
       lastError: null,
-      account: 'mara@example.com',
+      account: "Mara's mail",
+      username: 'mara@example.com',
       workspaceId: 'ws-1'
     });
   });
@@ -245,34 +269,80 @@ describe('resupplyCredential', () => {
     state: 'idle',
     lastSyncAt: null,
     lastError: null,
-    account: 'mara@example.com',
+    account: "Mara's mail",
+    username: 'mara@example.com',
     workspaceId: 'ws-1'
   };
 
-  it('no-ops outside the desktop app (no Tauri global in vitest)', async () => {
+  it('no-ops outside the desktop app', async () => {
     const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
 
     const result = await resupplyCredential(configuredMissing, { setMailCredential });
 
     expect(result).toBe(false);
+    expect(keychainGet).not.toHaveBeenCalled();
     expect(setMailCredential).not.toHaveBeenCalled();
   });
 
   it('no-ops when the credential is already present', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
     const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
     const present: MailStatus = { ...configuredMissing, credential: 'present' };
 
     const result = await resupplyCredential(present, { setMailCredential });
 
     expect(result).toBe(false);
+    expect(keychainGet).not.toHaveBeenCalled();
     expect(setMailCredential).not.toHaveBeenCalled();
   });
 
   it('no-ops when not configured', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
     const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
     const notConfigured: MailStatus = { ...configuredMissing, configured: false };
 
     const result = await resupplyCredential(notConfigured, { setMailCredential });
+
+    expect(result).toBe(false);
+    expect(keychainGet).not.toHaveBeenCalled();
+    expect(setMailCredential).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the status carries no username to key the lookup on', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+    const noUsername: MailStatus = { ...configuredMissing, username: null };
+
+    const result = await resupplyCredential(noUsername, { setMailCredential });
+
+    expect(result).toBe(false);
+    expect(keychainGet).not.toHaveBeenCalled();
+    expect(setMailCredential).not.toHaveBeenCalled();
+  });
+
+  it('desktop happy path: looks the secret up under the USERNAME (not the account label) and re-supplies it', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockResolvedValue('hunter2');
+    workspaceStore.generation = 5;
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const result = await resupplyCredential(configuredMissing, { setMailCredential });
+
+    // The lookup key is the IMAP login, NOT the display label — the setup
+    // flow stores the secret under workspace_id:username (spec §Credentials),
+    // so keying on `account` ("Mara's mail") would silently find nothing
+    // whenever label and login differ.
+    expect(keychainGet).toHaveBeenCalledWith('ws-1', 'mara@example.com');
+    expect(setMailCredential).toHaveBeenCalledWith('hunter2', 5);
+    expect(result).toBe(true);
+  });
+
+  it('no-ops (without calling the RPC) when the keychain has nothing stored', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockResolvedValue(null);
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const result = await resupplyCredential(configuredMissing, { setMailCredential });
 
     expect(result).toBe(false);
     expect(setMailCredential).not.toHaveBeenCalled();
