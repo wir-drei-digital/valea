@@ -80,7 +80,8 @@ defmodule Valea.Mail.Engine do
           state: String.t(),
           last_sync_at: String.t() | nil,
           last_error: String.t() | nil,
-          account: String.t() | nil
+          account: String.t() | nil,
+          workspace_id: String.t() | nil
         }
 
   def start_link(cfg), do: GenServer.start_link(__MODULE__, cfg, name: __MODULE__)
@@ -106,6 +107,18 @@ defmodule Valea.Mail.Engine do
   """
   @spec sync_now() :: :ok | {:error, :not_configured | :no_credential | :inactive}
   def sync_now, do: GenServer.call(__MODULE__, :sync_now)
+
+  @doc """
+  Re-reads `config/mail.yaml` from `root` and broadcasts the refreshed
+  status. The `setup_mail_account` RPC calls this right after
+  `Settings.write!/2` lands a fresh file — the Engine otherwise only reloads
+  `Settings` on its own `workspace_opened` activation, so account setup would
+  otherwise need a full workspace re-open to take effect. A cheap,
+  synchronous `GenServer.call` (no filesystem work happens off this
+  process's mailbox) — mirrors `status/0`.
+  """
+  @spec reload_settings() :: :ok
+  def reload_settings, do: GenServer.call(__MODULE__, :reload_settings)
 
   @doc """
   Re-runs the post-approval mailbox ops for `run_id` — the UI's retry button.
@@ -167,6 +180,7 @@ defmodule Valea.Mail.Engine do
        status: "inactive",
        last_sync_at: nil,
        last_error: nil,
+       workspace_id: nil,
        poll_timer: nil,
        sync_task: nil,
        ops_tasks: %{}
@@ -198,6 +212,13 @@ defmodule Valea.Mail.Engine do
       :ok -> {:reply, :ok, execute_ops(state, run_id)}
       {:error, _reason} = error -> {:reply, error, state}
     end
+  end
+
+  def handle_call(:reload_settings, _from, state) do
+    {settings, error} = load_settings(state.root)
+    new_state = %{state | settings: settings, last_error: error}
+    broadcast_status(new_state)
+    {:reply, :ok, new_state}
   end
 
   # Doctor never gates: it must report on exactly why an inactive/
@@ -273,7 +294,8 @@ defmodule Valea.Mail.Engine do
           settings: settings,
           credential: state.credential || env_credential(),
           last_error: error,
-          status: "idle"
+          status: "idle",
+          workspace_id: load_workspace_id(state.root)
       }
       |> schedule_poll()
 
@@ -374,6 +396,20 @@ defmodule Valea.Mail.Engine do
       {:ok, settings} -> {settings, nil}
       {:error, :not_configured} -> {nil, nil}
       {:error, {:invalid, reason}} -> {nil, reason}
+    end
+  end
+
+  # `config/workspace.yaml`'s persistent id (mail design spec, §Credentials —
+  # keychain entries key on it). Read once, at activation, into state rather
+  # than on every `status/0` call: `Scaffold.create/1` writes it once and
+  # `Migration` keeps it stable across opens, so it never changes for the
+  # lifetime of an activated Engine. `nil` on any absent/malformed file — a
+  # workspace scaffolded before this field existed, or a hand-edited one,
+  # must never crash activation.
+  defp load_workspace_id(root) do
+    case YamlElixir.read_from_file(Path.join(root, "config/workspace.yaml")) do
+      {:ok, %{"id" => id}} when is_binary(id) -> id
+      _ -> nil
     end
   end
 
@@ -492,7 +528,8 @@ defmodule Valea.Mail.Engine do
       state: state.status,
       last_sync_at: state.last_sync_at,
       last_error: state.last_error,
-      account: state.settings && state.settings.account
+      account: state.settings && state.settings.account,
+      workspace_id: state.workspace_id
     }
   end
 

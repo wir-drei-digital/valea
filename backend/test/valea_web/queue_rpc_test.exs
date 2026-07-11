@@ -271,6 +271,40 @@ defmodule ValeaWeb.QueueRpcTest do
     end
   end
 
+  describe "list_decided_items" do
+    test "lists a decided (approved) envelope raw, with its mailbox_ops", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      id = run_id("666666")
+      write_pending(workspace, id)
+
+      assert %{"success" => true, "data" => %{"revision" => revision}} =
+               rpc("get_queue_item", %{"runId" => id}, ["item", "revision"])
+
+      assert %{"success" => true, "data" => %{"draftPath" => _}} =
+               rpc(
+                 "approve_queue_item",
+                 %{"runId" => id, "revision" => revision, "generation" => generation},
+                 ["draftPath"]
+               )
+
+      assert %{"success" => true, "data" => %{"items" => items}} =
+               rpc("list_decided_queue_items", %{}, ["items"])
+
+      assert item = Enum.find(items, &(&1["run_id"] == id))
+      assert item["decided"] == "approved"
+      assert item["title"] == "Reply to Priya"
+      assert Map.has_key?(item, "mailbox_ops")
+      assert Map.has_key?(item, "created_at")
+    end
+
+    test "returns an empty list when nothing is decided yet" do
+      assert %{"success" => true, "data" => %{"items" => []}} =
+               rpc("list_decided_queue_items", %{}, ["items"])
+    end
+  end
+
   describe "list_audit_entries" do
     test "returns raw heterogeneous entries newest-first, reflecting a prior approval", %{
       workspace: workspace,

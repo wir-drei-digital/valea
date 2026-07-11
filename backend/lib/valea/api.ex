@@ -46,6 +46,20 @@ defmodule Valea.Api do
       rpc_action(:approve_queue_item, :approve_item)
       rpc_action(:reject_queue_item, :reject_item)
       rpc_action(:list_audit_entries, :list_audit_entries)
+      rpc_action(:list_decided_queue_items, :list_decided_items)
+    end
+
+    resource Valea.Api.Mail do
+      rpc_action(:mail_status, :mail_status)
+      rpc_action(:setup_mail_account, :setup_mail_account)
+      rpc_action(:set_mail_credential, :set_mail_credential)
+      rpc_action(:mail_sync_now, :mail_sync_now)
+      rpc_action(:mail_doctor, :mail_doctor)
+      rpc_action(:create_mail_folders, :create_mail_folders)
+      rpc_action(:list_mail_messages, :list_mail_messages)
+      rpc_action(:get_mail_message, :get_mail_message)
+      rpc_action(:mail_inbox, :mail_inbox)
+      rpc_action(:retry_mailbox_ops, :retry_mailbox_ops)
     end
   end
 
@@ -55,5 +69,6 @@ defmodule Valea.Api do
     resource Valea.Api.Cockpit
     resource Valea.Api.Agents
     resource Valea.Api.Queue
+    resource Valea.Api.Mail
   end
 end

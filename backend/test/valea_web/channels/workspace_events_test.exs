@@ -86,4 +86,63 @@ defmodule ValeaWeb.WorkspaceEventsTest do
       ExUnit.AssertionError -> poll_until_queue_pushed(trigger, attempts_left - 1)
     end
   end
+
+  test "mail status change pushes mail_status with string keys" do
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "mail",
+      {:mail_status_changed,
+       %{
+         configured: true,
+         credential: "present",
+         state: "idle",
+         last_sync_at: nil,
+         last_error: nil,
+         account: "mara@example.com",
+         workspace_id: "ws-1"
+       }}
+    )
+
+    assert_push "mail_status", %{
+      "configured" => true,
+      "credential" => "present",
+      "state" => "idle",
+      "account" => "mara@example.com",
+      "workspace_id" => "ws-1"
+    }
+  end
+
+  test "a sync pass start/finish pushes mail_sync with phase + newMessages" do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_sync_started})
+    assert_push "mail_sync", %{"phase" => "started", "newMessages" => 0}
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "mail",
+      {:mail_sync_finished, %{new_messages: 3, errors: []}}
+    )
+
+    assert_push "mail_sync", %{"phase" => "finished", "newMessages" => 3}
+  end
+
+  test "a newly indexed message pushes mail_message with its path" do
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "mail",
+      {:mail_message_upserted, %{path: "sources/mail/messages/x.md"}}
+    )
+
+    assert_push "mail_message", %{"path" => "sources/mail/messages/x.md"}
+  end
+
+  test "a mailbox op finishing pushes mailbox_ops with the run id" do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail_ops", {:mailbox_ops_updated, "run-1"})
+    assert_push "mailbox_ops", %{"runId" => "run-1"}
+  end
+
+  test "a mailbox op becoming pending is NOT pushed (internal Engine trigger only)" do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail_ops", {:mailbox_ops_pending, "run-1"})
+    refute_push "mailbox_ops", %{}
+    refute_push _, _
+  end
 end

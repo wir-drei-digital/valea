@@ -1181,6 +1181,718 @@ export async function saveIcmPageChannel<Fields extends SaveIcmPageFields | unde
 }
 
 
+export type CreateMailFoldersInput = {
+  generation: number;
+};
+
+export type CreateMailFoldersFields = UnifiedFieldSelection<{created: Array<string>, __type: "TypedMap", __primitiveFields: "created"}>[];
+
+export type InferCreateMailFoldersResult<
+  Fields extends CreateMailFoldersFields | undefined,
+> = InferResult<{created: Array<string>, __type: "TypedMap", __primitiveFields: "created"}, Fields>;
+
+export type CreateMailFoldersResult<Fields extends CreateMailFoldersFields | undefined = undefined> = | { success: true; data: InferCreateMailFoldersResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function createMailFolders<Fields extends CreateMailFoldersFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateMailFoldersInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateMailFoldersResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_mail_folders",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateMailFoldersResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function createMailFoldersChannel<Fields extends CreateMailFoldersFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateMailFoldersInput;
+  fields: Fields;
+  resultHandler: (result: CreateMailFoldersResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateMailFoldersResult<Fields>>(
+    config.channel,
+    {
+    action: "create_mail_folders",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type GetMailMessageInput = {
+  msgId: string;
+};
+
+export type GetMailMessageFields = UnifiedFieldSelection<{message: Record<string, any>, inbox: boolean, __type: "TypedMap", __primitiveFields: "message" | "inbox"}>[];
+
+export type InferGetMailMessageResult<
+  Fields extends GetMailMessageFields | undefined,
+> = InferResult<{message: Record<string, any>, inbox: boolean, __type: "TypedMap", __primitiveFields: "message" | "inbox"}, Fields>;
+
+export type GetMailMessageResult<Fields extends GetMailMessageFields | undefined = undefined> = | { success: true; data: InferGetMailMessageResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailMessage<Fields extends GetMailMessageFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GetMailMessageInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GetMailMessageResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "get_mail_message",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GetMailMessageResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailMessageChannel<Fields extends GetMailMessageFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GetMailMessageInput;
+  fields: Fields;
+  resultHandler: (result: GetMailMessageResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GetMailMessageResult<Fields>>(
+    config.channel,
+    {
+    action: "get_mail_message",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListMailMessagesFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, status: string | null, hasAttachments: boolean, uid: number | null, path: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "status" | "hasAttachments" | "uid" | "path"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListMailMessagesResult<
+  Fields extends ListMailMessagesFields | undefined,
+> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, status: string | null, hasAttachments: boolean, uid: number | null, path: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "status" | "hasAttachments" | "uid" | "path"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListMailMessagesResult<Fields extends ListMailMessagesFields | undefined = undefined> = | { success: true; data: InferListMailMessagesResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listMailMessages<Fields extends ListMailMessagesFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListMailMessagesResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_mail_messages",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListMailMessagesResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listMailMessagesChannel<Fields extends ListMailMessagesFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListMailMessagesResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListMailMessagesResult<Fields>>(
+    config.channel,
+    {
+    action: "list_mail_messages",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MailDoctorInput = {
+  generation: number;
+};
+
+export type MailDoctorFields = UnifiedFieldSelection<{ok: boolean, checks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "ok" | "checks"}>[];
+
+export type InferMailDoctorResult<
+  Fields extends MailDoctorFields | undefined,
+> = InferResult<{ok: boolean, checks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "ok" | "checks"}, Fields>;
+
+export type MailDoctorResult<Fields extends MailDoctorFields | undefined = undefined> = | { success: true; data: InferMailDoctorResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailDoctor<Fields extends MailDoctorFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MailDoctorInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MailDoctorResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mail_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MailDoctorResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailDoctorChannel<Fields extends MailDoctorFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: MailDoctorInput;
+  fields: Fields;
+  resultHandler: (result: MailDoctorResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MailDoctorResult<Fields>>(
+    config.channel,
+    {
+    action: "mail_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MailInboxFields = UnifiedFieldSelection<{entries: Array<{uid: number, fromText: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "uid" | "fromText" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferMailInboxResult<
+  Fields extends MailInboxFields | undefined,
+> = InferResult<{entries: Array<{uid: number, fromText: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "uid" | "fromText" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type MailInboxResult<Fields extends MailInboxFields | undefined = undefined> = | { success: true; data: InferMailInboxResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailInbox<Fields extends MailInboxFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MailInboxResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mail_inbox",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MailInboxResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailInboxChannel<Fields extends MailInboxFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: MailInboxResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MailInboxResult<Fields>>(
+    config.channel,
+    {
+    action: "mail_inbox",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MailStatusFields = UnifiedFieldSelection<{status: Record<string, any>, __type: "TypedMap", __primitiveFields: "status"}>[];
+
+export type InferMailStatusResult<
+  Fields extends MailStatusFields | undefined,
+> = InferResult<{status: Record<string, any>, __type: "TypedMap", __primitiveFields: "status"}, Fields>;
+
+export type MailStatusResult<Fields extends MailStatusFields | undefined = undefined> = | { success: true; data: InferMailStatusResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailStatus<Fields extends MailStatusFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MailStatusResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mail_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MailStatusResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailStatusChannel<Fields extends MailStatusFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: MailStatusResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MailStatusResult<Fields>>(
+    config.channel,
+    {
+    action: "mail_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MailSyncNowInput = {
+  generation: number;
+};
+
+export type MailSyncNowFields = UnifiedFieldSelection<{started: boolean, __type: "TypedMap", __primitiveFields: "started"}>[];
+
+export type InferMailSyncNowResult<
+  Fields extends MailSyncNowFields | undefined,
+> = InferResult<{started: boolean, __type: "TypedMap", __primitiveFields: "started"}, Fields>;
+
+export type MailSyncNowResult<Fields extends MailSyncNowFields | undefined = undefined> = | { success: true; data: InferMailSyncNowResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailSyncNow<Fields extends MailSyncNowFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MailSyncNowInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MailSyncNowResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mail_sync_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MailSyncNowResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailSyncNowChannel<Fields extends MailSyncNowFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: MailSyncNowInput;
+  fields: Fields;
+  resultHandler: (result: MailSyncNowResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MailSyncNowResult<Fields>>(
+    config.channel,
+    {
+    action: "mail_sync_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RetryMailboxOpsInput = {
+  runId: string;
+  generation: number;
+};
+
+export type RetryMailboxOpsFields = UnifiedFieldSelection<{accepted: boolean, __type: "TypedMap", __primitiveFields: "accepted"}>[];
+
+export type InferRetryMailboxOpsResult<
+  Fields extends RetryMailboxOpsFields | undefined,
+> = InferResult<{accepted: boolean, __type: "TypedMap", __primitiveFields: "accepted"}, Fields>;
+
+export type RetryMailboxOpsResult<Fields extends RetryMailboxOpsFields | undefined = undefined> = | { success: true; data: InferRetryMailboxOpsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function retryMailboxOps<Fields extends RetryMailboxOpsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RetryMailboxOpsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RetryMailboxOpsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "retry_mailbox_ops",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RetryMailboxOpsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function retryMailboxOpsChannel<Fields extends RetryMailboxOpsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RetryMailboxOpsInput;
+  fields: Fields;
+  resultHandler: (result: RetryMailboxOpsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RetryMailboxOpsResult<Fields>>(
+    config.channel,
+    {
+    action: "retry_mailbox_ops",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetMailCredentialInput = {
+  secret: string;
+  generation: number;
+};
+
+export type SetMailCredentialFields = UnifiedFieldSelection<{accepted: boolean, __type: "TypedMap", __primitiveFields: "accepted"}>[];
+
+export type InferSetMailCredentialResult<
+  Fields extends SetMailCredentialFields | undefined,
+> = InferResult<{accepted: boolean, __type: "TypedMap", __primitiveFields: "accepted"}, Fields>;
+
+export type SetMailCredentialResult<Fields extends SetMailCredentialFields | undefined = undefined> = | { success: true; data: InferSetMailCredentialResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function setMailCredential<Fields extends SetMailCredentialFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetMailCredentialInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetMailCredentialResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_mail_credential",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetMailCredentialResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function setMailCredentialChannel<Fields extends SetMailCredentialFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetMailCredentialInput;
+  fields: Fields;
+  resultHandler: (result: SetMailCredentialResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetMailCredentialResult<Fields>>(
+    config.channel,
+    {
+    action: "set_mail_credential",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetupMailAccountInput = {
+  account: string;
+  host: string;
+  port: number;
+  username: string;
+  generation: number;
+};
+
+export type SetupMailAccountFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];
+
+export type InferSetupMailAccountResult<
+  Fields extends SetupMailAccountFields | undefined,
+> = InferResult<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}, Fields>;
+
+export type SetupMailAccountResult<Fields extends SetupMailAccountFields | undefined = undefined> = | { success: true; data: InferSetupMailAccountResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function setupMailAccount<Fields extends SetupMailAccountFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetupMailAccountInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetupMailAccountResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "setup_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetupMailAccountResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function setupMailAccountChannel<Fields extends SetupMailAccountFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetupMailAccountInput;
+  fields: Fields;
+  resultHandler: (result: SetupMailAccountResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetupMailAccountResult<Fields>>(
+    config.channel,
+    {
+    action: "setup_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type ApproveQueueItemInput = {
   runId: string;
   revision: string;
@@ -1394,6 +2106,71 @@ export async function listAuditEntriesChannel<Fields extends ListAuditEntriesFie
     action: "list_audit_entries",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListDecidedQueueItemsFields = UnifiedFieldSelection<{items: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "items"}>[];
+
+export type InferListDecidedQueueItemsResult<
+  Fields extends ListDecidedQueueItemsFields | undefined,
+> = InferResult<{items: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "items"}, Fields>;
+
+export type ListDecidedQueueItemsResult<Fields extends ListDecidedQueueItemsFields | undefined = undefined> = | { success: true; data: InferListDecidedQueueItemsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function listDecidedQueueItems<Fields extends ListDecidedQueueItemsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListDecidedQueueItemsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_decided_queue_items",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListDecidedQueueItemsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Queue
+ *
+ * @ashActionType :action
+ */
+export async function listDecidedQueueItemsChannel<Fields extends ListDecidedQueueItemsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListDecidedQueueItemsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListDecidedQueueItemsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_decided_queue_items",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
     ...(config.fields !== undefined && { fields: config.fields })
   },
     config.timeout,

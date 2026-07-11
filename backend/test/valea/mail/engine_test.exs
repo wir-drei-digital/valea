@@ -79,7 +79,8 @@ defmodule Valea.Mail.EngineTest do
              credential: "missing",
              last_sync_at: nil,
              last_error: nil,
-             account: nil
+             account: nil,
+             workspace_id: nil
            } = Engine.status()
 
     assert Engine.sync_now() == {:error, :inactive}
@@ -112,6 +113,57 @@ defmodule Valea.Mail.EngineTest do
     assert status.state == "idle"
     assert status.configured == true
     assert status.account == "mara@example.com"
+  end
+
+  test "reads the workspace id from config/workspace.yaml at activation", %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+    File.write!(Path.join(root, "config/workspace.yaml"), "version: 3\nid: ws-abc-123\n")
+    start_engine!(root, 30)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 30}
+    )
+
+    assert Engine.status().workspace_id == "ws-abc-123"
+  end
+
+  test "workspace_id stays nil when config/workspace.yaml is absent", %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+    start_engine!(root, 31)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 31}
+    )
+
+    assert Engine.status().workspace_id == nil
+  end
+
+  test "reload_settings/0 re-reads config/mail.yaml and broadcasts :mail_status_changed", %{
+    root: root
+  } do
+    start_engine!(root, 32)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 32}
+    )
+
+    assert Engine.status().configured == false
+
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.reload_settings()
+
+    assert_receive {:mail_status_changed, status}
+    assert status.configured == true
+    assert status.account == "mara@example.com"
+    assert Engine.status().configured == true
   end
 
   test "placeholder settings (not-yet-configured) -> configured false, sync_now not_configured",

@@ -5,14 +5,16 @@ defmodule Valea.Api.Queue do
 
   Wraps `Valea.Queue` and `Valea.Audit`, following `Valea.Api.ICM`'s
   `constraints fields: [...]` pattern for typed actions. `get_item`'s
-  `item` field and `list_audit_entries`'s `entries` field stay UNCONSTRAINED
-  `:map` (no nested `fields:`) — a queue item envelope carries a
-  workflow-authored `payload` and audit entries are heterogeneous by `type`
-  — so both are delivered RAW (string keys, no camelCase translation) rather
-  than reshaped into a fixed typed shape. This is the same
-  typed-vs-unconstrained-map casing split documented in `Valea.Api.ICM`'s
-  moduledoc, just applied field-by-field within an otherwise-typed action
-  instead of to a whole action.
+  `item` field, `list_audit_entries`'s `entries` field, and
+  `list_decided_items`'s `items` field stay UNCONSTRAINED `:map` (no nested
+  `fields:`) — a queue item envelope carries a workflow-authored `payload`,
+  audit entries are heterogeneous by `type`, and a decided envelope's
+  `mailbox_ops` (mail design spec, §Mailbox ops) is itself heterogeneous by
+  op name — so all three are delivered RAW (string keys, no camelCase
+  translation) rather than reshaped into a fixed typed shape. This is the
+  same typed-vs-unconstrained-map casing split documented in
+  `Valea.Api.ICM`'s moduledoc, just applied field-by-field within an
+  otherwise-typed action instead of to a whole action.
 
   Mutating actions (`approve_item`, `reject_item`) take a `generation`
   argument and guard with `Valea.Workspace.Manager.check_generation/1`
@@ -115,6 +117,17 @@ defmodule Valea.Api.Queue do
           # keeps the field correct if that ever changes.
           {:ok, %{"rejected" => true}}
         else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :list_decided_items, :map do
+      constraints fields: [items: [type: {:array, :map}, allow_nil?: false]]
+
+      run fn _input, _ctx ->
+        case Valea.Queue.list_decided() do
+          {:ok, items} -> {:ok, %{items: items}}
           {:error, reason} -> {:error, error_for(reason)}
         end
       end

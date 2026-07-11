@@ -47,6 +47,20 @@ export type ICMAttributesOnlySchema = {
 };
 
 
+// Mail Schema
+export type MailResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type MailAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Queue Schema
 export type QueueResourceSchema = {
   __type: "Resource";
@@ -102,6 +116,15 @@ export type ICMFilterInput = {
 
 
 };
+export type MailFilterInput = {
+  and?: Array<MailFilterInput>;
+  or?: Array<MailFilterInput>;
+  not?: Array<MailFilterInput>;
+
+
+
+
+};
 export type QueueFilterInput = {
   and?: Array<QueueFilterInput>;
   or?: Array<QueueFilterInput>;
@@ -120,6 +143,8 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
 
 
 
