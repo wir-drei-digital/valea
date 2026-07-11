@@ -1,0 +1,9 @@
+From: Priya Nair <priya@example.com>
+To: Mara Lindt <mara@example.com>
+Subject: HTML only update
+Date: Fri, 10 Jul 2026 09:15:00 +0000
+Message-ID: <html-only-001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Hello <b>Mara</b></p><div>Second paragraph</div><ul><li>One</li><li>Two</li></ul><script>evil()</script><style>.x{color:red}</style></body></html>

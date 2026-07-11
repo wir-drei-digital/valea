@@ -1,0 +1,19 @@
+From: Priya Nair <priya@example.com>
+To: Mara Lindt <mara@example.com>
+Subject: Notes attached
+Date: Mon, 13 Jul 2026 12:45:00 +0000
+Message-ID: <base64-attachment-001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B64-BOUNDARY-3"
+
+--B64-BOUNDARY-3
+Content-Type: text/plain; charset=utf-8
+
+Please find the attached notes.
+--B64-BOUNDARY-3
+Content-Type: text/plain; name="notes.txt"
+Content-Disposition: attachment; filename="notes.txt"
+Content-Transfer-Encoding: base64
+
+TWVldGluZyBub3RlczogZGlzY3VzcyBRMyByb2FkbWFwLgo=
+--B64-BOUNDARY-3--

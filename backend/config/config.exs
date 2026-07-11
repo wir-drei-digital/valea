@@ -79,6 +79,13 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# codepagex ships every code page it knows about behind a compile flag —
+# without this, `mix compile` regenerates modules for all of them (slow,
+# and pulls in a bunch of legacy encodings Valea never needs). The mail
+# normalizer only ever falls back to Latin-1 / Windows-1252, so only those
+# two encoding tables are compiled in.
+config :codepagex, :encodings, [:iso_8859_1, "VENDORS/MICSFT/WINDOWS/CP1252"]
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

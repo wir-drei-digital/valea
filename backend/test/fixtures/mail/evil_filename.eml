@@ -1,0 +1,19 @@
+From: Priya Nair <priya@example.com>
+To: Mara Lindt <mara@example.com>
+Subject: See attached
+Date: Tue, 14 Jul 2026 13:00:00 +0000
+Message-ID: <evil-filename-001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="EVIL-BOUNDARY-4"
+
+--EVIL-BOUNDARY-4
+Content-Type: text/plain; charset=utf-8
+
+See attached.
+--EVIL-BOUNDARY-4
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="../../../etc/passwd"
+Content-Transfer-Encoding: base64
+
+bm90IGFjdHVhbGx5IC9ldGMvcGFzc3dkLCBqdXN0IGEgdGVzdCBwYXlsb2FkCg==
+--EVIL-BOUNDARY-4--

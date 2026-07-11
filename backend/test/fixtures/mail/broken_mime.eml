@@ -1,0 +1,10 @@
+From: Priya Nair <priya@example.com>
+To: Mara Lindt <mara@example.com>
+Subject: Corrupted message
+Date: Wed, 15 Jul 2026 14:20:00 +0000
+Message-ID: <broken-mime-001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed
+
+This mail client forgot to declare a boundary.
+The raw body is recovered best-effort by the normalizer's fallback path.

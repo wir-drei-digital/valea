@@ -1,0 +1,28 @@
+From: Priya Nair <priya@example.com>
+To: Mara Lindt <mara@example.com>
+Subject: Nested multipart test
+Date: Sat, 11 Jul 2026 10:00:00 +0000
+Message-ID: <nested-001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER-BOUNDARY-1"
+
+--OUTER-BOUNDARY-1
+Content-Type: multipart/alternative; boundary="INNER-BOUNDARY-2"
+
+--INNER-BOUNDARY-2
+Content-Type: text/plain; charset=utf-8
+
+Plain-text version of the nested message.
+--INNER-BOUNDARY-2
+Content-Type: text/html; charset=utf-8
+
+<p>HTML version, should be ignored.</p>
+--INNER-BOUNDARY-2--
+--OUTER-BOUNDARY-1
+Content-Type: text/plain
+Content-Disposition: attachment; filename="agenda.txt"
+
+1. Intro
+2. Roadmap
+3. Q&A
+--OUTER-BOUNDARY-1--
