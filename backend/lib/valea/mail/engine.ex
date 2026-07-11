@@ -60,8 +60,10 @@ defmodule Valea.Mail.Engine do
   use GenServer
 
   alias Valea.Mail.Index
+  alias Valea.Mail.MailboxOps
   alias Valea.Mail.Settings
   alias Valea.Mail.SyncPass
+  alias Valea.Queue
 
   @default_interval_minutes 5
 
@@ -104,15 +106,24 @@ defmodule Valea.Mail.Engine do
   @spec sync_now() :: :ok | {:error, :not_configured | :no_credential | :inactive}
   def sync_now, do: GenServer.call(__MODULE__, :sync_now)
 
-  @doc "Stub this task — wired to the post-approval mailbox-ops recovery/retry path later."
-  @spec retry_ops(String.t()) :: {:error, :not_implemented}
-  def retry_ops(_run_id), do: {:error, :not_implemented}
+  @doc """
+  Re-runs the post-approval mailbox ops for `run_id` — the UI's retry button.
+  Unlike the activation recovery scan (which re-attempts only `"pending"`
+  ops), this re-attempts BOTH `"pending"` and `"failed"` ops, since it is an
+  explicit, user-driven request. Refuses with the same gate as `sync_now/0`
+  (inactive/not-configured/no-credential); the actual work runs in an
+  unlinked task and never blocks this call.
+  """
+  @spec retry_ops(String.t()) :: :ok | {:error, :inactive | :no_credential | :not_configured}
+  def retry_ops(run_id) when is_binary(run_id),
+    do: GenServer.call(__MODULE__, {:retry_ops, run_id})
 
   # -- GenServer --------------------------------------------------------------
 
   @impl true
   def init(%{root: root, generation: generation}) do
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
 
     {:ok,
      %{
@@ -150,12 +161,29 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  def handle_call({:retry_ops, run_id}, _from, state) do
+    case validate_sync(state) do
+      :ok -> {:reply, :ok, execute_ops(state, run_id)}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
   @impl true
   def handle_info({:workspace_opened, _info, generation}, %{generation: generation} = state) do
     {:noreply, activate(state)}
   end
 
   def handle_info({:workspace_opened, _info, _other_generation}, state), do: {:noreply, state}
+
+  # A decided item's mailbox ops became pending (an approve/reject just
+  # landed). Execute them if we can reach the mailbox; otherwise leave them
+  # pending for the activation recovery scan or a later retry.
+  def handle_info({:mailbox_ops_pending, run_id}, state) do
+    {:noreply, maybe_execute_ops(state, run_id)}
+  end
+
+  # Our own update broadcast (and any other mail_ops chatter): ignore.
+  def handle_info({:mailbox_ops_updated, _run_id}, state), do: {:noreply, state}
 
   # `auth_failed` pauses polling: no re-arm until `set_credential/1` clears
   # it (see moduledoc §Errors).
@@ -198,7 +226,62 @@ defmodule Valea.Mail.Engine do
       |> schedule_poll()
 
     broadcast_status(new_state)
+    recover_mailbox_ops(new_state)
     new_state
+  end
+
+  # Activation recovery scan: any decided item whose mailbox ops are still
+  # "pending" (an approve/reject whose broadcast we missed, e.g. a crash or a
+  # switch-away before it ran) is re-executed. "failed" ops are deliberately
+  # NOT swept here — they wait for the user's explicit retry (`retry_ops/1`),
+  # since a failure is a signal worth showing, not silently re-attempting on
+  # every open. Gated by the same active/configured/credentialed check as a
+  # sync: with no credential the ops simply wait.
+  defp recover_mailbox_ops(state) do
+    case validate_sync(state) do
+      :ok -> Enum.each(pending_op_run_ids(), &execute_ops(state, &1))
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp pending_op_run_ids do
+    case Queue.list_decided() do
+      {:ok, entries} ->
+        for %{run_id: run_id, mailbox_ops: ops} <- entries, any_pending?(ops), do: run_id
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp any_pending?(ops) when is_map(ops) do
+    Enum.any?(ops, fn {_name, op} -> is_map(op) and Map.get(op, "status") == "pending" end)
+  end
+
+  defp any_pending?(_ops), do: false
+
+  # Runs the mailbox ops for `run_id` in an unlinked task so a slow or
+  # crashing pass can never block or take down the Engine. `MailboxOps.execute`
+  # is idempotent and self-guarding, so a duplicate trigger (recovery scan +
+  # the pending broadcast, say) is safe. Callers gate on `validate_sync/1`.
+  defp maybe_execute_ops(state, run_id) do
+    case validate_sync(state) do
+      :ok -> execute_ops(state, run_id)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp execute_ops(state, run_id) do
+    args = %{
+      root: state.root,
+      run_id: run_id,
+      transport: state.transport,
+      settings: state.settings,
+      credential: state.credential
+    }
+
+    spawn(fn -> MailboxOps.execute(args) end)
+    state
   end
 
   defp load_settings(root) do

@@ -218,9 +218,22 @@ defmodule Valea.Mail.EngineTest do
     refute dump =~ secret
   end
 
-  test "retry_ops/1 is an unimplemented stub this task", %{root: root} do
+  test "retry_ops/1 refuses on an inert (inactive) engine", %{root: root} do
     start_engine!(root, 11)
-    assert Engine.retry_ops("some-run-id") == {:error, :not_implemented}
+    assert Engine.retry_ops("some-run-id") == {:error, :inactive}
+  end
+
+  test "retry_ops/1 refuses when configured but not credentialed", %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+    start_engine!(root, 14)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 14}
+    )
+
+    assert Engine.retry_ops("some-run-id") == {:error, :no_credential}
   end
 
   test "an unsolicited :poll (simulating the timer firing) keeps the engine alive and idle", %{
@@ -344,5 +357,210 @@ defmodule Valea.Mail.EngineTest do
     send(new_task_pid, {:release, {:error, :test_done}})
     assert_receive {:mail_sync_finished, _payload}
     assert Engine.status().state == "idle"
+  end
+end
+
+# The mailbox-ops recovery + retry paths need the REAL Engine (started by the
+# workspace Runtime) so `Valea.Queue`/`Valea.Mail.Store` resolve against an
+# actually-open workspace — hence a separate module with its own setup that
+# opens one via `AgentCase` rather than the raw-tmp-root `EngineTest` above.
+defmodule Valea.Mail.EngineMailboxOpsTest do
+  use ExUnit.Case, async: false
+
+  alias Valea.AgentCase
+  alias Valea.Mail.Engine
+  alias Valea.Mail.Message
+  alias Valea.Mail.MessageFile
+  alias Valea.Mail.Settings
+  alias Valea.Queue
+
+  setup do
+    # The Runtime Engine reads this at init, so it must be set before the
+    # workspace opens.
+    Application.put_env(:valea, :mail_transport, FakeMailTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    {:ok, _} = FakeMailTransport.start_link()
+
+    ws = AgentCase.open_workspace!()
+
+    Settings.write!(ws.path, %{
+      account: "mara@example.com",
+      host: "imap.fastmail.com",
+      port: 993,
+      username: "mara@example.com"
+    })
+
+    %{root: ws.path}
+  end
+
+  # Re-fire the Engine's own generation's workspace_opened so it re-activates
+  # against the now-real mail.yaml, running the activation recovery scan.
+  defp reactivate(root) do
+    gen = :sys.get_state(Engine).generation
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "W"}, gen}
+    )
+  end
+
+  defp write_source_message(root, suffix, uid) do
+    msg_id = "2026-07-09-priya-#{suffix}"
+    rel = Path.join(["sources", "mail", "messages", "#{msg_id}.md"])
+    abs = Path.join(root, rel)
+    File.mkdir_p!(Path.dirname(abs))
+
+    message = %Message{
+      message_id: "<orig-#{suffix}@mail.example.com>",
+      from: %{name: "Priya Nair", email: "priya@example.com"},
+      subject: "Inquiry",
+      date: ~U[2026-07-09 10:00:00Z],
+      body_text: "Original.\n"
+    }
+
+    bytes =
+      MessageFile.render(message, %{
+        msg_id: msg_id,
+        uid: uid,
+        status: "review",
+        source: "imap",
+        attachments: []
+      })
+
+    File.write!(abs, bytes)
+    %{rel: rel, abs: abs}
+  end
+
+  defp write_draft(root, run_id) do
+    abs = Path.join([root, "sources", "mail", "drafts", "#{run_id}.md"])
+    File.mkdir_p!(Path.dirname(abs))
+    File.write!(abs, "---\nto: priya@example.com\nsubject: Re: Inquiry\n---\n\nHello Priya,\n")
+  end
+
+  defp plant_envelope(root, run_id, dir, ops, source_rel) do
+    envelope = %{
+      "schema" => "queue_item/v2",
+      "run_id" => run_id,
+      "workflow" => "icm/Workflows/New Inquiry Triage.md",
+      "risk_level" => "medium",
+      "created_at" => "2026-07-10T00:00:00Z",
+      "source_message" => source_rel,
+      "payload" => %{
+        "schema" => "proposal/v1",
+        "kind" => "email_draft",
+        "title" => "Reply",
+        "summary" => "Reply to Priya",
+        "sources" => ["icm/Clients/Priya Nair.md"],
+        "proposed_action" => %{
+          "type" => "create_email_draft",
+          "to" => "priya@example.com",
+          "subject" => "Re: Inquiry",
+          "body_markdown" => "Hi\n"
+        }
+      },
+      "mailbox_ops" => ops
+    }
+
+    path = Path.join([root, "queue", dir, "#{run_id}.json"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(envelope))
+  end
+
+  defp decided_ops(run_id) do
+    {:ok, %{item: item}} = Queue.get_decided(run_id)
+    item["mailbox_ops"]
+  end
+
+  test "the activation recovery scan runs a hand-planted approved envelope's pending ops", %{
+    root: root
+  } do
+    id = "20260710T000000Z-recover1"
+    source = write_source_message(root, "recover1", 71)
+    write_draft(root, id)
+
+    plant_envelope(
+      root,
+      id,
+      "approved",
+      %{"draft_append" => %{"status" => "pending"}, "archive_source" => %{"status" => "pending"}},
+      source.rel
+    )
+
+    :ok = Engine.set_credential("app-password")
+
+    FakeMailTransport.script([
+      {:connect, :_, {:ok, FakeMailTransport}},
+      {:select, [:_, "Drafts"], {:ok, %{uidvalidity: 1, uidnext: 10}}},
+      {:uid_search, :_, {:ok, []}},
+      {:append, :_, :ok},
+      {:select, [:_, "AI/Review"], {:ok, %{uidvalidity: 1, uidnext: 50}}},
+      {:uid_move, :_, :ok},
+      {:logout, :_, :ok}
+    ])
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+    reactivate(root)
+
+    # both ops report their outcome (draft_append, then archive_source)
+    assert_receive {:mailbox_ops_updated, ^id}, 2000
+    assert_receive {:mailbox_ops_updated, ^id}, 2000
+
+    ops = decided_ops(id)
+    assert ops["draft_append"]["status"] == "done"
+    assert ops["archive_source"]["status"] == "done"
+  end
+
+  test "the recovery scan leaves a failed op alone (it waits for retry)", %{root: root} do
+    id = "20260710T000000Z-failwait"
+    source = write_source_message(root, "failwait", 72)
+
+    plant_envelope(
+      root,
+      id,
+      "rejected",
+      %{"archive_source" => %{"status" => "failed", "error" => "prior timeout"}},
+      source.rel
+    )
+
+    :ok = Engine.set_credential("app-password")
+    # No script: if the scan wrongly touched the failed op, connect would raise.
+    reactivate(root)
+
+    # give the (correctly inert) scan a chance to have NOT run anything
+    Process.sleep(50)
+    assert FakeMailTransport.calls() == []
+    assert decided_ops(id)["archive_source"]["status"] == "failed"
+  end
+
+  test "retry_ops/1 re-runs a failed op to done", %{root: root} do
+    id = "20260710T000000Z-retry1"
+    source = write_source_message(root, "retry1", 73)
+
+    :ok = Engine.set_credential("app-password")
+    reactivate(root)
+    # active + configured + credentialed now; plant AFTER the scan so only the
+    # explicit retry drives it.
+    plant_envelope(
+      root,
+      id,
+      "rejected",
+      %{"archive_source" => %{"status" => "failed", "error" => "prior timeout"}},
+      source.rel
+    )
+
+    FakeMailTransport.script([
+      {:connect, :_, {:ok, FakeMailTransport}},
+      {:select, [:_, "AI/Review"], {:ok, %{uidvalidity: 1, uidnext: 50}}},
+      {:uid_move, :_, :ok},
+      {:logout, :_, :ok}
+    ])
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+    assert :ok = Engine.retry_ops(id)
+
+    assert_receive {:mailbox_ops_updated, ^id}, 2000
+    assert decided_ops(id)["archive_source"]["status"] == "done"
+    assert File.read!(source.abs) =~ "status: processed"
   end
 end
