@@ -181,4 +181,48 @@ defmodule Valea.Mail.EngineTest do
     start_engine!(root, 11)
     assert Engine.retry_ops("some-run-id") == {:error, :not_implemented}
   end
+
+  test "an unsolicited :poll (simulating the timer firing) keeps the engine alive and idle", %{
+    root: root
+  } do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+    start_engine!(root, 12)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 12}
+    )
+
+    pid = Process.whereis(Engine)
+    send(pid, :poll)
+
+    assert Engine.status().state == "idle"
+    assert Process.alive?(pid)
+  end
+
+  test "auth_failed pauses polling; set_credential clears it and re-arms", %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+    start_engine!(root, 13)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 13}
+    )
+
+    pid = Process.whereis(Engine)
+    :sys.replace_state(pid, fn state -> %{state | status: "auth_failed"} end)
+
+    send(pid, :poll)
+    # a poll tick while auth_failed must not re-arm the timer
+    assert %{poll_timer: nil} = :sys.get_state(pid)
+    assert Engine.status().state == "auth_failed"
+
+    assert :ok = Engine.set_credential("new-secret")
+    state_after = :sys.get_state(pid)
+    assert state_after.status == "idle"
+    assert state_after.poll_timer != nil
+    assert Engine.status().state == "idle"
+  end
 end
