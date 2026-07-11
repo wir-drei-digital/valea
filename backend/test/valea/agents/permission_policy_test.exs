@@ -43,6 +43,28 @@ defmodule Valea.Agents.PermissionPolicyTest do
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
   end
 
+  test "read of SECRETS/x (uppercased) -> deny (case-insensitive hard-deny)", %{
+    ws: ws,
+    chat: chat
+  } do
+    it = item("read", %{"file_path" => Path.join([ws, "SECRETS", "x"])})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
+  end
+
+  test "write of Logs/y (mixed case) -> deny (case-insensitive hard-deny)", %{ws: ws} do
+    target = Path.join([ws, "Logs", "y"])
+    ctx = %{workspace: ws, session_kind: "workflow", write_paths: [target]}
+    it = item("edit", %{"file_path" => target})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "write of APP.SQLITE (uppercased) -> deny (case-insensitive db-prefix)", %{ws: ws} do
+    target = Path.join(ws, "APP.SQLITE")
+    ctx = %{workspace: ws, session_kind: "workflow", write_paths: [target]}
+    it = item("edit", %{"file_path" => target})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
   test "read via symlink icm/link.md -> /etc/passwd -> deny (outside)", %{ws: ws, chat: chat} do
     File.ln_s!("/etc/passwd", Path.join([ws, "icm", "link.md"]))
     it = item("read", %{"file_path" => Path.join([ws, "icm", "link.md"])})

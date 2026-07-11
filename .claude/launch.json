@@ -7,6 +7,13 @@
       "runtimeArgs": ["run", "dev"],
       "cwd": "frontend",
       "port": 4273
+    },
+    {
+      "name": "backend-dev",
+      "runtimeExecutable": "mix",
+      "runtimeArgs": ["phx.server"],
+      "cwd": "backend",
+      "port": 4200
     }
   ]
 }

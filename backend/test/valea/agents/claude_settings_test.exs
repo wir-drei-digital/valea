@@ -21,7 +21,10 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     assert "WebFetch" in perms["deny"]
     assert "WebSearch" in perms["deny"]
     assert perms["ask"] == ["Write", "Edit", "Bash"]
-    assert perms["allow"] == ["Read"]
+    # Read auto-allow is SCOPED to the workspace tree (./**). An unscoped
+    # `Read` would auto-approve reads anywhere the OS user can reach, bypassing
+    # PermissionPolicy entirely for reads.
+    assert perms["allow"] == ["Read(./**)"]
   end
 
   test "idempotent — second write yields identical bytes", %{root: root} do

@@ -70,10 +70,16 @@ defmodule Valea.Agents.PermissionPolicy do
   defp denied?({:error, :outside}, _ws), do: true
   defp denied?({:error, _}, _ws), do: false
 
+  # Case-INSENSITIVE match: on a case-insensitive filesystem (macOS APFS
+  # default) `SECRETS/x` and `Secrets/x` resolve to the same protected dir as
+  # `secrets/x`, so the hard-deny must not be defeated by casing. The
+  # `@protected_dirs` / `@db_prefix` references are already lowercase.
   defp denied?({:ok, path}, ws) do
     rel = Path.relative_to(path, ws)
     top = rel |> Path.split() |> List.first()
-    top in @protected_dirs or String.starts_with?(Path.basename(rel), @db_prefix)
+
+    (is_binary(top) and String.downcase(top) in @protected_dirs) or
+      String.starts_with?(String.downcase(Path.basename(rel)), @db_prefix)
   end
 
   defp all_in_read_roots?(resolved, ws, read_roots) do
