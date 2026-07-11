@@ -1,6 +1,6 @@
 # Mail (Phase 4) — Design
 
-**Date:** 2026-07-11 · **Status:** approved design, pre-plan
+**Date:** 2026-07-11 · **Status:** approved design (v2 after external review), pre-plan
 **Depends on:** 2026-07-10-agent-slice-design.md (queue trust loop, workflows, audit, workspace runtime)
 
 ## Goal
@@ -65,7 +65,10 @@ Valea.Api.Mail          ash_typescript RPCs for the SPA
 @callback uid_fetch_meta(conn, uids) :: {:ok, [%{uid: _, size: _, flags: _}]}
 @callback uid_fetch_headers(conn, uids) :: {:ok, [%{uid: _, headers: binary}]}
 @callback uid_fetch_full(conn, uid) :: {:ok, binary}   # whole RFC822 via BODY.PEEK[]
-@callback uid_move(conn, uid, dest_folder) :: :ok | {:error, reason}
+@callback uid_move(conn, uid, dest_folder) ::
+            :ok | {:error, reason} | {:unsupported, reason}
+            # ImapClient resolves the safe-move ladder internally
+            # (MOVE → UIDPLUS COPY+UID EXPUNGE → :unsupported)
 @callback append(conn, folder, flags, rfc822) :: :ok | {:error, reason}
 @callback logout(conn) :: :ok
 ```
@@ -81,12 +84,24 @@ learned from prior art (ExImap's documented failure modes):
   counts (`{123}\r\n`), never by regex over accumulated text. The parser is
   a small tokenizer over tagged/untagged responses with literals.
 - **`RFC822.SIZE` before body fetch** — oversized messages are never pulled.
-- **`UID MOVE` when the server advertises `MOVE`**, otherwise
-  `UID COPY` + `UID STORE +FLAGS (\Deleted)` + `EXPUNGE` — chosen per
-  connection from CAPABILITY.
+- **Safe move, never bare EXPUNGE.** `UID MOVE` when the server advertises
+  `MOVE`; else, when `UIDPLUS` is advertised, `UID COPY` +
+  `UID STORE +FLAGS (\Deleted)` + **`UID EXPUNGE <uid>`** (RFC 4315), which
+  expunges only Valea's message. A bare `EXPUNGE` is never issued — it
+  would purge every `\Deleted` message in the mailbox, including ones the
+  user's own client marked. With neither capability, the move is reported
+  `unsupported`: the source message is left untouched (no `\Deleted` flag),
+  the local file still flips to `processed`, and the user moves it in their
+  own client. The doctor reports which of the three levels the server
+  supports.
 - **Connect-per-pass.** No persistent connections, no IDLE. Connect, work,
-  LOGOUT. TLS via `:ssl` with proper verification (system CA store),
-  implicit TLS on 993 (STARTTLS not needed for the supported posture).
+  LOGOUT. CAPABILITY is refreshed after login (servers may change the
+  advertised set post-authentication).
+- **TLS is mandatory.** Implicit TLS on port 993 only — there is no
+  plaintext or STARTTLS mode and no `ssl` toggle anywhere in config or UI.
+  `:ssl` options: `verify_peer` against the OS CA store
+  (`:public_key.cacerts_get()`), hostname verification via the standard
+  `:public_key` match rules, and SNI set to the configured host.
 - Folder names used by Valea (`AI/Review`, `AI/Processed`, `Drafts`) are
   ASCII; modified-UTF-7 mailbox encoding is not implemented (documented
   limitation — custom folder names must be ASCII).
@@ -111,6 +126,17 @@ numeric suffix, no traversal). Listed in frontmatter with size and path.
 Per-workspace GenServer. State: config (from `config/mail.yaml`), credential
 (RAM only), sync status, poll timer.
 
+**Activation gating:** the Runtime starts its children *before* the
+Manager runs the workspace migration (manager.ex order: repo → runtime →
+migrate → broadcast), so the Engine must not read `mail.yaml` at init —
+it would see the pre-v3 shape. The Engine boots inert, subscribed to the
+`"workspace"` PubSub topic, and activates (loads config, runs the
+recovery scan, starts the poll timer) only on the `{:workspace_opened,
+info, generation}` broadcast — which the Manager fires only after the
+migration succeeded. A rolled-back open simply kills the still-inert
+Engine. (The Migration moduledoc's stale claim that it runs before the
+runtime gets corrected as part of this phase.)
+
 One **sync pass** (triggered by timer, default every 5 minutes, or Sync now):
 
 1. Connect + login. Auth failure → status `auth_failed`, **polling pauses**
@@ -126,21 +152,32 @@ One **sync pass** (triggered by timer, default every 5 minutes, or Sync now):
 
 Every mutating step is stamped with the workspace generation, exactly like
 Phase 3's runtime paths. A crashed pass reruns idempotently. One bad message
-is skipped with an audit note; it never wedges the pass.
+is recorded as `failed` for that UID and the pass continues — it never
+wedges the pass, and it is retried on later passes (attempt-capped, see
+SyncState) rather than silently skipped forever.
 
 The Engine also executes **post-approval mailbox ops** (see below) and the
 **doctor** (see UI).
 
 ### SyncState + message index
 
-Two SQLite tables (Ash resources) inside the workspace DB, both cache-layer
-per Principle 1 — the files stay canonical:
+Three SQLite tables (Ash resources) inside the workspace DB, all
+cache-layer per Principle 1 — the files stay canonical:
 
-- `mail_sync_state`: folder, uidvalidity, last_seen_uid.
-- `mail_messages`: msg_id, path, from, subject, date, status,
-  has_attachments, uid — the index behind the list/get RPCs. Rebuilt from
-  the files on workspace open (same posture as the ICM tree scan), so a
-  wiped DB is a resync/rescan, never data loss.
+- `mail_sync_state`: folder, uidvalidity, high-water UID (highest UID
+  *seen*, used only to scope the next UID SEARCH).
+- `mail_uid_outcomes`: folder, uid, outcome (`synced | skipped_oversize |
+  failed`), attempts, msg_id. A single high-water mark alone would skip a
+  failed UID forever; instead, `failed` UIDs are retried on subsequent
+  passes with an attempt cap (3, then `failed` is terminal but visible in
+  sync status), and `skipped_oversize` ones are not re-fetched.
+- `mail_messages`: msg_id, message_id (full, for dedupe), path, from,
+  subject, date, status, has_attachments, uid — the index behind the
+  list/get RPCs. Rebuilt from the files on workspace open (same posture as
+  the ICM tree scan), so a wiped DB is a resync/rescan, never data loss.
+
+Dedupe is keyed on the **full Message-ID** via `mail_messages`, never on
+the filename hash.
 
 ## Workspace layout & formats
 
@@ -157,9 +194,13 @@ sources/mail/
 `msg_id` = `<date>-<from-slug>-<hash8>`: date is the message date
 (`YYYY-MM-DD`), from-slug is the sender display name (fallback: email
 local part) lowercased/ASCII-slugged, and `hash8` is the first 8 hex chars
-of SHA-256 over the Message-ID (fallback when Message-ID is missing:
-SHA-256 over date + from + subject). Collision-safe and deterministic —
-resync lands the same file. Frontmatter values YAML-encoded with the
+of SHA-256 over the Message-ID. When Message-ID is missing, the hash is
+taken over the message's **entire raw header block** (far stronger than
+date/from/subject, which can legitimately collide). `hash8` is a filename
+disambiguator, not the identity: dedupe uses the full Message-ID in the
+index, and if a landing file's path already exists for a *different*
+Message-ID, the hash is extended to 16 (then 64) chars until unique.
+Deterministic — resync lands the same file. Frontmatter values YAML-encoded with the
 Phase-3 control-character rejection (frontmatter-injection hardening).
 
 ```markdown
@@ -171,6 +212,9 @@ to: [{ name: "Mara Lindt", email: "mara@example.com" }]
 subject: "Question about leadership coaching"
 date: 2026-07-09T06:58:00Z
 uid: 4711
+in_reply_to: null         # Message-ID this mail replies to, if any
+references: []            # full References chain (list of Message-IDs)
+reply_to: null            # Reply-To address if it differs from from
 status: review            # review | processed
 source: imap              # imap | seed
 source_ref: "email://imap/2026-07-09-priya-nair-3f2a91c4"
@@ -184,6 +228,11 @@ flips `review` → `processed`. Stable paths keep queue items, audit entries,
 and any agent references valid. Optional notes fields (`charset_note`,
 `normalizer_note`, `truncation_note`) record degraded handling.
 
+`message_id`, `in_reply_to`, `references`, and `reply_to` exist precisely
+because the raw RFC822 bytes are discarded after normalization: they are
+everything the post-approval APPEND needs to thread the draft correctly
+and address the right recipient (`reply_to || from`).
+
 ### inbox.md
 
 A single regenerated file — a header table (date, from, subject), newest
@@ -194,14 +243,15 @@ the user didn't hand over.
 ### config/mail.yaml (v3)
 
 Non-secret only. The v2 `smtp:` block and `username_env`/`password_env`
-keys are removed.
+keys are removed, and so is the v2 `ssl:` boolean — TLS is mandatory and
+not configurable (a toggle would make `ssl: false` either dead config or a
+plaintext-login footgun).
 
 ```yaml
 account: mara@example.com
 imap:
   host: imap.example.com
   port: 993
-  ssl: true
   username: mara@example.com
 folders:
   review: "AI/Review"
@@ -218,26 +268,50 @@ safety:
 
 ### Seed & migration (workspace v2 → v3)
 
-- The Priya mock is reseeded as
+The existing migration contract is binding: **never delete or overwrite a
+user-modified file** (migration.ex moduledoc; enforced by tests). v2→v3
+therefore works with hash-based pristine detection — the migration ships
+the SHA-256 of each known v2 seed file it wants to touch, and only a
+byte-identical file counts as pristine:
+
+- **Priya mock:** reseeded as
   `sources/mail/messages/2026-07-09-priya-nair-seed0001.md` with
   `source: seed`, `source_ref: "email://seed/priya-nair-inquiry"`,
-  `status: review` — the whole demo loop keeps working with no account.
-- `sources/mail/normalized/` (and the JSON mock) is removed; `inbox.md`
-  seeded with a small plausible header list.
-- `config/mail.yaml` rewritten to v3 (preserving any user-edited host/
-  account values, dropping smtp/env keys).
-- `icm/Workflows/New Inquiry Triage.md` input contract updated: the run
-  names a `sources/mail/messages/*.md` path (markdown, not JSON).
+  `status: review` (written only if absent) — the demo loop keeps working
+  with no account. The old `sources/mail/normalized/priya-nair-inquiry.json`
+  is never deleted: pristine → moved to `logs/migrations/v3/`; modified →
+  it is a user file and stays exactly where it is.
+- **`config/mail.yaml`:** pristine v2 seed → replaced with the v3 seed.
+  User-modified → the original is copied to `logs/migrations/v3/` and the
+  file is rewritten preserving the user's `account`, `imap.host`,
+  `imap.port`, `imap.username`, and `folders` values while dropping
+  `smtp:`, `ssl:`, and the `*_env` keys.
+- **`icm/Workflows/New Inquiry Triage.md`:** pristine → updated input
+  contract (the run names a `sources/mail/messages/*.md` path — markdown,
+  not JSON). User-modified → left untouched; the migration records a note
+  (audited) and the mail doctor surfaces the contract mismatch as a
+  warning.
+- **`config/workspace.yaml`:** gains a persistent workspace identity —
+  `id: <uuid4>` (also added by Scaffold for new workspaces) — plus
+  `version: 3`. The UUID exists because keychain entries must survive the
+  workspace folder moving or being renamed (a path-derived key would not).
 - Idempotent `Valea.Workspace.Migration` step, same pattern as v1→v2;
-  `config/workspace.yaml` version bumps to 3.
+  `logs/migrations/` is append-only and never itself migrated.
 
 ## Credentials
 
 - **Desktop:** two Tauri commands using the `keyring` crate —
   `mail_secret_set(workspace_id, username, secret)` /
   `mail_secret_get(workspace_id, username)` (plus delete). Service name =
-  the app bundle identifier; account = `workspace_id:username`. Exposed
-  only over Tauri IPC to the SPA, never over HTTP.
+  the app bundle identifier; account = `workspace_id:username`, where
+  `workspace_id` is the persistent UUID from `config/workspace.yaml`
+  (stable across folder moves/renames). Exposed only over Tauri IPC to the
+  SPA, never over HTTP. Concretely this phase adds to the desktop crate:
+  the `keyring` dependency, the `#[tauri::command]` handlers registered in
+  the `invoke_handler`, and a Tauri v2 capability granting exactly these
+  commands to the sidecar-origin webview (the SPA is served from the
+  localhost sidecar, so the capability must name that remote origin —
+  today `main.rs` registers no commands and no such capability exists).
 - **Hand-off:** on app launch and after account setup, the SPA reads the
   secret from the keychain and calls the `mail_set_credential` RPC over the
   token-authenticated control plane. The Engine keeps it in process memory
@@ -260,25 +334,53 @@ audited synchronously, idempotent local draft write to
 `sources/mail/drafts/<run_id>.md`.
 
 Phase 4 adds a **post-approval mailbox stage**, executed by the Engine
-after the local approve completes. It can never block or undo an approval:
+after the local approve completes. It can never block or undo an approval,
+and it is crash-durable:
+
+**Durable intent.** The mailbox ops are written into the envelope *before*
+the terminal rename: approve's step 6 becomes "rewrite
+`processing/<run_id>.json` with a `mailbox_ops` map (`draft_append:
+pending`, `archive_source: pending`), then rename to `approved/`" — so an
+envelope in `approved/` always already carries its op intents. Reject
+gains the same treatment for its single `archive_source` op. After the
+rename, the queue notifies the Engine; if the process dies anywhere in
+between, the Engine's **recovery scan** (at activation, alongside the
+existing `recover_staging` pattern) walks `approved/` and `rejected/` for
+envelopes with non-terminal ops and resumes them. The intent lives in the
+envelope on disk — never only in a message to a process that might be gone.
+
+The ops:
 
 1. **APPEND draft**: compose RFC822 from the approved draft markdown via
-   `:mimemail` — `To`/`Subject` from the draft frontmatter,
-   `In-Reply-To`/`References` from the source message so the draft threads
-   correctly — APPEND to the configured Drafts folder with `\Draft` flag.
-   Audit `draft_appended`.
-2. **MOVE source message** `AI/Review` → `AI/Processed`; flip the file's
-   `status:` to `processed`. Runs on **reject too** (a rejected item has
-   still been reviewed). Audit `message_archived`.
+   `:mimemail` — `To` = source `reply_to || from`, `Subject` from the
+   draft frontmatter, `In-Reply-To` = source `message_id`, `References` =
+   source `references + [message_id]` — APPEND to the configured Drafts
+   folder with `\Draft` flag. The composed draft carries a
+   **deterministic Message-ID** (`<valea.draft.<run_id>@valea.invalid>`),
+   and before any APPEND (first attempt or retry) the Engine does
+   `UID SEARCH HEADER "Message-ID"` for it in the Drafts folder — found
+   means a prior attempt succeeded even if the crash hit before the audit
+   line, so the op is marked `done` without re-appending. Audit
+   `draft_appended`.
+2. **MOVE source message** `AI/Review` → `AI/Processed` (safe-move ladder
+   from the ImapClient section; `unsupported` is a terminal status shown
+   to the user); flip the file's `status:` to `processed`. Runs on
+   **reject too** (a rejected item has still been reviewed). Audit
+   `message_archived`.
 
-Per-op status (`pending / done / failed / skipped`) is recorded on the
-queue item envelope (a versioned extension of `queue_item/v1` →
-`mailbox_ops` map) and surfaced in the UI with a retry action
-(`mail_retry_mailbox_ops(item_id)` RPC, idempotent — ops that succeeded
-are not repeated; APPEND idempotence is guarded by checking for a prior
-`draft_appended` audit success before re-appending). IMAP offline at
-approval time = draft exists locally, ops show `failed` with retry. Seed
-messages (`source: seed`) skip mailbox ops (`skipped`).
+Per-op status (`pending / done / failed / skipped / unsupported`) is
+recorded on the queue item envelope (a versioned extension of
+`queue_item/v1` → `queue_item/v2` with a `mailbox_ops` map) and surfaced
+in the UI with a retry action (`mail_retry_mailbox_ops(item_id)` RPC —
+idempotent by the same search-before-append guard; ops already `done` are
+never repeated). IMAP offline at approval time = draft exists locally, ops
+show `failed` with retry. Seed messages (`source: seed`) get `skipped`
+ops at intent-writing time.
+
+**Queue API extension:** Phase 3's queue reads only `pending/`; the UI
+now also needs terminal envelopes, so the queue API gains list/get over
+`approved/` and `rejected/` (id, decided time, `mailbox_ops` status) to
+render outcomes and drive retry.
 
 ## UI
 
@@ -301,14 +403,17 @@ Same AppFrame + ListPane composition as `/chat`:
 
 ### Account setup + doctor
 
-Setup panel: host, port, SSL, username, account label → password field
+Setup panel: host, port (default 993, always TLS), username, account
+label → password field
 that writes **only** to the keychain (Tauri) and then hands off to the
 backend; in browser dev it posts straight to `mail_set_credential` with a
 visible "dev mode — not persisted" note. Then the doctor runs:
 
 `config_present → credential_present → tcp_reachable → tls_ok → login_ok →
 folders (review/processed/drafts exist; one-click "Create AI folders" for
-the missing AI/* ones) → move_capability (MOVE or fallback)`
+the missing AI/* ones) → move_capability (MOVE / UIDPLUS fallback /
+unsupported-manual) → workflow_contract (warns if a user-modified Triage
+page still names the legacy JSON input)`
 
 Same presentation pattern as the Phase-3 DoctorPanel; every check's detail
 is one toggle away; secrets redacted.
@@ -336,23 +441,30 @@ following the Phase-3 store patterns.
 | Oversized message (> cap) | headers-only file with `truncation_note`, attachments skipped |
 | Unknown charset / broken MIME | best-effort body + note in frontmatter, pass continues |
 | UIDVALIDITY change | clean folder resync; Message-ID dedupe keeps files stable |
-| MOVE not supported | COPY+STORE+EXPUNGE fallback per CAPABILITY |
+| MOVE not supported | UIDPLUS → COPY+STORE+`UID EXPUNGE <uid>`; neither → op `unsupported`, source untouched, user moves it manually (bare EXPUNGE never issued) |
 | Mailbox op fails post-approval | approval stands, op `failed` + retry button, audited |
+| Crash around approval terminal rename | op intents already in the envelope on disk; Engine recovery scan resumes them at activation |
+| APPEND retried after crash-before-audit | deterministic draft Message-ID + UID SEARCH in Drafts detects the prior success — no duplicate draft |
 | Evil attachment filename | sanitized to safe basename, never traverses |
-| One bad message | skipped + audited, pass continues |
+| One bad message | recorded `failed` + audited, pass continues; retried on later passes (attempt cap 3) |
 
 ## Testing
 
 - **ImapClient:** scripted fake IMAP server over real TCP/SSL sockets in
   ExUnit (the fake-ACP-agent pattern): greeting, login, literals, tagged/
-  untagged interleaving, MOVE vs fallback capability variants, size
-  responses, mid-stream disconnects.
+  untagged interleaving, the full move ladder (MOVE / UIDPLUS `UID
+  EXPUNGE` / unsupported — asserting bare EXPUNGE is never sent), size
+  responses, post-login CAPABILITY refresh, mid-stream disconnects.
 - **Normalizer:** fixture `.eml` corpus — plain, HTML-only, nested
   multipart, base64/quoted-printable, ISO-8859-1/Windows-1252, evil
   filenames, broken MIME.
 - **Engine:** fake Transport — full pass, incremental pass, UIDVALIDITY
-  reset, dedupe, size cap, auth-failure pause, post-approval ops incl.
-  failure/retry/skip-for-seed, generation staleness.
+  reset, dedupe, size cap, per-UID failed-retry with attempt cap,
+  auth-failure pause, activation gating (no config read before
+  `workspace_opened`), post-approval ops incl. failure/retry/
+  skip-for-seed/unsupported, recovery scan over `approved/`+`rejected/`
+  with pending intents, search-before-append idempotence, generation
+  staleness.
 - **API/queue:** RPC contract tests under the existing isolated test env;
   envelope extension roundtrip.
 - **Frontend:** vitest for MailStore + route components; svelte-check.
