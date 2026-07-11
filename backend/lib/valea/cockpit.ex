@@ -8,6 +8,18 @@ defmodule Valea.Cockpit do
   This module provides the seeded data shape that will be replaced by
   live data from the database and external integrations in later phases.
   Task 11 exposes this over RPC, Task 17 renders it in the UI.
+
+  Task 18 adds one LIVE field to the otherwise-still-seeded payload:
+  `"mail"` (`%{"review_count", "inbox_count", "configured"}`), read from
+  `Valea.Mail.Store`/`Valea.Mail.Engine` — the two live pieces the Today
+  page needs to generalize its inquiry card beyond the hardcoded seed
+  message and phrase "N to review · M in inbox" in the summary line. Mail
+  is workspace-scoped and only comes alive once `Valea.Workspace.Runtime`
+  has started `Valea.Mail.Engine` (which may never happen — no workspace
+  open, or a workspace mid-switch) — `Process.whereis(Valea.Mail.Engine)`
+  guards this exactly the way `Valea.Audit.entries/1` guards its own
+  GenServer call, so a dead/absent Engine degrades to the zero/unconfigured
+  default instead of crashing this call with `:noproc`.
   """
 
   @doc """
@@ -22,6 +34,7 @@ defmodule Valea.Cockpit do
     - "prepared_items": items prepared overnight (draft reviews, session briefs, etc.)
     - "open_loops": unresolved items
     - "while_you_were_away": background activity notifications
+    - "mail": `%{"review_count", "inbox_count", "configured"}` — live, see moduledoc
   """
   def today do
     {:ok,
@@ -113,7 +126,34 @@ defmodule Valea.Cockpit do
          "Synced 9 emails from AI / Review · 7:00",
          "3 workflows ran: inquiry triage, session prep, receipt capture",
          "Moved 4 newsletters to Reading · Undo"
-       ]
+       ],
+       "mail" => mail_summary()
      }}
+  end
+
+  # See the moduledoc: `Process.whereis/1` is the SAME guard
+  # `Valea.Audit.entries/1` uses, for the same reason — no workspace open (or
+  # one mid-switch) means `Valea.Mail.Engine` isn't registered, and calling
+  # its `GenServer.call/2` anyway would exit `:noproc` and take this whole
+  # RPC/channel call down instead of degrading gracefully. `Store.list_messages/0`
+  # and `Store.inbox_headers/0` both hit the SAME per-workspace `Valea.Repo`
+  # that `Valea.Mail.Engine` only ever activates alongside (both are children
+  # of the same `Valea.Workspace.Runtime`), so the one whereis check covers
+  # both dependencies.
+  defp mail_summary do
+    if Process.whereis(Valea.Mail.Engine) do
+      review_count =
+        Valea.Mail.Store.list_messages() |> Enum.count(&(&1.status == "review"))
+
+      inbox_count = length(Valea.Mail.Store.inbox_headers())
+
+      %{
+        "review_count" => review_count,
+        "inbox_count" => inbox_count,
+        "configured" => Valea.Mail.Engine.status().configured
+      }
+    else
+      %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+    end
   end
 end

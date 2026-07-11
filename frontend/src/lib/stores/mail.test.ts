@@ -260,6 +260,42 @@ describe('MailStore.handleMailboxOps', () => {
   });
 });
 
+describe('MailStore.onMailboxOps', () => {
+  it('notifies subscribers of every mailbox_ops push, alongside refreshMessages', () => {
+    const store = new MailStore(fakeApi({}) as never);
+    const listener = vi.fn();
+
+    store.onMailboxOps(listener);
+    store.handleMailboxOps({ runId: 'run-1' });
+
+    expect(listener).toHaveBeenCalledWith({ runId: 'run-1' });
+  });
+
+  it('stops notifying once unsubscribed', () => {
+    const store = new MailStore(fakeApi({}) as never);
+    const listener = vi.fn();
+
+    const unsubscribe = store.onMailboxOps(listener);
+    unsubscribe();
+    store.handleMailboxOps({ runId: 'run-1' });
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('supports multiple independent subscribers', () => {
+    const store = new MailStore(fakeApi({}) as never);
+    const a = vi.fn();
+    const b = vi.fn();
+
+    store.onMailboxOps(a);
+    store.onMailboxOps(b);
+    store.handleMailboxOps({ runId: 'run-2' });
+
+    expect(a).toHaveBeenCalledWith({ runId: 'run-2' });
+    expect(b).toHaveBeenCalledWith({ runId: 'run-2' });
+  });
+});
+
 describe('MailStore.handleMailStatus', () => {
   it('normalizes and stores status, and refetches messages + inbox (T13 activation race)', async () => {
     const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);

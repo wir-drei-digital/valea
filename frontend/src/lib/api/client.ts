@@ -74,6 +74,7 @@ import {
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
+  CockpitTodayFields,
   SaveIcmPageFields,
   CreateIcmPageFields,
   CreateIcmFolderFields,
@@ -237,7 +238,7 @@ function callIcmPageChannel(channel: NonNullable<ReturnType<typeof channelAvaila
 }
 
 function callCockpitTodayChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) => cockpitTodayChannel({ channel, ...handlers }));
+  return wrapChannelCall((handlers) => cockpitTodayChannel({ channel, fields: cockpitTodayFields, ...handlers }));
 }
 
 // The generated typed actions below reject an empty/omitted `fields` array
@@ -295,6 +296,26 @@ const listWorkflowsFields = [
 const listQueueItemsFields = [
   { items: ['runId', 'title', 'summary', 'kind', 'riskLevel', 'createdAt', 'workflow', 'valid', 'error'] }
 ] as unknown as ListQueueItemsFields;
+
+// Cockpit (Task 18 typed the whole `today` action — see `Valea.Api.Cockpit`'s
+// moduledoc). Same anonymous-embedded-map-array codegen gap as
+// `listWorkflowsFields`/`icmEntryReferencesFields` above (`schedule`/
+// `preparedItems`/`openLoops` are `Array<TypedMap>`, and `mail` on top of
+// that is a nested `TypedMap` field), so the generated `CockpitTodayFields`
+// type can't express this literal either — cast, not inferred. Selects
+// every field: `normalizeCockpitToday` (`lib/today/cockpit.ts`) reads the
+// whole payload.
+const cockpitTodayFields = [
+  'workspace',
+  'dateLabel',
+  'greeting',
+  'summary',
+  { schedule: ['time', 'title', 'subtitle', 'status'] },
+  { preparedItems: ['type', 'title', 'summary', 'usedSources', 'primaryAction', 'secondaryAction'] },
+  { openLoops: ['title', 'source'] },
+  'whileYouWereAway',
+  { mail: ['reviewCount', 'inboxCount', 'configured'] }
+] as unknown as CockpitTodayFields;
 
 // Mail (T13/T14). Every top-level boolean-valued field here (`saved`,
 // `accepted`, `started`, `ok`) is delivered under a STRING key by the
@@ -649,7 +670,8 @@ export const api = {
         result.ok ? { ok: true, data: normalizeIcmPage(result.data as Record<string, any>) } : result
     ),
 
-  cockpitToday: () => runRpc(callCockpitTodayChannel, () => httpCockpitToday(withAuth({}))),
+  cockpitToday: () =>
+    runRpc(callCockpitTodayChannel, () => httpCockpitToday(withAuth({ fields: cockpitTodayFields }))),
 
   // `prosemirror` is typed `object` (not `Record<string, any>`) so callers —
   // notably `PageEditorStore`, whose `noteChange(getJson: () => object)` gets

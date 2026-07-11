@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeCockpitToday, splitTrustClause } from './cockpit';
+import { mailSummaryLine, normalizeCockpitToday, splitTrustClause } from './cockpit';
 
 // Mirrors the seeded payload shape from backend/lib/valea/cockpit.ex —
 // an unconstrained :map, so keys arrive snake_case over RPC.
@@ -24,7 +24,8 @@ const rawSnake = {
     }
   ],
   open_loops: [{ title: 'Send proposal to Priya', source: 'from her email · yesterday' }],
-  while_you_were_away: ['Synced 9 emails from AI / Review · 7:00']
+  while_you_were_away: ['Synced 9 emails from AI / Review · 7:00'],
+  mail: { review_count: 3, inbox_count: 12, configured: true }
 };
 
 describe('normalizeCockpitToday', () => {
@@ -40,9 +41,10 @@ describe('normalizeCockpitToday', () => {
     expect(today.preparedItems[0].secondaryAction).toBe('Snooze');
     expect(today.openLoops[0].source).toBe('from her email · yesterday');
     expect(today.whileYouWereAway).toHaveLength(1);
+    expect(today.mail).toEqual({ reviewCount: 3, inboxCount: 12, configured: true });
   });
 
-  it('accepts camelCase keys as a fallback', () => {
+  it('accepts camelCase keys as a fallback (Task 18: cockpit_today is now a fully typed/camelCased action)', () => {
     const today = normalizeCockpitToday({
       workspace: 'W',
       dateLabel: 'D',
@@ -51,20 +53,33 @@ describe('normalizeCockpitToday', () => {
       schedule: [],
       preparedItems: [{ type: 't', title: 'x', summary: 's', usedSources: ['a'], primaryAction: 'p' }],
       openLoops: [],
-      whileYouWereAway: []
+      whileYouWereAway: [],
+      mail: { reviewCount: 1, inboxCount: 0, configured: false }
     });
 
     expect(today.dateLabel).toBe('D');
     expect(today.preparedItems[0].usedSources).toEqual(['a']);
     expect(today.preparedItems[0].secondaryAction).toBeUndefined();
+    expect(today.mail).toEqual({ reviewCount: 1, inboxCount: 0, configured: false });
   });
 
-  it('tolerates missing collections', () => {
+  it('tolerates missing collections, defaulting mail to zero/unconfigured', () => {
     const today = normalizeCockpitToday({ greeting: 'Hello.' });
     expect(today.schedule).toEqual([]);
     expect(today.preparedItems).toEqual([]);
     expect(today.openLoops).toEqual([]);
     expect(today.whileYouWereAway).toEqual([]);
+    expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
+  });
+});
+
+describe('mailSummaryLine', () => {
+  it('formats the review/inbox counts', () => {
+    expect(mailSummaryLine({ reviewCount: 3, inboxCount: 12, configured: true })).toBe('3 to review · 12 in inbox');
+  });
+
+  it('formats zero counts plainly', () => {
+    expect(mailSummaryLine({ reviewCount: 0, inboxCount: 0, configured: true })).toBe('0 to review · 0 in inbox');
   });
 });
 

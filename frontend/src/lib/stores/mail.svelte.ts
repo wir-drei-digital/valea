@@ -129,6 +129,14 @@ export class MailStore {
 
   #api: MailApi;
 
+  /**
+   * `mailbox_ops` push subscribers beyond this store's own `refreshMessages()`
+   * reaction (see `handleMailboxOps` below) — `onMailboxOps`'s doc comment
+   * explains why this exists instead of a route opening its own
+   * `channel.on('mailbox_ops', ...)`.
+   */
+  #mailboxOpsListeners = new Set<(payload: MailboxOpsPush) => void>();
+
   constructor(api: MailApi) {
     this.#api = api;
   }
@@ -232,8 +240,27 @@ export class MailStore {
    * `refreshMessages()` picks up the new status. `runId` carries nothing
    * else this store currently reacts to.
    */
-  handleMailboxOps(_payload: MailboxOpsPush): void {
+  handleMailboxOps(payload: MailboxOpsPush): void {
     void this.refreshMessages();
+    this.#mailboxOpsListeners.forEach((listener) => listener(payload));
+  }
+
+  /**
+   * Subscribes to `mailbox_ops` pushes as they arrive, IN ADDITION to this
+   * store's own `refreshMessages()` reaction above — for a route that needs
+   * to react to a specific `runId` (`routes/queue/[run_id]/+page.svelte`'s
+   * decided-item mailbox-op rows, Task 18) without opening a second,
+   * racing `channel.on('mailbox_ops', ...)` binding on the shared
+   * `workspace:events` channel (see `wireMailEvents`'s doc comment: only
+   * ONE join per topic reliably receives pushes, and this store's
+   * `handleMailboxOps` is already the sole handler wired to that one join).
+   * Returns an unsubscribe function — call it from the caller's cleanup
+   * (e.g. `onMount`'s returned callback) so a route that unmounts mid-run
+   * doesn't leak a listener that outlives it.
+   */
+  onMailboxOps(listener: (payload: MailboxOpsPush) => void): () => void {
+    this.#mailboxOpsListeners.add(listener);
+    return () => this.#mailboxOpsListeners.delete(listener);
   }
 
   #applyStatus(raw: MailStatusPush): void {

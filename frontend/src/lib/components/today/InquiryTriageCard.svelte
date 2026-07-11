@@ -1,15 +1,15 @@
 <script lang="ts">
-  // The Priya Nair "new inquiry" cockpit card, given a real trust-loop front
-  // end (spec Task 19): idle (seeded, unprepared) -> preparing (workflow
-  // running) -> the live queue item once `New Inquiry Triage.md` finishes.
-  // Three renders, chosen by matching `queueStore.items` against the triage
-  // workflow's path — NOT by any local "did I click prepare" flag, so a
-  // page reload after a previous run still shows the right state:
+  // A "new inquiry" cockpit card, given a real trust-loop front end (spec
+  // Task 19): idle (unprepared) -> preparing (workflow running) -> the live
+  // queue item once `New Inquiry Triage.md` finishes. Three renders, chosen
+  // by matching `queueStore.items` against the triage workflow's path — NOT
+  // by any local "did I click prepare" flag alone, so a page reload after a
+  // previous run still shows the right state:
   //
-  //   1. no matching queue item, not currently preparing -> the seeded card
-  //      (from `Valea.Cockpit.today/0`), with "Prepare a reply" as its one
-  //      primary action instead of the seed's "Review draft" (nothing has
-  //      been drafted yet, so linking anywhere would be a lie).
+  //   1. no matching queue item, not currently preparing -> the idle card,
+  //      with "Prepare a reply" as its one primary action instead of the
+  //      seed's "Review draft" (nothing has been drafted yet, so linking
+  //      anywhere would be a lie).
   //   2. no matching queue item, `runWorkflow` in flight -> amber
   //      "PREPARING" in-progress state, linking to the live session.
   //   3. matching queue item, `valid: true` -> `ApprovalCard`, built from
@@ -19,39 +19,89 @@
   //   4. ANY invalid queue item -> the muted "couldn't read" card (spec
   //      bullet). NOT matched by `workflow`: `Valea.Queue.list/0`'s
   //      `invalid_entry/2` always reports `workflow: nil` for a file that
-  //      failed to decode — an item this broken can't be attributed to a
-  //      workflow, so it can't be matched by path. Since this phase only
-  //      ever wires ONE workflow to a Today action, any invalid pending
-  //      item is treated as this run having gone wrong.
+  //      failed to decode — an item this broken can't be attributed to any
+  //      ONE card by data alone. KNOWN LIMITATION (Task 18 generalized this
+  //      card to render once per review message, all sharing this same
+  //      workflow): an invalid item still surfaces on EVERY rendered card,
+  //      same as the single-card Phase-1 behavior this preserves — there is
+  //      no information in an invalid entry to attribute it to just one.
+  //
+  // Task 18 generalized this from one hardcoded Priya Nair instance to
+  // `{path, fromName, subject}` props (defaults = the seed message), so
+  // `routes/+page.svelte` can render one of these per mail review message.
+  // Multiple concurrent cards run the SAME workflow against DIFFERENT
+  // inputs, so `matching` can no longer be "the first pending item for this
+  // workflow" (every card would then converge on whichever run resolves
+  // first) — `matchedRunId` below disambiguates: the FAST path is a run
+  // THIS card itself started (`prepareReply`'s response hands back
+  // `runId` directly); the SLOW path (a reload, where no local state
+  // survives) probes each unmatched candidate's full envelope for one whose
+  // `input` equals this card's own `path` (`envelopeInputPath`).
   import { api } from '$lib/api/client';
   import type { QueueItemEnvelope } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { queueStore } from '$lib/stores/queue.svelte';
-  import type { PreparedItem } from '$lib/today/cockpit';
   import { Button } from '$lib/components/ui/button/index.js';
-  import SourceChips from './SourceChips.svelte';
   import ApprovalCard from '$lib/components/queue/ApprovalCard.svelte';
+  import {
+    SEED_TRIAGE_PATH,
+    SEED_TRIAGE_FROM_NAME,
+    SEED_TRIAGE_SUBJECT,
+    envelopeInputPath,
+    idleCopy,
+    runWorkflowErrorMessage
+  } from './triage-card';
 
   const TRIAGE_WORKFLOW = 'icm/Workflows/New Inquiry Triage.md';
-  const TRIAGE_INPUT = 'sources/mail/normalized/priya-nair-inquiry.json';
 
-  let { item }: { item: PreparedItem } = $props();
+  let {
+    path = SEED_TRIAGE_PATH,
+    fromName = SEED_TRIAGE_FROM_NAME,
+    subject = SEED_TRIAGE_SUBJECT
+  }: { path?: string; fromName?: string; subject?: string } = $props();
+
+  const copy = $derived(idleCopy(fromName, subject));
 
   let preparing = $state(false);
   let sessionId: string | null = $state(null);
   let prepareError: string | null = $state(null);
 
-  // Newest pending item from this workflow, and — separately — the newest
-  // invalid pending item of ANY workflow (see the moduledoc-style comment
-  // above for why invalid items can't be matched by `workflow`).
-  // `queueStore.items` is already newest-first (`Valea.Queue.list/0`), and
-  // both are reactive to it, so a `queue_changed` push (wired at the shared
-  // `workspace:events` join, `wireIcmEvents` -> `wireQueueEvents`) flips
-  // this card over without any polling here.
-  const matching = $derived(queueStore.items.find((i) => i.valid && i.workflow === TRIAGE_WORKFLOW));
-  const invalidItem = $derived(queueStore.items.find((i) => !i.valid));
+  // The run id this card has resolved as "mine" — set either by
+  // `prepareReply` (own click) or the reconciliation effect below (reload).
+  // Sticky: once set, `matching` just tracks whatever `queueStore.items`
+  // says about that run id (present-and-valid -> ApprovalCard; gone ->
+  // decided elsewhere, card reverts to idle; a later `prepareReply` call
+  // overwrites it with the new run's id).
+  let matchedRunId: string | null = $state(null);
+  const checkedRunIds = new Set<string>();
 
-  // Full envelope for the matching item, fetched once it turns up (the list
+  const candidates = $derived(queueStore.items.filter((i) => i.valid && i.workflow === TRIAGE_WORKFLOW));
+  const invalidItem = $derived(queueStore.items.find((i) => !i.valid));
+  const matching = $derived(candidates.find((c) => c.runId === matchedRunId));
+
+  // Reload-reconciliation: probe each not-yet-ruled-out candidate's full
+  // envelope for one whose `input` equals this card's `path`. Re-runs
+  // whenever `candidates` changes, but `checkedRunIds` means each run id is
+  // only ever probed once.
+  $effect(() => {
+    if (matchedRunId) return;
+
+    for (const candidate of candidates) {
+      if (checkedRunIds.has(candidate.runId)) continue;
+      checkedRunIds.add(candidate.runId);
+
+      const runId = candidate.runId;
+      void queueStore.detail(runId).then((result) => {
+        if (matchedRunId) return; // beaten by a faster probe, or our own click
+        if (!result.ok) return;
+        if (envelopeInputPath(result.data.item) === path) {
+          matchedRunId = runId;
+        }
+      });
+    }
+  });
+
+  // Full envelope for the matched item, fetched once it turns up (the list
   // summary alone can't build ApprovalCard's sources/session-id). Keyed by
   // run id so a second, later run replaces rather than reuses a stale fetch.
   let envelope: QueueItemEnvelope | null = $state(null);
@@ -73,30 +123,14 @@
   async function prepareReply(): Promise<void> {
     preparing = true;
     prepareError = null;
-    const result = await api.runWorkflow(TRIAGE_WORKFLOW, TRIAGE_INPUT, workspaceStore.generation ?? 0);
+    const result = await api.runWorkflow(TRIAGE_WORKFLOW, path, workspaceStore.generation ?? 0);
     if (result.ok) {
       const data = result.data as { runId: string; sessionId: string };
       sessionId = data.sessionId;
+      matchedRunId = data.runId;
     } else {
       preparing = false;
       prepareError = runWorkflowErrorMessage(result.error);
-    }
-  }
-
-  function runWorkflowErrorMessage(code: string): string {
-    switch (code) {
-      case 'harness_unavailable':
-        return 'The assistant harness is not ready yet.';
-      case 'workflow_disabled':
-        return 'This workflow is turned off.';
-      case 'input_not_found':
-        return 'The inquiry email is missing.';
-      case 'workspace_changed':
-        return 'Your workspace changed. Reopen it and try again.';
-      case 'workspace_not_open':
-        return 'No workspace is open.';
-      default:
-        return 'Could not start the assistant. Please try again.';
     }
   }
 </script>
@@ -117,7 +151,7 @@
     >
       Preparing
     </span>
-    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{item.title}</h3>
+    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{copy.title}</h3>
     <p class="text-ink-body text-[13.5px] leading-normal">
       Drafting a reply — reading her email, your offer, and your tone guide.
     </p>
@@ -139,9 +173,8 @@
     >
       New inquiry
     </span>
-    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{item.title}</h3>
-    <p class="text-ink-body text-[13.5px] leading-normal">{item.summary}</p>
-    <SourceChips sources={item.usedSources} />
+    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{copy.title}</h3>
+    <p class="text-ink-body text-[13.5px] leading-normal">{copy.summary}</p>
     <div class="flex flex-wrap items-center gap-2 pt-0.5">
       <Button variant="default" onclick={() => void prepareReply()}>Prepare a reply</Button>
       {#if prepareError}

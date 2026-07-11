@@ -5,8 +5,10 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { queueStore } from '$lib/stores/queue.svelte';
+  import { mailStore } from '$lib/stores/mail.svelte';
   import { icmToNav } from '$lib/shell/nav';
-  import { normalizeCockpitToday, splitTrustClause, type CockpitToday } from '$lib/today/cockpit';
+  import { normalizeCockpitToday, splitTrustClause, mailSummaryLine, type CockpitToday } from '$lib/today/cockpit';
+  import { fromLabel, subjectLabel } from '$lib/components/mail/mail-shapes';
   import PreparedItemCard from '$lib/components/today/PreparedItemCard.svelte';
   import InquiryTriageCard from '$lib/components/today/InquiryTriageCard.svelte';
   import ScheduleList from '$lib/components/today/ScheduleList.svelte';
@@ -14,6 +16,15 @@
   import AwayList from '$lib/components/today/AwayList.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+
+  // The seeded cockpit narrative's Priya Nair entry — Task 18 stopped
+  // rendering it (and its rich seed copy) inline via `InquiryTriageCard
+  // {item}`; that card is now generalized (`{path, fromName, subject}`
+  // props) and rendered separately below, either once with defaults (not
+  // configured) or once per real review message (configured). This title
+  // is only used to filter that ONE entry back out of the generic
+  // `PreparedItemCard` loop so it doesn't render twice.
+  const SEED_INQUIRY_TITLE = 'Priya Nair · new inquiry';
 
   let today: CockpitToday | null = $state(null);
   let failed = $state(false);
@@ -42,10 +53,33 @@
     // Live updates after this are pushed via `queue_changed` (wired at the
     // shared `workspace:events` join — see `wireIcmEvents` in `icm.svelte.ts`).
     void queueStore.refetch();
+    // Populates `mailStore.messages` so a configured workspace's Today page
+    // can render one `InquiryTriageCard` per review message. Live updates
+    // arrive via the same shared join's mail pushes (`wireMailEvents`,
+    // wired once from `wireIcmEvents`) — same "refetch once on mount, pushes
+    // keep it fresh" convention `/mail`'s own `onMount` uses.
+    void mailStore.refreshMessages();
   });
 
   const icmNav = $derived(icmToNav(icmStore.nodes));
   const trust = $derived.by(() => splitTrustClause(today?.summary ?? ''));
+
+  const otherPreparedItems = $derived.by(() =>
+    (today?.preparedItems ?? []).filter((item) => item.title !== SEED_INQUIRY_TITLE)
+  );
+
+  // Only messages with an indexed path can actually be run through the
+  // triage workflow (`api.runWorkflow` needs a real `input` path) — a
+  // defensive filter, not an expected case (`Store.list_messages/0` always
+  // carries the file's own path).
+  const reviewMessages = $derived(
+    mailStore.messages.filter((m): m is typeof m & { path: string } => m.status === 'review' && !!m.path)
+  );
+
+  const preparedCount = $derived.by(() => {
+    if (!today) return 0;
+    return otherPreparedItems.length + (today.mail.configured ? reviewMessages.length : 1);
+  });
 </script>
 
 <AppShell>
@@ -88,6 +122,9 @@
         </h1>
         <p class="text-ink-body max-w-[560px] text-[14px]">
           {trust.lead}<strong class="text-ink-heading">{trust.trust}</strong>
+          {#if today.mail.configured}
+            <span class="text-ink-meta">· {mailSummaryLine(today.mail)}</span>
+          {/if}
         </p>
       </header>
 
@@ -98,14 +135,21 @@
         </section>
 
         <section>
-          <p class="text-overline mb-3">Prepared for you · {today.preparedItems.length}</p>
+          <p class="text-overline mb-3">Prepared for you · {preparedCount}</p>
           <div class="flex flex-col gap-4">
-            {#each today.preparedItems as item (item.title)}
-              {#if item.title === 'Priya Nair · new inquiry'}
-                <InquiryTriageCard {item} />
-              {:else}
-                <PreparedItemCard {item} />
-              {/if}
+            {#if today.mail.configured}
+              {#each reviewMessages as message (message.msgId)}
+                <InquiryTriageCard
+                  path={message.path}
+                  fromName={fromLabel(message)}
+                  subject={subjectLabel(message.subject)}
+                />
+              {/each}
+            {:else}
+              <InquiryTriageCard />
+            {/if}
+            {#each otherPreparedItems as item (item.title)}
+              <PreparedItemCard {item} />
             {/each}
           </div>
         </section>

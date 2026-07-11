@@ -558,9 +558,13 @@ export async function runWorkflowChannel<Fields extends RunWorkflowFields | unde
 }
 
 
-export type InferCockpitTodayResult = Record<string, any>;
+export type CockpitTodayFields = UnifiedFieldSelection<{workspace: string, dateLabel: string, greeting: string, summary: string, schedule: Array<{time: string, title: string, subtitle: string, status: string | null, __type: "TypedMap", __primitiveFields: "time" | "title" | "subtitle" | "status"}>, preparedItems: Array<{type: string, title: string, summary: string, usedSources: Array<string>, primaryAction: string, secondaryAction: string | null, __type: "TypedMap", __primitiveFields: "type" | "title" | "summary" | "usedSources" | "primaryAction" | "secondaryAction"}>, openLoops: Array<{title: string, source: string, __type: "TypedMap", __primitiveFields: "title" | "source"}>, whileYouWereAway: Array<string>, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, __type: "TypedMap", __primitiveFields: "workspace" | "dateLabel" | "greeting" | "summary" | "whileYouWereAway"}>[];
 
-export type CockpitTodayResult = | { success: true; data: InferCockpitTodayResult; }
+export type InferCockpitTodayResult<
+  Fields extends CockpitTodayFields | undefined,
+> = InferResult<{workspace: string, dateLabel: string, greeting: string, summary: string, schedule: Array<{time: string, title: string, subtitle: string, status: string | null, __type: "TypedMap", __primitiveFields: "time" | "title" | "subtitle" | "status"}>, preparedItems: Array<{type: string, title: string, summary: string, usedSources: Array<string>, primaryAction: string, secondaryAction: string | null, __type: "TypedMap", __primitiveFields: "type" | "title" | "summary" | "usedSources" | "primaryAction" | "secondaryAction"}>, openLoops: Array<{title: string, source: string, __type: "TypedMap", __primitiveFields: "title" | "source"}>, whileYouWereAway: Array<string>, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, __type: "TypedMap", __primitiveFields: "workspace" | "dateLabel" | "greeting" | "summary" | "whileYouWereAway"}, Fields>;
+
+export type CockpitTodayResult<Fields extends CockpitTodayFields | undefined = undefined> = | { success: true; data: InferCockpitTodayResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
 
 ;
@@ -570,20 +574,22 @@ export type CockpitTodayResult = | { success: true; data: InferCockpitTodayResul
  *
  * @ashActionType :action
  */
-export async function cockpitToday(
+export async function cockpitToday<Fields extends CockpitTodayFields | undefined = undefined>(
   config: {
   tenant?: string;
+  fields: Fields;
   headers?: Record<string, string>;
   fetchOptions?: RequestInit;
   customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }
-): Promise<CockpitTodayResult> {
+): Promise<CockpitTodayResult<Fields extends undefined ? [] : Fields>> {
   const payload = {
     action: "cockpit_today",
-    ...(config.tenant !== undefined && { tenant: config.tenant })
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
   };
 
-  return executeActionRpcRequest<CockpitTodayResult>(
+  return executeActionRpcRequest<CockpitTodayResult<Fields extends undefined ? [] : Fields>>(
     payload,
     config
   );
@@ -595,19 +601,21 @@ export async function cockpitToday(
  *
  * @ashActionType :action
  */
-export async function cockpitTodayChannel(config: {
+export async function cockpitTodayChannel<Fields extends CockpitTodayFields | undefined = undefined>(config: {
   channel: Channel;
   tenant?: string;
-  resultHandler: (result: CockpitTodayResult) => void;
+  fields: Fields;
+  resultHandler: (result: CockpitTodayResult<Fields>) => void;
   errorHandler?: (error: any) => void;
   timeoutHandler?: () => void;
   timeout?: number;
 }) {
-  executeActionChannelPush<CockpitTodayResult>(
+  executeActionChannelPush<CockpitTodayResult<Fields>>(
     config.channel,
     {
     action: "cockpit_today",
-    ...(config.tenant !== undefined && { tenant: config.tenant })
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
   },
     config.timeout,
     config
