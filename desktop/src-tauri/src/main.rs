@@ -162,8 +162,15 @@ fn parse_nonce(body: &str) -> Option<String> {
 }
 
 /// Builds the main window from its (create:false) config entry, injecting the
-/// control token before any page script runs. The init script is invisible to
-/// cross-origin pages, so the token never leaks off the loopback.
+/// control token before any page script runs.
+///
+/// SECURITY: a Tauri v2 initialization script runs on EVERY page load in this
+/// webview — including a remote origin, if the SPA were ever navigated off
+/// loopback. It is NOT "invisible to cross-origin pages". The token is safe
+/// today only because this window is pinned to the loopback origin: the SPA is
+/// served from `http://localhost:4817` (or the Vite dev origin), its CSP and
+/// the absence of external links keep it there, and the `on_navigation` guard
+/// below refuses any http(s) navigation off loopback as defence in depth.
 fn build_main_window(app: &tauri::AppHandle, token: &str) -> tauri::Result<()> {
     let config = app
         .config()
@@ -178,6 +185,19 @@ fn build_main_window(app: &tauri::AppHandle, token: &str) -> tauri::Result<()> {
 
     let window = WebviewWindowBuilder::from_config(app, &config)?
         .initialization_script(script)
+        .on_navigation(|url| {
+            // Pin the webview to the loopback origin so the init-script token
+            // can never reach a remote page. Allow only the backend origin
+            // (4817) and the Vite dev origin (4273); non-http(s) schemes
+            // (tauri:, about:, blob:, data:) are webview internals, left alone.
+            match url.scheme() {
+                "http" | "https" => {
+                    matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"))
+                        && matches!(url.port(), Some(4817) | Some(4273))
+                }
+                _ => true,
+            }
+        })
         .build()?;
 
     let _ = window.show();

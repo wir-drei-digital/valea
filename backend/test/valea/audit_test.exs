@@ -33,6 +33,15 @@ defmodule Valea.AuditTest do
              Enum.map(entries, &Map.take(&1, ["type"]))
   end
 
+  test "entries/1 with no Audit process running -> {:ok, []}, no crash" do
+    # No workspace open (or mid-switch): the named process is gone. entries/1
+    # must degrade calmly instead of exiting :noproc and taking the caller down.
+    :ok = stop_supervised(Valea.Audit)
+    refute Process.whereis(Valea.Audit)
+
+    assert {:ok, []} = Valea.Audit.entries(10)
+  end
+
   test "append with a non-JSON-encodable field never crashes the caller, and the Audit process stays alive",
        %{root: root} do
     audit_pid = Process.whereis(Valea.Audit)

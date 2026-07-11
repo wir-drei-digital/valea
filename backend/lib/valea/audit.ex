@@ -30,8 +30,18 @@ defmodule Valea.Audit do
       :ok
   end
 
+  @doc """
+  Most-recent `limit` audit entries, newest-first. Guarded like `append/2`:
+  with no workspace open (or mid-switch) the named Audit process does not
+  exist, so this degrades to `{:ok, []}` instead of exiting `:noproc` and
+  taking the calling RPC/channel process down.
+  """
   def entries(limit) do
-    GenServer.call(__MODULE__, {:entries, limit})
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, {:entries, limit})
+    else
+      {:ok, []}
+    end
   end
 
   @impl true
