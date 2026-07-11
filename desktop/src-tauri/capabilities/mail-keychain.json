@@ -1,0 +1,11 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "mail-keychain",
+	"description": "Keychain access for mail credentials, granted to the SPA regardless of Local/Remote origin classification.",
+	"windows": ["main"],
+	"local": true,
+	"remote": {
+		"urls": ["http://localhost:4817", "http://localhost:4273"]
+	},
+	"permissions": ["allow-mail-secret-set", "allow-mail-secret-get", "allow-mail-secret-delete"]
+}

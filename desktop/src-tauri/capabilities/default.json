@@ -15,8 +15,5 @@
 			"identifier": "shell:allow-spawn",
 			"allow": [{ "name": "binaries/valea-server", "sidecar": true }]
 		}
-	],
-	"remote": {
-		"urls": ["http://localhost:4817", "http://localhost:4273"]
-	}
+	]
 }
