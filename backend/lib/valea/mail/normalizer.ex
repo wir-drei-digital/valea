@@ -107,7 +107,7 @@ defmodule Valea.Mail.Normalizer do
   def normalize(rfc822) when is_binary(rfc822) do
     case try_decode(rfc822) do
       {:ok, mime} -> {:ok, build_from_mime(mime)}
-      :error -> {:ok, build_fallback(rfc822)}
+      {:error, reason} -> {:ok, build_fallback(rfc822, reason)}
     end
   end
 
@@ -139,12 +139,12 @@ defmodule Valea.Mail.Normalizer do
   defp try_decode(rfc822) do
     {:ok, :mimemail.decode(rfc822, @mime_options)}
   rescue
-    _ -> :error
+    e -> {:error, e}
   catch
     # mimemail uses erlang:error/1 for structural failures (e.g. no_boundary),
     # which `rescue` already catches as ErlangError — this `catch` is for the
     # rarer :throw/:exit paths in third-party MIME parsing code.
-    _, _ -> :error
+    kind, reason -> {:error, {kind, reason}}
   end
 
   defp build_from_mime({_type, _subtype, headers, _params, _body} = mime) do
@@ -166,7 +166,7 @@ defmodule Valea.Mail.Normalizer do
     }
   end
 
-  defp build_fallback(rfc822) do
+  defp build_fallback(rfc822, reason) do
     {header_block, body_raw} = split_message(rfc822)
     headers = parse_headers(header_block)
     {body_text, charset_note} = validate_or_scrub(normalize_newlines(body_raw))
@@ -185,11 +185,14 @@ defmodule Valea.Mail.Normalizer do
       notes:
         notes_map(
           normalizer_note:
-            "message failed structured MIME parsing; headers and body recovered best-effort",
+            "message failed structured MIME parsing (#{describe_reason(reason)}); headers and body recovered best-effort",
           charset_note: charset_note
         )
     }
   end
+
+  defp describe_reason(%{__exception__: true} = exception), do: Exception.message(exception)
+  defp describe_reason(reason), do: inspect(reason)
 
   defp split_message(raw) do
     case :binary.split(raw, "\r\n\r\n") do
