@@ -5,6 +5,7 @@
   import SectionOverline from './SectionOverline.svelte';
   import IcmTree from './IcmTree.svelte';
   import StatusPill from './StatusPill.svelte';
+  import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 
   let {
@@ -74,6 +75,7 @@
   </nav>
 
   <footer class="mt-auto flex flex-col gap-2 px-3 pb-3">
+    <WorkspaceSwitcher {onBeforeMutateActive} />
     <StatusPill label={syncedAt ? `All local · synced ${syncedAt}` : 'All local'} />
     <Tooltip.Provider>
       <Tooltip.Root>

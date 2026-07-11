@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { PageEditorStore } from './page-editor.svelte';
+import { workspaceStore } from './workspace.svelte';
 import type { ApiResult } from '../api/client';
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -8,7 +9,7 @@ type SaveResult = ApiResult<{ hash: string; savedAt: string }>;
 type PageResult = ApiResult<{ hash: string }>;
 
 function fakeApi(overrides: {
-  saveIcmPage?: (path: string, json: object, baseHash: string) => Promise<SaveResult>;
+  saveIcmPage?: (path: string, json: object, baseHash: string, generation?: number | null) => Promise<SaveResult>;
   icmPage?: (path: string) => Promise<PageResult>;
 }) {
   return {
@@ -18,6 +19,14 @@ function fakeApi(overrides: {
     icmPage: overrides.icmPage ?? (async () => ({ ok: true, data: { hash: 'h2' } }) as PageResult)
   };
 }
+
+// `workspaceStore` is a module-level singleton — tests that set
+// `.generation` to exercise the T21 guard must restore it afterward so
+// later tests (which construct a `PageEditorStore` expecting the default
+// `null` baseline) aren't affected by test order.
+afterEach(() => {
+  workspaceStore.generation = null;
+});
 
 describe('PageEditorStore', () => {
   it('happy path: dirty -> saving -> clean, adopts returned hash + savedAt', async () => {
@@ -32,7 +41,7 @@ describe('PageEditorStore', () => {
 
     await wait(30);
 
-    expect(save).toHaveBeenCalledWith('/p', { doc: 1 }, 'h1');
+    expect(save).toHaveBeenCalledWith('/p', { doc: 1 }, 'h1', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h2');
     expect(store.savedAt).toBe('ts2');
@@ -109,7 +118,7 @@ describe('PageEditorStore', () => {
     await flushPromise;
 
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2');
+    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h3');
   });
@@ -162,7 +171,7 @@ describe('PageEditorStore', () => {
     await store.resolveKeepMine();
 
     expect(icmPage).toHaveBeenCalledWith('/p');
-    expect(save).toHaveBeenCalledWith('/p', { doc: 'mine' }, 'h3');
+    expect(save).toHaveBeenCalledWith('/p', { doc: 'mine' }, 'h3', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h4');
     expect(store.savedAt).toBe('ts4');
@@ -218,7 +227,7 @@ describe('PageEditorStore', () => {
     await wait(15); // the re-armed debounce fires, saving the latest edit
 
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2');
+    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h3');
   });
@@ -319,7 +328,7 @@ describe('PageEditorStore', () => {
     await wait(15); // the re-armed debounce fires, saving the redirtied edit
 
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2');
+    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h3');
   });
@@ -346,5 +355,51 @@ describe('PageEditorStore', () => {
     expect(store.state).toBe('clean');
     expect(store.error).toBe(null);
     expect(store.hash).toBe('h2');
+  });
+
+  it('captures the workspace generation at construction and passes it to saveIcmPage', async () => {
+    workspaceStore.generation = 7;
+    const save = vi.fn(async () => ({ ok: true as const, data: { hash: 'h2', savedAt: 'ts2' } }));
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+
+    store.noteChange(() => ({ doc: 1 }));
+    await wait(30);
+
+    expect(save).toHaveBeenCalledWith('/p', { doc: 1 }, 'h1', 7);
+    expect(store.state).toBe('clean');
+  });
+
+  it('stale-generation save aborts locally: stays dirty with workspace_changed, never calls saveIcmPage', async () => {
+    workspaceStore.generation = 1;
+    const save = vi.fn(async () => ({ ok: true as const, data: { hash: 'h2', savedAt: 'ts2' } }));
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+
+    // The user switches to a different workspace (WorkspaceSwitcher) while
+    // this editor instance is still alive — `workspaceStore.generation`
+    // moves on without this store's `#generation` baseline following it.
+    workspaceStore.generation = 2;
+
+    store.noteChange(() => ({ doc: 1 }));
+    await wait(30);
+
+    expect(save).not.toHaveBeenCalled();
+    expect(store.state).toBe('dirty');
+    expect(store.error).toBe('workspace_changed');
+    expect(store.hash).toBe('h1');
+  });
+
+  it('stale-generation guard also aborts an explicit flush()', async () => {
+    workspaceStore.generation = 1;
+    const save = vi.fn(async () => ({ ok: true as const, data: { hash: 'h2', savedAt: 'ts2' } }));
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+
+    store.noteChange(() => ({ doc: 1 }));
+    workspaceStore.generation = 2;
+
+    await store.flush();
+
+    expect(save).not.toHaveBeenCalled();
+    expect(store.state).toBe('dirty');
+    expect(store.error).toBe('workspace_changed');
   });
 });

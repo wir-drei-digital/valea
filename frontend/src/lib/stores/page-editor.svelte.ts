@@ -1,4 +1,5 @@
 import type { Api } from '../api/client';
+import { workspaceStore } from './workspace.svelte';
 
 export type PageEditorState = 'clean' | 'dirty' | 'saving' | 'conflict';
 
@@ -29,6 +30,18 @@ type PageEditorApi = Pick<Api, 'saveIcmPage' | 'icmPage'>;
  *  - A save resolving with the `page_changed` error (the backend's optimistic
  *    concurrency guard) moves to `'conflict'`; any other error leaves the
  *    page `'dirty'` with `error` set so the next change retries.
+ *  - `#generation` is `workspaceStore.generation` captured at construction
+ *    (page load) — the workspace this page belongs to. `#save` compares it
+ *    against the LIVE `workspaceStore.generation` before every save
+ *    (debounce-fired, `flush()`, or `resolveKeepMine()`): a mismatch means
+ *    the user switched workspaces (Task 21's `WorkspaceSwitcher`) while this
+ *    editor instance was still alive, so the save is aborted locally —
+ *    staying `'dirty'` with `error: 'workspace_changed'` — rather than
+ *    silently writing this page's content into a folder that isn't the
+ *    workspace it was loaded from. The captured generation is also PASSED to
+ *    `saveIcmPage` so the backend's `check_generation/1` is a backstop for
+ *    the narrower race this local check can't close (a switch landing after
+ *    the check above but before the write reaches the backend).
  *  - `externalChange` is how the route informs the store that the page
  *    changed on disk (e.g. another window saved it, or a PubSub push):
  *    while `'clean'` it just flags `needsReload`; while `'dirty'`/`'saving'`
@@ -56,12 +69,14 @@ export class PageEditorStore {
   #saving: Promise<void> | null = null;
   #redirtied = false;
   #pendingExternalHash: string | null = null;
+  #generation: number | null;
 
   constructor(api: PageEditorApi, path: string, initial: { hash: string }, opts?: { debounceMs?: number }) {
     this.#api = api;
     this.#path = path;
     this.hash = initial.hash;
     this.#debounceMs = opts?.debounceMs ?? 1000;
+    this.#generation = workspaceStore.generation;
   }
 
   /**
@@ -192,14 +207,27 @@ export class PageEditorStore {
     if (this.#saving) return this.#saving;
     if (!this.#getJson) return Promise.resolve();
 
+    // Local generation guard (see class doc) — the workspace switched out
+    // from under this editor since it loaded. Abort before touching the
+    // network: this page's path may not even resolve inside the NEW
+    // workspace, and saving would either write to the wrong place or (with
+    // no workspace open) fail anyway. Stay dirty with a surfaced error
+    // rather than either silently dropping the edit or retrying forever.
+    if (workspaceStore.generation !== this.#generation) {
+      this.state = 'dirty';
+      this.error = 'workspace_changed';
+      return Promise.resolve();
+    }
+
     this.state = 'saving';
     this.#redirtied = false;
     const getJson = this.#getJson;
     const baseHash = this.hash;
+    const generation = this.#generation;
 
     const run = (async () => {
       try {
-        const result = await this.#api.saveIcmPage(this.#path, getJson(), baseHash);
+        const result = await this.#api.saveIcmPage(this.#path, getJson(), baseHash, generation);
 
         if (result.ok) {
           const data = result.data as { hash: string; savedAt: string };

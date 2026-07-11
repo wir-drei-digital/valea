@@ -343,7 +343,7 @@ function callListAuditEntriesChannel(
 
 function callSaveIcmPageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { path: string; prosemirror: Record<string, any>; baseHash: string }
+  input: { path: string; prosemirror: Record<string, any>; baseHash: string; generation?: number | null }
 ) {
   return wrapChannelCall((handlers) => saveIcmPageChannel({ channel, input, fields: saveIcmPageFields, ...handlers }));
 }
@@ -515,13 +515,21 @@ export const api = {
   // notably `PageEditorStore`, whose `noteChange(getJson: () => object)` gets
   // its JSON straight from the ProseMirror editor — don't need to assert
   // away the missing index signature just to call this.
-  saveIcmPage: (path: string, prosemirror: object, baseHash: string) =>
+  //
+  // `generation` (T21) is optional — `undefined`/`null` skips the backend's
+  // `check_generation/1` guard entirely (pre-T21 callers, transition
+  // compat); `PageEditorStore` now always passes the generation it captured
+  // at load, giving `workspace_changed` a backstop against a switch that
+  // happened after the frontend's own local generation check (T21) passed
+  // but before the write landed.
+  saveIcmPage: (path: string, prosemirror: object, baseHash: string, generation?: number | null) =>
     runRpc(
-      (channel) => callSaveIcmPageChannel(channel, { path, prosemirror: prosemirror as Record<string, any>, baseHash }),
+      (channel) =>
+        callSaveIcmPageChannel(channel, { path, prosemirror: prosemirror as Record<string, any>, baseHash, generation }),
       () =>
         httpSaveIcmPage(
           withAuth({
-            input: { path, prosemirror: prosemirror as Record<string, any>, baseHash },
+            input: { path, prosemirror: prosemirror as Record<string, any>, baseHash, generation },
             fields: saveIcmPageFields
           })
         )

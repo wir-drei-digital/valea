@@ -1,4 +1,5 @@
 import { api, type Api } from '../api/client';
+import { withBeforeMutate } from '../components/knowledge/before-mutate';
 
 export type RecentWorkspace = {
   path: string;
@@ -76,6 +77,38 @@ export class WorkspaceStore {
 
     await this.refresh();
     return { ok: true };
+  }
+
+  /**
+   * Switches to a different workspace from inside an already-open one (the
+   * sidebar's `WorkspaceSwitcher`), unlike `open()` above which is only ever
+   * called from onboarding/`'none'` state. The currently open ICM page may
+   * hold an unflushed debounced edit — reused directly (Task 21 brief:
+   * "the SAME exported hook the knowledge route registered for pre-mutate
+   * flushes") is `withBeforeMutate`, the exact helper `RenameDialog`/
+   * `DeleteDialog` already use to flush before a tree mutation. `onBeforeMutate`
+   * is the route's `() => store.flush()` (forwarded down through
+   * `Sidebar`/`WorkspaceSwitcher` as `onBeforeMutateActive`), which throws
+   * `Error('unsaved_changes')` (see `AppFrame`'s `onBeforeMutateActive` in
+   * the knowledge route) when the flush leaves the page dirty with an error —
+   * caught here and surfaced as the same `'unsaved_changes'` error code the
+   * rename/delete dialogs already show, rather than losing the edit by
+   * switching out from under it.
+   *
+   * On success, `open()`'s `refresh()` picks up the new workspace's
+   * name/path/generation; the backend's `workspace` broadcast (Phase-1
+   * machinery, wired once in the root layout via `wireIcmEvents`) also
+   * resets `icmStore` for every open window/tab, not just this call site.
+   */
+  async switchTo(
+    path: string,
+    onBeforeMutate?: () => Promise<void>
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      return await withBeforeMutate(onBeforeMutate, () => this.open(path));
+    } catch {
+      return { ok: false, error: 'unsaved_changes' };
+    }
   }
 }
 
