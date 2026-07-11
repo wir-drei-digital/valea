@@ -171,8 +171,8 @@ runs** — the session's opening prompt names the workflow contract, the
 input, and `queue/staging/<run_id>/proposal.json` as the only path it may
 write. On turn end `Runner.finalize/2` looks only at that exact path: valid
 → the canonical envelope `queue_item/v1` (`schema`, `run_id`, `session_id`,
-`acp_session_id`, `workflow`, `workflow_hash`, `input`, `input_hash`,
-`risk_level`, `created_at`, `payload`) is written atomically to
+`workflow`, `workflow_hash`, `input`, `input_hash`, `risk_level`,
+`approval`, `created_at`, `payload`) is written atomically to
 `queue/pending/<run_id>.json` and staging is cleaned; missing → "finished
 without producing anything for review"; invalid → a visible-but-unreadable
 state (staging left in place for inspection, raw file one toggle away). No
