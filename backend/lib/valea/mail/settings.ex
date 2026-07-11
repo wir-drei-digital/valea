@@ -102,35 +102,48 @@ defmodule Valea.Mail.Settings do
     dir = Path.join(root, "config")
     File.mkdir_p!(dir)
     path = Path.join(dir, "mail.yaml")
-    atomic_write!(path, render(account, host, port, username))
+
+    settings = %Settings{account: account, imap: %{host: host, port: port, username: username}}
+    atomic_write!(path, render(settings))
     :ok
+  end
+
+  @doc """
+  Renders a full `%Settings{}` to the v3 `config/mail.yaml` bytes —
+  `account`, `imap.host/port/username`, and `folders` come from the struct;
+  `sync:` and the fixed `safety:` invariant are always emitted. The single
+  source of truth for the v3 file layout: `write!/2` uses it with default
+  folders, and the workspace migration reuses it for the value-preserving
+  v2→v3 rewrite (custom folders preserved). String fields are rendered
+  through the injection-hardened `yaml_string/1`; callers pass binary
+  `account`/`host`/`username`.
+  """
+  @spec render(t()) :: binary()
+  def render(%Settings{} = settings) do
+    """
+    account: #{yaml_string(settings.account)}
+    imap:
+      host: #{yaml_string(settings.imap.host)}
+      port: #{settings.imap.port}
+      username: #{yaml_string(settings.imap.username)}
+    folders:
+      review: #{yaml_string(settings.folders.review)}
+      processed: #{yaml_string(settings.folders.processed)}
+      drafts: #{yaml_string(settings.folders.drafts)}
+    sync:
+      interval_minutes: #{settings.sync.interval_minutes}
+      max_message_bytes: #{settings.sync.max_message_bytes}
+      inbox_index_limit: #{settings.sync.inbox_index_limit}
+    safety:
+      send_directly: false
+      create_drafts_only: true
+    """
   end
 
   defp atomic_write!(path, bytes) do
     tmp = path <> ".tmp"
     File.write!(tmp, bytes)
     File.rename!(tmp, path)
-  end
-
-  defp render(account, host, port, username) do
-    """
-    account: #{yaml_string(account)}
-    imap:
-      host: #{yaml_string(host)}
-      port: #{port}
-      username: #{yaml_string(username)}
-    folders:
-      review: #{yaml_string(@default_folders.review)}
-      processed: #{yaml_string(@default_folders.processed)}
-      drafts: #{yaml_string(@default_folders.drafts)}
-    sync:
-      interval_minutes: #{@default_sync.interval_minutes}
-      max_message_bytes: #{@default_sync.max_message_bytes}
-      inbox_index_limit: #{@default_sync.inbox_index_limit}
-    safety:
-      send_directly: false
-      create_drafts_only: true
-    """
   end
 
   # Injection hardening, same shape as `Valea.Mail.MessageFile`'s

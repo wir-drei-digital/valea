@@ -22,7 +22,7 @@ Classifies a new email inquiry and drafts a reply for review.
 
 | Input | Where |
 | --- | --- |
-| The inquiry email | a `sources/mail/messages/*.md` file (YAML frontmatter + plain-text body) named by the run |
+| The inquiry email | named by the run |
 | Offer, tone, policy and pricing pages | listed under `sources` above |
 
 ## Process

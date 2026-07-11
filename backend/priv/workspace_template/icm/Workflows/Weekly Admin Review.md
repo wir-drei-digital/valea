@@ -3,7 +3,7 @@ enabled: false
 trigger: { type: manual, source: schedule.weekly }
 sources:
   - { id: open_queue, type: queue, required: true }
-  - { id: recent_mail, type: email, path: "sources/mail/normalized/*" }
+  - { id: recent_mail, type: email, path: "sources/mail/messages/*.md" }
 risk_level: low
 approval:
   required: true
@@ -20,7 +20,7 @@ Summarizes the week's open loops for the owner. Not active yet — scheduled tri
 | Input | Where |
 | --- | --- |
 | Open queue items | `queue/pending/` |
-| Recent mail | `sources/mail/normalized/` |
+| Recent mail | `sources/mail/messages/` |
 
 ## Process
 

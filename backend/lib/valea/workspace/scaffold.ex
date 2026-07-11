@@ -36,6 +36,16 @@ defmodule Valea.Workspace.Scaffold do
       # template ships the gitignore un-dotted so tooling never ignores
       # template files; the real workspace gets the dotted name
       File.rename(Path.join(target, "gitignore"), Path.join(target, ".gitignore"))
+      # config/workspace.yaml ships with `id: TEMPLATE`; a real workspace
+      # gets version 3 + a fresh, persistent UUID here (keychain entries key
+      # on it, so it must survive the folder being moved or renamed — see the
+      # mail design spec, §Credentials). The Migration keeps it stable on
+      # every subsequent open (never regenerates an existing id).
+      File.write!(
+        Path.join(target, "config/workspace.yaml"),
+        "version: 3\nid: #{Ecto.UUID.generate()}\n"
+      )
+
       # Managed Claude settings exist from the moment a workspace is
       # scaffolded; Migration keeps them in sync on every subsequent open.
       Valea.Agents.ClaudeSettings.write!(target)

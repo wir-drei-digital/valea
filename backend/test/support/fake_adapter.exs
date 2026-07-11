@@ -122,7 +122,7 @@ defmodule FakeAdapter do
       "kind" => "email_draft",
       "title" => "Reply to Priya Nair — coaching inquiry",
       "summary" => "Good-fit inquiry. Drafted a warm reply proposing a discovery call.",
-      "sources" => ["sources/mail/normalized/priya-nair-inquiry.json"],
+      "sources" => ["sources/mail/messages/2026-07-09-priya-nair-seed0001.md"],
       "proposed_action" => %{
         "type" => "create_email_draft",
         "to" => "priya@example.com",

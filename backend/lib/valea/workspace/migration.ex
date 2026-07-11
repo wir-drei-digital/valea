@@ -7,12 +7,38 @@ defmodule Valea.Workspace.Migration do
   """
 
   alias Valea.Markdown.ProseMirror
+  alias Valea.Mail.Settings
 
-  @current_version 2
+  @current_version 3
+
+  # SHA-256 of the pristine v2 template seed files this migration knows how to
+  # transform. Computed from the v2 template bytes as they stood on `main`
+  # BEFORE this task's edits, with:
+  #
+  #   shasum -a 256 priv/workspace_template/sources/mail/normalized/priya-nair-inquiry.json
+  #   shasum -a 256 priv/workspace_template/config/mail.yaml
+  #   shasum -a 256 "priv/workspace_template/icm/Workflows/New Inquiry Triage.md"
+  #
+  # Only a byte-identical file counts as pristine and is transformed in place;
+  # a user-modified file is NEVER deleted or overwritten (see the moduledoc
+  # contract) — it is left where it is (JSON, triage page) or archived first
+  # (mail.yaml) before a value-preserving rewrite.
+  @v2_priya_json_sha "cce5274405b9ede2a268b8337b8205579d75dc61b8af38241cdde3ada046fe2a"
+  @v2_mail_yaml_sha "473de344164a1d778f4488d166d9846e0ba329af0532a0b63f9bbd985c0914eb"
+  @v2_triage_sha "23ffbefe71c264c2f9ef945dc2fab269228789f19da47847d5f0bf6c01f9080f"
+
+  # Append-only archive for files the v2→v3 step moves or supersedes. Never
+  # itself migrated; entries are only ever added, never clobbered.
+  @archive_rel "logs/migrations/v3"
+  @priya_json_rel "sources/mail/normalized/priya-nair-inquiry.json"
+  @seed_message_rel "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
+  @mail_yaml_rel "config/mail.yaml"
+  @triage_rel "icm/Workflows/New Inquiry Triage.md"
 
   @spec migrate(String.t()) :: {:ok, integer()} | {:error, String.t()}
   def migrate(root) do
-    with {:ok, _} <- ensure_v2(root, read_version(root)) do
+    with {:ok, v} <- ensure_v2(root, read_version(root)),
+         {:ok, _} <- ensure_v3(root, v) do
       # Managed settings are regenerated on every open (and per session start).
       Valea.Agents.ClaudeSettings.write!(root)
       {:ok, @current_version}
@@ -45,6 +71,192 @@ defmodule Valea.Workspace.Migration do
     File.mkdir_p!(Path.join(root, "config"))
     File.write!(Path.join(root, "config/workspace.yaml"), "version: 2\n")
     {:ok, 2}
+  end
+
+  # v2 → v3 (mail design spec, §Seed & migration). Every step is idempotent
+  # and safe to re-run after a mid-migration crash. `config/workspace.yaml`
+  # (the version marker) is written LAST, so an interrupted run leaves the
+  # workspace at v2 and the whole step runs again cleanly next open.
+  defp ensure_v3(_root, v) when v >= 3, do: {:ok, v}
+
+  defp ensure_v3(root, _v) do
+    # Determine the persistent workspace id up front (preserve an existing one
+    # defensively; a v2 workspace.yaml holds only `version:`, so this normally
+    # mints a fresh UUID), but write it LAST.
+    id = workspace_id_or_new(root)
+
+    migrate_priya_seed!(root)
+    migrate_mail_yaml!(root)
+    migrate_triage_page!(root)
+
+    File.mkdir_p!(Path.join(root, "sources/mail/messages"))
+    File.mkdir_p!(Path.join(root, "sources/mail/attachments"))
+
+    File.mkdir_p!(Path.join(root, "config"))
+    File.write!(Path.join(root, "config/workspace.yaml"), "version: 3\nid: #{id}\n")
+    {:ok, 3}
+  end
+
+  defp workspace_id_or_new(root) do
+    path = Path.join(root, "config/workspace.yaml")
+
+    with true <- File.exists?(path),
+         {:ok, %{"id" => id}} when is_binary(id) <- YamlElixir.read_from_file(path),
+         true <- id not in ["", "TEMPLATE"] do
+      id
+    else
+      _ -> Ecto.UUID.generate()
+    end
+  end
+
+  # Priya mock: the legacy JSON at sources/mail/normalized/ is superseded by a
+  # seed markdown message. Pristine JSON → moved into the archive (removed from
+  # normalized/, which is going away, but never destroyed). Modified JSON → a
+  # user file; left exactly where it is. Either way the seed message is written
+  # if absent, so the no-account demo loop keeps working.
+  defp migrate_priya_seed!(root) do
+    json_path = Path.join(root, @priya_json_rel)
+
+    if File.exists?(json_path) and pristine?(json_path, @v2_priya_json_sha) do
+      archive_into!(root, json_path, "priya-nair-inquiry.json")
+    end
+
+    write_seed_message_if_absent!(root)
+  end
+
+  defp write_seed_message_if_absent!(root) do
+    target = Path.join(root, @seed_message_rel)
+
+    unless File.exists?(target) do
+      File.mkdir_p!(Path.dirname(target))
+      File.cp!(Path.join(template_dir(), @seed_message_rel), target)
+    end
+  end
+
+  # config/mail.yaml: pristine v2 seed → replaced in place with the v3 template
+  # bytes (recoverable seed, so not archived). Missing → template. Already the
+  # v3 template (fresh scaffold, or a crash re-run) → left alone. User-modified
+  # → the original is archived (append-only, never clobbered), then the file is
+  # rewritten preserving account / imap.host,port,username / folders while
+  # dropping smtp, ssl, and the *_env keys.
+  defp migrate_mail_yaml!(root) do
+    path = Path.join(root, @mail_yaml_rel)
+    template = Path.join(template_dir(), @mail_yaml_rel)
+
+    cond do
+      not File.exists?(path) -> File.cp!(template, path)
+      File.read!(path) == File.read!(template) -> :ok
+      pristine?(path, @v2_mail_yaml_sha) -> File.cp!(template, path)
+      true -> rewrite_modified_mail_yaml!(root, path)
+    end
+  end
+
+  defp rewrite_modified_mail_yaml!(root, path) do
+    archive_copy!(root, path, "mail.yaml")
+    File.write!(path, Settings.render(preserved_mail_settings(path)))
+  end
+
+  # Value-preserving v2→v3 projection. The v2 shape carried credentials only as
+  # `*_env` names (no username value), so `imap.username` falls back to the
+  # account. Folders keep the user's review/processed, drop the v2 `drafted`,
+  # and gain `drafts: "Drafts"`; sync/safety take the v3 defaults.
+  defp preserved_mail_settings(path) do
+    doc =
+      case YamlElixir.read_from_file(path) do
+        {:ok, m} when is_map(m) -> m
+        _ -> %{}
+      end
+
+    imap = as_map(doc["imap"])
+    folders = as_map(doc["folders"])
+
+    account = as_string(doc["account"])
+    username = as_string(imap["username"])
+
+    %Settings{
+      account: account || username || "",
+      imap: %{
+        host: as_string(imap["host"]) || "",
+        port: as_port(imap["port"]),
+        username: username || account || ""
+      },
+      folders: %{
+        review: as_string(folders["review"]) || "AI/Review",
+        processed: as_string(folders["processed"]) || "AI/Processed",
+        drafts: "Drafts"
+      }
+    }
+  end
+
+  # New Inquiry Triage page: pristine v2 seed → overwritten with the updated v3
+  # template (input contract now names a sources/mail/messages/*.md file). A
+  # user-modified page is left untouched, with an audited note that its input
+  # contract may still point at the legacy JSON (the mail doctor surfaces the
+  # same mismatch). Absent (shouldn't happen post-v2) → the template page.
+  defp migrate_triage_page!(root) do
+    path = Path.join(root, @triage_rel)
+    template = Path.join(template_dir(), @triage_rel)
+
+    cond do
+      not File.exists?(path) ->
+        File.mkdir_p!(Path.dirname(path))
+        File.cp!(template, path)
+
+      pristine?(path, @v2_triage_sha) ->
+        File.cp!(template, path)
+
+      true ->
+        audit("migration_note", %{
+          "note" =>
+            "triage workflow page kept (user-modified); its input contract may still reference the legacy JSON"
+        })
+    end
+  end
+
+  # -- v3 helpers ------------------------------------------------------------
+
+  # Moves `src` into the archive under `name` (idempotent: a rename leaves no
+  # source behind, so a re-run finds nothing to move).
+  defp archive_into!(root, src, name) do
+    dir = Path.join(root, @archive_rel)
+    File.mkdir_p!(dir)
+    File.rename!(src, Path.join(dir, name))
+  end
+
+  # Copies `src` into the archive under `name`, but never over an existing
+  # archived file — the archive is append-only, so a crash re-run must not
+  # overwrite the original it preserved on the first pass.
+  defp archive_copy!(root, src, name) do
+    dir = Path.join(root, @archive_rel)
+    File.mkdir_p!(dir)
+    dest = Path.join(dir, name)
+    unless File.exists?(dest), do: File.cp!(src, dest)
+  end
+
+  defp pristine?(path, expected_sha) do
+    case File.read(path) do
+      {:ok, bytes} -> sha256(bytes) == expected_sha
+      _ -> false
+    end
+  end
+
+  defp sha256(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+
+  defp as_map(m) when is_map(m), do: m
+  defp as_map(_), do: %{}
+
+  defp as_string(s) when is_binary(s), do: s
+  defp as_string(_), do: nil
+
+  defp as_port(p) when is_integer(p) and p > 0, do: p
+  defp as_port(_), do: 993
+
+  # Audit only when the workspace's Audit process is up (mirrors the
+  # Process.whereis guard in Runner/Queue/SyncPass): the migration runs after
+  # the Runtime started it, but the guard keeps offline callers (and tests)
+  # from crashing on :noproc.
+  defp audit(type, fields) do
+    if Process.whereis(Valea.Audit), do: Valea.Audit.append(type, fields)
   end
 
   defp copy_missing!(root, rel) do

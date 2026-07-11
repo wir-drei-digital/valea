@@ -47,7 +47,7 @@ defmodule ValeaWeb.QueueRpcTest do
       "session_id" => "sess-1",
       "workflow" => "icm/Workflows/New Inquiry Triage.md",
       "workflow_hash" => String.duplicate("a", 64),
-      "input" => "sources/mail/normalized/priya-nair-inquiry.json",
+      "input" => "sources/mail/messages/2026-07-09-priya-nair-seed0001.md",
       "input_hash" => String.duplicate("b", 64),
       "risk_level" => "medium",
       "approval" => %{"required" => true},

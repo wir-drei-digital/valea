@@ -37,7 +37,7 @@ A workflow run names one output path. Write a single JSON file there:
   "title": "Reply to Priya Nair — coaching inquiry",
   "summary": "Good-fit inquiry. Drafted a warm reply proposing a discovery call.",
   "sources": [
-    "sources/mail/normalized/priya-nair-inquiry.json",
+    "sources/mail/messages/2026-07-09-priya-nair-seed0001.md",
     "icm/Offers/Founder Coaching Package.md"
   ],
   "proposed_action": {

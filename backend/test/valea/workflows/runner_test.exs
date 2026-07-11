@@ -6,7 +6,7 @@ defmodule Valea.Workflows.RunnerTest do
 
   @wf_path "icm/Workflows/New Inquiry Triage.md"
   @disabled_wf_path "icm/Workflows/Weekly Admin Review.md"
-  @input_path "sources/mail/normalized/priya-nair-inquiry.json"
+  @input_path "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
 
   setup do
     ws = AgentCase.open_workspace!()
