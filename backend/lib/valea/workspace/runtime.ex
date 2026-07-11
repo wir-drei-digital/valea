@@ -15,6 +15,7 @@ defmodule Valea.Workspace.Runtime do
     children = [
       {Valea.ICM.Watcher, {Path.join(root, "icm"), Path.join(root, "queue")}},
       {Valea.Audit, %{root: root, generation: gen}},
+      {Valea.Mail.Engine, %{root: root, generation: gen}},
       Supervisor.child_spec(
         {Task,
          fn ->

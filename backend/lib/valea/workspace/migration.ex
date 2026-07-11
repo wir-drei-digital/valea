@@ -1,8 +1,9 @@
 defmodule Valea.Workspace.Migration do
   @moduledoc """
   Idempotent, versioned workspace upgrades, run by the Manager on every
-  open/create before the workspace runtime starts. Never deletes or
-  overwrites user files; converted sources are left in place.
+  open/create after the repo and runtime start and before the workspace is
+  presented as open. Never deletes or overwrites user files; converted
+  sources are left in place.
   """
 
   alias Valea.Markdown.ProseMirror
