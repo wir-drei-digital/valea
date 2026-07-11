@@ -1,0 +1,279 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import {
+  messageDot,
+  MESSAGE_DOT_CLASS,
+  isProcessed,
+  relativeTime,
+  fromLabel,
+  subjectLabel,
+  nonEmpty,
+  addressLabel,
+  addressListLabel,
+  formatDateTime,
+  attachmentsFromFrontmatter,
+  formatBytes,
+  canRunTriage,
+  mailStateLabel,
+  syncErrorText,
+  syncNowErrorMessage
+} from './mail-shapes';
+import type { MailStatus } from '$lib/stores/mail.svelte';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('messageDot', () => {
+  it('maps status "review" to act (the accent dot)', () => {
+    expect(messageDot('review')).toBe('act');
+  });
+
+  it('maps status "processed" to neutral', () => {
+    expect(messageDot('processed')).toBe('neutral');
+  });
+
+  it('falls back to neutral for null/undefined/unrecognized status', () => {
+    expect(messageDot(null)).toBe('neutral');
+    expect(messageDot(undefined)).toBe('neutral');
+    expect(messageDot('something_else')).toBe('neutral');
+  });
+
+  it('MESSAGE_DOT_CLASS carries a Tailwind class for every color', () => {
+    expect(MESSAGE_DOT_CLASS.act).toBe('bg-act-dot');
+    expect(MESSAGE_DOT_CLASS.neutral).toBe('bg-ink-meta');
+  });
+});
+
+describe('isProcessed', () => {
+  it('is true only for status "processed"', () => {
+    expect(isProcessed('processed')).toBe(true);
+    expect(isProcessed('review')).toBe(false);
+    expect(isProcessed(null)).toBe(false);
+    expect(isProcessed(undefined)).toBe(false);
+  });
+});
+
+describe('fromLabel', () => {
+  it('prefers fromName when present', () => {
+    expect(fromLabel({ fromName: 'Priya Nair', fromEmail: 'priya@example.com' })).toBe('Priya Nair');
+  });
+
+  it('falls back to fromEmail when fromName is missing/blank', () => {
+    expect(fromLabel({ fromName: null, fromEmail: 'priya@example.com' })).toBe('priya@example.com');
+    expect(fromLabel({ fromName: '   ', fromEmail: 'priya@example.com' })).toBe('priya@example.com');
+  });
+
+  it('falls back to a placeholder when neither is present', () => {
+    expect(fromLabel({ fromName: null, fromEmail: null })).toBe('(unknown sender)');
+  });
+});
+
+describe('subjectLabel', () => {
+  it('passes a non-empty subject through', () => {
+    expect(subjectLabel('Coaching inquiry')).toBe('Coaching inquiry');
+  });
+
+  it('falls back to a placeholder for null/blank subjects', () => {
+    expect(subjectLabel(null)).toBe('(no subject)');
+    expect(subjectLabel(undefined)).toBe('(no subject)');
+    expect(subjectLabel('   ')).toBe('(no subject)');
+  });
+});
+
+describe('nonEmpty', () => {
+  it('returns the trimmed value when present', () => {
+    expect(nonEmpty('  hi  ', 'fallback')).toBe('hi');
+  });
+
+  it('returns the fallback for null/undefined/blank', () => {
+    expect(nonEmpty(null, 'fallback')).toBe('fallback');
+    expect(nonEmpty(undefined, 'fallback')).toBe('fallback');
+    expect(nonEmpty('   ', 'fallback')).toBe('fallback');
+  });
+});
+
+describe('relativeTime', () => {
+  it('returns "" for null/undefined/unparseable input', () => {
+    expect(relativeTime(null)).toBe('');
+    expect(relativeTime(undefined)).toBe('');
+    expect(relativeTime('not-a-date')).toBe('');
+  });
+
+  it('formats a moment in the recent past relative to now', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-10T12:05:00Z'));
+
+    expect(relativeTime('2026-07-10T12:00:00Z')).toBe('5 minutes ago');
+  });
+});
+
+describe('addressLabel', () => {
+  it('renders "name <email>" when both are present', () => {
+    expect(addressLabel({ name: 'Priya Nair', email: 'priya@example.com' })).toBe(
+      'Priya Nair <priya@example.com>'
+    );
+  });
+
+  it('falls back to just the name, or just the email, when the other is missing', () => {
+    expect(addressLabel({ name: 'Priya Nair', email: null })).toBe('Priya Nair');
+    expect(addressLabel({ name: null, email: 'priya@example.com' })).toBe('priya@example.com');
+  });
+
+  it('returns "" for null, non-object, or an address with neither field', () => {
+    expect(addressLabel(null)).toBe('');
+    expect(addressLabel(undefined)).toBe('');
+    expect(addressLabel({ name: null, email: null })).toBe('');
+  });
+});
+
+describe('addressListLabel', () => {
+  it('joins multiple addresses with a comma', () => {
+    expect(
+      addressListLabel([
+        { name: 'Priya Nair', email: 'priya@example.com' },
+        { name: null, email: 'assistant@example.com' }
+      ])
+    ).toBe('Priya Nair <priya@example.com>, assistant@example.com');
+  });
+
+  it('returns "" for a non-array or empty array', () => {
+    expect(addressListLabel(undefined)).toBe('');
+    expect(addressListLabel([])).toBe('');
+  });
+});
+
+describe('formatDateTime', () => {
+  it('returns "" for null/undefined/unparseable input', () => {
+    expect(formatDateTime(null)).toBe('');
+    expect(formatDateTime(undefined)).toBe('');
+    expect(formatDateTime('not-a-date')).toBe('');
+  });
+
+  it('formats a valid ISO8601 timestamp to a non-empty string', () => {
+    expect(formatDateTime('2026-07-10T12:00:00Z')).not.toBe('');
+  });
+});
+
+describe('attachmentsFromFrontmatter', () => {
+  it('reads {filename, path, bytes} entries off frontmatter.attachments', () => {
+    const frontmatter = {
+      attachments: [{ filename: 'contract.pdf', path: 'sources/mail/attachments/m1/contract.pdf', bytes: 20480 }]
+    };
+
+    expect(attachmentsFromFrontmatter(frontmatter)).toEqual([
+      { filename: 'contract.pdf', path: 'sources/mail/attachments/m1/contract.pdf', bytes: 20480 }
+    ]);
+  });
+
+  it('drops malformed entries (missing filename/path) instead of throwing', () => {
+    const frontmatter = { attachments: [{ filename: 'ok.pdf', path: 'p' }, { bytes: 5 }, null, 'x'] };
+
+    expect(attachmentsFromFrontmatter(frontmatter)).toEqual([{ filename: 'ok.pdf', path: 'p', bytes: 0 }]);
+  });
+
+  it('returns [] for null frontmatter, a missing field, or a non-array value', () => {
+    expect(attachmentsFromFrontmatter(null)).toEqual([]);
+    expect(attachmentsFromFrontmatter({})).toEqual([]);
+    expect(attachmentsFromFrontmatter({ attachments: 'nope' })).toEqual([]);
+  });
+});
+
+describe('formatBytes', () => {
+  it('renders bytes under 1024 as whole bytes', () => {
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(0)).toBe('0 B');
+  });
+
+  it('renders kilobytes with one decimal below 10, whole numbers at/above 10', () => {
+    expect(formatBytes(2048)).toBe('2 KB');
+    expect(formatBytes(1536)).toBe('1.5 KB');
+    expect(formatBytes(20480)).toBe('20 KB');
+  });
+
+  it('renders megabytes once the value crosses 1024 KB', () => {
+    expect(formatBytes(5 * 1024 * 1024)).toBe('5 MB');
+  });
+
+  it('never throws on negative or non-finite input', () => {
+    expect(formatBytes(-5)).toBe('0 B');
+    expect(formatBytes(Number.NaN)).toBe('0 B');
+  });
+});
+
+describe('canRunTriage', () => {
+  it('is disabled while a run is in flight', () => {
+    expect(canRunTriage('review', true)).toBe(false);
+  });
+
+  it('is disabled for a processed message even when idle', () => {
+    expect(canRunTriage('processed', false)).toBe(false);
+  });
+
+  it('is disabled for a processed message that is ALSO (impossibly) mid-run', () => {
+    expect(canRunTriage('processed', true)).toBe(false);
+  });
+
+  it('is enabled for a review message that is idle', () => {
+    expect(canRunTriage('review', false)).toBe(true);
+  });
+
+  it('treats a null/unknown status as runnable (not yet indexed as processed)', () => {
+    expect(canRunTriage(null, false)).toBe(true);
+  });
+});
+
+describe('mailStateLabel', () => {
+  it.each([
+    ['idle', 'Up to date'],
+    ['syncing', 'Syncing…'],
+    ['auth_failed', 'Sign-in failed'],
+    ['inactive', 'Not connected']
+  ])('labels state=%s as %s', (state, expected) => {
+    expect(mailStateLabel(state)).toBe(expected);
+  });
+
+  it('falls back to the raw state string for anything unrecognized, and to "Unknown" for null', () => {
+    expect(mailStateLabel('a_future_state')).toBe('a_future_state');
+    expect(mailStateLabel(null)).toBe('Unknown');
+    expect(mailStateLabel(undefined)).toBe('Unknown');
+  });
+});
+
+describe('syncErrorText', () => {
+  const baseStatus: MailStatus = {
+    configured: true,
+    credential: 'present',
+    state: 'auth_failed',
+    lastSyncAt: null,
+    lastError: 'authentication failed',
+    account: 'Mara',
+    username: 'mara@example.com',
+    workspaceId: 'ws-1'
+  };
+
+  it('shows the engine-reported lastError when there is no local request error', () => {
+    expect(syncErrorText(baseStatus, null)).toBe('authentication failed');
+  });
+
+  it('prefers a local request error (e.g. the sync-now RPC itself failing) over lastError', () => {
+    expect(syncErrorText(baseStatus, 'Could not start a sync. Please try again.')).toBe(
+      'Could not start a sync. Please try again.'
+    );
+  });
+
+  it('returns null when neither is present', () => {
+    expect(syncErrorText({ ...baseStatus, lastError: null }, null)).toBeNull();
+    expect(syncErrorText(null, null)).toBeNull();
+  });
+});
+
+describe('syncNowErrorMessage', () => {
+  it.each([
+    ['not_configured', 'Connect your mailbox first.'],
+    ['workspace_not_open', 'No workspace is open.'],
+    ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
+    ['anything_else', 'Could not start a sync. Please try again.']
+  ])('maps error code=%s to a calm sentence', (code, expected) => {
+    expect(syncNowErrorMessage(code)).toBe(expected);
+  });
+});

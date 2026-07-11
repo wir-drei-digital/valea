@@ -1,7 +1,8 @@
 import { api, type Api } from '../api/client';
 import { workspaceStore } from './workspace.svelte';
 import { inDesktop, keychainGet } from '../keychain';
-import type { MailStatusPush, MailSyncPush, MailMessagePush } from '../socket';
+import type { MailStatusPush, MailSyncPush, MailMessagePush, MailboxOpsPush } from '../socket';
+import type { Channel } from 'phoenix';
 
 /**
  * Minimal surface of `api` this store depends on — same `Pick<Api, ...>`
@@ -219,6 +220,22 @@ export class MailStore {
     void this.refreshMessages();
   }
 
+  /**
+   * `mailbox_ops` push handler — a decided queue item's post-approval
+   * mailbox ops finished (`WorkspaceEventsChannel`'s `:mailbox_ops_updated`
+   * clause). The terminal step of that pipeline flips the source message's
+   * on-disk `status:` from `"review"` to `"processed"` and updates the
+   * `MessageIndex` row to match (`Valea.Mail.MailboxOps.append_done/2` →
+   * `Store.set_message_status/2`) — this store has no per-message
+   * cache to patch in place, so (same "just refetch on any related push"
+   * simplicity as `handleMailMessage`/`handleMailStatus`) a full
+   * `refreshMessages()` picks up the new status. `runId` carries nothing
+   * else this store currently reacts to.
+   */
+  handleMailboxOps(_payload: MailboxOpsPush): void {
+    void this.refreshMessages();
+  }
+
   #applyStatus(raw: MailStatusPush): void {
     this.status = normalizeMailStatus(raw);
     void resupplyCredential(this.status, this.#api);
@@ -226,6 +243,44 @@ export class MailStore {
 }
 
 export const mailStore = new MailStore(api);
+
+let mailEventsWired = false;
+
+/**
+ * Attaches the four mail push handlers (`mail_status`/`mail_sync`/
+ * `mail_message`/`mailbox_ops`) to an already-joined `workspace:events`
+ * channel, driving the singleton `mailStore`. Takes the channel as a
+ * parameter rather than joining its own — same reason `wireQueueEvents`/
+ * `wireAuditEvents` do (see their doc comments in `queue.svelte.ts`/
+ * `audit.svelte.ts`, and `wireIcmEvents`'s in `icm.svelte.ts`): Phoenix's JS
+ * client only reliably delivers pushes to ONE join per topic per socket, so
+ * every store rides the single `workspace:events` join `wireIcmEvents`
+ * (`routes/+layout.svelte`'s one call site) owns, rather than opening a
+ * second one here.
+ *
+ * SINGLE CALL SITE: wired from `wireIcmEvents` itself (`icm.svelte.ts`),
+ * alongside `wireQueueEvents`/`wireAuditEvents` — NOT from the `/mail`
+ * route directly. A route-local `onMount` can't safely call
+ * `joinWorkspaceEvents` itself (that would be a second, racing join to the
+ * same topic — see above), and the layout already holds the one shared
+ * channel, so wiring happens there, once, before any route mounts. This
+ * keeps mail pushes flowing (and `mailStore` fresh) even when the user
+ * isn't currently on `/mail` — same as `queueStore`/`auditStore` staying
+ * live in the background today.
+ *
+ * Idempotent against repeat calls, same spirit as `wireQueueEvents` — a
+ * second call is a no-op rather than attaching a second set of handlers
+ * (which would double-refetch on every push).
+ */
+export function wireMailEvents(channel: Channel): void {
+  if (mailEventsWired) return;
+  mailEventsWired = true;
+
+  channel.on('mail_status', (payload: MailStatusPush) => mailStore.handleMailStatus(payload));
+  channel.on('mail_sync', (payload: MailSyncPush) => mailStore.handleMailSync(payload));
+  channel.on('mail_message', (payload: MailMessagePush) => mailStore.handleMailMessage(payload));
+  channel.on('mailbox_ops', (payload: MailboxOpsPush) => mailStore.handleMailboxOps(payload));
+}
 
 /**
  * Silent credential recovery (mail design spec §Credentials, "Recovery"): a

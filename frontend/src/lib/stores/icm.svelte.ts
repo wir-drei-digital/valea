@@ -3,6 +3,7 @@ import type { IcmNode } from '../shell/nav';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 import { wireQueueEvents } from './queue.svelte';
 import { wireAuditEvents } from './audit.svelte';
+import { wireMailEvents } from './mail.svelte';
 import { workflowsStore } from './workflows.svelte';
 
 type IcmApi = Pick<Api, 'icmTree'>;
@@ -125,6 +126,14 @@ let icmEventsWired = false;
  * `wireQueueEvents` above: the audit trail grows on every queue mutation,
  * so it rides `queue_changed` on this one join rather than opening a
  * second.
+ *
+ * CARRY-FORWARD (T16 — `/mail` route): also wires `wireMailEvents` onto the
+ * same shared channel, same reasoning again — `mail_status`/`mail_sync`/
+ * `mail_message`/`mailbox_ops` all ride this one `workspace:events` join
+ * rather than the `/mail` route opening its own (see `wireMailEvents`'s doc
+ * comment in `mail.svelte.ts` for why a route-local join would race this
+ * one). `mailStore` stays live in the background exactly like `queueStore`/
+ * `auditStore` already do, not only while `/mail` is mounted.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -159,4 +168,5 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
 
   wireQueueEvents(channel);
   wireAuditEvents(channel);
+  wireMailEvents(channel);
 }

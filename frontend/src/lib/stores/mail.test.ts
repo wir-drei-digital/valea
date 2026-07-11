@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MailStore, resupplyCredential, type MailStatus } from './mail.svelte';
+import { MailStore, mailStore, resupplyCredential, wireMailEvents, type MailStatus } from './mail.svelte';
 import { inDesktop, keychainGet } from '../keychain';
 import { workspaceStore } from './workspace.svelte';
 import type { ApiResult } from '../api/client';
 import type { MailStatusPush } from '../socket';
+import type { Channel } from 'phoenix';
 
 // The keychain seam is mocked at the module boundary (mirrors
 // keychain.test.ts mocking `@tauri-apps/api/core`) so `resupplyCredential`'s
@@ -247,6 +248,18 @@ describe('MailStore.handleMailSync', () => {
   });
 });
 
+describe('MailStore.handleMailboxOps', () => {
+  it('triggers refreshMessages (a mailbox-ops run finishing can flip a message from review to processed)', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+
+    store.handleMailboxOps({ runId: 'run-1' });
+    await Promise.resolve();
+
+    expect(listMailMessages).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('MailStore.handleMailStatus', () => {
   it('normalizes and stores status, and refetches messages + inbox (T13 activation race)', async () => {
     const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
@@ -346,5 +359,49 @@ describe('resupplyCredential', () => {
 
     expect(result).toBe(false);
     expect(setMailCredential).not.toHaveBeenCalled();
+  });
+});
+
+// `mailEventsWired` is a module-level latch (see `wireMailEvents` in
+// `mail.svelte.ts`), so — same caveat as `wireQueueEvents`'s own test in
+// `queue.test.ts` — it can only be meaningfully exercised ONCE per test
+// file. This is the single test in the file that calls `wireMailEvents`,
+// keeping the "first call wins" assertion deterministic instead of
+// depending on test execution order.
+describe('wireMailEvents', () => {
+  it('attaches all four mail handlers to the first channel only, each driving the singleton mailStore', () => {
+    const handleMailStatus = vi.spyOn(mailStore, 'handleMailStatus').mockImplementation(() => {});
+    const handleMailSync = vi.spyOn(mailStore, 'handleMailSync').mockImplementation(() => {});
+    const handleMailMessage = vi.spyOn(mailStore, 'handleMailMessage').mockImplementation(() => {});
+    const handleMailboxOps = vi.spyOn(mailStore, 'handleMailboxOps').mockImplementation(() => {});
+
+    const handlersA: Record<string, (payload: unknown) => void> = {};
+    const channelA = { on: (event: string, cb: (payload: unknown) => void) => (handlersA[event] = cb) } as unknown as Channel;
+    const handlersB: Record<string, (payload: unknown) => void> = {};
+    const channelB = { on: (event: string, cb: (payload: unknown) => void) => (handlersB[event] = cb) } as unknown as Channel;
+
+    wireMailEvents(channelA);
+    wireMailEvents(channelB); // idempotent no-op: never attaches to a second channel
+
+    expect(handlersA['mail_status']).toBeTypeOf('function');
+    expect(handlersA['mail_sync']).toBeTypeOf('function');
+    expect(handlersA['mail_message']).toBeTypeOf('function');
+    expect(handlersA['mailbox_ops']).toBeTypeOf('function');
+    expect(handlersB['mail_status']).toBeUndefined();
+
+    handlersA['mail_status']({ configured: true });
+    handlersA['mail_sync']({ phase: 'finished' });
+    handlersA['mail_message']({ path: 'x' });
+    handlersA['mailbox_ops']({ runId: 'r1' });
+
+    expect(handleMailStatus).toHaveBeenCalledWith({ configured: true });
+    expect(handleMailSync).toHaveBeenCalledWith({ phase: 'finished' });
+    expect(handleMailMessage).toHaveBeenCalledWith({ path: 'x' });
+    expect(handleMailboxOps).toHaveBeenCalledWith({ runId: 'r1' });
+
+    handleMailStatus.mockRestore();
+    handleMailSync.mockRestore();
+    handleMailMessage.mockRestore();
+    handleMailboxOps.mockRestore();
   });
 });
