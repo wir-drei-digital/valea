@@ -240,6 +240,104 @@ defmodule Valea.Workflows.RunnerTest do
     assert File.read!(pending_path) == first_bytes
   end
 
+  test "a workflow session that dies before any turn ends still reaches a terminus (no_proposal), staging cleaned",
+       %{workspace: workspace} do
+    # crash_mid_turn emits a chunk then halts the adapter WITHOUT ending the
+    # turn, so {:turn} never fires. The session's death path must still fire
+    # on_turn_end("died") → finalize → no_proposal, or the run would orphan.
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("crash_mid_turn"))
+
+    assert {:ok, %{run_id: run_id}} = Runner.run(@wf_path, @input_path)
+
+    wait_until(fn ->
+      {:ok, entries} = Valea.Audit.entries(50)
+
+      Enum.any?(
+        entries,
+        &(&1["type"] == "workflow_run_finished" and &1["run_id"] == run_id)
+      )
+    end)
+
+    {:ok, entries} = Valea.Audit.entries(50)
+
+    finished =
+      Enum.filter(
+        entries,
+        &(&1["type"] == "workflow_run_finished" and &1["run_id"] == run_id)
+      )
+
+    # Exactly one terminus (not double-fired by both {:turn} and the exit).
+    assert [%{"outcome" => "no_proposal"}] = finished
+
+    # No orphaned staging.
+    refute File.dir?(Path.join([workspace, "queue", "staging", run_id]))
+  end
+
+  test "recover_staging/1 gives orphaned staging dirs a terminus and clears them", %{
+    workspace: workspace
+  } do
+    # (a) pre-turn orphan: run.json only, no proposal was ever written.
+    orphan = "20260710T000000Z-aaaaaa"
+    orphan_dir = Path.join([workspace, "queue", "staging", orphan])
+    File.mkdir_p!(orphan_dir)
+    File.write!(Path.join(orphan_dir, "run.json"), Jason.encode!(sidecar(orphan)))
+
+    # (b) proposal written but finalize never ran (hard crash after the write).
+    salvage = "20260710T000000Z-bbbbbb"
+    salvage_dir = Path.join([workspace, "queue", "staging", salvage])
+    File.mkdir_p!(salvage_dir)
+    File.write!(Path.join(salvage_dir, "run.json"), Jason.encode!(sidecar(salvage)))
+    File.write!(Path.join(salvage_dir, "proposal.json"), Jason.encode!(valid_proposal()))
+
+    Runner.recover_staging(workspace)
+
+    {:ok, entries} = Valea.Audit.entries(100)
+
+    orphan_fin =
+      Enum.find(entries, &(&1["type"] == "workflow_run_finished" and &1["run_id"] == orphan))
+
+    assert orphan_fin["outcome"] == "no_proposal"
+    refute File.dir?(orphan_dir)
+
+    salvage_fin =
+      Enum.find(entries, &(&1["type"] == "workflow_run_finished" and &1["run_id"] == salvage))
+
+    assert salvage_fin["outcome"] == "proposal_created"
+    assert File.exists?(Path.join([workspace, "queue", "pending", salvage <> ".json"]))
+    refute File.dir?(salvage_dir)
+  end
+
+  defp sidecar(run_id) do
+    %{
+      "run_id" => run_id,
+      "session_id" => "sess-1",
+      "workflow" => @wf_path,
+      "workflow_hash" => "deadbeef",
+      "input" => @input_path,
+      "input_hash" => "cafebabe",
+      "risk_level" => "medium",
+      "approval" => %{"required" => true},
+      "created_at" => DateTime.to_iso8601(DateTime.utc_now())
+    }
+  end
+
+  defp valid_proposal do
+    %{
+      "schema" => "proposal/v1",
+      "kind" => "email_draft",
+      "title" => "Reply",
+      "summary" => "A summary.",
+      "reasoning" => "Because.",
+      "sources" => [],
+      "proposed_action" => %{
+        "type" => "create_email_draft",
+        "to" => "a@b.test",
+        "subject" => "Re: hi",
+        "body_markdown" => "Body."
+      }
+    }
+  end
+
   defp wait_until(fun, tries \\ 100) do
     cond do
       fun.() ->

@@ -64,11 +64,45 @@ defmodule Valea.Workflows.Runner do
 
     case File.read(proposal_path) do
       {:error, _reason} ->
+        # No proposal was written (a died-pre-turn session or a genuinely empty
+        # turn). Nothing to inspect, so clear the staging dir too — this gives
+        # the run a terminus AND stops `recover_staging/1` from re-sweeping the
+        # leftover run.json on the next workspace open.
+        File.rm_rf(staging_dir)
         audit_finished(run_id, "no_proposal")
 
       {:ok, bytes} ->
         finalize_bytes(run_id, workspace, staging_dir, bytes)
     end
+
+    :ok
+  end
+
+  @doc """
+  Crash-recovery backstop for `finalize/2`: at workspace open, every
+  `queue/staging/<run_id>/` left behind by a HARD crash (the BEAM died before
+  the session's `on_turn_end` death-path could run) has no live session and no
+  terminus. Give each one a terminus by running `finalize/2` — which audits
+  `no_proposal` / `invalid_proposal` / `proposal_created` from whatever the
+  agent managed to write — then clear the dir so it is swept exactly once
+  across reboots (an invalid proposal's terminus is preserved in the audit
+  trail).
+
+  Runs from `Valea.Workspace.Runtime` startup, BEFORE any session can be
+  created for the newly opening workspace, so nothing under staging is live.
+  """
+  @spec recover_staging(String.t()) :: :ok
+  def recover_staging(workspace) do
+    workspace
+    |> Path.join(Path.join(@staging_dir))
+    |> Path.join("*")
+    |> Path.wildcard()
+    |> Enum.filter(&File.dir?/1)
+    |> Enum.each(fn dir ->
+      run_id = Path.basename(dir)
+      finalize(run_id, workspace)
+      File.rm_rf(dir)
+    end)
 
     :ok
   end

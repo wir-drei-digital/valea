@@ -121,7 +121,8 @@ defmodule Valea.Agents.SessionServer do
           queue: [],
           watchdog: watchdog,
           policy_ctx: Map.get(opts, :policy_ctx, %{}),
-          on_turn_end: Map.get(opts, :on_turn_end)
+          on_turn_end: Map.get(opts, :on_turn_end),
+          finalized?: false
         }
 
         broadcast(state, {:session_status, :starting})
@@ -204,6 +205,11 @@ defmodule Valea.Agents.SessionServer do
   def handle_info({:runtime_exit, _code}, %{exited?: true} = state), do: {:noreply, state}
 
   def handle_info({:runtime_exit, code}, state) do
+    # The adapter died. If a turn already fired on_turn_end this is a no-op;
+    # otherwise (handshake/adapter crash BEFORE any turn ended) fire it with a
+    # "died" sentinel so a workflow run still reaches its terminus (Runner
+    # .finalize → no_proposal) instead of orphaning its staging dir forever.
+    state = fire_turn_end(state, "died")
     state = set_status(%{state | exited?: true}, :exited)
     broadcast(state, {:session_exit, code})
     audit(state, "session_exited", %{"code" => code})
@@ -249,8 +255,7 @@ defmodule Valea.Agents.SessionServer do
   end
 
   defp apply_effect(state, {:turn, stop}) do
-    if state.on_turn_end, do: spawn(fn -> state.on_turn_end.(stop) end)
-    flush_queue(state)
+    state |> fire_turn_end(stop) |> flush_queue()
   end
 
   defp apply_effect(state, {:handshake_failed, reason}) do
@@ -448,9 +453,26 @@ defmodule Valea.Agents.SessionServer do
     ProcessRuntime.stop(state.handle)
 
     state
+    # A handshake/adapter failure before any turn ends must still terminate a
+    # workflow run — same "died" sentinel as the runtime_exit path.
+    |> fire_turn_end("died")
     |> append_item(%{"id" => "error", "type" => "error", "text" => reason})
     |> Map.put(:exited?, true)
     |> set_status(:failed)
+  end
+
+  # Fire the session's `on_turn_end` callback AT MOST ONCE. The {:turn} effect
+  # calls it on a normal turn end; the runtime_exit and fail paths call it with
+  # a "died" sentinel so a session that dies before any turn completes still
+  # gives its workflow run a terminus. `finalized?` guards against a second
+  # invocation (e.g. a turn end followed by the adapter exiting). Spawned so a
+  # slow finalize never blocks the session process.
+  defp fire_turn_end(%{finalized?: true} = state, _stop), do: state
+  defp fire_turn_end(%{on_turn_end: nil} = state, _stop), do: state
+
+  defp fire_turn_end(%{on_turn_end: on_turn_end} = state, stop) do
+    spawn(fn -> on_turn_end.(stop) end)
+    %{state | finalized?: true}
   end
 
   ## Helpers
