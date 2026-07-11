@@ -105,19 +105,27 @@ defmodule Valea.Mail.Doctor do
   auto-create. Returns the folder names actually created; a folder whose
   `create_folder` call itself fails is silently left out of that list (the
   doctor's next run will still report it missing). A connect failure is
-  returned verbatim as `{:error, reason}` — nothing to create without a
-  connection.
+  returned as `{:error, reason}` — nothing to create without a connection.
+  The reason passes through untouched unless it embeds the raw credential,
+  in which case it is stringified with the secret scrubbed (same redaction
+  posture as `run/1`'s tls_ok check; this error reaches RPC/UI consumers).
   """
   @spec create_folders(ctx()) :: {:ok, [String.t()]} | {:error, term()}
   def create_folders(%{settings: %Settings{} = settings, transport: transport} = ctx) do
-    case safe_connect(transport, settings.imap, ctx[:credential]) do
+    # Same once-at-the-connect-boundary resolution as `transport_group/2`,
+    # for the same reason: the connect error's reason term is the one value
+    # here that could conceivably embed the secret, and it flows out of
+    # this function to callers outside this module.
+    secret = resolve_credential(ctx[:credential])
+
+    case do_connect(transport, settings.imap, secret) do
       {:ok, conn} ->
         created = create_missing_ai_folders(transport, conn, settings.folders)
         safe_logout(transport, conn)
         {:ok, created}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, redact_reason(reason, secret)}
     end
   end
 
@@ -411,10 +419,6 @@ defmodule Valea.Mail.Doctor do
 
   # -- shared: connect/logout, never raising -------------------------------------
 
-  defp safe_connect(transport, imap_config, credential) do
-    do_connect(transport, imap_config, resolve_credential(credential))
-  end
-
   defp do_connect(transport, imap_config, secret) do
     transport.connect(imap_config, secret, [])
   rescue
@@ -435,6 +439,19 @@ defmodule Valea.Mail.Doctor do
     do: String.replace(text, secret, "[redacted]")
 
   defp redact(text, _secret), do: text
+
+  # `create_folders/1`'s counterpart to `redact/2` for a reason that is
+  # still a term, not a display string: a reason that does not embed the
+  # secret passes through completely untouched (callers can keep matching
+  # on `:econnrefused`-style atoms); one that does is stringified via
+  # `inspect/1` with the secret scrubbed — losing the term's shape is the
+  # acceptable cost of never letting the credential out of this module.
+  defp redact_reason(reason, secret) when is_binary(secret) and secret != "" do
+    text = inspect(reason)
+    if String.contains?(text, secret), do: redact(text, secret), else: reason
+  end
+
+  defp redact_reason(reason, _secret), do: reason
 
   defp safe_logout(transport, conn) do
     transport.logout(conn)

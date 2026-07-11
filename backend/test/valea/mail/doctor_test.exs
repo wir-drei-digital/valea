@@ -336,6 +336,17 @@ defmodule Valea.Mail.DoctorTest do
     assert {:error, :econnrefused} = Doctor.create_folders(the_ctx)
   end
 
+  test "create_folders scrubs the credential from a connect error before returning it" do
+    root = workspace_root()
+    secret = "hunter2-super-secret-XYZ"
+    the_ctx = ctx(%{root: root, credential: fn -> secret end})
+
+    FakeMailTransport.script([{:connect, :_, {:error, {:weird, secret}}}])
+
+    assert {:error, reason} = Doctor.create_folders(the_ctx)
+    refute inspect(reason, limit: :infinity, printable_limit: :infinity) =~ secret
+  end
+
   test "already-complete folders: create_folders is a no-op" do
     root = workspace_root()
     the_ctx = ctx(%{root: root})
