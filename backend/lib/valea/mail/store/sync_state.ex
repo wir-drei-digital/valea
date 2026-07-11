@@ -11,6 +11,16 @@ defmodule Valea.Mail.Store.SyncState do
   sqlite do
     table "mail_sync_state"
     repo Valea.Repo
+    # This table is hand-migrated (see the moduledoc + the migration itself,
+    # `create_mail_tables.exs`) — never generated. `migrate? false` excludes
+    # it from `AshSqlite.MigrationGenerator`'s snapshot diff, which is what
+    # both `mix ash.codegen` and `AshPhoenix.Plug.CheckCodegenStatus` (the
+    # dev-only endpoint plug that reruns that diff on every request) walk.
+    # Without this, dev boots 500 with `Ash.Error.Framework.PendingCodegen`
+    # on the very first request, and running codegen would emit a second,
+    # redundant "create mail_sync_state" migration racing the hand-written
+    # one against an already-migrated table.
+    migrate? false
   end
 
   actions do

@@ -12,6 +12,9 @@ defmodule Valea.Mail.Store.MessageIndex do
   sqlite do
     table "mail_messages"
     repo Valea.Repo
+    # Hand-migrated table — see the identical comment on
+    # `Valea.Mail.Store.SyncState`'s `sqlite` block.
+    migrate? false
   end
 
   actions do

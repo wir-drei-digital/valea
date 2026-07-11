@@ -11,6 +11,9 @@ defmodule Valea.Mail.Store.UidOutcome do
   sqlite do
     table "mail_uid_outcomes"
     repo Valea.Repo
+    # Hand-migrated table — see the identical comment on
+    # `Valea.Mail.Store.SyncState`'s `sqlite` block.
+    migrate? false
   end
 
   actions do

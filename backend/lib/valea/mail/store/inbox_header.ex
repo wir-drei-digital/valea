@@ -12,6 +12,9 @@ defmodule Valea.Mail.Store.InboxHeader do
   sqlite do
     table "mail_inbox_headers"
     repo Valea.Repo
+    # Hand-migrated table — see the identical comment on
+    # `Valea.Mail.Store.SyncState`'s `sqlite` block.
+    migrate? false
   end
 
   actions do
