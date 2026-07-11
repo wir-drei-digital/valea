@@ -1,3 +1,44 @@
+# A `Transport` double whose `connect/3` announces itself to a probe pid and
+# then blocks until released — so a test can observe the Engine's "syncing"
+# state while a pass is genuinely in flight (rather than racing a fast fake).
+# It blocks in the pass *Task*, never in the Engine, so status/sync_now calls
+# stay responsive.
+defmodule Valea.Mail.EngineTest.HangingTransport do
+  @behaviour Valea.Mail.Transport
+
+  @impl true
+  def connect(_config, _credential, _opts) do
+    send(Application.get_env(:valea, :engine_sync_probe), {:connect_called, self()})
+
+    receive do
+      {:release, result} -> result
+    end
+  end
+
+  @impl true
+  def capabilities(_conn), do: {:ok, []}
+  @impl true
+  def list_folders(_conn), do: {:ok, []}
+  @impl true
+  def create_folder(_conn, _folder), do: :ok
+  @impl true
+  def select(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1}}
+  @impl true
+  def uid_search(_conn, _criteria), do: {:ok, []}
+  @impl true
+  def uid_fetch_meta(_conn, _uids), do: {:ok, []}
+  @impl true
+  def uid_fetch_headers(_conn, _uids), do: {:ok, []}
+  @impl true
+  def uid_fetch_full(_conn, _uid), do: {:ok, ""}
+  @impl true
+  def uid_move(_conn, _uid, _folder), do: :ok
+  @impl true
+  def append(_conn, _folder, _flags, _rfc822), do: :ok
+  @impl true
+  def logout(_conn), do: :ok
+end
+
 defmodule Valea.Mail.EngineTest do
   use ExUnit.Case, async: false
 
@@ -224,5 +265,43 @@ defmodule Valea.Mail.EngineTest do
     assert state_after.status == "idle"
     assert state_after.poll_timer != nil
     assert Engine.status().state == "idle"
+  end
+
+  test "sync_now runs a pass in the background: status 'syncing', single-flight, result flips state",
+       %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 20)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 20}
+    )
+
+    :ok = Engine.set_credential("app-password")
+    # set_credential itself never starts a pass (only the timer / sync_now do)
+    assert Engine.status().state == "idle"
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now()
+    assert_receive {:connect_called, task_pid}
+    assert Engine.status().state == "syncing"
+
+    # a second sync_now while a pass is in flight is a no-op :ok — no new pass
+    assert :ok = Engine.sync_now()
+    refute_receive {:connect_called, _another}, 100
+
+    # release the pass; its {:error, :auth_failed} flips status and finishes
+    send(task_pid, {:release, {:error, :auth_failed}})
+    assert_receive {:mail_sync_finished, %{new_messages: 0, errors: ["authentication failed"]}}
+    assert Engine.status().state == "auth_failed"
+    assert %{poll_timer: nil, sync_task: nil} = :sys.get_state(Process.whereis(Engine))
   end
 end

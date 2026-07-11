@@ -37,20 +37,31 @@ defmodule Valea.Mail.Engine do
   `VALEA_MAIL_PASSWORD` env var, read once at activation and only if no
   credential has already been supplied.
 
+  ## Sync passes
+
+  A pass (`Valea.Mail.SyncPass.run/1`) runs in a monitored `Task`, triggered
+  by the poll timer or `sync_now/0` (per the design spec, §Engine, its only
+  two triggers). At most one runs at a time: the in-flight task's `{pid,
+  ref}` is tracked in `state.sync_task`, so a second `sync_now` (or a poll
+  tick) while syncing is a no-op that leaves the running pass untouched.
+  Status shows `"syncing"` for the duration; the task's result flips it back
+  to `"idle"` (or `"auth_failed"`) and broadcasts `mail_sync_finished`. The
+  credential closure is handed to the task and only ever called inside
+  `SyncPass` at the `transport.connect/3` boundary.
+
   ## Errors
 
-  Auth failure pauses the poll timer (no retry storm against a bad
-  password) until `set_credential/1` supplies a new one, which clears the
-  failure and re-arms polling. This task only lays the seam: the actual
-  sync pass (`run_pass/1`) is a no-op placeholder wired up in a later task,
-  so `state: "auth_failed"` is never actually reached yet — the
-  transition exists so that task doesn't have to touch the poll-pause
-  contract.
+  A pass returning `{:error, :auth_failed}` pauses the poll timer (no retry
+  storm against a bad password) until `set_credential/1` supplies a new one,
+  which clears the failure and re-arms polling. `set_credential/1` itself
+  never starts a pass directly — it only re-arms the timer, and the next
+  tick runs one.
   """
   use GenServer
 
   alias Valea.Mail.Index
   alias Valea.Mail.Settings
+  alias Valea.Mail.SyncPass
 
   @default_interval_minutes 5
 
@@ -78,17 +89,17 @@ defmodule Valea.Mail.Engine do
   @doc """
   Stores `secret` as the Engine's credential (RAM only, never logged) and
   broadcasts the updated status. If the Engine had paused on `auth_failed`,
-  this clears it and re-arms polling. Triggers a sync pass if the Engine is
-  active and configured (a no-op this task — see the moduledoc).
+  this clears it and re-arms polling — the next poll tick runs a pass; this
+  call never starts one itself.
   """
   @spec set_credential(String.t()) :: :ok
   def set_credential(secret) when is_binary(secret),
     do: GenServer.call(__MODULE__, {:set_credential, secret})
 
   @doc """
-  Triggers a sync pass immediately. Refuses when the Engine hasn't
-  activated yet, has no usable `Settings`, or has no credential — the sync
-  pass itself is a no-op stub this task (wired up in a later task).
+  Triggers a sync pass immediately (in a monitored `Task`). Refuses when the
+  Engine hasn't activated yet, has no usable `Settings`, or has no
+  credential. A no-op `:ok` when a pass is already running (single-flight).
   """
   @spec sync_now() :: :ok | {:error, :not_configured | :no_credential | :inactive}
   def sync_now, do: GenServer.call(__MODULE__, :sync_now)
@@ -114,7 +125,8 @@ defmodule Valea.Mail.Engine do
        status: "inactive",
        last_sync_at: nil,
        last_error: nil,
-       poll_timer: nil
+       poll_timer: nil,
+       sync_task: nil
      }}
   end
 
@@ -126,7 +138,6 @@ defmodule Valea.Mail.Engine do
       state
       |> Map.put(:credential, fn -> secret end)
       |> clear_auth_failed()
-      |> maybe_run_pass()
 
     broadcast_status(new_state)
     {:reply, :ok, new_state}
@@ -134,7 +145,7 @@ defmodule Valea.Mail.Engine do
 
   def handle_call(:sync_now, _from, state) do
     case validate_sync(state) do
-      :ok -> {:reply, :ok, run_pass(state)}
+      :ok -> {:reply, :ok, start_pass_unless_running(state)}
       {:error, _reason} = error -> {:reply, error, state}
     end
   end
@@ -151,7 +162,23 @@ defmodule Valea.Mail.Engine do
   def handle_info(:poll, %{status: "auth_failed"} = state),
     do: {:noreply, %{state | poll_timer: nil}}
 
-  def handle_info(:poll, state), do: {:noreply, state |> run_pass() |> schedule_poll()}
+  def handle_info(:poll, state), do: {:noreply, state |> maybe_start_pass() |> schedule_poll()}
+
+  # A pass Task reported its result: flush the pending :DOWN, then apply it.
+  def handle_info({:sync_result, pid, result}, %{sync_task: {pid, ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_pass(state, result)}
+  end
+
+  # The pass Task crashed before reporting (SyncPass returns tuples, so this
+  # is an unexpected raise/exit) — treat it as a failed pass, not a wedge.
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{sync_task: {pid, ref}} = state) do
+    {:noreply, finish_pass(state, {:error, {:sync_task_down, reason}})}
+  end
+
+  # Stale task chatter (already handled/superseded): ignore.
+  def handle_info({:sync_result, _pid, _result}, state), do: {:noreply, state}
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
   # -- activation ---------------------------------------------------------
 
@@ -196,16 +223,77 @@ defmodule Valea.Mail.Engine do
   defp validate_sync(%{credential: nil}), do: {:error, :no_credential}
   defp validate_sync(_state), do: :ok
 
-  defp maybe_run_pass(state) do
+  defp maybe_start_pass(state) do
     case validate_sync(state) do
-      :ok -> run_pass(state)
+      :ok -> start_pass_unless_running(state)
       {:error, _reason} -> state
     end
   end
 
-  # Seam for a later task: the real connect/select/fetch/normalize/land pass
-  # over `state.transport`. Deliberately a no-op here.
-  defp run_pass(state), do: state
+  # Single-flight: only start a pass when none is in flight.
+  defp start_pass_unless_running(%{sync_task: nil} = state), do: start_pass(state)
+  defp start_pass_unless_running(state), do: state
+
+  # Runs `SyncPass.run/1` in a monitored (unlinked) process so a crashing
+  # pass can never take the Engine down — the `spawn_monitor` result is
+  # tracked so a later `sync_now`/poll no-ops and the result/`:DOWN` message
+  # can be matched back. The credential closure travels into the task and is
+  # only ever called inside `SyncPass`, at the `connect/3` boundary.
+  defp start_pass(state) do
+    broadcast_event({:mail_sync_started})
+
+    parent = self()
+
+    args = %{
+      root: state.root,
+      settings: state.settings,
+      credential: state.credential,
+      transport: state.transport
+    }
+
+    {pid, ref} =
+      spawn_monitor(fn -> send(parent, {:sync_result, self(), SyncPass.run(args)}) end)
+
+    new_state = %{state | sync_task: {pid, ref}, status: "syncing"}
+    broadcast_status(new_state)
+    new_state
+  end
+
+  defp finish_pass(state, {:ok, %{new_messages: new_messages, errors: errors}}) do
+    broadcast_event({:mail_sync_finished, %{new_messages: new_messages, errors: errors}})
+
+    %{state | sync_task: nil, status: "idle", last_sync_at: now_iso(), last_error: nil}
+    |> tap_broadcast_status()
+  end
+
+  defp finish_pass(state, {:error, :auth_failed}) do
+    cancel_timer(state.poll_timer)
+    broadcast_event({:mail_sync_finished, %{new_messages: 0, errors: ["authentication failed"]}})
+
+    %{
+      state
+      | sync_task: nil,
+        status: "auth_failed",
+        poll_timer: nil,
+        last_error: "authentication failed"
+    }
+    |> tap_broadcast_status()
+  end
+
+  defp finish_pass(state, {:error, reason}) do
+    message = "sync failed: #{inspect(reason)}"
+    broadcast_event({:mail_sync_finished, %{new_messages: 0, errors: [message]}})
+
+    %{state | sync_task: nil, status: "idle", last_error: message}
+    |> tap_broadcast_status()
+  end
+
+  defp tap_broadcast_status(state) do
+    broadcast_status(state)
+    state
+  end
+
+  defp now_iso, do: DateTime.utc_now() |> DateTime.to_iso8601()
 
   defp clear_auth_failed(%{status: "auth_failed"} = state) do
     state |> Map.put(:status, "idle") |> schedule_poll()
@@ -241,6 +329,10 @@ defmodule Valea.Mail.Engine do
   end
 
   defp broadcast_status(state) do
-    Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_status_changed, build_status(state)})
+    broadcast_event({:mail_status_changed, build_status(state)})
+  end
+
+  defp broadcast_event(event) do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail", event)
   end
 end
