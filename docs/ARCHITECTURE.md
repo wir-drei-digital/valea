@@ -271,6 +271,226 @@ scaffolded.
 | Layer 4 working artifacts | `queue/` (staging/pending/processing/approved/rejected), `sources/` | Agent write access is confined to the exact staging path a run names; everything downstream is server-authored |
 | — (not an ICM layer) | `logs/` (`sessions/*.jsonl`, `audit.jsonl`) | Operational record — transcripts and the audit trail, not agent-facing memory |
 
+## Mail (Phase 4)
+
+A sync-to-files engine that connects Valea to the user's real IMAP mailbox,
+lands the messages they hand over (by moving them into `AI/Review` in their
+own mail client) as plain files under `sources/mail/`, and closes the
+approval loop back into the mailbox — replacing Phase 3's seeded mock input
+while keeping the agent's integration surface exactly what it already was:
+files. No IMAP IDLE, no OAuth, no multi-account (spec non-goals); no SMTP
+send anywhere (see Safety invariants below).
+
+### Module map (`backend/lib/valea/mail/`)
+
+- **`Valea.Mail.Engine`** — one GenServer per workspace (started under
+  `Valea.Workspace.Runtime`), owns `Settings` + the RAM-only credential +
+  sync status + poll timer. Inert (`active: false`, no file reads) until the
+  `{:workspace_opened, info, generation}` broadcast for its own generation;
+  a pass runs in a monitored `Task` (single-flight via `state.sync_task`),
+  triggered only by the poll timer or `sync_now/0`. `auth_failed` pauses
+  polling until `set_credential/1` supplies a new secret. Also single-flights
+  post-approval mailbox ops *per `run_id`* (`state.ops_tasks`).
+- **`Valea.Mail.SyncPass`** — one pass: connect, sync the Review folder
+  (per-UID outcome tracking so a failed message retries, an oversized one
+  doesn't re-fetch), sync INBOX headers (awareness index only), logout.
+  `UIDVALIDITY` change wipes that folder's watermark + outcomes and forces a
+  clean re-fetch; landed files/index rows survive (Message-ID dedupe
+  re-attaches them).
+- **`Valea.Mail.Transport`** (behaviour) / **`Valea.Mail.ImapClient`** (real
+  `:ssl` implementation) — UIDs only, `BODY.PEEK[...]` (never sets `\Seen`),
+  connect-per-pass (no persistent connections, no IDLE). `uid_move/3` is the
+  safe-move ladder: `UID MOVE` → `UID COPY` + `STORE +FLAGS (\Deleted)` +
+  targeted `UID EXPUNGE <uid>` (RFC 4315 UIDPLUS) → `{:unsupported, _}`; a
+  bare `EXPUNGE` never appears anywhere in the module.
+- **`Valea.Mail.Normalizer`** / **`Valea.Mail.Message`** — raw RFC822 →
+  normalized struct (`message_id`, `from`, `subject`, `date`, threading
+  fields `in_reply_to`/`references`/`reply_to`, `body_text`, `attachments`);
+  raw bytes are discarded after normalization.
+- **`Valea.Mail.MessageFile`** — the normalized-message-file format:
+  `msg_id/2` (deterministic `<date>-<from-slug>-<hash8>`, extending to 16/64
+  hex on a genuine hash collision), `render/2`, `parse/1`, `flip_status/2`
+  (byte-preserving, never re-serializes the rest of the file), injection-
+  hardened frontmatter (`yaml_string/1`: UTF-8 scrub, C0/DEL → space, `\`/`"`
+  escaped — a mail header can never break the frontmatter block).
+- **`Valea.Mail.DraftMime`** — composes the RFC822 bytes for an approved
+  reply: `To`/`In-Reply-To`/`References` come from the *source* message's
+  frontmatter (a reply threads onto what it answers), `Subject`/body from
+  the approved draft. Deterministic `Message-ID:
+  <valea.draft.<run_id>@valea.invalid>` (RFC 6761 `.invalid`) — the
+  idempotence guard `MailboxOps` searches on before ever appending.
+- **`Valea.Mail.MailboxOps`** — executes the two post-approval ops
+  (`draft_append`, `archive_source`) for a decided queue item; see the
+  lifecycle below. Never blocks an approval: a connect failure marks
+  actionable ops `"failed"` and returns, the human's decision stays
+  untouched. Independent ops — one failing never stops the other.
+- **`Valea.Mail.Settings`** — `config/mail.yaml` v3 ⇄ `%Settings{}`
+  (`account`, `imap.{host,port,username}`, `folders.{review,processed,drafts}`,
+  `sync.{interval_minutes,max_message_bytes,inbox_index_limit}`, the fixed
+  `safety:` block). No credential ever lives in this file. `load/1`
+  distinguishes `:not_configured` (missing file, blank/placeholder host) from
+  `{:invalid, reason}` (structurally broken).
+- **`Valea.Mail.Doctor`** — the connection preflight; see Doctor checks
+  below. `create_folders/1` is the doctor panel's "Create AI folders" action
+  (creates missing `AI/Review`/`AI/Processed` only — never touches Drafts).
+- **`Valea.Mail.Index`** — rebuilds the `mail_messages` cache from
+  `sources/mail/messages/*.md` (an unparseable file is skipped/logged, never
+  fatal); runs on every Engine activation.
+- **`Valea.Mail.Store`** (`Ash.Domain`, no `AshTypescript` extension —
+  internal-only) over four minimal `AshSqlite.DataLayer` resources
+  (`Store.SyncState`, `Store.UidOutcome`, `Store.MessageIndex`,
+  `Store.InboxHeader`; tables `mail_sync_state`/`mail_uid_outcomes`/
+  `mail_messages`/`mail_inbox_headers`). All four are pure cache — every
+  table is rebuildable from `sources/mail/` (+ an IMAP resync), so they are
+  **hand-migrated** (`backend/priv/repo/migrations/20260711000001_create_mail_tables.exs`)
+  rather than codegen'd: each resource's `sqlite do` block sets
+  `migrate? false`, which excludes it from `AshSqlite.MigrationGenerator`'s
+  snapshot diff — the same diff `AshPhoenix.Plug.CheckCodegenStatus` reruns
+  on every dev request. Without that flag dev boot 500s with
+  `Ash.Error.Framework.PendingCodegen` on the first request (no committed
+  resource snapshots exist for these four resources by design), and running
+  codegen would emit a second, redundant migration racing the hand-written
+  one against an already-migrated table.
+- **`Valea.Api.Mail`** — the RPC surface; see RPC + channel events below.
+- **Frontend**: `frontend/src/lib/stores/mail.svelte.ts` (`MailStore`,
+  `resupplyCredential`, `normalizeMailStatus`), components under
+  `frontend/src/lib/components/mail/` (`SetupPanel`, `MailDoctorPanel`,
+  `MessageList`, `MessageView`, `InboxSection`, `SyncStatusLine`), route
+  `frontend/src/routes/mail/+page.svelte`.
+- **Desktop**: `desktop/src-tauri/src/keychain.rs` — three Tauri commands
+  (`mail_secret_set/get/delete`) over the OS keychain (`keyring` crate),
+  gated by `desktop/src-tauri/capabilities/mail-keychain.json`.
+
+### `sources/mail/` layout
+
+```
+sources/mail/
+  messages/<msg_id>.md      # landed Review-folder messages (canonical; Store is cache)
+  attachments/<msg_id>/     # landed attachment files, deduped filenames
+  drafts/<run_id>.md        # human-approved reply draft, pre-append
+  inbox.md                  # regenerated every pass — INBOX awareness table, do not edit
+```
+
+`config/mail.yaml` (v3) lives outside `sources/`, alongside the other
+workspace config; the credential never lives in either.
+
+### `queue_item/v2` + mailbox_ops lifecycle
+
+Phase 3's queue (`Valea.Queue`) gained a schema bump on the decide path. On
+`approve/2`/`reject/2`, the already-claimed `processing/` file is atomically
+rewritten from `queue_item/v1` to `queue_item/v2` — adding a `mailbox_ops`
+map — before the final rename into `approved/`/`rejected/`:
+
+- `approve/2` on an `email_draft` payload stamps `{"draft_append" => %{},
+  "archive_source" => %{}}`; `reject/2` stamps only `{"archive_source" =>
+  %{}}`.
+- Each op's seeded `status` is `"skipped"` when the source message's leading
+  frontmatter says `source: seed` (or is absent/unreadable) — Phase 3's mock
+  data leaves nothing to append/move — otherwise `"pending"`.
+- Landing `approved/`/`rejected/` broadcasts `{:mailbox_ops_pending, run_id}`
+  on the `"mail_ops"` PubSub topic; `Valea.Mail.Engine` picks it up and runs
+  `MailboxOps.execute/1` in an unlinked, per-`run_id` single-flight task.
+  Activation also re-sweeps any item still `"pending"` (a missed broadcast);
+  `"failed"` ops wait for the user's explicit retry
+  (`Engine.retry_ops/1` → `retry_mailbox_ops` RPC), never auto-retried.
+- Each op resolves independently to `"done"` (append/move succeeded, or the
+  draft was already present — the idempotence guard), `"unsupported"` (no
+  MOVE/UIDPLUS — the *local* file still flips to `processed`, since the human
+  review already happened regardless of server capability), or `"failed"`
+  (retryable). `Queue.update_mailbox_op/3` records the outcome and
+  broadcasts `{:mailbox_ops_updated, run_id}`.
+- `Valea.Queue.recover/1` (crash recovery) includes the v2 upgrade: a
+  recovered approval never lands without its `mailbox_ops` map.
+
+### Credential path
+
+The credential is **never written to disk, never logged, never part of the
+workspace** — held only as a zero-arity closure in `Engine` process state
+(so `:sys.get_state/1`/a crash dump never renders it).
+
+```
+OS keychain (desktop only)          RPC (control plane)              Engine
+"digital.wirdrei.valea" service  →  set_mail_credential(secret,   →  set_credential/1
+account "<workspace_id>:<username>"  generation)                     (RAM closure only)
+```
+
+- **Setup**: `setup_mail_account` RPC writes `config/mail.yaml` (no
+  credential) and calls `Engine.reload_settings/0`. The frontend then writes
+  the secret to the OS keychain via `mail_secret_set` (Tauri command,
+  desktop only) — never through the RPC surface.
+- **Resupply** (every mail-store init / workspace open): the frontend's
+  `resupplyCredential` reads `mail_secret_get(workspace_id, username)` —
+  keyed on `status.username` (the IMAP login), **not** `status.account` (the
+  display label) — and, if present, calls `setMailCredential`. Self-
+  terminating: a successful resupply flips the Engine's `credential` field
+  to `"present"`, so it only runs while actually needed.
+- **Browser-mode / dev fallback**: no keychain in a plain browser tab (no
+  Tauri), so `Engine` reads `VALEA_MAIL_PASSWORD` once at activation, only
+  if no credential has already been supplied via RPC.
+- `set_mail_credential`'s `secret` argument is `sensitive? true`; nothing on
+  the request path logs action inputs regardless (no `Plug.Logger`).
+
+### RPC + channel events
+
+`Valea.Api.Mail` (`rpc_action(:name, :action)`, generated TS name in
+parens): `mail_status` → `:mail_status` (`mailStatus`); `setup_mail_account`
+(`setupMailAccount`, args `account, host, port, username, generation`);
+`set_mail_credential` (`setMailCredential`, args `secret, generation`);
+`mail_sync_now` (`mailSyncNow`, arg `generation`); `mail_doctor`
+(`mailDoctor`, arg `generation`); `create_mail_folders`
+(`createMailFolders`, arg `generation`); `list_mail_messages`
+(`listMailMessages`); `get_mail_message` (`getMailMessage`, arg `msg_id`);
+`mail_inbox` (`mailInbox`); `retry_mailbox_ops` (`retryMailboxOps`, args
+`run_id, generation`). Every mutating action takes `generation` and guards
+via `Manager.check_generation/1`; every read-only one still resolves
+`Manager.current/0` first (surfaces `"workspace_not_open"` instead of a
+`Repo`/`:noproc` crash).
+
+`ValeaWeb.WorkspaceEventsChannel` (topic `workspace:events`) subscribes to
+two more PubSub topics this phase, `"mail"` and `"mail_ops"`, and pushes:
+`mail_status` (the full status map, string-keyed), `mail_sync`
+(`{phase: "started"|"finished", newMessages}`), `mail_message` (`{path}` —
+one landed/updated message), `mailbox_ops` (`{runId}` — an op's outcome
+changed). `{:mailbox_ops_pending, _}` is deliberately not pushed — it is the
+Engine's own internal trigger, nothing for the UI to react to until
+`mailbox_ops` (the terminal signal) follows.
+
+### Doctor checks (`Valea.Mail.Doctor.run/1`)
+
+Sequential, each gated on the one before it (a failure marks everything
+downstream `"unknown"`, not attempted): `config_present` → `credential_present`
+→ `tcp_reachable` → one `transport.connect/3` call fanning out to `tls_ok` +
+`login_ok` + `folders` (missing `AI/Review`/`AI/Processed`/Drafts) +
+`move_capability` (MOVE vs. UIDPLUS vs. neither) → `workflow_contract`
+(gated on `config_present` alone — a local file check: does
+`icm/Workflows/New Inquiry Triage.md` still reference the legacy JSON
+input instead of `sources/mail/messages/*.md`). Never raises; every check
+carries a copyable remedy string. The credential is resolved once at the
+`connect/3` boundary and scrubbed out of any error text that would
+otherwise embed it.
+
+### Safety invariants
+
+- **TLS is mandatory and verified, always.** `ImapClient.connect/3` always
+  passes `verify: :verify_peer` + hostname verification + SNI; the only
+  caller-overridable piece is which trust root is used
+  (`opts[:tls_opts]`, e.g. `cacertfile:` — tests only, never production
+  code). There is no insecure escape hatch (no `VALEA_MAIL_TLS_INSECURE`
+  or equivalent) anywhere in the client.
+- **Safe-move ladder, never a bare `EXPUNGE`.** See `ImapClient.uid_move/3`
+  above — a bare `EXPUNGE` would purge every `\Deleted` message in the
+  mailbox, including ones the user's own client marked; it never appears in
+  the codebase outside the one targeted `UID EXPUNGE <uid>` call.
+  `BODY.PEEK[...]` is used for every fetch, so reading a message here never
+  flips `\Seen`.
+- **Never-send.** `config/mail.yaml`'s `safety:` block is a fixed,
+  non-configurable invariant (`send_directly: false`,
+  `create_drafts_only: true`) and `Valea.Mail.Transport` has no send/SMTP
+  callback at all — the only mailbox-writing operations anywhere in the
+  phase are `append` (Drafts folder only, via `DraftMime`) and `uid_move`
+  (Review → Processed). An approved reply always lands as a draft for the
+  human to review and send themselves.
+
 ## Design system pointer
 
 UI follows the "paper & ink, with a green pen for approval" design system: [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (canonical source: `docs/design/cockpit-design-system-v1.pdf`). Two-layer token architecture (raw tokens → shadcn-svelte semantic variable mapping); feature code never touches raw Tailwind classes directly. Shell layout is a reusable four-column grid (Sidebar · optional ListPane · Main · optional Rail) implemented as an `AppShell` component family on shadcn-svelte primitives.
@@ -300,3 +520,4 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-09-valea-foundation-design.md](superpowers/specs/2026-07-09-valea-foundation-design.md) — Foundation: monorepo scaffold, workspace creation/selection, app shell, Today cockpit (seeded), ICM tree in nav.
 - [2026-07-10-icm-editor-design.md](superpowers/specs/2026-07-10-icm-editor-design.md) — ICM editor: markdown↔ProseMirror converter + determinism contract, version-guarded saves, reference-aware tree CRUD, typed RPC.
 - [2026-07-10-agent-slice-design.md](superpowers/specs/2026-07-10-agent-slice-design.md) — Agent slice: ACP agent runtime, trust/permission model, queue/audit approval flow, control-plane auth, workspace runtime generations, ICM layer mapping.
+- [2026-07-11-mail-design.md](superpowers/specs/2026-07-11-mail-design.md) — Mail: IMAP sync-to-files engine, normalized message file format, `queue_item/v2` mailbox ops, OS-keychain credential handoff, connection doctor, `/mail` UI.

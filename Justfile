@@ -60,6 +60,41 @@ package-backend:
 desktop-bundle: package-backend
     cd desktop && bun tauri build
 
+# Throwaway Dovecot for manual mail E2E (mara / marapass, IMAPS-only,
+# scripts/dovecot/dovecot.conf mounted in place of the image's own config).
+#
+#   - Connect from the app: host `localhost`, port `3993`, user `mara`,
+#     password `marapass`. Set these via the mail setup RPC / onboarding UI
+#     (`config/mail.yaml` + the OS keychain), not by hand-editing files.
+#   - AI folders (AI/Review, AI/Processed) are NOT pre-created by this
+#     container — run the connection doctor's "Create AI folders" action
+#     (or the `create_mail_folders` RPC) once connected; see
+#     `Valea.Mail.Doctor.create_folders/1`.
+#   - TLS trust: the mounted `scripts/dovecot/dovecot.conf` serves
+#     `backend/test/fixtures/tls/server.pem` (CN=localhost, signed by the
+#     fixture `ca.pem`) instead of the stock image's own self-signed cert —
+#     but `Valea.Mail.ImapClient` always dials `verify: :verify_peer` against
+#     the OS trust store (see its moduledoc: this is never configurable, and
+#     `VALEA_MAIL_TLS_INSECURE=1` / any such escape hatch is NOT supported,
+#     by design — there is no way to weaken it from the app side). To make
+#     verify_peer trust the fixture CA for this manual run only, point the
+#     BEAM's own CA bundle at it when you boot the backend — this is a
+#     startup-time trust-root swap, not a code change, and it exercises the
+#     exact same `verify_peer` path production traffic does:
+#
+#       export ELIXIR_ERL_OPTIONS="-public_key cacerts_path \"$(pwd)/backend/test/fixtures/tls/ca.pem\""
+#       just dev
+#
+#     (run from the repo root; equivalently, export it before
+#     `cd backend && mix phx.server`). Unset it / start a normal shell for
+#     anything other than this manual E2E — it globally replaces the BEAM's
+#     trusted roots for the process.
+mail-dev:
+    docker run --rm -p 3993:993 --name valea-dovecot \
+      -v "$(pwd)/scripts/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro" \
+      -v "$(pwd)/backend/test/fixtures/tls:/etc/dovecot/tls:ro" \
+      dovecot/dovecot:latest
+
 # Run all checks (fails if the generated RPC client is stale)
 test:
     cd backend && mix test

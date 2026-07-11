@@ -161,7 +161,7 @@ project's proven scaffold. Full decisions per feature live in
 4. **Mail** — a sync-to-files engine that reads IMAP and normalizes messages
    into `sources/mail/`, following the AI/Review folder flow (replaces the
    mock input). No new agent tool surface — the agent still only reads
-   files.
+   files. *(shipped, pending merge; spec: 2026-07-11-mail-design.md)*
 5. **Calendar** — a sync-to-files engine that reads CalDAV / imports ICS
    into `sources/calendar/`, today + week views. Same file-first posture as
    Mail.
