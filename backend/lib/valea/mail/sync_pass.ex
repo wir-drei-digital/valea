@@ -396,11 +396,20 @@ defmodule Valea.Mail.SyncPass do
     case ctx.transport.uid_search(ctx.conn, search_criteria(high_water)) do
       {:ok, uids} ->
         new_uids = uids |> Enum.filter(&above?(&1, high_water)) |> Enum.sort()
-        errors = fetch_and_store_headers(ctx, new_uids)
-        Store.prune_inbox_headers(ctx.settings.sync.inbox_index_limit)
-        regenerate_inbox_md(ctx.root)
-        update_sync_state(@inbox, uidvalidity, high_water, new_uids)
-        errors
+
+        case fetch_and_store_headers(ctx, new_uids) do
+          :ok ->
+            Store.prune_inbox_headers(ctx.settings.sync.inbox_index_limit)
+            regenerate_inbox_md(ctx.root)
+            update_sync_state(@inbox, uidvalidity, high_water, new_uids)
+            []
+
+          {:error, message} ->
+            # Nothing was stored: keep the old watermark so these headers
+            # are searched (and fetched) again on the next pass.
+            Store.put_sync_state(@inbox, uidvalidity, high_water)
+            [message]
+        end
 
       {:error, reason} ->
         Store.put_sync_state(@inbox, uidvalidity, high_water)
@@ -408,7 +417,7 @@ defmodule Valea.Mail.SyncPass do
     end
   end
 
-  defp fetch_and_store_headers(_ctx, []), do: []
+  defp fetch_and_store_headers(_ctx, []), do: :ok
 
   defp fetch_and_store_headers(ctx, uids) do
     case ctx.transport.uid_fetch_headers(ctx.conn, uids) do
@@ -424,10 +433,10 @@ defmodule Valea.Mail.SyncPass do
           })
         end)
 
-        []
+        :ok
 
       {:error, reason} ->
-        ["inbox header fetch failed: #{inspect(reason)}"]
+        {:error, "inbox header fetch failed: #{inspect(reason)}"}
     end
   end
 

@@ -61,11 +61,14 @@ defmodule Valea.Mail.StoreTest do
   describe "record_outcome/4 + outcomes/1" do
     test "synced and skipped land in their own sets, never in retryable" do
       Store.record_outcome("INBOX", 1, :synced, "msg-1")
-      Store.record_outcome("INBOX", 2, :skipped)
+      # :skipped_oversize is what the sync pass actually records; plain
+      # :skipped is accepted too — both land in the skipped set.
+      Store.record_outcome("INBOX", 2, :skipped_oversize, "msg-2")
+      Store.record_outcome("INBOX", 4, :skipped)
 
       result = Store.outcomes("INBOX")
       assert result.synced == MapSet.new([1])
-      assert result.skipped == MapSet.new([2])
+      assert result.skipped == MapSet.new([2, 4])
       assert result.retryable == []
     end
 
@@ -92,7 +95,7 @@ defmodule Valea.Mail.StoreTest do
 
     test "outcomes only reflects the given folder" do
       Store.record_outcome("INBOX", 1, :synced)
-      Store.record_outcome("AI/Review", 1, :skipped)
+      Store.record_outcome("AI/Review", 1, :skipped_oversize)
 
       assert Store.outcomes("INBOX").synced == MapSet.new([1])
       assert Store.outcomes("INBOX").skipped == MapSet.new([])

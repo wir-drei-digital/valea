@@ -98,9 +98,12 @@ defmodule Valea.Mail.Store do
   end
 
   @doc """
-  Partitions every recorded outcome for `folder`. `retryable` is every UID
-  last recorded `failed` with fewer than 3 attempts — at 3 it drops out
-  (permanently skipped rather than retried forever).
+  Partitions every recorded outcome for `folder`. `skipped` covers
+  `skipped_oversize` — the string the sync pass actually records, so an
+  oversized message is never re-fetched — as well as plain `skipped`.
+  `retryable` is every UID last recorded `failed` with fewer than 3
+  attempts — at 3 it drops out (permanently skipped rather than retried
+  forever).
   """
   @spec outcomes(String.t()) :: %{synced: MapSet.t(), skipped: MapSet.t(), retryable: [integer()]}
   def outcomes(folder) do
@@ -113,8 +116,9 @@ defmodule Valea.Mail.Store do
   defp add_outcome(%{outcome: "synced", uid: uid}, acc),
     do: %{acc | synced: MapSet.put(acc.synced, uid)}
 
-  defp add_outcome(%{outcome: "skipped", uid: uid}, acc),
-    do: %{acc | skipped: MapSet.put(acc.skipped, uid)}
+  defp add_outcome(%{outcome: outcome, uid: uid}, acc)
+       when outcome in ["skipped", "skipped_oversize"],
+       do: %{acc | skipped: MapSet.put(acc.skipped, uid)}
 
   defp add_outcome(%{outcome: "failed", attempts: attempts, uid: uid}, acc) when attempts < 3,
     do: %{acc | retryable: [uid | acc.retryable]}

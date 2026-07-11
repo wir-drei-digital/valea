@@ -304,4 +304,45 @@ defmodule Valea.Mail.EngineTest do
     assert Engine.status().state == "auth_failed"
     assert %{poll_timer: nil, sync_task: nil} = :sys.get_state(Process.whereis(Engine))
   end
+
+  test "a pass task killed mid-flight is a failed pass: status recovers, never stuck syncing",
+       %{root: root} do
+    write_settings!(root, "imap.fastmail.com", "mara@example.com")
+
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 21)
+
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, %{path: root, name: "w"}, 21}
+    )
+
+    :ok = Engine.set_credential("app-password")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now()
+    assert_receive {:connect_called, task_pid}
+    assert Engine.status().state == "syncing"
+
+    # kill the pass task before it reports — the Engine's :DOWN handler must
+    # treat it as a failed pass, not wedge in "syncing"
+    Process.exit(task_pid, :kill)
+
+    assert_receive {:mail_sync_finished, %{new_messages: 0, errors: [error]}}
+    assert error =~ "sync failed"
+    assert Engine.status().state == "idle"
+    assert %{sync_task: nil} = :sys.get_state(Process.whereis(Engine))
+
+    # and a fresh pass can start afterwards
+    assert :ok = Engine.sync_now()
+    assert_receive {:connect_called, new_task_pid}
+    send(new_task_pid, {:release, {:error, :test_done}})
+    assert_receive {:mail_sync_finished, _payload}
+    assert Engine.status().state == "idle"
+  end
 end

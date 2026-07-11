@@ -255,4 +255,95 @@ defmodule Valea.Mail.SyncPassTest do
     assert {:error, :auth_failed} = run(root, settings())
     assert message_files(root) == []
   end
+
+  test "a skipped_oversize outcome alone prevents re-fetch, without any high-water mark",
+       %{root: root} do
+    # Only the outcome row exists — no sync state, so high_water is nil and
+    # the search is a fresh "ALL" that returns the UID again. Exclusion must
+    # come from outcomes.skipped, not from the watermark.
+    Store.record_outcome("AI/Review", 10, :skipped_oversize, "prior-msg-id")
+
+    FakeMailTransport.script([
+      {:connect, :_, {:ok, FakeMailTransport}},
+      {:select, :_, {:ok, %{uidvalidity: 100, uidnext: 20}}},
+      {:uid_search, fn [_c, crit] -> crit == "ALL" end, {:ok, [10]}},
+      # INBOX (same "ALL" search result) still fetches its headers
+      {:uid_fetch_headers, :_, {:ok, []}},
+      {:logout, :_, :ok}
+    ])
+
+    assert {:ok, %{new_messages: 0, errors: []}} = run(root, settings())
+
+    # the oversized UID was never a candidate: no meta/full fetch happened
+    refute Enum.any?(FakeMailTransport.calls(), &match?({:uid_fetch_meta, _}, &1))
+    refute Enum.any?(FakeMailTransport.calls(), &match?({:uid_fetch_full, _}, &1))
+    assert message_files(root) == []
+
+    # and the review watermark still hasn't advanced — the exclusion does
+    # not rest on high-water
+    assert {:ok, %{high_water_uid: nil}} = Store.get_sync_state("AI/Review")
+  end
+
+  test "inbox header fetch failure keeps the watermark; the next pass retries", %{root: root} do
+    plain = fixture("plain.eml")
+
+    # Park the Review folder behind a watermark so its search criteria
+    # ("UID 51:*") is distinguishable from INBOX's fresh "ALL".
+    Store.put_sync_state("AI/Review", 100, 50)
+
+    script = fn headers_result ->
+      FakeMailTransport.script([
+        {:connect, :_, {:ok, FakeMailTransport}},
+        {:select, :_, {:ok, %{uidvalidity: 100, uidnext: 20}}},
+        {:uid_search, fn [_c, crit] -> crit == "UID 51:*" end, {:ok, []}},
+        {:uid_search, fn [_c, crit] -> crit == "ALL" end, {:ok, [5]}},
+        {:uid_fetch_headers, :_, headers_result},
+        {:logout, :_, :ok}
+      ])
+    end
+
+    script.({:error, :timeout})
+    assert {:ok, %{new_messages: 0, errors: [error]}} = run(root, settings())
+    assert error =~ "inbox header fetch failed"
+
+    # the INBOX watermark did NOT advance past the unfetched header
+    assert {:ok, %{high_water_uid: nil}} = Store.get_sync_state("INBOX")
+
+    # next pass retries the same UID and succeeds
+    script.({:ok, [%{uid: 5, header: header_block(plain)}]})
+    assert {:ok, %{new_messages: 0, errors: []}} = run(root, settings())
+
+    inbox = File.read!(Path.join(root, "sources/mail/inbox.md"))
+    assert inbox =~ "Question about leadership coaching"
+    assert {:ok, %{high_water_uid: 5}} = Store.get_sync_state("INBOX")
+  end
+
+  test "a write-stage raise records failed and the pass continues", %{root: root} do
+    plain = fixture("plain.eml")
+    b64 = fixture("base64_attachment.eml")
+
+    # Block the attachment landing dir with a plain file: uid 11's
+    # attachment write raises (mkdir_p! through a file), uid 10 (no
+    # attachments) is unaffected.
+    File.write!(Path.join(root, "sources/mail/attachments"), "not a directory")
+
+    FakeMailTransport.script([
+      {:connect, :_, {:ok, FakeMailTransport}},
+      {:select, :_, {:ok, %{uidvalidity: 100, uidnext: 20}}},
+      {:uid_search, :_, {:ok, [10, 11]}},
+      {:uid_fetch_meta, :_,
+       {:ok, [%{uid: 10, size: byte_size(plain)}, %{uid: 11, size: byte_size(b64)}]}},
+      {:uid_fetch_full, fn [_c, uid] -> uid == 10 end, {:ok, plain}},
+      {:uid_fetch_full, fn [_c, uid] -> uid == 11 end, {:ok, b64}},
+      {:uid_fetch_headers, :_, {:ok, []}},
+      {:logout, :_, :ok}
+    ])
+
+    assert {:ok, %{new_messages: 1, errors: [error]}} = run(root, settings())
+    assert error =~ "uid 11"
+
+    # uid 10 landed; uid 11 failed mid-write and is retryable
+    assert length(message_files(root)) == 1
+    assert Store.outcomes("AI/Review").retryable == [11]
+  end
 end
