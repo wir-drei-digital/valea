@@ -308,8 +308,9 @@ send anywhere (see Safety invariants below).
   fields `in_reply_to`/`references`/`reply_to`, `body_text`, `attachments`);
   raw bytes are discarded after normalization.
 - **`Valea.Mail.MessageFile`** — the normalized-message-file format:
-  `msg_id/2` (deterministic `<date>-<from-slug>-<hash8>`, extending to 16/64
-  hex on a genuine hash collision), `render/2`, `parse/1`, `flip_status/2`
+  `msg_id/2` (deterministic `<date>-<from-slug>-<hash8>`; on a genuine hash
+  collision `SyncPass.msg_id_for_path/3` extends the hash to 16/64 hex),
+  `render/2`, `parse/1`, `flip_status/2`
   (byte-preserving, never re-serializes the rest of the file), injection-
   hardened frontmatter (`yaml_string/1`: UTF-8 scrub, C0/DEL → space, `\`/`"`
   escaped — a mail header can never break the frontmatter block).
@@ -381,12 +382,13 @@ Phase 3's queue (`Valea.Queue`) gained a schema bump on the decide path. On
 rewritten from `queue_item/v1` to `queue_item/v2` — adding a `mailbox_ops`
 map — before the final rename into `approved/`/`rejected/`:
 
-- `approve/2` on an `email_draft` payload stamps `{"draft_append" => %{},
-  "archive_source" => %{}}`; `reject/2` stamps only `{"archive_source" =>
-  %{}}`.
-- Each op's seeded `status` is `"skipped"` when the source message's leading
-  frontmatter says `source: seed` (or is absent/unreadable) — Phase 3's mock
-  data leaves nothing to append/move — otherwise `"pending"`.
+- `approve/2` on an `email_draft` payload stamps `{"draft_append" =>
+  %{"status" => status}, "archive_source" => %{"status" => status}}`;
+  `reject/2` stamps only `{"archive_source" => %{"status" => status}}`.
+- That seeded `status` (shared by all named ops) is `"skipped"` when the
+  source message's leading frontmatter says `source: seed` (or is
+  absent/unreadable) — Phase 3's mock data leaves nothing to append/move —
+  otherwise `"pending"`.
 - Landing `approved/`/`rejected/` broadcasts `{:mailbox_ops_pending, run_id}`
   on the `"mail_ops"` PubSub topic; `Valea.Mail.Engine` picks it up and runs
   `MailboxOps.execute/1` in an unlinked, per-`run_id` single-flight task.

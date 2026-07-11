@@ -95,9 +95,11 @@ desktop-bundle: package-backend
 #       just dev
 #
 #     (run from the repo root; equivalently, export it before
-#     `cd backend && mix phx.server`). Unset it / start a normal shell for
-#     anything other than this manual E2E — it globally replaces the BEAM's
-#     trusted roots for the process.
+#     `cd backend && mix phx.server`). Assumes the checkout path contains no
+#     spaces: the elixir launcher splices $ELIXIR_ERL_OPTIONS into the erl
+#     invocation unquoted, so a space in $(pwd) would split the argument.
+#     Unset it / start a normal shell for anything other than this manual
+#     E2E — it globally replaces the BEAM's trusted roots for the process.
 mail-dev:
     docker run --rm -p 3993:993 --name valea-dovecot \
       -v "$(pwd)/scripts/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro" \
