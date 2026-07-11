@@ -359,7 +359,12 @@
           <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
         </div>
 
-        {#if store.state === 'dirty' && store.error}
+        {#if store.state === 'dirty' && store.error === 'workspace_changed'}
+          <p role="alert" class="text-warn-ink text-[12px]">
+            The workspace changed while you were editing, so this page can no longer be
+            saved here. Copy anything you want to keep, then reopen the page.
+          </p>
+        {:else if store.state === 'dirty' && store.error}
           <p role="alert" class="text-warn-ink text-[12px]">
             Couldn't save this page. Your changes are still here — retrying on your next edit.
           </p>
