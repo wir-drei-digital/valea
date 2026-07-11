@@ -237,13 +237,26 @@ defmodule Valea.Workspace.Manager do
     end
   end
 
+  # Each workspace's app.sqlite is a fresh, independently-migrated database,
+  # so `Ecto.Migrator.run/4` recompiles the migration files from disk on
+  # every open (they're only ever pending once each, but for a *different*
+  # database each time) — including repeat opens within the same running
+  # app session (switching workspaces, tests). `ignore_module_conflict`
+  # keeps that from spamming "redefining module" warnings; it's reset
+  # immediately after, so it does not affect unrelated compilation.
   defp migrate do
     path =
       Application.get_env(:valea, :migrations_path) || Ecto.Migrator.migrations_path(Valea.Repo)
 
-    Ecto.Migrator.run(Valea.Repo, path, :up, all: true)
-    :ok
-  rescue
-    e -> {:error, {:migration_failed, Exception.message(e)}}
+    previous_compiler_options = Code.compiler_options(ignore_module_conflict: true)
+
+    try do
+      Ecto.Migrator.run(Valea.Repo, path, :up, all: true)
+      :ok
+    rescue
+      e -> {:error, {:migration_failed, Exception.message(e)}}
+    after
+      Code.compiler_options(previous_compiler_options)
+    end
   end
 end
