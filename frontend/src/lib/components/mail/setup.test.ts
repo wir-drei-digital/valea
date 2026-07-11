@@ -4,8 +4,11 @@ import {
   mailSetupErrorMessage,
   normalizeMailDoctorChecks,
   foldersCheckFailed,
+  createFoldersAndRecheck,
+  createFoldersErrorMessage,
   type MailSetupDeps,
-  type MailSetupFormInput
+  type MailSetupFormInput,
+  type CreateFoldersDeps
 } from './mail-shapes';
 import type { ApiResult } from '$lib/api/client';
 
@@ -226,6 +229,77 @@ describe('normalizeMailDoctorChecks', () => {
     expect(normalizeMailDoctorChecks(undefined)).toEqual([]);
     expect(normalizeMailDoctorChecks(null)).toEqual([]);
     expect(normalizeMailDoctorChecks('nope')).toEqual([]);
+  });
+});
+
+describe('createFoldersAndRecheck', () => {
+  function makeFolderDeps(overrides: Partial<CreateFoldersDeps> = {}): CreateFoldersDeps {
+    return {
+      api: { createMailFolders: vi.fn(async () => ok({ created: ['AI/Review'] })) },
+      rerunDoctor: vi.fn(async () => {}),
+      setBusy: vi.fn(),
+      ...overrides
+    };
+  }
+
+  it('success path: busy on -> createMailFolders -> re-run doctor -> busy off, resolving null', async () => {
+    const order: string[] = [];
+    const deps = makeFolderDeps({
+      api: {
+        createMailFolders: vi.fn(async () => {
+          order.push('createMailFolders');
+          return ok({ created: ['AI/Review'] });
+        })
+      },
+      rerunDoctor: vi.fn(async () => {
+        order.push('rerunDoctor');
+      }),
+      setBusy: vi.fn((busy: boolean) => {
+        order.push(`setBusy(${busy})`);
+      })
+    });
+
+    const message = await createFoldersAndRecheck(deps, 3);
+
+    expect(order).toEqual(['setBusy(true)', 'createMailFolders', 'rerunDoctor', 'setBusy(false)']);
+    expect(deps.api.createMailFolders).toHaveBeenCalledWith(3);
+    expect(message).toBeNull();
+  });
+
+  it('error path: a createMailFolders failure surfaces a message, skips the doctor re-run, and still resets busy', async () => {
+    const deps = makeFolderDeps({
+      api: { createMailFolders: vi.fn(async () => fail('workspace_changed')) }
+    });
+
+    const message = await createFoldersAndRecheck(deps, 3);
+
+    expect(message).toBe('Your workspace changed. Reopen it and try again.');
+    expect(deps.rerunDoctor).not.toHaveBeenCalled();
+    expect(deps.setBusy).toHaveBeenLastCalledWith(false);
+  });
+
+  it('still resets busy even when a step throws (the throw propagates)', async () => {
+    const deps = makeFolderDeps({
+      rerunDoctor: vi.fn(async () => {
+        throw new Error('boom');
+      })
+    });
+
+    await expect(createFoldersAndRecheck(deps, 3)).rejects.toThrow('boom');
+    expect(deps.setBusy).toHaveBeenLastCalledWith(false);
+  });
+});
+
+describe('createFoldersErrorMessage', () => {
+  it.each([
+    ['workspace_not_open', 'No workspace is open.'],
+    ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
+    ['not_configured', 'Connect your mailbox first.'],
+    ['no_credential', 'Enter your mailbox password first.'],
+    ['inactive', 'No workspace is open.'],
+    ['anything_else', 'Could not create the folders. Check the connection and try again.']
+  ])('maps error code=%s to a calm sentence', (code, expected) => {
+    expect(createFoldersErrorMessage(code)).toBe(expected);
   });
 });
 

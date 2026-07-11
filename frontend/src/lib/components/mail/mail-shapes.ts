@@ -336,3 +336,68 @@ export function normalizeMailDoctorChecks(raw: unknown): MailDoctorCheck[] {
 export function foldersCheckFailed(checks: MailDoctorCheck[]): boolean {
   return checks.some((check) => check.id === 'folders' && check.status === 'failed');
 }
+
+// -- MailDoctorPanel: "Create AI folders" sequencing --------------------------
+//
+// Same extraction rationale as `submitMailSetup`: the create-then-recheck
+// ordering (and its error/flag handling) is the testable part, so it lives
+// here as a plain function over injected deps; `MailDoctorPanel.svelte`
+// wires it to the real `api`, its own `run()` and its `creatingFolders`
+// flag.
+
+export type CreateFoldersDeps = {
+  api: Pick<Api, 'createMailFolders'>;
+  /** The panel's own doctor run — re-invoked after a successful create so the folder rows reflect reality. */
+  rerunDoctor: () => Promise<void>;
+  /** The panel's in-flight flag setter. Guaranteed to be called with `false` again on EVERY exit path, including a thrown step. */
+  setBusy: (busy: boolean) => void;
+};
+
+/**
+ * "Create AI folders" (backend: `Valea.Mail.Engine.create_folders/0` via
+ * `api.createMailFolders`): flips busy on, creates the missing AI/*
+ * folders, and — only if that RPC actually succeeded — re-runs the doctor
+ * so the `folders` row updates. A failed create resolves the mapped
+ * display message (see `createFoldersErrorMessage`) and deliberately skips
+ * the re-run: nothing changed server-side, so the checks on screen are
+ * still accurate. The busy flag is reset in a `finally`, so even a step
+ * that throws (none should — `ApiResult` calls never throw by contract)
+ * can't strand the button in its disabled "Creating…" state.
+ */
+export async function createFoldersAndRecheck(deps: CreateFoldersDeps, generation: number): Promise<string | null> {
+  deps.setBusy(true);
+  try {
+    const result = await deps.api.createMailFolders(generation);
+    if (!result.ok) return createFoldersErrorMessage(result.error);
+
+    await deps.rerunDoctor();
+    return null;
+  } finally {
+    deps.setBusy(false);
+  }
+}
+
+/**
+ * `create_mail_folders`'s error vocabulary: the generation guard's
+ * `workspace_not_open`/`workspace_changed` plus `Engine.create_folders/0`'s
+ * own gate (`inactive | not_configured | no_credential` — the same
+ * `validate_sync/1` gate as `sync_now`). `inactive` means no workspace
+ * runtime is up, which the user experiences identically to
+ * `workspace_not_open`. Anything else (a connect failure's inspected
+ * reason term, passed through `error_for/1`) gets the generic fallback.
+ */
+export function createFoldersErrorMessage(code: string): string {
+  switch (code) {
+    case 'workspace_not_open':
+    case 'inactive':
+      return 'No workspace is open.';
+    case 'workspace_changed':
+      return 'Your workspace changed. Reopen it and try again.';
+    case 'not_configured':
+      return 'Connect your mailbox first.';
+    case 'no_credential':
+      return 'Enter your mailbox password first.';
+    default:
+      return 'Could not create the folders. Check the connection and try again.';
+  }
+}

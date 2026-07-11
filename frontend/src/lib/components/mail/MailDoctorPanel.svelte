@@ -19,9 +19,12 @@
   // "failed" check.
   //
   // "Create AI folders" (visible once the `folders` check has actually
-  // failed, per `foldersCheckFailed`) calls `api.createMailFolders(generation)`
-  // then re-runs the doctor — same self-contained "mount + re-run" shape as
-  // DoctorPanel's "Check again", just with an extra action button beside it.
+  // failed, per `foldersCheckFailed`) runs `createFoldersAndRecheck`
+  // (`mail-shapes.ts`) — create the missing AI/* folders, then re-run the
+  // doctor on success; a failed create surfaces its mapped message in
+  // `createError` instead (no re-run — the on-screen checks are still
+  // accurate). Same self-contained "mount + re-run" shape as DoctorPanel's
+  // "Check again", just with an extra action button beside it.
   import { onMount } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import X from '@lucide/svelte/icons/x';
@@ -29,7 +32,12 @@
   import Copy from '@lucide/svelte/icons/copy';
   import { Button } from '$lib/components/ui/button/index.js';
   import { api } from '$lib/api/client';
-  import { normalizeMailDoctorChecks, foldersCheckFailed, type MailDoctorCheck } from './mail-shapes';
+  import {
+    normalizeMailDoctorChecks,
+    foldersCheckFailed,
+    createFoldersAndRecheck,
+    type MailDoctorCheck
+  } from './mail-shapes';
 
   let { generation }: { generation: number } = $props();
 
@@ -38,6 +46,7 @@
   let loadFailed = $state(false);
   let copiedId: string | null = $state(null);
   let creatingFolders = $state(false);
+  let createError: string | null = $state(null);
 
   const showCreateFolders = $derived(foldersCheckFailed(checks));
 
@@ -67,10 +76,15 @@
   }
 
   async function createFolders(): Promise<void> {
-    creatingFolders = true;
-    await api.createMailFolders(generation);
-    creatingFolders = false;
-    void run();
+    createError = null;
+    createError = await createFoldersAndRecheck(
+      {
+        api,
+        rerunDoctor: run,
+        setBusy: (busy) => (creatingFolders = busy)
+      },
+      generation
+    );
   }
 </script>
 
@@ -128,14 +142,19 @@
     </ul>
   {/if}
 
-  <div class="flex items-center gap-2">
-    <Button type="button" variant="outline" size="sm" onclick={() => run()} disabled={loading}>
-      Check again
-    </Button>
-    {#if showCreateFolders}
-      <Button type="button" size="sm" onclick={() => void createFolders()} disabled={creatingFolders}>
-        {creatingFolders ? 'Creating…' : 'Create AI folders'}
+  <div class="flex flex-col gap-1.5">
+    <div class="flex items-center gap-2">
+      <Button type="button" variant="outline" size="sm" onclick={() => run()} disabled={loading}>
+        Check again
       </Button>
+      {#if showCreateFolders}
+        <Button type="button" size="sm" onclick={() => void createFolders()} disabled={creatingFolders}>
+          {creatingFolders ? 'Creating…' : 'Create AI folders'}
+        </Button>
+      {/if}
+    </div>
+    {#if createError}
+      <p class="text-warn-ink text-[12.5px]" role="alert">{createError}</p>
     {/if}
   </div>
 </div>
