@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-12 · **Status:** approved design, pre-plan (phase ordering vs. Calendar to be decided)
 **Depends on:** 2026-07-10-agent-slice-design.md (policy contexts, workflows, queue), 2026-07-11-mail-design.md (workspace v3, migration patterns)
-**Sibling specs (planned):** Spec B — memory & methodology depth (agent-proposed ICM edits via queue, decision logs); Spec C — Knowledge/editor UX (backlinks UI, templates, search). Both build on this spec's structure.
+**Sibling specs:** Spec A2 — by-reference mounts (2026-07-12-icm-by-reference-design.md; external ICMs referenced in place — the ICM-first journey's end state); Spec B — memory & methodology depth (agent-proposed ICM edits via queue, decision logs); Spec C — Knowledge/editor UX (backlinks UI, templates, search). All build on this spec's structure.
 
 ## Goal
 
@@ -31,8 +31,9 @@ session with no Valea present; the app is the convenience layer.
 
 ## Non-goals
 
-By-reference/external-path mounts (config fields reserved only). Zip/git
-import automation (drop-in is manual; Valea detects). Agent-proposed memory
+By-reference/external-path mounts (config fields reserved here; designed
+in Spec A2, implementable immediately after this spec). Zip/git import
+automation (drop-in is manual; Valea detects). Agent-proposed memory
 updates through the queue (Spec B). Backlinks UI, templates, search
 (Spec C). Watch-triggers for workflows (Phase 6 — with the recorded rule
 that a *mounted* workflow's trigger will require workspace-side opt-in).
@@ -190,6 +191,17 @@ accordingly.
 
 ## Migration, scaffold, onboarding
 
+- **ICM-aware onboarding (the ICM-first journey).** Users commonly have an
+  ICM before they have Valea. When the open/create dialog is pointed at a
+  directory that is not a workspace, Valea checks whether it is (or
+  contains) an ICM — `icm.yaml` present, or a knowledge-shaped tree — and
+  never dead-ends with "not a workspace". Instead it offers **adoption**:
+  "This looks like a knowledge module — create a workspace around it?"
+  Adoption paths: (a) *reference it in place* (once Spec A2 ships — the
+  default, least invasive), or (b) *move it into the new workspace's
+  `mounts/`* (this spec: the only path; requires explicit consent to
+  relocate, with the original location shown). Copying is never offered —
+  a silent fork of the user's knowledge is worse than either.
 - **Scaffold/onboarding**: workspace creation asks for the business name;
   the starter ICM is seeded at `mounts/<slug>/` (slugged name) with a
   fresh manifest (new uuid, the given name), its own `AGENTS.md`
