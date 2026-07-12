@@ -8,7 +8,13 @@ describe('workflowEditHref', () => {
     );
   });
 
-  it('returns null for a path that does not start with mounts/', () => {
+  it('path-encodes each segment of an ABSOLUTE external workflow path (A2-T5b), same as icmToNav', () => {
+    expect(
+      workflowEditHref('/Users/dana/Client Docs/Workflows/New Inquiry Triage.md')
+    ).toBe('/knowledge//Users/dana/Client%20Docs/Workflows/New%20Inquiry%20Triage.md');
+  });
+
+  it('returns null for a legacy icm/ path or any other shape that is neither mounts/ nor absolute', () => {
     expect(workflowEditHref('icm/Workflows/New Inquiry Triage.md')).toBeNull();
     expect(workflowEditHref('workflows/New Inquiry Triage.md')).toBeNull();
     expect(workflowEditHref('')).toBeNull();

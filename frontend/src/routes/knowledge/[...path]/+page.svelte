@@ -6,6 +6,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { api, type IcmPageData } from '$lib/api/client';
   import { encodePath, flattenMountGroups, type IcmNode } from '$lib/shell/nav';
+  import { parentPath } from './parent-path';
   import { Skeleton } from '$lib/components/ui/skeleton';
   import PageEditor from '$lib/components/editor/PageEditor.svelte';
   import PageMeta from '$lib/components/editor/PageMeta.svelte';
@@ -78,9 +79,8 @@
     if (node?.type === 'folder') {
       return { title: node.name, path: node.path, entries: node.children ?? [] };
     }
-    const segments = decodedPath.split('/').filter(Boolean);
-    const parentPath = segments.slice(0, -1).join('/');
-    const parent = parentPath ? findNode(flatNodes, parentPath) : undefined;
+    const parentDir = parentPath(decodedPath);
+    const parent = parentDir ? findNode(flatNodes, parentDir) : undefined;
     if (parent?.type === 'folder') {
       return { title: parent.name, path: parent.path, entries: parent.children ?? [] };
     }

@@ -1,25 +1,32 @@
+import { encodePath } from '$lib/shell/nav';
+
 /**
  * Knowledge-page href for a workflow's "Edit →" link. `workflow.path` (from
- * `WorkflowsStore`/`list_workflows`) is WORKSPACE-relative, e.g.
+ * `WorkflowsStore`/`list_workflows`) is either WORKSPACE-relative, e.g.
  * `"mounts/primary/Workflows/New Inquiry Triage.md"` (see
- * `Valea.Workflows.parse/2`: `path: Path.join(mount.rel_root, ...)`).
+ * `Valea.Workflows.parse/2`: `path: Path.join(mount.rel_root, ...)`) for an
+ * EMBEDDED mount, or an ABSOLUTE physical path (e.g.
+ * `"/Users/dana/Client Docs/Workflows/New Inquiry Triage.md"`) for an
+ * EXTERNAL (by-reference) one, A2-T5b.
  *
  * A-T15: since the mounts refactor (A-T3), `Valea.ICM.tree/0`'s node
- * `path`s are ALSO workspace-relative (`mounts/<name>/…` — see
- * `Valea.ICM.prefix_tree/2`), so the Knowledge route's own paths are now
- * exactly this same `mounts/<name>/…` shape with NO prefix to strip —
- * confirmed against `icmToNav`'s `/knowledge/${encodePath(n.path)}` in
- * `lib/shell/nav.ts`, which encodes a `MountGroup` tree node's `path`
- * verbatim. (Before the mounts refactor this function stripped a leading
- * `"icm/"`; that prefix no longer exists on either side.)
+ * `path`s carry the SAME two shapes (`mounts/<name>/…` for embedded,
+ * absolute for external — see `Valea.ICM.prefix_tree/2`), so the Knowledge
+ * route's own paths are exactly this — with NO prefix to strip — and this
+ * reuses `icmToNav`'s own `encodePath` (`lib/shell/nav.ts`) so the two stay
+ * byte-for-byte the same encoding for the same path, rather than
+ * maintaining a second copy that could drift. (Before the mounts refactor
+ * this function stripped a leading `"icm/"`; that prefix no longer exists
+ * on either side.)
  *
- * Falls back to `null` for a path that (defensively) doesn't start with
- * `"mounts/"` so a malformed or pre-mounts-shaped entry never produces a
- * broken half-built link.
+ * Falls back to `null` for a path that (defensively) is neither
+ * workspace-relative (`"mounts/"`-prefixed) nor absolute (`"/"`-prefixed)
+ * so a malformed or pre-mounts-shaped entry (e.g. the legacy `"icm/"`
+ * prefix) never produces a broken half-built link.
  */
 export function workflowEditHref(path: string): string | null {
-  if (!path.startsWith('mounts/')) return null;
-  return `/knowledge/${path.split('/').map(encodeURIComponent).join('/')}`;
+  if (!path.startsWith('mounts/') && !path.startsWith('/')) return null;
+  return `/knowledge/${encodePath(path)}`;
 }
 
 /**
