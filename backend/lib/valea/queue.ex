@@ -285,9 +285,13 @@ defmodule Valea.Queue do
        `archive_source` mailbox-op intent (same seed rule as approve —
        `"skipped"` for a seed-source or missing/unreadable source message,
        else `"pending"`; a `memory_update` item carries no `mailbox_ops` at
-       all, since the edit was never applied);
+       all, since the edit was never applied); when a non-blank `reason`
+       was given, the envelope also gains `"decision" => %{"reason" =>
+       reason}` (see `normalize_reason/1` — trimmed, capped at 500 chars,
+       and blank collapses to no reason at all, same as omitting it);
     4. `File.rename!` `processing/` -> `rejected/`;
-    5. audit `item_rejected`, broadcast `{:mailbox_ops_pending, run_id}` on
+    5. audit `item_rejected` (with `"reason"` present only alongside a
+       normalized reason), broadcast `{:mailbox_ops_pending, run_id}` on
        `"mail_ops"` (the consumer no-ops when the sole op is skipped).
 
   Rejecting a `memory_update` item never touches the target mount page —
@@ -296,22 +300,46 @@ defmodule Valea.Queue do
 
   A crash before step 4 leaves the item in `processing/` with no draft;
   `recover/1` hands it back to `pending/` for the human to re-decide.
+
+  `reason` is optional (defaults to `nil`, preserving the `reject/2` call
+  shape every existing caller uses) and free text from the human — never
+  trusted as anything but display copy.
   """
-  @spec reject(String.t(), revision()) ::
+  @spec reject(String.t(), revision(), String.t() | nil) ::
           {:ok, %{}}
           | {:error, :queue_item_gone | :queue_item_changed | :queue_item_invalid}
-  def reject(run_id, revision) do
+  def reject(run_id, revision, reason \\ nil) do
     with {:ok, workspace} <- resolve(run_id),
          {:ok, bytes} <- read_pending(workspace, run_id),
          :ok <- check_revision(bytes, revision),
          {:ok, item} <- decode_for_execute(bytes),
          :ok <- claim(workspace, run_id) do
-      complete_rejection(workspace, run_id, item)
-      audit("item_rejected", %{"run_id" => run_id})
+      normalized_reason = normalize_reason(reason)
+      complete_rejection(workspace, run_id, item, normalized_reason)
+      audit("item_rejected", reject_audit(run_id, normalized_reason))
       broadcast_ops(run_id)
       {:ok, %{}}
     end
   end
+
+  # Trims, blank-collapses-to-nil, and caps at 500 chars — the human-authored
+  # rejection reason is free text destined for both the decided envelope and
+  # the audit log, never trusted beyond that. A non-binary reason (should be
+  # unreachable given the @spec, but this is a public function) is treated
+  # the same as no reason rather than raising.
+  defp normalize_reason(nil), do: nil
+
+  defp normalize_reason(reason) when is_binary(reason) do
+    case reason |> String.trim() |> String.slice(0, 500) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_reason(_reason), do: nil
+
+  defp reject_audit(run_id, nil), do: %{"run_id" => run_id}
+  defp reject_audit(run_id, reason), do: %{"run_id" => run_id, "reason" => reason}
 
   @doc """
   Crash recovery: for every file still sitting in `queue/processing/`
@@ -371,9 +399,12 @@ defmodule Valea.Queue do
   Decided items — everything in `approved/` and `rejected/` — newest first
   (run ids are lexically sortable timestamps). Each entry carries `run_id`,
   `decided` (`"approved"` | `"rejected"`), `title`, `kind`, the raw
-  `mailbox_ops` map (or `nil`), and `created_at`. Files that are unreadable or
-  no longer valid JSON are skipped (decided envelopes are written by this
-  module's own atomic writes, so this is defensive only).
+  `mailbox_ops` map (or `nil`), `created_at`, the raw `decision` map (or
+  `nil` — only a rejection with a non-blank reason carries `%{"reason" =>
+  ...}`; see `reject/3`), and `decided_at` (the v2-upgrade stamp). Files
+  that are unreadable or no longer valid JSON are skipped (decided
+  envelopes are written by this module's own atomic writes, so this is
+  defensive only).
   """
   @spec list_decided() :: {:ok, [map()]} | {:error, :no_workspace}
   def list_decided do
@@ -663,18 +694,30 @@ defmodule Valea.Queue do
     File.rename!(processing_path(workspace, run_id), approved_path(workspace, run_id))
   end
 
-  # reject/2 steps 3-4: same upgrade-then-rename shape as complete_approval,
+  # reject/3 steps 3-4: same upgrade-then-rename shape as complete_approval,
   # but with only the archive_source intent and rejected/ as the terminal
-  # directory. Operates on the ALREADY-CLAIMED processing file (single
-  # writer). A crash before the final rename leaves the item in processing/
-  # with no draft — recover_one/2 hands it back to pending/.
-  defp complete_rejection(workspace, run_id, item) do
-    item2 = upgrade_envelope(workspace, item, ["archive_source"])
+  # directory, plus an optional "decision" stamp when a normalized (already
+  # trimmed/blank-collapsed) reason was given. Operates on the
+  # ALREADY-CLAIMED processing file (single writer). A crash before the
+  # final rename leaves the item in processing/ with no draft —
+  # recover_one/2 hands it back to pending/.
+  defp complete_rejection(workspace, run_id, item, reason) do
+    item2 =
+      workspace
+      |> upgrade_envelope(item, ["archive_source"])
+      |> maybe_put_decision(reason)
+
     atomic_write!(processing_path(workspace, run_id), Jason.encode!(item2))
 
     File.mkdir_p!(rejected_dir(workspace))
     File.rename!(processing_path(workspace, run_id), rejected_path(workspace, run_id))
   end
+
+  # `nil` (no reason, or a blank one already collapsed by normalize_reason/1)
+  # leaves the envelope untouched — an approved item and a reason-less
+  # rejection both carry no "decision" key at all, not a null/empty one.
+  defp maybe_put_decision(item, nil), do: item
+  defp maybe_put_decision(item, reason), do: Map.put(item, "decision", %{"reason" => reason})
 
   # v1/v2 -> v2: bump schema, stamp the ISO-8601 decided_at (both verbs, every
   # kind — the reflection digest's fixed 30-day window keys off this), and,
@@ -920,7 +963,9 @@ defmodule Valea.Queue do
           title: item["payload"]["title"],
           kind: item["payload"]["kind"],
           mailbox_ops: item["mailbox_ops"],
-          created_at: item["created_at"]
+          created_at: item["created_at"],
+          decision: item["decision"],
+          decided_at: item["decided_at"]
         }
       ]
     else

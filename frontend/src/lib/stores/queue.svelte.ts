@@ -66,10 +66,19 @@ export class QueueStore {
     return { ok: true };
   }
 
-  /** Rejects a pending item. Same generation-sourcing and refetch-on-success as `approve`. */
-  async reject(runId: string, revision: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  /**
+   * Rejects a pending item. Same generation-sourcing and refetch-on-success
+   * as `approve`. `reason` is optional free text from the human explaining
+   * the rejection — passed straight through to `api.rejectQueueItem`, which
+   * normalizes/trims it server-side (see `Valea.Queue.reject/3`).
+   */
+  async reject(
+    runId: string,
+    revision: string,
+    reason?: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
     const generation = workspaceStore.generation ?? 0;
-    const result = await this.#api.rejectQueueItem(runId, revision, generation);
+    const result = await this.#api.rejectQueueItem(runId, revision, generation, reason);
     if (!result.ok) return { ok: false, error: result.error };
 
     await this.refetch();

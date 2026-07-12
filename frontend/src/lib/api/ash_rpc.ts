@@ -2701,6 +2701,7 @@ export type RejectQueueItemInput = {
   runId: string;
   revision: string;
   generation: number;
+  reason?: string | null;
 };
 
 export type RejectQueueItemFields = UnifiedFieldSelection<{rejected: boolean, __type: "TypedMap", __primitiveFields: "rejected"}>[];

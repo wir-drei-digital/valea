@@ -102,12 +102,20 @@ defmodule Valea.Api.Queue do
       argument :run_id, :string, allow_nil?: false
       argument :revision, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
+      # Optional free-text rejection reason (B6). `allow_nil?: true` +
+      # `default: nil` mirrors `Valea.Api.ICM.save_page`'s `generation`
+      # argument: ash_typescript only puts keys the caller actually sent
+      # into `input.arguments`, so an omitted `reason` is ABSENT, not
+      # `nil`, despite the default — `Map.get/2` (not a destructure) reads
+      # it either way.
+      argument :reason, :string, allow_nil?: true, default: nil
 
       run fn input, _ctx ->
         %{run_id: run_id, revision: revision, generation: generation} = input.arguments
+        reason = Map.get(input.arguments, :reason)
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{}} <- Valea.Queue.reject(run_id, revision) do
+             {:ok, %{}} <- Valea.Queue.reject(run_id, revision, reason) do
           # STRING key — see `Valea.Api.Agents.harness_doctor`'s note: a
           # top-level generic-action `:map` boolean field goes through
           # ash_typescript's untyped-map extraction fallback, which nulls out

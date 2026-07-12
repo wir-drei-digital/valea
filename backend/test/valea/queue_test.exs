@@ -858,6 +858,75 @@ defmodule Valea.QueueTest do
     end
   end
 
+  ## reject/3 rejection reasons (B6)
+
+  describe "reject/3 rejection reasons" do
+    test "reject/3 persists a trimmed reason in envelope and audit", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+
+      base =
+        :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
+
+      pending_memory!(ws, "rr1", target, base, "x")
+      {:ok, %{revision: rev}} = Valea.Queue.get("rr1")
+
+      assert {:ok, %{}} = Valea.Queue.reject("rr1", rev, "  too pushy  ")
+
+      rejected = Path.join(ws, "queue/rejected/rr1.json") |> File.read!() |> Jason.decode!()
+      assert rejected["decision"] == %{"reason" => "too pushy"}
+
+      {:ok, entries} = Valea.Audit.entries(10)
+      assert Enum.any?(entries, &(&1["type"] == "item_rejected" and &1["reason"] == "too pushy"))
+
+      {:ok, decided} = Valea.Queue.list_decided()
+      entry = Enum.find(decided, &(&1.run_id == "rr1"))
+      assert entry.decision == %{"reason" => "too pushy"}
+      assert entry.decided_at
+    end
+
+    test "reject/2 (no reason) leaves no decision key", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+
+      base =
+        :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
+
+      pending_memory!(ws, "rr2", target, base, "x")
+      {:ok, %{revision: rev}} = Valea.Queue.get("rr2")
+
+      assert {:ok, %{}} = Valea.Queue.reject("rr2", rev)
+
+      rejected = Path.join(ws, "queue/rejected/rr2.json") |> File.read!() |> Jason.decode!()
+      refute Map.has_key?(rejected, "decision")
+
+      {:ok, entries} = Valea.Audit.entries(10)
+
+      entry =
+        Enum.find(entries, &(&1["type"] == "item_rejected" and &1["run_id"] == "rr2"))
+
+      refute Map.has_key?(entry, "reason")
+
+      {:ok, decided} = Valea.Queue.list_decided()
+      entry2 = Enum.find(decided, &(&1.run_id == "rr2"))
+      assert entry2.decision == nil
+      assert entry2.decided_at
+    end
+
+    test "a blank/whitespace-only reason is treated the same as no reason", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+
+      base =
+        :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
+
+      pending_memory!(ws, "rr3", target, base, "x")
+      {:ok, %{revision: rev}} = Valea.Queue.get("rr3")
+
+      assert {:ok, %{}} = Valea.Queue.reject("rr3", rev, "   ")
+
+      rejected = Path.join(ws, "queue/rejected/rr3.json") |> File.read!() |> Jason.decode!()
+      refute Map.has_key?(rejected, "decision")
+    end
+  end
+
   ## recover/1 for memory items (B5) — decided by content hash, not a draft file
 
   describe "recover/1 for memory items" do

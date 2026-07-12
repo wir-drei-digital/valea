@@ -269,6 +269,61 @@ defmodule ValeaWeb.QueueRpcTest do
       assert inspect(errors) =~ "workspace_changed"
       assert File.exists?(Path.join([workspace, "queue", "pending", id <> ".json"]))
     end
+
+    test "a reason is trimmed and lands in the rejected envelope's decision", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      id = run_id("777777")
+      write_pending(workspace, id)
+
+      assert %{"success" => true, "data" => %{"revision" => revision}} =
+               rpc("get_queue_item", %{"runId" => id}, ["item", "revision"])
+
+      assert %{"success" => true, "data" => %{"rejected" => true}} =
+               rpc(
+                 "reject_queue_item",
+                 %{
+                   "runId" => id,
+                   "revision" => revision,
+                   "generation" => generation,
+                   "reason" => "  not a fit  "
+                 },
+                 ["rejected"]
+               )
+
+      rejected =
+        Path.join([workspace, "queue", "rejected", id <> ".json"])
+        |> File.read!()
+        |> Jason.decode!()
+
+      assert rejected["decision"] == %{"reason" => "not a fit"}
+    end
+
+    test "an omitted reason leaves no decision key on the rejected envelope", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      id = run_id("888888")
+      write_pending(workspace, id)
+
+      assert %{"success" => true, "data" => %{"revision" => revision}} =
+               rpc("get_queue_item", %{"runId" => id}, ["item", "revision"])
+
+      assert %{"success" => true, "data" => %{"rejected" => true}} =
+               rpc(
+                 "reject_queue_item",
+                 %{"runId" => id, "revision" => revision, "generation" => generation},
+                 ["rejected"]
+               )
+
+      rejected =
+        Path.join([workspace, "queue", "rejected", id <> ".json"])
+        |> File.read!()
+        |> Jason.decode!()
+
+      refute Map.has_key?(rejected, "decision")
+    end
   end
 
   describe "list_decided_items" do

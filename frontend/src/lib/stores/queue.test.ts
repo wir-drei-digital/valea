@@ -13,7 +13,12 @@ function fakeApi(overrides: {
   listQueueItems?: () => Promise<ListResult>;
   getQueueItem?: (runId: string) => Promise<DetailResult>;
   approveQueueItem?: (runId: string, revision: string, generation: number) => Promise<ApproveResult>;
-  rejectQueueItem?: (runId: string, revision: string, generation: number) => Promise<RejectResult>;
+  rejectQueueItem?: (
+    runId: string,
+    revision: string,
+    generation: number,
+    reason?: string
+  ) => Promise<RejectResult>;
 }) {
   return {
     listQueueItems: overrides.listQueueItems ?? (async () => ({ ok: true, data: { items: [] } }) as ListResult),
@@ -106,8 +111,20 @@ describe('QueueStore.approve / reject', () => {
 
     const result = await store.reject('run2', 'rev2');
 
-    expect(rejectQueueItem).toHaveBeenCalledWith('run2', 'rev2', 12);
+    expect(rejectQueueItem).toHaveBeenCalledWith('run2', 'rev2', 12, undefined);
     expect(listQueueItems).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('reject passes an optional reason straight through to the api', async () => {
+    workspaceStore.generation = 12;
+    const rejectQueueItem = vi.fn(async () => ({ ok: true, data: { rejected: true } }) as RejectResult);
+    const listQueueItems = vi.fn(async () => ({ ok: true, data: { items: [] } }) as ListResult);
+    const store = new QueueStore(fakeApi({ rejectQueueItem, listQueueItems }) as never);
+
+    const result = await store.reject('run2', 'rev2', 'too pushy');
+
+    expect(rejectQueueItem).toHaveBeenCalledWith('run2', 'rev2', 12, 'too pushy');
     expect(result).toEqual({ ok: true });
   });
 

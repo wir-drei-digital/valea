@@ -477,7 +477,7 @@ function callApproveQueueItemChannel(
 
 function callRejectQueueItemChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { runId: string; revision: string; generation: number }
+  input: { runId: string; revision: string; generation: number; reason?: string | null }
 ) {
   return wrapChannelCall((handlers) =>
     rejectQueueItemChannel({ channel, input, fields: rejectQueueItemFields, ...handlers })
@@ -945,12 +945,16 @@ export const api = {
         )
     ),
 
-  rejectQueueItem: (runId: string, revision: string, generation: number) =>
+  rejectQueueItem: (runId: string, revision: string, generation: number, reason?: string | null) =>
     runRpc(
-      (channel) => callRejectQueueItemChannel(channel, { runId, revision, generation }),
+      (channel) =>
+        callRejectQueueItemChannel(channel, { runId, revision, generation, reason: reason ?? null }),
       () =>
         httpRejectQueueItem(
-          withAuth({ input: { runId, revision, generation }, fields: rejectQueueItemFields })
+          withAuth({
+            input: { runId, revision, generation, reason: reason ?? null },
+            fields: rejectQueueItemFields
+          })
         )
     ),
 
