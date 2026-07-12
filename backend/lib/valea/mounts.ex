@@ -337,7 +337,13 @@ defmodule Valea.Mounts do
     end
   end
 
-  defp read_config_mounts(workspace) do
+  @doc false
+  # Internal-public for `Valea.Mounts.External` (BY-REFERENCE mounts): reads
+  # the same `mounts:` section this module's own discovery reads, keyed by
+  # config name, string keys/values as parsed by YamlElixir. Not part of the
+  # public contract — do not call from outside the `Valea.Mounts` namespace.
+  @spec read_config_mounts(workspace :: String.t()) :: map()
+  def read_config_mounts(workspace) do
     case read_workspace_config(workspace) do
       {:ok, doc} -> normalize_mounts(Map.get(doc, "mounts"))
     end
