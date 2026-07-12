@@ -352,6 +352,30 @@ defmodule Valea.Mounts.ExternalTest do
 
       assert Valea.Mounts.enabled(ws) == []
     end
+
+    test "a ref with parentheses in its resolved path is degraded and excluded from enabled/1" do
+      ws = tmp_dir!("valea-ext-ws")
+      parent = tmp_dir!("valea-ext-parent")
+      parens = Path.join(parent, "Projects (2024)")
+      write_manifest!(parens, %{id: "id", name: "Parens Project", description: ""})
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        project:
+          kind: path
+          ref: "#{parens}"
+      """)
+
+      assert [mount] = External.declared(ws)
+      assert mount.name == "project"
+      assert mount.manifest == nil
+      assert mount.degraded =~ "glob"
+      # config preserved
+      assert mount.root == real!(parens)
+      assert mount.enabled == true
+
+      assert Valea.Mounts.enabled(ws) == []
+    end
   end
 
   # $HOME cannot be faked at runtime (see the ~-expansion note below), and
@@ -548,6 +572,14 @@ defmodule Valea.Mounts.ExternalTest do
       parent = tmp_dir!("valea-ext-parent")
       weird = Path.join(parent, "v*1")
       write_manifest!(weird, %{id: "id", name: "Star", description: ""})
+
+      assert {:error, :unsafe_path} = External.validate_ref(ws, weird)
+    end
+
+    test "rejects a ref whose path contains parentheses", %{ws: ws} do
+      parent = tmp_dir!("valea-ext-parent")
+      weird = Path.join(parent, "Projects (2024)")
+      write_manifest!(weird, %{id: "id", name: "Parens", description: ""})
 
       assert {:error, :unsafe_path} = External.validate_ref(ws, weird)
     end

@@ -32,7 +32,7 @@ defmodule Valea.Mounts.External do
 
   The boundary checks (`check_boundaries/2`) AND the glob-safety check
   (`check_glob_safety/1` — the resolved path must not contain a Claude Code
-  permission-glob metacharacter: `* ? [ ] { }`; see `Valea.Agents.
+  permission-glob metacharacter: `* ? [ ] { } ( )`; see `Valea.Agents.
   ClaudeSettings` for why) run in `validate_ref/2` (the future
   `declare_mount` RPC's pre-write gate, which rejects a candidate outright)
   AND in `declared/1`'s read path: a hand-edited config can put ANY ref on
@@ -81,7 +81,7 @@ defmodule Valea.Mounts.External do
   preserved, never part of an effective set) — a hand-edited config must
   not be able to mint a clean mount that containment would later trust.
   Likewise a ref whose resolved path contains a Claude Code permission-glob
-  metacharacter (`* ? [ ] { }`) degrades rather than minting a mount whose
+  metacharacter (`* ? [ ] { } ( )`) degrades rather than minting a mount whose
   `Read(<root>/**)` allow entry would carry different match semantics than
   intended.
   """
@@ -108,7 +108,7 @@ defmodule Valea.Mounts.External do
   the ref — mounting an ancestor would recursively include the workspace
   itself), `:home_or_root` (ref resolves to `$HOME` or `/`), `:unsafe_path`
   (the resolved ref contains a Claude Code permission-glob metacharacter —
-  `*`, `?`, `[`, `]`, `{`, `}` — which would change the match semantics of
+  `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)` — which would change the match semantics of
   the `Read(<root>/**)` allow entry `Valea.Agents.ClaudeSettings` later
   splices it into), `:not_found` (no folder there — including a ref that
   resolves to a FILE, not a folder: the spec only ever speaks of folders),
@@ -162,7 +162,7 @@ defmodule Valea.Mounts.External do
     if File.dir?(resolved), do: :ok, else: {:error, :not_found}
   end
 
-  @glob_metacharacters ["*", "?", "[", "]", "{", "}"]
+  @glob_metacharacters ["*", "?", "[", "]", "{", "}", "(", ")"]
 
   # Claude Code's permission globs (`Read(<root>/**)`, spliced in by
   # `Valea.Agents.ClaudeSettings`) are matched by ITS OWN glob engine, not
@@ -171,9 +171,12 @@ defmodule Valea.Mounts.External do
   # semantics — e.g. a folder literally named `v*1` yields
   # `Read(/.../v*1/**)`, where `*` is no longer a literal character but a
   # wildcard, potentially widening what Claude Code auto-allows before the
-  # ACP permission callback ever fires. Checked on the RESOLVED path (post
-  # `~`-expansion, post symlink-walk) — the same value that becomes the
-  # allow glob's prefix.
+  # ACP permission callback ever fires. Parens are also unsafe: `)` is the
+  # rule delimiter in permission syntax, so a path like `/Users/x/Projects
+  # (2024)` would yield `Read(/Users/x/Projects (2024)/**)`, where the `)`
+  # closes the rule prematurely, producing a silently-dead allow entry.
+  # Checked on the RESOLVED path (post `~`-expansion, post symlink-walk) —
+  # the same value that becomes the allow glob's prefix.
   defp check_glob_safety(resolved) do
     if String.contains?(resolved, @glob_metacharacters) do
       {:error, :unsafe_path}
@@ -254,7 +257,7 @@ defmodule Valea.Mounts.External do
                   name,
                   resolved,
                   enabled,
-                  "path contains characters unsafe for permission globs"
+                  "path contains characters unsafe for permission globs: *, ?, [, ], {, }, (, )"
                 )
             end
 
