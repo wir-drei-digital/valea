@@ -101,4 +101,53 @@ defmodule Valea.Workflows.DistillTest do
     assert md =~ "### Injected title with control chars"
     assert md =~ "- reason: line one Embedded: fake-header line two"
   end
+
+  test "survives malformed payload (non-map) and renders with empty title via sanitize fallback",
+       %{
+         workspace: ws
+       } do
+    now = DateTime.utc_now()
+    recent = now |> DateTime.add(-1, :day) |> DateTime.to_iso8601()
+
+    # Corrupt envelope with payload as string instead of map
+    decided!(ws, "approved", "d6-corrupt", recent, %{
+      "payload" => "corrupt-string"
+    })
+
+    # Valid envelope as control
+    decided!(ws, "approved", "d7-valid", recent)
+
+    # Should not raise; should include both items
+    {2, md} = Distill.digest(ws)
+    assert md =~ "T-d7-valid"
+    refute String.contains?(md, "corrupt-string")
+  end
+
+  test "survives malformed decision (non-map) without raising", %{workspace: ws} do
+    now = DateTime.utc_now()
+    recent = now |> DateTime.add(-1, :day) |> DateTime.to_iso8601()
+
+    # Rejected envelope with decision as string instead of map
+    decided!(ws, "rejected", "d8-bad-decision", recent, %{
+      "decision" => "not-a-map"
+    })
+
+    # Should not raise
+    {1, md} = Distill.digest(ws)
+    assert md =~ "T-d8-bad-decision"
+    refute md =~ "- reason:"
+  end
+
+  test "excludes approved envelope with future decided_at (upper bound)", %{workspace: ws} do
+    now = DateTime.utc_now()
+    recent = now |> DateTime.add(-1, :day) |> DateTime.to_iso8601()
+    future = now |> DateTime.add(2, :day) |> DateTime.to_iso8601()
+
+    decided!(ws, "approved", "d9-recent", recent)
+    decided!(ws, "approved", "d10-future", future)
+
+    {1, md} = Distill.digest(ws)
+    assert md =~ "T-d9-recent"
+    refute md =~ "T-d10-future"
+  end
 end

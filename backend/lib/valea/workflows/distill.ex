@@ -25,7 +25,8 @@ defmodule Valea.Workflows.Distill do
   """
   @spec digest(String.t()) :: {non_neg_integer(), String.t()}
   def digest(workspace) do
-    cutoff = DateTime.add(DateTime.utc_now(), -@window_days, :day)
+    now = DateTime.utc_now()
+    cutoff = DateTime.add(now, -@window_days, :day)
 
     items =
       for dir <- ["approved", "rejected"],
@@ -34,7 +35,8 @@ defmodule Valea.Workflows.Distill do
           {:ok, %{} = item} <- [Jason.decode(bytes)],
           decided_at = parse_ts(item["decided_at"]),
           decided_at != nil,
-          DateTime.compare(decided_at, cutoff) == :gt do
+          DateTime.compare(decided_at, cutoff) == :gt,
+          DateTime.compare(decided_at, now) != :gt do
         {decided_at, dir, item}
       end
       |> Enum.sort_by(fn {ts, _, _} -> ts end, {:desc, DateTime})
@@ -54,20 +56,31 @@ defmodule Valea.Workflows.Distill do
 
   defp entry({ts, dir, item}) do
     decided = if dir == "approved", do: "approved", else: "rejected"
-    reason = get_in(item, ["decision", "reason"])
+
+    payload =
+      if is_map(item["payload"]) do
+        item["payload"]
+      else
+        %{}
+      end
+
+    reason =
+      case item["decision"] do
+        %{"reason" => r} -> r
+        _ -> nil
+      end
 
     [
-      "### #{sanitize(item["payload"]["title"] || item["run_id"])}",
-      "- kind: #{sanitize(item["payload"]["kind"])}",
+      "### #{sanitize(payload["title"] || item["run_id"])}",
+      "- kind: #{sanitize(payload["kind"])}",
       "- workflow: #{sanitize(item["workflow"])}",
       "- decided: #{decided} on #{ts |> DateTime.to_date() |> Date.to_iso8601()}"
     ] ++
       if(reason, do: ["- reason: #{sanitize(reason)}"], else: []) ++ [""]
   end
 
-  # Titles/reasons are user/agent text landing in an agent prompt file —
-  # collapse control chars and neutralize line-leading structure the same
-  # way MOUNTS.md generation does (`Valea.Mounts.MountsMd.sanitize/1`).
+  # Collapse control chars so no value can span lines — every value here
+  # renders mid-line after a literal prefix, so line-start escaping is unnecessary.
   defp sanitize(nil), do: ""
 
   defp sanitize(s) when is_binary(s) do
