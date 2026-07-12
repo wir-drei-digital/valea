@@ -66,12 +66,14 @@ defmodule Valea.Workflows do
   `Valea.Mail.Doctor` both use in place of the old hardcoded
   `icm/Workflows/New Inquiry Triage.md` (Task A-T13).
 
-  Picks the FIRST match in `list/0`'s own sort order (by `path`, which
-  sorts by owning mount name first since every path is prefixed
-  `mounts/<name>/...` — i.e. the first enabled mount, alphabetically, that
-  has a `Workflows/New Inquiry Triage.md`). A mount earlier in that order
-  without the file is skipped, not a dead end — see `triage_path/1`'s
-  sibling doc.
+  Picks the FIRST match in `list/0`'s own sort order (by `path`). Since
+  A2-T5b an EXTERNAL mount's `path` is the ABSOLUTE physical path while an
+  EMBEDDED mount's is still workspace-relative `mounts/<name>/...`, and
+  `"/"` sorts before `"m"` byte-wise — so EVERY external mount's workflow
+  sorts before EVERY embedded one, regardless of mount name; only within
+  each of those two groups does the sort fall back to alphabetical (by
+  mount root, then filename). A mount earlier in that order without the
+  file is skipped, not a dead end — see `triage_path/1`'s sibling doc.
   """
   @spec triage_path() :: String.t() | nil
   def triage_path do

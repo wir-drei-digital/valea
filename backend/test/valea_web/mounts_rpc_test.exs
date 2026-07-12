@@ -639,7 +639,11 @@ defmodule ValeaWeb.MountsRpcTest do
                rpc("mounts_doctor", %{"generation" => generation}, ["ok", "checks"])
 
       assert ok == false
-      assert Enum.any?(checks, &(&1["id"] == "ref_resolves:outside" and &1["status"] == "failed"))
+
+      assert Enum.any?(
+               checks,
+               &(&1["id"] == "ref_resolves:external:outside" and &1["status"] == "failed")
+             )
     end
 
     test "a stale generation surfaces workspace_changed", %{generation: generation} do

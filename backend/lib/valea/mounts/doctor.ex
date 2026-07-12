@@ -6,8 +6,16 @@ defmodule Valea.Mounts.Doctor do
   each with a status and a copyable remedy — but this one runs over a
   VARIABLE number of subjects (every mount `Valea.Mounts.list/1` discovers,
   embedded ∪ external, enabled + disabled + degraded) rather than a fixed
-  pipeline, so each check's `"id"` is `"<check>:<mount name>"` to stay
-  unique across the flat `checks:` list.
+  pipeline, so each check's `"id"` is `"<check>:<mount name>"` for an
+  EMBEDDED mount, or `"<check>:external:<mount name>"` for an EXTERNAL one
+  — the kind qualifier keeps every external check id disjoint from an
+  embedded one even in the one state where the same `<check>` name and the
+  same mount `name` can otherwise coincide: an embedded/external name
+  collision (see `manifest_ok_check/1`'s own doc) degrades BOTH entries,
+  each surfacing its OWN `manifest_ok` check — without the qualifier
+  they'd share the literal id `"manifest_ok:<name>"`, which is exactly the
+  duplicate Svelte 5's keyed `{#each}` cannot tolerate (`each_key_duplicate`
+  in dev). See `check_id/2`.
 
   Checks, per mount kind:
 
@@ -107,6 +115,17 @@ defmodule Valea.Mounts.Doctor do
   defp mount_checks(%{rel_root: nil} = mount), do: external_checks(mount)
   defp mount_checks(%{rel_root: rel} = mount) when is_binary(rel), do: [manifest_ok_check(mount)]
 
+  # Kind-qualified check id: `"<check>:<mount name>"` for an embedded mount
+  # (bare — the historical, still-unique-on-its-own form), or
+  # `"<check>:external:<mount name>"` for an external one. Applied to EVERY
+  # external check (not just `manifest_ok`, the one that can actually
+  # collide with an embedded mount's) so the id scheme is uniform — a
+  # reader can tell a check's mount kind from its id alone, and no future
+  # embedded-only check name can accidentally collide with an external one
+  # either.
+  defp check_id(%{rel_root: nil, name: name}, check_name), do: "#{check_name}:external:#{name}"
+  defp check_id(%{name: name}, check_name), do: "#{check_name}:#{name}"
+
   # -- embedded + external shared: manifest_ok --------------------------------
 
   # Ok iff the mount is not degraded at all — `degraded == nil` implies a
@@ -116,9 +135,13 @@ defmodule Valea.Mounts.Doctor do
   # directory basename, a name collision) surfaces here — for an embedded
   # mount this is the ONLY check, so every degrade reason has to land
   # somewhere; for an external mount this only runs once `ref_resolves` has
-  # already confirmed the reason isn't ref/path-level.
+  # already confirmed the reason isn't ref/path-level. An embedded/external
+  # NAME COLLISION degrades BOTH mount entries (see `Valea.Mounts`'s
+  # `degrade_name_collisions/1`), so this same function is called once per
+  # side with the SAME `mount.name` — `check_id/2`'s kind qualifier is what
+  # keeps their two `manifest_ok` checks from colliding on id.
   defp manifest_ok_check(mount) do
-    id = "manifest_ok:#{mount.name}"
+    id = check_id(mount, "manifest_ok")
     label = "#{mount.name}: manifest"
 
     case mount.degraded do
@@ -140,19 +163,19 @@ defmodule Valea.Mounts.Doctor do
     else
       [
         ref_resolves_check(mount),
-        unknown("manifest_ok:#{mount.name}", "#{mount.name}: manifest", @ref_gate_detail),
+        unknown(check_id(mount, "manifest_ok"), "#{mount.name}: manifest", @ref_gate_detail),
         unknown(
-          "secrets_hygiene:#{mount.name}",
+          check_id(mount, "secrets_hygiene"),
           "#{mount.name}: secrets hygiene",
           @ref_gate_detail
         ),
-        unknown("watcher_live:#{mount.name}", "#{mount.name}: watcher live", @ref_gate_detail)
+        unknown(check_id(mount, "watcher_live"), "#{mount.name}: watcher live", @ref_gate_detail)
       ]
     end
   end
 
   defp ref_resolves_check(mount) do
-    id = "ref_resolves:#{mount.name}"
+    id = check_id(mount, "ref_resolves")
     label = "#{mount.name}: reference resolves"
 
     if ref_resolves_ok?(mount) do
@@ -195,7 +218,7 @@ defmodule Valea.Mounts.Doctor do
   # -- external: secrets_hygiene ----------------------------------------------
 
   defp secrets_hygiene_check(mount) do
-    id = "secrets_hygiene:#{mount.name}"
+    id = check_id(mount, "secrets_hygiene")
     label = "#{mount.name}: secrets hygiene"
 
     case secret_entries(mount.root) do
@@ -232,7 +255,7 @@ defmodule Valea.Mounts.Doctor do
   # -- external: watcher_live --------------------------------------------------
 
   defp watcher_live_check(mount) do
-    id = "watcher_live:#{mount.name}"
+    id = check_id(mount, "watcher_live")
     label = "#{mount.name}: watcher live"
 
     cond do

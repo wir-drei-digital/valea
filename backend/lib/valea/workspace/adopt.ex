@@ -202,13 +202,19 @@ defmodule Valea.Workspace.Adopt do
     end
   end
 
-  # Compare filesystem identity using inode (device-independent uniqueness check).
-  # File.stat/2 follows symlinks, so both paths resolve to the same inode if they
-  # point to the same filesystem object (catches case-insensitive matches & symlinks).
+  # Compare filesystem identity using (major_device, inode) — the POSIX
+  # (st_dev, st_ino) pair, the actual uniqueness guarantee: an inode number
+  # is only guaranteed unique WITHIN one device/filesystem, so inode alone
+  # can false-positive across two different devices (e.g. the workspace
+  # parent and an external mount's source living on different volumes)
+  # happening to reuse the same inode number for two unrelated files.
+  # File.stat/2 follows symlinks, so both paths resolve to the same
+  # (major_device, inode) if they point to the same filesystem object
+  # (catches case-insensitive matches & symlinks).
   defp identity_identical?(path1, path2) do
     with {:ok, stat1} <- File.stat(path1, time: :posix),
          {:ok, stat2} <- File.stat(path2, time: :posix) do
-      stat1.inode == stat2.inode
+      stat1.inode == stat2.inode and stat1.major_device == stat2.major_device
     else
       # If either path doesn't exist or stat fails, they can't be identical
       _ -> false

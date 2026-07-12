@@ -10,10 +10,14 @@ defmodule Valea.ICM do
   ATTRIBUTES a workspace-relative path (`mounts/<name>/…`) to the mount
   that owns it — per its own docs, that's attribution, not authorization.
   Every function here re-expands the path against THAT mount's own root
-  (via the unchanged `contain/2`) after attribution, so `..` (or a `~`) can
-  never escape — including a `..` that tries to cross from one mount into
-  another (attribution still names the first mount; containment then
-  rejects the escaped path because it falls outside that mount's root).
+  (via `contain/2`) after attribution, so `..` (or a `~`) can never escape
+  — including a `..` that tries to cross from one mount into another
+  (attribution still names the first mount; containment then rejects the
+  escaped path because it falls outside that mount's root). `contain/2`
+  checks BOTH lexically (the `..`-collapsed path stays a string-prefix of
+  the mount root) AND physically (`Valea.Paths.resolve_real/2` against the
+  mount root, so a symlink planted inside the mount can't smuggle editor
+  authority to whatever it points at outside — see `contain/2`'s own doc).
 
   Every public function takes/returns a full workspace-relative path
   (`mounts/<name>/…`). Internally, the `mounts/<name>` prefix is stripped
@@ -49,6 +53,7 @@ defmodule Valea.ICM do
   alias Valea.ICM.References
   alias Valea.Markdown.ProseMirror
   alias Valea.Mounts
+  alias Valea.Paths
 
   def uri(rel_path), do: "icm://" <> rel_path
 
@@ -257,11 +262,41 @@ defmodule Valea.ICM do
 
   defp to_workspace_rel(mount, mount_rel_path), do: Path.join(mount.rel_root, mount_rel_path)
 
+  # Containment has two layers, both required:
+  #
+  #   1. LEXICAL — `abs` (the `..`-collapsed expansion of `rel_path` against
+  #      `root`) must fall under `root` as a string. This alone is what this
+  #      function did before symlink-hardening; it still runs first as a
+  #      cheap reject for the common case (and the mount-root sentinel: an
+  #      empty `rel_path` expands to `root` itself, which never starts with
+  #      `root <> "/"`, so `contain(root, "")` stays rejected exactly as it
+  #      always has — binding semantic 7 above).
+  #   2. REAL — a path that is lexically inside `root` can still walk OUT via
+  #      a symlink planted inside the mount (the workspace's own `..`-guard
+  #      only ever collapses literal `..` segments; it has no idea a
+  #      component is a symlink to somewhere else entirely). `Paths.resolve_real/2`
+  #      walks `abs` the way the OS would — resolving every symlink
+  #      component against ITS physical parent before applying any further
+  #      `..` — and re-checks containment against `root`'s OWN resolved
+  #      form. A target that doesn't exist yet (create/rename's destination)
+  #      is handled by `resolve_real/2` itself: it resolves the deepest
+  #      EXISTING ancestor and appends the rest literally, so a symlinked
+  #      PARENT directory still can't be used to smuggle a new file out.
+  #
+  # The returned path on success is the LEXICAL `abs`, not the resolved one
+  # — every caller (page reads, writes, renames, deletes) operates on the
+  # path the user named, exactly as before; `resolve_real/2` here is a gate,
+  # not a rewrite. A symlink that resolves to somewhere else WITHIN the same
+  # mount is still permitted (legitimate internal links keep working) since
+  # its resolved form still lands under `root`.
   defp contain(root, rel_path) do
     abs = Path.expand(rel_path, root)
 
     if String.starts_with?(abs, root <> "/") do
-      {:ok, abs}
+      case Paths.resolve_real(abs, root) do
+        {:ok, _real} -> {:ok, abs}
+        {:error, _reason} -> {:error, :outside_workspace}
+      end
     else
       {:error, :outside_workspace}
     end

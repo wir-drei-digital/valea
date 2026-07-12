@@ -99,12 +99,16 @@ defmodule Valea.Mounts.DoctorTest do
 
       {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
 
-      ref = find(checks, "ref_resolves:outside")
+      ref = find(checks, "ref_resolves:external:outside")
       assert ref["status"] == "failed"
       assert is_binary(ref["detail"])
       assert is_binary(ref["remedy"])
 
-      for id <- ["manifest_ok:outside", "secrets_hygiene:outside", "watcher_live:outside"] do
+      for id <- [
+            "manifest_ok:external:outside",
+            "secrets_hygiene:external:outside",
+            "watcher_live:external:outside"
+          ] do
         check = find(checks, id)
         assert check["status"] == "unknown"
         assert check["remedy"] == nil
@@ -125,10 +129,10 @@ defmodule Valea.Mounts.DoctorTest do
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
-      ref = find(checks, "ref_resolves:outside")
+      ref = find(checks, "ref_resolves:external:outside")
       assert ref["status"] == "failed"
       assert ref["detail"] =~ "folder not found at"
-      assert find(checks, "manifest_ok:outside")["status"] == "unknown"
+      assert find(checks, "manifest_ok:external:outside")["status"] == "unknown"
     end
 
     test "a guardrail-degraded ref (inside the workspace) surfaces its exact reason on ref_resolves" do
@@ -145,11 +149,11 @@ defmodule Valea.Mounts.DoctorTest do
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
-      ref = find(checks, "ref_resolves:insider")
+      ref = find(checks, "ref_resolves:external:insider")
       assert ref["status"] == "failed"
       assert ref["detail"] =~ "workspace"
-      assert find(checks, "manifest_ok:insider")["status"] == "unknown"
-      assert find(checks, "watcher_live:insider")["status"] == "unknown"
+      assert find(checks, "manifest_ok:external:insider")["status"] == "unknown"
+      assert find(checks, "watcher_live:external:insider")["status"] == "unknown"
     end
 
     test "an unsafe (glob-metacharacter) ref path surfaces its reason on ref_resolves" do
@@ -167,7 +171,7 @@ defmodule Valea.Mounts.DoctorTest do
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
-      ref = find(checks, "ref_resolves:weird")
+      ref = find(checks, "ref_resolves:external:weird")
       assert ref["status"] == "failed"
       assert ref["detail"] =~ "glob"
     end
@@ -189,11 +193,11 @@ defmodule Valea.Mounts.DoctorTest do
 
       {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
 
-      assert find(checks, "ref_resolves:outside")["status"] == "ok"
-      assert find(checks, "manifest_ok:outside")["status"] == "failed"
-      assert find(checks, "manifest_ok:outside")["detail"] == "icm.yaml is missing"
+      assert find(checks, "ref_resolves:external:outside")["status"] == "ok"
+      assert find(checks, "manifest_ok:external:outside")["status"] == "failed"
+      assert find(checks, "manifest_ok:external:outside")["detail"] == "icm.yaml is missing"
       # NOT gated by manifest_ok's failure — the folder is real and readable.
-      assert find(checks, "secrets_hygiene:outside")["status"] == "ok"
+      assert find(checks, "secrets_hygiene:external:outside")["status"] == "ok"
     end
   end
 
@@ -219,7 +223,7 @@ defmodule Valea.Mounts.DoctorTest do
       {root, _ext} = healthy_external_workspace!()
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      check = find(checks, "secrets_hygiene:outside")
+      check = find(checks, "secrets_hygiene:external:outside")
       assert check["status"] == "ok"
       assert check["remedy"] == nil
     end
@@ -229,7 +233,7 @@ defmodule Valea.Mounts.DoctorTest do
       File.mkdir_p!(Path.join(ext, "secrets"))
 
       {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
-      check = find(checks, "secrets_hygiene:outside")
+      check = find(checks, "secrets_hygiene:external:outside")
       assert check["status"] == "failed"
       assert check["detail"] =~ "secrets"
       assert check["remedy"] =~ "deny-list"
@@ -240,7 +244,7 @@ defmodule Valea.Mounts.DoctorTest do
       File.write!(Path.join(ext, "secrets"), "not a directory")
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      assert find(checks, "secrets_hygiene:outside")["status"] == "ok"
+      assert find(checks, "secrets_hygiene:external:outside")["status"] == "ok"
     end
 
     test "a .env.local file at the mount root fails secrets_hygiene" do
@@ -248,7 +252,7 @@ defmodule Valea.Mounts.DoctorTest do
       File.write!(Path.join(ext, ".env.local"), "SECRET=1")
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      check = find(checks, "secrets_hygiene:outside")
+      check = find(checks, "secrets_hygiene:external:outside")
       assert check["status"] == "failed"
       assert check["detail"] =~ ".env.local"
     end
@@ -258,7 +262,7 @@ defmodule Valea.Mounts.DoctorTest do
       File.write!(Path.join(ext, ".env"), "SECRET=1")
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      assert find(checks, "secrets_hygiene:outside")["status"] == "failed"
+      assert find(checks, "secrets_hygiene:external:outside")["status"] == "failed"
     end
 
     test "a filename that merely contains .env (not a prefix) is not flagged" do
@@ -267,7 +271,7 @@ defmodule Valea.Mounts.DoctorTest do
       File.write!(Path.join(ext, "myenvfile"), "fine")
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      assert find(checks, "secrets_hygiene:outside")["status"] == "ok"
+      assert find(checks, "secrets_hygiene:external:outside")["status"] == "ok"
     end
 
     test "secrets_hygiene never crashes when the mount root is unreadable and check detail carries no file contents" do
@@ -275,7 +279,7 @@ defmodule Valea.Mounts.DoctorTest do
       File.write!(Path.join(ext, ".env"), "TOP_SECRET_VALUE=do-not-leak")
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      check = find(checks, "secrets_hygiene:outside")
+      check = find(checks, "secrets_hygiene:external:outside")
       refute check["detail"] =~ "TOP_SECRET_VALUE"
       refute check["detail"] =~ "do-not-leak"
     end
@@ -298,7 +302,7 @@ defmodule Valea.Mounts.DoctorTest do
       """)
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      check = find(checks, "watcher_live:outside")
+      check = find(checks, "watcher_live:external:outside")
       assert check["status"] == "unknown"
       assert check["detail"] =~ "disabled"
       assert check["remedy"] == nil
@@ -309,9 +313,51 @@ defmodule Valea.Mounts.DoctorTest do
       {root, _ext} = healthy_external_workspace!()
 
       {:ok, %{checks: checks}} = Doctor.run(root)
-      check = find(checks, "watcher_live:outside")
+      check = find(checks, "watcher_live:external:outside")
       assert check["status"] == "failed"
       assert is_binary(check["remedy"])
+    end
+  end
+
+  # -- embedded/external name collision: check ids stay unique -----------------
+
+  describe "run/1 — embedded/external name collision" do
+    test "both entries' checks get unique ids (kind-qualified), no duplicate id in the flat list" do
+      root = tmp_dir!("vmounts-doctor")
+
+      write_manifest!(Path.join(root, "mounts/dup"), %{id: "id-dup", name: "Dup", description: ""})
+
+      ext = tmp_dir!("vmounts-doctor-ext")
+      write_manifest!(ext, %{id: "ext-dup", name: "ExtDup", description: ""})
+
+      write_workspace_yaml!(root, """
+      mounts:
+        dup:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      ids = Enum.map(checks, & &1["id"])
+      assert Enum.uniq(ids) == ids, "expected every check id to be unique, got #{inspect(ids)}"
+
+      # The embedded side keeps the bare id and fails manifest_ok with the
+      # collision reason.
+      embedded = find(checks, "manifest_ok:dup")
+      assert embedded
+      assert embedded["status"] == "failed"
+      assert embedded["detail"] == "name used by both an embedded and an external mount"
+
+      # The external side is kind-qualified — same check name, same mount
+      # name, disjoint id — and fails manifest_ok with the same reason
+      # (collision is not ref-level, so ref_resolves itself reports ok).
+      external = find(checks, "manifest_ok:external:dup")
+      assert external
+      assert external["status"] == "failed"
+      assert external["detail"] == "name used by both an embedded and an external mount"
+
+      refute embedded["id"] == external["id"]
     end
   end
 
@@ -414,10 +460,10 @@ defmodule Valea.Mounts.DoctorTest do
       {:ok, %{checks: checks, ok: true}} = Doctor.run(ws.path)
 
       for id <- [
-            "ref_resolves:outside",
-            "manifest_ok:outside",
-            "secrets_hygiene:outside",
-            "watcher_live:outside"
+            "ref_resolves:external:outside",
+            "manifest_ok:external:outside",
+            "secrets_hygiene:external:outside",
+            "watcher_live:external:outside"
           ] do
         check = find(checks, id)
         assert check["status"] == "ok", "expected #{id} to be ok, got #{inspect(check)}"
@@ -432,12 +478,12 @@ defmodule Valea.Mounts.DoctorTest do
       poll_until_mounts_changed(fn _i -> declare_external!(ws.path, "outside", ext) end)
 
       {:ok, %{checks: checks}} = Doctor.run(ws.path)
-      assert find(checks, "watcher_live:outside")["status"] == "ok"
+      assert find(checks, "watcher_live:external:outside")["status"] == "ok"
 
       poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("outside", false) end)
 
       {:ok, %{checks: checks}} = Doctor.run(ws.path)
-      check = find(checks, "watcher_live:outside")
+      check = find(checks, "watcher_live:external:outside")
       assert check["status"] == "unknown"
       assert check["detail"] =~ "disabled"
     end

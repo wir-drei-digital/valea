@@ -345,10 +345,19 @@ defmodule Valea.Workspace.Migration do
 
   # Root AGENTS.md: pristine v3 seed (the pre-mounts, `icm/`-routing version)
   # → replaced with the current, rules-only, `@MOUNTS.md`-routing template.
-  # User-modified → left in place, with an audited note — same posture as
-  # the v2→v3 triage-page rule; surfacing this to the user is a doctor
-  # concern (T13's territory), this only guarantees the audit trail exists.
-  # Absent (shouldn't happen post-v2) → the template page.
+  # Already byte-identical to the CURRENT template → left alone, no note:
+  # this is the v1→v4 chain, where `ensure_v2`'s `copy_missing!/2` fills an
+  # ABSENT root AGENTS.md from today's template (already the
+  # `@MOUNTS.md`-routing version) before this step ever runs, so by the
+  # time we get here the file exists, isn't the FROZEN v3 fixture (so
+  # doesn't match `@v3_root_agents_sha`), yet was never touched by any
+  # user — mirrors `migrate_mail_yaml!/1`'s own
+  # `File.read!(path) == File.read!(template)` short-circuit for the exact
+  # same reason. User-modified (neither the frozen v3 seed NOR today's
+  # template) → left in place, with an audited note — same posture as the
+  # v2→v3 triage-page rule; surfacing this to the user is a doctor concern
+  # (T13's territory), this only guarantees the audit trail exists. Absent
+  # (shouldn't happen post-v2) → the template page.
   defp migrate_root_agents!(root) do
     path = Path.join(root, "AGENTS.md")
     template = Path.join(Scaffold.template_dir(), "AGENTS.md")
@@ -356,6 +365,9 @@ defmodule Valea.Workspace.Migration do
     cond do
       not File.exists?(path) ->
         File.cp!(template, path)
+
+      File.read!(path) == File.read!(template) ->
+        :ok
 
       pristine?(path, @v3_root_agents_sha) ->
         File.cp!(template, path)
