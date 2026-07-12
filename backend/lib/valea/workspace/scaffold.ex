@@ -11,20 +11,6 @@ defmodule Valea.Workspace.Scaffold do
   renames its directory to a slug of that name, and regenerates the
   workspace's `MOUNTS.md` — so a freshly scaffolded workspace never ships a
   top-level `icm/` or `prompts/` tree, only `mounts/<slug>/`.
-
-  ## The `icm/Workflows/New Inquiry Triage.md` migration-compat shim
-
-  `priv/workspace_template/icm/` still exists on disk — ONE file,
-  `Workflows/New Inquiry Triage.md`, byte-identical to the pre-mounts v3
-  template — because `Valea.Workspace.Migration`'s (still v3, T9's territory)
-  `migrate_triage_page!/1` reads it directly (`Path.join(template_dir(),
-  "icm/Workflows/New Inquiry Triage.md")`) to upgrade a real, existing
-  top-level-`icm/` v2 workspace. This module's own template is `mounts/`-only
-  and must never expose that legacy path in a FRESH scaffold's output, so
-  `do_create/2` deletes the copied-in `target/icm` immediately after
-  `File.cp_r/2` — the shim is invisible to every workspace this module
-  creates; it exists solely for Migration's benefit. Remove this file (and
-  this section) once T9 reworks `migrate_triage_page!/1` for v3→v4.
   """
 
   alias Valea.Mounts.Manifest
@@ -66,20 +52,17 @@ defmodule Valea.Workspace.Scaffold do
   defp do_create(target, name) do
     with :ok <- File.mkdir_p(target),
          {:ok, _} <- File.cp_r(template_dir(), target) do
-      # The template's `icm/` is a Migration-only compat shim (see
-      # moduledoc) — never a real part of a v4 scaffold's own output.
-      File.rm_rf!(Path.join(target, "icm"))
       # template ships the gitignore un-dotted so tooling never ignores
       # template files; the real workspace gets the dotted name
       File.rename(Path.join(target, "gitignore"), Path.join(target, ".gitignore"))
       # config/workspace.yaml ships with `id: TEMPLATE`; a real workspace
-      # gets version 3 + a fresh, persistent UUID here (keychain entries key
+      # gets version 4 + a fresh, persistent UUID here (keychain entries key
       # on it, so it must survive the folder being moved or renamed — see the
       # mail design spec, §Credentials). The Migration keeps it stable on
       # every subsequent open (never regenerates an existing id).
       File.write!(
         Path.join(target, "config/workspace.yaml"),
-        "version: 3\nid: #{Ecto.UUID.generate()}\n"
+        "version: 4\nid: #{Ecto.UUID.generate()}\n"
       )
 
       mint_starter_mount!(target, name)
@@ -121,12 +104,19 @@ defmodule Valea.Workspace.Scaffold do
     unless mount_dir == starter_dir, do: File.rename!(starter_dir, mount_dir)
   end
 
-  # Lowercase, ascii-fold (NFD decomposition + stripping combining marks),
-  # non-alphanumeric runs collapse to a single `-`, leading/trailing `-`
-  # trimmed — mirrors `Valea.Mail.MessageFile`'s `from_slug/1`. A name with
-  # no alphanumeric characters at all (e.g. "!!!") falls back to "mount"
-  # rather than minting an empty/degenerate directory name.
-  defp slugify(name) do
+  @doc """
+  Lowercase, ascii-fold (NFD decomposition + stripping combining marks),
+  non-alphanumeric runs collapse to a single `-`, leading/trailing `-`
+  trimmed — mirrors `Valea.Mail.MessageFile`'s `from_slug/1`. A name with
+  no alphanumeric characters at all (e.g. "!!!") falls back to "mount"
+  rather than minting an empty/degenerate directory name.
+
+  Public so `Valea.Workspace.Migration`'s v3→v4 step can name a migrated
+  mount directory the same way a fresh scaffold names its starter one,
+  without duplicating this logic.
+  """
+  @spec slugify(String.t()) :: String.t()
+  def slugify(name) do
     slug =
       name
       |> String.normalize(:nfd)

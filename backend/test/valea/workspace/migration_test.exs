@@ -2,7 +2,9 @@ defmodule Valea.Workspace.MigrationTest do
   use ExUnit.Case, async: true
 
   alias Valea.Markdown.ProseMirror
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Migration
+  alias Valea.Workspace.Scaffold
 
   defp v1_workspace! do
     root = Path.join(System.tmp_dir!(), "vmig-#{System.os_time(:nanosecond)}")
@@ -55,20 +57,23 @@ defmodule Valea.Workspace.MigrationTest do
 
   test "migrates v1: layer files, converted workflow page, dirs, settings, marker" do
     root = v1_workspace!()
-    assert {:ok, 3} = Migration.migrate(root)
+    assert {:ok, 4} = Migration.migrate(root)
+    slug = Scaffold.slugify(Path.basename(root))
 
     assert File.exists?(Path.join(root, "AGENTS.md"))
     assert File.read!(Path.join(root, "CLAUDE.md")) =~ "@AGENTS.md"
     assert File.dir?(Path.join(root, "queue/staging"))
     assert File.dir?(Path.join(root, "queue/processing"))
     assert File.exists?(Path.join(root, ".claude/settings.json"))
-    # a v1 workspace is brought all the way to the current version (v3),
+    # a v1 workspace is brought all the way to the current version (v4),
     # gaining the persistent workspace id along the way
     workspace_yaml = File.read!(Path.join(root, "config/workspace.yaml"))
-    assert workspace_yaml =~ "version: 3"
+    assert workspace_yaml =~ "version: 4"
     assert workspace_yaml =~ ~r/^id: [0-9a-f-]{36}$/m
 
-    page = File.read!(Path.join(root, "icm/Workflows/New Inquiry Triage.md"))
+    # the old top-level icm/ tree is gone; its content now lives in the mount
+    refute File.dir?(Path.join(root, "icm"))
+    page = File.read!(Path.join([root, "mounts", slug, "Workflows", "New Inquiry Triage.md"]))
     assert String.starts_with?(page, "---\n")
     assert page =~ "enabled: true"
     assert page =~ "icm/Offers/Founder Coaching Package.md"
@@ -80,9 +85,12 @@ defmodule Valea.Workspace.MigrationTest do
 
   test "generated workflow page is canonical (round-trips byte-identically)" do
     root = v1_workspace!()
-    assert {:ok, 3} = Migration.migrate(root)
+    assert {:ok, 4} = Migration.migrate(root)
+    slug = Scaffold.slugify(Path.basename(root))
 
-    bytes = File.read!(Path.join(root, "icm/Workflows/New Inquiry Triage.md"))
+    bytes =
+      File.read!(Path.join([root, "mounts", slug, "Workflows", "New Inquiry Triage.md"]))
+
     {block, body} = Valea.ICM.split_frontmatter(bytes)
 
     assert block != "", "expected the generated page to carry a frontmatter block"
@@ -100,9 +108,9 @@ defmodule Valea.Workspace.MigrationTest do
 
   test "idempotent — second run changes nothing" do
     root = v1_workspace!()
-    {:ok, 3} = Migration.migrate(root)
+    {:ok, 4} = Migration.migrate(root)
     snapshot = snapshot(root)
-    {:ok, 3} = Migration.migrate(root)
+    {:ok, 4} = Migration.migrate(root)
     assert snapshot(root) == snapshot
   end
 
@@ -111,17 +119,21 @@ defmodule Valea.Workspace.MigrationTest do
     File.mkdir_p!(Path.join(root, "icm/Workflows"))
     File.write!(Path.join(root, "icm/Workflows/New Inquiry Triage.md"), "user content")
     File.write!(Path.join(root, "AGENTS.md"), "user agents")
-    {:ok, 3} = Migration.migrate(root)
-    assert File.read!(Path.join(root, "icm/Workflows/New Inquiry Triage.md")) == "user content"
+    {:ok, 4} = Migration.migrate(root)
+    slug = Scaffold.slugify(Path.basename(root))
+
+    assert File.read!(Path.join([root, "mounts", slug, "Workflows", "New Inquiry Triage.md"])) ==
+             "user content"
+
     assert File.read!(Path.join(root, "AGENTS.md")) == "user agents"
   end
 
-  test "fresh v3 workspace (from template) migrates to a no-op" do
+  test "fresh v4 workspace (from template) migrates to a no-op" do
     root = Path.join(System.tmp_dir!(), "vmig-#{System.os_time(:nanosecond)}")
     on_exit(fn -> File.rm_rf!(root) end)
-    :ok = Valea.Workspace.Scaffold.create(root)
+    :ok = Scaffold.create(root)
     snapshot = snapshot(root)
-    {:ok, 3} = Migration.migrate(root)
+    {:ok, 4} = Migration.migrate(root)
     # settings.json is (re)written but byte-identical; everything else untouched
     assert snapshot(root) == snapshot
   end
@@ -136,7 +148,10 @@ defmodule Valea.Workspace.MigrationTest do
   @archive_dir "logs/migrations/v3"
 
   defp fixture(name), do: File.read!(Path.join(@fixtures_dir, name))
-  defp template(rel), do: File.read!(Path.join(Valea.Workspace.Scaffold.template_dir(), rel))
+  defp template(rel), do: File.read!(Path.join(Scaffold.template_dir(), rel))
+
+  defp migration_fixture_v3(name),
+    do: File.read!(Path.join(Application.app_dir(:valea, "priv/migration_fixtures/v3"), name))
 
   # Builds a pristine v2 workspace from the byte-exact v2 template files (the
   # ones this task deleted/rewrote), captured under test/fixtures/workspace_v2.
@@ -165,13 +180,13 @@ defmodule Valea.Workspace.MigrationTest do
     root
   end
 
-  test "fresh scaffold: v3 marker + persistent uuid + seed message, no legacy JSON" do
+  test "fresh scaffold: v4 marker + persistent uuid + seed message, no legacy JSON" do
     root = Path.join(System.tmp_dir!(), "vmig3-scaffold-#{System.os_time(:nanosecond)}")
     on_exit(fn -> File.rm_rf!(root) end)
-    :ok = Valea.Workspace.Scaffold.create(root)
+    :ok = Scaffold.create(root)
 
     yaml = File.read!(Path.join(root, "config/workspace.yaml"))
-    assert yaml =~ "version: 3"
+    assert yaml =~ "version: 4"
     assert [uuid] = Regex.run(~r/^id: ([0-9a-f-]{36})$/m, yaml, capture: :all_but_first)
     refute uuid == "TEMPLATE"
 
@@ -184,21 +199,27 @@ defmodule Valea.Workspace.MigrationTest do
     refute File.dir?(Path.join(root, "sources/mail/normalized"))
   end
 
-  test "pristine v2 → transformed and archived" do
+  test "pristine v2 → transformed and archived, then relocated into the mount at v4" do
     root = v2_workspace!()
-    assert {:ok, 3} = Migration.migrate(root)
+    slug = Scaffold.slugify(Path.basename(root))
+    assert {:ok, 4} = Migration.migrate(root)
 
-    # workspace.yaml gains version 3 + a fresh uuid
+    # workspace.yaml gains version 4 + a fresh uuid
     yaml = File.read!(Path.join(root, "config/workspace.yaml"))
-    assert yaml =~ "version: 3"
+    assert yaml =~ "version: 4"
     assert yaml =~ ~r/^id: [0-9a-f-]{36}$/m
 
-    # pristine mail.yaml replaced in place with the v3 template (not archived)
+    # pristine mail.yaml replaced in place with the v3 template (not archived;
+    # config/mail.yaml is untouched by the v3→v4 icm/ → mounts/ relocation)
     assert File.read!(Path.join(root, @mail_yaml_path)) == template(@mail_yaml_path)
     refute File.exists?(Path.join([root, @archive_dir, "mail.yaml"]))
 
-    # pristine triage page overwritten with the v3 template page
-    assert File.read!(Path.join(root, @triage_path)) == template(@triage_path)
+    # the old icm/ tree is gone entirely: its pristine triage page was
+    # overwritten with the v3 replacement bytes (v2→v3), then the whole tree
+    # was relocated byte-for-byte into the mount (v3→v4)
+    refute File.dir?(Path.join(root, "icm"))
+    mount_triage = Path.join([root, "mounts", slug, "Workflows", "New Inquiry Triage.md"])
+    assert File.read!(mount_triage) == migration_fixture_v3("New Inquiry Triage.md")
 
     # pristine JSON moved into the archive; gone from normalized/; seed present
     refute File.exists?(Path.join(root, @priya_json_path))
@@ -211,6 +232,12 @@ defmodule Valea.Workspace.MigrationTest do
     # new mail dirs exist
     assert File.dir?(Path.join(root, "sources/mail/messages"))
     assert File.dir?(Path.join(root, "sources/mail/attachments"))
+
+    # the mount got a fresh manifest, and MOUNTS.md was regenerated
+    mount_dir = Path.join([root, "mounts", slug])
+    assert {:ok, manifest} = Manifest.load(mount_dir)
+    assert manifest.name == Path.basename(root)
+    assert File.exists?(Path.join(root, "MOUNTS.md"))
   end
 
   test "modified mail.yaml: values preserved, smtp/ssl dropped, original archived" do
@@ -235,7 +262,7 @@ defmodule Valea.Workspace.MigrationTest do
     """
 
     root = v2_workspace!(%{@mail_yaml_path => modified})
-    assert {:ok, 3} = Migration.migrate(root)
+    assert {:ok, 4} = Migration.migrate(root)
 
     # original archived verbatim (append-only)
     assert File.read!(Path.join([root, @archive_dir, "mail.yaml"])) == modified
@@ -261,7 +288,7 @@ defmodule Valea.Workspace.MigrationTest do
   test "modified priya JSON is a user file: left in place, never archived" do
     modified_json = ~s({"id":"email_priya_nair_inquiry","note":"hand-edited"}\n)
     root = v2_workspace!(%{@priya_json_path => modified_json})
-    assert {:ok, 3} = Migration.migrate(root)
+    assert {:ok, 4} = Migration.migrate(root)
 
     # user's modified JSON stays exactly where it is
     assert File.read!(Path.join(root, @priya_json_path)) == modified_json
@@ -270,19 +297,21 @@ defmodule Valea.Workspace.MigrationTest do
     assert File.exists?(Path.join(root, @seed_message_path))
   end
 
-  test "modified triage page is untouched" do
+  test "modified triage page is untouched, then relocated (byte-preserving) into the mount" do
     modified_page = "---\nenabled: true\n---\n# My own triage\n\nHand-edited by the user.\n"
     root = v2_workspace!(%{@triage_path => modified_page})
-    assert {:ok, 3} = Migration.migrate(root)
+    slug = Scaffold.slugify(Path.basename(root))
+    assert {:ok, 4} = Migration.migrate(root)
 
-    assert File.read!(Path.join(root, @triage_path)) == modified_page
+    assert File.read!(Path.join([root, "mounts", slug, "Workflows", "New Inquiry Triage.md"])) ==
+             modified_page
   end
 
-  test "v2 → v3 is idempotent — second run changes nothing" do
+  test "v2 → v4 is idempotent — second run changes nothing" do
     root = v2_workspace!()
-    {:ok, 3} = Migration.migrate(root)
+    {:ok, 4} = Migration.migrate(root)
     snapshot = snapshot(root)
-    {:ok, 3} = Migration.migrate(root)
+    {:ok, 4} = Migration.migrate(root)
     assert snapshot(root) == snapshot
   end
 
@@ -290,16 +319,159 @@ defmodule Valea.Workspace.MigrationTest do
     root = v2_workspace!()
     File.mkdir_p!(Path.join(root, "sources/mail/messages"))
     File.write!(Path.join(root, @seed_message_path), "user seed content")
-    {:ok, 3} = Migration.migrate(root)
+    {:ok, 4} = Migration.migrate(root)
     assert File.read!(Path.join(root, @seed_message_path)) == "user seed content"
   end
 
   test "preserves an existing workspace id defensively (never regenerates)" do
     root = v2_workspace!(%{"config/workspace.yaml" => "version: 2\nid: keep-me-1234\n"})
-    {:ok, 3} = Migration.migrate(root)
+    {:ok, 4} = Migration.migrate(root)
     yaml = File.read!(Path.join(root, "config/workspace.yaml"))
-    assert yaml =~ "version: 3"
+    assert yaml =~ "version: 4"
     assert yaml =~ "id: keep-me-1234"
+  end
+
+  # -- v3 → v4 -------------------------------------------------------------
+
+  @fixtures_v3_dir Path.expand("../../fixtures/workspace_v3", __DIR__)
+  defp fixture_v3(name), do: File.read!(Path.join(@fixtures_v3_dir, name))
+
+  # Builds a minimal v3-shaped (pre-mounts) workspace directly at version 3.
+  # `ensure_v2`/`ensure_v3` both short-circuit at `v >= their own version`, so
+  # this must independently create everything a real v1→v2→v3 climb would
+  # have left behind that `ensure_v4` (or this section's assertions) cares
+  # about: the top-level `icm/Workflows/` tree, a root AGENTS.md/CLAUDE.md,
+  # and (to exercise the prompts-move step) a top-level `prompts/`.
+  defp v3_workspace!(overrides \\ %{}) do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "vmig4-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    for d <- ["config", "icm/Workflows", "prompts"] do
+      File.mkdir_p!(Path.join(root, d))
+    end
+
+    files = %{
+      "config/workspace.yaml" =>
+        "version: 3\nid: v3fixture-#{System.unique_integer([:positive])}\n",
+      "AGENTS.md" => fixture_v3("AGENTS.md"),
+      "CLAUDE.md" => "@AGENTS.md\n",
+      @triage_path => fixture("New Inquiry Triage.md"),
+      "prompts/reply_writer.md" => "A reusable prompt fragment.\n"
+    }
+
+    Enum.each(Map.merge(files, overrides), fn {rel, bytes} ->
+      path = Path.join(root, rel)
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, bytes)
+    end)
+
+    on_exit(fn -> File.rm_rf!(root) end)
+    root
+  end
+
+  test "v3 → v4: icm/ gone, mounts/<slug>/ minted (manifest + AGENTS.md + CLAUDE.md), " <>
+         "prompts moved, root AGENTS.md replaced (pristine), MOUNTS.md present, version 4" do
+    root = v3_workspace!()
+    slug = Scaffold.slugify(Path.basename(root))
+
+    assert {:ok, 4} = Migration.migrate(root)
+
+    refute File.dir?(Path.join(root, "icm"))
+    refute File.dir?(Path.join(root, "prompts"))
+
+    mount_dir = Path.join([root, "mounts", slug])
+    assert File.dir?(mount_dir)
+
+    assert File.read!(Path.join(mount_dir, "Workflows/New Inquiry Triage.md")) ==
+             fixture("New Inquiry Triage.md")
+
+    assert {:ok, manifest} = Manifest.load(mount_dir)
+    assert manifest.name == Path.basename(root)
+    assert Regex.match?(~r/^[0-9a-f-]{36}$/, manifest.id)
+
+    assert File.exists?(Path.join(mount_dir, "AGENTS.md"))
+    assert File.read!(Path.join(mount_dir, "CLAUDE.md")) =~ "@AGENTS.md"
+
+    assert File.read!(Path.join(mount_dir, "prompts/reply_writer.md")) ==
+             "A reusable prompt fragment.\n"
+
+    root_agents = File.read!(Path.join(root, "AGENTS.md"))
+    assert root_agents == File.read!(Path.join(Scaffold.template_dir(), "AGENTS.md"))
+    assert root_agents =~ "@MOUNTS.md"
+
+    assert File.exists?(Path.join(root, "MOUNTS.md"))
+    mounts_md = File.read!(Path.join(root, "MOUNTS.md"))
+    assert mounts_md =~ "@mounts/#{slug}/AGENTS.md"
+
+    yaml = File.read!(Path.join(root, "config/workspace.yaml"))
+    assert yaml =~ "version: 4"
+  end
+
+  test "v3 → v4 resumes correctly after a crash between the icm/ rename and the remaining steps" do
+    root = v3_workspace!()
+    slug = Scaffold.slugify(Path.basename(root))
+
+    # Simulate a process that died right after `locate_or_create_mount!/2`
+    # renamed icm/ → mounts/<slug>, but before minting the manifest or
+    # bumping the version marker: config/workspace.yaml still says v3.
+    File.mkdir_p!(Path.join(root, "mounts"))
+    File.rename!(Path.join(root, "icm"), Path.join([root, "mounts", slug]))
+
+    assert {:ok, 4} = Migration.migrate(root)
+
+    # resumed into the SAME mount — no mounts/<slug>-2 duplicate was minted
+    refute File.dir?(Path.join([root, "mounts", "#{slug}-2"]))
+    mount_dir = Path.join([root, "mounts", slug])
+    assert File.exists?(Path.join(mount_dir, "Workflows/New Inquiry Triage.md"))
+    assert {:ok, manifest} = Manifest.load(mount_dir)
+    assert manifest.name == Path.basename(root)
+
+    yaml = File.read!(Path.join(root, "config/workspace.yaml"))
+    assert yaml =~ "version: 4"
+  end
+
+  test "v3 → v4: a modified root AGENTS.md is left in place (not replaced)" do
+    modified = "# My Own Root Instructions\n\nHand-edited.\n"
+    root = v3_workspace!(%{"AGENTS.md" => modified})
+
+    assert {:ok, 4} = Migration.migrate(root)
+
+    assert File.read!(Path.join(root, "AGENTS.md")) == modified
+  end
+
+  test "v3 → v4 idempotent — second run changes nothing" do
+    root = v3_workspace!()
+    {:ok, 4} = Migration.migrate(root)
+    snapshot = snapshot(root)
+    {:ok, 4} = Migration.migrate(root)
+    assert snapshot(root) == snapshot
+  end
+
+  test "v3 → v4 target-name collision appends -2" do
+    root = v3_workspace!()
+    slug = Scaffold.slugify(Path.basename(root))
+
+    File.mkdir_p!(Path.join(root, "mounts"))
+    collision_dir = Path.join([root, "mounts", slug])
+    File.mkdir_p!(collision_dir)
+    File.write!(Path.join(collision_dir, "keepme.txt"), "pre-existing, unrelated")
+
+    assert {:ok, 4} = Migration.migrate(root)
+
+    # the pre-existing directory at mounts/<slug> is untouched — never our tree
+    assert File.read!(Path.join(collision_dir, "keepme.txt")) == "pre-existing, unrelated"
+    refute File.exists?(Path.join(collision_dir, "icm.yaml"))
+
+    # icm/ was relocated into mounts/<slug>-2 instead
+    target = Path.join([root, "mounts", "#{slug}-2"])
+    assert File.dir?(target)
+    assert File.exists?(Path.join(target, "Workflows/New Inquiry Triage.md"))
+    assert {:ok, _} = Manifest.load(target)
+
+    refute File.dir?(Path.join(root, "icm"))
   end
 
   defp snapshot(root) do

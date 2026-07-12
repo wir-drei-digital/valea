@@ -137,12 +137,12 @@ defmodule Valea.Workspace.ScaffoldTest do
     assert mounts_md =~ "@mounts/acme-coaching/AGENTS.md"
   end
 
-  test "create writes version 3 + a fresh workspace uuid (not the template placeholder)" do
+  test "create writes version 4 + a fresh workspace uuid (not the template placeholder)" do
     target = tmp_target()
     assert :ok = Scaffold.create(target)
 
     yaml = File.read!(Path.join(target, "config/workspace.yaml"))
-    assert yaml =~ "version: 3"
+    assert yaml =~ "version: 4"
     assert [uuid] = Regex.run(~r/^id: ([0-9a-f-]{36})$/m, yaml, capture: :all_but_first)
     refute uuid == "TEMPLATE"
 

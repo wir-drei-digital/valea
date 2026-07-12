@@ -4,12 +4,20 @@ defmodule Valea.Workspace.Migration do
   open/create after the repo and runtime start and before the workspace is
   presented as open. Never deletes or overwrites user files; converted
   sources are left in place.
+
+  Byte-preserving renames are permitted; the never-delete/never-overwrite
+  contract forbids destroying or clobbering CONTENT, not relocating a tree
+  (see `ensure_v4/2`, which relocates the whole legacy `icm/` tree into
+  `mounts/<slug>/` without touching a single byte inside it).
   """
 
   alias Valea.Markdown.ProseMirror
   alias Valea.Mail.Settings
+  alias Valea.Mounts.Manifest
+  alias Valea.Mounts.MountsMd
+  alias Valea.Workspace.Scaffold
 
-  @current_version 3
+  @current_version 4
 
   # SHA-256 of the pristine v2 template seed files this migration knows how to
   # transform. Computed from the v2 template bytes as they stood on `main`
@@ -27,6 +35,17 @@ defmodule Valea.Workspace.Migration do
   @v2_mail_yaml_sha "473de344164a1d778f4488d166d9846e0ba329af0532a0b63f9bbd985c0914eb"
   @v2_triage_sha "23ffbefe71c264c2f9ef945dc2fab269228789f19da47847d5f0bf6c01f9080f"
 
+  # SHA-256 of the pristine v3 root AGENTS.md — the pre-mounts, `icm/`-routing
+  # template as it stood immediately before the mounts-template task (T8)
+  # rewrote it into the current, rules-only, `@MOUNTS.md`-routing version:
+  #
+  #   git show b8ebe7f:backend/priv/workspace_template/AGENTS.md | shasum -a 256
+  #
+  # (`b8ebe7f` is T8's parent commit.) Only a byte-identical file counts as
+  # pristine and is replaced in place by `migrate_root_agents!/1`; a
+  # user-modified root AGENTS.md is left exactly where it is.
+  @v3_root_agents_sha "7cd9215c88f5edf9096e422e405b92aa4bd08fe3f006e7b9e2fd38b829e2240a"
+
   # Append-only archive for files the v2→v3 step moves or supersedes. Never
   # itself migrated; entries are only ever added, never clobbered.
   @archive_rel "logs/migrations/v3"
@@ -38,7 +57,8 @@ defmodule Valea.Workspace.Migration do
   @spec migrate(String.t()) :: {:ok, integer()} | {:error, String.t()}
   def migrate(root) do
     with {:ok, v} <- ensure_v2(root, read_version(root)),
-         {:ok, _} <- ensure_v3(root, v) do
+         {:ok, v} <- ensure_v3(root, v),
+         {:ok, _} <- ensure_v4(root, v) do
       # Managed settings are regenerated on every open (and per session start).
       Valea.Agents.ClaudeSettings.write!(root)
       {:ok, @current_version}
@@ -95,6 +115,33 @@ defmodule Valea.Workspace.Migration do
     File.mkdir_p!(Path.join(root, "config"))
     File.write!(Path.join(root, "config/workspace.yaml"), "version: 3\nid: #{id}\n")
     {:ok, 3}
+  end
+
+  # v3 → v4 (mounts design spec, §Migration): the single top-level `icm/`
+  # tree becomes a real mount at `mounts/<slug>/`. Every step is idempotent
+  # and safe to re-run after a mid-migration crash — including a crash
+  # between the `icm/` → `mounts/<slug>/` rename and the steps that follow
+  # it, which relocate `locate_or_create_mount!/2`'s target from scratch
+  # every call and land on the SAME directory again rather than minting a
+  # second, empty one (see that function's doc). `config/workspace.yaml`
+  # (the version marker) is written LAST, so an interrupted run leaves the
+  # workspace at v3 and the whole step runs again cleanly next open.
+  defp ensure_v4(_root, v) when v >= 4, do: {:ok, v}
+
+  defp ensure_v4(root, _v) do
+    id = workspace_id_or_new(root)
+    slug = Scaffold.slugify(Path.basename(root))
+
+    mount_dir = locate_or_create_mount!(root, slug)
+    migrate_prompts_to_mount!(root, mount_dir)
+    mint_migrated_mount_files!(root, mount_dir)
+    migrate_root_agents!(root)
+
+    MountsMd.regenerate(root)
+
+    File.mkdir_p!(Path.join(root, "mounts"))
+    File.write!(Path.join(root, "config/workspace.yaml"), "version: 4\nid: #{id}\n")
+    {:ok, 4}
   end
 
   defp workspace_id_or_new(root) do
@@ -195,7 +242,7 @@ defmodule Valea.Workspace.Migration do
   # same mismatch). Absent (shouldn't happen post-v2) → the template page.
   defp migrate_triage_page!(root) do
     path = Path.join(root, @triage_rel)
-    template = Path.join(template_dir(), @triage_rel)
+    template = Path.join(v3_fixtures_dir(), "New Inquiry Triage.md")
 
     cond do
       not File.exists?(path) ->
@@ -212,6 +259,115 @@ defmodule Valea.Workspace.Migration do
         })
     end
   end
+
+  # -- v4 helpers --------------------------------------------------------
+
+  # Locates the mount that used to be the top-level `icm/` tree, renaming it
+  # there if it still exists. Pre-mounts workspaces never had a `mounts/`
+  # directory before this step runs, so while `icm/` is still present, every
+  # `mounts/<slug-N>` found occupied is a genuine name collision (never our
+  # own migrated tree) and the scan tries the next `-N` suffix. Once `icm/`
+  # is gone — this run's rename already ran, or an earlier crashed run's
+  # rename already ran — the migrated mount, if any, is identified by
+  # carrying a `Workflows/` subdir (guaranteed present: `ensure_v2` always
+  # creates `icm/Workflows`), so a retry after a crash between the rename
+  # and the steps that follow it finds the SAME directory again rather than
+  # minting a second, empty one.
+  defp locate_or_create_mount!(root, slug) do
+    mounts_dir = Path.join(root, "mounts")
+    icm_dir = Path.join(root, "icm")
+    File.mkdir_p!(mounts_dir)
+
+    if File.dir?(icm_dir) do
+      target = mount_slot(mounts_dir, slug, fn _ -> false end)
+      File.rename!(icm_dir, target)
+      target
+    else
+      mount_slot(mounts_dir, slug, &migrated_mount?/1)
+    end
+  end
+
+  defp migrated_mount?(dir), do: File.dir?(Path.join(dir, "Workflows"))
+
+  # First of `<slug>`, `<slug>-2`, `<slug>-3`, ... that is either free, or —
+  # per `reuse?` — already ours to keep using rather than a real collision.
+  defp mount_slot(mounts_dir, slug, reuse?, n \\ nil) do
+    name = if n, do: "#{slug}-#{n}", else: slug
+    candidate = Path.join(mounts_dir, name)
+
+    cond do
+      not File.exists?(candidate) -> candidate
+      reuse?.(candidate) -> candidate
+      true -> mount_slot(mounts_dir, slug, reuse?, (n || 1) + 1)
+    end
+  end
+
+  # If root `prompts/` exists and the mount doesn't have its own yet, move it
+  # in. A target that already exists is left alone — its source stays right
+  # where it is too — the never-overwrite contract, not a failed rename.
+  defp migrate_prompts_to_mount!(root, mount_dir) do
+    prompts_dir = Path.join(root, "prompts")
+    target = Path.join(mount_dir, "prompts")
+
+    if File.dir?(prompts_dir) and not File.exists?(target) do
+      File.rename!(prompts_dir, target)
+    end
+  end
+
+  # Mints the migrated mount's own icm.yaml/AGENTS.md/CLAUDE.md — each only
+  # if absent, so a re-run (or a mount a user already half-populated by
+  # hand) never clobbers anything.
+  defp mint_migrated_mount_files!(root, mount_dir) do
+    File.mkdir_p!(mount_dir)
+
+    manifest_path = Path.join(mount_dir, "icm.yaml")
+
+    unless File.exists?(manifest_path) do
+      Manifest.write!(mount_dir, %{
+        id: Ecto.UUID.generate(),
+        name: Path.basename(root),
+        description: ""
+      })
+    end
+
+    copy_missing_into!(mount_dir, "AGENTS.md", "mounts/starter/AGENTS.md")
+    copy_missing_into!(mount_dir, "CLAUDE.md", "mounts/starter/CLAUDE.md")
+  end
+
+  defp copy_missing_into!(mount_dir, name, template_rel) do
+    target = Path.join(mount_dir, name)
+
+    unless File.exists?(target) do
+      File.cp!(Path.join(Scaffold.template_dir(), template_rel), target)
+    end
+  end
+
+  # Root AGENTS.md: pristine v3 seed (the pre-mounts, `icm/`-routing version)
+  # → replaced with the current, rules-only, `@MOUNTS.md`-routing template.
+  # User-modified → left in place, with an audited note — same posture as
+  # the v2→v3 triage-page rule; surfacing this to the user is a doctor
+  # concern (T13's territory), this only guarantees the audit trail exists.
+  # Absent (shouldn't happen post-v2) → the template page.
+  defp migrate_root_agents!(root) do
+    path = Path.join(root, "AGENTS.md")
+    template = Path.join(Scaffold.template_dir(), "AGENTS.md")
+
+    cond do
+      not File.exists?(path) ->
+        File.cp!(template, path)
+
+      pristine?(path, @v3_root_agents_sha) ->
+        File.cp!(template, path)
+
+      true ->
+        audit("migration_note", %{
+          "note" =>
+            "root AGENTS.md kept (user-modified); it still routes via icm/ rather than @MOUNTS.md"
+        })
+    end
+  end
+
+  defp v3_fixtures_dir, do: Application.app_dir(:valea, "priv/migration_fixtures/v3")
 
   # -- v3 helpers ------------------------------------------------------------
 

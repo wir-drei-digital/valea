@@ -35,14 +35,17 @@ defmodule Valea.Workspace.MigrationV3AuditTest do
     %{root: root}
   end
 
-  test "a user-modified triage page is kept and the note is audited", %{root: root} do
+  test "a user-modified triage page is kept (then relocated byte-preserving into the mount) and the note is audited",
+       %{root: root} do
     modified_page = "---\nenabled: true\n---\n# My own triage\n\nHand-edited.\n"
     File.write!(Path.join(root, @triage_path), modified_page)
+    slug = Valea.Workspace.Scaffold.slugify(Path.basename(root))
 
-    assert {:ok, 3} = Migration.migrate(root)
+    assert {:ok, 4} = Migration.migrate(root)
 
-    # page left untouched
-    assert File.read!(Path.join(root, @triage_path)) == modified_page
+    # page content untouched, just relocated into the mount
+    assert File.read!(Path.join([root, "mounts", slug, "Workflows", "New Inquiry Triage.md"])) ==
+             modified_page
 
     # the migration_note is on the audit trail
     {:ok, entries} = Valea.Audit.entries(20)
@@ -51,15 +54,51 @@ defmodule Valea.Workspace.MigrationV3AuditTest do
     assert note["note"] =~ "triage workflow page kept (user-modified)"
   end
 
-  test "a pristine triage page is overwritten and no note is audited", %{root: root} do
+  test "a pristine triage page is overwritten and no note is audited for it", %{root: root} do
     File.write!(Path.join(root, @triage_path), fixture("New Inquiry Triage.md"))
+    slug = Valea.Workspace.Scaffold.slugify(Path.basename(root))
 
-    assert {:ok, 3} = Migration.migrate(root)
+    assert {:ok, 4} = Migration.migrate(root)
 
-    template = File.read!(Path.join(Valea.Workspace.Scaffold.template_dir(), @triage_path))
-    assert File.read!(Path.join(root, @triage_path)) == template
+    template =
+      File.read!(
+        Path.join(
+          Application.app_dir(:valea, "priv/migration_fixtures/v3"),
+          "New Inquiry Triage.md"
+        )
+      )
+
+    assert File.read!(Path.join([root, "mounts", slug, "Workflows", "New Inquiry Triage.md"])) ==
+             template
 
     {:ok, entries} = Valea.Audit.entries(20)
     refute Enum.any?(entries, &(&1["type"] == "migration_note"))
+  end
+
+  test "a user-modified root AGENTS.md is kept and a migration_note is audited", %{root: root} do
+    modified = "# My Own Root Instructions\n\nHand-edited.\n"
+    File.write!(Path.join(root, "AGENTS.md"), modified)
+
+    assert {:ok, 4} = Migration.migrate(root)
+
+    assert File.read!(Path.join(root, "AGENTS.md")) == modified
+
+    {:ok, entries} = Valea.Audit.entries(20)
+    note = Enum.find(entries, &(&1["note"] =~ "root AGENTS.md kept"))
+    assert note
+  end
+
+  test "an absent root AGENTS.md is filled from the current template, no note audited", %{
+    root: root
+  } do
+    refute File.exists?(Path.join(root, "AGENTS.md"))
+
+    assert {:ok, 4} = Migration.migrate(root)
+
+    assert File.read!(Path.join(root, "AGENTS.md")) ==
+             File.read!(Path.join(Valea.Workspace.Scaffold.template_dir(), "AGENTS.md"))
+
+    {:ok, entries} = Valea.Audit.entries(20)
+    refute Enum.any?(entries, &(&1["note"] =~ "root AGENTS.md kept"))
   end
 end
