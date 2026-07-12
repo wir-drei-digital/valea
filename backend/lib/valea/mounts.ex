@@ -146,13 +146,17 @@ defmodule Valea.Mounts do
   @doc """
   Scaffolds a brand-new, empty mount under `workspace` — `mounts/<slug>`,
   where `<slug>` is `Scaffold.slugify/1` of `name` (the same slugging a
-  fresh workspace scaffold gives its starter mount). `name` is validated
-  the same way `set_enabled/2` validates one (`validate_mount_name/1` —
-  non-blank, no `/`, no `..`, no control characters), even though here it's
-  a display name rather than a directory basename: it becomes the minted
-  manifest's `name:` (the GIVEN name, not the slug), so this keeps that
-  field's content shape consistent with every other mount-name-shaped
-  input in this module.
+  fresh workspace scaffold gives its starter mount). `name` here is a
+  DISPLAY name, not a directory basename — "Sales/Marketing" or
+  "Ops (EU/APAC)" are legitimate business names — so it gets the narrower
+  `validate_display_name/1` (non-blank, no C0 control chars/DEL), NOT
+  `set_enabled/2`'s strict basename validator: the raw name only ever
+  flows into `Scaffold.slugify/1` (which strips everything outside
+  `[a-z0-9-]` before any filesystem use), `Manifest.render/1` (which
+  `Valea.Yaml.escape/1`s it), and this module's own AGENTS.md skeleton
+  heading — a single line, which is exactly why control chars stay
+  rejected. It becomes the minted manifest's `name:` (the GIVEN name, not
+  the slug).
 
   Mints a fresh manifest (uuid4 `id`, `name`, `description`) via
   `Manifest.write!/2`, and a minimal self-describing `AGENTS.md` +
@@ -173,7 +177,7 @@ defmodule Valea.Mounts do
           {:ok, mount} | {:error, term()}
   def create(workspace, name, description)
       when is_binary(workspace) and is_binary(name) and is_binary(description) do
-    with :ok <- validate_mount_name(name) do
+    with :ok <- validate_display_name(name) do
       slug = Scaffold.slugify(name)
       dir = Path.join([workspace, "mounts", slug])
 
@@ -182,6 +186,24 @@ defmodule Valea.Mounts do
       else
         do_create(dir, name, description, workspace)
       end
+    end
+  end
+
+  # Display-name validator for `create/3` — deliberately NARROWER than
+  # `validate_mount_name/1` (the directory-basename validator `set_enabled/2`
+  # keeps): a display name may legitimately contain `/` or `..`
+  # ("Sales/Marketing"), since `Scaffold.slugify/1` strips everything outside
+  # [a-z0-9-] before the name ever touches the filesystem and
+  # `Manifest.render/1` Yaml.escape's it. Control chars/DEL stay rejected
+  # (the raw name lands single-line in the AGENTS.md skeleton heading), and
+  # a blank (all-whitespace) name is rejected too — it would slugify to the
+  # "mount" fallback and mint a manifest that `Manifest.load/1` immediately
+  # degrades ("name must not be blank").
+  defp validate_display_name(name) do
+    if String.trim(name) == "" or control_chars?(name) do
+      {:error, :invalid_mount_name}
+    else
+      :ok
     end
   end
 

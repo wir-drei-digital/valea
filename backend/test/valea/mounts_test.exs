@@ -360,12 +360,36 @@ defmodule Valea.MountsTest do
       assert {:error, _} = Mounts.create(System.tmp_dir!(), "", "desc")
     end
 
+    test "rejects an all-whitespace name (would mint an instantly-degraded manifest)" do
+      assert {:error, :invalid_mount_name} = Mounts.create(System.tmp_dir!(), "   ", "desc")
+    end
+
     test "rejects a name containing a control character" do
       assert {:error, _} = Mounts.create(System.tmp_dir!(), "evil\nname", "desc")
     end
 
-    test "rejects a name containing a path separator" do
-      assert {:error, _} = Mounts.create(System.tmp_dir!(), "a/b", "desc")
+    test "rejects a name containing a DEL byte" do
+      assert {:error, _} = Mounts.create(System.tmp_dir!(), "evil\x7Fname", "desc")
+    end
+
+    test "accepts a display name containing a path separator (slug strips it)", %{root: root} do
+      # "Sales/Marketing" is a legitimate BUSINESS name — the display name
+      # only flows into `Scaffold.slugify/1` (directory basename, strips to
+      # [a-z0-9-]) and `Manifest.render/1` (Yaml.escape'd), so a `/` never
+      # reaches the filesystem as a separator. Only `set_enabled/2` (whose
+      # name IS a directory basename) keeps the strict basename validator.
+      assert {:ok, mount} = Mounts.create(root, "Sales/Marketing", "cross-team")
+
+      assert mount.name == "sales-marketing"
+      assert mount.rel_root == "mounts/sales-marketing"
+      assert mount.manifest.name == "Sales/Marketing"
+      assert File.dir?(Path.join([root, "mounts", "sales-marketing"]))
+    end
+
+    test "accepts a display name containing ..", %{root: root} do
+      assert {:ok, mount} = Mounts.create(root, "Ops (EU/APAC)..", "regional ops")
+      assert mount.name == "ops-eu-apac"
+      assert mount.manifest.name == "Ops (EU/APAC).."
     end
 
     test "does not touch config/workspace.yaml or regenerate MOUNTS.md (caller's job)", %{
