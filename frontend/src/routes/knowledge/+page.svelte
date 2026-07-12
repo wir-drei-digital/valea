@@ -16,6 +16,7 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { encodePath, type IcmNode } from '$lib/shell/nav';
   import {
+    adoptFailureBannerText,
     buildMountsDisplay,
     classifyMounts,
     degradedChipLabel,
@@ -315,6 +316,33 @@
   {/snippet}
 
   {#snippet main()}
+    <!-- Fix wave 1 (A2-T9): a declare-stage reference-adoption failure
+         outlives the onboarding screen (see PendingAdoptError's doc comment
+         in stores/mounts.svelte.ts) — surfaced HERE, the first mounts-shaped
+         surface a fresh workspace lands on, as a prominent dismissible
+         banner. Rendered above BOTH main-pane states (header and doctor)
+         so toggling the doctor can't hide it. -->
+    {#if mountsStore.pendingAdoptError}
+      <div
+        role="alert"
+        class="bg-warn-tint text-warn-ink mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3"
+      >
+        <TriangleAlert class="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+        <p class="min-w-0 flex-1 text-[13px] leading-relaxed">
+          {adoptFailureBannerText(mountsStore.pendingAdoptError)}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          class="shrink-0"
+          onclick={() => mountsStore.clearPendingAdoptError()}
+        >
+          Dismiss
+        </Button>
+      </div>
+    {/if}
+
     {#if doctorOpen}
       <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
         <button

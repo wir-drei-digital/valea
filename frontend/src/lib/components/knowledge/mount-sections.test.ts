@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  adoptFailureBannerText,
   buildMountsDisplay,
   classifyMounts,
   degradedChipLabel,
@@ -282,5 +283,26 @@ describe('normalizeMountsDoctorChecks', () => {
     expect(normalizeMountsDoctorChecks(null)).toEqual([]);
     expect(normalizeMountsDoctorChecks(undefined)).toEqual([]);
     expect(normalizeMountsDoctorChecks('not an array')).toEqual([]);
+  });
+});
+
+// Fix wave 1 (A2-T9): the exact copy of the Knowledge page's
+// adoption-failure banner — rendered from `mountsStore.pendingAdoptError`
+// after a declare-stage reference-adoption failure survived the
+// onboarding-to-app transition. Kept as a pure function so the copy (which
+// names the retry affordance) is table-testable.
+describe('adoptFailureBannerText', () => {
+  it('names the mount, its source ref, the mapped message, and the retry affordance', () => {
+    expect(
+      adoptFailureBannerText({
+        name: 'Client Notes',
+        ref: '/Users/mara/Documents/Client Notes',
+        message: "That folder doesn't look like a knowledge module yet — it needs an icm.yaml."
+      })
+    ).toBe(
+      'Couldn\'t mount "Client Notes" from /Users/mara/Documents/Client Notes: ' +
+        "That folder doesn't look like a knowledge module yet — it needs an icm.yaml. " +
+        'You can retry from "Mount a folder from elsewhere…".'
+    );
   });
 });

@@ -43,14 +43,52 @@ export type MountSummary = {
  * staying live as the backend reports `mounts_changed` pushes (A-T6, mount
  * manifest edits or an RPC mutation — see `Valea.Api.Mounts`'s moduledoc).
  */
+/**
+ * A reference-adoption declare-stage failure carried across the
+ * onboarding-to-app transition (fix wave 1, A2-T9): `workspaceStore.create`
+ * flips `state = 'open'` — and the root layout reactively swaps the
+ * Onboarding screen out — BEFORE `declare_mount` resolves, so a declare
+ * failure landing after that flip has no live onboarding card left to
+ * render on. `adoptByReference` (onboarding-path.ts) persists it here; the
+ * Knowledge page renders it as a dismissible banner
+ * (`adoptFailureBannerText`, mount-sections.ts).
+ */
+export type PendingAdoptError = {
+  /** The by-reference mount name the declare was attempted with. */
+  name: string;
+  /** The external folder path (exactly as picked — the declare's `ref`). */
+  ref: string;
+  /** Already-mapped readable copy (`declareMountErrorMessage` output), not a raw code. */
+  message: string;
+};
+
 export class MountsStore {
   mounts: MountSummary[] = $state([]);
   loaded = $state(false);
+
+  /**
+   * Non-null only between a declare-stage reference-adoption failure and
+   * the user dismissing the Knowledge page's banner (or a later
+   * `setPendingAdoptError` overwriting it). Never set by a create-stage
+   * failure — that happens while the onboarding card is still mounted,
+   * which renders its own `referenceError` instead (see
+   * `adoptByReference`'s doc comment in onboarding-path.ts).
+   */
+  pendingAdoptError: PendingAdoptError | null = $state(null);
 
   #api: MountsApi;
 
   constructor(api: MountsApi) {
     this.#api = api;
+  }
+
+  setPendingAdoptError(name: string, ref: string, message: string): void {
+    this.pendingAdoptError = { name, ref, message };
+  }
+
+  /** Dismisses the adoption-failure banner. */
+  clearPendingAdoptError(): void {
+    this.pendingAdoptError = null;
   }
 
   async refresh(): Promise<void> {

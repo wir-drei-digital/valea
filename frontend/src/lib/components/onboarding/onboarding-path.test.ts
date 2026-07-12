@@ -175,7 +175,8 @@ describe('adoptByReference', () => {
     return {
       createWorkspace: overrides.createWorkspace ?? (async () => ({ ok: true })),
       declareMount: overrides.declareMount ?? (async () => ({ ok: true })),
-      currentGeneration: overrides.currentGeneration ?? (() => 4)
+      currentGeneration: overrides.currentGeneration ?? (() => 4),
+      setPendingAdoptError: overrides.setPendingAdoptError ?? (() => {})
     };
   }
 
@@ -183,13 +184,14 @@ describe('adoptByReference', () => {
     const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
     const declareMount = vi.fn(async () => ({ ok: true }) as const);
     const currentGeneration = vi.fn(() => 4);
+    const setPendingAdoptError = vi.fn();
 
     const result = await adoptByReference(
       '/Users/mara/Documents',
       'Coaching Brain Workspace',
       'Client Notes',
       '/Users/mara/Documents/Client Notes',
-      { createWorkspace, declareMount, currentGeneration }
+      { createWorkspace, declareMount, currentGeneration, setPendingAdoptError }
     );
 
     expect(createWorkspace).toHaveBeenCalledWith('/Users/mara/Documents', 'Coaching Brain Workspace');
@@ -197,45 +199,72 @@ describe('adoptByReference', () => {
     // generation is read AFTER createWorkspace resolves, never before.
     expect(currentGeneration).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ ok: true });
+    // success writes no pending error — nothing to surface later.
+    expect(setPendingAdoptError).not.toHaveBeenCalled();
   });
 
-  it('short-circuits on a create failure — never calls declareMount', async () => {
+  // Fix wave 1: a CREATE failure happens while the onboarding card is still
+  // mounted (workspaceStore.state never flipped), so the card's own
+  // referenceError rendering is the right surface — pendingAdoptError must
+  // stay untouched, or a stale banner would greet the user after a LATER
+  // successful onboarding.
+  it('short-circuits on a create failure — never calls declareMount, never writes pendingAdoptError', async () => {
     const declareMount = vi.fn(async () => ({ ok: true }) as const);
+    const setPendingAdoptError = vi.fn();
     const result = await adoptByReference(
       '/parent',
       'name',
       'mount',
       '/src',
-      fakeDeps({ createWorkspace: async () => ({ ok: false, error: 'target_not_empty' }), declareMount })
+      fakeDeps({
+        createWorkspace: async () => ({ ok: false, error: 'target_not_empty' }),
+        declareMount,
+        setPendingAdoptError
+      })
     );
 
     expect(result).toEqual({ ok: false, stage: 'create', error: 'target_not_empty' });
     expect(declareMount).not.toHaveBeenCalled();
+    expect(setPendingAdoptError).not.toHaveBeenCalled();
   });
 
-  it('surfaces a declare failure at the "declare" stage — the workspace was already created', async () => {
+  // Fix wave 1: a DECLARE failure happens AFTER workspaceStore.create flipped
+  // state to 'open' — the onboarding card is unmounted by the time this
+  // resolves, so its local error state is a dead write. The failure must be
+  // persisted (mapped to readable copy here, the one place holding all three
+  // of name/ref/code) so the post-transition UI (Knowledge's banner) can
+  // surface it.
+  it('surfaces a declare failure at the "declare" stage AND persists it via setPendingAdoptError with the MAPPED message', async () => {
+    const setPendingAdoptError = vi.fn();
     const result = await adoptByReference(
       '/parent',
       'name',
-      'mount',
-      '/src',
-      fakeDeps({ declareMount: async () => ({ ok: false, error: 'no_manifest' }) })
+      'Client Notes',
+      '/Users/mara/Documents/Client Notes',
+      fakeDeps({ declareMount: async () => ({ ok: false, error: 'no_manifest' }), setPendingAdoptError })
     );
 
     expect(result).toEqual({ ok: false, stage: 'declare', error: 'no_manifest' });
+    expect(setPendingAdoptError).toHaveBeenCalledWith(
+      'Client Notes',
+      '/Users/mara/Documents/Client Notes',
+      "That folder doesn't look like a knowledge module yet — it needs an icm.yaml."
+    );
   });
 
-  it('surfaces workspace_not_open at the declare stage when the post-create generation is unavailable, without calling declareMount', async () => {
+  it('surfaces workspace_not_open at the declare stage when the post-create generation is unavailable, without calling declareMount — and persists it too (the transition already happened)', async () => {
     const declareMount = vi.fn(async () => ({ ok: true }) as const);
+    const setPendingAdoptError = vi.fn();
     const result = await adoptByReference(
       '/parent',
       'name',
       'mount',
       '/src',
-      fakeDeps({ currentGeneration: () => null, declareMount })
+      fakeDeps({ currentGeneration: () => null, declareMount, setPendingAdoptError })
     );
 
     expect(result).toEqual({ ok: false, stage: 'declare', error: 'workspace_not_open' });
     expect(declareMount).not.toHaveBeenCalled();
+    expect(setPendingAdoptError).toHaveBeenCalledWith('mount', '/src', 'No workspace is open.');
   });
 });

@@ -255,6 +255,32 @@ describe('undeclareMountErrorMessage', () => {
   });
 });
 
+// Fix wave 1 (A2-T9): a declare-stage failure during reference-adoption
+// happens AFTER `workspaceStore.create` already flipped `state = 'open'` —
+// the onboarding card is unmounted by then, so its local `referenceError`
+// write is a no-op. `pendingAdoptError` persists the failure across that
+// transition; the Knowledge page renders it as a dismissible banner.
+describe('MountsStore.pendingAdoptError', () => {
+  it('starts null', () => {
+    const store = new MountsStore(fakeApi({}) as never);
+    expect(store.pendingAdoptError).toBeNull();
+  });
+
+  it('setPendingAdoptError stores name/ref/message; clearPendingAdoptError resets to null (dismiss)', () => {
+    const store = new MountsStore(fakeApi({}) as never);
+
+    store.setPendingAdoptError('client-notes', '/Users/mara/Documents/Client Notes', 'mapped message');
+    expect(store.pendingAdoptError).toEqual({
+      name: 'client-notes',
+      ref: '/Users/mara/Documents/Client Notes',
+      message: 'mapped message'
+    });
+
+    store.clearPendingAdoptError();
+    expect(store.pendingAdoptError).toBeNull();
+  });
+});
+
 describe('MountsStore.handleMountsChanged', () => {
   it('refetches mounts AND triggers the icm store refetch', async () => {
     const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);

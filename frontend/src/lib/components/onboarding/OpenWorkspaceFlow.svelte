@@ -20,7 +20,7 @@
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { mountsStore, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
+  import { mountsStore } from '$lib/stores/mounts.svelte';
   import {
     adoptByReference,
     basename,
@@ -256,14 +256,24 @@
       {
         createWorkspace: (parentDir, name) => workspaceStore.create(parentDir, name),
         declareMount: (name, ref, generation) => mountsStore.declare(name, ref, generation),
-        currentGeneration: () => workspaceStore.generation
+        currentGeneration: () => workspaceStore.generation,
+        // Declare-stage failures land AFTER workspaceStore.create flipped
+        // state to 'open' — this component is unmounted by then (the root
+        // layout swaps Onboarding out reactively), so any local error state
+        // set at that point is a dead write. The store field survives the
+        // transition; the Knowledge page renders it as a dismissible banner
+        // (fix wave 1).
+        setPendingAdoptError: (name, ref, message) => mountsStore.setPendingAdoptError(name, ref, message)
       }
     );
     referenceAdopting = false;
 
-    if (!outcome.ok) {
-      referenceError =
-        outcome.stage === 'create' ? mapCreateErrorCode(outcome.error) : declareMountErrorMessage(outcome.error);
+    // Only a CREATE-stage failure still has this card on screen to render
+    // into (the workspace never opened, so the state flip never happened).
+    // A declare-stage failure was already persisted via setPendingAdoptError
+    // above — setting referenceError for it would be a no-op nobody sees.
+    if (!outcome.ok && outcome.stage === 'create') {
+      referenceError = mapCreateErrorCode(outcome.error);
       return;
     }
   }

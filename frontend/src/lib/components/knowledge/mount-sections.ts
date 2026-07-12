@@ -9,7 +9,7 @@
  */
 
 import type { MountGroup } from '$lib/stores/icm.svelte';
-import type { MountSummary } from '$lib/stores/mounts.svelte';
+import type { MountSummary, PendingAdoptError } from '$lib/stores/mounts.svelte';
 import type { IcmNode } from '$lib/shell/nav';
 
 export type MountSection = {
@@ -179,4 +179,21 @@ export function normalizeMountsDoctorChecks(raw: unknown): MountsDoctorCheck[] {
     const remedy = typeof rec.remedy === 'string' ? rec.remedy : null;
     return [{ id, label, status, detail, remedy }];
   });
+}
+
+/**
+ * The Knowledge page's adoption-failure banner copy (fix wave 1, A2-T9) —
+ * rendered from `mountsStore.pendingAdoptError` after a declare-stage
+ * reference-adoption failure survived the onboarding-to-app transition
+ * (see `PendingAdoptError`'s doc comment in `stores/mounts.svelte.ts`).
+ * `message` is already-mapped readable copy (a full sentence ending in a
+ * period), so this only frames it with WHAT failed (name + source ref) and
+ * the retry affordance — which lives one glance away in the same pane's
+ * footer.
+ */
+export function adoptFailureBannerText(pending: PendingAdoptError): string {
+  return (
+    `Couldn't mount "${pending.name}" from ${pending.ref}: ${pending.message} ` +
+    'You can retry from "Mount a folder from elsewhere…".'
+  );
 }

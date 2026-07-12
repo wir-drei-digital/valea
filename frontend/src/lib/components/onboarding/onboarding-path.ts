@@ -6,6 +6,12 @@
 // decision — the part most worth getting exactly right — is testable
 // without mounting Svelte.
 import type { PathInspection } from '$lib/api/client';
+// Value import (not type-only) — `adoptByReference` maps a declare-stage
+// failure to readable copy at the moment it persists it, since this is the
+// one place holding name/ref/code together. Importing the pure function
+// from the store module doesn't drag any Svelte runtime in at test time
+// (mounts.svelte.ts is already imported directly by its own vitest suite).
+import { declareMountErrorMessage } from '$lib/stores/mounts.svelte';
 
 export type OnboardingMode =
   | { mode: 'open' }
@@ -133,6 +139,20 @@ export type ReferenceAdoptDeps = {
    * `declareMount` with a bogus generation).
    */
   currentGeneration: () => number | null;
+  /**
+   * Persists a DECLARE-stage failure so it survives the onboarding-to-app
+   * transition (fix wave 1): a successful `createWorkspace` flips
+   * `workspaceStore.state` to `'open'`, the root layout reactively swaps
+   * the Onboarding screen out, and any component-local error state set
+   * after that point is a write to a dead component. Called with the
+   * already-MAPPED readable message (`declareMountErrorMessage`) — this
+   * function is the one place holding all three of name/ref/code together.
+   * Wired to `mountsStore.setPendingAdoptError`; the Knowledge page renders
+   * it as a dismissible banner. NEVER called for a create-stage failure —
+   * that happens before the state flip, while the onboarding card is still
+   * mounted and rendering its own `referenceError`.
+   */
+  setPendingAdoptError: (name: string, ref: string, message: string) => void;
 };
 
 export type ReferenceAdoptOutcome = { ok: true } | { ok: false; stage: 'create' | 'declare'; error: string };
@@ -157,6 +177,13 @@ export type ReferenceAdoptOutcome = { ok: true } | { ok: false; stage: 'create' 
  * no mount was ever declared and no workspace-scoped mutation happened
  * beyond the (now-existing but reference-less) new workspace itself, which
  * the user can just retry into or abandon.
+ *
+ * A declare-stage failure (including the generation-unavailable guard —
+ * both happen after the create already succeeded and the onboarding UI is
+ * gone) is additionally persisted via `deps.setPendingAdoptError` — see
+ * that dep's doc comment. The workspace itself staying open with the mount
+ * not declared is fine and non-destructive; the persisted error is what
+ * keeps it from being SILENT.
  */
 export async function adoptByReference(
   parentDir: string,
@@ -169,10 +196,16 @@ export async function adoptByReference(
   if (!createResult.ok) return { ok: false, stage: 'create', error: createResult.error };
 
   const generation = deps.currentGeneration();
-  if (generation == null) return { ok: false, stage: 'declare', error: 'workspace_not_open' };
+  if (generation == null) {
+    deps.setPendingAdoptError(mountName, icmSourcePath, declareMountErrorMessage('workspace_not_open'));
+    return { ok: false, stage: 'declare', error: 'workspace_not_open' };
+  }
 
   const declareResult = await deps.declareMount(mountName, icmSourcePath, generation);
-  if (!declareResult.ok) return { ok: false, stage: 'declare', error: declareResult.error };
+  if (!declareResult.ok) {
+    deps.setPendingAdoptError(mountName, icmSourcePath, declareMountErrorMessage(declareResult.error));
+    return { ok: false, stage: 'declare', error: declareResult.error };
+  }
 
   return { ok: true };
 }
