@@ -72,6 +72,8 @@
         return 'No workspace is open.';
       case 'workspace_changed':
         return 'Your workspace changed. Reopen it and try again.';
+      case 'apply_conflict':
+        return 'The page changed since this was proposed. The item is back in your queue — reject it or re-run the workflow.';
       default:
         return 'Something went wrong. Please try again.';
     }

@@ -78,7 +78,10 @@ defmodule Valea.Api.Queue do
     end
 
     action :approve_item, :map do
-      constraints fields: [draft_path: [type: :string, allow_nil?: false]]
+      constraints fields: [
+                    draft_path: [type: :string, allow_nil?: true],
+                    applied_path: [type: :string, allow_nil?: true]
+                  ]
 
       argument :run_id, :string, allow_nil?: false
       argument :revision, :string, allow_nil?: false
@@ -88,8 +91,9 @@ defmodule Valea.Api.Queue do
         %{run_id: run_id, revision: revision, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{draft_path: draft_path}} <- Valea.Queue.approve(run_id, revision) do
-          {:ok, %{draft_path: draft_path}}
+             {:ok, %{draft_path: draft_path, applied_path: applied_path}} <-
+               Valea.Queue.approve(run_id, revision) do
+          {:ok, %{draft_path: draft_path, applied_path: applied_path}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end

@@ -77,6 +77,40 @@ defmodule ValeaWeb.QueueRpcTest do
     envelope
   end
 
+  # Inlined/adapted from `Valea.QueueTest`'s `pending_memory!/5` (B4) — same
+  # minimal `queue_item/v2` + `memory_update` envelope shape, just written
+  # via this test's own `write_pending`-style raw-file helper instead of
+  # `AgentCase.open_workspace!/1`. This suite's `setup` creates the workspace
+  # by name "W" (via the `create_workspace` RPC, not `AgentCase`), which
+  # slugifies to mount `w` (`Valea.Workspace.Scaffold.slugify/1`) — so
+  # memory targets here live under `mounts/w/...`, not `mounts/primary/...`.
+  defp write_pending_memory(workspace, run_id, target, base, content) do
+    item = %{
+      "schema" => "queue_item/v2",
+      "run_id" => run_id,
+      "workflow" => "mounts/w/Workflows/New Inquiry Triage.md",
+      "risk_level" => "medium",
+      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "payload" => %{
+        "title" => "Update x",
+        "summary" => "why",
+        "kind" => "memory_update",
+        "sources" => [],
+        "proposed_action" => %{
+          "type" => "apply_page_content",
+          "target_path" => target,
+          "base_sha256" => base,
+          "content_markdown" => content
+        }
+      }
+    }
+
+    path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(item))
+    item
+  end
+
   @items_fields [
     %{
       "items" => [
@@ -224,6 +258,55 @@ defmodule ValeaWeb.QueueRpcTest do
                )
 
       assert inspect(errors) =~ "queue_item_gone"
+    end
+
+    test "a memory_update item applies the edit and returns appliedPath with draftPath nil", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      id = run_id("m1")
+      target = "mounts/w/Pricing/Current Pricing.md"
+      old = File.read!(Path.join(workspace, target))
+      base = :crypto.hash(:sha256, old) |> Base.encode16(case: :lower)
+      write_pending_memory(workspace, id, target, base, "# Pricing\n\n150\n")
+
+      assert %{"success" => true, "data" => %{"revision" => revision}} =
+               rpc("get_queue_item", %{"runId" => id}, ["item", "revision"])
+
+      assert %{"success" => true, "data" => %{"appliedPath" => applied_path, "draftPath" => nil}} =
+               rpc(
+                 "approve_queue_item",
+                 %{"runId" => id, "revision" => revision, "generation" => generation},
+                 ["draftPath", "appliedPath"]
+               )
+
+      assert applied_path == target
+      assert File.read!(Path.join(workspace, target)) == "# Pricing\n\n150\n"
+      assert File.exists?(Path.join([workspace, "queue", "approved", id <> ".json"]))
+    end
+
+    test "a hash-mismatch memory_update item surfaces apply_conflict and stays pending", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      id = run_id("m2")
+      target = "mounts/w/Pricing/Current Pricing.md"
+      old = File.read!(Path.join(workspace, target))
+      write_pending_memory(workspace, id, target, String.duplicate("0", 64), "# clobber\n")
+
+      assert %{"success" => true, "data" => %{"revision" => revision}} =
+               rpc("get_queue_item", %{"runId" => id}, ["item", "revision"])
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "approve_queue_item",
+                 %{"runId" => id, "revision" => revision, "generation" => generation},
+                 ["draftPath", "appliedPath"]
+               )
+
+      assert inspect(errors) =~ "apply_conflict"
+      assert File.read!(Path.join(workspace, target)) == old
+      assert File.exists?(Path.join([workspace, "queue", "pending", id <> ".json"]))
     end
   end
 

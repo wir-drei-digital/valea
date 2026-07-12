@@ -2352,11 +2352,11 @@ export type ApproveQueueItemInput = {
   generation: number;
 };
 
-export type ApproveQueueItemFields = UnifiedFieldSelection<{draftPath: string, __type: "TypedMap", __primitiveFields: "draftPath"}>[];
+export type ApproveQueueItemFields = UnifiedFieldSelection<{draftPath: string | null, appliedPath: string | null, __type: "TypedMap", __primitiveFields: "draftPath" | "appliedPath"}>[];
 
 export type InferApproveQueueItemResult<
   Fields extends ApproveQueueItemFields | undefined,
-> = InferResult<{draftPath: string, __type: "TypedMap", __primitiveFields: "draftPath"}, Fields>;
+> = InferResult<{draftPath: string | null, appliedPath: string | null, __type: "TypedMap", __primitiveFields: "draftPath" | "appliedPath"}, Fields>;
 
 export type ApproveQueueItemResult<Fields extends ApproveQueueItemFields | undefined = undefined> = | { success: true; data: InferApproveQueueItemResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

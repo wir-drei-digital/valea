@@ -296,7 +296,7 @@ const icmEntryReferencesFields = [{ workflows: ['file', 'name'] }] as unknown as
 const createAgentSessionFields: CreateAgentSessionFields = ['id'];
 const runWorkflowFields: RunWorkflowFields = ['runId', 'sessionId'];
 const getQueueItemFields: GetQueueItemFields = ['item', 'revision'];
-const approveQueueItemFields: ApproveQueueItemFields = ['draftPath'];
+const approveQueueItemFields: ApproveQueueItemFields = ['draftPath', 'appliedPath'];
 const rejectQueueItemFields: RejectQueueItemFields = ['rejected'];
 const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
 
