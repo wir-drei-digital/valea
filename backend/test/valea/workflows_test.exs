@@ -247,4 +247,82 @@ defmodule Valea.WorkflowsTest do
     assert hd(workflows).path == "mounts/valid/Workflows/Good.md"
     assert hd(workflows).mount == "Valid Mount"
   end
+
+  # -- list/1 (pure form) and triage_path/0,1 (Task A-T13) --------------------
+
+  describe "list/1 (pure form)" do
+    test "matches list/0's result for the currently open workspace", %{workspace: ws} do
+      a = write_mount!(ws, "a", "Mount A")
+      write_workflow!(a, "Triage.md", @triage_frontmatter, @triage_body)
+
+      assert {:ok, via_list_0} = Workflows.list()
+      assert Workflows.list(ws) == via_list_0
+    end
+
+    test "a workspace with no mounts returns an empty list, without needing an open workspace" do
+      other =
+        System.tmp_dir!() |> Path.join("valea-wf-list1-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(other)
+      on_exit(fn -> File.rm_rf!(other) end)
+
+      assert Workflows.list(other) == []
+    end
+  end
+
+  describe "triage_path/0,1 (seeded-workflow discovery, Task A-T13)" do
+    test "finds the triage workflow's path in the first (alphabetically) enabled mount that has one",
+         %{workspace: ws} do
+      a = write_mount!(ws, "a", "Mount A")
+      write_workflow!(a, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
+
+      b = write_mount!(ws, "b", "Mount B")
+      write_workflow!(b, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
+
+      assert Workflows.triage_path() == "mounts/a/Workflows/New Inquiry Triage.md"
+      assert Workflows.triage_path(ws) == "mounts/a/Workflows/New Inquiry Triage.md"
+    end
+
+    test "skips a mount lacking the triage workflow and finds it in a later one",
+         %{workspace: ws} do
+      write_mount!(ws, "a", "Mount A")
+      # "a" has no Workflows/ at all.
+
+      b = write_mount!(ws, "b", "Mount B")
+      write_workflow!(b, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
+
+      assert Workflows.triage_path() == "mounts/b/Workflows/New Inquiry Triage.md"
+      assert Workflows.triage_path(ws) == "mounts/b/Workflows/New Inquiry Triage.md"
+    end
+
+    test "returns nil when no enabled mount has a triage workflow", %{workspace: ws} do
+      a = write_mount!(ws, "a", "Mount A")
+
+      write_workflow!(
+        a,
+        "Unrelated.md",
+        "enabled: true\nrisk_level: low\n",
+        "# Unrelated\n\nBody.\n"
+      )
+
+      assert Workflows.triage_path() == nil
+      assert Workflows.triage_path(ws) == nil
+    end
+
+    test "returns nil when no workspace is open (list/0's own no-workspace case)" do
+      Valea.Workspace.Manager.close()
+      assert Workflows.triage_path() == nil
+    end
+
+    test "a disabled mount's triage workflow is not found (mirrors list/0's enabled-only gating)",
+         %{workspace: ws} do
+      a = write_mount!(ws, "a", "Mount A")
+      write_workflow!(a, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
+
+      assert :ok = Mounts.set_enabled("a", false)
+
+      assert Workflows.triage_path() == nil
+      assert Workflows.triage_path(ws) == nil
+    end
+  end
 end

@@ -27,6 +27,12 @@ defmodule Valea.Api.Cockpit do
   applies to a field sitting directly on the ACTION's own returned map —
   `mail` itself is such a field (a map, never falsy), but `configured`
   nested inside it is not, so it needs no string-key trick.
+
+  `triage_workflow_path` (Task A-T13) is a top-level, NILABLE `:string` —
+  the falsy-map-field bug documented above is specific to `:boolean`'s
+  `false` (ash_typescript's own generic-action result handling), not to a
+  `nil` string, so this needs no string-key workaround either; it
+  camelCases to `triageWorkflowPath` like every other field here.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -84,6 +90,7 @@ defmodule Valea.Api.Cockpit do
                       ]
                     ],
                     while_you_were_away: [type: {:array, :string}, allow_nil?: false],
+                    triage_workflow_path: [type: :string, allow_nil?: true],
                     mail: [
                       type: :map,
                       allow_nil?: false,

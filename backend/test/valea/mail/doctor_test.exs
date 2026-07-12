@@ -3,6 +3,7 @@ defmodule Valea.Mail.DoctorTest do
 
   alias Valea.Mail.Doctor
   alias Valea.Mail.Settings
+  alias Valea.Mounts.Manifest
 
   @review "AI/Review"
   @processed "AI/Processed"
@@ -40,14 +41,40 @@ defmodule Valea.Mail.DoctorTest do
         "vmail-doctor-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
       )
 
-    File.mkdir_p!(Path.join([root, "icm", "Workflows"]))
+    File.mkdir_p!(root)
     ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(root) end)
     root
   end
 
+  # `New Inquiry Triage.md` under `root/mounts/starter/Workflows/` — the T8
+  # scaffold's layout (Task A-T13: `workflow_contract` discovers it via
+  # `Valea.Workflows.triage_path/1`, which requires a valid `icm.yaml`
+  # manifest AND a parseable frontmatter block before the file counts as a
+  # registry entry at all — hence the minimal `---\nenabled: true\n---\n`
+  # prepended here, on top of whatever body `write_triage!/2`'s caller
+  # passes (the OLD hardcoded-path fixtures below had no frontmatter of
+  # their own, since the old `File.read`-based check never parsed one).
   defp write_triage!(root, body) do
-    path = Path.join([root, "icm", "Workflows", "New Inquiry Triage.md"])
-    File.write!(path, body)
+    mount_dir = Path.join([root, "mounts", "starter"])
+    File.mkdir_p!(Path.join(mount_dir, "Workflows"))
+    Manifest.write!(mount_dir, %{id: "starter-id", name: "Starter", description: ""})
+
+    content = "---\nenabled: true\n---\n" <> body
+    File.write!(Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]), content)
+  end
+
+  # A mount with a Workflows/ page, but not the triage one — for the
+  # "registry non-empty, no triage match" case, distinct from "no mounts at
+  # all" (see the `workspace_root/0`-only tests below).
+  defp write_unrelated_workflow!(root) do
+    mount_dir = Path.join([root, "mounts", "other"])
+    File.mkdir_p!(Path.join(mount_dir, "Workflows"))
+    Manifest.write!(mount_dir, %{id: "other-id", name: "Other", description: ""})
+
+    File.write!(
+      Path.join([mount_dir, "Workflows", "Weekly Review.md"]),
+      "---\nenabled: true\n---\n# Weekly Review\n\nBody.\n"
+    )
   end
 
   @good_triage """
@@ -416,6 +443,7 @@ defmodule Valea.Mail.DoctorTest do
     contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
     assert contract["status"] == "failed"
     assert contract["remedy"] =~ "sources/mail/messages/*.md"
+    assert contract["detail"] =~ "mounts/starter/Workflows/New Inquiry Triage.md"
   end
 
   test "workflow_contract: absent file is unknown, not failed" do
@@ -424,6 +452,42 @@ defmodule Valea.Mail.DoctorTest do
     assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
     contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
     assert contract["status"] == "unknown"
+  end
+
+  test "workflow_contract: an empty registry (no mounts at all) is unknown, not failed" do
+    root = workspace_root()
+    # No mounts/ directory whatsoever — Workflows.list/1 returns [].
+
+    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
+    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
+    assert contract["status"] == "unknown"
+  end
+
+  test "workflow_contract: a non-empty registry with no triage-shaped entry is unknown, not failed" do
+    root = workspace_root()
+    write_unrelated_workflow!(root)
+
+    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
+    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
+    assert contract["status"] == "unknown"
+  end
+
+  test "workflow_contract: finds the triage workflow in a second mount when the first (alphabetically) enabled mount lacks one" do
+    root = workspace_root()
+    write_unrelated_workflow!(root)
+    # "other" (write_unrelated_workflow!) sorts after "starter" — write a
+    # first-alphabetically mount with no Workflows/ at all, so discovery
+    # has to skip past it to reach "starter"'s triage workflow.
+    aaa_dir = Path.join([root, "mounts", "aaa"])
+    File.mkdir_p!(aaa_dir)
+    Manifest.write!(aaa_dir, %{id: "aaa-id", name: "AAA", description: ""})
+
+    write_triage!(root, @good_triage)
+
+    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
+    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
+    assert contract["status"] == "ok"
+    assert contract["detail"] =~ "mounts/starter/Workflows/New Inquiry Triage.md"
   end
 
   # -- credential redaction ------------------------------------------------------------

@@ -12,6 +12,8 @@ defmodule Valea.CockpitTest do
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.Engine
+  alias Valea.Mounts
+  alias Valea.Mounts.Manifest
 
   test "today returns the seeded narrative" do
     {:ok, today} = Valea.Cockpit.today()
@@ -103,6 +105,10 @@ defmodule Valea.CockpitTest do
     # Mail — zero/unconfigured defaults: no workspace is open in this test,
     # so `Valea.Mail.Engine` isn't registered (Task 18).
     assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+
+    # Triage workflow path — no workspace is open in this test, so
+    # `Valea.Workflows.list/0` finds nothing to discover (Task A-T13).
+    assert today["triage_workflow_path"] == nil
   end
 
   describe "today/0 mail summary" do
@@ -225,6 +231,72 @@ defmodule Valea.CockpitTest do
       {:ok, today} = Valea.Cockpit.today()
 
       assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+    end
+  end
+
+  describe "today/0 triage_workflow_path (Task A-T13: seeded-workflow discovery)" do
+    defp write_mount!(ws_path, name, title) do
+      dir = Path.join([ws_path, "mounts", name])
+      File.mkdir_p!(dir)
+      Manifest.write!(dir, %{id: "id-" <> name, name: title, description: ""})
+      dir
+    end
+
+    defp write_triage_workflow!(mount_dir) do
+      File.mkdir_p!(Path.join(mount_dir, "Workflows"))
+
+      content = """
+      ---
+      enabled: true
+      risk_level: medium
+      ---
+      # New Inquiry Triage
+
+      Body.
+      """
+
+      File.write!(Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]), content)
+    end
+
+    test "carries the real mounts/<slug>/Workflows/... path from a freshly scaffolded workspace" do
+      ws = AgentCase.open_workspace!()
+
+      # T8's scaffold seeds the triage workflow in its one enabled starter
+      # mount — named from the workspace's own name, slugified
+      # (`Scaffold.mint_starter_mount!/2`), not necessarily literally
+      # "starter" (`AgentCase.open_workspace!/1`'s default name "W" slugs
+      # to "w").
+      [mount] = Mounts.list(ws.path)
+
+      {:ok, today} = Valea.Cockpit.today()
+
+      assert today["triage_workflow_path"] ==
+               "mounts/#{mount.name}/Workflows/New Inquiry Triage.md"
+    end
+
+    test "is nil when no enabled mount has a triage workflow" do
+      ws = AgentCase.open_workspace!()
+
+      # Disable the scaffold's own mount (which carries the seeded triage
+      # workflow) so no enabled mount has one.
+      Enum.each(Mounts.list(ws.path), &Mounts.set_enabled(&1.name, false))
+
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["triage_workflow_path"] == nil
+    end
+
+    test "is found in a second mount when the first (alphabetically) enabled mount lacks one" do
+      ws = AgentCase.open_workspace!()
+      Enum.each(Mounts.list(ws.path), &Mounts.set_enabled(&1.name, false))
+
+      write_mount!(ws.path, "aaa", "Mount AAA")
+      # "aaa" sorts before "bbb" and has no Workflows/ at all.
+
+      bbb = write_mount!(ws.path, "bbb", "Mount BBB")
+      write_triage_workflow!(bbb)
+
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["triage_workflow_path"] == "mounts/bbb/Workflows/New Inquiry Triage.md"
     end
   end
 end

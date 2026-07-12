@@ -420,13 +420,19 @@ defmodule Valea.Mail.EngineTest do
     """)
 
     # The raw tmp root this test module uses (unlike AgentCase's full
-    # template) has no icm/ tree at all; give workflow_contract something
-    # non-legacy to read so this test proves a genuine full-green run.
-    File.mkdir_p!(Path.join([root, "icm", "Workflows"]))
+    # template) has no mounts/ tree at all; give workflow_contract a
+    # discoverable, non-legacy triage workflow to read (Task A-T13:
+    # `Valea.Workflows.triage_path/1` requires a real mount — valid
+    # icm.yaml manifest plus a parseable frontmatter block — not just a
+    # file at the old hardcoded path) so this test proves a genuine
+    # full-green run.
+    mount_dir = Path.join([root, "mounts", "starter"])
+    File.mkdir_p!(Path.join(mount_dir, "Workflows"))
+    Valea.Mounts.Manifest.write!(mount_dir, %{id: "starter-id", name: "Starter", description: ""})
 
     File.write!(
-      Path.join([root, "icm", "Workflows", "New Inquiry Triage.md"]),
-      "Inputs: a `sources/mail/messages/*.md` file.\n"
+      Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]),
+      "---\nenabled: true\n---\n# New Inquiry Triage\n\nInputs: a `sources/mail/messages/*.md` file.\n"
     )
 
     start_engine!(root, 18)

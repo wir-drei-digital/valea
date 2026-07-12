@@ -29,19 +29,62 @@ defmodule Valea.Workflows do
 
   alias Valea.Mounts
   alias Valea.Mounts.Manifest
+  alias Valea.Workspace.Manager
+
+  # The seeded workflow's filename — stable across mounts (T8's scaffold
+  # seeds it at `mounts/<slug>/Workflows/New Inquiry Triage.md`; a
+  # by-reference or hand-authored mount could seed its own copy under a
+  # different mount name). `triage_path/0,1` matches on this basename alone,
+  # deliberately mount-agnostic — see their docs.
+  @triage_filename "New Inquiry Triage.md"
 
   @doc "All workflow contracts across every enabled mount, `{:ok, []}` when no workspace is open."
   @spec list() :: {:ok, [map()]}
   def list do
-    case Mounts.enabled() do
-      {:ok, mounts} ->
-        {:ok,
-         mounts
-         |> Enum.flat_map(&workflows_for_mount/1)
-         |> Enum.sort_by(& &1.path)}
+    case Manager.current() do
+      {:ok, %{path: ws}} -> {:ok, list(ws)}
+      {:error, :no_workspace} -> {:ok, []}
+    end
+  end
 
-      {:error, :no_workspace} ->
-        {:ok, []}
+  @doc "Pure form of `list/0` — every workflow contract across `workspace`'s enabled mounts, sorted by path."
+  @spec list(workspace :: String.t()) :: [map()]
+  def list(workspace) when is_binary(workspace) do
+    workspace
+    |> Mounts.enabled()
+    |> Enum.flat_map(&workflows_for_mount/1)
+    |> Enum.sort_by(& &1.path)
+  end
+
+  @doc """
+  The workspace-relative path of the seeded New Inquiry Triage workflow, or
+  `nil` when no enabled mount has one — the discovery `Valea.Cockpit` and
+  `Valea.Mail.Doctor` both use in place of the old hardcoded
+  `icm/Workflows/New Inquiry Triage.md` (Task A-T13).
+
+  Picks the FIRST match in `list/0`'s own sort order (by `path`, which
+  sorts by owning mount name first since every path is prefixed
+  `mounts/<name>/...` — i.e. the first enabled mount, alphabetically, that
+  has a `Workflows/New Inquiry Triage.md`). A mount earlier in that order
+  without the file is skipped, not a dead end — see `triage_path/1`'s
+  sibling doc.
+  """
+  @spec triage_path() :: String.t() | nil
+  def triage_path do
+    {:ok, workflows} = list()
+    find_triage(workflows)
+  end
+
+  @doc "Pure form of `triage_path/0` for `workspace`."
+  @spec triage_path(workspace :: String.t()) :: String.t() | nil
+  def triage_path(workspace) when is_binary(workspace) do
+    workspace |> list() |> find_triage()
+  end
+
+  defp find_triage(workflows) do
+    case Enum.find(workflows, &(Path.basename(&1.path) == @triage_filename)) do
+      nil -> nil
+      wf -> wf.path
     end
   end
 

@@ -31,14 +31,18 @@ defmodule Valea.Mail.Doctor do
          (`ctx.transport.capabilities/1`) are siblings computed off the
          same live `conn` once `login_ok` is `"ok"` — one's result never
          gates the other.
-    5. `workflow_contract` — reads `icm/Workflows/New Inquiry Triage.md`
-       under `ctx.root` and warns if it still names the legacy JSON input.
-       This is a **local file check with no mailbox dependency**, so it is
-       gated on config_present alone (step 1), not on credential/network/
-       login state — a broken workflow contract is worth surfacing even
-       before an account is fully connected. (It is still `"unknown"` when
+    5. `workflow_contract` — discovers the seeded New Inquiry Triage
+       workflow via `Valea.Workflows.triage_path/1` (the first enabled
+       mount, by the registry's own sort order, with a `Workflows/New
+       Inquiry Triage.md` — Task A-T13; no more hardcoded
+       `icm/Workflows/New Inquiry Triage.md`), reads it under `ctx.root`,
+       and warns if it still names the legacy JSON input. This is a
+       **local file check with no mailbox dependency**, so it is gated on
+       config_present alone (step 1), not on credential/network/login
+       state — a broken workflow contract is worth surfacing even before an
+       account is fully connected. (It is still `"unknown"` when
        `config_present` itself failed, matching every other check, and
-       `"unknown"` — not `"failed"` — when the Triage page doesn't exist at
+       `"unknown"` — not `"failed"` — when no mount has the Triage page at
        all: an absent probe target, not a probed-and-broken one.)
 
   `run/1` never raises: every transport call is caught, and an unexpected
@@ -63,7 +67,6 @@ defmodule Valea.Mail.Doctor do
         }
 
   @gen_tcp_timeout_ms 5_000
-  @triage_rel_path Path.join(["icm", "Workflows", "New Inquiry Triage.md"])
   @ai_folder_keys [:review, :processed]
 
   @gate_detail "not checked — an earlier check failed."
@@ -358,27 +361,32 @@ defmodule Valea.Mail.Doctor do
   end
 
   defp workflow_contract(ctx, true) do
-    path = Path.join(ctx.root, @triage_rel_path)
+    case Valea.Workflows.triage_path(ctx.root) do
+      nil -> workflow_contract_absent()
+      rel_path -> workflow_contract_read(ctx.root, rel_path)
+    end
+  end
 
-    case File.read(path) do
-      {:ok, content} -> workflow_contract_result(content)
+  defp workflow_contract_read(root, rel_path) do
+    case File.read(Path.join(root, rel_path)) do
+      {:ok, content} -> workflow_contract_result(content, rel_path)
       {:error, _reason} -> workflow_contract_absent()
     end
   end
 
-  defp workflow_contract_result(content) do
+  defp workflow_contract_result(content, rel_path) do
     if String.contains?(content, "normalized/") or String.contains?(content, ".json") do
       failed(
         "workflow_contract",
         "Workflow contract",
-        "icm/Workflows/New Inquiry Triage.md still references the legacy JSON input.",
+        "#{rel_path} still references the legacy JSON input.",
         @workflow_remedy
       )
     else
       ok(
         "workflow_contract",
         "Workflow contract",
-        "icm/Workflows/New Inquiry Triage.md matches the current mail message contract."
+        "#{rel_path} matches the current mail message contract."
       )
     end
   end
@@ -387,7 +395,7 @@ defmodule Valea.Mail.Doctor do
     unknown(
       "workflow_contract",
       "Workflow contract",
-      "icm/Workflows/New Inquiry Triage.md was not found."
+      "No New Inquiry Triage workflow was found in any enabled mount."
     )
   end
 

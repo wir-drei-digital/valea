@@ -20,6 +20,16 @@ defmodule Valea.Cockpit do
   guards this exactly the way `Valea.Audit.entries/1` guards its own
   GenServer call, so a dead/absent Engine degrades to the zero/unconfigured
   default instead of crashing this call with `:noproc`.
+
+  Task A-T13 adds a second live field, `"triage_workflow_path"`: the
+  workspace-relative path of the seeded New Inquiry Triage workflow
+  (`Valea.Workflows.triage_path/0` — the first enabled mount, by the
+  registry's own sort order, that has a `Workflows/New Inquiry Triage.md`),
+  or `nil` when none exists. This replaces the frontend's own hardcoded
+  `icm/Workflows/New Inquiry Triage.md` constant (that swap is a later
+  task); unlike `mail`, this needs no GenServer/whereis guard — `Workflows`
+  reads the filesystem directly and already degrades to `{:ok, []}` when no
+  workspace is open.
   """
 
   @doc """
@@ -35,6 +45,7 @@ defmodule Valea.Cockpit do
     - "open_loops": unresolved items
     - "while_you_were_away": background activity notifications
     - "mail": `%{"review_count", "inbox_count", "configured"}` — live, see moduledoc
+    - "triage_workflow_path": seeded triage workflow's path, or nil — live, see moduledoc
   """
   def today do
     {:ok,
@@ -127,7 +138,8 @@ defmodule Valea.Cockpit do
          "3 workflows ran: inquiry triage, session prep, receipt capture",
          "Moved 4 newsletters to Reading · Undo"
        ],
-       "mail" => mail_summary()
+       "mail" => mail_summary(),
+       "triage_workflow_path" => Valea.Workflows.triage_path()
      }}
   end
 
