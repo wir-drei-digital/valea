@@ -134,6 +134,31 @@ defmodule Valea.ICM.Watcher do
 
   def start_link(root), do: GenServer.start_link(__MODULE__, root, name: __MODULE__)
 
+  @doc """
+  Best-effort snapshot of the external mount roots this process's DYNAMIC
+  listener currently covers (see moduledoc) — the same `external_roots`
+  map's keys this GenServer itself recomputes on discovery/
+  `{:mounts_changed}`, as a `MapSet` of canonical (realpath-resolved)
+  absolute paths. Public so `Valea.Mounts.Doctor`'s `watcher_live` check can
+  ask "is THIS root currently watched" without reaching into `:sys.get_state`
+  outside tests — cleaner than exposing internal state for a single-field
+  read.
+
+  Returns an empty `MapSet` when this GenServer isn't registered (no
+  workspace open, or a race during open/close) rather than raising — a
+  doctor check must degrade gracefully, never crash its caller. Mirrors the
+  `Process.whereis/1` guard `Valea.Audit`/`Valea.Cockpit` already use for the
+  same "this process may legitimately not exist" situation.
+  """
+  @spec watched_roots() :: MapSet.t(String.t())
+  def watched_roots do
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :watched_roots)
+    else
+      MapSet.new()
+    end
+  end
+
   @impl true
   def init(root) do
     mounts_path = Path.join(root, "mounts")
@@ -181,6 +206,11 @@ defmodule Valea.ICM.Watcher do
        queue_timer: nil,
        recompute_timer: nil
      }}
+  end
+
+  @impl true
+  def handle_call(:watched_roots, _from, state) do
+    {:reply, MapSet.new(Map.keys(state.external_roots)), state}
   end
 
   @impl true
