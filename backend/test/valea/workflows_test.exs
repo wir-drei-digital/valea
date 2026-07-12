@@ -28,6 +28,46 @@ defmodule Valea.WorkflowsTest do
     File.write!(Path.join([mount_dir, "Workflows", filename]), content)
   end
 
+  # Declares an external (kind: "path") mount in the workspace's existing
+  # config/workspace.yaml, preserving version/id and every existing mount
+  # entry (e.g. this suite's setup-time set_enabled overlays).
+  defp declare_external!(ws_path, name, ref) do
+    config_path = Path.join(ws_path, "config/workspace.yaml")
+    {:ok, doc} = YamlElixir.read_from_file(config_path)
+
+    mounts = Map.put(Map.get(doc, "mounts") || %{}, name, %{"kind" => "path", "ref" => ref})
+
+    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
+
+    entries =
+      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+        [
+          "  #{n}:"
+          | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
+              "    #{k}: #{render_scalar(v)}"
+            end)
+        ]
+      end)
+
+    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+  end
+
+  defp render_scalar(v) when is_binary(v), do: inspect(v)
+  defp render_scalar(v), do: to_string(v)
+
+  defp external_icm!(name) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+    dir
+  end
+
   @triage_frontmatter """
   enabled: true
   trigger: { type: manual, source: email.selected }
@@ -96,6 +136,24 @@ defmodule Valea.WorkflowsTest do
     b_wf = Enum.find(workflows, &(&1.path == "mounts/b/Workflows/Shared.md"))
     assert a_wf.name == "A Shared"
     assert b_wf.name == "B Shared"
+  end
+
+  test "external mounts' workflows are not yet surfaced in list/1 (A2-T5b) — embedded only, no crash",
+       %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    write_workflow!(a, "Triage.md", "enabled: true\nrisk_level: low\n", "# Triage\n\nBody.\n")
+
+    ext = external_icm!("Ext")
+    write_workflow!(ext, "External.md", "enabled: true\nrisk_level: low\n", "# Ext WF\n\nBody.\n")
+    declare_external!(ws, "ext", ext)
+
+    # Sanity: the external mount IS effective — its workflows are excluded
+    # deliberately (rel_root: nil has no workspace-relative form for a
+    # workflow's `mounts/<name>/…` path), not because it failed to resolve.
+    assert "ext" in Enum.map(Mounts.enabled(ws), & &1.name)
+
+    workflows = Workflows.list(ws)
+    assert Enum.map(workflows, & &1.path) == ["mounts/a/Workflows/Triage.md"]
   end
 
   test "disabling a mount drops its workflows from list/0, but get/1 by explicit path still resolves it (T3 posture)",
@@ -187,7 +245,7 @@ defmodule Valea.WorkflowsTest do
   test "get/1 with a path that traverses from one mount into another returns not_found", %{
     workspace: ws
   } do
-    a = write_mount!(ws, "a", "Mount A")
+    _a = write_mount!(ws, "a", "Mount A")
     b = write_mount!(ws, "b", "Mount B")
     write_workflow!(b, "Secret.md", "enabled: true\n", "# Secret\n\nBody.\n")
 

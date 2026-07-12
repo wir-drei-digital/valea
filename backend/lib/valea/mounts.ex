@@ -146,12 +146,15 @@ defmodule Valea.Mounts do
       EMBEDDED mount named `<name>`, if `list/1` discovers one — regardless
       of that mount's `enabled`/`degraded` state (unchanged from before
       external mounts existed; every existing embedded-editor caller passes
-      this shape).
+      this shape). An external-only name never matches this shape — the
+      `mounts/<name>` form is the embedded addressing scheme; external
+      content is addressed by absolute path only.
     * an ABSOLUTE path (external content has no workspace-relative form —
       it lives outside the workspace) attributes to whichever EXTERNAL
       mount's `root` it falls under, segment-boundary (`/a/b` does not match
-      a `/a/bc` root) — but ONLY among ENABLED, non-degraded external
-      mounts. A degraded external mount's `root` may carry a resolved path
+      a `/a/bc` root); with NESTED declared roots the most-specific
+      (longest) matching root wins — but ONLY among ENABLED, non-degraded
+      external mounts. A degraded external mount's `root` may carry a resolved path
       a hand-edited config pointed at `$HOME`, `/`, or an ancestor of the
       workspace (preserved on the struct for recovery, never for trust —
       see `Valea.Mounts.External`'s moduledoc); matching attribution
@@ -172,8 +175,16 @@ defmodule Valea.Mounts do
     mounts = list(workspace)
 
     case mount_name_from_rel_path(rel_path) do
-      nil -> Enum.find(mounts, &external_root_match?(&1, rel_path))
-      name -> Enum.find(mounts, &(&1.name == name))
+      nil ->
+        mounts
+        |> Enum.filter(&external_root_match?(&1, rel_path))
+        |> most_specific_root()
+
+      # The `mounts/<name>` rel-path shape is the EMBEDDED addressing
+      # scheme -- external content is addressed by absolute path only, so
+      # an external-only name never matches here (`rel_root: nil`).
+      name ->
+        Enum.find(mounts, &(&1.rel_root != nil and &1.name == name))
     end
   end
 
@@ -185,6 +196,12 @@ defmodule Valea.Mounts do
   end
 
   defp external_root_match?(_embedded, _path), do: false
+
+  # With NESTED external roots (one declared root inside another), a path
+  # in the inner mount is under BOTH -- the most-specific (longest) root
+  # owns it, never whichever name happens to sort first.
+  defp most_specific_root([]), do: nil
+  defp most_specific_root(matches), do: Enum.max_by(matches, &byte_size(&1.root))
 
   # Segment-boundary "is `path` under (or equal to) `root`?" -- mirrors
   # `Valea.Mounts.External`'s own `under?/2`: a trailing-slash join, never a

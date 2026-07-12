@@ -511,12 +511,18 @@ defmodule Valea.Agents.SessionServer do
     %{state | watchdog: nil}
   end
 
-  # `["sources"]` plus every ENABLED mount's `rel_root` ("mounts/<name>") —
-  # the read boundary `PermissionPolicy` checks reads against. A disabled or
-  # degraded mount is simply absent from this list (see
-  # `Valea.Mounts.enabled/1`), so its reads fall through to `PermissionPolicy`'s
-  # `:ask` — never a hard deny, deny is reserved for the protected dirs.
-  defp read_roots(workspace), do: ["sources" | Enum.map(Mounts.enabled(workspace), & &1.rel_root)]
+  # `["sources"]` plus every ENABLED, EMBEDDED mount's `rel_root`
+  # ("mounts/<name>") — the read boundary `PermissionPolicy` checks reads
+  # against. A disabled or degraded mount is simply absent from this list
+  # (see `Valea.Mounts.enabled/1`), so its reads fall through to
+  # `PermissionPolicy`'s `:ask` — never a hard deny, deny is reserved for
+  # the protected dirs. EXTERNAL (by-reference) mounts have `rel_root: nil`
+  # (no workspace-relative form — `PermissionPolicy` would crash on it) and
+  # are deliberately absent too: their absolute roots join via extra_roots
+  # in A2-T3.
+  defp read_roots(workspace) do
+    ["sources" | for(%{rel_root: rel} <- Mounts.enabled(workspace), rel != nil, do: rel)]
+  end
 
   defp version, do: to_string(Application.spec(:valea, :vsn) || "0.0.0")
 

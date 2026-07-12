@@ -119,6 +119,12 @@ defmodule Valea.Workflows do
     end
   end
 
+  # EXTERNAL (by-reference) mounts have `rel_root: nil` — `parse/2` builds a
+  # workflow's workspace-relative `mounts/<name>/…` path from it, a form
+  # external content does not have. Their workflows are deliberately not
+  # surfaced yet; A2-T5b adds external workflows to `list/0,1`.
+  defp workflows_for_mount(%{rel_root: nil}), do: []
+
   defp workflows_for_mount(%{manifest: %Manifest{}} = mount) do
     mount.root
     |> Path.join("Workflows")

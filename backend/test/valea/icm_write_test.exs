@@ -20,7 +20,7 @@ defmodule Valea.ICMWriteTest do
     # `path: "<rel>"` frontmatter convention (no `icm/` prefix) — naming the
     # workspace "Primary" lands that mount at exactly `mounts/primary`, the
     # path every rename/reference assertion below addresses.
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
+    {:ok, _ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
 
     on_exit(fn ->
       Manager.close()

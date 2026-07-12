@@ -22,6 +22,48 @@ defmodule Valea.Agents.SessionReadRootsTest do
     :sys.get_state(pid).policy_ctx
   end
 
+  # Declares an external (kind: "path") mount in the workspace's existing
+  # config/workspace.yaml, preserving version/id and every existing mount
+  # entry.
+  defp declare_external!(ws_path, name, ref) do
+    config_path = Path.join(ws_path, "config/workspace.yaml")
+    {:ok, doc} = YamlElixir.read_from_file(config_path)
+
+    mounts =
+      (Map.get(doc, "mounts") || %{})
+      |> Map.put(name, %{"kind" => "path", "ref" => ref})
+
+    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
+
+    entries =
+      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+        [
+          "  #{n}:"
+          | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
+              "    #{k}: #{render_scalar(v)}"
+            end)
+        ]
+      end)
+
+    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+  end
+
+  defp render_scalar(v) when is_binary(v), do: inspect(v)
+  defp render_scalar(v), do: to_string(v)
+
+  defp external_icm!(name) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    Valea.Mounts.Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+    dir
+  end
+
   test "a started chat session's read_roots is [\"sources\", \"mounts/primary\"] — computed from Mounts.enabled",
        %{workspace: workspace} do
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
@@ -39,6 +81,25 @@ defmodule Valea.Agents.SessionReadRootsTest do
     on_exit(fn -> AgentCase.kill_session(id) end)
 
     assert %{read_roots: ["sources"]} = policy_ctx_for(id)
+  end
+
+  test "external mounts are not yet surfaced in read_roots (A2-T5b) — embedded + sources only, never nil",
+       %{workspace: workspace} do
+    ext = external_icm!("Ext")
+    declare_external!(workspace, "ext", ext)
+
+    # Sanity: the external mount IS effective — it's excluded from
+    # read_roots deliberately (rel_root: nil has no workspace-relative
+    # form; external roots join via extra_roots in A2-T3), not because it
+    # failed to resolve.
+    assert "ext" in Enum.map(Valea.Mounts.enabled(workspace), & &1.name)
+
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
+    on_exit(fn -> AgentCase.kill_session(id) end)
+
+    assert %{read_roots: read_roots} = policy_ctx_for(id)
+    refute nil in read_roots
+    assert Enum.sort(read_roots) == ["mounts/primary", "sources"]
   end
 
   test "an explicit policy_ctx read_roots is NOT clobbered by the computed default",

@@ -29,7 +29,8 @@ defmodule Valea.ICM do
   impossible for the UI to ever inspect or fix a disabled mount's content.
 
   `tree/0` is the one function scoped to `Mounts.enabled/0`: it returns one
-  entry per ENABLED, non-degraded mount, grouped:
+  entry per ENABLED, non-degraded EMBEDDED mount (external `rel_root: nil`
+  mounts are not surfaced until A2-T5b), grouped:
 
       {:ok, [%{mount: name, title: manifest_name, root_rel: "mounts/<name>",
                tree: [<node>, ...]}, ...]}
@@ -47,7 +48,13 @@ defmodule Valea.ICM do
   def tree do
     with {:ok, mounts} <- Mounts.enabled() do
       {:ok,
-       Enum.map(mounts, fn m ->
+       mounts
+       # EXTERNAL (by-reference) mounts have `rel_root: nil` — no
+       # workspace-relative form for the `mounts/<name>/…` node paths this
+       # tree is built from. They are deliberately not surfaced here yet;
+       # A2-T5b adds external groups to the tree.
+       |> Enum.reject(&is_nil(&1.rel_root))
+       |> Enum.map(fn m ->
          %{
            mount: m.name,
            title: m.manifest.name,

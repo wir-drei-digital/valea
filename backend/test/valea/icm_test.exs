@@ -12,6 +12,46 @@ defmodule Valea.ICMTest do
     Manifest.write!(dir, %{id: "id-" <> name, name: title, description: ""})
   end
 
+  # Declares an external (kind: "path") mount in the workspace's existing
+  # config/workspace.yaml, preserving version/id and every existing mount
+  # entry.
+  defp declare_external!(ws_path, name, ref) do
+    config_path = Path.join(ws_path, "config/workspace.yaml")
+    {:ok, doc} = YamlElixir.read_from_file(config_path)
+
+    mounts = Map.put(Map.get(doc, "mounts") || %{}, name, %{"kind" => "path", "ref" => ref})
+
+    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
+
+    entries =
+      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+        [
+          "  #{n}:"
+          | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
+              "    #{k}: #{render_scalar(v)}"
+            end)
+        ]
+      end)
+
+    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+  end
+
+  defp render_scalar(v) when is_binary(v), do: inspect(v)
+  defp render_scalar(v), do: to_string(v)
+
+  defp external_icm!(name) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+    dir
+  end
+
   setup do
     dir =
       Path.join(
@@ -86,6 +126,22 @@ defmodule Valea.ICMTest do
     # the mount's own manifest is infrastructure, not knowledge content —
     # never listed at the mount root
     refute Enum.any?(mount.tree, &(&1.name == "icm.yaml"))
+  end
+
+  test "external mounts are not yet surfaced in tree/0 (A2-T5b) — embedded groups only, no crash",
+       %{ws: ws} do
+    ext = external_icm!("Ext")
+    File.mkdir_p!(Path.join(ext, "Offers"))
+    File.write!(Path.join(ext, "Offers/X.md"), "# X\n")
+    declare_external!(ws, "ext", ext)
+
+    # Sanity: the external mount IS effective — it's excluded from tree/0
+    # deliberately (no workspace-relative form for the tree's
+    # `mounts/<name>/…` paths), not because it failed to resolve.
+    assert "ext" in Enum.map(Mounts.enabled(ws), & &1.name)
+
+    assert {:ok, groups} = ICM.tree()
+    assert Enum.map(groups, & &1.mount) == ["primary"]
   end
 
   test "page reads content with title and uri" do

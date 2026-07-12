@@ -422,6 +422,62 @@ defmodule Valea.MountsTest do
     test "an absolute path outside any declared external root returns nil", %{root: root} do
       assert Mounts.mount_for(root, "/definitely/not/a/mount/path") == nil
     end
+
+    test "a mounts/<name> rel path never attributes to an external-only name — embedded shape only",
+         %{root: root, ext: ext} do
+      # `ext` is declared as external mount "outside" (setup); there is no
+      # embedded mounts/outside directory. The `mounts/<name>` rel-path
+      # shape is the EMBEDDED addressing scheme — external content is
+      # addressed by absolute path only.
+      refute File.dir?(Path.join([root, "mounts", "outside"]))
+      assert File.dir?(ext)
+
+      assert Mounts.mount_for(root, "mounts/outside/Offers/X.md") == nil
+    end
+
+    test "nested external roots: most-specific root wins when the OUTER name sorts first" do
+      %{ws: ws, inner: inner, outer: outer} = nested_external_ws!("a-outer", "z-inner")
+
+      assert %{name: "z-inner"} = Mounts.mount_for(ws, Path.join(inner.root, "X.md"))
+      # a path under outer but NOT under inner still attributes to outer.
+      assert %{name: "a-outer"} = Mounts.mount_for(ws, Path.join(outer.root, "Y.md"))
+    end
+
+    test "nested external roots: most-specific root wins when the INNER name sorts first" do
+      %{ws: ws, inner: inner, outer: outer} = nested_external_ws!("z-outer", "a-inner")
+
+      assert %{name: "a-inner"} = Mounts.mount_for(ws, Path.join(inner.root, "X.md"))
+      assert %{name: "z-outer"} = Mounts.mount_for(ws, Path.join(outer.root, "Y.md"))
+    end
+  end
+
+  # Two effective external mounts, one root nested inside the other —
+  # attribution for a path in the inner mount must pick the most-specific
+  # (longest) root, never the first name alphabetically.
+  defp nested_external_ws!(outer_name, inner_name) do
+    outer = tmp_dir!("valea-mounts-outer")
+    inner = Path.join(outer, "inner")
+    write_manifest!(outer, %{id: "id-outer", name: "Outer", description: ""})
+    write_manifest!(inner, %{id: "id-inner", name: "Inner", description: ""})
+    File.write!(Path.join(inner, "X.md"), "# X")
+
+    ws = tmp_dir!("valea-mounts-nested-ws")
+
+    write_workspace_yaml!(ws, """
+    mounts:
+      #{outer_name}:
+        kind: path
+        ref: "#{outer}"
+      #{inner_name}:
+        kind: path
+        ref: "#{inner}"
+    """)
+
+    [inner_mount] = Mounts.list(ws) |> Enum.filter(&(&1.name == inner_name))
+    [outer_mount] = Mounts.list(ws) |> Enum.filter(&(&1.name == outer_name))
+    assert inner_mount.degraded == nil
+    assert outer_mount.degraded == nil
+    %{ws: ws, inner: inner_mount, outer: outer_mount}
   end
 
   describe "set_enabled/2 — current workspace" do
