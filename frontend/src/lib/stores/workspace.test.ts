@@ -49,6 +49,30 @@ describe('WorkspaceStore', () => {
   });
 });
 
+describe('WorkspaceStore.adopt', () => {
+  it('calls api.adoptWorkspace with parentDir/name/icmSourcePath, then refreshes on success', async () => {
+    const api = fakeApi(true, 1) as any;
+    api.adoptWorkspace = vi.fn(async () => ({ ok: true as const, data: {} }));
+    const store = new WorkspaceStore(api as never);
+
+    const result = await store.adopt('/Users/mara', 'Acme', '/Users/mara/Old Notes');
+
+    expect(result).toEqual({ ok: true });
+    expect(api.adoptWorkspace).toHaveBeenCalledWith('/Users/mara', 'Acme', '/Users/mara/Old Notes');
+    expect(store.state).toBe('open');
+  });
+
+  it('surfaces the adoptWorkspace error without refreshing', async () => {
+    const api = fakeApi(false) as any;
+    api.adoptWorkspace = vi.fn(async () => ({ ok: false as const, error: 'source_is_workspace' }));
+    const store = new WorkspaceStore(api as never);
+
+    const result = await store.adopt('/Users/mara', 'Acme', '/Users/mara/Already A Workspace');
+
+    expect(result).toEqual({ ok: false, error: 'source_is_workspace' });
+  });
+});
+
 describe('WorkspaceStore.switchTo', () => {
   function fakeApiWithOpen(generation = 3) {
     const api = fakeApi(true, generation) as any;

@@ -11,6 +11,10 @@ import {
   recentWorkspacesChannel,
   inspectWorkspace as httpInspectWorkspace,
   inspectWorkspaceChannel,
+  inspectPath as httpInspectPath,
+  inspectPathChannel,
+  adoptWorkspace as httpAdoptWorkspace,
+  adoptWorkspaceChannel,
   icmTree as httpIcmTree,
   icmTreeChannel,
   icmPage as httpIcmPage,
@@ -237,6 +241,17 @@ function callRecentWorkspacesChannel(channel: NonNullable<ReturnType<typeof chan
 
 function callInspectWorkspaceChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
   return wrapChannelCall((handlers) => inspectWorkspaceChannel({ channel, input, ...handlers }));
+}
+
+function callInspectPathChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
+  return wrapChannelCall((handlers) => inspectPathChannel({ channel, input, ...handlers }));
+}
+
+function callAdoptWorkspaceChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { parentDir: string; name: string; icmSourcePath: string }
+) {
+  return wrapChannelCall((handlers) => adoptWorkspaceChannel({ channel, input, ...handlers }));
 }
 
 function callIcmTreeChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
@@ -611,7 +626,33 @@ function callIcmEntryReferencesChannel(
 }
 
 /**
- * Typed shape of an `icm_page` RPC result. The backend action returns an
+ * Typed shape of an `inspect_path` RPC result — backs the open/create
+ * dialog's branch decision (`Valea.Workspace.Adopt.classify_path/1` on the
+ * backend; `decideOnboardingMode` in `components/onboarding/onboarding-path.ts`
+ * on this side). The backend action returns an unconstrained `:map`
+ * (`InferInspectPathResult = Record<string, any>`), so this is asserted by
+ * `normalizePathInspection` below rather than inferred by ash_typescript,
+ * mirroring `IcmPageData`/`normalizeIcmPage` just below.
+ *
+ * `name`/`description` come from the source's manifest and are only
+ * non-null when `kind === 'icm'`.
+ */
+export type PathInspection = {
+  kind: 'workspace' | 'icm' | 'other';
+  name: string | null;
+  description: string | null;
+};
+
+export function normalizePathInspection(raw: Record<string, any>): PathInspection {
+  return {
+    kind: raw.kind,
+    name: raw.name ?? null,
+    description: raw.description ?? null
+  };
+}
+
+/**
+ * Raw `icm_page` RPC result. The backend action returns an
  * unconstrained `:map` (`InferIcmPageResult = Record<string, any>` in the
  * generated client), so this is asserted by `normalizeIcmPage` below rather
  * than inferred by ash_typescript.
@@ -713,6 +754,21 @@ export const api = {
     runRpc(
       (channel) => callInspectWorkspaceChannel(channel, { path }),
       () => httpInspectWorkspace(withAuth({ input: { path } }))
+    ),
+
+  inspectPath: (path: string) =>
+    runRpc(
+      (channel) => callInspectPathChannel(channel, { path }),
+      () => httpInspectPath(withAuth({ input: { path } }))
+    ).then(
+      (result): ApiResult<PathInspection> =>
+        result.ok ? { ok: true, data: normalizePathInspection(result.data as Record<string, any>) } : result
+    ),
+
+  adoptWorkspace: (parentDir: string, name: string, icmSourcePath: string) =>
+    runRpc(
+      (channel) => callAdoptWorkspaceChannel(channel, { parentDir, name, icmSourcePath }),
+      () => httpAdoptWorkspace(withAuth({ input: { parentDir, name, icmSourcePath } }))
     ),
 
   icmTree: () => runRpc(callIcmTreeChannel, () => httpIcmTree(withAuth({ fields: icmTreeFields }))),

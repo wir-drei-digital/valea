@@ -14,7 +14,10 @@ export type WorkspaceState = 'loading' | 'none' | 'open';
  * Minimal surface of `api` this store depends on — lets the brief's test
  * inject a fake without implementing all 8 wrapped calls.
  */
-type WorkspaceApi = Pick<Api, 'getWorkspace' | 'recentWorkspaces' | 'createWorkspace' | 'openWorkspace'>;
+type WorkspaceApi = Pick<
+  Api,
+  'getWorkspace' | 'recentWorkspaces' | 'createWorkspace' | 'openWorkspace' | 'adoptWorkspace'
+>;
 
 export class WorkspaceStore {
   state: WorkspaceState = $state('loading');
@@ -73,6 +76,26 @@ export class WorkspaceStore {
 
   async open(path: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const result = await this.#api.openWorkspace(path);
+    if (!result.ok) return { ok: false, error: result.error };
+
+    await this.refresh();
+    return { ok: true };
+  }
+
+  /**
+   * ICM-aware onboarding (A-T16): adopts an existing, non-workspace
+   * knowledge folder into a brand-new workspace BY MOVE — see
+   * `Valea.Workspace.Adopt` on the backend. Mirrors `create`/`open` above:
+   * only refreshes on success, so a rejected adopt (source already a
+   * workspace, nested in one, a cycle, cross-device, ...) leaves the
+   * store's current state untouched.
+   */
+  async adopt(
+    parentDir: string,
+    name: string,
+    icmSourcePath: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const result = await this.#api.adoptWorkspace(parentDir, name, icmSourcePath);
     if (!result.ok) return { ok: false, error: result.error };
 
     await this.refresh();

@@ -2550,6 +2550,73 @@ export async function rejectQueueItemChannel<Fields extends RejectQueueItemField
 }
 
 
+export type AdoptWorkspaceInput = {
+  parentDir: string;
+  name: string;
+  icmSourcePath: string;
+};
+
+export type InferAdoptWorkspaceResult = Record<string, any>;
+
+export type AdoptWorkspaceResult = | { success: true; data: InferAdoptWorkspaceResult; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function adoptWorkspace(
+  config: {
+  tenant?: string;
+  input: AdoptWorkspaceInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<AdoptWorkspaceResult> {
+  const payload = {
+    action: "adopt_workspace",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeActionRpcRequest<AdoptWorkspaceResult>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function adoptWorkspaceChannel(config: {
+  channel: Channel;
+  tenant?: string;
+  input: AdoptWorkspaceInput;
+  resultHandler: (result: AdoptWorkspaceResult) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<AdoptWorkspaceResult>(
+    config.channel,
+    {
+    action: "adopt_workspace",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type InferCloseWorkspaceResult = Record<string, any>;
 
 export type CloseWorkspaceResult = | { success: true; data: InferCloseWorkspaceResult; }
@@ -2723,6 +2790,71 @@ export async function getWorkspaceChannel(config: {
     {
     action: "get_workspace",
     ...(config.tenant !== undefined && { tenant: config.tenant })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type InspectPathInput = {
+  path: string;
+};
+
+export type InferInspectPathResult = Record<string, any>;
+
+export type InspectPathResult = | { success: true; data: InferInspectPathResult; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function inspectPath(
+  config: {
+  tenant?: string;
+  input: InspectPathInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<InspectPathResult> {
+  const payload = {
+    action: "inspect_path",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeActionRpcRequest<InspectPathResult>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function inspectPathChannel(config: {
+  channel: Channel;
+  tenant?: string;
+  input: InspectPathInput;
+  resultHandler: (result: InspectPathResult) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<InspectPathResult>(
+    config.channel,
+    {
+    action: "inspect_path",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
   },
     config.timeout,
     config
