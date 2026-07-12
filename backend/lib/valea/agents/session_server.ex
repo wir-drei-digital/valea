@@ -99,10 +99,21 @@ defmodule Valea.Agents.SessionServer do
     # `Valea.Workflows.Runner` (workflow) start sessions through
     # `Valea.Agents.start_session/1`, which lands here, so neither call site
     # needs its own Mounts lookup.
+    #
+    # `extra_roots` follows the exact same pattern — fresh at every session
+    # start, `put_new_lazy` so an explicit override is never clobbered, one
+    # computation site both call sites share — for `PermissionPolicy`'s
+    # OTHER read root list (A2-T3): the absolute real roots of every
+    # ENABLED, EXTERNAL (by-reference) mount. The same forward-footgun
+    # applies here as for `read_roots`: a future caller that pre-populates
+    # `policy_ctx[:extra_roots]` before calling `start_session/1` silently
+    # wins over this computed value, so double-check any such override still
+    # reflects the CURRENT `Mounts.enabled/1` state.
     policy_ctx =
       opts
       |> Map.get(:policy_ctx, %{})
       |> Map.put_new_lazy(:read_roots, fn -> read_roots(workspace) end)
+      |> Map.put_new_lazy(:extra_roots, fn -> extra_roots(workspace) end)
 
     case ProcessRuntime.start(
            %{cmd: spec.cmd, args: spec.args, env: spec.env, cd: workspace},
@@ -519,9 +530,22 @@ defmodule Valea.Agents.SessionServer do
   # the protected dirs. EXTERNAL (by-reference) mounts have `rel_root: nil`
   # (no workspace-relative form — `PermissionPolicy` would crash on it) and
   # are deliberately absent too: their absolute roots join via extra_roots
-  # in A2-T3.
+  # below (A2-T3).
   defp read_roots(workspace) do
     ["sources" | for(%{rel_root: rel} <- Mounts.enabled(workspace), rel != nil, do: rel)]
+  end
+
+  # The absolute, already-realpath-resolved real roots of every ENABLED,
+  # EXTERNAL (by-reference) mount — `rel_root: nil` is exactly the
+  # by-reference marker (an embedded mount's `rel_root` joins `read_roots`
+  # above instead). `PermissionPolicy` grants READS (never writes — write
+  # containment stays staging-path-only, see its moduledoc) under any of
+  # these, on top of the existing workspace `read_roots`. A disabled or
+  # degraded external mount is simply absent here too (`Mounts.enabled/1`
+  # excludes it), so its reads fall through to `PermissionPolicy`'s `:ask`
+  # — same non-deny treatment as a disabled embedded mount above.
+  defp extra_roots(workspace) do
+    for %{rel_root: nil, root: root} <- Mounts.enabled(workspace), do: root
   end
 
   defp version, do: to_string(Application.spec(:valea, :vsn) || "0.0.0")

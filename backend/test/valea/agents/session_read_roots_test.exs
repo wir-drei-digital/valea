@@ -83,23 +83,55 @@ defmodule Valea.Agents.SessionReadRootsTest do
     assert %{read_roots: ["sources"]} = policy_ctx_for(id)
   end
 
-  test "external mounts are not yet surfaced in read_roots (A2-T5b) — embedded + sources only, never nil",
+  test "external mounts stay OUT of read_roots but join extra_roots (A2-T3) — the workspace-relative and absolute read surfaces are tracked separately",
        %{workspace: workspace} do
     ext = external_icm!("Ext")
     declare_external!(workspace, "ext", ext)
 
     # Sanity: the external mount IS effective — it's excluded from
     # read_roots deliberately (rel_root: nil has no workspace-relative
-    # form; external roots join via extra_roots in A2-T3), not because it
-    # failed to resolve.
-    assert "ext" in Enum.map(Valea.Mounts.enabled(workspace), & &1.name)
+    # form; PermissionPolicy would crash on it), not because it failed to
+    # resolve. Its real root is what extra_roots carries instead.
+    enabled = Valea.Mounts.enabled(workspace)
+    assert "ext" in Enum.map(enabled, & &1.name)
+    assert %{root: ext_root} = Enum.find(enabled, &(&1.name == "ext"))
 
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
     on_exit(fn -> AgentCase.kill_session(id) end)
 
-    assert %{read_roots: read_roots} = policy_ctx_for(id)
+    assert %{read_roots: read_roots, extra_roots: extra_roots} = policy_ctx_for(id)
     refute nil in read_roots
     assert Enum.sort(read_roots) == ["mounts/primary", "sources"]
+    assert extra_roots == [ext_root]
+  end
+
+  test "disabling the external mount BEFORE a session starts excludes its root from that session's extra_roots — its reads then ask-gate, not deny",
+       %{workspace: workspace} do
+    ext = external_icm!("Ext")
+    declare_external!(workspace, "ext", ext)
+    :ok = Valea.Mounts.set_enabled("ext", false)
+
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
+    on_exit(fn -> AgentCase.kill_session(id) end)
+
+    assert %{extra_roots: []} = policy_ctx_for(id)
+  end
+
+  test "an explicit policy_ctx extra_roots is NOT clobbered by the computed default",
+       %{workspace: workspace} do
+    {:ok, %{id: id}} =
+      AgentCase.start_session(workspace, "happy", %{
+        policy_ctx: %{
+          workspace: workspace,
+          session_kind: "chat",
+          write_paths: [],
+          extra_roots: ["/some/explicit/root"]
+        }
+      })
+
+    on_exit(fn -> AgentCase.kill_session(id) end)
+
+    assert %{extra_roots: ["/some/explicit/root"]} = policy_ctx_for(id)
   end
 
   test "an explicit policy_ctx read_roots is NOT clobbered by the computed default",

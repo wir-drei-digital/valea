@@ -127,9 +127,20 @@ defmodule Valea.Agents.PermissionPolicyTest do
     assert :ask = PermissionPolicy.decide(it, chat)
   end
 
-  test "read of an absolute path outside the workspace -> deny", %{chat: chat} do
+  # Pre-A2-T3, ANY absolute path outside the workspace hit the same
+  # `{:error, :outside}` -> hard-deny path as a genuine workspace escape,
+  # because a fixed single root had no way to distinguish "unrecognized
+  # location" from "actively escaping a trusted root". Now that containment
+  # is a ROOT SET, an absolute path that never nominally claimed to be under
+  # any enabled root (workspace or extra_roots) is merely unrecognized ->
+  # ask-gate. A path that DID nominally claim an enabled root but resolves
+  # elsewhere (a symlink escape) is the one that stays hard-denied — see the
+  # extra_roots section below.
+  test "read of an absolute path under NO root (no extra_roots, not workspace) -> ask", %{
+    chat: chat
+  } do
     it = item("read", %{"file_path" => "/etc/passwd"})
-    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
+    assert :ask = PermissionPolicy.decide(it, chat)
   end
 
   # --- realpath regression at the policy level ---
@@ -235,5 +246,129 @@ defmodule Valea.Agents.PermissionPolicyTest do
     File.ln_s!("/etc/passwd", Path.join([ws, "mounts", "a", "escape"]))
     it = item("read", %{"file_path" => Path.join([ws, "mounts", "a", "escape"])})
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  # --- root-set containment: extra_roots (A2-T3, by-reference/external mounts) ---
+  #
+  # `ctx[:extra_roots]` is a list of ABSOLUTE, already-resolved-real external
+  # mount roots (mirroring `Valea.Mounts.enabled/1`'s `root` for a
+  # `rel_root: nil` mount). The read surface PermissionPolicy grants is the
+  # workspace root (existing read_roots logic, unchanged) UNION every
+  # extra_roots member. Write containment never consults extra_roots — reads
+  # only.
+
+  defp external_root! do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-policy-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    # Realpath-resolve exactly like `Valea.Mounts.External` resolves a
+    # declared mount's own root (`Path.expand/1` then the `resolve_real(p, p)`
+    # self-base trick), so these tests exercise the same absolute strings
+    # production code would put in `ctx[:extra_roots]`.
+    expanded = Path.expand(dir)
+
+    case Valea.Paths.resolve_real(expanded, expanded) do
+      {:ok, real} -> real
+      {:error, _} -> expanded
+    end
+  end
+
+  defp extra_ctx(ws, extra_roots) do
+    %{workspace: ws, session_kind: "chat", write_paths: [], extra_roots: extra_roots}
+  end
+
+  test "read under an extra_roots member -> allow", %{ws: ws} do
+    ext = external_root!()
+    File.write!(Path.join(ext, "note.md"), "hi")
+    ctx = extra_ctx(ws, [ext])
+
+    it = item("read", %{"file_path" => Path.join(ext, "note.md")})
+    assert {:allow, "allow_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "read under the same external root -> ask when its mount is disabled (absent from extra_roots)",
+       %{ws: ws} do
+    ext = external_root!()
+    File.write!(Path.join(ext, "note.md"), "hi")
+    ctx = extra_ctx(ws, [])
+
+    it = item("read", %{"file_path" => Path.join(ext, "note.md")})
+    assert :ask = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "a symlink inside an enabled extra_root escaping to an unenrolled location -> deny", %{
+    ws: ws
+  } do
+    ext = external_root!()
+    File.ln_s!("/etc/hosts", Path.join(ext, "escape"))
+    ctx = extra_ctx(ws, [ext])
+
+    it = item("read", %{"file_path" => Path.join(ext, "escape")})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "a symlink inside an enabled extra_root INTO workspace sources/ -> allow (lands in another enabled root)",
+       %{ws: ws} do
+    ext = external_root!()
+    File.ln_s!(Path.join([ws, "sources", "note.md"]), Path.join(ext, "into_ws"))
+    ctx = extra_ctx(ws, [ext])
+
+    it = item("read", %{"file_path" => Path.join(ext, "into_ws")})
+    assert {:allow, "allow_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "workspace deny-list still wins with extra_roots configured: secrets/ -> deny", %{ws: ws} do
+    ext = external_root!()
+    ctx = extra_ctx(ws, [ext])
+
+    it = item("read", %{"file_path" => Path.join([ws, "secrets", "notes.txt"])})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "prefix-boundary: an extra_roots member does not match a sibling dir sharing its prefix",
+       %{ws: ws} do
+    ext = external_root!()
+    sibling = ext <> "-other"
+    File.mkdir_p!(sibling)
+    on_exit(fn -> File.rm_rf!(sibling) end)
+    File.write!(Path.join(sibling, "file.md"), "hi")
+    ctx = extra_ctx(ws, [ext])
+
+    it = item("read", %{"file_path" => Path.join(sibling, "file.md")})
+    assert :ask = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "a deny-listed workspace path reached VIA an external symlink -> deny (walks into workspace secrets/)",
+       %{ws: ws} do
+    ext = external_root!()
+    File.ln_s!(Path.join([ws, "secrets", "notes.txt"]), Path.join(ext, "to_secrets"))
+    ctx = extra_ctx(ws, [ext])
+
+    it = item("read", %{"file_path" => Path.join(ext, "to_secrets")})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "write under an extra_roots member -> NOT allowed (write containment stays staging-only)",
+       %{ws: ws} do
+    ext = external_root!()
+    File.write!(Path.join(ext, "file.md"), "hi")
+    staging = Path.join([ws, "queue", "staging", "r1", "proposal.json"])
+
+    ctx = %{
+      workspace: ws,
+      session_kind: "workflow",
+      write_paths: [staging],
+      extra_roots: [ext]
+    }
+
+    it = item("edit", %{"file_path" => Path.join(ext, "file.md")})
+    refute match?({:allow, _}, PermissionPolicy.decide(it, ctx))
+    assert :ask = PermissionPolicy.decide(it, ctx)
   end
 end
