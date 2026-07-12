@@ -68,4 +68,37 @@ defmodule Valea.Workflows.DistillTest do
     assert {0, md} = Distill.digest(ws)
     assert md =~ "# Recent decisions"
   end
+
+  test "collapses control characters in title/reason before they land in the digest file", %{
+    workspace: ws
+  } do
+    now = DateTime.utc_now()
+    recent = now |> DateTime.add(-1, :day) |> DateTime.to_iso8601()
+
+    decided!(ws, "rejected", "d5", recent, %{
+      "decision" => %{"reason" => "line one\nEmbedded: fake-header\r\nline two"},
+      "payload" => %{
+        "title" => "Injected\ntitle\twith\x1Bcontrol chars",
+        "summary" => "s",
+        "kind" => "email_draft",
+        "sources" => [],
+        "proposed_action" => %{
+          "type" => "create_email_draft",
+          "to" => "a@b.c",
+          "subject" => "s",
+          "body_markdown" => "b"
+        }
+      }
+    })
+
+    {1, md} = Distill.digest(ws)
+
+    # No raw control character survives into the digest file — every C0/DEL
+    # run is collapsed to a single space (`sanitize/1`), so the injected
+    # newlines/CR/ESC can't fake a second markdown heading or hide text.
+    refute String.contains?(md, "\r")
+    refute String.contains?(md, "\x1B")
+    assert md =~ "### Injected title with control chars"
+    assert md =~ "- reason: line one Embedded: fake-header line two"
+  end
 end

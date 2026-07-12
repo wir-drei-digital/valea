@@ -158,6 +158,24 @@ defmodule Valea.Workflows.RunnerTest do
 
       assert started["input"] == expected_rel
     end
+
+    test "a traversal-shaped input_name is contained to the staging dir (Path.basename defense-in-depth)",
+         %{workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+      assert {:ok, %{run_id: run_id}} =
+               Runner.run_generated(@wf_path, "../../../../etc/passwd", "digest bytes")
+
+      # Basenamed to "passwd" and written INSIDE this run's own staging dir —
+      # never escaping it (and never touching the real /etc/passwd, which
+      # this process has no write access to regardless).
+      expected_rel = Path.join(["queue", "staging", run_id, "passwd"])
+      assert File.read!(Path.join(workspace, expected_rel)) == "digest bytes"
+
+      sidecar_path = Path.join([workspace, "queue", "staging", run_id, "run.json"])
+      sidecar = sidecar_path |> File.read!() |> Jason.decode!()
+      assert sidecar["input"] == expected_rel
+    end
   end
 
   test "run/2 accepts a workflow whose path resolves inside an enabled EXTERNAL mount root (A2-T5b)",
@@ -620,7 +638,7 @@ defmodule Valea.Workflows.RunnerTest do
   end
 
   # Mirrors the file's existing sidecar/staging setup (`sidecar/1` below,
-  # `start_run/6`'s own `run.json` shape) so `finalize/2` can be driven
+  # `start_run/5`'s own `run.json` shape) so `finalize/2` can be driven
   # directly against hand-seeded staging, same as every other finalize test
   # in this file.
   defp seed_run!(ws, run_id) do
