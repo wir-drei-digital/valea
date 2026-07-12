@@ -13,7 +13,7 @@ defmodule Valea.Workspace.Runtime do
   @impl true
   def init(%{root: root, generation: gen}) do
     children = [
-      {Valea.ICM.Watcher, {Path.join(root, "mounts"), Path.join(root, "queue")}},
+      {Valea.ICM.Watcher, root},
       {Valea.Audit, %{root: root, generation: gen}},
       {Valea.Mail.Engine, %{root: root, generation: gen}},
       Supervisor.child_spec(

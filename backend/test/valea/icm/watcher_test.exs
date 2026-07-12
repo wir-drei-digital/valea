@@ -1,6 +1,8 @@
 defmodule Valea.ICM.WatcherTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
@@ -224,5 +226,216 @@ defmodule Valea.ICM.WatcherTest do
   test "watcher dies with the workspace", %{ws: _ws} do
     Manager.close()
     refute Process.whereis(Valea.ICM.Watcher)
+  end
+
+  # -- A2-T5: external mount roots + config/workspace.yaml -----------------
+
+  # Mirrors `ValeaWeb.MountsRpcTest`/`Valea.Agents.SessionReadRootsTest`'s
+  # helper of the same name/shape: declares an external (`kind: "path"`)
+  # mount directly on disk, preserving `version`/`id` and every existing
+  # mount entry — a "hand edit" that bypasses the RPC layer entirely (the
+  # declare/undeclare RPC is a later task).
+  defp declare_external!(ws_path, name, ref) do
+    config_path = Path.join(ws_path, "config/workspace.yaml")
+    {:ok, doc} = YamlElixir.read_from_file(config_path)
+
+    mounts =
+      (Map.get(doc, "mounts") || %{})
+      |> Map.put(name, %{"kind" => "path", "ref" => ref})
+
+    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
+
+    entries =
+      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+        [
+          "  #{n}:"
+          | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
+              "    #{k}: #{render_scalar(v)}"
+            end)
+        ]
+      end)
+
+    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+  end
+
+  defp render_scalar(v) when is_binary(v), do: inspect(v)
+  defp render_scalar(v), do: to_string(v)
+
+  defp external_icm!(name) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-watcher-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+    dir
+  end
+
+  defp poll_until_mounts_changed(trigger, attempts_left \\ 10)
+
+  defp poll_until_mounts_changed(_trigger, 0) do
+    flunk("mounts_changed was never broadcast after repeated fs writes")
+  end
+
+  defp poll_until_mounts_changed(trigger, attempts_left) do
+    trigger.(attempts_left)
+
+    receive do
+      {:mounts_changed} -> :ok
+    after
+      300 -> poll_until_mounts_changed(trigger, attempts_left - 1)
+    end
+  end
+
+  test "a write under an enabled external mount's root broadcasts icm_changed, not mounts_changed",
+       %{ws: ws} do
+    ext = external_icm!("Ext")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
+
+    # Declaring the mount is itself discovery-relevant (a
+    # config/workspace.yaml write) — drive it through `poll_until_both` so
+    # its broadcasts are fully drained here, not left to race the
+    # content-only assertion below.
+    poll_until_both(fn _i -> declare_external!(ws.path, "ext", ext) end)
+    drain_any()
+
+    poll_until_broadcast(fn i ->
+      File.write!(Path.join(ext, "note-#{i}.md"), "# note")
+    end)
+
+    refute_received {:mounts_changed}
+  end
+
+  test "touching an enabled external mount's icm.yaml broadcasts both icm_changed and mounts_changed",
+       %{ws: ws} do
+    ext = external_icm!("Ext")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
+
+    poll_until_both(fn _i -> declare_external!(ws.path, "ext", ext) end)
+    drain_any()
+
+    poll_until_both(fn _i ->
+      Manifest.write!(ext, %{id: "ext-id", name: "Ext", description: "updated"})
+    end)
+  end
+
+  test "after disabling an external mount, changes under its former root no longer broadcast icm_changed",
+       %{ws: ws} do
+    ext = external_icm!("Ext")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
+
+    poll_until_both(fn _i -> declare_external!(ws.path, "ext", ext) end)
+    drain_any()
+
+    # Warm-up: prove the watcher is actively watching `ext` before relying
+    # on its absence below.
+    poll_until_broadcast(fn i -> File.write!(Path.join(ext, "warm-#{i}.md"), "warm") end)
+
+    # Disabling via `Mounts.set_enabled/2` directly (not the RPC layer)
+    # writes `config/workspace.yaml` — the ONLY reason this broadcasts at
+    # all is this watcher's own config/ discovery handling.
+    poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("ext", false) end)
+    drain_any()
+
+    File.write!(Path.join(ext, "post-disable.md"), "nope")
+
+    # No positive event to wait on for the (correctly) suppressed write
+    # above — use an unrelated queue/ broadcast, which itself takes a full
+    # debounce+retry cycle, as the time buffer, then assert absence.
+    poll_until_queue_broadcast(fn i ->
+      File.write!(Path.join(ws.path, "queue/pending/probe-#{i}.json"), "{}")
+    end)
+
+    refute_received {:icm_changed}
+  end
+
+  test "a missing external root does not crash the watcher on workspace open", %{ws: ws} do
+    missing_ref =
+      Path.join(System.tmp_dir!(), "valea-missing-ext-#{System.os_time(:nanosecond)}")
+
+    declare_external!(ws.path, "gone", missing_ref)
+
+    Manager.close()
+    {:ok, _reopened} = Manager.open(ws.path)
+
+    watcher_pid = Process.whereis(Valea.ICM.Watcher)
+    assert watcher_pid
+    assert Process.alive?(watcher_pid)
+  end
+
+  test "hand-editing config/workspace.yaml to declare an external mount broadcasts mounts_changed and regenerates MOUNTS.md + settings on disk",
+       %{ws: ws} do
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
+
+    ext = external_icm!("Ext")
+
+    poll_until_mounts_changed(fn _i -> declare_external!(ws.path, "ext", ext) end)
+
+    %{root: ext_root} = ws.path |> Valea.Mounts.enabled() |> Enum.find(&(&1.name == "ext"))
+
+    mounts_md = File.read!(Path.join(ws.path, "MOUNTS.md"))
+    assert mounts_md =~ "@#{ext_root}/AGENTS.md"
+
+    allow =
+      ws.path
+      |> Path.join(".claude/settings.json")
+      |> File.read!()
+      |> Jason.decode!()
+      |> get_in(["permissions", "allow"])
+
+    assert "Read(#{ext_root}/**)" in allow
+  end
+
+  test "a mounts_changed broadcast that doesn't change the external-root set does not restart the FileSystem process",
+       %{ws: _ws} do
+    before_pid = :sys.get_state(Valea.ICM.Watcher).watcher
+
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mounts", {:mounts_changed})
+
+    # No positive event to poll for here (a no-op recompute produces no
+    # broadcast) — the recompute is debounced 200ms, so a bounded sleep
+    # comfortably past that window is the only way to assert the negative
+    # (pid stability), mirroring `drain_any/0`'s own fixed-timeout idiom
+    # above.
+    Process.sleep(300)
+
+    after_pid = :sys.get_state(Valea.ICM.Watcher).watcher
+    assert after_pid == before_pid
+  end
+
+  test "a regeneration failure (unwritable workspace root) is rescued -- the watcher stays alive and still broadcasts",
+       %{ws: ws} do
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
+
+    # `config/workspace.yaml` lives in a SUBdirectory, whose own
+    # permissions are untouched, so the discovery write itself still
+    # succeeds; only writing `MOUNTS.md` (directly in `ws.path`) fails,
+    # exercising `regenerate_workspace_metadata/1`'s rescue for real
+    # instead of just by reasoning. Restored in an `on_exit` registered
+    # here, which — LIFO — runs BEFORE the outer `setup` block's
+    # `Manager.close/0` + `File.rm_rf!/1`.
+    File.chmod!(ws.path, 0o500)
+    on_exit(fn -> File.chmod!(ws.path, 0o700) end)
+
+    log =
+      capture_log(fn ->
+        poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("w", false) end)
+      end)
+
+    assert log =~ "Valea.ICM.Watcher: workspace metadata regeneration failed"
+
+    watcher_pid = Process.whereis(Valea.ICM.Watcher)
+    assert watcher_pid
+    assert Process.alive?(watcher_pid)
   end
 end
