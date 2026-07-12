@@ -107,14 +107,18 @@ technical detail is one toggle away, never the default.
 
 ## First run
 
-Onboarding is the principles made tangible: *"Welcome. Your business runs on a
-folder you own."* A fresh instance offers two paths — **set it up in
+Onboarding is the principles made tangible: *"Welcome. Your business runs on
+folders you own."* A fresh instance offers two paths — **set it up in
 conversation** (about 15 minutes of talking; the assistant builds the workspace
 as you go, and you approve each page it writes; nothing connects without
 asking) or **open an existing workspace** (from a consultant handoff, a backup,
-or another machine — everything picks up where it left off). The trust bar
-states the deal plainly: runs on this machine, keys stay in the system
-keychain, export or walk away with the folder anytime.
+or another machine — everything picks up where it left off). Pointing that
+second path at a folder that looks like a knowledge module instead of a full
+workspace offers to mount it — **by reference, read right where it already
+lives** (the default), or moved in — as a module alongside a fresh workspace,
+never overwriting one. The trust bar states the deal plainly: runs on this
+machine, keys stay in the system keychain, export or walk away with the
+folder — or folders — anytime.
 
 ## The daily loop we're building toward
 
@@ -164,7 +168,7 @@ project's proven scaffold. Full decisions per feature live in
    hardened approval queue + audit log, prepared card on Today. Adopts the
    ICM paper's Layer 0/1 as combined root `AGENTS.md`/`CLAUDE.md` files, and
    hosts Layer 2 stage contracts as `icm/Workflows/*.md` inside the
-   reference tree itself. After this phase Valea is a demo-able product with
+   reference tree itself (later superseded by ICM mounts, item 7). After this phase Valea is a demo-able product with
    no accounts connected. *(shipped, pending merge; spec:
    2026-07-10-agent-slice-design.md)*
 4. **Mail** — a sync-to-files engine that reads IMAP and normalizes messages
@@ -186,10 +190,12 @@ project's proven scaffold. Full decisions per feature live in
    session into every enabled mount; path-native references
    (`mounts/<name>/Offers/X.md`), no alias layer. *(Plan A — "all mounts" —
    shipped, pending merge on `feat/icm-mounts`; spec:
-   2026-07-12-icm-mounts-design.md.)* Deferred to a follow-on plan (Spec
-   A2): by-reference/external mounts (ICMs referenced in place rather than
-   moved in — `kind:`/`ref:` config keys already reserved for this), root-set
-   containment, and a doctor mounts section.
+   2026-07-12-icm-mounts-design.md.)* By-reference/external mounts — ICMs
+   referenced in place rather than moved in (`kind: "path"`/`ref:` config
+   keys), root-set containment, managed-settings read allows, and a doctor
+   mounts section — followed as Plan A2. *(Plan A2 — shipped, pending merge
+   on the same `feat/icm-mounts` branch; spec:
+   2026-07-12-icm-by-reference-design.md.)*
 
 The MVP is complete when the core acceptance scenario runs end-to-end: open
 app → move Priya's inquiry to AI/Review → run triage workflow → review the

@@ -36,7 +36,7 @@ The user owns a workspace folder; everything canonical is a readable file inside
 - **RPC action list** (`rpc_action(:name, :action)` in `Valea.Api`, generated TS function name in parens):
   - `Valea.Api.Workspace`: `get_workspace` → `:current` (`getWorkspace`) — reports `{open, path, name}`, `open: false` when no workspace; `create_workspace` → `:create_workspace` (`createWorkspace`, args `parent_dir`, `name`); `open_workspace` → `:open_workspace` (`openWorkspace`, arg `path`); `close_workspace` → `:close_workspace` (`closeWorkspace`); `recent_workspaces` → `:recent` (`recentWorkspaces`); `inspect_workspace` → `:inspect_workspace` (`inspectWorkspace`, arg `path` — used by the "what's in this folder" onboarding preview).
   - `Valea.Api.ICM`: `icm_tree` → `:tree` (`icmTree`) — a list of per-mount groups `{mount, title, root_rel, tree}`, one group per ENABLED, non-degraded mount (Task A-T11; replaces Phase 1/2's single flat folder/page tree of `{workspace}/icm`); `icm_page` → `:page` (`icmPage`, arg `path`).
-  - `Valea.Api.Mounts`: `list_mounts` → `:list_mounts` (`listMounts`) — every discovered mount (enabled/disabled/degraded), typed `name`/`title`/`description`/`relRoot`/`enabled`/`degraded`; `set_mount_enabled` → `:set_mount_enabled` (`setMountEnabled`, args `name, enabled, generation`); `create_mount` → `:create_mount` (`createMount`, args `name, description, generation`, returns `relRoot`). See [ICM mounts (Plan A)](#icm-mounts-plan-a) below.
+  - `Valea.Api.Mounts`: `list_mounts` → `:list_mounts` (`listMounts`) — every discovered mount (enabled/disabled/degraded, embedded ∪ external), typed `name`/`title`/`description`/`relRoot`/`root`/`enabled`/`degraded` (`relRoot` nullable — `nil` for an external mount; `root` always the absolute path); `set_mount_enabled` → `:set_mount_enabled` (`setMountEnabled`, args `name, enabled, generation`); `create_mount` → `:create_mount` (`createMount`, args `name, description, generation`, returns `relRoot`); `declare_mount` → `:declare_mount` (`declareMount`, args `name, ref, generation`) — validates `ref` via `Valea.Mounts.External.validate_ref/2` and writes a `kind: "path"` config entry; `undeclare_mount` → `:undeclare_mount` (`undeclareMount`, args `name, generation`) — config-only removal, never touches the folder; `mounts_doctor` → `:mounts_doctor` (`mountsDoctor`, arg `generation`) — per-mount health checks. See [ICM mounts (Plan A)](#icm-mounts-plan-a) below, including its "By-reference (external) mounts (Plan A2)" subsection.
   - `Valea.Api.Cockpit`: `cockpit_today` → `:today` (`cockpitToday`) — the seeded §17 narrative.
 - **Transport: Phoenix channels first, HTTP fallback.** One socket (`ValeaWeb.UserSocket`, path `/socket`) carries two independent channel topics: `ash_typescript_rpc:client` (ash_typescript's channel-RPC transport — every `icmTree()`-style call goes here when the channel is joined) and the single consolidated **`workspace:events`** channel, joined once from `frontend/src/routes/+layout.svelte` via `wireIcmEvents()` (`frontend/src/lib/stores/icm.svelte.ts`) and pushing two event names: `workspace` (`{open, name?, path?}`, on open/close) and `icm_changed` (`{}`, on any change under `{workspace}/icm`, debounced 200ms by `Valea.ICM.Watcher`). There is no per-feature channel sprawl — `workspace:events` is the one realtime channel, and non-realtime RPC prefers `ash_typescript_rpc:client` but transparently falls back to plain `POST /rpc/run` (`ValeaWeb.RpcController.run/2`) when the socket/channel isn't joined (see `frontend/src/lib/api/client.ts`).
 - Plain controllers only where RPC doesn't fit — e.g. `GET /api/health` (`ValeaWeb.HealthController`, returns `{"status":"ok"}`) for sidecar port polling from Tauri.
@@ -506,7 +506,7 @@ otherwise embed it.
 
 ## ICM mounts (Plan A)
 
-*(shipped on `feat/icm-mounts`, pending merge; roadmap Phase 7 — "all mounts", by-reference/external mounts deferred to a follow-on plan)*
+*(shipped on `feat/icm-mounts`, pending merge; roadmap Phase 7 — "all mounts". By-reference/external mounts — originally deferred to a follow-on plan — landed on this same branch as Plan A2; see "By-reference (external) mounts (Plan A2)" at the end of this section.)*
 
 The single hardcoded `icm/` tree Phases 1–4 relied on is now `mounts/<name>/`
 — one or more self-contained ICM modules per workspace, each independently
@@ -712,6 +712,186 @@ as the final content step; `config/workspace.yaml`'s `version: 4` marker is
 written LAST, so a crash mid-migration leaves the workspace at v3 and the
 whole step re-runs cleanly on the next open.
 
+### By-reference (external) mounts (Plan A2)
+
+*(shipped on `feat/icm-mounts`, pending merge; spec:
+[2026-07-12-icm-by-reference-design.md](superpowers/specs/2026-07-12-icm-by-reference-design.md))*
+
+An ICM can now be MOUNTED IN PLACE — referenced from wherever it already
+lives on disk — instead of moved into `mounts/<name>/`. A fresh workspace
+still ships one embedded `mounts/starter/` mount; a by-reference mount is
+purely additive, a second (or third, ...) mount alongside it.
+
+**Config model.** `Valea.Mounts.External` (`backend/lib/valea/mounts/external.ex`)
+reads `config/workspace.yaml`'s `mounts:` section for `kind: "path"` entries
+carrying a `ref:` — the external folder, absolute or `~`-based (a relative
+ref is rejected/degraded outright: it would anchor to the nondeterministic
+process CWD in a release). `ref` is stored EXACTLY as given (`~`-form
+survives in the config — resolved fresh, never cached, at every read) so
+the declaration stays portable across machines where `~` resolves
+differently. `declared/1` resolves each ref the SAME way `root` becomes an
+agent read root: `Path.expand/1` then `Valea.Paths.resolve_real/2`'s
+self-base trick (`resolve_real(p, p)`) to fully walk symlinks — the
+resolved value IS the security-relevant one. Five guardrails, checked in a
+fixed order (`:home_or_root` before `:inside_workspace`/
+`:ancestor_of_workspace` — `$HOME` is very often itself an ancestor of the
+workspace, so checking ancestry first would mask the more specific,
+more-likely fat-finger): not absolute, points at `$HOME`/`/`, inside the
+workspace, an ancestor of the workspace, or contains a Claude Code
+permission-glob metacharacter (`* ? [ ] { } ( )` — parens included, since
+`)` is the rule delimiter in Claude Code's permission syntax and would
+truncate a `Read(<root>/**)` allow entry silently). These same checks run
+on BOTH paths: `validate_ref/2` (the `declare_mount` RPC's pre-write gate —
+a failing candidate is rejected outright, no config write) and `declared/1`
+itself (the read path — a hand-edited config can put ANY ref on disk, so a
+guardrail-failing entry DEGRADES rather than being dropped: config
+preserved, excluded from any effective set, recoverable if the folder
+reappears or the ref is fixed).
+
+**Merge semantics.** `Valea.Mounts.list/1` is embedded ∪ external
+(`External.declared/1`), sorted by name. A name declared as both an
+embedded directory and an external entry degrades BOTH entries
+("name used by both an embedded and an external mount") rather than
+letting one silently shadow the other. `mount_for/2`'s absolute-path
+attribution matches only ENABLED, non-degraded external roots, and with
+nested declared roots the most-specific (longest) root wins. External
+mounts are excluded from `enabled/1` exactly like a degraded embedded
+mount — the same `degraded != nil` convention, no separate vocabulary.
+
+**Root-set containment.** `Valea.Agents.PermissionPolicy` generalizes from
+a single workspace root to a ROOT SET: the workspace root ∪
+`ctx[:extra_roots]` — the absolute, already-resolved roots of every
+enabled external mount, computed fresh at every session start
+(`SessionServer.extra_roots/1`, mirroring the existing `read_roots/1`
+pattern, never cached). A path is readable iff it lands inside the
+workspace root or any `extra_roots` member. The workspace deny-list
+(`secrets/`, `logs/`, `.claude/`, `.git/`, the SQLite files) applies to the
+WORKSPACE TREE ONLY — an external mount has no Valea-managed deny-list (a
+`secrets/` folder sitting at an external mount's root is a doctor WARNING,
+`secrets_hygiene` below, not a hard deny). Write containment is UNCHANGED:
+`extra_roots` grants reads only, never write auto-allow. A symlink that
+NOMINALLY claims a currently-enabled root but whose true resolved location
+lands in NO enabled root is denied fail-closed, same as the deny-list — the
+candidate's own address lied about where it points. An absolute path that
+never nominally claimed any enabled root at all (not the workspace, not an
+`extra_roots` member) is simply unrecognized and ASK-gates like any other
+unclassifiable candidate — it does not hard-deny; that blanket
+"anything outside the workspace is denied" behavior predates external
+mounts and no longer holds.
+
+**Managed settings allows.** `Valea.Agents.ClaudeSettings.content/1` adds
+one absolute `Read(<resolved-root>/**)` allow entry per enabled external
+mount, alongside the existing workspace-scoped `Read(./**)` — Claude Code
+accepts an absolute glob alongside the relative form, and without this
+entry every read under an external mount would fall through to `ask` even
+though `PermissionPolicy`'s `extra_roots` already trusts it. Computed
+FRESH from `Mounts.enabled/1` on every `write!/1` call (session start, the
+`declare_mount`/`undeclare_mount`/`set_mount_enabled`/`create_mount` RPCs,
+and the watcher's own discovery-flush regeneration below) — never cached,
+so a disabled external mount's allow entry disappears the next time
+settings regenerate.
+
+**Physical paths, no alias layer.** External mount content is addressed by
+its resolved ABSOLUTE path everywhere it's agent- or RPC-visible — there is
+no workspace-relative alias for it. `Valea.ICM.tree/0`'s per-mount
+`root_rel` is the mount's absolute root for an external mount (a
+`mounts/<name>` workspace-relative string for embedded); every node `path`
+beneath it is built the same way, `prefix_tree/2` joining a `mounts/<name>`
+prefix or an absolute root identically. Editor ops (`save_page`,
+`create_page`, `create_folder`, `rename`, `delete`) resolve the owning
+mount via `Mounts.mount_for/1` (attribution only) and then re-contain the
+path against THAT mount's own root via the unchanged `contain/2` chokepoint
+— the same mechanism for both mount kinds, so a `..` can never escape. The
+mount root itself is protected from delete/rename with no special-case
+code: `mount_relative(root, root)` collapses to `""` (the same sentinel
+that already means "the mount's own root"), and `contain(root, "")`
+rejects it because `root` does not start with `root <> "/"`. `Valea.ICM.References`
+mirrors the same mount-relative logic for its own scan/rewrite. `Valea.Workflows.list/1`
+unions `Workflows/*.md` across every enabled mount, embedded or external —
+an external entry's `path` is the raw absolute glob result, never
+prefixed; `Valea.Workflows.Runner`'s workflow-read containment root is the
+mount's own absolute `root` for an external mount, the workspace root for
+embedded.
+
+**Doctor.** `Valea.Mounts.Doctor.run/1` (`backend/lib/valea/mounts/doctor.ex`)
+runs a VARIABLE-subject check list — one entry per discovered mount,
+`"<check>:<mount name>"` ids to stay unique. An embedded mount gets one
+check, `manifest_ok`. An external mount gets four in a single gate:
+`ref_resolves` (does the ref resolve to a real folder and pass every
+guardrail above?) gates `manifest_ok`, `secrets_hygiene`, and
+`watcher_live` — all three report `"unknown"` when `ref_resolves` fails,
+rather than probing a root that may not exist. `secrets_hygiene` is a
+WARNING-class check (Valea's deny-list doesn't reach into a folder it
+doesn't own) — it still reports `"failed"` (this codebase's status
+vocabulary has no separate "warning" literal), the warning framing lives
+in the wording; it lists directory ENTRY NAMES at the mount root only
+(`File.ls/1`), never opens a file. `watcher_live` asks
+`Valea.ICM.Watcher.watched_roots/0` whether the mount's root is in the
+CURRENT watched set — `"unknown"` (not `"failed"`) for a disabled mount,
+since the watcher never watches a disabled external root by design.
+Exposed over RPC as `mounts_doctor` (`Valea.Api.Mounts`), rendered by
+`MountsDoctorPanel.svelte` on `/knowledge`.
+
+**Watcher.** `Valea.ICM.Watcher` splits its `FileSystem` subscription in
+two: a FIXED listener over `mounts/`, `queue/`, `config/` — started once in
+`init/1`, never restarted, giving the workspace's own trees a zero-loss
+window across every recompute — and a DYNAMIC listener over the currently
+enabled external roots, stopped and restarted (bounded 5s stop, unlinked
+first so a hung port can't block the GenServer) whenever that root set
+actually differs. `config/workspace.yaml` is now watched too — it's the
+source of truth for both enabled/disabled state and external-mount
+declarations, so a hand-edit to it is discovery-relevant (only the file
+itself; `config/mail.yaml`/`config/calendar.yaml` produce no event). On its
+OWN discovery flush the watcher regenerates `MOUNTS.md` and
+`.claude/settings.json` BEFORE broadcasting `{:mounts_changed}` — closing
+the gap where a hand-edited config or a manually dropped-in `icm.yaml`
+previously left those derived files stale until the next RPC mutation
+happened to touch them.
+
+**RPCs + audit.** `Valea.Api.Mounts` gains `declare_mount` (validates via
+`External.validate_ref/2` first — a failing candidate is rejected outright
+with no config write at all), `undeclare_mount` (config-only; NEVER
+touches the folder, embedded or external), and `mounts_doctor`. Declaring,
+undeclaring, enabling, or disabling an EXTERNAL mount is a workspace
+BOUNDARY change (a filesystem location outside the workspace an agent
+session can now read) and is audited (`mount_declared`/`mount_undeclared`/
+`mount_enabled`/`mount_disabled`, `Valea.Mounts`) with the mount's `name`
+and best-effort RESOLVED absolute path; toggling an EMBEDDED mount stays
+unaudited (it never changes a read boundary — it always lived inside the
+workspace).
+
+**`MOUNTS.md`.** An external mount's enabled block shows its real location
+(`mounted from: <resolved-abs>`) instead of a workspace-relative `path:`
+line, and its `@`-ref line points at the full absolute path
+(`@<resolved-abs>/AGENTS.md`) rather than `@mounts/<name>/AGENTS.md` — a
+bare, non-Valea Claude Code session has no workspace root to resolve a
+relative reference against. A degraded external mount renders under
+"Needs attention" with its resolved (possibly nonexistent) path, or the
+placeholder `(no path declared)` when the ref was never absolute/`~`-based
+to begin with.
+
+**Frontend.** By-reference is the DEFAULT adopt action in onboarding: when
+"open an existing workspace" is pointed at a folder that already looks
+like an ICM, "Use it where it is" (`onboarding-path.ts`'s
+`adoptByReference` — scaffolds a normal new workspace with its own starter
+mount, then declares the picked folder as a second, referenced mount) is
+the primary button; "Move it into the workspace" (Plan A's original
+move-adopt flow) stays available as the explicit secondary choice.
+Knowledge's "Mount a folder from elsewhere…" (`MountFromElsewhereDialog.svelte`)
+is the same declare flow post-onboarding — nothing is copied or moved, the
+folder is read exactly where it already lives. "Unmount"
+(`UnmountDialog.svelte`) is config-only — the folder stays exactly where it
+is on disk. `MountsDoctorPanel.svelte` renders the doctor checks above on
+`/knowledge`. A declare-stage failure during onboarding is a genuine UX gap
+without extra handling: `workspaceStore.create` flips workspace state to
+`'open'` — swapping the Onboarding screen out — BEFORE `declare_mount`
+resolves, so a failure landing after that flip has no live onboarding card
+left to render on. `mountsStore.pendingAdoptError` persists that failure
+across the transition; the onboarding flow explicitly navigates to
+`/knowledge` on a declare-stage failure so the Knowledge page's dismissible
+banner is actually reachable (post-onboarding success still lands on
+Today, unchanged).
+
 ## Design system pointer
 
 UI follows the "paper & ink, with a green pen for approval" design system: [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (canonical source: `docs/design/cockpit-design-system-v1.pdf`). Two-layer token architecture (raw tokens → shadcn-svelte semantic variable mapping); feature code never touches raw Tailwind classes directly. Shell layout is a reusable four-column grid (Sidebar · optional ListPane · Main · optional Rail) implemented as an `AppShell` component family on shadcn-svelte primitives.
@@ -743,3 +923,4 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-10-agent-slice-design.md](superpowers/specs/2026-07-10-agent-slice-design.md) — Agent slice: ACP agent runtime, trust/permission model, queue/audit approval flow, control-plane auth, workspace runtime generations, ICM layer mapping.
 - [2026-07-11-mail-design.md](superpowers/specs/2026-07-11-mail-design.md) — Mail: IMAP sync-to-files engine, normalized message file format, `queue_item/v2` mailbox ops, OS-keychain credential handoff, connection doctor, `/mail` UI.
 - [2026-07-12-icm-mounts-design.md](superpowers/specs/2026-07-12-icm-mounts-design.md) — ICM mounts (Plan A): `mounts/<name>/` replaces the single `icm/` tree, manifest-based discovery, `MOUNTS.md` generated routing, per-mount `read_roots`, v3→v4 migration, mounts-aware Knowledge UI, adopt-by-move onboarding.
+- [2026-07-12-icm-by-reference-design.md](superpowers/specs/2026-07-12-icm-by-reference-design.md) — By-reference mounts (Plan A2): external `kind: "path"` mounts referenced in place, root-set containment, managed-settings external `Read` allows, per-mount doctor, declare/undeclare RPCs + audit, by-reference-default onboarding.
