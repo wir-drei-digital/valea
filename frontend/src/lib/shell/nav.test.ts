@@ -48,6 +48,36 @@ describe('encodePath', () => {
   it('encodes segments but keeps separators', () => {
     expect(encodePath('A B/C&D.md')).toBe('A%20B/C%26D.md');
   });
+
+  // A2-T5b: an external mount's node `path` is an ABSOLUTE physical path
+  // (see `Valea.ICM.tree/0`'s moduledoc), so `encodePath` sees a leading
+  // empty segment (from the leading "/"). Verified against SvelteKit's own
+  // `[...path]` rest-param route regex (`^/knowledge(?:/([^]*))?/?$`) that
+  // `/knowledge/` + this encoded value round-trips through
+  // decode_pathname -> route match -> decodeURIComponent back to the exact
+  // original absolute path — this is the evidence behind wiring external
+  // rows as clickable rather than leaving them inert (binding semantic 6).
+  it('round-trips an absolute external path through the /knowledge/[...path] route shape', () => {
+    const abs = '/Users/dev/ext mount/Offers/X.md';
+    const href = `/knowledge/${encodePath(abs)}`;
+    expect(href).toBe('/knowledge//Users/dev/ext%20mount/Offers/X.md');
+
+    // Mirrors SvelteKit's route regex for `/knowledge/[...path]` (a rest
+    // param consumes exactly ONE of the two consecutive slashes, capturing
+    // the rest — including the external path's own leading "/" — intact).
+    const routePattern = /^\/knowledge(?:\/([^]*))?\/?$/;
+    const match = routePattern.exec(href);
+    const captured = match?.[1] ?? null;
+    expect(captured).toBe('/Users/dev/ext%20mount/Offers/X.md');
+
+    // Our route component's own per-segment decode (split '/', decode each,
+    // rejoin) reconstructs the exact original absolute path.
+    const decoded = (captured ?? '')
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/');
+    expect(decoded).toBe(abs);
+  });
 });
 
 // Replaces the deleted `IcmStore.nodes` back-compat getter (A-T15) — every

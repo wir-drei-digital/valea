@@ -16,10 +16,31 @@ export type MountSection = {
   mount: string;
   title: string;
   description: string;
-  /** The mount's own workspace-relative root (`MountGroup.rootRel`, e.g. `"mounts/primary"`) — where this section's "New page/folder" action creates into. */
+  /**
+   * The mount's own root (`MountGroup.rootRel`) — where this section's "New
+   * page/folder" action creates into. For an EMBEDDED mount this is the
+   * workspace-relative `"mounts/<name>"`; for an EXTERNAL (by-reference)
+   * mount (A2-T5b) it is instead that mount's ABSOLUTE physical root — see
+   * `isExternalRootRel` below for telling the two apart.
+   */
   rootRel: string;
   tree: IcmNode[];
 };
+
+/**
+ * True when `rootRel` is an external mount's ABSOLUTE physical root rather
+ * than an embedded mount's workspace-relative `mounts/<name>` form (A2-T5b
+ * — `Valea.ICM.tree/0`'s `root_rel` carries a different vocabulary per
+ * mount kind, see its moduledoc: `root_rel` stays a string either way, just
+ * a different vocabulary). An embedded `rootRel` is always relative (never
+ * starts with `/`); an external one is always the resolved absolute root,
+ * which always does. Used to show a section's physical location (binding
+ * semantic 6's "title + description + location") only for external mounts
+ * — an embedded mount's location is implicit (it's inside the workspace).
+ */
+export function isExternalRootRel(rootRel: string): boolean {
+  return rootRel.startsWith('/');
+}
 
 /**
  * `collapsed: true` — the pre-mounts look: render `tree` directly at the

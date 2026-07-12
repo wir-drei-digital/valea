@@ -15,7 +15,12 @@
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { encodePath, type IcmNode } from '$lib/shell/nav';
-  import { buildMountsDisplay, classifyMounts, degradedChipLabel } from '$lib/components/knowledge/mount-sections';
+  import {
+    buildMountsDisplay,
+    classifyMounts,
+    degradedChipLabel,
+    isExternalRootRel
+  } from '$lib/components/knowledge/mount-sections';
   import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
@@ -142,6 +147,14 @@
                   <p class="text-overline">{section.title}</p>
                   {#if section.description}
                     <p class="text-ink-meta mt-0.5 truncate text-[11.5px]">{section.description}</p>
+                  {/if}
+                  {#if isExternalRootRel(section.rootRel)}
+                    <!-- A2-T5b: an external (by-reference) mount's content lives
+                         outside the workspace — show WHERE, since that's not
+                         otherwise implied the way an embedded mount's is. -->
+                    <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={section.rootRel}>
+                      {section.rootRel}
+                    </p>
                   {/if}
                 </div>
                 <NewEntryButton onNew={(mode) => openNew(section.rootRel, mode)} />

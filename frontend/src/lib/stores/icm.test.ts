@@ -270,6 +270,48 @@ describe('IcmStore.refetch (grouped tree parsing)', () => {
     ]);
   });
 
+  it('parses an EXTERNAL mount group (A2-T5b) — rootRel and every node path stay the absolute physical vocabulary the backend sent, unmodified', async () => {
+    const extPage = {
+      name: 'X',
+      path: '/Users/dev/ext-mount/Offers/X.md',
+      type: 'page',
+      uri: 'icm:///Users/dev/ext-mount/Offers/X.md'
+    };
+    const extFolder = {
+      name: 'Offers',
+      path: '/Users/dev/ext-mount/Offers',
+      type: 'folder',
+      page_count: 1,
+      children: [extPage]
+    };
+    const store = new IcmStore({
+      icmTree: async () =>
+        groupedResult([
+          { mount: 'primary', title: 'Primary', rootRel: 'mounts/primary', tree: [] },
+          { mount: 'ext', title: 'Ext', rootRel: '/Users/dev/ext-mount', tree: [extFolder] }
+        ])
+    });
+
+    await store.refetch();
+
+    const extGroup = store.groups.find((g) => g.mount === 'ext');
+    expect(extGroup?.rootRel).toBe('/Users/dev/ext-mount');
+    expect(extGroup?.tree[0]).toEqual({
+      name: 'Offers',
+      path: '/Users/dev/ext-mount/Offers',
+      type: 'folder',
+      pageCount: 1,
+      children: [
+        {
+          name: 'X',
+          path: '/Users/dev/ext-mount/Offers/X.md',
+          type: 'page',
+          uri: 'icm:///Users/dev/ext-mount/Offers/X.md'
+        }
+      ]
+    });
+  });
+
   it('defaults to an empty groups array when `mounts` is missing', async () => {
     const store = new IcmStore({ icmTree: async () => ({ ok: true, data: {} }) as ApiResult<any> });
 

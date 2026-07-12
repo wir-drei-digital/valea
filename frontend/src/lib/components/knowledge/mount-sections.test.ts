@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildMountsDisplay, classifyMounts, degradedChipLabel } from './mount-sections';
+import { buildMountsDisplay, classifyMounts, degradedChipLabel, isExternalRootRel } from './mount-sections';
 import type { MountGroup } from '$lib/stores/icm.svelte';
 import type { MountSummary } from '$lib/stores/mounts.svelte';
 import type { IcmNode } from '$lib/shell/nav';
@@ -71,6 +71,38 @@ describe('buildMountsDisplay', () => {
         }
       ]
     });
+  });
+
+  it('passes an EXTERNAL mount group through with its absolute rootRel, alongside an embedded section (A2-T5b)', () => {
+    const extNode: IcmNode = {
+      name: 'Offers',
+      path: '/Users/dev/ext-mount/Offers',
+      type: 'folder',
+      pageCount: 1,
+      children: []
+    };
+    const extGroup: MountGroup = { mount: 'ext', title: 'Ext', rootRel: '/Users/dev/ext-mount', tree: [extNode] };
+    const extSummary: MountSummary = {
+      name: 'ext',
+      title: 'Ext',
+      description: 'By-reference client folder',
+      relRoot: '/Users/dev/ext-mount',
+      enabled: true,
+      degraded: null
+    };
+
+    const display = buildMountsDisplay([primaryGroup, extGroup], [primarySummary, extSummary]);
+    expect(display.collapsed).toBe(false);
+    if (!display.collapsed) {
+      const extSection = display.sections.find((s) => s.mount === 'ext');
+      expect(extSection).toEqual({
+        mount: 'ext',
+        title: 'Ext',
+        description: 'By-reference client folder',
+        rootRel: '/Users/dev/ext-mount',
+        tree: [extNode]
+      });
+    }
   });
 
   it('joins each section\'s description by mount NAME, not title', () => {
@@ -146,6 +178,20 @@ describe('classifyMounts', () => {
 
   it('returns empty buckets for an empty catalog', () => {
     expect(classifyMounts([])).toEqual({ active: [], degraded: [], deactivated: [] });
+  });
+});
+
+describe('isExternalRootRel (A2-T5b)', () => {
+  it('is false for an embedded mount\'s workspace-relative rootRel', () => {
+    expect(isExternalRootRel('mounts/primary')).toBe(false);
+  });
+
+  it('is false for the collapsed zero-mounts empty rootRel', () => {
+    expect(isExternalRootRel('')).toBe(false);
+  });
+
+  it('is true for an external mount\'s absolute physical rootRel', () => {
+    expect(isExternalRootRel('/Users/dev/ext-mount')).toBe(true);
   });
 });
 
