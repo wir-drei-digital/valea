@@ -72,7 +72,16 @@ defmodule Valea.Mounts do
     workspace |> list() |> Enum.filter(&effective?/1)
   end
 
-  @doc "Resolves a workspace-relative path to the mount that owns it, in the current workspace."
+  @doc """
+  Resolves a workspace-relative path to the mount that owns it, in the
+  current workspace.
+
+  Attribution only — it does not validate or contain the path. Callers
+  that go on to do filesystem I/O with `rel_path` must independently
+  expand it and prefix-check it against the resolved mount's `root`
+  (mirroring `Valea.ICM.contain/2`); this function only identifies which
+  mount a path *names*, it does not authorize access to it.
+  """
   @spec mount_for(rel_path :: String.t()) ::
           {:ok, mount} | {:error, :not_in_mount | :no_workspace}
   def mount_for(rel_path) when is_binary(rel_path) do
@@ -84,7 +93,15 @@ defmodule Valea.Mounts do
     end
   end
 
-  @doc "Pure form of `mount_for/1` for `workspace` — the owning mount, or `nil`."
+  @doc """
+  Pure form of `mount_for/1` for `workspace` — the owning mount, or `nil`.
+
+  Attribution only — it does not validate or contain `rel_path`. Callers
+  that go on to do filesystem I/O with `rel_path` must independently
+  expand it and prefix-check it against the resolved mount's `root`
+  (mirroring `Valea.ICM.contain/2`); this function only identifies which
+  mount a path *names*, it does not authorize access to it.
+  """
   @spec mount_for(workspace :: String.t(), rel_path :: String.t()) :: mount | nil
   def mount_for(workspace, rel_path) when is_binary(workspace) and is_binary(rel_path) do
     case mount_name_from_rel_path(rel_path) do
@@ -106,7 +123,7 @@ defmodule Valea.Mounts do
   def set_enabled(name, enabled) when is_binary(name) and is_boolean(enabled) do
     with :ok <- validate_mount_name(name),
          {:ok, ws} <- workspace_root(),
-         {:ok, doc} <- read_workspace_config(ws) do
+         {:ok, doc} <- read_workspace_config_for_write(ws) do
       write_workspace_config(ws, render_config(doc, name, enabled))
     end
   end
@@ -165,6 +182,22 @@ defmodule Valea.Mounts do
     end
   end
 
+  # Write-path variant of `read_workspace_config/1`. A missing file is safe
+  # to treat as an empty config (there is nothing on disk to lose). Any
+  # other failure to read an EXISTING file — parse error, or a document
+  # that didn't parse to a map — must not fall through to `%{}`: doing so
+  # would make `set_enabled/2` atomically overwrite a real (if currently
+  # unreadable) config, discarding `version`/`id` and anything else in it.
+  # Callers must treat this as a hard stop, not a fail-open default.
+  defp read_workspace_config_for_write(workspace) do
+    case YamlElixir.read_from_file(config_path(workspace)) do
+      {:ok, doc} when is_map(doc) -> {:ok, doc}
+      {:error, %YamlElixir.FileNotFoundError{}} -> {:ok, %{}}
+      {:ok, not_a_map} -> {:error, {:config_unreadable, {:not_a_map, not_a_map}}}
+      {:error, reason} -> {:error, {:config_unreadable, reason}}
+    end
+  end
+
   defp read_config_mounts(workspace) do
     case read_workspace_config(workspace) do
       {:ok, doc} -> normalize_mounts(Map.get(doc, "mounts"))
@@ -182,7 +215,7 @@ defmodule Valea.Mounts do
   end
 
   defp validate_mount_name(name) do
-    if String.contains?(name, "/") or String.contains?(name, "..") do
+    if name == "" or String.contains?(name, "/") or String.contains?(name, "..") do
       {:error, :invalid_mount_name}
     else
       :ok

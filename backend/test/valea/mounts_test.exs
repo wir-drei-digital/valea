@@ -46,6 +46,7 @@ defmodule Valea.MountsTest do
 
       assert Enum.map(mounts, & &1.name) == ["a", "b", "c"]
       assert length(mounts) == 3
+      assert root |> Mounts.enabled() |> Enum.map(& &1.name) == ["a", "b"]
 
       [a, b, c] = mounts
 
@@ -229,6 +230,29 @@ defmodule Valea.MountsTest do
 
     test "rejects a name containing .." do
       assert {:error, _} = Mounts.set_enabled("..", true)
+    end
+
+    test "existing config with valid version/id but broken YAML: set_enabled errors and does not touch the file",
+         %{ws: ws} do
+      config_path = Path.join(ws.path, "config/workspace.yaml")
+
+      File.write!(config_path, """
+      version: 3
+      id: some-real-workspace-id
+      mounts:
+        a:
+          enabled: [unterminated
+      """)
+
+      before_bytes = File.read!(config_path)
+
+      assert {:error, _reason} = Mounts.set_enabled("a", false)
+
+      assert File.read!(config_path) == before_bytes
+    end
+
+    test "rejects an empty name" do
+      assert {:error, _} = Mounts.set_enabled("", true)
     end
   end
 
