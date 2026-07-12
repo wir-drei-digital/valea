@@ -2,14 +2,31 @@ defmodule Valea.Workflows.RunnerTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
+  alias Valea.Mounts.Manifest
   alias Valea.Workflows.Runner
 
-  @wf_path "icm/Workflows/New Inquiry Triage.md"
-  @disabled_wf_path "icm/Workflows/Weekly Admin Review.md"
+  @wf_path "mounts/primary/Workflows/New Inquiry Triage.md"
+  @disabled_wf_path "mounts/primary/Workflows/Weekly Admin Review.md"
   @input_path "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
+
+  # The workspace template still scaffolds the legacy `icm/` tree until Task
+  # A-T8 migrates it (see `test/valea/icm_test.exs`'s identical note) — a
+  # fresh scaffold has no `mounts/` dir at all, so `Valea.Workflows` (now
+  # mount-sourced, T5) would see nothing. COPY (not move) the scaffolded
+  # `icm/` into `mounts/<name>/` and stamp a manifest on it, mirroring
+  # `icm_test.exs`'s `seed_mount!/3`, to exercise the Runner against the
+  # rich seeded workflow contracts (New Inquiry Triage, Weekly Admin
+  # Review, ...).
+  defp seed_mount!(ws_path, name, title) do
+    mount_dir = Path.join([ws_path, "mounts", name])
+    File.mkdir_p!(Path.dirname(mount_dir))
+    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
+    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
+  end
 
   setup do
     ws = AgentCase.open_workspace!()
+    seed_mount!(ws.path, "primary", "Primary")
     %{workspace: ws.path}
   end
 
@@ -27,7 +44,9 @@ defmodule Valea.Workflows.RunnerTest do
 
   test "run/2 on an unknown workflow path -> not_found" do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-    assert {:error, :not_found} = Runner.run("icm/Workflows/Nonexistent.md", @input_path)
+
+    assert {:error, :not_found} =
+             Runner.run("mounts/primary/Workflows/Nonexistent.md", @input_path)
   end
 
   test "run/2 with an input_path that traverses out of the workspace -> input_not_found" do
@@ -37,13 +56,13 @@ defmodule Valea.Workflows.RunnerTest do
              Runner.run(@wf_path, "../../../../../../../../etc/passwd")
   end
 
-  test "run/2 with a workflow_path that lexically starts with icm/Workflows/ but traverses out of it -> not_found",
+  test "run/2 with a workflow_path that lexically starts with mounts/primary/Workflows/ but traverses out of it -> not_found",
        %{workspace: workspace} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-    File.write!(Path.join(workspace, "icm/Offers/escaped.md"), "# Escaped\n")
+    File.write!(Path.join(workspace, "mounts/primary/Offers/escaped.md"), "# Escaped\n")
 
     assert {:error, :not_found} =
-             Runner.run("icm/Workflows/../Offers/escaped.md", @input_path)
+             Runner.run("mounts/primary/Workflows/../Offers/escaped.md", @input_path)
   end
 
   test "run/2 when the harness is unavailable: workflow_run_started audit is paired with a start_failed workflow_run_finished audit" do

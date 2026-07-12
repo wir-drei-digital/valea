@@ -2,6 +2,8 @@ defmodule Valea.WorkflowsTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
+  alias Valea.Mounts
+  alias Valea.Mounts.Manifest
   alias Valea.Workflows
 
   setup do
@@ -9,26 +11,121 @@ defmodule Valea.WorkflowsTest do
     %{workspace: ws.path}
   end
 
-  test "list/0 returns the four template workflows, exactly one enabled" do
-    assert {:ok, workflows} = Workflows.list()
-    assert length(workflows) == 4
-    assert Enum.count(workflows, & &1.enabled) == 1
-
-    enabled = Enum.find(workflows, & &1.enabled)
-    assert enabled.name == "New Inquiry Triage"
-    assert enabled.path == "icm/Workflows/New Inquiry Triage.md"
+  defp write_mount!(ws_path, name, title) do
+    dir = Path.join([ws_path, "mounts", name])
+    File.mkdir_p!(dir)
+    Manifest.write!(dir, %{id: "id-" <> name, name: title, description: ""})
+    dir
   end
 
-  test "get/1 parses frontmatter (trigger.source, risk_level, approval.actions) and steps_preview" do
-    assert {:ok, wf} = Workflows.get("icm/Workflows/New Inquiry Triage.md")
+  defp write_workflow!(mount_dir, filename, frontmatter, body) do
+    File.mkdir_p!(Path.join(mount_dir, "Workflows"))
+    content = "---\n" <> frontmatter <> "---\n" <> body
+    File.write!(Path.join([mount_dir, "Workflows", filename]), content)
+  end
 
-    assert wf.path == "icm/Workflows/New Inquiry Triage.md"
+  @triage_frontmatter """
+  enabled: true
+  trigger: { type: manual, source: email.selected }
+  sources:
+    - { id: current_email, type: email, required: true }
+    - { id: founder_coaching_offer, type: icm, path: "Offers/Founder Coaching Package.md" }
+    - { id: tone_guide, type: icm, path: "Tone & Voice/Email Tone Guide.md" }
+  risk_level: medium
+  approval:
+    required: true
+    reason: Email replies must be reviewed before sending.
+    actions: [create_email_draft]
+  """
+
+  @triage_body """
+  # New Inquiry Triage
+
+  Classifies a new email inquiry and drafts a reply for review.
+
+  ## Process
+
+  1. Summarize the incoming inquiry in two sentences.
+  2. Classify it: good-fit, unclear, not fit, or spam.
+  3. Draft a warm reply using the tone guide and the relevant offer. Respect the no-medical-advice policy.
+  """
+
+  test "list/0 unions two enabled mounts, each workflow with distinct path + mount provenance",
+       %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    write_workflow!(a, "Triage.md", @triage_frontmatter, @triage_body)
+
+    b = write_mount!(ws, "b", "Mount B")
+    write_workflow!(b, "Review.md", "enabled: false\nrisk_level: low\n", "# Review\n\nBody.\n")
+
+    assert {:ok, workflows} = Workflows.list()
+    assert length(workflows) == 2
+
+    wf_a = Enum.find(workflows, &(&1.path == "mounts/a/Workflows/Triage.md"))
+    assert wf_a.mount == "Mount A"
+    assert wf_a.name == "New Inquiry Triage"
+    assert wf_a.enabled == true
+
+    wf_b = Enum.find(workflows, &(&1.path == "mounts/b/Workflows/Review.md"))
+    assert wf_b.mount == "Mount B"
+    assert wf_b.name == "Review"
+    assert wf_b.enabled == false
+
+    # sorted by path
+    assert Enum.map(workflows, & &1.path) == Enum.sort(Enum.map(workflows, & &1.path))
+  end
+
+  test "same workflow filename in two mounts coexists without shadowing", %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    write_workflow!(a, "Shared.md", "enabled: true\nrisk_level: low\n", "# A Shared\n\nBody.\n")
+
+    b = write_mount!(ws, "b", "Mount B")
+    write_workflow!(b, "Shared.md", "enabled: true\nrisk_level: low\n", "# B Shared\n\nBody.\n")
+
+    assert {:ok, workflows} = Workflows.list()
+    paths = Enum.map(workflows, & &1.path)
+    assert "mounts/a/Workflows/Shared.md" in paths
+    assert "mounts/b/Workflows/Shared.md" in paths
+    assert length(workflows) == 2
+
+    a_wf = Enum.find(workflows, &(&1.path == "mounts/a/Workflows/Shared.md"))
+    b_wf = Enum.find(workflows, &(&1.path == "mounts/b/Workflows/Shared.md"))
+    assert a_wf.name == "A Shared"
+    assert b_wf.name == "B Shared"
+  end
+
+  test "disabling a mount drops its workflows from list/0, but get/1 by explicit path still resolves it (T3 posture)",
+       %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    write_workflow!(a, "Triage.md", @triage_frontmatter, @triage_body)
+
+    assert {:ok, [_one]} = Workflows.list()
+
+    assert :ok = Mounts.set_enabled("a", false)
+
+    assert {:ok, []} = Workflows.list()
+
+    assert {:ok, wf} = Workflows.get("mounts/a/Workflows/Triage.md")
+    assert wf.name == "New Inquiry Triage"
+    assert wf.mount == "Mount A"
+    assert wf.path == "mounts/a/Workflows/Triage.md"
+  end
+
+  test "get/1 parses frontmatter (trigger.source, risk_level, approval.actions) and steps_preview",
+       %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    write_workflow!(a, "Triage.md", @triage_frontmatter, @triage_body)
+
+    assert {:ok, wf} = Workflows.get("mounts/a/Workflows/Triage.md")
+
+    assert wf.path == "mounts/a/Workflows/Triage.md"
+    assert wf.mount == "Mount A"
     assert wf.name == "New Inquiry Triage"
     assert wf.enabled == true
     assert wf.trigger["source"] == "email.selected"
     assert wf.risk_level == "medium"
     assert wf.approval["actions"] == ["create_email_draft"]
-    assert is_list(wf.sources) and length(wf.sources) > 0
+    assert is_list(wf.sources) and length(wf.sources) == 3
     assert wf.description =~ "Classifies a new email inquiry"
 
     assert wf.steps_preview == [
@@ -38,46 +135,86 @@ defmodule Valea.WorkflowsTest do
            ]
   end
 
-  test "get/1 on a disabled workflow still returns it (enabled: false)" do
-    assert {:ok, wf} = Workflows.get("icm/Workflows/Weekly Admin Review.md")
+  test "get/1 on a disabled workflow still returns it (enabled: false)", %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    write_workflow!(a, "Weekly.md", "enabled: false\nrisk_level: low\n", "# Weekly\n\nBody.\n")
+
+    assert {:ok, wf} = Workflows.get("mounts/a/Workflows/Weekly.md")
     assert wf.enabled == false
     assert wf.risk_level == "low"
   end
 
-  test "get/1 on a missing path returns not_found" do
-    assert {:error, :not_found} = Workflows.get("icm/Workflows/Nonexistent.md")
+  test "get/1 on a missing path returns not_found", %{workspace: ws} do
+    write_mount!(ws, "a", "Mount A")
+    assert {:error, :not_found} = Workflows.get("mounts/a/Workflows/Nonexistent.md")
   end
 
-  test "get/1 outside icm/Workflows/ returns not_found" do
-    assert {:error, :not_found} = Workflows.get("icm/Offers/Founder Coaching Package.md")
+  test "get/1 outside mounts/<name>/Workflows/ returns not_found", %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    File.mkdir_p!(Path.join(a, "Offers"))
+    File.write!(Path.join([a, "Offers", "X.md"]), "---\nenabled: true\n---\n# X\n")
+
+    assert {:error, :not_found} = Workflows.get("mounts/a/Offers/X.md")
   end
 
-  test "get/1 with a path containing .. that escapes the workspace returns not_found" do
+  test "get/1 with a path that doesn't name a mount at all returns not_found", %{workspace: ws} do
+    write_mount!(ws, "a", "Mount A")
+    assert {:error, :not_found} = Workflows.get("sources/mail/messages/x.md")
+  end
+
+  test "get/1 with a path containing .. that escapes the workspace returns not_found", %{
+    workspace: ws
+  } do
+    write_mount!(ws, "a", "Mount A")
+
     assert {:error, :not_found} =
-             Workflows.get("icm/Workflows/../../../../../../../../etc/passwd")
+             Workflows.get("mounts/a/Workflows/../../../../../../../../etc/passwd")
   end
 
-  test "get/1 with a path that lexically starts with icm/Workflows/ but traverses out of it (while staying inside the workspace) returns not_found",
-       %{workspace: workspace} do
-    File.write!(Path.join(workspace, "icm/Offers/escaped.md"), "# Escaped\n")
+  test "get/1 with a path that lexically starts with mounts/<name>/Workflows/ but traverses out of it (while staying inside the mount) returns not_found",
+       %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    File.mkdir_p!(Path.join(a, "Offers"))
+    File.write!(Path.join([a, "Offers", "escaped.md"]), "# Escaped\n")
 
-    assert {:error, :not_found} = Workflows.get("icm/Workflows/../Offers/escaped.md")
+    assert {:error, :not_found} = Workflows.get("mounts/a/Workflows/../Offers/escaped.md")
+  end
+
+  test "get/1 with a path that traverses from one mount into another returns not_found", %{
+    workspace: ws
+  } do
+    a = write_mount!(ws, "a", "Mount A")
+    b = write_mount!(ws, "b", "Mount B")
+    write_workflow!(b, "Secret.md", "enabled: true\n", "# Secret\n\nBody.\n")
+
+    assert {:error, :not_found} =
+             Workflows.get("mounts/a/Workflows/../../b/Workflows/Secret.md")
   end
 
   test "a Workflows/ page without frontmatter is not a contract: list/0 skips it, get/1 -> not_found",
-       %{workspace: workspace} do
-    path = Path.join(workspace, "icm/Workflows/No Frontmatter.md")
-    File.write!(path, "# No Frontmatter\n\nJust a plain page, no YAML header.\n")
+       %{workspace: ws} do
+    a = write_mount!(ws, "a", "Mount A")
+    write_workflow!(a, "Triage.md", @triage_frontmatter, @triage_body)
 
-    assert {:error, :not_found} = Workflows.get("icm/Workflows/No Frontmatter.md")
+    File.write!(
+      Path.join([a, "Workflows", "No Frontmatter.md"]),
+      "# No Frontmatter\n\nJust a plain page, no YAML header.\n"
+    )
+
+    assert {:error, :not_found} = Workflows.get("mounts/a/Workflows/No Frontmatter.md")
 
     assert {:ok, workflows} = Workflows.list()
-    assert length(workflows) == 4
-    refute Enum.any?(workflows, &(&1.path == "icm/Workflows/No Frontmatter.md"))
+    assert length(workflows) == 1
+    refute Enum.any?(workflows, &(&1.path == "mounts/a/Workflows/No Frontmatter.md"))
   end
 
   test "no workspace open returns an empty list" do
     Valea.Workspace.Manager.close()
     assert {:ok, []} = Workflows.list()
+  end
+
+  test "no workspace open: get/1 returns not_found" do
+    Valea.Workspace.Manager.close()
+    assert {:error, :not_found} = Workflows.get("mounts/a/Workflows/Triage.md")
   end
 end

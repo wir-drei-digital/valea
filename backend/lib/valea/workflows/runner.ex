@@ -14,6 +14,29 @@ defmodule Valea.Workflows.Runner do
   workspace)`, callable from the session's `on_turn_end` callback,
   crash-recovery, or a test — and idempotent, since it only ever acts on
   what it finds on disk.
+
+  `workflow_path` is an OPAQUE workspace-relative string throughout this
+  module — it is hashed, embedded in the prompt, and carried verbatim into
+  the sidecar/queue envelope/audit entries, but never itself parsed or
+  glob-matched. That means the Plan A mount refactor (`Valea.Mounts`, T2)
+  needed NO change here: `Valea.Workflows.list/0`'s `path` field is now
+  `mounts/<name>/Workflows/<file>.md` instead of the old single hardcoded
+  `icm/Workflows/<file>.md`, and this module carries the new shape through
+  coherently by construction.
+
+  This module also does NOT resolve a workflow contract's `sources:`
+  frontmatter (the `%{id, type, path}` list of ICM pages the contract
+  declares) — confirmed by inspection: the only `"sources"` this module
+  touches is the AGENT-PRODUCED proposal's `sources` field (a flat list of
+  strings the agent self-reports having read, checked by
+  `valid_proposal?/1`), never the contract's own `sources:` list. Resolving
+  the contract's `sources:` paths is entirely agent-facing: the agent reads
+  the workflow `.md` file itself (named opaquely in the prompt below) over
+  its ACP session and interprets `sources:` per the ICM-relative-first
+  convention `Valea.ICM.References` already established (T4) — relative to
+  the CONTRACT'S OWN mount root, not the workspace root. That convention
+  will be spelled out for the agent in the mount's own `AGENTS.md`
+  (`A-T7`/`A-T8`, not yet built); nothing to change here until then.
   """
 
   alias Valea.Workflows
