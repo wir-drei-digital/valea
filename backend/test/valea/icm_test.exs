@@ -230,21 +230,32 @@ defmodule Valea.ICMTest do
       %{ws: ws, ext: ext}
     end
 
-    test "external mounts are not yet editable via ICM ops (A2-T5b)", %{ws: ws, ext: ext} do
+    test "external mounts are not yet editable via ICM ops (A2-T5b)", %{ws: ws} do
       # Sanity: the external mount IS effective — it's just not yet editable.
-      assert "ext" in Enum.map(Mounts.enabled(ws), & &1.name)
+      [m] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
+      assert m.rel_root == nil
 
-      # Resolve to the absolute path of the external page
-      ext_page_abs = Path.join(ext, "Offers/External.md")
+      # Derive the page path from the EFFECTIVE mount's realpath-RESOLVED root
+      # (`m.root`), not the raw tmp path — on macOS the raw `/var/folders/...`
+      # tmp path never string-matches the resolved `/private/var/...` root, so
+      # a raw-path call would be rejected by attribution (`:not_in_mount`)
+      # and never reach the `rel_root: nil` clause this test pins.
+      ext_page_abs = Path.join(m.root, "Offers/External.md")
       assert File.exists?(ext_page_abs)
 
-      # page/1 rejects the external absolute path
+      # Sanity: this path DOES attribute to the external mount — the
+      # rejections below exercise the rel_root: nil clause, not attribution.
+      assert {:ok, %{name: "ext", rel_root: nil}} = Mounts.mount_for(ext_page_abs)
+
+      # page/1 rejects the external absolute path (no read)
       assert {:error, :outside_workspace} = ICM.page(ext_page_abs)
 
       # rename/2 rejects the external absolute path and leaves the file untouched on disk
       assert {:error, :outside_workspace} = ICM.rename(ext_page_abs, "Renamed")
-      assert File.exists?(ext_page_abs), "file should remain untouched on disk"
-      refute File.exists?(Path.join(ext, "Offers/Renamed.md")), "rename should not have happened"
+      assert File.read!(ext_page_abs) == "# External Page\n", "file should be untouched on disk"
+
+      refute File.exists?(Path.join(m.root, "Offers/Renamed.md")),
+             "rename should not have happened"
 
       # delete/1 rejects the external absolute path
       assert {:error, :outside_workspace} = ICM.delete(ext_page_abs)
