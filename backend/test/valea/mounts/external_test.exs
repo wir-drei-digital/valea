@@ -232,6 +232,140 @@ defmodule Valea.Mounts.ExternalTest do
     end
   end
 
+  describe "declared/1 -- read-path guardrails (hand-edited config must not mint a clean mount)" do
+    test "an ancestor-of-workspace ref is degraded even when a manifest is reachable there" do
+      parent = tmp_dir!("valea-ext-parent")
+      ws = Path.join(parent, "the-workspace")
+      File.mkdir_p!(ws)
+      # A manifest AT the ancestor — proves the guardrail fires before (and
+      # regardless of) manifest loading.
+      write_manifest!(parent, %{id: "evil", name: "Evil Ancestor", description: ""})
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        evil:
+          kind: path
+          ref: "#{parent}"
+      """)
+
+      assert [mount] = External.declared(ws)
+      assert mount.name == "evil"
+      assert mount.manifest == nil
+      assert mount.degraded =~ "ancestor"
+      # config preserved: the entry still surfaces; root carries the resolved
+      # path; `degraded != nil` is what excludes it from any effective set
+      # (the `effective?/1` convention every consumer composes over).
+      assert mount.root == real!(parent)
+      assert mount.enabled == true
+    end
+
+    test "ref == the workspace root itself is degraded" do
+      ws = tmp_dir!("valea-ext-ws")
+      write_manifest!(ws, %{id: "self", name: "Self", description: ""})
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        selfref:
+          kind: path
+          ref: "#{ws}"
+      """)
+
+      assert [mount] = External.declared(ws)
+      assert mount.manifest == nil
+      assert is_binary(mount.degraded)
+      assert mount.degraded =~ "workspace"
+    end
+
+    test "a ref inside the workspace is degraded" do
+      ws = tmp_dir!("valea-ext-ws")
+      inside = Path.join(ws, "nested/icm")
+      write_manifest!(inside, %{id: "in", name: "Inside", description: ""})
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        insider:
+          kind: path
+          ref: "#{inside}"
+      """)
+
+      assert [mount] = External.declared(ws)
+      assert mount.manifest == nil
+      assert mount.degraded =~ "workspace"
+    end
+
+    test "a symlink ref resolving inside the workspace is degraded (guardrail runs on the resolved path)" do
+      ws = tmp_dir!("valea-ext-ws")
+      inside = Path.join(ws, "target")
+      write_manifest!(inside, %{id: "in", name: "Inside", description: ""})
+
+      link_parent = tmp_dir!("valea-ext-link-parent")
+      link = Path.join(link_parent, "sneaky")
+      File.ln_s!(inside, link)
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        sneaky:
+          kind: path
+          ref: "#{link}"
+      """)
+
+      assert [mount] = External.declared(ws)
+      assert mount.manifest == nil
+      assert mount.degraded =~ "workspace"
+    end
+
+    test "a relative ref is degraded, never anchored to the process CWD" do
+      ws = tmp_dir!("valea-ext-ws")
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        rel:
+          kind: path
+          ref: "some/relative/dir"
+      """)
+
+      assert [mount] = External.declared(ws)
+      assert mount.manifest == nil
+      assert mount.degraded =~ "absolute"
+    end
+  end
+
+  # $HOME cannot be faked at runtime (see the ~-expansion note below), and
+  # declaring the REAL $HOME as a config ref in a test would depend on
+  # whether the developer's home happens to contain an icm.yaml — so the
+  # home-or-root arm of the READ path is exercised directly on the shared
+  # guardrail function both `declared/1` and `validate_ref/2` call.
+  describe "check_boundaries/2 (shared guardrail)" do
+    test "rejects the realpath-resolved $HOME even when a manifest would be reachable there" do
+      ws = real!(tmp_dir!("valea-ext-ws"))
+      home = real!(System.user_home!())
+
+      assert {:error, :home_or_root} = External.check_boundaries(home, ws)
+    end
+
+    test "rejects / literally" do
+      ws = real!(tmp_dir!("valea-ext-ws"))
+      assert {:error, :home_or_root} = External.check_boundaries("/", ws)
+    end
+
+    test "accepts an unrelated sibling path (segment boundary, not string prefix)" do
+      parent = real!(tmp_dir!("valea-ext-parent"))
+      ws = Path.join(parent, "ws")
+      sibling = Path.join(parent, "ws-other")
+
+      assert :ok = External.check_boundaries(sibling, ws)
+    end
+
+    test "classifies self/inside/ancestor relationships" do
+      parent = real!(tmp_dir!("valea-ext-parent"))
+      ws = Path.join(parent, "ws")
+
+      assert {:error, :inside_workspace} = External.check_boundaries(ws, ws)
+      assert {:error, :inside_workspace} = External.check_boundaries(Path.join(ws, "sub"), ws)
+      assert {:error, :ancestor_of_workspace} = External.check_boundaries(parent, ws)
+    end
+  end
+
   # ~-expansion cannot be exercised by overriding the HOME env var at
   # runtime: `System.user_home!/0` reads `:init.get_argument(:home)`, which
   # the BEAM captures once at VM boot from the OS environment and never
@@ -324,6 +458,22 @@ defmodule Valea.Mounts.ExternalTest do
 
     test "rejects / exactly", %{ws: ws} do
       assert {:error, :home_or_root} = External.validate_ref(ws, "/")
+    end
+
+    test "rejects a bare ~ (resolves to $HOME) as :home_or_root", %{ws: ws} do
+      assert {:error, :home_or_root} = External.validate_ref(ws, "~")
+    end
+
+    test "rejects a relative ref as :not_absolute -- never anchored to the process CWD", %{
+      ws: ws
+    } do
+      assert {:error, :not_absolute} = External.validate_ref(ws, "some/relative/dir")
+      assert {:error, :not_absolute} = External.validate_ref(ws, "./dot-relative")
+      assert {:error, :not_absolute} = External.validate_ref(ws, "../up-relative")
+      # `~user` home lookups are not supported by Path.expand -- it would fall
+      # back to a CWD-relative literal, so it is rejected the same way.
+      assert {:error, :not_absolute} = External.validate_ref(ws, "~otheruser/icm")
+      assert {:error, :not_absolute} = External.validate_ref(ws, "")
     end
 
     test "rejects a ref that does not resolve to any folder", %{ws: ws} do

@@ -40,12 +40,15 @@ defmodule Valea.Mounts do
   alias Valea.Yaml
 
   # A resolved mount. `root` is the ABSOLUTE path; `rel_root` is
-  # workspace-relative ("mounts/<name>"). `enabled` from config. `degraded`
-  # carries a reason string when the manifest is missing/broken (still listed
-  # for the UI, excluded from the effective set).
+  # workspace-relative ("mounts/<name>") for embedded mounts and `nil` for
+  # external (by-reference) mounts produced by `Valea.Mounts.External` — an
+  # ICM outside the workspace has no workspace-relative path. `enabled` from
+  # config. `degraded` carries a reason string when the manifest is
+  # missing/broken (still listed for the UI, excluded from the effective
+  # set).
   @type mount :: %{
           name: String.t(),
-          rel_root: String.t(),
+          rel_root: String.t() | nil,
           root: String.t(),
           manifest: %Valea.Mounts.Manifest{} | nil,
           enabled: boolean(),
