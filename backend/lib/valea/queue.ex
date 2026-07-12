@@ -248,6 +248,7 @@ defmodule Valea.Queue do
     :ok
   rescue
     e in File.Error -> {:error, {:write_failed, e.reason}}
+    e in File.RenameError -> {:error, {:write_failed, e.reason}}
   end
 
   # base_sha256: nil means "create" — the target must not already exist.
