@@ -5,6 +5,7 @@ defmodule ValeaWeb.IcmRpcTest do
 
   @endpoint ValeaWeb.Endpoint
 
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
   # A fresh scaffold (T8) mints its own real mount from the template's rich
@@ -46,16 +47,22 @@ defmodule ValeaWeb.IcmRpcTest do
   end
 
   describe "icm_tree" do
+    # The `:tree` action's outer mount-group shape (`mount`/`title`/
+    # `rootRel`/`tree`) is now a `constraints fields: [...]` typed return
+    # (Task A-T11) — camelCase like every other typed field on this
+    # resource, and selected explicitly like `icm_entry_references`'
+    # nested `workflows` field below. The per-node `tree` value stays
+    # unconstrained (see moduledoc), so nodes inside it keep snake_case,
+    # same as pre-A-T11.
+    @mount_fields [%{"mounts" => ["mount", "title", "rootRel", "tree"]}]
+
     test "returns one entry per mount, grouped, with string keys all the way down" do
-      assert %{"success" => true, "data" => %{"nodes" => [mount]}} =
-               rpc("icm_tree", %{})
+      assert %{"success" => true, "data" => %{"mounts" => [mount]}} =
+               rpc("icm_tree", %{}, @mount_fields)
 
       assert mount["mount"] == "primary"
       assert mount["title"] == "Primary"
-      # The `:tree` action is unconstrained (see moduledoc) — like
-      # `frontmatter` on `:page`, ash_typescript never walks into an
-      # unconstrained map to camelCase its keys, so this stays snake_case.
-      assert mount["root_rel"] == "mounts/primary"
+      assert mount["rootRel"] == "mounts/primary"
       assert is_list(mount["tree"])
 
       offers = Enum.find(mount["tree"], &(&1["name"] == "Offers"))
@@ -67,6 +74,28 @@ defmodule ValeaWeb.IcmRpcTest do
       assert page["type"] == "page"
       assert page["path"] == "mounts/primary/Offers/Founder Coaching Package.md"
       assert page["uri"] == "icm://mounts/primary/Offers/Founder Coaching Package.md"
+    end
+
+    test "groups per enabled mount, sorted by name, each with its own title" do
+      assert {:ok, %{path: root}} = Manager.current()
+      secondary_dir = Path.join([root, "mounts", "secondary"])
+      File.mkdir_p!(secondary_dir)
+
+      Manifest.write!(secondary_dir, %{
+        id: "id-secondary",
+        name: "Secondary",
+        description: ""
+      })
+
+      assert %{"success" => true, "data" => %{"mounts" => mounts}} =
+               rpc("icm_tree", %{}, @mount_fields)
+
+      assert Enum.map(mounts, & &1["mount"]) == ["primary", "secondary"]
+
+      secondary = Enum.find(mounts, &(&1["mount"] == "secondary"))
+      assert secondary["title"] == "Secondary"
+      assert secondary["rootRel"] == "mounts/secondary"
+      assert secondary["tree"] == []
     end
   end
 

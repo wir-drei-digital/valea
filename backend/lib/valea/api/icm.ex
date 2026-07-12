@@ -5,15 +5,18 @@ defmodule Valea.Api.ICM do
 
   Wraps `Valea.ICM`; converts its atom-keyed nodes into string-keyed maps
   and translates the `:no_workspace` reason into the frontend's
-  `"workspace_not_open"` error string. The `:tree` action's return shape
-  changed with `Valea.ICM.tree/0` (Task A-T3): it's now a list of per-mount
-  groups (`%{mount:, title:, root_rel:, tree: [...]}`) instead of a flat
-  node list, still delivered unconstrained under `"nodes"` — `stringify/1`
-  below recurses into the new `:tree` key the same way it always has for
-  `:children`. The typed, grouped RPC contract (dedicated field constraints,
-  a wire shape the frontend codegen actually consumes) is Task A-T11's; this
-  is only the minimal adaptation needed to keep this resource compiling and
-  correct against the new per-mount return shape.
+  `"workspace_not_open"` error string. `Valea.ICM.tree/0` (Task A-T3)
+  returns a list of per-mount groups (`%{mount:, title:, root_rel:, tree:
+  [...]}`) instead of a flat node list; the `:tree` action (Task A-T11)
+  declares `constraints fields: [mounts: [...]]` on that OUTER shape —
+  `mount`/`title`/`root_rel`/`tree` are typed, camelCase fields like every
+  other `constraints fields: [...]` action below — while each per-node
+  `tree` value stays unconstrained (no `items: [fields: ...]`; a
+  `folder`/`page` node can nest arbitrarily deep via `:children`, which
+  Ash's field-constraint system has no way to describe recursively).
+  `stringify/1` below still walks that unconstrained `tree` list by hand,
+  same as it always has for `:children` and for the unconstrained `:page`
+  return.
 
   The write actions (`save_page`, `create_page`, `create_folder`, `rename`,
   `delete`, `references`) declare `constraints fields: [...]` on their `:map`
@@ -42,10 +45,37 @@ defmodule Valea.Api.ICM do
 
   actions do
     action :tree, :map do
+      constraints fields: [
+                    mounts: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            mount: [type: :string, allow_nil?: false],
+                            title: [type: :string, allow_nil?: false],
+                            root_rel: [type: :string, allow_nil?: false],
+                            # Unconstrained on purpose — see moduledoc.
+                            tree: [type: {:array, :map}, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
       run fn _input, _ctx ->
         case Valea.ICM.tree() do
-          {:ok, nodes} -> {:ok, %{"nodes" => stringify(nodes)}}
-          {:error, reason} -> {:error, error_for(reason)}
+          {:ok, groups} ->
+            {:ok,
+             %{
+               mounts:
+                 Enum.map(groups, fn %{mount: mount, title: title, root_rel: root_rel, tree: tree} ->
+                   %{mount: mount, title: title, root_rel: root_rel, tree: stringify(tree)}
+                 end)
+             }}
+
+          {:error, reason} ->
+            {:error, error_for(reason)}
         end
       end
     end
@@ -205,11 +235,6 @@ defmodule Valea.Api.ICM do
   defp stringify(%{} = node) do
     Map.new(node, fn
       {:children, children} -> {"children", stringify(children)}
-      # `tree/0` (Task A-T3) now returns one entry per mount, each carrying
-      # its own node list under `:tree` — needs the same recursive walk as
-      # `:children` so the grouped shape round-trips to string keys/values
-      # all the way down, not just at the top level.
-      {:tree, tree} -> {"tree", stringify(tree)}
       {:type, t} -> {"type", to_string(t)}
       {k, v} -> {to_string(k), v}
     end)

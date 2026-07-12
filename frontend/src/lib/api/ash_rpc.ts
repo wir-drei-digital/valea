@@ -982,9 +982,13 @@ export async function icmPageChannel(config: {
 }
 
 
-export type InferIcmTreeResult = Record<string, any>;
+export type IcmTreeFields = UnifiedFieldSelection<{mounts: Array<{mount: string, title: string, rootRel: string, tree: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mount" | "title" | "rootRel" | "tree"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
-export type IcmTreeResult = | { success: true; data: InferIcmTreeResult; }
+export type InferIcmTreeResult<
+  Fields extends IcmTreeFields | undefined,
+> = InferResult<{mounts: Array<{mount: string, title: string, rootRel: string, tree: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mount" | "title" | "rootRel" | "tree"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type IcmTreeResult<Fields extends IcmTreeFields | undefined = undefined> = | { success: true; data: InferIcmTreeResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
 
 ;
@@ -994,20 +998,22 @@ export type IcmTreeResult = | { success: true; data: InferIcmTreeResult; }
  *
  * @ashActionType :action
  */
-export async function icmTree(
+export async function icmTree<Fields extends IcmTreeFields | undefined = undefined>(
   config: {
   tenant?: string;
+  fields: Fields;
   headers?: Record<string, string>;
   fetchOptions?: RequestInit;
   customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }
-): Promise<IcmTreeResult> {
+): Promise<IcmTreeResult<Fields extends undefined ? [] : Fields>> {
   const payload = {
     action: "icm_tree",
-    ...(config.tenant !== undefined && { tenant: config.tenant })
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
   };
 
-  return executeActionRpcRequest<IcmTreeResult>(
+  return executeActionRpcRequest<IcmTreeResult<Fields extends undefined ? [] : Fields>>(
     payload,
     config
   );
@@ -1019,19 +1025,21 @@ export async function icmTree(
  *
  * @ashActionType :action
  */
-export async function icmTreeChannel(config: {
+export async function icmTreeChannel<Fields extends IcmTreeFields | undefined = undefined>(config: {
   channel: Channel;
   tenant?: string;
-  resultHandler: (result: IcmTreeResult) => void;
+  fields: Fields;
+  resultHandler: (result: IcmTreeResult<Fields>) => void;
   errorHandler?: (error: any) => void;
   timeoutHandler?: () => void;
   timeout?: number;
 }) {
-  executeActionChannelPush<IcmTreeResult>(
+  executeActionChannelPush<IcmTreeResult<Fields>>(
     config.channel,
     {
     action: "icm_tree",
-    ...(config.tenant !== undefined && { tenant: config.tenant })
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
   },
     config.timeout,
     config

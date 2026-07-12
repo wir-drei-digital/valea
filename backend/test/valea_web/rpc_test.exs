@@ -45,7 +45,14 @@ defmodule ValeaWeb.RpcTest do
   end
 
   test "icm_tree requires a workspace" do
-    assert %{"success" => false, "errors" => errors} = rpc("icm_tree", %{})
+    # `:tree` is now a `constraints fields: [...]` typed action (Task
+    # A-T11), so it needs an explicit, non-empty field selection like any
+    # other typed action here — otherwise ash_typescript rejects the
+    # request with `empty_fields_array` before the `run` callback (and
+    # this resource's own `workspace_not_open` check) ever executes.
+    assert %{"success" => false, "errors" => errors} =
+             rpc("icm_tree", %{}, [%{"mounts" => ["mount"]}])
+
     assert inspect(errors) =~ "workspace_not_open"
   end
 
@@ -76,7 +83,9 @@ defmodule ValeaWeb.RpcTest do
     rpc("create_workspace", %{"parentDir" => parent, "name" => "Primary"})
     await_engine_active!()
 
-    assert %{"success" => true, "data" => %{"nodes" => [mount]}} = rpc("icm_tree", %{})
+    assert %{"success" => true, "data" => %{"mounts" => [mount]}} =
+             rpc("icm_tree", %{}, [%{"mounts" => ["mount", "title", "rootRel", "tree"]}])
+
     assert mount["mount"] == "primary"
     assert Enum.any?(mount["tree"], &(&1["name"] == "Offers"))
 
