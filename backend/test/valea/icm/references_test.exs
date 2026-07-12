@@ -245,6 +245,50 @@ defmodule Valea.ICM.ReferencesTest do
       assert page =~ "\nOffers/Y.md"
       assert page =~ "see Offers/Y.md"
     end
+
+    test "a wildcard reference to a longer real folder survives a folder rename", %{ws: ws} do
+      # `Clients/` already exists in the outer setup; `My Clients/` is the
+      # longer real folder whose wildcard reference must not be corrupted —
+      # the candidate `My Clients/*` can never exist as a literal file, so
+      # the probe must check the folder itself.
+      write_page!(ws, "a", "My Clients/Special.md", "# Special\n")
+      write_workflow!(ws, "a", "My Wildcard.md", ["My Clients/*"])
+      write_workflow!(ws, "a", "Wildcard.md", ["Clients/*"])
+      before = File.read!(Path.join(workflows_dir(ws, "a"), "My Wildcard.md"))
+
+      {:ok, refs} = References.referencing_workflows("mounts/a/Clients/*")
+      assert Enum.map(refs, & &1.file) == ["Wildcard.md"]
+
+      {:ok, updated} = References.rewrite("mounts/a/Clients/*", "mounts/a/Customers/*")
+      assert updated == ["Wildcard.md"]
+      assert File.read!(Path.join(workflows_dir(ws, "a"), "My Wildcard.md")) == before
+
+      page = File.read!(Path.join(workflows_dir(ws, "a"), "Wildcard.md"))
+      assert page =~ ~s(path: "Customers/*")
+      refute page =~ "Clients/*"
+    end
+
+    test "an opener character inside a longer real path does not truncate the probe", %{ws: ws} do
+      # `Lea's Notes/X.md` contains a `'` — the left extension must not stop
+      # at the first delimiter it meets (candidate `s Notes/X.md` doesn't
+      # exist) but keep extending to `Lea's Notes/X.md`, which does.
+      write_page!(ws, "a", "Notes/X.md", "# X\n")
+      write_page!(ws, "a", "Lea's Notes/X.md", "# Lea's X\n")
+      write_workflow!(ws, "a", "Lea Ref.md", ["Lea's Notes/X.md"])
+      write_workflow!(ws, "a", "Notes Ref.md", ["Notes/X.md"])
+      before = File.read!(Path.join(workflows_dir(ws, "a"), "Lea Ref.md"))
+
+      {:ok, refs} = References.referencing_workflows("mounts/a/Notes/X.md")
+      assert Enum.map(refs, & &1.file) == ["Notes Ref.md"]
+
+      {:ok, updated} = References.rewrite("mounts/a/Notes/X.md", "mounts/a/Notes/Y.md")
+      assert updated == ["Notes Ref.md"]
+      assert File.read!(Path.join(workflows_dir(ws, "a"), "Lea Ref.md")) == before
+
+      page = File.read!(Path.join(workflows_dir(ws, "a"), "Notes Ref.md"))
+      assert page =~ ~s(path: "Notes/Y.md")
+      refute page =~ "Notes/X.md"
+    end
   end
 
   test "a bare mount-root path is invalid for both functions" do

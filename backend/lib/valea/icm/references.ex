@@ -24,15 +24,25 @@ defmodule Valea.ICM.References do
     * start of content, a newline, or an opening delimiter
       (`"`, `'`, `(`, `[`, `` ` ``) — a real reference boundary; match.
     * space/tab — ambiguous, because ICM paths may contain spaces: the
-      text is extended left to the nearest opening delimiter/newline and
-      the leading whitespace trimmed; if that longer candidate is a
-      DIFFERENT path that actually exists under the mount root
-      (`Special Offers/X.md`), the occurrence belongs to that longer path
-      and is skipped, otherwise it is a match (`- Offers/X.md` YAML list
-      items, prose mentions).
+      text is extended left — to the nearest opening delimiter/newline,
+      then (since an opener can itself appear inside a path name,
+      `Lea's Notes/X.md`) past each further delimiter up to the start of
+      the line — and every successively longer candidate is probed for
+      existence under the mount root, a `<folder>/*` wildcard candidate
+      probing the folder itself. If ANY candidate is a DIFFERENT existing
+      path (`Special Offers/X.md`, `My Clients/*`), the occurrence
+      belongs to that longer path and is skipped; otherwise it is a match
+      (`- Offers/X.md` YAML list items, prose mentions).
     * anything else (letters, digits, `/`, `-`, `.`, …) — the occurrence
       is the tail of a longer token (`MoreOffers/X.md`, `Sub/Offers/X.md`);
       skipped.
+
+  Known limitation of existence-based disambiguation: a DANGLING superset
+  reference — `"Special Offers/X.md"` where that longer path is no longer
+  on disk — fails every probe, so renaming `Offers/X.md` rewrites its
+  tail. Renames keep references coherent for content that exists;
+  already-dangling references were already broken and stay broken (now
+  with a renamed tail).
 
   The same anchored matching drives both detection and replacement, so
   `rewrite/2` never touches an occurrence `referencing_workflows/1` would
@@ -201,27 +211,51 @@ defmodule Valea.ICM.References do
   # spaces, so `Offers/X.md` inside `"Special Offers/X.md"` is the tail of
   # a longer path, while `- Offers/X.md` (YAML list item) or a prose
   # mention is a genuine reference. Disambiguate by extending the text
-  # leftward to the nearest opening delimiter/newline (or start), trimming
-  # the leading whitespace, and checking whether the longer candidate path
-  # ending at the match end actually exists under the mount root: if it
-  # does, the occurrence belongs to that longer path — skip it.
+  # leftward and probing each successively longer candidate (extension +
+  # needle, leading whitespace trimmed) for existence under the mount
+  # root: if ANY candidate is a different, existing path, the occurrence
+  # belongs to that longer path — skip it. A single extension to the
+  # nearest delimiter is not enough, because an opening delimiter can
+  # itself appear inside a path name (`Lea's Notes/X.md` — the `'` would
+  # truncate the candidate to the nonexistent `s Notes/X.md`), so the
+  # search keeps extending past each delimiter up to the start of the
+  # line before declaring the occurrence genuine.
   defp longer_existing_path?(content, pos, needle, mount_root) do
-    bound = left_delimiter_bound(content, pos)
-    extension = binary_part(content, bound, pos - bound)
-    candidate = String.trim_leading(extension) <> needle
-
-    candidate != needle and File.exists?(Path.join(mount_root, candidate))
+    content
+    |> extension_bounds(pos)
+    |> Enum.any?(fn bound ->
+      extension = binary_part(content, bound, pos - bound)
+      candidate = String.trim_leading(extension) <> needle
+      candidate != needle and existing_path?(mount_root, candidate)
+    end)
   end
 
-  defp left_delimiter_bound(content, pos), do: scan_left(content, pos - 1)
+  # The candidate left-extension bounds for an ambiguous occurrence at
+  # `pos`: the position just after each opening delimiter scanning
+  # leftward, nearest first, ending with the start of the line (or of the
+  # content).
+  defp extension_bounds(content, pos), do: collect_bounds(content, pos - 1, [])
 
-  defp scan_left(_content, i) when i < 0, do: 0
+  defp collect_bounds(_content, i, acc) when i < 0, do: Enum.reverse([0 | acc])
 
-  defp scan_left(content, i) do
+  defp collect_bounds(content, i, acc) do
     case :binary.at(content, i) do
-      ?\n -> i + 1
-      c when c in @boundary_openers -> i + 1
-      _ -> scan_left(content, i - 1)
+      ?\n -> Enum.reverse([i + 1 | acc])
+      c when c in @boundary_openers -> collect_bounds(content, i - 1, [i + 1 | acc])
+      _ -> collect_bounds(content, i - 1, acc)
+    end
+  end
+
+  # Existence probe for a candidate longer path. A wildcard reference
+  # (`<folder>/*` — the needle shape folder renames emit, see
+  # `Valea.ICM.rename/2`) can never exist as a literal file, so the folder
+  # itself is probed instead.
+  defp existing_path?(mount_root, candidate) do
+    if String.ends_with?(candidate, "/*") do
+      folder = binary_part(candidate, 0, byte_size(candidate) - 2)
+      File.dir?(Path.join(mount_root, folder))
+    else
+      File.exists?(Path.join(mount_root, candidate))
     end
   end
 
