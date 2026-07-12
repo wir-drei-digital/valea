@@ -1,8 +1,34 @@
 defmodule Valea.ICMTest do
   use ExUnit.Case, async: false
 
+  alias Valea.Mounts
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
   alias Valea.ICM
+
+  # The workspace template still scaffolds the legacy `icm/` tree until
+  # Task A-T8 migrates it; a fresh scaffold has no `mounts/` dir at all. To
+  # exercise the per-mount `Valea.ICM` against the rich seeded fixture
+  # content (Offers/, Workflows/, etc.), COPY (not move) the scaffolded
+  # `icm/` into `mounts/<name>/` and stamp a manifest on it. The original
+  # `icm/` tree is left in place untouched — `Valea.ICM.References` (T4) and
+  # the watcher (T6) are still hardcoded to read `icm/Workflows/*.md`
+  # directly, not through this module, so tests that exercise reference
+  # rewriting (icm_write_test.exs) keep asserting against that untouched
+  # original tree while driving the rename/create/delete calls themselves
+  # against the `mounts/primary/…` copy.
+  defp seed_mount!(ws_path, name, title) do
+    mount_dir = Path.join([ws_path, "mounts", name])
+    File.mkdir_p!(Path.dirname(mount_dir))
+    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
+    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
+  end
+
+  defp write_mount!(ws_path, name, title) do
+    dir = Path.join([ws_path, "mounts", name])
+    File.mkdir_p!(dir)
+    Manifest.write!(dir, %{id: "id-" <> name, name: title, description: ""})
+  end
 
   setup do
     dir =
@@ -13,7 +39,8 @@ defmodule Valea.ICMTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, _} = Manager.create(Path.join(dir, "workspaces"), "W")
+    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
+    seed_mount!(ws.path, "primary", "Primary")
 
     on_exit(fn ->
       Manager.close()
@@ -21,39 +48,101 @@ defmodule Valea.ICMTest do
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    :ok
+    %{ws: ws.path}
   end
 
-  test "tree lists seeded folders with counts" do
-    {:ok, tree} = ICM.tree()
-    names = Enum.map(tree, & &1.name)
+  test "tree lists seeded folders with counts, grouped by mount" do
+    {:ok, [mount]} = ICM.tree()
+    assert mount.mount == "primary"
+    assert mount.title == "Primary"
+    assert mount.root_rel == "mounts/primary"
+
+    names = Enum.map(mount.tree, & &1.name)
     assert "Offers" in names
     assert "Tone & Voice" in names
-    offers = Enum.find(tree, &(&1.name == "Offers"))
+    offers = Enum.find(mount.tree, &(&1.name == "Offers"))
     assert offers.type == :folder
+    assert offers.path == "mounts/primary/Offers"
     assert offers.page_count == 2
-    assert Enum.any?(offers.children, &(&1.name == "Founder Coaching Package"))
+    child = Enum.find(offers.children, &(&1.name == "Founder Coaching Package"))
+    assert child
+    assert child.path == "mounts/primary/Offers/Founder Coaching Package.md"
+    assert child.uri == "icm://mounts/primary/Offers/Founder Coaching Package.md"
   end
 
   test "page reads content with title and uri" do
-    {:ok, page} = ICM.page("Offers/Founder Coaching Package.md")
+    {:ok, page} = ICM.page("mounts/primary/Offers/Founder Coaching Package.md")
     assert page.title == "Founder Coaching Package"
-    assert page.uri == "icm://Offers/Founder Coaching Package.md"
+    assert page.uri == "icm://mounts/primary/Offers/Founder Coaching Package.md"
     assert page.content =~ "## Best fit"
   end
 
   test "page rejects escape attempts" do
     assert {:error, :outside_workspace} = ICM.page("../logs/audit.jsonl")
     assert {:error, :outside_workspace} = ICM.page("Offers/../../secrets/x")
+    assert {:error, :outside_workspace} = ICM.page("mounts/primary/../../logs/audit.jsonl")
   end
 
   test "page returns not_found for a missing page" do
-    assert {:error, :not_found} = ICM.page("Offers/Nope.md")
+    assert {:error, :not_found} = ICM.page("mounts/primary/Offers/Nope.md")
   end
 
   test "errors without a workspace" do
     Manager.close()
     assert {:error, :no_workspace} = ICM.tree()
-    assert {:error, :no_workspace} = ICM.page("Offers/Founder Coaching Package.md")
+    assert {:error, :no_workspace} = ICM.page("mounts/primary/Offers/Founder Coaching Package.md")
+  end
+
+  describe "multiple mounts" do
+    setup %{ws: ws} do
+      write_mount!(ws, "a", "Mount A")
+      File.write!(Path.join([ws, "mounts", "a", "Notes.md"]), "# A Note\n")
+
+      write_mount!(ws, "b", "Mount B")
+      File.write!(Path.join([ws, "mounts", "b", "Secret.md"]), "# B Secret\n")
+      :ok = Mounts.set_enabled("b", false)
+
+      :ok
+    end
+
+    test "tree/0 returns one entry per ENABLED mount, with workspace-relative node paths" do
+      {:ok, mounts} = ICM.tree()
+      assert Enum.map(mounts, & &1.mount) |> Enum.sort() == ["a", "primary"]
+      refute Enum.any?(mounts, &(&1.mount == "b"))
+
+      a = Enum.find(mounts, &(&1.mount == "a"))
+      assert a.title == "Mount A"
+      assert a.root_rel == "mounts/a"
+      assert [%{path: "mounts/a/Notes.md", type: :page, uri: "icm://mounts/a/Notes.md"}] = a.tree
+    end
+
+    test "page reads a specific mount's file by its full workspace-relative path" do
+      assert {:ok, page} = ICM.page("mounts/a/Notes.md")
+      assert page.content == "# A Note\n"
+      assert page.uri == "icm://mounts/a/Notes.md"
+    end
+
+    test "page reads a DISABLED mount's page fine — enabled-gating is a read_roots/agent concern, not the editor's" do
+      assert {:ok, page} = ICM.page("mounts/b/Secret.md")
+      assert page.content == "# B Secret\n"
+    end
+
+    test "a `..` escape cannot cross from one mount into another" do
+      assert {:error, :outside_workspace} = ICM.page("mounts/a/../b/Secret.md")
+    end
+
+    test "create/rename/delete operate within the resolving mount's own containment", %{ws: ws} do
+      assert {:ok, %{path: "mounts/a/New.md"}} = ICM.create_page("mounts/a", "New")
+      assert {:ok, %{path: "mounts/a/Sub"}} = ICM.create_folder("mounts/a", "Sub")
+
+      assert {:ok, %{path: "mounts/a/Renamed.md"}} = ICM.rename("mounts/a/New.md", "Renamed")
+
+      assert {:ok, %{deleted: true}} = ICM.delete("mounts/a/Renamed.md")
+      refute File.exists?(Path.join(ws, "mounts/a/Renamed.md"))
+
+      # Escaping mount a's own root while creating is denied, even though
+      # mount "b" is a real, discovered mount.
+      assert {:error, :outside_workspace} = ICM.create_page("mounts/a/../b", "Intruder")
+    end
   end
 end

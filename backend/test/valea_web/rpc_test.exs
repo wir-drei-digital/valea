@@ -6,7 +6,21 @@ defmodule ValeaWeb.RpcTest do
   @endpoint ValeaWeb.Endpoint
 
   alias Valea.Mail.Engine
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
+
+  # The workspace template still scaffolds the legacy `icm/` tree (Task
+  # A-T8 migrates it) — a fresh scaffold has no `mounts/` dir at all, so
+  # `Valea.ICM.tree/0` (and the `icm_tree` RPC action wrapping it) returns
+  # no entries until a mount exists. Copy the seeded `icm/` tree into
+  # `mounts/primary/` and stamp a manifest on it, mirroring the same fixture
+  # pattern used in `test/valea_web/icm_rpc_test.exs`.
+  defp seed_mount!(ws_path, name, title) do
+    mount_dir = Path.join([ws_path, "mounts", name])
+    File.mkdir_p!(Path.dirname(mount_dir))
+    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
+    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
+  end
 
   setup do
     dir =
@@ -71,9 +85,11 @@ defmodule ValeaWeb.RpcTest do
   test "icm_tree and cockpit_today succeed with a workspace open", %{parent: parent} do
     rpc("create_workspace", %{"parentDir" => parent, "name" => "W"})
     await_engine_active!()
+    seed_mount!(Path.join(parent, "W"), "primary", "Primary")
 
-    assert %{"success" => true, "data" => %{"nodes" => nodes}} = rpc("icm_tree", %{})
-    assert Enum.any?(nodes, &(&1["name"] == "Offers"))
+    assert %{"success" => true, "data" => %{"nodes" => [mount]}} = rpc("icm_tree", %{})
+    assert mount["mount"] == "primary"
+    assert Enum.any?(mount["tree"], &(&1["name"] == "Offers"))
 
     assert %{
              "success" => true,

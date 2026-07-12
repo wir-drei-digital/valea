@@ -1,26 +1,66 @@
 defmodule Valea.ICM do
   @moduledoc """
-  Read access to the workspace's icm/ tree — the user's business memory.
-  The filesystem is the source of truth. This module is the single
-  containment chokepoint for icm reads: every path is expanded and checked
-  against the icm root AFTER expansion, so `..` (or a `~`) can never escape.
+  Read/write access to the workspace's mounted ICM trees — the user's
+  business memory, now split across `mounts/<name>/` modules (Plan A)
+  instead of a single hardcoded `icm/` root. The filesystem is the source
+  of truth.
+
+  This module is still the single containment chokepoint for every ICM
+  path, just parameterized per mount: `Valea.Mounts.mount_for/1` only
+  ATTRIBUTES a workspace-relative path (`mounts/<name>/…`) to the mount
+  that owns it — per its own docs, that's attribution, not authorization.
+  Every function here re-expands the path against THAT mount's own root
+  (via the unchanged `contain/2`) after attribution, so `..` (or a `~`) can
+  never escape — including a `..` that tries to cross from one mount into
+  another (attribution still names the first mount; containment then
+  rejects the escaped path because it falls outside that mount's root).
+
+  Every public function takes/returns a full workspace-relative path
+  (`mounts/<name>/…`). Internally, the `mounts/<name>` prefix is stripped
+  before delegating to the mount-relative containment/tree-building logic
+  (unchanged from the single-root era) and reattached on the way back out.
+
+  DECISION: `page/1` — and `save_page/3`, `create_page/2`, `create_folder/2`,
+  `rename/2`, `delete/1` — resolve their target mount via `Mounts.mount_for/1`
+  REGARDLESS of that mount's enabled state. A disabled mount's page still
+  opens, edits, and saves fine here. Enabled-gating (what an agent or
+  `read_roots` may act on) is that consumer's concern, not the editor's
+  containment chokepoint — excluding disabled mounts here would make it
+  impossible for the UI to ever inspect or fix a disabled mount's content.
+
+  `tree/0` is the one function scoped to `Mounts.enabled/0`: it returns one
+  entry per ENABLED, non-degraded mount, grouped:
+
+      {:ok, [%{mount: name, title: manifest_name, root_rel: "mounts/<name>",
+               tree: [<node>, ...]}, ...]}
+
+  where `<node>` is the same folder/page node shape `tree/0` always
+  produced, just with `path` (and a page's `uri`) now workspace-relative.
   """
 
   alias Valea.ICM.References
   alias Valea.Markdown.ProseMirror
-  alias Valea.Workspace.Manager
+  alias Valea.Mounts
 
   def uri(rel_path), do: "icm://" <> rel_path
 
   def tree do
-    with {:ok, root} <- icm_root() do
-      {:ok, build_tree(root, root)}
+    with {:ok, mounts} <- Mounts.enabled() do
+      {:ok,
+       Enum.map(mounts, fn m ->
+         %{
+           mount: m.name,
+           title: m.manifest.name,
+           root_rel: m.rel_root,
+           tree: prefix_tree(build_tree(m.root, m.root), m.rel_root)
+         }
+       end)}
     end
   end
 
   def page(rel_path) do
-    with {:ok, root} <- icm_root(),
-         {:ok, abs} <- contain(root, rel_path) do
+    with {:ok, mount} <- mount_root_for(rel_path),
+         {:ok, abs} <- contain(mount.root, mount_relative(rel_path)) do
       case File.read(abs) do
         {:ok, content} ->
           {block, body} = split_frontmatter(content)
@@ -98,8 +138,8 @@ defmodule Valea.ICM do
   renamed over the target, so readers never observe a partial write.
   """
   def save_page(rel_path, pm_map, base_hash) do
-    with {:ok, root} <- icm_root(),
-         {:ok, abs} <- contain(root, rel_path),
+    with {:ok, mount} <- mount_root_for(rel_path),
+         {:ok, abs} <- contain(mount.root, mount_relative(rel_path)),
          {:ok, current} <- read_for_save(abs) do
       if sha256_hex(current) == base_hash do
         {block, _old_body} = split_frontmatter(current)
@@ -145,12 +185,33 @@ defmodule Valea.ICM do
     :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
   end
 
-  defp icm_root do
-    case Manager.current() do
-      {:ok, %{path: ws}} -> {:ok, Path.join(ws, "icm")}
+  # Resolves the mount owning `rel_path` (a full `mounts/<name>/…`
+  # workspace-relative path) via `Mounts.mount_for/1` — attribution only, see
+  # moduledoc. `:not_in_mount` (no `mounts/<name>` prefix at all, or a name
+  # that isn't actually a discovered mount) is folded into `:outside_workspace`
+  # — from this module's point of view, a path that doesn't name a real mount
+  # is just as inaccessible as one that escapes a real mount's root.
+  defp mount_root_for(rel_path) do
+    case Mounts.mount_for(rel_path) do
+      {:ok, mount} -> {:ok, mount}
+      {:error, :not_in_mount} -> {:error, :outside_workspace}
       {:error, :no_workspace} -> {:error, :no_workspace}
     end
   end
+
+  # Strips the leading `mounts/<name>` segment off a workspace-relative path,
+  # leaving the path relative to THAT mount's own root — the same shape every
+  # `contain/2`/`build_tree/2` call took before mounts existed. Only ever
+  # called after `mount_root_for/1` already confirmed `rel_path` has this
+  # shape; the fallback is defensive, not a normal code path.
+  defp mount_relative(rel_path) do
+    case Path.split(rel_path) do
+      ["mounts", _name | rest] -> Enum.join(rest, "/")
+      _ -> rel_path
+    end
+  end
+
+  defp to_workspace_rel(mount, mount_rel_path), do: Path.join(mount.rel_root, mount_rel_path)
 
   defp contain(root, rel_path) do
     abs = Path.expand(rel_path, root)
@@ -197,6 +258,22 @@ defmodule Valea.ICM do
       true ->
         nil
     end
+  end
+
+  # Rewrites `build_tree/2`'s mount-relative node `path`s (and a page node's
+  # `uri`, which is derived from `path`) into workspace-relative
+  # (`mounts/<name>/…`) form — the one prefixing pass `tree/0` needs, since
+  # `build_tree/2` itself stays mount-root-relative (unchanged, shared with
+  # every other per-mount operation in this module).
+  defp prefix_tree(nodes, prefix) do
+    Enum.map(nodes, fn
+      %{type: :folder, children: children} = node ->
+        %{node | path: Path.join(prefix, node.path), children: prefix_tree(children, prefix)}
+
+      %{type: :page} = node ->
+        new_path = Path.join(prefix, node.path)
+        %{node | path: new_path, uri: uri(new_path)}
+    end)
   end
 
   defp count_pages(children) do
@@ -276,22 +353,28 @@ defmodule Valea.ICM do
   @doc """
   Creates a new page in the given parent folder.
 
-  Returns `{:ok, %{path: rel_path}} | {:error, reason}` where rel_path is the
-  relative path from the icm root.
+  `parent_rel_path` is a full workspace-relative path (`mounts/<name>` for
+  the mount's own root, or `mounts/<name>/<subfolder>` beneath it).
+
+  Returns `{:ok, %{path: rel_path}} | {:error, reason}` where `rel_path` is
+  workspace-relative (`mounts/<name>/…`).
 
   The page is seeded with a markdown title header using the name (without .md extension).
 
   Errors:
   - `:name_invalid` - name fails validation
   - `:already_exists` - a file or folder already exists at that path
-  - `:outside_workspace` - path would escape the icm root
+  - `:outside_workspace` - path would escape the owning mount's root, or
+    doesn't name a mount at all
   - `:no_workspace` - no workspace is currently active
   """
   def create_page(parent_rel_path, name) do
     with {:ok, normalized_name} <- normalize_name(name),
-         {:ok, root} <- icm_root(),
-         :ok <- check_parent_contained(root, parent_rel_path),
-         parent_abs <- Path.join(root, parent_rel_path),
+         {:ok, mount} <- mount_root_for(parent_rel_path),
+         root <- mount.root,
+         mount_parent <- mount_relative(parent_rel_path),
+         :ok <- check_parent_contained(root, mount_parent),
+         parent_abs <- Path.join(root, mount_parent),
          :ok <- check_parent_is_directory(parent_abs),
          name_with_ext <- ensure_md_extension(normalized_name),
          abs <- Path.join(parent_abs, name_with_ext),
@@ -306,7 +389,7 @@ defmodule Valea.ICM do
       # save.
       content = "# " <> title
 
-      write_string_to_file(abs, content) |> format_create_response(abs, root)
+      write_string_to_file(abs, content) |> format_create_response(abs, mount)
     else
       {:error, :name_invalid} -> {:error, :name_invalid}
       {:error, reason} -> {:error, reason}
@@ -317,28 +400,33 @@ defmodule Valea.ICM do
   @doc """
   Creates a new folder in the given parent folder.
 
-  Returns `{:ok, %{path: rel_path}} | {:error, reason}` where rel_path is the
-  relative path from the icm root.
+  `parent_rel_path` is a full workspace-relative path (`mounts/<name>` for
+  the mount's own root, or `mounts/<name>/<subfolder>` beneath it).
+
+  Returns `{:ok, %{path: rel_path}} | {:error, reason}` where `rel_path` is
+  workspace-relative (`mounts/<name>/…`).
 
   Errors:
   - `:name_invalid` - name fails validation
   - `:already_exists` - a file or folder already exists at that path
-  - `:outside_workspace` - path would escape the icm root
+  - `:outside_workspace` - path would escape the owning mount's root, or
+    doesn't name a mount at all
   - `:no_workspace` - no workspace is currently active
   """
   def create_folder(parent_rel_path, name) do
     with {:ok, normalized_name} <- normalize_name(name),
-         {:ok, root} <- icm_root(),
-         :ok <- check_parent_contained(root, parent_rel_path),
-         parent_abs <- Path.join(root, parent_rel_path),
+         {:ok, mount} <- mount_root_for(parent_rel_path),
+         root <- mount.root,
+         mount_parent <- mount_relative(parent_rel_path),
+         :ok <- check_parent_contained(root, mount_parent),
+         parent_abs <- Path.join(root, mount_parent),
          :ok <- check_parent_is_directory(parent_abs),
          abs <- Path.join(parent_abs, normalized_name),
          {:ok, _} <- contain(root, Path.relative_to(abs, root)),
          false <- File.exists?(abs),
          :ok <- ensure_parent_directory(parent_abs),
          :ok <- create_directory(abs) do
-      rel = Path.relative_to(abs, root)
-      {:ok, %{path: rel}}
+      format_create_response({:ok, %{}}, abs, mount)
     else
       {:error, :name_invalid} -> {:error, :name_invalid}
       {:error, reason} -> {:error, reason}
@@ -367,12 +455,12 @@ defmodule Valea.ICM do
     end
   end
 
-  defp format_create_response({:ok, _}, abs, root) do
-    rel = Path.relative_to(abs, root)
-    {:ok, %{path: rel}}
+  defp format_create_response({:ok, _}, abs, mount) do
+    rel = Path.relative_to(abs, mount.root)
+    {:ok, %{path: to_workspace_rel(mount, rel)}}
   end
 
-  defp format_create_response({:error, reason}, _abs, _root) do
+  defp format_create_response({:error, reason}, _abs, _mount) do
     {:error, reason}
   end
 
@@ -389,8 +477,9 @@ defmodule Valea.ICM do
   along the way.
 
   Returns `{:ok, %{path: new_rel_path, updated_workflows: [names]}}` where
-  `names` are the display names of the workflows whose references were
-  rewritten (deduplicated, sorted).
+  `new_rel_path` is workspace-relative (`mounts/<name>/…`) and `names` are
+  the display names of the workflows whose references were rewritten
+  (deduplicated, sorted).
 
   If a workflow rewrite fails, returns `{:error, {:rewrite_failed, filename, reason}}`.
   Note: The file rename itself has already happened at this point; the filesystem
@@ -401,21 +490,24 @@ defmodule Valea.ICM do
   - `:name_invalid` - the new name fails validation
   - `:already_exists` - a file or folder already exists at the new path
   - `:not_found` - nothing exists at `rel_path`
-  - `:outside_workspace` - a path would escape the icm root
+  - `:outside_workspace` - a path would escape the owning mount's root, or
+    doesn't name a mount at all
   - `:no_workspace` - no workspace is currently active
   - `{:rewrite_failed, filename, reason}` - a workflow reference rewrite failed
   """
   def rename(rel_path, new_name) do
-    with {:ok, root} <- icm_root(),
-         {:ok, old_abs} <- contain(root, rel_path),
+    with {:ok, mount} <- mount_root_for(rel_path),
+         root <- mount.root,
+         mount_rel <- mount_relative(rel_path),
+         {:ok, old_abs} <- contain(root, mount_rel),
          true <- File.exists?(old_abs),
          {:ok, normalized_name} <- normalize_name(new_name),
          is_dir <- File.dir?(old_abs),
          name_with_ext <- rename_target_name(is_dir, normalized_name),
-         new_rel <- join_rel(parent_of(rel_path), name_with_ext),
+         new_rel <- join_rel(parent_of(mount_rel), name_with_ext),
          {:ok, new_abs} <- contain(root, new_rel),
          false <- File.exists?(new_abs) do
-      do_rename(root, rel_path, new_rel, old_abs, new_abs, is_dir)
+      do_rename(root, mount_rel, new_rel, old_abs, new_abs, is_dir, mount)
     else
       false -> {:error, :not_found}
       true -> {:error, :already_exists}
@@ -436,7 +528,7 @@ defmodule Valea.ICM do
   defp join_rel("", name), do: name
   defp join_rel(parent, name), do: Path.join(parent, name)
 
-  defp do_rename(root, old_rel, new_rel, old_abs, new_abs, true) do
+  defp do_rename(root, old_rel, new_rel, old_abs, new_abs, true, mount) do
     # Collect every .md file under the folder — with its old and new
     # relative path — BEFORE moving anything on disk. Reference rewrites
     # then run per-file on the exact `icm/<child path>` string, so a
@@ -458,19 +550,19 @@ defmodule Valea.ICM do
 
     case rewrite_children(child_pairs ++ [wildcard_pair]) do
       {:ok, updated_workflows} ->
-        {:ok, %{path: new_rel, updated_workflows: updated_workflows}}
+        {:ok, %{path: to_workspace_rel(mount, new_rel), updated_workflows: updated_workflows}}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp do_rename(_root, old_rel, new_rel, old_abs, new_abs, false) do
+  defp do_rename(_root, old_rel, new_rel, old_abs, new_abs, false, mount) do
     File.rename!(old_abs, new_abs)
 
     case rewrite_children([{old_rel, new_rel}]) do
       {:ok, updated_workflows} ->
-        {:ok, %{path: new_rel, updated_workflows: updated_workflows}}
+        {:ok, %{path: to_workspace_rel(mount, new_rel), updated_workflows: updated_workflows}}
 
       {:error, reason} ->
         {:error, reason}
@@ -518,12 +610,13 @@ defmodule Valea.ICM do
 
   Errors:
   - `:not_found` - nothing exists at `rel_path`
-  - `:outside_workspace` - path would escape the icm root
+  - `:outside_workspace` - path would escape the owning mount's root, or
+    doesn't name a mount at all
   - `:no_workspace` - no workspace is currently active
   """
   def delete(rel_path) do
-    with {:ok, root} <- icm_root(),
-         {:ok, abs} <- contain(root, rel_path) do
+    with {:ok, mount} <- mount_root_for(rel_path),
+         {:ok, abs} <- contain(mount.root, mount_relative(rel_path)) do
       cond do
         File.dir?(abs) ->
           File.rm_rf!(abs)

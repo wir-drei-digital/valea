@@ -1,10 +1,19 @@
 defmodule Valea.Api.ICM do
   @moduledoc """
-  Data-layer-less Ash resource exposing the workspace icm/ tree over RPC.
+  Data-layer-less Ash resource exposing the workspace's mounted ICM trees
+  over RPC.
 
   Wraps `Valea.ICM`; converts its atom-keyed nodes into string-keyed maps
   and translates the `:no_workspace` reason into the frontend's
-  `"workspace_not_open"` error string.
+  `"workspace_not_open"` error string. The `:tree` action's return shape
+  changed with `Valea.ICM.tree/0` (Task A-T3): it's now a list of per-mount
+  groups (`%{mount:, title:, root_rel:, tree: [...]}`) instead of a flat
+  node list, still delivered unconstrained under `"nodes"` — `stringify/1`
+  below recurses into the new `:tree` key the same way it always has for
+  `:children`. The typed, grouped RPC contract (dedicated field constraints,
+  a wire shape the frontend codegen actually consumes) is Task A-T11's; this
+  is only the minimal adaptation needed to keep this resource compiling and
+  correct against the new per-mount return shape.
 
   The write actions (`save_page`, `create_page`, `create_folder`, `rename`,
   `delete`, `references`) declare `constraints fields: [...]` on their `:map`
@@ -196,6 +205,11 @@ defmodule Valea.Api.ICM do
   defp stringify(%{} = node) do
     Map.new(node, fn
       {:children, children} -> {"children", stringify(children)}
+      # `tree/0` (Task A-T3) now returns one entry per mount, each carrying
+      # its own node list under `:tree` — needs the same recursive walk as
+      # `:children` so the grouped shape round-trips to string keys/values
+      # all the way down, not just at the top level.
+      {:tree, tree} -> {"tree", stringify(tree)}
       {:type, t} -> {"type", to_string(t)}
       {k, v} -> {to_string(k), v}
     end)

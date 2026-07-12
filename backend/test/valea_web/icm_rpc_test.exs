@@ -5,7 +5,21 @@ defmodule ValeaWeb.IcmRpcTest do
 
   @endpoint ValeaWeb.Endpoint
 
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
+
+  # See test/valea/icm_test.exs's `seed_mount!/3` comment: the workspace
+  # template still scaffolds the legacy `icm/` tree (Task A-T8 migrates it),
+  # so a freshly created workspace has no `mounts/` dir at all. Copy the
+  # seeded `icm/` tree into `mounts/primary/` and stamp a manifest on it so
+  # the RPC layer's ICM actions — which now resolve through
+  # `Valea.Mounts.mount_for/1` — have a real mount to operate on.
+  defp seed_mount!(ws_path, name, title) do
+    mount_dir = Path.join([ws_path, "mounts", name])
+    File.mkdir_p!(Path.dirname(mount_dir))
+    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
+    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
+  end
 
   setup do
     dir =
@@ -25,8 +39,13 @@ defmodule ValeaWeb.IcmRpcTest do
 
     parent = Path.join(dir, "workspaces")
     rpc("create_workspace", %{"parentDir" => parent, "name" => "W"})
+    # `Valea.Workspace.Manager.create/2` targets `Path.join(parent_dir, name)`
+    # verbatim (no slugification) — see `Valea.Workspace.Scaffold.create/1` —
+    # so this is the same path the RPC call above just opened.
+    ws_path = Path.join(parent, "W")
+    seed_mount!(ws_path, "primary", "Primary")
 
-    %{parent: parent}
+    %{parent: parent, ws_path: ws_path}
   end
 
   defp rpc(action, input, fields \\ []) do
@@ -37,11 +56,36 @@ defmodule ValeaWeb.IcmRpcTest do
     |> json_response(200)
   end
 
+  describe "icm_tree" do
+    test "returns one entry per mount, grouped, with string keys all the way down" do
+      assert %{"success" => true, "data" => %{"nodes" => [mount]}} =
+               rpc("icm_tree", %{})
+
+      assert mount["mount"] == "primary"
+      assert mount["title"] == "Primary"
+      # The `:tree` action is unconstrained (see moduledoc) — like
+      # `frontmatter` on `:page`, ash_typescript never walks into an
+      # unconstrained map to camelCase its keys, so this stays snake_case.
+      assert mount["root_rel"] == "mounts/primary"
+      assert is_list(mount["tree"])
+
+      offers = Enum.find(mount["tree"], &(&1["name"] == "Offers"))
+      assert offers["type"] == "folder"
+      assert offers["path"] == "mounts/primary/Offers"
+      assert is_list(offers["children"])
+
+      page = Enum.find(offers["children"], &(&1["name"] == "Founder Coaching Package"))
+      assert page["type"] == "page"
+      assert page["path"] == "mounts/primary/Offers/Founder Coaching Package.md"
+      assert page["uri"] == "icm://mounts/primary/Offers/Founder Coaching Package.md"
+    end
+  end
+
   describe "save_icm_page" do
     test "mutates and persists: load, append paragraph, save, re-fetch, verify" do
       # Load the original page
       assert %{"success" => true, "data" => page} =
-               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+               rpc("icm_page", %{"path" => "mounts/primary/Offers/Discovery Call.md"})
 
       original_hash = page["hash"]
       assert is_binary(original_hash)
@@ -64,7 +108,7 @@ defmodule ValeaWeb.IcmRpcTest do
                rpc(
                  "save_icm_page",
                  %{
-                   "path" => "Offers/Discovery Call.md",
+                   "path" => "mounts/primary/Offers/Discovery Call.md",
                    "prosemirror" => mutated_prosemirror,
                    "baseHash" => original_hash
                  },
@@ -79,7 +123,7 @@ defmodule ValeaWeb.IcmRpcTest do
 
       # Re-fetch the page to verify persistence
       assert %{"success" => true, "data" => refetched} =
-               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+               rpc("icm_page", %{"path" => "mounts/primary/Offers/Discovery Call.md"})
 
       # Verify the content was persisted and contains the added text
       refetched_content = refetched["content"]
@@ -92,13 +136,13 @@ defmodule ValeaWeb.IcmRpcTest do
 
     test "stale base hash surfaces page_changed" do
       assert %{"success" => true, "data" => page} =
-               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+               rpc("icm_page", %{"path" => "mounts/primary/Offers/Discovery Call.md"})
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "save_icm_page",
                  %{
-                   "path" => "Offers/Discovery Call.md",
+                   "path" => "mounts/primary/Offers/Discovery Call.md",
                    "prosemirror" => page["prosemirror"],
                    "baseHash" => "deadbeef"
                  },
@@ -110,13 +154,13 @@ defmodule ValeaWeb.IcmRpcTest do
 
     test "a stale generation surfaces workspace_changed and does not save" do
       assert %{"success" => true, "data" => page} =
-               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+               rpc("icm_page", %{"path" => "mounts/primary/Offers/Discovery Call.md"})
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "save_icm_page",
                  %{
-                   "path" => "Offers/Discovery Call.md",
+                   "path" => "mounts/primary/Offers/Discovery Call.md",
                    "prosemirror" => page["prosemirror"],
                    "baseHash" => page["hash"],
                    "generation" => 999_999
@@ -128,7 +172,7 @@ defmodule ValeaWeb.IcmRpcTest do
 
       # Untouched: re-fetching still shows the original hash.
       assert %{"success" => true, "data" => refetched} =
-               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+               rpc("icm_page", %{"path" => "mounts/primary/Offers/Discovery Call.md"})
 
       assert refetched["hash"] == page["hash"]
     end
@@ -138,13 +182,13 @@ defmodule ValeaWeb.IcmRpcTest do
                rpc("get_workspace", %{})
 
       assert %{"success" => true, "data" => page} =
-               rpc("icm_page", %{"path" => "Offers/Discovery Call.md"})
+               rpc("icm_page", %{"path" => "mounts/primary/Offers/Discovery Call.md"})
 
       assert %{"success" => true, "data" => saved} =
                rpc(
                  "save_icm_page",
                  %{
-                   "path" => "Offers/Discovery Call.md",
+                   "path" => "mounts/primary/Offers/Discovery Call.md",
                    "prosemirror" => page["prosemirror"],
                    "baseHash" => page["hash"],
                    "generation" => generation
@@ -161,33 +205,33 @@ defmodule ValeaWeb.IcmRpcTest do
       assert %{"success" => true, "data" => %{"path" => path}} =
                rpc(
                  "create_icm_page",
-                 %{"parentPath" => "Offers", "name" => "New Offer"},
+                 %{"parentPath" => "mounts/primary/Offers", "name" => "New Offer"},
                  ["path"]
                )
 
-      assert path == "Offers/New Offer.md"
+      assert path == "mounts/primary/Offers/New Offer.md"
     end
 
-    test "create_icm_page at root level (empty parentPath) succeeds" do
+    test "create_icm_page at the mount root succeeds" do
       assert %{"success" => true, "data" => %{"path" => path}} =
                rpc(
                  "create_icm_page",
-                 %{"parentPath" => "", "name" => "Root Test"},
+                 %{"parentPath" => "mounts/primary", "name" => "Root Test"},
                  ["path"]
                )
 
-      assert path == "Root Test.md"
+      assert path == "mounts/primary/Root Test.md"
     end
 
     test "create_icm_folder returns the new path" do
       assert %{"success" => true, "data" => %{"path" => path}} =
                rpc(
                  "create_icm_folder",
-                 %{"parentPath" => "Offers", "name" => "New Section"},
+                 %{"parentPath" => "mounts/primary/Offers", "name" => "New Section"},
                  ["path"]
                )
 
-      assert path == "Offers/New Section"
+      assert path == "mounts/primary/Offers/New Section"
     end
 
     test "rename_icm_entry of a referenced page reports the updated workflows" do
@@ -195,13 +239,13 @@ defmodule ValeaWeb.IcmRpcTest do
                rpc(
                  "rename_icm_entry",
                  %{
-                   "path" => "Templates/Follow-up Email.md",
+                   "path" => "mounts/primary/Templates/Follow-up Email.md",
                    "newName" => "Follow-up Note"
                  },
                  ["path", "updatedWorkflows"]
                )
 
-      assert data["path"] == "Templates/Follow-up Note.md"
+      assert data["path"] == "mounts/primary/Templates/Follow-up Note.md"
       assert is_list(data["updatedWorkflows"])
       assert data["updatedWorkflows"] != []
       assert "Post-Session Follow-up" in data["updatedWorkflows"]
@@ -209,7 +253,9 @@ defmodule ValeaWeb.IcmRpcTest do
 
     test "delete_icm_entry returns deleted: true" do
       assert %{"success" => true, "data" => %{"deleted" => true}} =
-               rpc("delete_icm_entry", %{"path" => "Offers/Discovery Call.md"}, ["deleted"])
+               rpc("delete_icm_entry", %{"path" => "mounts/primary/Offers/Discovery Call.md"}, [
+                 "deleted"
+               ])
     end
 
     test "icm_entry_references lists referencing workflows" do
