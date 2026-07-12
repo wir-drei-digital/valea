@@ -228,6 +228,27 @@ defmodule Valea.Workspace.AdoptTest do
       refute File.exists?(Path.join(source, "config"))
     end
 
+    test "rejects when target is a symlink pointing to source (case-insensitive filesystem guard)",
+         %{parent: parent} do
+      source = tmp_dir("valea-target-symlink-source")
+      File.mkdir_p!(source)
+      File.write!(Path.join(source, "Notes.md"), "# hello")
+
+      # Create parent and a symlink in it pointing to source
+      File.mkdir_p!(parent)
+      symlink_path = Path.join(parent, "alias-to-source")
+      File.ln_s(source, symlink_path)
+
+      # Attempt to adopt via the symlink (different string, same filesystem identity)
+      assert {:error, :target_is_source} =
+               Adopt.create_with_icm(parent, "alias-to-source", source)
+
+      # source untouched
+      assert File.dir?(source)
+      assert File.exists?(Path.join(source, "Notes.md"))
+      refute File.exists?(Path.join(source, "config"))
+    end
+
     test "an existing non-empty target folder surfaces target_not_empty (bubbled from Scaffold.create)",
          %{parent: parent} do
       source = tmp_dir("valea-source-tne")

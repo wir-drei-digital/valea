@@ -185,11 +185,33 @@ defmodule Valea.Workspace.Adopt do
   # See moduledoc (`:target_is_source`) — adopting a folder into its own
   # parent under its own name would scaffold into (empty source) or bounce
   # confusingly off (non-empty source) the very folder being adopted.
+  # On case-insensitive filesystems (macOS APFS), string comparison alone
+  # misses "client notes" vs "Client Notes" — so also check filesystem
+  # identity (inode + device) when target exists.
   defp validate_target_not_source(target, icm_source_path) do
+    # Fast path: string comparison catches exact matches and non-existent targets
     if Path.expand(target) == Path.expand(icm_source_path) do
       {:error, :target_is_source}
     else
-      :ok
+      # If target already exists, verify it's not the same filesystem object
+      # (catches case-insensitive matches and symlinks pointing to source).
+      case identity_identical?(target, icm_source_path) do
+        true -> {:error, :target_is_source}
+        false -> :ok
+      end
+    end
+  end
+
+  # Compare filesystem identity using inode (device-independent uniqueness check).
+  # File.stat/2 follows symlinks, so both paths resolve to the same inode if they
+  # point to the same filesystem object (catches case-insensitive matches & symlinks).
+  defp identity_identical?(path1, path2) do
+    with {:ok, stat1} <- File.stat(path1, time: :posix),
+         {:ok, stat2} <- File.stat(path2, time: :posix) do
+      stat1.inode == stat2.inode
+    else
+      # If either path doesn't exist or stat fails, they can't be identical
+      _ -> false
     end
   end
 
@@ -221,7 +243,12 @@ defmodule Valea.Workspace.Adopt do
         Manager.open(target)
 
       {:error, reason} ->
-        File.rm_rf!(target)
+        # Belt-and-suspenders: never delete target if it's the source
+        # (filesystem-identical, caught by validate but failsafe here).
+        unless identity_identical?(target, icm_source_path) do
+          File.rm_rf!(target)
+        end
+
         {:error, map_move_error(reason)}
     end
   end
