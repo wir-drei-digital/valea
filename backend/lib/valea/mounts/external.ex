@@ -30,12 +30,15 @@ defmodule Valea.Mounts.External do
 
   ## Guardrails — enforced on BOTH paths
 
-  The boundary checks (`check_boundaries/2`) run in `validate_ref/2` (the
-  future `declare_mount` RPC's pre-write gate, which rejects a candidate
-  outright) AND in `declared/1`'s read path: a hand-edited config can put
-  ANY ref on disk, and since a clean external mount's `root` becomes an
-  agent read root later, the read path must degrade — never bless — a ref
-  that fails containment. Unlike `validate_ref/2`, `declared/1` never
+  The boundary checks (`check_boundaries/2`) AND the glob-safety check
+  (`check_glob_safety/1` — the resolved path must not contain a Claude Code
+  permission-glob metacharacter: `* ? [ ] { }`; see `Valea.Agents.
+  ClaudeSettings` for why) run in `validate_ref/2` (the future
+  `declare_mount` RPC's pre-write gate, which rejects a candidate outright)
+  AND in `declared/1`'s read path: a hand-edited config can put ANY ref on
+  disk, and since a clean external mount's `root` becomes an agent read
+  root later, the read path must degrade — never bless — a ref that fails
+  containment OR glob safety. Unlike `validate_ref/2`, `declared/1` never
   drops an entry (a workspace moved, a drive unmounted, and so on are
   transient and should recover, not vanish): a guardrail-failing ref
   yields a DEGRADED mount, config preserved, excluded from any effective
@@ -77,6 +80,10 @@ defmodule Valea.Mounts.External do
   or to an ancestor of the workspace, yields a DEGRADED mount (config
   preserved, never part of an effective set) — a hand-edited config must
   not be able to mint a clean mount that containment would later trust.
+  Likewise a ref whose resolved path contains a Claude Code permission-glob
+  metacharacter (`* ? [ ] { }`) degrades rather than minting a mount whose
+  `Read(<root>/**)` allow entry would carry different match semantics than
+  intended.
   """
   @spec declared(workspace :: String.t()) :: [Valea.Mounts.mount()]
   def declared(workspace) when is_binary(workspace) do
@@ -99,11 +106,14 @@ defmodule Valea.Mounts.External do
   release), `:inside_workspace` (the resolved ref is under, or IS, the
   workspace root), `:ancestor_of_workspace` (the workspace root is under
   the ref — mounting an ancestor would recursively include the workspace
-  itself), `:home_or_root` (ref resolves to `$HOME` or `/`), `:not_found`
-  (no folder there — including a ref that resolves to a FILE, not a
-  folder: the spec only ever speaks of folders), `:no_manifest` (a folder
-  with no `icm.yaml`), `{:invalid_manifest, reason}` (a folder whose
-  `icm.yaml` fails `Valea.Mounts.Manifest.load/1`).
+  itself), `:home_or_root` (ref resolves to `$HOME` or `/`), `:unsafe_path`
+  (the resolved ref contains a Claude Code permission-glob metacharacter —
+  `*`, `?`, `[`, `]`, `{`, `}` — which would change the match semantics of
+  the `Read(<root>/**)` allow entry `Valea.Agents.ClaudeSettings` later
+  splices it into), `:not_found` (no folder there — including a ref that
+  resolves to a FILE, not a folder: the spec only ever speaks of folders),
+  `:no_manifest` (a folder with no `icm.yaml`), `{:invalid_manifest,
+  reason}` (a folder whose `icm.yaml` fails `Valea.Mounts.Manifest.load/1`).
   """
   @spec validate_ref(workspace :: String.t(), ref :: String.t()) ::
           {:ok, resolved_abs :: String.t()}
@@ -112,6 +122,7 @@ defmodule Valea.Mounts.External do
     with :ok <- check_absolute(ref),
          resolved = resolve_best_effort(ref),
          :ok <- check_boundaries(resolved, resolve_best_effort(workspace)),
+         :ok <- check_glob_safety(resolved),
          :ok <- check_folder(resolved) do
       validate_manifest(resolved)
     end
@@ -149,6 +160,26 @@ defmodule Valea.Mounts.External do
 
   defp check_folder(resolved) do
     if File.dir?(resolved), do: :ok, else: {:error, :not_found}
+  end
+
+  @glob_metacharacters ["*", "?", "[", "]", "{", "}"]
+
+  # Claude Code's permission globs (`Read(<root>/**)`, spliced in by
+  # `Valea.Agents.ClaudeSettings`) are matched by ITS OWN glob engine, not
+  # the filesystem. If the resolved external root itself contains a glob
+  # metacharacter, splicing it raw into that allow entry changes its match
+  # semantics — e.g. a folder literally named `v*1` yields
+  # `Read(/.../v*1/**)`, where `*` is no longer a literal character but a
+  # wildcard, potentially widening what Claude Code auto-allows before the
+  # ACP permission callback ever fires. Checked on the RESOLVED path (post
+  # `~`-expansion, post symlink-walk) — the same value that becomes the
+  # allow glob's prefix.
+  defp check_glob_safety(resolved) do
+    if String.contains?(resolved, @glob_metacharacters) do
+      {:error, :unsafe_path}
+    else
+      :ok
+    end
   end
 
   defp validate_manifest(resolved) do
@@ -214,7 +245,18 @@ defmodule Valea.Mounts.External do
 
         case check_boundaries(resolved, ws_resolved) do
           :ok ->
-            build_resolved(name, ref, resolved, enabled)
+            case check_glob_safety(resolved) do
+              :ok ->
+                build_resolved(name, ref, resolved, enabled)
+
+              {:error, :unsafe_path} ->
+                degraded_mount(
+                  name,
+                  resolved,
+                  enabled,
+                  "path contains characters unsafe for permission globs"
+                )
+            end
 
           {:error, boundary} ->
             degraded_mount(name, resolved, enabled, boundary_degrade_reason(boundary))

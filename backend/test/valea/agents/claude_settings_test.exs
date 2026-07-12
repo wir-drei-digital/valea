@@ -158,6 +158,26 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     assert allow == ["Read(./**)"]
   end
 
+  test "an external mount whose resolved path contains glob metacharacters is excluded, does not crash",
+       %{root: root} do
+    parent = tmp_dir!("valea-cs-ext-parent")
+    weird = Path.join(parent, "weird[1]")
+    write_manifest!(weird, %{id: "weird-id", name: "Weird", description: ""})
+
+    write_workspace_yaml!(root, """
+    mounts:
+      weird:
+        kind: path
+        ref: "#{weird}"
+    """)
+
+    :ok = ClaudeSettings.write!(root)
+
+    allow = read_perms(root)["allow"]
+    assert allow == ["Read(./**)"]
+    refute Enum.any?(allow, &String.contains?(&1, "weird"))
+  end
+
   test "the deny block is byte-identical whether or not external mounts are enabled", %{
     root: root
   } do

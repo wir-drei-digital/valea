@@ -328,6 +328,30 @@ defmodule Valea.Mounts.ExternalTest do
       assert mount.manifest == nil
       assert mount.degraded =~ "absolute"
     end
+
+    test "a ref resolving to a path with a glob metacharacter is degraded, excluded from Mounts.enabled/1" do
+      ws = tmp_dir!("valea-ext-ws")
+      parent = tmp_dir!("valea-ext-parent")
+      weird = Path.join(parent, "weird[1]")
+      write_manifest!(weird, %{id: "id", name: "Weird", description: ""})
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        weird:
+          kind: path
+          ref: "#{weird}"
+      """)
+
+      assert [mount] = External.declared(ws)
+      assert mount.name == "weird"
+      assert mount.manifest == nil
+      assert mount.degraded =~ "glob"
+      # config preserved
+      assert mount.root == real!(weird)
+      assert mount.enabled == true
+
+      assert Valea.Mounts.enabled(ws) == []
+    end
   end
 
   # $HOME cannot be faked at runtime (see the ~-expansion note below), and
@@ -510,6 +534,22 @@ defmodule Valea.Mounts.ExternalTest do
 
       assert {:error, {:invalid_manifest, reason}} = External.validate_ref(ws, ext)
       assert is_binary(reason)
+    end
+
+    test "rejects a ref whose resolved directory name contains a glob metacharacter", %{ws: ws} do
+      parent = tmp_dir!("valea-ext-parent")
+      weird = Path.join(parent, "weird[1]")
+      write_manifest!(weird, %{id: "id", name: "Weird", description: ""})
+
+      assert {:error, :unsafe_path} = External.validate_ref(ws, weird)
+    end
+
+    test "rejects a ref containing a literal * in its resolved path", %{ws: ws} do
+      parent = tmp_dir!("valea-ext-parent")
+      weird = Path.join(parent, "v*1")
+      write_manifest!(weird, %{id: "id", name: "Star", description: ""})
+
+      assert {:error, :unsafe_path} = External.validate_ref(ws, weird)
     end
 
     test "resolves a symlink to its real path before applying guardrails", %{ws: ws} do
