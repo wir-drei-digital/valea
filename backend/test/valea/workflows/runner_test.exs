@@ -2,6 +2,8 @@ defmodule Valea.Workflows.RunnerTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
+  alias Valea.Mounts
+  alias Valea.Mounts.Manifest
   alias Valea.Workflows.Runner
 
   @wf_path "mounts/primary/Workflows/New Inquiry Triage.md"
@@ -113,6 +115,62 @@ defmodule Valea.Workflows.RunnerTest do
       |> Enum.find(&(&1["type"] == "workflow_run_finished" and &1["run_id"] == run_id))
 
     assert finished["outcome"] == "proposal_created"
+  end
+
+  test "run/2 accepts a workflow whose path resolves inside an enabled EXTERNAL mount root (A2-T5b)",
+       %{workspace: workspace} do
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+    ext =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(Path.join(ext, "Workflows"))
+    on_exit(fn -> File.rm_rf!(ext) end)
+    Manifest.write!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+    File.write!(
+      Path.join(ext, "Workflows/External Triage.md"),
+      """
+      ---
+      enabled: true
+      risk_level: medium
+      approval:
+        required: true
+      ---
+      # External Triage
+
+      ## Process
+
+      1. Do the thing.
+      """
+    )
+
+    config_path = Path.join(workspace, "config/workspace.yaml")
+    {:ok, doc} = YamlElixir.read_from_file(config_path)
+
+    File.write!(
+      config_path,
+      "version: #{doc["version"]}\nid: #{inspect(doc["id"])}\nmounts:\n  ext:\n    kind: \"path\"\n    ref: #{inspect(ext)}\n"
+    )
+
+    [ext_mount] = Enum.filter(Mounts.enabled(workspace), &(&1.name == "ext"))
+    ext_wf_path = Path.join(ext_mount.root, "Workflows/External Triage.md")
+
+    assert {:ok, %{run_id: run_id}} = Runner.run(ext_wf_path, @input_path)
+
+    pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
+    wait_until(fn -> File.exists?(pending_path) end)
+
+    item = pending_path |> File.read!() |> Jason.decode!()
+    # `workflow` carries the ABSOLUTE physical path verbatim — the run
+    # input/queue-envelope/audit vocabulary for external content is the
+    # resolved absolute path, not a workspace-relative one (binding
+    # semantic 4).
+    assert item["workflow"] == ext_wf_path
+    assert item["payload"]["kind"] == "email_draft"
   end
 
   test "finalize/2 with no staging file: outcome no_proposal, no pending item", %{

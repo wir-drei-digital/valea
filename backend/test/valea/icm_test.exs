@@ -128,17 +128,47 @@ defmodule Valea.ICMTest do
     refute Enum.any?(mount.tree, &(&1.name == "icm.yaml"))
   end
 
-  test "external mounts are not yet surfaced in tree/0 (A2-T5b) — embedded groups only, no crash",
+  test "external mounts are surfaced in tree/0 with the absolute physical root/paths (A2-T5b), alongside embedded groups",
        %{ws: ws} do
     ext = external_icm!("Ext")
     File.mkdir_p!(Path.join(ext, "Offers"))
     File.write!(Path.join(ext, "Offers/X.md"), "# X\n")
     declare_external!(ws, "ext", ext)
 
-    # Sanity: the external mount IS effective — it's excluded from tree/0
-    # deliberately (no workspace-relative form for the tree's
-    # `mounts/<name>/…` paths), not because it failed to resolve.
-    assert "ext" in Enum.map(Mounts.enabled(ws), & &1.name)
+    # Derive assertions from the EFFECTIVE mount's realpath-resolved root
+    # (m.root), not the raw tmp path — on macOS the raw `/var/folders/...`
+    # tmp path never string-matches the resolved `/private/var/...` root.
+    [ext_mount] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
+
+    assert {:ok, groups} = ICM.tree()
+    assert Enum.map(groups, & &1.mount) |> Enum.sort() == ["ext", "primary"]
+
+    ext_group = Enum.find(groups, &(&1.mount == "ext"))
+    assert ext_group.title == "Ext"
+    # root_rel stays a string (the RPC type holds), but for an external mount
+    # its value is the ABSOLUTE physical root — the one vocabulary this
+    # group's node paths use (binding semantic 1).
+    assert ext_group.root_rel == ext_mount.root
+
+    offers = Enum.find(ext_group.tree, &(&1.name == "Offers"))
+    assert offers.type == :folder
+    assert offers.path == Path.join(ext_mount.root, "Offers")
+    assert offers.page_count == 1
+
+    x = Enum.find(offers.children, &(&1.name == "X"))
+    assert x.type == :page
+    assert x.path == Path.join(ext_mount.root, "Offers/X.md")
+    assert x.uri == "icm://" <> Path.join(ext_mount.root, "Offers/X.md")
+
+    # Embedded groups are unchanged: still workspace-relative.
+    primary = Enum.find(groups, &(&1.mount == "primary"))
+    assert primary.root_rel == "mounts/primary"
+  end
+
+  test "a DISABLED external mount drops out of tree/0 entirely", %{ws: ws} do
+    ext = external_icm!("Ext")
+    declare_external!(ws, "ext", ext)
+    :ok = Mounts.set_enabled("ext", false)
 
     assert {:ok, groups} = ICM.tree()
     assert Enum.map(groups, & &1.mount) == ["primary"]
@@ -230,36 +260,67 @@ defmodule Valea.ICMTest do
       %{ws: ws, ext: ext}
     end
 
-    test "external mounts are not yet editable via ICM ops (A2-T5b)", %{ws: ws} do
-      # Sanity: the external mount IS effective — it's just not yet editable.
+    test "external mounts are editable via ICM ops through their absolute physical paths (A2-T5b)",
+         %{ws: ws} do
+      # Sanity: the external mount IS effective.
       [m] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
       assert m.rel_root == nil
 
       # Derive the page path from the EFFECTIVE mount's realpath-RESOLVED root
       # (`m.root`), not the raw tmp path — on macOS the raw `/var/folders/...`
-      # tmp path never string-matches the resolved `/private/var/...` root, so
-      # a raw-path call would be rejected by attribution (`:not_in_mount`)
-      # and never reach the `rel_root: nil` clause this test pins.
+      # tmp path never string-matches the resolved `/private/var/...` root.
       ext_page_abs = Path.join(m.root, "Offers/External.md")
       assert File.exists?(ext_page_abs)
-
-      # Sanity: this path DOES attribute to the external mount — the
-      # rejections below exercise the rel_root: nil clause, not attribution.
       assert {:ok, %{name: "ext", rel_root: nil}} = Mounts.mount_for(ext_page_abs)
 
-      # page/1 rejects the external absolute path (no read)
+      # page/1 reads the external page fine, by its absolute physical path —
+      # `path`/`uri` round-trip that same absolute vocabulary.
+      assert {:ok, page} = ICM.page(ext_page_abs)
+      assert page.path == ext_page_abs
+      assert page.content == "# External Page\n"
+      assert page.uri == "icm://" <> ext_page_abs
+
+      # create_page/2 + create_folder/2 land directly at the external mount's
+      # own root (the same "" mount-relative special case embedded mounts get).
+      assert {:ok, %{path: new_page_path}} = ICM.create_page(m.root, "New External")
+      assert new_page_path == Path.join(m.root, "New External.md")
+      assert File.exists?(new_page_path)
+
+      assert {:ok, %{path: new_folder_path}} = ICM.create_folder(m.root, "New Folder")
+      assert new_folder_path == Path.join(m.root, "New Folder")
+      assert File.dir?(new_folder_path)
+
+      # rename/2 works within the external mount.
+      assert {:ok, %{path: renamed_path}} = ICM.rename(new_page_path, "Renamed External")
+      assert renamed_path == Path.join(m.root, "Renamed External.md")
+      refute File.exists?(new_page_path)
+      assert File.exists?(renamed_path)
+
+      # delete/1 of a page INSIDE the external mount is a legitimate
+      # user-initiated editor action (binding semantic 7).
+      assert {:ok, %{deleted: true}} = ICM.delete(renamed_path)
+      refute File.exists?(renamed_path)
+
+      # But never the mount root itself — Valea never deletes/moves an
+      # external folder wholesale.
+      assert {:error, :outside_workspace} = ICM.rename(m.root, "Hijacked")
+      assert {:error, :outside_workspace} = ICM.delete(m.root)
+      assert File.dir?(m.root), "mount root must remain untouched on disk"
+    end
+
+    test "a DISABLED external mount's absolute paths still get :outside_workspace from every editor op",
+         %{ws: ws} do
+      :ok = Mounts.set_enabled("ext", false)
+      [m] = Enum.filter(Mounts.list(ws), &(&1.name == "ext"))
+      ext_page_abs = Path.join(m.root, "Offers/External.md")
+
+      # Sanity: disabled external no longer attributes via absolute path.
+      assert {:error, :not_in_mount} = Mounts.mount_for(ext_page_abs)
+
       assert {:error, :outside_workspace} = ICM.page(ext_page_abs)
-
-      # rename/2 rejects the external absolute path and leaves the file untouched on disk
       assert {:error, :outside_workspace} = ICM.rename(ext_page_abs, "Renamed")
-      assert File.read!(ext_page_abs) == "# External Page\n", "file should be untouched on disk"
-
-      refute File.exists?(Path.join(m.root, "Offers/Renamed.md")),
-             "rename should not have happened"
-
-      # delete/1 rejects the external absolute path
       assert {:error, :outside_workspace} = ICM.delete(ext_page_abs)
-      assert File.exists?(ext_page_abs), "file should remain untouched on disk"
+      assert File.exists?(ext_page_abs), "disabled external mount's file must be untouched"
     end
   end
 end

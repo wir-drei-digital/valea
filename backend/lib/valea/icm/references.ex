@@ -81,7 +81,7 @@ defmodule Valea.ICM.References do
   """
   def referencing_workflows(rel_path) do
     with {:ok, mount} <- resolve_mount(rel_path),
-         {:ok, needle} <- inner_needle(rel_path) do
+         {:ok, needle} <- inner_needle(rel_path, mount) do
       refs =
         mount
         |> workflows_dir()
@@ -118,8 +118,8 @@ defmodule Valea.ICM.References do
     with {:ok, old_mount} <- resolve_mount(old_rel),
          {:ok, new_mount} <- resolve_mount(new_rel),
          :ok <- same_mount(old_mount, new_mount),
-         {:ok, old_needle} <- inner_needle(old_rel),
-         {:ok, new_needle} <- inner_needle(new_rel) do
+         {:ok, old_needle} <- inner_needle(old_rel, old_mount),
+         {:ok, new_needle} <- inner_needle(new_rel, new_mount) do
       files_to_rewrite =
         old_mount
         |> workflows_dir()
@@ -156,19 +156,31 @@ defmodule Valea.ICM.References do
   # The mount-relative inner path is the search/replace needle. A bare
   # mount root (inner path "") is invalid: an empty needle would match
   # everywhere and a replace with/of "" shreds files.
-  defp inner_needle(rel_path) do
-    case mount_relative(rel_path) do
+  defp inner_needle(rel_path, mount) do
+    case mount_relative(rel_path, mount) do
       "" -> {:error, :invalid_path}
       needle -> {:ok, needle}
     end
   end
 
-  # Strips the leading `mounts/<name>` segment off a workspace-relative
-  # path, leaving the path ICM-relative to that mount's own root. Mirrors
-  # the private `mount_relative/1` in `Valea.ICM` — kept local rather than
-  # shared for the same reason `atomic_write/2` below is: a small,
-  # self-contained module, not worth a shared dependency for.
-  defp mount_relative(rel_path) do
+  # The path relative to `mount`'s OWN root — ICM-relative to that mount.
+  # Mirrors the private `mount_relative/2` in `Valea.ICM` — kept local
+  # rather than shared for the same reason `atomic_write/2` below is: a
+  # small, self-contained module, not worth a shared dependency for.
+  #
+  #   * embedded: strips the leading `mounts/<name>` segment off the
+  #     workspace-relative `rel_path`.
+  #   * external (A2-T5b, `rel_root: nil`): strips `mount.root` itself off
+  #     the ABSOLUTE `rel_path`.
+  defp mount_relative(rel_path, %{rel_root: nil, root: root}) do
+    cond do
+      rel_path == root -> ""
+      String.starts_with?(rel_path, root <> "/") -> String.trim_leading(rel_path, root <> "/")
+      true -> rel_path
+    end
+  end
+
+  defp mount_relative(rel_path, _mount) do
     case Path.split(rel_path) do
       ["mounts", _name | rest] -> Enum.join(rest, "/")
       _ -> rel_path

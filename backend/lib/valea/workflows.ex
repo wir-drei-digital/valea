@@ -11,10 +11,14 @@ defmodule Valea.Workflows do
   `list/0` unions `Workflows/*.md` across `Valea.Mounts.enabled/0` — one
   glob per mount, sorted by the union's `path`. Each entry's `path` is
   workspace-relative (`mounts/<name>/Workflows/<file>.md`, replacing the
-  old single hardcoded `icm/Workflows/<file>.md`) and carries a `mount`
-  field — the owning mount's manifest display name (`manifest.name`) — for
-  provenance. Because `path` is namespaced by mount, two mounts may each
-  have a same-named `Workflows/<file>.md` without one shadowing the other.
+  old single hardcoded `icm/Workflows/<file>.md`) for an EMBEDDED mount, or
+  the ABSOLUTE physical `<root>/Workflows/<file>.md` for an EXTERNAL
+  (`rel_root: nil`) mount (A2-T5b) — external content is addressed by its
+  resolved absolute path in this registry, same as everywhere else. Every
+  entry carries a `mount` field — the owning mount's manifest display name
+  (`manifest.name`) — for provenance. Because `path` is namespaced by mount
+  (by directory prefix or by absolute root), two mounts may each have a
+  same-named `Workflows/<file>.md` without one shadowing the other.
 
   DECISION (mirrors `Valea.ICM`'s DECISION for `page/1`, T3): `list/0` uses
   `Mounts.enabled/0`, so a DISABLED (or degraded) mount's workflows drop
@@ -89,18 +93,24 @@ defmodule Valea.Workflows do
   end
 
   @doc """
-  One workflow contract by its workspace-relative path (as returned in
-  `list/0`'s `path` field, e.g. `"mounts/primary/Workflows/New Inquiry
-  Triage.md"`). Resolves the owning mount regardless of its enabled state
-  (see moduledoc DECISION). `{:error, :not_found}` when the path doesn't
-  name a real mount, doesn't land under that mount's `Workflows/`, is
-  missing, or has no parseable frontmatter block.
+  One workflow contract by its `list/0`-shaped `path` (workspace-relative
+  `"mounts/primary/Workflows/New Inquiry Triage.md"` for an embedded mount,
+  or the ABSOLUTE physical `<root>/Workflows/<file>.md` for an external one,
+  A2-T5b). Resolves the owning mount via `Mounts.mount_for/1` — for an
+  embedded path, regardless of that mount's enabled state (see moduledoc
+  DECISION); for an absolute external path, `mount_for/1`'s own attribution
+  rule requires an ENABLED, non-degraded mount (mirrors `Valea.ICM`'s editor
+  ops, A2-T5b binding semantic 2) — a disabled/degraded external mount's
+  path simply fails to attribute and falls through to `:not_found` below,
+  same as any other unrecognized path. `{:error, :not_found}` when the path
+  doesn't name a (currently eligible) mount, doesn't land under that
+  mount's `Workflows/`, is missing, or has no parseable frontmatter block.
   """
   @spec get(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get(rel_path) do
     with {:ok, mount} <- Mounts.mount_for(rel_path),
          %Manifest{} <- mount.manifest,
-         mount_rel <- mount_relative(rel_path),
+         mount_rel <- mount_relative(rel_path, mount),
          true <- valid_workflow_rel?(mount_rel),
          {:ok, real} <- Valea.Paths.resolve_real(mount_rel, mount.root),
          true <- under_workflows_dir?(real, mount.root),
@@ -118,12 +128,6 @@ defmodule Valea.Workflows do
       _ -> {:error, :not_found}
     end
   end
-
-  # EXTERNAL (by-reference) mounts have `rel_root: nil` — `parse/2` builds a
-  # workflow's workspace-relative `mounts/<name>/…` path from it, a form
-  # external content does not have. Their workflows are deliberately not
-  # surfaced yet; A2-T5b adds external workflows to `list/0,1`.
-  defp workflows_for_mount(%{rel_root: nil}), do: []
 
   defp workflows_for_mount(%{manifest: %Manifest{}} = mount) do
     mount.root
@@ -159,12 +163,24 @@ defmodule Valea.Workflows do
     end
   end
 
-  # Strips the leading `mounts/<name>` segment off a workspace-relative
-  # path, leaving the path relative to that mount's own root. Mirrors the
-  # private `mount_relative/1` in `Valea.ICM` / `Valea.ICM.References` —
-  # kept local for the same reason those keep their own copy: a small,
-  # self-contained helper, not worth a shared dependency for.
-  defp mount_relative(rel_path) do
+  # The path relative to `mount`'s OWN root. Mirrors `Valea.ICM`'s private
+  # `mount_relative/2` (kept local for the same reason `Valea.ICM.References`
+  # keeps its own copy too: a small, self-contained helper, not worth a
+  # shared dependency for):
+  #
+  #   * embedded: strips the leading `mounts/<name>` segment off the
+  #     workspace-relative `rel_path`.
+  #   * external (A2-T5b, `rel_root: nil`): strips `mount.root` itself off
+  #     the ABSOLUTE `rel_path`.
+  defp mount_relative(rel_path, %{rel_root: nil, root: root}) do
+    cond do
+      rel_path == root -> ""
+      String.starts_with?(rel_path, root <> "/") -> String.trim_leading(rel_path, root <> "/")
+      true -> rel_path
+    end
+  end
+
+  defp mount_relative(rel_path, _mount) do
     case Path.split(rel_path) do
       ["mounts", _name | rest] -> Enum.join(rest, "/")
       _ -> rel_path
@@ -176,7 +192,7 @@ defmodule Valea.Workflows do
          {block, body} <- Valea.ICM.split_frontmatter(content),
          %{} = fm <- parse_frontmatter(block) do
       %{
-        path: Path.join(mount.rel_root, Path.relative_to(abs, mount.root)),
+        path: workflow_path(mount, abs),
         mount: mount.manifest.name,
         name: name_of(body, abs),
         description: description_of(body),
@@ -191,6 +207,13 @@ defmodule Valea.Workflows do
       _ -> nil
     end
   end
+
+  # A workflow's `list/0`-shaped `path`: workspace-relative (`mounts/<name>/…`)
+  # for an embedded mount; `abs` itself (already the absolute physical path —
+  # it came straight off `mount.root`'s own glob/join) for an external one
+  # (A2-T5b).
+  defp workflow_path(%{rel_root: nil}, abs), do: abs
+  defp workflow_path(mount, abs), do: Path.join(mount.rel_root, Path.relative_to(abs, mount.root))
 
   defp parse_frontmatter(""), do: nil
 

@@ -138,7 +138,7 @@ defmodule Valea.WorkflowsTest do
     assert b_wf.name == "B Shared"
   end
 
-  test "external mounts' workflows are not yet surfaced in list/1 (A2-T5b) — embedded only, no crash",
+  test "external mounts' workflows are surfaced in list/1 with absolute paths (A2-T5b), alongside embedded",
        %{workspace: ws} do
     a = write_mount!(ws, "a", "Mount A")
     write_workflow!(a, "Triage.md", "enabled: true\nrisk_level: low\n", "# Triage\n\nBody.\n")
@@ -147,13 +147,38 @@ defmodule Valea.WorkflowsTest do
     write_workflow!(ext, "External.md", "enabled: true\nrisk_level: low\n", "# Ext WF\n\nBody.\n")
     declare_external!(ws, "ext", ext)
 
-    # Sanity: the external mount IS effective — its workflows are excluded
-    # deliberately (rel_root: nil has no workspace-relative form for a
-    # workflow's `mounts/<name>/…` path), not because it failed to resolve.
-    assert "ext" in Enum.map(Mounts.enabled(ws), & &1.name)
+    [ext_mount] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
 
     workflows = Workflows.list(ws)
-    assert Enum.map(workflows, & &1.path) == ["mounts/a/Workflows/Triage.md"]
+
+    assert Enum.map(workflows, & &1.path) |> Enum.sort() ==
+             Enum.sort([
+               "mounts/a/Workflows/Triage.md",
+               Path.join(ext_mount.root, "Workflows/External.md")
+             ])
+
+    ext_wf = Enum.find(workflows, &(&1.mount == "Ext"))
+    assert ext_wf.path == Path.join(ext_mount.root, "Workflows/External.md")
+    assert ext_wf.name == "Ext WF"
+    assert ext_wf.enabled == true
+  end
+
+  test "a DISABLED external mount drops out of list/1 AND its absolute path no longer resolves via get/1 (unlike a disabled embedded mount — see Mounts.mount_for/1's enabled-only external attribution)",
+       %{workspace: ws} do
+    ext = external_icm!("Ext")
+    write_workflow!(ext, "External.md", "enabled: true\nrisk_level: low\n", "# Ext WF\n\nBody.\n")
+    declare_external!(ws, "ext", ext)
+
+    [ext_mount] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
+    ext_wf_path = Path.join(ext_mount.root, "Workflows/External.md")
+
+    assert {:ok, [_one]} = Workflows.list()
+    assert {:ok, _wf} = Workflows.get(ext_wf_path)
+
+    :ok = Mounts.set_enabled("ext", false)
+
+    assert {:ok, []} = Workflows.list()
+    assert {:error, :not_found} = Workflows.get(ext_wf_path)
   end
 
   test "disabling a mount drops its workflows from list/0, but get/1 by explicit path still resolves it (T3 posture)",
@@ -270,6 +295,31 @@ defmodule Valea.WorkflowsTest do
     refute Enum.any?(workflows, &(&1.path == "mounts/a/Workflows/No Frontmatter.md"))
   end
 
+  test "get/1 on an external mount's absolute path outside its Workflows/ returns not_found",
+       %{workspace: ws} do
+    ext = external_icm!("Ext")
+    File.mkdir_p!(Path.join(ext, "Offers"))
+    File.write!(Path.join(ext, "Offers/X.md"), "---\nenabled: true\n---\n# X\n")
+    declare_external!(ws, "ext", ext)
+
+    [ext_mount] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
+
+    assert {:error, :not_found} = Workflows.get(Path.join(ext_mount.root, "Offers/X.md"))
+  end
+
+  test "get/1 on an external mount's absolute path that traverses out of its Workflows/ (while staying inside the mount) returns not_found",
+       %{workspace: ws} do
+    ext = external_icm!("Ext")
+    File.mkdir_p!(Path.join(ext, "Offers"))
+    File.write!(Path.join(ext, "Offers/escaped.md"), "# Escaped\n")
+    declare_external!(ws, "ext", ext)
+
+    [ext_mount] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
+
+    escape_path = Path.join(ext_mount.root, "Workflows/../Offers/escaped.md")
+    assert {:error, :not_found} = Workflows.get(escape_path)
+  end
+
   test "no workspace open returns an empty list" do
     Valea.Workspace.Manager.close()
     assert {:ok, []} = Workflows.list()
@@ -370,6 +420,19 @@ defmodule Valea.WorkflowsTest do
     test "returns nil when no workspace is open (list/0's own no-workspace case)" do
       Valea.Workspace.Manager.close()
       assert Workflows.triage_path() == nil
+    end
+
+    test "finds the triage workflow seeded in an enabled EXTERNAL mount (A2-T5b acceptance: registry discovery keeps working)",
+         %{workspace: ws} do
+      ext = external_icm!("Ext")
+      write_workflow!(ext, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
+      declare_external!(ws, "ext", ext)
+
+      [ext_mount] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
+      expected = Path.join(ext_mount.root, "Workflows/New Inquiry Triage.md")
+
+      assert Workflows.triage_path() == expected
+      assert Workflows.triage_path(ws) == expected
     end
 
     test "a disabled mount's triage workflow is not found (mirrors list/0's enabled-only gating)",

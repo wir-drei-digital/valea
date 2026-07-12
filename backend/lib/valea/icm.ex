@@ -29,14 +29,21 @@ defmodule Valea.ICM do
   impossible for the UI to ever inspect or fix a disabled mount's content.
 
   `tree/0` is the one function scoped to `Mounts.enabled/0`: it returns one
-  entry per ENABLED, non-degraded EMBEDDED mount (external `rel_root: nil`
-  mounts are not surfaced until A2-T5b), grouped:
+  entry per ENABLED, non-degraded mount, embedded ∪ external, grouped:
 
       {:ok, [%{mount: name, title: manifest_name, root_rel: "mounts/<name>",
                tree: [<node>, ...]}, ...]}
 
   where `<node>` is the same folder/page node shape `tree/0` always
-  produced, just with `path` (and a page's `uri`) now workspace-relative.
+  produced. For an EMBEDDED mount, `root_rel` and every node `path` (and a
+  page's `uri`) are workspace-relative (`mounts/<name>/…`), unchanged. For
+  an EXTERNAL (`rel_root: nil`) mount (A2-T5b), `root_rel` is instead that
+  mount's ABSOLUTE physical root, and every node `path` beneath it is the
+  ABSOLUTE physical path — external content is addressed by the resolved
+  absolute path in every agent-visible/RPC vocabulary; `root_rel` stays a
+  STRING either way (the RPC type holds), just a different vocabulary per
+  mount kind. `prefix_tree/2` doesn't care which — `Path.join/2` joins a
+  `mounts/<name>` prefix or an absolute root identically.
   """
 
   alias Valea.ICM.References
@@ -48,18 +55,16 @@ defmodule Valea.ICM do
   def tree do
     with {:ok, mounts} <- Mounts.enabled() do
       {:ok,
-       mounts
-       # EXTERNAL (by-reference) mounts have `rel_root: nil` — no
-       # workspace-relative form for the `mounts/<name>/…` node paths this
-       # tree is built from. They are deliberately not surfaced here yet;
-       # A2-T5b adds external groups to the tree.
-       |> Enum.reject(&is_nil(&1.rel_root))
-       |> Enum.map(fn m ->
+       Enum.map(mounts, fn m ->
+         # `rel_root` (embedded) or `root` (external, A2-T5b) — the prefix
+         # `prefix_tree/2` joins onto every node's mount-root-relative path.
+         prefix = m.rel_root || m.root
+
          %{
            mount: m.name,
            title: m.manifest.name,
-           root_rel: m.rel_root,
-           tree: prefix_tree(build_tree(m.root, m.root), m.rel_root)
+           root_rel: prefix,
+           tree: prefix_tree(build_tree(m.root, m.root), prefix)
          }
        end)}
     end
@@ -67,7 +72,7 @@ defmodule Valea.ICM do
 
   def page(rel_path) do
     with {:ok, mount} <- mount_root_for(rel_path),
-         {:ok, abs} <- contain(mount.root, mount_relative(rel_path)) do
+         {:ok, abs} <- contain(mount.root, mount_relative(rel_path, mount)) do
       case File.read(abs) do
         {:ok, content} ->
           {block, body} = split_frontmatter(content)
@@ -146,7 +151,7 @@ defmodule Valea.ICM do
   """
   def save_page(rel_path, pm_map, base_hash) do
     with {:ok, mount} <- mount_root_for(rel_path),
-         {:ok, abs} <- contain(mount.root, mount_relative(rel_path)),
+         {:ok, abs} <- contain(mount.root, mount_relative(rel_path, mount)),
          {:ok, current} <- read_for_save(abs) do
       if sha256_hex(current) == base_hash do
         {block, _old_body} = split_frontmatter(current)
@@ -192,35 +197,63 @@ defmodule Valea.ICM do
     :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
   end
 
-  # Resolves the mount owning `rel_path` (a full `mounts/<name>/…`
-  # workspace-relative path) via `Mounts.mount_for/1` — attribution only, see
-  # moduledoc. `:not_in_mount` (no `mounts/<name>` prefix at all, or a name
-  # that isn't actually a discovered mount) is folded into `:outside_workspace`
-  # — from this module's point of view, a path that doesn't name a real mount
-  # is just as inaccessible as one that escapes a real mount's root.
-  #
-  # External mounts (rel_root: nil) are not editable via ICM ops until A2-T5b
-  # opens the editor to absolute external paths.
+  # Resolves the mount owning `rel_path` via `Mounts.mount_for/1` —
+  # attribution only, see moduledoc. Accepts BOTH shapes `mount_for/1`
+  # attributes: a workspace-relative `mounts/<name>/…` path (embedded,
+  # regardless of that mount's enabled/degraded state), or an ABSOLUTE path
+  # under an ENABLED, non-degraded EXTERNAL mount's root (A2-T5b — a
+  # disabled/degraded external mount's absolute path never attributes at
+  # all, per `Mounts.mount_for/2`'s own doc, so it falls into the
+  # `:not_in_mount` clause below exactly like any other unrecognized path).
+  # `:not_in_mount` is folded into `:outside_workspace` — from this module's
+  # point of view, a path that doesn't name a real (or currently eligible)
+  # mount is just as inaccessible as one that escapes a real mount's root.
   defp mount_root_for(rel_path) do
     case Mounts.mount_for(rel_path) do
-      {:ok, %{rel_root: nil}} -> {:error, :outside_workspace}
       {:ok, mount} -> {:ok, mount}
       {:error, :not_in_mount} -> {:error, :outside_workspace}
       {:error, :no_workspace} -> {:error, :no_workspace}
     end
   end
 
-  # Strips the leading `mounts/<name>` segment off a workspace-relative path,
-  # leaving the path relative to THAT mount's own root — the same shape every
-  # `contain/2`/`build_tree/2` call took before mounts existed. Only ever
-  # called after `mount_root_for/1` already confirmed `rel_path` has this
-  # shape; the fallback is defensive, not a normal code path.
-  defp mount_relative(rel_path) do
+  # The path relative to `mount`'s OWN root — the shape every
+  # `contain/2`/`build_tree/2` call takes, regardless of mount kind:
+  #
+  #   * embedded: strips the leading `mounts/<name>` segment off the
+  #     workspace-relative `rel_path`.
+  #   * external (A2-T5b, `rel_root: nil`): strips `mount.root` itself off
+  #     the ABSOLUTE `rel_path` — the mount root exactly becomes `""` (the
+  #     same sentinel `check_parent_contained/2` and `contain/2` already use
+  #     for "the mount's own root" — so an external mount's root gets the
+  #     identical strict-containment treatment an embedded mount's root
+  #     already does: `contain(root, "")` rejects it, which is exactly how
+  #     `rename`/`delete` targeting the mount root itself stay rejected
+  #     without any special-case code, binding semantic 7).
+  #
+  # Only ever called after `mount_root_for/1` already confirmed `rel_path`
+  # attributes to `mount`; the final fallback clause is defensive, not a
+  # normal code path.
+  defp mount_relative(rel_path, %{rel_root: nil, root: root}) do
+    cond do
+      rel_path == root -> ""
+      String.starts_with?(rel_path, root <> "/") -> String.trim_leading(rel_path, root <> "/")
+      true -> rel_path
+    end
+  end
+
+  defp mount_relative(rel_path, _mount) do
     case Path.split(rel_path) do
       ["mounts", _name | rest] -> Enum.join(rest, "/")
       _ -> rel_path
     end
   end
+
+  # The external/embedded mirror of `mount_relative/2`: turns a mount-relative
+  # path back into the vocabulary that mount's kind exposes externally —
+  # workspace-relative (`mounts/<name>/…`) for embedded, ABSOLUTE physical
+  # path for external (A2-T5b).
+  defp to_workspace_rel(%{rel_root: nil, root: root}, mount_rel_path),
+    do: Path.join(root, mount_rel_path)
 
   defp to_workspace_rel(mount, mount_rel_path), do: Path.join(mount.rel_root, mount_rel_path)
 
@@ -412,7 +445,7 @@ defmodule Valea.ICM do
     with {:ok, normalized_name} <- normalize_name(name),
          {:ok, mount} <- mount_root_for(parent_rel_path),
          root <- mount.root,
-         mount_parent <- mount_relative(parent_rel_path),
+         mount_parent <- mount_relative(parent_rel_path, mount),
          :ok <- check_parent_contained(root, mount_parent),
          parent_abs <- Path.join(root, mount_parent),
          :ok <- check_parent_is_directory(parent_abs),
@@ -457,7 +490,7 @@ defmodule Valea.ICM do
     with {:ok, normalized_name} <- normalize_name(name),
          {:ok, mount} <- mount_root_for(parent_rel_path),
          root <- mount.root,
-         mount_parent <- mount_relative(parent_rel_path),
+         mount_parent <- mount_relative(parent_rel_path, mount),
          :ok <- check_parent_contained(root, mount_parent),
          parent_abs <- Path.join(root, mount_parent),
          :ok <- check_parent_is_directory(parent_abs),
@@ -538,7 +571,7 @@ defmodule Valea.ICM do
   def rename(rel_path, new_name) do
     with {:ok, mount} <- mount_root_for(rel_path),
          root <- mount.root,
-         mount_rel <- mount_relative(rel_path),
+         mount_rel <- mount_relative(rel_path, mount),
          {:ok, old_abs} <- contain(root, mount_rel),
          true <- File.exists?(old_abs),
          {:ok, normalized_name} <- normalize_name(new_name),
@@ -663,7 +696,7 @@ defmodule Valea.ICM do
   """
   def delete(rel_path) do
     with {:ok, mount} <- mount_root_for(rel_path),
-         {:ok, abs} <- contain(mount.root, mount_relative(rel_path)) do
+         {:ok, abs} <- contain(mount.root, mount_relative(rel_path, mount)) do
       cond do
         File.dir?(abs) ->
           File.rm_rf!(abs)

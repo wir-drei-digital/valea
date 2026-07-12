@@ -1,6 +1,8 @@
 defmodule Valea.ICMWriteTest do
   use ExUnit.Case, async: false
 
+  alias Valea.Mounts
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
   alias Valea.ICM
   alias Valea.Markdown.ProseMirror
@@ -230,5 +232,80 @@ defmodule Valea.ICMWriteTest do
 
   test "delete a non-existent path returns not_found" do
     assert {:error, :not_found} = ICM.delete("mounts/primary/Offers/Nope.md")
+  end
+
+  describe "external mounts (A2-T5b)" do
+    defp declare_external!(ws_path, name, ref) do
+      config_path = Path.join(ws_path, "config/workspace.yaml")
+      {:ok, doc} = YamlElixir.read_from_file(config_path)
+
+      mounts = Map.put(Map.get(doc, "mounts") || %{}, name, %{"kind" => "path", "ref" => ref})
+
+      header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
+
+      entries =
+        Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+          [
+            "  #{n}:"
+            | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
+                "    #{k}: #{inspect(v)}"
+              end)
+          ]
+        end)
+
+      File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+    end
+
+    defp external_icm!(name) do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+      dir
+    end
+
+    setup do
+      ws = ws_path()
+      ext = external_icm!("Ext")
+      File.mkdir_p!(Path.join(ext, "Offers"))
+      File.write!(Path.join(ext, "Offers/External.md"), "# External Page\n")
+      declare_external!(ws, "ext", ext)
+
+      [m] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
+      %{mount: m}
+    end
+
+    test "save_page round-trips an edit and returns a new hash, guarded by base_hash", %{
+      mount: m
+    } do
+      page_path = Path.join(m.root, "Offers/External.md")
+      page = load(page_path)
+
+      {:ok, pm} = ProseMirror.from_markdown(page.content <> "\nOne more line.\n")
+      {:ok, %{hash: new_hash}} = ICM.save_page(page_path, pm, page.hash)
+      refute new_hash == page.hash
+      assert load(page_path).content =~ "One more line."
+
+      # A stale base_hash is rejected — the guard applies to external pages
+      # exactly as it does to embedded ones.
+      assert {:error, :page_changed} = ICM.save_page(page_path, pm, page.hash)
+    end
+
+    test "create_page/create_folder at the external mount's own root", %{mount: m} do
+      assert {:ok, %{path: page_path}} = ICM.create_page(m.root, "Scratch")
+      assert page_path == Path.join(m.root, "Scratch.md")
+      assert load(page_path).content == "# Scratch"
+
+      assert {:ok, %{path: folder_path}} = ICM.create_folder(m.root, "Projects")
+      assert folder_path == Path.join(m.root, "Projects")
+      assert File.dir?(folder_path)
+
+      assert {:error, :already_exists} = ICM.create_folder(m.root, "Projects")
+    end
   end
 end

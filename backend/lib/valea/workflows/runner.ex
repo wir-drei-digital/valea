@@ -15,14 +15,25 @@ defmodule Valea.Workflows.Runner do
   crash-recovery, or a test — and idempotent, since it only ever acts on
   what it finds on disk.
 
-  `workflow_path` is an OPAQUE workspace-relative string throughout this
-  module — it is hashed, embedded in the prompt, and carried verbatim into
-  the sidecar/queue envelope/audit entries, but never itself parsed or
-  glob-matched. That means the Plan A mount refactor (`Valea.Mounts`, T2)
-  needed NO change here: `Valea.Workflows.list/0`'s `path` field is now
-  `mounts/<name>/Workflows/<file>.md` instead of the old single hardcoded
+  `workflow_path` is an OPAQUE string throughout this module for hashing,
+  prompting, and the sidecar/queue envelope/audit entries — carried
+  verbatim, never parsed for those purposes. That means the Plan A mount
+  refactor (`Valea.Mounts`, T2) needed NO change here: `Valea.Workflows.
+  list/0`'s `path` field is `mounts/<name>/Workflows/<file>.md` for an
+  embedded mount instead of the old single hardcoded
   `icm/Workflows/<file>.md`, and this module carries the new shape through
   coherently by construction.
+
+  ONE exception (A2-T5b): `read_workflow/2`'s containment check needs to
+  know WHICH root to resolve `workflow_path` against — the workspace root
+  for an embedded (workspace-relative) path, or the owning EXTERNAL mount's
+  own absolute root for an absolute one (external content lives outside the
+  workspace, so containing it against the workspace would always fail).
+  `workflow_containment_root/2` answers that via `Valea.Mounts.mount_for/1`
+  — the same attribution primitive `Valea.Workflows.get/1` already used
+  moments earlier in this same call to resolve `wf`, so it is guaranteed to
+  agree. This is the one place `workflow_path`'s SHAPE (not its content) is
+  inspected; everything else about it downstream stays opaque.
 
   This module also does NOT resolve a workflow contract's `sources:`
   frontmatter (the `%{id, type, path}` list of ICM pages the contract
@@ -156,14 +167,30 @@ defmodule Valea.Workflows.Runner do
   defp ensure_enabled(_wf), do: {:error, :workflow_disabled}
 
   # Containment-gated: `resolve_real/2` rejects any `..`/symlink traversal
-  # that would escape `workspace` (realpath semantics, mirroring
+  # that would escape the containment root (realpath semantics, mirroring
   # `PermissionPolicy`), and the read goes through the RESOLVED absolute
   # path so the check actually gates what gets read.
   defp read_workflow(workspace, workflow_path) do
-    with {:ok, real} <- Valea.Paths.resolve_real(workflow_path, workspace),
+    with {:ok, root} <- workflow_containment_root(workspace, workflow_path),
+         {:ok, real} <- Valea.Paths.resolve_real(workflow_path, root),
          {:ok, bytes} <- File.read(real) do
       {:ok, bytes}
     else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  # The root `workflow_path` must be contained within — the workspace for an
+  # embedded (workspace-relative `mounts/<name>/…`) path, unchanged from
+  # before mounts existed, or the owning EXTERNAL mount's own absolute root
+  # for an absolute one (A2-T5b — external content lives outside the
+  # workspace by definition, so containing it against the workspace would
+  # always fail). See moduledoc for why this is the one place `workflow_path`
+  # is inspected rather than treated opaquely.
+  defp workflow_containment_root(workspace, workflow_path) do
+    case Valea.Mounts.mount_for(workflow_path) do
+      {:ok, %{rel_root: nil, root: root}} -> {:ok, root}
+      {:ok, %{rel_root: rel_root}} when is_binary(rel_root) -> {:ok, workspace}
       _ -> {:error, :not_found}
     end
   end
