@@ -19,14 +19,19 @@
     buildMountsDisplay,
     classifyMounts,
     degradedChipLabel,
-    isExternalRootRel
+    isExternalRootRel,
+    isExternalMount
   } from '$lib/components/knowledge/mount-sections';
   import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
+  import MountFromElsewhereDialog from '$lib/components/knowledge/MountFromElsewhereDialog.svelte';
+  import MountsDoctorPanel from '$lib/components/knowledge/MountsDoctorPanel.svelte';
+  import UnmountDialog from '$lib/components/knowledge/UnmountDialog.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import ImageIcon from '@lucide/svelte/icons/image';
   import FileText from '@lucide/svelte/icons/file-text';
@@ -85,6 +90,27 @@
     if (!result.ok) {
       reenableError = { ...reenableError, [name]: result.error };
     }
+  }
+
+  // A2-T9: "Mount a folder from elsewhere…" and the mounts doctor — both
+  // pinned-footer affordances (`ListPane`'s `footer` snippet), same
+  // placement pattern the panel-per-feature-route precedent already sets
+  // (`agent/DoctorPanel` inline in `/chat`, `mail/MailDoctorPanel` inline in
+  // `/mail`'s `SetupPanel`): the mounts doctor is a mounts-shaped concern,
+  // so it lives right here in mounts' own route rather than a separate
+  // settings page (this app has none).
+  let mountFromElsewhereOpen = $state(false);
+  let doctorOpen = $state(false);
+
+  // "Unmount" (A2-T9) — one dialog instance for every external-mount row
+  // across the active sections, degraded chips, and deactivated list (same
+  // per-row-props pattern `DeleteDialog`/`RenameDialog` use via `EntryMenu`).
+  let unmountTarget = $state('');
+  let unmountOpen = $state(false);
+
+  function openUnmount(name: string): void {
+    unmountTarget = name;
+    unmountOpen = true;
   }
 </script>
 
@@ -155,6 +181,13 @@
                     <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={section.rootRel}>
                       {section.rootRel}
                     </p>
+                    <button
+                      type="button"
+                      onclick={() => openUnmount(section.mount)}
+                      class="text-ink-meta hover:text-warn-ink mt-0.5 text-[11px] underline-offset-2 hover:underline"
+                    >
+                      Unmount
+                    </button>
                   {/if}
                 </div>
                 <NewEntryButton onNew={(mode) => openNew(section.rootRel, mode)} />
@@ -184,6 +217,18 @@
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-semibold">{mount.title}</span>
                     <span class="block text-[11px] opacity-90">{degradedChipLabel(mount)}</span>
+                    {#if isExternalMount(mount)}
+                      <span class="mt-0.5 block truncate font-mono text-[10.5px] opacity-80" title={mount.root}>
+                        {mount.root}
+                      </span>
+                      <button
+                        type="button"
+                        onclick={() => openUnmount(mount.name)}
+                        class="mt-0.5 text-[11px] underline-offset-2 hover:underline"
+                      >
+                        Unmount
+                      </button>
+                    {/if}
                   </span>
                 </li>
               {/each}
@@ -212,16 +257,30 @@
                        child of <ul> is invalid markup. -->
                   <li class="flex flex-col gap-1 py-1">
                     <div class="flex items-center justify-between gap-2">
-                      <span class="text-ink-secondary min-w-0 flex-1 truncate text-[13px]">{mount.title}</span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={!!reenabling[mount.name]}
-                        onclick={() => void reenable(mount.name)}
-                      >
-                        {reenabling[mount.name] ? 'Enabling…' : 'Enable'}
-                      </Button>
+                      <span class="min-w-0 flex-1">
+                        <span class="text-ink-secondary block truncate text-[13px]">{mount.title}</span>
+                        {#if isExternalMount(mount)}
+                          <span class="text-ink-meta block truncate font-mono text-[10.5px]" title={mount.root}>
+                            {mount.root}
+                          </span>
+                        {/if}
+                      </span>
+                      <div class="flex shrink-0 items-center gap-1.5">
+                        {#if isExternalMount(mount)}
+                          <Button type="button" variant="outline" size="sm" onclick={() => openUnmount(mount.name)}>
+                            Unmount
+                          </Button>
+                        {/if}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!!reenabling[mount.name]}
+                          onclick={() => void reenable(mount.name)}
+                        >
+                          {reenabling[mount.name] ? 'Enabling…' : 'Enable'}
+                        </Button>
+                      </div>
                     </div>
                     {#if reenableError[mount.name]}
                       <p class="text-warn-ink text-[11px]" role="alert">{reenableError[mount.name]}</p>
@@ -233,15 +292,50 @@
           </div>
         {/if}
       {/snippet}
+
+      {#snippet footer()}
+        <div class="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onclick={() => (mountFromElsewhereOpen = true)}
+            class="text-ink-secondary hover:text-ink-heading text-[12px]"
+          >
+            Mount a folder from elsewhere…
+          </button>
+          <button
+            type="button"
+            onclick={() => (doctorOpen = true)}
+            class="text-ink-meta hover:text-ink-heading text-[12px]"
+          >
+            Check your mounts
+          </button>
+        </div>
+      {/snippet}
     </ListPane>
   {/snippet}
 
   {#snippet main()}
-    <PageHeader
-      title="Knowledge"
-      subtitle="Your business memory — every page is a plain Markdown file in your workspace."
-    />
+    {#if doctorOpen}
+      <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
+        <button
+          type="button"
+          onclick={() => (doctorOpen = false)}
+          class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
+        >
+          <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
+          Back to Knowledge
+        </button>
+        <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
+      </div>
+    {:else}
+      <PageHeader
+        title="Knowledge"
+        subtitle="Your business memory — every page is a plain Markdown file in your workspace."
+      />
+    {/if}
   {/snippet}
 </AppFrame>
 
 <NewEntryDialog mode={newEntryMode} parentPath={newEntryParent} bind:open={newEntryOpen} />
+<MountFromElsewhereDialog bind:open={mountFromElsewhereOpen} />
+<UnmountDialog name={unmountTarget} bind:open={unmountOpen} />

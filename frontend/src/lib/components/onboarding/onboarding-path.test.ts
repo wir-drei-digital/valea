@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { basename, decideOnboardingMode, dirname, slugify } from './onboarding-path';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  adoptByReference,
+  basename,
+  decideOnboardingMode,
+  defaultAdoptAction,
+  dirname,
+  slugify,
+  type ReferenceAdoptDeps
+} from './onboarding-path';
 import type { PathInspection } from '$lib/api/client';
 
 const workspaceInspection: PathInspection = { kind: 'workspace', name: null, description: null };
@@ -131,5 +139,103 @@ describe('slugify', () => {
 
   it('passes a plain lowercase name through unchanged', () => {
     expect(slugify('client-notes')).toBe('client-notes');
+  });
+});
+
+// A2-T9: adopt-by-reference ("Use it where it is") is now the DEFAULT
+// action for an ICM-shaped folder — move ("Move it into the workspace")
+// stays available but secondary. `defaultAdoptAction` is the single,
+// directly-testable source of truth the UI reads for which button gets
+// the primary/emphasized treatment, rather than that decision being
+// implicit in template button order alone.
+describe('defaultAdoptAction', () => {
+  it('is "reference" for an "adopt" mode (kind: icm)', () => {
+    const mode = decideOnboardingMode(icmInspection, '/Users/mara/Documents/Client Notes');
+    expect(defaultAdoptAction(mode)).toBe('reference');
+  });
+
+  it('is null for "open" — nothing to default, this is the plain open-workspace path', () => {
+    expect(defaultAdoptAction({ mode: 'open' })).toBeNull();
+  });
+
+  it('is null for "unsupported"', () => {
+    expect(defaultAdoptAction({ mode: 'unsupported' })).toBeNull();
+  });
+});
+
+// A2-T9: the frontend-side orchestration behind "Use it where it is" —
+// there is no backend adopt-by-reference endpoint (`Valea.Workspace.Adopt`
+// is move-only), so this sequencing IS the by-reference adoption path:
+// scaffold a brand-new workspace the normal way, then declare the external
+// folder into it as a by-reference mount. Deps are injected (same shape as
+// `mail-shapes.ts`'s `submitMailSetup`) so this is testable without a real
+// store or RPC.
+describe('adoptByReference', () => {
+  function fakeDeps(overrides: Partial<ReferenceAdoptDeps> = {}): ReferenceAdoptDeps {
+    return {
+      createWorkspace: overrides.createWorkspace ?? (async () => ({ ok: true })),
+      declareMount: overrides.declareMount ?? (async () => ({ ok: true })),
+      currentGeneration: overrides.currentGeneration ?? (() => 4)
+    };
+  }
+
+  it('creates the workspace, then declares the source path as an external mount using the POST-CREATE generation', async () => {
+    const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
+    const declareMount = vi.fn(async () => ({ ok: true }) as const);
+    const currentGeneration = vi.fn(() => 4);
+
+    const result = await adoptByReference(
+      '/Users/mara/Documents',
+      'Coaching Brain Workspace',
+      'Client Notes',
+      '/Users/mara/Documents/Client Notes',
+      { createWorkspace, declareMount, currentGeneration }
+    );
+
+    expect(createWorkspace).toHaveBeenCalledWith('/Users/mara/Documents', 'Coaching Brain Workspace');
+    expect(declareMount).toHaveBeenCalledWith('Client Notes', '/Users/mara/Documents/Client Notes', 4);
+    // generation is read AFTER createWorkspace resolves, never before.
+    expect(currentGeneration).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('short-circuits on a create failure — never calls declareMount', async () => {
+    const declareMount = vi.fn(async () => ({ ok: true }) as const);
+    const result = await adoptByReference(
+      '/parent',
+      'name',
+      'mount',
+      '/src',
+      fakeDeps({ createWorkspace: async () => ({ ok: false, error: 'target_not_empty' }), declareMount })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'create', error: 'target_not_empty' });
+    expect(declareMount).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a declare failure at the "declare" stage — the workspace was already created', async () => {
+    const result = await adoptByReference(
+      '/parent',
+      'name',
+      'mount',
+      '/src',
+      fakeDeps({ declareMount: async () => ({ ok: false, error: 'no_manifest' }) })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'declare', error: 'no_manifest' });
+  });
+
+  it('surfaces workspace_not_open at the declare stage when the post-create generation is unavailable, without calling declareMount', async () => {
+    const declareMount = vi.fn(async () => ({ ok: true }) as const);
+    const result = await adoptByReference(
+      '/parent',
+      'name',
+      'mount',
+      '/src',
+      fakeDeps({ currentGeneration: () => null, declareMount })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'declare', error: 'workspace_not_open' });
+    expect(declareMount).not.toHaveBeenCalled();
   });
 });

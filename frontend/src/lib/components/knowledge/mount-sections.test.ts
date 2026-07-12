@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildMountsDisplay, classifyMounts, degradedChipLabel, isExternalRootRel } from './mount-sections';
+import {
+  buildMountsDisplay,
+  classifyMounts,
+  degradedChipLabel,
+  isExternalRootRel,
+  isExternalMount,
+  normalizeMountsDoctorChecks
+} from './mount-sections';
 import type { MountGroup } from '$lib/stores/icm.svelte';
 import type { MountSummary } from '$lib/stores/mounts.svelte';
 import type { IcmNode } from '$lib/shell/nav';
@@ -27,6 +34,7 @@ const primarySummary: MountSummary = {
   title: 'Primary',
   description: 'The default mount',
   relRoot: 'mounts/primary',
+  root: '/Users/dev/workspace/mounts/primary',
   enabled: true,
   degraded: null
 };
@@ -35,6 +43,7 @@ const clientsSummary: MountSummary = {
   title: 'Clients',
   description: 'Client-facing docs',
   relRoot: 'mounts/clients',
+  root: '/Users/dev/workspace/mounts/clients',
   enabled: true,
   degraded: null
 };
@@ -82,11 +91,18 @@ describe('buildMountsDisplay', () => {
       children: []
     };
     const extGroup: MountGroup = { mount: 'ext', title: 'Ext', rootRel: '/Users/dev/ext-mount', tree: [extNode] };
+    // `relRoot: null` (not the absolute path) — A2-T8 gave `list_mounts` a
+    // SEPARATE `root` field for an external mount's real location; `relRoot`
+    // stays `null` for one (`Valea.Mounts.mount()`'s own convention). This
+    // fixture predates that split; corrected here per the A2-T9 brief's
+    // "verify + extend tests if gaps" instruction for the deactivated/
+    // degraded groups' external handling.
     const extSummary: MountSummary = {
       name: 'ext',
       title: 'Ext',
       description: 'By-reference client folder',
-      relRoot: '/Users/dev/ext-mount',
+      relRoot: null,
+      root: '/Users/dev/ext-mount',
       enabled: true,
       degraded: null
     };
@@ -131,6 +147,7 @@ describe('classifyMounts', () => {
     title: 'Archive',
     description: 'Old client work',
     relRoot: 'mounts/archive',
+    root: '/Users/dev/workspace/mounts/archive',
     enabled: false,
     degraded: null
   };
@@ -139,6 +156,7 @@ describe('classifyMounts', () => {
     title: 'broken',
     description: '',
     relRoot: 'mounts/broken',
+    root: '/Users/dev/workspace/mounts/broken',
     enabled: true,
     degraded: 'icm.yaml is missing'
   };
@@ -147,6 +165,7 @@ describe('classifyMounts', () => {
     title: 'broken2',
     description: '',
     relRoot: 'mounts/broken2',
+    root: '/Users/dev/workspace/mounts/broken2',
     enabled: false,
     degraded: 'invalid mount directory name'
   };
@@ -202,5 +221,66 @@ describe('degradedChipLabel', () => {
 
   it('falls back to a generic reason when degraded is null (defensive — callers only invoke this for a degraded mount)', () => {
     expect(degradedChipLabel({ degraded: null })).toBe('Degraded — unknown reason');
+  });
+});
+
+// A2-T9: tells an EXTERNAL `list_mounts` row (`relRoot: null`, see
+// `MountSummary`'s doc comment) apart from an embedded one — used by the
+// deactivated/degraded groups (and the mount detail rows) to decide when to
+// show `mount.root` as the real location and offer "Unmount".
+describe('isExternalMount', () => {
+  it('is true when relRoot is null (external, by-reference)', () => {
+    expect(isExternalMount({ relRoot: null })).toBe(true);
+  });
+
+  it('is false when relRoot is a workspace-relative string (embedded)', () => {
+    expect(isExternalMount({ relRoot: 'mounts/primary' })).toBe(false);
+  });
+});
+
+// A2-T9: `mounts_doctor`'s `checks` field is the SAME unconstrained-`:map`
+// passthrough shape `mail_doctor` uses (`Valea.Api.Mounts`'s moduledoc) —
+// `{id, label, status, detail, remedy}` — so this mirrors
+// `mail-shapes.ts`'s `normalizeMailDoctorChecks` defensive narrowing
+// exactly (an entry with no `id` is dropped rather than rendered as a
+// mystery row).
+describe('normalizeMountsDoctorChecks', () => {
+  it('narrows a well-formed checks array', () => {
+    const raw = [
+      { id: 'manifest_ok:primary', label: 'primary: manifest', status: 'ok', detail: 'icm.yaml loads.', remedy: null },
+      {
+        id: 'ref_resolves:client-notes',
+        label: 'client-notes: reference resolves',
+        status: 'failed',
+        detail: 'folder not found at ~/Client Notes',
+        remedy: 'Check this mount\'s reference in Settings.'
+      }
+    ];
+    expect(normalizeMountsDoctorChecks(raw)).toEqual([
+      { id: 'manifest_ok:primary', label: 'primary: manifest', status: 'ok', detail: 'icm.yaml loads.', remedy: null },
+      {
+        id: 'ref_resolves:client-notes',
+        label: 'client-notes: reference resolves',
+        status: 'failed',
+        detail: 'folder not found at ~/Client Notes',
+        remedy: 'Check this mount\'s reference in Settings.'
+      }
+    ]);
+  });
+
+  it('defaults a missing label to the id, missing status to "unknown", missing detail to "", missing remedy to null', () => {
+    expect(normalizeMountsDoctorChecks([{ id: 'watcher_live:ext' }])).toEqual([
+      { id: 'watcher_live:ext', label: 'watcher_live:ext', status: 'unknown', detail: '', remedy: null }
+    ]);
+  });
+
+  it('drops an entry with no id rather than rendering a mystery row', () => {
+    expect(normalizeMountsDoctorChecks([{ label: 'no id here', status: 'ok' }])).toEqual([]);
+  });
+
+  it('returns an empty array for a non-array payload', () => {
+    expect(normalizeMountsDoctorChecks(null)).toEqual([]);
+    expect(normalizeMountsDoctorChecks(undefined)).toEqual([]);
+    expect(normalizeMountsDoctorChecks('not an array')).toEqual([]);
   });
 });

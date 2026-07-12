@@ -6,18 +6,29 @@
   //   - kind "workspace" -> the original "inspect then open" step.
   //   - kind "other" -> the original "doesn't look like a Valea workspace"
   //     error, unchanged.
-  //   - kind "icm" (A-T16, ICM-aware onboarding) -> a move-consent step:
-  //     the folder is NOT a workspace, but is/contains an adoptable
-  //     knowledge module (`icm.yaml`). Offers "create a workspace around
-  //     this knowledge module", showing the ORIGINAL path and moving
-  //     (never copying — see `Valea.Workspace.Adopt`'s moduledoc) the
-  //     folder into the new workspace's `mounts/`.
+  //   - kind "icm" (A-T16, ICM-aware onboarding; A2-T9, by-reference) -> a
+  //     consent step offering TWO actions on the SAME source path:
+  //       - "Use it where it is" (PRIMARY/default per `defaultAdoptAction`,
+  //         A2-T9) — declares the folder as a by-reference mount into a
+  //         BRAND-NEW workspace (`confirmReference` -> `adoptByReference`).
+  //         Nothing moves; the folder never leaves its original location.
+  //       - "Move it into the workspace" (secondary, unchanged A-T16
+  //         behavior) — moves (never copies — see `Valea.Workspace.Adopt`'s
+  //         moduledoc) the folder into the new workspace's `mounts/`.
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { basename, decideOnboardingMode, dirname, slugify, type OnboardingMode } from './onboarding-path';
+  import { mountsStore, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
+  import {
+    adoptByReference,
+    basename,
+    decideOnboardingMode,
+    dirname,
+    slugify,
+    type OnboardingMode
+  } from './onboarding-path';
 
   type Inspection = {
     valid: boolean;
@@ -50,6 +61,17 @@
   let adopting = $state(false);
   let adoptError = $state<string | null>(null);
 
+  // A2-T9: "Use it where it is" — the by-reference sibling of the move flow
+  // above, sharing the SAME `adopt` state (source path, target workspace
+  // name/parent). Kept in separate state from `adopting`/`adoptError` since
+  // the two actions can't run concurrently but DO have distinct in-flight
+  // labels and error vocabularies (`adoptByReference`'s two stages map
+  // through different code tables — `mapCreateErrorCode` for a "create"
+  // failure, `declareMountErrorMessage` for a "declare" one, see
+  // `confirmReference` below).
+  let referenceAdopting = $state(false);
+  let referenceError = $state<string | null>(null);
+
   // Resolved destination, live as name/parentDir are edited: the workspace
   // that will be created, and the exact `mounts/<slug>` inside it the
   // folder will move into (slug recomputed the same way the backend does —
@@ -62,6 +84,16 @@
   const adoptMountPath = $derived(
     adopt ? `${adoptTargetPath}/mounts/${slugify(basename(adopt.originalPath))}` : ''
   );
+
+  // A2-T9: the by-reference mount's name inside the NEW workspace — the
+  // source folder's own basename, same default `MountFromElsewhereDialog`
+  // uses for Knowledge's "Mount a folder from elsewhere…" flow. Not
+  // separately editable here (unlike the workspace name/parent above) —
+  // keeps the consent card to the two fields that actually need a
+  // decision; `declare_mount`'s `invalid_mount_name` rejection (surfaced
+  // via `declareMountErrorMessage`) is the backstop for a pathological
+  // basename.
+  const referenceMountName = $derived(adopt ? basename(adopt.originalPath) : '');
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -79,6 +111,7 @@
     inspection = null;
     adopt = null;
     adoptError = null;
+    referenceError = null;
     if (!path.trim()) {
       error = 'Choose a folder to open.';
       return;
@@ -186,6 +219,55 @@
     }
   }
 
+  // `Valea.Workspace.Manager.create/2`'s error vocabulary — same two codes
+  // `CreateWorkspaceDialog.svelte`'s own (unshared, per that component's
+  // precedent) `mapErrorCode` maps for the "Start fresh" flow; this is the
+  // `adoptByReference` orchestration's "create" stage.
+  function mapCreateErrorCode(code: string): string {
+    switch (code) {
+      case 'target_not_empty':
+        return 'That folder already has files in it. Pick an empty spot for the new workspace.';
+      case 'not_a_workspace':
+        return "This folder doesn't look like a Valea workspace.";
+      default:
+        return 'Something went wrong while creating the workspace. Try again.';
+    }
+  }
+
+  async function confirmReference() {
+    if (!adopt) return;
+    referenceError = null;
+
+    if (!adopt.name.trim()) {
+      referenceError = 'Give the workspace a name.';
+      return;
+    }
+    if (!adopt.parentDir.trim()) {
+      referenceError = 'Choose a folder to create the workspace in.';
+      return;
+    }
+
+    referenceAdopting = true;
+    const outcome = await adoptByReference(
+      adopt.parentDir.trim(),
+      adopt.name.trim(),
+      referenceMountName,
+      adopt.originalPath,
+      {
+        createWorkspace: (parentDir, name) => workspaceStore.create(parentDir, name),
+        declareMount: (name, ref, generation) => mountsStore.declare(name, ref, generation),
+        currentGeneration: () => workspaceStore.generation
+      }
+    );
+    referenceAdopting = false;
+
+    if (!outcome.ok) {
+      referenceError =
+        outcome.stage === 'create' ? mapCreateErrorCode(outcome.error) : declareMountErrorMessage(outcome.error);
+      return;
+    }
+  }
+
   async function pickAdoptParentFolder() {
     if (!adopt) return;
     const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
@@ -200,6 +282,7 @@
     adopt = null;
     error = null;
     adoptError = null;
+    referenceError = null;
   }
 </script>
 
@@ -217,45 +300,71 @@
       </div>
 
       <p class="text-ink-body text-[12.5px]">
-        Valea will MOVE this folder into the new workspace's <code class="font-mono text-[11.5px]">mounts/</code> —
-        nothing is copied, and nothing is left behind at the original location.
+        By default, Valea reads it right where it is — nothing moves. You can also move it into the new
+        workspace's <code class="font-mono text-[11.5px]">mounts/</code> instead; either way, nothing is ever
+        copied.
       </p>
 
       <div class="flex flex-col gap-1.5">
         <Label for="adopt-name">Workspace name</Label>
-        <Input id="adopt-name" bind:value={adopt.name} disabled={adopting} placeholder="My business" />
+        <Input
+          id="adopt-name"
+          bind:value={adopt.name}
+          disabled={adopting || referenceAdopting}
+          placeholder="My business"
+        />
       </div>
 
       <div class="flex flex-col gap-1.5">
         <Label for="adopt-parent-dir">Create the workspace in</Label>
         {#if isTauri}
           <div class="flex gap-2">
-            <Input id="adopt-parent-dir" bind:value={adopt.parentDir} disabled={adopting} readonly />
-            <Button type="button" variant="outline" onclick={pickAdoptParentFolder} disabled={adopting}>
+            <Input id="adopt-parent-dir" bind:value={adopt.parentDir} disabled={adopting || referenceAdopting} readonly />
+            <Button
+              type="button"
+              variant="outline"
+              onclick={pickAdoptParentFolder}
+              disabled={adopting || referenceAdopting}
+            >
               Browse…
             </Button>
           </div>
         {:else}
-          <Input id="adopt-parent-dir" bind:value={adopt.parentDir} disabled={adopting} />
+          <Input id="adopt-parent-dir" bind:value={adopt.parentDir} disabled={adopting || referenceAdopting} />
         {/if}
       </div>
 
       <div class="flex flex-col gap-1">
         <span class="text-ink-meta text-[11px] tracking-wide uppercase">New workspace</span>
         <p class="text-ink-meta font-mono text-[11.5px] break-all">{adoptTargetPath}</p>
-        <span class="text-ink-meta text-[11px] tracking-wide uppercase">Folder moves to</span>
+        <span class="text-ink-meta text-[11px] tracking-wide uppercase">Mounted here as (stays in place)</span>
+        <p class="text-ink-meta font-mono text-[11.5px] break-all">{referenceMountName}</p>
+        <span class="text-ink-meta text-[11px] tracking-wide uppercase">Or, if moved instead</span>
         <p class="text-ink-meta font-mono text-[11.5px] break-all">{adoptMountPath}</p>
       </div>
 
+      {#if referenceError}
+        <p role="alert" class="text-warn-ink text-[12.5px]">{referenceError}</p>
+      {/if}
       {#if adoptError}
         <p role="alert" class="text-warn-ink text-[12.5px]">{adoptError}</p>
       {/if}
 
       <div class="flex flex-wrap gap-2">
-        <Button type="button" onclick={confirmAdopt} disabled={adopting}>
-          {adopting ? 'Creating…' : 'Create a workspace around this knowledge module'}
+        <Button type="button" onclick={confirmReference} disabled={adopting || referenceAdopting}>
+          {referenceAdopting ? 'Setting up…' : 'Use it where it is'}
         </Button>
-        <Button type="button" variant="outline" onclick={cancel} disabled={adopting}>Cancel</Button>
+        <Button
+          type="button"
+          variant="outline"
+          onclick={confirmAdopt}
+          disabled={adopting || referenceAdopting}
+        >
+          {adopting ? 'Moving…' : 'Move it into the workspace'}
+        </Button>
+        <Button type="button" variant="outline" onclick={cancel} disabled={adopting || referenceAdopting}>
+          Cancel
+        </Button>
       </div>
     </div>
   {:else if inspection}

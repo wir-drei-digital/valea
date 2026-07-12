@@ -132,3 +132,51 @@ export function classifyMounts(mounts: MountSummary[]): MountClassification {
 export function degradedChipLabel(mount: Pick<MountSummary, 'degraded'>): string {
   return `Degraded — ${mount.degraded ?? 'unknown reason'}`;
 }
+
+/**
+ * True for an EXTERNAL (by-reference, A2-T8) `list_mounts` ROW —
+ * `relRoot` is `null` only for an external mount (`Valea.Mounts.mount()`'s
+ * own convention; see `MountSummary`'s doc comment in
+ * `stores/mounts.svelte.ts`). Distinct from `isExternalRootRel` above,
+ * which classifies a TREE SECTION's `rootRel` string (from `icm_tree`, a
+ * different RPC) instead of a `list_mounts` summary — the deactivated and
+ * degraded groups only ever have the latter (an inactive mount has no
+ * `MountGroup`, since `icm_tree` only reports enabled, non-degraded
+ * mounts), so THIS is what they use to decide when to show `mount.root`
+ * as the real location and offer "Unmount".
+ */
+export function isExternalMount(mount: Pick<MountSummary, 'relRoot'>): boolean {
+  return mount.relRoot === null;
+}
+
+// -- mounts doctor: check-row shaping (backend: `Valea.Mounts.Doctor.run/1`,
+// `mounts_doctor`'s `checks` field — UNCONSTRAINED `:map`, same as
+// `mail_doctor`, see `Valea.Api.Mounts`'s moduledoc — so it arrives as
+// loosely-typed `Record<string, any>[]` and must be narrowed defensively,
+// mirroring `mail-shapes.ts`'s `normalizeMailDoctorChecks` exactly) --------
+
+export type MountsDoctorCheck = {
+  id: string;
+  label: string;
+  status: string;
+  detail: string;
+  remedy: string | null;
+};
+
+/** Narrows `mounts_doctor`'s raw `checks` payload; an entry with no `id` is dropped rather than rendered as a mystery row. */
+export function normalizeMountsDoctorChecks(raw: unknown): MountsDoctorCheck[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw.flatMap((entry): MountsDoctorCheck[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const rec = entry as Record<string, unknown>;
+    const id = typeof rec.id === 'string' ? rec.id : '';
+    if (!id) return [];
+
+    const label = typeof rec.label === 'string' ? rec.label : id;
+    const status = typeof rec.status === 'string' ? rec.status : 'unknown';
+    const detail = typeof rec.detail === 'string' ? rec.detail : '';
+    const remedy = typeof rec.remedy === 'string' ? rec.remedy : null;
+    return [{ id, label, status, detail, remedy }];
+  });
+}

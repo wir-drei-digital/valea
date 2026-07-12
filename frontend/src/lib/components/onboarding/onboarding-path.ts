@@ -91,3 +91,88 @@ export function slugify(name: string): string {
     .replace(/^-+|-+$/g, '');
   return slug === '' ? 'mount' : slug;
 }
+
+// -- A2-T9: adopt-by-reference is now the DEFAULT --------------------------
+
+export type AdoptAction = 'reference' | 'move';
+
+/**
+ * Which adopt action gets the primary/emphasized button on the consent
+ * card — the single source of truth `OpenWorkspaceFlow.svelte` reads for
+ * button order/emphasis, so "reference is the default" is an assertion
+ * this test file can check directly rather than something only visible by
+ * reading template markup. `null` for any non-"adopt" mode (nothing to
+ * default: "open" and "unsupported" have no adopt buttons at all).
+ *
+ * Per the Plan A2 design decision: pointing the open dialog at an ICM now
+ * offers "Use it where it is" (declare `kind: "path"` — see
+ * `adoptByReference` below) FIRST; "Move it into the workspace" (the
+ * original A-T16 move-adopt flow, `workspaceStore.adopt`) stays available
+ * as the explicit secondary choice, never removed — some folders genuinely
+ * should move (a handoff, a backup import), so reference isn't a
+ * replacement, just the safer/more-reversible default.
+ */
+export function defaultAdoptAction(mode: OnboardingMode): AdoptAction | null {
+  return mode.mode === 'adopt' ? 'reference' : null;
+}
+
+export type ReferenceAdoptDeps = {
+  createWorkspace: (parentDir: string, name: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  declareMount: (
+    name: string,
+    ref: string,
+    generation: number
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Reads the CURRENT generation — a closure, not a value, and always
+   * called AFTER `createWorkspace` resolves (mirrors `mail-shapes.ts`'s
+   * `refreshWorkspaceId`): the only generation this function can trust is
+   * the freshly-created workspace's own, never one the caller cached
+   * beforehand. `null` means the workspace isn't open (unexpected — surfaces
+   * as `workspace_not_open` on the declare stage rather than calling
+   * `declareMount` with a bogus generation).
+   */
+  currentGeneration: () => number | null;
+};
+
+export type ReferenceAdoptOutcome = { ok: true } | { ok: false; stage: 'create' | 'declare'; error: string };
+
+/**
+ * Orchestrates "Use it where it is": scaffolds a brand-new workspace the
+ * NORMAL way (`createWorkspace` — starter mount included, same as "Start
+ * fresh"; deliberately NOT an empty-shell workspace, per the Plan A2
+ * design decision — the starter mount is the workspace's own knowledge
+ * home, and the external ICM arrives as a SECOND, referenced mount
+ * alongside it, not a replacement for it), then declares the external
+ * folder into it as a by-reference mount (`mountName`/`icmSourcePath` ->
+ * `declareMount`).
+ *
+ * There is no backend "adopt by reference" endpoint — `Valea.Workspace.Adopt`
+ * is move-only (see its moduledoc) — so this frontend-side sequencing IS
+ * the by-reference adoption path; keeping it here (pure, deps-injected)
+ * rather than inline in the component is what makes it testable without a
+ * real store or RPC round trip.
+ *
+ * Short-circuits on the create step's failure — nothing to clean up, since
+ * no mount was ever declared and no workspace-scoped mutation happened
+ * beyond the (now-existing but reference-less) new workspace itself, which
+ * the user can just retry into or abandon.
+ */
+export async function adoptByReference(
+  parentDir: string,
+  workspaceName: string,
+  mountName: string,
+  icmSourcePath: string,
+  deps: ReferenceAdoptDeps
+): Promise<ReferenceAdoptOutcome> {
+  const createResult = await deps.createWorkspace(parentDir, workspaceName);
+  if (!createResult.ok) return { ok: false, stage: 'create', error: createResult.error };
+
+  const generation = deps.currentGeneration();
+  if (generation == null) return { ok: false, stage: 'declare', error: 'workspace_not_open' };
+
+  const declareResult = await deps.declareMount(mountName, icmSourcePath, generation);
+  if (!declareResult.ok) return { ok: false, stage: 'declare', error: declareResult.error };
+
+  return { ok: true };
+}

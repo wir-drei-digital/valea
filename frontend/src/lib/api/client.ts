@@ -80,7 +80,13 @@ import {
   setMountEnabled as httpSetMountEnabled,
   setMountEnabledChannel,
   createMount as httpCreateMount,
-  createMountChannel
+  createMountChannel,
+  declareMount as httpDeclareMount,
+  declareMountChannel,
+  undeclareMount as httpUndeclareMount,
+  undeclareMountChannel,
+  mountsDoctor as httpMountsDoctor,
+  mountsDoctorChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -115,7 +121,10 @@ import type {
   IcmTreeFields,
   ListMountsFields,
   SetMountEnabledFields,
-  CreateMountFields
+  CreateMountFields,
+  DeclareMountFields,
+  UndeclareMountFields,
+  MountsDoctorFields
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -360,20 +369,32 @@ const getMailMessageFields: GetMailMessageFields = ['message', 'inbox'];
 const retryMailboxOpsFields: RetryMailboxOpsFields = ['accepted'];
 const listDecidedQueueItemsFields: ListDecidedQueueItemsFields = ['items'];
 
-// Mounts (A-T12/A-T14). Same anonymous-embedded-map-array codegen gap as
-// `listAgentSessionsFields`/`listWorkflowsFields`/`listQueueItemsFields`
+// Mounts (A-T12/A-T14/A2-T8). Same anonymous-embedded-map-array codegen gap
+// as `listAgentSessionsFields`/`listWorkflowsFields`/`listQueueItemsFields`
 // above (see the comment on `icmEntryReferencesFields`) — `mounts` is an
 // `Array<TypedMap>` action-return field, which `ComplexFieldSelection`
 // can't express, so the generated `Fields` type collapses to `never` for
 // the literal. The backend action accepts this exact nested literal
-// (verified by the passing `mounts_rpc_test.exs` suite). `saved`/`relRoot`
-// are plain top-level fields (`SetMountEnabledFields`/`CreateMountFields`)
-// with no such gap, so no cast is needed for them.
+// (verified by the passing `mounts_rpc_test.exs` suite). `saved`/`relRoot`/
+// `declared`/`undeclared` are plain top-level fields
+// (`SetMountEnabledFields`/`CreateMountFields`/`DeclareMountFields`/
+// `UndeclareMountFields`) with no such gap, so no cast is needed for them —
+// same for `mountsDoctorFields` below (`checks` is the UNCONSTRAINED
+// `Array<Record<string, any>>` passthrough, not a nested `TypedMap`, so it
+// hits no gap either — mirrors `mailDoctorFields`).
+//
+// `root` (A2-T8: the mount's absolute directory, embedded or external —
+// see `MountSummary`'s doc comment in `stores/mounts.svelte.ts`) is
+// included here alongside `relRoot` — an external mount's real location is
+// only ever available through THIS field, `relRoot` is `null` for one.
 const listMountsFields = [
-  { mounts: ['name', 'title', 'description', 'relRoot', 'enabled', 'degraded'] }
+  { mounts: ['name', 'title', 'description', 'relRoot', 'root', 'enabled', 'degraded'] }
 ] as unknown as ListMountsFields;
 const setMountEnabledFields: SetMountEnabledFields = ['saved'];
 const createMountFields: CreateMountFields = ['relRoot'];
+const declareMountFields: DeclareMountFields = ['declared'];
+const undeclareMountFields: UndeclareMountFields = ['undeclared'];
+const mountsDoctorFields: MountsDoctorFields = ['ok', 'checks'];
 
 // `icm_tree` (A-T11). Same anonymous-embedded-map-array codegen gap as
 // `listMountsFields` above — `mounts` is an `Array<TypedMap>` action-return
@@ -570,6 +591,33 @@ function callCreateMountChannel(
 ) {
   return wrapChannelCall((handlers) =>
     createMountChannel({ channel, input, fields: createMountFields, ...handlers })
+  );
+}
+
+function callDeclareMountChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { name: string; ref: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    declareMountChannel({ channel, input, fields: declareMountFields, ...handlers })
+  );
+}
+
+function callUndeclareMountChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { name: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    undeclareMountChannel({ channel, input, fields: undeclareMountFields, ...handlers })
+  );
+}
+
+function callMountsDoctorChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    mountsDoctorChannel({ channel, input, fields: mountsDoctorFields, ...handlers })
   );
 }
 
@@ -1002,6 +1050,29 @@ export const api = {
     runRpc(
       (channel) => callCreateMountChannel(channel, { name, description, generation }),
       () => httpCreateMount(withAuth({ input: { name, description, generation }, fields: createMountFields }))
+    ),
+
+  // By-reference mounts (A2-T8/A2-T9). `declareMount`'s `ref` is passed
+  // through EXACTLY as picked/typed (absolute or `~`-based) — see
+  // `Valea.Mounts.declare_external/3`'s moduledoc: the config value stays in
+  // the user's own portable form, never a resolved/normalized path.
+
+  declareMount: (name: string, ref: string, generation: number) =>
+    runRpc(
+      (channel) => callDeclareMountChannel(channel, { name, ref, generation }),
+      () => httpDeclareMount(withAuth({ input: { name, ref, generation }, fields: declareMountFields }))
+    ),
+
+  undeclareMount: (name: string, generation: number) =>
+    runRpc(
+      (channel) => callUndeclareMountChannel(channel, { name, generation }),
+      () => httpUndeclareMount(withAuth({ input: { name, generation }, fields: undeclareMountFields }))
+    ),
+
+  mountsDoctor: (generation: number) =>
+    runRpc(
+      (channel) => callMountsDoctorChannel(channel, { generation }),
+      () => httpMountsDoctor(withAuth({ input: { generation }, fields: mountsDoctorFields }))
     )
 };
 
