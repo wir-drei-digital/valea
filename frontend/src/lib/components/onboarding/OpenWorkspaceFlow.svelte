@@ -15,6 +15,7 @@
   //       - "Move it into the workspace" (secondary, unchanged A-T16
   //         behavior) — moves (never copies — see `Valea.Workspace.Adopt`'s
   //         moduledoc) the folder into the new workspace's `mounts/`.
+  import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
@@ -262,8 +263,11 @@
         // layout swaps Onboarding out reactively), so any local error state
         // set at that point is a dead write. The store field survives the
         // transition; the Knowledge page renders it as a dismissible banner
-        // (fix wave 1).
-        setPendingAdoptError: (name, ref, message) => mountsStore.setPendingAdoptError(name, ref, message)
+        // (fix wave 1) — and the user is taken THERE rather than Today,
+        // where the banner (and its retry affordance) would be out of sight
+        // (fix wave 2).
+        setPendingAdoptError: (name, ref, message) => mountsStore.setPendingAdoptError(name, ref, message),
+        goToKnowledge: () => void goto('/knowledge')
       }
     );
     referenceAdopting = false;

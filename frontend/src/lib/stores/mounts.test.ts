@@ -279,6 +279,23 @@ describe('MountsStore.pendingAdoptError', () => {
     store.clearPendingAdoptError();
     expect(store.pendingAdoptError).toBeNull();
   });
+
+  // Fix wave 2: a user who retries via "Mount a folder from elsewhere…" and
+  // succeeds shouldn't keep seeing "Couldn't mount…" — a successful declare
+  // IS the retry the banner points at, so it clears the banner itself.
+  it('a successful declare clears pendingAdoptError; a failed one leaves it (the failure is still true)', async () => {
+    const okStore = new MountsStore(fakeApi({}) as never);
+    okStore.setPendingAdoptError('client-notes', '/src', 'mapped message');
+    await okStore.declare('client-notes', '/src', 2);
+    expect(okStore.pendingAdoptError).toBeNull();
+
+    const failStore = new MountsStore(
+      fakeApi({ declareMount: async () => ({ ok: false, error: 'not_found' }) }) as never
+    );
+    failStore.setPendingAdoptError('client-notes', '/src', 'mapped message');
+    await failStore.declare('client-notes', '/src', 2);
+    expect(failStore.pendingAdoptError).not.toBeNull();
+  });
 });
 
 describe('MountsStore.handleMountsChanged', () => {

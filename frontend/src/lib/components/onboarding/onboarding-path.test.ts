@@ -176,7 +176,8 @@ describe('adoptByReference', () => {
       createWorkspace: overrides.createWorkspace ?? (async () => ({ ok: true })),
       declareMount: overrides.declareMount ?? (async () => ({ ok: true })),
       currentGeneration: overrides.currentGeneration ?? (() => 4),
-      setPendingAdoptError: overrides.setPendingAdoptError ?? (() => {})
+      setPendingAdoptError: overrides.setPendingAdoptError ?? (() => {}),
+      goToKnowledge: overrides.goToKnowledge ?? (() => {})
     };
   }
 
@@ -185,13 +186,14 @@ describe('adoptByReference', () => {
     const declareMount = vi.fn(async () => ({ ok: true }) as const);
     const currentGeneration = vi.fn(() => 4);
     const setPendingAdoptError = vi.fn();
+    const goToKnowledge = vi.fn();
 
     const result = await adoptByReference(
       '/Users/mara/Documents',
       'Coaching Brain Workspace',
       'Client Notes',
       '/Users/mara/Documents/Client Notes',
-      { createWorkspace, declareMount, currentGeneration, setPendingAdoptError }
+      { createWorkspace, declareMount, currentGeneration, setPendingAdoptError, goToKnowledge }
     );
 
     expect(createWorkspace).toHaveBeenCalledWith('/Users/mara/Documents', 'Coaching Brain Workspace');
@@ -201,6 +203,9 @@ describe('adoptByReference', () => {
     expect(result).toEqual({ ok: true });
     // success writes no pending error — nothing to surface later.
     expect(setPendingAdoptError).not.toHaveBeenCalled();
+    // success keeps landing on Today (the state flip's natural destination)
+    // — no forced navigation (fix wave 2).
+    expect(goToKnowledge).not.toHaveBeenCalled();
   });
 
   // Fix wave 1: a CREATE failure happens while the onboarding card is still
@@ -208,9 +213,10 @@ describe('adoptByReference', () => {
   // referenceError rendering is the right surface — pendingAdoptError must
   // stay untouched, or a stale banner would greet the user after a LATER
   // successful onboarding.
-  it('short-circuits on a create failure — never calls declareMount, never writes pendingAdoptError', async () => {
+  it('short-circuits on a create failure — never calls declareMount, never writes pendingAdoptError, never navigates', async () => {
     const declareMount = vi.fn(async () => ({ ok: true }) as const);
     const setPendingAdoptError = vi.fn();
+    const goToKnowledge = vi.fn();
     const result = await adoptByReference(
       '/parent',
       'name',
@@ -219,13 +225,17 @@ describe('adoptByReference', () => {
       fakeDeps({
         createWorkspace: async () => ({ ok: false, error: 'target_not_empty' }),
         declareMount,
-        setPendingAdoptError
+        setPendingAdoptError,
+        goToKnowledge
       })
     );
 
     expect(result).toEqual({ ok: false, stage: 'create', error: 'target_not_empty' });
     expect(declareMount).not.toHaveBeenCalled();
     expect(setPendingAdoptError).not.toHaveBeenCalled();
+    // still on the onboarding screen (state never flipped) — navigating
+    // would tear the error out from under the user (fix wave 2).
+    expect(goToKnowledge).not.toHaveBeenCalled();
   });
 
   // Fix wave 1: a DECLARE failure happens AFTER workspaceStore.create flipped
@@ -234,14 +244,15 @@ describe('adoptByReference', () => {
   // persisted (mapped to readable copy here, the one place holding all three
   // of name/ref/code) so the post-transition UI (Knowledge's banner) can
   // surface it.
-  it('surfaces a declare failure at the "declare" stage AND persists it via setPendingAdoptError with the MAPPED message', async () => {
+  it('surfaces a declare failure at the "declare" stage, persists it via setPendingAdoptError with the MAPPED message, AND navigates to Knowledge (where the banner + retry live)', async () => {
     const setPendingAdoptError = vi.fn();
+    const goToKnowledge = vi.fn();
     const result = await adoptByReference(
       '/parent',
       'name',
       'Client Notes',
       '/Users/mara/Documents/Client Notes',
-      fakeDeps({ declareMount: async () => ({ ok: false, error: 'no_manifest' }), setPendingAdoptError })
+      fakeDeps({ declareMount: async () => ({ ok: false, error: 'no_manifest' }), setPendingAdoptError, goToKnowledge })
     );
 
     expect(result).toEqual({ ok: false, stage: 'declare', error: 'no_manifest' });
@@ -250,21 +261,27 @@ describe('adoptByReference', () => {
       '/Users/mara/Documents/Client Notes',
       "That folder doesn't look like a knowledge module yet — it needs an icm.yaml."
     );
+    // Fix wave 2: post-onboarding the user otherwise lands on Today, where
+    // the banner never renders — the declare-failure path must take them to
+    // the surface that shows it.
+    expect(goToKnowledge).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces workspace_not_open at the declare stage when the post-create generation is unavailable, without calling declareMount — and persists it too (the transition already happened)', async () => {
+  it('surfaces workspace_not_open at the declare stage when the post-create generation is unavailable, without calling declareMount — persists AND navigates too (the transition already happened)', async () => {
     const declareMount = vi.fn(async () => ({ ok: true }) as const);
     const setPendingAdoptError = vi.fn();
+    const goToKnowledge = vi.fn();
     const result = await adoptByReference(
       '/parent',
       'name',
       'mount',
       '/src',
-      fakeDeps({ currentGeneration: () => null, declareMount, setPendingAdoptError })
+      fakeDeps({ currentGeneration: () => null, declareMount, setPendingAdoptError, goToKnowledge })
     );
 
     expect(result).toEqual({ ok: false, stage: 'declare', error: 'workspace_not_open' });
     expect(declareMount).not.toHaveBeenCalled();
     expect(setPendingAdoptError).toHaveBeenCalledWith('mount', '/src', 'No workspace is open.');
+    expect(goToKnowledge).toHaveBeenCalledTimes(1);
   });
 });

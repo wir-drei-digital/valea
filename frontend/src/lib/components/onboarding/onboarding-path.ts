@@ -153,6 +153,22 @@ export type ReferenceAdoptDeps = {
    * mounted and rendering its own `referenceError`.
    */
   setPendingAdoptError: (name: string, ref: string, message: string) => void;
+  /**
+   * Navigates to the Knowledge page — the surface that renders
+   * `pendingAdoptError`'s banner and hosts the "Mount a folder from
+   * elsewhere…" retry affordance (fix wave 2). Called ONLY on the two
+   * declare-stage failure paths, right after `setPendingAdoptError`:
+   * post-onboarding the user otherwise lands on Today (`/`), where the
+   * banner never renders, leaving the persisted error unreachable in
+   * practice. Safe to navigate at that point — the workspace state flip
+   * already happened, so the route exists. Success keeps landing on Today
+   * as before (no forced navigation), and a create-stage failure never
+   * navigates (the onboarding screen is still up, rendering its own
+   * error). Wired to SvelteKit's `goto('/knowledge')` by
+   * `OpenWorkspaceFlow.svelte`; injected so this stays testable without
+   * SvelteKit's runtime.
+   */
+  goToKnowledge: () => void;
 };
 
 export type ReferenceAdoptOutcome = { ok: true } | { ok: false; stage: 'create' | 'declare'; error: string };
@@ -198,12 +214,14 @@ export async function adoptByReference(
   const generation = deps.currentGeneration();
   if (generation == null) {
     deps.setPendingAdoptError(mountName, icmSourcePath, declareMountErrorMessage('workspace_not_open'));
+    deps.goToKnowledge();
     return { ok: false, stage: 'declare', error: 'workspace_not_open' };
   }
 
   const declareResult = await deps.declareMount(mountName, icmSourcePath, generation);
   if (!declareResult.ok) {
     deps.setPendingAdoptError(mountName, icmSourcePath, declareMountErrorMessage(declareResult.error));
+    deps.goToKnowledge();
     return { ok: false, stage: 'declare', error: declareResult.error };
   }
 

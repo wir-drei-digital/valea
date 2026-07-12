@@ -162,6 +162,11 @@ export class MountsStore {
     const result = await this.#api.declareMount(name, ref, generation);
     if (!result.ok) return { ok: false, error: result.error };
 
+    // Fix wave 2: a successful declare IS the retry the adoption-failure
+    // banner points at ("Mount a folder from elsewhere…") — a user who just
+    // mounted something shouldn't keep seeing "Couldn't mount…". A FAILED
+    // declare deliberately leaves it: the persisted failure is still true.
+    this.clearPendingAdoptError();
     await this.refresh();
     return { ok: true };
   }
