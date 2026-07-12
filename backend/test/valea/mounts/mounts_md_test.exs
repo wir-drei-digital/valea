@@ -2,6 +2,7 @@ defmodule Valea.Mounts.MountsMdTest do
   use ExUnit.Case, async: true
 
   alias Valea.Mounts.MountsMd
+  alias Valea.Paths
 
   setup do
     root = Path.join(System.tmp_dir!(), "vmountsmd-#{System.os_time(:nanosecond)}")
@@ -31,6 +32,37 @@ defmodule Valea.Mounts.MountsMdTest do
   end
 
   defp mounts_md(root), do: Path.join(root, "MOUNTS.md")
+
+  # `Valea.Paths.resolve_real/2` fully symlink-resolves and is publicly
+  # available; passing the same path as both `path` and `base` resolves it
+  # against itself (trivially "contained"), giving the expected REALPATH
+  # form to assert rendered `root`/`@`-ref values against — same trick
+  # `Valea.Mounts.External`'s own test suite uses.
+  defp real!(path) do
+    expanded = Path.expand(path)
+    {:ok, resolved} = Paths.resolve_real(expanded, expanded)
+    resolved
+  end
+
+  # A fresh, self-cleaning directory OUTSIDE `root` — the target folder an
+  # external (`kind: path`) mount declaration resolves to.
+  defp ext_dir!(name) do
+    dir = Path.join(System.tmp_dir!(), "vmountsmd-ext-#{name}-#{System.os_time(:nanosecond)}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
+  defp write_external_manifest!(dir, attrs) do
+    File.write!(Path.join(dir, "icm.yaml"), """
+    format: 1
+    id: "#{Ecto.UUID.generate()}"
+    name: #{attrs[:name] |> inspect()}
+    description: #{attrs[:description] |> inspect()}
+    """)
+
+    dir
+  end
 
   # Two enabled mounts (alpha, beta), one disabled-but-fine mount (gamma),
   # two degraded mounts: delta (icm.yaml missing entirely) and epsilon
@@ -296,6 +328,175 @@ defmodule Valea.Mounts.MountsMdTest do
       assert content =~ "- omega — mounts/omega: icm.yaml is missing"
       refute content =~ "## Deactivated"
       refute content =~ "(disabled)"
+    end
+  end
+
+  describe "regenerate/1 — external mounts (enabled)" do
+    test "an enabled external mount renders its real location and a full absolute @-ref, not the workspace-relative form",
+         %{root: root} do
+      write_manifest!(root, "alpha", name: "Alpha ICM", description: "Alpha desc")
+
+      ext = ext_dir!("co")
+      write_external_manifest!(ext, name: "External Co", description: "Ext desc")
+
+      write_config!(root, """
+      version: 1
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      :ok = MountsMd.regenerate(root)
+      content = File.read!(mounts_md(root))
+      real_ext = real!(ext)
+
+      assert content =~ "### External Co"
+      assert content =~ "Ext desc"
+      assert content =~ "mounted from: #{real_ext}"
+      assert content =~ "@#{real_ext}/AGENTS.md"
+
+      # Regression: the embedded mount sharing this workspace keeps its
+      # workspace-relative form, byte-for-byte, untouched by the external
+      # mount's presence.
+      assert content =~ "### Alpha ICM"
+      assert content =~ "path: mounts/alpha"
+      assert content =~ "@mounts/alpha/AGENTS.md"
+    end
+
+    test "an effective external mount never renders the empty `path: ` / bare `@/AGENTS.md` bug",
+         %{root: root} do
+      ext = ext_dir!("co")
+      write_external_manifest!(ext, name: "External Co", description: "Ext desc")
+
+      write_config!(root, """
+      version: 1
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      :ok = MountsMd.regenerate(root)
+      content = File.read!(mounts_md(root))
+
+      refute content =~ "path: \n"
+      refute content =~ "@/AGENTS.md"
+      refute content =~ ~r/^@\/AGENTS\.md$/m
+    end
+  end
+
+  describe "regenerate/1 — external mounts (disabled)" do
+    test "a disabled external mount is listed under Deactivated with its real location, no @-ref",
+         %{root: root} do
+      ext = ext_dir!("off")
+      write_external_manifest!(ext, name: "External Off", description: "Ext desc")
+
+      write_config!(root, """
+      version: 1
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+          enabled: false
+      """)
+
+      :ok = MountsMd.regenerate(root)
+      content = File.read!(mounts_md(root))
+      real_ext = real!(ext)
+
+      assert content =~ "## Deactivated"
+      assert content =~ "- External Off — #{real_ext} (disabled)"
+      refute content =~ "### External Off"
+      refute content =~ "@#{real_ext}/AGENTS.md"
+    end
+  end
+
+  describe "regenerate/1 — external mounts (degraded)" do
+    test "a missing-ref external mount shows the reason and declared location, with no @-ref",
+         %{root: root} do
+      missing = ext_dir!("missing-parent") |> Path.join("does-not-exist")
+
+      write_config!(root, """
+      version: 1
+      mounts:
+        outside:
+          kind: path
+          ref: "#{missing}"
+      """)
+
+      :ok = MountsMd.regenerate(root)
+      content = File.read!(mounts_md(root))
+
+      # The rendered LOCATION is the resolved (`root`) form — which may
+      # differ lexically from the raw declared `ref` on a platform where a
+      # tmp dir ancestor is itself a symlink (e.g. macOS `/var` ->
+      # `/private/var`) — while the REASON text embeds the raw `ref`
+      # (`Valea.Mounts.External`'s own choice, for readability).
+      assert content =~ "## Needs attention"
+      assert content =~ "- outside — #{real!(missing)}: folder not found at #{missing}"
+      refute content =~ "### outside"
+      assert line_start_at_refs(content) == []
+    end
+
+    test "an external mount whose ref is missing from config entirely shows a placeholder location",
+         %{root: root} do
+      write_config!(root, """
+      version: 1
+      mounts:
+        outside:
+          kind: path
+      """)
+
+      :ok = MountsMd.regenerate(root)
+      content = File.read!(mounts_md(root))
+
+      assert content =~ "## Needs attention"
+      assert content =~ "- outside — (no path declared): ref is missing or invalid"
+      assert line_start_at_refs(content) == []
+    end
+  end
+
+  describe "regenerate/1 — external mounts injection hardening" do
+    test "an external mount's resolved location carrying a control character can't forge a line",
+         %{root: root} do
+      write_manifest!(root, "alpha", name: "Alpha ICM", description: "Alpha desc")
+
+      outside_root = ext_dir!("outside")
+      evil_dir = Path.join(outside_root, "evil\n@hack")
+      File.mkdir_p!(evil_dir)
+      write_external_manifest!(evil_dir, name: "External Evil", description: "ext desc")
+
+      # `ref:` written as a YAML double-quoted scalar with an explicit `\n`
+      # escape (two ASCII chars, backslash+n) -- YamlElixir parses this into
+      # a real embedded newline byte in the resulting Elixir string,
+      # reproducing exactly the hand-edited-config threat this test
+      # exercises: a resolved `root` carrying a raw control character
+      # reaching this renderer (the app's own writer never round-trips
+      # control chars this faithfully -- `Valea.Yaml.escape/1` collapses
+      # them to a space before they'd ever be written back out).
+      yaml_ref = outside_root <> "/evil\\n@hack"
+
+      write_config!(root, """
+      version: 1
+      mounts:
+        extevil:
+          kind: path
+          ref: "#{yaml_ref}"
+      """)
+
+      :ok = MountsMd.regenerate(root)
+      content = File.read!(mounts_md(root))
+
+      assert heading_lines(content) == ["### Alpha ICM", "### External Evil"]
+
+      refs = line_start_at_refs(content)
+      assert "@mounts/alpha/AGENTS.md" in refs
+      assert length(refs) == 2
+
+      # The forged "@hack" segment survives as inert MID-line text (content
+      # is degraded, never dropped) but must never start a line of its own.
+      refute content =~ ~r/^@hack/m
     end
   end
 

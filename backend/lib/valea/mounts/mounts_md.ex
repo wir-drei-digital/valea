@@ -15,18 +15,30 @@ defmodule Valea.Mounts.MountsMd do
   same way `Valea.Mounts`'s own `effective?/1` does:
 
     * **enabled** (`degraded: nil`, `enabled: true`) — a `### <name>` block
-      with the manifest's description, workspace-relative path, and an
-      `@mounts/<name>/AGENTS.md` file-reference line (the same `@`-prefixed
-      convention the workspace root `AGENTS.md` already uses) so an agent
-      reading this file is routed straight into the mount's own
-      instructions.
-    * **deactivated** (`degraded: nil`, `enabled: false`) — listed by name,
-      no `@`-ref: the mount's `AGENTS.md` is intentionally NOT pulled in
-      while it's turned off.
-    * **degraded** (`degraded: reason`) — listed with its reason, no
-      `@`-ref. A degraded mount's `manifest` may be `nil` (missing or
-      invalid `icm.yaml`), so this section renders from `mount.name` (the
-      directory basename) only and never touches `mount.manifest`.
+      with the manifest's description, a location line, and an `@`-ref file
+      reference line so an agent reading this file is routed straight into
+      the mount's own instructions. An EMBEDDED mount (`rel_root` set) gets
+      the workspace-relative form: `path: mounts/<name>` and
+      `@mounts/<name>/AGENTS.md`. An EXTERNAL, by-reference mount
+      (`rel_root: nil` — `Valea.Mounts.External`) lives outside the
+      workspace, so instead it shows its real resolved location —
+      `mounted from: <resolved-abs>` — with the `@`-ref pointing at the
+      SAME full absolute path (`@<resolved-abs>/AGENTS.md`): a bare
+      (non-Valea) Claude Code session has no workspace root to resolve a
+      relative path against, so the reference must be self-sufficient.
+    * **deactivated** (`degraded: nil`, `enabled: false`) — listed by name
+      with its location (workspace-relative for embedded, resolved-absolute
+      for external), no `@`-ref: the mount's `AGENTS.md` is intentionally
+      NOT pulled in while it's turned off.
+    * **degraded** (`degraded: reason`) — listed with its location and
+      reason, no `@`-ref. A degraded mount's `manifest` may be `nil`
+      (missing or invalid `icm.yaml`, or — for an external mount — a ref
+      that doesn't resolve to a folder), so this section renders from
+      `mount.name`/`mount.rel_root`/`mount.root` only and never touches
+      `mount.manifest`. A degraded external mount whose `ref` was missing
+      from config entirely, the wrong YAML type, or not absolute has no
+      resolved path at all (`root: ""`) — rendered as an explicit
+      `(no path declared)` placeholder rather than a blank gap in the line.
 
   An empty section (e.g. no disabled mounts) is omitted entirely rather
   than rendered with a "none" placeholder.
@@ -48,6 +60,18 @@ defmodule Valea.Mounts.MountsMd do
   the description (the one rendered position where a value BEGINS a line)
   additionally gets a leading `#`/`@` backslash-escaped via
   `neutralize_line_start/1`.
+
+  An external mount's resolved absolute `root` is a THIRD rendered value
+  class, alongside manifest name/description: it is user-declared (a
+  `config/workspace.yaml` ref, hand-editable same as a manifest) and
+  filesystem-derived (a realpath, not itself run through any earlier
+  sanitizer), so it gets `sanitize/1` too, for the same line-integrity
+  reason. It is never passed through `neutralize_line_start/1`, though —
+  the `@<root>/AGENTS.md` line it feeds is INTENTIONALLY a live import (the
+  external-mount equivalent of `@mounts/<name>/AGENTS.md`), so that line is
+  built STRUCTURALLY instead: a literal `@`, the sanitized path, and a
+  literal `/AGENTS.md` — never a single interpolated value whose own
+  leading character could be mistaken for something to neutralize.
   """
 
   alias Valea.Mounts
@@ -109,19 +133,64 @@ defmodule Valea.Mounts.MountsMd do
   end
 
   # `mount.manifest` is guaranteed non-nil here: this clause only ever sees
-  # mounts with `degraded: nil`, and `Valea.Mounts.list/1` only produces
-  # `degraded: nil` when the manifest loaded successfully.
+  # mounts with `degraded: nil`, and `Valea.Mounts.list/1` (and
+  # `Valea.Mounts.External.declared/1`, merged in) only produce
+  # `degraded: nil` when the manifest loaded successfully — for an external
+  # mount that also means `root` is a real, existing, non-blank folder (see
+  # `Valea.Mounts.External.mount_from_manifest/3`).
   #
   # `name` renders mid-line (after `### `) so collapsing control chars is
   # enough; `description` is the one value that BEGINS a line, so it also
-  # gets its leading `#`/`@` neutralized (see moduledoc).
-  defp enabled_block(%{manifest: %{name: name, description: description}, rel_root: rel_root}) do
+  # gets its leading `#`/`@` neutralized (see moduledoc). The location/ref
+  # lines dispatch on `rel_root` — embedded (`is_binary`) vs external
+  # (`nil`) — see `location_line/2` and `ref_line/2`.
+  defp enabled_block(%{
+         manifest: %{name: name, description: description},
+         rel_root: rel_root,
+         root: root
+       }) do
     """
     ### #{sanitize(name)}
     #{description |> sanitize() |> neutralize_line_start()}
-    path: #{rel_root}
-    @#{rel_root}/AGENTS.md\
+    #{location_line(rel_root, root)}
+    #{ref_line(rel_root, root)}\
     """
+  end
+
+  # Embedded mount: workspace-relative `path:` line, UNCHANGED from before
+  # external mounts existed — `rel_root` is trusted raw here (see moduledoc
+  # / `Valea.Mounts`'s discovery-time guard against a corrupted basename
+  # ever reaching this renderer).
+  defp location_line(rel_root, _root) when is_binary(rel_root) do
+    "path: #{rel_root}"
+  end
+
+  # External mount (`rel_root: nil`): show the REAL location outside the
+  # workspace so the user can see exactly which folder this is. `root` is
+  # filesystem-derived, not sanitized by any earlier layer, so it gets the
+  # same `sanitize/1` every other rendered value gets (see moduledoc).
+  defp location_line(nil, root) do
+    "mounted from: #{sanitize(root)}"
+  end
+
+  # Embedded mount: same `@mounts/<name>/AGENTS.md` convention as before —
+  # this is THE bug this module used to have for external mounts (`nil`
+  # interpolating as `""`, producing a bare `@/AGENTS.md` root import); the
+  # `is_binary(rel_root)` dispatch is what fixes it.
+  defp ref_line(rel_root, _root) when is_binary(rel_root) do
+    "@#{rel_root}/AGENTS.md"
+  end
+
+  # External mount: the reference must be the FULL resolved absolute path —
+  # a bare (non-Valea) session has no workspace to root a relative path
+  # against, so this is the one place in the file where the `@`-line points
+  # OUTSIDE the workspace entirely. Built STRUCTURALLY (literal `@` ..
+  # sanitized path .. literal `/AGENTS.md`), never through
+  # `neutralize_line_start/1` — this line is INTENTIONALLY a live import,
+  # and `sanitize/1` alone already guarantees `root` is single-line, so it
+  # can never masquerade as a forged `#`/`@`-led line of its own.
+  defp ref_line(nil, root) do
+    "@" <> sanitize(root) <> "/AGENTS.md"
   end
 
   defp deactivated_section([]), do: nil
@@ -131,10 +200,19 @@ defmodule Valea.Mounts.MountsMd do
     Enum.join(["## Deactivated" | lines], "\n")
   end
 
-  # Same non-nil manifest guarantee as `enabled_block/1` — `degraded: nil`.
-  defp deactivated_line(%{manifest: %{name: name}, rel_root: rel_root}) do
-    "- #{sanitize(name)} — #{rel_root} (disabled)"
+  # Same non-nil manifest guarantee as `enabled_block/1` — `degraded: nil`,
+  # so a `rel_root: nil` (external) mount here always has a real, existing
+  # `root` too. Embedded shows its workspace-relative path; external shows
+  # its resolved absolute location (sanitized — same real-location
+  # convention as `enabled_block/1`'s "mounted from:" line, just without
+  # the live `@`-ref: disabled means its AGENTS.md is intentionally NOT
+  # pulled in).
+  defp deactivated_line(%{manifest: %{name: name}, rel_root: rel_root, root: root}) do
+    "- #{sanitize(name)} — #{deactivated_location(rel_root, root)} (disabled)"
   end
+
+  defp deactivated_location(rel_root, _root) when is_binary(rel_root), do: rel_root
+  defp deactivated_location(nil, root), do: sanitize(root)
 
   defp needs_attention_section([]), do: nil
 
@@ -143,13 +221,32 @@ defmodule Valea.Mounts.MountsMd do
     Enum.join(["## Needs attention" | lines], "\n")
   end
 
-  # Degraded mounts may have `manifest: nil` (missing/invalid icm.yaml) —
-  # render from `name`/`rel_root`/`degraded` only, never `mount.manifest`.
-  # `name` (a directory basename) and `reason` (may embed a YAML parser
-  # message) are sanitized too: both are metadata-derived text rendered
-  # into the routing file, same threat as manifest name/description.
-  defp needs_attention_line(%{name: name, rel_root: rel_root, degraded: reason}) do
-    "- #{sanitize(name)} — #{rel_root}: #{sanitize(reason)}"
+  # Degraded mounts may have `manifest: nil` (missing/invalid icm.yaml, or —
+  # for an external mount — a ref that doesn't resolve to a folder at all)
+  # — render from `name`/`rel_root`/`root`/`degraded` only, never
+  # `mount.manifest`. `name` (a directory basename, or an external mount's
+  # config key) and `reason` (may embed a YAML parser message, or an
+  # external ref's declared path) are sanitized too: both are
+  # metadata-derived text rendered into the routing file, same threat as
+  # manifest name/description. An external mount's `root` is the declared
+  # ref, resolved — even when the resolved folder doesn't exist (that's
+  # exactly why it's degraded), showing it here answers "which folder is
+  # missing" without the user having to parse `reason`.
+  defp needs_attention_line(%{name: name, rel_root: rel_root, root: root, degraded: reason}) do
+    "- #{sanitize(name)} — #{needs_attention_location(rel_root, root)}: #{sanitize(reason)}"
+  end
+
+  defp needs_attention_location(rel_root, _root) when is_binary(rel_root), do: rel_root
+
+  # Two of `Valea.Mounts.External`'s degrade reasons (`ref` missing from
+  # config entirely, the wrong YAML type, or not an absolute/`~` path) have
+  # no resolved path at all (`root: ""`) — render an explicit placeholder
+  # rather than leaving a blank gap between the em dash and the colon.
+  defp needs_attention_location(nil, root) do
+    case sanitize(root) do
+      "" -> "(no path declared)"
+      location -> location
+    end
   end
 
   # -- metadata sanitization (see moduledoc) ---------------------------------
