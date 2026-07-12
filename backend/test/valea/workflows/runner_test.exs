@@ -373,6 +373,142 @@ defmodule Valea.Workflows.RunnerTest do
     refute File.dir?(salvage_dir)
   end
 
+  describe "memory proposal pairs" do
+    test "two valid pairs become two pending items with server-owned fields", %{workspace: ws} do
+      staging = seed_run!(ws, "r-mem-1")
+      target = "mounts/primary/Pricing/Current Pricing.md"
+
+      base =
+        :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
+
+      File.write!(
+        Path.join(staging, "proposals/a-pricing.json"),
+        Jason.encode!(%{
+          "schema" => "memory_update/v1",
+          "target_path" => target,
+          "base_sha256" => base,
+          "reason" => "rate changed",
+          "sources" => [target]
+        })
+      )
+
+      File.write!(Path.join(staging, "proposals/a-pricing.md"), "# Pricing\n\n150 EUR\n")
+
+      File.write!(
+        Path.join(staging, "proposals/b-wf.json"),
+        Jason.encode!(%{
+          "schema" => "memory_update/v1",
+          "target_path" => "mounts/primary/Workflows/New Inquiry Triage.md",
+          "base_sha256" => nil,
+          "reason" => "tighten steps",
+          "sources" => []
+        })
+      )
+
+      File.write!(Path.join(staging, "proposals/b-wf.md"), "# WF\n")
+
+      :ok = Runner.finalize("r-mem-1", ws)
+
+      p1 = Path.join(ws, "queue/pending/r-mem-1-m1.json") |> File.read!() |> Jason.decode!()
+      p2 = Path.join(ws, "queue/pending/r-mem-1-m2.json") |> File.read!() |> Jason.decode!()
+
+      assert p1["run_id"] == "r-mem-1-m1"
+      assert p1["risk_level"] == "medium"
+      assert p1["payload"]["kind"] == "memory_update"
+      assert p1["payload"]["summary"] == "rate changed"
+      assert p1["payload"]["proposed_action"]["type"] == "apply_page_content"
+      assert p1["payload"]["proposed_action"]["content_markdown"] == "# Pricing\n\n150 EUR\n"
+      refute Map.has_key?(p1, "source_message")
+
+      # server-derived tier overrides anything claimed: workflow target is high
+      assert p2["risk_level"] == "high"
+      assert p2["payload"]["title"] == "New page: New Inquiry Triage.md"
+
+      refute File.exists?(Path.join(ws, "queue/staging/r-mem-1"))
+    end
+
+    test "invalid pair audits memory_proposal_invalid and keeps staging", %{workspace: ws} do
+      staging = seed_run!(ws, "r-mem-2")
+
+      File.write!(
+        Path.join(staging, "proposals/bad.json"),
+        Jason.encode!(%{
+          "schema" => "memory_update/v1",
+          "target_path" => "AGENTS.md",
+          "base_sha256" => nil,
+          "reason" => "x",
+          "sources" => []
+        })
+      )
+
+      File.write!(Path.join(staging, "proposals/bad.md"), "x")
+
+      :ok = Runner.finalize("r-mem-2", ws)
+
+      assert Path.join(ws, "queue/pending") |> Path.join("r-mem-2*") |> Path.wildcard() == []
+      assert File.exists?(Path.join(ws, "queue/staging/r-mem-2"))
+
+      {:ok, entries} = Valea.Audit.entries(50)
+
+      assert Enum.any?(
+               entries,
+               &(&1["type"] == "memory_proposal_invalid" and &1["file"] == "bad.json")
+             )
+    end
+
+    # The brief sketches this via "the fake adapter records opts"; the fake
+    # adapter (test/support/fake_adapter.exs) does not record session opts.
+    # The existing, established seam for observing a live session's
+    # policy_ctx is `:sys.get_state/1` on the SessionServer pid looked up via
+    # the Registry — the exact pattern `session_read_roots_test.exs` already
+    # uses for this same struct. `policy_ctx` is fixed at `init/1` time and
+    # never mutated afterward, so reading it right after `run/2` returns
+    # (which only returns once `init/1` — and thus policy_ctx construction —
+    # has completed) is race-free regardless of how fast the fake harness's
+    # async finalize runs.
+    test "run/2 grants: proposals dir writable, run.json not, staging readable", %{
+      workspace: workspace
+    } do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+      assert {:ok, %{run_id: run_id, session_id: session_id}} = Runner.run(@wf_path, @input_path)
+      on_exit(fn -> AgentCase.kill_session(session_id) end)
+
+      pid = GenServer.whereis({:via, Registry, {Valea.Agents.SessionRegistry, session_id}})
+      policy_ctx = :sys.get_state(pid).policy_ctx
+
+      staging_dir = Path.join([workspace, "queue", "staging", run_id])
+
+      assert policy_ctx.write_paths == [Path.join(staging_dir, "proposal.json")]
+      assert policy_ctx.write_roots == [Path.join(staging_dir, "proposals")]
+      assert Path.join(["queue", "staging", run_id]) in policy_ctx.read_roots
+    end
+  end
+
+  # Mirrors the file's existing sidecar/staging setup (`sidecar/1` below,
+  # `start_run/6`'s own `run.json` shape) so `finalize/2` can be driven
+  # directly against hand-seeded staging, same as every other finalize test
+  # in this file.
+  defp seed_run!(ws, run_id) do
+    staging = Path.join(ws, "queue/staging/#{run_id}")
+    File.mkdir_p!(Path.join(staging, "proposals"))
+
+    run = %{
+      "run_id" => run_id,
+      "session_id" => "s1",
+      "workflow" => @wf_path,
+      "workflow_hash" => String.duplicate("a", 64),
+      "input" => @input_path,
+      "input_hash" => String.duplicate("b", 64),
+      "risk_level" => "medium",
+      "approval" => %{"required" => true},
+      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    File.write!(Path.join(staging, "run.json"), Jason.encode!(run))
+    staging
+  end
+
   defp sidecar(run_id) do
     %{
       "run_id" => run_id,

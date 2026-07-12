@@ -151,11 +151,11 @@ defmodule Valea.Agents.SessionReadRootsTest do
     assert %{read_roots: ["queue"]} = policy_ctx_for(id)
   end
 
-  test "a workflow session (via Valea.Workflows.Runner) also gets read_roots from Mounts.enabled",
+  test "a workflow session (via Valea.Workflows.Runner) also gets read_roots from Mounts.enabled, plus its own run staging dir (B3)",
        %{workspace: _workspace} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
-    assert {:ok, %{session_id: id}} =
+    assert {:ok, %{run_id: run_id, session_id: id}} =
              Valea.Workflows.Runner.run(
                "mounts/primary/Workflows/New Inquiry Triage.md",
                "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
@@ -164,6 +164,8 @@ defmodule Valea.Agents.SessionReadRootsTest do
     on_exit(fn -> AgentCase.kill_session(id) end)
 
     assert %{read_roots: read_roots} = policy_ctx_for(id)
-    assert Enum.sort(read_roots) == Enum.sort(["sources", "mounts/primary"])
+
+    assert Enum.sort(read_roots) ==
+             Enum.sort(["sources", "mounts/primary", "queue/staging/#{run_id}"])
   end
 end

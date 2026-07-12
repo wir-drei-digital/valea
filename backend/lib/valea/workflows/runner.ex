@@ -50,7 +50,10 @@ defmodule Valea.Workflows.Runner do
   (`A-T7`/`A-T8`, not yet built); nothing to change here until then.
   """
 
+  alias Valea.Agents.RiskTier
+  alias Valea.Agents.SessionServer
   alias Valea.Workflows
+  alias Valea.Workflows.MemoryProposal
   alias Valea.Workspace.Manager
 
   @staging_dir ["queue", "staging"]
@@ -77,37 +80,46 @@ defmodule Valea.Workflows.Runner do
   end
 
   @doc """
-  Idempotent finalize for `run_id` in `workspace`: reads ONLY the exact
-  staging proposal path.
+  Idempotent finalize for `run_id` in `workspace` — a pure function of
+  `(run_id, workspace)`: reads ONLY what is on disk under
+  `queue/staging/<run_id>/`, the exact primary `proposal.json` (proposal/v1,
+  unchanged contract) AND, independently, every `proposals/<name>.json` +
+  `<name>.md` memory-update pair (`Valea.Workflows.MemoryProposal`,
+  memory_update/v1). Fans out into up to `1 + N` pending items: the primary
+  proposal keeps its bare `<run_id>.json` id; each valid memory pair becomes
+  its own `<run_id>-m<i>.json` (1-based over the FULL sorted pair list, so
+  ids stay stable across calls even when some pairs are invalid). Every
+  memory item's `risk_level` and target containment are computed HERE, from
+  the target path alone, via `RiskTier.classify/2` +
+  `MemoryProposal.check_target/2` — never taken from the agent's manifest.
 
-    * missing → audit `workflow_run_finished` outcome `"no_proposal"`
-    * unparseable/invalid per proposal/v1 → audit outcome `"invalid_proposal"`,
-      staging is LEFT in place for inspection
-    * valid → write `queue/pending/<run_id>.json` (atomic tmp+rename), audit
-      `queue_item_created` then `workflow_run_finished` outcome
-      `"proposal_created"`, remove the staging dir
+    * outcome `"proposal_created"` — at least one item (primary or memory)
+      was created; `queue_item_created` audited once per item created
+    * outcome `"invalid_proposal"` — nothing was created and the primary
+      proposal was invalid/unparseable, OR at least one memory pair was
+      invalid (`memory_proposal_invalid` audited per invalid pair, carrying
+      `run_id`/`file`/`reason`); staging is LEFT in place for inspection
+    * outcome `"no_proposal"` — no primary proposal and no memory pairs at
+      all
 
-  Safe to call more than once: a second call after success finds no staging
-  file (already removed) and is a `"no_proposal"` no-op — the pending item
-  is never duplicated.
+  A single `workflow_run_finished` is audited with the outcome above, and
+  the staging dir is removed ONLY when nothing was invalid (a run that
+  produced two valid memory items but one invalid third pair keeps its
+  whole staging dir, not just the invalid pair's files — the same
+  inspect-on-invalid contract the primary proposal always had).
+
+  Safe to call more than once: a second call after a full success finds no
+  staging dir (already removed) and is a `"no_proposal"` no-op — no pending
+  item is ever duplicated.
   """
   @spec finalize(String.t(), String.t()) :: :ok
   def finalize(run_id, workspace) do
     staging_dir = staging_dir(workspace, run_id)
-    proposal_path = Path.join(staging_dir, "proposal.json")
 
-    case File.read(proposal_path) do
-      {:error, _reason} ->
-        # No proposal was written (a died-pre-turn session or a genuinely empty
-        # turn). Nothing to inspect, so clear the staging dir too — this gives
-        # the run a terminus AND stops `recover_staging/1` from re-sweeping the
-        # leftover run.json on the next workspace open.
-        File.rm_rf(staging_dir)
-        audit_finished(run_id, "no_proposal")
+    primary = finalize_primary(staging_dir, workspace, run_id)
+    memory = finalize_memory(staging_dir, workspace, run_id)
 
-      {:ok, bytes} ->
-        finalize_bytes(run_id, workspace, staging_dir, bytes)
-    end
+    outcome_and_cleanup(staging_dir, run_id, primary, memory)
 
     :ok
   end
@@ -141,17 +153,154 @@ defmodule Valea.Workflows.Runner do
     :ok
   end
 
-  defp finalize_bytes(run_id, workspace, staging_dir, bytes) do
-    with {:ok, payload} <- Jason.decode(bytes),
-         true <- valid_proposal?(payload),
-         {:ok, run} <- read_sidecar(staging_dir) do
-      write_pending!(workspace, run_id, run, payload)
-      audit("queue_item_created", %{"run_id" => run_id, "kind" => payload["kind"]})
-      File.rm_rf(staging_dir)
-      audit_finished(run_id, "proposal_created")
-    else
-      _ -> audit_finished(run_id, "invalid_proposal")
+  # The existing proposal/v1 flow, verbatim, minus its own audit/cleanup —
+  # those are now centralized in `outcome_and_cleanup/4` so a primary
+  # proposal and its sibling memory pairs share ONE terminus audit and ONE
+  # cleanup decision instead of racing each other. `:absent` (no
+  # `proposal.json` at all — a died-pre-turn session, a genuinely empty
+  # turn, or a workflow contract with no proposal output at all) is kept
+  # distinct from `:invalid` (a `proposal.json` that IS present but fails
+  # validation) so `outcome_and_cleanup/4` can tell "nothing here" from
+  # "something here was wrong".
+  @spec finalize_primary(String.t(), String.t(), String.t()) :: :created | :invalid | :absent
+  defp finalize_primary(staging_dir, workspace, run_id) do
+    proposal_path = Path.join(staging_dir, "proposal.json")
+
+    case File.read(proposal_path) do
+      {:error, _reason} ->
+        :absent
+
+      {:ok, bytes} ->
+        with {:ok, payload} <- Jason.decode(bytes),
+             true <- valid_proposal?(payload),
+             {:ok, run} <- read_sidecar(staging_dir) do
+          write_pending!(workspace, run_id, run, payload)
+          audit("queue_item_created", %{"run_id" => run_id, "kind" => payload["kind"]})
+          :created
+        else
+          _ -> :invalid
+        end
     end
+  end
+
+  # Every agent-staged memory-update pair, fanned out into its own pending
+  # item. Needs the sidecar (for the queue envelope's session/workflow/input
+  # fields, shared with the primary item) — an unreadable sidecar (staging
+  # dir absent entirely, or a crash before `write_sidecar/2` ever ran) means
+  # there is nothing trustworthy to build an envelope from, so this
+  # degrades to "no memory pairs" rather than crashing `finalize/2`; the
+  # primary path already covers auditing that case.
+  @spec finalize_memory(String.t(), String.t(), String.t()) ::
+          {created :: non_neg_integer(), invalid :: non_neg_integer()}
+  defp finalize_memory(staging_dir, workspace, run_id) do
+    case read_sidecar(staging_dir) do
+      {:error, _reason} ->
+        {0, 0}
+
+      {:ok, run} ->
+        staging_dir
+        |> MemoryProposal.load_pairs()
+        |> Enum.with_index(1)
+        |> Enum.reduce({0, 0}, fn {{file, result}, i}, {created, invalid} ->
+          case finalize_pair(result, run, workspace, run_id, i, file) do
+            :created -> {created + 1, invalid}
+            :invalid -> {created, invalid + 1}
+          end
+        end)
+    end
+  end
+
+  defp finalize_pair({:error, reason}, _run, _workspace, run_id, _i, file) do
+    invalid_pair_audit(run_id, file, reason)
+  end
+
+  defp finalize_pair(
+         {:ok, %{manifest: manifest, content: content}},
+         run,
+         workspace,
+         run_id,
+         i,
+         file
+       ) do
+    case MemoryProposal.check_target(workspace, manifest["target_path"]) do
+      {:error, reason} ->
+        invalid_pair_audit(run_id, file, reason)
+
+      {:ok, _target} ->
+        item_id = "#{run_id}-m#{i}"
+        tier = RiskTier.classify(workspace, manifest["target_path"]) || "medium"
+        envelope = memory_envelope(run, item_id, manifest, content, tier)
+        write_memory_pending!(workspace, item_id, envelope)
+        audit("queue_item_created", %{"run_id" => item_id, "kind" => "memory_update"})
+        :created
+    end
+  end
+
+  defp invalid_pair_audit(run_id, file, reason) do
+    audit("memory_proposal_invalid", %{
+      "run_id" => run_id,
+      "file" => file,
+      "reason" => to_string(reason)
+    })
+
+    :invalid
+  end
+
+  # `base_sha256: nil` is the create/1 sentinel (Spec B, proposal-pair
+  # vocabulary) — the target page does not exist yet, so the title reads
+  # "New page: …" rather than "Update …".
+  defp memory_envelope(run, item_id, manifest, content, tier) do
+    base = Path.basename(manifest["target_path"])
+    title = if manifest["base_sha256"] == nil, do: "New page: " <> base, else: "Update " <> base
+
+    %{
+      "schema" => "queue_item/v2",
+      "run_id" => item_id,
+      "session_id" => run["session_id"],
+      "workflow" => run["workflow"],
+      "workflow_hash" => run["workflow_hash"],
+      "input" => run["input"],
+      "input_hash" => run["input_hash"],
+      "risk_level" => tier,
+      "approval" => run["approval"],
+      "created_at" => run["created_at"],
+      "payload" => %{
+        "title" => title,
+        "summary" => manifest["reason"],
+        "kind" => "memory_update",
+        "sources" => manifest["sources"],
+        "proposed_action" => %{
+          "type" => "apply_page_content",
+          "target_path" => manifest["target_path"],
+          "base_sha256" => manifest["base_sha256"],
+          "content_markdown" => content
+        }
+      }
+    }
+  end
+
+  # Single terminus for BOTH the primary proposal and its sibling memory
+  # pairs: any item created (primary or memory) outranks any invalid one for
+  # the outcome (a run that produced one good memory item and one bad one is
+  # still "proposal_created" — the good item is live in the queue), but
+  # staging is kept whenever ANYTHING was invalid, regardless of outcome, so
+  # the bad pair(s) stay inspectable next to the good item's now-removed
+  # source. Absent-everything (no primary, no memory pairs at all) is the
+  # only path that reaches `"no_proposal"`.
+  defp outcome_and_cleanup(staging_dir, run_id, primary, {mem_created, mem_invalid}) do
+    created? = primary == :created or mem_created > 0
+    invalid? = primary == :invalid or mem_invalid > 0
+
+    outcome =
+      cond do
+        created? -> "proposal_created"
+        invalid? -> "invalid_proposal"
+        true -> "no_proposal"
+      end
+
+    unless invalid?, do: File.rm_rf(staging_dir)
+
+    audit_finished(run_id, outcome)
   end
 
   ## run/2 helpers
@@ -208,6 +357,10 @@ defmodule Valea.Workflows.Runner do
     run_id = generate_run_id()
     staging_dir = staging_dir(workspace, run_id)
     File.mkdir_p!(staging_dir)
+    # The agent's memory-update grant (below) is scoped to exactly this
+    # subdirectory — created up front so the write_roots grant has somewhere
+    # to land even on a workflow turn that writes no memory pairs at all.
+    File.mkdir_p!(Path.join(staging_dir, "proposals"))
     staging_rel = Path.join([staging_dir_rel(run_id), "proposal.json"])
     staging_abs = Path.join(workspace, staging_rel)
 
@@ -239,7 +392,21 @@ defmodule Valea.Workflows.Runner do
       policy_ctx: %{
         workspace: workspace,
         session_kind: "workflow",
-        write_paths: [staging_abs]
+        write_paths: [staging_abs],
+        # Directory grant (B2's `write_roots`), scoped to `proposals/` only —
+        # NEVER the staging dir itself, so the trusted `run.json` sidecar
+        # this module writes below stays unwritable by the agent (security
+        # invariant: the sidecar is server-owned, carried verbatim into every
+        # queue envelope `finalize/2` builds).
+        write_roots: [Path.join(staging_dir, "proposals")],
+        # The agent needs to read its own staging dir back (e.g. to check
+        # what it already wrote) in addition to the usual mount/sources
+        # surface — `default_read_roots/1` is the SAME single computation
+        # site `SessionServer.init/1` itself falls back to, extended (never
+        # re-derived) per that function's own contract.
+        read_roots:
+          SessionServer.default_read_roots(workspace) ++
+            [Path.join(["queue", "staging", run_id])]
       },
       initial_prompt: prompt(workflow_path, input_path, staging_rel),
       on_turn_end: fn _stop -> finalize(run_id, workspace) end
@@ -279,9 +446,15 @@ defmodule Valea.Workflows.Runner do
     Read AGENTS.md first if you have not already. Then execute the workflow
     contract at "#{workflow_path}" against the input file "#{input_path}".
     Follow the contract's Process steps. Read only the pages its Inputs and
-    sources name. Write exactly one proposal/v1 JSON file to
-    "#{staging_rel}" and nothing else. When the file is written, state
-    in one sentence what you prepared, and stop.
+    sources name. If the contract's Outputs call for a proposal, write
+    exactly one proposal/v1 JSON file to "#{staging_rel}". If you noticed
+    business knowledge that is stale, missing, or contradicted, you may
+    additionally propose memory updates: for each one, write a pair of
+    files under "#{Path.dirname(staging_rel)}/proposals/" — <name>.md (the
+    complete new page content) and <name>.json (a memory_update/v1
+    manifest) — following the memory-update contract in AGENTS.md. Write
+    nothing else. When done, state in one sentence what you prepared, and
+    stop.
     """
   end
 
@@ -318,6 +491,17 @@ defmodule Valea.Workflows.Runner do
     }
 
     path = Path.join(pending_dir(workspace), run_id <> ".json")
+    File.mkdir_p!(pending_dir(workspace))
+    atomic_write!(path, Jason.encode!(envelope))
+  end
+
+  # Same tmp+rename atomic write `write_pending!/4` uses, for a memory
+  # item's own already-built envelope (`memory_envelope/5`) — a memory item
+  # has no `source_message` key (it is never a mailbox-op trigger), so it
+  # doesn't share `write_pending!/4`'s envelope construction, only its write
+  # path.
+  defp write_memory_pending!(workspace, item_id, envelope) do
+    path = Path.join(pending_dir(workspace), item_id <> ".json")
     File.mkdir_p!(pending_dir(workspace))
     atomic_write!(path, Jason.encode!(envelope))
   end
