@@ -6,24 +6,6 @@ defmodule Valea.ICMTest do
   alias Valea.Workspace.Manager
   alias Valea.ICM
 
-  # The workspace template still scaffolds the legacy `icm/` tree until
-  # Task A-T8 migrates it; a fresh scaffold has no `mounts/` dir at all. To
-  # exercise the per-mount `Valea.ICM` against the rich seeded fixture
-  # content (Offers/, Workflows/, etc.), COPY (not move) the scaffolded
-  # `icm/` into `mounts/<name>/` and stamp a manifest on it. The original
-  # `icm/` tree is left in place untouched — `Valea.ICM.References` (T4) and
-  # the watcher (T6) are still hardcoded to read `icm/Workflows/*.md`
-  # directly, not through this module, so tests that exercise reference
-  # rewriting (icm_write_test.exs) keep asserting against that untouched
-  # original tree while driving the rename/create/delete calls themselves
-  # against the `mounts/primary/…` copy.
-  defp seed_mount!(ws_path, name, title) do
-    mount_dir = Path.join([ws_path, "mounts", name])
-    File.mkdir_p!(Path.dirname(mount_dir))
-    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
-    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
-  end
-
   defp write_mount!(ws_path, name, title) do
     dir = Path.join([ws_path, "mounts", name])
     File.mkdir_p!(dir)
@@ -39,8 +21,12 @@ defmodule Valea.ICMTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
-    seed_mount!(ws.path, "primary", "Primary")
+    # A fresh scaffold (T8) mints its own real mount from the template's rich
+    # seed content (Offers/, Workflows/, etc.) at `mounts/<slug-of-name>` —
+    # naming the workspace "Primary" lands that mount at exactly
+    # `mounts/primary`, the name/title this whole suite asserts against, with
+    # no separate copy/seed step needed.
+    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
 
     on_exit(fn ->
       Manager.close()

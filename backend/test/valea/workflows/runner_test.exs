@@ -2,31 +2,19 @@ defmodule Valea.Workflows.RunnerTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
-  alias Valea.Mounts.Manifest
   alias Valea.Workflows.Runner
 
   @wf_path "mounts/primary/Workflows/New Inquiry Triage.md"
   @disabled_wf_path "mounts/primary/Workflows/Weekly Admin Review.md"
   @input_path "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
 
-  # The workspace template still scaffolds the legacy `icm/` tree until Task
-  # A-T8 migrates it (see `test/valea/icm_test.exs`'s identical note) — a
-  # fresh scaffold has no `mounts/` dir at all, so `Valea.Workflows` (now
-  # mount-sourced, T5) would see nothing. COPY (not move) the scaffolded
-  # `icm/` into `mounts/<name>/` and stamp a manifest on it, mirroring
-  # `icm_test.exs`'s `seed_mount!/3`, to exercise the Runner against the
-  # rich seeded workflow contracts (New Inquiry Triage, Weekly Admin
-  # Review, ...).
-  defp seed_mount!(ws_path, name, title) do
-    mount_dir = Path.join([ws_path, "mounts", name])
-    File.mkdir_p!(Path.dirname(mount_dir))
-    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
-    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
-  end
-
+  # A fresh scaffold (T8) mints its own real mount from the template's rich
+  # seed content (New Inquiry Triage, Weekly Admin Review, ...) at
+  # `mounts/<slug-of-name>` — naming the workspace "Primary" lands it at
+  # exactly `mounts/primary`, the path this whole suite exercises the
+  # Runner against.
   setup do
-    ws = AgentCase.open_workspace!()
-    seed_mount!(ws.path, "primary", "Primary")
+    ws = AgentCase.open_workspace!("Primary")
     %{workspace: ws.path}
   end
 

@@ -3,7 +3,7 @@ enabled: false
 trigger: { type: manual, source: calendar.upcoming }
 sources:
   - { id: upcoming_event, type: calendar, required: true }
-  - { id: client_page, type: icm, path: "icm/Clients/*" }
+  - { id: client_page, type: icm, path: "Clients/*" }
   - { id: brief_prompt, type: prompt, path: "prompts/session_brief_writer.md" }
 risk_level: low
 approval:

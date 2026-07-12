@@ -5,33 +5,16 @@ defmodule ValeaWeb.IcmRpcTest do
 
   @endpoint ValeaWeb.Endpoint
 
-  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
-  # See test/valea/icm_write_test.exs's `seed_mount!/3` comment: the
-  # workspace template still scaffolds the legacy `icm/` tree (Task A-T8
-  # migrates it), so a freshly created workspace has no `mounts/` dir at
-  # all. Copy the seeded `icm/` tree into `mounts/primary/`, rewrite its
-  # Workflows pages to the mount-relative reference convention References
-  # (T4) anchors on (the legacy `path: "icm/<rel>"` form would correctly
-  # never match), and stamp a manifest on it so the RPC layer's ICM
-  # actions — which resolve through `Valea.Mounts.mount_for/1` — have a
-  # real mount to operate on.
-  defp seed_mount!(ws_path, name, title) do
-    mount_dir = Path.join([ws_path, "mounts", name])
-    File.mkdir_p!(Path.dirname(mount_dir))
-    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
-
-    [mount_dir, "Workflows", "*.md"]
-    |> Path.join()
-    |> Path.wildcard()
-    |> Enum.each(fn abs ->
-      File.write!(abs, String.replace(File.read!(abs), ~s(path: "icm/), ~s(path: ")))
-    end)
-
-    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
-  end
-
+  # A fresh scaffold (T8) mints its own real mount from the template's rich
+  # seed content (Offers/, Templates/, Workflows/, ...) at
+  # `mounts/<slug-of-name>`, with `Workflows/*.md` already carrying the
+  # mount-relative `path: "<rel>"` frontmatter convention (no `icm/`
+  # prefix). Naming the workspace "Primary" lands that mount at exactly
+  # `mounts/primary`, the path the RPC layer's ICM actions (resolving
+  # through `Valea.Mounts.mount_for/1`) — and every assertion below —
+  # address.
   setup do
     dir =
       Path.join(
@@ -49,14 +32,9 @@ defmodule ValeaWeb.IcmRpcTest do
     end)
 
     parent = Path.join(dir, "workspaces")
-    rpc("create_workspace", %{"parentDir" => parent, "name" => "W"})
-    # `Valea.Workspace.Manager.create/2` targets `Path.join(parent_dir, name)`
-    # verbatim (no slugification) — see `Valea.Workspace.Scaffold.create/1` —
-    # so this is the same path the RPC call above just opened.
-    ws_path = Path.join(parent, "W")
-    seed_mount!(ws_path, "primary", "Primary")
+    rpc("create_workspace", %{"parentDir" => parent, "name" => "Primary"})
 
-    %{parent: parent, ws_path: ws_path}
+    %{parent: parent}
   end
 
   defp rpc(action, input, fields \\ []) do

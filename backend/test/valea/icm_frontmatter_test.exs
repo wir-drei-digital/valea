@@ -2,7 +2,6 @@ defmodule Valea.ICMFrontmatterTest do
   use ExUnit.Case, async: false
 
   alias Valea.ICM
-  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
   @page_with_fm """
@@ -18,16 +17,6 @@ defmodule Valea.ICMFrontmatterTest do
 
   @page_broken_yaml "---\n{ broken\n---\n\n# X\n"
 
-  # See icm_test.exs's `seed_mount!/3` comment: copy (not move) the scaffolded
-  # `icm/` into `mounts/primary/` so this module operates per-mount while the
-  # original `icm/` is left for the still-hardcoded References/watcher.
-  defp seed_mount!(ws_path, name, title) do
-    mount_dir = Path.join([ws_path, "mounts", name])
-    File.mkdir_p!(Path.dirname(mount_dir))
-    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
-    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
-  end
-
   setup do
     dir =
       Path.join(
@@ -37,8 +26,11 @@ defmodule Valea.ICMFrontmatterTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, %{path: ws}} = Manager.create(Path.join(dir, "workspaces"), "W")
-    seed_mount!(ws, "primary", "Primary")
+    # A fresh scaffold (T8) mints its own real mount from the template's seed
+    # content at `mounts/<slug-of-name>` — naming the workspace "Primary"
+    # lands it at exactly `mounts/primary`, whose `Workflows/` dir this suite
+    # writes its own fixture pages into.
+    {:ok, %{path: ws}} = Manager.create(Path.join(dir, "workspaces"), "Primary")
 
     File.write!(Path.join(ws, "mounts/primary/Workflows/Contract.md"), @page_with_fm)
     File.write!(Path.join(ws, "mounts/primary/Workflows/Broken.md"), @page_broken_yaml)

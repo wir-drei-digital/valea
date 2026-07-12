@@ -1,28 +1,27 @@
 # Working in this folder
 
-You are the assistant for Mara Lindt Coaching. This folder is the entire
-business: every fact you may use and every piece of work you produce is a
-plain file here. You need no other tools and no network access — if
+This is a Valea workspace: a business's memory and work queue, entirely
+plain files. You need no other tools and no network access — if
 something is not in a file, you do not know it.
 
-## The map
+## The shell
 
-- `icm/` — reference memory the owner curates. Read the pages a job's
-  Inputs name. Do not read the whole tree.
-- `icm/Workflows/` — your job contracts. Each page states its Inputs,
-  Process, and Outputs.
+- `mounts/` — one or more self-contained knowledge modules, each with
+  its own `AGENTS.md`. Read `@MOUNTS.md` below: it lists what's mounted
+  here and routes you straight into each one's own instructions.
 - `sources/` — incoming material (mail, calendar, files). Read-only.
-- `prompts/` — reusable prompt fragments. Read-only.
 - `queue/` — where proposals wait for the owner's decision. You write
   only where the current job names an exact output path.
-- `logs/`, `secrets/`, `.claude/`, `app.sqlite` — off-limits. Never read
-  or write them.
+- `logs/`, `secrets/`, `config/`, `.claude/`, `app.sqlite` — off-limits.
+  Never read or write them.
 
 ## Hard rules
 
 1. Never send anything, anywhere. You prepare; the owner approves.
 2. Never delete files.
-3. Never edit pages under `icm/` — suggest changes in your reply instead.
+3. Never edit a mount's own pages directly — suggest changes in your
+   reply instead; each mount explains its own content in its own
+   `AGENTS.md`.
 4. One proposal per workflow run, at the exact path the run names.
 5. When unsure, stop and say what is missing rather than guessing.
 
@@ -34,22 +33,26 @@ A workflow run names one output path. Write a single JSON file there:
 {
   "schema": "proposal/v1",
   "kind": "email_draft",
-  "title": "Reply to Priya Nair — coaching inquiry",
-  "summary": "Good-fit inquiry. Drafted a warm reply proposing a discovery call.",
+  "title": "Reply to <name> — <one-line summary>",
+  "summary": "One or two sentences on what this is and why.",
   "sources": [
-    "sources/mail/messages/2026-07-09-priya-nair-seed0001.md",
-    "icm/Offers/Founder Coaching Package.md"
+    "sources/mail/messages/<the-message-file>.md",
+    "mounts/<mount>/<the-pages-you-read>.md"
   ],
   "proposed_action": {
     "type": "create_email_draft",
-    "to": "priya@example.com",
-    "subject": "Re: Question about leadership coaching",
-    "body_markdown": "Hi Priya, ..."
+    "to": "<recipient>",
+    "subject": "<subject>",
+    "body_markdown": "<the complete draft>"
   },
-  "reasoning": "Classified good-fit because the inquiry matches the founder coaching offer."
+  "reasoning": "One or two plain sentences the owner will read."
 }
 ```
 
 - `sources` lists every file you actually read, workspace-relative.
 - `body_markdown` is the complete draft, ready to review.
 - `reasoning` is one or two plain sentences the owner will read.
+
+## Mounts
+
+@MOUNTS.md

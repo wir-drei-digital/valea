@@ -1,40 +1,9 @@
 defmodule Valea.ICMWriteTest do
   use ExUnit.Case, async: false
 
-  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
   alias Valea.ICM
   alias Valea.Markdown.ProseMirror
-
-  # The workspace template still scaffolds the legacy `icm/` tree until
-  # Task A-T8 migrates it, and a fresh scaffold has no `mounts/` dir at
-  # all — so COPY (not move) the scaffolded `icm/` into `mounts/primary/`
-  # to get a mount with rich seeded fixture content. Post T4,
-  # `Valea.ICM.References` resolves the owning mount for whatever
-  # workspace-relative path it's given and scans/rewrites THAT mount's own
-  # `Workflows/` for the MOUNT-RELATIVE needle, anchored: a `/` right
-  # before an occurrence marks it as the tail of a longer token, so the
-  # template's legacy `path: "icm/<rel>"` form would (correctly) never
-  # match. Rewrite the copied pages to the mount-relative convention a
-  # real post-T8 mount will carry — every rename/reference assertion below
-  # then reads `mounts/primary/Workflows/…` and asserts on unprefixed
-  # `<rel>` needles.
-  defp seed_mount!(ws_path, name, title) do
-    mount_dir = Path.join([ws_path, "mounts", name])
-    File.mkdir_p!(Path.dirname(mount_dir))
-    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
-    strip_legacy_icm_prefix!(mount_dir)
-    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
-  end
-
-  defp strip_legacy_icm_prefix!(mount_dir) do
-    [mount_dir, "Workflows", "*.md"]
-    |> Path.join()
-    |> Path.wildcard()
-    |> Enum.each(fn abs ->
-      File.write!(abs, String.replace(File.read!(abs), ~s(path: "icm/), ~s(path: ")))
-    end)
-  end
 
   setup do
     dir =
@@ -45,8 +14,13 @@ defmodule Valea.ICMWriteTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
-    seed_mount!(ws.path, "primary", "Primary")
+    # A fresh scaffold (T8) mints its own real mount from the template's rich
+    # seed content (Offers/, Workflows/, etc.) at `mounts/<slug-of-name>`, and
+    # the template's `Workflows/*.md` already carry the mount-relative
+    # `path: "<rel>"` frontmatter convention (no `icm/` prefix) — naming the
+    # workspace "Primary" lands that mount at exactly `mounts/primary`, the
+    # path every rename/reference assertion below addresses.
+    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
 
     on_exit(fn ->
       Manager.close()

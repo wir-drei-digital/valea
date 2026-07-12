@@ -8,6 +8,10 @@ defmodule Valea.WorkflowsTest do
 
   setup do
     ws = AgentCase.open_workspace!()
+    # A fresh scaffold (T8) mints its own real, enabled mount from the
+    # template's seed content — disable it so this suite's `Workflows.list/0`
+    # assertions see only the mounts each test builds for itself.
+    Enum.each(Mounts.list(ws.path), &Mounts.set_enabled(&1.name, false))
     %{workspace: ws.path}
   end
 

@@ -3,9 +3,9 @@ enabled: false
 trigger: { type: manual, source: calendar.completed }
 sources:
   - { id: completed_event, type: calendar, required: true }
-  - { id: client_page, type: icm, path: "icm/Clients/*" }
-  - { id: tone_guide, type: icm, path: "icm/Tone & Voice/Email Tone Guide.md" }
-  - { id: followup_template, type: icm, path: "icm/Templates/Follow-up Email.md" }
+  - { id: client_page, type: icm, path: "Clients/*" }
+  - { id: tone_guide, type: icm, path: "Tone & Voice/Email Tone Guide.md" }
+  - { id: followup_template, type: icm, path: "Templates/Follow-up Email.md" }
 risk_level: medium
 approval:
   required: true

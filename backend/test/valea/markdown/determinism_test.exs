@@ -3,19 +3,30 @@ defmodule Valea.Markdown.DeterminismTest do
 
   alias Valea.Markdown.ProseMirror
 
-  @template Path.join(:code.priv_dir(:valea), "workspace_template/icm")
+  @template Path.join(:code.priv_dir(:valea), "workspace_template/mounts/starter")
 
-  # Every seed page — including the four Workflows/*.md pages that carry a
-  # leading YAML frontmatter block — must round-trip byte-identically. For a
-  # page with no frontmatter, `Valea.ICM.split_frontmatter/1` returns
+  # Every seed ICM page — including the four Workflows/*.md pages that carry
+  # a leading YAML frontmatter block — must round-trip byte-identically. The
+  # mount's own AGENTS.md/CLAUDE.md (self-description, not a curated ICM
+  # page a user edits through the ICM page editor) and `prompts/*.md`
+  # (reference fragments, same non-ICM-page status) are excluded — the same
+  # split the pre-mounts template already drew structurally (AGENTS.md/
+  # CLAUDE.md lived at the workspace root; prompts/ was a sibling top-level
+  # dir), now re-expressed as an explicit filter since both live inside the
+  # mount alongside the real ICM content post-T8.
+  @seed_pages @template
+              |> Path.join("**/*.md")
+              |> Path.wildcard()
+              |> Enum.reject(fn path ->
+                rel = Path.relative_to(path, @template)
+                rel in ["AGENTS.md", "CLAUDE.md"] or String.starts_with?(rel, "prompts/")
+              end)
+
+  # For a page with no frontmatter, `Valea.ICM.split_frontmatter/1` returns
   # `{"", md}` and this degenerates to the original whole-file check; for a
   # frontmatter page, the block is left untouched (it never goes through the
   # markdown converter) and only the body is round-tripped.
-  for path <-
-        Path.wildcard(
-          Path.join(Path.join(:code.priv_dir(:valea), "workspace_template/icm"), "**/*.md")
-        ),
-      rel = Path.relative_to(path, Path.join(:code.priv_dir(:valea), "workspace_template/icm")) do
+  for path <- @seed_pages, rel = Path.relative_to(path, @template) do
     test "round-trips seed page #{rel} byte-identically" do
       md = File.read!(unquote(path))
       {block, body} = Valea.ICM.split_frontmatter(md)
@@ -33,6 +44,6 @@ defmodule Valea.Markdown.DeterminismTest do
   end
 
   test "template has seed pages (guard against silent wildcard miss)" do
-    assert length(Path.wildcard(Path.join(@template, "**/*.md"))) >= 12
+    assert length(@seed_pages) >= 12
   end
 end

@@ -6,25 +6,16 @@ defmodule ValeaWeb.AgentsRpcTest do
   @endpoint ValeaWeb.Endpoint
 
   alias Valea.AgentCase
-  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
   @wf_path "mounts/primary/Workflows/New Inquiry Triage.md"
   @disabled_wf_path "mounts/primary/Workflows/Weekly Admin Review.md"
   @input_path "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
 
-  # The workspace template still scaffolds the legacy `icm/` tree until Task
-  # A-T8 migrates it — a fresh scaffold has no `mounts/` dir at all, so
-  # `Valea.Workflows` (mount-sourced, T5) sees nothing until one exists.
-  # COPY (not move) the scaffolded `icm/` into `mounts/<name>/` and stamp a
-  # manifest on it, mirroring `test/valea/icm_test.exs`'s `seed_mount!/3`.
-  defp seed_mount!(ws_path, name, title) do
-    mount_dir = Path.join([ws_path, "mounts", name])
-    File.mkdir_p!(Path.dirname(mount_dir))
-    File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
-    Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
-  end
-
+  # A fresh scaffold (T8) mints its own real mount from the template's rich
+  # seed content (New Inquiry Triage, Weekly Admin Review, ...) at
+  # `mounts/<slug-of-name>` — naming the workspace "Primary" lands it at
+  # exactly `mounts/primary`, the path this whole suite exercises.
   setup do
     dir =
       Path.join(
@@ -42,10 +33,8 @@ defmodule ValeaWeb.AgentsRpcTest do
     end)
 
     parent = Path.join(dir, "workspaces")
-    rpc("create_workspace", %{"parentDir" => parent, "name" => "W"})
+    rpc("create_workspace", %{"parentDir" => parent, "name" => "Primary"})
     %{"data" => %{"generation" => generation}} = rpc("get_workspace", %{})
-
-    seed_mount!(Path.join(parent, "W"), "primary", "Primary")
 
     %{parent: parent, generation: generation}
   end
@@ -161,7 +150,7 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert is_binary(run_id)
       assert is_binary(session_id)
 
-      pending_path = Path.join([parent, "W", "queue", "pending", run_id <> ".json"])
+      pending_path = Path.join([parent, "Primary", "queue", "pending", run_id <> ".json"])
       wait_until(fn -> File.exists?(pending_path) end)
     end
 

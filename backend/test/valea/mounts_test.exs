@@ -157,6 +157,10 @@ defmodule Valea.MountsTest do
       System.put_env("VALEA_APP_DIR", dir)
       Manager.close()
       {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
+      # A fresh scaffold (T8) mints its own real mount from the template's
+      # seed content — clear it so this suite's own hand-built mounts are
+      # the only ones `Mounts.list/1` sees.
+      ws.path |> Path.join("mounts/*") |> Path.wildcard() |> Enum.each(&File.rm_rf!/1)
 
       on_exit(fn ->
         Manager.close()
@@ -267,6 +271,10 @@ defmodule Valea.MountsTest do
       System.put_env("VALEA_APP_DIR", dir)
       Manager.close()
       {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
+      # A fresh scaffold (T8) mints its own real mount from the template's
+      # seed content — clear it so this suite's own hand-built mounts are
+      # the only ones `Mounts.list/1` sees.
+      ws.path |> Path.join("mounts/*") |> Path.wildcard() |> Enum.each(&File.rm_rf!/1)
 
       on_exit(fn ->
         Manager.close()

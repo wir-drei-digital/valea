@@ -62,7 +62,7 @@ defmodule Valea.Workspace.Manager do
   def handle_call({:create, parent_dir, name}, _from, state) do
     target = Path.join(parent_dir, name)
 
-    with :ok <- Scaffold.create(target),
+    with :ok <- Scaffold.create(target, name),
          {:ok, state} <- do_open(target, state) do
       {:reply, {:ok, state.workspace}, state}
     else
