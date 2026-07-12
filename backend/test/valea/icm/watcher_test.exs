@@ -396,9 +396,9 @@ defmodule Valea.ICM.WatcherTest do
     assert "Read(#{ext_root}/**)" in allow
   end
 
-  test "a mounts_changed broadcast that doesn't change the external-root set does not restart the FileSystem process",
+  test "a mounts_changed broadcast that doesn't change the external-root set restarts neither listener",
        %{ws: _ws} do
-    before_pid = :sys.get_state(Valea.ICM.Watcher).watcher
+    before_state = :sys.get_state(Valea.ICM.Watcher)
 
     Phoenix.PubSub.broadcast(Valea.PubSub, "mounts", {:mounts_changed})
 
@@ -409,8 +409,35 @@ defmodule Valea.ICM.WatcherTest do
     # above.
     Process.sleep(300)
 
-    after_pid = :sys.get_state(Valea.ICM.Watcher).watcher
-    assert after_pid == before_pid
+    after_state = :sys.get_state(Valea.ICM.Watcher)
+    assert after_state.fixed_watcher == before_state.fixed_watcher
+    assert after_state.external_watcher == before_state.external_watcher
+  end
+
+  test "recomputing a CHANGED external-root set restarts only the external listener — the fixed listener pid is stable",
+       %{ws: ws} do
+    # A fresh workspace has no external mounts, so no dynamic listener yet.
+    %{fixed_watcher: fixed_before, external_watcher: nil} = :sys.get_state(Valea.ICM.Watcher)
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
+
+    ext = external_icm!("Ext")
+    poll_until_mounts_changed(fn _i -> declare_external!(ws.path, "ext", ext) end)
+
+    # `:sys.get_state/1` serializes behind the flush that broadcast, and the
+    # recompute runs synchronously inside that same handle_info — so the
+    # state observed here is already post-recompute.
+    state = :sys.get_state(Valea.ICM.Watcher)
+    assert state.fixed_watcher == fixed_before
+    assert is_pid(state.external_watcher)
+
+    drain_any()
+
+    poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("ext", false) end)
+
+    state = :sys.get_state(Valea.ICM.Watcher)
+    assert state.fixed_watcher == fixed_before
+    assert state.external_watcher == nil
   end
 
   test "a regeneration failure (unwritable workspace root) is rescued -- the watcher stays alive and still broadcasts",

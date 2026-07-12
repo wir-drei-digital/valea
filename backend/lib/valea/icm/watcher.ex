@@ -53,32 +53,62 @@ defmodule Valea.ICM.Watcher do
   regeneration itself never writes into `mounts/`, `queue/`, `config/`, or
   any external root. See `watcher_test.exs` for the loop-safety tests.
 
-  ## External mount roots are dynamic
+  ## External mount roots are dynamic — two listeners, not one
 
   Which external roots are enabled can change at runtime — a
   `set_mount_enabled`/`create_mount` RPC mutation, or a hand-edited
-  `config/workspace.yaml` this watcher itself just noticed. This process
-  subscribes to the `"mounts"` PubSub topic (the SAME topic both the RPC
-  layer and this watcher's own discovery flush broadcast on) so it hears
-  about every source of change, and recomputes the watched directory set
-  (`mounts/`, `queue/`, `config/`, plus every currently enabled external
-  root) after: (a) its own discovery flush, and (b) a debounced,
-  coalesced window after `{:mounts_changed}` arrives via PubSub. Recompute
-  is a plain set comparison against the CURRENTLY watched external roots —
-  if nothing changed, the underlying `FileSystem` process is left alone;
-  only a real difference triggers a stop-and-restart with the new dir
-  list. This is what makes it SAFE for this process to receive its own
-  broadcast back (Phoenix.PubSub delivers to every subscriber of a topic,
-  including the publisher): by the time the self-sent message is handled,
-  the recompute already ran synchronously inside the flush that produced
-  it, so the redundant recompute finds no diff and never restarts
-  anything — no infinite loop, just one harmless extra comparison. A
-  declared external mount whose root does not currently exist on disk
-  (unmounted drive, moved folder, ...) is silently skipped rather than
-  crashing the watcher — `Valea.Mounts.enabled/1` already excludes a
-  mount whose root does not resolve to a real folder (it comes back
-  degraded), but the check is repeated here too as a defense against the
-  narrow TOCTOU window between that computation and this one.
+  `config/workspace.yaml` this watcher itself just noticed. To make that
+  re-subscription safe for the parts of the watch set that NEVER change,
+  the underlying `FileSystem` subscription is SPLIT in two:
+
+    * a FIXED listener over `mounts/`, `queue/`, `config/` — started once
+      in `init/1` and never restarted, so events under the workspace's own
+      trees have ZERO loss window across external-root recomputes;
+    * a DYNAMIC listener over the enabled external roots — restarted (or
+      started/stopped) whenever the recomputed root set actually differs.
+      It is `nil` while no external roots are watchable, rather than a
+      `FileSystem` process with an empty dir list.
+
+  Events from both pids flow through the same path-based classification —
+  `handle_info` never dispatches on WHICH listener a `:file_event` came
+  from, only on the path, so a straggler event from a just-stopped dynamic
+  listener is classified against the already-updated root set (a removed
+  root's stragglers simply classify to `:ignore`).
+
+  This process subscribes to the `"mounts"` PubSub topic (the SAME topic
+  both the RPC layer and this watcher's own discovery flush broadcast on)
+  so it hears about every source of change, and recomputes the enabled
+  external-root set after: (a) its own discovery flush, and (b) a
+  debounced, coalesced window after `{:mounts_changed}` arrives via
+  PubSub. Recompute is a plain set comparison against the CURRENTLY
+  watched external roots — if nothing changed, neither listener is
+  touched; only a real difference stops and replaces the DYNAMIC listener.
+  This is what makes it SAFE for this process to receive its own broadcast
+  back (Phoenix.PubSub delivers to every subscriber of a topic, including
+  the publisher): by the time the self-sent message is handled, the
+  recompute already ran synchronously inside the flush that produced it,
+  so the redundant recompute finds no diff and never restarts anything —
+  no infinite loop, just one harmless extra comparison. A declared
+  external mount whose root does not currently exist on disk (unmounted
+  drive, moved folder, ...) is silently skipped rather than crashing the
+  watcher — `Valea.Mounts.enabled/1` already excludes a mount whose root
+  does not resolve to a real folder (it comes back degraded), but the
+  check is repeated here too as a defense against the narrow TOCTOU
+  window between that computation and this one.
+
+  One honest caveat remains: while the DYNAMIC listener is being swapped
+  (stop old, start new), a change under an external root that survives
+  the swap can land in the gap and go unreported. This loss window is
+  inherent to re-subscription itself — a watcher backend cannot atomically
+  change its dir set — and it is BOUNDED (the swap is a synchronous
+  stop+start, no debounce in between) and LOW-STAKES: every event this
+  module emits is a payload-less refetch hint, so a consumer that missed
+  one sees correct data again on the very next change (or refetch) rather
+  than diverging; and `{:mounts_changed}` for RPC-driven mutations is
+  broadcast independently by `Valea.Api.Mounts`, never through this
+  window. The fixed trees — where the workspace's own state machine
+  (queue/) and source of truth (config/) live — are deliberately kept out
+  of this window entirely.
 
   FSEvents (the macOS backend — and watcher backends generally) only
   reports changes under a path that already existed when the watch stream
@@ -118,10 +148,13 @@ defmodule Valea.ICM.Watcher do
 
     external_roots = compute_external_roots(root)
 
-    {:ok, watcher} =
-      FileSystem.start_link(dirs: fixed_dirs(root) ++ Map.keys(external_roots))
+    # Two listeners — see moduledoc. The fixed one is started once here
+    # and never restarted; only the dynamic (external-root) one is ever
+    # swapped by `recompute_dirs/1`.
+    {:ok, fixed_watcher} = FileSystem.start_link(dirs: fixed_dirs(root))
+    FileSystem.subscribe(fixed_watcher)
 
-    FileSystem.subscribe(watcher)
+    external_watcher = start_external_watcher(Map.keys(external_roots))
 
     # FSEvents (the macOS backend) reports paths through their PHYSICAL
     # (symlink-resolved) form — e.g. under `/private/var/...` even when the
@@ -133,7 +166,8 @@ defmodule Valea.ICM.Watcher do
     # is idempotent — kept for defense-in-depth/uniformity, not correction.
     {:ok,
      %{
-       watcher: watcher,
+       fixed_watcher: fixed_watcher,
+       external_watcher: external_watcher,
        root: root,
        mounts_path: canonical(mounts_path),
        queue_path: canonical(queue_path),
@@ -323,30 +357,56 @@ defmodule Valea.ICM.Watcher do
   defp fixed_dirs(root),
     do: [Path.join(root, "mounts"), Path.join(root, "queue"), Path.join(root, "config")]
 
-  # Recomputes the enabled-external-mount root set and restarts the
-  # underlying `FileSystem` subscription ONLY when that set actually
-  # changed — see moduledoc for why this short-circuit is what makes it
-  # safe for this process to receive its own `{:mounts_changed}`
-  # broadcast back.
+  # Recomputes the enabled-external-mount root set and swaps the DYNAMIC
+  # `FileSystem` listener ONLY when that set actually changed — the fixed
+  # listener is never touched (see moduledoc: this is what gives the
+  # workspace's own trees a zero loss window, and what makes it safe for
+  # this process to receive its own `{:mounts_changed}` broadcast back).
   defp recompute_dirs(state) do
     new_external_roots = compute_external_roots(state.root)
 
     if MapSet.new(Map.keys(new_external_roots)) == MapSet.new(Map.keys(state.external_roots)) do
       state
     else
-      restart_filesystem(state, new_external_roots)
+      stop_external_watcher(state.external_watcher)
+
+      %{
+        state
+        | external_watcher: start_external_watcher(Map.keys(new_external_roots)),
+          external_roots: new_external_roots
+      }
     end
   end
 
-  defp restart_filesystem(state, new_external_roots) do
-    GenServer.stop(state.watcher)
+  # No dynamic listener while there is nothing external to watch — `nil`,
+  # never a `FileSystem` process with an empty dir list.
+  defp start_external_watcher([]), do: nil
 
-    {:ok, watcher} =
-      FileSystem.start_link(dirs: fixed_dirs(state.root) ++ Map.keys(new_external_roots))
-
+  defp start_external_watcher(roots) do
+    {:ok, watcher} = FileSystem.start_link(dirs: roots)
     FileSystem.subscribe(watcher)
+    watcher
+  end
 
-    %{state | watcher: watcher, external_roots: new_external_roots}
+  defp stop_external_watcher(nil), do: :ok
+
+  # Bounded stop: a hung watcher port must not block this GenServer
+  # forever. Unlinked first, so an abandoned (timed-out) pid can neither
+  # take this process down when it eventually dies nor leak an exit
+  # signal; its straggler `:file_event`s are harmless either way — they
+  # classify against the already-updated root set (see moduledoc).
+  defp stop_external_watcher(pid) do
+    Process.unlink(pid)
+    GenServer.stop(pid, :normal, 5_000)
+    :ok
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "Valea.ICM.Watcher: external FileSystem listener did not stop cleanly, abandoning: " <>
+          inspect(reason)
+      )
+
+      :ok
   end
 
   # -- regeneration on discovery (see moduledoc) ------------------------

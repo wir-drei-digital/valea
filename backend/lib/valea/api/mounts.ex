@@ -29,11 +29,17 @@ defmodule Valea.Api.Mounts do
   same message `Valea.ICM.Watcher` broadcasts on filesystem discovery
   changes (Task A-T6), so a subscriber (the `mounts` topic push in
   `ValeaWeb.WorkspaceEventsChannel`) can't tell an RPC-driven change from a
-  filesystem one. This is load-bearing for `set_mount_enabled` in
-  particular: toggling `config/workspace.yaml`'s `mounts:` section touches
-  a file OUTSIDE the `mounts/` tree the Watcher observes, so without this
-  explicit broadcast, an enable/disable would never reach a live socket at
-  all.
+  filesystem one. Since A2-T5 the Watcher observes `config/workspace.yaml`
+  too, so the config write these actions perform would ALSO surface as a
+  watcher-driven `{:mounts_changed}` (plus its own regeneration) after the
+  watcher's ~200ms debounce — this explicit broadcast is therefore
+  redundant-but-faster, and it is kept DELIBERATELY, not vestigially:
+  it reaches subscribers immediately instead of a debounce later, and it
+  is transactionally coupled to the regeneration this action just
+  performed (broadcast follows regenerate in the same call, so a
+  subscriber reacting to it always reads fresh MOUNTS.md/settings.json —
+  never a window where the message raced its own metadata). Do not remove
+  it in favor of the watcher path.
 
   The `ClaudeSettings.write!/1` half of that regeneration (Plan A2 Task 4)
   is what keeps `.claude/settings.json`'s per-external-mount `Read` allow
