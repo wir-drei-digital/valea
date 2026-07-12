@@ -61,6 +61,12 @@ defmodule Valea.Api do
       rpc_action(:mail_inbox, :mail_inbox)
       rpc_action(:retry_mailbox_ops, :retry_mailbox_ops)
     end
+
+    resource Valea.Api.Mounts do
+      rpc_action(:list_mounts, :list_mounts)
+      rpc_action(:set_mount_enabled, :set_mount_enabled)
+      rpc_action(:create_mount, :create_mount)
+    end
   end
 
   resources do
@@ -70,5 +76,6 @@ defmodule Valea.Api do
     resource Valea.Api.Agents
     resource Valea.Api.Queue
     resource Valea.Api.Mail
+    resource Valea.Api.Mounts
   end
 end

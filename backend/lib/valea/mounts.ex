@@ -18,10 +18,25 @@ defmodule Valea.Mounts do
   `enabled/0,1` regardless of its config `enabled` flag — the effective set
   every later consumer (ICM tree, Workflows, References, ...) composes
   over.
+
+  A mount whose directory BASENAME itself carries a C0 control character or
+  DEL (e.g. a stray newline) is also always degraded — regardless of
+  whether its `icm.yaml` is otherwise fine — with reason `"invalid mount
+  directory name"`. This is a discovery-time guard, not a rendering one:
+  `Valea.Mounts.MountsMd` interpolates a mount's `rel_root` RAW into a live
+  `@`-import line for every enabled mount, so a corrupted basename reaching
+  that renderer at all would forge a line the routing file's own reader
+  can't distinguish from a real import. Quarantining it here — before
+  `rel_root` is ever built from the raw name — is the only layer that can
+  fix this without breaking the real `@`-import path for legitimately-named
+  mounts. `validate_mount_name/1` (used by `set_enabled/2` and `create/3`)
+  rejects the same class of name outright for anything this module writes
+  itself.
   """
 
   alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
+  alias Valea.Workspace.Scaffold
   alias Valea.Yaml
 
   # A resolved mount. `root` is the ABSOLUTE path; `rel_root` is
@@ -116,8 +131,8 @@ defmodule Valea.Mounts do
   and every other key on every mount entry (including this one) — so
   hand-added or by-reference-mount fields like `kind`/`ref` survive.
 
-  Rejects a `name` containing `/` or `..` (defense in depth: a mount name
-  is a safe directory basename).
+  Rejects a `name` containing `/`, `..`, or a C0 control character/DEL
+  (defense in depth: a mount name is a safe directory basename).
   """
   @spec set_enabled(name :: String.t(), boolean()) :: :ok | {:error, term()}
   def set_enabled(name, enabled) when is_binary(name) and is_boolean(enabled) do
@@ -128,21 +143,123 @@ defmodule Valea.Mounts do
     end
   end
 
+  @doc """
+  Scaffolds a brand-new, empty mount under `workspace` — `mounts/<slug>`,
+  where `<slug>` is `Scaffold.slugify/1` of `name` (the same slugging a
+  fresh workspace scaffold gives its starter mount). `name` is validated
+  the same way `set_enabled/2` validates one (`validate_mount_name/1` —
+  non-blank, no `/`, no `..`, no control characters), even though here it's
+  a display name rather than a directory basename: it becomes the minted
+  manifest's `name:` (the GIVEN name, not the slug), so this keeps that
+  field's content shape consistent with every other mount-name-shaped
+  input in this module.
+
+  Mints a fresh manifest (uuid4 `id`, `name`, `description`) via
+  `Manifest.write!/2`, and a minimal self-describing `AGENTS.md` +
+  `CLAUDE.md` (`@AGENTS.md`) skeleton — the mount's ICM is empty at
+  creation; the skeleton says so and invites it to grow. A directory
+  collision (the slug already exists) is rejected outright
+  (`{:error, :already_exists}`) rather than disambiguated, mirroring
+  `Valea.ICM.create_page/2`'s stance on name collisions.
+
+  Does NOT touch `config/workspace.yaml` (a freshly created mount is
+  enabled by default — `config_enabled?/2`'s absent-means-true default
+  already covers it) or regenerate `MOUNTS.md` — callers that need it
+  refreshed (the `create_mount` RPC action) call
+  `Valea.Mounts.MountsMd.regenerate/1` themselves, same as `set_enabled/2`'s
+  callers already do.
+  """
+  @spec create(workspace :: String.t(), name :: String.t(), description :: String.t()) ::
+          {:ok, mount} | {:error, term()}
+  def create(workspace, name, description)
+      when is_binary(workspace) and is_binary(name) and is_binary(description) do
+    with :ok <- validate_mount_name(name) do
+      slug = Scaffold.slugify(name)
+      dir = Path.join([workspace, "mounts", slug])
+
+      if File.exists?(dir) do
+        {:error, :already_exists}
+      else
+        do_create(dir, name, description, workspace)
+      end
+    end
+  end
+
+  defp do_create(dir, name, description, workspace) do
+    File.mkdir_p!(dir)
+
+    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: name, description: description})
+    File.write!(Path.join(dir, "AGENTS.md"), agents_md_skeleton(name, description))
+    File.write!(Path.join(dir, "CLAUDE.md"), "@AGENTS.md\n")
+
+    {:ok, build_mount(dir, read_config_mounts(workspace))}
+  end
+
+  defp agents_md_skeleton(name, description) do
+    body = if String.trim(description) == "", do: "No description yet.", else: description
+
+    """
+    # This mount: #{name}
+
+    #{body}
+
+    This mount is new and empty — it has no pages yet. As Clients, Offers,
+    Workflows, or other pages are added here, describe them in this file
+    the way another mount's own AGENTS.md does, so an agent reading this
+    file knows what it can rely on.
+    """
+  end
+
   # -- discovery ---------------------------------------------------------
 
   defp build_mount(dir, config_mounts) do
     name = Path.basename(dir)
-    {manifest, degraded} = load_manifest(dir)
 
+    if control_chars?(name) do
+      degraded_basename_mount(dir, name, config_mounts)
+    else
+      {manifest, degraded} = load_manifest(dir)
+
+      %{
+        name: name,
+        rel_root: Path.join("mounts", name),
+        root: Path.expand(dir),
+        manifest: manifest,
+        enabled: config_enabled?(config_mounts, name),
+        degraded: degraded
+      }
+    end
+  end
+
+  # A directory basename carrying a C0 control char or DEL (e.g. a newline)
+  # is quarantined unconditionally — degraded regardless of whether its
+  # icm.yaml is otherwise valid, so it can never reach `effective?/1` (never
+  # enabled) or `MountsMd`'s enabled/deactivated render paths, which both
+  # interpolate `rel_root` RAW into a live `@`-import line. `rel_root` here
+  # is built from a SANITIZED display name (control-char runs collapsed to a
+  # single space, mirroring `MountsMd`'s own `sanitize/1`) rather than the
+  # raw basename: `rel_root` is the one field a degraded mount still renders
+  # into MOUNTS.md (the "Needs attention" line), so this is the layer where
+  # that value must already be safe — the renderer cannot fix it without
+  # corrupting the real `@`-import path for legitimately-named mounts. `name`
+  # stays the raw basename (round-trips identification; MountsMd's own
+  # `sanitize/1` already neutralizes it at that render site), and `root`
+  # stays the real, unsanitized absolute path — filesystem calls, unlike
+  # text rendered into a routing file, don't care about control chars.
+  defp degraded_basename_mount(dir, name, config_mounts) do
     %{
       name: name,
-      rel_root: Path.join("mounts", name),
+      rel_root: Path.join("mounts", sanitize_display(name)),
       root: Path.expand(dir),
-      manifest: manifest,
+      manifest: nil,
       enabled: config_enabled?(config_mounts, name),
-      degraded: degraded
+      degraded: "invalid mount directory name"
     }
   end
+
+  defp control_chars?(name), do: Regex.match?(~r/[\x00-\x1F\x7F]/, name)
+
+  defp sanitize_display(name), do: String.replace(name, ~r/[\x00-\x1F\x7F]+/, " ")
 
   defp load_manifest(dir) do
     case Manifest.load(dir) do
@@ -215,7 +332,8 @@ defmodule Valea.Mounts do
   end
 
   defp validate_mount_name(name) do
-    if name == "" or String.contains?(name, "/") or String.contains?(name, "..") do
+    if name == "" or String.contains?(name, "/") or String.contains?(name, "..") or
+         control_chars?(name) do
       {:error, :invalid_mount_name}
     else
       :ok

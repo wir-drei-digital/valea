@@ -61,6 +61,20 @@ export type MailAttributesOnlySchema = {
 };
 
 
+// Mounts Schema
+export type MountsResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type MountsAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Queue Schema
 export type QueueResourceSchema = {
   __type: "Resource";
@@ -125,6 +139,15 @@ export type MailFilterInput = {
 
 
 };
+export type MountsFilterInput = {
+  and?: Array<MountsFilterInput>;
+  or?: Array<MountsFilterInput>;
+  not?: Array<MountsFilterInput>;
+
+
+
+
+};
 export type QueueFilterInput = {
   and?: Array<QueueFilterInput>;
   or?: Array<QueueFilterInput>;
@@ -143,6 +166,8 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
 
 
 

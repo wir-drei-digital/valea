@@ -66,6 +66,11 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     end
   end
 
+  test "a mounts change pushes mounts_changed" do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mounts", {:mounts_changed})
+    assert_push "mounts_changed", %{}
+  end
+
   test "queue change pushes queue_changed", %{parent: parent} do
     {:ok, ws} = Manager.create(parent, "W")
 

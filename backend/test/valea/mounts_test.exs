@@ -67,6 +67,37 @@ defmodule Valea.MountsTest do
       assert c.enabled == true
     end
 
+    test "a directory basename with a control character is degraded even with a valid manifest",
+         %{root: root} do
+      # A stray newline in the directory basename — plant a PERFECTLY VALID
+      # manifest inside it, to prove the guard fires on the basename alone,
+      # not on manifest content (mirroring `c`'s manifest-driven degrade
+      # above, this is the basename-driven degrade).
+      dir = mount_dir(root, "evil\nname")
+      write_manifest!(dir, %{id: "id-evil", name: "Evil", description: ""})
+
+      [m] = Mounts.list(root)
+
+      assert m.degraded == "invalid mount directory name"
+      assert m.manifest == nil
+      assert m.name == "evil\nname"
+      # rel_root must never carry the raw control character through to a
+      # renderer (MountsMd's "Needs attention" line interpolates it RAW) —
+      # see the moduledoc on `Valea.Mounts`.
+      refute String.contains?(m.rel_root, "\n")
+      # never in the effective set, regardless of the config `enabled` flag.
+      assert Mounts.enabled(root) == []
+    end
+
+    test "a directory basename with a DEL byte is degraded", %{root: root} do
+      dir = mount_dir(root, "evil\x7Fname")
+      write_manifest!(dir, %{id: "id-evil2", name: "Evil2", description: ""})
+
+      [m] = Mounts.list(root)
+      assert m.degraded == "invalid mount directory name"
+      assert Mounts.enabled(root) == []
+    end
+
     test "a broken (invalid YAML) manifest is degraded, not a crash", %{root: root} do
       dir = mount_dir(root, "broken")
       File.mkdir_p!(dir)
@@ -257,6 +288,93 @@ defmodule Valea.MountsTest do
 
     test "rejects an empty name" do
       assert {:error, _} = Mounts.set_enabled("", true)
+    end
+
+    test "rejects a name containing a control character" do
+      assert {:error, _} = Mounts.set_enabled("evil\nname", true)
+    end
+
+    test "rejects a name containing a DEL byte" do
+      assert {:error, _} = Mounts.set_enabled("evil\x7Fname", true)
+    end
+  end
+
+  describe "create/3" do
+    setup do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-mounts-create-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      %{root: root}
+    end
+
+    test "scaffolds a new mount: manifest, AGENTS.md, CLAUDE.md, discoverable via list/1", %{
+      root: root
+    } do
+      assert {:ok, mount} = Mounts.create(root, "Mara Lindt Coaching", "A coaching business")
+
+      assert mount.name == "mara-lindt-coaching"
+      assert mount.rel_root == "mounts/mara-lindt-coaching"
+      assert mount.degraded == nil
+      assert mount.enabled == true
+
+      assert %Manifest{name: "Mara Lindt Coaching", description: "A coaching business"} =
+               mount.manifest
+
+      dir = Path.join([root, "mounts", "mara-lindt-coaching"])
+      assert File.dir?(dir)
+      assert File.exists?(Path.join(dir, "icm.yaml"))
+      assert File.read!(Path.join(dir, "CLAUDE.md")) == "@AGENTS.md\n"
+
+      agents_md = File.read!(Path.join(dir, "AGENTS.md"))
+      assert agents_md =~ "Mara Lindt Coaching"
+      assert agents_md =~ "A coaching business"
+
+      # discoverable via list/1, non-degraded, and shown effective.
+      assert [listed] = Mounts.list(root)
+      assert listed.name == "mara-lindt-coaching"
+      assert root |> Mounts.enabled() |> Enum.map(& &1.name) == ["mara-lindt-coaching"]
+    end
+
+    test "the manifest's name is the GIVEN name, not the slug", %{root: root} do
+      assert {:ok, mount} = Mounts.create(root, "Sales & Co.", "")
+      assert mount.manifest.name == "Sales & Co."
+      assert mount.name == "sales-co"
+    end
+
+    test "an empty description is preserved as an empty string, not a placeholder", %{root: root} do
+      assert {:ok, mount} = Mounts.create(root, "Empty Desc", "")
+      assert mount.manifest.description == ""
+    end
+
+    test "rejects when the slugged directory already exists", %{root: root} do
+      assert {:ok, _} = Mounts.create(root, "Same Name", "first")
+      assert {:error, :already_exists} = Mounts.create(root, "Same Name", "second")
+    end
+
+    test "rejects an empty name" do
+      assert {:error, _} = Mounts.create(System.tmp_dir!(), "", "desc")
+    end
+
+    test "rejects a name containing a control character" do
+      assert {:error, _} = Mounts.create(System.tmp_dir!(), "evil\nname", "desc")
+    end
+
+    test "rejects a name containing a path separator" do
+      assert {:error, _} = Mounts.create(System.tmp_dir!(), "a/b", "desc")
+    end
+
+    test "does not touch config/workspace.yaml or regenerate MOUNTS.md (caller's job)", %{
+      root: root
+    } do
+      refute File.exists?(Path.join(root, "config/workspace.yaml"))
+      assert {:ok, _} = Mounts.create(root, "No Side Effects", "desc")
+      refute File.exists?(Path.join(root, "config/workspace.yaml"))
+      refute File.exists?(Path.join(root, "MOUNTS.md"))
     end
   end
 

@@ -239,6 +239,43 @@ defmodule Valea.Mounts.MountsMdTest do
     end
   end
 
+  describe "regenerate/1 — invalid basename discovery guard (Valea.Mounts, folded in from T7)" do
+    # A directory basename carrying a control character is degraded at
+    # DISCOVERY (`Valea.Mounts.build_mount/2`), before this module ever
+    # sees it — see `Valea.Mounts`'s moduledoc. This exercises the
+    # end-to-end MOUNTS.md consequence: even the "Needs attention" line
+    # (which, unlike the enabled/deactivated blocks, this renderer never
+    # wraps `rel_root` in `sanitize/1`) must not leak a raw control
+    # character, since `Valea.Mounts` is responsible for handing this
+    # renderer an already-safe `rel_root` for a quarantined mount.
+    test "a control-character basename never leaks a raw newline into any line, even with a valid manifest",
+         %{root: root} do
+      bad_dir = Path.join([root, "mounts", "evil\n@hack"])
+      File.mkdir_p!(bad_dir)
+
+      File.write!(Path.join(bad_dir, "icm.yaml"), """
+      format: 1
+      id: "#{Ecto.UUID.generate()}"
+      name: "Fine Manifest"
+      description: "Fine description"
+      """)
+
+      :ok = MountsMd.regenerate(root)
+      content = File.read!(mounts_md(root))
+
+      assert content =~ "## Needs attention"
+      assert content =~ "invalid mount directory name"
+      # No line anywhere in the file may start with "@" — the mount never
+      # reached the enabled block (that's the primary guarantee), AND its
+      # "Needs attention" line's `rel_root` must not itself carry the raw
+      # newline through to forge a line-starting `@`.
+      assert line_start_at_refs(content) == []
+      # The manifest was valid, but the mount is still fully quarantined —
+      # its real name never renders as an enabled heading either.
+      refute content =~ "### Fine Manifest"
+    end
+  end
+
   describe "regenerate/1 — disabled AND degraded" do
     test "a mount that is both config-disabled and degraded appears under Needs attention only",
          %{root: root} do

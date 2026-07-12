@@ -1909,6 +1909,221 @@ export async function setupMailAccountChannel<Fields extends SetupMailAccountFie
 }
 
 
+export type CreateMountInput = {
+  name: string;
+  description: string;
+  generation: number;
+};
+
+export type CreateMountFields = UnifiedFieldSelection<{relRoot: string, __type: "TypedMap", __primitiveFields: "relRoot"}>[];
+
+export type InferCreateMountResult<
+  Fields extends CreateMountFields | undefined,
+> = InferResult<{relRoot: string, __type: "TypedMap", __primitiveFields: "relRoot"}, Fields>;
+
+export type CreateMountResult<Fields extends CreateMountFields | undefined = undefined> = | { success: true; data: InferCreateMountResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mounts
+ *
+ * @ashActionType :action
+ */
+export async function createMount<Fields extends CreateMountFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateMountInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateMountResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_mount",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateMountResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mounts
+ *
+ * @ashActionType :action
+ */
+export async function createMountChannel<Fields extends CreateMountFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateMountInput;
+  fields: Fields;
+  resultHandler: (result: CreateMountResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateMountResult<Fields>>(
+    config.channel,
+    {
+    action: "create_mount",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListMountsFields = UnifiedFieldSelection<{mounts: Array<{name: string, title: string, description: string, relRoot: string, enabled: boolean, degraded: string | null, __type: "TypedMap", __primitiveFields: "name" | "title" | "description" | "relRoot" | "enabled" | "degraded"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListMountsResult<
+  Fields extends ListMountsFields | undefined,
+> = InferResult<{mounts: Array<{name: string, title: string, description: string, relRoot: string, enabled: boolean, degraded: string | null, __type: "TypedMap", __primitiveFields: "name" | "title" | "description" | "relRoot" | "enabled" | "degraded"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListMountsResult<Fields extends ListMountsFields | undefined = undefined> = | { success: true; data: InferListMountsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mounts
+ *
+ * @ashActionType :action
+ */
+export async function listMounts<Fields extends ListMountsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListMountsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_mounts",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListMountsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mounts
+ *
+ * @ashActionType :action
+ */
+export async function listMountsChannel<Fields extends ListMountsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListMountsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListMountsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_mounts",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetMountEnabledInput = {
+  name: string;
+  enabled: boolean;
+  generation: number;
+};
+
+export type SetMountEnabledFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];
+
+export type InferSetMountEnabledResult<
+  Fields extends SetMountEnabledFields | undefined,
+> = InferResult<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}, Fields>;
+
+export type SetMountEnabledResult<Fields extends SetMountEnabledFields | undefined = undefined> = | { success: true; data: InferSetMountEnabledResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mounts
+ *
+ * @ashActionType :action
+ */
+export async function setMountEnabled<Fields extends SetMountEnabledFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetMountEnabledInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetMountEnabledResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_mount_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetMountEnabledResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mounts
+ *
+ * @ashActionType :action
+ */
+export async function setMountEnabledChannel<Fields extends SetMountEnabledFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetMountEnabledInput;
+  fields: Fields;
+  resultHandler: (result: SetMountEnabledResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetMountEnabledResult<Fields>>(
+    config.channel,
+    {
+    action: "set_mount_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type ApproveQueueItemInput = {
   runId: string;
   revision: string;
