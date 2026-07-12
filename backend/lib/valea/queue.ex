@@ -45,6 +45,20 @@ defmodule Valea.Queue do
   write-then-remove reject flow): rejected wins, the pending duplicate is
   dropped.
 
+  A `memory_update` item (`payload.kind`) executes a direct edit to a mount
+  page instead of a draft file — see `approve/2`'s kind dispatch and
+  `apply_page_content/2`. A conflict (stale/mismatched `base_sha256`, a
+  disabled/degraded mount, a create target that already exists, or a
+  containment failure) is guaranteed to execute NOTHING — `apply_page_content`
+  writes only after every guard passes — so the claimed item is hand-renamed
+  straight back to `pending/`, atomically, exactly like the pre-execute crash
+  window below. NOTE: unlike the email path, `recover/1` does not yet know
+  how to tell "memory write already landed, only the terminal rename is
+  missing" apart from "nothing happened yet" — both look like "no draft file"
+  to the current draft-existence check. Deciding that case by comparing the
+  target page's on-disk hash against the proposed `content_markdown` is
+  `recover/1`'s job (a later task), not this one's.
+
   On approve completion and reject completion (even when the seeded ops are
   all `"skipped"`), a `{:mailbox_ops_pending, run_id}` message is broadcast on
   the `"mail_ops"` PubSub topic; `update_mailbox_op/3` broadcasts
@@ -113,26 +127,37 @@ defmodule Valea.Queue do
     2. atomic claim: `File.rename/2` `pending/<run_id>.json` ->
        `processing/<run_id>.json` (already moved/gone -> `:queue_item_gone`);
     3. audit `approval_intent`, SYNCHRONOUSLY (flushed to disk before step 4
-       runs — see moduledoc);
-    4. idempotent execute: write `sources/mail/drafts/<run_id>.md` UNLESS it
-       already exists (a replay after a crash between steps 3 and 5 must not
-       re-send/re-write);
-    5. audit `action_executed`;
-    6. upgrade-then-rename: atomically rewrite the CLAIMED `processing/` file
-       to the `queue_item/v2` envelope (schema bumped, plus a `mailbox_ops`
-       map seeding the post-approval mailbox intents — `draft_append` +
-       `archive_source`, each `"pending"` or, for a seed-source item, a
-       missing/unreadable source message, `"skipped"`), then `File.rename/2`
-       `processing/` -> `approved/`. The rewrite is a single-writer
-       tmp+rename over the processing path — safe because the item is already
-       claimed;
-    7. audit `item_approved`, then broadcast `{:mailbox_ops_pending, run_id}`
-       on the `"mail_ops"` PubSub topic (fired even when both ops are
-       `"skipped"` — the mailbox consumer no-ops).
+       runs — see moduledoc) — this happens BEFORE either kind's execute;
+    4. kind dispatch: `payload.kind == "memory_update"` executes
+       `apply_page_content/2` (see below); every other kind executes today's
+       email draft flow (steps 4-7 as previously documented: idempotent
+       `sources/mail/drafts/<run_id>.md` write, `action_executed`,
+       upgrade-then-rename to `approved/` with seeded `mailbox_ops`,
+       `item_approved`, `{:mailbox_ops_pending, run_id}` broadcast).
+
+  For `memory_update`, step 4 re-runs `Valea.Workflows.MemoryProposal.check_target/2`
+  against the CURRENT mount state (the boundary may have changed since the
+  item was finalized), then guards the write with a hash check against
+  `base_sha256` (`nil` means "must not already exist" — a create). Any guard
+  failure — `:not_in_mount` / `:mount_not_enabled` / `:outside_mount` from
+  `check_target/2`, or `:target_exists` / `:page_missing` / `:page_changed`
+  from the hash guard — means NOTHING was written, so the claimed item is
+  renamed straight back to `pending/`, `apply_conflict` is audited with the
+  reason, and `{:error, :apply_conflict}` is returned. On success the page is
+  written with an atomic tmp+rename, then the SAME upgrade-then-rename to
+  `approved/` as the email path runs (stamping `queue_item/v2` + `decided_at`;
+  `mailbox_ops` is only added for `email_draft`, so a memory item's approved
+  envelope carries none). No mailbox broadcast — there are no mailbox ops for
+  a memory item; the queue-changed UI refresh comes from the directory-rename
+  watcher instead.
+
+  Returns `{:ok, %{draft_path: ..., applied_path: nil}}` for an email item or
+  `{:ok, %{draft_path: nil, applied_path: target_path}}` for a memory item.
   """
   @spec approve(String.t(), revision()) ::
-          {:ok, %{draft_path: String.t()}}
-          | {:error, :queue_item_gone | :queue_item_changed | :queue_item_invalid}
+          {:ok, %{draft_path: String.t() | nil, applied_path: String.t() | nil}}
+          | {:error,
+             :queue_item_gone | :queue_item_changed | :queue_item_invalid | :apply_conflict}
   def approve(run_id, revision) do
     with {:ok, workspace} <- resolve(run_id),
          {:ok, bytes} <- read_pending(workspace, run_id),
@@ -140,12 +165,90 @@ defmodule Valea.Queue do
          {:ok, item} <- decode_for_execute(bytes),
          :ok <- claim(workspace, run_id) do
       audit_sync("approval_intent", %{"run_id" => run_id})
-      ensure_draft(workspace, run_id, item)
-      audit("action_executed", %{"run_id" => run_id})
-      complete_approval(workspace, run_id, item)
-      audit("item_approved", %{"run_id" => run_id})
-      broadcast_ops(run_id)
-      {:ok, %{draft_path: draft_rel_path(run_id)}}
+
+      case item["payload"]["kind"] do
+        "memory_update" -> execute_memory(workspace, run_id, item)
+        _ -> execute_email(workspace, run_id, item)
+      end
+    end
+  end
+
+  # approve/2 steps 4-7 for every kind but memory_update: today's original
+  # approve body, extracted verbatim (see approve/2's @doc). Idempotent —
+  # `ensure_draft/3` skips the write if the draft already exists, so a replay
+  # after a crash between `approval_intent` and completion is safe.
+  defp execute_email(workspace, run_id, item) do
+    ensure_draft(workspace, run_id, item)
+    audit("action_executed", %{"run_id" => run_id})
+    complete_approval(workspace, run_id, item)
+    audit("item_approved", %{"run_id" => run_id})
+    broadcast_ops(run_id)
+    {:ok, %{draft_path: draft_rel_path(run_id), applied_path: nil}}
+  end
+
+  # approve/2's memory_update execute step: apply the proposed edit to the
+  # target mount page, guarded by check_target/2 (re-run at approve time, not
+  # cached from finalize) and a base_sha256 hash check. Any guard failure
+  # means apply_page_content/2 wrote NOTHING — see its @doc — so the item is
+  # handed back to pending/ untouched rather than left claimed. The rename
+  # back is itself atomic (a single File.rename!/2): a crash before it leaves
+  # the item safely in processing/ (nothing observable happened, same as any
+  # other pre-execute crash — recover/1 already handles that window); a crash
+  # after it leaves the item safely back in pending/, only the apply_conflict
+  # audit line may be lost, which is a logging gap, not a state hazard the
+  # human re-deciding needs.
+  defp execute_memory(workspace, run_id, item) do
+    action = item["payload"]["proposed_action"]
+
+    case apply_page_content(workspace, action) do
+      {:ok, target} ->
+        audit("action_executed", %{"run_id" => run_id, "target_path" => target})
+        complete_approval(workspace, run_id, item)
+        audit("item_approved", %{"run_id" => run_id})
+        {:ok, %{draft_path: nil, applied_path: target}}
+
+      {:error, reason} ->
+        # Nothing observable happened — hand the CLAIMED item back to
+        # pending/ for the human to re-decide with fresh context. Same
+        # recovery posture as a crashed pre-execute approve.
+        File.mkdir_p!(pending_dir(workspace))
+        File.rename!(processing_path(workspace, run_id), pending_path(workspace, run_id))
+
+        audit("apply_conflict", %{
+          "run_id" => run_id,
+          "target_path" => action["target_path"],
+          "reason" => to_string(reason)
+        })
+
+        {:error, :apply_conflict}
+    end
+  end
+
+  # Re-runs check_target/2 (the finalize-time result is NOT cached — the
+  # mount boundary may have changed since) then guards the write with a hash
+  # check. Writes only after BOTH guards pass; any error here means the
+  # filesystem is untouched.
+  defp apply_page_content(workspace, action) do
+    target = action["target_path"]
+
+    with {:ok, %{abs: abs}} <- Valea.Workflows.MemoryProposal.check_target(workspace, target),
+         :ok <- check_base(abs, action["base_sha256"]) do
+      File.mkdir_p!(Path.dirname(abs))
+      atomic_write!(abs, action["content_markdown"])
+      {:ok, target}
+    end
+  end
+
+  # base_sha256: nil means "create" — the target must not already exist.
+  defp check_base(abs, nil) do
+    if File.exists?(abs), do: {:error, :target_exists}, else: :ok
+  end
+
+  defp check_base(abs, base) do
+    case File.read(abs) do
+      {:ok, bytes} -> if sha256(bytes) == base, do: :ok, else: {:error, :page_changed}
+      {:error, :enoent} -> {:error, :page_missing}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -159,13 +262,19 @@ defmodule Valea.Queue do
        `processing/<run_id>.json` (already moved/gone ->
        `:queue_item_gone`) — this is what makes a concurrent `approve/2`
        and `reject/2` of the same item mutually exclusive;
-    3. atomically rewrite the claimed file to the `queue_item/v2` envelope
-       carrying ONLY an `archive_source` mailbox-op intent (same seed rule
-       as approve — `"skipped"` for a seed-source or missing/unreadable
-       source message, else `"pending"`);
+    3. atomically rewrite the claimed file to the `queue_item/v2` envelope,
+       stamping `decided_at` and — for an `email_draft` ONLY — an
+       `archive_source` mailbox-op intent (same seed rule as approve —
+       `"skipped"` for a seed-source or missing/unreadable source message,
+       else `"pending"`; a `memory_update` item carries no `mailbox_ops` at
+       all, since the edit was never applied);
     4. `File.rename!` `processing/` -> `rejected/`;
     5. audit `item_rejected`, broadcast `{:mailbox_ops_pending, run_id}` on
        `"mail_ops"` (the consumer no-ops when the sole op is skipped).
+
+  Rejecting a `memory_update` item never touches the target mount page —
+  the proposed edit was only ever staged in the envelope, so there is
+  nothing to undo.
 
   A crash before step 4 leaves the item in `processing/` with no draft;
   `recover/1` hands it back to `pending/` for the human to re-decide.
@@ -417,10 +526,26 @@ defmodule Valea.Queue do
       nonempty_string?(payload["summary"]) and
       nonempty_string?(payload["kind"]) and
       list_of_strings?(payload["sources"]) and
-      valid_action?(payload["proposed_action"])
+      valid_action_for_kind?(payload["kind"], payload["proposed_action"])
   end
 
   defp valid_payload?(_payload), do: false
+
+  # `memory_update` gets its own action shape (apply_page_content); every
+  # other kind (today: `email_draft`) keeps going through `valid_action?/1`
+  # unchanged.
+  defp valid_action_for_kind?("memory_update", %{
+         "type" => "apply_page_content",
+         "target_path" => target,
+         "base_sha256" => base,
+         "content_markdown" => content
+       })
+       when is_binary(target) and is_binary(content) do
+    nonempty_string?(target) and (is_nil(base) or hex64?(base))
+  end
+
+  defp valid_action_for_kind?("memory_update", _action), do: false
+  defp valid_action_for_kind?(_kind, action), do: valid_action?(action)
 
   defp valid_action?(%{
          "type" => "create_email_draft",
@@ -432,6 +557,9 @@ defmodule Valea.Queue do
        do: no_control_chars?(to) and no_control_chars?(subject)
 
   defp valid_action?(_action), do: false
+
+  defp hex64?(b) when is_binary(b), do: b =~ ~r/\A[0-9a-f]{64}\z/
+  defp hex64?(_b), do: false
 
   # `to`/`subject` are interpolated straight into the draft's YAML frontmatter
   # (`draft_markdown/2`). A control char — newline, CR, or any other C0/DEL —
@@ -493,11 +621,11 @@ defmodule Valea.Queue do
     Enum.join(lines, "\n")
   end
 
-  # Step 6 of approve/2: upgrade the CLAIMED processing file to queue_item/v2
-  # (schema + mailbox_ops), atomically rewriting it in place before the final
-  # rename to approved/. The item is already claimed, so this is the sole
-  # writer of the processing path — the tmp+rename just makes the content swap
-  # crash-atomic.
+  # Step 6 of approve/2 (both kinds): upgrade the CLAIMED processing file to
+  # queue_item/v2 (schema + decided_at, plus mailbox_ops for an email_draft),
+  # atomically rewriting it in place before the final rename to approved/.
+  # The item is already claimed, so this is the sole writer of the processing
+  # path — the tmp+rename just makes the content swap crash-atomic.
   defp complete_approval(workspace, run_id, item) do
     item2 = upgrade_envelope(workspace, item, ["draft_append", "archive_source"])
     atomic_write!(processing_path(workspace, run_id), Jason.encode!(item2))
@@ -519,11 +647,14 @@ defmodule Valea.Queue do
     File.rename!(processing_path(workspace, run_id), rejected_path(workspace, run_id))
   end
 
-  # v1/v2 -> v2: bump schema and, for an email_draft, stamp the seeded
-  # mailbox-op intents. Non-email_draft kinds carry no ops map.
+  # v1/v2 -> v2: bump schema, stamp the ISO-8601 decided_at (both verbs, every
+  # kind — the reflection digest's fixed 30-day window keys off this), and,
+  # for an email_draft, stamp the seeded mailbox-op intents. Non-email_draft
+  # kinds (memory_update included) carry no ops map.
   defp upgrade_envelope(workspace, item, op_names) do
     item
     |> Map.put("schema", "queue_item/v2")
+    |> Map.put("decided_at", DateTime.utc_now() |> DateTime.to_iso8601())
     |> maybe_put_mailbox_ops(workspace, item, op_names)
   end
 

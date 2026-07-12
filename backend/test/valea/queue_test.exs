@@ -5,7 +5,12 @@ defmodule Valea.QueueTest do
   alias Valea.Queue
 
   setup do
-    ws = AgentCase.open_workspace!()
+    # Named "Primary" (not the bare default) so the mount slug is "primary" —
+    # the apply_page_content tests below target mounts/primary/... paths and
+    # need Valea.Mounts.set_enabled("primary", ...) to resolve. None of the
+    # existing tests in this file reference the mount slug, so this is safe
+    # for them.
+    ws = AgentCase.open_workspace!("Primary")
     %{workspace: ws.path}
   end
 
@@ -690,5 +695,115 @@ defmodule Valea.QueueTest do
     id = run_id("dec004")
     write_pending(workspace, id)
     assert {:error, :queue_item_gone} = Queue.get_decided(id)
+  end
+
+  ## apply_page_content — memory_update execute arm (B4)
+
+  defp pending_memory!(ws, run_id, target, base, content) do
+    item = %{
+      "schema" => "queue_item/v2",
+      "run_id" => run_id,
+      "workflow" => "mounts/primary/Workflows/New Inquiry Triage.md",
+      "risk_level" => "medium",
+      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "payload" => %{
+        "title" => "Update x",
+        "summary" => "why",
+        "kind" => "memory_update",
+        "sources" => [],
+        "proposed_action" => %{
+          "type" => "apply_page_content",
+          "target_path" => target,
+          "base_sha256" => base,
+          "content_markdown" => content
+        }
+      }
+    }
+
+    dir = Path.join(ws, "queue/pending")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, run_id <> ".json"), Jason.encode!(item))
+    item
+  end
+
+  describe "apply_page_content" do
+    test "approve applies an edit when the base hash matches", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      old = File.read!(Path.join(ws, target))
+      base = :crypto.hash(:sha256, old) |> Base.encode16(case: :lower)
+      pending_memory!(ws, "m1", target, base, "# Pricing\n\n150\n")
+
+      {:ok, %{item: _, revision: rev}} = Queue.get("m1")
+      assert {:ok, %{applied_path: ^target, draft_path: nil}} = Queue.approve("m1", rev)
+      assert File.read!(Path.join(ws, target)) == "# Pricing\n\n150\n"
+      assert File.exists?(Path.join(ws, "queue/approved/m1.json"))
+
+      approved = Path.join(ws, "queue/approved/m1.json") |> File.read!() |> Jason.decode!()
+      assert approved["decided_at"]
+      refute Map.has_key?(approved, "mailbox_ops")
+    end
+
+    test "approve creates a page when base is null and target absent", %{workspace: ws} do
+      target = "mounts/primary/Decisions/2026-07.md"
+      pending_memory!(ws, "m2", target, nil, "# Decisions\n")
+      {:ok, %{revision: rev}} = Queue.get("m2")
+      assert {:ok, %{applied_path: ^target}} = Queue.approve("m2", rev)
+      assert File.read!(Path.join(ws, target)) == "# Decisions\n"
+    end
+
+    test "hash mismatch: nothing written, item back in pending, apply_conflict audited", %{
+      workspace: ws
+    } do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      pending_memory!(ws, "m3", target, String.duplicate("0", 64), "# clobber\n")
+      old = File.read!(Path.join(ws, target))
+      {:ok, %{revision: rev}} = Queue.get("m3")
+
+      assert {:error, :apply_conflict} = Queue.approve("m3", rev)
+      assert File.read!(Path.join(ws, target)) == old
+      assert File.exists?(Path.join(ws, "queue/pending/m3.json"))
+      refute File.exists?(Path.join(ws, "queue/processing/m3.json"))
+
+      {:ok, entries} = Valea.Audit.entries(20)
+      assert Enum.any?(entries, &(&1["type"] == "apply_conflict" and &1["run_id"] == "m3"))
+    end
+
+    test "create-target-exists and disabled-mount are conflicts too", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      pending_memory!(ws, "m4", target, nil, "x")
+      {:ok, %{revision: rev}} = Queue.get("m4")
+      assert {:error, :apply_conflict} = Queue.approve("m4", rev)
+
+      base =
+        :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
+
+      pending_memory!(ws, "m5", target, base, "y")
+      # set_enabled/2 returns bare :ok (not {:ok, _}) — the brief's snippet
+      # assumed the {:ok, _} shape; adapted to the actual spec (confirmed
+      # against test/valea/mounts_test.exs and memory_proposal_test.exs).
+      :ok = Valea.Mounts.set_enabled("primary", false)
+      {:ok, %{revision: rev5}} = Queue.get("m5")
+      assert {:error, :apply_conflict} = Queue.approve("m5", rev5)
+      :ok = Valea.Mounts.set_enabled("primary", true)
+    end
+
+    test "malformed apply action fails envelope validation", %{workspace: ws} do
+      pending_memory!(ws, "m6", "mounts/primary/x.md", "not-hex", "c")
+      assert {:error, :queue_item_invalid} = Queue.get("m6")
+    end
+
+    test "reject of a memory item lands with decided_at and no mailbox_ops", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+
+      base =
+        :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
+
+      pending_memory!(ws, "m7", target, base, "z")
+      {:ok, %{revision: rev}} = Queue.get("m7")
+      assert {:ok, %{}} = Queue.reject("m7", rev)
+      rejected = Path.join(ws, "queue/rejected/m7.json") |> File.read!() |> Jason.decode!()
+      assert rejected["decided_at"]
+      refute Map.has_key?(rejected, "mailbox_ops")
+    end
   end
 end
