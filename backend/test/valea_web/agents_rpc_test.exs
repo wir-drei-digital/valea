@@ -233,7 +233,8 @@ defmodule ValeaWeb.AgentsRpcTest do
                      "triggerSource",
                      "riskLevel",
                      "sourceCount",
-                     "steps"
+                     "steps",
+                     "mount"
                    ]
                  }
                ])
@@ -246,6 +247,10 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert triage["sourceCount"] == 5
       assert is_list(triage["steps"])
       assert triage["steps"] != []
+      # A-T15: mount provenance (the owning mount's manifest display name) —
+      # a fresh scaffold names the seeded mount after the workspace itself
+      # ("Primary", per this suite's `setup`).
+      assert triage["mount"] == "Primary"
 
       assert weekly = Enum.find(workflows, &(&1["path"] == @disabled_wf_path))
       assert weekly["enabled"] == false

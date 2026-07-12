@@ -90,7 +90,7 @@
       </Dialog.Title>
       <Dialog.Description class="text-ink-body">
         {mode === 'page' ? 'Adds a Markdown page to' : 'Adds a folder to'}
-        <span class="font-mono text-[12px]">icm/{parentPath}</span>
+        <span class="font-mono text-[12px]">{parentPath}</span>
       </Dialog.Description>
     </Dialog.Header>
 

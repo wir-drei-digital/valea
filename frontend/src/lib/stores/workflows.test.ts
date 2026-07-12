@@ -9,7 +9,8 @@ describe('WorkflowsStore.refetch', () => {
         path: '/wf/reply.md',
         name: 'Reply drafting',
         enabled: true,
-        riskLevel: 'low'
+        riskLevel: 'low',
+        mount: 'Primary'
       }
     ];
     const store = new WorkflowsStore({

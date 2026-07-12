@@ -63,14 +63,23 @@
     runWorkflowErrorMessage
   } from './triage-card';
 
-  const TRIAGE_WORKFLOW = 'icm/Workflows/New Inquiry Triage.md';
-
   let {
     path = SEED_TRIAGE_PATH,
     fromName = SEED_TRIAGE_FROM_NAME,
     summary = SEED_TRIAGE_SUMMARY,
-    sources = SEED_TRIAGE_SOURCES
-  }: { path?: string; fromName?: string; summary?: string; sources?: string[] } = $props();
+    sources = SEED_TRIAGE_SOURCES,
+    // A-T15: sourced from the cockpit/today payload's live
+    // `triageWorkflowPath` (T13's `Valea.Cockpit.today/0`), not a hardcoded
+    // const — `null` when no enabled mount has a seeded triage workflow.
+    // `routes/+page.svelte` passes `today?.triageWorkflowPath ?? null`.
+    triageWorkflowPath = null
+  }: {
+    path?: string;
+    fromName?: string;
+    summary?: string;
+    sources?: string[];
+    triageWorkflowPath?: string | null;
+  } = $props();
 
   const title = $derived(triageTitle(fromName));
 
@@ -87,7 +96,9 @@
   let matchedRunId: string | null = $state(null);
   const checkedRunIds = new Set<string>();
 
-  const candidates = $derived(queueStore.items.filter((i) => i.valid && i.workflow === TRIAGE_WORKFLOW));
+  const candidates = $derived(
+    queueStore.items.filter((i) => i.valid && !!triageWorkflowPath && i.workflow === triageWorkflowPath)
+  );
   const invalidItem = $derived(queueStore.items.find((i) => !i.valid));
   const matching = $derived(candidates.find((c) => c.runId === matchedRunId));
 
@@ -133,9 +144,10 @@
   });
 
   async function prepareReply(): Promise<void> {
+    if (!triageWorkflowPath) return; // defensive: the button is hidden whenever this is null
     preparing = true;
     prepareError = null;
-    const result = await api.runWorkflow(TRIAGE_WORKFLOW, path, workspaceStore.generation ?? 0);
+    const result = await api.runWorkflow(triageWorkflowPath, path, workspaceStore.generation ?? 0);
     if (result.ok) {
       const data = result.data as { runId: string; sessionId: string };
       sessionId = data.sessionId;
@@ -190,11 +202,16 @@
     {#if sources.length > 0}
       <SourceChips {sources} />
     {/if}
-    <div class="flex flex-wrap items-center gap-2 pt-0.5">
-      <Button variant="default" onclick={() => void prepareReply()}>Prepare a reply</Button>
-      {#if prepareError}
-        <p class="text-warn-ink text-[12.5px]">{prepareError}</p>
-      {/if}
-    </div>
+    {#if triageWorkflowPath}
+      <!-- A-T15: no seeded triage workflow (`triageWorkflowPath === null`)
+           means there is nothing to run — degrade gracefully by hiding the
+           action entirely rather than wiring a button to a dead link. -->
+      <div class="flex flex-wrap items-center gap-2 pt-0.5">
+        <Button variant="default" onclick={() => void prepareReply()}>Prepare a reply</Button>
+        {#if prepareError}
+          <p class="text-warn-ink text-[12.5px]">{prepareError}</p>
+        {/if}
+      </div>
+    {/if}
   </article>
 {/if}

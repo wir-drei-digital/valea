@@ -155,7 +155,8 @@ defmodule Valea.Api.Agents do
                             trigger_source: [type: :string, allow_nil?: true],
                             risk_level: [type: :string, allow_nil?: true],
                             source_count: [type: :integer, allow_nil?: false],
-                            steps: [type: {:array, :string}, allow_nil?: false]
+                            steps: [type: {:array, :string}, allow_nil?: false],
+                            mount: [type: :string, allow_nil?: false]
                           ]
                         ]
                       ]
@@ -206,6 +207,12 @@ defmodule Valea.Api.Agents do
   # `sources` maps) into the typed shape the card list needs — the full
   # nested contract (trigger conditions, approval policy, ...) is one click
   # away via `Valea.Workflows.get/1` in Knowledge, not duplicated here.
+  #
+  # `mount` (A-T15) passes through `wf.mount` — the owning mount's manifest
+  # display name, already carried by `Valea.Workflows.list/0`'s per-workflow
+  # map (see its moduledoc) but previously dropped here, so the RPC surface
+  # never exposed which mount a workflow card belongs to. Powers
+  # `WorkflowCard.svelte`'s "· <mount>" provenance chip.
   defp flatten_workflow(wf) do
     %{
       path: wf.path,
@@ -215,7 +222,8 @@ defmodule Valea.Api.Agents do
       trigger_source: Map.get(wf.trigger || %{}, "source"),
       risk_level: wf.risk_level,
       source_count: length(wf.sources || []),
-      steps: wf.steps_preview
+      steps: wf.steps_preview,
+      mount: wf.mount
     }
   end
 end

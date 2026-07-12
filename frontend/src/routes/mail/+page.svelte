@@ -14,11 +14,30 @@
   import { syncNowErrorMessage } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { api } from '$lib/api/client';
+  import { normalizeCockpitToday } from '$lib/today/cockpit';
   import MessageList from '$lib/components/mail/MessageList.svelte';
   import InboxSection from '$lib/components/mail/InboxSection.svelte';
   import SyncStatusLine from '$lib/components/mail/SyncStatusLine.svelte';
   import MessageView from '$lib/components/mail/MessageView.svelte';
   import SetupPanel from '$lib/components/mail/SetupPanel.svelte';
+
+  // A-T15: `MessageView`'s "Run triage" needs the SAME live
+  // `triageWorkflowPath` Today reads off the cockpit payload (T13) rather
+  // than a hardcoded const — this route has no other reason to load the
+  // cockpit payload, so it fetches just this one field for itself instead
+  // of standing up a shared cockpit store for a single value. `null` while
+  // loading (or on fetch failure) degrades the same way an absent seeded
+  // workflow does: the action stays hidden, never a dead link.
+  let triageWorkflowPath: string | null = $state(null);
+
+  onMount(() => {
+    void api.cockpitToday().then((result) => {
+      if (result.ok) {
+        triageWorkflowPath = normalizeCockpitToday(result.data as Record<string, any>).triageWorkflowPath;
+      }
+    });
+  });
 
   // `mail_status`/`mail_sync`/`mail_message`/`mailbox_ops` are wired ONCE,
   // at the layout (`wireMailEvents`, called from `wireIcmEvents` in
@@ -168,7 +187,7 @@
         <EmptyState icon={MailIcon} title="Mail" body="Messages you move to AI/Review appear here." />
       {/if}
     {:else if activeId === selectedId && activeDetail}
-      <MessageView message={activeDetail} />
+      <MessageView message={activeDetail} {triageWorkflowPath} />
     {:else if loadError}
       <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
     {:else}

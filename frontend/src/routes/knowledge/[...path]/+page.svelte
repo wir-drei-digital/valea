@@ -5,7 +5,7 @@
   import { AppFrame, ListPane, PageHeader, SegmentedControl } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { api, type IcmPageData } from '$lib/api/client';
-  import { encodePath, type IcmNode } from '$lib/shell/nav';
+  import { encodePath, flattenMountGroups, type IcmNode } from '$lib/shell/nav';
   import { Skeleton } from '$lib/components/ui/skeleton';
   import PageEditor from '$lib/components/editor/PageEditor.svelte';
   import PageMeta from '$lib/components/editor/PageMeta.svelte';
@@ -44,7 +44,17 @@
     return undefined;
   }
 
-  const node = $derived(findNode(icmStore.nodes, decodedPath));
+  // A-T15: this route only ever needs a flat search-by-path (never a
+  // per-mount grouped display — that's `/knowledge`'s own concern, see
+  // `buildMountsDisplay` in `components/knowledge/mount-sections.ts`), so it
+  // flattens `icmStore.groups` rather than reading the deleted
+  // `icmStore.nodes` back-compat getter. Safe: every node `path` is
+  // workspace-relative (`mounts/<name>/…`, A-T3) and therefore unique across
+  // mounts, so flattening never conflates two different mounts' same-named
+  // folders/pages.
+  const flatNodes = $derived(flattenMountGroups(icmStore.groups));
+
+  const node = $derived(findNode(flatNodes, decodedPath));
   const isPage = $derived(node?.type === 'page');
 
   // Overline above the page title — the parent folder the page lives in
@@ -66,11 +76,11 @@
     }
     const segments = decodedPath.split('/').filter(Boolean);
     const parentPath = segments.slice(0, -1).join('/');
-    const parent = parentPath ? findNode(icmStore.nodes, parentPath) : undefined;
+    const parent = parentPath ? findNode(flatNodes, parentPath) : undefined;
     if (parent?.type === 'folder') {
       return { title: parent.name, path: parent.path, entries: parent.children ?? [] };
     }
-    return { title: 'Knowledge', path: '', entries: icmStore.nodes };
+    return { title: 'Knowledge', path: '', entries: flatNodes };
   });
 
   type PageContent = IcmPageData;
@@ -154,7 +164,7 @@
   }
 
   // The ICM tree carries names/counts, not a per-page content hash, so
-  // there's no way to tell from `icmStore.nodes` alone whether THIS page
+  // there's no way to tell from `icmStore.groups` alone whether THIS page
   // changed when the tree refetches on `icm_changed`. Cheapest correct
   // thing: whenever the tree reference is replaced (any icm_changed-driven
   // refetch, including this page's own save landing on disk), refetch just
@@ -206,7 +216,7 @@
   }
 
   $effect(() => {
-    void icmStore.nodes; // establishes the dependency on tree refetches
+    void icmStore.groups; // establishes the dependency on tree refetches
     void store; // and on the open page changing (nav between knowledge pages)
     if (!store) return;
 
@@ -364,7 +374,7 @@
           <h1 class="font-display text-ink-heading text-[30px] leading-tight font-medium">{content.title}</h1>
           <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
             <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
-            <span class="text-ink-meta font-mono text-[11.5px]">icm/{decodedPath}</span>
+            <span class="text-ink-meta font-mono text-[11.5px]">{decodedPath}</span>
           </div>
         </header>
 

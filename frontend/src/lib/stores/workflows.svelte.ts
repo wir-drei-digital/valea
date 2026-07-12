@@ -13,6 +13,13 @@ export type WorkflowListItem = {
   riskLevel: string;
   sourceCount?: number;
   steps?: unknown;
+  /**
+   * The owning mount's manifest display name (A-T15 — `Valea.Api.Agents`'s
+   * `flatten_workflow/1` passes `Valea.Workflows.list/0`'s per-workflow
+   * `mount` field through). Powers `WorkflowCard.svelte`'s "· <mount>"
+   * provenance chip via `mountProvenanceLabel` (`workflowHref.ts`).
+   */
+  mount?: string;
 };
 
 /**

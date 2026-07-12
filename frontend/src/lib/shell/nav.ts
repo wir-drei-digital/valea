@@ -67,6 +67,21 @@ export function encodePath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
+/**
+ * Flattens every mount group's tree into a single array, in group order —
+ * the shape every pre-A-T15 consumer of the now-deleted `icmStore.nodes`
+ * back-compat getter expected. Structurally typed against just `{ tree:
+ * IcmNode[] }` (rather than importing `MountGroup` from `stores/icm.svelte`)
+ * so this stays a leaf pure-logic module with no reverse dependency on the
+ * store layer. Used by consumers that need a single flat search/nav list
+ * (the sidebar's persistent `IcmTree` flyout, page-path lookups) — NOT by
+ * the Knowledge route's own per-mount section rendering, which reads
+ * `icmStore.groups` directly (see `components/knowledge/mount-sections.ts`).
+ */
+export function flattenMountGroups(groups: Array<{ tree: IcmNode[] }>): IcmNode[] {
+  return groups.flatMap((g) => g.tree);
+}
+
 export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
   return nodes.map((n) =>
     n.type === 'folder'

@@ -25,6 +25,7 @@ const rawSnake = {
   ],
   open_loops: [{ title: 'Send proposal to Priya', source: 'from her email · yesterday' }],
   while_you_were_away: ['Synced 9 emails from AI / Review · 7:00'],
+  triage_workflow_path: 'mounts/primary/Workflows/New Inquiry Triage.md',
   mail: { review_count: 3, inbox_count: 12, configured: true }
 };
 
@@ -41,6 +42,7 @@ describe('normalizeCockpitToday', () => {
     expect(today.preparedItems[0].secondaryAction).toBe('Snooze');
     expect(today.openLoops[0].source).toBe('from her email · yesterday');
     expect(today.whileYouWereAway).toHaveLength(1);
+    expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
     expect(today.mail).toEqual({ reviewCount: 3, inboxCount: 12, configured: true });
   });
 
@@ -54,22 +56,30 @@ describe('normalizeCockpitToday', () => {
       preparedItems: [{ type: 't', title: 'x', summary: 's', usedSources: ['a'], primaryAction: 'p' }],
       openLoops: [],
       whileYouWereAway: [],
+      triageWorkflowPath: 'mounts/primary/Workflows/New Inquiry Triage.md',
       mail: { reviewCount: 1, inboxCount: 0, configured: false }
     });
 
     expect(today.dateLabel).toBe('D');
     expect(today.preparedItems[0].usedSources).toEqual(['a']);
     expect(today.preparedItems[0].secondaryAction).toBeUndefined();
+    expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
     expect(today.mail).toEqual({ reviewCount: 1, inboxCount: 0, configured: false });
   });
 
-  it('tolerates missing collections, defaulting mail to zero/unconfigured', () => {
+  it('tolerates missing collections, defaulting mail to zero/unconfigured and triageWorkflowPath to null', () => {
     const today = normalizeCockpitToday({ greeting: 'Hello.' });
     expect(today.schedule).toEqual([]);
     expect(today.preparedItems).toEqual([]);
     expect(today.openLoops).toEqual([]);
     expect(today.whileYouWereAway).toEqual([]);
+    expect(today.triageWorkflowPath).toBeNull();
     expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
+  });
+
+  it('normalizes an explicit null triageWorkflowPath (no enabled mount has a seeded triage workflow) to null, not the string "null"', () => {
+    const today = normalizeCockpitToday({ ...rawSnake, triage_workflow_path: null });
+    expect(today.triageWorkflowPath).toBeNull();
   });
 });
 

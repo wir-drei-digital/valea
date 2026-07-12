@@ -54,6 +54,15 @@ export type CockpitToday = {
   preparedItems: PreparedItem[];
   openLoops: OpenLoop[];
   whileYouWereAway: string[];
+  /**
+   * The seeded New Inquiry Triage workflow's workspace-relative path (A-T13
+   * — `Valea.Cockpit.today/0`'s live `triage_workflow_path` field), or
+   * `null` when no enabled mount has one. `today/InquiryTriageCard.svelte`
+   * and `mail/MessageView.svelte` run this workflow instead of a hardcoded
+   * `TRIAGE_WORKFLOW` const, and hide their "Prepare a reply"/"Run triage"
+   * action entirely when this is `null` — no dead link.
+   */
+  triageWorkflowPath: string | null;
   mail: MailSummary;
 };
 
@@ -109,11 +118,16 @@ function normalizeMailSummary(raw: unknown): MailSummary {
   };
 }
 
+function asNullableString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
 export function normalizeCockpitToday(raw: RawMap): CockpitToday {
   const schedule = pick(raw, 'schedule', 'schedule');
   const prepared = pick(raw, 'preparedItems', 'prepared_items');
   const loops = pick(raw, 'openLoops', 'open_loops');
   const away = pick(raw, 'whileYouWereAway', 'while_you_were_away');
+  const triageWorkflowPath = pick(raw, 'triageWorkflowPath', 'triage_workflow_path');
 
   return {
     workspace: asString(raw.workspace),
@@ -124,6 +138,7 @@ export function normalizeCockpitToday(raw: RawMap): CockpitToday {
     preparedItems: Array.isArray(prepared) ? prepared.map(normalizePreparedItem) : [],
     openLoops: Array.isArray(loops) ? loops.map(normalizeOpenLoop) : [],
     whileYouWereAway: asStringList(away),
+    triageWorkflowPath: asNullableString(triageWorkflowPath),
     mail: normalizeMailSummary(raw.mail)
   };
 }

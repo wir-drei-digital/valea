@@ -6,7 +6,7 @@
   // 0.75 opacity with a neutral "NOT ACTIVE YET" badge instead of a colored
   // kind badge (§5: neutral = informational, nothing here is unsafe).
   import type { WorkflowListItem } from '$lib/stores/workflows.svelte';
-  import { workflowEditHref } from './workflowHref';
+  import { mountProvenanceLabel, workflowEditHref } from './workflowHref';
 
   let { workflow }: { workflow: WorkflowListItem } = $props();
 
@@ -15,6 +15,10 @@
   );
 
   const editHref = $derived(workflowEditHref(workflow.path));
+  // A-T15: "· <mount>" provenance — only rendered once multiple mounts can
+  // carry a same-named Workflows/ contract; `null` (missing/blank mount)
+  // renders nothing rather than a bare "·".
+  const provenance = $derived(mountProvenanceLabel(workflow.mount));
 
   const riskStyle: Record<string, string> = {
     low: 'bg-act-tint text-act',
@@ -31,7 +35,12 @@
     : 'opacity-75'}"
 >
   <div class="flex items-start justify-between gap-3">
-    <h3 class="font-display text-ink-heading text-[17px]">{workflow.name}</h3>
+    <h3 class="font-display text-ink-heading text-[17px]">
+      {workflow.name}
+      {#if provenance}
+        <span class="text-ink-meta text-[13px] font-normal">{provenance}</span>
+      {/if}
+    </h3>
     {#if !workflow.enabled}
       <span
         class="bg-paper-track text-ink-secondary inline-flex w-fit shrink-0 items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold tracking-[0.04em] uppercase"

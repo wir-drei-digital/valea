@@ -6,7 +6,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { queueStore } from '$lib/stores/queue.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
-  import { icmToNav } from '$lib/shell/nav';
+  import { icmToNav, flattenMountGroups } from '$lib/shell/nav';
   import { normalizeCockpitToday, splitTrustClause, mailSummaryLine, type CockpitToday } from '$lib/today/cockpit';
   import { fromLabel, subjectLabel } from '$lib/components/mail/mail-shapes';
   import { genericSummary } from '$lib/components/today/triage-card';
@@ -84,7 +84,7 @@
     return mailStore.onMailStatus(() => void refresh());
   });
 
-  const icmNav = $derived(icmToNav(icmStore.nodes));
+  const icmNav = $derived(icmToNav(flattenMountGroups(icmStore.groups)));
   const trust = $derived.by(() => splitTrustClause(today?.summary ?? ''));
 
   const otherPreparedItems = $derived.by(() =>
@@ -176,10 +176,15 @@
                   fromName={fromLabel(message)}
                   summary={genericSummary(subjectLabel(message.subject))}
                   sources={[]}
+                  triageWorkflowPath={today.triageWorkflowPath}
                 />
               {/each}
             {:else}
-              <InquiryTriageCard summary={seedInquiry?.summary} sources={seedInquiry?.usedSources} />
+              <InquiryTriageCard
+                summary={seedInquiry?.summary}
+                sources={seedInquiry?.usedSources}
+                triageWorkflowPath={today.triageWorkflowPath}
+              />
             {/if}
             {#each otherPreparedItems as item (item.title)}
               <PreparedItemCard {item} />

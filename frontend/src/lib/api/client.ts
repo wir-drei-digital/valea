@@ -299,7 +299,8 @@ const listWorkflowsFields = [
       'triggerSource',
       'riskLevel',
       'sourceCount',
-      'steps'
+      'steps',
+      'mount'
     ]
   }
 ] as unknown as ListWorkflowsFields;
@@ -324,6 +325,7 @@ const cockpitTodayFields = [
   { preparedItems: ['type', 'title', 'summary', 'usedSources', 'primaryAction', 'secondaryAction'] },
   { openLoops: ['title', 'source'] },
   'whileYouWereAway',
+  'triageWorkflowPath',
   { mail: ['reviewCount', 'inboxCount', 'configured'] }
 ] as unknown as CockpitTodayFields;
 

@@ -4,7 +4,7 @@
   import { AppShell, Sidebar } from '$lib/components/shell';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
-  import { icmToNav } from '$lib/shell/nav';
+  import { icmToNav, flattenMountGroups } from '$lib/shell/nav';
 
   // Thin per-page composition of AppShell + Sidebar, shared by every route
   // beyond Today (which still wires this inline — see +page.svelte). Each
@@ -30,7 +30,11 @@
     void icmStore.refetch();
   });
 
-  const icmNav = $derived(icmToNav(icmStore.nodes));
+  // A-T15: the sidebar's persistent nav flyout stays flat across every
+  // enabled mount (today's look) — per-mount SECTIONS are a Knowledge-route
+  // concern (see `routes/knowledge/+page.svelte`'s `buildMountsDisplay`),
+  // not this global tree.
+  const icmNav = $derived(icmToNav(flattenMountGroups(icmStore.groups)));
 </script>
 
 <AppShell {list} {main} {rail} {mainVariant}>

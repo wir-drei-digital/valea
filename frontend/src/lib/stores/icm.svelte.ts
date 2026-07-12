@@ -87,26 +87,6 @@ export class IcmStore {
     this.#api = api;
   }
 
-  /**
-   * Back-compat flatten of every mount group's tree into a single flat
-   * array, in group order — the exact shape every pre-A-T14 consumer
-   * (`AppFrame`/`+page.svelte`'s `icmToNav`, `routes/knowledge/**`'s
-   * `findNode`/list panes) still expects. A plain getter over `groups`
-   * (itself `$state`), so it stays reactive under Svelte 5's fine-grained
-   * tracking without needing its own `$derived` field.
-   *
-   * DEPRECATED for anything mount-aware: this concatenates every mount's
-   * pages into one list with no group boundary, so multi-mount workspaces
-   * show as one undifferentiated tree here. T15 ("Knowledge UI
-   * mounts-aware") is expected to migrate every consumer above to `groups`
-   * directly (rendering each mount's `title`/`tree` as its own section) and
-   * then delete this getter — kept only so this task doesn't have to make
-   * that UI change itself (see task-14-report.md's T15 handoff list).
-   */
-  get nodes(): IcmNode[] {
-    return this.groups.flatMap((g) => g.tree);
-  }
-
   async refetch(): Promise<void> {
     const result = await this.#api.icmTree();
     if (!result.ok) return;

@@ -40,9 +40,14 @@
   } from './mail-shapes';
   import type { MailMessageDetail } from '$lib/stores/mail.svelte';
 
-  const TRIAGE_WORKFLOW = 'icm/Workflows/New Inquiry Triage.md';
-
-  let { message }: { message: MailMessageDetail } = $props();
+  let {
+    message,
+    // A-T15: sourced from the cockpit/today payload's live
+    // `triageWorkflowPath` (T13), not a hardcoded const — `null` when no
+    // enabled mount has a seeded triage workflow. `routes/mail/+page.svelte`
+    // fetches the cockpit payload and passes this through.
+    triageWorkflowPath = null
+  }: { message: MailMessageDetail; triageWorkflowPath?: string | null } = $props();
 
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
   const status = $derived(typeof frontmatter.status === 'string' ? frontmatter.status : null);
@@ -79,9 +84,10 @@
   const canRun = $derived(canRunTriage(status, running || preparing));
 
   async function runTriage(): Promise<void> {
+    if (!triageWorkflowPath) return; // defensive: the button is hidden whenever this is null
     running = true;
     runError = null;
-    const result = await api.runWorkflow(TRIAGE_WORKFLOW, message.path, workspaceStore.generation ?? 0);
+    const result = await api.runWorkflow(triageWorkflowPath, message.path, workspaceStore.generation ?? 0);
     running = false;
     if (result.ok) {
       preparing = true;
@@ -172,7 +178,7 @@
       >
         Processed
       </span>
-    {:else}
+    {:else if triageWorkflowPath}
       <Button type="button" disabled={!canRun} onclick={() => void runTriage()}>Run triage</Button>
       {#if preparing}
         <p class="text-ink-meta text-[12.5px]">Preparing… watch Today/Queue.</p>
