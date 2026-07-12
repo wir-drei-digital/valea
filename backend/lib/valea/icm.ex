@@ -539,16 +539,16 @@ defmodule Valea.ICM do
     File.rename!(old_abs, new_abs)
 
     # Workflows can also reference an entire folder via a wildcard glob
-    # (`icm/<folder>/*` — see `priv/workspace_template/icm/Workflows/*.md`),
+    # (`<folder>/*` — see `priv/workspace_template/icm/Workflows/*.md`),
     # which `collect_md_children` never surfaces (it only walks concrete
     # `.md` files that existed on disk at rename time). Rewrite that exact
-    # `icm/<old_rel>/*` needle too, via the same precision-safe full-string
+    # `<old_rel>/*` needle too, via the same precision-safe full-string
     # mechanism as every other reference — the trailing `/*` keeps this from
     # ever matching a sibling folder's wildcard (e.g. "Offers" vs.
     # "Offers Extra").
     wildcard_pair = {old_rel <> "/*", new_rel <> "/*"}
 
-    case rewrite_children(child_pairs ++ [wildcard_pair]) do
+    case rewrite_children(mount, child_pairs ++ [wildcard_pair]) do
       {:ok, updated_workflows} ->
         {:ok, %{path: to_workspace_rel(mount, new_rel), updated_workflows: updated_workflows}}
 
@@ -560,7 +560,7 @@ defmodule Valea.ICM do
   defp do_rename(_root, old_rel, new_rel, old_abs, new_abs, false, mount) do
     File.rename!(old_abs, new_abs)
 
-    case rewrite_children([{old_rel, new_rel}]) do
+    case rewrite_children(mount, [{old_rel, new_rel}]) do
       {:ok, updated_workflows} ->
         {:ok, %{path: to_workspace_rel(mount, new_rel), updated_workflows: updated_workflows}}
 
@@ -581,11 +581,18 @@ defmodule Valea.ICM do
     end)
   end
 
-  defp rewrite_children(pairs) do
+  # `pairs` are mount-relative (the shape every other caller in this module
+  # already works in). `References` (T4) takes workspace-relative
+  # `mounts/<name>/…` paths — it resolves the owning mount itself, scoping
+  # every scan/rewrite to that mount's own `Workflows/` — so each pair is
+  # reattached to `mount` here before crossing that boundary.
+  defp rewrite_children(mount, pairs) do
     Enum.reduce_while(pairs, {:ok, []}, fn {old_rel, new_rel}, {:ok, names} ->
-      {:ok, refs} = References.referencing_workflows(old_rel)
+      old_ws_rel = to_workspace_rel(mount, old_rel)
+      new_ws_rel = to_workspace_rel(mount, new_rel)
+      {:ok, refs} = References.referencing_workflows(old_ws_rel)
 
-      case References.rewrite(old_rel, new_rel) do
+      case References.rewrite(old_ws_rel, new_ws_rel) do
         {:ok, _updated_files} ->
           new_names = Enum.map(refs, & &1.name)
           {:cont, {:ok, names ++ new_names}}

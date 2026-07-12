@@ -2,6 +2,7 @@ defmodule Valea.ICM.ReferencesTest do
   use ExUnit.Case, async: false
 
   alias Valea.ICM.References
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
   setup do
@@ -13,7 +14,43 @@ defmodule Valea.ICM.ReferencesTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, _} = Manager.create(Path.join(dir, "workspaces"), "W")
+    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
+
+    write_mount!(ws.path, "a", "Mount A")
+
+    write_page!(
+      ws.path,
+      "a",
+      "Offers/Founder Coaching Package.md",
+      "# Founder Coaching Package\n"
+    )
+
+    write_page!(ws.path, "a", "Tone & Voice/Email Tone Guide.md", "# Email Tone Guide\n")
+    write_page!(ws.path, "a", "Clients/Lea Brunner.md", "# Lea Brunner\n")
+
+    write_workflow!(ws.path, "a", "New Inquiry Triage.md", [
+      "Offers/Founder Coaching Package.md",
+      "Tone & Voice/Email Tone Guide.md"
+    ])
+
+    write_workflow!(ws.path, "a", "Post-Session Follow-up.md", [
+      "Tone & Voice/Email Tone Guide.md"
+    ])
+
+    # Mount b has a SAME-NAMED page as mount a, and its own workflow
+    # referencing it — proving that scanning mount a never leaks into mount
+    # b's Workflows/, and vice versa (mount isolation is by directory, not
+    # by the needle string matching).
+    write_mount!(ws.path, "b", "Mount B")
+
+    write_page!(
+      ws.path,
+      "b",
+      "Offers/Founder Coaching Package.md",
+      "# Founder Coaching Package\n"
+    )
+
+    write_workflow!(ws.path, "b", "B Triage.md", ["Offers/Founder Coaching Package.md"])
 
     on_exit(fn ->
       Manager.close()
@@ -21,52 +58,140 @@ defmodule Valea.ICM.ReferencesTest do
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    :ok
+    %{ws: ws.path}
   end
 
-  defp ws_path do
-    {:ok, %{path: path}} = Manager.current()
-    path
+  defp write_mount!(ws_path, name, title) do
+    dir = Path.join([ws_path, "mounts", name])
+    File.mkdir_p!(dir)
+    Manifest.write!(dir, %{id: "id-" <> name, name: title, description: ""})
   end
 
-  test "finds workflows referencing a page" do
-    {:ok, refs} = References.referencing_workflows("Offers/Founder Coaching Package.md")
+  defp write_page!(ws_path, mount, inner_rel, content) do
+    abs = Path.join([ws_path, "mounts", mount, inner_rel])
+    File.mkdir_p!(Path.dirname(abs))
+    File.write!(abs, content)
+  end
+
+  # `sources` needles are ICM-relative to the workflow's own mount — no
+  # `mounts/<name>` prefix, and (post T4) no legacy `icm/` prefix either.
+  defp write_workflow!(ws_path, mount, filename, referenced_inner_paths) do
+    sources =
+      referenced_inner_paths
+      |> Enum.with_index()
+      |> Enum.map(fn {path, i} -> "  - { id: src#{i}, type: icm, path: \"#{path}\" }" end)
+      |> Enum.join("\n")
+
+    content = """
+    ---
+    sources:
+    #{sources}
+    ---
+    # #{Path.rootname(filename)}
+    """
+
+    write_page!(ws_path, mount, Path.join("Workflows", filename), content)
+  end
+
+  defp workflows_dir(ws_path, mount), do: Path.join([ws_path, "mounts", mount, "Workflows"])
+
+  test "finds workflows (within the owning mount) referencing a page" do
+    {:ok, refs} = References.referencing_workflows("mounts/a/Offers/Founder Coaching Package.md")
     assert [%{file: "New Inquiry Triage.md", name: "New Inquiry Triage"}] = refs
 
-    {:ok, []} = References.referencing_workflows("Clients/Lea Brunner.md")
+    {:ok, []} = References.referencing_workflows("mounts/a/Clients/Lea Brunner.md")
   end
 
-  test "rewrite updates the page literally and atomically" do
-    # Both New Inquiry Triage.md and Post-Session Follow-up.md reference
-    # the Email Tone Guide in the seeded workspace template.
-    {:ok, ["New Inquiry Triage.md", "Post-Session Follow-up.md"]} =
-      References.rewrite("Tone & Voice/Email Tone Guide.md", "Tone & Voice/Voice Guide.md")
+  test "a same-named page in a different mount is NOT matched (mount isolation)" do
+    {:ok, refs_a} =
+      References.referencing_workflows("mounts/a/Offers/Founder Coaching Package.md")
+
+    assert Enum.map(refs_a, & &1.file) == ["New Inquiry Triage.md"]
+
+    {:ok, refs_b} =
+      References.referencing_workflows("mounts/b/Offers/Founder Coaching Package.md")
+
+    assert Enum.map(refs_b, & &1.file) == ["B Triage.md"]
+  end
+
+  test "rewrite updates the ICM-relative needle literally and atomically, within the mount", %{
+    ws: ws
+  } do
+    assert {:ok, ["New Inquiry Triage.md", "Post-Session Follow-up.md"]} =
+             References.rewrite(
+               "mounts/a/Tone & Voice/Email Tone Guide.md",
+               "mounts/a/Tone & Voice/Voice Guide.md"
+             )
 
     for file <- ["New Inquiry Triage.md", "Post-Session Follow-up.md"] do
-      page = File.read!(Path.join(ws_path(), "icm/Workflows/#{file}"))
-      assert page =~ "icm/Tone & Voice/Voice Guide.md"
-      refute page =~ "icm/Tone & Voice/Email Tone Guide.md"
+      page = File.read!(Path.join(workflows_dir(ws, "a"), file))
+      assert page =~ "Tone & Voice/Voice Guide.md"
+      refute page =~ "Tone & Voice/Email Tone Guide.md"
     end
+
+    # Mount b's own (same-shaped) reference is untouched.
+    b_page = File.read!(Path.join(workflows_dir(ws, "b"), "B Triage.md"))
+    assert b_page =~ "Offers/Founder Coaching Package.md"
   end
 
   test "rewrite returns empty list when no workflow references the path" do
-    {:ok, []} = References.rewrite("Clients/Lea Brunner.md", "Clients/Someone Else.md")
+    {:ok, []} =
+      References.rewrite("mounts/a/Clients/Lea Brunner.md", "mounts/a/Clients/Someone Else.md")
   end
 
-  test "rewrite returns error on write failure" do
-    workflows_dir = Path.join(ws_path(), "icm/Workflows")
+  test "rewrite rejects a cross-mount pair — a rename never crosses mounts", %{ws: ws} do
+    assert {:error, :cross_mount_rename} =
+             References.rewrite(
+               "mounts/a/Offers/Founder Coaching Package.md",
+               "mounts/b/Offers/Renamed.md"
+             )
 
-    # Make the workflows directory read-only to force atomic_write to fail
-    File.chmod!(workflows_dir, 0o555)
+    # Neither mount's workflows were touched.
+    a_page = File.read!(Path.join(workflows_dir(ws, "a"), "New Inquiry Triage.md"))
+    assert a_page =~ "Offers/Founder Coaching Package.md"
 
-    on_exit(fn ->
-      # Restore write permissions before rm_rf cleanup
-      File.chmod!(workflows_dir, 0o755)
-    end)
+    b_page = File.read!(Path.join(workflows_dir(ws, "b"), "B Triage.md"))
+    assert b_page =~ "Offers/Founder Coaching Package.md"
+  end
 
-    # Attempt to rewrite should return an error tuple
-    result = References.rewrite("Tone & Voice/Email Tone Guide.md", "Tone & Voice/Voice Guide.md")
+  test "rewrite returns error on write failure", %{ws: ws} do
+    dir = workflows_dir(ws, "a")
+    File.chmod!(dir, 0o555)
+
+    on_exit(fn -> File.chmod!(dir, 0o755) end)
+
+    result =
+      References.rewrite(
+        "mounts/a/Tone & Voice/Email Tone Guide.md",
+        "mounts/a/Tone & Voice/Voice Guide.md"
+      )
+
     assert {:error, {:rewrite_failed, filename, _reason}} = result
     assert filename in ["New Inquiry Triage.md", "Post-Session Follow-up.md"]
+  end
+
+  test "referencing_workflows rejects a path that doesn't name a real mount" do
+    assert {:error, :outside_workspace} = References.referencing_workflows("Offers/Nope.md")
+
+    assert {:error, :outside_workspace} =
+             References.referencing_workflows("mounts/does-not-exist/Nope.md")
+  end
+
+  test "rewrite rejects a path that doesn't name a real mount" do
+    assert {:error, :outside_workspace} =
+             References.rewrite("Offers/Nope.md", "Offers/Also-Nope.md")
+  end
+
+  test "errors without a workspace" do
+    Manager.close()
+
+    assert {:error, :no_workspace} =
+             References.referencing_workflows("mounts/a/Offers/Founder Coaching Package.md")
+
+    assert {:error, :no_workspace} =
+             References.rewrite(
+               "mounts/a/Offers/Founder Coaching Package.md",
+               "mounts/a/Offers/Renamed.md"
+             )
   end
 end

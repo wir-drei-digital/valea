@@ -262,7 +262,7 @@ defmodule ValeaWeb.IcmRpcTest do
       assert %{"success" => true, "data" => %{"workflows" => workflows}} =
                rpc(
                  "icm_entry_references",
-                 %{"path" => "Templates/Follow-up Email.md"},
+                 %{"path" => "mounts/primary/Templates/Follow-up Email.md"},
                  [%{"workflows" => ["file", "name"]}]
                )
 

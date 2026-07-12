@@ -6,13 +6,19 @@ defmodule Valea.ICMWriteTest do
   alias Valea.ICM
   alias Valea.Markdown.ProseMirror
 
-  # See the comment on `seed_mount!/3` in icm_test.exs: the scaffolded
-  # `icm/` tree is COPIED (not moved) into `mounts/primary/` so `Valea.ICM`
-  # operates on the mount while `Valea.ICM.References` (T4, still hardcoded
-  # to `{workspace}/icm/Workflows`) keeps reading the untouched original —
-  # the mount-relative paths this module passes to `References` match the
-  # `icm/<rel_path>` needles already baked into the seeded Workflows pages,
-  # so reference-rewrite behavior is exercised exactly as before.
+  # The workspace template still scaffolds the legacy `icm/` tree until
+  # Task A-T8 migrates it, and a fresh scaffold has no `mounts/` dir at
+  # all — so COPY (not move) the scaffolded `icm/` into `mounts/primary/`
+  # to get a mount with rich seeded fixture content. Post T4,
+  # `Valea.ICM.References` resolves the owning mount for whatever
+  # workspace-relative path it's given and scans/rewrites THAT mount's own
+  # `Workflows/` — so every rename/reference assertion below reads from
+  # `mounts/primary/Workflows/…`, not the untouched (and now irrelevant)
+  # original `icm/` tree. The seeded pages' `sources:` needles are still
+  # literally `icm/<rel_path>` (the pre-mounts convention, unchanged here —
+  # that's Task A-T8's job) but that string is a superset of the
+  # mount-relative needle References now searches/replaces on, so rewrite
+  # behavior round-trips correctly either way.
   defp seed_mount!(ws_path, name, title) do
     mount_dir = Path.join([ws_path, "mounts", name])
     File.mkdir_p!(Path.dirname(mount_dir))
@@ -132,7 +138,7 @@ defmodule Valea.ICMWriteTest do
   end
 
   defp workflow_page do
-    File.read!(Path.join(ws_path(), "icm/Workflows/New Inquiry Triage.md"))
+    File.read!(Path.join(ws_path(), "mounts/primary/Workflows/New Inquiry Triage.md"))
   end
 
   test "rename a referenced page moves the file and rewrites referencing workflows" do
@@ -181,7 +187,7 @@ defmodule Valea.ICMWriteTest do
     {:ok, %{path: "mounts/primary/Offers Extra/Sidecar.md"}} =
       ICM.create_page("mounts/primary/Offers Extra", "Sidecar")
 
-    workflow_path = Path.join(ws_path(), "icm/Workflows/New Inquiry Triage.md")
+    workflow_path = Path.join(ws_path(), "mounts/primary/Workflows/New Inquiry Triage.md")
 
     File.write!(
       workflow_path,
@@ -200,11 +206,11 @@ defmodule Valea.ICMWriteTest do
 
   test "renaming a folder rewrites wildcard workflow references to it" do
     session_prep = fn ->
-      File.read!(Path.join(ws_path(), "icm/Workflows/Session Prep Brief.md"))
+      File.read!(Path.join(ws_path(), "mounts/primary/Workflows/Session Prep Brief.md"))
     end
 
     post_session = fn ->
-      File.read!(Path.join(ws_path(), "icm/Workflows/Post-Session Follow-up.md"))
+      File.read!(Path.join(ws_path(), "mounts/primary/Workflows/Post-Session Follow-up.md"))
     end
 
     assert session_prep.() =~ "icm/Clients/*"
