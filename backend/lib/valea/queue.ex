@@ -789,19 +789,28 @@ defmodule Valea.Queue do
 
   # Memory items are decided by CONTENT: the envelope carries the exact
   # bytes the apply would have written, so "did the apply happen" is a pure
-  # hash comparison against the target — no draft file to consult. Every
-  # other kind (including an unreadable/invalid processing file, which
+  # hash comparison against the target — no draft file to consult. A
+  # memory-kind envelope whose action is malformed (missing or non-binary
+  # target_path / content_markdown) is treated like any unreadable file —
+  # the :email fallback's draft-absent default repends it for a human.
+  # Every other kind (including an unreadable/invalid processing file, which
   # cannot possibly be a memory_update) falls through to :email, which
   # preserves the ORIGINAL draft-existence recovery unchanged.
   defp classify_recovery(workspace, path) do
     with {:ok, bytes} <- File.read(path),
-         {:ok, %{"payload" => %{"kind" => "memory_update"}} = item} <- Jason.decode(bytes) do
-      action = item["payload"]["proposed_action"]
-      abs = memory_target_abs(workspace, action["target_path"])
+         {:ok,
+          %{
+            "payload" => %{
+              "kind" => "memory_update",
+              "proposed_action" => %{"target_path" => target, "content_markdown" => content}
+            }
+          }} <- Jason.decode(bytes),
+         true <- is_binary(target) and is_binary(content) do
+      abs = memory_target_abs(workspace, target)
 
       case File.read(abs) do
         {:ok, current} ->
-          if sha256(current) == sha256(action["content_markdown"] || ""),
+          if sha256(current) == sha256(content),
             do: :finish_memory,
             else: :repend
 

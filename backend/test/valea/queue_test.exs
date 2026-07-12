@@ -965,5 +965,49 @@ defmodule Valea.QueueTest do
       refute File.exists?(processing_path(workspace, id))
       assert File.exists?(approved_path(workspace, id))
     end
+
+    test "malformed memory envelope (nil target_path) repends instead of raising",
+         %{workspace: ws} do
+      # Valid JSON, kind memory_update, but proposed_action.target_path is nil —
+      # this should be treated like any unreadable file and repended safely,
+      # not raise Path.join/2 FunctionClauseError that poisons boot recovery.
+      id = run_id("malformed")
+
+      item = %{
+        "schema" => "queue_item/v1",
+        "run_id" => id,
+        "workflow" => "test",
+        "risk_level" => "medium",
+        "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "payload" => %{
+          "title" => "Malformed action",
+          "summary" => "Testing edge case",
+          "kind" => "memory_update",
+          "sources" => [],
+          "proposed_action" => %{
+            "type" => "apply_page_content",
+            "target_path" => nil,
+            "base_sha256" => nil,
+            "content_markdown" => "content"
+          }
+        }
+      }
+
+      processing_dir = Path.join([ws, "queue", "processing"])
+      File.mkdir_p!(processing_dir)
+      File.write!(Path.join(processing_dir, id <> ".json"), Jason.encode!(item))
+
+      # This must NOT raise; recover/1 should complete successfully.
+      assert :ok = Valea.Queue.recover(ws)
+
+      # The malformed item should have been repended (treated like unreadable).
+      assert File.exists?(Path.join([ws, "queue", "pending", id <> ".json"]))
+      refute File.exists?(Path.join([ws, "queue", "processing", id <> ".json"]))
+      refute File.exists?(Path.join([ws, "queue", "approved", id <> ".json"]))
+
+      {:ok, entries} = Valea.Audit.entries(50)
+
+      assert Enum.any?(entries, &(&1["type"] == "approval_recovered" and &1["run_id"] == id))
+    end
   end
 end
