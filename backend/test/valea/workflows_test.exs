@@ -217,4 +217,30 @@ defmodule Valea.WorkflowsTest do
     Valea.Workspace.Manager.close()
     assert {:error, :not_found} = Workflows.get("mounts/a/Workflows/Triage.md")
   end
+
+  test "list/0 gracefully skips mounts with degraded (invalid) manifests",
+       %{workspace: ws} do
+    # Create one valid mount with a workflow
+    valid = write_mount!(ws, "valid", "Valid Mount")
+    write_workflow!(valid, "Good.md", @triage_frontmatter, @triage_body)
+
+    # Create a degraded mount: Workflows dir exists with a workflow file,
+    # but icm.yaml is invalid (unterminated YAML key)
+    degraded_dir = Path.join([ws, "mounts", "degraded"])
+    File.mkdir_p!(degraded_dir)
+    File.write!(Path.join(degraded_dir, "icm.yaml"), "name: [unterminated")
+
+    File.mkdir_p!(Path.join(degraded_dir, "Workflows"))
+
+    File.write!(
+      Path.join([degraded_dir, "Workflows", "BadMount.md"]),
+      "---\nenabled: true\nrisk_level: low\n---\n# BadMount\n\nBody.\n"
+    )
+
+    # list/0 should return only the valid mount's workflow, not raise
+    assert {:ok, workflows} = Workflows.list()
+    assert length(workflows) == 1
+    assert hd(workflows).path == "mounts/valid/Workflows/Good.md"
+    assert hd(workflows).mount == "Valid Mount"
+  end
 end

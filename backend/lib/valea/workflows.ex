@@ -76,7 +76,7 @@ defmodule Valea.Workflows do
     end
   end
 
-  defp workflows_for_mount(mount) do
+  defp workflows_for_mount(%{manifest: %Manifest{}} = mount) do
     mount.root
     |> Path.join("Workflows")
     |> Path.join("*.md")
@@ -84,6 +84,10 @@ defmodule Valea.Workflows do
     |> Enum.map(&parse(&1, mount))
     |> Enum.reject(&is_nil/1)
   end
+
+  # Defense in depth: skip mounts with degraded (non-Manifest) manifest.
+  # Mounts.enabled/0 already filters these out, but guard here to be safe.
+  defp workflows_for_mount(_mount), do: []
 
   # Cheap lexical pre-filter — NOT the containment check. A mount-relative
   # remainder can lexically start with "Workflows/" and end in ".md" while
