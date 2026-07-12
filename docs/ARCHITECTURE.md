@@ -563,8 +563,7 @@ Two independent sources of truth compose in `Valea.Mounts`
   enabled by default) that never touches the mount's own files.
   `Mounts.set_enabled/2` writes it atomically, preserving `version`, `id`,
   and every other key on every mount entry — including hand-added or
-  future by-reference-mount fields like `kind`/`ref` (deferred to a
-  follow-on plan) — so nothing but the `enabled` flag it's asked to change
+  including `kind`/`ref` fields (by-reference mounts, Plan A2 — see the By-reference section below) — so nothing but the `enabled` flag it's asked to change
   is ever touched.
 - `Mounts.list/0,1` (glob `mounts/*`, sorted by name) and `Mounts.enabled/0,1`
   (filtered to `enabled: true, degraded: nil` — the effective composition
@@ -665,11 +664,11 @@ consumed by `Valea.Cockpit`'s seeded narrative and `Valea.Mail.Doctor`'s
 ### RPC surface
 
 `Valea.Api.Mounts` (`backend/lib/valea/api/mounts.ex`): `list_mounts` →
-every discovered mount, typed `name`/`title`/`description`/`relRoot`/
+every discovered mount, typed `name`/`title`/`description`/`relRoot`/`root`/
 `enabled`/`degraded`; `set_mount_enabled` (args `name, enabled, generation`)
 → writes config, regenerates `MOUNTS.md`, broadcasts `mounts_changed`;
 `create_mount` (args `name, description, generation`) → mints a new mount,
-regenerates `MOUNTS.md`, broadcasts `mounts_changed`, returns `relRoot`. See
+regenerates `MOUNTS.md`, broadcasts `mounts_changed`, returns `relRoot`. Plan A2 added `declare_mount`, `undeclare_mount`, and `mounts_doctor` (see the By-reference section below). See
 the RPC action list in [API layer](#api-layer) above for the generated
 TypeScript names, and `icm_tree`'s changed (grouped) return shape.
 
