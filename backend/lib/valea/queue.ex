@@ -217,7 +217,7 @@ defmodule Valea.Queue do
         audit("apply_conflict", %{
           "run_id" => run_id,
           "target_path" => action["target_path"],
-          "reason" => to_string(reason)
+          "reason" => reason_string(reason)
         })
 
         {:error, :apply_conflict}
@@ -232,11 +232,22 @@ defmodule Valea.Queue do
     target = action["target_path"]
 
     with {:ok, %{abs: abs}} <- Valea.Workflows.MemoryProposal.check_target(workspace, target),
-         :ok <- check_base(abs, action["base_sha256"]) do
-      File.mkdir_p!(Path.dirname(abs))
-      atomic_write!(abs, action["content_markdown"])
+         :ok <- check_base(abs, action["base_sha256"]),
+         :ok <- write_page(abs, action["content_markdown"]) do
       {:ok, target}
     end
+  end
+
+  # The write itself can fault (target descending through an existing
+  # file, read-only external mount, mount vanishing mid-write) — those
+  # are conflicts like any other: nothing observable may happen and the
+  # item must come back to pending, never orphan in processing/.
+  defp write_page(abs, content) do
+    File.mkdir_p!(Path.dirname(abs))
+    atomic_write!(abs, content)
+    :ok
+  rescue
+    e in File.Error -> {:error, {:write_failed, e.reason}}
   end
 
   # base_sha256: nil means "create" — the target must not already exist.
@@ -872,6 +883,12 @@ defmodule Valea.Queue do
   end
 
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  # apply_conflict's "reason" field: plain atoms (from check_target/check_base)
+  # stringify directly; anything else (e.g. write_page's {:write_failed, _}
+  # tuple) would crash `to_string/1`, so fall back to `inspect/1`.
+  defp reason_string(reason) when is_atom(reason), do: to_string(reason)
+  defp reason_string(reason), do: inspect(reason)
 
   defp audit(type, fields) do
     if Process.whereis(Valea.Audit), do: Valea.Audit.append(type, fields)

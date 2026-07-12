@@ -751,6 +751,34 @@ defmodule Valea.QueueTest do
       assert File.read!(Path.join(ws, target)) == "# Decisions\n"
     end
 
+    test "approve success path audits in order and stamps target_path on action_executed", %{
+      workspace: ws
+    } do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      old = File.read!(Path.join(ws, target))
+      base = :crypto.hash(:sha256, old) |> Base.encode16(case: :lower)
+      pending_memory!(ws, "m1o", target, base, "# Pricing\n\n200\n")
+
+      {:ok, %{revision: rev}} = Queue.get("m1o")
+      assert {:ok, %{applied_path: ^target}} = Queue.approve("m1o", rev)
+
+      {:ok, entries} = Valea.Audit.entries(100)
+
+      chain =
+        entries
+        |> Enum.reverse()
+        |> Enum.filter(&(&1["run_id"] == "m1o"))
+
+      assert Enum.map(chain, & &1["type"]) == [
+               "approval_intent",
+               "action_executed",
+               "item_approved"
+             ]
+
+      action_executed = Enum.find(chain, &(&1["type"] == "action_executed"))
+      assert action_executed["target_path"] == target
+    end
+
     test "hash mismatch: nothing written, item back in pending, apply_conflict audited", %{
       workspace: ws
     } do
@@ -770,9 +798,15 @@ defmodule Valea.QueueTest do
 
     test "create-target-exists and disabled-mount are conflicts too", %{workspace: ws} do
       target = "mounts/primary/Pricing/Current Pricing.md"
+      old = File.read!(Path.join(ws, target))
+
       pending_memory!(ws, "m4", target, nil, "x")
       {:ok, %{revision: rev}} = Queue.get("m4")
       assert {:error, :apply_conflict} = Queue.approve("m4", rev)
+
+      assert File.read!(Path.join(ws, target)) == old
+      assert File.exists?(Path.join(ws, "queue/pending/m4.json"))
+      refute File.exists?(Path.join(ws, "queue/processing/m4.json"))
 
       base =
         :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
@@ -785,11 +819,28 @@ defmodule Valea.QueueTest do
       {:ok, %{revision: rev5}} = Queue.get("m5")
       assert {:error, :apply_conflict} = Queue.approve("m5", rev5)
       :ok = Valea.Mounts.set_enabled("primary", true)
+
+      assert File.read!(Path.join(ws, target)) == old
+      assert File.exists?(Path.join(ws, "queue/pending/m5.json"))
+      refute File.exists?(Path.join(ws, "queue/processing/m5.json"))
     end
 
     test "malformed apply action fails envelope validation", %{workspace: ws} do
       pending_memory!(ws, "m6", "mounts/primary/x.md", "not-hex", "c")
       assert {:error, :queue_item_invalid} = Queue.get("m6")
+    end
+
+    test "write exception is a conflict, not an orphaned item", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md/evil.md"
+      pending_memory!(ws, "m8", target, nil, "x")
+      {:ok, %{revision: rev}} = Queue.get("m8")
+
+      assert {:error, :apply_conflict} = Valea.Queue.approve("m8", rev)
+      assert File.exists?(Path.join(ws, "queue/pending/m8.json"))
+      refute File.exists?(Path.join(ws, "queue/processing/m8.json"))
+
+      {:ok, entries} = Valea.Audit.entries(20)
+      assert Enum.any?(entries, &(&1["type"] == "apply_conflict" and &1["run_id"] == "m8"))
     end
 
     test "reject of a memory item lands with decided_at and no mailbox_ops", %{workspace: ws} do
