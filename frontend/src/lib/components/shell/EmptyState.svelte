@@ -7,7 +7,9 @@
   // optional `actions` snippet for the rare case a route needs a next step
   // from the empty state itself (e.g. Chat's "Start a session" / "Run
   // checks"). Every existing call site omits `actions` and is unaffected.
+  // A small procedural garden grows quietly underneath — see PlantGrowth.
   import type { Snippet } from 'svelte';
+  import PlantGrowth from './PlantGrowth.svelte';
 
   let {
     icon,
@@ -38,4 +40,7 @@
       {@render actions()}
     </div>
   {/if}
+  <div class="mt-3" aria-hidden="true">
+    <PlantGrowth />
+  </div>
 </div>
