@@ -108,9 +108,11 @@ defmodule Valea.Workflows.Runner do
   whole staging dir, not just the invalid pair's files — the same
   inspect-on-invalid contract the primary proposal always had).
 
-  Safe to call more than once: a second call after a full success finds no
-  staging dir (already removed) and is a `"no_proposal"` no-op — no pending
-  item is ever duplicated.
+  Idempotence holds for fully-successful runs: a second call after all items
+  were created finds no staging dir (already removed) and is a `"no_proposal"`
+  no-op. A run kept for inspection because some proposal was invalid WILL
+  re-create its already-created items if `recover_staging/1` re-finalizes it
+  at boot — a known window, closed in the crash-recovery task (B5).
   """
   @spec finalize(String.t(), String.t()) :: :ok
   def finalize(run_id, workspace) do

@@ -6,9 +6,14 @@ defmodule Valea.Workflows.MemoryProposal do
   here treats the pair as untrusted input; the manifest's claims are
   verified, never carried (risk tier is derived elsewhere, from the
   target path alone).
+
+  Content size is capped at 1_000_000 bytes (agent-authored input, inlined
+  into the envelope).
   """
 
   alias Valea.Mounts
+
+  @max_content_bytes 1_000_000
 
   @spec load_pairs(String.t()) :: [{String.t(), {:ok, map()} | {:error, atom()}}]
   def load_pairs(staging_dir) do
@@ -37,10 +42,12 @@ defmodule Valea.Workflows.MemoryProposal do
          {:ok, %{} = manifest} <- Jason.decode(bytes),
          true <- valid_manifest?(manifest),
          {:ok, content} <- File.read(Path.join(dir, md)),
+         {:size, true} <- {:size, byte_size(content) <= @max_content_bytes},
          true <- String.valid?(content) do
       {:ok, %{manifest: manifest, content: content}}
     else
       {:md, false} -> {:error, :missing_content}
+      {:size, false} -> {:error, :content_too_large}
       false -> {:error, :invalid_manifest}
       _ -> {:error, :invalid_pair}
     end
@@ -49,6 +56,7 @@ defmodule Valea.Workflows.MemoryProposal do
   defp valid_manifest?(m) do
     m["schema"] == "memory_update/v1" and
       nonempty?(m["target_path"]) and
+      not String.ends_with?(m["target_path"], "/") and
       valid_base?(m["base_sha256"]) and
       nonempty?(m["reason"]) and
       is_list(m["sources"]) and Enum.all?(m["sources"], &is_binary/1)

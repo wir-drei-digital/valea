@@ -96,4 +96,28 @@ defmodule Valea.Workflows.MemoryProposalTest do
     assert {:error, :mount_not_enabled} =
              MemoryProposal.check_target(ws, "mounts/primary/Pricing/Current Pricing.md")
   end
+
+  test "content exceeding 1_000_000 bytes is rejected", %{staging: staging} do
+    put_pair(
+      staging,
+      "large",
+      manifest("mounts/primary/Pricing/Current Pricing.md"),
+      String.duplicate("a", 1_000_001)
+    )
+
+    assert [{"large.json", {:error, :content_too_large}}] =
+             MemoryProposal.load_pairs(staging)
+  end
+
+  test "target_path ending with / is rejected as invalid", %{staging: staging} do
+    put_pair(
+      staging,
+      "dir_target",
+      %{manifest("mounts/primary/Pricing/") | "target_path" => "mounts/primary/Pricing/"},
+      "# Content\n"
+    )
+
+    assert [{"dir_target.json", {:error, :invalid_manifest}}] =
+             MemoryProposal.load_pairs(staging)
+  end
 end
