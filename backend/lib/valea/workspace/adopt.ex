@@ -62,6 +62,15 @@ defmodule Valea.Workspace.Adopt do
     * `parent_dir` is the source, or nested inside it — `:cycle` (the new
       workspace would be scaffolded inside the very folder about to be
       moved into it)
+    * the target (`parent_dir/name`) IS the source — `:target_is_source`
+      (adopting a folder into its own parent under its own name). Without
+      this guard an EMPTY source would be scaffolded INTO —
+      `Scaffold.create/2` accepts an empty existing dir — and then renamed
+      into itself, and a non-empty one would bounce off the misleading
+      `:target_not_empty` ("that folder already has files in it" — the
+      user's own folder). The frontend's `decideOnboardingMode` adjusts its
+      default suggested name so a prefilled config never hits this, but a
+      hand-edited name still can — this is the backstop.
 
   A same-device move failure is mapped by `map_move_error/1`; `:exdev`
   (cross-device rename) becomes the distinct `:cross_device` — the
@@ -101,12 +110,15 @@ defmodule Valea.Workspace.Adopt do
           {:ok, map()} | {:error, term()}
   def create_with_icm(parent_dir, name, icm_source_path)
       when is_binary(parent_dir) and is_binary(name) and is_binary(icm_source_path) do
+    target = Path.join(parent_dir, name)
+
     with :ok <- validate_source_exists(icm_source_path),
          :ok <- validate_not_open_workspace(icm_source_path),
          :ok <- validate_not_a_workspace(icm_source_path),
          :ok <- validate_not_nested_in_workspace(icm_source_path),
-         :ok <- validate_no_cycle(parent_dir, icm_source_path) do
-      do_create_with_icm(Path.join(parent_dir, name), name, icm_source_path)
+         :ok <- validate_no_cycle(parent_dir, icm_source_path),
+         :ok <- validate_target_not_source(target, icm_source_path) do
+      do_create_with_icm(target, name, icm_source_path)
     end
   end
 
@@ -165,6 +177,17 @@ defmodule Valea.Workspace.Adopt do
 
     if parent == source or String.starts_with?(parent, source <> "/") do
       {:error, :cycle}
+    else
+      :ok
+    end
+  end
+
+  # See moduledoc (`:target_is_source`) — adopting a folder into its own
+  # parent under its own name would scaffold into (empty source) or bounce
+  # confusingly off (non-empty source) the very folder being adopted.
+  defp validate_target_not_source(target, icm_source_path) do
+    if Path.expand(target) == Path.expand(icm_source_path) do
+      {:error, :target_is_source}
     else
       :ok
     end

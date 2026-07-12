@@ -212,6 +212,22 @@ defmodule Valea.Workspace.AdoptTest do
       assert File.dir?(source)
     end
 
+    test "rejects target == source (adopting into its own parent under its own name)", %{
+      parent: _parent
+    } do
+      source = tmp_dir("valea-target-eq-source")
+      File.mkdir_p!(source)
+      File.write!(Path.join(source, "Notes.md"), "# hello")
+
+      assert {:error, :target_is_source} =
+               Adopt.create_with_icm(Path.dirname(source), Path.basename(source), source)
+
+      # untouched — never scaffolded into, never moved
+      assert File.dir?(source)
+      assert File.exists?(Path.join(source, "Notes.md"))
+      refute File.exists?(Path.join(source, "config"))
+    end
+
     test "an existing non-empty target folder surfaces target_not_empty (bubbled from Scaffold.create)",
          %{parent: parent} do
       source = tmp_dir("valea-source-tne")

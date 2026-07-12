@@ -189,5 +189,51 @@ defmodule ValeaWeb.WorkspaceRpcTest do
 
       assert inspect(errors) =~ "source_not_found"
     end
+
+    test "target == source surfaces target_is_source" do
+      source = tmp_dir("valea-target-eq-source")
+      File.mkdir_p!(source)
+      File.write!(Path.join(source, "Notes.md"), "# hello")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("adopt_workspace", %{
+                 "parentDir" => Path.dirname(source),
+                 "name" => Path.basename(source),
+                 "icmSourcePath" => source
+               })
+
+      assert inspect(errors) =~ "target_is_source"
+      assert File.exists?(Path.join(source, "Notes.md"))
+    end
+
+    test "a real rename failure surfaces the move_failed wire string (source intact)", %{
+      parent: parent
+    } do
+      source_parent = tmp_dir("valea-source-parent")
+      source = Path.join(source_parent, "knowledge")
+      File.mkdir_p!(source)
+      File.write!(Path.join(source, "Notes.md"), "# hello")
+
+      # Same deterministic non-EXDEV rename failure as the Adopt unit suite:
+      # a read-only source parent makes File.rename/2 fail with :eacces.
+      File.chmod!(source_parent, 0o555)
+      on_exit(fn -> File.chmod!(source_parent, 0o755) end)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("adopt_workspace", %{
+                 "parentDir" => parent,
+                 "name" => "CleansUp",
+                 "icmSourcePath" => source
+               })
+
+      # The exact code, not a substring: without the explicit
+      # `error_message({:move_failed, _})` clause the fallthrough would emit
+      # `inspect({:move_failed, :eacces})` — a wire string no frontend case
+      # matches (and one that still CONTAINS "move_failed", so a =~ here
+      # would pass vacuously).
+      assert Enum.any?(errors, &(&1["type"] == "move_failed"))
+      assert File.exists?(Path.join(source, "Notes.md"))
+      refute File.exists?(Path.join(parent, "CleansUp"))
+    end
   end
 end

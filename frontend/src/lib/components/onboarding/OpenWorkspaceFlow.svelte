@@ -17,7 +17,7 @@
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { decideOnboardingMode, dirname, type OnboardingMode } from './onboarding-path';
+  import { basename, decideOnboardingMode, dirname, slugify, type OnboardingMode } from './onboarding-path';
 
   type Inspection = {
     valid: boolean;
@@ -41,13 +41,27 @@
   let inspection = $state<Inspection | null>(null);
 
   // ICM-aware onboarding (A-T16). `name`/`parentDir` prefill from
-  // `decideOnboardingMode` but stay editable — `name` in particular MUST
-  // end up different from the source folder's own name (the new
-  // workspace can't be scaffolded AT the source path; see
-  // `Valea.Workspace.Adopt`'s `:cycle` rejection when it isn't).
+  // `decideOnboardingMode` but stay editable — the default config is
+  // guaranteed collision-free (`decideOnboardingMode` appends " Workspace"
+  // when the name would make target == source), and if the user edits it
+  // back into a collision, the backend's `:target_is_source` /
+  // `:target_not_empty` / `:cycle` rejections catch it with a clear error.
   let adopt = $state<AdoptStep | null>(null);
   let adopting = $state(false);
   let adoptError = $state<string | null>(null);
+
+  // Resolved destination, live as name/parentDir are edited: the workspace
+  // that will be created, and the exact `mounts/<slug>` inside it the
+  // folder will move into (slug recomputed the same way the backend does —
+  // from the SOURCE folder's basename, not the workspace name). Shown on
+  // the consent card so a collision or a wrong-location pick is visible
+  // before clicking, not after a backend rejection.
+  const adoptTargetPath = $derived(
+    adopt ? `${adopt.parentDir.trim().replace(/\/+$/, '')}/${adopt.name.trim()}` : ''
+  );
+  const adoptMountPath = $derived(
+    adopt ? `${adoptTargetPath}/mounts/${slugify(basename(adopt.originalPath))}` : ''
+  );
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -134,12 +148,16 @@
         return 'That folder is already part of another Valea workspace.';
       case 'cycle':
         return "The new workspace can't be created inside the knowledge folder itself. Choose a different name or location.";
+      case 'target_is_source':
+        return 'The new workspace would be the knowledge folder itself. Choose a different name or location.';
       case 'target_not_empty':
         return 'That folder already has files in it. Pick an empty spot for the new workspace.';
       case 'cross_device':
         return 'Keep the knowledge folder on the same disk as the new workspace for now.';
       case 'source_not_found':
         return 'That folder no longer exists.';
+      case 'move_failed':
+        return "The folder couldn't be moved — it's untouched at its original location. Try again.";
       default:
         return 'Something went wrong while adopting this folder. Try again.';
     }
@@ -220,6 +238,13 @@
         {:else}
           <Input id="adopt-parent-dir" bind:value={adopt.parentDir} disabled={adopting} />
         {/if}
+      </div>
+
+      <div class="flex flex-col gap-1">
+        <span class="text-ink-meta text-[11px] tracking-wide uppercase">New workspace</span>
+        <p class="text-ink-meta font-mono text-[11.5px] break-all">{adoptTargetPath}</p>
+        <span class="text-ink-meta text-[11px] tracking-wide uppercase">Folder moves to</span>
+        <p class="text-ink-meta font-mono text-[11.5px] break-all">{adoptMountPath}</p>
       </div>
 
       {#if adoptError}

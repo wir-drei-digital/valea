@@ -22,6 +22,16 @@ export type OnboardingMode =
  * move. `suggestedName` prefills the new workspace's name field: the
  * manifest's own `name` when it's a real (non-blank) string, otherwise the
  * source folder's own basename.
+ *
+ * Collision guard: the consent step also prefills `parentDir` with the
+ * source's own parent (`dirname(originalPath)`), so a suggested name equal
+ * to the source folder's basename would make the default TARGET path the
+ * source itself — the backend rejects that (`:target_is_source`), but the
+ * default configuration must never be a rejected one. When the candidate
+ * name matches the basename ("Client Notes" inside `.../Client Notes` —
+ * the common case, since adopted manifests are often named after their
+ * folder), " Workspace" is appended: "Client Notes Workspace". The
+ * basename-fallback case always gets this adjustment, by construction.
  */
 export function decideOnboardingMode(inspection: PathInspection, path: string): OnboardingMode {
   switch (inspection.kind) {
@@ -33,10 +43,12 @@ export function decideOnboardingMode(inspection: PathInspection, path: string): 
 
     case 'icm': {
       const trimmedName = inspection.name?.trim();
+      const candidate = trimmedName ? trimmedName : basename(path);
+      const suggestedName = candidate === basename(path) ? `${candidate} Workspace` : candidate;
       return {
         mode: 'adopt',
         originalPath: path,
-        suggestedName: trimmedName ? trimmedName : basename(path),
+        suggestedName,
         description: inspection.description
       };
     }
@@ -60,4 +72,22 @@ export function dirname(path: string): string {
   const trimmed = path.replace(/\/+$/, '');
   const idx = trimmed.lastIndexOf('/');
   return idx <= 0 ? '/' : trimmed.slice(0, idx);
+}
+
+/**
+ * Mirrors `Valea.Workspace.Scaffold.slugify/1` exactly (lowercase, NFD
+ * ascii-fold stripping non-spacing marks, non-alphanumeric runs collapsed
+ * to a single `-`, leading/trailing `-` trimmed, "mount" fallback) — used
+ * only for DISPLAY: the consent card shows the `mounts/<slug>` destination
+ * the backend will move the folder into. The backend recomputes the slug
+ * itself from the source basename; this never feeds a filesystem path.
+ */
+export function slugify(name: string): string {
+  const slug = name
+    .normalize('NFD')
+    .replace(/\p{Mn}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug === '' ? 'mount' : slug;
 }

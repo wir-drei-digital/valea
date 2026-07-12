@@ -178,6 +178,17 @@ defmodule Valea.Api.Workspace do
   defp error_message(:source_in_workspace), do: Error.new("source_in_workspace")
   defp error_message(:source_is_open_workspace), do: Error.new("source_is_open_workspace")
   defp error_message(:cycle), do: Error.new("cycle")
+  defp error_message(:target_is_source), do: Error.new("target_is_source")
   defp error_message(:cross_device), do: Error.new("cross_device")
+
+  # A non-EXDEV rename failure (`Adopt.map_move_error/1`'s catch-all). The
+  # underlying posix reason (:eacces, ...) is collapsed to the bare code
+  # the frontend matches on — its message tells the user the source folder
+  # is intact at its original location (Adopt removed the scaffolded
+  # target and never touched the source). Without this clause the
+  # fallthrough below would emit `inspect({:move_failed, reason})`, a wire
+  # string no frontend case matches.
+  defp error_message({:move_failed, _reason}), do: Error.new("move_failed")
+
   defp error_message(other), do: Error.new(inspect(other))
 end
