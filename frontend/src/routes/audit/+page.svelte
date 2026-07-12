@@ -6,7 +6,7 @@
   // `wireIcmEvents` in `icm.svelte.ts`); this route only needs the
   // first-load `refetch()`.
   import { onMount } from 'svelte';
-  import { AppFrame, EmptyState } from '$lib/components/shell';
+  import { AppFrame, EmptyState, PageHeader } from '$lib/components/shell';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
   import ListChecks from '@lucide/svelte/icons/list-checks';
   import { auditStore } from '$lib/stores/audit.svelte';
@@ -19,12 +19,10 @@
 
 <AppFrame>
   {#snippet main()}
-    <header class="flex flex-col gap-2 pb-2">
-      <h1 class="font-display text-ink-heading text-[24px]">Audit log</h1>
-      <p class="text-ink-body max-w-[560px] text-[13.5px]">
-        Every action — synced, drafted, approved — recorded here as plain lines, oldest at the bottom.
-      </p>
-    </header>
+    <PageHeader
+      title="Audit log"
+      subtitle="Every action — synced, drafted, approved — recorded here as plain lines, oldest at the bottom."
+    />
 
     {#if !auditStore.loaded}
       <div class="flex flex-col gap-2" aria-hidden="true">

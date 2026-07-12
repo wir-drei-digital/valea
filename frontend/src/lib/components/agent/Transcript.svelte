@@ -35,7 +35,7 @@
   let { store }: { store: AgentSessionStore } = $props();
 </script>
 
-<div class="flex flex-col gap-3.5 px-4 py-4">
+<div class="flex flex-col gap-4 px-4 py-5">
   {#each store.items as item (item.id)}
     {#if item.type === 'message' && item.role === 'user'}
       <MessageItem role="user" text={asString(item.text)} />

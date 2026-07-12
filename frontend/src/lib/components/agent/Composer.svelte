@@ -62,39 +62,55 @@
   }
 </script>
 
-<div class="border-paper-hairline border-t px-4 py-3">
-  <textarea
-    bind:this={textareaEl}
-    bind:value={text}
-    oninput={autogrow}
-    onkeydown={onKeydown}
-    disabled={busy}
-    rows="1"
-    placeholder="Message the agent…"
-    class="text-ink-body placeholder:text-ink-meta block max-h-[160px] min-h-[20px] w-full resize-none overflow-y-auto bg-transparent text-[13.5px] leading-[1.5] focus:outline-none disabled:opacity-60"
-  ></textarea>
+<!-- Composer per the cockpit chat screen: a bordered card floating on the
+     surface with the send action inside it, and the session's config
+     selectors as a quiet row underneath — not chrome attached to a
+     hairline. -->
+<div class="px-4 pt-1 pb-4">
+  <div
+    class="border-paper-border bg-paper-card shadow-card focus-within:border-paper-button-border rounded-[14px] border transition-colors"
+  >
+    <div class="flex items-end gap-3 px-4 py-3">
+      <textarea
+        bind:this={textareaEl}
+        bind:value={text}
+        oninput={autogrow}
+        onkeydown={onKeydown}
+        disabled={busy}
+        rows="1"
+        placeholder="Message the agent…"
+        class="text-ink-body placeholder:text-ink-meta block max-h-[160px] min-h-[20px] flex-1 resize-none overflow-y-auto bg-transparent text-[13.5px] leading-[1.5] focus:outline-none disabled:opacity-60"
+      ></textarea>
 
-  <div class="mt-2 flex flex-wrap items-center gap-1.5">
-    {#each configItems as item (item.id)}
-      <ConfigChip {item} onSelect={(value) => onSetConfig(item.id, value)} />
-    {/each}
-
-    <span class="flex-1"></span>
-
-    {#if busy}
-      <span class="text-ink-meta text-[12px]">Working…</span>
-      <button type="button" onclick={onStop} class="text-ink-secondary hover:text-ink-heading text-[12px]">
-        Stop
-      </button>
-    {:else}
-      <button
-        type="button"
-        onclick={submit}
-        disabled={!text.trim()}
-        class="bg-act hover:bg-act-hover rounded-md px-3 py-1.5 text-[12.5px] font-medium text-white disabled:opacity-40"
-      >
-        Send
-      </button>
-    {/if}
+      {#if busy}
+        <div class="flex shrink-0 items-center gap-2.5">
+          <span class="text-ink-meta text-[12px]">Working…</span>
+          <button
+            type="button"
+            onclick={onStop}
+            class="border-paper-button-border text-ink-secondary hover:bg-paper-pill rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-colors"
+          >
+            Stop
+          </button>
+        </div>
+      {:else}
+        <button
+          type="button"
+          onclick={submit}
+          disabled={!text.trim()}
+          class="bg-act hover:bg-act-hover shrink-0 rounded-lg px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors disabled:opacity-40"
+        >
+          Send
+        </button>
+      {/if}
+    </div>
   </div>
+
+  {#if configItems.length > 0}
+    <div class="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1">
+      {#each configItems as item (item.id)}
+        <ConfigChip {item} onSelect={(value) => onSetConfig(item.id, value)} />
+      {/each}
+    </div>
+  {/if}
 </div>

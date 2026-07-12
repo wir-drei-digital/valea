@@ -89,7 +89,10 @@
 
   function sessionTitle(session: AgentSessionSummary): string {
     if (session.title && session.title.trim().length > 0) return session.title;
-    if (session.kind === 'workflow') return session.workflow ?? 'Workflow run';
+    // Untitled workflow runs show a plain title here — the workflow's file
+    // path renders as its own mono line under the title, so repeating it as
+    // the title would double it up.
+    if (session.kind === 'workflow') return 'Workflow run';
     return 'Chat session';
   }
 
@@ -135,91 +138,97 @@
   }
 </script>
 
-<AppFrame>
+<AppFrame mainVariant="column">
   {#snippet list()}
-    <ListPane>
-      {#snippet header()}
-        <p class="text-overline">Chat</p>
+    <ListPane title="Chat">
+      {#snippet action()}
+        <Button type="button" variant="outline" size="sm" onclick={() => void startSession()}>
+          New session
+        </Button>
       {/snippet}
       {#snippet children()}
-        <ul class="flex flex-col py-1">
+        <ul class="divide-paper-hairline flex flex-col divide-y">
           {#each sortedSessions(sessionsList.sessions) as session (session.id)}
+            {@const selected = session.id === selectedId}
             <li class:opacity-75={!session.live}>
               <a
                 href={`/chat?session=${session.id}`}
-                class="flex items-center gap-2 py-2 pr-3 pl-3 text-[13px] text-ink-body transition-colors hover:bg-paper-pill"
-                class:bg-paper-card={session.id === selectedId}
+                class="block border-l-[3px] py-3 pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
+                class:border-act={selected}
+                class:border-transparent={!selected}
+                class:bg-paper-card={selected}
               >
-                <span
-                  class="size-1.5 shrink-0 rounded-full"
-                  class:bg-act-dot={session.live}
-                  aria-hidden="true"
-                ></span>
-                <span class="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
+                <span class="flex items-baseline justify-between gap-3">
+                  <span class="flex min-w-0 items-center gap-1.5">
+                    {#if session.live}
+                      <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
+                    {/if}
+                    <span class="text-ink-heading truncate text-[13.5px] [font-weight:650]">
+                      {sessionTitle(session)}
+                    </span>
+                  </span>
+                  <span class="text-ink-meta shrink-0 text-[11.5px]">{relativeTime(session.startedAt)}</span>
+                </span>
                 {#if session.kind === 'workflow' && session.workflow}
-                  <span
-                    class="border-paper-chip-border bg-paper-card shrink-0 rounded-sm border px-1.5 py-px font-mono text-[10px] text-ink-secondary"
-                  >
+                  <span class="text-ink-meta mt-1 block truncate font-mono text-[10.5px]">
                     {session.workflow}
                   </span>
                 {/if}
-                <span class="text-ink-meta shrink-0 text-[11px]">{relativeTime(session.startedAt)}</span>
               </a>
             </li>
           {/each}
         </ul>
-      {/snippet}
-      {#snippet footer()}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          class="w-full"
-          onclick={() => void startSession()}
-        >
-          New session
-        </Button>
       {/snippet}
     </ListPane>
   {/snippet}
 
   {#snippet main()}
     {#if doctorOverride}
-      <DoctorPanel />
+      <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
+        <DoctorPanel />
+      </div>
     {:else if !selectedId}
-      <EmptyState
-        icon={MessageSquare}
-        title="Your assistant"
-        body="Talk to your assistant about the business — everything it knows is a file in your folder."
-      >
-        {#snippet actions()}
-          <Button type="button" onclick={() => void startSession()}>Start a session</Button>
-          <button
-            type="button"
-            class="text-ink-secondary hover:text-ink-heading text-[12.5px]"
-            onclick={() => (doctorOverride = true)}
-          >
-            Run checks
-          </button>
-          {#if startError}
-            <p class="text-warn-ink text-[12.5px]" role="alert">{startError}</p>
-          {/if}
-        {/snippet}
-      </EmptyState>
+      <div class="mx-auto w-full max-w-[660px] px-8 py-8">
+        <EmptyState
+          icon={MessageSquare}
+          title="Your assistant"
+          body="Talk to your assistant about the business — everything it knows is a file in your folder."
+        >
+          {#snippet actions()}
+            <Button type="button" onclick={() => void startSession()}>Start a session</Button>
+            <button
+              type="button"
+              class="text-ink-secondary hover:text-ink-heading text-[12.5px]"
+              onclick={() => (doctorOverride = true)}
+            >
+              Run checks
+            </button>
+            {#if startError}
+              <p class="text-warn-ink text-[12.5px]" role="alert">{startError}</p>
+            {/if}
+          {/snippet}
+        </EmptyState>
+      </div>
     {:else if sessionDoctor}
-      <DoctorPanel />
+      <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
+        <DoctorPanel />
+      </div>
     {:else if store}
-      <div class="flex flex-col gap-3">
+      <!-- Transcript scrolls; the composer (or the ended/starting row) stays
+           docked at the pane's bottom edge, per the cockpit chat screen. -->
+      <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
         <PlanBar item={planItem} />
 
-        <Transcript {store} />
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          <Transcript {store} />
+        </div>
 
         <UsageLine item={usageItem} />
 
         {#if starting}
-          <p class="text-ink-meta px-4 py-3 text-[12.5px]">Starting…</p>
+          <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
         {:else if ended}
-          <div class="border-paper-hairline flex items-center justify-between border-t px-4 py-3">
+          <div class="border-paper-hairline mx-4 mb-4 flex items-center justify-between gap-3 border-t px-0 pt-3">
             <p class="text-ink-meta text-[12.5px]">This session has ended.</p>
             <Button type="button" variant="outline" size="sm" onclick={() => void startFollowUp()}>
               Start a follow-up session
@@ -236,7 +245,7 @@
         {/if}
       </div>
     {:else}
-      <p class="text-ink-meta text-[13px]">Loading…</p>
+      <p class="text-ink-meta px-8 py-8 text-[13px]">Loading…</p>
     {/if}
   {/snippet}
 </AppFrame>

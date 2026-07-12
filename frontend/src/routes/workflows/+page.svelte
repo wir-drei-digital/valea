@@ -8,7 +8,7 @@
   // first-load `refetch()`, same convention as `icmStore`/`queueStore` on
   // Today.
   import { onMount } from 'svelte';
-  import { AppFrame, EmptyState } from '$lib/components/shell';
+  import { AppFrame, EmptyState, PageHeader } from '$lib/components/shell';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { workflowsStore } from '$lib/stores/workflows.svelte';
@@ -21,13 +21,10 @@
 
 <AppFrame>
   {#snippet main()}
-    <header class="flex flex-col gap-2 pb-2">
-      <h1 class="font-display text-ink-heading text-[24px]">Workflows</h1>
-      <p class="text-ink-body max-w-[560px] text-[13.5px]">
-        Every workflow is a plain file you can read — its trigger, its steps, and where it needs your
-        approval, nothing hidden.
-      </p>
-    </header>
+    <PageHeader
+      title="Workflows"
+      subtitle="Every workflow is a plain file you can read — its trigger, its steps, and where it needs your approval, nothing hidden."
+    />
 
     {#if !workflowsStore.loaded}
       <div class="flex flex-col gap-4" aria-hidden="true">

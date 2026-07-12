@@ -1,10 +1,13 @@
 <!doctype html>
-<html lang="en" class="dark" style="background:#0c0a13">
+<!-- Light-only app (DESIGN_SYSTEM: "Light only; dark mode deferred").
+     color-scheme drives UA chrome (scrollbars, form controls); the inline
+     background covers first paint + overscroll before layout.css loads. -->
+<html lang="en" style="background:#fbf8f1">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
-		<meta name="color-scheme" content="dark" />
+		<meta name="color-scheme" content="light" />
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

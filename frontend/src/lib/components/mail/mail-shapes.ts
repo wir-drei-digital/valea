@@ -101,6 +101,18 @@ export function addressLabel(addr: RawAddress): string {
   return name || email;
 }
 
+/** Just the display name of an address ("" when absent) — the read-pane header renders name and email as separate pieces. */
+export function addressName(addr: RawAddress): string {
+  if (!addr || typeof addr !== 'object') return '';
+  return typeof addr.name === 'string' ? addr.name.trim() : '';
+}
+
+/** Just the email of an address ("" when absent) — counterpart of `addressName`. */
+export function addressEmail(addr: RawAddress): string {
+  if (!addr || typeof addr !== 'object') return '';
+  return typeof addr.email === 'string' ? addr.email.trim() : '';
+}
+
 /** Comma-joined `addressLabel` over a `to`-style address list; "" for a non-array or all-blank entries. */
 export function addressListLabel(list: unknown): string {
   if (!Array.isArray(list)) return '';

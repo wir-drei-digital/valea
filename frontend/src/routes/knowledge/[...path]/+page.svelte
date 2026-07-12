@@ -2,17 +2,17 @@
   import { page } from '$app/state';
   import { beforeNavigate, goto } from '$app/navigation';
   import { onDestroy } from 'svelte';
-  import { AppFrame, ListPane } from '$lib/components/shell';
+  import { AppFrame, ListPane, PageHeader, SegmentedControl } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { api, type IcmPageData } from '$lib/api/client';
   import { encodePath, type IcmNode } from '$lib/shell/nav';
   import { Skeleton } from '$lib/components/ui/skeleton';
-  import { Button } from '$lib/components/ui/button/index.js';
   import PageEditor from '$lib/components/editor/PageEditor.svelte';
   import PageMeta from '$lib/components/editor/PageMeta.svelte';
   import ConflictBanner from '$lib/components/editor/ConflictBanner.svelte';
   import { PageEditorStore } from '$lib/stores/page-editor.svelte';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
+  import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
 
   let newEntryMode: 'page' | 'folder' = $state('page');
@@ -46,6 +46,32 @@
 
   const node = $derived(findNode(icmStore.nodes, decodedPath));
   const isPage = $derived(node?.type === 'page');
+
+  // Overline above the page title — the parent folder the page lives in
+  // (the memory screen's kind line), or the section root for top-level pages.
+  const parentLabel = $derived.by(() => {
+    const segments = decodedPath.split('/').filter(Boolean);
+    return segments.length > 1 ? segments[segments.length - 2] : 'Knowledge';
+  });
+
+  // The list pane always shows a folder's entries — the open folder itself,
+  // or (on a page route) the folder CONTAINING the page, with the open page
+  // highlighted like mail/chat's selected rows. Before this, page routes
+  // rendered an empty pane. New entries created from the pane header land in
+  // this listed folder (`path`), which for page routes is the parent — not
+  // the page's own path.
+  const listContext = $derived.by((): { title: string; path: string; entries: IcmNode[] } => {
+    if (node?.type === 'folder') {
+      return { title: node.name, path: node.path, entries: node.children ?? [] };
+    }
+    const segments = decodedPath.split('/').filter(Boolean);
+    const parentPath = segments.slice(0, -1).join('/');
+    const parent = parentPath ? findNode(icmStore.nodes, parentPath) : undefined;
+    if (parent?.type === 'folder') {
+      return { title: parent.name, path: parent.path, entries: parent.children ?? [] };
+    }
+    return { title: 'Knowledge', path: '', entries: icmStore.nodes };
+  });
 
   type PageContent = IcmPageData;
 
@@ -264,46 +290,43 @@
   }}
 >
   {#snippet list()}
-    <ListPane>
-      {#snippet header()}
-        <p class="text-overline">{node?.type === 'folder' ? node.name : 'Knowledge'}</p>
+    <ListPane title={listContext.title}>
+      {#snippet action()}
+        <NewEntryButton onNew={openNew} />
       {/snippet}
       {#snippet children()}
         <ul class="flex flex-col py-1">
-          {#if node?.type === 'folder'}
-            {#each node.children ?? [] as child (child.path)}
-              <li class="group relative">
-                <a
-                  href={`/knowledge/${encodePath(child.path)}`}
-                  class="flex items-center gap-2 py-2 pr-9 pl-3 text-[13px] text-ink-body transition-colors hover:bg-paper-pill"
+          {#each listContext.entries as child (child.path)}
+            {@const selected = child.path === decodedPath}
+            <li class="group relative">
+              <a
+                href={`/knowledge/${encodePath(child.path)}`}
+                class="flex items-center gap-2 border-l-[3px] py-2 pr-9 pl-3 text-[13px] transition-colors hover:bg-paper-pill"
+                class:border-act={selected}
+                class:border-transparent={!selected}
+                class:bg-paper-card={selected}
+              >
+                <span
+                  class={[
+                    'min-w-0 flex-1 truncate',
+                    selected ? 'text-ink-heading [font-weight:650]' : 'text-ink-body'
+                  ]}
                 >
-                  <span class="min-w-0 flex-1 truncate">{child.name}</span>
-                  {#if child.type === 'folder'}
-                    <span class="text-ink-meta text-[11px] tabular-nums">{child.pageCount ?? 0}</span>
-                  {/if}
-                </a>
-                <EntryMenu
-                  path={child.path}
-                  name={child.name}
-                  isFolder={child.type === 'folder'}
-                  class="absolute top-1/2 right-0.5 -translate-y-1/2"
-                />
-              </li>
-            {/each}
-          {/if}
+                  {child.name}
+                </span>
+                {#if child.type === 'folder'}
+                  <span class="text-ink-meta text-[11px] tabular-nums">{child.pageCount ?? 0}</span>
+                {/if}
+              </a>
+              <EntryMenu
+                path={child.path}
+                name={child.name}
+                isFolder={child.type === 'folder'}
+                class="absolute top-1/2 right-0.5 -translate-y-1/2"
+              />
+            </li>
+          {/each}
         </ul>
-      {/snippet}
-      {#snippet footer()}
-        {#if node?.type === 'folder'}
-          <div class="flex gap-2">
-            <Button type="button" variant="outline" size="sm" class="flex-1" onclick={() => openNew('page')}>
-              New page
-            </Button>
-            <Button type="button" variant="outline" size="sm" class="flex-1" onclick={() => openNew('folder')}>
-              New folder
-            </Button>
-          </div>
-        {/if}
       {/snippet}
     </ListPane>
   {/snippet}
@@ -318,46 +341,32 @@
     {:else if !node}
       <p class="text-ink-body text-[13.5px]">This page doesn't exist anymore.</p>
     {:else if node.type === 'folder'}
-      <header class="flex flex-col gap-2">
-        <h1 class="font-display text-[24px] text-ink-heading">{node.name}</h1>
-        <p class="max-w-[520px] text-[13.5px] text-ink-body">Pick a page from the list to read it.</p>
-      </header>
+      <PageHeader title={node.name} subtitle="Pick a page from the list to read it." />
     {:else if loading}
       <p class="text-ink-body text-[13.5px]">Loading…</p>
     {:else if loadFailed || !content || !store}
       <p class="text-ink-body text-[13.5px]">This page doesn't exist anymore.</p>
     {:else}
       <article class="flex flex-col gap-4">
-        <div class="flex items-center justify-between gap-3">
-          <div class="flex items-center gap-3">
-            <p class="font-mono text-ink-meta text-[12px]">icm/{decodedPath}</p>
-            <div role="tablist" aria-label="View" class="bg-paper-track inline-flex items-center rounded-full p-0.5">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={viewMode === 'friendly'}
-                class={`rounded-full px-3 py-1 text-[12px] transition-colors ${
-                  viewMode === 'friendly' ? 'bg-paper-card text-ink-heading' : 'text-ink-meta'
-                }`}
-                onclick={() => toggleView('friendly')}
-              >
-                Friendly view
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={viewMode === 'raw'}
-                class={`rounded-full px-3 py-1 text-[12px] transition-colors ${
-                  viewMode === 'raw' ? 'bg-paper-card text-ink-heading' : 'text-ink-meta'
-                }`}
-                onclick={() => toggleView('raw')}
-              >
-                Raw
-              </button>
-            </div>
+        <header class="flex flex-col gap-1.5">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-overline">{parentLabel}</p>
+            <SegmentedControl
+              label="View"
+              value={viewMode}
+              options={[
+                { value: 'friendly', label: 'Friendly view' },
+                { value: 'raw', label: 'Raw' }
+              ]}
+              onChange={(v) => toggleView(v as 'friendly' | 'raw')}
+            />
           </div>
-          <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
-        </div>
+          <h1 class="font-display text-ink-heading text-[30px] leading-tight font-medium">{content.title}</h1>
+          <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
+            <span class="text-ink-meta font-mono text-[11.5px]">icm/{decodedPath}</span>
+          </div>
+        </header>
 
         {#if store.state === 'dirty' && store.error === 'workspace_changed'}
           <p role="alert" class="text-warn-ink text-[12px]">
@@ -369,8 +378,6 @@
             Couldn't save this page. Your changes are still here — retrying on your next edit.
           </p>
         {/if}
-
-        <h1 class="font-display text-[24px] text-ink-heading">{content.title}</h1>
 
         {#if store.state === 'conflict'}
           <ConflictBanner
@@ -402,4 +409,4 @@
   {/snippet}
 </AppFrame>
 
-<NewEntryDialog mode={newEntryMode} parentPath={decodedPath} bind:open={newEntryOpen} />
+<NewEntryDialog mode={newEntryMode} parentPath={listContext.path} bind:open={newEntryOpen} />

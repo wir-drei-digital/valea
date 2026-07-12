@@ -8,8 +8,10 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { onMount, untrack } from 'svelte';
-  import { AppFrame, ListPane, EmptyState } from '$lib/components/shell';
+  import { AppFrame, ListPane, FilterPill, EmptyState } from '$lib/components/shell';
+  import { Button } from '$lib/components/ui/button/index.js';
   import MailIcon from '@lucide/svelte/icons/mail';
+  import { syncNowErrorMessage } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import MessageList from '$lib/components/mail/MessageList.svelte';
@@ -95,23 +97,63 @@
     };
   });
 
-  function syncNow(): Promise<string | null> {
-    return mailStore.syncNow(workspaceStore.generation ?? 0);
+  // Which of the pane's two lists is showing: the indexed AI/Review
+  // messages, or the raw cached inbox headers. Same data as before the
+  // filter-pill header landed — the pills replaced `InboxSection`'s inline
+  // collapse toggle, they don't filter within either set.
+  let tab = $state<'review' | 'inbox'>('review');
+
+  // "Sync now" lives in the pane header next to the title; its in-flight
+  // and error state belong to the route, and the resulting message is
+  // handed to `SyncStatusLine` (the pane footer) for display.
+  let syncRequesting = $state(false);
+  let syncRequestError = $state<string | null>(null);
+  const syncBusy = $derived(syncRequesting || mailStore.status?.state === 'syncing');
+
+  async function handleSyncNow(): Promise<void> {
+    syncRequesting = true;
+    syncRequestError = null;
+    const code = await mailStore.syncNow(workspaceStore.generation ?? 0);
+    syncRequesting = false;
+    if (code) syncRequestError = syncNowErrorMessage(code);
   }
 </script>
 
 <AppFrame>
   {#snippet list()}
-    <ListPane>
-      {#snippet header()}
-        <p class="text-overline">Mail</p>
+    <ListPane title="Mail">
+      {#snippet action()}
+        <Button type="button" variant="outline" size="sm" disabled={syncBusy} onclick={() => void handleSyncNow()}>
+          Sync now
+        </Button>
+      {/snippet}
+      {#snippet filter()}
+        <FilterPill
+          label="Review"
+          count={mailStore.messages.length}
+          active={tab === 'review'}
+          onclick={() => (tab = 'review')}
+        />
+        <FilterPill
+          label="Inbox"
+          count={mailStore.inbox.length}
+          active={tab === 'inbox'}
+          onclick={() => (tab = 'inbox')}
+        />
       {/snippet}
       {#snippet children()}
-        <MessageList messages={mailStore.messages} {selectedId} />
-        <InboxSection entries={mailStore.inbox} />
+        {#if tab === 'review'}
+          <MessageList messages={mailStore.messages} {selectedId} />
+        {:else}
+          <InboxSection entries={mailStore.inbox} />
+        {/if}
       {/snippet}
       {#snippet footer()}
-        <SyncStatusLine status={mailStore.status} onSyncNow={syncNow} onSettings={() => void goto('/mail?setup=1')} />
+        <SyncStatusLine
+          status={mailStore.status}
+          requestError={syncRequestError}
+          onSettings={() => void goto('/mail?setup=1')}
+        />
       {/snippet}
     </ListPane>
   {/snippet}

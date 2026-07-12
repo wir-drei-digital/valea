@@ -13,10 +13,15 @@
   let {
     list,
     main,
+    rail,
+    mainVariant,
     onBeforeMutateActive
   }: {
     list?: Snippet;
     main: Snippet;
+    rail?: Snippet;
+    /** Forwarded to `AppShell` — see its doc comment. */
+    mainVariant?: 'prose' | 'column';
     /** Forwarded to `Sidebar`/`IcmTree` — see `IcmTree.svelte`'s doc comment. */
     onBeforeMutateActive?: () => Promise<void>;
   } = $props();
@@ -28,7 +33,7 @@
   const icmNav = $derived(icmToNav(icmStore.nodes));
 </script>
 
-<AppShell {list} {main}>
+<AppShell {list} {main} {rail} {mainVariant}>
   {#snippet sidebar()}
     <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {icmNav} {onBeforeMutateActive} />
   {/snippet}

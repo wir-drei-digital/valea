@@ -1,11 +1,13 @@
 <script lang="ts">
-  // Read pane for a selected message (docs/DESIGN_SYSTEM.md §8/§10): header
-  // block (From/To/Subject/Date) as structured facts (label `text-ink-meta`,
-  // value 600 ink — same convention as `queue/DraftReview.svelte`'s To/
-  // Subject rows), body as plain preformatted TEXT (`white-space: pre-wrap`,
-  // NOT markdown-rendered, NEVER `{@html}` — untrusted mail content, same
-  // inert-interpolation posture as `DraftReview`'s body), attachment chips,
-  // then either the "Run triage" action or a neutral "Processed" badge.
+  // Read pane for a selected message, per the cockpit mail screen: subject
+  // as the Newsreader page headline, one meta row under it (sender-name
+  // pill · address · date, and the message's workspace file path in mono
+  // right-aligned — the §1 ownership signature), hairline, then the body as
+  // plain preformatted TEXT directly on the reading surface
+  // (`white-space: pre-wrap`, NOT markdown-rendered, NEVER `{@html}` —
+  // untrusted mail content, same inert-interpolation posture as
+  // `DraftReview`'s body), attachment chips, then either the "Run triage"
+  // action or a neutral "Processed" badge behind a closing hairline.
   //
   // Run triage mirrors `today/InquiryTriageCard.svelte`'s in-flight/error
   // handling (`prepareReply`/`runWorkflowErrorMessage`) but deliberately
@@ -26,8 +28,9 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import Paperclip from '@lucide/svelte/icons/paperclip';
   import {
-    addressLabel,
+    addressEmail,
     addressListLabel,
+    addressName,
     attachmentsFromFrontmatter,
     canRunTriage,
     formatBytes,
@@ -44,9 +47,17 @@
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
   const status = $derived(typeof frontmatter.status === 'string' ? frontmatter.status : null);
   const subject = $derived(subjectLabel(typeof frontmatter.subject === 'string' ? frontmatter.subject : null));
-  const from = $derived(addressLabel(frontmatter.from as RawAddress));
+  const fromName = $derived(addressName(frontmatter.from as RawAddress));
+  const fromEmail = $derived(addressEmail(frontmatter.from as RawAddress));
   const to = $derived(addressListLabel(frontmatter.to));
   const date = $derived(typeof frontmatter.date === 'string' ? frontmatter.date : null);
+  // "email · date" next to the sender-name pill; falls back to
+  // "(unknown sender)" only when the address carried neither part.
+  const metaLine = $derived(
+    [fromName ? fromEmail : fromEmail || '(unknown sender)', formatDateTime(date)]
+      .filter(Boolean)
+      .join(' · ')
+  );
   const attachments = $derived(attachmentsFromFrontmatter(message.frontmatter));
 
   let running = $state(false);
@@ -110,31 +121,27 @@
   }
 </script>
 
-<div class="flex flex-col gap-6">
-  <dl class="border-paper-hairline divide-paper-hairline flex flex-col divide-y rounded-lg border">
-    <div class="flex items-baseline justify-between gap-4 px-3 py-2 text-[13px]">
-      <dt class="text-ink-meta shrink-0">From</dt>
-      <dd class="text-ink-heading truncate text-right font-semibold">{from}</dd>
+<article class="flex flex-col gap-6">
+  <header class="border-paper-hairline flex flex-col gap-2.5 border-b pb-5">
+    <h1 class="font-display text-ink-heading text-[22px] leading-snug font-medium">{subject}</h1>
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      {#if fromName}
+        <span
+          class="bg-paper-pill text-ink-secondary inline-flex items-center rounded-full px-2.5 py-0.5 text-[12px] font-semibold"
+        >
+          {fromName}
+        </span>
+      {/if}
+      <span class="text-ink-secondary min-w-0 truncate text-[12.5px]">{metaLine}</span>
+      <span class="min-w-4 flex-1" aria-hidden="true"></span>
+      <span class="text-ink-meta max-w-full truncate font-mono text-[11px]">{message.path}</span>
     </div>
     {#if to}
-      <div class="flex items-baseline justify-between gap-4 px-3 py-2 text-[13px]">
-        <dt class="text-ink-meta shrink-0">To</dt>
-        <dd class="text-ink-heading truncate text-right font-semibold">{to}</dd>
-      </div>
+      <p class="text-ink-meta text-[12px]">To {to}</p>
     {/if}
-    <div class="flex items-baseline justify-between gap-4 px-3 py-2 text-[13px]">
-      <dt class="text-ink-meta shrink-0">Subject</dt>
-      <dd class="text-ink-heading truncate text-right font-semibold">{subject}</dd>
-    </div>
-    <div class="flex items-baseline justify-between gap-4 px-3 py-2 text-[13px]">
-      <dt class="text-ink-meta shrink-0">Date</dt>
-      <dd class="text-ink-heading truncate text-right font-semibold">{formatDateTime(date) || '—'}</dd>
-    </div>
-  </dl>
+  </header>
 
-  <div class="border-paper-border bg-paper-card rounded-xl border px-5 py-4">
-    <p class="text-ink-body font-sans text-[13.5px] leading-relaxed whitespace-pre-wrap">{message.body}</p>
-  </div>
+  <p class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap">{message.body}</p>
 
   {#if attachments.length > 0}
     <div>
@@ -158,14 +165,14 @@
     </div>
   {/if}
 
-  {#if status === 'processed'}
-    <span
-      class="bg-paper-track text-ink-secondary inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold tracking-[0.04em] uppercase"
-    >
-      Processed
-    </span>
-  {:else}
-    <div class="flex flex-wrap items-center gap-2 pt-1">
+  <div class="border-paper-hairline flex flex-wrap items-center gap-2.5 border-t pt-4">
+    {#if status === 'processed'}
+      <span
+        class="bg-paper-track text-ink-secondary inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold tracking-[0.04em] uppercase"
+      >
+        Processed
+      </span>
+    {:else}
       <Button type="button" disabled={!canRun} onclick={() => void runTriage()}>Run triage</Button>
       {#if preparing}
         <p class="text-ink-meta text-[12.5px]">Preparing… watch Today/Queue.</p>
@@ -173,6 +180,6 @@
       {#if runError}
         <p class="text-warn-ink text-[12.5px]" role="alert">{runError}</p>
       {/if}
-    </div>
-  {/if}
-</div>
+    {/if}
+  </div>
+</article>

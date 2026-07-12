@@ -37,10 +37,10 @@
           type="button"
           {...props}
           title={name}
-          class="border-paper-chip-border bg-paper-card flex items-center gap-1 rounded-sm border px-2 py-1 text-[11.5px] text-ink-secondary hover:bg-paper-panel data-[state=open]:bg-paper-panel"
+          class="text-ink-secondary hover:text-ink-heading data-[state=open]:text-ink-heading flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] transition-colors"
         >
           <span class="text-ink-meta">{name}</span>
-          <span class="max-w-[12ch] truncate text-ink-body">{display}</span>
+          <span class="max-w-[16ch] truncate font-medium">{display}</span>
           <ChevronDown class="text-ink-meta size-3" aria-hidden="true" />
         </button>
       {/snippet}

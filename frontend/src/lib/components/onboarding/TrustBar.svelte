@@ -8,8 +8,10 @@
   let { onExplain }: { onExplain: () => void } = $props();
 </script>
 
+<!-- Full-width window footer on the welcome screen — the trust facts span
+     the whole window edge-to-edge, mirroring the app's status-bar band. -->
 <div
-  class="flex flex-col gap-4 border-t border-paper-hairline pt-5 text-[12.5px] text-ink-secondary sm:flex-row sm:items-center sm:justify-between"
+  class="border-paper-hairline text-ink-secondary flex flex-col gap-4 border-t px-8 py-4 text-[12.5px] sm:flex-row sm:items-center sm:justify-between"
 >
   <ul class="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-6">
     <li class="flex items-center gap-2">

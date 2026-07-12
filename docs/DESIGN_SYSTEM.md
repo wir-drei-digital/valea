@@ -120,6 +120,8 @@ Scale:
 |---|---|
 | Greeting ("Good morning, Mara.") | Newsreader 500 · 32–40 |
 | Page title ("Open loops") | Newsreader · 21–24 |
+| Memory page title ("Founder Coaching") | Newsreader 500 · 30 |
+| List-pane title ("Mail", "Chat") | Newsreader 500 · 21 |
 | Rail title ("Around your week") | Newsreader · 19 |
 | Quote (verbatim source material) | italic · 14–15 |
 | Card title | Instrument Sans 650 · 13.5–15 |
@@ -197,8 +199,14 @@ bottom-right.
 
 ## 8. Lists & rows
 
+- **List-pane header** — Newsreader 21 pane title with a secondary action
+  right-aligned on the same row; optional filter-pill row underneath (999px
+  pills, the active one filled on the `#EEE8D9` track, idle ones plain
+  `#57503F` text); a hairline separates the header block from the rows.
 - **Mail list item** — selected = `#FFFEFA` fill + 3px green left bar. Status
-  badges show the assistant's work at a glance — never more than two.
+  badges show the assistant's work at a glance — never more than two. Sender
+  line 650 with the relative time right-aligned, subject under it, hairline
+  row separators.
 - **Task row** — checkbox 15px / r4 / border `#C9BFA6` (terracotta `#E0BDA9`
   when the action sends). Provenance chip is mandatory. "Waiting on others"
   rows use a dashed circle · 0.85 opacity.
@@ -224,6 +232,11 @@ Chat:
   mirrored radius, **source chips underneath every substantive answer**.
 - Memory-update suggestion cards (§6) render inline in the thread, full width
   of the bubble column.
+- **Composer** — a bordered `#E6DECB` card (radius 14, card paper, card
+  shadow) floating on the surface, docked at the pane's bottom edge with the
+  transcript scrolling above it; the send button sits inside the card,
+  bottom-right. Session config selectors (model, mode, …) render as a quiet
+  12px text-plus-chevron row *below* the card, never as chips inside it.
 
 ## 10. Panels, provenance & the hood
 
@@ -263,6 +276,12 @@ Chat:
   use; the panes are shared components, never per-feature layouts.
 - The three consequence colors are first-class tokens (`--act`, `--suggest`,
   `--warn` families), not ad-hoc values in components.
+- Shared shell primitives — one implementation each, never re-rolled per
+  view: `ListPane` (pane title + action + filter row), `PageHeader` (§11
+  main-pane header), `SegmentedControl` (view toggles), `FilterPill` (list
+  filters), `RailCard` (§10 rail cards), `EmptyState`. Empty states grow a
+  small procedural garden (`PlantGrowth`) — decorative only, `aria-hidden`,
+  fully static under `prefers-reduced-motion`.
 - Fonts are bundled with the app (e.g. fontsource packages) — a local-first
   desktop app must not fetch fonts from a CDN at runtime.
 - Light only; dark mode deferred (unchanged decision).

@@ -4,6 +4,7 @@
   // anatomy: two cards (start fresh / continue), trust bar footer, recent
   // workspaces list.
   import { Button } from '$lib/components/ui/button/index.js';
+  import Folder from '@lucide/svelte/icons/folder';
   import CreateWorkspaceDialog from './CreateWorkspaceDialog.svelte';
   import OpenWorkspaceFlow from './OpenWorkspaceFlow.svelte';
   import TrustBar from './TrustBar.svelte';
@@ -29,95 +30,103 @@
   }
 </script>
 
-<div class="mx-auto flex min-h-screen max-w-[880px] flex-col gap-10 px-8 py-16">
-  <header class="flex flex-col gap-3 text-center">
-    <h1 class="font-display text-[36px] leading-tight text-ink-heading">
-      Welcome. Your business runs on a folder you own.
-    </h1>
-    <p class="mx-auto max-w-[560px] text-[14px] text-ink-subtitle">
-      This app is a cockpit over plain files — your offers, policies, workflows and memory. No account to create.
-      Choose how to begin:
-    </p>
-  </header>
-
-  <div class="grid grid-cols-1 gap-5 md:grid-cols-2">
-    <!-- Card 1: start fresh -->
-    <section class="flex flex-col gap-4 rounded-xl border border-paper-border bg-paper-card p-5 shadow-card">
-      <p class="text-overline text-act">START FRESH · MOST PEOPLE BEGIN HERE</p>
-      <h2 class="font-display text-[19px] text-ink-heading">Set it up in conversation</h2>
-      <p class="text-[13.5px] text-ink-body">
-        About 15 minutes of talking. The assistant builds your workspace as you go, and you approve each page it
-        writes.
-      </p>
-
-      <ol class="flex flex-col">
-        {#each steps as step, i}
-          <li
-            class={[
-              'flex items-start gap-3 py-3',
-              i < steps.length - 1 ? 'border-b border-paper-hairline' : ''
-            ]}
-          >
-            <span
-              class="flex size-6 shrink-0 items-center justify-center rounded-full bg-paper-nav-active text-[11.5px] font-semibold text-ink-heading"
-            >
-              {i + 1}
-            </span>
-            <span class="pt-0.5 text-[13px] text-ink-body">{step}</span>
-          </li>
-        {/each}
-      </ol>
-
-      <div class="flex flex-wrap items-center gap-3 pt-1">
-        <Button type="button" onclick={() => (createOpen = true)}>Start the conversation</Button>
-        <span class="text-[12px] text-ink-meta">nothing connects without asking you</span>
-      </div>
-    </section>
-
-    <!-- Card 2: continue -->
-    <section class="flex flex-col gap-4 rounded-xl border border-paper-border bg-paper-panel p-5 shadow-card">
-      <p class="text-overline">CONTINUE · FROM A HANDOFF OR BACKUP</p>
-      <h2 class="font-display text-[19px] text-ink-heading">Open an existing workspace</h2>
-      <p class="text-[13.5px] text-ink-body">
-        From a consultant, a backup, or another machine. Everything picks up where it left off — memory, workflows,
-        history.
-      </p>
-
+<div class="flex min-h-screen flex-col">
+  <div class="mx-auto flex w-full max-w-[1010px] flex-1 flex-col justify-center gap-10 px-8 py-14">
+    <header class="flex flex-col items-center gap-6 text-center">
       <div
-        class="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-paper-chip-border bg-paper-surface px-4 py-8 text-center"
+        class="bg-act flex size-14 items-center justify-center rounded-[15px] shadow-[0_10px_24px_rgba(47,93,72,0.28)]"
+        aria-hidden="true"
       >
-        <p class="text-[13.5px] font-semibold text-ink-heading">Drop your folder here</p>
-        <p class="font-mono text-[11px] text-ink-meta">icm/ · workflows/ · queue/ · logs/</p>
-        <p class="text-[12px] text-ink-subtitle">We'll show you what's inside before anything runs.</p>
+        <Folder class="size-6 text-white" strokeWidth={1.75} />
       </div>
+      <div class="flex flex-col gap-3">
+        <h1 class="font-display text-ink-heading text-[38px] leading-[1.15] font-medium text-balance">
+          Welcome. Your business runs on a folder you own.
+        </h1>
+        <p class="text-ink-subtitle mx-auto max-w-[560px] text-[14.5px] leading-relaxed">
+          This app is a cockpit over plain files — your offers, policies, workflows and memory. No account to create.
+          Choose how to begin:
+        </p>
+      </div>
+    </header>
 
-      <OpenWorkspaceFlow />
-    </section>
-  </div>
+    <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
+      <!-- Card 1: start fresh -->
+      <section class="border-paper-border bg-paper-card shadow-card flex flex-col gap-4 rounded-xl border p-6">
+        <p class="text-overline text-act">START FRESH · MOST PEOPLE BEGIN HERE</p>
+        <h2 class="font-display text-ink-heading text-[20px] font-medium">Set it up in conversation</h2>
+        <p class="text-ink-body text-[13.5px]">
+          About 15 minutes of talking. The assistant builds your workspace as you go, and you approve each page it
+          writes.
+        </p>
 
-  {#if openError}
-    <p role="alert" class="text-center text-[12.5px] text-warn-ink">{openError}</p>
-  {/if}
-
-  {#if workspaceStore.recent.length > 0}
-    <div class="flex flex-col gap-2">
-      <p class="text-overline">Recent</p>
-      <ul class="flex flex-col">
-        {#each workspaceStore.recent as ws (ws.path)}
-          <li class="border-b border-paper-hairline last:border-b-0">
-            <button
-              type="button"
-              onclick={() => openRecent(ws.path)}
-              class="flex w-full items-center justify-between gap-3 py-2.5 text-left transition-colors hover:bg-paper-pill"
+        <ol class="flex flex-col">
+          {#each steps as step, i}
+            <li
+              class={[
+                'flex items-start gap-3.5 py-3',
+                i < steps.length - 1 ? 'border-b border-paper-hairline' : ''
+              ]}
             >
-              <span class="text-[13px] text-ink-body">{ws.name}</span>
-              <span class="font-mono text-[11px] text-ink-meta">{ws.path}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
+              <span class="text-ink-meta w-4 shrink-0 text-[13px] tabular-nums">{i + 1}</span>
+              <span class="text-ink-body text-[13px] leading-relaxed">{step}</span>
+            </li>
+          {/each}
+        </ol>
+
+        <div class="mt-auto flex flex-wrap items-center gap-3 pt-1">
+          <Button type="button" onclick={() => (createOpen = true)}>Start the conversation</Button>
+          <span class="text-ink-meta text-[12px]">nothing connects without asking you</span>
+        </div>
+      </section>
+
+      <!-- Card 2: continue -->
+      <section class="border-paper-border bg-paper-panel shadow-card flex flex-col gap-4 rounded-xl border p-6">
+        <p class="text-overline">CONTINUE · FROM A HANDOFF OR BACKUP</p>
+        <h2 class="font-display text-ink-heading text-[20px] font-medium">Open an existing workspace</h2>
+        <p class="text-ink-body text-[13.5px]">
+          From a consultant, a backup, or another machine. Everything picks up where it left off — memory, workflows,
+          history.
+        </p>
+
+        <div
+          class="border-paper-chip-border bg-paper-surface flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-9 text-center"
+        >
+          <p class="text-ink-heading text-[13.5px] font-semibold">Drop your folder here</p>
+          <p class="text-ink-meta font-mono text-[11px]">icm/ · workflows/ · queue/ · logs/</p>
+          <p class="text-ink-subtitle text-[12px]">We'll show you what's inside before anything runs.</p>
+        </div>
+
+        <div class="mt-auto">
+          <OpenWorkspaceFlow />
+        </div>
+      </section>
     </div>
-  {/if}
+
+    {#if openError}
+      <p role="alert" class="text-warn-ink text-center text-[12.5px]">{openError}</p>
+    {/if}
+
+    {#if workspaceStore.recent.length > 0}
+      <div class="flex flex-col gap-2">
+        <p class="text-overline">Recent</p>
+        <ul class="flex flex-col">
+          {#each workspaceStore.recent as ws (ws.path)}
+            <li class="border-paper-hairline border-b last:border-b-0">
+              <button
+                type="button"
+                onclick={() => openRecent(ws.path)}
+                class="hover:bg-paper-pill flex w-full items-center justify-between gap-3 py-2.5 text-left transition-colors"
+              >
+                <span class="text-ink-body text-[13px]">{ws.name}</span>
+                <span class="text-ink-meta font-mono text-[11px]">{ws.path}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+  </div>
 
   <TrustBar onExplain={() => (explainOpen = true)} />
 </div>

@@ -1,6 +1,12 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
+/* Valea is light-only (dark mode deferred — standing decision). Scope the
+   `dark:` variant to an explicit `.dark` ancestor (which we never set) so
+   shadcn-svelte's dark: utilities can't switch on via the OS media query
+   and UA chrome/scrollbars stay light regardless of system theme. */
+@custom-variant dark (&:is(.dark *));
+
 /* ── Raw tokens — Paper & ink (docs/DESIGN_SYSTEM.md is canonical) ── */
 :root {
   /* paper */
@@ -128,6 +134,10 @@
 }
 
 @layer base {
+  html {
+    color-scheme: light;
+    background: var(--paper-surface);
+  }
   body {
     background: var(--paper-surface);
     color: var(--ink-body);
