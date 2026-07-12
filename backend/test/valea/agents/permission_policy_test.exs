@@ -371,4 +371,55 @@ defmodule Valea.Agents.PermissionPolicyTest do
     refute match?({:allow, _}, PermissionPolicy.decide(it, ctx))
     assert :ask = PermissionPolicy.decide(it, ctx)
   end
+
+  # --- write_roots dir grants (B2) ---
+  #
+  # `ctx[:write_roots]` grants a whole DIRECTORY, not a single exact path —
+  # every write under it (segment boundary, like `read_roots`/`extra_roots`
+  # above) auto-allows in a workflow session, alongside the existing exact
+  # `write_paths` list. This is how the memory-update flow (B3's Runner)
+  # grants a run's `queue/staging/<run_id>/proposals/` dir without knowing
+  # every proposal filename up front, while `run.json` (the trusted sidecar
+  # one level up) stays untouched by the grant.
+
+  describe "write_roots dir grants" do
+    test "workflow write inside a write_root is allowed", %{ws: ws} do
+      root = Path.join(ws, "queue/staging/r1/proposals")
+      File.mkdir_p!(root)
+      ctx = %{workspace: ws, session_kind: "workflow", write_paths: [], write_roots: [root]}
+      it = item("write", %{"file_path" => Path.join(root, "a.json")})
+      assert {:allow, "allow_once"} = PermissionPolicy.decide(it, ctx)
+    end
+
+    test "workflow write to the staging sidecar outside the root asks", %{ws: ws} do
+      root = Path.join(ws, "queue/staging/r1/proposals")
+      File.mkdir_p!(root)
+      ctx = %{workspace: ws, session_kind: "workflow", write_paths: [], write_roots: [root]}
+      it = item("write", %{"file_path" => Path.join(ws, "queue/staging/r1/run.json")})
+      assert :ask = PermissionPolicy.decide(it, ctx)
+    end
+
+    test "chat sessions get no write_roots allowance", %{ws: ws} do
+      root = Path.join(ws, "queue/staging/r1/proposals")
+      File.mkdir_p!(root)
+      ctx = %{workspace: ws, session_kind: "chat", write_paths: [], write_roots: [root]}
+      it = item("write", %{"file_path" => Path.join(root, "a.json")})
+      assert :ask = PermissionPolicy.decide(it, ctx)
+    end
+
+    test "prefix trick does not escape the root", %{ws: ws} do
+      root = Path.join(ws, "queue/staging/r1/proposals")
+      File.mkdir_p!(root)
+      File.mkdir_p!(Path.join(ws, "queue/staging/r1/proposals-evil"))
+
+      ctx = %{workspace: ws, session_kind: "workflow", write_paths: [], write_roots: [root]}
+
+      it =
+        item("write", %{
+          "file_path" => Path.join(ws, "queue/staging/r1/proposals-evil/a.json")
+        })
+
+      assert :ask = PermissionPolicy.decide(it, ctx)
+    end
+  end
 end

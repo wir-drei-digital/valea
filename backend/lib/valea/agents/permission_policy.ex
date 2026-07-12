@@ -101,7 +101,8 @@ defmodule Valea.Agents.PermissionPolicy do
         {:allow, "allow_once"}
 
       kind in @write_kinds and ctx.session_kind == "workflow" and
-          all_in_write_paths?(resolved, ctx.write_paths, ctx.workspace) ->
+          (all_in_write_paths?(resolved, ctx.write_paths, ctx.workspace) or
+             all_in_write_roots?(resolved, ctx[:write_roots] || [], ctx.workspace)) ->
         {:allow, "allow_once"}
 
       true ->
@@ -249,5 +250,30 @@ defmodule Valea.Agents.PermissionPolicy do
       end)
 
     Enum.all?(resolved, fn {:ok, path} -> path in allowed end)
+  end
+
+  # Directory write grants (B2): unlike `write_paths` (an exact-match
+  # allowlist of individual files), `write_roots` grants everything under a
+  # DIRECTORY — segment-boundary contained exactly like `read_roots`/
+  # `extra_roots` above, so "proposals-evil" is never treated as inside
+  # "proposals". Each root is itself resolve_real'd against the workspace
+  # before comparison, same as write_paths, so a symlinked root can't
+  # relocate the grant to somewhere else. `[]` (no roots granted, or ctx
+  # omits the key entirely) never allows — mirrors `all_in_write_paths?/3`'s
+  # own empty-list-denies-everything behavior, so a bare ctx without
+  # `write_roots` degrades to today's exact-path-only grants, not a wildcard.
+  defp all_in_write_roots?(_resolved, [], _workspace), do: false
+
+  defp all_in_write_roots?(resolved, roots, workspace) do
+    allowed =
+      for root <- roots,
+          {:ok, real} <- [Valea.Paths.resolve_real(root, workspace)],
+          do: real
+
+    allowed != [] and
+      Enum.all?(resolved, fn
+        {:ok, p} -> Enum.any?(allowed, &(p == &1 or String.starts_with?(p, &1 <> "/")))
+        _ -> false
+      end)
   end
 end

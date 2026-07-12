@@ -112,8 +112,8 @@ defmodule Valea.Agents.SessionServer do
     policy_ctx =
       opts
       |> Map.get(:policy_ctx, %{})
-      |> Map.put_new_lazy(:read_roots, fn -> read_roots(workspace) end)
-      |> Map.put_new_lazy(:extra_roots, fn -> extra_roots(workspace) end)
+      |> Map.put_new_lazy(:read_roots, fn -> default_read_roots(workspace) end)
+      |> Map.put_new_lazy(:extra_roots, fn -> default_extra_roots(workspace) end)
 
     case ProcessRuntime.start(
            %{cmd: spec.cmd, args: spec.args, env: spec.env, cd: workspace},
@@ -531,7 +531,14 @@ defmodule Valea.Agents.SessionServer do
   # (no workspace-relative form — `PermissionPolicy` would crash on it) and
   # are deliberately absent too: their absolute roots join via extra_roots
   # below (A2-T3).
-  defp read_roots(workspace) do
+  #
+  # Public (not just `init/1`'s own `Map.put_new_lazy` call site above) so a
+  # caller building a `policy_ctx` with ADDITIONAL grants — e.g. B3's Runner
+  # adding a per-run staging read root — can EXTEND this list instead of
+  # re-deriving mount composition itself and risking drift from what a live
+  # session actually gets.
+  @doc "Default agent read roots: `[\"sources\"]` plus every enabled embedded mount's `rel_root`."
+  def default_read_roots(workspace) do
     ["sources" | for(%{rel_root: rel} <- Mounts.enabled(workspace), rel != nil, do: rel)]
   end
 
@@ -544,7 +551,10 @@ defmodule Valea.Agents.SessionServer do
   # degraded external mount is simply absent here too (`Mounts.enabled/1`
   # excludes it), so its reads fall through to `PermissionPolicy`'s `:ask`
   # — same non-deny treatment as a disabled embedded mount above.
-  defp extra_roots(workspace) do
+  #
+  # Public for the same EXTEND-not-replace reason as `default_read_roots/1`.
+  @doc "Default agent extra (external-mount) read roots — absolute, realpath-resolved."
+  def default_extra_roots(workspace) do
     for %{rel_root: nil, root: root} <- Mounts.enabled(workspace), do: root
   end
 
