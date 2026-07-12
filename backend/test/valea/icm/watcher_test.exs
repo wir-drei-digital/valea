@@ -27,6 +27,9 @@ defmodule Valea.ICM.WatcherTest do
   test "a write under mounts/<name>/... broadcasts icm_changed, but not mounts_changed", %{
     ws: ws
   } do
+    # Prepare mounts/a before subscriptions to avoid race with discovery events
+    File.mkdir_p!(Path.join(ws.path, "mounts/a"))
+
     Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
 
@@ -38,9 +41,13 @@ defmodule Valea.ICM.WatcherTest do
     # `refute_received` below can't race a still-in-flight mounts_changed
     # from this setup step.
     poll_until_both(fn i ->
-      File.mkdir_p!(Path.join(ws.path, "mounts/a"))
-      File.write!(Path.join(ws.path, "mounts/a/warm-#{i}.txt"), "warm")
+      File.mkdir_p!(Path.join(ws.path, "mounts/a-#{i}"))
+      File.write!(Path.join(ws.path, "mounts/a-#{i}/warm-#{i}.txt"), "warm")
     end)
+
+    # Drain any remaining queued messages from warm-up to avoid false positives
+    # when refute_received is called below
+    drain_any()
 
     # macOS fsevents arms its native listener port asynchronously after
     # FileSystem.start_link/subscribe return, so an fs event fired
@@ -122,6 +129,17 @@ defmodule Valea.ICM.WatcherTest do
       {:mounts_changed} -> drain_known(MapSet.put(seen, :mounts_changed))
     after
       300 -> seen
+    end
+  end
+
+  # Aggressively drain any remaining PubSub messages with a longer timeout
+  defp drain_any do
+    receive do
+      {:icm_changed} -> drain_any()
+      {:mounts_changed} -> drain_any()
+      {:queue_changed} -> drain_any()
+    after
+      500 -> :ok
     end
   end
 
