@@ -33,6 +33,9 @@ defmodule Valea.Api.Cockpit do
   `false` (ash_typescript's own generic-action result handling), not to a
   `nil` string, so this needs no string-key workaround either; it
   camelCases to `triageWorkflowPath` like every other field here.
+
+  `distill_workflow_path` (Task B8) is the same shape, mirroring
+  `triage_workflow_path` exactly — camelCases to `distillWorkflowPath`.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -91,6 +94,7 @@ defmodule Valea.Api.Cockpit do
                     ],
                     while_you_were_away: [type: {:array, :string}, allow_nil?: false],
                     triage_workflow_path: [type: :string, allow_nil?: true],
+                    distill_workflow_path: [type: :string, allow_nil?: true],
                     mail: [
                       type: :map,
                       allow_nil?: false,

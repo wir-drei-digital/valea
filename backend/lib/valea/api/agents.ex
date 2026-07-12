@@ -9,11 +9,21 @@ defmodule Valea.Api.Agents do
   interfaces (see that module's moduledoc for the full rationale and the
   typed-vs-unconstrained-map casing caveat).
 
-  Mutating actions (`create_session`, `run_workflow`) take a `generation`
-  argument and guard with `Valea.Workspace.Manager.check_generation/1`
-  BEFORE touching anything — a stale generation (workspace closed/reopened/
-  switched under the caller) surfaces as `workspace_changed` rather than
-  silently acting against the wrong workspace.
+  Mutating actions (`create_session`, `run_workflow`, `distill_decisions`)
+  take a `generation` argument and guard with
+  `Valea.Workspace.Manager.check_generation/1` BEFORE touching anything — a
+  stale generation (workspace closed/reopened/switched under the caller)
+  surfaces as `workspace_changed` rather than silently acting against the
+  wrong workspace.
+
+  `distill_decisions` (Task B8) is `run_workflow`'s generated-input sibling:
+  no `input` argument — it compiles the reflection workflow's own input
+  (`Valea.Workflows.Distill.digest/1`, the last 30 days of decided queue
+  items) server-side and hands it to
+  `Valea.Workflows.Runner.run_generated/3`. `workflow_not_found` when no
+  enabled mount carries a Distill Decisions contract yet (the starter-mount
+  seed for it is Task B9's job); `no_recent_decisions` when the digest
+  window is empty.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -105,6 +115,30 @@ defmodule Valea.Api.Agents do
       end
     end
 
+    action :distill_decisions, :map do
+      constraints fields: [
+                    run_id: [type: :string, allow_nil?: false],
+                    session_id: [type: :string, allow_nil?: false]
+                  ]
+
+      argument :generation, :integer, allow_nil?: false
+
+      run fn action_input, _ctx ->
+        %{generation: generation} = action_input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, path} <- distill_workflow_path(),
+             {:ok, %{path: workspace}} <- Manager.current(),
+             {:ok, md} <- recent_decisions_digest(workspace),
+             {:ok, result} <-
+               Valea.Workflows.Runner.run_generated(path, "input-decisions.md", md) do
+          {:ok, result}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :harness_doctor, :map do
       constraints fields: [
                     ok: [type: :boolean, allow_nil?: false],
@@ -167,6 +201,25 @@ defmodule Valea.Api.Agents do
         {:ok, workflows} = Valea.Workflows.list()
         {:ok, %{workflows: Enum.map(workflows, &flatten_workflow/1)}}
       end
+    end
+  end
+
+  # `distill_decisions`'s two workflow-specific preconditions, each mapped
+  # to the error string the brief names: no enabled mount carries a Distill
+  # Decisions contract (the starter-mount seed for it is Task B9's job), or
+  # the digest window is genuinely empty (nothing decided in the last 30
+  # days — see `Valea.Workflows.Distill.digest/1`).
+  defp distill_workflow_path do
+    case Valea.Workflows.distill_path() do
+      nil -> {:error, :workflow_not_found}
+      path -> {:ok, path}
+    end
+  end
+
+  defp recent_decisions_digest(workspace) do
+    case Valea.Workflows.Distill.digest(workspace) do
+      {0, _md} -> {:error, :no_recent_decisions}
+      {_count, md} -> {:ok, md}
     end
   end
 

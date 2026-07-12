@@ -109,6 +109,9 @@ defmodule Valea.CockpitTest do
     # Triage workflow path — no workspace is open in this test, so
     # `Valea.Workflows.list/0` finds nothing to discover (Task A-T13).
     assert today["triage_workflow_path"] == nil
+
+    # Distill workflow path — same no-workspace-open reasoning (Task B8).
+    assert today["distill_workflow_path"] == nil
   end
 
   describe "today/0 mail summary" do
@@ -297,6 +300,45 @@ defmodule Valea.CockpitTest do
 
       {:ok, today} = Valea.Cockpit.today()
       assert today["triage_workflow_path"] == "mounts/bbb/Workflows/New Inquiry Triage.md"
+    end
+  end
+
+  describe "today/0 distill_workflow_path (Task B8: mirrors triage_workflow_path)" do
+    defp write_distill_workflow!(mount_dir) do
+      File.mkdir_p!(Path.join(mount_dir, "Workflows"))
+
+      content = """
+      ---
+      enabled: true
+      risk_level: medium
+      ---
+      # Distill Decisions
+
+      Body.
+      """
+
+      File.write!(Path.join([mount_dir, "Workflows", "Distill Decisions.md"]), content)
+    end
+
+    test "is nil on a freshly scaffolded workspace (the starter-mount seed is Task B9's job)" do
+      AgentCase.open_workspace!()
+
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["distill_workflow_path"] == nil
+    end
+
+    test "carries the real mounts/<name>/Workflows/... path once an enabled mount has one" do
+      ws = AgentCase.open_workspace!()
+      Enum.each(Mounts.list(ws.path), &Mounts.set_enabled(&1.name, false))
+
+      write_mount!(ws.path, "aaa", "Mount AAA")
+      # "aaa" sorts before "bbb" and has no Workflows/ at all.
+
+      bbb = write_mount!(ws.path, "bbb", "Mount BBB")
+      write_distill_workflow!(bbb)
+
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["distill_workflow_path"] == "mounts/bbb/Workflows/Distill Decisions.md"
     end
   end
 end

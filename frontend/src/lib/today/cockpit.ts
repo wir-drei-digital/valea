@@ -63,6 +63,14 @@ export type CockpitToday = {
    * action entirely when this is `null` — no dead link.
    */
   triageWorkflowPath: string | null;
+  /**
+   * The seeded Distill Decisions reflection workflow's workspace-relative
+   * path (Task B8 — `Valea.Cockpit.today/0`'s live `distill_workflow_path`
+   * field, mirroring `triageWorkflowPath` above), or `null` when no enabled
+   * mount has one — expected on a fresh scaffold until the starter-mount
+   * seed for it lands (Task B9).
+   */
+  distillWorkflowPath: string | null;
   mail: MailSummary;
 };
 
@@ -128,6 +136,7 @@ export function normalizeCockpitToday(raw: RawMap): CockpitToday {
   const loops = pick(raw, 'openLoops', 'open_loops');
   const away = pick(raw, 'whileYouWereAway', 'while_you_were_away');
   const triageWorkflowPath = pick(raw, 'triageWorkflowPath', 'triage_workflow_path');
+  const distillWorkflowPath = pick(raw, 'distillWorkflowPath', 'distill_workflow_path');
 
   return {
     workspace: asString(raw.workspace),
@@ -139,6 +148,7 @@ export function normalizeCockpitToday(raw: RawMap): CockpitToday {
     openLoops: Array.isArray(loops) ? loops.map(normalizeOpenLoop) : [],
     whileYouWereAway: asStringList(away),
     triageWorkflowPath: asNullableString(triageWorkflowPath),
+    distillWorkflowPath: asNullableString(distillWorkflowPath),
     mail: normalizeMailSummary(raw.mail)
   };
 }

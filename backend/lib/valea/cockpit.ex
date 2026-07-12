@@ -30,6 +30,11 @@ defmodule Valea.Cockpit do
   task); unlike `mail`, this needs no GenServer/whereis guard — `Workflows`
   reads the filesystem directly and already degrades to `{:ok, []}` when no
   workspace is open.
+
+  Task B8 adds a third live field, `"distill_workflow_path"`, the same
+  discovery mirrored onto the seeded Distill Decisions reflection workflow
+  (`Valea.Workflows.distill_path/0`) — `nil` until a mount carries one (the
+  starter-template seed for it is Task B9's job).
   """
 
   @doc """
@@ -46,6 +51,7 @@ defmodule Valea.Cockpit do
     - "while_you_were_away": background activity notifications
     - "mail": `%{"review_count", "inbox_count", "configured"}` — live, see moduledoc
     - "triage_workflow_path": seeded triage workflow's path, or nil — live, see moduledoc
+    - "distill_workflow_path": seeded distill workflow's path, or nil — live, see moduledoc
   """
   def today do
     {:ok,
@@ -139,7 +145,8 @@ defmodule Valea.Cockpit do
          "Moved 4 newsletters to Reading · Undo"
        ],
        "mail" => mail_summary(),
-       "triage_workflow_path" => Valea.Workflows.triage_path()
+       "triage_workflow_path" => Valea.Workflows.triage_path(),
+       "distill_workflow_path" => Valea.Workflows.distill_path()
      }}
   end
 

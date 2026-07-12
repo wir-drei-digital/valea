@@ -39,6 +39,8 @@ import {
   listAgentSessionsChannel,
   runWorkflow as httpRunWorkflow,
   runWorkflowChannel,
+  distillDecisions as httpDistillDecisions,
+  distillDecisionsChannel,
   harnessDoctor as httpHarnessDoctor,
   harnessDoctorChannel,
   listWorkflows as httpListWorkflows,
@@ -100,6 +102,7 @@ import type {
   CreateAgentSessionFields,
   ListAgentSessionsFields,
   RunWorkflowFields,
+  DistillDecisionsFields,
   HarnessDoctorFields,
   ListWorkflowsFields,
   ListQueueItemsFields,
@@ -295,6 +298,7 @@ const icmEntryReferencesFields = [{ workflows: ['file', 'name'] }] as unknown as
 
 const createAgentSessionFields: CreateAgentSessionFields = ['id'];
 const runWorkflowFields: RunWorkflowFields = ['runId', 'sessionId'];
+const distillDecisionsFields: DistillDecisionsFields = ['runId', 'sessionId'];
 const getQueueItemFields: GetQueueItemFields = ['item', 'revision'];
 const approveQueueItemFields: ApproveQueueItemFields = ['draftPath', 'appliedPath'];
 const rejectQueueItemFields: RejectQueueItemFields = ['rejected'];
@@ -350,6 +354,7 @@ const cockpitTodayFields = [
   { openLoops: ['title', 'source'] },
   'whileYouWereAway',
   'triageWorkflowPath',
+  'distillWorkflowPath',
   { mail: ['reviewCount', 'inboxCount', 'configured'] }
 ] as unknown as CockpitTodayFields;
 
@@ -436,6 +441,15 @@ function callRunWorkflowChannel(
 ) {
   return wrapChannelCall((handlers) =>
     runWorkflowChannel({ channel, input, fields: runWorkflowFields, ...handlers })
+  );
+}
+
+function callDistillDecisionsChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    distillDecisionsChannel({ channel, input, fields: distillDecisionsFields, ...handlers })
   );
 }
 
@@ -911,6 +925,15 @@ export const api = {
       (channel) => callRunWorkflowChannel(channel, { path, input, generation }),
       () =>
         httpRunWorkflow(withAuth({ input: { path, input, generation }, fields: runWorkflowFields }))
+    ),
+
+  distillDecisions: (generation: number) =>
+    runRpc(
+      (channel) => callDistillDecisionsChannel(channel, { generation }),
+      () =>
+        httpDistillDecisions(
+          withAuth({ input: { generation }, fields: distillDecisionsFields })
+        )
     ),
 
   harnessDoctor: () =>

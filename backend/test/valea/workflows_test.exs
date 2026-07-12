@@ -446,4 +446,50 @@ defmodule Valea.WorkflowsTest do
       assert Workflows.triage_path(ws) == nil
     end
   end
+
+  # distill_path/0,1 (Task B8) mirrors triage_path/0,1's shape exactly (same
+  # basename-match-over-list/0 implementation), so this exercises only the
+  # cases that matter for that mirroring — not the full triage_path suite
+  # above. The starter-mount seed for "Distill Decisions.md" itself is B9's
+  # task, so a fresh scaffold's own mount never carries one yet; every test
+  # below hand-writes the file the way `triage_path/0,1`'s tests do.
+  describe "distill_path/0,1 (Task B8, mirrors triage_path/0,1)" do
+    test "finds the distill workflow's path in the first (alphabetically) enabled mount that has one",
+         %{workspace: ws} do
+      a = write_mount!(ws, "a", "Mount A")
+      write_workflow!(a, "Distill Decisions.md", @triage_frontmatter, @triage_body)
+
+      b = write_mount!(ws, "b", "Mount B")
+      write_workflow!(b, "Distill Decisions.md", @triage_frontmatter, @triage_body)
+
+      assert Workflows.distill_path() == "mounts/a/Workflows/Distill Decisions.md"
+      assert Workflows.distill_path(ws) == "mounts/a/Workflows/Distill Decisions.md"
+    end
+
+    test "skips a mount lacking the distill workflow and finds it in a later one",
+         %{workspace: ws} do
+      write_mount!(ws, "a", "Mount A")
+      # "a" has no Workflows/ at all.
+
+      b = write_mount!(ws, "b", "Mount B")
+      write_workflow!(b, "Distill Decisions.md", @triage_frontmatter, @triage_body)
+
+      assert Workflows.distill_path() == "mounts/b/Workflows/Distill Decisions.md"
+      assert Workflows.distill_path(ws) == "mounts/b/Workflows/Distill Decisions.md"
+    end
+
+    test "returns nil when no enabled mount has a distill workflow (expected until B9 seeds one)",
+         %{workspace: ws} do
+      a = write_mount!(ws, "a", "Mount A")
+      write_workflow!(a, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
+
+      assert Workflows.distill_path() == nil
+      assert Workflows.distill_path(ws) == nil
+    end
+
+    test "returns nil when no workspace is open (list/0's own no-workspace case)" do
+      Valea.Workspace.Manager.close()
+      assert Workflows.distill_path() == nil
+    end
+  end
 end

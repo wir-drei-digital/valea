@@ -288,6 +288,79 @@ export async function createAgentSessionChannel<Fields extends CreateAgentSessio
 }
 
 
+export type DistillDecisionsInput = {
+  generation: number;
+};
+
+export type DistillDecisionsFields = UnifiedFieldSelection<{runId: string, sessionId: string, __type: "TypedMap", __primitiveFields: "runId" | "sessionId"}>[];
+
+export type InferDistillDecisionsResult<
+  Fields extends DistillDecisionsFields | undefined,
+> = InferResult<{runId: string, sessionId: string, __type: "TypedMap", __primitiveFields: "runId" | "sessionId"}, Fields>;
+
+export type DistillDecisionsResult<Fields extends DistillDecisionsFields | undefined = undefined> = | { success: true; data: InferDistillDecisionsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function distillDecisions<Fields extends DistillDecisionsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DistillDecisionsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DistillDecisionsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "distill_decisions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DistillDecisionsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function distillDecisionsChannel<Fields extends DistillDecisionsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DistillDecisionsInput;
+  fields: Fields;
+  resultHandler: (result: DistillDecisionsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DistillDecisionsResult<Fields>>(
+    config.channel,
+    {
+    action: "distill_decisions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type HarnessDoctorFields = UnifiedFieldSelection<{ok: boolean, checks: Array<{id: string, status: string, detail: string, remedy: string | null, __type: "TypedMap", __primitiveFields: "id" | "status" | "detail" | "remedy"}>, __type: "TypedMap", __primitiveFields: "ok"}>[];
 
 export type InferHarnessDoctorResult<
@@ -558,11 +631,11 @@ export async function runWorkflowChannel<Fields extends RunWorkflowFields | unde
 }
 
 
-export type CockpitTodayFields = UnifiedFieldSelection<{workspace: string, dateLabel: string, greeting: string, summary: string, schedule: Array<{time: string, title: string, subtitle: string, status: string | null, __type: "TypedMap", __primitiveFields: "time" | "title" | "subtitle" | "status"}>, preparedItems: Array<{type: string, title: string, summary: string, usedSources: Array<string>, primaryAction: string, secondaryAction: string | null, __type: "TypedMap", __primitiveFields: "type" | "title" | "summary" | "usedSources" | "primaryAction" | "secondaryAction"}>, openLoops: Array<{title: string, source: string, __type: "TypedMap", __primitiveFields: "title" | "source"}>, whileYouWereAway: Array<string>, triageWorkflowPath: string | null, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, __type: "TypedMap", __primitiveFields: "workspace" | "dateLabel" | "greeting" | "summary" | "whileYouWereAway" | "triageWorkflowPath"}>[];
+export type CockpitTodayFields = UnifiedFieldSelection<{workspace: string, dateLabel: string, greeting: string, summary: string, schedule: Array<{time: string, title: string, subtitle: string, status: string | null, __type: "TypedMap", __primitiveFields: "time" | "title" | "subtitle" | "status"}>, preparedItems: Array<{type: string, title: string, summary: string, usedSources: Array<string>, primaryAction: string, secondaryAction: string | null, __type: "TypedMap", __primitiveFields: "type" | "title" | "summary" | "usedSources" | "primaryAction" | "secondaryAction"}>, openLoops: Array<{title: string, source: string, __type: "TypedMap", __primitiveFields: "title" | "source"}>, whileYouWereAway: Array<string>, triageWorkflowPath: string | null, distillWorkflowPath: string | null, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, __type: "TypedMap", __primitiveFields: "workspace" | "dateLabel" | "greeting" | "summary" | "whileYouWereAway" | "triageWorkflowPath" | "distillWorkflowPath"}>[];
 
 export type InferCockpitTodayResult<
   Fields extends CockpitTodayFields | undefined,
-> = InferResult<{workspace: string, dateLabel: string, greeting: string, summary: string, schedule: Array<{time: string, title: string, subtitle: string, status: string | null, __type: "TypedMap", __primitiveFields: "time" | "title" | "subtitle" | "status"}>, preparedItems: Array<{type: string, title: string, summary: string, usedSources: Array<string>, primaryAction: string, secondaryAction: string | null, __type: "TypedMap", __primitiveFields: "type" | "title" | "summary" | "usedSources" | "primaryAction" | "secondaryAction"}>, openLoops: Array<{title: string, source: string, __type: "TypedMap", __primitiveFields: "title" | "source"}>, whileYouWereAway: Array<string>, triageWorkflowPath: string | null, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, __type: "TypedMap", __primitiveFields: "workspace" | "dateLabel" | "greeting" | "summary" | "whileYouWereAway" | "triageWorkflowPath"}, Fields>;
+> = InferResult<{workspace: string, dateLabel: string, greeting: string, summary: string, schedule: Array<{time: string, title: string, subtitle: string, status: string | null, __type: "TypedMap", __primitiveFields: "time" | "title" | "subtitle" | "status"}>, preparedItems: Array<{type: string, title: string, summary: string, usedSources: Array<string>, primaryAction: string, secondaryAction: string | null, __type: "TypedMap", __primitiveFields: "type" | "title" | "summary" | "usedSources" | "primaryAction" | "secondaryAction"}>, openLoops: Array<{title: string, source: string, __type: "TypedMap", __primitiveFields: "title" | "source"}>, whileYouWereAway: Array<string>, triageWorkflowPath: string | null, distillWorkflowPath: string | null, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, __type: "TypedMap", __primitiveFields: "workspace" | "dateLabel" | "greeting" | "summary" | "whileYouWereAway" | "triageWorkflowPath" | "distillWorkflowPath"}, Fields>;
 
 export type CockpitTodayResult<Fields extends CockpitTodayFields | undefined = undefined> = | { success: true; data: InferCockpitTodayResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

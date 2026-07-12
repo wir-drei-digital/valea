@@ -38,6 +38,7 @@ defmodule Valea.Api do
       rpc_action(:create_agent_session, :create_session)
       rpc_action(:list_agent_sessions, :list_sessions)
       rpc_action(:run_workflow, :run_workflow)
+      rpc_action(:distill_decisions, :distill_decisions)
       rpc_action(:harness_doctor, :harness_doctor)
       rpc_action(:list_workflows, :list_workflows)
     end

@@ -200,6 +200,119 @@ defmodule ValeaWeb.AgentsRpcTest do
     end
   end
 
+  describe "distill_decisions" do
+    # `@wf_path`'s starter-mount slug is "primary" (this suite's `setup`
+    # names the workspace "Primary" — see the file header comment); the
+    # Distill Decisions contract itself is NOT yet seeded there (Task B9's
+    # job), so every test below writes its own directly into that same
+    # mount to exercise `distill_path/0`'s discovery.
+    @distill_wf_path "mounts/primary/Workflows/Distill Decisions.md"
+
+    defp write_distill_workflow!(parent) do
+      dir = Path.join([parent, "Primary", "mounts", "primary", "Workflows"])
+      File.mkdir_p!(dir)
+
+      File.write!(
+        Path.join(dir, "Distill Decisions.md"),
+        """
+        ---
+        enabled: true
+        risk_level: medium
+        approval:
+          required: true
+        ---
+        # Distill Decisions
+
+        ## Process
+
+        1. Read the digest.
+        """
+      )
+    end
+
+    defp write_decided_item!(parent, dir, run_id, decided_at) do
+      item = %{
+        "schema" => "queue_item/v2",
+        "run_id" => run_id,
+        "workflow" => @wf_path,
+        "risk_level" => "medium",
+        "created_at" => "2026-07-01T00:00:00Z",
+        "decided_at" => decided_at,
+        "payload" => %{
+          "title" => "T-" <> run_id,
+          "summary" => "s",
+          "kind" => "email_draft",
+          "sources" => [],
+          "proposed_action" => %{
+            "type" => "create_email_draft",
+            "to" => "a@b.c",
+            "subject" => "s",
+            "body_markdown" => "b"
+          }
+        }
+      }
+
+      d = Path.join([parent, "Primary", "queue", dir])
+      File.mkdir_p!(d)
+      File.write!(Path.join(d, run_id <> ".json"), Jason.encode!(item))
+    end
+
+    test "happy path returns run_id and session_id and eventually queues a proposal", %{
+      generation: generation,
+      parent: parent
+    } do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+      write_distill_workflow!(parent)
+
+      recent = DateTime.utc_now() |> DateTime.add(-2, :day) |> DateTime.to_iso8601()
+      write_decided_item!(parent, "approved", "d1", recent)
+
+      assert %{"success" => true, "data" => %{"runId" => run_id, "sessionId" => session_id}} =
+               rpc("distill_decisions", %{"generation" => generation}, ["runId", "sessionId"])
+
+      assert is_binary(run_id)
+      assert is_binary(session_id)
+
+      input_path =
+        Path.join([parent, "Primary", "queue", "staging", run_id, "input-decisions.md"])
+
+      wait_until(fn -> File.exists?(input_path) end)
+      assert File.read!(input_path) =~ "T-d1"
+
+      pending_path = Path.join([parent, "Primary", "queue", "pending", run_id <> ".json"])
+      wait_until(fn -> File.exists?(pending_path) end)
+    end
+
+    test "a stale generation surfaces workspace_changed", %{generation: generation} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("distill_decisions", %{"generation" => generation - 1}, [
+                 "runId",
+                 "sessionId"
+               ])
+
+      assert inspect(errors) =~ "workspace_changed"
+    end
+
+    test "no distill contract installed surfaces workflow_not_found", %{generation: generation} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("distill_decisions", %{"generation" => generation}, ["runId", "sessionId"])
+
+      assert inspect(errors) =~ "workflow_not_found"
+    end
+
+    test "an empty decisions window surfaces no_recent_decisions", %{
+      generation: generation,
+      parent: parent
+    } do
+      write_distill_workflow!(parent)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("distill_decisions", %{"generation" => generation}, ["runId", "sessionId"])
+
+      assert inspect(errors) =~ "no_recent_decisions"
+    end
+  end
+
   describe "harness_doctor" do
     test "returns three checks shaped id/status/detail/remedy" do
       assert %{"success" => true, "data" => %{"ok" => ok, "checks" => checks}} =

@@ -42,6 +42,14 @@ defmodule Valea.Workflows do
   # deliberately mount-agnostic — see their docs.
   @triage_filename "New Inquiry Triage.md"
 
+  # The reflection workflow's filename (Task B8) — same mount-agnostic
+  # basename-match discovery as `@triage_filename`/`triage_path/0,1` above.
+  # The starter-template contract file itself (seeding a mount's own
+  # `Workflows/Distill Decisions.md`) is Task B9's job — until that lands,
+  # `distill_path/0` returning `nil` on a fresh scaffold is expected, same
+  # as `triage_path/0` would before Task A-T8 seeded ITS file.
+  @distill_filename "Distill Decisions.md"
+
   @doc "All workflow contracts across every enabled mount, `{:ok, []}` when no workspace is open."
   @spec list() :: {:ok, [map()]}
   def list do
@@ -89,6 +97,33 @@ defmodule Valea.Workflows do
 
   defp find_triage(workflows) do
     case Enum.find(workflows, &(Path.basename(&1.path) == @triage_filename)) do
+      nil -> nil
+      wf -> wf.path
+    end
+  end
+
+  @doc """
+  The workspace-relative (or, for an external mount, absolute physical)
+  path of the seeded Distill Decisions reflection workflow, or `nil` when
+  no enabled mount has one — mirrors `triage_path/0` exactly (same
+  first-match-in-`list/0`'s-own-sort-order semantics; see its doc for the
+  full external/embedded sort-order rationale). Task B8's `distill_decisions`
+  RPC uses this in place of a hardcoded path.
+  """
+  @spec distill_path() :: String.t() | nil
+  def distill_path do
+    {:ok, workflows} = list()
+    find_distill(workflows)
+  end
+
+  @doc "Pure form of `distill_path/0` for `workspace`."
+  @spec distill_path(workspace :: String.t()) :: String.t() | nil
+  def distill_path(workspace) when is_binary(workspace) do
+    workspace |> list() |> find_distill()
+  end
+
+  defp find_distill(workflows) do
+    case Enum.find(workflows, &(Path.basename(&1.path) == @distill_filename)) do
       nil -> nil
       wf -> wf.path
     end

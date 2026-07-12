@@ -26,6 +26,7 @@ const rawSnake = {
   open_loops: [{ title: 'Send proposal to Priya', source: 'from her email · yesterday' }],
   while_you_were_away: ['Synced 9 emails from AI / Review · 7:00'],
   triage_workflow_path: 'mounts/primary/Workflows/New Inquiry Triage.md',
+  distill_workflow_path: 'mounts/primary/Workflows/Distill Decisions.md',
   mail: { review_count: 3, inbox_count: 12, configured: true }
 };
 
@@ -43,6 +44,7 @@ describe('normalizeCockpitToday', () => {
     expect(today.openLoops[0].source).toBe('from her email · yesterday');
     expect(today.whileYouWereAway).toHaveLength(1);
     expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
+    expect(today.distillWorkflowPath).toBe('mounts/primary/Workflows/Distill Decisions.md');
     expect(today.mail).toEqual({ reviewCount: 3, inboxCount: 12, configured: true });
   });
 
@@ -57,6 +59,7 @@ describe('normalizeCockpitToday', () => {
       openLoops: [],
       whileYouWereAway: [],
       triageWorkflowPath: 'mounts/primary/Workflows/New Inquiry Triage.md',
+      distillWorkflowPath: 'mounts/primary/Workflows/Distill Decisions.md',
       mail: { reviewCount: 1, inboxCount: 0, configured: false }
     });
 
@@ -64,22 +67,29 @@ describe('normalizeCockpitToday', () => {
     expect(today.preparedItems[0].usedSources).toEqual(['a']);
     expect(today.preparedItems[0].secondaryAction).toBeUndefined();
     expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
+    expect(today.distillWorkflowPath).toBe('mounts/primary/Workflows/Distill Decisions.md');
     expect(today.mail).toEqual({ reviewCount: 1, inboxCount: 0, configured: false });
   });
 
-  it('tolerates missing collections, defaulting mail to zero/unconfigured and triageWorkflowPath to null', () => {
+  it('tolerates missing collections, defaulting mail to zero/unconfigured and triageWorkflowPath/distillWorkflowPath to null', () => {
     const today = normalizeCockpitToday({ greeting: 'Hello.' });
     expect(today.schedule).toEqual([]);
     expect(today.preparedItems).toEqual([]);
     expect(today.openLoops).toEqual([]);
     expect(today.whileYouWereAway).toEqual([]);
     expect(today.triageWorkflowPath).toBeNull();
+    expect(today.distillWorkflowPath).toBeNull();
     expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
   });
 
   it('normalizes an explicit null triageWorkflowPath (no enabled mount has a seeded triage workflow) to null, not the string "null"', () => {
     const today = normalizeCockpitToday({ ...rawSnake, triage_workflow_path: null });
     expect(today.triageWorkflowPath).toBeNull();
+  });
+
+  it('normalizes an explicit null distillWorkflowPath (no enabled mount has a seeded distill workflow yet — Task B9) to null, not the string "null"', () => {
+    const today = normalizeCockpitToday({ ...rawSnake, distill_workflow_path: null });
+    expect(today.distillWorkflowPath).toBeNull();
   });
 });
 

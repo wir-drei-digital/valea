@@ -117,6 +117,49 @@ defmodule Valea.Workflows.RunnerTest do
     assert finished["outcome"] == "proposal_created"
   end
 
+  describe "run_generated/3" do
+    test "writes the generated input to staging before the session starts, and carries it through sidecar/envelope/audit",
+         %{workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+      digest = "# Recent decisions (last 30 days)\n\nsome content\n"
+
+      assert {:ok, %{run_id: run_id, session_id: session_id}} =
+               Runner.run_generated(@wf_path, "input-decisions.md", digest)
+
+      expected_rel = Path.join(["queue", "staging", run_id, "input-decisions.md"])
+      input_abs = Path.join(workspace, expected_rel)
+
+      # `run_generated/3` only returns once `Valea.Agents.start_session/1`
+      # has, which is strictly after `start_run/5` materializes the
+      # generated input to staging — so the file is already there,
+      # BEFORE the fake harness's `workflow_happy` scenario ever receives
+      # its first `session/prompt`.
+      assert File.read!(input_abs) == digest
+
+      sidecar_path = Path.join([workspace, "queue", "staging", run_id, "run.json"])
+      sidecar = sidecar_path |> File.read!() |> Jason.decode!()
+      assert sidecar["input"] == expected_rel
+      assert is_binary(sidecar["input_hash"]) and byte_size(sidecar["input_hash"]) == 64
+
+      pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
+      wait_until(fn -> File.exists?(pending_path) end)
+
+      item = pending_path |> File.read!() |> Jason.decode!()
+      assert item["input"] == expected_rel
+      assert item["session_id"] == session_id
+      assert item["source_message"] == expected_rel
+      assert is_binary(item["input_hash"]) and byte_size(item["input_hash"]) == 64
+
+      {:ok, entries} = Valea.Audit.entries(50)
+
+      started =
+        Enum.find(entries, &(&1["type"] == "workflow_run_started" and &1["run_id"] == run_id))
+
+      assert started["input"] == expected_rel
+    end
+  end
+
   test "run/2 accepts a workflow whose path resolves inside an enabled EXTERNAL mount root (A2-T5b)",
        %{workspace: workspace} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))

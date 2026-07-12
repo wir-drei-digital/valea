@@ -82,7 +82,40 @@ defmodule Valea.Workflows.Runner do
          :ok <- ensure_enabled(wf),
          {:ok, workflow_bytes} <- read_workflow(workspace, workflow_path),
          {:ok, input_bytes} <- read_input(workspace, input_path) do
-      start_run(workspace, wf, workflow_path, workflow_bytes, input_path, input_bytes)
+      start_run(workspace, wf, workflow_path, workflow_bytes, {:file, input_path, input_bytes})
+    end
+  end
+
+  @doc """
+  Same contract as `run/2`, except the input is not a file already on disk —
+  `input_bytes` is written server-side to `queue/staging/<run_id>/<input_name>`
+  BEFORE the session starts (so it exists before the session's first prompt
+  ever fires), and `input_path` in the sidecar/queue-envelope/audit trail is
+  that staging-relative path, exactly as if it had been a real input file.
+  `input_hash` is `sha256(input_bytes)`, same as `run/2`.
+
+  Built for `Valea.Workflows.Distill`'s decisions digest (B8): the digest is
+  compiled in memory, not read off an existing source file, but the
+  session still needs a named FILE to point its prompt at — the B3 staging
+  read grant (`read_roots` extended with `queue/staging/<run_id>`) already
+  lets the session read it back, so no read-boundary widening is needed
+  here.
+  """
+  @spec run_generated(String.t(), String.t(), binary()) ::
+          {:ok, %{run_id: String.t(), session_id: String.t()}}
+          | {:error, :not_found | :workflow_disabled | :harness_unavailable | term()}
+  def run_generated(workflow_path, input_name, input_bytes) do
+    with {:ok, %{path: workspace}} <- current_workspace(),
+         {:ok, wf} <- Workflows.get(workflow_path),
+         :ok <- ensure_enabled(wf),
+         {:ok, workflow_bytes} <- read_workflow(workspace, workflow_path) do
+      start_run(
+        workspace,
+        wf,
+        workflow_path,
+        workflow_bytes,
+        {:generated, input_name, input_bytes}
+      )
     end
   end
 
@@ -392,7 +425,29 @@ defmodule Valea.Workflows.Runner do
     end
   end
 
-  defp start_run(workspace, wf, workflow_path, workflow_bytes, input_path, input_bytes) do
+  # `{:file, ...}`: nothing to do, the bytes were already read off a real
+  # source file by `run/2` — `input_path` is that file's own
+  # workspace-relative path, carried through unchanged.
+  defp materialize_input(_staging_dir, _run_id, {:file, input_path, input_bytes}) do
+    {input_path, input_bytes}
+  end
+
+  # `{:generated, ...}`: no source file exists — `run_generated/3`'s caller
+  # handed us bytes compiled in memory. Write them into THIS run's own
+  # staging dir (never the agent-writable `proposals/` subdir — this file is
+  # server-owned input, not agent output) before the session starts, so the
+  # prompt can name a real file and the B3 staging read grant lets the
+  # session read it back. `Path.basename/1` is defense-in-depth against a
+  # `name` carrying `/`/`..` — every current caller passes a fixed literal
+  # (`"input-decisions.md"`), but this keeps the write contained to
+  # `staging_dir` regardless.
+  defp materialize_input(staging_dir, run_id, {:generated, name, bytes}) do
+    safe_name = Path.basename(name)
+    File.write!(Path.join(staging_dir, safe_name), bytes)
+    {Path.join(["queue", "staging", run_id, safe_name]), bytes}
+  end
+
+  defp start_run(workspace, wf, workflow_path, workflow_bytes, input) do
     run_id = generate_run_id()
     staging_dir = staging_dir(workspace, run_id)
     File.mkdir_p!(staging_dir)
@@ -402,6 +457,16 @@ defmodule Valea.Workflows.Runner do
     File.mkdir_p!(Path.join(staging_dir, "proposals"))
     staging_rel = Path.join([staging_dir_rel(run_id), "proposal.json"])
     staging_abs = Path.join(workspace, staging_rel)
+
+    # `:file` (run/2): the caller already has bytes read off an existing
+    # source file, `input_path` is that file's own workspace-relative path.
+    # `:generated` (run_generated/3): no source file exists yet — the bytes
+    # are compiled server-side (e.g. `Valea.Workflows.Distill.digest/1`) and
+    # written HERE, before the session starts, so `input_path` becomes the
+    # staging-relative path of the file just created. Either way, everything
+    # downstream (sidecar, prompt, audit, queue envelope) uses `input_path`/
+    # `input_bytes` uniformly from this point on.
+    {input_path, input_bytes} = materialize_input(staging_dir, run_id, input)
 
     run = %{
       "run_id" => run_id,
