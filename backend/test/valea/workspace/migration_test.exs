@@ -474,6 +474,54 @@ defmodule Valea.Workspace.MigrationTest do
     refute File.dir?(Path.join(root, "icm"))
   end
 
+  test "v3 → v4: prompts/ exists but icm/ is absent (hand-corrupted) → creates mount dir, migrates prompts" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "vmig4-prompts-only-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    for d <- ["config", "prompts"] do
+      File.mkdir_p!(Path.join(root, d))
+    end
+
+    files = %{
+      "config/workspace.yaml" =>
+        "version: 3\nid: v3fixture-prompts-only-#{System.unique_integer([:positive])}\n",
+      "AGENTS.md" => fixture_v3("AGENTS.md"),
+      "CLAUDE.md" => "@AGENTS.md\n",
+      "prompts/reply_writer.md" => "A reusable prompt fragment.\n"
+    }
+
+    Enum.each(files, fn {rel, bytes} ->
+      path = Path.join(root, rel)
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, bytes)
+    end)
+
+    on_exit(fn -> File.rm_rf!(root) end)
+    slug = Scaffold.slugify(Path.basename(root))
+
+    # This should succeed despite icm/ being absent — mkdir_p! happens before prompts move
+    assert {:ok, 4} = Migration.migrate(root)
+
+    # prompts/ is gone from root, now inside the mount
+    refute File.dir?(Path.join(root, "prompts"))
+    mount_dir = Path.join([root, "mounts", slug])
+
+    assert File.read!(Path.join(mount_dir, "prompts/reply_writer.md")) ==
+             "A reusable prompt fragment.\n"
+
+    # mount manifest and AGENTS.md were created
+    assert {:ok, manifest} = Manifest.load(mount_dir)
+    assert manifest.name == Path.basename(root)
+    assert File.exists?(Path.join(mount_dir, "AGENTS.md"))
+
+    # version marker is set to v4
+    yaml = File.read!(Path.join(root, "config/workspace.yaml"))
+    assert yaml =~ "version: 4"
+  end
+
   defp snapshot(root) do
     root
     |> Path.join("**")

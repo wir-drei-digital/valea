@@ -89,7 +89,7 @@ defmodule Valea.Workspace.Migration do
     convert_workflows!(root)
     ensure_gitignore_claude!(root)
     File.mkdir_p!(Path.join(root, "config"))
-    File.write!(Path.join(root, "config/workspace.yaml"), "version: 2\n")
+    atomic_write!(Path.join(root, "config/workspace.yaml"), "version: 2\n")
     {:ok, 2}
   end
 
@@ -113,7 +113,7 @@ defmodule Valea.Workspace.Migration do
     File.mkdir_p!(Path.join(root, "sources/mail/attachments"))
 
     File.mkdir_p!(Path.join(root, "config"))
-    File.write!(Path.join(root, "config/workspace.yaml"), "version: 3\nid: #{id}\n")
+    atomic_write!(Path.join(root, "config/workspace.yaml"), "version: 3\nid: #{id}\n")
     {:ok, 3}
   end
 
@@ -133,6 +133,7 @@ defmodule Valea.Workspace.Migration do
     slug = Scaffold.slugify(Path.basename(root))
 
     mount_dir = locate_or_create_mount!(root, slug)
+    File.mkdir_p!(mount_dir)
     migrate_prompts_to_mount!(root, mount_dir)
     mint_migrated_mount_files!(root, mount_dir)
     migrate_root_agents!(root)
@@ -140,7 +141,7 @@ defmodule Valea.Workspace.Migration do
     MountsMd.regenerate(root)
 
     File.mkdir_p!(Path.join(root, "mounts"))
-    File.write!(Path.join(root, "config/workspace.yaml"), "version: 4\nid: #{id}\n")
+    atomic_write!(Path.join(root, "config/workspace.yaml"), "version: 4\nid: #{id}\n")
     {:ok, 4}
   end
 
@@ -534,5 +535,13 @@ defmodule Valea.Workspace.Migration do
     unless String.contains?(current, ".claude/") do
       File.write!(path, current <> ".claude/\n")
     end
+  end
+
+  # Atomic write to a file: write to .tmp sibling, then rename in place.
+  # Avoids torn writes that leave garbage YAML → read_version/1 fallback to v1.
+  defp atomic_write!(path, bytes) do
+    tmp = path <> ".tmp"
+    File.write!(tmp, bytes)
+    File.rename!(tmp, path)
   end
 end
