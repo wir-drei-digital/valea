@@ -364,6 +364,16 @@ defmodule Valea.Mounts.ExternalTest do
       assert {:error, :inside_workspace} = External.check_boundaries(Path.join(ws, "sub"), ws)
       assert {:error, :ancestor_of_workspace} = External.check_boundaries(parent, ws)
     end
+
+    test "crashes (never silently returns :ok) when either argument is not an absolute path" do
+      ws = real!(tmp_dir!("valea-ext-ws"))
+
+      assert_raise FunctionClauseError, fn -> External.check_boundaries("~/foo", ws) end
+      assert_raise FunctionClauseError, fn -> External.check_boundaries("relative/dir", ws) end
+      assert_raise FunctionClauseError, fn -> External.check_boundaries(ws, "~/foo") end
+      assert_raise FunctionClauseError, fn -> External.check_boundaries(ws, "relative/dir") end
+      assert_raise FunctionClauseError, fn -> External.check_boundaries("", ws) end
+    end
   end
 
   # ~-expansion cannot be exercised by overriding the HOME env var at

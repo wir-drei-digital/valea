@@ -12,6 +12,15 @@ defmodule Valea.Mounts do
     whether a mount is *enabled* — a purely relational, mutable overlay
     that never touches the mount's own files.
 
+  A third kind joins these two at discovery time: `Valea.Mounts.External`
+  resolves `kind: "path"` entries in the same `mounts:` section into
+  BY-REFERENCE mounts living OUTSIDE the workspace (`rel_root: nil`). `list/1`
+  returns embedded ∪ external, sorted by name; a name declared as BOTH an
+  embedded directory AND an external entry is ambiguous, so BOTH entries are
+  marked degraded (`"name used by both an embedded and an external mount"`)
+  rather than either silently shadowing the other — excluding both from
+  `enabled/1` via the same `degraded != nil` convention below.
+
   A mount is "degraded" when its `icm.yaml` is missing or invalid: it is
   still discovered and listed (so the UI can show *something* is wrong and
   the user can fix or remove it), but it is always excluded from
@@ -34,6 +43,7 @@ defmodule Valea.Mounts do
   itself.
   """
 
+  alias Valea.Mounts.External
   alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
   alias Valea.Workspace.Scaffold
@@ -55,7 +65,11 @@ defmodule Valea.Mounts do
           degraded: String.t() | nil
         }
 
-  @doc "All discovered mounts in the current workspace (enabled + disabled + degraded), sorted by name."
+  @doc """
+  All discovered mounts in the current workspace — embedded ∪ declared
+  external (enabled + disabled + degraded) — sorted by name. See the
+  moduledoc for the embedded/external name-collision rule.
+  """
   @spec list() :: {:ok, [mount]} | {:error, :no_workspace}
   def list do
     with {:ok, ws} <- workspace_root() do
@@ -63,16 +77,26 @@ defmodule Valea.Mounts do
     end
   end
 
-  @doc "Pure form of `list/0` — every discovered mount under `workspace`, sorted by name."
+  @doc """
+  Pure form of `list/0` — every discovered mount under `workspace` (embedded
+  ∪ declared external via `Valea.Mounts.External.declared/1`), sorted by
+  name.
+  """
   @spec list(workspace :: String.t()) :: [mount]
   def list(workspace) when is_binary(workspace) do
     config_mounts = read_config_mounts(workspace)
 
-    workspace
-    |> Path.join("mounts/*")
-    |> Path.wildcard()
-    |> Enum.filter(&File.dir?/1)
-    |> Enum.map(&build_mount(&1, config_mounts))
+    embedded =
+      workspace
+      |> Path.join("mounts/*")
+      |> Path.wildcard()
+      |> Enum.filter(&File.dir?/1)
+      |> Enum.map(&build_mount(&1, config_mounts))
+
+    external = External.declared(workspace)
+
+    (embedded ++ external)
+    |> degrade_name_collisions()
     |> Enum.sort_by(& &1.name)
   end
 
@@ -91,8 +115,10 @@ defmodule Valea.Mounts do
   end
 
   @doc """
-  Resolves a workspace-relative path to the mount that owns it, in the
-  current workspace.
+  Resolves a path to the mount that owns it, in the current workspace —
+  either a workspace-relative `mounts/<name>/…` path (embedded) or an
+  ABSOLUTE path under an enabled, non-degraded external mount's `root`
+  (by-reference). See `mount_for/2` for the full contract.
 
   Attribution only — it does not validate or contain the path. Callers
   that go on to do filesystem I/O with `rel_path` must independently
@@ -114,18 +140,57 @@ defmodule Valea.Mounts do
   @doc """
   Pure form of `mount_for/1` for `workspace` — the owning mount, or `nil`.
 
-  Attribution only — it does not validate or contain `rel_path`. Callers
-  that go on to do filesystem I/O with `rel_path` must independently
-  expand it and prefix-check it against the resolved mount's `root`
-  (mirroring `Valea.ICM.contain/2`); this function only identifies which
-  mount a path *names*, it does not authorize access to it.
+  Two path shapes are attributed:
+
+    * a workspace-relative `mounts/<name>/…` path attributes to the
+      EMBEDDED mount named `<name>`, if `list/1` discovers one — regardless
+      of that mount's `enabled`/`degraded` state (unchanged from before
+      external mounts existed; every existing embedded-editor caller passes
+      this shape).
+    * an ABSOLUTE path (external content has no workspace-relative form —
+      it lives outside the workspace) attributes to whichever EXTERNAL
+      mount's `root` it falls under, segment-boundary (`/a/b` does not match
+      a `/a/bc` root) — but ONLY among ENABLED, non-degraded external
+      mounts. A degraded external mount's `root` may carry a resolved path
+      a hand-edited config pointed at `$HOME`, `/`, or an ancestor of the
+      workspace (preserved on the struct for recovery, never for trust —
+      see `Valea.Mounts.External`'s moduledoc); matching attribution
+      against it would let a dangerous path masquerade as a legitimate
+      mount, so it is excluded by construction. Embedded mounts are never
+      matched this way. This function assumes the caller already resolved
+      the path to its real, physical form (mirrors how `root` itself is
+      realpath-resolved) — it only compares, it does not resolve.
+
+  Neither shape validates or contains the path — attribution only. Callers
+  that go on to do filesystem I/O with the path must independently expand
+  it and prefix-check it against the resolved mount's `root` (mirroring
+  `Valea.ICM.contain/2`); this function only identifies which mount a path
+  *names*, it does not authorize access to it.
   """
   @spec mount_for(workspace :: String.t(), rel_path :: String.t()) :: mount | nil
   def mount_for(workspace, rel_path) when is_binary(workspace) and is_binary(rel_path) do
+    mounts = list(workspace)
+
     case mount_name_from_rel_path(rel_path) do
-      nil -> nil
-      name -> workspace |> list() |> Enum.find(&(&1.name == name))
+      nil -> Enum.find(mounts, &external_root_match?(&1, rel_path))
+      name -> Enum.find(mounts, &(&1.name == name))
     end
+  end
+
+  # Only an ENABLED, non-degraded EXTERNAL mount's `root` is eligible for
+  # absolute-path attribution -- see the `mount_for/2` @doc for why a
+  # degraded one must never match.
+  defp external_root_match?(%{rel_root: nil} = mount, path) do
+    effective?(mount) and path_under_root?(path, mount.root)
+  end
+
+  defp external_root_match?(_embedded, _path), do: false
+
+  # Segment-boundary "is `path` under (or equal to) `root`?" -- mirrors
+  # `Valea.Mounts.External`'s own `under?/2`: a trailing-slash join, never a
+  # lexical string prefix, so `/a/b` never matches an `/a/bc` root.
+  defp path_under_root?(path, root) do
+    path == root or String.starts_with?(path <> "/", root <> "/")
   end
 
   @doc """
@@ -296,6 +361,29 @@ defmodule Valea.Mounts do
 
   defp effective?(%{enabled: true, degraded: nil}), do: true
   defp effective?(_), do: false
+
+  # A name declared as BOTH an embedded directory and an external `kind:
+  # "path"` entry is ambiguous -- degrade BOTH entries (never drop either;
+  # `list/1` keeps surfacing both for the UI to disambiguate) rather than
+  # letting one silently shadow the other. Any given name can only collide
+  # between exactly one embedded and one external entry (directory
+  # basenames are unique on the filesystem; config map keys are unique in
+  # YAML), so "more than one entry with this name" IS "one of each kind".
+  defp degrade_name_collisions(mounts) do
+    collided_names =
+      mounts
+      |> Enum.frequencies_by(& &1.name)
+      |> Enum.filter(fn {_name, count} -> count > 1 end)
+      |> Enum.into(MapSet.new(), fn {name, _count} -> name end)
+
+    Enum.map(mounts, fn m ->
+      if MapSet.member?(collided_names, m.name) do
+        %{m | degraded: "name used by both an embedded and an external mount"}
+      else
+        m
+      end
+    end)
+  end
 
   defp mount_name_from_rel_path(rel_path) do
     case Path.split(rel_path) do

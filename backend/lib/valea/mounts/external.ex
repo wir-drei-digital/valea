@@ -129,8 +129,7 @@ defmodule Valea.Mounts.External do
   """
   @spec check_boundaries(resolved_ref :: String.t(), resolved_workspace :: String.t()) ::
           :ok | {:error, :home_or_root | :inside_workspace | :ancestor_of_workspace}
-  def check_boundaries(resolved_ref, resolved_workspace)
-      when is_binary(resolved_ref) and is_binary(resolved_workspace) do
+  def check_boundaries("/" <> _ = resolved_ref, "/" <> _ = resolved_workspace) do
     cond do
       home_or_root?(resolved_ref) -> {:error, :home_or_root}
       under?(resolved_ref, resolved_workspace) -> {:error, :inside_workspace}

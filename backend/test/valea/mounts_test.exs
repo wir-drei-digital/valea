@@ -17,6 +17,18 @@ defmodule Valea.MountsTest do
 
   defp mount_dir(root, name), do: Path.join([root, "mounts", name])
 
+  defp tmp_dir!(prefix) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "#{prefix}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
   describe "list/1 — discovery" do
     setup do
       root =
@@ -146,6 +158,150 @@ defmodule Valea.MountsTest do
     end
   end
 
+  describe "list/1 & enabled/1 — merges declared external mounts" do
+    setup do
+      %{root: tmp_dir!("valea-mounts-merge")}
+    end
+
+    test "one embedded + one external declared mount both appear in enabled/1", %{root: root} do
+      write_manifest!(mount_dir(root, "a"), %{id: "id-a", name: "A", description: ""})
+      ext = tmp_dir!("valea-mounts-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_workspace_yaml!(root, """
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      names = root |> Mounts.enabled() |> Enum.map(& &1.name)
+      assert names == ["a", "outside"]
+
+      list_names = root |> Mounts.list() |> Enum.map(& &1.name)
+      assert list_names == ["a", "outside"]
+    end
+
+    test "an external mount's enabled default is true when its config entry omits enabled", %{
+      root: root
+    } do
+      ext = tmp_dir!("valea-mounts-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_workspace_yaml!(root, """
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      [outside] = root |> Mounts.list() |> Enum.filter(&(&1.name == "outside"))
+      assert outside.enabled == true
+    end
+
+    test "disabling the external name (via config) drops it from enabled/1 but list/1 keeps it",
+         %{root: root} do
+      ext = tmp_dir!("valea-mounts-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_workspace_yaml!(root, """
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+          enabled: false
+      """)
+
+      enabled_names = root |> Mounts.enabled() |> Enum.map(& &1.name)
+      refute "outside" in enabled_names
+
+      list = Mounts.list(root)
+      outside = Enum.find(list, &(&1.name == "outside"))
+      assert outside.enabled == false
+      assert outside.degraded == nil
+    end
+
+    test "embedded/external name collision degrades BOTH entries and excludes both from enabled/1",
+         %{root: root} do
+      write_manifest!(mount_dir(root, "dup"), %{id: "id-dup", name: "Dup", description: ""})
+      ext = tmp_dir!("valea-mounts-ext")
+      write_manifest!(ext, %{id: "ext-dup", name: "ExtDup", description: ""})
+
+      write_workspace_yaml!(root, """
+      mounts:
+        dup:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      list = Mounts.list(root)
+      dups = Enum.filter(list, &(&1.name == "dup"))
+      assert length(dups) == 2
+
+      assert Enum.all?(
+               dups,
+               &(&1.degraded == "name used by both an embedded and an external mount")
+             )
+
+      refute "dup" in (root |> Mounts.enabled() |> Enum.map(& &1.name))
+    end
+
+    test "a guardrail-degraded external mount is excluded from enabled/1 even with enabled: true",
+         %{root: _root} do
+      parent = tmp_dir!("valea-mounts-parent")
+      ws = Path.join(parent, "the-workspace")
+      File.mkdir_p!(ws)
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        evil:
+          kind: path
+          ref: "#{parent}"
+          enabled: true
+      """)
+
+      list = Mounts.list(ws)
+      [evil] = Enum.filter(list, &(&1.name == "evil"))
+      assert evil.degraded =~ "ancestor"
+      assert evil.enabled == true
+
+      refute "evil" in (ws |> Mounts.enabled() |> Enum.map(& &1.name))
+    end
+
+    test "two workspaces declaring the same external ICM each resolve it independently, unshared state" do
+      shared = tmp_dir!("valea-mounts-shared")
+      write_manifest!(shared, %{id: "shared-id", name: "Shared", description: ""})
+
+      ws1 = tmp_dir!("valea-mounts-ws1")
+      ws2 = tmp_dir!("valea-mounts-ws2")
+
+      write_workspace_yaml!(ws1, """
+      mounts:
+        shared:
+          kind: path
+          ref: "#{shared}"
+      """)
+
+      write_workspace_yaml!(ws2, """
+      mounts:
+        shared:
+          kind: path
+          ref: "#{shared}"
+          enabled: false
+      """)
+
+      [m1] = Mounts.list(ws1) |> Enum.filter(&(&1.name == "shared"))
+      [m2] = Mounts.list(ws2) |> Enum.filter(&(&1.name == "shared"))
+
+      assert m1.root == m2.root
+      assert m1.degraded == nil
+      assert m2.degraded == nil
+      # each workspace's `enabled:` overlay is independent -- no coordination.
+      assert Enum.map(Mounts.enabled(ws1), & &1.name) == ["shared"]
+      assert Enum.map(Mounts.enabled(ws2), & &1.name) == []
+    end
+  end
+
   describe "mount_for/2" do
     setup do
       root =
@@ -174,6 +330,97 @@ defmodule Valea.MountsTest do
 
     test "returns nil for a bare mounts path with no name segment", %{root: root} do
       assert Mounts.mount_for(root, "mounts") == nil
+    end
+  end
+
+  describe "mount_for/2 — absolute paths (external mounts)" do
+    setup do
+      root = tmp_dir!("valea-mounts-abs")
+      write_manifest!(mount_dir(root, "a"), %{id: "id-a", name: "A", description: ""})
+
+      ext = tmp_dir!("valea-mounts-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+      File.mkdir_p!(Path.join(ext, "Offers"))
+      File.write!(Path.join(ext, "Offers/X.md"), "# X")
+
+      write_workspace_yaml!(root, """
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      [outside] = Mounts.list(root) |> Enum.filter(&(&1.name == "outside"))
+      %{root: root, ext: ext, outside: outside}
+    end
+
+    test "resolves an absolute path under the external mount's real root", %{
+      root: root,
+      outside: outside
+    } do
+      path = Path.join(outside.root, "Offers/X.md")
+      assert %{name: "outside"} = Mounts.mount_for(root, path)
+    end
+
+    test "an absolute path exactly equal to the external root resolves too", %{
+      root: root,
+      outside: outside
+    } do
+      assert %{name: "outside"} = Mounts.mount_for(root, outside.root)
+    end
+
+    test "a sibling path sharing a string prefix with the external root is not attributed (segment boundary)",
+         %{root: root, outside: outside} do
+      sibling = outside.root <> "-other/file.md"
+      assert Mounts.mount_for(root, sibling) == nil
+    end
+
+    test "embedded rel-path attribution is unaffected by a declared external mount", %{
+      root: root
+    } do
+      assert %{name: "a"} = Mounts.mount_for(root, "mounts/a/X.md")
+    end
+
+    test "an absolute path under a disabled external mount's root is not attributed", %{
+      root: root,
+      ext: ext
+    } do
+      write_workspace_yaml!(root, """
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+          enabled: false
+      """)
+
+      [outside] = Mounts.list(root) |> Enum.filter(&(&1.name == "outside"))
+      path = Path.join(outside.root, "Offers/X.md")
+
+      assert Mounts.mount_for(root, path) == nil
+    end
+
+    test "an absolute path under a guardrail-degraded external mount's root is not attributed",
+         %{root: _root} do
+      parent = tmp_dir!("valea-mounts-parent")
+      ws = Path.join(parent, "the-workspace")
+      File.mkdir_p!(ws)
+
+      write_workspace_yaml!(ws, """
+      mounts:
+        evil:
+          kind: path
+          ref: "#{parent}"
+      """)
+
+      [evil] = Mounts.list(ws) |> Enum.filter(&(&1.name == "evil"))
+      assert evil.degraded != nil
+
+      path = Path.join(evil.root, "somewhere/deep/file.md")
+      assert Mounts.mount_for(ws, path) == nil
+    end
+
+    test "an absolute path outside any declared external root returns nil", %{root: root} do
+      assert Mounts.mount_for(root, "/definitely/not/a/mount/path") == nil
     end
   end
 
@@ -244,6 +491,32 @@ defmodule Valea.MountsTest do
     test "is atomic: no stray .tmp file left behind", %{ws: ws} do
       assert :ok = Mounts.set_enabled("a", true)
       refute File.exists?(Path.join(ws.path, "config/workspace.yaml.tmp"))
+    end
+
+    test "sets enabled for an external-only name with no mounts/<name> dir on disk, preserving kind/ref",
+         %{ws: ws} do
+      config_path = Path.join(ws.path, "config/workspace.yaml")
+      {:ok, %{"id" => id}} = YamlElixir.read_from_file(config_path)
+
+      File.write!(config_path, """
+      version: 4
+      id: #{id}
+      mounts:
+        outside:
+          kind: path
+          ref: "/some/external/ref"
+      """)
+
+      refute File.dir?(Path.join([ws.path, "mounts", "outside"]))
+
+      assert :ok = Mounts.set_enabled("outside", false)
+
+      {:ok, doc} = YamlElixir.read_from_file(config_path)
+      assert doc["id"] == id
+      assert doc["mounts"]["outside"]["enabled"] == false
+      assert doc["mounts"]["outside"]["kind"] == "path"
+      assert doc["mounts"]["outside"]["ref"] == "/some/external/ref"
+      refute File.dir?(Path.join([ws.path, "mounts", "outside"]))
     end
 
     test "list/1 reflects a disabled mount after set_enabled", %{ws: ws} do
