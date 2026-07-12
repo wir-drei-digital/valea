@@ -562,9 +562,10 @@ Two independent sources of truth compose in `Valea.Mounts`
   A purely relational, mutable overlay (`mounts.<name>.enabled`, absent =
   enabled by default) that never touches the mount's own files.
   `Mounts.set_enabled/2` writes it atomically, preserving `version`, `id`,
-  and every other key on every mount entry — including hand-added or
-  including `kind`/`ref` fields (by-reference mounts, Plan A2 — see the By-reference section below) — so nothing but the `enabled` flag it's asked to change
-  is ever touched.
+  and every other key on every mount entry — including hand-added keys and
+  the `kind`/`ref` fields (by-reference mounts, Plan A2 — see the
+  By-reference section below) — so nothing but the `enabled` flag it's
+  asked to change is ever touched.
 - `Mounts.list/0,1` (glob `mounts/*`, sorted by name) and `Mounts.enabled/0,1`
   (filtered to `enabled: true, degraded: nil` — the effective composition
   set every consumer below composes over) are the two entry points.
