@@ -227,6 +227,11 @@ defmodule Valea.ICM do
     dir
     |> File.ls!()
     |> Enum.reject(&String.starts_with?(&1, "."))
+    # The mount's own manifest (`<root>/icm.yaml` — see `Valea.Mounts.Manifest`)
+    # is mount infrastructure, not knowledge content: exclude it at the ROOT
+    # level only, same spirit as the dotfile filter above. A nested folder's
+    # own `icm.yaml` (just a file that happens to share the name) still lists.
+    |> Enum.reject(&(dir == root and &1 == "icm.yaml"))
     |> Enum.map(&node_for(Path.join(dir, &1), root))
     |> Enum.reject(&is_nil/1)
     |> Enum.sort_by(fn n -> {if(n.type == :folder, do: 0, else: 1), String.downcase(n.name)} end)
@@ -255,7 +260,25 @@ defmodule Valea.ICM do
           uri: uri(rel)
         }
 
+      File.regular?(abs) ->
+        # A-T15 fix wave: non-.md regular files (media, PDFs, ...) surface as
+        # :file leaves so the Knowledge UI can list them (with `ext` for icon
+        # selection — normalized lowercase so ".PDF"/".pdf" map the same).
+        # Hidden files are already excluded upstream (`build_tree/2` rejects
+        # dot-prefixed names before this is ever called). Deliberately no
+        # `uri`: only .md pages are icm:// addressable/editable; rename
+        # cascades ignore these too (`collect_md_children`/`References` glob
+        # `*.md` only).
+        %{
+          name: Path.basename(abs),
+          path: rel,
+          type: :file,
+          ext: abs |> Path.extname() |> String.downcase()
+        }
+
       true ->
+        # Anything that is neither a directory, a .md page, nor a regular
+        # file (sockets, fifos, dangling symlinks) stays out of the tree.
         nil
     end
   end
@@ -273,6 +296,10 @@ defmodule Valea.ICM do
       %{type: :page} = node ->
         new_path = Path.join(prefix, node.path)
         %{node | path: new_path, uri: uri(new_path)}
+
+      # A :file leaf has no uri to rewrite — only its path gains the prefix.
+      %{type: :file} = node ->
+        %{node | path: Path.join(prefix, node.path)}
     end)
   end
 
@@ -280,6 +307,8 @@ defmodule Valea.ICM do
     Enum.reduce(children, 0, fn
       %{type: :page}, acc -> acc + 1
       %{type: :folder, page_count: n}, acc -> acc + n
+      # :file leaves are listed but never counted as pages.
+      %{type: :file}, acc -> acc
     end)
   end
 

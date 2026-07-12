@@ -36,9 +36,7 @@ export type MountGroup = {
  * typing (`InferIcmTreeResult`) drifting from the shape at runtime.
  */
 export function normalizeIcmNode(raw: Record<string, any>): IcmNode {
-  const type: IcmNode['type'] = raw.type === 'folder' ? 'folder' : 'page';
-
-  if (type === 'folder') {
+  if (raw.type === 'folder') {
     const pageCount = typeof raw.page_count === 'number'
       ? raw.page_count
       : (typeof raw.pageCount === 'number' ? raw.pageCount : 0);
@@ -46,16 +44,30 @@ export function normalizeIcmNode(raw: Record<string, any>): IcmNode {
     return {
       name: raw.name,
       path: raw.path,
-      type,
+      type: 'folder',
       children: Array.isArray(raw.children) ? raw.children.map(normalizeIcmNode) : [],
       pageCount
     };
   }
 
+  // A-T15 fix wave: non-.md file leaves keep their type (and `ext`, already
+  // lowercase from the backend) instead of being coerced to 'page' — a
+  // coerced file would render as an openable page and 404 in the editor.
+  if (raw.type === 'file') {
+    return {
+      name: raw.name,
+      path: raw.path,
+      type: 'file',
+      ext: typeof raw.ext === 'string' ? raw.ext : ''
+    };
+  }
+
+  // Anything else (including an unknown future type) still defaults to
+  // 'page' — the pre-existing defensive posture, unchanged.
   return {
     name: raw.name,
     path: raw.path,
-    type,
+    type: 'page',
     uri: raw.uri
   };
 }

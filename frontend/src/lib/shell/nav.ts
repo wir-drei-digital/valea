@@ -13,10 +13,18 @@ import ListChecks from '@lucide/svelte/icons/list-checks';
 export type IcmNode = {
   name: string;
   path: string;
-  type: 'folder' | 'page';
+  /**
+   * `'file'` (A-T15 fix wave) is a non-.md regular file (media, PDF, ...) —
+   * listed by `Valea.ICM.tree/0` as a leaf with `ext` (lowercase, e.g.
+   * `".pdf"`) for icon selection, but never editable/navigable: only `.md`
+   * pages open in the editor.
+   */
+  type: 'folder' | 'page' | 'file';
   children?: IcmNode[];
   pageCount?: number;
   uri?: string;
+  /** Lowercase extension incl. the dot (file leaves only), e.g. `".pdf"`. */
+  ext?: string;
 };
 
 // Loosely typed so any lucide icon component (or compatible svelte component) is accepted.
@@ -83,15 +91,25 @@ export function flattenMountGroups(groups: Array<{ tree: IcmNode[] }>): IcmNode[
 }
 
 export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
-  return nodes.map((n) =>
-    n.type === 'folder'
-      ? {
+  return nodes.flatMap((n): NavTreeItem[] => {
+    if (n.type === 'folder') {
+      return [
+        {
           label: n.name,
           href: `/knowledge/${encodePath(n.path)}`,
           path: n.path,
           count: n.pageCount,
           children: icmToNav(n.children ?? [])
         }
-      : { label: n.name, href: `/knowledge/${encodePath(n.path)}`, path: n.path }
-  );
+      ];
+    }
+    // A-T15 fix wave: file leaves never get an editor href — only .md pages
+    // open in the editor, so a `/knowledge/<path>` link for a PDF would be a
+    // dead page. They're dropped from the sidebar nav entirely; the Knowledge
+    // route's own list panes render them as non-clickable rows instead.
+    if (n.type === 'file') {
+      return [];
+    }
+    return [{ label: n.name, href: `/knowledge/${encodePath(n.path)}`, path: n.path }];
+  });
 }

@@ -16,12 +16,16 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { encodePath, type IcmNode } from '$lib/shell/nav';
   import { buildMountsDisplay, classifyMounts, degradedChipLabel } from '$lib/components/knowledge/mount-sections';
+  import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import ImageIcon from '@lucide/svelte/icons/image';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import FileIcon from '@lucide/svelte/icons/file';
 
   onMount(() => {
     // `icmStore.refetch()` is already kicked off by `AppFrame`'s own
@@ -38,6 +42,13 @@
 
   function folders(tree: IcmNode[]): IcmNode[] {
     return tree.filter((n) => n.type === 'folder');
+  }
+
+  // A-T15 fix wave: non-.md file leaves (media/PDF) at a mount's top level.
+  // Rendered as non-clickable rows below the folders — visible ("reveal"),
+  // but never navigable: only .md pages open in the editor.
+  function fileLeaves(tree: IcmNode[]): IcmNode[] {
+    return tree.filter((n) => n.type === 'file');
   }
 
   let newEntryMode: 'page' | 'folder' = $state('page');
@@ -90,6 +101,21 @@
   </li>
 {/snippet}
 
+{#snippet fileRow(file: IcmNode)}
+  <!-- Non-clickable by design: only .md pages open in the editor. -->
+  <li class="text-ink-secondary flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-[13px]">
+    {#if fileLeafKind(file.ext) === 'image'}
+      <ImageIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+    {:else if fileLeafKind(file.ext) === 'pdf'}
+      <FileText class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+    {:else}
+      <FileIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+    {/if}
+    <span class="min-w-0 flex-1 truncate">{file.name}</span>
+    <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">{fileLeafLabel(file.ext)}</span>
+  </li>
+{/snippet}
+
 <AppFrame>
   {#snippet list()}
     <ListPane title="Knowledge">
@@ -103,6 +129,9 @@
           <ul class="flex flex-col py-1">
             {#each folders(display.tree) as folder (folder.path)}
               {@render folderRow(folder)}
+            {/each}
+            {#each fileLeaves(display.tree) as file (file.path)}
+              {@render fileRow(file)}
             {/each}
           </ul>
         {:else}
@@ -120,6 +149,9 @@
               <ul class="flex flex-col py-1">
                 {#each folders(section.tree) as folder (folder.path)}
                   {@render folderRow(folder)}
+                {/each}
+                {#each fileLeaves(section.tree) as file (file.path)}
+                  {@render fileRow(file)}
                 {/each}
               </ul>
             </div>
@@ -163,21 +195,25 @@
             {#if deactivatedOpen}
               <ul class="flex flex-col gap-1 px-2 pb-3">
                 {#each classification.deactivated as mount (mount.name)}
-                  <li class="flex items-center justify-between gap-2 py-1">
-                    <span class="text-ink-secondary min-w-0 flex-1 truncate text-[13px]">{mount.title}</span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={!!reenabling[mount.name]}
-                      onclick={() => void reenable(mount.name)}
-                    >
-                      {reenabling[mount.name] ? 'Enabling…' : 'Enable'}
-                    </Button>
+                  <!-- The error line lives INSIDE the <li> — a <p> as a direct
+                       child of <ul> is invalid markup. -->
+                  <li class="flex flex-col gap-1 py-1">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-ink-secondary min-w-0 flex-1 truncate text-[13px]">{mount.title}</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!!reenabling[mount.name]}
+                        onclick={() => void reenable(mount.name)}
+                      >
+                        {reenabling[mount.name] ? 'Enabling…' : 'Enable'}
+                      </Button>
+                    </div>
+                    {#if reenableError[mount.name]}
+                      <p class="text-warn-ink text-[11px]" role="alert">{reenableError[mount.name]}</p>
+                    {/if}
                   </li>
-                  {#if reenableError[mount.name]}
-                    <p class="text-warn-ink text-[11px]" role="alert">{reenableError[mount.name]}</p>
-                  {/if}
                 {/each}
               </ul>
             {/if}

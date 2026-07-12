@@ -14,6 +14,10 @@
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
+  import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
+  import ImageIcon from '@lucide/svelte/icons/image';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import FileIcon from '@lucide/svelte/icons/file';
 
   let newEntryMode: 'page' | 'folder' = $state('page');
   let newEntryOpen = $state(false);
@@ -308,33 +312,49 @@
         <ul class="flex flex-col py-1">
           {#each listContext.entries as child (child.path)}
             {@const selected = child.path === decodedPath}
-            <li class="group relative">
-              <a
-                href={`/knowledge/${encodePath(child.path)}`}
-                class="flex items-center gap-2 border-l-[3px] py-2 pr-9 pl-3 text-[13px] transition-colors hover:bg-paper-pill"
-                class:border-act={selected}
-                class:border-transparent={!selected}
-                class:bg-paper-card={selected}
-              >
-                <span
-                  class={[
-                    'min-w-0 flex-1 truncate',
-                    selected ? 'text-ink-heading [font-weight:650]' : 'text-ink-body'
-                  ]}
-                >
-                  {child.name}
-                </span>
-                {#if child.type === 'folder'}
-                  <span class="text-ink-meta text-[11px] tabular-nums">{child.pageCount ?? 0}</span>
+            {#if child.type === 'file'}
+              <!-- A-T15 fix wave: non-.md file leaf — visible but
+                   non-clickable (only .md pages open in the editor). -->
+              <li class="text-ink-secondary flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-[13px]">
+                {#if fileLeafKind(child.ext) === 'image'}
+                  <ImageIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                {:else if fileLeafKind(child.ext) === 'pdf'}
+                  <FileText class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                {:else}
+                  <FileIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
                 {/if}
-              </a>
-              <EntryMenu
-                path={child.path}
-                name={child.name}
-                isFolder={child.type === 'folder'}
-                class="absolute top-1/2 right-0.5 -translate-y-1/2"
-              />
-            </li>
+                <span class="min-w-0 flex-1 truncate">{child.name}</span>
+                <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">{fileLeafLabel(child.ext)}</span>
+              </li>
+            {:else}
+              <li class="group relative">
+                <a
+                  href={`/knowledge/${encodePath(child.path)}`}
+                  class="flex items-center gap-2 border-l-[3px] py-2 pr-9 pl-3 text-[13px] transition-colors hover:bg-paper-pill"
+                  class:border-act={selected}
+                  class:border-transparent={!selected}
+                  class:bg-paper-card={selected}
+                >
+                  <span
+                    class={[
+                      'min-w-0 flex-1 truncate',
+                      selected ? 'text-ink-heading [font-weight:650]' : 'text-ink-body'
+                    ]}
+                  >
+                    {child.name}
+                  </span>
+                  {#if child.type === 'folder'}
+                    <span class="text-ink-meta text-[11px] tabular-nums">{child.pageCount ?? 0}</span>
+                  {/if}
+                </a>
+                <EntryMenu
+                  path={child.path}
+                  name={child.name}
+                  isFolder={child.type === 'folder'}
+                  class="absolute top-1/2 right-0.5 -translate-y-1/2"
+                />
+              </li>
+            {/if}
           {/each}
         </ul>
       {/snippet}

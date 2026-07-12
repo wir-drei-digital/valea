@@ -143,6 +143,45 @@ describe('normalizeIcmNode', () => {
 
     expect(result.pageCount).toBe(10);
   });
+
+  it('preserves file leaves (A-T15 fix wave) — type "file" with the ext passed through', () => {
+    const raw = { name: 'X.pdf', path: 'mounts/primary/Offers/X.pdf', type: 'file', ext: '.pdf' };
+
+    expect(normalizeIcmNode(raw)).toEqual<IcmNode>({
+      name: 'X.pdf',
+      path: 'mounts/primary/Offers/X.pdf',
+      type: 'file',
+      ext: '.pdf'
+    });
+  });
+
+  it('normalizes file leaves nested inside folder children', () => {
+    const raw = {
+      name: 'Offers',
+      path: 'mounts/primary/Offers',
+      type: 'folder',
+      page_count: 1,
+      children: [
+        { name: 'Founder Coaching', path: 'mounts/primary/Offers/Founder Coaching.md', type: 'page', uri: 'u' },
+        { name: 'logo.png', path: 'mounts/primary/Offers/logo.png', type: 'file', ext: '.png' }
+      ]
+    };
+
+    const result = normalizeIcmNode(raw);
+
+    expect(result.children?.[1]).toEqual<IcmNode>({
+      name: 'logo.png',
+      path: 'mounts/primary/Offers/logo.png',
+      type: 'file',
+      ext: '.png'
+    });
+  });
+
+  it('still coerces an unknown type to page (defensive default, unchanged)', () => {
+    const raw = { name: 'Mystery', path: '/mystery', type: 'something_else', uri: 'u' };
+
+    expect(normalizeIcmNode(raw).type).toBe('page');
+  });
 });
 
 // The backend's `icm_tree` RPC (A-T11) returns a GROUPED envelope —

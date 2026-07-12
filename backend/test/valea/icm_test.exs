@@ -56,6 +56,38 @@ defmodule Valea.ICMTest do
     assert child.uri == "icm://mounts/primary/Offers/Founder Coaching Package.md"
   end
 
+  test "tree lists non-.md files as :file leaves with a lowercase ext, still excluding hidden files",
+       %{ws: ws} do
+    dir = Path.join(ws, "mounts/primary/Offers")
+    File.write!(Path.join(dir, "X.pdf"), "%PDF-1.4 fake")
+    File.write!(Path.join(dir, "logo.PNG"), "not really a png")
+    File.write!(Path.join(dir, ".hidden.pdf"), "still hidden")
+
+    {:ok, [mount]} = ICM.tree()
+    offers = Enum.find(mount.tree, &(&1.name == "Offers"))
+
+    pdf = Enum.find(offers.children, &(&1.name == "X.pdf"))
+    assert pdf == %{name: "X.pdf", path: "mounts/primary/Offers/X.pdf", type: :file, ext: ".pdf"}
+
+    png = Enum.find(offers.children, &(&1.name == "logo.PNG"))
+
+    assert png == %{
+             name: "logo.PNG",
+             path: "mounts/primary/Offers/logo.PNG",
+             type: :file,
+             ext: ".png"
+           }
+
+    refute Enum.any?(offers.children, &String.starts_with?(&1.name, "."))
+
+    # file leaves never count as pages
+    assert offers.page_count == 2
+
+    # the mount's own manifest is infrastructure, not knowledge content —
+    # never listed at the mount root
+    refute Enum.any?(mount.tree, &(&1.name == "icm.yaml"))
+  end
+
   test "page reads content with title and uri" do
     {:ok, page} = ICM.page("mounts/primary/Offers/Founder Coaching Package.md")
     assert page.title == "Founder Coaching Package"

@@ -20,6 +20,28 @@ describe('icmToNav', () => {
     expect(nav[0].count).toBe(2);
     expect(nav[0].children?.[0].href).toBe('/knowledge/Tone%20%26%20Voice/Email%20Tone%20Guide.md');
   });
+
+  it('emits NO nav item for file leaves — only .md pages get an editor href (A-T15 fix wave)', () => {
+    const withFiles: IcmNode[] = [
+      {
+        name: 'Offers',
+        path: 'mounts/primary/Offers',
+        type: 'folder',
+        pageCount: 1,
+        children: [
+          { name: 'Founder', path: 'mounts/primary/Offers/Founder.md', type: 'page', uri: 'u' },
+          { name: 'brochure.pdf', path: 'mounts/primary/Offers/brochure.pdf', type: 'file', ext: '.pdf' }
+        ]
+      },
+      { name: 'logo.png', path: 'mounts/primary/logo.png', type: 'file', ext: '.png' }
+    ];
+
+    const nav = icmToNav(withFiles);
+
+    expect(nav).toHaveLength(1); // the top-level file leaf is dropped
+    expect(nav[0].children).toHaveLength(1); // the nested one too
+    expect(nav[0].children?.[0].label).toBe('Founder');
+  });
 });
 
 describe('encodePath', () => {
