@@ -12,18 +12,28 @@ defmodule Valea.ICMWriteTest do
   # to get a mount with rich seeded fixture content. Post T4,
   # `Valea.ICM.References` resolves the owning mount for whatever
   # workspace-relative path it's given and scans/rewrites THAT mount's own
-  # `Workflows/` — so every rename/reference assertion below reads from
-  # `mounts/primary/Workflows/…`, not the untouched (and now irrelevant)
-  # original `icm/` tree. The seeded pages' `sources:` needles are still
-  # literally `icm/<rel_path>` (the pre-mounts convention, unchanged here —
-  # that's Task A-T8's job) but that string is a superset of the
-  # mount-relative needle References now searches/replaces on, so rewrite
-  # behavior round-trips correctly either way.
+  # `Workflows/` for the MOUNT-RELATIVE needle, anchored: a `/` right
+  # before an occurrence marks it as the tail of a longer token, so the
+  # template's legacy `path: "icm/<rel>"` form would (correctly) never
+  # match. Rewrite the copied pages to the mount-relative convention a
+  # real post-T8 mount will carry — every rename/reference assertion below
+  # then reads `mounts/primary/Workflows/…` and asserts on unprefixed
+  # `<rel>` needles.
   defp seed_mount!(ws_path, name, title) do
     mount_dir = Path.join([ws_path, "mounts", name])
     File.mkdir_p!(Path.dirname(mount_dir))
     File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
+    strip_legacy_icm_prefix!(mount_dir)
     Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
+  end
+
+  defp strip_legacy_icm_prefix!(mount_dir) do
+    [mount_dir, "Workflows", "*.md"]
+    |> Path.join()
+    |> Path.wildcard()
+    |> Enum.each(fn abs ->
+      File.write!(abs, String.replace(File.read!(abs), ~s(path: "icm/), ~s(path: ")))
+    end)
   end
 
   setup do
@@ -153,8 +163,8 @@ defmodule Valea.ICMWriteTest do
     assert File.exists?(Path.join(ws_path(), "mounts/primary/Offers/Founder Package.md"))
 
     page = workflow_page()
-    assert page =~ "icm/Offers/Founder Package.md"
-    refute page =~ "icm/Offers/Founder Coaching Package.md"
+    assert page =~ ~s(path: "Offers/Founder Package.md")
+    refute page =~ "Offers/Founder Coaching Package.md"
   end
 
   test "rename to an invalid or already-existing name" do
@@ -176,8 +186,8 @@ defmodule Valea.ICMWriteTest do
            )
 
     page = workflow_page()
-    assert page =~ "icm/Offerings/Founder Coaching Package.md"
-    refute page =~ "icm/Offers/Founder Coaching Package.md"
+    assert page =~ ~s(path: "Offerings/Founder Coaching Package.md")
+    refute page =~ "Offers/Founder Coaching Package.md"
   end
 
   test "renaming a folder does not corrupt references to a sibling folder whose name is a prefix superset" do
@@ -192,16 +202,16 @@ defmodule Valea.ICMWriteTest do
     File.write!(
       workflow_path,
       File.read!(workflow_path) <>
-        "\n  - id: sidecar\n    type: icm\n    path: icm/Offers Extra/Sidecar.md\n"
+        "\n  - id: sidecar\n    type: icm\n    path: \"Offers Extra/Sidecar.md\"\n"
     )
 
     assert {:ok, %{path: "mounts/primary/Offerings"}} =
              ICM.rename("mounts/primary/Offers", "Offerings")
 
     page = workflow_page()
-    assert page =~ "icm/Offerings/Founder Coaching Package.md"
-    assert page =~ "icm/Offers Extra/Sidecar.md"
-    refute page =~ "icm/Offerings Extra/Sidecar.md"
+    assert page =~ ~s(path: "Offerings/Founder Coaching Package.md")
+    assert page =~ ~s(path: "Offers Extra/Sidecar.md")
+    refute page =~ "Offerings Extra/Sidecar.md"
   end
 
   test "renaming a folder rewrites wildcard workflow references to it" do
@@ -213,8 +223,8 @@ defmodule Valea.ICMWriteTest do
       File.read!(Path.join(ws_path(), "mounts/primary/Workflows/Post-Session Follow-up.md"))
     end
 
-    assert session_prep.() =~ "icm/Clients/*"
-    assert post_session.() =~ "icm/Clients/*"
+    assert session_prep.() =~ ~s(path: "Clients/*")
+    assert post_session.() =~ ~s(path: "Clients/*")
 
     assert {:ok, %{path: "mounts/primary/Customers", updated_workflows: updated_workflows}} =
              ICM.rename("mounts/primary/Clients", "Customers")
@@ -225,10 +235,10 @@ defmodule Valea.ICMWriteTest do
     refute File.exists?(Path.join(ws_path(), "mounts/primary/Clients"))
     assert File.exists?(Path.join(ws_path(), "mounts/primary/Customers"))
 
-    assert session_prep.() =~ "icm/Customers/*"
-    refute session_prep.() =~ "icm/Clients/*"
-    assert post_session.() =~ "icm/Customers/*"
-    refute post_session.() =~ "icm/Clients/*"
+    assert session_prep.() =~ ~s(path: "Customers/*")
+    refute session_prep.() =~ "Clients/*"
+    assert post_session.() =~ ~s(path: "Customers/*")
+    refute post_session.() =~ "Clients/*"
   end
 
   test "delete a page removes it and leaves workflows untouched" do

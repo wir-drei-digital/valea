@@ -8,16 +8,27 @@ defmodule ValeaWeb.IcmRpcTest do
   alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
-  # See test/valea/icm_test.exs's `seed_mount!/3` comment: the workspace
-  # template still scaffolds the legacy `icm/` tree (Task A-T8 migrates it),
-  # so a freshly created workspace has no `mounts/` dir at all. Copy the
-  # seeded `icm/` tree into `mounts/primary/` and stamp a manifest on it so
-  # the RPC layer's ICM actions — which now resolve through
-  # `Valea.Mounts.mount_for/1` — have a real mount to operate on.
+  # See test/valea/icm_write_test.exs's `seed_mount!/3` comment: the
+  # workspace template still scaffolds the legacy `icm/` tree (Task A-T8
+  # migrates it), so a freshly created workspace has no `mounts/` dir at
+  # all. Copy the seeded `icm/` tree into `mounts/primary/`, rewrite its
+  # Workflows pages to the mount-relative reference convention References
+  # (T4) anchors on (the legacy `path: "icm/<rel>"` form would correctly
+  # never match), and stamp a manifest on it so the RPC layer's ICM
+  # actions — which resolve through `Valea.Mounts.mount_for/1` — have a
+  # real mount to operate on.
   defp seed_mount!(ws_path, name, title) do
     mount_dir = Path.join([ws_path, "mounts", name])
     File.mkdir_p!(Path.dirname(mount_dir))
     File.cp_r!(Path.join(ws_path, "icm"), mount_dir)
+
+    [mount_dir, "Workflows", "*.md"]
+    |> Path.join()
+    |> Path.wildcard()
+    |> Enum.each(fn abs ->
+      File.write!(abs, String.replace(File.read!(abs), ~s(path: "icm/), ~s(path: ")))
+    end)
+
     Manifest.write!(mount_dir, %{id: "id-" <> name, name: title, description: ""})
   end
 

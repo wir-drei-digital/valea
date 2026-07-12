@@ -182,6 +182,77 @@ defmodule Valea.ICM.ReferencesTest do
              References.rewrite("Offers/Nope.md", "Offers/Also-Nope.md")
   end
 
+  describe "anchored needle matching" do
+    setup %{ws: ws} do
+      write_page!(ws, "a", "Offers/X.md", "# X\n")
+      write_page!(ws, "a", "Special Offers/X.md", "# Special X\n")
+      write_page!(ws, "a", "MoreOffers/X.md", "# More X\n")
+      :ok
+    end
+
+    test "a longer real path (Special Offers/X.md) is neither listed nor corrupted", %{ws: ws} do
+      write_workflow!(ws, "a", "Special Ref.md", ["Special Offers/X.md"])
+      before = File.read!(Path.join(workflows_dir(ws, "a"), "Special Ref.md"))
+
+      {:ok, refs} = References.referencing_workflows("mounts/a/Offers/X.md")
+      refute Enum.any?(refs, &(&1.file == "Special Ref.md"))
+
+      {:ok, updated} = References.rewrite("mounts/a/Offers/X.md", "mounts/a/Offers/Y.md")
+      refute "Special Ref.md" in updated
+      assert File.read!(Path.join(workflows_dir(ws, "a"), "Special Ref.md")) == before
+    end
+
+    test "a no-space token continuation (MoreOffers/X.md) is not matched", %{ws: ws} do
+      write_workflow!(ws, "a", "More Ref.md", ["MoreOffers/X.md"])
+      before = File.read!(Path.join(workflows_dir(ws, "a"), "More Ref.md"))
+
+      {:ok, refs} = References.referencing_workflows("mounts/a/Offers/X.md")
+      refute Enum.any?(refs, &(&1.file == "More Ref.md"))
+
+      {:ok, updated} = References.rewrite("mounts/a/Offers/X.md", "mounts/a/Offers/Y.md")
+      refute "More Ref.md" in updated
+      assert File.read!(Path.join(workflows_dir(ws, "a"), "More Ref.md")) == before
+    end
+
+    test "quoted, YAML-list, markdown-link, line-start, and prose-space forms all match and rewrite",
+         %{ws: ws} do
+      # `see Offers/X.md` is a space-preceded prose mention whose leftward
+      # extension ("Offers/X.md) and see Offers/X.md", back to the nearest
+      # opening delimiter) is NOT an existing path, so it still counts.
+      content = """
+      ---
+      sources:
+        - { id: quoted, type: icm, path: "Offers/X.md" }
+        - Offers/X.md
+      ---
+      Offers/X.md
+      A [link](Offers/X.md) and see Offers/X.md in prose.
+      """
+
+      write_page!(ws, "a", "Workflows/Anchor Forms.md", content)
+
+      {:ok, refs} = References.referencing_workflows("mounts/a/Offers/X.md")
+      assert Enum.any?(refs, &(&1.file == "Anchor Forms.md"))
+
+      {:ok, updated} = References.rewrite("mounts/a/Offers/X.md", "mounts/a/Offers/Y.md")
+      assert "Anchor Forms.md" in updated
+
+      page = File.read!(Path.join(workflows_dir(ws, "a"), "Anchor Forms.md"))
+      refute page =~ "Offers/X.md"
+      assert page =~ ~s(path: "Offers/Y.md")
+      assert page =~ "- Offers/Y.md"
+      assert page =~ "(Offers/Y.md)"
+      assert page =~ "\nOffers/Y.md"
+      assert page =~ "see Offers/Y.md"
+    end
+  end
+
+  test "a bare mount-root path is invalid for both functions" do
+    assert {:error, :invalid_path} = References.referencing_workflows("mounts/a")
+    assert {:error, :invalid_path} = References.rewrite("mounts/a", "mounts/a/Offers/X.md")
+    assert {:error, :invalid_path} = References.rewrite("mounts/a/Offers/X.md", "mounts/a")
+  end
+
   test "errors without a workspace" do
     Manager.close()
 

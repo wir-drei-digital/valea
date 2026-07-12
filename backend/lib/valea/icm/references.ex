@@ -16,19 +16,43 @@ defmodule Valea.ICM.References do
 
   Workflow pages are treated as opaque text here — scanning/rewriting by
   substring is both simpler and more robust than parsing YAML and chasing
-  its structure. `rewrite/2` is a plain string replace, not aware of YAML
-  syntax, so callers must pass matchable substrings (see the boundary
-  handling in `Valea.ICM.rename/2` for folder renames).
+  its structure. But a bare substring is not enough: the needle
+  `Offers/X.md` also occurs inside the longer paths `Special Offers/X.md`
+  and `MoreOffers/X.md`, so every occurrence is anchored by the character
+  immediately before it:
+
+    * start of content, a newline, or an opening delimiter
+      (`"`, `'`, `(`, `[`, `` ` ``) — a real reference boundary; match.
+    * space/tab — ambiguous, because ICM paths may contain spaces: the
+      text is extended left to the nearest opening delimiter/newline and
+      the leading whitespace trimmed; if that longer candidate is a
+      DIFFERENT path that actually exists under the mount root
+      (`Special Offers/X.md`), the occurrence belongs to that longer path
+      and is skipped, otherwise it is a match (`- Offers/X.md` YAML list
+      items, prose mentions).
+    * anything else (letters, digits, `/`, `-`, `.`, …) — the occurrence
+      is the tail of a longer token (`MoreOffers/X.md`, `Sub/Offers/X.md`);
+      skipped.
+
+  The same anchored matching drives both detection and replacement, so
+  `rewrite/2` never touches an occurrence `referencing_workflows/1` would
+  not report.
   """
 
   alias Valea.Mounts
 
   @name_regex ~r/^name:\s*(.+)$/m
 
+  # Characters that open a quoted/bracketed reference — a needle occurrence
+  # directly after one of these is a real reference boundary. Also the hard
+  # stops (together with a newline) when extending an ambiguous
+  # space-preceded occurrence leftward.
+  @boundary_openers [?", ?', ?(, ?[, ?`]
+
   @doc """
   Lists the workflows — within `rel_path`'s own mount — that reference it,
-  by scanning every `{mount_root}/Workflows/*.md` for the literal
-  ICM-relative needle.
+  by scanning every `{mount_root}/Workflows/*.md` for the ICM-relative
+  needle, anchored per the moduledoc's boundary rules.
 
   `rel_path` is workspace-relative (`mounts/<name>/<inner>`); the string
   scanned for is `<inner>` alone (no `mounts/<name>` prefix).
@@ -39,19 +63,20 @@ defmodule Valea.ICM.References do
   its extension when absent — which is every current page, since the
   frontmatter carries no `name:` key.
 
-  Errors: `{:error, :outside_workspace}` when `rel_path` doesn't name a
-  mount discovered in the current workspace; `{:error, :no_workspace}`
-  when no workspace is open.
+  Errors: `{:error, :invalid_path}` when `rel_path` is a bare mount root
+  (empty inner path — an empty needle would match everything);
+  `{:error, :outside_workspace}` when `rel_path` doesn't name a mount
+  discovered in the current workspace; `{:error, :no_workspace}` when no
+  workspace is open.
   """
   def referencing_workflows(rel_path) do
-    with {:ok, mount} <- resolve_mount(rel_path) do
-      needle = mount_relative(rel_path)
-
+    with {:ok, mount} <- resolve_mount(rel_path),
+         {:ok, needle} <- inner_needle(rel_path) do
       refs =
         mount
         |> workflows_dir()
         |> workflow_files()
-        |> Enum.filter(fn abs -> File.read!(abs) =~ needle_pattern(needle) end)
+        |> Enum.filter(fn abs -> anchored_matches(File.read!(abs), needle, mount.root) != [] end)
         |> Enum.map(&describe_workflow/1)
         |> Enum.sort_by(& &1.file)
 
@@ -61,17 +86,19 @@ defmodule Valea.ICM.References do
 
   @doc """
   Rewrites every workflow — within `old_rel`'s mount — referencing
-  `old_rel` to reference `new_rel` instead, by literally replacing the
-  `<inner>` needle and atomically writing the file back.
+  `old_rel` to reference `new_rel` instead, by replacing each anchored
+  occurrence of the old `<inner>` needle (same boundary rules as
+  `referencing_workflows/1`) and atomically writing the file back.
 
   `old_rel` and `new_rel` are both workspace-relative (`mounts/<name>/<inner>`)
   and MUST name the same mount — a rename never crosses mounts.
 
   Returns `{:ok, [updated_filenames]}` (sorted) on success,
   `{:error, :cross_mount_rename}` when `old_rel`/`new_rel` name different
-  mounts, `{:error, :outside_workspace}` / `{:error, :no_workspace}` from
-  mount resolution, or `{:error, {:rewrite_failed, file_basename, reason}}`
-  if any write fails.
+  mounts, `{:error, :invalid_path}` when either path is a bare mount root,
+  `{:error, :outside_workspace}` / `{:error, :no_workspace}` from mount
+  resolution, or `{:error, {:rewrite_failed, file_basename, reason}}` if
+  any write fails.
 
   Note: A rewrite failure leaves already-rewritten files on disk; the caller
   must surface the error to the user (who can decide whether to retry, rollback
@@ -80,17 +107,20 @@ defmodule Valea.ICM.References do
   def rewrite(old_rel, new_rel) do
     with {:ok, old_mount} <- resolve_mount(old_rel),
          {:ok, new_mount} <- resolve_mount(new_rel),
-         :ok <- same_mount(old_mount, new_mount) do
-      old_needle = mount_relative(old_rel)
-      new_needle = mount_relative(new_rel)
-
+         :ok <- same_mount(old_mount, new_mount),
+         {:ok, old_needle} <- inner_needle(old_rel),
+         {:ok, new_needle} <- inner_needle(new_rel) do
       files_to_rewrite =
         old_mount
         |> workflows_dir()
         |> workflow_files()
-        |> Enum.filter(fn abs -> File.read!(abs) =~ needle_pattern(old_needle) end)
+        |> Enum.map(fn abs ->
+          content = File.read!(abs)
+          {abs, content, anchored_matches(content, old_needle, old_mount.root)}
+        end)
+        |> Enum.reject(fn {_abs, _content, matches} -> matches == [] end)
 
-      rewrite_all(files_to_rewrite, old_needle, new_needle)
+      rewrite_all(files_to_rewrite, new_needle)
     end
   end
 
@@ -101,9 +131,10 @@ defmodule Valea.ICM.References do
   # the mount `rel_path` points into without validating the rest of the
   # path. That is exactly what this module needs — it never turns
   # `rel_path` into a filesystem path itself, only strips its `mounts/<name>`
-  # prefix to build a search/replace needle (see `mount_relative/1`); every
-  # actual filesystem access below is confined to `mount.root/Workflows/*.md`,
-  # already contained by construction via `workflow_files/1`'s glob.
+  # prefix to build a search/replace needle (see `inner_needle/1`); the
+  # scan/rewrite I/O is confined to `mount.root/Workflows/*.md` by
+  # construction via `workflow_files/1`'s glob, and the ambiguity probe in
+  # `longer_existing_path?/4` is a read-only `File.exists?`.
   defp resolve_mount(rel_path) do
     case Mounts.mount_for(rel_path) do
       {:ok, mount} -> {:ok, mount}
@@ -112,12 +143,21 @@ defmodule Valea.ICM.References do
     end
   end
 
+  # The mount-relative inner path is the search/replace needle. A bare
+  # mount root (inner path "") is invalid: an empty needle would match
+  # everywhere and a replace with/of "" shreds files.
+  defp inner_needle(rel_path) do
+    case mount_relative(rel_path) do
+      "" -> {:error, :invalid_path}
+      needle -> {:ok, needle}
+    end
+  end
+
   # Strips the leading `mounts/<name>` segment off a workspace-relative
-  # path, leaving the path ICM-relative to that mount's own root — the
-  # needle scanned/rewritten in Workflows pages. Mirrors the private
-  # `mount_relative/1` in `Valea.ICM` — kept local rather than shared for
-  # the same reason `atomic_write/2` below is: a small, self-contained
-  # module, not worth a shared dependency for.
+  # path, leaving the path ICM-relative to that mount's own root. Mirrors
+  # the private `mount_relative/1` in `Valea.ICM` — kept local rather than
+  # shared for the same reason `atomic_write/2` below is: a small,
+  # self-contained module, not worth a shared dependency for.
   defp mount_relative(rel_path) do
     case Path.split(rel_path) do
       ["mounts", _name | rest] -> Enum.join(rest, "/")
@@ -125,11 +165,83 @@ defmodule Valea.ICM.References do
     end
   end
 
-  defp rewrite_all(files, old_needle, new_needle) do
+  # -- anchored matching (shared by detection and replacement) -----------
+
+  # All `{byte_pos, byte_len}` occurrences of `needle` in `content` that
+  # pass the boundary rules (see moduledoc). Byte-level inspection of the
+  # preceding character is UTF-8 safe: the anchor characters are all ASCII,
+  # and an ASCII byte value never occurs inside a multi-byte UTF-8
+  # sequence — a trailing byte of a multi-byte character falls through to
+  # the token-continuation (skip) clause, which is the correct call.
+  defp anchored_matches(content, needle, mount_root) do
+    content
+    |> :binary.matches(needle)
+    |> Enum.filter(&anchored?(content, &1, needle, mount_root))
+  end
+
+  defp anchored?(_content, {0, _len}, _needle, _mount_root), do: true
+
+  defp anchored?(content, {pos, _len}, needle, mount_root) do
+    case :binary.at(content, pos - 1) do
+      ?\n ->
+        true
+
+      prev when prev in @boundary_openers ->
+        true
+
+      prev when prev in [?\s, ?\t] ->
+        not longer_existing_path?(content, pos, needle, mount_root)
+
+      _token_continuation ->
+        false
+    end
+  end
+
+  # A space-preceded occurrence is ambiguous — ICM paths may contain
+  # spaces, so `Offers/X.md` inside `"Special Offers/X.md"` is the tail of
+  # a longer path, while `- Offers/X.md` (YAML list item) or a prose
+  # mention is a genuine reference. Disambiguate by extending the text
+  # leftward to the nearest opening delimiter/newline (or start), trimming
+  # the leading whitespace, and checking whether the longer candidate path
+  # ending at the match end actually exists under the mount root: if it
+  # does, the occurrence belongs to that longer path — skip it.
+  defp longer_existing_path?(content, pos, needle, mount_root) do
+    bound = left_delimiter_bound(content, pos)
+    extension = binary_part(content, bound, pos - bound)
+    candidate = String.trim_leading(extension) <> needle
+
+    candidate != needle and File.exists?(Path.join(mount_root, candidate))
+  end
+
+  defp left_delimiter_bound(content, pos), do: scan_left(content, pos - 1)
+
+  defp scan_left(_content, i) when i < 0, do: 0
+
+  defp scan_left(content, i) do
+    case :binary.at(content, i) do
+      ?\n -> i + 1
+      c when c in @boundary_openers -> i + 1
+      _ -> scan_left(content, i - 1)
+    end
+  end
+
+  # Splices `replacement` over each matched range, right-to-left so the
+  # byte offsets of the earlier (unprocessed) matches stay valid while the
+  # binary grows/shrinks behind them.
+  defp splice(content, matches, replacement) do
+    matches
+    |> Enum.sort_by(fn {pos, _len} -> pos end, :desc)
+    |> Enum.reduce(content, fn {pos, len}, acc ->
+      prefix = binary_part(acc, 0, pos)
+      suffix = binary_part(acc, pos + len, byte_size(acc) - pos - len)
+      prefix <> replacement <> suffix
+    end)
+  end
+
+  defp rewrite_all(files, new_needle) do
     result =
-      Enum.reduce_while(files, {:ok, []}, fn abs, {:ok, updated} ->
-        content = File.read!(abs)
-        rewritten = String.replace(content, old_needle, new_needle)
+      Enum.reduce_while(files, {:ok, []}, fn {abs, content, matches}, {:ok, updated} ->
+        rewritten = splice(content, matches, new_needle)
 
         case atomic_write(abs, rewritten) do
           :ok ->
@@ -145,8 +257,6 @@ defmodule Valea.ICM.References do
       error -> error
     end
   end
-
-  defp needle_pattern(needle), do: Regex.compile!(Regex.escape(needle))
 
   defp workflows_dir(mount), do: Path.join(mount.root, "Workflows")
 
