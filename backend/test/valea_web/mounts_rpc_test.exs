@@ -43,6 +43,57 @@ defmodule ValeaWeb.MountsRpcTest do
     |> json_response(200)
   end
 
+  # Declares an external (kind: "path") mount in the workspace's existing
+  # config/workspace.yaml, preserving version/id and every existing mount
+  # entry — mirrors `Valea.Agents.SessionReadRootsTest`'s helper of the same
+  # name/shape.
+  defp declare_external!(ws_path, name, ref) do
+    config_path = Path.join(ws_path, "config/workspace.yaml")
+    {:ok, doc} = YamlElixir.read_from_file(config_path)
+
+    mounts =
+      (Map.get(doc, "mounts") || %{})
+      |> Map.put(name, %{"kind" => "path", "ref" => ref})
+
+    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
+
+    entries =
+      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+        [
+          "  #{n}:"
+          | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
+              "    #{k}: #{render_scalar(v)}"
+            end)
+        ]
+      end)
+
+    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+  end
+
+  defp render_scalar(v) when is_binary(v), do: inspect(v)
+  defp render_scalar(v), do: to_string(v)
+
+  defp external_icm!(name) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-mounts-rpc-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    Valea.Mounts.Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+    dir
+  end
+
+  defp settings_allow(workspace) do
+    workspace
+    |> Path.join(".claude/settings.json")
+    |> File.read!()
+    |> Jason.decode!()
+    |> get_in(["permissions", "allow"])
+  end
+
   @mount_fields [
     %{"mounts" => ["name", "title", "description", "relRoot", "enabled", "degraded"]}
   ]
@@ -139,6 +190,48 @@ defmodule ValeaWeb.MountsRpcTest do
                )
 
       assert inspect(errors) =~ "invalid_mount_name"
+    end
+
+    # A2-T4: the managed `.claude/settings.json` regenerates on this
+    # mutation too (not just at session start), so an external mount's
+    # `Read(<abs>/**)` allow tracks `enabled` state without a workspace
+    # reopen. The external mount here is declared directly on disk (a
+    # hand-edited config, not through this RPC — Plan A2's declare RPC is a
+    # later task), so the settings file written at workspace-scaffold time
+    # predates it and starts stale; ANY subsequent mutation — even one
+    # unrelated to "ext" itself — must pick it up because `write!/1` reads
+    # `Mounts.enabled/1` fresh every time.
+    test "a hand-declared external mount's Read allow appears after the next mutation and disappears when disabled",
+         %{workspace: workspace, generation: generation} do
+      ext = external_icm!("Ext")
+      declare_external!(workspace, "ext", ext)
+
+      stale_allow = settings_allow(workspace)
+      assert stale_allow == ["Read(./**)"]
+
+      assert %{"success" => true} =
+               rpc(
+                 "set_mount_enabled",
+                 %{"name" => "w", "enabled" => true, "generation" => generation},
+                 ["saved"]
+               )
+
+      %{root: ext_root} =
+        workspace |> Valea.Mounts.enabled() |> Enum.find(&(&1.name == "ext"))
+
+      allow_after_unrelated_mutation = settings_allow(workspace)
+      assert "Read(#{ext_root}/**)" in allow_after_unrelated_mutation
+
+      assert %{"success" => true} =
+               rpc(
+                 "set_mount_enabled",
+                 %{"name" => "ext", "enabled" => false, "generation" => generation},
+                 ["saved"]
+               )
+
+      allow_after_disable = settings_allow(workspace)
+      refute "Read(#{ext_root}/**)" in allow_after_disable
+      assert allow_after_disable == ["Read(./**)"]
     end
   end
 

@@ -22,17 +22,31 @@ defmodule Valea.Api.Mounts do
       `Valea.Workspace.Manager.check_generation/1` before touching anything,
       same as `Valea.Api.Queue`/`Valea.Api.Mail`.
 
-  `set_mount_enabled` and `create_mount` both regenerate `MOUNTS.md`
-  (`Valea.Mounts.MountsMd.regenerate/1`) and broadcast `{:mounts_changed}`
-  on the `"mounts"` PubSub topic afterwards — the EXACT same message
-  `Valea.ICM.Watcher` broadcasts on filesystem discovery changes (Task
-  A-T6), so a subscriber (the `mounts` topic push in
+  `set_mount_enabled` and `create_mount` both regenerate workspace metadata
+  (`regenerate_workspace_metadata/1`: `Valea.Mounts.MountsMd.regenerate/1`
+  AND `Valea.Agents.ClaudeSettings.write!/1`) and broadcast
+  `{:mounts_changed}` on the `"mounts"` PubSub topic afterwards — the EXACT
+  same message `Valea.ICM.Watcher` broadcasts on filesystem discovery
+  changes (Task A-T6), so a subscriber (the `mounts` topic push in
   `ValeaWeb.WorkspaceEventsChannel`) can't tell an RPC-driven change from a
   filesystem one. This is load-bearing for `set_mount_enabled` in
   particular: toggling `config/workspace.yaml`'s `mounts:` section touches
   a file OUTSIDE the `mounts/` tree the Watcher observes, so without this
   explicit broadcast, an enable/disable would never reach a live socket at
   all.
+
+  The `ClaudeSettings.write!/1` half of that regeneration (Plan A2 Task 4)
+  is what keeps `.claude/settings.json`'s per-external-mount `Read` allow
+  in sync with `enabled` state for a workspace that is ALREADY open: an
+  agent session started before this RPC call already has its ACP
+  permission policy (`extra_roots`, computed once at session start) either
+  way, but the settings FILE Claude Code itself reads is regenerated here
+  so the very next session — or a bare Claude Code session outside Valea
+  entirely — sees the current enabled set without needing a workspace
+  reopen. (Session start, `Valea.Workspace.Scaffold`, and
+  `Valea.Workspace.Migration` each also call `ClaudeSettings.write!/1`
+  independently — this is the mutation-time counterpart, not a
+  replacement.)
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -40,6 +54,7 @@ defmodule Valea.Api.Mounts do
     type_name("Mounts")
   end
 
+  alias Valea.Agents.ClaudeSettings
   alias Valea.Api.Error
   alias Valea.Mounts
   alias Valea.Mounts.MountsMd
@@ -87,7 +102,7 @@ defmodule Valea.Api.Mounts do
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- Mounts.set_enabled(name, enabled) do
-          MountsMd.regenerate(root)
+          regenerate_workspace_metadata(root)
           broadcast_mounts_changed()
           {:ok, %{"saved" => true}}
         else
@@ -113,7 +128,7 @@ defmodule Valea.Api.Mounts do
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              {:ok, mount} <- Mounts.create(root, name, description) do
-          MountsMd.regenerate(root)
+          regenerate_workspace_metadata(root)
           broadcast_mounts_changed()
           {:ok, %{rel_root: mount.rel_root}}
         else
@@ -152,6 +167,19 @@ defmodule Valea.Api.Mounts do
 
   defp description_for(%{manifest: %{description: description}}), do: description
   defp description_for(_mount), do: ""
+
+  # The single place both mutating actions regenerate workspace metadata
+  # from — MOUNTS.md (the agent-readable mount index) and the managed
+  # `.claude/settings.json` (the external-mount `Read` allow set, Plan
+  # A2 Task 4) both derive from the SAME post-mutation mount set, so they
+  # regenerate together rather than each call site remembering both calls
+  # independently. See moduledoc for why `ClaudeSettings.write!/1` needs to
+  # run here too, not just at session start.
+  defp regenerate_workspace_metadata(root) do
+    MountsMd.regenerate(root)
+    ClaudeSettings.write!(root)
+    :ok
+  end
 
   # Mirrors `Valea.ICM.Watcher`'s own discovery-change broadcast EXACTLY
   # (same module, same topic, same message shape) — see moduledoc.
