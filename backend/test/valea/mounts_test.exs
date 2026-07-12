@@ -628,6 +628,297 @@ defmodule Valea.MountsTest do
     end
   end
 
+  describe "declare_external/3" do
+    setup do
+      %{root: tmp_dir!("valea-mounts-declare")}
+    end
+
+    test "happy path: declares an external mount, preserving other entries + version/id", %{
+      root: root
+    } do
+      ext = tmp_dir!("valea-mounts-declare-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_workspace_yaml!(root, """
+      version: 4
+      id: ws-id
+      mounts:
+        keep:
+          enabled: false
+      """)
+
+      assert {:ok, resolved} = Mounts.declare_external(root, "outside", ext)
+      assert File.dir?(resolved)
+
+      {:ok, doc} = YamlElixir.read_from_file(Path.join(root, "config/workspace.yaml"))
+      assert doc["version"] == 4
+      assert doc["id"] == "ws-id"
+      assert doc["mounts"]["keep"]["enabled"] == false
+      assert doc["mounts"]["outside"]["kind"] == "path"
+      assert doc["mounts"]["outside"]["ref"] == ext
+      assert doc["mounts"]["outside"]["enabled"] == true
+
+      [outside] = root |> Mounts.list() |> Enum.filter(&(&1.name == "outside"))
+      assert outside.rel_root == nil
+      assert outside.degraded == nil
+      assert outside.root == resolved
+      assert outside.manifest.name == "Ext"
+    end
+
+    # Mirrors `Valea.Mounts.ExternalTest`'s own "~ expansion" fixture: a
+    # real, uniquely-named, self-cleaning directory planted directly under
+    # the ACTUAL $HOME (there is no other way to exercise `~` — it resolves
+    # against `System.user_home!/0` inside the running node, not a
+    # sandboxable value).
+    test "preserves a ~-form ref exactly, not its resolved absolute path" do
+      unique =
+        "valea-mounts-declare-tilde-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+
+      home_child = Path.join(System.user_home!(), unique)
+      on_exit(fn -> File.rm_rf!(home_child) end)
+      write_manifest!(home_child, %{id: "tilde-id", name: "Tilde", description: ""})
+
+      root = tmp_dir!("valea-mounts-declare-tilde-ws")
+      write_workspace_yaml!(root, "mounts: {}\n")
+      ref = "~/#{unique}"
+
+      assert {:ok, resolved} = Mounts.declare_external(root, "tilde", ref)
+      assert File.dir?(resolved)
+      refute resolved == ref
+
+      {:ok, doc} = YamlElixir.read_from_file(Path.join(root, "config/workspace.yaml"))
+      assert doc["mounts"]["tilde"]["ref"] == ref
+    end
+
+    test "an invalid ref is rejected with validate_ref's own reason and never touches config", %{
+      root: root
+    } do
+      write_workspace_yaml!(root, """
+      version: 1
+      id: ws-id
+      mounts: {}
+      """)
+
+      before = File.read!(Path.join(root, "config/workspace.yaml"))
+
+      # `root` itself as the ref -- points at (== IS) the workspace root.
+      assert {:error, :inside_workspace} = Mounts.declare_external(root, "bad", root)
+
+      assert File.read!(Path.join(root, "config/workspace.yaml")) == before
+    end
+
+    test "rejects an invalid mount name before ever touching validate_ref or config", %{
+      root: root
+    } do
+      refute File.exists?(Path.join(root, "config/workspace.yaml"))
+
+      assert {:error, :invalid_mount_name} = Mounts.declare_external(root, "a/b", root)
+
+      refute File.exists?(Path.join(root, "config/workspace.yaml"))
+    end
+
+    test "re-declaring an existing name overwrites kind/ref/enabled, preserving other entries", %{
+      root: root
+    } do
+      ext1 = tmp_dir!("valea-mounts-declare-ext1")
+      write_manifest!(ext1, %{id: "ext1-id", name: "Ext1", description: ""})
+      ext2 = tmp_dir!("valea-mounts-declare-ext2")
+      write_manifest!(ext2, %{id: "ext2-id", name: "Ext2", description: ""})
+
+      write_workspace_yaml!(root, """
+      mounts:
+        keep:
+          enabled: false
+      """)
+
+      assert {:ok, _resolved1} = Mounts.declare_external(root, "outside", ext1)
+      assert {:ok, resolved2} = Mounts.declare_external(root, "outside", ext2)
+
+      {:ok, doc} = YamlElixir.read_from_file(Path.join(root, "config/workspace.yaml"))
+      assert doc["mounts"]["outside"]["ref"] == ext2
+      assert doc["mounts"]["keep"]["enabled"] == false
+
+      [outside] = root |> Mounts.list() |> Enum.filter(&(&1.name == "outside"))
+      assert outside.root == resolved2
+      assert outside.manifest.name == "Ext2"
+    end
+  end
+
+  describe "undeclare/2" do
+    setup do
+      %{root: tmp_dir!("valea-mounts-undeclare")}
+    end
+
+    test "removes an external entry only, preserving other entries + version/id", %{root: root} do
+      ext = tmp_dir!("valea-mounts-undeclare-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_workspace_yaml!(root, """
+      version: 4
+      id: ws-id
+      mounts:
+        keep:
+          enabled: false
+        outside:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      [outside] = root |> Mounts.list() |> Enum.filter(&(&1.name == "outside"))
+
+      assert {:ok, resolved} = Mounts.undeclare(root, "outside")
+      assert resolved == outside.root
+
+      {:ok, doc} = YamlElixir.read_from_file(Path.join(root, "config/workspace.yaml"))
+      assert doc["version"] == 4
+      assert doc["id"] == "ws-id"
+      assert doc["mounts"]["keep"]["enabled"] == false
+      refute Map.has_key?(doc["mounts"], "outside")
+
+      refute "outside" in (root |> Mounts.list() |> Enum.map(& &1.name))
+    end
+
+    test "leaves the referenced external folder untouched on disk", %{root: root} do
+      ext = tmp_dir!("valea-mounts-undeclare-ext2")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_workspace_yaml!(root, """
+      mounts:
+        outside:
+          kind: path
+          ref: "#{ext}"
+      """)
+
+      assert {:ok, _path} = Mounts.undeclare(root, "outside")
+
+      assert File.dir?(ext)
+      assert File.exists?(Path.join(ext, "icm.yaml"))
+    end
+
+    test "an embedded mount's directory is left untouched -- errors instead of removing anything",
+         %{root: root} do
+      write_manifest!(mount_dir(root, "embedded"), %{
+        id: "id-e",
+        name: "Embedded",
+        description: ""
+      })
+
+      assert {:error, :mount_not_declared} = Mounts.undeclare(root, "embedded")
+
+      assert File.dir?(mount_dir(root, "embedded"))
+      assert File.exists?(Path.join(mount_dir(root, "embedded"), "icm.yaml"))
+    end
+
+    test "errors :mount_not_declared for a name with no config entry at all", %{root: root} do
+      write_workspace_yaml!(root, "mounts: {}\n")
+      assert {:error, :mount_not_declared} = Mounts.undeclare(root, "ghost")
+    end
+
+    test "errors :mount_not_declared for a name whose config entry has no kind: path (an embedded-only relational entry)",
+         %{root: root} do
+      write_workspace_yaml!(root, """
+      mounts:
+        half:
+          enabled: false
+      """)
+
+      before = File.read!(Path.join(root, "config/workspace.yaml"))
+
+      assert {:error, :mount_not_declared} = Mounts.undeclare(root, "half")
+
+      assert File.read!(Path.join(root, "config/workspace.yaml")) == before
+    end
+
+    test "rejects an invalid mount name", %{root: root} do
+      assert {:error, :invalid_mount_name} = Mounts.undeclare(root, "a/b")
+    end
+  end
+
+  describe "declare_external/3, undeclare/2, set_enabled/2 -- audit (current workspace)" do
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-app-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+        )
+
+      System.put_env("VALEA_APP_DIR", dir)
+      Manager.close()
+      {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
+      # A fresh scaffold (T8) mints its own real mount from the template's
+      # seed content — clear it so this suite's own hand-built mounts are
+      # the only ones `Mounts.list/1` sees.
+      ws.path |> Path.join("mounts/*") |> Path.wildcard() |> Enum.each(&File.rm_rf!/1)
+
+      on_exit(fn ->
+        Manager.close()
+        File.rm_rf!(dir)
+        System.delete_env("VALEA_APP_DIR")
+      end)
+
+      %{ws: ws}
+    end
+
+    test "declare_external audits mount_declared with name and resolved path", %{ws: ws} do
+      ext = tmp_dir!("valea-mounts-audit-declare-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      assert {:ok, resolved} = Mounts.declare_external(ws.path, "outside", ext)
+
+      {:ok, entries} = Valea.Audit.entries(10)
+      entry = Enum.find(entries, &(&1["type"] == "mount_declared"))
+      assert entry["name"] == "outside"
+      assert entry["path"] == resolved
+    end
+
+    test "undeclare audits mount_undeclared with name and resolved path", %{ws: ws} do
+      ext = tmp_dir!("valea-mounts-audit-undeclare-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+      {:ok, resolved} = Mounts.declare_external(ws.path, "outside", ext)
+
+      assert {:ok, ^resolved} = Mounts.undeclare(ws.path, "outside")
+
+      {:ok, entries} = Valea.Audit.entries(10)
+      entry = Enum.find(entries, &(&1["type"] == "mount_undeclared"))
+      assert entry["name"] == "outside"
+      assert entry["path"] == resolved
+    end
+
+    test "set_enabled audits mount_disabled/mount_enabled for an EXTERNAL mount, with resolved path",
+         %{ws: ws} do
+      ext = tmp_dir!("valea-mounts-audit-toggle-ext")
+      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+      {:ok, resolved} = Mounts.declare_external(ws.path, "outside", ext)
+
+      assert :ok = Mounts.set_enabled("outside", false)
+
+      {:ok, entries} = Valea.Audit.entries(10)
+      disabled = Enum.find(entries, &(&1["type"] == "mount_disabled"))
+      assert disabled["name"] == "outside"
+      assert disabled["path"] == resolved
+
+      assert :ok = Mounts.set_enabled("outside", true)
+
+      {:ok, entries2} = Valea.Audit.entries(10)
+      enabled = Enum.find(entries2, &(&1["type"] == "mount_enabled"))
+      assert enabled["name"] == "outside"
+      assert enabled["path"] == resolved
+    end
+
+    test "set_enabled does NOT audit an EMBEDDED mount toggle", %{ws: ws} do
+      write_manifest!(Path.join([ws.path, "mounts", "emb"]), %{
+        id: "id-e",
+        name: "Emb",
+        description: ""
+      })
+
+      assert :ok = Mounts.set_enabled("emb", false)
+
+      {:ok, entries} = Valea.Audit.entries(50)
+      refute Enum.any?(entries, &(&1["type"] in ["mount_enabled", "mount_disabled"]))
+    end
+  end
+
   describe "create/3" do
     setup do
       root =

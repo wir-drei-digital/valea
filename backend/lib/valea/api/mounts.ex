@@ -1,28 +1,40 @@
 defmodule Valea.Api.Mounts do
   @moduledoc """
-  Data-layer-less Ash resource exposing `Valea.Mounts` (list/enable/create)
-  over RPC. Follows `Valea.Api.Queue`/`Valea.Api.Mail`'s conventions:
+  Data-layer-less Ash resource exposing `Valea.Mounts`
+  (list/enable/create/declare/undeclare) and `Valea.Mounts.Doctor` over RPC.
+  Follows `Valea.Api.Queue`/`Valea.Api.Mail`'s conventions:
 
     * `constraints fields: [...]` typed actions for structured returns —
       `list_mounts`'s `mounts` field is a fully-typed array of
-      `name`/`title`/`description`/`relRoot`/`enabled`/`degraded` (`degraded`
-      nullable: `nil` for a healthy mount, a reason string otherwise). This
-      is a NESTED array-item field, not a top-level one, so `enabled`
-      staying an ordinary atom-keyed `:boolean` field is fine — the
-      top-level generic-action boolean/falsy-map-field bug documented in
+      `name`/`title`/`description`/`relRoot`/`root`/`enabled`/`degraded`
+      (`relRoot`/`degraded` nullable: `relRoot` is `nil` for an EXTERNAL
+      mount, `degraded` is `nil` for a healthy one). This is a NESTED
+      array-item field, not a top-level one, so `enabled` staying an
+      ordinary atom-keyed `:boolean` field is fine — the top-level
+      generic-action boolean/falsy-map-field bug documented in
       `Valea.Api.Queue`'s moduledoc only reaches a field of the action's
       OWN top-level return map, not one nested inside an array item's
-      `fields:`.
-    * `set_mount_enabled`'s `saved` field, being top-level, DOES hit that
-      bug — it uses the same STRING-key workaround (`%{"saved" => true}`)
-      every other top-level boolean-returning mutation in this codebase
-      uses.
-    * Mutating actions (`set_mount_enabled`, `create_mount`) take a
-      `generation` argument and guard with
-      `Valea.Workspace.Manager.check_generation/1` before touching anything,
-      same as `Valea.Api.Queue`/`Valea.Api.Mail`.
+      `fields:`. `mounts_doctor`'s `checks` field is the UNCONSTRAINED
+      `:map` passthrough instead (mirrors `Valea.Api.Mail`'s `mail_doctor`)
+      — `Valea.Mounts.Doctor.run/0,1`'s check shape is already
+      string-keyed and homogeneous enough not to need per-field typing.
+    * `set_mount_enabled`/`declare_mount`/`undeclare_mount`'s top-level
+      boolean fields (`saved`/`declared`/`undeclared`) and `mounts_doctor`'s
+      `ok` DO hit that top-level bug — each uses the same STRING-key
+      workaround (`%{"saved" => true}`, etc.) every other top-level
+      boolean-returning mutation in this codebase uses.
+    * Mutating actions (`set_mount_enabled`, `create_mount`,
+      `declare_mount`, `undeclare_mount`) take a `generation` argument and
+      guard with `Valea.Workspace.Manager.check_generation/1` before
+      touching anything, same as `Valea.Api.Queue`/`Valea.Api.Mail`.
+      `mounts_doctor` ALSO takes and guards `generation` even though it
+      never writes config — it probes LIVE state (the watcher's current
+      root set, the filesystem under every external mount's resolved root),
+      so it is "mutating-adjacent" the same way `Valea.Api.Mail`'s
+      `mail_doctor` is (see that module's moduledoc).
 
-  `set_mount_enabled` and `create_mount` both regenerate workspace metadata
+  `set_mount_enabled`, `create_mount`, `declare_mount`, and
+  `undeclare_mount` all regenerate workspace metadata
   (`regenerate_workspace_metadata/1`: `Valea.Mounts.MountsMd.regenerate/1`
   AND `Valea.Agents.ClaudeSettings.write!/1`) and broadcast
   `{:mounts_changed}` on the `"mounts"` PubSub topic afterwards — the EXACT
@@ -40,6 +52,13 @@ defmodule Valea.Api.Mounts do
   subscriber reacting to it always reads fresh MOUNTS.md/settings.json —
   never a window where the message raced its own metadata). Do not remove
   it in favor of the watcher path.
+
+  `declare_mount`/`undeclare_mount` and (when the mount is EXTERNAL)
+  `set_mount_enabled` are audited by `Valea.Mounts` itself
+  (`mount_declared`/`mount_undeclared`/`mount_enabled`/`mount_disabled` —
+  see that module's moduledoc, "Audit — external mounts are boundary
+  changes") — this resource does not append audit entries directly, it
+  only triggers the domain-layer mutation that does.
 
   The `ClaudeSettings.write!/1` half of that regeneration (Plan A2 Task 4)
   is what keeps `.claude/settings.json`'s per-external-mount `Read` allow
@@ -63,6 +82,7 @@ defmodule Valea.Api.Mounts do
   alias Valea.Agents.ClaudeSettings
   alias Valea.Api.Error
   alias Valea.Mounts
+  alias Valea.Mounts.Doctor
   alias Valea.Mounts.MountsMd
   alias Valea.Workspace.Manager
 
@@ -78,7 +98,22 @@ defmodule Valea.Api.Mounts do
                             name: [type: :string, allow_nil?: false],
                             title: [type: :string, allow_nil?: false],
                             description: [type: :string, allow_nil?: false],
-                            rel_root: [type: :string, allow_nil?: false],
+                            # `nil` for an EXTERNAL mount (`Valea.Mounts.mount()`'s own
+                            # `rel_root: nil` — it has no workspace-relative path; see
+                            # `Valea.Mounts.External`'s moduledoc). Was wrongly
+                            # `allow_nil?: false` pre-A2-T8 — harmless while every
+                            # mount was embedded, but an external row would have had
+                            # this field silently nulled-then-rejected by
+                            # ash_typescript's non-nullable typing the moment one
+                            # existed (A2-T5b ledger).
+                            rel_root: [type: :string, allow_nil?: true],
+                            # ABSOLUTE path for every mount (embedded or external) —
+                            # the one field of `Valea.Mounts.mount()` this action
+                            # didn't expose before A2-T8. Always present (never
+                            # `nil`): an external mount's `root` is the empty-string
+                            # sentinel, never `nil`, when its ref isn't even
+                            # absolute/`~`-based (see `Valea.Mounts.External`).
+                            root: [type: :string, allow_nil?: false],
                             enabled: [type: :boolean, allow_nil?: false],
                             degraded: [type: :string, allow_nil?: true]
                           ]
@@ -142,15 +177,89 @@ defmodule Valea.Api.Mounts do
         end
       end
     end
+
+    action :declare_mount, :map do
+      constraints fields: [declared: [type: :boolean, allow_nil?: false]]
+
+      argument :name, :string, allow_nil?: false
+      argument :ref, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{name: name, ref: ref, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, _resolved} <- Mounts.declare_external(root, name, ref) do
+          regenerate_workspace_metadata(root)
+          broadcast_mounts_changed()
+          {:ok, %{"declared" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :undeclare_mount, :map do
+      constraints fields: [undeclared: [type: :boolean, allow_nil?: false]]
+
+      argument :name, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{name: name, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, _path} <- Mounts.undeclare(root, name) do
+          regenerate_workspace_metadata(root)
+          broadcast_mounts_changed()
+          {:ok, %{"undeclared" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    # No config write of its own, but — like `mail_doctor` — it probes live
+    # state (the watcher's current root set, the filesystem under every
+    # external mount's resolved root) rather than reading a cached value, so
+    # it takes/guards `generation` the same "mutating-adjacent" way
+    # `mail_doctor` does (see `Valea.Api.Mail`'s moduledoc).
+    action :mounts_doctor, :map do
+      constraints fields: [
+                    ok: [type: :boolean, allow_nil?: false],
+                    checks: [type: {:array, :map}, allow_nil?: false]
+                  ]
+
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        with :ok <- Manager.check_generation(input.arguments.generation),
+             {:ok, %{checks: checks, ok: ok}} <- Doctor.run() do
+          {:ok, %{"ok" => ok, "checks" => checks}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
   end
 
   @doc false
   # Central error mapping for every action in this resource — mirrors
   # `Valea.Api.Queue.error_for/1`. `:no_workspace` becomes the frontend's
   # `"workspace_not_open"` code; `:workspace_changed` (a stale generation)
-  # and `Valea.Mounts`'s own atoms (`:invalid_mount_name`, `:already_exists`)
-  # already stringify to the exact code the frontend expects.
+  # and `Valea.Mounts`'s own atoms (`:invalid_mount_name`, `:already_exists`,
+  # `:mount_not_declared`) already stringify to the exact code the frontend
+  # expects — as do SEVEN of `Valea.Mounts.External.validate_ref/2`'s eight
+  # reason atoms (`declare_mount`'s validation gate): `:not_absolute`,
+  # `:inside_workspace`, `:ancestor_of_workspace`, `:home_or_root`,
+  # `:not_found`, `:no_manifest`, `:unsafe_path`. The eighth,
+  # `{:invalid_manifest, reason}`, is a 2-tuple (not a bare atom) and gets
+  # its own clause below so it doesn't fall through to the catch-all
+  # `inspect/1` code.
   def error_for(:no_workspace), do: Error.new("workspace_not_open")
+  def error_for({:invalid_manifest, _reason}), do: Error.new("invalid_manifest")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
   def error_for(reason), do: Error.new(inspect(reason))
 
@@ -160,6 +269,7 @@ defmodule Valea.Api.Mounts do
       title: title_for(mount),
       description: description_for(mount),
       rel_root: mount.rel_root,
+      root: mount.root,
       enabled: mount.enabled,
       degraded: mount.degraded
     }

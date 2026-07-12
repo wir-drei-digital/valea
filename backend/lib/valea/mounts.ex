@@ -38,9 +38,27 @@ defmodule Valea.Mounts do
   can't distinguish from a real import. Quarantining it here — before
   `rel_root` is ever built from the raw name — is the only layer that can
   fix this without breaking the real `@`-import path for legitimately-named
-  mounts. `validate_mount_name/1` (used by `set_enabled/2` and `create/3`)
-  rejects the same class of name outright for anything this module writes
-  itself.
+  mounts. `validate_mount_name/1` (used by `set_enabled/2`, `declare_external/3`,
+  `undeclare/2`, and `create/3`) rejects the same class of name outright for
+  anything this module writes itself.
+
+  ## Audit — external mounts are boundary changes
+
+  Declaring, undeclaring, enabling, or disabling an EXTERNAL (`kind:
+  "path"`) mount changes what filesystem locations OUTSIDE the workspace an
+  agent session can read — a workspace boundary change, not a purely
+  internal relational edit. `declare_external/3` audits `mount_declared`,
+  `undeclare/2` audits `mount_undeclared`, and `set_enabled/2` audits
+  `mount_enabled`/`mount_disabled` — but ONLY when the mount being touched
+  is external (`kind: "path"`); toggling an EMBEDDED mount never changes
+  any read boundary (it always lived inside the workspace), so it stays
+  unaudited, matching this function's pre-A2 behavior. Every audit entry
+  carries the mount's best-effort RESOLVED absolute path — the same `root`
+  value `Valea.Mounts.External.declared/1` computes, which survives even a
+  degraded/boundary-violating ref (`nil` only when the ref was never
+  absolute/`~`-based at all) — alongside the mount `name`, so the audit
+  trail names the real location being granted or revoked, not just the
+  config key.
   """
 
   alias Valea.Mounts.External
@@ -218,13 +236,116 @@ defmodule Valea.Mounts do
 
   Rejects a `name` containing `/`, `..`, or a C0 control character/DEL
   (defense in depth: a mount name is a safe directory basename).
+
+  Audits `mount_enabled`/`mount_disabled` with `name` and the mount's
+  best-effort resolved path — but ONLY when `name` names an EXTERNAL
+  (`kind: "path"`) entry; toggling an embedded mount stays unaudited (see
+  moduledoc, "Audit — external mounts are boundary changes").
   """
   @spec set_enabled(name :: String.t(), boolean()) :: :ok | {:error, term()}
   def set_enabled(name, enabled) when is_binary(name) and is_boolean(enabled) do
     with :ok <- validate_mount_name(name),
          {:ok, ws} <- workspace_root(),
          {:ok, doc} <- read_workspace_config_for_write(ws) do
-      write_workspace_config(ws, render_config(doc, name, enabled))
+      mounts = doc |> Map.get("mounts") |> normalize_mounts()
+
+      case write_workspace_config(ws, render_config(doc, name, enabled)) do
+        :ok ->
+          audit_toggle(ws, mounts, name, enabled)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Declares a BY-REFERENCE (external) mount named `name` under `workspace`,
+  validating `ref` via `Valea.Mounts.External.validate_ref/2` FIRST — a
+  candidate that fails any guardrail or has no loadable manifest is
+  rejected outright with the SAME error reason `validate_ref/2` returns,
+  with NO config write at all.
+
+  On success, writes `mounts.<name>: {kind: "path", ref: <ref>, enabled:
+  true}` to `config/workspace.yaml`, preserving `version`, `id`, and every
+  OTHER mount entry untouched — same atomic-write,
+  preserve-everything-else contract as `set_enabled/2`. `ref` is written
+  EXACTLY as given (a `~`-form ref stays `~`-form in the config) — the
+  resolved absolute path this function returns (and audits) is derived
+  fresh, never stored; keeping the config value in the user's own portable
+  form is the whole point of a by-reference mount surviving a move to
+  another machine where `~` resolves differently.
+
+  Re-declaring an already-declared name overwrites that ONE entry with the
+  new `kind`/`ref`/`enabled: true` (every other entry is still preserved)
+  — there is no separate "update" operation.
+
+  Rejects `name` the same way `set_enabled/2` does (a mount name is a
+  config key / safe directory basename).
+
+  Audits `mount_declared` with `name` and the resolved absolute path (see
+  moduledoc).
+  """
+  @spec declare_external(workspace :: String.t(), name :: String.t(), ref :: String.t()) ::
+          {:ok, resolved :: String.t()} | {:error, term()}
+  def declare_external(workspace, name, ref)
+      when is_binary(workspace) and is_binary(name) and is_binary(ref) do
+    with :ok <- validate_mount_name(name),
+         {:ok, resolved} <- External.validate_ref(workspace, ref),
+         {:ok, doc} <- read_workspace_config_for_write(workspace) do
+      case write_workspace_config(workspace, render_declare(doc, name, ref)) do
+        :ok ->
+          audit("mount_declared", %{"name" => name, "path" => resolved})
+          {:ok, resolved}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Removes the EXTERNAL (`kind: "path"`) config entry named `name` from
+  `workspace`'s `config/workspace.yaml` — config-only, NEVER touches any
+  folder (neither the external target nor, obviously, any `mounts/<name>`
+  directory — an embedded mount has no config entry to remove in the first
+  place). Preserves `version`, `id`, and every other mount entry
+  untouched.
+
+  Rejects with `:mount_not_declared` when `name` has no config entry at
+  all, OR when it has one that isn't `kind: "path"` (an embedded-only
+  relational entry, e.g. a bare `{enabled: false}`, or a declared entry of
+  some other `kind` altogether) — there is nothing external here to
+  undeclare.
+
+  Audits `mount_undeclared` with `name` and the mount's best-effort
+  resolved path, captured BEFORE the entry is removed (see moduledoc);
+  `nil` only when the ref was never absolute/`~`-based to begin with.
+  """
+  @spec undeclare(workspace :: String.t(), name :: String.t()) ::
+          {:ok, resolved_path :: String.t() | nil} | {:error, term()}
+  def undeclare(workspace, name) when is_binary(workspace) and is_binary(name) do
+    with :ok <- validate_mount_name(name),
+         {:ok, doc} <- read_workspace_config_for_write(workspace) do
+      mounts = doc |> Map.get("mounts") |> normalize_mounts()
+
+      case Map.get(mounts, name) do
+        %{"kind" => "path"} ->
+          path = external_root_for_audit(workspace, name)
+
+          case write_workspace_config(workspace, render_undeclare(doc, name)) do
+            :ok ->
+              audit("mount_undeclared", %{"name" => name, "path" => path})
+              {:ok, path}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+
+        _not_external ->
+          {:error, :mount_not_declared}
+      end
     end
   end
 
@@ -485,6 +606,52 @@ defmodule Valea.Mounts do
     end
   end
 
+  # -- audit (see moduledoc, "Audit — external mounts are boundary changes")
+
+  # `set_enabled/2`'s audit gate — fires `mount_enabled`/`mount_disabled`
+  # ONLY when `name` names an EXTERNAL (`kind: "path"`) entry in `mounts`
+  # (the PRE-write config map — kind/ref never change on a plain
+  # enable/disable toggle, so reading it before or after the write is
+  # equivalent here). An embedded mount's toggle is a no-op for this
+  # function, matching pre-A2 behavior.
+  defp audit_toggle(workspace, mounts, name, enabled) do
+    case Map.get(mounts, name) do
+      %{"kind" => "path"} ->
+        type = if enabled, do: "mount_enabled", else: "mount_disabled"
+        audit(type, %{"name" => name, "path" => external_root_for_audit(workspace, name)})
+
+      _not_external ->
+        :ok
+    end
+  end
+
+  # The currently-declared EXTERNAL mount named `name`'s best-effort
+  # resolved `root`, or `nil` — reuses this module's own `list/1` (embedded
+  # ∪ external, the SAME degrade-tolerant resolution
+  # `Valea.Mounts.External` performs) rather than re-validating, so a
+  # BOUNDARY-VIOLATING or currently-missing ref still yields its resolved
+  # path for the audit trail (see `Valea.Mounts.External`'s moduledoc:
+  # `root` survives even a degraded mount). Only a ref that was never
+  # absolute/`~`-based at all resolves to the empty-string sentinel, which
+  # becomes `nil` here. Must be called BEFORE any config write that would
+  # remove the entry (`undeclare/2`) — `list/1` only sees what's still on
+  # disk.
+  defp external_root_for_audit(workspace, name) do
+    workspace
+    |> list()
+    |> Enum.find(&(&1.name == name and &1.rel_root == nil))
+    |> case do
+      nil -> nil
+      %{root: ""} -> nil
+      %{root: root} -> root
+    end
+  end
+
+  defp audit(type, fields) do
+    if Process.whereis(Valea.Audit), do: Valea.Audit.append(type, fields)
+    :ok
+  end
+
   # -- rendering: preserves version/id + every key on every mount entry --
 
   defp render_config(doc, name, enabled) do
@@ -494,6 +661,31 @@ defmodule Valea.Mounts do
       |> normalize_mounts()
       |> put_enabled(name, enabled)
 
+    render_doc(doc, mounts)
+  end
+
+  # `declare_external/3`'s writer — replaces (never merges) the ONE entry
+  # named `name` with its full new declared shape, preserving every OTHER
+  # entry untouched. `ref` is stored EXACTLY as given (see
+  # `declare_external/3`'s @doc for why raw/`~`-form survives).
+  defp render_declare(doc, name, ref) do
+    mounts =
+      doc
+      |> Map.get("mounts")
+      |> normalize_mounts()
+      |> Map.put(name, %{"kind" => "path", "ref" => ref, "enabled" => true})
+
+    render_doc(doc, mounts)
+  end
+
+  # `undeclare/2`'s writer — drops the entry named `name` entirely,
+  # preserving every other entry untouched.
+  defp render_undeclare(doc, name) do
+    mounts = doc |> Map.get("mounts") |> normalize_mounts() |> Map.delete(name)
+    render_doc(doc, mounts)
+  end
+
+  defp render_doc(doc, mounts) do
     header = [top_level_line(doc, "version"), top_level_line(doc, "id")] |> Enum.reject(&is_nil/1)
     lines = header ++ render_mounts_section(mounts)
     Enum.join(lines, "\n") <> "\n"
