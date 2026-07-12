@@ -52,12 +52,18 @@ defmodule Valea.Queue do
   containment failure) is guaranteed to execute NOTHING — `apply_page_content`
   writes only after every guard passes — so the claimed item is hand-renamed
   straight back to `pending/`, atomically, exactly like the pre-execute crash
-  window below. NOTE: unlike the email path, `recover/1` does not yet know
-  how to tell "memory write already landed, only the terminal rename is
-  missing" apart from "nothing happened yet" — both look like "no draft file"
-  to the current draft-existence check. Deciding that case by comparing the
-  target page's on-disk hash against the proposed `content_markdown` is
-  `recover/1`'s job (a later task), not this one's.
+  window below. Unlike the email path, a memory item has no draft file to
+  probe for "did the write happen" — so `recover/1` decides it by CONTENT
+  instead (`classify_recovery/2`): the envelope carries the exact bytes
+  `apply_page_content/2` would have written, so hashing the target's current
+  on-disk bytes against `content_markdown` is a direct, race-free answer. A
+  match means the write landed — finish it into `approved/` (same
+  `upgrade_envelope` stamp the happy path uses, `recovered: true`, no
+  mailbox broadcast — a memory item never has ops). Anything else (target
+  missing, or present with DIFFERENT bytes — e.g. a distinct edit landed on
+  the same page after this item was claimed) means this item's write never
+  happened, so it goes back to `pending/` exactly like a crashed pre-execute
+  approve.
 
   On approve completion and reject completion (even when the seeded ops are
   all `"skipped"`), a `{:mailbox_ops_pending, run_id}` message is broadcast on
@@ -310,18 +316,29 @@ defmodule Valea.Queue do
   @doc """
   Crash recovery: for every file still sitting in `queue/processing/`
   (meaning the process died between the claiming rename and the terminal
-  rename — approve OR reject), decide its fate from whether the draft was
-  already written:
+  rename — approve OR reject), decide its fate by KIND first
+  (`classify_recovery/2`):
 
-    * draft exists -> a crashed approve whose execute step finished, only
-      completion didn't — finish it (stamp the step-6 `queue_item/v2` +
-      `mailbox_ops` upgrade if the crash skipped it, rename to `approved/`,
-      audit `item_approved` with `recovered: true`, broadcast
-      `{:mailbox_ops_pending, run_id}`);
-    * draft absent -> a crashed approve pre-execute or a crashed reject
-      pre-terminal-rename — nothing observable happened, so hand it back to
-      `pending/` (audit `approval_recovered`) for a human to approve/reject
-      again.
+    * `memory_update` -> decided by CONTENT, not draft existence: the
+      target page's current on-disk bytes are hashed against the envelope's
+      `content_markdown`. A match means the write already landed — finish
+      it (stamp the `queue_item/v2` upgrade, rename to `approved/`, audit
+      `item_approved` with `recovered: true`; no mailbox broadcast, same as
+      the happy-path memory approve). Anything else (target missing, or
+      present with different bytes) means the write never happened for THIS
+      item — hand it back to `pending/` (audit `approval_recovered`) for
+      the human to re-decide, same posture as the email pre-execute window
+      below.
+    * every other kind -> the ORIGINAL draft-existence check:
+        - draft exists -> a crashed approve whose execute step finished,
+          only completion didn't — finish it (stamp the step-6
+          `queue_item/v2` + `mailbox_ops` upgrade if the crash skipped it,
+          rename to `approved/`, audit `item_approved` with
+          `recovered: true`, broadcast `{:mailbox_ops_pending, run_id}`);
+        - draft absent -> a crashed approve pre-execute or a crashed reject
+          pre-terminal-rename — nothing observable happened, so hand it
+          back to `pending/` (audit `approval_recovered`) for a human to
+          approve/reject again.
 
   Additionally sweeps the LEGACY reject crash window — a `rejected/` file
   whose run_id still has a `pending/` sibling, left by the old
@@ -763,16 +780,76 @@ defmodule Valea.Queue do
   defp recover_one(workspace, path) do
     run_id = Path.basename(path, ".json")
 
+    case classify_recovery(workspace, path) do
+      :finish_memory -> finish_recovered_memory(workspace, path, run_id)
+      :repend -> repend!(workspace, path, run_id)
+      :email -> recover_email(workspace, path, run_id)
+    end
+  end
+
+  # Memory items are decided by CONTENT: the envelope carries the exact
+  # bytes the apply would have written, so "did the apply happen" is a pure
+  # hash comparison against the target — no draft file to consult. Every
+  # other kind (including an unreadable/invalid processing file, which
+  # cannot possibly be a memory_update) falls through to :email, which
+  # preserves the ORIGINAL draft-existence recovery unchanged.
+  defp classify_recovery(workspace, path) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, %{"payload" => %{"kind" => "memory_update"}} = item} <- Jason.decode(bytes) do
+      action = item["payload"]["proposed_action"]
+      abs = memory_target_abs(workspace, action["target_path"])
+
+      case File.read(abs) do
+        {:ok, current} ->
+          if sha256(current) == sha256(action["content_markdown"] || ""),
+            do: :finish_memory,
+            else: :repend
+
+        _ ->
+          :repend
+      end
+    else
+      _ -> :email
+    end
+  end
+
+  defp memory_target_abs(_workspace, "/" <> _ = abs), do: abs
+  defp memory_target_abs(workspace, rel), do: Path.join(workspace, rel)
+
+  # The original email recovery: draft existence is the sole signal, exactly
+  # as before this refactor — the email crash-recovery contract is
+  # unchanged bit-for-bit.
+  defp recover_email(workspace, path, run_id) do
     if File.exists?(draft_path(workspace, run_id)) do
       finish_recovered_approval(workspace, path, run_id)
     else
-      # Draft absent: a crashed approve that executed nothing observable, or
-      # a crashed reject that never reached its terminal rename. Either way
-      # the human re-decides.
-      File.mkdir_p!(pending_dir(workspace))
-      File.rename!(path, pending_path(workspace, run_id))
-      audit("approval_recovered", %{"run_id" => run_id})
+      repend!(workspace, path, run_id)
     end
+  end
+
+  # Draft absent (email) or content mismatch/missing (memory): nothing
+  # observable happened for THIS item, so the human re-decides.
+  defp repend!(workspace, path, run_id) do
+    File.mkdir_p!(pending_dir(workspace))
+    File.rename!(path, pending_path(workspace, run_id))
+    audit("approval_recovered", %{"run_id" => run_id})
+  end
+
+  # The target's bytes already match content_markdown, so the write landed —
+  # only the terminal rename (and possibly the v2 upgrade) is missing. Stamp
+  # the SAME upgrade approve/2's memory path uses (empty op list: a memory
+  # item never carries mailbox_ops, and maybe_put_mailbox_ops/4 already
+  # no-ops for non-email kinds) before the atomic rename into approved/. No
+  # broadcast — there are no mailbox ops for a memory item to wake up.
+  defp finish_recovered_memory(workspace, path, run_id) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, %{} = item} <- Jason.decode(bytes) do
+      atomic_write!(path, Jason.encode!(upgrade_envelope(workspace, item, [])))
+    end
+
+    File.mkdir_p!(approved_dir(workspace))
+    File.rename!(path, approved_path(workspace, run_id))
+    audit("item_approved", %{"run_id" => run_id, "recovered" => true})
   end
 
   # The draft exists, so approve's execute step finished — but the crash may

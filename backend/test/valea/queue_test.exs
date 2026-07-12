@@ -857,4 +857,113 @@ defmodule Valea.QueueTest do
       refute Map.has_key?(rejected, "mailbox_ops")
     end
   end
+
+  ## recover/1 for memory items (B5) — decided by content hash, not a draft file
+
+  describe "recover/1 for memory items" do
+    test "apply happened, crash before terminal rename → finished", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      content = "# Applied\n"
+      item = pending_memory!(ws, "mr1", target, String.duplicate("0", 64), content)
+      # simulate: claimed + applied, then crash
+      File.mkdir_p!(Path.join(ws, "queue/processing"))
+
+      File.rename!(
+        Path.join(ws, "queue/pending/mr1.json"),
+        Path.join(ws, "queue/processing/mr1.json")
+      )
+
+      File.write!(Path.join(ws, target), content)
+
+      :ok = Valea.Queue.recover(ws)
+
+      assert File.exists?(Path.join(ws, "queue/approved/mr1.json"))
+      approved = Path.join(ws, "queue/approved/mr1.json") |> File.read!() |> Jason.decode!()
+      assert approved["decided_at"]
+      _ = item
+    end
+
+    test "crash before apply → handed back to pending", %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      pending_memory!(ws, "mr2", target, String.duplicate("0", 64), "# Never applied\n")
+      File.mkdir_p!(Path.join(ws, "queue/processing"))
+
+      File.rename!(
+        Path.join(ws, "queue/pending/mr2.json"),
+        Path.join(ws, "queue/processing/mr2.json")
+      )
+
+      :ok = Valea.Queue.recover(ws)
+
+      assert File.exists?(Path.join(ws, "queue/pending/mr2.json"))
+      refute File.exists?(Path.join(ws, "queue/approved/mr2.json"))
+    end
+
+    test "crash after apply, but the target now holds DIFFERENT content than the envelope proposed → handed back to pending, not finished",
+         %{workspace: ws} do
+      # Guards against a false-positive "finished" verdict: the target file
+      # exists but its bytes do not match content_markdown (e.g. a second,
+      # unrelated edit landed on the same page since this item was claimed).
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      pending_memory!(ws, "mr3", target, String.duplicate("0", 64), "# Proposed\n")
+      File.mkdir_p!(Path.join(ws, "queue/processing"))
+
+      File.rename!(
+        Path.join(ws, "queue/pending/mr3.json"),
+        Path.join(ws, "queue/processing/mr3.json")
+      )
+
+      File.write!(Path.join(ws, target), "# Something else entirely\n")
+
+      :ok = Valea.Queue.recover(ws)
+
+      assert File.exists?(Path.join(ws, "queue/pending/mr3.json"))
+      refute File.exists?(Path.join(ws, "queue/approved/mr3.json"))
+    end
+
+    test "finishing a recovered memory item upgrades schema to v2 and carries no mailbox_ops, no broadcast",
+         %{workspace: ws} do
+      target = "mounts/primary/Pricing/Current Pricing.md"
+      content = "# Applied v2\n"
+      pending_memory!(ws, "mr4", target, String.duplicate("0", 64), content)
+      File.mkdir_p!(Path.join(ws, "queue/processing"))
+
+      File.rename!(
+        Path.join(ws, "queue/pending/mr4.json"),
+        Path.join(ws, "queue/processing/mr4.json")
+      )
+
+      File.write!(Path.join(ws, target), content)
+
+      Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
+      :ok = Valea.Queue.recover(ws)
+
+      approved = Path.join(ws, "queue/approved/mr4.json") |> File.read!() |> Jason.decode!()
+      assert approved["schema"] == "queue_item/v2"
+      refute Map.has_key?(approved, "mailbox_ops")
+      refute_received {:mailbox_ops_pending, "mr4"}
+
+      {:ok, entries} = Valea.Audit.entries(50)
+      entry = Enum.find(entries, &(&1["type"] == "item_approved" and &1["run_id"] == "mr4"))
+      assert entry
+      assert entry["recovered"] == true
+    end
+
+    test "the email recovery path is unaffected: draft-existence still decides an email item's fate",
+         %{workspace: workspace} do
+      id = run_id("emailrec")
+      write_pending(workspace, id)
+      File.mkdir_p!(Path.dirname(processing_path(workspace, id)))
+      File.rename!(pending_path(workspace, id), processing_path(workspace, id))
+
+      draft_abs = draft_path(workspace, id)
+      File.mkdir_p!(Path.dirname(draft_abs))
+      File.write!(draft_abs, "already executed")
+
+      Queue.recover(workspace)
+
+      refute File.exists?(processing_path(workspace, id))
+      assert File.exists?(approved_path(workspace, id))
+    end
+  end
 end
