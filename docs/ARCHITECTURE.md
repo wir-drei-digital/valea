@@ -25,7 +25,7 @@ The user owns a workspace folder; everything canonical is a readable file inside
 
 - **Backend boots workspace-less.** Boot order: Telemetry → PubSub → `Workspace.Supervisor` → Endpoint. `Workspace.Supervisor` (`Supervisor`, `rest_for_one`) holds a `DynamicSupervisor` plus the `Workspace.Manager` GenServer. The Ecto Repo is *not* a static supervision child — it starts under the `DynamicSupervisor` only while a workspace is open, so there is no database until then.
 - **App-level config** (`Valea.App.Config`) is a small JSON file in the OS app-data dir (e.g. `~/Library/Application Support/valea/config.json` on macOS): known workspaces (path, name, last-opened-at) + last-opened path. A plain module (not a process) — solves bootstrapping before any workspace exists, without a database.
-- **`Valea.Workspace.Manager`** (GenServer) owns the open-workspace lifecycle: `create/2` scaffolds a new workspace from `backend/priv/workspace_template/` (via `Valea.Workspace.Scaffold.create/1`) and opens it; `open/1` validates the workspace marker structure, starts `Valea.Repo` under the `DynamicSupervisor` pointed at `{path}/app.sqlite`, runs Ecto migrations, records the workspace in app config, and broadcasts `{:workspace_opened, %{path:, name:}}` on the `"workspace"` PubSub topic. `close/0` (broadcasts `{:workspace_closed}`) and `current/0` (`{:ok, %{path:, name:}} | {:error, :no_workspace}`) round it out. At boot, `handle_continue(:auto_open, _)` reopens `App.Config.read()["last_opened"]` automatically if it still validates as a workspace (falls back to workspace-less if the path no longer validates). After migrations, the Manager also starts `Valea.ICM.Watcher` under the same `DynamicSupervisor`; it watches `{workspace}/icm` and broadcasts a debounced (200ms) `{:icm_changed}` on the `"icm"` PubSub topic whenever anything underneath changes.
+- **`Valea.Workspace.Manager`** (GenServer) owns the open-workspace lifecycle: `create/2` scaffolds a new workspace from `backend/priv/workspace_template/` (via `Valea.Workspace.Scaffold.create/1`) and opens it; `open/1` validates the workspace marker structure, starts `Valea.Repo` under the `DynamicSupervisor` pointed at `{path}/app.sqlite`, runs Ecto migrations, records the workspace in app config, and broadcasts `{:workspace_opened, %{path:, name:}}` on the `"workspace"` PubSub topic. `close/0` (broadcasts `{:workspace_closed}`) and `current/0` (`{:ok, %{path:, name:}} | {:error, :no_workspace}`) round it out. At boot, `handle_continue(:auto_open, _)` reopens `App.Config.read()["last_opened"]` automatically if it still validates as a workspace (falls back to workspace-less if the path no longer validates). After migrations, the Manager also starts `Valea.ICM.Watcher` under the same `DynamicSupervisor`; it watches `{workspace}/mounts` and `{workspace}/queue` (each with its own 200ms debounce timer), broadcasting `{:icm_changed}` on the `"icm"` topic for any change under `mounts/`, `{:mounts_changed}` on the `"mounts"` topic when the change touches the mount SET itself (see [ICM mounts (Plan A)](#icm-mounts-plan-a) below), and `{:queue_changed}` on the `"queue"` topic for any change under `queue/`.
 - **Rollback is two-tier, and only one tier is implemented today.** Process-level: `open_workspace/2,3` in `Manager` starts the Repo then the watcher one at a time, accumulating started pids; if either step fails, every pid started so far is torn down via `DynamicSupervisor.terminate_child/2` before the error returns — a half-opened workspace never keeps a Repo or watcher running under a name a later open/create could mistake for success. Filesystem-level: `Valea.Workspace.Scaffold.create/1` (`File.mkdir_p` + `File.cp_r` from the template) has **no rollback** — if `File.cp_r` fails partway through copying `backend/priv/workspace_template/`, the partially-written target directory is left on disk as-is; nothing deletes it. In practice this window is small (a local recursive copy of a few dozen small template files) and no acceptance test has hit it, but it's a known gap, not a designed guarantee.
 - Migrations run **at workspace open**, in every environment — not at release boot, since the database doesn't exist until a workspace is open.
 - Open/create failures are loud and specific; a workspace is never presented as healthy when half-seeded (process-level, per above).
@@ -35,7 +35,8 @@ The user owns a workspace folder; everything canonical is a readable file inside
 - **`ash_typescript`**: Ash actions on the `Valea.Api` domain (`backend/lib/valea/api.ex`, extension `AshTypescript.Rpc`) exposed as typed RPC, with a generated TypeScript client (`frontend/src/lib/api/ash_rpc.ts`, committed) giving end-to-end type safety. No AshJsonApi, no hand-maintained client types. All three resources (`Workspace`, `ICM`, `Cockpit`) are data-layer-less Ash resources — thin adapters over plain Elixir modules (`Valea.Workspace.Manager`, `Valea.ICM`, `Valea.Cockpit`), not Ecto-backed.
 - **RPC action list** (`rpc_action(:name, :action)` in `Valea.Api`, generated TS function name in parens):
   - `Valea.Api.Workspace`: `get_workspace` → `:current` (`getWorkspace`) — reports `{open, path, name}`, `open: false` when no workspace; `create_workspace` → `:create_workspace` (`createWorkspace`, args `parent_dir`, `name`); `open_workspace` → `:open_workspace` (`openWorkspace`, arg `path`); `close_workspace` → `:close_workspace` (`closeWorkspace`); `recent_workspaces` → `:recent` (`recentWorkspaces`); `inspect_workspace` → `:inspect_workspace` (`inspectWorkspace`, arg `path` — used by the "what's in this folder" onboarding preview).
-  - `Valea.Api.ICM`: `icm_tree` → `:tree` (`icmTree`) — nested folder/page tree of `{workspace}/icm`; `icm_page` → `:page` (`icmPage`, arg `path`).
+  - `Valea.Api.ICM`: `icm_tree` → `:tree` (`icmTree`) — a list of per-mount groups `{mount, title, root_rel, tree}`, one group per ENABLED, non-degraded mount (Task A-T11; replaces Phase 1/2's single flat folder/page tree of `{workspace}/icm`); `icm_page` → `:page` (`icmPage`, arg `path`).
+  - `Valea.Api.Mounts`: `list_mounts` → `:list_mounts` (`listMounts`) — every discovered mount (enabled/disabled/degraded), typed `name`/`title`/`description`/`relRoot`/`enabled`/`degraded`; `set_mount_enabled` → `:set_mount_enabled` (`setMountEnabled`, args `name, enabled, generation`); `create_mount` → `:create_mount` (`createMount`, args `name, description, generation`, returns `relRoot`). See [ICM mounts (Plan A)](#icm-mounts-plan-a) below.
   - `Valea.Api.Cockpit`: `cockpit_today` → `:today` (`cockpitToday`) — the seeded §17 narrative.
 - **Transport: Phoenix channels first, HTTP fallback.** One socket (`ValeaWeb.UserSocket`, path `/socket`) carries two independent channel topics: `ash_typescript_rpc:client` (ash_typescript's channel-RPC transport — every `icmTree()`-style call goes here when the channel is joined) and the single consolidated **`workspace:events`** channel, joined once from `frontend/src/routes/+layout.svelte` via `wireIcmEvents()` (`frontend/src/lib/stores/icm.svelte.ts`) and pushing two event names: `workspace` (`{open, name?, path?}`, on open/close) and `icm_changed` (`{}`, on any change under `{workspace}/icm`, debounced 200ms by `Valea.ICM.Watcher`). There is no per-feature channel sprawl — `workspace:events` is the one realtime channel, and non-realtime RPC prefers `ash_typescript_rpc:client` but transparently falls back to plain `POST /rpc/run` (`ValeaWeb.RpcController.run/2`) when the socket/channel isn't joined (see `frontend/src/lib/api/client.ts`).
 - Plain controllers only where RPC doesn't fit — e.g. `GET /api/health` (`ValeaWeb.HealthController`, returns `{"status":"ok"}`) for sidecar port polling from Tauri.
@@ -45,9 +46,9 @@ The user owns a workspace folder; everything canonical is a readable file inside
 
 ## ICM editor (Phase 2)
 
-- **Markdown ↔ ProseMirror converter** (`backend/lib/valea/markdown/prose_mirror.ex`, `.../profile.ex`): vendored from `magus/lib/magus/markdown/prose_mirror.ex` (header comment records the origin + Valea's divergences — positional `profile` arg, `to_markdown/2` returns `{:ok, md}`, blockquote serializer drops the trailing space on blank quote lines). MDEx-based, pure/IO-free. `Valea.Markdown.Profile` is the Valea profile: every callback (`post_process/1`, `node_to_markdown/1`, `inline_node_to_markdown/1`) is the identity/default — no custom node lifting, standard CommonMark + GFM only (the paper's "plain text as interface" principle; no callouts/wikilinks/tags/`magus://` links/image blocks). **Determinism contract** (`backend/test/valea/markdown/determinism_test.exs`): every seed page under `backend/priv/workspace_template/icm/**/*.md` (13 pages) round-trips `markdown → PM JSON → markdown` byte-identically, and a second pass is a fixed point — enforced by test, not just convention; the editor never sees markdown, only tiptap's ProseMirror JSON, converted at the backend boundary.
+- **Markdown ↔ ProseMirror converter** (`backend/lib/valea/markdown/prose_mirror.ex`, `.../profile.ex`): vendored from `magus/lib/magus/markdown/prose_mirror.ex` (header comment records the origin + Valea's divergences — positional `profile` arg, `to_markdown/2` returns `{:ok, md}`, blockquote serializer drops the trailing space on blank quote lines). MDEx-based, pure/IO-free. `Valea.Markdown.Profile` is the Valea profile: every callback (`post_process/1`, `node_to_markdown/1`, `inline_node_to_markdown/1`) is the identity/default — no custom node lifting, standard CommonMark + GFM only (the paper's "plain text as interface" principle; no callouts/wikilinks/tags/`magus://` links/image blocks). **Determinism contract** (`backend/test/valea/markdown/determinism_test.exs`): every seed ICM page under `backend/priv/workspace_template/mounts/starter/**/*.md` (17 pages today, excluding the mount's own `AGENTS.md`/`CLAUDE.md` and `prompts/*.md`; the test guards `>= 12` against a silent wildcard miss) round-trips `markdown → PM JSON → markdown` byte-identically, and a second pass is a fixed point — enforced by test, not just convention; the editor never sees markdown, only tiptap's ProseMirror JSON, converted at the backend boundary.
 - **`Valea.ICM` write operations** (`backend/lib/valea/icm.ex`): `save_page(rel_path, pm_map, base_hash)` — SHA-256-hex hash guard (`sha256_hex/1` of the current file bytes must equal `base_hash` or the call returns `{:error, :page_changed}`, magus-style optimistic concurrency adapted to files, no lock files, no mtime), then `ProseMirror.to_markdown/1` and an atomic write; `create_page/2` / `create_folder/2` (shared `normalize_name/1` — NFC-normalize, trim, reject empty/`/`/`\`/leading `.`, `.md` auto-appended for pages; parent-must-be-a-directory guard); `rename/2` and `delete/1` work for both pages and folders (folder rename collects every nested `.md` first, then rewrites references for each). All writes share one `atomic_write/2` helper (tmp file + `File.rename!` in the same directory) and pass through the existing containment chokepoint (`contain/2`). `page/1` (existing read) now also returns `hash` (SHA-256 hex of the bytes at read time) and `prosemirror` (converted JSON) — a conversion failure is loud (`{:error, {:conversion_failed, msg}}`), never a silently-degraded page.
-- **`Valea.ICM.References`** (`backend/lib/valea/icm/references.ex`): plain-string scan of `{workspace}/workflows/*.yaml` for the literal `icm/<rel_path>` needle (no YAML parsing needed — the paths are load-bearing `sources:` entries in Layer-2 stage contracts per the ICM paper). `referencing_workflows/1` returns `[%{file:, name:}]` (`name:` via `~r/^name:\s*(.+)$/m`, falls back to the filename); `rewrite/2` string-replaces the old needle with the new one in every referencing file, atomically, and reports which files it touched — `Valea.ICM.rename/2` calls this after a successful move and returns `updated_workflows` (the human-readable names) to the caller; if a rewrite fails partway, the error is reported truthfully as `{:rewrite_failed, file, reason}` rather than claimed as success (no rename rollback — a known, documented gap, same posture as the workspace-scaffold rollback gap above). `delete/1` deliberately does NOT touch workflows; `icm_entry_references/1` lets the UI warn before a destructive delete.
+- **`Valea.ICM.References`** (`backend/lib/valea/icm/references.ex`): plain-string scan, scoped to a single mount, of that mount's own `Workflows/*.md` pages for a literal ICM-relative needle (mount-relative — e.g. `Offers/X.md`, never prefixed with the mount's own name — no YAML parsing needed; the paths are load-bearing `sources:` entries in Layer-2 stage contracts per the ICM paper). `referencing_workflows/1` and `rewrite/2` both take a workspace-relative `mounts/<name>/<inner>` path, resolve the owning mount via `Valea.Mounts.mount_for/1`, and scan/rewrite only THAT mount's own `Workflows/*.md` — a same-named page in a different mount is never matched (mount isolation is by directory, not by the needle string). `referencing_workflows/1` returns `[%{file:, name:}]` (`name:` via `~r/^name:\s*(.+)$/m`, falls back to the filename); `rewrite/2` string-replaces the old needle with the new one in every referencing file, atomically, and reports which files it touched — `Valea.ICM.rename/2` calls this after a successful move and returns `updated_workflows` (the human-readable names) to the caller; if a rewrite fails partway, the error is reported truthfully as `{:rewrite_failed, file, reason}` rather than claimed as success (no rename rollback — a known, documented gap, same posture as the workspace-scaffold rollback gap above). `delete/1` deliberately does NOT touch workflows; `icm_entry_references/1` lets the UI warn before a destructive delete.
 - **RPC — first constrained/typed returns**: `save_icm_page`, `create_icm_page`, `create_icm_folder`, `rename_icm_entry`, `delete_icm_entry`, `icm_entry_references` (all on `Valea.Api.ICM`) are the first RPC actions in the app to declare `constraints fields: [...]` on their `:map` return, so ash_typescript emits real typed TS interfaces instead of `Record<string, any>` — e.g. generated `SaveIcmPageFields = UnifiedFieldSelection<{hash: string, savedAt: string, ...}>[]`, not the Phase-1 `Record<string, any>` shape described above. This begins retiring that caveat for new surface without retro-typing `icm_tree`/`icm_page`/`cockpit_today` (out of scope). `Valea.Api.ICM.error_for/1` centralizes error mapping for every action on the resource: `:no_workspace` → `"workspace_not_open"`, other atoms → `to_string/1`, anything else (tuple reasons like `{:conversion_failed, msg}` or `{:rewrite_failed, file, reason}`) → `inspect/1` (never `to_string/1` on a tuple — it raises). Root-level creates use `argument :parent_path, :string, constraints: [allow_empty?: true]` so `create_icm_page("", "Name")` is valid. The existing `:page` action stays unconstrained (Phase-1, not retro-typed) but its map now carries the two new fields (`hash`, `prosemirror`) alongside the old ones.
 - **Editor component family** (`frontend/src/lib/components/editor/`): `PageEditor.svelte` — tiptap 2.27.x on Svelte 5 (magus lifecycle pattern: editor built in `$effect` + `untrack`, destroyed in cleanup + `onDestroy`, exported `getJSON/setContent/focus/isEmpty`). Extensions: StarterKit, Placeholder, Link, Typography, TaskList/TaskItem, Table family, plus three framework-agnostic extensions vendored from `tiptap_phoenix` into `frontend/src/lib/editor/vendor/` (`slash_command.js`, `bubble_menu.js`, `drag_handle.js` — each with an origin header, `pushEvent`/LiveView plumbing stripped) and its `tiptap.css` (every `--ttp-*` variable re-mapped onto Paper & ink tokens, no DaisyUI vars live). `PageMeta.svelte` renders the save-status + context-cost meta line; `ConflictBanner.svelte` renders the amber suggestion-card conflict UI. `frontend/src/lib/stores/page-editor.svelte.ts` (`PageEditorStore`, one instance per open page, no singleton) is the save-loop state machine: states `clean | dirty | saving | conflict`; `noteChange` arms a 1000ms debounce, redirties (rather than losing an edit) if a change lands while a save is already in flight; `flush()` awaits an immediate save (called on route-leave and before the raw-view toggle); `externalChange(hash)` — driven by the route re-checking `icm_page`'s hash whenever the watcher's `icm_changed` fires — silently reloads while `clean`, or raises `conflict` while `dirty`/`saving`, with own-echo detection (a save's own resulting hash is not mistaken for a foreign conflict); `resolveReload()` discards local edits for disk truth, `resolveKeepMine()` refetches the hash and resaves the local JSON on top (last-write-wins recovery). `frontend/src/lib/api/client.ts` is still the sole `ash_rpc` importer, wrapping the six new generated calls (`saveIcmPage`, `createIcmPage`, `createIcmFolder`, `renameIcmEntry`, `deleteIcmEntry`, `icmEntryReferences`) in the same `{ok,data}|{ok:false,error}` envelope as Phase 1. Tree CRUD UI (`frontend/src/lib/components/knowledge/`: `NewEntryDialog`, `RenameDialog`, `DeleteDialog`, `EntryMenu`) shows the reference impact before a rename/delete confirms (`icmEntryReferences`) and never does optimistic tree surgery — the existing watcher → `icm_changed` pipeline is what refreshes the nav tree and list pane after every write.
 
@@ -140,9 +141,15 @@ precedence **deny → allow → ask**, unclassifiable is always `ask`. Deny is
 hard: any resolved path under a protected dir (`secrets`, `logs`, `.claude`,
 `.git`) or matching the `app.sqlite*` prefix, or any path that resolves
 *outside* the workspace at all. Read-kind calls are allowed only when every
-path falls inside the declared reference roots (`icm`, `sources`, `prompts`,
-or the root `AGENTS.md`/`CLAUDE.md` files — a list, so ICM mounts can extend
-it later) — never a blanket workspace-root allow. Write-kind calls are
+path falls inside the declared reference roots (`sources`, the root
+`AGENTS.md`/`CLAUDE.md` files, and each ENABLED mount's own `mounts/<name>`
+root — recomputed fresh at every session start via
+`Valea.Agents.SessionServer`'s `read_roots/1`,
+`["sources" | Enum.map(Mounts.enabled(ws), & &1.rel_root)]`, so
+enabling/disabling a mount takes effect on the very next session without a
+restart; a disabled/absent mount is simply not in the list, falling through
+to `ask` rather than a hard deny — see [ICM mounts (Plan
+A)](#icm-mounts-plan-a) below) — never a blanket workspace-root allow. Write-kind calls are
 allowed only for workflow-kind sessions, and only when every path exactly
 matches the run's declared write paths (the one staging file its run
 named) — **chat sessions have no automatic write root; every chat write
@@ -261,15 +268,15 @@ list drops the root `workflows/` requirement and writes `ClaudeSettings` at
 create time, so managed settings exist from the moment a workspace is
 scaffolded.
 
-### ICM layer mapping (documented adaptation)
-
-| Paper layer | Valea location | Notes |
-| --- | --- | --- |
-| Layer 0 root instructions + Layer 1 routing | `AGENTS.md` (+ `CLAUDE.md` containing only `@AGENTS.md`, Claude Code's native import) | Combined into one file at this workspace size; enumerates ICM roots so mounts can extend it later |
-| Layer 2 stage contracts | `icm/Workflows/*.md` | Hosted inside the reference tree — a deliberate Valea adaptation (one tree, one editor, one nav), not a separate `workflows/` folder |
-| Layer 3 stable reference | `icm/` (everything else — Clients, Offers, Policies, Pricing, Templates, Tone & Voice, Decisions) | Read-only to the agent; only the pages a job's Inputs name are meant to be read, never the whole tree |
-| Layer 4 working artifacts | `queue/` (staging/pending/processing/approved/rejected), `sources/` | Agent write access is confined to the exact staging path a run names; everything downstream is server-authored |
-| — (not an ICM layer) | `logs/` (`sessions/*.jsonl`, `audit.jsonl`) | Operational record — transcripts and the audit trail, not agent-facing memory |
+The version marker has since advanced twice more,
+`Valea.Workspace.Migration.migrate/1` chaining `ensure_v2 → ensure_v3 →
+ensure_v4` and writing the marker last at every step (a crash mid-migration
+always leaves the workspace one version behind, so the whole step re-runs
+cleanly next open): v2→v3 (Mail phase — seeds `sources/mail/messages/`,
+migrates `config/mail.yaml` and the triage workflow page) and v3→v4 (ICM
+mounts — the legacy `icm/` tree becomes a real mount at `mounts/<slug>/`;
+see [ICM mounts (Plan A)](#icm-mounts-plan-a) below for the v4 step in
+full).
 
 ## Mail (Phase 4)
 
@@ -464,9 +471,13 @@ downstream `"unknown"`, not attempted): `config_present` → `credential_present
 → `tcp_reachable` → one `transport.connect/3` call fanning out to `tls_ok` +
 `login_ok` + `folders` (missing `AI/Review`/`AI/Processed`/Drafts) +
 `move_capability` (MOVE vs. UIDPLUS vs. neither) → `workflow_contract`
-(gated on `config_present` alone — a local file check: does
-`icm/Workflows/New Inquiry Triage.md` still reference the legacy JSON
-input instead of `sources/mail/messages/*.md`). Never raises; every check
+(gated on `config_present` alone — a local file check: discovers the seeded
+New Inquiry Triage workflow via `Valea.Workflows.triage_path/1` (Task
+A-T13 — the first enabled mount, by the registry's own sort order, with a
+`Workflows/New Inquiry Triage.md`; no more hardcoded
+`icm/Workflows/New Inquiry Triage.md` path) and warns if it still
+references the legacy JSON input instead of `sources/mail/messages/*.md`).
+Never raises; every check
 carries a copyable remedy string. The credential is resolved once at the
 `connect/3` boundary and scrubbed out of any error text that would
 otherwise embed it.
@@ -492,6 +503,214 @@ otherwise embed it.
   phase are `append` (Drafts folder only, via `DraftMime`) and `uid_move`
   (Review → Processed). An approved reply always lands as a draft for the
   human to review and send themselves.
+
+## ICM mounts (Plan A)
+
+*(shipped on `feat/icm-mounts`, pending merge; roadmap Phase 7 — "all mounts", by-reference/external mounts deferred to a follow-on plan)*
+
+The single hardcoded `icm/` tree Phases 1–4 relied on is now `mounts/<name>/`
+— one or more self-contained ICM modules per workspace, each independently
+enabled/disabled. Workspace version 4 (`config/workspace.yaml`); a fresh
+scaffold ships one seeded mount, `mounts/starter/`.
+
+**Layer mapping, restated for mounts:** the workspace *shell* — root
+`AGENTS.md`/`CLAUDE.md`, `queue/`, `sources/`, `logs/` — still carries Layers
+0/1 (root instructions + routing) and Layer 4 (working artifacts); Layer 1
+routing no longer names a single `icm/` tree, it names `@MOUNTS.md` (below),
+which fans out into every enabled mount. Each mount under `mounts/<name>/`
+is now its OWN self-contained Layers 2/3: `Workflows/*.md` is that mount's
+Layer 2 (stage contracts whose `sources:` frontmatter is ICM-relative to
+THAT mount's own root — never prefixed with the mount's name), and
+everything else under the mount root is its Layer 3 (stable reference,
+read-only to the agent). A mount also carries its own `AGENTS.md`/
+`CLAUDE.md` (`CLAUDE.md` is `@AGENTS.md`, same convention as the workspace
+root) — a mount-scoped Layer 0/1 describing only that module's own content
+(see `mounts/starter/AGENTS.md`'s "The map" section, or the skeleton
+`Valea.Mounts.create/3` mints for a brand-new mount).
+
+| Paper layer | Valea location | Notes |
+| --- | --- | --- |
+| Layer 0/1 (root instructions + routing) | workspace root `AGENTS.md`/`CLAUDE.md` | Routes via `@MOUNTS.md`, not directly into a single `icm/` tree |
+| Layer 0/1, per mount | `mounts/<name>/AGENTS.md`/`CLAUDE.md` | Mount-scoped self-description; minted by `Scaffold`/`Mounts.create/3`/`Migration` |
+| Layer 2 (stage contracts), per mount | `mounts/<name>/Workflows/*.md` | `Valea.Workflows.list/0,1` unions across every ENABLED mount, each entry carrying a `mount` provenance field |
+| Layer 3 (stable reference), per mount | `mounts/<name>/` (everything else) | Read-only to the agent; only the pages a job's Inputs name are meant to be read |
+| Layer 4 (working artifacts) | `queue/`, `sources/` | Unchanged — workspace-shell level, not per-mount |
+| — (not an ICM layer) | `logs/` | Unchanged |
+
+### Discovery & relationship state
+
+Two independent sources of truth compose in `Valea.Mounts`
+(`backend/lib/valea/mounts.ex`):
+
+- **Filesystem = identity.** `mounts/<name>/icm.yaml`'s mere presence marks
+  a directory as a mount; the directory basename IS the mount's `name`.
+  `Valea.Mounts.Manifest` (`backend/lib/valea/mounts/manifest.ex`) is the
+  `icm.yaml` ⇄ `%Manifest{format, id, name, description}` codec — `format`
+  defaults to `1`, unknown keys are ignored (a stray hand-edited key never
+  bricks loading a mount), and `id` is provenance, not identity (minted once,
+  travels with a copy/rename, never enforced unique). `Manifest.load/1`
+  returns `{:error, :missing}` (no `icm.yaml`) or `{:error, {:invalid,
+  reason}}` (not a YAML mapping, or `name` absent/blank/non-string); either
+  way the mount is **degraded** — still discovered and listed (so the UI can
+  show something is wrong), but always excluded from `Mounts.enabled/0,1`
+  regardless of its config `enabled` flag. A directory basename carrying a C0
+  control character or DEL is ALSO always degraded, independent of its
+  `icm.yaml` — `Valea.Mounts.MountsMd` interpolates `rel_root` RAW into a
+  live `@`-import line, so a corrupted basename must never reach that
+  renderer un-quarantined.
+- **`config/workspace.yaml`'s `mounts:` section = relationship state only.**
+  A purely relational, mutable overlay (`mounts.<name>.enabled`, absent =
+  enabled by default) that never touches the mount's own files.
+  `Mounts.set_enabled/2` writes it atomically, preserving `version`, `id`,
+  and every other key on every mount entry — including hand-added or
+  future by-reference-mount fields like `kind`/`ref` (deferred to a
+  follow-on plan) — so nothing but the `enabled` flag it's asked to change
+  is ever touched.
+- `Mounts.list/0,1` (glob `mounts/*`, sorted by name) and `Mounts.enabled/0,1`
+  (filtered to `enabled: true, degraded: nil` — the effective composition
+  set every consumer below composes over) are the two entry points.
+  `Mounts.mount_for/1,2` resolves the mount a workspace-relative path NAMES
+  by its leading `mounts/<name>` segment — **attribution only, not
+  authorization**: every caller (`Valea.ICM`, `Valea.Workflows`,
+  `Valea.ICM.References`) re-expands and re-contains the path against that
+  mount's own root afterward, so a `..` can never escape — including one
+  that tries to cross from one mount into another.
+- `Mounts.create/3` scaffolds a brand-new, empty mount at
+  `mounts/<Scaffold.slugify(name)>` — a fresh uuid manifest plus a minimal
+  self-describing `AGENTS.md`/`CLAUDE.md` skeleton. It does not touch
+  `config/workspace.yaml` (freshly created = enabled by the absent-means-true
+  default) or regenerate `MOUNTS.md` itself — callers (the `create_mount` RPC)
+  do both.
+
+### `MOUNTS.md` generated routing
+
+`Valea.Mounts.MountsMd.regenerate/1` (`backend/lib/valea/mounts/mounts_md.ex`)
+reads the full mount set fresh every call and overwrites
+`<workspace>/MOUNTS.md` atomically — never hand-edited. Three sections
+mirror `Mounts`' own enabled/disabled/degraded split: **enabled** mounts get
+a `### <name>` block (description, `path:`, and a live
+`@mounts/<name>/AGENTS.md` import line — the same `@`-prefixed convention
+the workspace root `AGENTS.md` already uses); **deactivated** mounts are
+listed by name with no `@`-ref (so a disabled mount's instructions are never
+pulled in); **degraded** mounts are listed with their reason, no `@`-ref,
+rendered from `name`/`rel_root` alone (`manifest` may be `nil`). Every
+metadata value (a mount's `name`/`description` — mount-supplied,
+hand-editable text) is sanitized before rendering: runs of C0 control
+characters collapse to a single space (a value can never span/forge a new
+line), and the description — the one value that BEGINS a rendered line —
+additionally backslash-escapes a leading `#`/`@` so it can't masquerade as a
+heading or import directive. Every discovery-affecting caller regenerates
+it: `Scaffold.create/2`, `Migration`'s v3→v4 step, the `set_mount_enabled`/
+`create_mount` RPCs, and (indirectly, via those RPCs and the Watcher below)
+every enable/disable/create.
+
+**Routing chain a bare Claude Code session follows**, root to leaf: root
+`CLAUDE.md` (`@AGENTS.md`) → root `AGENTS.md` (rules; its own "Mounts"
+section is `@MOUNTS.md`) → `MOUNTS.md` (generated; one `@mounts/<name>/
+AGENTS.md` line per enabled mount) → each mount's own `AGENTS.md` (its map
+of Clients/Offers/Workflows/etc., mount-relative). No Valea-specific tooling
+is required to follow it — plain `@`-import resolution, Claude Code's native
+mechanism.
+
+### Per-mount `read_roots`
+
+`Valea.Agents.SessionServer.read_roots/1` computes, fresh at every session
+start (never cached): `["sources" | Enum.map(Mounts.enabled(workspace), &
+&1.rel_root)]` — feeding `Valea.Agents.PermissionPolicy.decide/2`'s
+`ctx[:read_roots]` (default fallback `["sources"]` only when a caller starts
+a session without computing one, e.g. a bare test call). Because it's
+recomputed every session start rather than cached, enabling/disabling a
+mount takes effect on the very next session without a restart. Membership
+(`all_in_read_roots?/3`) matches by leading PATH COMPONENTS
+(`Path.split/1`), not a lexical string prefix — `mounts/a` never wrongly
+matches `mounts/ab/...`. The root `AGENTS.md`/`CLAUDE.md` files are allowed
+separately (`@root_files`), outside `read_roots` proper.
+
+### Watcher: `icm_changed` / `mounts_changed` / `queue_changed`
+
+`Valea.ICM.Watcher` now watches two roots — `mounts/` and `queue/` — each
+with its own 200ms debounce timer, so a burst in one never delays or
+coalesces with the other. Any change under `mounts/` broadcasts
+`{:icm_changed}` on `"icm"` (unchanged contract: consumers refetch the
+grouped tree). A change to the MOUNT SET ITSELF — a top-level
+`mounts/<name>` directory added/removed, or a `mounts/<name>/icm.yaml`
+touch — additionally broadcasts `{:mounts_changed}` on `"mounts"`, sharing
+the mounts tree's debounce window (every event is classified as it arrives,
+so a manifest touch inside a content burst still gets both events, together,
+exactly once). `queue/` changes broadcast `{:queue_changed}` on `"queue"`,
+independently debounced. The `set_mount_enabled`/`create_mount` RPCs
+(`Valea.Api.Mounts`) broadcast the IDENTICAL `{:mounts_changed}` message
+themselves after writing `config/workspace.yaml` — necessary because
+toggling a mount's enabled flag touches a file OUTSIDE the `mounts/` tree
+the Watcher observes, so without that explicit broadcast an enable/disable
+would never reach a live socket.
+
+### Workflows registry union + References
+
+`Valea.Workflows.list/0,1` (`backend/lib/valea/workflows.ex`) unions
+`Workflows/*.md` across `Mounts.enabled/0` — one glob per mount, sorted by
+the union's `path`. Each entry's `path` is workspace-relative
+(`mounts/<name>/Workflows/<file>.md`) and carries a `mount` field (the
+owning mount's manifest display name) for UI provenance; two mounts may each
+have a same-named `Workflows/<file>.md` without shadowing. `get/1` resolves
+the owning mount regardless of its enabled state (editor-style access — a
+disabled mount's contract still parses by explicit path); gating what a RUN
+may actually execute is `Valea.Workflows.Runner`'s concern.
+`Valea.Workflows.triage_path/0,1` (Task A-T13) replaces the old hardcoded
+`icm/Workflows/New Inquiry Triage.md` lookup: the FIRST enabled mount, in
+`list/0,1`'s own sort order, with a `Workflows/New Inquiry Triage.md` —
+consumed by `Valea.Cockpit`'s seeded narrative and `Valea.Mail.Doctor`'s
+`workflow_contract` check, neither of which hardcodes a mount name anymore.
+
+### RPC surface
+
+`Valea.Api.Mounts` (`backend/lib/valea/api/mounts.ex`): `list_mounts` →
+every discovered mount, typed `name`/`title`/`description`/`relRoot`/
+`enabled`/`degraded`; `set_mount_enabled` (args `name, enabled, generation`)
+→ writes config, regenerates `MOUNTS.md`, broadcasts `mounts_changed`;
+`create_mount` (args `name, description, generation`) → mints a new mount,
+regenerates `MOUNTS.md`, broadcasts `mounts_changed`, returns `relRoot`. See
+the RPC action list in [API layer](#api-layer) above for the generated
+TypeScript names, and `icm_tree`'s changed (grouped) return shape.
+
+**Frontend**: `frontend/src/lib/stores/mounts.svelte.ts` (`MountsStore`) —
+the mount catalog (`list_mounts`), `setEnabled`/`create` wrappers, and
+`handleMountsChanged` (wired via `wireMountsEvents` onto the shared
+`workspace:events` join) which refetches BOTH itself and `icmStore`'s
+grouped tree together, since a mount being enabled/disabled/created changes
+both `list_mounts` and `icm_tree`'s grouping. Knowledge UI grouping logic
+(single-mount collapse, deactivated group, degraded chips, workflow
+provenance chips) lives in
+`frontend/src/lib/components/knowledge/mount-sections.ts`.
+
+### Template v4 + Scaffold + migration v4
+
+A fresh scaffold (`Valea.Workspace.Scaffold.create/2`) mints the template's
+seeded `mounts/starter/` mount a real uuid + the workspace's own display
+name, renames its directory to `Scaffold.slugify(name)` (NFD-fold,
+lowercase, non-alphanumeric runs collapse to `-`, trim, "mount" fallback for
+a degenerate name), regenerates `MOUNTS.md` from the real minted mount, and
+writes `config/workspace.yaml` as `version: 4` plus a fresh persistent
+workspace uuid — so a freshly scaffolded workspace never ships a top-level
+`icm/` or `prompts/` tree, only `mounts/<slug>/`.
+
+Migration v3→v4 (`Valea.Workspace.Migration.ensure_v4/2`,
+`backend/lib/valea/workspace/migration.ex`): the legacy top-level `icm/`
+tree, if still present, is renamed BYTE-PRESERVING into `mounts/<slug>/`
+(`Scaffold.slugify(basename(workspace))`; a name collision tries `-2`, `-3`,
+... suffixes); a crash-safe re-run after the rename recognizes the SAME
+already-migrated directory by its `Workflows/` subdir rather than minting a
+second, empty one. Root `prompts/`, if present and the mount doesn't already
+have its own, moves in unchanged. The migrated mount gets a fresh
+`icm.yaml`/`AGENTS.md`/`CLAUDE.md` only where absent (never clobbers a
+user-populated mount). The root `AGENTS.md` is swapped for the current
+`@MOUNTS.md`-routing template ONLY if it's still byte-identical to the
+pristine pre-mounts v3 seed (sha256-pinned) — a user-modified root
+`AGENTS.md` is left untouched, with an audited `migration_note` that it
+still routes via `icm/` rather than `@MOUNTS.md`. `MOUNTS.md` is regenerated
+as the final content step; `config/workspace.yaml`'s `version: 4` marker is
+written LAST, so a crash mid-migration leaves the workspace at v3 and the
+whole step re-runs cleanly on the next open.
 
 ## Design system pointer
 
@@ -523,3 +742,4 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-10-icm-editor-design.md](superpowers/specs/2026-07-10-icm-editor-design.md) — ICM editor: markdown↔ProseMirror converter + determinism contract, version-guarded saves, reference-aware tree CRUD, typed RPC.
 - [2026-07-10-agent-slice-design.md](superpowers/specs/2026-07-10-agent-slice-design.md) — Agent slice: ACP agent runtime, trust/permission model, queue/audit approval flow, control-plane auth, workspace runtime generations, ICM layer mapping.
 - [2026-07-11-mail-design.md](superpowers/specs/2026-07-11-mail-design.md) — Mail: IMAP sync-to-files engine, normalized message file format, `queue_item/v2` mailbox ops, OS-keychain credential handoff, connection doctor, `/mail` UI.
+- [2026-07-12-icm-mounts-design.md](superpowers/specs/2026-07-12-icm-mounts-design.md) — ICM mounts (Plan A): `mounts/<name>/` replaces the single `icm/` tree, manifest-based discovery, `MOUNTS.md` generated routing, per-mount `read_roots`, v3→v4 migration, mounts-aware Knowledge UI, adopt-by-move onboarding.

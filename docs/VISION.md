@@ -32,21 +32,30 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
    user can inspect, back up, export, version, or hand off the workspace at any
    time — without us.
 
-2. **ICM at the core.** ICM (Interpretable Context Methodology) is the user's
-   human-readable business memory — a file/folder structure of Markdown pages
-   (offers, pricing, clients, tone of voice, policies, templates, decisions)
-   reflected directly in the app navigation. **The AI never "just knows
-   things."** It uses visible, editable memory, and every suggestion shows
-   which pages and sources it used. The methodology is formalized in
-   *"Interpretable Context Methodology: Folder Structure as Agent
-   Architecture"* (Van Clief & McDermott, arxiv.org/html/2603.16021v2):
-   Valea's root `AGENTS.md`/`CLAUDE.md` are Layer 0/1 (root instructions +
-   routing, deliberately combined into one file at this workspace size),
-   `icm/Workflows/*.md` are Layer 2 stage contracts (hosted inside the
-   reference tree itself — a documented Valea adaptation, not a separate
-   `workflows/` folder), the rest of `icm/` is Layer 3 (stable reference
-   material), and `queue/`/`sources/` are Layer 4 working artifacts behind
-   review gates.
+2. **ICM at the core — as composable capability modules.** ICM
+   (Interpretable Context Methodology) is the user's human-readable business
+   memory — a file/folder structure of Markdown pages (offers, pricing,
+   clients, tone of voice, policies, templates, decisions) reflected
+   directly in the app navigation. **The AI never "just knows things."** It
+   uses visible, editable memory, and every suggestion shows which pages and
+   sources it used. The methodology is formalized in *"Interpretable Context
+   Methodology: Folder Structure as Agent Architecture"* (Van Clief &
+   McDermott, arxiv.org/html/2603.16021v2). A workspace composes one or more
+   mounted ICMs, each a uniform, portable **capability module**: knowledge
+   in any file format, its own `Workflows/*.md` job contracts, reusable
+   prompt fragments, and optionally its own agent-executable scripts —
+   plugin-style, telling the agent what it knows, when to act, and how.
+   Mounting one gives the workspace both context and capability at once;
+   unmounting removes both together, and every ICM stays usable by a bare
+   Claude Code session with no Valea present at all — the app is the
+   convenience layer. The workspace itself is the **operational shell**, not
+   another ICM: its root `AGENTS.md`/`CLAUDE.md` carry Layer 0/1 (root
+   instructions + routing — to a generated `MOUNTS.md` index that fans out
+   into every enabled mount, not a single hardcoded tree), and its
+   `queue/`/`sources/` are Layer 4 working artifacts behind review gates.
+   Each mounted ICM carries its OWN Layer 2 (its `Workflows/*.md` stage
+   contracts) and Layer 3 (everything else — its stable reference material),
+   described by its own self-sufficient `AGENTS.md`.
 
 3. **Transparent workflows.** Workflows are inspectable markdown contracts
    with a YAML header: trigger, sources, steps, outputs, approval
@@ -168,10 +177,19 @@ project's proven scaffold. Full decisions per feature live in
 6. **Workflows & agents, full depth** — registry UI, context bundles,
    additional harnesses beyond Claude Code, everything the prototype slice
    deferred.
-7. **ICM mounts** — named external ICM roots (shared + personal composition)
-   in workspace config, own top-level Knowledge sections, per-mount
-   writability, namespaced references (`company:icm/…`); the agent slice's
-   policy contexts and root lists are already composition-ready for this.
+7. **ICM mounts** — the workspace becomes a standard operational shell
+   composing one or more mounted ICMs (`mounts/<name>/`), each a uniform,
+   portable capability module with its own `Workflows/`, reference content,
+   and self-describing `AGENTS.md`; per-mount enable/disable in
+   `config/workspace.yaml` (relationship state only — never touches the
+   mount's own files); a generated `MOUNTS.md` routes a bare Claude Code
+   session into every enabled mount; path-native references
+   (`mounts/<name>/Offers/X.md`), no alias layer. *(Plan A — "all mounts" —
+   shipped, pending merge on `feat/icm-mounts`; spec:
+   2026-07-12-icm-mounts-design.md.)* Deferred to a follow-on plan (Spec
+   A2): by-reference/external mounts (ICMs referenced in place rather than
+   moved in — `kind:`/`ref:` config keys already reserved for this), root-set
+   containment, and a doctor mounts section.
 
 The MVP is complete when the core acceptance scenario runs end-to-end: open
 app → move Priya's inquiry to AI/Review → run triage workflow → review the
