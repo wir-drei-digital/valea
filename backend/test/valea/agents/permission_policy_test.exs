@@ -10,13 +10,18 @@ defmodule Valea.Agents.PermissionPolicyTest do
         "valea-policy-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
       )
 
-    File.mkdir_p!(Path.join(ws, "icm"))
+    File.mkdir_p!(Path.join(ws, "sources"))
     File.mkdir_p!(Path.join(ws, "secrets"))
     File.mkdir_p!(Path.join(ws, "logs"))
     File.mkdir_p!(Path.join(ws, "queue/pending"))
     File.mkdir_p!(Path.join(ws, "queue/staging/r1"))
-    File.write!(Path.join([ws, "icm", "note.md"]), "hi")
+    File.mkdir_p!(Path.join(ws, "mounts/a/Offers"))
+    File.mkdir_p!(Path.join(ws, "mounts/ab"))
+    File.write!(Path.join([ws, "sources", "note.md"]), "hi")
     File.write!(Path.join([ws, "secrets", "notes.txt"]), "shh")
+    File.write!(Path.join([ws, "mounts", "a", "note.md"]), "hi")
+    File.write!(Path.join([ws, "mounts", "a", "Offers", "X.md"]), "hi")
+    File.write!(Path.join([ws, "mounts", "ab", "X.md"]), "hi")
 
     on_exit(fn -> File.rm_rf!(ws) end)
 
@@ -28,8 +33,8 @@ defmodule Valea.Agents.PermissionPolicyTest do
     %{"id" => "perm1", "kind" => kind, "rawInput" => raw_input, "title" => title}
   end
 
-  test "read inside icm/ -> allow", %{ws: ws, chat: chat} do
-    it = item("read", %{"file_path" => Path.join([ws, "icm", "note.md"])})
+  test "read inside sources/ -> allow (default read_roots, no override)", %{ws: ws, chat: chat} do
+    it = item("read", %{"file_path" => Path.join([ws, "sources", "note.md"])})
     assert {:allow, "allow_once"} = PermissionPolicy.decide(it, chat)
   end
 
@@ -65,9 +70,9 @@ defmodule Valea.Agents.PermissionPolicyTest do
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
   end
 
-  test "read via symlink icm/link.md -> /etc/passwd -> deny (outside)", %{ws: ws, chat: chat} do
-    File.ln_s!("/etc/passwd", Path.join([ws, "icm", "link.md"]))
-    it = item("read", %{"file_path" => Path.join([ws, "icm", "link.md"])})
+  test "read via symlink sources/link.md -> /etc/passwd -> deny (outside)", %{ws: ws, chat: chat} do
+    File.ln_s!("/etc/passwd", Path.join([ws, "sources", "link.md"]))
+    it = item("read", %{"file_path" => Path.join([ws, "sources", "link.md"])})
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
   end
 
@@ -113,7 +118,7 @@ defmodule Valea.Agents.PermissionPolicyTest do
   end
 
   test "kind execute (Bash) -> ask even with workspace paths in rawInput", %{ws: ws, chat: chat} do
-    it = item("execute", %{"file_path" => Path.join([ws, "icm", "note.md"])})
+    it = item("execute", %{"file_path" => Path.join([ws, "sources", "note.md"])})
     assert :ask = PermissionPolicy.decide(it, chat)
   end
 
@@ -131,22 +136,22 @@ defmodule Valea.Agents.PermissionPolicyTest do
   # resolve_real resolves symlinks before ".", so these adversarial inputs
   # can no longer masquerade as a benign in-workspace path.
 
-  test "read via symlink icm/L -> secrets/ssl then .. -> deny (lands in secrets/)", %{
+  test "read via symlink sources/L -> secrets/ssl then .. -> deny (lands in secrets/)", %{
     ws: ws,
     chat: chat
   } do
     File.mkdir_p!(Path.join([ws, "secrets", "ssl"]))
-    File.ln_s!(Path.join([ws, "secrets", "ssl"]), Path.join([ws, "icm", "L"]))
-    it = item("read", %{"file_path" => Path.join([ws, "icm", "L", "..", "master.key"])})
+    File.ln_s!(Path.join([ws, "secrets", "ssl"]), Path.join([ws, "sources", "L"]))
+    it = item("read", %{"file_path" => Path.join([ws, "sources", "L", "..", "master.key"])})
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
   end
 
-  test "read via symlink icm/L -> /etc/ssl then .. -> deny (outside host file)", %{
+  test "read via symlink sources/L -> /etc/ssl then .. -> deny (outside host file)", %{
     ws: ws,
     chat: chat
   } do
-    File.ln_s!("/etc/ssl", Path.join([ws, "icm", "L"]))
-    it = item("read", %{"file_path" => Path.join([ws, "icm", "L", "..", "passwd"])})
+    File.ln_s!("/etc/ssl", Path.join([ws, "sources", "L"]))
+    it = item("read", %{"file_path" => Path.join([ws, "sources", "L", "..", "passwd"])})
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, chat)
   end
 
@@ -177,5 +182,58 @@ defmodule Valea.Agents.PermissionPolicyTest do
 
     it = item("read", %{"file_path" => Path.join([ws, "queue", "pending", "x.json"])})
     assert {:allow, "allow_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  # --- per-mount read_roots (A-T10) ---
+
+  defp mount_ctx(ws, roots) do
+    %{workspace: ws, session_kind: "chat", write_paths: [], read_roots: ["sources" | roots]}
+  end
+
+  test "read under mounts/a/... -> allow when mounts/a is an enabled read root", %{ws: ws} do
+    ctx = mount_ctx(ws, ["mounts/a"])
+    it = item("read", %{"file_path" => Path.join([ws, "mounts", "a", "note.md"])})
+    assert {:allow, "allow_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "read under mounts/a/Offers/... (nested) -> allow when mounts/a is a read root", %{ws: ws} do
+    ctx = mount_ctx(ws, ["mounts/a"])
+    it = item("read", %{"file_path" => Path.join([ws, "mounts", "a", "Offers", "X.md"])})
+    assert {:allow, "allow_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "read under mounts/b/... -> ask when b is disabled/absent from read_roots", %{ws: ws} do
+    ctx = mount_ctx(ws, ["mounts/a"])
+    it = item("read", %{"file_path" => Path.join([ws, "mounts", "b", "note.md"])})
+    assert :ask = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "mounts/a matches mounts/a/... but NOT mounts/ab/... — segment boundary, not string prefix",
+       %{ws: ws} do
+    ctx = mount_ctx(ws, ["mounts/a"])
+
+    a = item("read", %{"file_path" => Path.join([ws, "mounts", "a", "note.md"])})
+    assert {:allow, "allow_once"} = PermissionPolicy.decide(a, ctx)
+
+    ab = item("read", %{"file_path" => Path.join([ws, "mounts", "ab", "X.md"])})
+    assert :ask = PermissionPolicy.decide(ab, ctx)
+  end
+
+  test "deny-list wins over an allowed mount root: mounts/a/../../secrets/x -> deny", %{ws: ws} do
+    ctx = mount_ctx(ws, ["mounts/a"])
+
+    it =
+      item("read", %{
+        "file_path" => Path.join([ws, "mounts", "a", "..", "..", "secrets", "notes.txt"])
+      })
+
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  test "a symlink inside an allowed mount escaping outside the workspace -> deny", %{ws: ws} do
+    ctx = mount_ctx(ws, ["mounts/a"])
+    File.ln_s!("/etc/passwd", Path.join([ws, "mounts", "a", "escape"]))
+    it = item("read", %{"file_path" => Path.join([ws, "mounts", "a", "escape"])})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
   end
 end

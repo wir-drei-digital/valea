@@ -23,6 +23,7 @@ defmodule Valea.Agents.SessionServer do
 
   alias Valea.Acp.Connection
   alias Valea.Agents.ProcessRuntime
+  alias Valea.Mounts
 
   @handshake_timeout_ms 30_000
   @max_prompt_queue 50
@@ -88,6 +89,21 @@ defmodule Valea.Agents.SessionServer do
     # session start (forces writes/Bash through the ACP permission callback).
     Valea.Agents.ClaudeSettings.write!(workspace)
 
+    # `read_roots` is likewise computed FRESH at every session start (never
+    # cached) so enabling/disabling a mount between sessions takes effect on
+    # the very next session without a restart — mirrors the ClaudeSettings
+    # regeneration above. `Map.put_new_lazy` only fills the key in when the
+    # caller's policy_ctx doesn't already carry one, so an explicit override
+    # (tests, a future caller) is never clobbered. This is the ONE place
+    # read_roots is computed — both `Valea.Api.Agents` (chat) and
+    # `Valea.Workflows.Runner` (workflow) start sessions through
+    # `Valea.Agents.start_session/1`, which lands here, so neither call site
+    # needs its own Mounts lookup.
+    policy_ctx =
+      opts
+      |> Map.get(:policy_ctx, %{})
+      |> Map.put_new_lazy(:read_roots, fn -> read_roots(workspace) end)
+
     case ProcessRuntime.start(
            %{cmd: spec.cmd, args: spec.args, env: spec.env, cd: workspace},
            self()
@@ -120,7 +136,7 @@ defmodule Valea.Agents.SessionServer do
           exited?: false,
           queue: [],
           watchdog: watchdog,
-          policy_ctx: Map.get(opts, :policy_ctx, %{}),
+          policy_ctx: policy_ctx,
           on_turn_end: Map.get(opts, :on_turn_end),
           finalized?: false
         }
@@ -494,6 +510,13 @@ defmodule Valea.Agents.SessionServer do
     Process.cancel_timer(ref)
     %{state | watchdog: nil}
   end
+
+  # `["sources"]` plus every ENABLED mount's `rel_root` ("mounts/<name>") —
+  # the read boundary `PermissionPolicy` checks reads against. A disabled or
+  # degraded mount is simply absent from this list (see
+  # `Valea.Mounts.enabled/1`), so its reads fall through to `PermissionPolicy`'s
+  # `:ask` — never a hard deny, deny is reserved for the protected dirs.
+  defp read_roots(workspace), do: ["sources" | Enum.map(Mounts.enabled(workspace), & &1.rel_root)]
 
   defp version, do: to_string(Application.spec(:valea, :vsn) || "0.0.0")
 

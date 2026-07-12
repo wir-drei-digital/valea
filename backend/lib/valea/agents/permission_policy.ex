@@ -17,9 +17,18 @@ defmodule Valea.Agents.PermissionPolicy do
   @db_prefix "app.sqlite"
   @read_kinds ["read"]
   @write_kinds ["edit", "write", "delete", "move"]
-  # Default reference roots; ctx[:read_roots] overrides — a LIST so ICM
-  # mounts can extend it later (spec §Composition-ready choices).
-  @default_read_roots ["icm", "sources", "prompts"]
+  # Fallback when a caller starts a session without computing read_roots
+  # (e.g. a bare PermissionPolicy.decide/2 call in a test). The real value
+  # every live session gets is computed at session start
+  # (`SessionServer.init/1`): `["sources"] ++ Enum.map(Mounts.enabled(ws), &
+  # &1.rel_root)`, so each mount's `mounts/<name>` is a read root ONLY while
+  # that mount is enabled — a disabled/absent mount is simply not in the
+  # list, so its reads fall through to `:ask` (never a hard deny; deny is
+  # reserved for the protected dirs above). `icm` and `prompts` are gone
+  # from the default: `icm/` no longer exists (mounts replaced it) and
+  # `prompts/` now lives inside each mount, covered by that mount's own
+  # `mounts/<name>` root.
+  @default_read_roots ["sources"]
   @root_files ["AGENTS.md", "CLAUDE.md"]
 
   @spec decide(map(), map()) :: :ask | {:allow, String.t()} | {:deny, String.t()}
@@ -82,13 +91,21 @@ defmodule Valea.Agents.PermissionPolicy do
       String.starts_with?(String.downcase(Path.basename(rel)), @db_prefix)
   end
 
+  # A read root may be multi-segment (`mounts/a`), so membership is checked
+  # by leading PATH COMPONENTS, not a top-segment string or a lexical
+  # `String.starts_with?/2` — the latter would let `mounts/a` wrongly match
+  # `mounts/ab/...` (a component boundary, not a character boundary).
   defp all_in_read_roots?(resolved, ws, read_roots) do
+    roots = Enum.map(read_roots, &Path.split/1)
+
     Enum.all?(resolved, fn {:ok, path} ->
       rel = Path.relative_to(path, ws)
-      top = rel |> Path.split() |> List.first()
-      top in read_roots or rel in @root_files
+      parts = Path.split(rel)
+      Enum.any?(roots, &under_root?(&1, parts)) or rel in @root_files
     end)
   end
+
+  defp under_root?(root_parts, parts), do: Enum.take(parts, length(root_parts)) == root_parts
 
   defp all_in_write_paths?(resolved, write_paths, workspace) do
     allowed =
