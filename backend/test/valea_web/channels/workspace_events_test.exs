@@ -42,8 +42,11 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     # test/valea/icm/watcher_test.exs), so a bare mkdir + assert_push can miss
     # the event while the port is still spinning up. Retry the triggering
     # write until the push lands, instead of padding assert_push's timeout.
+    #
+    # The watcher watches mounts/ (not the legacy icm/ tree — see
+    # A-T6/watcher.ex), so the trigger has to land under a mount.
     poll_until_pushed(fn i ->
-      File.mkdir_p!(Path.join(ws.path, "icm/Fresh #{i}"))
+      File.mkdir_p!(Path.join(ws.path, "mounts/a/Fresh #{i}"))
     end)
   end
 
