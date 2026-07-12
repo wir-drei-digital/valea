@@ -145,24 +145,33 @@ describe('normalizeIcmNode', () => {
   });
 });
 
+// The backend's `icm_tree` RPC (A-T11) returns a GROUPED envelope —
+// `{ mounts: [{ mount, title, rootRel, tree }] }` — one entry per enabled
+// mount, rather than a single flat `nodes` array. Every fixture below uses
+// this shape; `IcmStore.refetch` is what parses it into `groups`.
+function groupedResult(mounts: Array<{ mount: string; title: string; rootRel: string; tree: any[] }>): ApiResult<any> {
+  return { ok: true, data: { mounts } } as ApiResult<any>;
+}
+
 describe('IcmStore.loaded', () => {
   it('starts false before any refetch resolves', () => {
-    const store = new IcmStore({ icmTree: async () => ({ ok: true, data: { nodes: [] } }) as ApiResult<any> });
+    const store = new IcmStore({ icmTree: async () => groupedResult([]) });
 
     expect(store.loaded).toBe(false);
+    expect(store.groups).toEqual([]);
     expect(store.nodes).toEqual([]);
   });
 
-  it('flips true after a successful refetch, alongside populated nodes', async () => {
+  it('flips true after a successful refetch, alongside populated groups', async () => {
     const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
     const store = new IcmStore({
-      icmTree: async () => ({ ok: true, data: { nodes: [raw] } }) as ApiResult<any>
+      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
     });
 
     await store.refetch();
 
     expect(store.loaded).toBe(true);
-    expect(store.nodes).toHaveLength(1);
+    expect(store.groups).toHaveLength(1);
   });
 
   it('stays false when the fetch fails, so callers keep showing the loading state', async () => {
@@ -180,7 +189,7 @@ describe('IcmStore.loaded', () => {
     const store = new IcmStore({
       icmTree: async () => {
         call += 1;
-        return { ok: true, data: { nodes: [] } } as ApiResult<any>;
+        return groupedResult([]);
       }
     });
 
@@ -193,36 +202,117 @@ describe('IcmStore.loaded', () => {
   });
 });
 
-describe('IcmStore.reset', () => {
-  it('empties nodes and clears loaded', async () => {
+describe('IcmStore.refetch (grouped tree parsing)', () => {
+  it('parses each mount entry into a MountGroup with a normalized tree', async () => {
+    const rawPrimary = { name: 'Folder A', path: '/folder-a', type: 'folder', page_count: 1, children: [] };
+    const rawClients = { name: 'Folder B', path: '/folder-b', type: 'folder', pageCount: 2, children: [] };
+    const store = new IcmStore({
+      icmTree: async () =>
+        groupedResult([
+          { mount: 'primary', title: 'Primary', rootRel: '', tree: [rawPrimary] },
+          { mount: 'clients', title: 'Clients', rootRel: 'mounts/clients', tree: [rawClients] }
+        ])
+    });
+
+    await store.refetch();
+
+    expect(store.groups).toEqual([
+      {
+        mount: 'primary',
+        title: 'Primary',
+        rootRel: '',
+        tree: [{ name: 'Folder A', path: '/folder-a', type: 'folder', pageCount: 1, children: [] }]
+      },
+      {
+        mount: 'clients',
+        title: 'Clients',
+        rootRel: 'mounts/clients',
+        tree: [{ name: 'Folder B', path: '/folder-b', type: 'folder', pageCount: 2, children: [] }]
+      }
+    ]);
+  });
+
+  it('defaults to an empty groups array when `mounts` is missing', async () => {
+    const store = new IcmStore({ icmTree: async () => ({ ok: true, data: {} }) as ApiResult<any> });
+
+    await store.refetch();
+
+    expect(store.groups).toEqual([]);
+    expect(store.loaded).toBe(true);
+  });
+
+  it('leaves groups untouched on failure', async () => {
     const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
     const store = new IcmStore({
-      icmTree: async () => ({ ok: true, data: { nodes: [raw] } }) as ApiResult<any>
+      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
+    });
+    await store.refetch();
+
+    const failing = new IcmStore({ icmTree: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any> });
+    await failing.refetch();
+
+    expect(failing.groups).toEqual([]);
+  });
+});
+
+describe('IcmStore.nodes (back-compat flatten)', () => {
+  it('flattens every mount group\'s tree into a single array, in group order', async () => {
+    const rawA = { name: 'A', path: '/a', type: 'folder', page_count: 0, children: [] };
+    const rawB = { name: 'B', path: '/b', type: 'page', uri: 'uri-b' };
+    const store = new IcmStore({
+      icmTree: async () =>
+        groupedResult([
+          { mount: 'primary', title: 'Primary', rootRel: '', tree: [rawA] },
+          { mount: 'clients', title: 'Clients', rootRel: 'mounts/clients', tree: [rawB] }
+        ])
+    });
+
+    await store.refetch();
+
+    expect(store.nodes).toEqual([
+      { name: 'A', path: '/a', type: 'folder', pageCount: 0, children: [] },
+      { name: 'B', path: '/b', type: 'page', uri: 'uri-b' }
+    ]);
+  });
+
+  it('is empty when there are no groups', () => {
+    const store = new IcmStore({ icmTree: async () => groupedResult([]) });
+
+    expect(store.nodes).toEqual([]);
+  });
+});
+
+describe('IcmStore.reset', () => {
+  it('empties groups/nodes and clears loaded', async () => {
+    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore({
+      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
     });
 
     await store.refetch();
     expect(store.loaded).toBe(true);
-    expect(store.nodes).toHaveLength(1);
+    expect(store.groups).toHaveLength(1);
 
     store.reset();
 
     expect(store.loaded).toBe(false);
+    expect(store.groups).toEqual([]);
     expect(store.nodes).toEqual([]);
   });
 
   it('is safe to call before any refetch has resolved', () => {
-    const store = new IcmStore({ icmTree: async () => ({ ok: true, data: { nodes: [] } }) as ApiResult<any> });
+    const store = new IcmStore({ icmTree: async () => groupedResult([]) });
 
     store.reset();
 
     expect(store.loaded).toBe(false);
-    expect(store.nodes).toEqual([]);
+    expect(store.groups).toEqual([]);
   });
 
   it('allows a subsequent refetch to repopulate the tree after reset', async () => {
     const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
     const store = new IcmStore({
-      icmTree: async () => ({ ok: true, data: { nodes: [raw] } }) as ApiResult<any>
+      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
     });
 
     await store.refetch();
@@ -230,6 +320,6 @@ describe('IcmStore.reset', () => {
     await store.refetch();
 
     expect(store.loaded).toBe(true);
-    expect(store.nodes).toHaveLength(1);
+    expect(store.groups).toHaveLength(1);
   });
 });

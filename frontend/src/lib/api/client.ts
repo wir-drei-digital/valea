@@ -70,7 +70,13 @@ import {
   retryMailboxOps as httpRetryMailboxOps,
   retryMailboxOpsChannel,
   listDecidedQueueItems as httpListDecidedQueueItems,
-  listDecidedQueueItemsChannel
+  listDecidedQueueItemsChannel,
+  listMounts as httpListMounts,
+  listMountsChannel,
+  setMountEnabled as httpSetMountEnabled,
+  setMountEnabledChannel,
+  createMount as httpCreateMount,
+  createMountChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -101,7 +107,11 @@ import type {
   GetMailMessageFields,
   MailInboxFields,
   RetryMailboxOpsFields,
-  ListDecidedQueueItemsFields
+  ListDecidedQueueItemsFields,
+  IcmTreeFields,
+  ListMountsFields,
+  SetMountEnabledFields,
+  CreateMountFields
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -230,7 +240,7 @@ function callInspectWorkspaceChannel(channel: NonNullable<ReturnType<typeof chan
 }
 
 function callIcmTreeChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) => icmTreeChannel({ channel, ...handlers }));
+  return wrapChannelCall((handlers) => icmTreeChannel({ channel, fields: icmTreeFields, ...handlers }));
 }
 
 function callIcmPageChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
@@ -332,6 +342,28 @@ const createMailFoldersFields: CreateMailFoldersFields = ['created'];
 const getMailMessageFields: GetMailMessageFields = ['message', 'inbox'];
 const retryMailboxOpsFields: RetryMailboxOpsFields = ['accepted'];
 const listDecidedQueueItemsFields: ListDecidedQueueItemsFields = ['items'];
+
+// Mounts (A-T12/A-T14). Same anonymous-embedded-map-array codegen gap as
+// `listAgentSessionsFields`/`listWorkflowsFields`/`listQueueItemsFields`
+// above (see the comment on `icmEntryReferencesFields`) — `mounts` is an
+// `Array<TypedMap>` action-return field, which `ComplexFieldSelection`
+// can't express, so the generated `Fields` type collapses to `never` for
+// the literal. The backend action accepts this exact nested literal
+// (verified by the passing `mounts_rpc_test.exs` suite). `saved`/`relRoot`
+// are plain top-level fields (`SetMountEnabledFields`/`CreateMountFields`)
+// with no such gap, so no cast is needed for them.
+const listMountsFields = [
+  { mounts: ['name', 'title', 'description', 'relRoot', 'enabled', 'degraded'] }
+] as unknown as ListMountsFields;
+const setMountEnabledFields: SetMountEnabledFields = ['saved'];
+const createMountFields: CreateMountFields = ['relRoot'];
+
+// `icm_tree` (A-T11). Same anonymous-embedded-map-array codegen gap as
+// `listMountsFields` above — `mounts` is an `Array<TypedMap>` action-return
+// field. `tree` itself stays an unconstrained `Array<Record<string, any>>`
+// (the recursive folder/page tree), so it needs no nested selection of its
+// own, just the bare field name.
+const icmTreeFields = [{ mounts: ['mount', 'title', 'rootRel', 'tree'] }] as unknown as IcmTreeFields;
 
 // Same anonymous-embedded-map-array codegen gap as `listAgentSessionsFields`/
 // `listWorkflowsFields`/`listQueueItemsFields` above (see the comment on
@@ -502,6 +534,28 @@ function callListDecidedQueueItemsChannel(channel: NonNullable<ReturnType<typeof
   );
 }
 
+function callListMountsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) => listMountsChannel({ channel, fields: listMountsFields, ...handlers }));
+}
+
+function callSetMountEnabledChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { name: string; enabled: boolean; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setMountEnabledChannel({ channel, input, fields: setMountEnabledFields, ...handlers })
+  );
+}
+
+function callCreateMountChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { name: string; description: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    createMountChannel({ channel, input, fields: createMountFields, ...handlers })
+  );
+}
+
 function callSaveIcmPageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { path: string; prosemirror: Record<string, any>; baseHash: string; generation?: number | null }
@@ -659,7 +713,7 @@ export const api = {
       () => httpInspectWorkspace(withAuth({ input: { path } }))
     ),
 
-  icmTree: () => runRpc(callIcmTreeChannel, () => httpIcmTree(withAuth({}))),
+  icmTree: () => runRpc(callIcmTreeChannel, () => httpIcmTree(withAuth({ fields: icmTreeFields }))),
 
   icmPage: (path: string) =>
     runRpc(
@@ -867,6 +921,29 @@ export const api = {
   listDecidedQueueItems: () =>
     runRpc(callListDecidedQueueItemsChannel, () =>
       httpListDecidedQueueItems(withAuth({ fields: listDecidedQueueItemsFields }))
+    ),
+
+  // Mounts (A-T12/A-T14). `listMounts` delivers its `mounts` array RAW
+  // (unconstrained per-item shape at this layer, though already camelCased
+  // by ash_typescript — see `listMountsFields`'s comment above) —
+  // `stores/mounts.svelte.ts` owns casting it to `MountSummary[]`, same
+  // raw-delivery split `QueueStore`/`AuditStore` use for their list RPCs.
+
+  listMounts: () => runRpc(callListMountsChannel, () => httpListMounts(withAuth({ fields: listMountsFields }))),
+
+  setMountEnabled: (name: string, enabled: boolean, generation: number) =>
+    runRpc(
+      (channel) => callSetMountEnabledChannel(channel, { name, enabled, generation }),
+      () =>
+        httpSetMountEnabled(
+          withAuth({ input: { name, enabled, generation }, fields: setMountEnabledFields })
+        )
+    ),
+
+  createMount: (name: string, description: string, generation: number) =>
+    runRpc(
+      (channel) => callCreateMountChannel(channel, { name, description, generation }),
+      () => httpCreateMount(withAuth({ input: { name, description, generation }, fields: createMountFields }))
     )
 };
 

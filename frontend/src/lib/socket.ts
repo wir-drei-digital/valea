@@ -129,6 +129,7 @@ export type MailboxOpsPush = { runId: string };
 export function joinWorkspaceEvents(handlers: {
   onWorkspace?: (payload: WorkspaceEventPayload) => void;
   onIcmChanged?: () => void;
+  onMountsChanged?: () => void;
   onMailStatus?: (payload: MailStatusPush) => void;
   onMailSync?: (payload: MailSyncPush) => void;
   onMailMessage?: (payload: MailMessagePush) => void;
@@ -142,6 +143,9 @@ export function joinWorkspaceEvents(handlers: {
   }
   if (handlers.onIcmChanged) {
     channel.on('icm_changed', () => handlers.onIcmChanged?.());
+  }
+  if (handlers.onMountsChanged) {
+    channel.on('mounts_changed', () => handlers.onMountsChanged?.());
   }
   if (handlers.onMailStatus) {
     channel.on('mail_status', (payload: MailStatusPush) => handlers.onMailStatus?.(payload));

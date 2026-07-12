@@ -4,9 +4,27 @@ import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 import { wireQueueEvents } from './queue.svelte';
 import { wireAuditEvents } from './audit.svelte';
 import { wireMailEvents } from './mail.svelte';
+import { wireMountsEvents } from './mounts.svelte';
 import { workflowsStore } from './workflows.svelte';
 
 type IcmApi = Pick<Api, 'icmTree'>;
+
+/**
+ * One entry of the grouped `icm_tree` RPC (A-T11) — one per enabled mount.
+ * `mount` is the mount's stable name (`Valea.Mounts`'s `name`), `title`/
+ * `rootRel` mirror `MountSummary`'s `title`/`relRoot` (named `rootRel` here
+ * to match the `icm_tree` action's own field name — see `IcmTreeFields` in
+ * `api/ash_rpc.ts` — a naming difference from `list_mounts`'s `relRoot`
+ * that's a generated-type fact, not a typo). `tree` is that mount's
+ * ICM tree, already normalized to `IcmNode[]` the same way the old flat
+ * `nodes` array was.
+ */
+export type MountGroup = {
+  mount: string;
+  title: string;
+  rootRel: string;
+  tree: IcmNode[];
+};
 
 /**
  * Normalizes a raw RPC tree node into `IcmNode`. The backend returns plain
@@ -47,14 +65,19 @@ function normalizeNode(raw: Record<string, any>): IcmNode {
 }
 
 export class IcmStore {
-  nodes: IcmNode[] = $state([]);
   /**
-   * True once the first `refetch()` call has resolved successfully. `nodes`
-   * starts empty and stays empty until the async refetch resolves (SSR is
-   * off, so this is the default state on a cold/direct/refreshed load), so
-   * callers must not treat an empty `nodes` as "path not found" until this
-   * flips true — otherwise pages that exist flash a false not-found while
-   * the tree is still loading.
+   * Grouped ICM tree (A-T11) — one `MountGroup` per enabled mount, in the
+   * order the backend reports them. This is the real, current shape of
+   * `icm_tree`'s result; `nodes` below is a back-compat shim over it.
+   */
+  groups: MountGroup[] = $state([]);
+  /**
+   * True once the first `refetch()` call has resolved successfully.
+   * `groups` starts empty and stays empty until the async refetch resolves
+   * (SSR is off, so this is the default state on a cold/direct/refreshed
+   * load), so callers must not treat an empty tree as "path not found"
+   * until this flips true — otherwise pages that exist flash a false
+   * not-found while the tree is still loading.
    */
   loaded = $state(false);
 
@@ -64,12 +87,39 @@ export class IcmStore {
     this.#api = api;
   }
 
+  /**
+   * Back-compat flatten of every mount group's tree into a single flat
+   * array, in group order — the exact shape every pre-A-T14 consumer
+   * (`AppFrame`/`+page.svelte`'s `icmToNav`, `routes/knowledge/**`'s
+   * `findNode`/list panes) still expects. A plain getter over `groups`
+   * (itself `$state`), so it stays reactive under Svelte 5's fine-grained
+   * tracking without needing its own `$derived` field.
+   *
+   * DEPRECATED for anything mount-aware: this concatenates every mount's
+   * pages into one list with no group boundary, so multi-mount workspaces
+   * show as one undifferentiated tree here. T15 ("Knowledge UI
+   * mounts-aware") is expected to migrate every consumer above to `groups`
+   * directly (rendering each mount's `title`/`tree` as its own section) and
+   * then delete this getter — kept only so this task doesn't have to make
+   * that UI change itself (see task-14-report.md's T15 handoff list).
+   */
+  get nodes(): IcmNode[] {
+    return this.groups.flatMap((g) => g.tree);
+  }
+
   async refetch(): Promise<void> {
     const result = await this.#api.icmTree();
     if (!result.ok) return;
 
-    const data = result.data as { nodes?: Record<string, any>[] };
-    this.nodes = (data.nodes ?? []).map(normalizeNode);
+    const data = result.data as {
+      mounts?: Array<{ mount: string; title: string; rootRel: string; tree?: Record<string, any>[] }>;
+    };
+    this.groups = (data.mounts ?? []).map((g) => ({
+      mount: g.mount,
+      title: g.title,
+      rootRel: g.rootRel,
+      tree: (g.tree ?? []).map(normalizeNode)
+    }));
     this.loaded = true;
   }
 
@@ -79,7 +129,7 @@ export class IcmStore {
    * never be mistaken for the new one's — see `wireIcmEvents` below.
    */
   reset(): void {
-    this.nodes = [];
+    this.groups = [];
     this.loaded = false;
   }
 }
@@ -134,6 +184,15 @@ let icmEventsWired = false;
  * comment in `mail.svelte.ts` for why a route-local join would race this
  * one). `mailStore` stays live in the background exactly like `queueStore`/
  * `auditStore` already do, not only while `/mail` is mounted.
+ *
+ * CARRY-FORWARD (A-T14): also wires `wireMountsEvents` onto the same shared
+ * channel, same reasoning again — `mounts_changed` (A-T6/A-T12: a mount
+ * manifest change on disk, or an RPC-driven enable/disable/create) rides
+ * this one `workspace:events` join too. `wireMountsEvents` itself drives
+ * both `mountsStore.refresh()` AND `icmStore.refetch()` (see
+ * `MountsStore.handleMountsChanged`'s doc comment in `mounts.svelte.ts`) —
+ * a mount toggling changes `icm_tree`'s grouping (A-T11), not just
+ * `list_mounts`'s output, so the two stores go stale together.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -169,4 +228,5 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
   wireQueueEvents(channel);
   wireAuditEvents(channel);
   wireMailEvents(channel);
+  wireMountsEvents(channel);
 }
