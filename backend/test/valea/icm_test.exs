@@ -219,4 +219,36 @@ defmodule Valea.ICMTest do
       assert {:error, :outside_workspace} = ICM.create_page("mounts/a/../b", "Intruder")
     end
   end
+
+  describe "external mounts" do
+    setup %{ws: ws} do
+      ext = external_icm!("Ext")
+      File.mkdir_p!(Path.join(ext, "Offers"))
+      File.write!(Path.join(ext, "Offers/External.md"), "# External Page\n")
+      declare_external!(ws, "ext", ext)
+
+      %{ws: ws, ext: ext}
+    end
+
+    test "external mounts are not yet editable via ICM ops (A2-T5b)", %{ws: ws, ext: ext} do
+      # Sanity: the external mount IS effective — it's just not yet editable.
+      assert "ext" in Enum.map(Mounts.enabled(ws), & &1.name)
+
+      # Resolve to the absolute path of the external page
+      ext_page_abs = Path.join(ext, "Offers/External.md")
+      assert File.exists?(ext_page_abs)
+
+      # page/1 rejects the external absolute path
+      assert {:error, :outside_workspace} = ICM.page(ext_page_abs)
+
+      # rename/2 rejects the external absolute path and leaves the file untouched on disk
+      assert {:error, :outside_workspace} = ICM.rename(ext_page_abs, "Renamed")
+      assert File.exists?(ext_page_abs), "file should remain untouched on disk"
+      refute File.exists?(Path.join(ext, "Offers/Renamed.md")), "rename should not have happened"
+
+      # delete/1 rejects the external absolute path
+      assert {:error, :outside_workspace} = ICM.delete(ext_page_abs)
+      assert File.exists?(ext_page_abs), "file should remain untouched on disk"
+    end
+  end
 end

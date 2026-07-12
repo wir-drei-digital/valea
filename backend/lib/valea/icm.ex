@@ -198,8 +198,12 @@ defmodule Valea.ICM do
   # that isn't actually a discovered mount) is folded into `:outside_workspace`
   # — from this module's point of view, a path that doesn't name a real mount
   # is just as inaccessible as one that escapes a real mount's root.
+  #
+  # External mounts (rel_root: nil) are not editable via ICM ops until A2-T5b
+  # opens the editor to absolute external paths.
   defp mount_root_for(rel_path) do
     case Mounts.mount_for(rel_path) do
+      {:ok, %{rel_root: nil}} -> {:error, :outside_workspace}
       {:ok, mount} -> {:ok, mount}
       {:error, :not_in_mount} -> {:error, :outside_workspace}
       {:error, :no_workspace} -> {:error, :no_workspace}
