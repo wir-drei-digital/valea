@@ -58,6 +58,13 @@ defmodule Valea.Workflows.Runner do
 
   @staging_dir ["queue", "staging"]
   @pending_dir ["queue", "pending"]
+  # The other three terminal/in-flight queue dirs (mirrors Valea.Queue's own
+  # paths) — item_exists?/2 (B5 part 2) checks all four so a re-finalize can
+  # tell "already created" apart from "genuinely new", regardless of which
+  # of pending/processing/approved/rejected the item has since moved to.
+  @processing_dir ["queue", "processing"]
+  @approved_dir ["queue", "approved"]
+  @rejected_dir ["queue", "rejected"]
 
   @doc """
   Runs `workflow_path` (as returned by `Valea.Workflows.list/0`'s `path`
@@ -108,11 +115,21 @@ defmodule Valea.Workflows.Runner do
   whole staging dir, not just the invalid pair's files — the same
   inspect-on-invalid contract the primary proposal always had).
 
-  Idempotence holds for fully-successful runs: a second call after all items
-  were created finds no staging dir (already removed) and is a `"no_proposal"`
-  no-op. A run kept for inspection because some proposal was invalid WILL
-  re-create its already-created items if `recover_staging/1` re-finalizes it
-  at boot — a known window, closed in the crash-recovery task (B5).
+  Idempotence holds UNCONDITIONALLY, including a run kept for inspection
+  because some proposal was invalid: before writing ANY pending item
+  (primary OR memory), `finalize/2` checks whether that item's id already
+  exists in `queue/pending/`, `queue/processing/`, `queue/approved/`, or
+  `queue/rejected/` (`item_exists?/2`) and skips it silently when it does —
+  no envelope write, no `queue_item_created` audit, and the skip counts as
+  NEITHER created nor invalid for THAT call's outcome. So a second call
+  after all items were created — whether the staging dir is already gone, or
+  kept because a sibling pair was invalid — never resurrects an
+  already-decided item (the primary `<run_id>.json` id is guarded exactly
+  like a memory item's `<run_id>-m<i>` id), and a re-finalize of a
+  fully-created run with one still-invalid pair yields outcome
+  `"invalid_proposal"` — the invalid pair is honestly re-audited every time,
+  only the already-created id is skipped. This closes the crash-recovery
+  window `recover_staging/1` used to re-open at boot (B5).
   """
   @spec finalize(String.t(), String.t()) :: :ok
   def finalize(run_id, workspace) do
@@ -163,8 +180,14 @@ defmodule Valea.Workflows.Runner do
   # turn, or a workflow contract with no proposal output at all) is kept
   # distinct from `:invalid` (a `proposal.json` that IS present but fails
   # validation) so `outcome_and_cleanup/4` can tell "nothing here" from
-  # "something here was wrong".
-  @spec finalize_primary(String.t(), String.t(), String.t()) :: :created | :invalid | :absent
+  # "something here was wrong". `:skipped` is a THIRD, idempotency-only
+  # outcome (B5 part 2): the proposal is otherwise valid, but `run_id`
+  # already exists somewhere in the queue — a re-finalize
+  # (`recover_staging/1` at boot, or any direct re-call) must not resurrect
+  # it. `outcome_and_cleanup/4` treats `:skipped` as neither created nor
+  # invalid, the same way it always treated `:absent`.
+  @spec finalize_primary(String.t(), String.t(), String.t()) ::
+          :created | :invalid | :absent | :skipped
   defp finalize_primary(staging_dir, workspace, run_id) do
     proposal_path = Path.join(staging_dir, "proposal.json")
 
@@ -176,9 +199,13 @@ defmodule Valea.Workflows.Runner do
         with {:ok, payload} <- Jason.decode(bytes),
              true <- valid_proposal?(payload),
              {:ok, run} <- read_sidecar(staging_dir) do
-          write_pending!(workspace, run_id, run, payload)
-          audit("queue_item_created", %{"run_id" => run_id, "kind" => payload["kind"]})
-          :created
+          if item_exists?(workspace, run_id) do
+            :skipped
+          else
+            write_pending!(workspace, run_id, run, payload)
+            audit("queue_item_created", %{"run_id" => run_id, "kind" => payload["kind"]})
+            :created
+          end
         else
           _ -> :invalid
         end
@@ -192,6 +219,10 @@ defmodule Valea.Workflows.Runner do
   # there is nothing trustworthy to build an envelope from, so this
   # degrades to "no memory pairs" rather than crashing `finalize/2`; the
   # primary path already covers auditing that case.
+  # `:skipped` (B5 part 2, see finalize_primary/3's comment for the shared
+  # rationale) increments neither counter — a re-finalize that finds an
+  # already-created `<run_id>-m<i>` id neither re-creates it nor counts it
+  # toward `invalid`.
   @spec finalize_memory(String.t(), String.t(), String.t()) ::
           {created :: non_neg_integer(), invalid :: non_neg_integer()}
   defp finalize_memory(staging_dir, workspace, run_id) do
@@ -207,6 +238,7 @@ defmodule Valea.Workflows.Runner do
           case finalize_pair(result, run, workspace, run_id, i, file) do
             :created -> {created + 1, invalid}
             :invalid -> {created, invalid + 1}
+            :skipped -> {created, invalid}
           end
         end)
     end
@@ -230,11 +262,16 @@ defmodule Valea.Workflows.Runner do
 
       {:ok, _target} ->
         item_id = "#{run_id}-m#{i}"
-        tier = RiskTier.classify(workspace, manifest["target_path"]) || "medium"
-        envelope = memory_envelope(run, item_id, manifest, content, tier)
-        write_memory_pending!(workspace, item_id, envelope)
-        audit("queue_item_created", %{"run_id" => item_id, "kind" => "memory_update"})
-        :created
+
+        if item_exists?(workspace, item_id) do
+          :skipped
+        else
+          tier = RiskTier.classify(workspace, manifest["target_path"]) || "medium"
+          envelope = memory_envelope(run, item_id, manifest, content, tier)
+          write_memory_pending!(workspace, item_id, envelope)
+          audit("queue_item_created", %{"run_id" => item_id, "kind" => "memory_update"})
+          :created
+        end
     end
   end
 
@@ -473,6 +510,26 @@ defmodule Valea.Workflows.Runner do
     end
   end
 
+  # Idempotency guard (B5 part 2): true when `item_id` already exists
+  # ANYWHERE in the queue — pending, claimed, or already decided. Checked
+  # before writing any pending item (primary or memory) so a re-finalize of
+  # a staging dir kept around for inspection (an invalid sibling pair) can
+  # never resurrect an item a previous finalize already created, nor an
+  # already-decided one a human has since approved or rejected.
+  defp item_exists?(workspace, item_id) do
+    file = item_id <> ".json"
+
+    Enum.any?(
+      [
+        pending_dir(workspace),
+        processing_dir(workspace),
+        approved_dir(workspace),
+        rejected_dir(workspace)
+      ],
+      &File.exists?(Path.join(&1, file))
+    )
+  end
+
   defp write_pending!(workspace, run_id, run, payload) do
     envelope = %{
       "schema" => "queue_item/v2",
@@ -558,6 +615,9 @@ defmodule Valea.Workflows.Runner do
   defp staging_dir_rel(run_id), do: Path.join(@staging_dir ++ [run_id])
   defp staging_dir(workspace, run_id), do: Path.join(workspace, staging_dir_rel(run_id))
   defp pending_dir(workspace), do: Path.join([workspace | @pending_dir])
+  defp processing_dir(workspace), do: Path.join([workspace | @processing_dir])
+  defp approved_dir(workspace), do: Path.join([workspace | @approved_dir])
+  defp rejected_dir(workspace), do: Path.join([workspace | @rejected_dir])
 
   ## misc
 

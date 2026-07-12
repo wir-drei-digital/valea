@@ -485,6 +485,97 @@ defmodule Valea.Workflows.RunnerTest do
     end
   end
 
+  describe "finalize/2 idempotent re-finalize (B5 part 2)" do
+    # Mirrors the B3-review scenario: a valid primary proposal (creates
+    # <run_id>.json) alongside one invalid memory pair — the invalid pair
+    # keeps staging in place for inspection, which is exactly the condition
+    # `recover_staging/1` re-finalizes at boot.
+    defp seed_mixed_run!(ws, run_id) do
+      staging = seed_run!(ws, run_id)
+
+      File.write!(Path.join(staging, "proposal.json"), Jason.encode!(valid_proposal()))
+
+      File.write!(
+        Path.join(staging, "proposals/bad.json"),
+        Jason.encode!(%{
+          "schema" => "memory_update/v1",
+          "target_path" => "AGENTS.md",
+          "base_sha256" => nil,
+          "reason" => "x",
+          "sources" => []
+        })
+      )
+
+      File.write!(Path.join(staging, "proposals/bad.md"), "x")
+
+      staging
+    end
+
+    test "re-finalizing a staging dir whose items were already created creates no new pending files and does not re-audit queue_item_created",
+         %{workspace: ws} do
+      run_id = "r-idem-1"
+      seed_mixed_run!(ws, run_id)
+
+      :ok = Runner.finalize(run_id, ws)
+
+      pending_path = Path.join(ws, "queue/pending/#{run_id}.json")
+      assert File.exists?(pending_path)
+      assert File.exists?(Path.join(ws, "queue/staging/#{run_id}"))
+      first_bytes = File.read!(pending_path)
+
+      # Re-finalize (simulating recover_staging's boot-time re-run over a
+      # staging dir kept for inspection because of the sibling invalid pair).
+      :ok = Runner.finalize(run_id, ws)
+
+      assert File.read!(pending_path) == first_bytes
+
+      assert Path.join(ws, "queue/pending") |> Path.join("#{run_id}*") |> Path.wildcard() == [
+               pending_path
+             ]
+
+      {:ok, entries} = Valea.Audit.entries(100)
+
+      created_count =
+        Enum.count(entries, &(&1["type"] == "queue_item_created" and &1["run_id"] == run_id))
+
+      assert created_count == 1
+
+      finished =
+        entries
+        |> Enum.reverse()
+        |> Enum.filter(&(&1["type"] == "workflow_run_finished" and &1["run_id"] == run_id))
+        |> Enum.map(& &1["outcome"])
+
+      # First call: the primary item was created, which outranks the sibling
+      # invalid pair for outcome. Second call: nothing new is created (the
+      # primary id is skipped) but the pair is STILL invalid — honestly
+      # re-audited — so this call's outcome is invalid_proposal.
+      assert finished == ["proposal_created", "invalid_proposal"]
+    end
+
+    test "an already-decided item is not resurrected by re-finalize", %{workspace: ws} do
+      run_id = "r-idem-2"
+      seed_mixed_run!(ws, run_id)
+
+      :ok = Runner.finalize(run_id, ws)
+
+      pending_path = Path.join(ws, "queue/pending/#{run_id}.json")
+      assert File.exists?(pending_path)
+
+      # Simulate a human decision moving the item out of pending/ (hand-move
+      # to avoid depending on Queue.approve's own guards here).
+      approved_dir = Path.join(ws, "queue/approved")
+      File.mkdir_p!(approved_dir)
+      approved_path = Path.join(approved_dir, "#{run_id}.json")
+      File.rename!(pending_path, approved_path)
+
+      :ok = Runner.finalize(run_id, ws)
+
+      refute File.exists?(pending_path)
+      assert File.exists?(approved_path)
+    end
+  end
+
   # Mirrors the file's existing sidecar/staging setup (`sidecar/1` below,
   # `start_run/6`'s own `run.json` shape) so `finalize/2` can be driven
   # directly against hand-seeded staging, same as every other finalize test
