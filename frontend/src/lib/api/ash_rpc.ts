@@ -921,11 +921,11 @@ export type IcmEntryReferencesInput = {
   path: string;
 };
 
-export type IcmEntryReferencesFields = UnifiedFieldSelection<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type IcmEntryReferencesFields = UnifiedFieldSelection<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, pages: Array<{sourcePath: string, mount: string, linkText: string, __type: "TypedMap", __primitiveFields: "sourcePath" | "mount" | "linkText"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferIcmEntryReferencesResult<
   Fields extends IcmEntryReferencesFields | undefined,
-> = InferResult<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, pages: Array<{sourcePath: string, mount: string, linkText: string, __type: "TypedMap", __primitiveFields: "sourcePath" | "mount" | "linkText"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type IcmEntryReferencesResult<Fields extends IcmEntryReferencesFields | undefined = undefined> = | { success: true; data: InferIcmEntryReferencesResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

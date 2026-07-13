@@ -300,7 +300,13 @@ const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
 // falls through to `never`. The backend action itself DOES accept this exact
 // nested literal (confirmed in Task 5), so the assertion below is trusted
 // runtime knowledge overriding an incomplete generated type, not a guess.
-const icmEntryReferencesFields = [{ workflows: ['file', 'name'] }] as unknown as IcmEntryReferencesFields;
+// `pages` (Task C3) is the AST-confirmed backlinks union alongside the
+// original `workflows` — same cast pattern, same codegen gap, one more
+// nested field selection in the same literal.
+const icmEntryReferencesFields = [
+  { workflows: ['file', 'name'] },
+  { pages: ['sourcePath', 'mount', 'linkText'] }
+] as unknown as IcmEntryReferencesFields;
 
 // `icm_search`/`icm_paths_exist` (Task C2). Same anonymous-embedded-map-array
 // codegen gap as `icmEntryReferencesFields` above — `results` is an

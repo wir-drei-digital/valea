@@ -201,15 +201,40 @@ defmodule Valea.Api.ICM do
                           ]
                         ]
                       ]
+                    ],
+                    pages: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            source_path: [type: :string, allow_nil?: false],
+                            mount: [type: :string, allow_nil?: false],
+                            link_text: [type: :string, allow_nil?: false]
+                          ]
+                        ]
+                      ]
                     ]
                   ]
 
       argument :path, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Valea.ICM.References.referencing_workflows(input.arguments.path) do
-          {:ok, refs} ->
-            {:ok, %{workflows: Enum.map(refs, &%{file: &1.file, name: &1.name})}}
+        case Manager.current() do
+          {:ok, %{path: root}} ->
+            with {:ok, refs} <- Valea.ICM.References.referencing_workflows(input.arguments.path),
+                 {:ok, pages} <- Valea.ICM.Backlinks.backlinks(root, input.arguments.path) do
+              {:ok,
+               %{
+                 workflows: Enum.map(refs, &%{file: &1.file, name: &1.name}),
+                 pages:
+                   Enum.map(pages, fn p ->
+                     %{source_path: p.source_path, mount: p.mount, link_text: p.link_text}
+                   end)
+               }}
+            else
+              {:error, reason} -> {:error, error_for(reason)}
+            end
 
           {:error, reason} ->
             {:error, error_for(reason)}

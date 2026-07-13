@@ -288,6 +288,44 @@ defmodule ValeaWeb.IcmRpcTest do
       assert Enum.all?(workflows, &(is_binary(&1["file"]) and is_binary(&1["name"])))
       assert Enum.any?(workflows, &(&1["name"] == "Post-Session Follow-up"))
     end
+
+    test "icm_entry_references also lists AST-confirmed page backlinks (Task C3)" do
+      assert {:ok, %{path: root}} = Manager.current()
+
+      # A real Link node resolving (relative-from-source) to the target —
+      # must be confirmed.
+      File.write!(
+        Path.join(root, "mounts/primary/Offers/Backlink Source.md"),
+        "# Backlink Source\n\nSee the [template](<../Templates/Follow-up Email.md>) for details.\n"
+      )
+
+      # A bare prose mention of the same filename — never a Link node, must
+      # NOT be confirmed.
+      File.write!(
+        Path.join(root, "mounts/primary/Offers/Not A Link.md"),
+        "# Not A Link\n\nTemplates/Follow-up Email.md is mentioned in prose only.\n"
+      )
+
+      assert %{"success" => true, "data" => %{"workflows" => workflows, "pages" => pages}} =
+               rpc(
+                 "icm_entry_references",
+                 %{"path" => "mounts/primary/Templates/Follow-up Email.md"},
+                 [
+                   %{"workflows" => ["file", "name"]},
+                   %{"pages" => ["sourcePath", "mount", "linkText"]}
+                 ]
+               )
+
+      assert is_list(workflows)
+      assert is_list(pages)
+
+      refute Enum.any?(pages, &(&1["sourcePath"] == "mounts/primary/Offers/Not A Link.md"))
+
+      hit = Enum.find(pages, &(&1["sourcePath"] == "mounts/primary/Offers/Backlink Source.md"))
+      assert hit != nil
+      assert hit["mount"] == "primary"
+      assert hit["linkText"] == "template"
+    end
   end
 
   describe "icm_search" do
