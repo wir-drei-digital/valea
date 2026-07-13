@@ -254,6 +254,24 @@ export function createPageLinkSuggestion({ char, name, pagePath, api, allowedPre
         suggestion: {
           char,
           allowedPrefixes,
+          // We insert a link mark, not a closing-delimiter node — there's no
+          // `]]` or second `@` the user types to end the picker. Without
+          // this, `@tiptap/suggestion`'s default (`false`) makes the match
+          // regex die at the first whitespace character (see
+          // `findSuggestionMatch.ts`: the non-`allowSpaces` branch matches
+          // `[^\s<char>]*`), so a multi-word title/query like "Meeting
+          // Notes" can never be typed — the popup would destroy itself the
+          // instant the user hits the space after "Meeting". `true` swaps
+          // in the lazy `.*?` regex bounded by end-of-line or another
+          // `\s<char>`, which keeps the match open across spaces until the
+          // user selects an item (range gets deleted by `command`),
+          // presses Escape, or moves the cursor out of the matched range —
+          // all of which already terminate the suggestion via the plugin's
+          // own `active` bookkeeping, unchanged by this option. `$`/`^` in
+          // the regex are `m`-flagged (per line), and matching is scoped to
+          // the current text node anyway, so this can't run on past a
+          // paragraph break either.
+          allowSpaces: true,
           pluginKey: new PluginKey(name),
           command: ({ editor, range, props }) => {
             props.command({ editor, range })
