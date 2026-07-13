@@ -218,7 +218,7 @@ defmodule Valea.Agents.SessionServer do
     # Items FIRST (each appended + broadcast in arrival order), THEN effects —
     # so a message chunk lands with a lower seq than the {:turn} it precedes.
     state = %{state | conn: conn}
-    state = Enum.reduce(items, state, &append_item(&2, &1))
+    state = Enum.reduce(items, state, &append_item(&2, enrich_item(&1, state)))
     state = Enum.reduce(effects, state, &apply_effect(&2, &1))
     {:noreply, state}
   end
@@ -267,6 +267,22 @@ defmodule Valea.Agents.SessionServer do
   end
 
   def terminate(_reason, _state), do: :ok
+
+  # A permission ask is the human's decision point — stamp the same
+  # server-derived risk tier the queue uses, so the dialog can say
+  # plainly when an approval changes future agent behavior. Display
+  # metadata only; policy decisions never read it.
+  defp enrich_item(%{"type" => "permission", "rawInput" => raw} = item, state)
+       when is_map(raw) do
+    path = raw["file_path"] || raw["path"] || raw["filePath"] || raw["notebook_path"]
+
+    case is_binary(path) && Valea.Agents.RiskTier.classify(state.workspace, path) do
+      tier when tier in ["high", "medium"] -> Map.put(item, "risk_tier", tier)
+      _ -> item
+    end
+  end
+
+  defp enrich_item(item, _state), do: item
 
   ## Effects
 

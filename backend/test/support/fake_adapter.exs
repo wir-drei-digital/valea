@@ -1,6 +1,6 @@
 # Scripted ACP adapter for SessionServer integration tests.
-# Scenarios: happy | permission | crash_mid_turn | stderr_noise | hang |
-# workflow_happy
+# Scenarios: happy | permission | permission_risk_tier | crash_mid_turn |
+# stderr_noise | hang | workflow_happy
 #
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
@@ -75,6 +75,49 @@ defmodule FakeAdapter do
         # wait for the answer before finishing the turn
         answer = IO.gets("") |> Jason.decode!()
         _ = answer
+
+        update(ctx, %{
+          "sessionUpdate" => "agent_message_chunk",
+          "content" => %{"type" => "text", "text" => "done"}
+        })
+
+        reply(id, %{"stopReason" => "end_turn"})
+
+      "permission_risk_tier" ->
+        # Three asks in one turn, each against a real path under the
+        # session's own workspace (ProcessRuntime sets the subprocess cwd
+        # to the workspace) — one behavior-bearing (high), one ordinary
+        # knowledge page (medium), one outside any mount (no tier at all).
+        # Waits for the answer between each so the SessionServer.answer_
+        # permission driving pattern matches the existing "permission"
+        # scenario.
+        cwd = File.cwd!()
+
+        targets = [
+          {"pr1", "Write Workflows page",
+           Path.join([cwd, "mounts/primary/Workflows/New Inquiry Triage.md"])},
+          {"pr2", "Write knowledge page",
+           Path.join([cwd, "mounts/primary/Pricing/Current Pricing.md"])},
+          {"pr3", "Write source file", Path.join([cwd, "sources/mail/inbox.md"])}
+        ]
+
+        Enum.each(targets, fn {rpc_id, title, path} ->
+          request(rpc_id, "session/request_permission", %{
+            "sessionId" => ctx.session,
+            "toolCall" => %{
+              "toolCallId" => rpc_id,
+              "title" => title,
+              "kind" => "edit",
+              "rawInput" => %{"file_path" => path}
+            },
+            "options" => [
+              %{"optionId" => "y", "name" => "Allow", "kind" => "allow_once"},
+              %{"optionId" => "n", "name" => "Reject", "kind" => "reject_once"}
+            ]
+          })
+
+          _ = IO.gets("") |> Jason.decode!()
+        end)
 
         update(ctx, %{
           "sessionUpdate" => "agent_message_chunk",

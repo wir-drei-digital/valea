@@ -98,6 +98,68 @@ defmodule Valea.Agents.SessionServerTest do
     assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
   end
 
+  test "permission items carry the server-derived risk tier (display metadata only)", %{
+    root: root
+  } do
+    # The fake adapter subprocess reads its OWN `File.cwd!()` (set via
+    # erlexec's `{:cd, workspace}`) to build its rawInput paths — and on
+    # macOS a tmp dir path lexically differs from what `getcwd()` reports
+    # after chdir (`/var/...` vs the physical `/private/var/...`, same
+    # symlink quirk `PermissionPolicy`'s moduledoc already documents).
+    # Resolve `root` to that same physical form up front so the workspace
+    # this test starts the session with is the exact string the subprocess
+    # will echo back — otherwise `RiskTier.classify`'s lexical
+    # `Path.relative_to` would silently fail to attribute the path to its
+    # mount.
+    {:ok, root} = Valea.Paths.resolve_real(root, root)
+
+    File.mkdir_p!(Path.join(root, "mounts/primary/Workflows"))
+    File.mkdir_p!(Path.join(root, "sources/mail"))
+
+    {:ok, %{id: id}} = start_session(root, "permission_risk_tier")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    :ok = Valea.Agents.SessionServer.prompt(id, "write")
+
+    assert_receive {:session_event, _,
+                    %{"type" => "permission", "title" => "Write Workflows page"} = high_perm},
+                   10_000
+
+    assert high_perm["risk_tier"] == "high"
+
+    # The broadcast and the pre-resolution timeline entry both come from
+    # the SAME `append_item/2` call on the enriched item — check the
+    # timeline snapshot BEFORE answering, since answering collapses the
+    # item to a minimal `resolved: true` record (existing `Connection
+    # .answer_permission/3` behavior, unrelated to this enrichment).
+    {:ok, %{items: items}} = Valea.Agents.SessionServer.attach(id)
+    assert Enum.find(items, &(&1["id"] == high_perm["id"])) == high_perm
+
+    :ok = Valea.Agents.SessionServer.answer_permission(id, high_perm["id"], "allow_once")
+
+    assert_receive {:session_event, _,
+                    %{"type" => "permission", "title" => "Write knowledge page"} = medium_perm},
+                   10_000
+
+    assert medium_perm["risk_tier"] == "medium"
+    {:ok, %{items: items}} = Valea.Agents.SessionServer.attach(id)
+    assert Enum.find(items, &(&1["id"] == medium_perm["id"])) == medium_perm
+
+    :ok = Valea.Agents.SessionServer.answer_permission(id, medium_perm["id"], "allow_once")
+
+    assert_receive {:session_event, _,
+                    %{"type" => "permission", "title" => "Write source file"} = no_tier_perm},
+                   10_000
+
+    refute Map.has_key?(no_tier_perm, "risk_tier")
+    {:ok, %{items: items}} = Valea.Agents.SessionServer.attach(id)
+    assert Enum.find(items, &(&1["id"] == no_tier_perm["id"])) == no_tier_perm
+
+    :ok = Valea.Agents.SessionServer.answer_permission(id, no_tier_perm["id"], "allow_once")
+
+    assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+  end
+
   test "mid-turn crash: exit broadcast, turn ends, transcript intact", %{root: root} do
     {:ok, %{id: id}} = start_session(root, "crash_mid_turn")
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
