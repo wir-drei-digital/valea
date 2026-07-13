@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-13-icm-project-workspaces-design.md` — binding for every task; read it for any ambiguity. It supersedes `2026-07-12-icm-mounts-design.md` (Plan A) and `2026-07-12-icm-by-reference-design.md` (Plan A2) wherever they define embedded `mounts/`, workspace-root routing, `MOUNTS.md`, global mount composition, or path-as-identity.
 
+**Revision 2026-07-13 (B/C interaction review):** after Specs B (methodology depth) and C (knowledge depth) merged to main, this plan was reviewed for how the redesign disturbs their shipped code. The review added/expanded tasks for: the run-sidecar ICM stamp + `RiskTier`/finalize on ICM identity (Tasks 7.2, 7.3, **7.5**); re-keying `backlinks.ex`/`link_rewrite.ex` and scoping search/backlinks/rename-rewrite to **primary + related** ICMs (Tasks 4.2, **5.6**); the image upload/serve endpoint (**Task 4.4**); the frontend link/image path-vocabulary rewrite (**Task 9.6**); a portable **ICM template** seeded on create + the Valea proposal contract injected via the session bootstrap `context.md` (Tasks **3.5**, 1.2 — the "inject + seed" resolution of where B's teach-loop content lives once the workspace stops being an agent project); and the C7 managed-settings **fallback** the Phase-1 spike must decide (Task 1.1), since the installed `claude-agent-acp` adapter has no verified way to load an external settings file. Three decisions locked in this review: **(a)** Valea's queue vocabulary is injected at launch + a clean starter is seeded into new ICMs (never baked into the portable ICM's own files); **(b)** editor-time search/backlinks/rename-rewrite are bounded to the primary ICM + its declared related ICMs; **(c)** the Phase-1 spike settles the managed-settings mechanism before `SessionSettings` is built on it. **Follow-up decision (harness seam):** enforcement is `PermissionPolicy` on the ACP `session/request_permission` callback (harness-neutral, authoritative); the settings file is only an optional per-harness pre-filter, wrapped behind a new `Valea.Harness` behaviour (`Valea.Harnesses.ClaudeCode` is its first implementer). Claude Code ships **callback-only** — no settings file is written into or near the ICM (the user's own `.claude/` config lives there; the ICM must stay usable by a bare harness); the session `context.md` (related-ICM map + injected contract) is still materialized under the hidden workspace. Tasks 1.1–1.3, C6, C7, C10 reshaped accordingly.
+
 ## How to execute this plan
 
 The spec defines twelve phases (spec §"Implementation sequence"). This plan keeps that order. **Each phase is an independently testable milestone** and is designed to be executed — and reviewed — as its own session: at the end of every phase the suite is green and the app runs. Phases are strictly ordered by dependency (a later phase consumes types and modules a earlier one produces); do not reorder. Within a phase, tasks are bite-sized (2–5 minute steps) and each ends with a commit.
@@ -131,11 +133,11 @@ related_icms:
 }
 ```
 
-`SessionScope.resolve/1` takes an opts map `%{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` (defined in Phase 5 Task 5.2) and is the ONLY place mount-key lookup, health/uniqueness validation, related-ICM resolution, absolute read/write root computation, and session-local settings/context materialization happen. Neither `Valea.Api.Agents` nor `Valea.Workflows.Runner` re-derives these rules. (spec §"Session scope and launch", §"Backend restructuring map")
+`SessionScope.resolve/1` takes an opts map `%{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` (defined in Phase 5 Task 5.2) and is the ONLY place mount-key lookup, health/uniqueness validation, related-ICM resolution, absolute read/write root computation, and session-local settings/context materialization happen. Neither `Valea.Api.Agents` nor `Valea.Workflows.Runner` re-derives these rules. (spec §"Session scope and launch", §"Backend restructuring map") The scope's `managed_settings` is **optional** — `nil` when the session's harness enforces callback-only (Claude Code today); `managed_context` (the `context.md` bootstrap) is always materialized. `SessionScope` hands the scope to the session's harness adapter (`Valea.Harness.launch/2`), which decides what to materialize.
 
-### C7 — Managed session harness settings
+### C7 — Session permission policy (callback-authoritative) + optional pre-filter
 
-Materialized per session at `runtime/sessions/<id>/settings.json` (never inside the ICM). The policy (spec §"Managed harness settings"):
+The session permission policy is enforced by `Valea.Agents.PermissionPolicy` (Task 5.3) on the ACP `session/request_permission` callback — harness-neutral and authoritative. The same policy MAY additionally be rendered as a per-harness native pre-filter file to reduce callback round-trips, but that is an optimization, never the gate. The policy (spec §"Managed harness settings"):
 
 - **Allow reads** in the primary ICM root and each resolved related ICM root, and at each exact task input path.
 - **Ask** for `Edit`, `Write`, and `Bash` unless an exact workflow grant applies.
@@ -143,7 +145,7 @@ Materialized per session at `runtime/sessions/<id>/settings.json` (never inside 
 - **Do not auto-load** instructions (`CLAUDE.md`) from related additional directories — only the primary ICM's own `CLAUDE.md` (at the cwd) loads; related entrypoints are read only when the primary ICM's routing calls for them.
 - Preserve user-level harness config except where Valea's stronger session enforcement overrides it.
 
-The exact adapter mechanism (settings-file flag vs. ACP session param, additional-directory flag) is fixed by the **Phase 1 spike** and recorded in `docs/notes/acp-launch-contract.md`; all later phases consume that contract. Enforcement never relies on context-file behavior alone.
+**Claude Code ships callback-only** (this review's decision): the installed adapter cannot be pointed at an external settings file, and Valea will not write a pre-filter into the user-owned ICM (their own `.claude/` config lives there — the ICM must stay usable by a bare harness). So `scope.managed_settings` is `nil` for CC; enforcement is entirely the callback. The pre-filter renderer (`SessionSettings.content/1`) is kept ready for a future harness/adapter that can load an external file. Additional read roots are still conveyed natively (`session/new` `additionalDirectories`) so common related-ICM reads don't each round-trip. Whether `additionalDirectories` auto-loads a dir's `CLAUDE.md`, and how to suppress it, is fixed by the Phase-1 spike and recorded in `docs/notes/acp-launch-contract.md`.
 
 ### C8 — Session metadata (`session/v1`, written as transcript line 1)
 
@@ -188,6 +190,8 @@ NEW backend:
   lib/valea/agents/session_settings.ex        Valea.Agents.SessionSettings (C7, Phase 1/5)
   lib/valea/mounts/context.ex                 Valea.Mounts.Context         (C4 related-ICMs, Phase 5)
   lib/valea/api/icms.ex                        Valea.Api.Icms               (C9, Phase 3)
+  lib/valea/harness.ex                        Valea.Harness behaviour (harness-neutral launch seam) (C7, Phase 1)
+  priv/icm_template/                          portable ICM starter, seeded by create/3 (Phase 3, Task 3.5)
 NEW frontend:
   src/lib/components/shell/IcmProjects.svelte  sidebar ICM/session groups   (Phase 9)
   src/lib/stores/recent-sessions.svelte.ts     grouped-by-mount session store (Phase 9)
@@ -195,7 +199,11 @@ RENAMED/REPURPOSED:
   Valea.Mounts                                 embedded+external → config-only external registry (Phase 3)
   Valea.Mounts.Manifest                        format 1 provenance → format 2 stable identity (Phase 3)
   Valea.Agents.ClaudeSettings                  workspace .claude writer → SessionSettings renderer (Phase 1/5)
+  Valea.Harnesses.ClaudeCode                   gains launch/materialization; implements Valea.Harness; callback-only enforcement (Phase 1)
   Valea.Api.Workspace                          path-based → id-based (Phase 2)
+  Valea.ICM.Backlinks / Valea.ICM.LinkRewrite  all-enabled-mounts → primary+related scope, (mount_key, rel_path) (Phase 4 + Task 5.6)
+  Valea.Agents.RiskTier                        workspace-path attribution → ICM-locator tier (Phase 7, Task 7.5)
+  ValeaWeb.FilesController                      raw-path attribution → mount_key + documented Assets/ stance (Phase 4, Task 4.4)
 DELETED (Phase 11):
   lib/valea/mounts/mounts_md.ex                MOUNTS.md generation
   lib/valea/mounts/external.ex                 folded into Valea.Mounts (all mounts are external now)
@@ -208,9 +216,9 @@ DELETED (Phase 11):
 
 ## Phase 1 — Harness launch spike
 
-**Milestone:** the claude-agent-acp launch contract for `cwd` + additional read roots + Valea-managed session settings/context is *discovered, documented, and proven end to end*, and Valea has a pure `SessionSettings` renderer + a fake-adapter assertion of the launch shape. **No runtime refactor lands in this phase** (the real chat/workflow launch keeps using the current workspace-root path until Phase 5); this phase de-risks everything downstream. (spec §"Managed harness settings": "No runtime refactor lands until the managed-settings path is demonstrated end to end.")
+**Milestone:** the claude-agent-acp launch surface is *discovered and documented* — how it receives `cwd`, how it receives additional read roots (native `session/new` `additionalDirectories`), and whether writes/denied-reads reach the ACP `session/request_permission` callback (the authoritative gate) — and a throwaway probe proves the callback-authoritative model end to end. Whether the adapter can also be pointed at an *external* settings pre-filter is recorded as informational (the chosen path is **callback-only**, so a negative answer does not block). Valea also gains a `Valea.Harness` behaviour + a `SessionSettings` renderer + a fake-adapter assertion of the launch shape. **No runtime refactor lands in this phase** (the real chat/workflow launch keeps using the current workspace-root path until Phase 5); this phase de-risks everything downstream.
 
-Today `Valea.Acp.Connection.new/1` sends only `%{"cwd" => launch.cwd, "mcpServers" => []}` on `session/new` (`acp/connection.ex:378-401`), and `Valea.Agents.ClaudeSettings.write!/1` writes `<workspace>/.claude/settings.json` with `./`-anchored globs that are correct only because cwd == workspace (`agents/claude_settings.ex:66-76`, moduledoc). Both assumptions break when cwd becomes an external ICM root. This phase establishes how to instead hand the adapter a Valea-owned settings file + extra read directories without writing anything into the ICM.
+Today `Valea.Acp.Connection.new/1` sends only `%{"cwd" => launch.cwd, "mcpServers" => []}` on `session/new` (`acp/connection.ex:378-401`), and `Valea.Agents.ClaudeSettings.write!/1` writes `<workspace>/.claude/settings.json` with `./`-anchored globs that are correct only because cwd == workspace (`agents/claude_settings.ex:66-76`, moduledoc). Both assumptions break when cwd becomes an external ICM root. This phase establishes the replacement: additional read roots via the native `additionalDirectories` field, and the ACP `request_permission` callback (not a settings file) as the authoritative gate — nothing is written into the ICM.
 
 ### Task 1.1: Spike — discover and document the adapter launch contract
 
@@ -264,6 +272,8 @@ Expected and required to pass the milestone:
 
 Paste the observed output into `acp-launch-contract.md` under "Verified proof". If any expectation fails, iterate the mechanism (step 2) until all pass; the downstream phases depend on this being real, not assumed.
 
+**Fallback decision (record the outcome in the contract note).** A review of the installed `@agentclientprotocol/claude-agent-acp@0.58.1` found: (a) additional read roots ARE natively supported — `session/new` accepts a top-level `additionalDirectories` field (prefer it over any `_meta.valea.*` invention; see Task 1.3); but (b) the adapter's `SettingsManager` only resolves `.claude/settings.json` from the session **cwd** + `~/.claude` + the OS-managed path — there is **no** parameter to point it at an external Valea-owned settings file. If the spike confirms (b) against whatever adapter version ships at implementation time, choose and document ONE fallback before Task 1.2 builds `SessionSettings.materialize!`: **(1)** a newer adapter/CLI surface that forwards `--settings`/`--add-dir` (re-verify — the bare `claude` CLI has these; confirm the adapter passes them through); **(2)** write a Valea-owned `<cwd>/.claude/settings.json` inside the ICM as a documented, gitignored-by-convention exception to invariant 9 (weakest — the spec explicitly rules this out; take it only if 1 and 3 fail); or **(3)** drop settings-file pre-filtering and enforce solely through the ACP `session/request_permission` round-trip with `PermissionPolicy` as sole authority (architecturally clean since `PermissionPolicy` already decides allow/deny/ask, but the SDK's default permission mode governs auto-approvals before Valea's callback fires — verify it prompts rather than auto-allows). Whichever is chosen, `SessionSettings`'s target/consumption contract (Task 1.2) must be shaped to it, so this decision precedes Task 1.2. **Decision landed:** option (3), callback-only (see C7 and Task 1.2) — enforcement is `PermissionPolicy` on the ACP `request_permission` callback and no settings file is written. Options (1)/(2) are revisited only if the spike shows the callback itself does not gate writes/denied-reads (proof step 4 must confirm it does).
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -271,20 +281,26 @@ git add docs/notes/acp-launch-contract.md backend/scripts/spike/acp_launch_probe
 git commit -m "spike: prove claude-agent-acp launch contract (cwd + add-dir + managed settings)"
 ```
 
-### Task 1.2: `Valea.Agents.SessionSettings` — managed settings + context renderer
+### Task 1.2: `Valea.Harness` behaviour + `SessionSettings` renderer (callback-only for Claude Code)
 
 **Files:**
-- Create: `backend/lib/valea/agents/session_settings.ex`
-- Test: `backend/test/valea/agents/session_settings_test.exs`
+- Create: `backend/lib/valea/harness.ex` (the `Valea.Harness` behaviour — harness-neutral launch seam)
+- Modify: `backend/lib/valea/harnesses/claude_code.ex` (`Valea.Harnesses.ClaudeCode` implements `Valea.Harness`; delegates rendering to `SessionSettings`; ships callback-only)
+- Create: `backend/lib/valea/agents/session_settings.ex` (the Claude Code adapter's renderer)
+- Test: `backend/test/valea/agents/session_settings_test.exs`, `backend/test/valea/harnesses/claude_code_test.exs`
 
 **Interfaces:**
 - Consumes: the C7 policy and the C6 launch object shape (only the fields it needs: `primary_icm.root`, `related_icms[].root`, `read_paths`, `write_paths`, `write_roots`, `workspace.root`, `managed_settings`, `managed_context`).
 - Produces:
   - `Valea.Agents.SessionSettings.content(scope :: map()) :: map()` — the settings JSON map (C7), computed from absolute roots (NOT `./`-anchored). Deny wins over allow.
   - `Valea.Agents.SessionSettings.context(scope :: map()) :: String.t()` — the `context.md` bootstrap listing the resolved primary + related ICM roots and entrypoints (C6 map, human/agent-readable).
-  - `Valea.Agents.SessionSettings.materialize!(scope :: map()) :: :ok` — writes `content/1` to `scope.managed_settings` and `context/1` to `scope.managed_context`, creating `runtime/sessions/<id>/` (atomic tmp+rename). Never writes inside any ICM root. Consumed by SessionScope (Phase 5) and (for the real launch) SessionServer (Phase 5).
+  - `Valea.Agents.SessionSettings.materialize!(scope :: map()) :: :ok` — always writes `context/1` to `scope.managed_context`; writes `content/1` to `scope.managed_settings` **only when that field is non-nil** (a harness that can load an external pre-filter). Creates `runtime/sessions/<id>/` (atomic tmp+rename), never inside any ICM root.
+  - `Valea.Harness` behaviour: `c:launch(scope :: map(), session_dir :: String.t()) :: {:ok, directives :: map()}` where `directives = %{cwd, additional_roots, context_path, settings_path, env, argv_extra}`. The harness-neutral seam SessionScope calls (Phase 5) instead of touching a settings file directly.
+  - `Valea.Harnesses.ClaudeCode.launch/2` (implements the behaviour): calls `SessionSettings.materialize!/1`, returns `additional_roots` = resolved related-ICM + exact-input roots (conveyed as `additionalDirectories`), `context_path` = the materialized `context.md`, and `settings_path: nil` (callback-only — enforcement is `PermissionPolicy` on the ACP callback). A future harness that accepts an external settings file sets `settings_path` and gets the pre-filter for free.
 
 Note: this renders *absolute-root* allow/deny rules (the C7 policy), unlike the old `ClaudeSettings` which relied on `./**` anchored to cwd==workspace. This is the module that makes cwd≠workspace safe.
+
+**Contract injection (inject+seed decision).** `context/1` is where Valea's own queue vocabulary lives now that the workspace carries no root `AGENTS.md`. For a **workflow** session (`scope.kind == "workflow"`), `context/1` appends the `proposal/v1` + `memory_update/v1` contract text — the exact schema guidance currently in `backend/priv/workspace_template/AGENTS.md`, which Phase 2 deletes. This keeps the Valea-specific vocabulary out of the portable ICM's own files (the ICM stays usable by a bare harness) while still teaching each workflow run the proposal shapes. Preserve that contract text verbatim in this module when Phase 2 removes the template `AGENTS.md`. Add a test: `context(scope(%{kind: "workflow"}))` contains `memory_update/v1`, and `context(scope(%{kind: "chat"}))` does not.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -454,8 +470,17 @@ defmodule Valea.Agents.SessionSettings do
 
   @spec materialize!(map()) :: :ok
   def materialize!(scope) do
-    write_atomic!(scope.managed_settings, Jason.encode!(content(scope), pretty: true) <> "\n")
+    # context.md is always written (session bootstrap: related-ICM map + injected contract).
     write_atomic!(scope.managed_context, context(scope))
+
+    # The settings.json pre-filter is written ONLY when the harness can be pointed at an
+    # external file (scope.managed_settings != nil). Claude Code ships callback-only, so
+    # managed_settings is nil, nothing lands in or near the ICM, and enforcement is
+    # PermissionPolicy on the ACP request_permission callback.
+    if scope.managed_settings do
+      write_atomic!(scope.managed_settings, Jason.encode!(content(scope), pretty: true) <> "\n")
+    end
+
     :ok
   end
 
@@ -473,11 +498,17 @@ end
 Run: `cd backend && mix test test/valea/agents/session_settings_test.exs`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Define the `Valea.Harness` behaviour + Claude Code adapter**
+
+Create `backend/lib/valea/harness.ex` with `@callback launch(scope :: map(), session_dir :: String.t()) :: {:ok, map()}`. In `Valea.Harnesses.ClaudeCode`, implement `launch/2`: `SessionSettings.materialize!(scope)`, then return `{:ok, %{cwd: scope.cwd, additional_roots: related_and_input_roots(scope), context_path: scope.managed_context, settings_path: scope.managed_settings, env: Valea.Agents.Env.minimal(), argv_extra: []}}`. For Claude Code `scope.managed_settings` is `nil` (callback-only). Add `backend/test/valea/harnesses/claude_code_test.exs` asserting `launch/2` returns `settings_path: nil`, `additional_roots` containing the related root, and a `context_path` that exists after the call while no `.claude/` is written under the ICM.
+
+- [ ] **Step 6: Run to verify pass** — `cd backend && mix test test/valea/agents/session_settings_test.exs test/valea/harnesses/claude_code_test.exs` → PASS.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add backend/lib/valea/agents/session_settings.ex backend/test/valea/agents/session_settings_test.exs
-git commit -m "feat: SessionSettings renderer (absolute-root managed harness settings + context)"
+git add backend/lib/valea/harness.ex backend/lib/valea/harnesses/claude_code.ex backend/lib/valea/agents/session_settings.ex backend/test/valea/agents/session_settings_test.exs backend/test/valea/harnesses/claude_code_test.exs
+git commit -m "feat: Valea.Harness behaviour + ClaudeCode callback-only launch adapter"
 ```
 
 ### Task 1.3: Teach `Acp.Connection` + fake adapter the extended launch shape
@@ -489,9 +520,9 @@ git commit -m "feat: SessionSettings renderer (absolute-root managed harness set
 
 **Interfaces:**
 - Consumes: the launch map given to `Connection.new/1`, extended from `%{cwd, mode, conversation_id, known_message_ids, client_version}` with two optional fields: `read_roots :: [String.t()]` (absolute additional directories) and `settings_path :: String.t() | nil` (the managed settings file).
-- Produces: `session/new` frames that carry the additional roots and settings path per the Phase-1.1 contract, defaulting to today's behavior when the fields are absent (so existing sessions are unaffected until Phase 5 supplies them). The fake adapter records what it received so tests can assert transmission.
+- Produces: `session/new` frames that carry the additional read roots (native `additionalDirectories`) and — only if the session's harness supplies one — a settings-file path, defaulting to today's behavior when the fields are absent. For Claude Code (callback-only) `settings_path` is absent and only `additionalDirectories` is sent; the test asserts `additionalDirectories` carries the related root and that no settings path is required. The fake adapter records what it received so tests can assert transmission.
 
-Use the exact param/flag names fixed in `docs/notes/acp-launch-contract.md`. The code below shows the ACP-session-param encoding; if the contract instead fixes CLI flags forwarded by the adapter, encode them where `ProcessRuntime` builds argv and adjust the test to assert argv — keep the *test's* observable contract (roots + settings transmitted) identical.
+Use the exact param/flag names fixed in `docs/notes/acp-launch-contract.md`. The code below shows the ACP-session-param encoding; if the contract instead fixes CLI flags forwarded by the adapter, encode them where `ProcessRuntime` builds argv and adjust the test to assert argv — keep the *test's* observable contract (roots + settings transmitted) identical. **Note:** the installed adapter exposes additional read roots as a native top-level `session/new` `additionalDirectories` field — prefer sending `read_roots` as `additionalDirectories` over the illustrative `_meta.valea.readRoots` shape below; adjust the test assertion to match whatever the Task-1.1 contract fixed.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -914,6 +945,8 @@ Compatibility shim to keep phases green: the `mount()` map keeps its current fie
   - `Manifest.render(attrs) :: String.t()` — emits `format: 2`.
   - `Manifest.write!(icm_root, attrs) :: :ok` — unchanged mechanics (atomic), emits format 2.
 
+**Pre-flight (do this first):** the format-1 loader accepted any `id` (including absent/non-UUID); the format-2 loader rejects non-UUIDs. Before flipping the loader, `grep -rl "icm.yaml" backend/priv backend/test` and confirm every fixture/template `icm.yaml` carries a real UUID `id` (the two Valea-minted paths already do; hand-written fixtures may not). Fix any that don't in this task, or Phase 3 tests fail at load time.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```elixir
@@ -1061,7 +1094,7 @@ Rewrite `list/1` to read `read_config_mounts/1`'s `icms:` map and build one exte
 - Consumes: `Valea.Mounts.Manifest.write!/2` (create only), `Valea.Audit.append/2`, `Valea.Paths`/boundary checks.
 - Produces (all operate on the current workspace's `config/workspace.yaml` `icms:` map; none mutates an ICM except `create` which writes a fresh `icm.yaml` into a folder the user is creating):
   - `Valea.Mounts.mount(workspace, path) :: {:ok, %{mount_key, id}} | {:error, reason}` — validates the folder is a healthy format-2 ICM, boundary-checks the path, rejects duplicate physical root and duplicate id in this workspace, derives a unique mount key from the manifest name (`slugify` + de-dupe), writes `icms.<key> = %{path: <user-form>, enabled: true}`, audits `icm_mounted`. Never copies/moves.
-  - `Valea.Mounts.create(workspace, name, path) :: {:ok, %{mount_key, id}} | {:error, reason}` — mints a new UUID, `Manifest.write!(path, %{id: uuid, name: name, description: ""})` at the (empty/new) folder, then `mount/2` it. `create` is the only path that writes into an ICM.
+  - `Valea.Mounts.create(workspace, name, path) :: {:ok, %{mount_key, id}} | {:error, reason}` — mints a new UUID, **seeds the portable ICM template (Task 3.5)** into the (empty/new) folder — including a fresh format-2 `icm.yaml` (`id`, `name`, `description: ""`) — then `mount/2` it. `create` is the only path that writes into an ICM. (Task 3.3 may land a minimal `Manifest.write!` skeleton first; Task 3.5 upgrades it to the full template copy.)
   - `Valea.Mounts.set_enabled(workspace, mount_key, enabled) :: :ok | {:error, reason}` — flips `icms.<key>.enabled`, audits `icm_enabled`/`icm_disabled`.
   - `Valea.Mounts.unmount(workspace, mount_key) :: {:ok, path} | {:error, reason}` — removes the `icms.<key>` entry only; folder untouched; audits `icm_unmounted`.
 
@@ -1098,7 +1131,25 @@ git add backend/lib/valea/api/icms.ex backend/lib/valea/api.ex backend/test/vale
 git commit -m "feat: Valea.Api.Icms RPC (list/mount/create/enable/unmount/doctor) + regen client"
 ```
 
-**Phase 3 exit check:** mounting/creating an ICM writes only `workspace.yaml` `icms:` (and, for create, a fresh format-2 `icm.yaml`); `Mounts.list` is config truth with root/id uniqueness + boundary degradation; the ICM RPC surface is id/mount-key based; `mix test` + `bun run check` green. `MOUNTS.md` is no longer written by any registry action.
+### Task 3.5: Portable ICM template + `create/3` seeds it
+
+**Files:**
+- Create: `backend/priv/icm_template/` — the portable ICM starter, adapted from the current `backend/priv/workspace_template/mounts/starter/` tree (which Phase 2 deletes): `CLAUDE.md` (`@AGENTS.md` + `@CONTEXT.md` imports), `AGENTS.md` (identity/rules/folder-map skeleton with a `{{name}}` heading), `CONTEXT.md` (routing skeleton + a commented `related_icms:` frontmatter example, C4), `Workflows/Distill Decisions.md` (B's distill workflow, verbatim from the current starter), `Decisions/2026.md` (the decision-log seed), `Templates/Client.md` + `Templates/Decision.md` (C's starters, verbatim from the current `mounts/starter/Templates/`).
+- Modify: `backend/lib/valea/mounts.ex` (`create/3` copies the template instead of writing only a bare `icm.yaml`)
+- Test: `backend/test/valea/mounts/mounts_mutation_test.exs` (extend the `create` case)
+
+**Interfaces:**
+- Consumes: `Valea.Mounts.Manifest.write!/2`, the template dir via `Application.app_dir(:valea, "priv/icm_template")`.
+- Produces: `Valea.Mounts.create(workspace, name, path)` now `cp_r`s `priv/icm_template/` into `path`, substitutes `{{name}}` in `AGENTS.md`/`CONTEXT.md`, writes a fresh format-2 `icm.yaml` (`id` = new UUID, `name`, `description: ""`) over the template placeholder, then mounts by reference. A freshly created ICM therefore carries the Distill workflow, a Decisions log, and the Client/Decision templates, so B's teach-loop and C's templates work out of the box — the "seed" half of the inject+seed decision. The portable files carry NO Valea-specific queue/proposal JSON vocabulary (that is injected per session by `SessionSettings.context/1`, Task 1.2), keeping the ICM usable by a bare harness.
+
+- [ ] **Step 1: Build the template dir** — copy + adapt the soon-to-be-deleted `backend/priv/workspace_template/mounts/starter/` tree into `backend/priv/icm_template/`. Replace the starter's fixed name with a `{{name}}` placeholder in `AGENTS.md`/`CONTEXT.md`. Strip any content that referenced the workspace-root `AGENTS.md` proposal contract (that vocabulary moves to the injected `context.md`, Task 1.2); `CONTEXT.md` keeps only the routing skeleton + the commented `related_icms:` example.
+- [ ] **Step 2: Write the failing test** — `Mounts.create(ws, "Coaching", path)` then assert `path/Workflows/Distill Decisions.md`, `path/Decisions/2026.md`, `path/Templates/Client.md`, `path/CONTEXT.md`, and a format-2 `path/icm.yaml` (real UUID, `name: "Coaching"`) all exist, and `AGENTS.md` contains "Coaching" (placeholder substituted).
+- [ ] **Step 3: Run to verify failure** — FAIL.
+- [ ] **Step 4: Implement** — change `create/3` to `File.cp_r!(template_dir(), path)`, substitute `{{name}}`, `Manifest.write!(path, %{id: uuid, name: name, description: ""})`, then `mount/2`.
+- [ ] **Step 5: Run to verify pass** — PASS.
+- [ ] **Step 6: Commit** — `feat: seed new ICMs from a portable icm_template (Distill workflow, Decisions, Templates)`.
+
+**Phase 3 exit check:** mounting/creating an ICM writes only `workspace.yaml` `icms:` (and, for create, a seeded portable ICM at the target folder); `Mounts.list` is config truth with root/id uniqueness + boundary degradation; the ICM RPC surface is id/mount-key based; `mix test` + `bun run check` green. `MOUNTS.md` is no longer written by any registry action.
 
 ---
 
@@ -1176,7 +1227,7 @@ end
 **Files:**
 - Modify: `backend/lib/valea/icm.ex` (page/save_page/create_page/create_folder/rename/delete take `mount_key` + ICM-relative path; `tree_for/1` returns one ICM's tree)
 - Modify: `backend/lib/valea/api/icm.ex` (actions take `mount_key` + `path`; add `icm_tree(mount_key)`)
-- Modify: `backend/lib/valea/icm/references.ex`, `backend/lib/valea/icm/search.ex` (mount-key/ICM-relative addressing; drop the `rel_root || root` fork — always absolute root)
+- Modify: `backend/lib/valea/icm/references.ex`, `backend/lib/valea/icm/search.ex`, `backend/lib/valea/icm/backlinks.ex`, `backend/lib/valea/icm/link_rewrite.ex` (mount-key/ICM-relative addressing; drop the `rel_root || root` fork — always absolute root). `backlinks.ex`/`link_rewrite.ex` also stop scanning `Mounts.enabled/1` here and scan only the single target ICM as an interim; Task 5.6 widens them to primary+related once `Mounts.Context.resolve/2` exists.
 - Test: `backend/test/valea/icm_test.exs`, `backend/test/valea/api/icm_test.exs`
 
 **Interfaces:**
@@ -1188,7 +1239,7 @@ end
 
 - [ ] **Step 1: Write the failing tests** — via a mounted ICM (as in 4.1 setup): `ICM.page("coaching", "Pricing/Current Pricing.md")` returns the page; `save_page` round-trips with a base hash; `tree_for("coaching")` lists `Pricing/` with an ICM-relative path; `create_page`/`rename`/`delete` operate ICM-relative; a `..` escape is denied.
 - [ ] **Step 2: Run to verify failure** — FAIL.
-- [ ] **Step 3: Implement** the re-keyed `Valea.ICM` functions (collapse the `mount_relative`/`to_workspace_rel` dual-clauses to the single absolute-root case), `tree_for/1`, and the `Api.ICM` action arg changes + `icm_tree`. Update `References`/`Search` to address by mount root directly.
+- [ ] **Step 3: Implement** the re-keyed `Valea.ICM` functions (collapse the `mount_relative`/`to_workspace_rel` dual-clauses to the single absolute-root case), `tree_for/1`, and the `Api.ICM` action arg changes + `icm_tree`. Update `References`/`Search`/`Backlinks`/`LinkRewrite` to address by mount root directly (single-ICM scan for now).
 - [ ] **Step 4: Run to verify pass** — PASS.
 - [ ] **Step 5: Commit** — `feat: re-key ICM page ops to (mount_key, relative_path) + icm_tree`.
 
@@ -1208,7 +1259,24 @@ end
 - [ ] **Step 2: Run gates** — `cd frontend && bun run check` (0), `bun run test` (green), `git diff --exit-code ../frontend/src/lib/api/` after codegen (clean/committed).
 - [ ] **Step 3: Commit** — `chore: adapt frontend ICM addressing to (mountKey, path) + regen client`.
 
-**Phase 4 exit check:** ICM files are addressed by `(mount_key, ICM-relative path)` end to end; `Valea.Icm.Locator` resolves id+path against the live mount table and attributes physical paths back to locators; suite green. Persisted records still store raw paths — Phase 7 moves queue/audit onto locators.
+### Task 4.4: Re-key image upload/serve to `mount_key` + confirm the Assets/ stance
+
+**Files:**
+- Modify: `backend/lib/valea_web/controllers/files_controller.ex` (upload resolves the target ICM by `mount_key` + ICM-relative `page_path` instead of attributing a raw path; serve resolves the same way)
+- Modify: `frontend/src/lib/editor/image-upload.ts` call site (send `mountKey`) — the path-vocabulary rewrite of this module is Task 9.6; here only the upload request gains `mountKey`
+- Test: `backend/test/valea_web/files_controller_test.exs` (or the existing controller test)
+
+**Interfaces:**
+- Consumes: `Valea.Mounts.mount_by_key/2`, `Valea.Paths.resolve_real/2`.
+- Produces: `POST /files/upload` takes `mount_key` + an ICM-relative `page_path`, resolves the mount root via `mount_by_key/2`, and writes the pasted image to `<icm_root>/Assets/<slug>-<hash8>.ext` (unchanged destination), contained by `resolve_real/2`. `GET /files/raw` resolves the same way. **Stance (locked in this review):** a user-pasted image is *user content the user asked to store in their own note*, not a Valea-generated runtime/settings artifact, so writing it into the external ICM's `Assets/` does not violate invariant 9 (which targets Valea's own logs/settings/db). The upload endpoint is driven by an explicit human paste/drop in the editor — the human is the approver — so it correctly does NOT pass through the agent `PermissionPolicy` ask-gate (that gate governs the *agent's* writes, spec §"Managed harness settings"). Document this asymmetry in the controller moduledoc so it is a stated decision, not an oversight.
+
+- [ ] **Step 1: Write the failing test** — upload an image with `mount_key: "coaching"` + `page_path: "Notes/x.md"`; assert the file lands under `<coaching_root>/Assets/` and `GET /files/raw` serves it with `content-type` + `content-disposition: inline` + `x-content-type-options: nosniff`; a `mount_key` that isn't mounted → error; a `page_path` escaping the ICM → rejected.
+- [ ] **Step 2: Run to verify failure** — FAIL (endpoint still attributes a raw path).
+- [ ] **Step 3: Implement** — replace the `MemoryProposal.check_target/2` attribution with `mount_by_key/2` + `resolve_real/2`; add the stance moduledoc; keep the token-gated upload / token-exempt serve split and the atomic write.
+- [ ] **Step 4: Run to verify pass** — PASS.
+- [ ] **Step 5: Commit** — `feat: image upload/serve keyed by mount_key; document the Assets/ user-content stance`.
+
+**Phase 4 exit check:** ICM files are addressed by `(mount_key, ICM-relative path)` end to end; `Valea.Icm.Locator` resolves id+path against the live mount table and attributes physical paths back to locators; image upload/serve is mount-key-keyed with a documented stance; suite green. Persisted records still store raw paths — Phase 7 moves queue/audit onto locators.
 
 ---
 
@@ -1241,10 +1309,10 @@ Minor resequencing vs. the spec: this phase lands the `create_session(kind, moun
 - Test: `backend/test/valea/agents/session_scope_test.exs`
 
 **Interfaces:**
-- Consumes: `Valea.Workspace.Manager.check_generation/1` + `current/0`, `Valea.Mounts.mount_by_key/2`, `Valea.Mounts.Context.resolve/2`, `Valea.Agents.SessionSettings.materialize!/1`.
-- Produces: `Valea.Agents.SessionScope.resolve(opts) :: {:ok, scope :: map()} | {:error, reason}` where `opts = %{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` and `scope` is the C6 launch object. It: guards generation; resolves the workspace; looks up + validates the primary ICM (`{:error, :icm_unavailable}` if missing/disabled/degraded); resolves direct related ICMs (issues are attached as `scope.context_issues` for the UI/doctor — a chat proceeds with a degraded-context warning, a workflow's required-input check is Phase 7); computes `cwd = primary.root`, `managed_settings`/`managed_context` under `<workspace>/runtime/sessions/<session_id>/`; calls `SessionSettings.materialize!/1`; returns the scope. This is the ONLY place these rules live (spec §"Introduce session-scope resolution").
+- Consumes: `Valea.Workspace.Manager.check_generation/1` + `current/0`, `Valea.Mounts.mount_by_key/2`, `Valea.Mounts.Context.resolve/2`, the session's harness adapter via the `Valea.Harness` behaviour (`Valea.Harnesses.ClaudeCode.launch/2`, which materializes `context.md` and, for CC, sets `settings_path: nil`).
+- Produces: `Valea.Agents.SessionScope.resolve(opts) :: {:ok, scope :: map()} | {:error, reason}` where `opts = %{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` and `scope` is the C6 launch object. It: guards generation; resolves the workspace; looks up + validates the primary ICM (`{:error, :icm_unavailable}` if missing/disabled/degraded); resolves direct related ICMs (issues are attached as `scope.context_issues` for the UI/doctor — a chat proceeds with a degraded-context warning, a workflow's required-input check is Phase 7); computes `cwd = primary.root`, `managed_context` under `<workspace>/runtime/sessions/<session_id>/` (and `managed_settings` only if the harness loads an external pre-filter — `nil` for Claude Code); invokes the harness adapter (`Valea.Harness.launch/2`) to materialize context + return launch directives; returns the scope. This is the ONLY place these rules live (spec §"Introduce session-scope resolution").
 
-- [ ] **Step 1: Write the failing tests** — with a mounted primary ICM: `resolve(%{kind: "chat", mount_key: "coaching", generation: g, session_id: "s1"})` returns a scope with `cwd == primary root`, `workspace.root == workspace`, materialized `settings.json`/`context.md` present under `runtime/sessions/s1/`, and `read_paths == []`. A stale generation → `{:error, :workspace_changed}`. An unknown/disabled mount_key → `{:error, :icm_unavailable}`. A declared related ICM appears in `scope.related_icms`.
+- [ ] **Step 1: Write the failing tests** — with a mounted primary ICM: `resolve(%{kind: "chat", mount_key: "coaching", generation: g, session_id: "s1"})` returns a scope with `cwd == primary root`, `workspace.root == workspace`, a materialized `context.md` under `runtime/sessions/s1/` (and no `settings.json` — callback-only), and `read_paths == []`. A stale generation → `{:error, :workspace_changed}`. An unknown/disabled mount_key → `{:error, :icm_unavailable}`. A declared related ICM appears in `scope.related_icms`.
 - [ ] **Step 2: Run to verify failure** — FAIL.
 - [ ] **Step 3: Implement** `resolve/1` per the interface; assemble the C6 map; call `SessionSettings.materialize!/1`.
 - [ ] **Step 4: Run to verify pass** — PASS.
@@ -1314,6 +1382,10 @@ defmodule Valea.Agents.PermissionPolicyTest do
   test "a related root that is not granted is denied on symlink escape", %{ctx: ctx} do
     assert {:deny, _} = P.decide(read("/etc/passwd"), ctx)
   end
+
+  test "root instruction files resolve against the primary ICM cwd, not the workspace", %{ctx: ctx} do
+    assert {:allow, _} = P.decide(read("CLAUDE.md"), ctx)   # @root_files, now cwd == ICM-relative
+  end
 end
 ```
 
@@ -1332,11 +1404,11 @@ end
 
 **Interfaces:**
 - Consumes: the C6 `scope` from `SessionScope.resolve/1`.
-- Produces: a session whose subprocess cwd (`ProcessRuntime.start(%{cd: scope.cwd})`) and ACP cwd (`Connection.new(%{cwd: scope.cwd, read_roots: related_and_input_roots, settings_path: scope.managed_settings})`) are the primary ICM root; the transcript stays at `<scope.workspace.root>/logs/sessions/<id>.jsonl`; `policy_ctx = %{workspace_root: scope.workspace.root, cwd: scope.cwd, read_roots: [scope.primary_icm.root | related roots ++ scope.read_paths], session_kind: scope.kind, write_paths: scope.write_paths, write_roots: scope.write_roots}`. The `ClaudeSettings.write!(workspace)` call is removed from `init/1` (settings are materialized by `SessionScope`). `default_read_roots/1`/`default_extra_roots/1` are removed (the scope now provides absolute read roots).
+- Produces: a session whose subprocess cwd (`ProcessRuntime.start(%{cd: scope.cwd})`) and ACP cwd (`Connection.new(%{cwd: scope.cwd, additional_roots: directives.additional_roots, settings_path: directives.settings_path})`, from the harness `launch/2` directives — `settings_path` is `nil` for Claude Code) are the primary ICM root; the transcript stays at `<scope.workspace.root>/logs/sessions/<id>.jsonl`; `policy_ctx = %{workspace_root: scope.workspace.root, cwd: scope.cwd, read_roots: [scope.primary_icm.root | related roots ++ scope.read_paths], session_kind: scope.kind, write_paths: scope.write_paths, write_roots: scope.write_roots}` — this `policy_ctx`, applied by `PermissionPolicy` on the ACP `request_permission` callback, is the authoritative enforcement (the settings file, when present, is only a pre-filter). The `ClaudeSettings.write!(workspace)` call is removed from `init/1`. `default_read_roots/1`/`default_extra_roots/1` are removed (the scope provides absolute read roots).
 
-- [ ] **Step 1: Write/adjust the failing tests** — using `AgentCase` with a mounted ICM: after starting a session, assert (via the fake adapter's recorded launch) that the process cwd and ACP `session/new` `cwd` equal the primary ICM root (not the workspace); assert the fake adapter received the managed `settings_path` and the related root; assert a relative `Read(AGENTS.md)` is allowed (resolves under the ICM) while `Read(<workspace>/sources/…)` is `:ask`.
+- [ ] **Step 1: Write/adjust the failing tests** — using `AgentCase` with a mounted ICM: after starting a session, assert (via the fake adapter's recorded launch) that the process cwd and ACP `session/new` `cwd` equal the primary ICM root (not the workspace); assert the fake adapter received the related root via `additionalDirectories` (and no settings path — callback-only); assert a relative `Read(AGENTS.md)` is allowed via the callback (resolves under the ICM) while `Read(<workspace>/sources/…)` is `:ask`.
 - [ ] **Step 2: Run to verify failure** — FAIL (cwd is still the workspace).
-- [ ] **Step 3: Implement** — change `init/1` to destructure `scope` from opts; set `cd: scope.cwd` and `cwd: scope.cwd`; build the split `policy_ctx`; pass `read_roots`/`settings_path` into `Connection.new/1`; keep transcript path anchored to `scope.workspace.root`; drop `ClaudeSettings.write!` and the `default_*_roots` helpers. Update `AgentCase.start_session/3` to `SessionScope.resolve/1` a scope for the given mounted ICM and pass it.
+- [ ] **Step 3: Implement** — change `init/1` to destructure `scope` from opts; set `cd: scope.cwd` and `cwd: scope.cwd`; build the split `policy_ctx`; obtain launch directives from the harness (`Valea.Harnesses.ClaudeCode.launch/2`) and pass `additional_roots`/`settings_path` into `Connection.new/1`; keep transcript path anchored to `scope.workspace.root`; drop `ClaudeSettings.write!` and the `default_*_roots` helpers. Update `AgentCase.start_session/3` to `SessionScope.resolve/1` a scope for the given mounted ICM and pass it.
 - [ ] **Step 4: Run to verify pass** — PASS.
 - [ ] **Step 5: Commit** — `feat: SessionServer launches with cwd = primary ICM root + managed settings`.
 
@@ -1364,6 +1436,26 @@ Run: `cd backend && mix test`; `mix ash_typescript.codegen && git diff --exit-co
 git add backend/lib/valea/api/agents.ex backend/lib/valea/workflows/runner.ex backend/test/ frontend/
 git commit -m "feat: create_session(kind, mount_key) launches inside the primary ICM"
 ```
+
+### Task 5.6: Scope search / backlinks / rename-rewrite to primary + related ICMs
+
+**Files:**
+- Modify: `backend/lib/valea/icm/search.ex` (`search` takes a primary `mount_key`; scans primary + related roots, not all enabled mounts)
+- Modify: `backend/lib/valea/icm/backlinks.ex` (`backlinks` scans primary + related roots)
+- Modify: `backend/lib/valea/icm/link_rewrite.ex` (`rewrite_all` on rename scans primary + related roots)
+- Modify: `backend/lib/valea/icm.ex` (`rename/2` passes the primary mount_key into `LinkRewrite`), `backend/lib/valea/api/icm.ex` (`icm_search(query, mount_key, …)`, `references(mount_key, path)` carry the primary ICM)
+- Modify: `frontend/src/lib/api/client.ts` + regen (thread `mountKey`; full palette/panel wiring is Task 9.6)
+- Test: `backend/test/valea/icm/search_test.exs`, `backlinks_test.exs`, `link_rewrite_test.exs`
+
+**Interfaces:**
+- Consumes: `Valea.Mounts.mount_by_key/2`, `Valea.Mounts.Context.resolve/2` (Task 5.1 — the primary's declared related ICMs).
+- Produces: a shared `scoped_roots(workspace, mount_key) :: [root]` = `[primary.root | Context.resolve(workspace, primary).related |> Enum.map(& &1.root)]`. `Search.search`, `Backlinks.backlinks`, and `LinkRewrite.rewrite_all` operate over exactly this set instead of `Mounts.enabled(workspace)`. This makes editor-time cross-ICM reach match the session context boundary (decision (b) of this review): a rename in ICM A no longer silently rewrites links in an unrelated mounted ICM B; it reaches B only if A's `CONTEXT.md` declares B related. Workflow-reference rewrite (`References`) stays single-ICM (unchanged).
+
+- [ ] **Step 1: Write the failing tests** — with three mounted ICMs A, B, C where A's `CONTEXT.md` declares B related: `Search.search(ws, q, "A")` returns hits from A and B but never C; `Backlinks.backlinks(ws, "A", page)` includes an inbound link authored in B, excludes one in C; renaming a page in A rewrites a confirmed link in B and leaves C untouched.
+- [ ] **Step 2: Run to verify failure** — FAIL (today all three scan every enabled mount).
+- [ ] **Step 3: Implement** — add `scoped_roots/2` (in `Valea.Mounts` or a shared helper); replace the `Mounts.enabled/1` iteration in all three modules with it; thread `mount_key` through the RPCs.
+- [ ] **Step 4: Regenerate + gates** — codegen; `bun run check`/`bun run test`.
+- [ ] **Step 5: Commit** — `feat: scope search/backlinks/rename-rewrite to the primary ICM + its related ICMs`.
 
 **Phase 5 exit check:** a chat or workflow session's process + ACP cwd is the primary ICM's physical root; the workspace is not an ancestor of the cwd; managed settings/context are materialized under the hidden workspace and never in the ICM; the permission policy resolves relative paths against the ICM and denies workspace state; `mix test` + `bun run check` green. This is the point at which the core invariants (1, 4, 5) hold at runtime.
 
@@ -1465,7 +1557,7 @@ git commit -m "feat: create_session(kind, mount_key) launches inside the primary
 
 **Interfaces:**
 - Consumes: `Valea.Workflows.get/2`, `Valea.Icm.Locator.resolve/2` (input locator → absolute), `Valea.Agents.SessionScope.resolve/1`.
-- Produces: `Valea.Workflows.Runner.run(mount_key, relative_path, input_locator, generation) :: {:ok, %{run_id, session_id}} | {:error, reason}` — validates workflow ownership; resolves the input locator (ICM-relative or a workspace source) to an absolute path, failing preflight (`:input_unavailable`) if it can't resolve or a required related ICM is missing (spec §"Related ICMs"); builds the scope via `SessionScope.resolve(%{kind: "workflow", mount_key: mount_key, generation: generation, session_id: id, read_paths: [input_abs], write_paths: [staging_proposal_abs], write_roots: [staging_proposals_dir]})`; keeps the server-owned run id/hashes/sidecar/finalize/audit. The agent proposes only at the exact granted paths. `run_generated/3` (distill) similarly writes the generated input into staging first, then grants it. `run_workflow(mount_key, relative_path, input_locator, generation)` RPC (C9); the client sends no cwd.
+- Produces: `Valea.Workflows.Runner.run(mount_key, relative_path, input_locator, generation) :: {:ok, %{run_id, session_id}} | {:error, reason}` — validates workflow ownership; resolves the input locator (ICM-relative or a workspace source) to an absolute path, failing preflight (`:input_unavailable`) if it can't resolve or a required related ICM is missing (spec §"Related ICMs"); builds the scope via `SessionScope.resolve(%{kind: "workflow", mount_key: mount_key, generation: generation, session_id: id, read_paths: [input_abs], write_paths: [staging_proposal_abs], write_roots: [staging_proposals_dir]})`; keeps the server-owned run id/hashes/sidecar/finalize/audit. The agent proposes only at the exact granted paths. `run_generated/3` (distill) similarly writes the generated input into staging first, then grants it. `run_workflow(mount_key, relative_path, input_locator, generation)` RPC (C9); the client sends no cwd. **The run sidecar (`run.json`) additionally records `icm_id`, `mount_key`, and `icm_root`** so that `finalize/2` — a pure function of `(run_id, workspace)` invoked from both `on_turn_end` and crash recovery — can turn the agent's ICM-relative proposal `target_path` into an ICM locator (Task 7.3) and classify its risk (Task 7.5) without re-deriving the owning ICM. Add a test asserting the sidecar carries `icm_id`/`mount_key`/`icm_root`.
 
 - [ ] **Step 1: Write the failing tests** — run a workflow with a workspace-source `input_locator` (`%{"kind"=>"workspace","path"=>"sources/mail/messages/1.md"}`): the session cwd is the owning ICM, the input abs path is in the scope's `read_paths`, and the staging proposal path is the only write grant; a generic chat in the same ICM cannot read that source (regression assertion). An `input_locator` whose ICM is unmounted → `:input_unavailable` before any subprocess spawns.
 - [ ] **Step 2: Run to verify failure** — FAIL.
@@ -1487,7 +1579,7 @@ git commit -m "feat: create_session(kind, mount_key) launches inside the primary
 
 - [ ] **Step 1: Write the failing tests** — a memory proposal whose target ICM is mounted applies on approval; after the ICM's path is repaired to a new location (re-mount at a new folder with the same id), a pending proposal re-resolves and still applies; after `unmount_icm`, approval returns `:apply_conflict` and the item goes back to `pending/`; the `check_base/2` hash-mismatch guard still blocks a changed page.
 - [ ] **Step 2: Run to verify failure** — FAIL.
-- [ ] **Step 3: Implement** — at finalize, compute the locator from the agent's granted target abs via `Locator.for_path/2`; store it in the envelope; update `valid_payload?`/`valid_action_for_kind?` to accept `target.locator`; in `apply_page_content/2` replace `MemoryProposal.check_target` with `Locator.resolve/2` (map its errors to `:apply_conflict`) then keep `check_base/2`; update crash-recovery target resolution similarly.
+- [ ] **Step 3: Implement** — at finalize, build the locator directly as `Locator.icm(sidecar.icm_id, target_rel)` after containment-validating the agent's ICM-relative `target_path` against the owning ICM root (the sidecar carries both from Task 7.2 — no absolute intermediate or `for_path/2` re-attribution needed); store it in the envelope; update `valid_payload?`/`valid_action_for_kind?` to accept `target.locator`; in `apply_page_content/2` replace `MemoryProposal.check_target` with `Locator.resolve/2` (map its errors to `:apply_conflict`) then keep `check_base/2`; update crash-recovery target resolution similarly (it reads the same sidecar `icm_id`).
 - [ ] **Step 4: Run to verify pass** — PASS.
 - [ ] **Step 5: Commit** — `feat: memory-update queue targets as ICM locators, re-resolved at approval`.
 
@@ -1506,7 +1598,24 @@ git commit -m "feat: create_session(kind, mount_key) launches inside the primary
 - [ ] **Step 4: Run to verify pass** — PASS.
 - [ ] **Step 5: Commit** — `feat: audit snapshots stable locator + resolved path`.
 
-**Phase 7 exit check:** workflows are ICM-owned and launch with exact input/staging grants only; queue targets and audit entries are locator-keyed and survive an ICM move (re-resolving at approval); a generic chat still cannot read workspace sources; suite green.
+### Task 7.5: `RiskTier` on ICM identity; finalize + enrich call sites
+
+**Files:**
+- Modify: `backend/lib/valea/agents/risk_tier.ex` (`classify` takes an ICM locator / `(mount, rel_path)` and classifies the ICM-relative path directly)
+- Modify: `backend/lib/valea/workflows/runner.ex:302` (`finalize_pair` classifies the target locator), `backend/lib/valea/agents/session_server.ex:279` (`enrich_item` attributes the touched absolute path via `Locator.for_path/2` then classifies)
+- Test: `backend/test/valea/agents/risk_tier_test.exs`
+
+**Interfaces:**
+- Consumes: `Valea.Icm.Locator` (C5).
+- Produces: `RiskTier.classify(locator_or_rel) :: "high" | "medium" | nil` that checks the **ICM-relative** path against `@behavior_files` (`AGENTS.md`/`CLAUDE.md`/`icm.yaml`) and the `Workflows/` prefix, WITHOUT relying on `Mounts.mount_for/2` attribution of a workspace path. This closes the regression the review found: once cwd == the ICM root, an agent's reference to `AGENTS.md`/`Workflows/*.md` is ICM-relative and the old workspace-path attribution returns `nil`, silently downgrading behavior-changing edits to "medium". `finalize_pair` classifies the memory-update target's ICM locator (its `path` is already ICM-relative). `enrich_item` (permission badge) has an absolute touched path; it calls `Locator.for_path(workspace, abs)` → ICM locator → `classify`. An off-ICM (workspace) locator classifies `nil` as before.
+
+- [ ] **Step 1: Write the failing tests** — `classify(Locator.icm(id, "AGENTS.md")) == "high"`; `classify(Locator.icm(id, "Workflows/Distill Decisions.md")) == "high"`; `classify(Locator.icm(id, "Pricing/x.md")) == "medium"`; `classify(Locator.workspace("sources/mail/1.md")) == nil`. Plus a `finalize_pair` integration assertion that a proposal targeting `AGENTS.md` gets `risk_level: "high"`, not "medium".
+- [ ] **Step 2: Run to verify failure** — FAIL (today `classify(workspace, "AGENTS.md")` → nil after the cwd move).
+- [ ] **Step 3: Implement** — rework `classify` to take a locator (or `(mount, rel_path)`), strip to the ICM-relative path, and tier it directly; update both call sites.
+- [ ] **Step 4: Run to verify pass** — PASS.
+- [ ] **Step 5: Commit** — `feat: RiskTier classifies ICM-relative targets; fix finalize/enrich under cwd=ICM`.
+
+**Phase 7 exit check:** workflows are ICM-owned and launch with exact input/staging grants only; queue targets and audit entries are locator-keyed and survive an ICM move (re-resolving at approval); memory-update risk tiers stay correct under cwd=ICM; a generic chat still cannot read workspace sources; suite green.
 
 ---
 
@@ -1633,6 +1742,23 @@ git commit -m "feat: create_session(kind, mount_key) launches inside the primary
 - [ ] **Step 2: Run gates + preview** — `bun run check`/`bun run test`; in-browser, confirm a Today item names its ICM and a "chat about this message" action requires an ICM selection.
 - [ ] **Step 3: Commit** — `feat: workspace-wide views carry ICM provenance; mail/calendar actions select an ICM`.
 
+### Task 9.6: Re-key editor link + image path math to `(mountKey, relative_path)`
+
+**Files:**
+- Modify: `frontend/src/lib/editor/page-link.ts` (`linkDestination`/`parentOf`/`pickerItems` drop the `isAbsolute(path)` embedded-vs-external fork; every ICM path is ICM-relative within a known `mountKey`)
+- Modify: `frontend/src/lib/editor/image-upload.ts` (`resolveImageSrc`/`joinRelative` drop the same `isAbsolute` fork; `src` is ICM-relative, resolved via `GET /files/raw?mount_key=…&path=…`)
+- Modify: `frontend/src/lib/components/palette/palette.ts` + `SearchPalette.svelte` (pass the selected ICM `mountKey` to `icmSearch`; results carry `mountKey`), `frontend/src/lib/components/knowledge/backlinks-panel.ts` consumers (references keyed by primary `mountKey`)
+- Test: `frontend/src/lib/editor/page-link.test.ts`, `image-upload.test.ts`, the palette tests
+
+**Interfaces:**
+- The `isAbsolute(path)` "leading slash ⇒ external mount, else workspace-relative embedded" heuristic in `page-link.ts:28-30` and `image-upload.ts:68-69` no longer corresponds to anything real once Phase 4 collapses the backend `rel_root || root` fork (every path is now `(mount_key, ICM-relative)`). This task removes that heuristic so the link picker's relative-destination math and the image `src` resolution are *correct*, not merely `bun run check`-green (the vocabulary drift Phase 4.3 deferred). Cmd+K and the backlinks panel now operate against the selected ICM's `mountKey` (primary + related per Task 5.6).
+
+- [ ] **Step 1: Write the failing tests** — `linkDestination` for a page in ICM `coaching` produces an ICM-relative destination with no leading-slash branch; `resolveImageSrc` builds a `/files/raw?mount_key=coaching&path=Assets/x.png` URL; the palette passes `mountKey` to `icmSearch`.
+- [ ] **Step 2: Run to verify failure** — `cd frontend && bun run test` → FAIL.
+- [ ] **Step 3: Implement** — delete the `isAbsolute` forks; thread `mountKey` into the picker, image src, palette, and backlinks calls; update the co-located `.test.ts` expectations.
+- [ ] **Step 4: Run gates + preview** — `bun run check`/`bun run test`; in-browser: paste an image (round-trips via `/files/raw`), use `[[` to link a multi-word page, Cmd+K within the ICM.
+- [ ] **Step 5: Commit** — `feat: editor link/image path math + palette keyed to (mountKey, relative_path)`.
+
 **Verification (Browser preview):** after Task 9.3/9.4, start the dev server via `preview_start` (`.claude/launch.json` `dev` config → backend `mix phx.server` + frontend on `:4273`; see the Justfile `dev` recipe), open the app, create a workspace + mount an ICM (Phase 10 UI may still be in progress — use the `create_icm`/`mount_icm` RPCs or a seeded workspace), and confirm the sidebar shows the ICM group with its `+`, that `+` starts a chat whose transcript names that ICM, and that the file tree renders in Knowledge (not the sidebar). Capture a screenshot for the summary.
 
 **Phase 9 exit check:** the sidebar is ICM projects + recent sessions with no file tree; Knowledge owns the tree and switches by ICM; routes carry `?icm`/`?session`; `bun run check`/`bun run test` green and the flow verified in-browser.
@@ -1752,7 +1878,7 @@ git commit -m "feat: create_session(kind, mount_key) launches inside the primary
 ### Task 11.3: Remove dead `rel_root` branches + frontend legacy + regen
 
 **Files:**
-- Modify: `backend/lib/valea/icm.ex`, `backend/lib/valea/icm/references.ex`, `backend/lib/valea/icm/search.ex`, `backend/lib/valea/agents/risk_tier.ex` (delete the now-unreachable embedded (`rel_root != nil`) branches and any workspace-relative normalization that no longer applies)
+- Modify: `backend/lib/valea/icm.ex`, `backend/lib/valea/icm/references.ex`, `backend/lib/valea/icm/search.ex`, `backend/lib/valea/icm/backlinks.ex`, `backend/lib/valea/icm/link_rewrite.ex` (delete the now-unreachable embedded (`rel_root != nil`) branches and any workspace-relative normalization that no longer applies). `risk_tier.ex` was already reworked onto ICM locators in Task 7.5 — do not re-touch its logic here. Note: Step 1's `grep -rn "rel_root" lib` is authoritative for the full blast radius; the C10 module map named only four files, but `rel_root` also appears in `files_controller.ex`, `workflows.ex`, `workflows/memory_proposal.ex`, `workflows/runner.ex`, `icm/watcher.ex`, and `mounts/doctor.ex` — clean every hit the grep returns, not just the named files.
 - Modify: `frontend/src/lib/stores/workspace.svelte.ts` (delete `adopt()`), `frontend/src/lib/api/client.ts` (delete `adoptWorkspace`/`inspectPath`/`inspectWorkspace`/`createWorkspace(parentDir,…)` wrappers), remove unused `sessions-list.svelte.ts` singleton if now dead, and any leftover onboarding files (`onboarding-path` adopt helpers, `MountFromElsewhereDialog` move option, `UnmountDialog` copy)
 - Modify: `frontend/src/lib/api/ash_rpc.ts` (regenerated — the deleted actions disappear)
 - Modify: tests referencing removed surface
