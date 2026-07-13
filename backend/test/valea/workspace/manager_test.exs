@@ -247,4 +247,41 @@ defmodule Valea.Workspace.ManagerTest do
       assert yaml =~ "version: 5"
     end
   end
+
+  describe "switch_preflight/1" do
+    test "unknown target id errors" do
+      assert {:error, :unknown_workspace} = Manager.switch_preflight("nope")
+    end
+
+    test "no live sessions in the current workspace -> empty list", %{parent: parent} do
+      {:ok, _a} = Manager.create(parent, "A")
+
+      Valea.App.Config.record_opened(%{
+        id: "preflight-target-empty",
+        name: "B",
+        slug: "b",
+        path: "/tmp/valea-preflight-target-empty"
+      })
+
+      assert {:ok, %{live_sessions: [], target_id: "preflight-target-empty"}} =
+               Manager.switch_preflight("preflight-target-empty")
+    end
+
+    test "reports the current workspace's live sessions", %{parent: parent} do
+      {:ok, a} = Manager.create(parent, "A")
+      {:ok, %{id: sid}} = Valea.AgentCase.start_session(a.path, "happy")
+
+      Valea.App.Config.record_opened(%{
+        id: "preflight-target-live",
+        name: "B",
+        slug: "b",
+        path: "/tmp/valea-preflight-target-live"
+      })
+
+      assert {:ok, %{live_sessions: live, target_id: "preflight-target-live"}} =
+               Manager.switch_preflight("preflight-target-live")
+
+      assert [%{id: ^sid}] = live
+    end
+  end
 end

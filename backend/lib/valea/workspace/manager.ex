@@ -57,6 +57,34 @@ defmodule Valea.Workspace.Manager do
   """
   def check_generation(g), do: GenServer.call(__MODULE__, {:check_generation, g})
 
+  @doc """
+  Read-only preflight for a workspace switch: validates `id` names a known
+  (registered) workspace, then reports the CURRENTLY open workspace's live
+  agent sessions — the ones a switch to `id` would stop — so the UI can
+  confirm before switching. Performs no teardown; `open/1` remains the only
+  thing that actually closes the current workspace. A plain function (not a
+  GenServer call) since it only reads external state
+  (`Valea.App.Config`/`Valea.Agents`), never `Manager`'s own process state.
+  """
+  @spec switch_preflight(String.t()) ::
+          {:ok, %{live_sessions: [map()], target_id: String.t()}} | {:error, :unknown_workspace}
+  def switch_preflight(id) do
+    case Config.workspace_by_id(id) do
+      nil ->
+        {:error, :unknown_workspace}
+
+      _entry ->
+        {:ok, sessions} = Valea.Agents.list_sessions()
+
+        live_sessions =
+          sessions
+          |> Enum.filter(& &1["live"])
+          |> Enum.map(&%{id: &1["id"], title: &1["title"], icm_mount: &1["icm_mount"]})
+
+        {:ok, %{live_sessions: live_sessions, target_id: id}}
+    end
+  end
+
   @impl true
   def init(_opts) do
     {:ok, %{workspace: nil, children: [], generation: 0}, {:continue, :auto_open}}
