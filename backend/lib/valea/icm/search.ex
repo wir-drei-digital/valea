@@ -1,0 +1,182 @@
+defmodule Valea.ICM.Search do
+  @moduledoc """
+  Scan-backed full-text search over enabled mounts. The filesystem is the
+  index (Spec C): per query, every mount is walked concurrently with a
+  hard per-mount budget; a mount that does not answer in time is skipped
+  and NAMED, never silently dropped. Query text is literal — terms are
+  matched with `String.contains?/2` on downcased text, no pattern syntax.
+  The RPC contract (`search/3`'s return shape) is deliberately
+  implementation-agnostic: FTS5 can replace these internals later.
+  """
+
+  alias Valea.Mounts
+
+  @default_timeout 500
+  @default_limit 20
+  @snippet_radius 90
+
+  @spec search(String.t(), String.t(), keyword()) ::
+          {:ok, %{results: [map()], skipped: [String.t()]}}
+  def search(workspace, query, opts \\ []) do
+    terms =
+      query |> String.downcase() |> String.split(~r/\s+/u, trim: true) |> Enum.uniq()
+
+    if terms == [] do
+      {:ok, %{results: [], skipped: []}}
+    else
+      mounts = Keyword.get_lazy(opts, :mounts, fn -> Mounts.enabled(workspace) end)
+      timeout = Keyword.get(opts, :timeout_ms, @default_timeout)
+      limit = Keyword.get(opts, :limit, @default_limit)
+
+      {hits, skipped} = scan_mounts(workspace, mounts, terms, timeout)
+
+      results =
+        hits
+        |> Enum.sort_by(fn r -> {-r.score, r.path} end)
+        |> Enum.take(limit)
+        |> Enum.map(&Map.drop(&1, [:score]))
+
+      {:ok, %{results: results, skipped: skipped}}
+    end
+  end
+
+  defp scan_mounts(workspace, mounts, terms, timeout) do
+    tasks =
+      Enum.map(mounts, fn mount ->
+        {mount.name, Task.async(fn -> scan_mount(workspace, mount, terms) end)}
+      end)
+
+    Enum.reduce(tasks, {[], []}, fn {name, task}, {hits, skipped} ->
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, mount_hits} -> {hits ++ mount_hits, skipped}
+        _ -> {hits, skipped ++ [name]}
+      end
+    end)
+  end
+
+  defp scan_mount(workspace, mount, terms) do
+    root = mount_root(workspace, mount)
+    prefix = mount.rel_root || mount.root
+
+    root
+    |> Path.join("**/*.md")
+    |> Path.wildcard()
+    |> Enum.flat_map(fn abs ->
+      case File.read(abs) do
+        {:ok, content} -> score_file(prefix, root, abs, mount.name, content, terms)
+        _ -> []
+      end
+    end)
+  end
+
+  defp mount_root(workspace, %{rel_root: rel}) when is_binary(rel), do: Path.join(workspace, rel)
+  defp mount_root(_workspace, %{root: root}), do: root
+
+  defp score_file(prefix, root, abs, mount_name, content, terms) do
+    {_fm, body} = Valea.ICM.split_frontmatter(content)
+    title = title_of(body, abs)
+    headings = headings_of(body)
+
+    title_down = String.downcase(title)
+    headings_down = String.downcase(headings)
+    body_down = String.downcase(body)
+
+    if Enum.all?(terms, fn t ->
+         String.contains?(title_down, t) or String.contains?(headings_down, t) or
+           String.contains?(body_down, t)
+       end) do
+      score =
+        Enum.reduce(terms, 0, fn t, acc ->
+          acc +
+            if(String.contains?(title_down, t), do: 5, else: 0) +
+            if(String.contains?(headings_down, t), do: 3, else: 0) +
+            occurrences(body_down, t)
+        end)
+
+      rel = Path.join(prefix, Path.relative_to(abs, root))
+
+      [
+        %{
+          path: rel,
+          mount: mount_name,
+          title: title,
+          snippet: snippet(body, body_down, terms),
+          terms: terms,
+          score: score
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  defp occurrences(haystack, needle) do
+    haystack |> :binary.matches(needle) |> length() |> min(10)
+  end
+
+  defp title_of(body, abs) do
+    body
+    |> String.split("\n")
+    |> Enum.take(20)
+    |> Enum.find_value(fn line ->
+      case line do
+        "# " <> rest -> String.trim(rest)
+        _ -> nil
+      end
+    end)
+    |> case do
+      nil -> Path.basename(abs, ".md")
+      t -> t
+    end
+  end
+
+  defp headings_of(body) do
+    body
+    |> String.split("\n")
+    |> Enum.filter(&String.starts_with?(&1, "#"))
+    |> Enum.join("\n")
+  end
+
+  # Cut a window around the first body match; expand to whitespace
+  # boundaries so we never split a grapheme or a word.
+  defp snippet(body, body_down, terms) do
+    pos =
+      terms
+      |> Enum.flat_map(fn t ->
+        case :binary.match(body_down, t) do
+          {p, _} -> [p]
+          :nomatch -> []
+        end
+      end)
+      |> Enum.min(fn -> 0 end)
+
+    from = max(pos - @snippet_radius, 0)
+    len = min(@snippet_radius * 2, byte_size(body) - from)
+
+    body
+    |> binary_part(from, len)
+    |> trim_to_valid_utf8()
+    |> String.replace(~r/\s+/u, " ")
+    |> String.trim()
+  end
+
+  # binary_part can cut mid-codepoint at either end — drop bytes until
+  # both edges are valid UTF-8.
+  defp trim_to_valid_utf8(bin) do
+    bin |> trim_leading_invalid() |> trim_trailing_invalid()
+  end
+
+  defp trim_leading_invalid(<<_, rest::binary>> = bin) do
+    if String.valid?(bin), do: bin, else: trim_leading_invalid(rest)
+  end
+
+  defp trim_leading_invalid(<<>>), do: <<>>
+
+  defp trim_trailing_invalid(bin) do
+    if String.valid?(bin) or byte_size(bin) == 0 do
+      bin
+    else
+      trim_trailing_invalid(binary_part(bin, 0, byte_size(bin) - 1))
+    end
+  end
+end
