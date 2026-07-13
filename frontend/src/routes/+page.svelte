@@ -8,6 +8,7 @@
   import { mailStore } from '$lib/stores/mail.svelte';
   import { icmToNav, flattenMountGroups } from '$lib/shell/nav';
   import { normalizeCockpitToday, splitTrustClause, mailSummaryLine, type CockpitToday } from '$lib/today/cockpit';
+  import { distillButtonState, distillErrorMessage, type DistillPhase } from '$lib/today/distill';
   import { fromLabel, subjectLabel } from '$lib/components/mail/mail-shapes';
   import { genericSummary } from '$lib/components/today/triage-card';
   import PreparedItemCard from '$lib/components/today/PreparedItemCard.svelte';
@@ -32,6 +33,16 @@
   let today: CockpitToday | null = $state(null);
   let failed = $state(false);
   let loading = $state(true);
+
+  // "Distill recent decisions" action (Task B13) — local run phase for the
+  // quiet secondary button under "Prepared for you". Stays in the
+  // `'running'` phase once a run starts successfully: the resulting queue
+  // items surface wherever queue items already render, via the existing
+  // `queue_changed` refetch (see `distill.ts`'s header doc), so there is no
+  // "run finished" signal here to revert the button to idle from.
+  let distillPhase: DistillPhase = $state('idle');
+  let distillSessionId: string | null = $state(null);
+  let distillErrorText: string | undefined = $state(undefined);
 
   async function load() {
     loading = true;
@@ -112,6 +123,24 @@
     if (!today) return 0;
     return otherPreparedItems.length + (today.mail.configured ? reviewMessages.length : 1);
   });
+
+  const distillState = $derived(distillButtonState(today, distillPhase, distillErrorText));
+
+  async function runDistill(): Promise<void> {
+    if (!today?.distillWorkflowPath) return; // defensive: the button is hidden whenever this is null
+    distillPhase = 'running';
+    distillErrorText = undefined;
+    const result = await api.distillDecisions(workspaceStore.generation ?? 0);
+    if (result.ok) {
+      const data = result.data as { runId: string; sessionId: string };
+      distillSessionId = data.sessionId;
+    } else if (result.error === 'no_recent_decisions') {
+      distillPhase = 'empty';
+    } else {
+      distillPhase = 'error';
+      distillErrorText = distillErrorMessage(result.error);
+    }
+  }
 </script>
 
 <AppShell>
@@ -190,6 +219,31 @@
               <PreparedItemCard {item} />
             {/each}
           </div>
+          {#if distillState.visible}
+            <div class="mt-4 flex flex-wrap items-center gap-2.5">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={distillState.disabled}
+                onclick={() => void runDistill()}
+              >
+                {distillState.label}
+              </Button>
+              {#if distillPhase === 'running' && distillSessionId}
+                <a
+                  href={`/chat?session=${distillSessionId}`}
+                  class="text-act hover:text-act-hover text-[12.5px] font-semibold"
+                >
+                  Watching the run &rarr;
+                </a>
+              {/if}
+              {#if distillState.note}
+                <p class="text-[12.5px] {distillPhase === 'error' ? 'text-warn-ink' : 'text-ink-meta'}">
+                  {distillState.note}
+                </p>
+              {/if}
+            </div>
+          {/if}
         </section>
       </div>
 

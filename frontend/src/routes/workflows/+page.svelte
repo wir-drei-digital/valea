@@ -10,12 +10,53 @@
   import { onMount } from 'svelte';
   import { AppFrame, EmptyState, PageHeader } from '$lib/components/shell';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { workflowsStore } from '$lib/stores/workflows.svelte';
   import WorkflowCard from '$lib/components/workflows/WorkflowCard.svelte';
+  import { api } from '$lib/api/client';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { normalizeCockpitToday } from '$lib/today/cockpit';
+  import { distillButtonState, distillErrorMessage, type DistillPhase } from '$lib/today/distill';
+
+  // "Distill recent decisions" (Task B13) — same action as the Today page's,
+  // rendered on whichever card's `path` matches the cockpit payload's
+  // `distillWorkflowPath` (Task B8). This route otherwise never fetches
+  // cockpit data, so a small standalone fetch on mount is enough — the
+  // field is the only thing this page needs off that payload.
+  let distillWorkflowPath: string | null = $state(null);
+  let distillPhase: DistillPhase = $state('idle');
+  let distillSessionId: string | null = $state(null);
+  let distillErrorText: string | undefined = $state(undefined);
+
+  async function loadDistillWorkflowPath(): Promise<void> {
+    const result = await api.cockpitToday();
+    if (result.ok) {
+      distillWorkflowPath = normalizeCockpitToday(result.data as Record<string, any>).distillWorkflowPath;
+    }
+  }
+
+  const distillState = $derived(distillButtonState({ distillWorkflowPath }, distillPhase, distillErrorText));
+
+  async function runDistill(): Promise<void> {
+    if (!distillWorkflowPath) return; // defensive: the button is hidden whenever this is null
+    distillPhase = 'running';
+    distillErrorText = undefined;
+    const result = await api.distillDecisions(workspaceStore.generation ?? 0);
+    if (result.ok) {
+      const data = result.data as { runId: string; sessionId: string };
+      distillSessionId = data.sessionId;
+    } else if (result.error === 'no_recent_decisions') {
+      distillPhase = 'empty';
+    } else {
+      distillPhase = 'error';
+      distillErrorText = distillErrorMessage(result.error);
+    }
+  }
 
   onMount(() => {
     void workflowsStore.refetch();
+    void loadDistillWorkflowPath();
   });
 </script>
 
@@ -40,7 +81,34 @@
     {:else}
       <div class="flex flex-col gap-4">
         {#each workflowsStore.list as workflow (workflow.path)}
-          <WorkflowCard {workflow} />
+          <div class="flex flex-col gap-2.5">
+            <WorkflowCard {workflow} />
+            {#if workflow.path === distillWorkflowPath && distillState.visible}
+              <div class="flex flex-wrap items-center gap-2.5 px-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={distillState.disabled}
+                  onclick={() => void runDistill()}
+                >
+                  {distillState.label}
+                </Button>
+                {#if distillPhase === 'running' && distillSessionId}
+                  <a
+                    href={`/chat?session=${distillSessionId}`}
+                    class="text-act hover:text-act-hover text-[12.5px] font-semibold"
+                  >
+                    Watching the run &rarr;
+                  </a>
+                {/if}
+                {#if distillState.note}
+                  <p class="text-[12.5px] {distillPhase === 'error' ? 'text-warn-ink' : 'text-ink-meta'}">
+                    {distillState.note}
+                  </p>
+                {/if}
+              </div>
+            {/if}
+          </div>
         {/each}
       </div>
     {/if}
