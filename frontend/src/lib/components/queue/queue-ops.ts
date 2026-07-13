@@ -40,6 +40,8 @@ export type DecidedQueueItem = {
   createdAt: string | null;
   /** The human's rejection reason (B6/B12), or `null` — never present on an approved item. */
   decision: { reason: string } | null;
+  /** The applied target path for memory-kind items (B12), or `null` for email or absent paths. */
+  targetPath: string | null;
 };
 
 /** Narrows one raw `list_decided_items` entry; `null` for anything missing a usable `run_id`. */
@@ -57,7 +59,8 @@ export function normalizeDecidedItem(raw: unknown): DecidedQueueItem | null {
     kind: typeof rec.kind === 'string' ? rec.kind : null,
     mailboxOps: rec.mailbox_ops ?? rec.mailboxOps ?? null,
     createdAt: firstString(rec.created_at, rec.createdAt),
-    decision: normalizeDecision(rec.decision)
+    decision: normalizeDecision(rec.decision),
+    targetPath: typeof rec.target_path === 'string' ? rec.target_path : null
   };
 }
 

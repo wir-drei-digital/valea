@@ -33,7 +33,8 @@ describe('normalizeDecidedItem', () => {
       kind: 'email_draft',
       mailboxOps: rawApproved.mailbox_ops,
       createdAt: '2026-07-10T09:00:00Z',
-      decision: null
+      decision: null,
+      targetPath: null
     });
   });
 
@@ -65,6 +66,23 @@ describe('normalizeDecidedItem', () => {
       normalizeDecidedItem({ run_id: 'r2', decided: 'rejected', decision: { reason: '   ' } })?.decision
     ).toBeNull();
     expect(normalizeDecidedItem({ run_id: 'r3', decided: 'rejected', decision: 'nope' })?.decision).toBeNull();
+  });
+
+  it('carries target_path through for memory-kind items (B12)', () => {
+    const item = normalizeDecidedItem({
+      run_id: 'm1',
+      decided: 'approved',
+      title: 'Update test',
+      kind: 'memory_update',
+      target_path: 'mounts/primary/Notes/Test.md'
+    });
+    expect(item?.targetPath).toBe('mounts/primary/Notes/Test.md');
+  });
+
+  it('defaults targetPath to null when absent or non-string', () => {
+    expect(normalizeDecidedItem({ run_id: 'e1', decided: 'approved' })?.targetPath).toBeNull();
+    expect(normalizeDecidedItem({ run_id: 'e2', decided: 'approved', target_path: 123 })?.targetPath).toBeNull();
+    expect(normalizeDecidedItem({ run_id: 'e3', decided: 'approved', target_path: null })?.targetPath).toBeNull();
   });
 });
 

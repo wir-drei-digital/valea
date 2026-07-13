@@ -680,6 +680,55 @@ defmodule Valea.QueueTest do
     assert is_binary(second.created_at)
   end
 
+  test "list_decided/0 carries target_path for memory items and nil for email items", %{
+    workspace: workspace
+  } do
+    # Email item (no target_path in proposed_action)
+    email_id = run_id("dec_email")
+    write_pending(workspace, email_id, %{"source_message" => @seed_message})
+    {:ok, %{revision: email_rev}} = Queue.get(email_id)
+    assert {:ok, _} = Queue.approve(email_id, email_rev)
+
+    # Memory item with target_path
+    memory_id = run_id("dec_memory")
+
+    memory_envelope = %{
+      "schema" => "queue_item/v2",
+      "run_id" => memory_id,
+      "workflow" => "mounts/Primary/Workflows/Test.md",
+      "risk_level" => "low",
+      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "payload" => %{
+        "title" => "Update test",
+        "summary" => "Test update",
+        "kind" => "memory_update",
+        "sources" => [],
+        "proposed_action" => %{
+          "type" => "apply_page_content",
+          "target_path" => "mounts/primary/Notes/Test.md",
+          "base_sha256" => nil,
+          "content_markdown" => "# Test"
+        }
+      }
+    }
+
+    path = Path.join([workspace, "queue", "pending", memory_id <> ".json"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(memory_envelope))
+    {:ok, %{revision: memory_rev}} = Queue.get(memory_id)
+    assert {:ok, _} = Queue.approve(memory_id, memory_rev)
+
+    assert {:ok, items} = Queue.list_decided()
+    email_item = Enum.find(items, &(&1.run_id == email_id))
+    memory_item = Enum.find(items, &(&1.run_id == memory_id))
+
+    assert email_item != nil
+    assert is_nil(email_item.target_path)
+
+    assert memory_item != nil
+    assert memory_item.target_path == "mounts/primary/Notes/Test.md"
+  end
+
   test "get_decided/1 returns the raw envelope and which dir it lives in", %{workspace: workspace} do
     id = run_id("dec003")
     write_pending(workspace, id, %{"source_message" => @seed_message})

@@ -965,7 +965,8 @@ defmodule Valea.Queue do
           mailbox_ops: item["mailbox_ops"],
           created_at: item["created_at"],
           decision: item["decision"],
-          decided_at: item["decided_at"]
+          decided_at: item["decided_at"],
+          target_path: get_in(item, ["payload", "proposed_action", "target_path"])
         }
       ]
     else
