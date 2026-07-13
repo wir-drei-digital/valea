@@ -4,6 +4,14 @@ Condensed map of the standing decisions. Full reasoning per feature lives in
 [docs/superpowers/specs/](superpowers/specs/); this file states outcomes, not
 rationale, and grows with each feature/spec.
 
+> **Status note:** This document records Valea's currently implemented
+> architecture. The approved next restructuring is defined in [Workspace
+> Profiles, Mounted ICM Projects & ICM-Scoped
+> Sessions](superpowers/specs/2026-07-13-icm-project-workspaces-design.md):
+> private workspace profiles, externally mounted ICMs, one primary ICM per
+> session, and project-oriented navigation. Until that work is implemented,
+> the sections below remain the as-built reference.
+
 ## System shape
 
 Three serving modes, one Phoenix app:
@@ -1114,3 +1122,4 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-12-icm-mounts-design.md](superpowers/specs/2026-07-12-icm-mounts-design.md) — ICM mounts (Plan A): `mounts/<name>/` replaces the single `icm/` tree, manifest-based discovery, `MOUNTS.md` generated routing, per-mount `read_roots`, v3→v4 migration, mounts-aware Knowledge UI, adopt-by-move onboarding.
 - [2026-07-12-icm-by-reference-design.md](superpowers/specs/2026-07-12-icm-by-reference-design.md) — By-reference mounts (Plan A2): external `kind: "path"` mounts referenced in place, root-set containment, managed-settings external `Read` allows, per-mount doctor, declare/undeclare RPCs + audit, by-reference-default onboarding.
 - [2026-07-12-methodology-depth-design.md](superpowers/specs/2026-07-12-methodology-depth-design.md) — Methodology depth (Spec B): server-derived risk tiers, memory-update proposal pairs + staging write/read grants, the queue's `apply_page_content` executor and content-hash crash recovery, optional rejection reasons, the decisions digest + Distill Decisions reflection workflow, and the diff/risk-tier ask-gate and memory-update review UI.
+- [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — Approved target redesign: private Valea workspace profiles, user-owned ICM projects mounted only by reference, one primary ICM and `cwd` per session, explicit cross-ICM context, project/session navigation, and simplified onboarding.

@@ -1,8 +1,13 @@
 # ICM Mounts & Workspace Shell — Design (ICM Spec A of three)
 
-**Date:** 2026-07-12 · **Status:** approved design, pre-plan (phase ordering vs. Calendar to be decided)
+**Date:** 2026-07-12 · **Status:** implemented historical design; superseded as the target architecture by [Workspace Profiles, Mounted ICM Projects & ICM-Scoped Sessions](2026-07-13-icm-project-workspaces-design.md)
 **Depends on:** 2026-07-10-agent-slice-design.md (policy contexts, workflows, queue), 2026-07-11-mail-design.md (workspace v3, migration patterns)
 **Sibling specs:** Spec A2 — by-reference mounts (2026-07-12-icm-by-reference-design.md; external ICMs referenced in place — the ICM-first journey's end state); Spec B — memory & methodology depth (agent-proposed ICM edits via queue, decision logs); Spec C — Knowledge/editor UX (backlinks UI, templates, search). All build on this spec's structure.
+
+> This document records the currently implemented embedded/global-composition
+> model. Do not use it as the basis for new restructuring work. The approved
+> replacement moves Valea workspaces into private app storage, mounts every
+> ICM by reference, and scopes each session to one primary ICM.
 
 ## Goal
 

@@ -26,11 +26,14 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
 
 ## The five principles
 
-1. **Local-first ownership.** The user owns the workspace folder. Business
-   memory, workflows, queue items, and audit logs live locally as readable
-   files. SQLite is a cache/index layer; the canonical data is file-backed. The
-   user can inspect, back up, export, version, or hand off the workspace at any
-   time — without us.
+1. **Local-first ownership, with clear boundaries.** The user owns each ICM
+   folder: business memory, workflows, context routing, and methodology remain
+   visible, portable, versionable files that work without Valea. Valea owns a
+   separate private local **workspace profile** for connected accounts,
+   normalized sources, approvals, audit history, session transcripts, and its
+   SQLite cache. Nothing canonical is cloud-hosted by default; the user can
+   inspect, back up, export, or walk away with both their ICM folders and the
+   local operational profile.
 
 2. **ICM at the core — as composable capability modules.** ICM
    (Interpretable Context Methodology) is the user's human-readable business
@@ -40,22 +43,19 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
    uses visible, editable memory, and every suggestion shows which pages and
    sources it used. The methodology is formalized in *"Interpretable Context
    Methodology: Folder Structure as Agent Architecture"* (Van Clief &
-   McDermott, arxiv.org/html/2603.16021v2). A workspace composes one or more
-   mounted ICMs, each a uniform, portable **capability module**: knowledge
-   in any file format, its own `Workflows/*.md` job contracts, reusable
-   prompt fragments, and optionally its own agent-executable scripts —
-   plugin-style, telling the agent what it knows, when to act, and how.
-   Mounting one gives the workspace both context and capability at once;
-   unmounting removes both together, and every ICM stays usable by a bare
-   Claude Code session with no Valea present at all — the app is the
-   convenience layer. The workspace itself is the **operational shell**, not
-   another ICM: its root `AGENTS.md`/`CLAUDE.md` carry Layer 0/1 (root
-   instructions + routing — to a generated `MOUNTS.md` index that fans out
-   into every enabled mount, not a single hardcoded tree), and its
-   `queue/`/`sources/` are Layer 4 working artifacts behind review gates.
-   Each mounted ICM carries its OWN Layer 2 (its `Workflows/*.md` stage
-   contracts) and Layer 3 (everything else — its stable reference material),
-   described by its own self-sufficient `AGENTS.md`.
+   McDermott, arxiv.org/html/2603.16021v2). A workspace profile mounts one or
+   more ICMs **by reference**, wherever the user already keeps them. Each ICM
+   is a uniform, portable context project: its own Layer 0/1 identity and
+   routing (`CLAUDE.md`, `AGENTS.md`, `CONTEXT.md`), Layer 2 job contracts
+   (`Workflows/*.md`), Layer 3 reference knowledge, reusable prompt fragments,
+   and optional scripts. Every agent session belongs to exactly one **primary
+   ICM** and runs with that ICM as its coding-harness cwd. Other mounted ICMs
+   are available projects, not a global context bundle; they join only when
+   the primary ICM explicitly declares them as related context. The workspace
+   supplies Layer 4 working artifacts — exact source inputs and proposal
+   outputs — without becoming agent identity or routing. The app is the
+   convenience and trust layer; every ICM stays usable by a bare coding
+   harness with no Valea present.
 
 3. **Transparent workflows.** Workflows are inspectable markdown contracts
    with a YAML header: trigger, sources, steps, outputs, approval
@@ -73,16 +73,17 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
 5. **Pluggable AI harnesses.** Valea does not build a custom agent runtime. It
    integrates existing agent harnesses (Claude Code first, then OpenCode,
    Codex, Hermes, Pi, direct API, local models) behind an adapter boundary.
-   **The app owns the workspace, context bundles, workflow specs, approval
-   queue, audit log, and UI. The harness only executes tasks and returns
-   structured results.** This is a **file-first integration** by product
-   principle, not phase limitation: every resource the agent consumes or
-   produces — memory pages, incoming mail, proposals, drafts — is a plain
-   file in the workspace, and the file tree **is** the agent's API. There are
-   no custom tools and no custom MCP servers; coding harnesses are used at
-   what they already do best (read/edit files, run commands), and future
-   integrations (real mail, calendar) are sync-to-files engines, never new
-   tool surfaces the agent must learn.
+   **The app owns workspace profiles, ICM mount relationships, workflow
+   execution, approval queues, audit logs, and UI. The harness only executes
+   tasks and returns structured results.** This is a **file-first
+   integration** by product principle, not phase limitation: every resource
+   the agent consumes or produces — ICM pages, incoming mail, proposals,
+   drafts — is a plain file. A harness starts inside the primary ICM and
+   receives only explicitly related ICM roots plus exact workspace inputs and
+   outputs. There are no custom tools and no custom MCP servers; coding
+   harnesses are used at what they already do best (read/edit files, run
+   commands), and future integrations (real mail, calendar) are sync-to-files
+   engines, never new tool surfaces the agent must learn.
 
 ## Where the value lives
 
@@ -107,18 +108,19 @@ technical detail is one toggle away, never the default.
 
 ## First run
 
-Onboarding is the principles made tangible: *"Welcome. Your business runs on
-folders you own."* A fresh instance offers two paths — **set it up in
-conversation** (about 15 minutes of talking; the assistant builds the workspace
-as you go, and you approve each page it writes; nothing connects without
-asking) or **open an existing workspace** (from a consultant handoff, a backup,
-or another machine — everything picks up where it left off). Pointing that
-second path at a folder that looks like a knowledge module instead of a full
-workspace offers to mount it — **by reference, read right where it already
-lives** (the default), or moved in — as a module alongside a fresh workspace,
-never overwriting one. The trust bar states the deal plainly: runs on this
-machine, keys stay in the system keychain, export or walk away with the
-folder — or folders — anytime.
+Onboarding is the principles made tangible: *"Welcome. Your knowledge stays in
+folders you own."* A fresh instance offers two paths. **Start fresh** creates
+a new portable ICM in a visible user-owned location, creates Valea's private
+workspace profile automatically, mounts the ICM by reference, and opens its
+guided first session. **Use an existing ICM** selects a folder the user already
+has; Valea validates and mounts it in place, again creating the private
+workspace profile automatically. The user names the business/profile but is
+never asked to choose or understand a workspace storage folder. Additional
+workspaces remain useful for different account setups, ICM sets, queues, and
+audit histories, and are created or selected from the workspace switcher. The
+trust bar states the deal plainly: runs on this machine, keys stay in the
+system keychain, ICMs remain yours, and nothing is copied or moved behind your
+back.
 
 ## The daily loop we're building toward
 
@@ -148,11 +150,13 @@ plugin marketplace, no external booking links.
 ## Technical posture (summary)
 
 Tauri desktop app; SvelteKit static SPA frontend; Elixir/Phoenix/Ash backend
-bundled as a sidecar binary; SQLite inside the user's workspace as index/cache;
-everything canonical is a readable file in the workspace. Based on the legend
-project's proven scaffold. Full decisions per feature live in
-`docs/superpowers/specs/`; the condensed map lives in `docs/ARCHITECTURE.md`
-(created with the foundation implementation).
+bundled as a sidecar binary. Valea workspace profiles live in the private
+local app directory and own integrations, sources, queue, audit, transcripts,
+and SQLite cache. ICMs live separately in user-owned folders and are mounted
+by reference; every session uses one ICM as its harness cwd. Full decisions
+per feature live in `docs/superpowers/specs/`; `docs/ARCHITECTURE.md` records
+the currently implemented system, while approved future restructurings remain
+clearly marked in their design specs until implemented.
 
 ## Roadmap shape (reordered 2026-07-10 — prototype first)
 
@@ -181,21 +185,17 @@ project's proven scaffold. Full decisions per feature live in
 6. **Workflows & agents, full depth** — registry UI, context bundles,
    additional harnesses beyond Claude Code, everything the prototype slice
    deferred.
-7. **ICM mounts** — the workspace becomes a standard operational shell
-   composing one or more mounted ICMs (`mounts/<name>/`), each a uniform,
-   portable capability module with its own `Workflows/`, reference content,
-   and self-describing `AGENTS.md`; per-mount enable/disable in
-   `config/workspace.yaml` (relationship state only — never touches the
-   mount's own files); a generated `MOUNTS.md` routes a bare Claude Code
-   session into every enabled mount; path-native references
-   (`mounts/<name>/Offers/X.md`), no alias layer. *(Plan A — "all mounts" —
-   shipped, pending merge on `feat/icm-mounts`; spec:
-   2026-07-12-icm-mounts-design.md.)* By-reference/external mounts — ICMs
-   referenced in place rather than moved in (`kind: "path"`/`ref:` config
-   keys), root-set containment, managed-settings read allows, and a doctor
-   mounts section — followed as Plan A2. *(Plan A2 — shipped, pending merge
-   on the same `feat/icm-mounts` branch; spec:
-   2026-07-12-icm-by-reference-design.md.)*
+7. **ICM projects & workspace profiles** — replace the interim embedded/global
+   mount composition with the final boundary: private Valea workspace profiles
+   mount user-owned ICM folders by reference; every session selects one
+   primary ICM and runs with that ICM as cwd; related ICMs are explicit rather
+   than globally routed; the main sidebar groups each mounted ICM with its five
+   recent sessions; onboarding starts fresh or from an existing ICM without
+   asking for a workspace path. Workspaces remain switchable account and
+   operational boundaries. *(Approved redesign, implementation pending;
+   spec: [Workspace Profiles, Mounted ICM Projects & ICM-Scoped Sessions](superpowers/specs/2026-07-13-icm-project-workspaces-design.md).
+   Supersedes Plan A/A2 as the target architecture; their implementation
+   remains the current starting point.)*
 8. **Methodology depth** — closes the teaching loop (principle 2/4, daily-loop
    step 5): a server-derived risk tier makes a proposed edit's stakes
    explicit (a mount's `Workflows/*.md`/`AGENTS.md`/`CLAUDE.md`/`icm.yaml`

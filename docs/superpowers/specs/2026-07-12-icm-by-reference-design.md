@@ -1,7 +1,12 @@
 # By-Reference ICM Mounts — Design (ICM Spec A2)
 
-**Date:** 2026-07-12 · **Status:** approved design, pre-plan
+**Date:** 2026-07-12 · **Status:** implemented historical design; superseded as the target architecture by [Workspace Profiles, Mounted ICM Projects & ICM-Scoped Sessions](2026-07-13-icm-project-workspaces-design.md)
 **Depends on:** 2026-07-12-icm-mounts-design.md (Spec A — the mount model this extends). Implements the `kind:`/`ref:` fields Spec A reserved.
+
+> This document records the first by-reference extension to the embedded
+> mount model. The replacement design makes all ICM mounts by-reference,
+> removes embedded discovery and global `MOUNTS.md` routing, and makes the
+> selected ICM the session cwd.
 
 ## Goal
 
