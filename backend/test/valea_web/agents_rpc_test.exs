@@ -202,10 +202,11 @@ defmodule ValeaWeb.AgentsRpcTest do
 
   describe "distill_decisions" do
     # `@wf_path`'s starter-mount slug is "primary" (this suite's `setup`
-    # names the workspace "Primary" — see the file header comment); the
-    # Distill Decisions contract itself is NOT yet seeded there (Task B9's
-    # job), so every test below writes its own directly into that same
-    # mount to exercise `distill_path/0`'s discovery.
+    # names the workspace "Primary" — see the file header comment). Since
+    # Task B9, the starter mount seeds a real Distill Decisions contract at
+    # this same path, so a freshly scaffolded workspace already has one;
+    # `write_distill_workflow!/1` below overwrites it with scenario-specific
+    # frontmatter/body where a test needs different content than the seed.
     @distill_wf_path "mounts/primary/Workflows/Distill Decisions.md"
 
     defp write_distill_workflow!(parent) do
@@ -293,7 +294,15 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert inspect(errors) =~ "workspace_changed"
     end
 
-    test "no distill contract installed surfaces workflow_not_found", %{generation: generation} do
+    test "no distill contract installed surfaces workflow_not_found", %{
+      generation: generation,
+      parent: parent
+    } do
+      # Since Task B9 the starter mount seeds a real Distill Decisions
+      # contract by default — remove it so this test still exercises the
+      # genuinely-missing-contract branch of `distill_path/0`.
+      File.rm!(Path.join([parent, "Primary", @distill_wf_path]))
+
       assert %{"success" => false, "errors" => errors} =
                rpc("distill_decisions", %{"generation" => generation}, ["runId", "sessionId"])
 

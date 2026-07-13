@@ -223,8 +223,35 @@ defmodule Valea.Workspace.ScaffoldTest do
     summary = Scaffold.inspect_summary(target)
     assert summary.valid
     assert summary.icm_pages >= 12
-    assert summary.workflows == 4
+    assert summary.workflows == 5
     assert summary.queue_pending == 0
     assert summary.has_audit_log
+  end
+
+  # Task B9: the starter mount seeds a Distill Decisions workflow contract
+  # (the basename Valea.Workflows.distill_path/0 matches, Task B8), a
+  # Decisions/2026.md seed page, and the root + mount AGENTS.md both carry
+  # the memory-update contract's vocabulary.
+  test "create/2 seeds the Distill Decisions contract, a decision log, and the memory-update contract" do
+    target = tmp_target()
+    :ok = Scaffold.create(target, "Acme Coaching")
+
+    workflows = Valea.Workflows.list(target)
+
+    distill =
+      Enum.find(workflows, &(Path.basename(&1.path) == "Distill Decisions.md"))
+
+    assert distill, "expected a Distill Decisions.md workflow contract"
+    assert distill.name == "Distill Decisions"
+    assert distill.enabled == true
+    assert distill.risk_level == "medium"
+
+    assert File.exists?(Path.join(target, "mounts/acme-coaching/Decisions/2026.md"))
+
+    root_agents = File.read!(Path.join(target, "AGENTS.md"))
+    assert root_agents =~ "memory_update/v1"
+
+    mount_agents = File.read!(Path.join(target, "mounts/acme-coaching/AGENTS.md"))
+    assert mount_agents =~ "Decisions/"
   end
 end

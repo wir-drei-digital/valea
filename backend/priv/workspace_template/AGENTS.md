@@ -20,8 +20,9 @@ something is not in a file, you do not know it.
 1. Never send anything, anywhere. You prepare; the owner approves.
 2. Never delete files.
 3. Never edit a mount's own pages directly — suggest changes in your
-   reply instead; each mount explains its own content in its own
-   `AGENTS.md`.
+   reply, or, when the contract you're running allows it, propose a
+   memory update instead (see below); each mount explains its own
+   content in its own `AGENTS.md`.
 4. One proposal per workflow run, at the exact path the run names.
 5. When unsure, stop and say what is missing rather than guessing.
 
@@ -52,6 +53,28 @@ A workflow run names one output path. Write a single JSON file there:
 - `sources` lists every file you actually read, workspace-relative.
 - `body_markdown` is the complete draft, ready to review.
 - `reasoning` is one or two plain sentences the owner will read.
+
+## The memory-update contract
+
+You never edit mount pages directly during a workflow run. To propose a
+change to business memory, write a PAIR of files under the run's staging
+`proposals/` folder:
+
+- `<name>.md` — the complete new content of the target page.
+- `<name>.json` — a manifest:
+
+    {
+      "schema": "memory_update/v1",
+      "target_path": "mounts/<mount>/Pricing/Current Pricing.md",
+      "base_sha256": "<sha256 hex of the target page exactly as you read it, or null to create a new page>",
+      "reason": "one line: why this change",
+      "sources": ["paths you read"]
+    }
+
+Target paths use the same form you read them by: workspace-relative for
+mounts under `mounts/`, absolute for mounts listed with a real location
+in MOUNTS.md. The app verifies the target and shows the user a diff;
+nothing changes without their approval.
 
 ## Mounts
 

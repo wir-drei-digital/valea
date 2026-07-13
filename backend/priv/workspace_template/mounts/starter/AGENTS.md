@@ -14,7 +14,9 @@ know it.
 - `Pricing/` — current prices. Avoid leading with price unless asked.
 - `Templates/` — starting points for replies, not verbatim scripts.
 - `Tone & Voice/` — how replies should sound.
-- `Decisions/` — a record of past calls the owner made, for consistency.
+- `Decisions/` — the decision log: dated entries recording business
+  decisions, why they were made, and their source. When work you prepare
+  is approved or rejected for a reason, that reason usually belongs here.
 - `Workflows/` — job contracts. Each page states its Inputs, Process,
   and Outputs; its `sources:` frontmatter lists the pages relevant to
   that job, as paths relative to THIS mount's own root — e.g.

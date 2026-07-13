@@ -34,3 +34,5 @@ Classifies a new email inquiry and drafts a reply for review.
 ## Outputs
 
 One `proposal/v1` file at the exact path the run names, with `kind: "email_draft"`. Do not send anything.
+
+If the inquiry exposed stale or missing business memory (pricing that no longer matches, a policy the pages don't cover), you may also propose memory updates per the memory-update contract in the root AGENTS.md.

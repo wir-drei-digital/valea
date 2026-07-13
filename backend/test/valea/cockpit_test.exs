@@ -320,11 +320,11 @@ defmodule Valea.CockpitTest do
       File.write!(Path.join([mount_dir, "Workflows", "Distill Decisions.md"]), content)
     end
 
-    test "is nil on a freshly scaffolded workspace (the starter-mount seed is Task B9's job)" do
+    test "carries the seeded starter-mount path on a freshly scaffolded workspace (Task B9)" do
       AgentCase.open_workspace!()
 
       {:ok, today} = Valea.Cockpit.today()
-      assert today["distill_workflow_path"] == nil
+      assert today["distill_workflow_path"] == "mounts/w/Workflows/Distill Decisions.md"
     end
 
     test "carries the real mounts/<name>/Workflows/... path once an enabled mount has one" do
