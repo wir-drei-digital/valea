@@ -1,8 +1,9 @@
 import { api, type Api } from '../api/client';
 import { withBeforeMutate } from '../components/knowledge/before-mutate';
 
+// id-based (C9, Phase 2) — no `path`; see `Valea.Api.Workspace`'s moduledoc.
 export type RecentWorkspace = {
-  path: string;
+  id: string;
   name: string;
   lastOpenedAt?: string;
   [key: string]: unknown;
@@ -22,7 +23,7 @@ type WorkspaceApi = Pick<
 export class WorkspaceStore {
   state: WorkspaceState = $state('loading');
   name: string | null = $state(null);
-  path: string | null = $state(null);
+  id: string | null = $state(null);
   generation: number | null = $state(null);
   recent: RecentWorkspace[] = $state([]);
 
@@ -42,7 +43,7 @@ export class WorkspaceStore {
     if (!workspaceResult.ok) {
       this.state = 'none';
       this.name = null;
-      this.path = null;
+      this.id = null;
       this.generation = null;
       return;
     }
@@ -50,32 +51,45 @@ export class WorkspaceStore {
     const data = workspaceResult.data as {
       open: boolean;
       name: string | null;
-      path: string | null;
+      id: string | null;
       generation?: number | null;
     };
     if (data.open) {
       this.state = 'open';
       this.name = data.name;
-      this.path = data.path;
+      this.id = data.id;
       this.generation = data.generation ?? null;
     } else {
       this.state = 'none';
       this.name = null;
-      this.path = null;
+      this.id = null;
       this.generation = null;
     }
   }
 
+  // NOTE (Phase 2, id-based create): `parentDir` is now ACCEPTED BUT
+  // IGNORED — `create_workspace` is app-owned (Task 2.5); no caller
+  // supplies a filesystem location anymore. Kept in the signature so
+  // existing onboarding call sites (`CreateWorkspaceDialog.svelte`,
+  // `adoptByReference`'s `ReferenceAdoptDeps.createWorkspace`) keep
+  // compiling without a rework — the deeper id-consuming onboarding UI
+  // lands in Phase 10.
   async create(parentDir: string, name: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    const result = await this.#api.createWorkspace(parentDir, name);
+    void parentDir;
+    const result = await this.#api.createWorkspace(name);
     if (!result.ok) return { ok: false, error: result.error };
 
     await this.refresh();
     return { ok: true };
   }
 
-  async open(path: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    const result = await this.#api.openWorkspace(path);
+  // NOTE (Phase 2, id-based open): `id` was `path` pre-Task-2.5 — every
+  // caller (`OpenWorkspaceFlow.svelte`'s "open an existing workspace by
+  // path" flow, `WorkspaceSwitcher`/`Onboarding`'s recent-workspace list)
+  // now passes a workspace id string, not a filesystem path; the deeper
+  // rework of those call sites lands in Phase 10.
+  async open(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const result = await this.#api.openWorkspace(id);
     if (!result.ok) return { ok: false, error: result.error };
 
     await this.refresh();
@@ -124,11 +138,11 @@ export class WorkspaceStore {
    * resets `icmStore` for every open window/tab, not just this call site.
    */
   async switchTo(
-    path: string,
+    id: string,
     onBeforeMutate?: () => Promise<void>
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     try {
-      return await withBeforeMutate(onBeforeMutate, () => this.open(path));
+      return await withBeforeMutate(onBeforeMutate, () => this.open(id));
     } catch {
       return { ok: false, error: 'unsaved_changes' };
     }

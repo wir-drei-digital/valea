@@ -42,15 +42,7 @@
   let switching = $state(false);
   let error = $state<string | null>(null);
 
-  function basename(path: string): string {
-    const trimmed = path.replace(/\/+$/, '');
-    const idx = trimmed.lastIndexOf('/');
-    return idx === -1 ? trimmed : trimmed.slice(idx + 1);
-  }
-
-  const currentName = $derived(
-    workspaceStore.path ? basename(workspaceStore.path) : (workspaceStore.name ?? 'Workspace')
-  );
+  const currentName = $derived(workspaceStore.name ?? 'Workspace');
 
   function mapError(code: string): string {
     // Mirrors RenameDialog's flush-failure copy (`before-mutate.ts`'s
@@ -62,11 +54,11 @@
     return "Couldn't open this workspace. Try again.";
   }
 
-  async function selectWorkspace(path: string): Promise<void> {
-    const trimmed = path.trim();
+  async function selectWorkspace(id: string): Promise<void> {
+    const trimmed = id.trim();
     if (!trimmed) return;
 
-    if (trimmed === workspaceStore.path) {
+    if (trimmed === workspaceStore.id) {
       menuOpen = false;
       formOpen = false;
       return;
@@ -120,13 +112,13 @@
     </DropdownMenu.Trigger>
     <DropdownMenu.Content align="start" class="w-64">
       {#if workspaceStore.recent.length > 0}
-        {#each workspaceStore.recent as ws (ws.path)}
-          {@const current = ws.path === workspaceStore.path}
+        {#each workspaceStore.recent as ws (ws.id)}
+          {@const current = ws.id === workspaceStore.id}
           <DropdownMenu.Item
             aria-current={current ? 'true' : undefined}
             onSelect={(event) => {
               event.preventDefault();
-              void selectWorkspace(ws.path);
+              void selectWorkspace(ws.id);
             }}
           >
             <span class="flex size-3.5 shrink-0 items-center justify-center">
@@ -136,7 +128,6 @@
             </span>
             <span class="flex min-w-0 flex-col">
               <span class="truncate text-[12.5px] text-ink-heading">{ws.name}</span>
-              <span class="truncate font-mono text-[10.5px] text-ink-meta">{ws.path}</span>
             </span>
           </DropdownMenu.Item>
         {/each}

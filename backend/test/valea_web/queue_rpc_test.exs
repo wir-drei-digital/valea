@@ -23,8 +23,14 @@ defmodule ValeaWeb.QueueRpcTest do
       System.delete_env("VALEA_APP_DIR")
     end)
 
+    # Legacy path-based `Manager.create/2` (v4, starter mount) — called
+    # directly rather than through the `create_workspace` RPC, which is now
+    # the C9 id-based surface (`Manager.create/1`, v5, no `mounts/`). This
+    # suite exercises `mounts/w/...` starter-mount content the id-based
+    # create can't provide yet (Phase 3 introduces the config-backed ICM
+    # registry) — see `Valea.Api.Workspace`'s moduledoc.
     parent = Path.join(dir, "workspaces")
-    rpc("create_workspace", %{"parentDir" => parent, "name" => "W"})
+    {:ok, _} = Manager.create(parent, "W")
     %{"data" => %{"generation" => generation}} = rpc("get_workspace", %{})
 
     %{workspace: Path.join(parent, "W"), generation: generation}

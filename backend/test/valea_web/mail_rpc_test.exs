@@ -33,8 +33,16 @@ defmodule ValeaWeb.MailRpcTest do
       Application.delete_env(:valea, :mail_transport)
     end)
 
+    # Legacy path-based `Manager.create/2` — called directly rather than
+    # through the `create_workspace` RPC, which is now the C9 id-based
+    # surface (`Manager.create/1`, app-owned dir). This suite's fixtures
+    # (`config/mail.yaml`, `sources/mail/messages/...`) live in either
+    # template, but only the legacy path form yields a deterministic,
+    # test-derivable `workspace:` path (`Path.join(parent, "W")`) — the
+    # id-based create intentionally never returns one (see
+    # `Valea.Api.Workspace`'s moduledoc).
     parent = Path.join(dir, "workspaces")
-    rpc("create_workspace", %{"parentDir" => parent, "name" => "W"})
+    {:ok, _} = Manager.create(parent, "W")
     %{"data" => %{"generation" => generation}} = rpc("get_workspace", %{})
 
     %{workspace: Path.join(parent, "W"), generation: generation}

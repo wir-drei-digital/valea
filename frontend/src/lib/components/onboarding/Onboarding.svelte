@@ -21,9 +21,9 @@
     "Pick your first workflow — it drafts, you approve"
   ];
 
-  async function openRecent(path: string) {
+  async function openRecent(id: string) {
     openError = null;
-    const result = await workspaceStore.open(path);
+    const result = await workspaceStore.open(id);
     if (!result.ok) {
       openError = "This folder doesn't look like a Valea workspace.";
     }
@@ -111,15 +111,14 @@
       <div class="flex flex-col gap-2">
         <p class="text-overline">Recent</p>
         <ul class="flex flex-col">
-          {#each workspaceStore.recent as ws (ws.path)}
+          {#each workspaceStore.recent as ws (ws.id)}
             <li class="border-paper-hairline border-b last:border-b-0">
               <button
                 type="button"
-                onclick={() => openRecent(ws.path)}
+                onclick={() => openRecent(ws.id)}
                 class="hover:bg-paper-pill flex w-full items-center justify-between gap-3 py-2.5 text-left transition-colors"
               >
                 <span class="text-ink-body text-[13px]">{ws.name}</span>
-                <span class="text-ink-meta font-mono text-[11px]">{ws.path}</span>
               </button>
             </li>
           {/each}

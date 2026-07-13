@@ -35,11 +35,14 @@ defmodule ValeaWeb.RpcTest do
     |> json_response(200)
   end
 
-  test "get_workspace reports closed, then open after create_workspace", %{parent: parent} do
+  test "get_workspace reports closed, then open after create_workspace" do
     assert %{"success" => true, "data" => %{"open" => false}} = rpc("get_workspace", %{})
 
-    assert %{"success" => true, "data" => %{"open" => true, "name" => "W"}} =
-             rpc("create_workspace", %{"parentDir" => parent, "name" => "W"})
+    assert %{"success" => true, "data" => %{"open" => true, "name" => "W", "id" => id} = data} =
+             rpc("create_workspace", %{"name" => "W"})
+
+    assert is_binary(id)
+    refute Map.has_key?(data, "path")
 
     assert %{"success" => true, "data" => %{"open" => true}} = rpc("get_workspace", %{})
   end
@@ -80,7 +83,13 @@ defmodule ValeaWeb.RpcTest do
     # seed content at `mounts/<slug-of-name>` — naming the workspace
     # "Primary" lands it at exactly `mounts/primary`, with no separate
     # seed step needed.
-    rpc("create_workspace", %{"parentDir" => parent, "name" => "Primary"})
+    # Legacy path-based `Manager.create/2` (v4, starter mount) — called
+    # directly rather than through the `create_workspace` RPC, which is now
+    # the C9 id-based surface (`Manager.create/1`, v5, no `mounts/`). This
+    # test exercises the seeded `mounts/primary/...` content the id-based
+    # create can't provide yet (Phase 3 introduces the config-backed ICM
+    # registry) — see `Valea.Api.Workspace`'s moduledoc.
+    {:ok, _} = Manager.create(parent, "Primary")
     await_engine_active!()
 
     assert %{"success" => true, "data" => %{"mounts" => [mount]}} =

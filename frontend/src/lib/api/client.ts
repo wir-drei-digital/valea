@@ -9,6 +9,8 @@ import {
   openWorkspaceChannel,
   recentWorkspaces as httpRecentWorkspaces,
   recentWorkspacesChannel,
+  workspaceSwitchPreflight as httpWorkspaceSwitchPreflight,
+  workspaceSwitchPreflightChannel,
   inspectWorkspace as httpInspectWorkspace,
   inspectWorkspaceChannel,
   inspectPath as httpInspectPath,
@@ -247,17 +249,27 @@ function callGetWorkspaceChannel(channel: NonNullable<ReturnType<typeof channelA
 
 function callCreateWorkspaceChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { parentDir: string; name: string }
+  input: { name: string }
 ) {
   return wrapChannelCall((handlers) => createWorkspaceChannel({ channel, input, ...handlers }));
 }
 
-function callOpenWorkspaceChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
+function callOpenWorkspaceChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { id: string; generation?: number | null }
+) {
   return wrapChannelCall((handlers) => openWorkspaceChannel({ channel, input, ...handlers }));
 }
 
 function callRecentWorkspacesChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
   return wrapChannelCall((handlers) => recentWorkspacesChannel({ channel, ...handlers }));
+}
+
+function callWorkspaceSwitchPreflightChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { id: string }
+) {
+  return wrapChannelCall((handlers) => workspaceSwitchPreflightChannel({ channel, input, ...handlers }));
 }
 
 function callInspectWorkspaceChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
@@ -902,21 +914,34 @@ async function uploadImage(file: File, pagePath: string): Promise<ApiResult<{ pa
 }
 
 export const api = {
+  // id-based (C9, Phase 2) — `getWorkspace`'s payload now carries `id`
+  // instead of `path` (see `Valea.Api.Workspace`'s moduledoc); no caller
+  // supplies or receives a filesystem path anymore.
   getWorkspace: () => runRpc(callGetWorkspaceChannel, () => httpGetWorkspace(withAuth({}))),
 
-  createWorkspace: (parentDir: string, name: string) =>
+  createWorkspace: (name: string) =>
     runRpc(
-      (channel) => callCreateWorkspaceChannel(channel, { parentDir, name }),
-      () => httpCreateWorkspace(withAuth({ input: { parentDir, name } }))
+      (channel) => callCreateWorkspaceChannel(channel, { name }),
+      () => httpCreateWorkspace(withAuth({ input: { name } }))
     ),
 
-  openWorkspace: (path: string) =>
+  openWorkspace: (id: string, generation?: number | null) =>
     runRpc(
-      (channel) => callOpenWorkspaceChannel(channel, { path }),
-      () => httpOpenWorkspace(withAuth({ input: { path } }))
+      (channel) => callOpenWorkspaceChannel(channel, { id, generation: generation ?? null }),
+      () => httpOpenWorkspace(withAuth({ input: { id, generation: generation ?? null } }))
     ),
 
   recentWorkspaces: () => runRpc(callRecentWorkspacesChannel, () => httpRecentWorkspaces(withAuth({}))),
+
+  // Read-only preflight for a workspace switch (Task 2.4) — reports the
+  // currently open workspace's live agent sessions a switch to `id` would
+  // stop. Unwired into any store/UI yet — the id-consuming switcher UI
+  // lands in Phase 10.
+  workspaceSwitchPreflight: (id: string) =>
+    runRpc(
+      (channel) => callWorkspaceSwitchPreflightChannel(channel, { id }),
+      () => httpWorkspaceSwitchPreflight(withAuth({ input: { id } }))
+    ),
 
   inspectWorkspace: (path: string) =>
     runRpc(

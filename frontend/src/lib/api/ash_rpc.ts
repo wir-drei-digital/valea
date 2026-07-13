@@ -3193,7 +3193,6 @@ export async function closeWorkspaceChannel(config: {
 
 
 export type CreateWorkspaceInput = {
-  parentDir: string;
   name: string;
 };
 
@@ -3446,7 +3445,8 @@ export async function inspectWorkspaceChannel(config: {
 
 
 export type OpenWorkspaceInput = {
-  path: string;
+  id: string;
+  generation?: number | null;
 };
 
 export type InferOpenWorkspaceResult = Record<string, any>;
@@ -3625,6 +3625,71 @@ export async function runtimeCheckChannel<Fields extends RuntimeCheckFields | un
     action: "runtime_check",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type WorkspaceSwitchPreflightInput = {
+  id: string;
+};
+
+export type InferWorkspaceSwitchPreflightResult = Record<string, any>;
+
+export type WorkspaceSwitchPreflightResult = | { success: true; data: InferWorkspaceSwitchPreflightResult; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function workspaceSwitchPreflight(
+  config: {
+  tenant?: string;
+  input: WorkspaceSwitchPreflightInput;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<WorkspaceSwitchPreflightResult> {
+  const payload = {
+    action: "workspace_switch_preflight",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
+  };
+
+  return executeActionRpcRequest<WorkspaceSwitchPreflightResult>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Workspace
+ *
+ * @ashActionType :action
+ */
+export async function workspaceSwitchPreflightChannel(config: {
+  channel: Channel;
+  tenant?: string;
+  input: WorkspaceSwitchPreflightInput;
+  resultHandler: (result: WorkspaceSwitchPreflightResult) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<WorkspaceSwitchPreflightResult>(
+    config.channel,
+    {
+    action: "workspace_switch_preflight",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input
   },
     config.timeout,
     config

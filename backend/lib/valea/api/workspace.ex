@@ -5,6 +5,25 @@ defmodule Valea.Api.Workspace do
   Thin wrapper around `Valea.Workspace.Manager` / `Valea.Workspace.Scaffold`;
   it owns no logic of its own — it adapts their return shapes into the
   string-keyed maps the frontend consumes.
+
+  ## C9 id-based surface (Phase 2)
+
+  `current`/`create_workspace`/`open_workspace`/`recent`/
+  `workspace_switch_preflight` are the id-based lifecycle (spec §C9): every
+  payload carries `id`, never `path` — no caller supplies or receives a
+  filesystem path (`opened_payload/1`, `recent_payload/1`).
+
+  `create_workspace_at_path`/`open_workspace_at_path` are the OLD,
+  path-based actions (formerly `create_workspace`/`open_workspace`) —
+  renamed here so the id-based actions above could take over their wire
+  names. Kept defined (compiling) but deliberately NOT listed in
+  `Valea.Api`'s `typescript_rpc` block, so they're unreachable from the
+  frontend: nothing calls them anymore (`Valea.Workspace.Adopt` scaffolds
+  and opens legacy workspaces directly through `Manager`/`Scaffold`, never
+  through this resource). Retained rather than deleted so Phase 10/11's
+  removal (alongside `Adopt` itself and the onboarding rework) is a clean,
+  isolated diff. `inspect_workspace`/`inspect_path`/`adopt_workspace` stay
+  untouched and RPC-exposed — onboarding still needs them until Phase 10.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -13,6 +32,7 @@ defmodule Valea.Api.Workspace do
   end
 
   alias Valea.Api.Error
+  alias Valea.App.Config
   alias Valea.Workspace.Adopt
   alias Valea.Workspace.Manager
   alias Valea.Workspace.Scaffold
@@ -22,26 +42,19 @@ defmodule Valea.Api.Workspace do
       run fn _input, _ctx ->
         case Manager.current() do
           {:ok, info} ->
-            {:ok,
-             %{
-               "open" => true,
-               "path" => info.path,
-               "name" => info.name,
-               "generation" => Manager.generation()
-             }}
+            {:ok, opened_payload(info)}
 
           {:error, :no_workspace} ->
-            {:ok, %{"open" => false, "path" => nil, "name" => nil, "generation" => nil}}
+            {:ok, %{"open" => false, "id" => nil, "name" => nil, "generation" => nil}}
         end
       end
     end
 
     action :create_workspace, :map do
-      argument :parent_dir, :string, allow_nil?: false
       argument :name, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Manager.create(input.arguments.parent_dir, input.arguments.name) do
+        case Manager.create(input.arguments.name) do
           {:ok, info} -> {:ok, opened_payload(info)}
           {:error, reason} -> {:error, error_message(reason)}
         end
@@ -49,11 +62,23 @@ defmodule Valea.Api.Workspace do
     end
 
     action :open_workspace, :map do
-      argument :path, :string, allow_nil?: false
+      argument :id, :string, allow_nil?: false
+      # Optional, mirroring `Valea.Api.ICM`'s `save_page` `generation`
+      # (`icm.ex`'s moduledoc/comment) — `nil` (onboarding's first-ever
+      # open, no current workspace to guard) skips the check entirely; once
+      # present (an already-open workspace initiating a switch, e.g. the
+      # sidebar switcher), a stale generation is rejected BEFORE the switch
+      # via `check_generation_if_present/1`, guarding against a race where
+      # another window already switched workspaces out from under this call.
+      argument :generation, :integer, allow_nil?: true, default: nil
 
       run fn input, _ctx ->
-        case Manager.open_path(input.arguments.path) do
-          {:ok, info} -> {:ok, opened_payload(info)}
+        generation = Map.get(input.arguments, :generation)
+
+        with :ok <- check_generation_if_present(generation),
+             {:ok, info} <- Manager.open(input.arguments.id) do
+          {:ok, opened_payload(info)}
+        else
           {:error, reason} -> {:error, error_message(reason)}
         end
       end
@@ -67,7 +92,66 @@ defmodule Valea.Api.Workspace do
     end
 
     action :recent, {:array, :map} do
-      run fn _input, _ctx -> {:ok, Valea.App.Config.recent()} end
+      run fn _input, _ctx ->
+        {:ok, Enum.map(Config.recent(), &recent_payload/1)}
+      end
+    end
+
+    # Read-only preflight for a workspace switch (Task 2.4's
+    # `Manager.switch_preflight/1`) — reports the CURRENTLY open workspace's
+    # live agent sessions a switch to `id` would stop, so the UI can confirm
+    # before switching. A self-switch (`id` == the currently open
+    # workspace's own id) is a graceful no-op here: nothing would actually
+    # be torn down, so it always reports an empty `live_sessions` rather
+    # than the current workspace's own (irrelevant) live sessions or an
+    # error.
+    action :workspace_switch_preflight, :map do
+      argument :id, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        id = input.arguments.id
+
+        if self_switch?(id) do
+          {:ok, %{"target_id" => id, "live_sessions" => []}}
+        else
+          case Manager.switch_preflight(id) do
+            {:ok, %{live_sessions: sessions, target_id: target_id}} ->
+              {:ok,
+               %{
+                 "target_id" => target_id,
+                 "live_sessions" => Enum.map(sessions, &session_payload/1)
+               }}
+
+            {:error, reason} ->
+              {:error, error_message(reason)}
+          end
+        end
+      end
+    end
+
+    # -- LEGACY path-based surface — see moduledoc --------------------------
+
+    action :create_workspace_at_path, :map do
+      argument :parent_dir, :string, allow_nil?: false
+      argument :name, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        case Manager.create(input.arguments.parent_dir, input.arguments.name) do
+          {:ok, info} -> {:ok, opened_payload(info)}
+          {:error, reason} -> {:error, error_message(reason)}
+        end
+      end
+    end
+
+    action :open_workspace_at_path, :map do
+      argument :path, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        case Manager.open_path(input.arguments.path) do
+          {:ok, info} -> {:ok, opened_payload(info)}
+          {:error, reason} -> {:error, error_message(reason)}
+        end
+      end
     end
 
     action :inspect_workspace, :map do
@@ -156,18 +240,45 @@ defmodule Valea.Api.Workspace do
     end
   end
 
+  # id-based (C9) — never carries `path`.
   defp opened_payload(info) do
     %{
       "open" => true,
-      "path" => info.path,
+      "id" => info.id,
       "name" => info.name,
       "generation" => Manager.generation()
     }
   end
 
+  # id-based (C9) — strips `path`/`slug` off `Valea.App.Config.recent/0`'s
+  # registry entries, keeping only what the UI needs to list and pick a
+  # workspace to open by id.
+  defp recent_payload(entry) do
+    %{
+      "id" => entry["id"],
+      "name" => entry["name"],
+      "last_opened_at" => entry["last_opened_at"]
+    }
+  end
+
+  defp session_payload(%{id: id, title: title, icm_mount: icm_mount}) do
+    %{"id" => id, "title" => title, "icm_mount" => icm_mount}
+  end
+
+  defp self_switch?(id) do
+    case Manager.current() do
+      {:ok, %{id: current_id}} -> current_id == id
+      {:error, :no_workspace} -> false
+    end
+  end
+
+  defp check_generation_if_present(nil), do: :ok
+  defp check_generation_if_present(generation), do: Manager.check_generation(generation)
+
   defp error_message(:not_a_workspace), do: Error.new("not_a_workspace")
   defp error_message(:target_not_empty), do: Error.new("target_not_empty")
   defp error_message(:workspace_changed), do: Error.new("workspace_changed")
+  defp error_message(:unknown_workspace), do: Error.new("unknown_workspace")
   # `Valea.Workspace.Adopt.create_with_icm/3`'s rejection atoms (see its
   # moduledoc) — each already stringifies to the exact code the frontend
   # matches on, but listed explicitly (rather than falling through to the

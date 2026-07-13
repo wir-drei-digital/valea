@@ -255,7 +255,7 @@
       referenceMountName,
       adopt.originalPath,
       {
-        createWorkspace: (parentDir, name) => workspaceStore.create(parentDir, name),
+        createWorkspace: (parentDir, name) => workspaceStore.create(parentDir, name), // parentDir ignored (Phase 2, app-owned)
         declareMount: (name, ref, generation) => mountsStore.declare(name, ref, generation),
         currentGeneration: () => workspaceStore.generation,
         // Declare-stage failures land AFTER workspaceStore.create flipped
