@@ -103,4 +103,66 @@ defmodule Valea.Markdown.ProseMirrorTest do
       assert rt("![alt](https://x.com/i.png)") == "![alt](https://x.com/i.png)"
     end
   end
+
+  describe "<> destination wrapping (C4)" do
+    test "a link destination containing a space round-trips byte-for-byte" do
+      assert rt("[a b](<Offers/My Page.md>)") == "[a b](<Offers/My Page.md>)"
+    end
+
+    test "an image destination containing a space round-trips byte-for-byte" do
+      assert rt("![x](<a b.png>)") == "![x](<a b.png>)"
+    end
+
+    test "a link mark with a spaced href serializes wrapped in <>" do
+      doc = %{
+        "type" => "doc",
+        "content" => [
+          %{
+            "type" => "paragraph",
+            "content" => [
+              %{
+                "type" => "text",
+                "text" => "x",
+                "marks" => [
+                  %{"type" => "link", "attrs" => %{"href" => "Offers/My Page.md"}}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      assert ProseMirror.to_markdown(doc) == {:ok, "[x](<Offers/My Page.md>)"}
+    end
+
+    test "an image attrs with a spaced src serializes wrapped in <>" do
+      doc = %{
+        "type" => "doc",
+        "content" => [
+          %{
+            "type" => "paragraph",
+            "content" => [
+              %{"type" => "image", "attrs" => %{"src" => "a b.png", "alt" => "x"}}
+            ]
+          }
+        ]
+      }
+
+      assert ProseMirror.to_markdown(doc) == {:ok, "![x](<a b.png>)"}
+    end
+
+    test "hrefs without spaces stay unwrapped" do
+      assert rt("[l](https://x.com)") == "[l](https://x.com)"
+      assert rt("![alt](https://x.com/i.png)") == "![alt](https://x.com/i.png)"
+    end
+
+    test "a block-level image node (no paragraph wrapper) with a spaced src wraps too" do
+      doc = %{
+        "type" => "doc",
+        "content" => [%{"type" => "image", "attrs" => %{"src" => "a b.png", "alt" => "x"}}]
+      }
+
+      assert ProseMirror.to_markdown(doc) == {:ok, "![x](<a b.png>)"}
+    end
+  end
 end

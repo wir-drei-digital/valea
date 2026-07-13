@@ -49,6 +49,7 @@ defmodule Valea.ICM.References do
   not report.
   """
 
+  alias Valea.ICM.Splice
   alias Valea.Mounts
 
   @name_regex ~r/^name:\s*(.+)$/m
@@ -271,23 +272,10 @@ defmodule Valea.ICM.References do
     end
   end
 
-  # Splices `replacement` over each matched range, right-to-left so the
-  # byte offsets of the earlier (unprocessed) matches stay valid while the
-  # binary grows/shrinks behind them.
-  defp splice(content, matches, replacement) do
-    matches
-    |> Enum.sort_by(fn {pos, _len} -> pos end, :desc)
-    |> Enum.reduce(content, fn {pos, len}, acc ->
-      prefix = binary_part(acc, 0, pos)
-      suffix = binary_part(acc, pos + len, byte_size(acc) - pos - len)
-      prefix <> replacement <> suffix
-    end)
-  end
-
   defp rewrite_all(files, new_needle) do
     result =
       Enum.reduce_while(files, {:ok, []}, fn {abs, content, matches}, {:ok, updated} ->
-        rewritten = splice(content, matches, new_needle)
+        rewritten = Splice.splice(content, matches, new_needle)
 
         case atomic_write(abs, rewritten) do
           :ok ->

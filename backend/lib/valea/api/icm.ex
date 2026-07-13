@@ -158,7 +158,8 @@ defmodule Valea.Api.ICM do
     action :rename, :map do
       constraints fields: [
                     path: [type: :string, allow_nil?: false],
-                    updated_workflows: [type: {:array, :string}, allow_nil?: false]
+                    updated_workflows: [type: {:array, :string}, allow_nil?: false],
+                    updated_pages: [type: {:array, :string}, allow_nil?: false]
                   ]
 
       argument :path, :string, allow_nil?: false
@@ -166,8 +167,8 @@ defmodule Valea.Api.ICM do
 
       run fn input, _ctx ->
         case Valea.ICM.rename(input.arguments.path, input.arguments.new_name) do
-          {:ok, %{path: path, updated_workflows: updated}} ->
-            {:ok, %{path: path, updated_workflows: updated}}
+          {:ok, %{path: path, updated_workflows: workflows, updated_pages: pages}} ->
+            {:ok, %{path: path, updated_workflows: workflows, updated_pages: pages}}
 
           {:error, reason} ->
             {:error, error_for(reason)}

@@ -122,4 +122,42 @@ defmodule Valea.PathsTest do
     assert {:error, :outside} =
              Paths.resolve_real("queue/staging/r1/L/../proposal.json", base)
   end
+
+  describe "relative/2 (C4)" do
+    test "same-mount sibling folder needs one level up" do
+      assert Paths.relative("mounts/primary/Offers", "mounts/primary/Pricing/Rates.md") ==
+               "../Pricing/Rates.md"
+    end
+
+    test "target in the same folder as the source needs no prefix" do
+      assert Paths.relative("mounts/primary/Offers", "mounts/primary/Offers/Rates.md") ==
+               "Rates.md"
+    end
+
+    test "target nested deeper under the source's own folder" do
+      assert Paths.relative("mounts/primary", "mounts/primary/Pricing/Rates.md") ==
+               "Pricing/Rates.md"
+    end
+
+    test "cross-mount (embedded <-> embedded) needs multiple levels up" do
+      assert Paths.relative("mounts/second", "mounts/primary/Pricing/Rates.md") ==
+               "../primary/Pricing/Rates.md"
+    end
+
+    test "several levels of nesting on both sides" do
+      assert Paths.relative(
+               "mounts/primary/Clients/Active",
+               "mounts/primary/Offers/Deals/Rates.md"
+             ) == "../../Offers/Deals/Rates.md"
+    end
+
+    test "both sides absolute (external mount vocabulary)" do
+      assert Paths.relative("/Users/x/Notes/Offers", "/Users/x/Notes/Pricing/Rates.md") ==
+               "../Pricing/Rates.md"
+    end
+
+    test "identical directories produce the bare basename" do
+      assert Paths.relative("mounts/primary", "mounts/primary/Rates.md") == "Rates.md"
+    end
+  end
 end

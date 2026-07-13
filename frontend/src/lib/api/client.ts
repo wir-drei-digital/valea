@@ -290,7 +290,7 @@ function callCockpitTodayChannel(channel: NonNullable<ReturnType<typeof channelA
 const saveIcmPageFields: SaveIcmPageFields = ['hash', 'savedAt'];
 const createIcmPageFields: CreateIcmPageFields = ['path'];
 const createIcmFolderFields: CreateIcmFolderFields = ['path'];
-const renameIcmEntryFields: RenameIcmEntryFields = ['path', 'updatedWorkflows'];
+const renameIcmEntryFields: RenameIcmEntryFields = ['path', 'updatedWorkflows', 'updatedPages'];
 const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
 // Note: the generated `IcmEntryReferencesFields` type can't actually express
 // nested field selection into an `Array<TypedMap>` (a real ash_typescript

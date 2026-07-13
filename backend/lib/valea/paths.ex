@@ -26,6 +26,24 @@ defmodule Valea.Paths do
 
   @max_hops 32
 
+  @doc """
+  Lexical relative path from `from_dir` to `to_path` (same vocabulary on
+  both sides — both workspace-relative, or both absolute physical paths).
+  Pure segment math — no filesystem access, no symlink resolution: drops
+  the common leading path segments, then emits one `".."` per remaining
+  `from_dir` segment, joined with the remaining `to_path` segments.
+  """
+  @spec relative(String.t(), String.t()) :: String.t()
+  def relative(from_dir, to_path) do
+    from = Path.split(from_dir)
+    to = Path.split(to_path)
+    {common_from, common_to} = drop_common(from, to)
+    Path.join(List.duplicate("..", length(common_from)) ++ common_to)
+  end
+
+  defp drop_common([h | t1], [h | t2]), do: drop_common(t1, t2)
+  defp drop_common(from, to), do: {from, to}
+
   @spec resolve_real(String.t(), String.t()) ::
           {:ok, String.t()} | {:error, :outside | :invalid}
   def resolve_real(path, base) do

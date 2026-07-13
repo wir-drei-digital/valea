@@ -1272,11 +1272,11 @@ export type RenameIcmEntryInput = {
   newName: string;
 };
 
-export type RenameIcmEntryFields = UnifiedFieldSelection<{path: string, updatedWorkflows: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows"}>[];
+export type RenameIcmEntryFields = UnifiedFieldSelection<{path: string, updatedWorkflows: Array<string>, updatedPages: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows" | "updatedPages"}>[];
 
 export type InferRenameIcmEntryResult<
   Fields extends RenameIcmEntryFields | undefined,
-> = InferResult<{path: string, updatedWorkflows: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows"}, Fields>;
+> = InferResult<{path: string, updatedWorkflows: Array<string>, updatedPages: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows" | "updatedPages"}, Fields>;
 
 export type RenameIcmEntryResult<Fields extends RenameIcmEntryFields | undefined = undefined> = | { success: true; data: InferRenameIcmEntryResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

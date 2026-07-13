@@ -50,10 +50,11 @@ defmodule Valea.ICM do
   `mounts/<name>` prefix or an absolute root identically.
   """
 
-  alias Valea.ICM.References
+  alias Valea.ICM.{LinkRewrite, References}
   alias Valea.Markdown.ProseMirror
   alias Valea.Mounts
   alias Valea.Paths
+  alias Valea.Workspace.Manager
 
   def uri(rel_path), do: "icm://" <> rel_path
 
@@ -581,17 +582,24 @@ defmodule Valea.ICM do
 
   @doc """
   Renames a page or folder in place (same parent, new basename), rewriting
-  any workflow references to it (or, for a folder, to anything it contains)
-  along the way.
+  any workflow references to it (or, for a folder, to anything it
+  contains) along the way, AND rewriting every inbound in-content
+  link/image destination — across every enabled mount — that a real
+  Link/Image AST node confirms resolves to the OLD path (see
+  `Valea.ICM.LinkRewrite`).
 
-  Returns `{:ok, %{path: new_rel_path, updated_workflows: [names]}}` where
-  `new_rel_path` is workspace-relative (`mounts/<name>/…`) and `names` are
-  the display names of the workflows whose references were rewritten
-  (deduplicated, sorted).
+  Returns `{:ok, %{path: new_rel_path, updated_workflows: [names], updated_pages: [paths]}}`
+  where `new_rel_path` is workspace-relative (`mounts/<name>/…`), `names`
+  are the display names of the workflows whose `sources:` references were
+  rewritten (deduplicated, sorted), and `paths` are the tree-vocabulary
+  paths of the pages whose in-content links were rewritten (sorted).
 
-  If a workflow rewrite fails, returns `{:error, {:rewrite_failed, filename, reason}}`.
-  Note: The file rename itself has already happened at this point; the filesystem
-  is not rolled back. The error is returned to allow the user to decide how to
+  If a workflow or link rewrite fails, returns
+  `{:error, {:rewrite_failed, filename, reason}}`. Note: The file rename
+  itself has already happened at this point, and any workflow rewrites
+  that already succeeded before a later failure are not undone either —
+  the filesystem is not rolled back on any rewrite failure, workflow or
+  link alike. The error is returned to allow the user to decide how to
   proceed (e.g., via version control recovery or manual intervention).
 
   Errors:
@@ -601,7 +609,7 @@ defmodule Valea.ICM do
   - `:outside_workspace` - a path would escape the owning mount's root, or
     doesn't name a mount at all
   - `:no_workspace` - no workspace is currently active
-  - `{:rewrite_failed, filename, reason}` - a workflow reference rewrite failed
+  - `{:rewrite_failed, filename, reason}` - a workflow or link rewrite failed
   """
   def rename(rel_path, new_name) do
     with {:ok, mount} <- mount_root_for(rel_path),
@@ -643,50 +651,93 @@ defmodule Valea.ICM do
     # sibling folder whose name happens to start with the same prefix
     # (e.g. renaming "Offers" while "Offers Extra" also exists) is never
     # touched: its files were never in this collected list.
-    child_pairs = collect_md_children(old_abs, root, old_rel, new_rel)
+    child_pairs = collect_children(old_abs, root, old_rel, new_rel, "**/*.md")
+
+    # LinkRewrite needs every REGULAR file under the folder, not just
+    # `.md` pages — a page anywhere can hold an in-content link/image
+    # destination that points at a non-`.md` sibling (an image, a PDF)
+    # that lives inside the renamed folder and so moves along with it,
+    # even though the sibling's own basename never changes.
+    link_pairs = collect_children(old_abs, root, old_rel, new_rel, "**")
+
     File.rename!(old_abs, new_abs)
 
     # Workflows can also reference an entire folder via a wildcard glob
     # (`<folder>/*` — see `priv/workspace_template/icm/Workflows/*.md`),
-    # which `collect_md_children` never surfaces (it only walks concrete
-    # `.md` files that existed on disk at rename time). Rewrite that exact
+    # which `collect_children` never surfaces (it only walks concrete
+    # files that existed on disk at rename time). Rewrite that exact
     # `<old_rel>/*` needle too, via the same precision-safe full-string
     # mechanism as every other reference — the trailing `/*` keeps this from
     # ever matching a sibling folder's wildcard (e.g. "Offers" vs.
     # "Offers Extra").
     wildcard_pair = {old_rel <> "/*", new_rel <> "/*"}
 
-    case rewrite_children(mount, child_pairs ++ [wildcard_pair]) do
-      {:ok, updated_workflows} ->
-        {:ok, %{path: to_workspace_rel(mount, new_rel), updated_workflows: updated_workflows}}
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, updated_workflows} <- rewrite_children(mount, child_pairs ++ [wildcard_pair]),
+         {:ok, updated_pages} <- rewrite_links(mount, link_pairs) do
+      {:ok,
+       %{
+         path: to_workspace_rel(mount, new_rel),
+         updated_workflows: updated_workflows,
+         updated_pages: updated_pages
+       }}
     end
   end
 
   defp do_rename(_root, old_rel, new_rel, old_abs, new_abs, false, mount) do
     File.rename!(old_abs, new_abs)
 
-    case rewrite_children(mount, [{old_rel, new_rel}]) do
-      {:ok, updated_workflows} ->
-        {:ok, %{path: to_workspace_rel(mount, new_rel), updated_workflows: updated_workflows}}
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, updated_workflows} <- rewrite_children(mount, [{old_rel, new_rel}]),
+         {:ok, updated_pages} <- rewrite_links(mount, [{old_rel, new_rel}]) do
+      {:ok,
+       %{
+         path: to_workspace_rel(mount, new_rel),
+         updated_workflows: updated_workflows,
+         updated_pages: updated_pages
+       }}
     end
   end
 
-  defp collect_md_children(old_abs, root, old_rel, new_rel) do
+  defp collect_children(old_abs, root, old_rel, new_rel, glob) do
     old_abs
-    |> Path.join("**/*.md")
+    |> Path.join(glob)
     |> Path.wildcard()
+    |> Enum.filter(&File.regular?/1)
     |> Enum.map(&Path.relative_to(&1, root))
     |> Enum.sort()
     |> Enum.map(fn child_old_rel ->
       suffix = String.trim_leading(child_old_rel, old_rel)
       {child_old_rel, new_rel <> suffix}
     end)
+  end
+
+  # Reattaches each mount-relative pair to `mount`'s own vocabulary (same
+  # boundary `rewrite_children/2` already crosses for References) and
+  # hands the tree-vocabulary pairs to `LinkRewrite`, which scans every
+  # enabled mount's `.md` files for confirmed inbound links to the OLD
+  # path of any pair and rewrites them to the NEW one.
+  defp rewrite_links(mount, pairs) do
+    with {:ok, workspace} <- workspace_root() do
+      ws_pairs =
+        Enum.map(pairs, fn {old_rel, new_rel} ->
+          {to_workspace_rel(mount, old_rel), to_workspace_rel(mount, new_rel)}
+        end)
+
+      LinkRewrite.rewrite_all(workspace, ws_pairs)
+    end
+  end
+
+  # Mirrors the private `workspace_root/0` in `Valea.Mounts` — kept local
+  # for the same reason `atomic_write/2` is (see `Valea.ICM.References`'s
+  # own note): a two-line delegation to `Manager.current/0`, not worth a
+  # shared dependency for. By the time `rename/2` reaches here,
+  # `mount_root_for/1` has already gone through `Mounts.mount_for/1` (which
+  # itself requires an open workspace), so this is defensive, not a normal
+  # failure path.
+  defp workspace_root do
+    case Manager.current() do
+      {:ok, %{path: ws}} -> {:ok, ws}
+      {:error, :no_workspace} -> {:error, :no_workspace}
+    end
   end
 
   # `pairs` are mount-relative (the shape every other caller in this module

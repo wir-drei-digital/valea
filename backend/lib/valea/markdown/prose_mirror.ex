@@ -430,7 +430,7 @@ defmodule Valea.Markdown.ProseMirror do
   defp node_to_markdown_default(%{"type" => "image", "attrs" => attrs}, _profile) do
     src = attrs["src"] || ""
     alt = attrs["alt"] || ""
-    "![#{alt}](#{src}#{image_title_suffix(attrs)})"
+    "![#{alt}](#{wrap_dest(src)}#{image_title_suffix(attrs)})"
   end
 
   defp node_to_markdown_default(%{"type" => "hardBreak"}, _profile), do: "  \n"
@@ -585,7 +585,7 @@ defmodule Valea.Markdown.ProseMirror do
   defp mark_close(%{"type" => "italic"}), do: "*"
   defp mark_close(%{"type" => "strike"}), do: "~~"
   defp mark_close(%{"type" => "code"}), do: "`"
-  defp mark_close(%{"type" => "link"} = mark), do: "](#{link_href(mark)})"
+  defp mark_close(%{"type" => "link"} = mark), do: "](#{wrap_dest(link_href(mark))})"
 
   defp link_href(%{"attrs" => %{"href" => href}}), do: href
   defp link_href(_), do: ""
@@ -606,7 +606,7 @@ defmodule Valea.Markdown.ProseMirror do
   defp inline_node_body_default(%{"type" => "image", "attrs" => attrs}) do
     src = attrs["src"] || ""
     alt = attrs["alt"] || ""
-    "![#{alt}](#{src}#{image_title_suffix(attrs)})"
+    "![#{alt}](#{wrap_dest(src)}#{image_title_suffix(attrs)})"
   end
 
   defp inline_node_body_default(_), do: ""
@@ -617,6 +617,16 @@ defmodule Valea.Markdown.ProseMirror do
   end
 
   defp image_title_suffix(_), do: ""
+
+  # A destination containing a raw space is unparseable as a bare GFM
+  # `(dest)` (the space would end the destination early) — MDEx accepts a
+  # `<dest>`-bracketed form for exactly this case, and strips the brackets
+  # on parse (the url comes back unbracketed either way — confirmed against
+  # the installed 0.13.3). Wrapping on serialize is what round-trips: a
+  # destination with no space is left bare so no existing seed page churns.
+  defp wrap_dest(dest) do
+    if is_binary(dest) and String.contains?(dest, " "), do: "<" <> dest <> ">", else: dest
+  end
 
   # ---------------------------------------------------------------------------
   # ProseMirror JSON → Plain Text
