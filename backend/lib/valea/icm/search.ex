@@ -150,8 +150,16 @@ defmodule Valea.ICM.Search do
       end)
       |> Enum.min(fn -> 0 end)
 
-    from = max(pos - @snippet_radius, 0)
-    len = min(@snippet_radius * 2, byte_size(body) - from)
+    # `pos` is a byte offset into `body_down`; `String.downcase/1` can, for a
+    # handful of Unicode characters, change a string's byte length (e.g. the
+    # Turkish dotted "İ"), so `body_down` and `body` are not guaranteed to be
+    # byte-identical in length. Clamping `pos` into `body`'s own byte range
+    # before the window math keeps this a no-op for the overwhelming common
+    # case (equal lengths) while preventing a negative-length `binary_part/3`
+    # call on the rare mismatched one.
+    safe_pos = pos |> max(0) |> min(byte_size(body))
+    from = max(safe_pos - @snippet_radius, 0)
+    len = max(min(@snippet_radius * 2, byte_size(body) - from), 0)
 
     body
     |> binary_part(from, len)
