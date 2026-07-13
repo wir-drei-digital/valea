@@ -1089,6 +1089,203 @@ action on both `frontend/src/routes/+page.svelte` (Today) and
 `frontend/src/routes/workflows/+page.svelte`, hidden entirely when
 `distillWorkflowPath` is `null`.
 
+## Knowledge & editor depth (Spec C)
+
+*(pending merge on `worktree-knowledge-depth`; spec:
+[2026-07-12-knowledge-depth-design.md](superpowers/specs/2026-07-12-knowledge-depth-design.md))*
+
+Makes Knowledge a genuinely daily-usable surface: a `[[`/`@` link picker,
+a backlinks panel, page templates, one-keystroke search, and image
+paste/drag — implemented entirely as standard GFM markdown on disk, no
+non-standard link/image syntax, no wikilink node type.
+
+### Search — filesystem-is-the-index, FTS5 as the named upgrade seam
+
+`Valea.ICM.Search.search/3` (`backend/lib/valea/icm/search.ex`) is
+scan-backed, not index-backed: every ENABLED mount is walked concurrently
+per query (`Task.async/1` per mount) under one SHARED 500 ms deadline
+(`Task.yield_many/2` blocks at most `timeout` total, not per task, so N
+slow mounts still return in roughly one timeout's wall time rather than
+compounding); a mount that doesn't answer in time is `Task.shutdown(...,
+:brutal_kill)`'d and named in the `skipped` list, never silently dropped.
+Query terms are whitespace-split, downcased, AND-matched via
+`String.contains?/2` — literal text only, no regex/query syntax, so there
+is no injection surface. Title/heading/body hits are weighted (5/3/1 per
+occurrence, capped) into a score, sorted, capped at the top 20. The
+moduledoc states the seam explicitly: the RPC's return shape
+(`%{results:, skipped:}`) is implementation-agnostic on purpose, so FTS5
+can replace these scan internals later without a contract break. RPC:
+`icm_search` → `:search` (`icmSearch`, args `query`, optional `mount`) and
+`icm_paths_exist` → `:paths_exist` (`icmPathsExist`, arg `paths` —
+resolves each through the same mount-containment check
+(`Valea.Workflows.MemoryProposal.check_target/2`) the memory-update write
+path uses, then a plain `File.regular?/1`) on `Valea.Api.ICM`
+(`backend/lib/valea/api/icm.ex`).
+
+### Backlinks — AST-confirmed, never a text match
+
+`Valea.ICM.Backlinks` (`backend/lib/valea/icm/backlinks.ex`): a cheap
+filename-substring pre-filter (raw content contains the target's basename,
+literal or `URI.encode/1`-percent-encoded) narrows candidates before the
+expensive step — a real `MDEx.parse_document/2` AST walk (version-proof:
+matches on "has a `:nodes` key", not a specific struct list, so a future
+MDEx node type that carries children the same way is walked correctly with
+no code change) confirming only actual `MDEx.Link`/`MDEx.Image`
+destinations that RESOLVE to the target's absolute path — a prose mention
+of the filename or the same text inside a code span is never a Link/Image
+node, so it never matches. `http(s)://`/`mailto:`/`#anchor` destinations
+are ignored outright. Returns document-order text (`walk/2` prepends
+during its reverse-preorder recursion, reversed once at the end), one
+entry per source page (first matching link/image wins). The `references`
+RPC (`icm_entry_references` → `:references`) now returns BOTH kinds in one
+call — `{workflows: [...], pages: [...]}` — unifying `Valea.ICM.
+References.referencing_workflows/1` (Layer-2 stage-contract `sources:`
+entries) with `Backlinks.backlinks/2` (in-page links) behind one RPC
+surface.
+
+### Link conventions and the rename rewrite
+
+On-disk links/images are standard GFM only — `[text](dest)` /
+`![alt](dest)`, destination `<…>`-wrapped only when it contains a space —
+never a custom wikilink token. Path rule: relative-from-the-linking-page
+when source and target are both inside the workspace; an absolute physical
+path when either end is in an external (by-reference) mount.
+
+`Valea.ICM.LinkRewrite` (`backend/lib/valea/icm/link_rewrite.ex`) rewrites
+every enabled mount's confirmed inbound Link/Image destinations on a
+rename — BYTE-SURGICALLY: only the destination bytes (plus `<>` wrapping
+via its own `wrap/1` when the new destination needs it) change, using the
+same right-to-left byte-offset splice `Valea.ICM.Splice.splice/3`
+(`backend/lib/valea/icm/splice.ex`, extracted from `References` so both
+modules share it) that `Valea.ICM.References` already uses — the
+REFERENCING file is never round-tripped through the markdown↔ProseMirror
+converter, so the determinism contract holds. Confirmation runs through
+`Backlinks.destinations/3` (the same real AST parse backlinks uses); the
+new destination is computed via `Valea.Paths.relative/2` (workspace-
+relative pairs) or kept absolute (either end external).
+`Valea.ICM.rename/2` returns `updated_pages` (this module's output)
+alongside the pre-existing `updated_workflows`.
+
+Two documented limitations, neither of which ever corrupts a file:
+
+- **Fence-duplicate rewrite.** The splice is textual, not positional: once
+  a destination string is confirmed by at least one real Link/Image node
+  anywhere in the file, EVERY textual occurrence of that exact string
+  (inside `](dest)`/`](<dest>)` syntax) is spliced — including one that
+  happens to also sit inside a code fence in the same file. The result is
+  a still-plausible, still-readable path string, just not the intended one
+  inside that fence.
+- **Normalize-mismatch skip.** `Backlinks.destinations/3`'s `:url` is
+  MDEx's entity-decoded/backslash-unescaped normalized destination; the
+  splice searches RAW on-disk bytes for that normalized string. A
+  destination WRITTEN in entity/escaped form (e.g. on-disk
+  `[x](Foo&amp;Bar.md)`) never matches its own normalized bytes, so the
+  splice silently skips it — the link is left dangling after the rename,
+  never corrupted. Valea's own converter always serializes raw characters,
+  so this only exposes non-Valea-authored markdown in an external mount.
+
+### Templates
+
+`Templates/` is a plain top-level folder per mount, holding ordinary `.md`
+pages. `Valea.ICM.create_page_from_template/3` (`backend/lib/valea/icm.
+ex`) substitutes exactly two placeholders textually (`String.replace/3`,
+not markdown-aware — runs inside code fences too): `{{date}}` (`Date.
+utc_today() |> Date.to_iso8601()`, `YYYY-MM-DD`) is substituted BEFORE
+`{{title}}` — deliberately date-first, so a new page literally named
+`{{date}}` (i.e. `{{date}}` appears inside the substituted title text)
+never gets its title-borne `{{date}}` text caught by an already-completed
+date pass. Any other `{{...}}` placeholder is left byte-for-byte verbatim
+— not a general template engine, no injection surface. Template and new
+page must attribute to the SAME mount (`:cross_mount_template` otherwise).
+RPC: `create_icm_page_from_template` → `:create_page_from_template`
+(`createIcmPageFromTemplate`, args `parent_path, name, template_path`) on
+`Valea.Api.ICM`. Starter content: `mounts/starter/Templates/{Client,
+Decision,Follow-up Email,Discovery Call Reply}.md` — `Decision.md` pairs
+with Spec B's `Decisions/` convention.
+
+### Images — `Assets/` + `/files` endpoints
+
+`ValeaWeb.FilesController` (`backend/lib/valea_web/controllers/
+files_controller.ex`) writes to and serves `Assets/<page-slug>-<hash8>.
+<ext>` at the target mount's root. `POST /files/upload` is token-gated
+(its own `:files_upload` router pipeline mirrors `:rpc`'s `ValeaWeb.Plugs.
+ControlToken`), capped at 10 MB (`@max_upload_bytes 10_000_000`, checked
+via `File.stat/1` on the parsed upload — the transport-level `Plug.
+Parsers` `length:` in `endpoint.ex` is set higher, `12_000_000`, purely as
+headroom so this business check runs first), and allowlists BOTH extension
+and `content_type` (`.png/.jpg/.jpeg/.gif/.webp` → their exact MIME type —
+deliberately no `.svg`, which is scriptable). Both actions attribute the
+requested path to an ENABLED, non-degraded mount and contain it via
+`Valea.Workflows.MemoryProposal.check_target/2` (the same symlink-aware
+`Valea.Paths.resolve_real/2` containment the memory-update write path
+uses) — a symlink planted inside a mount's `Assets/` folder is defeated the
+same way. `GET /files/raw` is deliberately TOKEN-EXEMPT — its own
+unauthenticated `/files` scope on the plain `:api` pipeline in `router.
+ex` — because an `<img>` tag cannot send custom headers, and the
+Phoenix endpoint only ever binds loopback (127.0.0.1): the endpoint
+exposes only files a local process could already read. It sets
+`x-content-type-options: nosniff` and `content-disposition: inline`, and
+always derives `content-type` from the allowlisted file EXTENSION —
+never from anything client-supplied or stored — so a mismatched upload can
+never make the serve path emit an attacker-chosen content-type.
+
+### Frontend — image paste/drag, link picker, palette, backlinks UI
+
+- **Image extension** (`@tiptap/extension-image` in `PageEditor.svelte`):
+  an image node's `src` always holds the on-disk relative (or
+  absolute-external) reference the upload endpoint returned, never a
+  `/files/raw?...` URL — that mapping (`resolveImageSrc`, `frontend/src/
+  lib/editor/image-upload.ts`) is applied only at DISPLAY time, inside the
+  extension's `renderHTML`, so a page's serialized markdown stays portable.
+  `isAllowedImage`/`allowedImageFiles` mirror the backend's exact
+  extension+content-type allowlist so a doomed upload is never attempted;
+  `PageEditor.svelte`'s `handlePaste`/`handleDrop` upload every allowed
+  image in a multi-file paste/drop, not just the first, via
+  `api.uploadImage` — plain `fetch('/files/upload', ...)`, not an Ash RPC
+  call (see `frontend/src/lib/api/client.ts`'s `uploadImage`).
+- **`[[`/`@` page-link picker**: `frontend/src/lib/editor/vendor/
+  page_link_suggestion.js` (a `@tiptap/suggestion`-based factory,
+  vendored, instantiated TWICE — once per trigger char — each with its own
+  `PluginKey` so the two don't clobber shared plugin state) plus pure
+  `frontend/src/lib/editor/page-link.ts` (`pickerItems`, `linkDestination`,
+  `parentOf`). `allowSpaces: true` keeps the suggestion match open across
+  spaces so a multi-word title/query can be typed at all. Item selection
+  inserts a STANDARD link mark (`marks: [{type: "link", attrs: {href}}]`)
+  — never a custom wikilink node; an empty-query "Create" item calls
+  `api.createIcmPage` first, then inserts the link to the freshly created
+  page (create-on-empty).
+- **Cmd+K search palette**: `frontend/src/lib/components/palette/
+  SearchPalette.svelte`, mounted once, globally, in `frontend/src/routes/
+  +layout.svelte` (a `metaKey || ctrlKey` + `k` window keydown listener);
+  `frontend/src/lib/components/palette/palette.ts` is the pure reducer
+  (`paletteReduce`) plus `highlightSegments`, which bolds matched terms as
+  plain TEXT segments (never `{@html}`) even though the underlying
+  title/snippet text comes straight from page content. The empty-query MRU
+  list is `frontend/src/lib/stores/recent-pages.ts`
+  (`localStorage['valea.recent-pages']`, most-recent-first, capped at 10,
+  guarded against a missing/locked-down `localStorage`).
+- **Link navigation + dangling links**: `frontend/src/lib/editor/
+  link-nav.ts`'s `classifyHref` (page / external / file) drives
+  `PageEditor.svelte`'s click handler — a `.md` href navigates in-app, an
+  `http(s):` href opens a new tab, anything else no-ops — and
+  `collectDocLinkPaths` feeds `api.icmPathsExist` to build the dangling set
+  the knowledge route re-checks on page load and after every save. A
+  dangling page-link is decorated via a ProseMirror plugin (`PluginKey
+  ('link-dangling')`, CSS class `link-dangling`) and clicking it opens a
+  create-confirm dialog instead of navigating.
+- **Backlinks panel + impact dialogs + template select**: `BacklinksPanel.
+  svelte` (rendered in the page rail, `frontend/src/routes/knowledge/
+  [...path]/+page.svelte`) and `frontend/src/lib/components/knowledge/
+  backlinks-panel.ts` (`groupReferences`, `impactLine`/`deleteImpactLine`
+  — singular/plural, compound-subject copy, "updates" framing for rename
+  vs. "will lose the link/reference" framing for delete) share one source
+  of truth over `icm_entry_references`'s `{workflows, pages}`;
+  `RenameDialog`/`DeleteDialog` render the same impact line before the
+  user confirms. `frontend/src/lib/components/knowledge/
+  template-options.ts`'s `templateOptions` (mount-scoped — only offers
+  templates from the mount that owns the target parent folder) feeds
+  `NewEntryDialog`'s "Start from" select.
+
 ## Design system pointer
 
 UI follows the "paper & ink, with a green pen for approval" design system: [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (canonical source: `docs/design/cockpit-design-system-v1.pdf`). Two-layer token architecture (raw tokens → shadcn-svelte semantic variable mapping); feature code never touches raw Tailwind classes directly. Shell layout is a reusable four-column grid (Sidebar · optional ListPane · Main · optional Rail) implemented as an `AppShell` component family on shadcn-svelte primitives.
@@ -1122,4 +1319,5 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-12-icm-mounts-design.md](superpowers/specs/2026-07-12-icm-mounts-design.md) — ICM mounts (Plan A): `mounts/<name>/` replaces the single `icm/` tree, manifest-based discovery, `MOUNTS.md` generated routing, per-mount `read_roots`, v3→v4 migration, mounts-aware Knowledge UI, adopt-by-move onboarding.
 - [2026-07-12-icm-by-reference-design.md](superpowers/specs/2026-07-12-icm-by-reference-design.md) — By-reference mounts (Plan A2): external `kind: "path"` mounts referenced in place, root-set containment, managed-settings external `Read` allows, per-mount doctor, declare/undeclare RPCs + audit, by-reference-default onboarding.
 - [2026-07-12-methodology-depth-design.md](superpowers/specs/2026-07-12-methodology-depth-design.md) — Methodology depth (Spec B): server-derived risk tiers, memory-update proposal pairs + staging write/read grants, the queue's `apply_page_content` executor and content-hash crash recovery, optional rejection reasons, the decisions digest + Distill Decisions reflection workflow, and the diff/risk-tier ask-gate and memory-update review UI.
+- [2026-07-12-knowledge-depth-design.md](superpowers/specs/2026-07-12-knowledge-depth-design.md) — Knowledge & editor depth (Spec C): scan-backed search with an FTS5 upgrade seam, AST-confirmed backlinks, byte-surgical rename link-rewrite, page templates, contained image upload/serve endpoints, the `[[`/`@` page-link picker, the Cmd+K search palette + MRU + dangling-link handling, and the backlinks panel + page-aware impact dialogs + template select UI.
 - [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — Approved target redesign: private Valea workspace profiles, user-owned ICM projects mounted only by reference, one primary ICM and `cwd` per session, explicit cross-ICM context, project/session navigation, and simplified onboarding.

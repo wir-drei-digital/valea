@@ -209,6 +209,25 @@ clearly marked in their design specs until implemented.
    one-line reason, visible in the decided history. *(Spec B — shipped,
    pending merge on `feat/methodology-depth`; spec:
    2026-07-12-methodology-depth-design.md.)*
+9. **Knowledge & editor depth** — makes Knowledge a genuinely daily-usable
+   surface, entirely as standard GFM markdown on disk: a scan-backed
+   literal search (per-mount concurrent scan under a shared budget, top 20
+   results) whose RPC contract is deliberately implementation-agnostic so
+   FTS5 can replace the scan internals later without a contract break;
+   AST-confirmed backlinks (a real Link/Image node, never a prose mention
+   or code-fence lookalike); a byte-surgical rename link-rewrite that
+   keeps the editor's determinism contract intact (two documented,
+   non-corrupting limitations); page templates (a `Templates/` folder per
+   mount, `{{title}}`/`{{date}}` substitution); contained image
+   upload/serve endpoints (`Assets/<slug>-<hash8>.<ext>`, the serve route
+   deliberately token-exempt since an `<img>` tag can't send headers and
+   the listener is loopback-only); and, on the frontend, a `[[`/`@`
+   page-link picker inserting standard link marks, a Cmd+K search palette
+   with an MRU, link-click navigation with dangling-link decoration and
+   create-on-click, a backlinks panel, and page-aware rename/delete impact
+   dialogs. *(Spec C — shipped, pending merge on
+   `worktree-knowledge-depth`; spec:
+   2026-07-12-knowledge-depth-design.md.)*
 
 The MVP is complete when the core acceptance scenario runs end-to-end: open
 app → move Priya's inquiry to AI/Review → run triage workflow → review the
