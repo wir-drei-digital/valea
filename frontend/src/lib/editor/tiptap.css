@@ -362,6 +362,76 @@
     opacity: 0.5;
 }
 
+/* ========= Page-link menu ([[ and @ picker, Task C8) ========= */
+.page-link-menu {
+    background: var(--paper-card);
+    border: 1px solid var(--paper-border);
+    border-radius: var(--ttp-radius);
+    box-shadow: var(--shadow-card);
+    padding: 0.25rem;
+    min-width: 240px;
+    max-width: 360px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.page-link-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: none;
+    background: none;
+    border-radius: var(--ttp-radius-inner);
+    cursor: pointer;
+    text-align: left;
+    transition: background-color 0.1s;
+}
+
+.page-link-item:hover,
+.page-link-item.is-selected {
+    background: var(--ttp-bg-muted);
+}
+
+.page-link-item-icon {
+    flex: 0 0 auto;
+    width: 1.25rem;
+    height: 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.5;
+    font-size: 0.8125rem;
+}
+
+.page-link-item-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
+}
+
+.page-link-item-title {
+    font-size: 0.875rem;
+    color: var(--ttp-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.page-link-item.is-create .page-link-item-title {
+    color: var(--ttp-primary);
+}
+
+.page-link-item-snippet {
+    font-size: 0.75rem;
+    color: var(--ttp-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* ========= Bubble menu (floating toolbar) ========= */
 .bubble-menu {
     background: var(--paper-card);

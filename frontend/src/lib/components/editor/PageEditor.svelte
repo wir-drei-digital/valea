@@ -19,6 +19,7 @@
 	import TaskItem from '@tiptap/extension-task-item';
 	import { createBubbleMenu } from '$lib/editor/vendor/bubble_menu.js';
 	import { createSlashCommand } from '$lib/editor/vendor/slash_command.js';
+	import { createPageLinkSuggestion } from '$lib/editor/vendor/page_link_suggestion.js';
 	import { DragHandle } from '$lib/editor/vendor/drag_handle.js';
 	import { commands, type SlashCommandItem } from '$lib/editor/commands';
 	import { allowedImageFiles, isAllowedImage, resolveImageSrc } from '$lib/editor/image-upload';
@@ -205,6 +206,16 @@
 						TaskList,
 						TaskItem.configure({ nested: true }),
 						createSlashCommand(toSlashItems(commands)),
+						// Page-link picker (Task C8): two Suggestion instances sharing one
+						// factory, distinguished by `name` (see the factory's header
+						// comment on why a shared/default plugin key would clobber one
+						// instance's state) — `[[` for an explicit link-picker trigger,
+						// `@` for a mention-style trigger. Both search the SAME `pagePath`
+						// (relative-link math is computed from the page being edited) and
+						// the same injected `api` (icmSearch for results, createIcmPage
+						// for the create-on-empty item).
+						createPageLinkSuggestion({ char: '[[', name: 'pageLinkBracket', pagePath, api }),
+						createPageLinkSuggestion({ char: '@', name: 'pageLinkMention', pagePath, api }),
 						// Formatting bubble on selection — bold/italic/strike/link only
 						// this phase (see vendor/bubble_menu.js's header comment for why
 						// underline/code were trimmed from the vendored button row).
