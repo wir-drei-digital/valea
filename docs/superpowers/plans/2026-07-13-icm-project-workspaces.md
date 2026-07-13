@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-13-icm-project-workspaces-design.md` — binding for every task; read it for any ambiguity. It supersedes `2026-07-12-icm-mounts-design.md` (Plan A) and `2026-07-12-icm-by-reference-design.md` (Plan A2) wherever they define embedded `mounts/`, workspace-root routing, `MOUNTS.md`, global mount composition, or path-as-identity.
 
-**Revision 2026-07-13 (B/C interaction review):** after Specs B (methodology depth) and C (knowledge depth) merged to main, this plan was reviewed for how the redesign disturbs their shipped code. The review added/expanded tasks for: the run-sidecar ICM stamp + `RiskTier`/finalize on ICM identity (Tasks 7.2, 7.3, **7.5**); re-keying `backlinks.ex`/`link_rewrite.ex` and scoping search/backlinks/rename-rewrite to **primary + related** ICMs (Tasks 4.2, **5.6**); the image upload/serve endpoint (**Task 4.4**); the frontend link/image path-vocabulary rewrite (**Task 9.6**); a portable **ICM template** seeded on create + the Valea proposal contract injected via the session bootstrap `context.md` (Tasks **3.5**, 1.2 — the "inject + seed" resolution of where B's teach-loop content lives once the workspace stops being an agent project); and the C7 managed-settings **fallback** the Phase-1 spike must decide (Task 1.1), since the installed `claude-agent-acp` adapter has no verified way to load an external settings file. Three decisions locked in this review: **(a)** Valea's queue vocabulary is injected at launch + a clean starter is seeded into new ICMs (never baked into the portable ICM's own files); **(b)** editor-time search/backlinks/rename-rewrite are bounded to the primary ICM + its declared related ICMs; **(c)** the Phase-1 spike settles the managed-settings mechanism before `SessionSettings` is built on it. **Follow-up decision (harness seam):** enforcement is `PermissionPolicy` on the ACP `session/request_permission` callback (harness-neutral, authoritative); the settings file is only an optional per-harness pre-filter, wrapped behind a new `Valea.Harness` behaviour (`Valea.Harnesses.ClaudeCode` is its first implementer). Claude Code ships **callback-only** — no settings file is written into or near the ICM (the user's own `.claude/` config lives there; the ICM must stay usable by a bare harness); the session `context.md` (related-ICM map + injected contract) is still materialized under the hidden workspace. Tasks 1.1–1.3, C6, C7, C10 reshaped accordingly.
+**Revision 2026-07-13 (B/C interaction review):** after Specs B (methodology depth) and C (knowledge depth) merged to main, this plan was reviewed for how the redesign disturbs their shipped code. The review added/expanded tasks for: the run-sidecar ICM stamp + `RiskTier`/finalize on ICM identity (Tasks 7.2, 7.3, **7.5**); re-keying `backlinks.ex`/`link_rewrite.ex` and scoping search/backlinks/rename-rewrite to **primary + related** ICMs (Tasks 4.2, **5.6**); the image upload/serve endpoint (**Task 4.4**); the frontend link/image path-vocabulary rewrite (**Task 9.6**); a portable **ICM template** seeded on create + the Valea proposal contract injected via the session bootstrap `context.md` (Tasks **3.5**, 1.2 — the "inject + seed" resolution of where B's teach-loop content lives once the workspace stops being an agent project); and the C7 managed-settings **fallback** the Phase-1 spike must decide (Task 1.1), since the installed `claude-agent-acp` adapter has no verified way to load an external settings file. Three decisions locked in this review: **(a)** Valea's queue vocabulary is injected at launch + a clean starter is seeded into new ICMs (never baked into the portable ICM's own files); **(b)** editor-time search/backlinks/rename-rewrite are bounded to the primary ICM + its declared related ICMs; **(c)** the Phase-1 spike settles the managed-settings mechanism before `SessionSettings` is built on it. **Follow-up decision (harness seam):** enforcement is `PermissionPolicy` on the ACP `session/request_permission` callback (harness-neutral, authoritative); the settings file is only an optional per-harness pre-filter, wrapped behind a new `Valea.Harness` behaviour (`Valea.Harnesses.ClaudeCode` is its first implementer). Claude Code ships **callback-only** — no settings file is written into or near the ICM (the user's own `.claude/` config lives there; the ICM must stay usable by a bare harness); the session `context.md` (related-ICM map + injected contract) is still materialized under the hidden workspace. Tasks 1.1–1.3, C6, C7, C10 reshaped accordingly. **Spike-review revision:** the Phase-1 review found pure callback-only can't guarantee writes/denied-reads reach the callback with no settings at all (the CLI's own defaults decide first), and surfaced the SDK's in-memory `managedSettings` (`--managed-settings <json>`, no file). Enforcement is therefore an in-memory `managedSettings` posture (rendered by `SessionSettings.content/1`) + the ACP callback as authoritative answer — still zero ICM writes. `launch/2` returns `managed_settings` (JSON), not `settings_path`.
 
 ## How to execute this plan
 
@@ -133,11 +133,11 @@ related_icms:
 }
 ```
 
-`SessionScope.resolve/1` takes an opts map `%{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` (defined in Phase 5 Task 5.2) and is the ONLY place mount-key lookup, health/uniqueness validation, related-ICM resolution, absolute read/write root computation, and session-local settings/context materialization happen. Neither `Valea.Api.Agents` nor `Valea.Workflows.Runner` re-derives these rules. (spec §"Session scope and launch", §"Backend restructuring map") The scope's `managed_settings` is **optional** — `nil` when the session's harness enforces callback-only (Claude Code today); `managed_context` (the `context.md` bootstrap) is always materialized. `SessionScope` hands the scope to the session's harness adapter (`Valea.Harness.launch/2`), which decides what to materialize.
+`SessionScope.resolve/1` takes an opts map `%{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` (defined in Phase 5 Task 5.2) and is the ONLY place mount-key lookup, health/uniqueness validation, related-ICM resolution, absolute read/write root computation, and session-local settings/context materialization happen. Neither `Valea.Api.Agents` nor `Valea.Workflows.Runner` re-derives these rules. (spec §"Session scope and launch", §"Backend restructuring map") `managed_context` (the `context.md` bootstrap) is always materialized to disk; the permission posture is rendered in-memory by the harness (`managed_settings` JSON), never written to disk. `SessionScope` hands the scope to the session's harness adapter (`Valea.Harness.launch/2`), which returns the launch directives.
 
-### C7 — Session permission policy (callback-authoritative) + optional pre-filter
+### C7 — Session permission policy: in-memory managedSettings + callback
 
-The session permission policy is enforced by `Valea.Agents.PermissionPolicy` (Task 5.3) on the ACP `session/request_permission` callback — harness-neutral and authoritative. The same policy MAY additionally be rendered as a per-harness native pre-filter file to reduce callback round-trips, but that is an optimization, never the gate. The policy (spec §"Managed harness settings"):
+The session permission policy has two cooperating layers, both keeping Valea out of the ICM: an in-memory **posture** rendered by `SessionSettings.content/1` and injected per-harness (Claude Code: the SDK's `managedSettings`, forwarded as `--managed-settings <json>`) that makes sensitive calls fall through to "ask", and `Valea.Agents.PermissionPolicy` (Task 5.3) on the ACP `session/request_permission` callback, which authoritatively answers each ask. The posture guarantees the call reaches the callback; the callback decides. Neither writes into the ICM. The policy (spec §"Managed harness settings"):
 
 - **Allow reads** in the primary ICM root and each resolved related ICM root, and at each exact task input path.
 - **Ask** for `Edit`, `Write`, and `Bash` unless an exact workflow grant applies.
@@ -145,7 +145,7 @@ The session permission policy is enforced by `Valea.Agents.PermissionPolicy` (Ta
 - **Do not auto-load** instructions (`CLAUDE.md`) from related additional directories — only the primary ICM's own `CLAUDE.md` (at the cwd) loads; related entrypoints are read only when the primary ICM's routing calls for them.
 - Preserve user-level harness config except where Valea's stronger session enforcement overrides it.
 
-**Claude Code ships callback-only** (this review's decision): the installed adapter cannot be pointed at an external settings file, and Valea will not write a pre-filter into the user-owned ICM (their own `.claude/` config lives there — the ICM must stay usable by a bare harness). So `scope.managed_settings` is `nil` for CC; enforcement is entirely the callback. The pre-filter renderer (`SessionSettings.content/1`) is kept ready for a future harness/adapter that can load an external file. Additional read roots are still conveyed natively (`session/new` `additionalDirectories`) so common related-ICM reads don't each round-trip. Whether `additionalDirectories` auto-loads a dir's `CLAUDE.md`, and how to suppress it, is fixed by the Phase-1 spike and recorded in `docs/notes/acp-launch-contract.md`.
+**Claude Code uses in-memory `managedSettings`** (revised after the Phase-1 spike review). The installed adapter cannot load an *external settings file*, but the underlying SDK accepts settings as an **in-memory JSON string** — `managedSettings` (forwarded to the CLI as `--managed-settings <json>`), documented for embedding apps that must "enforce lockdown settings on the spawned subprocess without writing root-owned files," and applied restrictive-only. Valea renders its posture with `SessionSettings.content/1` and passes it as `managedSettings` via the adapter's SDK-options channel (`_meta.claudeCode.options`, per the contract note). This writes **nothing** into or near the ICM (the user's own `.claude/` config there is untouched) *and* sets the posture that guarantees writes/`Bash`/denied-reads fall through to the ACP `request_permission` callback — closing the gap pure callback-only left (with no settings at all, the CLI's own defaults decide first and may auto-resolve a call before Valea sees it). The callback remains the authoritative answer to every resulting ask. Additional read roots are conveyed natively via `session/new` `additionalDirectories`. Whether `additionalDirectories` auto-loads a dir's `CLAUDE.md`, and how to suppress it, is fixed by the Phase-1 spike and recorded in `docs/notes/acp-launch-contract.md`.
 
 ### C8 — Session metadata (`session/v1`, written as transcript line 1)
 
@@ -199,7 +199,7 @@ RENAMED/REPURPOSED:
   Valea.Mounts                                 embedded+external → config-only external registry (Phase 3)
   Valea.Mounts.Manifest                        format 1 provenance → format 2 stable identity (Phase 3)
   Valea.Agents.ClaudeSettings                  workspace .claude writer → SessionSettings renderer (Phase 1/5)
-  Valea.Harnesses.ClaudeCode                   gains launch/materialization; implements Valea.Harness; callback-only enforcement (Phase 1)
+  Valea.Harnesses.ClaudeCode                   gains launch/materialization; implements Valea.Harness; in-memory managedSettings + callback (Phase 1)
   Valea.Api.Workspace                          path-based → id-based (Phase 2)
   Valea.ICM.Backlinks / Valea.ICM.LinkRewrite  all-enabled-mounts → primary+related scope, (mount_key, rel_path) (Phase 4 + Task 5.6)
   Valea.Agents.RiskTier                        workspace-path attribution → ICM-locator tier (Phase 7, Task 7.5)
@@ -216,9 +216,9 @@ DELETED (Phase 11):
 
 ## Phase 1 — Harness launch spike
 
-**Milestone:** the claude-agent-acp launch surface is *discovered and documented* — how it receives `cwd`, how it receives additional read roots (native `session/new` `additionalDirectories`), and whether writes/denied-reads reach the ACP `session/request_permission` callback (the authoritative gate) — and a throwaway probe proves the callback-authoritative model end to end. Whether the adapter can also be pointed at an *external* settings pre-filter is recorded as informational (the chosen path is **callback-only**, so a negative answer does not block). Valea also gains a `Valea.Harness` behaviour + a `SessionSettings` renderer + a fake-adapter assertion of the launch shape. **No runtime refactor lands in this phase** (the real chat/workflow launch keeps using the current workspace-root path until Phase 5); this phase de-risks everything downstream.
+**Milestone:** the claude-agent-acp launch surface is *discovered and documented* — how it receives `cwd`, how it receives additional read roots (native `session/new` `additionalDirectories`), and whether writes/denied-reads reach the ACP `session/request_permission` callback (the authoritative gate) — and a throwaway probe proves the callback-authoritative model end to end. Whether the adapter can also be pointed at an *external* settings pre-filter is recorded as informational (the chosen path is the SDK's in-memory `managedSettings`, see Task 1.2, so an external-settings-file negative answer does not block). Valea also gains a `Valea.Harness` behaviour + a `SessionSettings` renderer + a fake-adapter assertion of the launch shape. **No runtime refactor lands in this phase** (the real chat/workflow launch keeps using the current workspace-root path until Phase 5); this phase de-risks everything downstream.
 
-Today `Valea.Acp.Connection.new/1` sends only `%{"cwd" => launch.cwd, "mcpServers" => []}` on `session/new` (`acp/connection.ex:378-401`), and `Valea.Agents.ClaudeSettings.write!/1` writes `<workspace>/.claude/settings.json` with `./`-anchored globs that are correct only because cwd == workspace (`agents/claude_settings.ex:66-76`, moduledoc). Both assumptions break when cwd becomes an external ICM root. This phase establishes the replacement: additional read roots via the native `additionalDirectories` field, and the ACP `request_permission` callback (not a settings file) as the authoritative gate — nothing is written into the ICM.
+Today `Valea.Acp.Connection.new/1` sends only `%{"cwd" => launch.cwd, "mcpServers" => []}` on `session/new` (`acp/connection.ex:378-401`), and `Valea.Agents.ClaudeSettings.write!/1` writes `<workspace>/.claude/settings.json` with `./`-anchored globs that are correct only because cwd == workspace (`agents/claude_settings.ex:66-76`, moduledoc). Both assumptions break when cwd becomes an external ICM root. This phase establishes the replacement: additional read roots via the native `additionalDirectories` field, an in-memory `managedSettings` posture (SDK `--managed-settings`, no file) that makes sensitive calls fall through to "ask", and the ACP `request_permission` callback as the authoritative answer — nothing is written into the ICM.
 
 ### Task 1.1: Spike — discover and document the adapter launch contract
 
@@ -272,7 +272,7 @@ Expected and required to pass the milestone:
 
 Paste the observed output into `acp-launch-contract.md` under "Verified proof". If any expectation fails, iterate the mechanism (step 2) until all pass; the downstream phases depend on this being real, not assumed.
 
-**Fallback decision (record the outcome in the contract note).** A review of the installed `@agentclientprotocol/claude-agent-acp@0.58.1` found: (a) additional read roots ARE natively supported — `session/new` accepts a top-level `additionalDirectories` field (prefer it over any `_meta.valea.*` invention; see Task 1.3); but (b) the adapter's `SettingsManager` only resolves `.claude/settings.json` from the session **cwd** + `~/.claude` + the OS-managed path — there is **no** parameter to point it at an external Valea-owned settings file. If the spike confirms (b) against whatever adapter version ships at implementation time, choose and document ONE fallback before Task 1.2 builds `SessionSettings.materialize!`: **(1)** a newer adapter/CLI surface that forwards `--settings`/`--add-dir` (re-verify — the bare `claude` CLI has these; confirm the adapter passes them through); **(2)** write a Valea-owned `<cwd>/.claude/settings.json` inside the ICM as a documented, gitignored-by-convention exception to invariant 9 (weakest — the spec explicitly rules this out; take it only if 1 and 3 fail); or **(3)** drop settings-file pre-filtering and enforce solely through the ACP `session/request_permission` round-trip with `PermissionPolicy` as sole authority (architecturally clean since `PermissionPolicy` already decides allow/deny/ask, but the SDK's default permission mode governs auto-approvals before Valea's callback fires — verify it prompts rather than auto-allows). Whichever is chosen, `SessionSettings`'s target/consumption contract (Task 1.2) must be shaped to it, so this decision precedes Task 1.2. **Decision landed:** option (3), callback-only (see C7 and Task 1.2) — enforcement is `PermissionPolicy` on the ACP `request_permission` callback and no settings file is written. Options (1)/(2) are revisited only if the spike shows the callback itself does not gate writes/denied-reads (proof step 4 must confirm it does).
+**Fallback decision (record the outcome in the contract note).** A review of the installed `@agentclientprotocol/claude-agent-acp@0.58.1` found: (a) additional read roots ARE natively supported — `session/new` accepts a top-level `additionalDirectories` field (prefer it over any `_meta.valea.*` invention; see Task 1.3); but (b) the adapter's `SettingsManager` only resolves `.claude/settings.json` from the session **cwd** + `~/.claude` + the OS-managed path — there is **no** parameter to point it at an external Valea-owned settings file. If the spike confirms (b) against whatever adapter version ships at implementation time, choose and document ONE fallback before Task 1.2 builds `SessionSettings.materialize!`: **(1)** a newer adapter/CLI surface that forwards `--settings`/`--add-dir` (re-verify — the bare `claude` CLI has these; confirm the adapter passes them through); **(2)** write a Valea-owned `<cwd>/.claude/settings.json` inside the ICM as a documented, gitignored-by-convention exception to invariant 9 (weakest — the spec explicitly rules this out; take it only if 1 and 3 fail); or **(3)** drop settings-file pre-filtering and enforce solely through the ACP `session/request_permission` round-trip with `PermissionPolicy` as sole authority (architecturally clean since `PermissionPolicy` already decides allow/deny/ask, but the SDK's default permission mode governs auto-approvals before Valea's callback fires — verify it prompts rather than auto-allows). Whichever is chosen, `SessionSettings`'s target/consumption contract (Task 1.2) must be shaped to it, so this decision precedes Task 1.2. **Decision landed (revised post-review):** neither the external settings file (options 1/2) nor pure callback-only (option 3), but the SDK's in-memory `managedSettings` — settings passed as `--managed-settings <json>`, no file written anywhere. This sets the restrictive posture (ask writes/`Bash`, deny workspace state) so sensitive calls reach the ACP callback, which `PermissionPolicy` answers authoritatively. It closes the hole the review found in pure callback-only (with no settings, the CLI's defaults may auto-resolve a call before Valea sees it). See C7 and Task 1.2.
 
 - [ ] **Step 5: Commit**
 
@@ -281,11 +281,11 @@ git add docs/notes/acp-launch-contract.md backend/scripts/spike/acp_launch_probe
 git commit -m "spike: prove claude-agent-acp launch contract (cwd + add-dir + managed settings)"
 ```
 
-### Task 1.2: `Valea.Harness` behaviour + `SessionSettings` renderer (callback-only for Claude Code)
+### Task 1.2: `Valea.Harness` behaviour + `SessionSettings` renderer (in-memory managedSettings for Claude Code)
 
 **Files:**
 - Create: `backend/lib/valea/harness.ex` (the `Valea.Harness` behaviour — harness-neutral launch seam)
-- Modify: `backend/lib/valea/harnesses/claude_code.ex` (`Valea.Harnesses.ClaudeCode` implements `Valea.Harness`; delegates rendering to `SessionSettings`; ships callback-only)
+- Modify: `backend/lib/valea/harnesses/claude_code.ex` (`Valea.Harnesses.ClaudeCode` implements `Valea.Harness`; delegates rendering to `SessionSettings`; conveys the in-memory `managedSettings` posture)
 - Create: `backend/lib/valea/agents/session_settings.ex` (the Claude Code adapter's renderer)
 - Test: `backend/test/valea/agents/session_settings_test.exs`, `backend/test/valea/harnesses/claude_code_test.exs`
 
@@ -294,9 +294,9 @@ git commit -m "spike: prove claude-agent-acp launch contract (cwd + add-dir + ma
 - Produces:
   - `Valea.Agents.SessionSettings.content(scope :: map()) :: map()` — the settings JSON map (C7), computed from absolute roots (NOT `./`-anchored). Deny wins over allow.
   - `Valea.Agents.SessionSettings.context(scope :: map()) :: String.t()` — the `context.md` bootstrap listing the resolved primary + related ICM roots and entrypoints (C6 map, human/agent-readable).
-  - `Valea.Agents.SessionSettings.materialize!(scope :: map()) :: :ok` — always writes `context/1` to `scope.managed_context`; writes `content/1` to `scope.managed_settings` **only when that field is non-nil** (a harness that can load an external pre-filter). Creates `runtime/sessions/<id>/` (atomic tmp+rename), never inside any ICM root.
-  - `Valea.Harness` behaviour: `c:launch(scope :: map(), session_dir :: String.t()) :: {:ok, directives :: map()}` where `directives = %{cwd, additional_roots, context_path, settings_path, env, argv_extra}`. The harness-neutral seam SessionScope calls (Phase 5) instead of touching a settings file directly.
-  - `Valea.Harnesses.ClaudeCode.launch/2` (implements the behaviour): calls `SessionSettings.materialize!/1`, returns `additional_roots` = resolved related-ICM + exact-input roots (conveyed as `additionalDirectories`), `context_path` = the materialized `context.md`, and `settings_path: nil` (callback-only — enforcement is `PermissionPolicy` on the ACP callback). A future harness that accepts an external settings file sets `settings_path` and gets the pre-filter for free.
+  - `Valea.Agents.SessionSettings.materialize!(scope :: map()) :: :ok` — writes only `context/1` to `scope.managed_context`, creating `runtime/sessions/<id>/` (atomic tmp+rename), never inside any ICM root. The permission posture is NOT written to disk; it is rendered by `content/1` and passed in-memory to the harness (see `launch/2`).
+  - `Valea.Harness` behaviour: `c:launch(scope :: map(), session_dir :: String.t()) :: {:ok, directives :: map()}` where `directives = %{cwd, additional_roots, context_path, managed_settings, env, argv_extra}` (`managed_settings` is the in-memory posture JSON string, or `nil` for a harness that doesn't support it). The harness-neutral seam SessionScope calls (Phase 5).
+  - `Valea.Harnesses.ClaudeCode.launch/2` (implements the behaviour): calls `SessionSettings.materialize!/1` (context only), then returns `additional_roots` = resolved related-ICM + exact-input roots (conveyed as `additionalDirectories`), `context_path` = the materialized `context.md`, and `managed_settings` = `Jason.encode!(SessionSettings.content(scope))` — the in-memory posture JSON conveyed to the adapter via its SDK-options channel (`_meta.claudeCode.options.managedSettings`, per the contract note). Nothing is written to the ICM; `PermissionPolicy` on the ACP callback authoritatively answers the asks the posture produces.
 
 Note: this renders *absolute-root* allow/deny rules (the C7 policy), unlike the old `ClaudeSettings` which relied on `./**` anchored to cwd==workspace. This is the module that makes cwd≠workspace safe.
 
@@ -372,21 +372,20 @@ defmodule Valea.Agents.SessionSettingsTest do
     assert md =~ "CONTEXT.md"
   end
 
-  test "materialize! writes settings + context and never inside an ICM root" do
+  test "materialize! writes only context.md (posture is in-memory), never inside an ICM root" do
     tmp = Path.join(System.tmp_dir!(), "vss-#{System.unique_integer([:positive])}")
     icm = Path.join(tmp, "icm")
     File.mkdir_p!(icm)
-    settings = Path.join([tmp, "ws", "runtime", "sessions", "s1", "settings.json"])
     context = Path.join([tmp, "ws", "runtime", "sessions", "s1", "context.md"])
 
     :ok =
       SessionSettings.materialize!(
         scope(%{primary_icm: %{mount_key: "c", id: "i", root: icm, manifest: nil},
-                cwd: icm, related_icms: [], managed_settings: settings, managed_context: context})
+                cwd: icm, related_icms: [], managed_context: context})
       )
 
-    assert File.exists?(settings)
     assert File.exists?(context)
+    refute File.exists?(Path.join([tmp, "ws", "runtime", "sessions", "s1", "settings.json"]))
     assert File.dir?(Path.join(icm, ".claude")) == false
     on_exit(fn -> File.rm_rf!(tmp) end)
   end
@@ -470,17 +469,12 @@ defmodule Valea.Agents.SessionSettings do
 
   @spec materialize!(map()) :: :ok
   def materialize!(scope) do
-    # context.md is always written (session bootstrap: related-ICM map + injected contract).
+    # Only context.md is written to disk (session bootstrap: related-ICM map + injected
+    # contract). The permission posture is NOT written as a file — it is rendered by
+    # content/1 and passed in-memory to the harness as managedSettings (--managed-settings
+    # <json>), so nothing lands in or near the ICM. Enforcement: the posture forces sensitive
+    # calls to "ask", and PermissionPolicy on the ACP request_permission callback answers them.
     write_atomic!(scope.managed_context, context(scope))
-
-    # The settings.json pre-filter is written ONLY when the harness can be pointed at an
-    # external file (scope.managed_settings != nil). Claude Code ships callback-only, so
-    # managed_settings is nil, nothing lands in or near the ICM, and enforcement is
-    # PermissionPolicy on the ACP request_permission callback.
-    if scope.managed_settings do
-      write_atomic!(scope.managed_settings, Jason.encode!(content(scope), pretty: true) <> "\n")
-    end
-
     :ok
   end
 
@@ -500,7 +494,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Define the `Valea.Harness` behaviour + Claude Code adapter**
 
-Create `backend/lib/valea/harness.ex` with `@callback launch(scope :: map(), session_dir :: String.t()) :: {:ok, map()}`. In `Valea.Harnesses.ClaudeCode`, implement `launch/2`: `SessionSettings.materialize!(scope)`, then return `{:ok, %{cwd: scope.cwd, additional_roots: related_and_input_roots(scope), context_path: scope.managed_context, settings_path: scope.managed_settings, env: Valea.Agents.Env.minimal(), argv_extra: []}}`. For Claude Code `scope.managed_settings` is `nil` (callback-only). Add `backend/test/valea/harnesses/claude_code_test.exs` asserting `launch/2` returns `settings_path: nil`, `additional_roots` containing the related root, and a `context_path` that exists after the call while no `.claude/` is written under the ICM.
+Create `backend/lib/valea/harness.ex` with `@callback launch(scope :: map(), session_dir :: String.t()) :: {:ok, map()}`. In `Valea.Harnesses.ClaudeCode`, implement `launch/2`: `SessionSettings.materialize!(scope)` (context only), then return `{:ok, %{cwd: scope.cwd, additional_roots: related_and_input_roots(scope), context_path: scope.managed_context, managed_settings: Jason.encode!(SessionSettings.content(scope)), env: Valea.Agents.Env.minimal(), argv_extra: []}}`. Add `backend/test/valea/harnesses/claude_code_test.exs` asserting `launch/2` returns a `managed_settings` JSON string whose decoded `permissions.deny` includes the workspace-state globs and whose `permissions.ask` includes `Write`/`Bash`, `additional_roots` containing the related root, a `context_path` that exists after the call, and no `.claude/` written under the ICM.
 
 - [ ] **Step 6: Run to verify pass** — `cd backend && mix test test/valea/agents/session_settings_test.exs test/valea/harnesses/claude_code_test.exs` → PASS.
 
@@ -508,7 +502,7 @@ Create `backend/lib/valea/harness.ex` with `@callback launch(scope :: map(), ses
 
 ```bash
 git add backend/lib/valea/harness.ex backend/lib/valea/harnesses/claude_code.ex backend/lib/valea/agents/session_settings.ex backend/test/valea/agents/session_settings_test.exs backend/test/valea/harnesses/claude_code_test.exs
-git commit -m "feat: Valea.Harness behaviour + ClaudeCode callback-only launch adapter"
+git commit -m "feat: Valea.Harness behaviour + ClaudeCode launch adapter (in-memory managedSettings)"
 ```
 
 ### Task 1.3: Teach `Acp.Connection` + fake adapter the extended launch shape
@@ -519,10 +513,10 @@ git commit -m "feat: Valea.Harness behaviour + ClaudeCode callback-only launch a
 - Test: `backend/test/valea/acp/connection_test.exs` (add cases; create if absent)
 
 **Interfaces:**
-- Consumes: the launch map given to `Connection.new/1`, extended from `%{cwd, mode, conversation_id, known_message_ids, client_version}` with two optional fields: `read_roots :: [String.t()]` (absolute additional directories) and `settings_path :: String.t() | nil` (the managed settings file).
-- Produces: `session/new` frames that carry the additional read roots (native `additionalDirectories`) and — only if the session's harness supplies one — a settings-file path, defaulting to today's behavior when the fields are absent. For Claude Code (callback-only) `settings_path` is absent and only `additionalDirectories` is sent; the test asserts `additionalDirectories` carries the related root and that no settings path is required. The fake adapter records what it received so tests can assert transmission.
+- Consumes: the launch map given to `Connection.new/1`, extended from `%{cwd, mode, conversation_id, known_message_ids, client_version}` with two optional fields: `additional_roots :: [String.t()]` (absolute additional directories → `additionalDirectories`) and `managed_settings :: String.t() | nil` (the in-memory posture JSON → the adapter's SDK-options channel).
+- Produces: `session/new` frames that carry the additional read roots (native `additionalDirectories`) and the in-memory `managedSettings` posture JSON (via the adapter's SDK-options channel, per the contract note), defaulting to today's behavior when the fields are absent. The test asserts `additionalDirectories` carries the related root and the `managedSettings` posture is transmitted. The fake adapter records what it received so tests can assert transmission.
 
-Use the exact param/flag names fixed in `docs/notes/acp-launch-contract.md`. The code below shows the ACP-session-param encoding; if the contract instead fixes CLI flags forwarded by the adapter, encode them where `ProcessRuntime` builds argv and adjust the test to assert argv — keep the *test's* observable contract (roots + settings transmitted) identical. **Note:** the installed adapter exposes additional read roots as a native top-level `session/new` `additionalDirectories` field — prefer sending `read_roots` as `additionalDirectories` over the illustrative `_meta.valea.readRoots` shape below; adjust the test assertion to match whatever the Task-1.1 contract fixed.
+Use the exact param/flag names fixed in `docs/notes/acp-launch-contract.md`. The code below shows one encoding; if the contract instead fixes CLI flags forwarded by the adapter, encode them where `ProcessRuntime` builds argv and adjust the test to assert argv — keep the *test's* observable contract (additional roots + managed-settings posture transmitted) identical. **Note:** the installed adapter exposes additional read roots as a native top-level `session/new` `additionalDirectories` field, and the in-memory posture rides the SDK-options channel (`_meta.claudeCode.options.managedSettings`); use the exact field placement the Task-1.1 contract note fixes and adjust the test assertions to match.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -548,16 +542,16 @@ defmodule Valea.Acp.ConnectionLaunchTest do
     assert frame["params"]["cwd"] == "/icms/coaching"
   end
 
-  test "session/new carries additional read roots and managed settings path when present" do
+  test "session/new carries additional read roots and the managed-settings posture when present" do
     frame = session_new_frame(%{cwd: "/icms/coaching", mode: :new, conversation_id: nil,
       known_message_ids: MapSet.new(), client_version: "test",
-      read_roots: ["/icms/legal"], settings_path: "/ws/runtime/sessions/s1/settings.json"})
+      additional_roots: ["/icms/legal"],
+      managed_settings: ~s({"permissions":{"deny":["Read(/ws/logs/**)"],"ask":["Write","Bash"]}})})
 
-    # field names per docs/notes/acp-launch-contract.md — assert the values reach the frame
+    # exact field placement per docs/notes/acp-launch-contract.md — assert the values reach the frame
     assert frame["params"]["cwd"] == "/icms/coaching"
-    assert "/icms/legal" in get_in(frame, ["params", "_meta", "valea", "readRoots"])
-    assert get_in(frame, ["params", "_meta", "valea", "settingsPath"]) ==
-             "/ws/runtime/sessions/s1/settings.json"
+    assert "/icms/legal" in frame["params"]["additionalDirectories"]
+    assert get_in(frame, ["params", "_meta", "claudeCode", "options", "managedSettings"]) =~ "Write"
   end
 end
 ```
@@ -569,13 +563,14 @@ Expected: FAIL — the second assertion fails (no `_meta` carried today).
 
 - [ ] **Step 3: Implement**
 
-In `acp/connection.ex`, extend `open_session_frames/2` so the `session/new` base includes the additional roots + settings path when the launch map carries them (encode per the contract note — shown here as ACP `_meta`, adjust if the contract fixes CLI-flag forwarding):
+In `acp/connection.ex`, extend `open_session_frames/2` so the `session/new` base includes the additional roots (native `additionalDirectories`) + the managed-settings posture when the launch map carries them (encode per the contract note — shown here as native field + `_meta`, adjust if the contract fixes CLI-flag forwarding):
 
 ```elixir
 defp open_session_frames(%{launch: launch} = state, caps) do
   base =
     %{"cwd" => launch.cwd, "mcpServers" => []}
-    |> put_valea_meta(launch)
+    |> put_additional_directories(launch)
+    |> put_managed_settings(launch)
 
   cond do
     # …existing session/resume + session/load branches unchanged…
@@ -583,18 +578,24 @@ defp open_session_frames(%{launch: launch} = state, caps) do
   end
 end
 
-defp put_valea_meta(base, launch) do
-  meta =
-    %{}
-    |> maybe_put("readRoots", Map.get(launch, :read_roots))
-    |> maybe_put("settingsPath", Map.get(launch, :settings_path))
-
-  if meta == %{}, do: base, else: Map.put(base, "_meta", %{"valea" => meta})
+# additionalDirectories is a native session/new field (per the contract note).
+defp put_additional_directories(base, launch) do
+  case Map.get(launch, :additional_roots) do
+    roots when is_list(roots) and roots != [] -> Map.put(base, "additionalDirectories", roots)
+    _ -> base
+  end
 end
 
-defp maybe_put(map, _k, nil), do: map
-defp maybe_put(map, _k, []), do: map
-defp maybe_put(map, k, v), do: Map.put(map, k, v)
+# The in-memory posture rides the adapter's SDK-options channel (per the contract note).
+defp put_managed_settings(base, launch) do
+  case Map.get(launch, :managed_settings) do
+    json when is_binary(json) ->
+      Map.put(base, "_meta", %{"claudeCode" => %{"options" => %{"managedSettings" => json}}})
+
+    _ ->
+      base
+  end
+end
 ```
 
 Then extend `test/support/fake_adapter.exs` to store the received `session/new` `params` (including `_meta`) and echo them back in a way the SessionServer E2E tests (Phase 5) can observe — mirror however the fake adapter already records `cwd`.
@@ -1309,10 +1310,10 @@ Minor resequencing vs. the spec: this phase lands the `create_session(kind, moun
 - Test: `backend/test/valea/agents/session_scope_test.exs`
 
 **Interfaces:**
-- Consumes: `Valea.Workspace.Manager.check_generation/1` + `current/0`, `Valea.Mounts.mount_by_key/2`, `Valea.Mounts.Context.resolve/2`, the session's harness adapter via the `Valea.Harness` behaviour (`Valea.Harnesses.ClaudeCode.launch/2`, which materializes `context.md` and, for CC, sets `settings_path: nil`).
-- Produces: `Valea.Agents.SessionScope.resolve(opts) :: {:ok, scope :: map()} | {:error, reason}` where `opts = %{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` and `scope` is the C6 launch object. It: guards generation; resolves the workspace; looks up + validates the primary ICM (`{:error, :icm_unavailable}` if missing/disabled/degraded); resolves direct related ICMs (issues are attached as `scope.context_issues` for the UI/doctor — a chat proceeds with a degraded-context warning, a workflow's required-input check is Phase 7); computes `cwd = primary.root`, `managed_context` under `<workspace>/runtime/sessions/<session_id>/` (and `managed_settings` only if the harness loads an external pre-filter — `nil` for Claude Code); invokes the harness adapter (`Valea.Harness.launch/2`) to materialize context + return launch directives; returns the scope. This is the ONLY place these rules live (spec §"Introduce session-scope resolution").
+- Consumes: `Valea.Workspace.Manager.check_generation/1` + `current/0`, `Valea.Mounts.mount_by_key/2`, `Valea.Mounts.Context.resolve/2`, the session's harness adapter via the `Valea.Harness` behaviour (`Valea.Harnesses.ClaudeCode.launch/2`, which materializes `context.md` and computes the in-memory `managed_settings` posture JSON).
+- Produces: `Valea.Agents.SessionScope.resolve(opts) :: {:ok, scope :: map()} | {:error, reason}` where `opts = %{kind, mount_key, generation, session_id, read_paths \\ [], write_paths \\ [], write_roots \\ []}` and `scope` is the C6 launch object. It: guards generation; resolves the workspace; looks up + validates the primary ICM (`{:error, :icm_unavailable}` if missing/disabled/degraded); resolves direct related ICMs (issues are attached as `scope.context_issues` for the UI/doctor — a chat proceeds with a degraded-context warning, a workflow's required-input check is Phase 7); computes `cwd = primary.root`, `managed_context` under `<workspace>/runtime/sessions/<session_id>/` (the posture is rendered in-memory by the harness, not written to disk); invokes the harness adapter (`Valea.Harness.launch/2`) to materialize context + return launch directives; returns the scope. This is the ONLY place these rules live (spec §"Introduce session-scope resolution").
 
-- [ ] **Step 1: Write the failing tests** — with a mounted primary ICM: `resolve(%{kind: "chat", mount_key: "coaching", generation: g, session_id: "s1"})` returns a scope with `cwd == primary root`, `workspace.root == workspace`, a materialized `context.md` under `runtime/sessions/s1/` (and no `settings.json` — callback-only), and `read_paths == []`. A stale generation → `{:error, :workspace_changed}`. An unknown/disabled mount_key → `{:error, :icm_unavailable}`. A declared related ICM appears in `scope.related_icms`.
+- [ ] **Step 1: Write the failing tests** — with a mounted primary ICM: `resolve(%{kind: "chat", mount_key: "coaching", generation: g, session_id: "s1"})` returns a scope with `cwd == primary root`, `workspace.root == workspace`, a materialized `context.md` under `runtime/sessions/s1/` (and no `settings.json` on disk — the posture is in-memory), and `read_paths == []`. A stale generation → `{:error, :workspace_changed}`. An unknown/disabled mount_key → `{:error, :icm_unavailable}`. A declared related ICM appears in `scope.related_icms`.
 - [ ] **Step 2: Run to verify failure** — FAIL.
 - [ ] **Step 3: Implement** `resolve/1` per the interface; assemble the C6 map; call `SessionSettings.materialize!/1`.
 - [ ] **Step 4: Run to verify pass** — PASS.
@@ -1404,11 +1405,11 @@ end
 
 **Interfaces:**
 - Consumes: the C6 `scope` from `SessionScope.resolve/1`.
-- Produces: a session whose subprocess cwd (`ProcessRuntime.start(%{cd: scope.cwd})`) and ACP cwd (`Connection.new(%{cwd: scope.cwd, additional_roots: directives.additional_roots, settings_path: directives.settings_path})`, from the harness `launch/2` directives — `settings_path` is `nil` for Claude Code) are the primary ICM root; the transcript stays at `<scope.workspace.root>/logs/sessions/<id>.jsonl`; `policy_ctx = %{workspace_root: scope.workspace.root, cwd: scope.cwd, read_roots: [scope.primary_icm.root | related roots ++ scope.read_paths], session_kind: scope.kind, write_paths: scope.write_paths, write_roots: scope.write_roots}` — this `policy_ctx`, applied by `PermissionPolicy` on the ACP `request_permission` callback, is the authoritative enforcement (the settings file, when present, is only a pre-filter). The `ClaudeSettings.write!(workspace)` call is removed from `init/1`. `default_read_roots/1`/`default_extra_roots/1` are removed (the scope provides absolute read roots).
+- Produces: a session whose subprocess cwd (`ProcessRuntime.start(%{cd: scope.cwd})`) and ACP cwd (`Connection.new(%{cwd: scope.cwd, additional_roots: directives.additional_roots, managed_settings: directives.managed_settings})`, from the harness `launch/2` directives) are the primary ICM root; the transcript stays at `<scope.workspace.root>/logs/sessions/<id>.jsonl`; `policy_ctx = %{workspace_root: scope.workspace.root, cwd: scope.cwd, read_roots: [scope.primary_icm.root | related roots ++ scope.read_paths], session_kind: scope.kind, write_paths: scope.write_paths, write_roots: scope.write_roots}` — this `policy_ctx`, applied by `PermissionPolicy` on the ACP `request_permission` callback, is the authoritative enforcement (the settings file, when present, is only a pre-filter). The `ClaudeSettings.write!(workspace)` call is removed from `init/1`. `default_read_roots/1`/`default_extra_roots/1` are removed (the scope provides absolute read roots).
 
-- [ ] **Step 1: Write/adjust the failing tests** — using `AgentCase` with a mounted ICM: after starting a session, assert (via the fake adapter's recorded launch) that the process cwd and ACP `session/new` `cwd` equal the primary ICM root (not the workspace); assert the fake adapter received the related root via `additionalDirectories` (and no settings path — callback-only); assert a relative `Read(AGENTS.md)` is allowed via the callback (resolves under the ICM) while `Read(<workspace>/sources/…)` is `:ask`.
+- [ ] **Step 1: Write/adjust the failing tests** — using `AgentCase` with a mounted ICM: after starting a session, assert (via the fake adapter's recorded launch) that the process cwd and ACP `session/new` `cwd` equal the primary ICM root (not the workspace); assert the fake adapter received the related root via `additionalDirectories` and the in-memory `managedSettings` posture; assert a relative `Read(AGENTS.md)` is allowed via the callback (resolves under the ICM) while `Read(<workspace>/sources/…)` is `:ask`.
 - [ ] **Step 2: Run to verify failure** — FAIL (cwd is still the workspace).
-- [ ] **Step 3: Implement** — change `init/1` to destructure `scope` from opts; set `cd: scope.cwd` and `cwd: scope.cwd`; build the split `policy_ctx`; obtain launch directives from the harness (`Valea.Harnesses.ClaudeCode.launch/2`) and pass `additional_roots`/`settings_path` into `Connection.new/1`; keep transcript path anchored to `scope.workspace.root`; drop `ClaudeSettings.write!` and the `default_*_roots` helpers. Update `AgentCase.start_session/3` to `SessionScope.resolve/1` a scope for the given mounted ICM and pass it.
+- [ ] **Step 3: Implement** — change `init/1` to destructure `scope` from opts; set `cd: scope.cwd` and `cwd: scope.cwd`; build the split `policy_ctx`; obtain launch directives from the harness (`Valea.Harnesses.ClaudeCode.launch/2`) and pass `additional_roots`/`managed_settings` into `Connection.new/1`; keep transcript path anchored to `scope.workspace.root`; drop `ClaudeSettings.write!` and the `default_*_roots` helpers. Update `AgentCase.start_session/3` to `SessionScope.resolve/1` a scope for the given mounted ICM and pass it.
 - [ ] **Step 4: Run to verify pass** — PASS.
 - [ ] **Step 5: Commit** — `feat: SessionServer launches with cwd = primary ICM root + managed settings`.
 
