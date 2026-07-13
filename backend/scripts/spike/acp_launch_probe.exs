@@ -11,13 +11,22 @@
 #     roots            ACP field; NOT wired into `Valea.Acp.Connection` yet —
 #                       that is Task 1.3's job. See "Why this script speaks
 #                       raw ACP" below).
-#   * managed         — a Valea-owned settings.json is written to a THIRD
-#     settings          temp dir standing in for `runtime/sessions/<id>/
-#                       settings.json`, deliberately NOT under cwd or any
-#                       additionalDirectories entry, to empirically confirm
-#                       the adapter's `SettingsManager` never looks at it
-#                       (see docs/notes/acp-launch-contract.md, "Managed
-#                       settings").
+#   * managed         — TWO things are exercised: (a) a Valea-owned
+#     settings          settings.json is written to a THIRD temp dir standing
+#                       in for `runtime/sessions/<id>/settings.json`,
+#                       deliberately NOT under cwd or any additionalDirectories
+#                       entry, to empirically confirm the adapter's
+#                       `SettingsManager` never looks at it; (b) the chosen
+#                       mechanism itself — an in-memory `managedSettings`
+#                       posture (ask Write/Edit/Bash; deny the secret dir;
+#                       deny WebFetch/WebSearch) forwarded on `session/new` via
+#                       `_meta.claudeCode.options.managedSettings`, the SDK's
+#                       documented lockdown-without-a-file channel (see
+#                       docs/notes/acp-launch-contract.md, "Managed
+#                       settings"). (a) is a rejected-alternative check; (b)
+#                       is the actual chosen posture, present here so the
+#                       moment account headroom returns, a live run also
+#                       exercises it end to end.
 #   * enforcement     — every Read/Write the model attempts outside the
 #                       allowed roots must arrive as a `session/
 #                       request_permission` REQUEST that this script answers
@@ -252,6 +261,30 @@ defmodule Spike.AcpLaunchProbe do
        }) do
     IO.puts("<- initialize ok (protocolVersion=#{inspect(result["protocolVersion"])})")
 
+    # The chosen enforcement posture (see docs/notes/acp-launch-contract.md,
+    # "Managed settings"): in-memory only, forwarded through the SDK's
+    # documented `Options.managedSettings` field via the adapter's own
+    # `_meta.claudeCode.options.*` pass-through — no settings file is
+    # written anywhere. Deliberately restrictive-only (ask/deny, no `allow`
+    # array): the SDK filters `Options.managedSettings` restrictive-only, so
+    # a permissive key here would silently be dropped anyway (`sdk.d.ts`,
+    # `Options.managedSettings` doc comment). This mirrors the shape of
+    # `Valea.Agents.ClaudeSettings.content/1`'s `ask`/`deny` set, minus its
+    # `allow` array (which only makes sense for the file-based mechanism
+    # that module writes for the legacy/non-ICM case).
+    managed_settings = %{
+      "permissions" => %{
+        "ask" => ["Write", "Edit", "Bash"],
+        "deny" => [
+          "Read(#{state.dirs.secret}/**)",
+          "Edit(#{state.dirs.secret}/**)",
+          "Write(#{state.dirs.secret}/**)",
+          "WebFetch",
+          "WebSearch"
+        ]
+      }
+    }
+
     send_frame(handle, %{
       "jsonrpc" => "2.0",
       "id" => @session_new_id,
@@ -259,12 +292,16 @@ defmodule Spike.AcpLaunchProbe do
       "params" => %{
         "cwd" => state.dirs.primary,
         "mcpServers" => [],
-        "additionalDirectories" => [state.dirs.related]
+        "additionalDirectories" => [state.dirs.related],
+        "_meta" => %{
+          "claudeCode" => %{"options" => %{"managedSettings" => managed_settings}}
+        }
       }
     })
 
     IO.puts(
-      "-> session/new  cwd=#{state.dirs.primary}  additionalDirectories=[#{state.dirs.related}]"
+      "-> session/new  cwd=#{state.dirs.primary}  additionalDirectories=[#{state.dirs.related}]" <>
+        "  _meta.claudeCode.options.managedSettings=#{inspect(managed_settings)}"
     )
 
     %{state | stage: :await_session_new}

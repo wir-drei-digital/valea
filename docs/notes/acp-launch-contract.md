@@ -8,10 +8,24 @@ wire/CLI mechanism behind cwd, additional read roots, and managed settings
 (spec §C7 "Session permission policy").
 
 **Decision landed (do not re-open without a new spike):** enforcement of
-reads/writes is **callback-only** — `Valea.Agents.PermissionPolicy.decide/2`
-on the ACP `session/request_permission` round-trip is the sole,
-harness-neutral, authoritative gate. No settings file is written into or
-near an ICM. Additional read roots are still conveyed natively via
+reads/writes is **managedSettings-posture + callback**, not callback-only.
+An initial version of this note framed enforcement as "callback-only" —
+that framing was **wrong** and is corrected here (see "Managed settings"
+below for why): registering the ACP `session/request_permission` callback
+only makes the SDK pass `--permission-prompt-tool stdio` to the CLI; the
+CLI's **own** permission engine (settings + defaults + mode) decides FIRST,
+and only calls that fall through to "ask" ever reach the callback. With no
+settings at all, CLI defaults govern and can auto-resolve a write or a
+denied read before Valea's callback is ever invoked. The corrected,
+locked-in mechanism: Valea passes an **in-memory** `managedSettings`
+posture (ask `Write`/`Edit`/`Bash`; deny the workspace's protected
+subdirectories; deny `WebFetch`/`WebSearch`) on `session/new`, via the
+SDK's documented `Options.managedSettings` → `--managed-settings <json>`
+channel (no file written into or near the ICM — see "Managed settings"
+below for the exact file:line citations). That posture is what forces
+sensitive calls to fall through to "ask"; `Valea.Agents
+.PermissionPolicy.decide/2` on the callback then authoritatively answers
+each one. Additional read roots are still conveyed natively via
 `session/new`'s `additionalDirectories` field (a genuine efficiency win —
 common related-ICM reads don't each round-trip through the callback), but
 that field is a **convenience**, not a security boundary: a read outside
@@ -205,6 +219,19 @@ additionalDirectories?: string[];   // "Additional directories Claude can access
 // sdk.d.ts:1835
 settings?: string | Settings;       // accepts a FILE PATH *or* an inline Settings object/JSON string
 
+// sdk.d.ts:1836-1859 (doc comment + field) — THE CHOSEN ENFORCEMENT MECHANISM
+/**
+ * Policy-tier settings supplied by the spawning parent process. ...
+ * Even when opted in, the value is filtered restrictive-only: permissive
+ * arrays (`permissions.allow`, `additionalDirectories`, `allowedMcpServers`,
+ * ...) that would widen an existing admin lock are silently dropped. ...
+ *
+ * Intended for embedding applications (e.g. desktop apps) that derive
+ * lockdown settings from their own enterprise configuration and need to
+ * enforce them on the spawned subprocess without writing root-owned files.
+ */
+managedSettings?: Settings;
+
 // sdk.d.ts:1861-1870
 /**
  * Control which filesystem settings to load.
@@ -231,7 +258,20 @@ CLAUDE.md loading is ON by default and would need an explicit override to
 turn off (see "Instruction isolation" below — turning it off globally is
 the wrong tool for isolating one related directory's memory).
 
-### `sdk.mjs` (bundled, minified) — confirms `additionalDirectories` → `--add-dir`, `settingSources` → `--setting-sources`
+`Options.managedSettings` (`sdk.d.ts:1859`, doc comment `sdk.d.ts:1836-1858`)
+is the field this contract chooses for enforcement. Its own doc comment says
+exactly what Valea needs: an **embedding application** (Valea's Elixir
+backend, spawning the adapter, which spawns the CLI) can "enforce [lockdown
+settings] on the spawned subprocess without writing root-owned files." It is
+also explicitly **restrictive-only-filtered**: `permissions.allow`,
+`additionalDirectories`, `allowedMcpServers`, and other permissive keys are
+silently dropped even if included — only deny/ask-shaped keys take effect.
+This is a good structural fit for Valea's posture (ask + deny only, no
+`allow` array) and a hard constraint: an `allow` array in `managedSettings`
+would be silently ignored, so allow-listing must stay the callback's job,
+not this channel's.
+
+### `sdk.mjs` (bundled, minified) — confirms `additionalDirectories` → `--add-dir`, `settingSources` → `--setting-sources`, `managedSettings` → `--managed-settings`
 
 ```
 ...W.push("--session-mirror");for(let Ue of e)W.push("--add-dir",Ue);...
@@ -254,6 +294,18 @@ let zu=kA(ju,na);for(let[Ue,Gt]of Object.entries(zu)) ... W.push(`--${Ue}`,Gt);
 pair — consistent with the CLI's own `--settings <file-or-json>`
 description. See "Instruction isolation" for how this is used, and the
 caveat about passing a **string**, not a raw object.)
+
+```
+...if(this.options.managedSettings)W.push("--managed-settings",this.options.managedSettings);...
+```
+(`sdk.mjs` line 88 — confirms `options.managedSettings`, if set, becomes a
+`--managed-settings <value>` argv pair to the underlying native CLI. The
+value pushed is already a JSON string by this point: the query-construction
+path a few frames earlier — `managedSettings:s?me(s):void 0` (`sdk.mjs` line
+117, where `me` is the module's local `JSON.stringify` wrapper) —
+stringifies the caller's plain object before it ever reaches this push. This
+is the exact mechanism `Options.managedSettings` above documents, confirmed
+at the argv-construction level, not just the type-declaration level.)
 
 ---
 
@@ -343,24 +395,95 @@ isolation would then rely on the primary ICM's own `context.md`
 (`Valea.Agents.SessionSettings.context/1`, Task 1.2) explicitly telling the
 agent not to treat the related ICM's conventions as its own.
 
-### Managed settings (locked decision: callback-only, no file)
+### Managed settings (locked decision: in-memory `managedSettings` posture + callback)
 
-**No file, by design.** The adapter's `SettingsManager` cannot be pointed at
-an external file (confirmed above, source-grounded — `getWatchedPaths/0`
-hard-codes exactly three locations, none of them attacker/Valea-suppliable
-without touching `~/.claude` or the OS-managed path, both of which are
-user/OS-owned, not per-ICM). Per the plan's locked decision (fallback option
-**(3)**), Valea does **not** attempt to write `runtime/sessions/<id>/
-settings.json` into any adapter-resolved location. `Valea.Agents
-.SessionSettings.materialize!/1` (Task 1.2) still renders `content/1` for a
-**future** harness that CAN accept an external file (`Valea.Harness`
-behaviour's `settings_path` directive, left `nil` for Claude Code), but for
-Claude Code, enforcement is **entirely** the ACP `session/request_permission`
-callback, decided by `Valea.Agents.PermissionPolicy.decide/2`.
+**No file, but not callback-only either — this is the corrected decision.**
+An earlier draft of this note locked in "callback-only, no file" and framed
+it as safe because "the adapter's `SettingsManager` cannot be pointed at an
+external file." That framing missed the actual risk: the ACP
+`request_permission` callback only ever fires for tool calls the CLI's own
+permission engine resolves to `"ask"`. Registering the callback (which is
+what makes Valea's adapter launch pass `--permission-prompt-tool stdio` to
+the CLI) does not by itself change what the CLI's permission engine decides
+BEFORE the callback is consulted — that decision is driven by
+settings + defaults + mode. With **zero** settings supplied (the old
+decision), the CLI's own defaults govern that first-pass decision, and nothing
+guarantees a sensitive write or a should-be-denied read falls through to
+`"ask"` rather than being auto-resolved by the CLI itself, invisibly to
+Valea. `Valea.Agents.ClaudeSettings`'s own moduledoc says this explicitly for
+the workspace-root case Valea already ships
+(`backend/lib/valea/agents/claude_settings.ex:51-60`, the "LOAD-BEARING
+scoping" comment): an **unscoped** `Read` allow "would auto-approve reads of
+ANY path the OS user can reach ... BEFORE the ACP permission callback
+fires — making PermissionPolicy's outside-workspace deny and read-roots
+allowlist dead code for reads." The same structural risk applies with **no**
+settings at all, not just a badly-scoped one — a callback with nothing
+upstream steering the CLI's first-pass decision toward `"ask"` is not a
+guarantee.
 
-This is not hypothetical for Claude Code — it is how Valea **already**
-operates in production today, unmodified by this task. See "Verified proof
-— production-grounded" below.
+**The fix, and the actual chosen mechanism:** the SDK exposes an in-memory
+`Options.managedSettings` field (`sdk.d.ts:1859`, doc comment
+`sdk.d.ts:1836-1858` — quoted in full in "Surface" above), documented for
+exactly this case — "embedding applications ... that need to enforce
+[lockdown settings] on the spawned subprocess without writing root-owned
+files." The adapter forwards it verbatim: any value under
+`_meta.claudeCode.options.managedSettings` on `session/new` spreads into
+`userProvidedOptions` (`acp-agent.js:2856-2858`, quoted in "Surface" above —
+`...userProvidedOptions` wins over adapter defaults) and reaches the SDK's
+`query()` as `options.managedSettings`, which the SDK then serializes and
+forwards as `--managed-settings <json>` to the underlying native CLI
+(`sdk.mjs` line 88: `if(this.options.managedSettings)W.push("--managed-settings",this.options.managedSettings)`,
+quoted in full in "Surface" above). **No file is written into or near the
+ICM** — the value lives only in the adapter/CLI subprocess's argv and
+memory for the life of that session, satisfying the "never write into the
+ICM" invariant exactly as well as the old "no settings at all" decision did,
+while actually closing the gap that decision left open.
+
+Valea renders its posture as this `managedSettings` JSON (restrictive-only,
+matching the SDK's own filtering — see "Surface" above): `ask` for
+`Write`/`Edit`/`Bash`, `deny` for the workspace's protected subdirectories
+(`logs/`, `config/`, `secrets/`, `runtime/`, `.git/`, `app.sqlite*`), and
+`deny` for `WebFetch`/`WebSearch`. That posture is what **forces** the
+sensitive calls spec §C7 cares about to fall through to `"ask"` — closing
+exactly the gap the old "callback-only" decision left open — and
+`Valea.Agents.PermissionPolicy.decide/2`, invoked on the resulting
+`session/request_permission` callback, remains the sole place that turns
+each `"ask"` into an actual `allow`/`deny` decision. In other words: the
+posture sets up the gate, the callback is still what walks through it.
+`Valea.Agents.SessionSettings.materialize!/1` (Task 1.2) still renders
+`content/1` for a **future** harness that CAN accept an external file
+(`Valea.Harness` behaviour's `settings_path` directive, left `nil` for
+Claude Code) — that path is unaffected by this decision.
+
+**Precondition before any real ICM session runs with writes/secrets
+enabled:** the `managedSettings` posture above must get one live
+end-to-end verification against a real `claude-agent-acp` subprocess —
+confirming (a) a write attempt is `"ask"`-gated (not auto-allowed) under
+the posture, (b) a secret-path read is denied, and (c) both round-trip
+through `Valea.Agents.PermissionPolicy.decide/2` via the ACP callback, not
+resolved by the CLI on its own. This spike attempted exactly that proof —
+`session/new` now carries `_meta.claudeCode.options.managedSettings` with a
+posture in this shape (see `backend/scripts/spike/acp_launch_probe.exs`) —
+but the **tool-call turn itself was blocked by a real account monthly-spend
+limit**, identically to the original run (see "Verified proof" below for
+both runs' raw output). So today this note is honest about a **live/source
+split**: `cwd`, `additionalDirectories`, and "no settings.json file ever
+appears" (including with `managedSettings` now attached to `session/new`)
+are **live-proven**; that the `managedSettings` posture actually produces
+an `"ask"` for a write and a `deny` for a secret read via the callback is
+**source/code-grounded** (the field:line citations above) but **not yet
+independently live-verified**. Treat that live gap as a hard precondition,
+not a formality, before Task 1.2/1.3 route a real ICM session through this
+mechanism with writes or secrets enabled.
+
+This callback-answers-the-ask half is not hypothetical for Claude Code — it
+is how Valea's existing chat/workflow session path **already** operates in
+production today (posture-assisted via `ClaudeSettings.write!/1`'s
+workspace-root file, not yet via `managedSettings`), unmodified by this
+task except for the file→in-memory posture swap this note locks in. See
+"Verified proof — production-grounded" below — and see "Rejected
+alternatives" for why the file-based version of that posture is not the
+path forward for ICMs specifically.
 
 ### Instruction isolation
 
@@ -378,6 +501,12 @@ explicitly asked to act within that ICM").
 
 ### Rejected alternatives
 
+- **Callback-only, no settings supplied at all** (this note's own original
+  decision, before this review pass): rejected — as explained above, a bare
+  callback with no upstream posture steering the CLI's first-pass decision
+  is not a guarantee that sensitive calls reach it at all; the CLI's own
+  defaults could auto-resolve them first. `managedSettings` is what
+  supplies that steering without writing a file.
 - **External settings file pointed at by the adapter** (fallback option
   1/`--settings <path>` reaching `SettingsManager`): **not forwarded** by
   this adapter version — `SettingsManager` only ever resolves `~/.claude`,
@@ -389,15 +518,22 @@ explicitly asked to act within that ICM").
   it reaches the underlying CLI subprocess's argv, not `SettingsManager`;
   `SettingsManager` is the adapter's OWN separate settings resolution used
   for `permissions.defaultMode` and model allowlisting, and it never
-  consults `options.settings`). Re-verify if a future adapter version adds
-  an explicit "external settings path" ACP param.
+  consults `options.settings`). This is also a structurally different
+  channel from the chosen `managedSettings` field — `options.settings` is
+  NOT restrictive-only-filtered by the SDK, so it is the wrong channel for
+  a lockdown posture even where it IS forwarded. Re-verify if a future
+  adapter version adds an explicit "external settings path" ACP param.
 - **`<cwd>/.claude/settings.json` written into the ICM** (fallback option
-  2): rejected per spec — the ICM must stay usable by a bare harness, and
-  this is EXACTLY what `Valea.Agents.ClaudeSettings.write!/1`
+  2): rejected — it clobbers the user's own config at that path (or, if
+  none exists yet, silently claims that path for Valea, which a bare
+  non-Valea harness opening the same ICM later would then also pick up).
+  The ICM must stay usable by a bare harness with no Valea-owned residue in
+  it. This is EXACTLY what `Valea.Agents.ClaudeSettings.write!/1`
   (`backend/lib/valea/agents/claude_settings.ex`) does TODAY for the
-  Valea-workspace-root case, which is precisely the pattern Task 1.2
-  replaces for the ICM-root case. Kept only as the historical baseline this
-  spike supersedes, not as an option going forward.
+  Valea-workspace-root case (a location Valea already owns outright, unlike
+  an ICM), which is precisely the pattern Task 1.2 replaces for the
+  ICM-root case. Kept only as the historical baseline this spike
+  supersedes, not as an option going forward for ICMs.
 - **`_meta.valea.*` invention for additional read roots**: unnecessary —
   `additionalDirectories` is a native, first-class `session/new` field
   (confirmed above), so there is no need to invent a Valea-specific `_meta`
@@ -417,7 +553,12 @@ deletable once Task 1.2/1.3 land. It:
    (`SECRET.md`, in neither), plus a fourth dir holding a **stand-in
    settings.json** (denying the secret dir) that is deliberately placed
    OUTSIDE cwd/additionalDirectories, to empirically test whether the
-   adapter ever looks at it.
+   adapter ever looks at it (a rejected-alternative check, not the chosen
+   mechanism). Separately, `session/new` itself now also carries a
+   `_meta.claudeCode.options.managedSettings` posture (ask
+   `Write`/`Edit`/`Bash`; deny the secret dir; deny `WebFetch`/`WebSearch`)
+   — the actual chosen mechanism — so the probe is ready to exercise it the
+   moment a live tool-call turn is possible again.
 2. Resolves the harness via `Valea.Harnesses.ClaudeCode.acp_command/1` and
    launches it via `Valea.Agents.ProcessRuntime.start/2` with
    `Valea.Agents.Env.minimal/0` as the subprocess environment — the exact
@@ -489,10 +630,50 @@ Run: `cd backend && mix run scripts/spike/acp_launch_probe.exs`
   NOT independently live-verified this run; both remain source/binary and
   production-grounded (below).
 
+### Third live run (this review-fix pass): `managedSettings` reaches `session/new` live, same rate-limit blocker on the prompt turn
+
+After adding `_meta.claudeCode.options.managedSettings` to the probe's
+`session/new` params (see "Proof harness" above), a third live run against
+the real adapter subprocess produced:
+
+```
+<- initialize ok (protocolVersion=1)
+-> session/new  cwd=/var/.../acp_probe_4422/primary_icm  additionalDirectories=[/var/.../acp_probe_4422/related_icm]  _meta.claudeCode.options.managedSettings=%{"permissions" => %{"ask" => ["Write", "Edit", "Bash"], "deny" => ["Read(/var/.../acp_probe_4422/secret/**)", "Edit(/var/.../acp_probe_4422/secret/**)", "Write(/var/.../acp_probe_4422/secret/**)", "WebFetch", "WebSearch"]}}
+<- session/new ok (sessionId=c605898b-9c8b-4786-9ecb-2963dced1368)
+-> session/prompt (4-step read/read/read-secret/write instructions)
+<- session/update  available_commands_update
+<- session/update  usage_update
+!! session/prompt FAILED: %{"code" => -32603, "data" => %{"errorKind" => "rate_limit"},
+   "message" => "Internal error: You've hit your monthly spend limit. Run
+   /usage-credits to manage your limit and keep using Fable 5 or switch
+   models to continue this chat."}
+<- session/update  session_info_update
+```
+
+- **New live confirmation**: `session/new` accepted a real
+  `_meta.claudeCode.options.managedSettings` payload without error or
+  rejection, and negotiated a session (`sessionId` returned) — the adapter
+  does not reject or ignore the `managedSettings` sub-field of
+  `_meta.claudeCode.options`. This corroborates the "Surface" section's
+  `...userProvidedOptions` spread claim (`acp-agent.js:2856-2858`) at the
+  wire level, for `managedSettings` specifically, not just for the fields
+  already covered by the first two runs.
+- **`find <primary> <related> -name settings.json` still empty** after this
+  run too — with `managedSettings` now attached, still no settings.json
+  written into either ICM, and the same `.claude/<plugin-scaffold>/`
+  directories (see below) reappeared in `primary_icm` only, unchanged from
+  the prior two runs.
+- **Same blocker, same exact `errorKind: "rate_limit"` message** — the
+  prompt turn still never reached a tool call, so this run does **not**
+  close the live gap on whether the posture actually produces an `"ask"`
+  for the write step or a `deny` for the secret-read step. That remains the
+  documented precondition (see "Managed settings" above) for any real ICM
+  session with writes/secrets enabled.
+
 ### Unexpected live finding: `.claude/` subdirectories DO appear, but never `settings.json`
 
-Both live runs left a `.claude/` directory in the **primary** ICM (never in
-the related one) containing only empty subdirectories:
+All three live runs left a `.claude/` directory in the **primary** ICM
+(never in the related one) containing only empty subdirectories:
 `audit/, plans/, research/, reviews/, skill-metrics/, solutions/` — no files,
 and critically **no `settings.json`**. These directory names match
 globally-installed Claude Code **plugin/skill scaffolding** (e.g. the
@@ -527,22 +708,60 @@ note in Phase 5 if it proves persistent across more accounts/environments.
 - `claudeMdExcludes` (`sdk.d.ts:6298`) as the surgical suppression
   mechanism, forwarded via `options.settings` → `--settings <json-string>`
   (`sdk.mjs`, quoted above).
+- `Options.managedSettings` (`sdk.d.ts:1859`, doc comment
+  `sdk.d.ts:1836-1858`) → `--managed-settings <json-string>` argv (`sdk.mjs`
+  line 88, `managedSettings:s?me(s):void 0` stringification at line 117,
+  both quoted above) — the chosen enforcement channel. **Partially
+  live-confirmed this run** (third live run above: `session/new` accepted
+  the field without error) but the actual **effect** of the posture — that
+  a write attempt gets `"ask"`'d and a secret read gets `deny`'d, both via
+  the callback — is still source-grounded only, not independently
+  live-observed (the prompt turn never ran in any of the three live runs).
+  `restrictive-only` filtering of `managedSettings` (permissive keys like
+  `permissions.allow` silently dropped) is documented in the same doc
+  comment, not independently tested.
 
-### Production-grounded: the callback already gates writes/denied-reads TODAY
+### Production-grounded: today's callback-reaching behavior is settings-posture-assisted, not callback-only
 
 This is not a hypothesis riding on the blocked live run — it is how Valea's
-**existing, shipped** chat/workflow session path already works, unmodified
-by this task, and covered by a green test suite (`mix test
+**existing, shipped** chat/workflow session path already works today
+(unmodified by this task except for the file→in-memory posture swap this
+note locks in), and covered by a green test suite (`mix test
 test/valea/acp/connection_test.exs test/valea/agents/session_server_test.exs
 test/valea/agents/permission_policy_test.exs` → **59 passed**, run as part
-of this task):
+of this task). Read this section as: "the callback reliably gets a chance
+to decide, *given that a posture is in place steering the CLI toward
+`"ask"` first*" — not as evidence that the bare callback alone would
+suffice. Today's production posture is the file `Valea.Agents
+.ClaudeSettings.write!/1` writes at the workspace root
+(`backend/lib/valea/agents/claude_settings.ex:51-60`, the "LOAD-BEARING
+scoping" comment quoted in "Managed settings" above) — exactly the same
+structural role this note's `managedSettings` posture now plays for ICMs,
+via a different (in-memory, not file) delivery channel. This is precisely
+why "callback-only, no posture at all" was the wrong original decision:
+production Claude Code sessions have never actually run callback-only:
 
 - `Valea.Acp.Connection.dispatch_incoming/2` intercepts EVERY inbound
   `session/request_permission` request from the adapter
-  (`connection.ex:466-492`) — there is no code path where the adapter's own
-  permission mode can resolve a tool call without Valea seeing it, because
-  `canUseTool: this.canUseTool(sessionId)` (`acp-agent.js:2887`) is wired
-  for every tool, unconditionally, by the adapter itself.
+  (`connection.ex:466-492`) — for calls that reach the callback at all,
+  there is no code path where the adapter's own permission mode can resolve
+  the SAME tool call without Valea seeing it too, because `canUseTool:
+  this.canUseTool(sessionId)` (`acp-agent.js:2887`) is wired for every tool,
+  unconditionally, by the adapter itself. **One exception**: when the ACP
+  session's mode is `"bypassPermissions"`, the adapter short-circuits
+  before `canUseTool` is ever invoked and auto-allows —
+  `if (session.modes.currentModeId === "bypassPermissions") { return
+  {behavior: "allow", ...} }` (`acp-agent.js:2318-2326`, verified against
+  the installed `0.58.1` adapter). Valea never selects that mode itself —
+  no `bypassPermissions` string appears anywhere in `backend/lib/valea/`,
+  and `session/new`/`session/set_mode` payloads Valea sends never set a
+  mode — so this exception is a latent adapter capability, not a path
+  Valea's own code exercises today. It would only trigger if a user
+  explicitly selected a "bypass" config option surfaced by the adapter
+  itself (`session/set_config_option`, `connection.ex:192-216`, a
+  passthrough for whatever the adapter advertises) — worth a doctor-check
+  or explicit exclusion of that mode from the config UI in a later phase if
+  the adapter ever advertises it as selectable.
 - `Valea.Agents.SessionServer.apply_effect(state, {:permission_requested,
   item})` → `policy_decide/2` (`session_server.ex:308-333`) calls
   `Valea.Agents.PermissionPolicy.decide/2` and answers the ACP request
@@ -593,16 +812,23 @@ explicitly whether "outside the primary+related ICM roots" becomes a hard
 
 | Need | Mechanism | Proof |
 |---|---|---|
-| cwd | `session/new.cwd` | **Live** (this spike, x2) + already production |
-| Additional read roots | `session/new.additionalDirectories` | **Live** (this spike, x2, session accepted) |
-| Managed settings | none — callback-only | **Live** (no settings.json ever appears) + production (existing callback wiring, 59 tests) |
-| Enforcement (writes/denied-reads reach the callback) | `session/request_permission` → `PermissionPolicy.decide/2` | **Production** (existing tests) — NOT independently re-proven live this run (rate-limited before any tool call) |
+| cwd | `session/new.cwd` | **Live** (this spike, x3) + already production |
+| Additional read roots | `session/new.additionalDirectories` | **Live** (this spike, x3, session accepted) |
+| Managed settings (posture delivery, no file) | in-memory `managedSettings` → `--managed-settings <json>` via `_meta.claudeCode.options.managedSettings` (`sdk.d.ts:1859`, `sdk.mjs` line 88) | **Live** (`session/new` accepts the field, no error, no settings.json ever appears — this spike, x1 with the field attached) + production (posture-assisted callback wiring exists today via the file-based predecessor, 59 tests) |
+| Enforcement (posture forces writes/denied-reads to `"ask"`, callback decides) | `managedSettings` posture (ask/deny) → `session/request_permission` → `PermissionPolicy.decide/2` | **Production-grounded for the callback-decides half** (existing tests, file-based posture) — **NOT independently live-verified for the `managedSettings`-specific posture** this run (rate-limited before any tool call in all three runs). This is the documented precondition before real ICM sessions with writes/secrets enabled — see "Managed settings" above. |
 | CLAUDE.md auto-loads from `additionalDirectories` | yes, by default | **Source/binary-grounded only** — not live-observed |
 | Suppressing that auto-load | `claudeMdExcludes` via `_meta.claudeCode.options.settings` (JSON string) | **Source-grounded only, unverified live** — Task 1.2/1.3 must add a live check before depending on it |
 
-Status for this task: **contract fully documented and decision-locked**;
-proof is a mix of live (cwd + additionalDirectories + no-settings-file) and
-strong source/production grounding (callback enforcement, CLAUDE.md
-behavior) — the live gap is a genuine, reproduced, external account
-constraint (monthly spend limit), not a defect in the mechanism or the
-probe.
+Status for this task: **contract fully documented and decision corrected**
+(in-memory `managedSettings` posture + callback, not callback-only — see
+"Managed settings" above for why the original decision was wrong). Proof is
+a mix of live (cwd + additionalDirectories + no-settings-file, including
+with `managedSettings` attached) and strong source/production grounding
+(the `managedSettings` field:line citations, and the file-based posture's
+existing production behavior) — the live gap specific to this task is a
+genuine, reproduced, external account constraint (monthly spend limit) that
+blocked the prompt turn on all three runs, not a defect in the mechanism or
+the probe. That gap is recorded as a hard **precondition** — one live
+end-to-end verification of the `managedSettings` posture (write asks,
+secret read denies, both via the callback) — before Task 1.2/1.3 route a
+real ICM session through it with writes or secrets enabled.
