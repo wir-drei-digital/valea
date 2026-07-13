@@ -222,4 +222,86 @@ defmodule ValeaWeb.FilesControllerTest do
            |> get("/files/raw", %{"path" => "mounts/primary/Assets/escape.png"})
            |> response(404)
   end
+
+  test "serve rejects a symlinked Assets DIRECTORY escaping the mount", %{workspace: ws} do
+    outside_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-outside-dir-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(outside_dir)
+    File.write!(Path.join(outside_dir, "x.png"), "outside bytes")
+
+    # "Assets" ITSELF is a symlink pointing outside the mount root, not just
+    # a file inside it — resolve_real must walk through the directory
+    # component too, not just the leaf.
+    File.ln_s!(outside_dir, Path.join(ws, "mounts/primary/Assets"))
+
+    assert build_conn()
+           |> get("/files/raw", %{"path" => "mounts/primary/Assets/x.png"})
+           |> response(404)
+  end
+
+  test "serve rejects an absolute-path escape attempt", %{workspace: ws} do
+    outside_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-abs-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(outside_dir)
+    outside_file = Path.join(outside_dir, "secret.png")
+    File.write!(outside_file, "should never be served")
+
+    # Absolute paths only ever attribute to a DECLARED, enabled EXTERNAL
+    # mount root — an arbitrary absolute filesystem path must 404, not leak
+    # via `Path.expand` unifying it with a mount root by coincidence.
+    assert build_conn() |> get("/files/raw", %{"path" => outside_file}) |> response(404)
+    assert build_conn() |> get("/files/raw", %{"path" => "/etc/passwd"}) |> response(404)
+
+    # Absolute path INSIDE the workspace but outside any mount (workspace
+    # root itself, not under mounts/<name>/) must 404 too — same extension
+    # as a legitimate asset, so this actually exercises containment rather
+    # than just the extension allowlist.
+    workspace_root_png = Path.join(ws, "shadow.png")
+    File.write!(workspace_root_png, "not under any mount")
+
+    assert build_conn()
+           |> get("/files/raw", %{"path" => workspace_root_png})
+           |> response(404)
+  end
+
+  test "serve rejects a URL-encoded traversal attempt", %{conn: _conn} do
+    # Plug/Phoenix's router already percent-decodes the query string before
+    # `params` reaches the controller, so an encoded ".." arrives identical
+    # to a literal one — this asserts that decoding doesn't create a second,
+    # unguarded code path.
+    conn =
+      build_conn()
+      |> get("/files/raw?path=mounts%2Fprimary%2F%2e%2e%2f%2e%2e%2fsecrets%2Fx.png")
+
+    assert response(conn, 404)
+  end
+
+  test "upload is rejected 400 when page_path attributes to no mount at all", %{conn: conn} do
+    upload = %Plug.Upload{path: write_tmp_png!(), filename: "x.png", content_type: "image/png"}
+
+    conn1 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{"file" => upload, "page_path" => "logs/audit.jsonl"})
+
+    assert json_response(conn1, 400)
+
+    conn2 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload,
+        "page_path" => "mounts/primary/../../secrets/x.md"
+      })
+
+    assert json_response(conn2, 400)
+  end
 end
