@@ -26,4 +26,25 @@ describe('lineDiff', () => {
     expect(out.rows.length).toBe(100);
     expect(out.truncated).toBe(true);
   });
+
+  it('skips LCS for oversized inputs and renders as del-then-add', () => {
+    // 2100 lines each side: (2100+1) * (2100+1) = 4,410,201 > 4,000,000
+    const bigA = Array.from({ length: 2100 }, (_, i) => `a${i}`).join('\n');
+    const bigB = Array.from({ length: 2100 }, (_, i) => `b${i}`).join('\n');
+    const out = lineDiff(bigA, bigB, 5000);
+
+    // Should render as del-then-add: 2100 deletes + 2100 adds (capped at 5000)
+    expect(out.truncated).toBe(true);
+    expect(out.rows.length).toBe(4200);
+
+    // Verify del-then-add structure: first 2100 should be deletes
+    const firstRows = out.rows.slice(0, 2100);
+    const allFirstAreDels = firstRows.every((r) => r.type === 'del');
+    expect(allFirstAreDels).toBe(true);
+
+    // Next 2100 should be adds
+    const secondRows = out.rows.slice(2100);
+    const allSecondAreAdds = secondRows.every((r) => r.type === 'add');
+    expect(allSecondAreAdds).toBe(true);
+  });
 });

@@ -30,4 +30,13 @@ describe('derivePermissionView', () => {
     expect(v.diff).toBeUndefined();
     expect(v.command).toBe('ls');
   });
+
+  it('hides whitespace-only commands', () => {
+    const v = derivePermissionView({
+      title: 'Run',
+      command: '   ',
+      rawInput: { command: '   ' }
+    });
+    expect(v.command).toBeUndefined();
+  });
 });

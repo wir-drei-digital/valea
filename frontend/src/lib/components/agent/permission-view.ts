@@ -27,7 +27,7 @@ export function derivePermissionView(item: Record<string, unknown>): PermissionV
   const raw = (item.rawInput ?? {}) as Record<string, unknown>;
   const view: PermissionView = { title: str(item.title) ?? 'Permission request' };
   const command = str(item.command) ?? str(raw.command);
-  if (command) view.command = command;
+  if (command && command.trim().length > 0) view.command = command;
 
   const tier = str(item.risk_tier);
   if (tier === 'high' || tier === 'medium') view.tier = tier;

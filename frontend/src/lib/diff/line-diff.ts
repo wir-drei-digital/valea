@@ -17,6 +17,19 @@ export function lineDiff(
   const b = newText === '' ? [] : newText.split('\n');
   const m = a.length;
   const n = b.length;
+
+  const MAX_LCS_CELLS = 4_000_000; // ~2000×2000 lines — beyond this, skip LCS
+
+  // Oversized inputs skip the LCS pass entirely: render as bounded
+  // delete-then-add so the dialog stays responsive on agent-sized payloads.
+  if ((m + 1) * (n + 1) > MAX_LCS_CELLS) {
+    const rows: DiffRow[] = [
+      ...a.map((text) => ({ type: 'del' as const, text })),
+      ...b.map((text) => ({ type: 'add' as const, text }))
+    ];
+    return { rows: rows.slice(0, cap), truncated: true };
+  }
+
   // DP table of LCS lengths
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
   for (let i = m - 1; i >= 0; i--) {
