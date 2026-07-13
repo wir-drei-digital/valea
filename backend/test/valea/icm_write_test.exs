@@ -176,6 +176,30 @@ defmodule Valea.ICMWriteTest do
              )
   end
 
+  test "create_page_from_template: page name with {{date}} placeholder stays literal" do
+    File.write!(
+      Path.join(ws_path(), "mounts/primary/Templates/Report.md"),
+      "# {{title}}\n\nGenerated on {{date}}\n"
+    )
+
+    {:ok, %{path: path}} =
+      ICM.create_page_from_template(
+        "mounts/primary/Clients",
+        "Report {{date}}",
+        "mounts/primary/Templates/Report.md"
+      )
+
+    today = Date.utc_today() |> Date.to_iso8601()
+    content = File.read!(Path.join(ws_path(), path))
+
+    # The page name should be preserved verbatim in the title
+    assert content =~ "# Report {{date}}"
+    # The template's {{date}} placeholder should be substituted with the actual date
+    assert content =~ "Generated on #{today}"
+    # Verify both are present: the literal {{date}} from page name and substituted date
+    assert String.contains?(content, ["# Report {{date}}", "Generated on #{today}"])
+  end
+
   defp ws_path do
     {:ok, %{path: path}} = Manager.current()
     path

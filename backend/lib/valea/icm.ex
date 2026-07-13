@@ -563,8 +563,8 @@ defmodule Valea.ICM do
 
       content =
         template_bytes
-        |> String.replace("{{title}}", title)
         |> String.replace("{{date}}", Date.utc_today() |> Date.to_iso8601())
+        |> String.replace("{{title}}", title)
 
       write_string_to_file(abs, content) |> format_create_response(abs, mount)
     else
