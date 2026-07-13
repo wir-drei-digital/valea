@@ -15,6 +15,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { withBeforeMutate } from './before-mutate';
+  import { groupReferences, impactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
 
   let {
     path,
@@ -40,15 +41,19 @@
   let submitting = $state(false);
   let error = $state<string | null>(null);
   let loadingRefs = $state(false);
-  let referenceCount = $state<number | null>(null);
+  let referencePages = $state<PageRef[]>([]);
+  let referenceWorkflows = $state<WorkflowRef[]>([]);
   let inputRef = $state<HTMLInputElement | null>(null);
+
+  const impact = $derived(impactLine(referencePages.length, referenceWorkflows.length));
 
   $effect(() => {
     if (open) {
       name = currentName;
       error = null;
       submitting = false;
-      referenceCount = null;
+      referencePages = [];
+      referenceWorkflows = [];
 
       if (isFolder) {
         loadingRefs = false;
@@ -57,19 +62,15 @@
         void api.icmEntryReferences(path).then((result) => {
           loadingRefs = false;
           if (result.ok) {
-            const data = result.data as { workflows: { file: string; name: string }[] };
-            referenceCount = data.workflows.length;
+            const data = result.data as { workflows?: WorkflowRef[]; pages?: PageRef[] };
+            const grouped = groupReferences(data);
+            referencePages = grouped.pages;
+            referenceWorkflows = grouped.workflows;
           }
         });
       }
     }
   });
-
-  function impactLine(count: number): string {
-    return count === 1
-      ? 'Also updates 1 workflow that reads this page.'
-      : `Also updates ${count} workflows that read this page.`;
-  }
 
   function mapError(code: string): string {
     switch (code) {
@@ -166,11 +167,11 @@
       </div>
 
       {#if isFolder}
-        <p class="text-suggest-ink text-[12.5px]">Workflow references to pages inside will be updated.</p>
+        <p class="text-suggest-ink text-[12.5px]">References to pages inside will be updated.</p>
       {:else if loadingRefs}
-        <p class="text-ink-meta text-[12.5px]">Checking workflow references…</p>
-      {:else if referenceCount}
-        <p class="text-suggest-ink text-[12.5px]">{impactLine(referenceCount)}</p>
+        <p class="text-ink-meta text-[12.5px]">Checking references…</p>
+      {:else if impact}
+        <p class="text-suggest-ink text-[12.5px]">{impact}</p>
       {/if}
 
       {#if error}

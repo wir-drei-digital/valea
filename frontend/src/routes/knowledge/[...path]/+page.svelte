@@ -17,6 +17,7 @@
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
+  import BacklinksPanel from '$lib/components/knowledge/BacklinksPanel.svelte';
   import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import ImageIcon from '@lucide/svelte/icons/image';
   import FileText from '@lucide/svelte/icons/file-text';
@@ -483,6 +484,8 @@
         {/if}
 
         <PageMeta frontmatter={content.frontmatter} />
+
+        <BacklinksPanel path={decodedPath} />
 
         <div class="bg-paper-pill rounded-xl px-4 py-3">
           <p class="text-[13px] text-ink-body">

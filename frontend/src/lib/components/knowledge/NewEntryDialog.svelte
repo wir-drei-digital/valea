@@ -3,6 +3,13 @@
   // mapping and layout stay in one place. Pages land the user straight in
   // the editor on success; folders just close — the watcher (icm_changed)
   // refreshes the tree, so there's nothing to navigate to yet.
+  //
+  // Page mode also offers a "Start from" template select (Task C10) —
+  // options come from `templateOptions`, which only ever offers templates
+  // from the mount that owns `parentPath` (`createIcmPageFromTemplate`
+  // requires template and new page to share a mount). Leaving it on the
+  // default "Empty page" (`templatePath === ''`) keeps the pre-C10
+  // `createIcmPage` call path exactly as it was.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -10,6 +17,8 @@
   import { api } from '$lib/api/client';
   import { encodePath } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
+  import { icmStore } from '$lib/stores/icm.svelte';
+  import { templateOptions } from './template-options';
 
   let {
     mode,
@@ -21,6 +30,12 @@
   let submitting = $state(false);
   let error = $state<string | null>(null);
   let inputRef = $state<HTMLInputElement | null>(null);
+  // "Start from" (Task C10) — the chosen template's path, or '' for "Empty
+  // page" (the pre-C10 default create-a-blank-page behavior). Folder mode
+  // never reads this.
+  let templatePath = $state('');
+
+  const options = $derived(mode === 'page' ? templateOptions(icmStore.groups, parentPath) : []);
 
   // Reset to a clean slate every time the dialog opens — it's a shared
   // instance reused across many create actions, not remounted per open.
@@ -29,6 +44,7 @@
       name = '';
       error = null;
       submitting = false;
+      templatePath = '';
     }
   });
 
@@ -53,7 +69,11 @@
     error = null;
     submitting = true;
     const result =
-      mode === 'page' ? await api.createIcmPage(parentPath, trimmed) : await api.createIcmFolder(parentPath, trimmed);
+      mode === 'folder'
+        ? await api.createIcmFolder(parentPath, trimmed)
+        : templatePath
+          ? await api.createIcmPageFromTemplate(parentPath, trimmed, templatePath)
+          : await api.createIcmPage(parentPath, trimmed);
     submitting = false;
 
     if (!result.ok) {
@@ -106,6 +126,23 @@
           onkeydown={onKeydown}
         />
       </div>
+
+      {#if mode === 'page'}
+        <div class="flex flex-col gap-1.5">
+          <Label for="new-entry-template">Start from</Label>
+          <select
+            id="new-entry-template"
+            bind:value={templatePath}
+            disabled={submitting}
+            class="border-input focus-visible:border-ring h-8 rounded-lg border bg-transparent px-2.5 py-1 text-[13.5px] text-ink-body outline-none disabled:pointer-events-none disabled:opacity-50"
+          >
+            <option value="">Empty page</option>
+            {#each options as option (option.path)}
+              <option value={option.path}>{option.label}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
 
       {#if error}
         <p role="alert" class="text-[12.5px] text-warn-ink">{error}</p>
