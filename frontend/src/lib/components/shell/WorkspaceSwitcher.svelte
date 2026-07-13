@@ -2,24 +2,15 @@
   // Sidebar workspace switcher — sits above the StatusPill. Trigger shows
   // the current workspace's folder name (basename of its path, mono 11px)
   // with a chevron; opens a shadcn/bits-ui DropdownMenu listing recent
-  // workspaces (current one checked) plus "Open another folder…".
+  // workspaces (current one checked).
   //
-  // The "Open another folder…" path input is deliberately rendered OUTSIDE
-  // `DropdownMenu.Content` (selecting the item closes the menu and reveals
-  // a small panel below the trigger instead) rather than inline inside the
-  // open menu: bits-ui's menu content wires a raw keydown handler that
-  // typeahead-searches on every single character key while focus is
-  // anywhere inside the content (see `DOMTypeahead.handleTypeaheadSearch`
-  // in `bits-ui/dist/internal/dom-typeahead.svelte.js`), with no guard for
-  // the key event's target being a text input — so a live `<Input>` nested
-  // inside `DropdownMenu.Content` has every keystroke hijacked into
-  // menu-item matching (which calls `.focus()` on whatever item matches,
-  // yanking focus out of the field). Closing the menu first sidesteps that
-  // entirely while keeping the same reveal-a-path-input-and-Open-button
-  // shape the brief and `OpenWorkspaceFlow.svelte` (onboarding) both use.
+  // The manual "Open another folder…" path entry was removed here: Task 2.5
+  // made `open_workspace` resolve strictly by registry id
+  // (`Manager.open/1` → `Config.workspace_by_id/1`), so typing an arbitrary
+  // folder path always failed with `unknown_workspace`. The full id-based
+  // switcher rework (adding a folder picker back, wired to id resolution)
+  // is Phase 10 — this is just removing the broken affordance early.
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
-  import { Button } from '$lib/components/ui/button/index.js';
-  import { Input } from '$lib/components/ui/input/index.js';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Check from '@lucide/svelte/icons/check';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -37,8 +28,6 @@
   } = $props();
 
   let menuOpen = $state(false);
-  let formOpen = $state(false);
-  let manualPath = $state('');
   let switching = $state(false);
   let error = $state<string | null>(null);
 
@@ -60,7 +49,6 @@
 
     if (trimmed === workspaceStore.id) {
       menuOpen = false;
-      formOpen = false;
       return;
     }
 
@@ -75,29 +63,11 @@
     }
 
     menuOpen = false;
-    formOpen = false;
-    manualPath = '';
-  }
-
-  function openForm(): void {
-    formOpen = true;
-    error = null;
-  }
-
-  function closeForm(): void {
-    formOpen = false;
-    manualPath = '';
-    error = null;
   }
 </script>
 
 <div class="flex flex-col gap-1.5">
-  <DropdownMenu.Root
-    bind:open={menuOpen}
-    onOpenChange={(open) => {
-      if (!open) closeForm();
-    }}
-  >
+  <DropdownMenu.Root bind:open={menuOpen}>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
         <button
@@ -116,8 +86,10 @@
           {@const current = ws.id === workspaceStore.id}
           <DropdownMenu.Item
             aria-current={current ? 'true' : undefined}
+            aria-disabled={switching ? 'true' : undefined}
             onSelect={(event) => {
               event.preventDefault();
+              if (switching) return;
               void selectWorkspace(ws.id);
             }}
           >
@@ -131,41 +103,9 @@
             </span>
           </DropdownMenu.Item>
         {/each}
-        <DropdownMenu.Separator />
       {/if}
-      <DropdownMenu.Item
-        onSelect={(event) => {
-          event.preventDefault();
-          menuOpen = false;
-          openForm();
-        }}
-      >
-        Open another folder…
-      </DropdownMenu.Item>
     </DropdownMenu.Content>
   </DropdownMenu.Root>
-
-  {#if formOpen}
-    <div class="flex flex-col gap-2 rounded-lg border border-paper-border bg-paper-card p-2.5">
-      <Input
-        bind:value={manualPath}
-        disabled={switching}
-        placeholder="/Users/you/Documents/my-business"
-        onkeydown={(event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            void selectWorkspace(manualPath);
-          }
-        }}
-      />
-      <div class="flex gap-2">
-        <Button type="button" size="sm" class="flex-1" onclick={() => void selectWorkspace(manualPath)} disabled={switching || !manualPath.trim()}>
-          {switching ? 'Opening…' : 'Open'}
-        </Button>
-        <Button type="button" variant="outline" size="sm" onclick={closeForm} disabled={switching}>Cancel</Button>
-      </div>
-    </div>
-  {/if}
 
   {#if error}
     <p role="alert" class="text-[11.5px] text-warn-ink">{error}</p>
