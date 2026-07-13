@@ -10,22 +10,50 @@ defmodule Valea.ICM.LinkRewrite do
   path — a prose mention or a code-fence lookalike is never a Link/Image
   node, so `destinations/3` never reports it, and it is left untouched.
 
-  Known limitation: the splice itself is TEXTUAL, not positional — once a
-  destination string is confirmed (by the presence of at least one real
-  Link/Image node resolving to the renamed target ANYWHERE in the file),
-  every textual occurrence of that exact destination string in the file
-  is spliced, in both its bracketed (`](<dest>)`) and unbracketed
-  (`](dest)`) forms. If the SAME destination string also happens to
-  appear, byte-for-byte, inside a code fence or other non-link context IN
-  THE SAME FILE as a real, confirmed link to it, that fence occurrence is
-  rewritten too — the AST only confirms the file has *a* real link with
-  that destination, not which specific textual span it came from. This is
-  accepted as a rare, cosmetic edge case (the fence text now names the new
-  path instead of the old one — still a plausible, readable path string,
-  not corruption). A destination that appears ONLY inside a code fence,
-  with no real Link/Image node anywhere in the file resolving to the
-  renamed target, is correctly left untouched — confirmation fails for
-  the whole file, so no splice is attempted at all.
+  Known limitations (two; neither ever corrupts a file — the worst outcome
+  in either case is a link pointing at the wrong-but-plausible place):
+
+    * Fence-duplicate rewrite. The splice itself is TEXTUAL, not
+      positional — once a destination string is confirmed (by the
+      presence of at least one real Link/Image node resolving to the
+      renamed target ANYWHERE in the file), every textual occurrence of
+      that exact destination string in the file is spliced, in both its
+      bracketed (`](<dest>)`) and unbracketed (`](dest)`) forms. If the
+      SAME destination string also happens to appear, byte-for-byte,
+      inside a code fence or other non-link context IN THE SAME FILE as a
+      real, confirmed link to it, that fence occurrence is rewritten too
+      — the AST only confirms the file has *a* real link with that
+      destination, not which specific textual span it came from. This is
+      accepted as a rare, cosmetic edge case (the fence text now names
+      the new path instead of the old one — still a plausible, readable
+      path string, not corruption). A destination that appears ONLY
+      inside a code fence, with no real Link/Image node anywhere in the
+      file resolving to the renamed target, is correctly left untouched
+      — confirmation fails for the whole file, so no splice is attempted
+      at all.
+
+    * Normalize mismatch (dangling, not rewritten — and NOT the only hole
+      above). `Backlinks.destinations/3`'s `:url` is MDEx's *normalized*
+      destination: HTML entities (`&amp;`, `&#39;`, `&lt;`, …) are
+      entity-decoded and backslash escapes (`\_`, `\&`, …) are unescaped
+      during parsing. The splice, however, searches the RAW on-disk bytes
+      for `](<url>)` / `](url)` built from that normalized string. When a
+      confirmed inbound link is WRITTEN in an entity or escaped form —
+      e.g. on disk `[x](Foo&amp;Bar.md)`, pointing at a file literally
+      named `Foo&Bar.md` — the normalized `:url` (`"Foo&Bar.md"`) never
+      occurs as raw bytes in the file (which has `"Foo&amp;Bar.md"`), so
+      the splice finds no match and silently skips it: the link is left
+      exactly as written, and after the rename it points at a name that
+      no longer exists. That is a dangling reference — the same failure
+      class as a link that was already dangling before the rename — never
+      corrupted bytes; and because nothing on disk changed, the source
+      page is correctly absent from `updated_pages`. Likelihood is low:
+      it needs BOTH a special-character filename AND a link written in
+      entity/backslash form. Valea's own converter always serializes
+      destinations with raw characters (see `Valea.Markdown.ProseMirror`),
+      so Valea-authored links are never affected by this; the exposure is
+      non-Valea-authored markdown living in an external, by-reference
+      mount.
   """
 
   alias Valea.ICM.{Backlinks, Splice}
@@ -55,8 +83,10 @@ defmodule Valea.ICM.LinkRewrite do
           abs <- Path.wildcard(Path.join(root, "**/*.md")),
           do: {Path.join(prefix, Path.relative_to(abs, root)), abs}
 
+    needles = basename_needles(pairs)
+
     Enum.reduce_while(sources, {:ok, []}, fn {source_rel, abs}, {:ok, updated} ->
-      case rewrite_file(workspace, source_rel, abs, pairs) do
+      case rewrite_file(workspace, source_rel, abs, pairs, needles) do
         :unchanged -> {:cont, {:ok, updated}}
         {:ok, _} -> {:cont, {:ok, [source_rel | updated]}}
         {:error, reason} -> {:halt, {:error, {:rewrite_failed, Path.basename(abs), reason}}}
@@ -68,20 +98,46 @@ defmodule Valea.ICM.LinkRewrite do
     end
   end
 
-  defp rewrite_file(workspace, source_rel, abs, pairs) do
+  # Cheap pre-filter mirroring `Backlinks.backlinks/2`'s: a source can only
+  # contain a confirmed link to a renamed target if its raw bytes contain
+  # that target's basename, either literally or `URI.encode/1`-percent-
+  # encoded — skip the AST parse entirely otherwise. This is a pure speed
+  # optimization: it never changes which files end up rewritten, because a
+  # file that fails this check would have produced no confirmed splice
+  # anyway. It also, correctly, pre-filters out the HTML-entity/backslash
+  # -escaped case documented above as unrewritable (raw bytes there contain
+  # neither the literal nor the percent-encoded basename) — consistent
+  # with, not a new instance of, that documented limitation.
+  defp basename_needles(pairs) do
+    for {old, _new} <- pairs,
+        basename = Path.basename(old),
+        needle <- [basename, URI.encode(basename)],
+        uniq: true,
+        do: needle
+  end
+
+  defp rewrite_file(workspace, source_rel, abs, pairs, needles) do
     with {:ok, content} <- File.read(abs) do
-      confirmed = confirmed_urls(workspace, source_rel, content, pairs)
-
-      case splice_urls(content, confirmed) do
-        ^content ->
-          :unchanged
-
-        new_content ->
-          case atomic_write(abs, new_content) do
-            :ok -> {:ok, source_rel}
-            {:error, reason} -> {:error, reason}
-          end
+      if Enum.any?(needles, &String.contains?(content, &1)) do
+        splice_file(workspace, source_rel, abs, content, pairs)
+      else
+        :unchanged
       end
+    end
+  end
+
+  defp splice_file(workspace, source_rel, abs, content, pairs) do
+    confirmed = confirmed_urls(workspace, source_rel, content, pairs)
+
+    case splice_urls(content, confirmed) do
+      ^content ->
+        :unchanged
+
+      new_content ->
+        case atomic_write(abs, new_content) do
+          :ok -> {:ok, source_rel}
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 

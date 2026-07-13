@@ -2,6 +2,7 @@ defmodule Valea.ICM.LinkRewriteTest do
   use ExUnit.Case, async: false
 
   alias Valea.ICM
+  alias Valea.ICM.Backlinks
   alias Valea.Mounts
   alias Valea.Workspace.Manager
 
@@ -138,6 +139,31 @@ defmodule Valea.ICM.LinkRewriteTest do
     assert File.read!(Path.join(ws, src)) ==
              "# E\n\n[real link](<Pricing/Rate Card.md>)\n\n" <>
                "```\n](<Pricing/Rate Card.md>) lookalike, same file as a real link\n```\n"
+  end
+
+  test "known limitation: a confirmed link written in HTML-entity form is left dangling, not corrupted",
+       %{workspace: ws} do
+    # MDEx entity-decodes `&amp;` -> `&` while parsing, so `Backlinks.destinations/3`
+    # reports this link's `:url` as "Foo&Bar.md" — NOT the raw on-disk bytes
+    # ("Foo&amp;Bar.md"). Confirm the premise first: on the installed MDEx,
+    # this really is a genuine confirmed inbound reference to the target
+    # (not a non-match), so the skip asserted below is a real documented
+    # gap, not a vacuous case.
+    target_rel = "mounts/primary/Foo&Bar.md"
+    File.write!(Path.join(ws, target_rel), "# Foo&Bar\n")
+
+    src = "mounts/primary/G.md"
+    body = "# G\n\nSee [x](Foo&amp;Bar.md) here.\n"
+    File.write!(Path.join(ws, src), body)
+
+    target_abs = Path.expand(Path.join(ws, target_rel))
+
+    assert [%{url: "Foo&Bar.md", abs: ^target_abs}] = Backlinks.destinations(ws, src, body)
+
+    assert {:ok, %{updated_pages: updated}} = ICM.rename(target_rel, "Renamed.md")
+
+    refute src in updated
+    assert File.read!(Path.join(ws, src)) == body
   end
 
   test "a rewrite failure does not roll back the already-completed filesystem rename", %{
