@@ -14,6 +14,14 @@ defmodule ValeaWeb.Router do
     plug ValeaWeb.Plugs.ControlToken
   end
 
+  # Image upload shares the RPC surface's token gate — mirrors the `:rpc`
+  # pipeline (named separately since it lives in its own `/files` scope,
+  # not `/rpc`).
+  pipeline :files_upload do
+    plug :accepts, ["json"]
+    plug ValeaWeb.Plugs.ControlToken
+  end
+
   scope "/api", ValeaWeb do
     pipe_through :api
     get "/health", HealthController, :show
@@ -23,6 +31,19 @@ defmodule ValeaWeb.Router do
     pipe_through :rpc
     post "/run", RpcController, :run
     post "/validate", RpcController, :validate
+  end
+
+  scope "/files", ValeaWeb do
+    pipe_through :files_upload
+    post "/upload", FilesController, :upload
+  end
+
+  # Deliberately token-EXEMPT — an `<img>` tag cannot send headers, and this
+  # is a 127.0.0.1 listener serving only files local processes could already
+  # read. See `ValeaWeb.FilesController` moduledoc for the containment story.
+  scope "/files", ValeaWeb do
+    pipe_through :api
+    get "/raw", FilesController, :serve
   end
 
   # SPA catch-all (static build baked into priv/static in `just build`).

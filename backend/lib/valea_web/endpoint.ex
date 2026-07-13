@@ -45,7 +45,12 @@ defmodule ValeaWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+    json_decoder: Phoenix.json_library(),
+    # Transport backstop for image uploads (ValeaWeb.FilesController): the
+    # controller's own explicit File.stat check enforces the real 10 MB
+    # business cap, so this only needs headroom above that so the parser
+    # doesn't reject a legitimate upload before the controller ever runs.
+    length: 12_000_000
 
   plug Plug.MethodOverride
   plug Plug.Head
