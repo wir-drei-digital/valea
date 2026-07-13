@@ -10,6 +10,7 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:4200',
       '/rpc': 'http://localhost:4200',
+      '/files': 'http://localhost:4200',
       '/socket': { target: 'ws://localhost:4200', ws: true }
     }
   },

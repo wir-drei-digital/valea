@@ -853,6 +853,54 @@ export type AuditEntry = {
   [key: string]: unknown;
 };
 
+/**
+ * Uploads an image for `pagePath` (Task C7). Plain HTTP — `POST /files/upload`
+ * is not an Ash RPC action (see `ValeaWeb.FilesController`'s moduledoc), so
+ * this bypasses `runRpc`/the generated client entirely and calls `fetch`
+ * directly, carrying the same `x-valea-token` header `withAuth` injects for
+ * the HTTP RPC fallback (`controlToken()` — see `socket.ts`). Response keys
+ * are snake_case on the wire (`path`, `rel_from_page`); mapped to
+ * `relFromPage` here, the app's one camelCase boundary for this endpoint.
+ */
+async function uploadImage(file: File, pagePath: string): Promise<ApiResult<{ path: string; relFromPage: string }>> {
+  const body = new FormData();
+  body.append('file', file);
+  body.append('page_path', pagePath);
+
+  let response: Response;
+  try {
+    response = await fetch('/files/upload', {
+      method: 'POST',
+      body,
+      headers: { 'x-valea-token': controlToken() }
+    });
+  } catch {
+    return { ok: false, error: 'network_error' };
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const error =
+      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+        ? payload.error
+        : 'upload_failed';
+    return { ok: false, error };
+  }
+
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    typeof (payload as Record<string, unknown>).path !== 'string' ||
+    typeof (payload as Record<string, unknown>).rel_from_page !== 'string'
+  ) {
+    return { ok: false, error: 'invalid_response' };
+  }
+
+  const data = payload as { path: string; rel_from_page: string };
+  return { ok: true, data: { path: data.path, relFromPage: data.rel_from_page } };
+}
+
 export const api = {
   getWorkspace: () => runRpc(callGetWorkspaceChannel, () => httpGetWorkspace(withAuth({}))),
 
@@ -1183,7 +1231,11 @@ export const api = {
     runRpc(
       (channel) => callMountsDoctorChannel(channel, { generation }),
       () => httpMountsDoctor(withAuth({ input: { generation }, fields: mountsDoctorFields }))
-    )
+    ),
+
+  // Images (Task C7). Plain HTTP, not Ash RPC — see `uploadImage`'s own doc
+  // comment above.
+  uploadImage
 };
 
 export type Api = typeof api;

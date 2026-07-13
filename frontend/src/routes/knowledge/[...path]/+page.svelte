@@ -420,6 +420,7 @@
           <PageEditor
             bind:this={editorRef}
             content={content.prosemirror}
+            pagePath={decodedPath}
             onChange={() => store?.noteChange(() => editorRef!.getJSON())}
           />
         </div>
