@@ -948,12 +948,13 @@ already-granted staging dir: `queue/staging/<run_id>/proposals/<name>.md`
 `reason`, `sources`). `Valea.Workflows.MemoryProposal`
 (`backend/lib/valea/workflows/memory_proposal.ex`) owns loading/validating
 pairs (`load_pairs/1` — globs `proposals/*`, pairs `.json`↔`.md` by
-basename, reports an orphaned `.json`/`.md` as `{:error, :orphaned_content}`
-/ `:missing_content`, caps content at 1,000,000 bytes) and the server-owned
-containment check (`check_target/2` — the target must attribute to an
-ENABLED, non-degraded mount via `Valea.Mounts.mount_for/2`, and its physical
-resolution via `Valea.Paths.resolve_real/2` must stay inside that mount's
-own root; the manifest's own claims are never trusted). `Valea.Workflows.
+basename, reports a `.json` with no sibling `.md` as `{:error, :missing_content}`
+and a `.md` with no claiming `.json` as `{:error, :orphaned_content}`, caps
+content at 1,000,000 bytes) and the server-owned containment check
+(`check_target/2` — the target must attribute to an ENABLED, non-degraded
+mount via `Valea.Mounts.mount_for/2`, and its physical resolution via
+`Valea.Paths.resolve_real/2` must stay inside that mount's own root; the
+manifest's own claims are never trusted). `Valea.Workflows.
 Runner`'s `start_run/5` (`backend/lib/valea/workflows/runner.ex`) grants the
 write through `Valea.Agents.PermissionPolicy`'s directory-scoped
 `write_roots` (`policy_ctx.write_roots: [Path.join(staging_dir,
@@ -977,8 +978,9 @@ invalid). Every memory item's `risk_level` and target containment are
 computed HERE, from the target path alone, via `RiskTier.classify/2` +
 `MemoryProposal.check_target/2` — never taken from the agent's manifest. An
 invalid pair is audited `memory_proposal_invalid` (`run_id`, `file`,
-`reason`); the run's staging dir is kept whenever anything was invalid, so
-the bad pair stays inspectable next to the good item's now-removed source.
+`reason`); the run's staging dir is kept whenever anything was invalid —
+the whole directory stays in place for inspection when any pair failed — or
+fully removed when all pairs were valid, never partially cleaned.
 Idempotence: before writing any pending item (primary or memory),
 `item_exists?/2` checks all four queue directories (`pending/processing/
 approved/rejected`) and skips silently if the id already exists — this is
@@ -1024,9 +1026,11 @@ upgrade and completes the rename to `approved/` (audited `item_approved`,
 present with different bytes) hands the item back to `pending/`
 (`repend!/3`, audited `approval_recovered`) for the human to re-decide.
 Every other kind falls through to the original draft-existence recovery,
-unchanged. `mailbox_ops` stays email-only throughout: `valid_mailbox_ops?/1`
-and `maybe_put_mailbox_ops/4` are both gated on `payload.kind ==
-"email_draft"`, so a memory item's decided envelope never carries the key.
+unchanged. `mailbox_ops` stays email-only throughout: `maybe_put_mailbox_ops/4`
+is gated on `payload.kind == "email_draft"` (adding the map only for email
+drafts), while `valid_mailbox_ops?/1` simply checks that `mailbox_ops`, if
+present, is a map with no kind requirement — so a memory item's decided
+envelope never carries the key (nil passes the generic map check).
 
 ### Rejection reasons
 
