@@ -5,6 +5,10 @@
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
 defmodule FakeAdapter do
+  # Well-known relative artifact name for the last-received `session/new`
+  # params (see the "Task 1.3" comment on the session/new handler below).
+  @session_new_echo_file ".fake_adapter_session_new_params.json"
+
   def main([scenario]) do
     loop(%{scenario: scenario, session: "fake-sess-1"})
   end
@@ -30,7 +34,19 @@ defmodule FakeAdapter do
     })
   end
 
-  defp handle(%{"method" => "session/new", "id" => id}, ctx) do
+  # Task 1.3: record the `session/new` params exactly as received over the
+  # wire (including `additionalDirectories` / `_meta.claudeCode.options.
+  # managedSettings`, once Phase 5's SessionScope starts sending them) so a
+  # SessionServer E2E test can assert what actually crossed the ACP pipe —
+  # not just what Connection intended to send. Persisted to a JSON file in
+  # the subprocess's own cwd (ProcessRuntime sets that to the session's
+  # workspace/ICM root), the same externally-observable-artifact pattern
+  # `workflow_happy` already uses for its staged proposal.json. No test in
+  # this task reads it back — every launch today omits both fields, so the
+  # file always reflects today's unchanged baseline shape
+  # (`%{"cwd" => ..., "mcpServers" => []}`).
+  defp handle(%{"method" => "session/new", "id" => id, "params" => params}, ctx) do
+    File.write!(Path.join(File.cwd!(), @session_new_echo_file), Jason.encode!(params))
     reply(id, %{"sessionId" => ctx.session})
   end
 

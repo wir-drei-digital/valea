@@ -375,8 +375,17 @@ defmodule Valea.Acp.Connection do
   # session/resume (preferred) > session/load > session/new. All carry cwd +
   # mcpServers: []. resume/load require a conversation id and the matching
   # runtime-advertised capability; otherwise degrade to a fresh session/new.
+  #
+  # `additional_roots`/`managed_settings` are optional Phase-5 fields on the
+  # launch map (see docs/notes/acp-launch-contract.md). Gated: absent on
+  # every session today, so `base` — and therefore every branch below —
+  # stays byte-for-byte `%{"cwd" => ..., "mcpServers" => []}` until
+  # SessionScope starts supplying them.
   defp open_session_frames(%{launch: launch} = state, caps) do
-    base = %{"cwd" => launch.cwd, "mcpServers" => []}
+    base =
+      %{"cwd" => launch.cwd, "mcpServers" => []}
+      |> put_additional_directories(launch)
+      |> put_managed_settings(launch)
 
     cond do
       (launch.mode in [:resume, :load] and launch.conversation_id) && caps.resume? ->
@@ -397,6 +406,30 @@ defmodule Valea.Acp.Connection do
 
       true ->
         request(state, "session/new", base, :session_new)
+    end
+  end
+
+  # additionalDirectories is a native session/new field (per the contract
+  # note's "Additional read roots" section) — not a Valea `_meta` invention.
+  # Gated: only added when the launch map carries a non-empty list.
+  defp put_additional_directories(base, launch) do
+    case Map.get(launch, :additional_roots) do
+      roots when is_list(roots) and roots != [] -> Map.put(base, "additionalDirectories", roots)
+      _ -> base
+    end
+  end
+
+  # The in-memory managed-settings posture rides the adapter's SDK-options
+  # pass-through channel `_meta.claudeCode.options.managedSettings` (per the
+  # contract note's "Managed settings" section) — never written to disk.
+  # Gated: only added when the launch map carries a JSON string.
+  defp put_managed_settings(base, launch) do
+    case Map.get(launch, :managed_settings) do
+      json when is_binary(json) ->
+        Map.put(base, "_meta", %{"claudeCode" => %{"options" => %{"managedSettings" => json}}})
+
+      _ ->
+        base
     end
   end
 

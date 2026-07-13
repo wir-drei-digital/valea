@@ -491,3 +491,66 @@ defmodule Valea.Acp.ConnectionTest do
     assert info == %{"id" => "session_info", "type" => "session_info", "title" => "My Session"}
   end
 end
+
+# Task 1.3: the launch map's two optional Phase-5 fields —
+# `additional_roots` (-> native `additionalDirectories`) and
+# `managed_settings` (-> `_meta.claudeCode.options.managedSettings`, per
+# docs/notes/acp-launch-contract.md). Contract-gated: absent today, so the
+# baseline `session/new` frame stays unchanged (first test below).
+defmodule Valea.Acp.ConnectionLaunchTest do
+  use ExUnit.Case, async: true
+  alias Valea.Acp.Connection
+
+  defp session_new_frame(launch) do
+    {state, [init_frame]} = Connection.new(launch)
+    # advance the handshake to the point session/new is emitted, correlating
+    # the response to whatever rpc id the initialize request actually used
+    # (Connection.new/1 starts next_id at 1, not 0).
+    init_id = Jason.decode!(init_frame)["id"]
+
+    init_resp =
+      Jason.encode!(%{
+        "jsonrpc" => "2.0",
+        "id" => init_id,
+        "result" => %{"protocolVersion" => 1, "agentCapabilities" => %{}}
+      })
+
+    {_state, _items, frames, _effects} = Connection.handle_bytes(state, init_resp <> "\n")
+    frames |> Enum.map(&Jason.decode!/1) |> Enum.find(&(&1["method"] == "session/new"))
+  end
+
+  test "session/new carries cwd (baseline, unchanged)" do
+    frame =
+      session_new_frame(%{
+        cwd: "/icms/coaching",
+        mode: :new,
+        conversation_id: nil,
+        known_message_ids: MapSet.new(),
+        client_version: "test"
+      })
+
+    assert frame["params"]["cwd"] == "/icms/coaching"
+    assert frame["params"] == %{"cwd" => "/icms/coaching", "mcpServers" => []}
+  end
+
+  test "session/new carries additional read roots and the managed-settings posture when present" do
+    frame =
+      session_new_frame(%{
+        cwd: "/icms/coaching",
+        mode: :new,
+        conversation_id: nil,
+        known_message_ids: MapSet.new(),
+        client_version: "test",
+        additional_roots: ["/icms/legal"],
+        managed_settings:
+          ~s|{"permissions":{"deny":["Read(/ws/logs/**)"],"ask":["Write","Bash"]}}|
+      })
+
+    # exact field placement per docs/notes/acp-launch-contract.md — assert the values reach the frame
+    assert frame["params"]["cwd"] == "/icms/coaching"
+    assert "/icms/legal" in frame["params"]["additionalDirectories"]
+
+    assert get_in(frame, ["params", "_meta", "claudeCode", "options", "managedSettings"]) =~
+             "Write"
+  end
+end
