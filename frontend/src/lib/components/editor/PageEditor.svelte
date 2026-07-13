@@ -21,7 +21,7 @@
 	import { createSlashCommand } from '$lib/editor/vendor/slash_command.js';
 	import { DragHandle } from '$lib/editor/vendor/drag_handle.js';
 	import { commands, type SlashCommandItem } from '$lib/editor/commands';
-	import { isAllowedImage, resolveImageSrc } from '$lib/editor/image-upload';
+	import { allowedImageFiles, isAllowedImage, resolveImageSrc } from '$lib/editor/image-upload';
 	import { api } from '$lib/api/client';
 	import '$lib/editor/tiptap.css';
 
@@ -51,32 +51,43 @@
 	let uploadError = $state<string | null>(null);
 
 	/**
-	 * Shared upload path for both paste and drop: validates the file against
-	 * the same allowlist the backend enforces, uploads it, and — on success —
-	 * inserts an image node at `pos` with `attrs.src` set to the response's
-	 * `relFromPage` (the ON-DISK value; `renderHTML` maps it to a `/files/raw`
-	 * URL at display time only, see the extension config below). `pos` is
-	 * clamped to the current doc size in case it shifted while the (async)
-	 * upload was in flight.
+	 * Shared upload path for both paste and drop. `files` is already filtered
+	 * to the allowlist (`allowedImageFiles`, called by the handlers below), so
+	 * every entry here gets uploaded and inserted — a single failed upload
+	 * (network error, server rejection) sets the quiet `uploadError` for that
+	 * file but does not stop the rest of the batch. Uploads run sequentially
+	 * (one `await` at a time, not `Promise.all`) so insertion order matches
+	 * paste/drop order: `pos` starts at the paste caret / drop coordinates,
+	 * then advances to `editor.state.selection.from` after each successful
+	 * insert (tiptap's `insertContentAt` moves the selection to the end of
+	 * the just-inserted content by default), so the next image lands right
+	 * after the previous one instead of at the original position again.
+	 * Clamped to the current doc size at each insert in case it shifted while
+	 * an upload was in flight. On success, `attrs.src` is set to the
+	 * response's `relFromPage` (the ON-DISK value; `renderHTML` maps it to a
+	 * `/files/raw` URL at display time only, see the extension config below).
 	 */
-	async function uploadAndInsert(file: File, pos: number): Promise<void> {
-		if (!isAllowedImage(file)) return;
+	async function uploadAndInsertAll(files: File[], pos: number): Promise<void> {
+		for (const file of files) {
+			if (!isAllowedImage(file)) continue;
 
-		const result = await api.uploadImage(file, pagePath);
-		if (!editor) return;
+			const result = await api.uploadImage(file, pagePath);
+			if (!editor) return;
 
-		if (!result.ok) {
-			uploadError = "Couldn't upload the image. Try again.";
-			return;
+			if (!result.ok) {
+				uploadError = "Couldn't upload the image. Try again.";
+				continue;
+			}
+
+			uploadError = null;
+			const insertAt = Math.min(pos, editor.state.doc.content.size);
+			editor
+				.chain()
+				.focus()
+				.insertContentAt(insertAt, { type: 'image', attrs: { src: result.data.relFromPage, alt: file.name } })
+				.run();
+			pos = editor.state.selection.from;
 		}
-
-		uploadError = null;
-		const insertAt = Math.min(pos, editor.state.doc.content.size);
-		editor
-			.chain()
-			.focus()
-			.insertContentAt(insertAt, { type: 'image', attrs: { src: result.data.relFromPage, alt: file.name } })
-			.run();
 	}
 
 	export function getJSON(): PMDoc {
@@ -135,32 +146,36 @@
 						attributes: {
 							class: 'tiptap-editor-content focus:outline-none'
 						},
-						// Image paste/drop (Task C7). Both handlers extract the first
-						// allowed image, upload it, and insert an image node once the
-						// upload resolves — see `uploadAndInsert` above. Returning
-						// `false` (no image found, or the file fails the allowlist)
-						// falls through to tiptap's default paste/drop handling, so
-						// text/other content is unaffected.
+						// Image paste/drop (Task C7). Both handlers extract EVERY
+						// allowed image from the event (`allowedImageFiles` — an item
+						// that fails the allowlist, e.g. an SVG, never blocks an
+						// allowed sibling elsewhere in the same paste/drop) and hand
+						// the batch to `uploadAndInsertAll` above, which uploads and
+						// inserts each in order. Returning `false` (no allowed image
+						// anywhere in the event) falls through to tiptap's default
+						// paste/drop handling, so text/other content is unaffected.
 						handlePaste: (view, event) => {
 							const items = Array.from(event.clipboardData?.items ?? []);
-							const item = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'));
-							const file = item?.getAsFile() ?? null;
-							if (!file || !isAllowedImage(file)) return false;
+							const candidates = items
+								.filter((it) => it.kind === 'file')
+								.map((it) => it.getAsFile())
+								.filter((f): f is File => f !== null);
+							const files = allowedImageFiles(candidates);
+							if (files.length === 0) return false;
 
 							event.preventDefault();
 							const pos = view.state.selection.from;
-							void uploadAndInsert(file, pos);
+							void uploadAndInsertAll(files, pos);
 							return true;
 						},
 						handleDrop: (view, event) => {
-							const files = Array.from(event.dataTransfer?.files ?? []);
-							const file = files.find((f) => isAllowedImage(f));
-							if (!file) return false;
+							const files = allowedImageFiles(Array.from(event.dataTransfer?.files ?? []));
+							if (files.length === 0) return false;
 
 							event.preventDefault();
 							const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
 							const pos = coords ? coords.pos : view.state.selection.from;
-							void uploadAndInsert(file, pos);
+							void uploadAndInsertAll(files, pos);
 							return true;
 						}
 					},

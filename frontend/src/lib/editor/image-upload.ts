@@ -36,6 +36,21 @@ export function isAllowedImage(file: File): boolean {
   return expectedType !== undefined && file.type === expectedType;
 }
 
+/**
+ * Filters a batch of candidate files (a paste's clipboard files, or a drop's
+ * `DataTransfer.files`) down to the ones `isAllowedImage` accepts, preserving
+ * order. Used by both `handlePaste` and `handleDrop` in `PageEditor.svelte`
+ * so every allowed image in a multi-file paste/drop is uploaded, not just
+ * the first — a disallowed file anywhere in the batch (wrong type, SVG,
+ * plain text) never blocks the allowed siblings around it. Pure: does not
+ * touch the DOM `DataTransferItem`/`ClipboardEvent` types, so callers do
+ * their own item-to-File extraction (e.g. filtering clipboard items to
+ * `kind === 'file'` and calling `getAsFile()`) before calling this.
+ */
+export function allowedImageFiles(files: File[]): File[] {
+  return files.filter(isAllowedImage);
+}
+
 function dirnameOf(path: string): string {
   const idx = path.lastIndexOf('/');
   return idx === -1 ? '' : path.slice(0, idx);

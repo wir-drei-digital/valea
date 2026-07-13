@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isAllowedImage, resolveImageSrc, joinRelative } from './image-upload';
+import { allowedImageFiles, isAllowedImage, resolveImageSrc, joinRelative } from './image-upload';
 
 function makeFile(name: string, type: string): File {
   return new File(['x'], name, { type });
@@ -97,5 +97,37 @@ describe('isAllowedImage', () => {
 
   it('rejects a file with an unlisted extension', () => {
     expect(isAllowedImage(makeFile('photo.bmp', 'image/bmp'))).toBe(false);
+  });
+});
+
+describe('allowedImageFiles', () => {
+  it('keeps only the allowed images out of a mixed batch (png + svg + text)', () => {
+    const png = makeFile('photo.png', 'image/png');
+    const svg = makeFile('vector.svg', 'image/svg+xml');
+    const text = makeFile('notes.md', 'text/markdown');
+    expect(allowedImageFiles([svg, png, text])).toEqual([png]);
+  });
+
+  it('keeps every allowed image when the whole batch qualifies, preserving order', () => {
+    const first = makeFile('a.png', 'image/png');
+    const second = makeFile('b.jpg', 'image/jpeg');
+    const third = makeFile('c.gif', 'image/gif');
+    expect(allowedImageFiles([first, second, third])).toEqual([first, second, third]);
+  });
+
+  it('does not let a disallowed file earlier in the batch block an allowed one later', () => {
+    const svg = makeFile('vector.svg', 'image/svg+xml');
+    const png = makeFile('photo.png', 'image/png');
+    expect(allowedImageFiles([svg, png])).toEqual([png]);
+  });
+
+  it('returns an empty array when nothing in the batch is allowed', () => {
+    const svg = makeFile('vector.svg', 'image/svg+xml');
+    const text = makeFile('notes.md', 'text/markdown');
+    expect(allowedImageFiles([svg, text])).toEqual([]);
+  });
+
+  it('returns an empty array for an empty batch', () => {
+    expect(allowedImageFiles([])).toEqual([]);
   });
 });
