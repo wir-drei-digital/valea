@@ -290,6 +290,73 @@ defmodule ValeaWeb.IcmRpcTest do
     end
   end
 
+  describe "icm_search" do
+    # `results`/`skipped` are the `:search` action's own `constraints
+    # fields: [...]` typed return (Task C2) — `results` nests field
+    # selection into an `Array<TypedMap>`, same shape as `icm_tree`'s
+    # `mounts` above.
+    @search_fields [%{"results" => ["path", "mount", "title", "snippet", "terms"]}, "skipped"]
+
+    test "returns camelCased results with mount name for a seeded term" do
+      assert %{"success" => true, "data" => %{"results" => results, "skipped" => skipped}} =
+               rpc("icm_search", %{"query" => "founder coaching"}, @search_fields)
+
+      assert is_list(skipped)
+
+      hit =
+        Enum.find(results, &(&1["path"] == "mounts/primary/Offers/Founder Coaching Package.md"))
+
+      assert hit["mount"] == "primary"
+      assert hit["title"] == "Founder Coaching Package"
+      assert is_binary(hit["snippet"])
+      assert hit["terms"] == ["founder", "coaching"]
+    end
+
+    test "mount argument filters Mounts.enabled to that one mount before scanning" do
+      assert %{"success" => true, "data" => %{"results" => results}} =
+               rpc("icm_search", %{"query" => "coaching", "mount" => "primary"}, @search_fields)
+
+      assert results != []
+      assert Enum.all?(results, &(&1["mount"] == "primary"))
+    end
+
+    test "an unknown mount name yields no results, never an error" do
+      assert %{"success" => true, "data" => %{"results" => results}} =
+               rpc(
+                 "icm_search",
+                 %{"query" => "coaching", "mount" => "does-not-exist"},
+                 @search_fields
+               )
+
+      assert results == []
+    end
+  end
+
+  describe "icm_paths_exist" do
+    @paths_exist_fields [%{"results" => ["path", "exists"]}]
+
+    test "true only for a real page inside an enabled mount; shell/traversal paths are false, never an error" do
+      assert %{"success" => true, "data" => %{"results" => results}} =
+               rpc(
+                 "icm_paths_exist",
+                 %{
+                   "paths" => [
+                     "mounts/primary/Pricing/Current Pricing.md",
+                     "AGENTS.md",
+                     "mounts/primary/../secrets/x"
+                   ]
+                 },
+                 @paths_exist_fields
+               )
+
+      assert results == [
+               %{"path" => "mounts/primary/Pricing/Current Pricing.md", "exists" => true},
+               %{"path" => "AGENTS.md", "exists" => false},
+               %{"path" => "mounts/primary/../secrets/x", "exists" => false}
+             ]
+    end
+  end
+
   describe "error mapping helper" do
     test "atom reasons stringify" do
       assert %Valea.Api.Error{code: "page_changed"} =

@@ -41,6 +41,9 @@ defmodule Valea.Api.ICM do
   end
 
   alias Valea.Api.Error
+  alias Valea.ICM.Search
+  alias Valea.Mounts
+  alias Valea.Workflows.MemoryProposal
   alias Valea.Workspace.Manager
 
   actions do
@@ -213,6 +216,84 @@ defmodule Valea.Api.ICM do
         end
       end
     end
+
+    action :search, :map do
+      constraints fields: [
+                    results: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            path: [type: :string, allow_nil?: false],
+                            mount: [type: :string, allow_nil?: false],
+                            title: [type: :string, allow_nil?: false],
+                            snippet: [type: :string, allow_nil?: false],
+                            terms: [type: {:array, :string}, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ],
+                    skipped: [type: {:array, :string}, allow_nil?: false]
+                  ]
+
+      argument :query, :string, allow_nil?: false
+      # Optional: filters `Mounts.enabled/1` down to the one named mount
+      # BEFORE scanning (see `search_opts/2` below) — never taken as a
+      # mount struct from the caller, only ever used to filter the
+      # server's own enabled-mounts list, so a caller can't inject a
+      # mount that isn't enabled.
+      argument :mount, :string, allow_nil?: true, default: nil
+
+      run fn input, _ctx ->
+        case Manager.current() do
+          {:ok, %{path: root}} ->
+            mount_name = Map.get(input.arguments, :mount)
+
+            {:ok, %{results: results, skipped: skipped}} =
+              Search.search(root, input.arguments.query, search_opts(root, mount_name))
+
+            {:ok, %{results: results, skipped: skipped}}
+
+          {:error, reason} ->
+            {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :paths_exist, :map do
+      constraints fields: [
+                    results: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            path: [type: :string, allow_nil?: false],
+                            exists: [type: :boolean, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :paths, {:array, :string}, allow_nil?: false
+
+      run fn input, _ctx ->
+        case Manager.current() do
+          {:ok, %{path: root}} ->
+            results =
+              Enum.map(input.arguments.paths, fn path ->
+                %{path: path, exists: path_exists?(root, path)}
+              end)
+
+            {:ok, %{results: results}}
+
+          {:error, reason} ->
+            {:error, error_for(reason)}
+        end
+      end
+    end
   end
 
   @doc false
@@ -238,5 +319,33 @@ defmodule Valea.Api.ICM do
       {:type, t} -> {"type", to_string(t)}
       {k, v} -> {to_string(k), v}
     end)
+  end
+
+  # `nil` (no mount filter) leaves `Search.search/3` to default to every
+  # enabled mount. A present `mount` name filters the server's OWN
+  # `Mounts.enabled/1` list down to the (at most one) entry with that
+  # name — a caller can only narrow the scan to a mount that is already
+  # enabled; an unknown or disabled name filters to `[]` (search
+  # trivially returns no results), never to a mount struct built from the
+  # argument itself.
+  defp search_opts(_root, nil), do: []
+
+  defp search_opts(root, mount_name) do
+    [mounts: root |> Mounts.enabled() |> Enum.filter(&(&1.name == mount_name))]
+  end
+
+  # A path "exists" only when it attributes to an ENABLED, non-degraded
+  # mount AND its physical resolution stays inside that mount's root —
+  # `MemoryProposal.check_target/2` (Spec B) already implements exactly
+  # this containment; the only thing added here is the actual file-type
+  # check. `check_target/2` never raises on malformed/unknown/traversal
+  # input (shell paths, unknown mounts, `..` escapes all fall through to
+  # `{:error, _}`), so this never needs a rescue — and never leaks the
+  # resolved absolute path back to the caller, only the boolean.
+  defp path_exists?(root, path) do
+    case MemoryProposal.check_target(root, path) do
+      {:ok, %{abs: abs}} -> File.regular?(abs)
+      {:error, _reason} -> false
+    end
   end
 end

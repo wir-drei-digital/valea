@@ -28,6 +28,8 @@ defmodule Valea.Api do
       rpc_action(:rename_icm_entry, :rename)
       rpc_action(:delete_icm_entry, :delete)
       rpc_action(:icm_entry_references, :references)
+      rpc_action(:icm_search, :search)
+      rpc_action(:icm_paths_exist, :paths_exist)
     end
 
     resource Valea.Api.Cockpit do

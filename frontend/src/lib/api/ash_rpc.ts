@@ -1055,6 +1055,153 @@ export async function icmPageChannel(config: {
 }
 
 
+export type IcmPathsExistInput = {
+  paths: Array<string>;
+};
+
+export type IcmPathsExistFields = UnifiedFieldSelection<{results: Array<{path: string, exists: boolean, __type: "TypedMap", __primitiveFields: "path" | "exists"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferIcmPathsExistResult<
+  Fields extends IcmPathsExistFields | undefined,
+> = InferResult<{results: Array<{path: string, exists: boolean, __type: "TypedMap", __primitiveFields: "path" | "exists"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type IcmPathsExistResult<Fields extends IcmPathsExistFields | undefined = undefined> = | { success: true; data: InferIcmPathsExistResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmPathsExist<Fields extends IcmPathsExistFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: IcmPathsExistInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<IcmPathsExistResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "icm_paths_exist",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<IcmPathsExistResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmPathsExistChannel<Fields extends IcmPathsExistFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: IcmPathsExistInput;
+  fields: Fields;
+  resultHandler: (result: IcmPathsExistResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<IcmPathsExistResult<Fields>>(
+    config.channel,
+    {
+    action: "icm_paths_exist",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type IcmSearchInput = {
+  query: string;
+  mount?: string | null;
+};
+
+export type IcmSearchFields = UnifiedFieldSelection<{results: Array<{path: string, mount: string, title: string, snippet: string, terms: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "mount" | "title" | "snippet" | "terms"}>, skipped: Array<string>, __type: "TypedMap", __primitiveFields: "skipped"}>[];
+
+export type InferIcmSearchResult<
+  Fields extends IcmSearchFields | undefined,
+> = InferResult<{results: Array<{path: string, mount: string, title: string, snippet: string, terms: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "mount" | "title" | "snippet" | "terms"}>, skipped: Array<string>, __type: "TypedMap", __primitiveFields: "skipped"}, Fields>;
+
+export type IcmSearchResult<Fields extends IcmSearchFields | undefined = undefined> = | { success: true; data: InferIcmSearchResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmSearch<Fields extends IcmSearchFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: IcmSearchInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<IcmSearchResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "icm_search",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<IcmSearchResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmSearchChannel<Fields extends IcmSearchFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: IcmSearchInput;
+  fields: Fields;
+  resultHandler: (result: IcmSearchResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<IcmSearchResult<Fields>>(
+    config.channel,
+    {
+    action: "icm_search",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type IcmTreeFields = UnifiedFieldSelection<{mounts: Array<{mount: string, title: string, rootRel: string, tree: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mount" | "title" | "rootRel" | "tree"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferIcmTreeResult<

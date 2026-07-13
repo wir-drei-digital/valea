@@ -31,6 +31,10 @@ import {
   deleteIcmEntryChannel,
   icmEntryReferences as httpIcmEntryReferences,
   icmEntryReferencesChannel,
+  icmSearch as httpIcmSearch,
+  icmSearchChannel,
+  icmPathsExist as httpIcmPathsExist,
+  icmPathsExistChannel,
   cockpitToday as httpCockpitToday,
   cockpitTodayChannel,
   createAgentSession as httpCreateAgentSession,
@@ -99,6 +103,8 @@ import type {
   RenameIcmEntryFields,
   DeleteIcmEntryFields,
   IcmEntryReferencesFields,
+  IcmSearchFields,
+  IcmPathsExistFields,
   CreateAgentSessionFields,
   ListAgentSessionsFields,
   RunWorkflowFields,
@@ -295,6 +301,21 @@ const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
 // nested literal (confirmed in Task 5), so the assertion below is trusted
 // runtime knowledge overriding an incomplete generated type, not a guess.
 const icmEntryReferencesFields = [{ workflows: ['file', 'name'] }] as unknown as IcmEntryReferencesFields;
+
+// `icm_search`/`icm_paths_exist` (Task C2). Same anonymous-embedded-map-array
+// codegen gap as `icmEntryReferencesFields` above — `results` is an
+// `Array<TypedMap>` action-return field on both, which `ComplexFieldSelection`
+// can't express, so the generated `Fields` type collapses to `never` for the
+// literal; cast, not inferred. Booleans ride INSIDE `icmPathsExistFields`'s
+// `results` array item (`exists`), not as a top-level action-return field, so
+// the top-level falsy-map-field workaround documented on
+// `listQueueItemsFields`/`mailDoctorFields` does not apply here — see
+// `Valea.Api.ICM`'s `:paths_exist` action.
+const icmSearchFields = [
+  { results: ['path', 'mount', 'title', 'snippet', 'terms'] },
+  'skipped'
+] as unknown as IcmSearchFields;
+const icmPathsExistFields = [{ results: ['path', 'exists'] }] as unknown as IcmPathsExistFields;
 
 const createAgentSessionFields: CreateAgentSessionFields = ['id'];
 const runWorkflowFields: RunWorkflowFields = ['runId', 'sessionId'];
@@ -687,6 +708,24 @@ function callIcmEntryReferencesChannel(
   );
 }
 
+function callIcmSearchChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { query: string; mount?: string | null }
+) {
+  return wrapChannelCall((handlers) =>
+    icmSearchChannel({ channel, input, fields: icmSearchFields, ...handlers })
+  );
+}
+
+function callIcmPathsExistChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { paths: string[] }
+) {
+  return wrapChannelCall((handlers) =>
+    icmPathsExistChannel({ channel, input, fields: icmPathsExistFields, ...handlers })
+  );
+}
+
 /**
  * Typed shape of an `inspect_path` RPC result — backs the open/create
  * dialog's branch decision (`Valea.Workspace.Adopt.classify_path/1` on the
@@ -899,6 +938,22 @@ export const api = {
     runRpc(
       (channel) => callIcmEntryReferencesChannel(channel, { path }),
       () => httpIcmEntryReferences(withAuth({ input: { path }, fields: icmEntryReferencesFields }))
+    ),
+
+  // `icm_search`/`icm_paths_exist` (Task C2). `mount` filters the scan to a
+  // single already-enabled mount server-side (see `Valea.Api.ICM`'s
+  // `:search` action) — an omitted/undefined `mount` scans every enabled
+  // mount, matching `Valea.ICM.Search.search/3`'s default.
+  icmSearch: (query: string, mount?: string) =>
+    runRpc(
+      (channel) => callIcmSearchChannel(channel, { query, mount: mount ?? null }),
+      () => httpIcmSearch(withAuth({ input: { query, mount: mount ?? null }, fields: icmSearchFields }))
+    ),
+
+  icmPathsExist: (paths: string[]) =>
+    runRpc(
+      (channel) => callIcmPathsExistChannel(channel, { paths }),
+      () => httpIcmPathsExist(withAuth({ input: { paths }, fields: icmPathsExistFields }))
     ),
 
   // Mutating wrappers below take `generation` as a plain argument rather
