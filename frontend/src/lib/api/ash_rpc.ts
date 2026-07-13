@@ -844,6 +844,81 @@ export async function createIcmPageChannel<Fields extends CreateIcmPageFields | 
 }
 
 
+export type CreateIcmPageFromTemplateInput = {
+  parentPath: string;
+  name: string;
+  templatePath: string;
+};
+
+export type CreateIcmPageFromTemplateFields = UnifiedFieldSelection<{path: string, __type: "TypedMap", __primitiveFields: "path"}>[];
+
+export type InferCreateIcmPageFromTemplateResult<
+  Fields extends CreateIcmPageFromTemplateFields | undefined,
+> = InferResult<{path: string, __type: "TypedMap", __primitiveFields: "path"}, Fields>;
+
+export type CreateIcmPageFromTemplateResult<Fields extends CreateIcmPageFromTemplateFields | undefined = undefined> = | { success: true; data: InferCreateIcmPageFromTemplateResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function createIcmPageFromTemplate<Fields extends CreateIcmPageFromTemplateFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateIcmPageFromTemplateInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateIcmPageFromTemplateResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_icm_page_from_template",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateIcmPageFromTemplateResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function createIcmPageFromTemplateChannel<Fields extends CreateIcmPageFromTemplateFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateIcmPageFromTemplateInput;
+  fields: Fields;
+  resultHandler: (result: CreateIcmPageFromTemplateResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateIcmPageFromTemplateResult<Fields>>(
+    config.channel,
+    {
+    action: "create_icm_page_from_template",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type DeleteIcmEntryInput = {
   path: string;
 };

@@ -12,7 +12,10 @@ know it.
 - `Offers/` — what's on offer, who it's a good fit for, and who it isn't.
 - `Policies/` — rules that constrain what you may say or do.
 - `Pricing/` — current prices. Avoid leading with price unless asked.
-- `Templates/` — starting points for replies, not verbatim scripts.
+- `Templates/` — starting points for replies and new pages, not verbatim
+  scripts. `{{title}}` and `{{date}}` are filled in when a page is
+  created from one — use `Client.md`/`Decision.md` when adding a client
+  file or a decision entry so pages stay consistent.
 - `Tone & Voice/` — how replies should sound.
 - `Decisions/` — the decision log: dated entries recording business
   decisions, why they were made, and their source. When work you prepare

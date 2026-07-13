@@ -23,6 +23,8 @@ import {
   saveIcmPageChannel,
   createIcmPage as httpCreateIcmPage,
   createIcmPageChannel,
+  createIcmPageFromTemplate as httpCreateIcmPageFromTemplate,
+  createIcmPageFromTemplateChannel,
   createIcmFolder as httpCreateIcmFolder,
   createIcmFolderChannel,
   renameIcmEntry as httpRenameIcmEntry,
@@ -99,6 +101,7 @@ import type {
   CockpitTodayFields,
   SaveIcmPageFields,
   CreateIcmPageFields,
+  CreateIcmPageFromTemplateFields,
   CreateIcmFolderFields,
   RenameIcmEntryFields,
   DeleteIcmEntryFields,
@@ -289,6 +292,7 @@ function callCockpitTodayChannel(channel: NonNullable<ReturnType<typeof channelA
 // complete field list matching what these wrappers report back to callers.
 const saveIcmPageFields: SaveIcmPageFields = ['hash', 'savedAt'];
 const createIcmPageFields: CreateIcmPageFields = ['path'];
+const createIcmPageFromTemplateFields: CreateIcmPageFromTemplateFields = ['path'];
 const createIcmFolderFields: CreateIcmFolderFields = ['path'];
 const renameIcmEntryFields: RenameIcmEntryFields = ['path', 'updatedWorkflows', 'updatedPages'];
 const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
@@ -678,6 +682,15 @@ function callCreateIcmPageChannel(
   );
 }
 
+function callCreateIcmPageFromTemplateChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { parentPath: string; name: string; templatePath: string }
+) {
+  return wrapChannelCall((handlers) =>
+    createIcmPageFromTemplateChannel({ channel, input, fields: createIcmPageFromTemplateFields, ...handlers })
+  );
+}
+
 function callCreateIcmFolderChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { parentPath: string; name: string }
@@ -920,6 +933,15 @@ export const api = {
     runRpc(
       (channel) => callCreateIcmPageChannel(channel, { parentPath, name }),
       () => httpCreateIcmPage(withAuth({ input: { parentPath, name }, fields: createIcmPageFields }))
+    ),
+
+  createIcmPageFromTemplate: (parentPath: string, name: string, templatePath: string) =>
+    runRpc(
+      (channel) => callCreateIcmPageFromTemplateChannel(channel, { parentPath, name, templatePath }),
+      () =>
+        httpCreateIcmPageFromTemplate(
+          withAuth({ input: { parentPath, name, templatePath }, fields: createIcmPageFromTemplateFields })
+        )
     ),
 
   createIcmFolder: (parentPath: string, name: string) =>

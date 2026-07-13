@@ -141,6 +141,23 @@ defmodule Valea.Api.ICM do
       end
     end
 
+    action :create_page_from_template, :map do
+      constraints fields: [path: [type: :string, allow_nil?: false]]
+
+      argument :parent_path, :string, allow_nil?: false, constraints: [allow_empty?: true]
+      argument :name, :string, allow_nil?: false
+      argument :template_path, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{parent_path: parent_path, name: name, template_path: template_path} = input.arguments
+
+        case Valea.ICM.create_page_from_template(parent_path, name, template_path) do
+          {:ok, %{path: path}} -> {:ok, %{path: path}}
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :create_folder, :map do
       constraints fields: [path: [type: :string, allow_nil?: false]]
 

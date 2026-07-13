@@ -118,6 +118,64 @@ defmodule Valea.ICMWriteTest do
     {:ok, %{path: "mounts/primary/Trailing.md"}} = ICM.create_page("mounts/primary", "Trailing.")
   end
 
+  test "create_page_from_template substitutes title and date, code fences included" do
+    File.write!(
+      Path.join(ws_path(), "mounts/primary/Templates/T.md"),
+      "# {{title}}\n\nSince {{date}}.\n\n```\n{{title}} in a fence\n```\n\n{{unknown}} stays\n"
+    )
+
+    {:ok, %{path: path}} =
+      ICM.create_page_from_template(
+        "mounts/primary/Clients",
+        "Anna Roth",
+        "mounts/primary/Templates/T.md"
+      )
+
+    assert path == "mounts/primary/Clients/Anna Roth.md"
+    today = Date.utc_today() |> Date.to_iso8601()
+
+    assert File.read!(Path.join(ws_path(), path)) ==
+             "# Anna Roth\n\nSince #{today}.\n\n```\nAnna Roth in a fence\n```\n\n{{unknown}} stays\n"
+  end
+
+  test "cross-mount template is rejected" do
+    assert {:ok, _} = Mounts.create(ws_path(), "second", "second mount")
+
+    assert {:error, :cross_mount_template} =
+             ICM.create_page_from_template(
+               "mounts/primary/Clients",
+               "X",
+               "mounts/second/Templates/T.md"
+             )
+  end
+
+  test "create_page_from_template: existing target and bad names are rejected as create_page does" do
+    File.write!(Path.join(ws_path(), "mounts/primary/Templates/T.md"), "# {{title}}\n")
+
+    assert {:error, :name_invalid} =
+             ICM.create_page_from_template(
+               "mounts/primary/Clients",
+               "a/b",
+               "mounts/primary/Templates/T.md"
+             )
+
+    assert {:error, :already_exists} =
+             ICM.create_page_from_template(
+               "mounts/primary/Clients",
+               "Lea Brunner",
+               "mounts/primary/Templates/T.md"
+             )
+  end
+
+  test "create_page_from_template: an unreadable template is rejected" do
+    assert {:error, :template_not_found} =
+             ICM.create_page_from_template(
+               "mounts/primary/Clients",
+               "Ghost",
+               "mounts/primary/Templates/Nope.md"
+             )
+  end
+
   defp ws_path do
     {:ok, %{path: path}} = Manager.current()
     path

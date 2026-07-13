@@ -254,4 +254,26 @@ defmodule Valea.Workspace.ScaffoldTest do
     mount_agents = File.read!(Path.join(target, "mounts/acme-coaching/AGENTS.md"))
     assert mount_agents =~ "Decisions/"
   end
+
+  # Task C5: the starter mount's Templates/ folder seeds Client.md and
+  # Decision.md (instantiation targets for `Valea.ICM.create_page_from_template/3`)
+  # alongside the pre-existing reply templates — neither replaces the other.
+  test "create/2 seeds Client and Decision page templates alongside the reply templates" do
+    target = tmp_target()
+    :ok = Scaffold.create(target, "Acme Coaching")
+
+    templates_dir = Path.join(target, "mounts/acme-coaching/Templates")
+    assert File.exists?(Path.join(templates_dir, "Client.md"))
+    assert File.exists?(Path.join(templates_dir, "Decision.md"))
+    assert File.exists?(Path.join(templates_dir, "Discovery Call Reply.md"))
+    assert File.exists?(Path.join(templates_dir, "Follow-up Email.md"))
+
+    client = File.read!(Path.join(templates_dir, "Client.md"))
+    assert client =~ "{{title}}"
+    assert client =~ "{{date}}"
+
+    decision = File.read!(Path.join(templates_dir, "Decision.md"))
+    assert decision =~ "{{title}}"
+    assert decision =~ "{{date}}"
+  end
 end

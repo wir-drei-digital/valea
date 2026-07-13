@@ -252,6 +252,54 @@ defmodule ValeaWeb.IcmRpcTest do
       assert path == "mounts/primary/Offers/New Section"
     end
 
+    test "create_icm_page_from_template substitutes title and date" do
+      assert %{"success" => true, "data" => %{"path" => path}} =
+               rpc(
+                 "create_icm_page_from_template",
+                 %{
+                   "parentPath" => "mounts/primary/Clients",
+                   "name" => "Anna Roth",
+                   "templatePath" => "mounts/primary/Templates/Client.md"
+                 },
+                 ["path"]
+               )
+
+      assert path == "mounts/primary/Clients/Anna Roth.md"
+
+      assert %{"success" => true, "data" => page} =
+               rpc("icm_page", %{"path" => path})
+
+      assert page["content"] =~ "# Anna Roth"
+      assert page["content"] =~ Date.utc_today() |> Date.to_iso8601()
+    end
+
+    test "create_icm_page_from_template rejects a cross-mount template" do
+      assert {:ok, %{path: root}} = Manager.current()
+      secondary_dir = Path.join([root, "mounts", "secondary"])
+      File.mkdir_p!(Path.join(secondary_dir, "Templates"))
+
+      Manifest.write!(secondary_dir, %{
+        id: "id-secondary",
+        name: "Secondary",
+        description: ""
+      })
+
+      File.write!(Path.join(secondary_dir, "Templates/T.md"), "# {{title}}\n")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "create_icm_page_from_template",
+                 %{
+                   "parentPath" => "mounts/primary/Clients",
+                   "name" => "X",
+                   "templatePath" => "mounts/secondary/Templates/T.md"
+                 },
+                 ["path"]
+               )
+
+      assert inspect(errors) =~ "cross_mount_template"
+    end
+
     test "rename_icm_entry of a referenced page reports the updated workflows" do
       assert %{"success" => true, "data" => data} =
                rpc(

@@ -507,6 +507,99 @@ defmodule Valea.ICM do
   end
 
   @doc """
+  Creates a new page in the given parent folder, seeded from an existing
+  template page instead of the bare `"# <title>"` `create_page/2` writes.
+
+  `template_rel_path` is a full workspace-relative path (`mounts/<name>/…`)
+  naming the template file to read. Its raw bytes are substituted
+  textually — a plain `String.replace/3`, not markdown-aware, so it runs
+  inside code fences too — for exactly two placeholders:
+
+    * `{{title}}` — the new page's name, without the `.md` extension
+      (mirrors `create_page/2`'s own seed title)
+    * `{{date}}` — today's date, `Date.utc_today() |> Date.to_iso8601()`
+      (`YYYY-MM-DD`)
+
+  Any other `{{...}}` placeholder is left byte-for-byte verbatim: this is
+  intentionally not a general template engine, just the two placeholders
+  above, so there is no injection surface — the substitution never
+  evaluates or interprets the template's content.
+
+  `parent_rel_path` and `template_rel_path` must attribute to the SAME
+  mount (`Templates/` content in one mount can't seed a page in another).
+  Every other rule mirrors `create_page/2` exactly: same name
+  validation/normalization, same parent containment, same already-exists
+  guard, same atomic write.
+
+  Returns `{:ok, %{path: rel_path}} | {:error, reason}` where `rel_path` is
+  workspace-relative (`mounts/<name>/…`).
+
+  Errors:
+  - `:name_invalid` - name fails validation
+  - `:already_exists` - a file or folder already exists at that path
+  - `:template_not_found` - the template path is contained (attributes to
+    a mount and stays inside its root) but isn't a readable regular file
+  - `:cross_mount_template` - the template attributes to a different mount
+    than the parent folder
+  - `:outside_workspace` - a path (parent OR template) would escape its
+    owning mount's root, or doesn't name a mount at all
+  - `:no_workspace` - no workspace is currently active
+  """
+  def create_page_from_template(parent_rel_path, name, template_rel_path) do
+    with {:ok, normalized_name} <- normalize_name(name),
+         {:ok, mount} <- mount_root_for(parent_rel_path),
+         root <- mount.root,
+         mount_parent <- mount_relative(parent_rel_path, mount),
+         :ok <- check_parent_contained(root, mount_parent),
+         parent_abs <- Path.join(root, mount_parent),
+         :ok <- check_parent_is_directory(parent_abs),
+         name_with_ext <- ensure_md_extension(normalized_name),
+         abs <- Path.join(parent_abs, name_with_ext),
+         {:ok, _} <- contain(root, Path.relative_to(abs, root)),
+         false <- File.exists?(abs),
+         {:ok, template_bytes} <- read_template(mount, template_rel_path),
+         :ok <- ensure_parent_directory(parent_abs) do
+      title = Path.basename(name_with_ext, ".md")
+
+      content =
+        template_bytes
+        |> String.replace("{{title}}", title)
+        |> String.replace("{{date}}", Date.utc_today() |> Date.to_iso8601())
+
+      write_string_to_file(abs, content) |> format_create_response(abs, mount)
+    else
+      {:error, :name_invalid} -> {:error, :name_invalid}
+      {:error, reason} -> {:error, reason}
+      true -> {:error, :already_exists}
+    end
+  end
+
+  # Resolves `template_rel_path` to its owning mount and containment-checks
+  # it exactly like any other ICM path (attribution via `mount_root_for/1`,
+  # then `contain/2` against THAT mount's own root — a template path can no
+  # more escape its mount via `..`/symlink than any other ICM read can).
+  # Requires it to attribute to the SAME mount as `parent_mount` (checked
+  # BEFORE the file is read, so a cross-mount template path is rejected
+  # even when nothing exists at it yet) and only then reads its raw bytes —
+  # a missing/unreadable file surfaces as `:template_not_found` rather than
+  # the underlying POSIX reason, since the caller only cares that the
+  # template wasn't usable.
+  defp read_template(parent_mount, template_rel_path) do
+    with {:ok, template_mount} <- mount_root_for(template_rel_path),
+         :ok <- check_same_mount(parent_mount, template_mount),
+         template_mount_rel <- mount_relative(template_rel_path, template_mount),
+         {:ok, template_abs} <- contain(template_mount.root, template_mount_rel) do
+      case File.read(template_abs) do
+        {:ok, bytes} -> {:ok, bytes}
+        {:error, _reason} -> {:error, :template_not_found}
+      end
+    end
+  end
+
+  defp check_same_mount(%{name: name}, %{name: name}), do: :ok
+  defp check_same_mount(_parent_mount, _template_mount), do: {:error, :cross_mount_template}
+
+  @doc """
   Creates a new folder in the given parent folder.
 
   `parent_rel_path` is a full workspace-relative path (`mounts/<name>` for
