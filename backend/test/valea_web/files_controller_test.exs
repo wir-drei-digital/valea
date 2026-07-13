@@ -304,4 +304,38 @@ defmodule ValeaWeb.FilesControllerTest do
 
     assert json_response(conn2, 400)
   end
+
+  test "serve includes anti-MIME-sniffing headers and no charset in content-type", %{
+    conn: conn,
+    workspace: _ws
+  } do
+    upload = %Plug.Upload{
+      path: write_tmp_png!(),
+      filename: "test.png",
+      content_type: "image/png"
+    }
+
+    conn1 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload,
+        "page_path" => "mounts/primary/Clients/Julia Steiner.md"
+      })
+
+    assert %{"path" => path} = json_response(conn1, 200)
+
+    conn2 = get(build_conn(), "/files/raw", %{"path" => path})
+    assert response(conn2, 200)
+
+    # Assert x-content-type-options: nosniff header
+    assert get_resp_header(conn2, "x-content-type-options") == ["nosniff"]
+
+    # Assert content-disposition: inline header
+    assert get_resp_header(conn2, "content-disposition") == ["inline"]
+
+    # Assert content-type has no charset (should be exactly "image/png", not "image/png; charset=utf-8")
+    content_type = get_resp_header(conn2, "content-type") |> hd()
+    assert content_type == "image/png"
+  end
 end

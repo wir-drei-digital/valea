@@ -84,7 +84,9 @@ defmodule ValeaWeb.FilesController do
     case MemoryProposal.check_target(ws, dest_tree_path) do
       {:ok, %{abs: dest_abs}} ->
         File.mkdir_p!(Path.dirname(dest_abs))
-        File.write!(dest_abs, bytes)
+        tmp_abs = dest_abs <> ".tmp"
+        File.write!(tmp_abs, bytes)
+        File.rename!(tmp_abs, dest_abs)
 
         rel_from_page = Paths.relative(Path.dirname(page_path), dest_tree_path)
 
@@ -134,7 +136,9 @@ defmodule ValeaWeb.FilesController do
          {:ok, %{abs: abs}} <- MemoryProposal.check_target(ws, path),
          true <- regular_file?(abs) do
       conn
-      |> put_resp_content_type(content_type)
+      |> put_resp_header("x-content-type-options", "nosniff")
+      |> put_resp_header("content-disposition", "inline")
+      |> put_resp_content_type(content_type, nil)
       |> send_file(200, abs)
     else
       _ -> not_found(conn)
