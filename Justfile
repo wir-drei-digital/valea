@@ -53,8 +53,15 @@ package-backend:
     cp -R frontend/build/. backend/priv/static/
     backend/scripts/build-release.sh valea_desktop
     triple=$(rustc -vV | sed -n 's/host: //p')
+    # Burrito names each wrapped artifact burrito_out/<release>_<target>; pick
+    # the one matching this host (see the targets in backend/mix.exs).
+    case "$(uname -s)" in
+      Darwin) burrito=valea_desktop_macos_arm ;;
+      Linux)  burrito=valea_desktop_linux ;;
+      *) echo "Unsupported OS for desktop sidecar: $(uname -s)" >&2; exit 1 ;;
+    esac
     mkdir -p desktop/src-tauri/binaries
-    cp backend/burrito_out/valea_desktop_macos_arm "desktop/src-tauri/binaries/valea-server-${triple}"
+    cp "backend/burrito_out/${burrito}" "desktop/src-tauri/binaries/valea-server-${triple}"
 
 # Full desktop bundle
 desktop-bundle: package-backend

@@ -22,9 +22,21 @@ defmodule Valea.MixProject do
       valea_desktop: [
         include_executables_for: [:unix],
         steps: [:assemble, &Burrito.wrap/1],
-        burrito: [targets: [macos_arm: [os: :darwin, cpu: :aarch64]]]
+        burrito: [targets: desktop_sidecar_targets()]
       ]
     ]
+  end
+
+  # Burrito wraps every listed target, and a cross-OS wrap needs that target's
+  # ERTS — so we build only the native target for the current build host. Each
+  # platform packages its own sidecar (macOS → macos_arm, Linux → linux); the
+  # Justfile picks the matching `burrito_out/valea_desktop_<target>` artifact.
+  defp desktop_sidecar_targets do
+    case :os.type() do
+      {:unix, :darwin} -> [macos_arm: [os: :darwin, cpu: :aarch64]]
+      {:unix, :linux} -> [linux: [os: :linux, cpu: :x86_64]]
+      other -> raise "unsupported build host for the desktop sidecar: #{inspect(other)}"
+    end
   end
 
   def application do

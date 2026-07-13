@@ -10,10 +10,34 @@ Local-first agentic operating system for solopreneurs — desktop app.
 
 - [asdf](https://asdf-vm.com) with elixir + erlang plugins (versions pinned in `.tool-versions`)
 - [Bun](https://bun.sh) ≥ 1.3
-- [Rust](https://rustup.rs) (for Tauri)
+- [Rust](https://rustup.rs) (for Tauri):
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
 - [just](https://github.com/casey/just)
 
 zig is NOT a prerequisite: `backend/scripts/build-release.sh` auto-provisions the pinned zig (one-time download into `~/.local/zig`) when packaging the desktop sidecar.
+
+### Linux desktop system libraries (Tauri)
+
+Building the desktop app (`just dev-desktop`, `just desktop-bundle`) links against the GTK 3 / WebKitGTK stack, which must be installed from your distro. The web dev flow (`just dev`) does **not** need these.
+
+**Fedora / Nobara:**
+
+```bash
+sudo dnf install webkit2gtk4.1-devel javascriptcoregtk4.1-devel \
+  gtk3-devel libsoup3-devel cairo-gobject-devel \
+  librsvg2-devel openssl-devel
+```
+
+**Debian / Ubuntu:**
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+  librsvg2-dev libssl-dev build-essential curl wget file
+```
+
+Without them, the Rust build fails with `pkg-config` errors like `Package 'gdk-3.0' not found` / `cairo-gobject not found`.
 
 ## Setup
 
