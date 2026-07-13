@@ -216,6 +216,19 @@
     opacity: 0.8;
 }
 
+/* Dangling link (Task C9) — a link mark whose resolved on-disk target is
+ * missing (see PageEditor.svelte's decoration plugin). Split into
+ * text-decoration-* longhands (rather than the `text-decoration` shorthand)
+ * so this reliably overrides `.ProseMirror a`'s solid underline regardless
+ * of whether ProseMirror renders the decoration's class directly on the
+ * `<a>` or on a wrapping inline element around its text. */
+.ProseMirror .link-dangling {
+    color: var(--warn-ink);
+    text-decoration-line: underline;
+    text-decoration-style: dashed;
+    text-decoration-color: var(--warn-ink);
+}
+
 /* Tables */
 .ProseMirror .tableWrapper {
     overflow-x: auto;

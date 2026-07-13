@@ -9,6 +9,7 @@
   import Onboarding from '$lib/components/onboarding/Onboarding.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { wireIcmEvents } from '$lib/stores/icm.svelte';
+  import SearchPalette from '$lib/components/palette/SearchPalette.svelte';
 
   let { children } = $props();
 
@@ -38,4 +39,5 @@
   <Onboarding />
 {:else}
   {@render children()}
+  <SearchPalette />
 {/if}

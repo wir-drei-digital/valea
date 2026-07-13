@@ -7,6 +7,8 @@
   import { api, type IcmPageData } from '$lib/api/client';
   import { encodePath, flattenMountGroups, type IcmNode } from '$lib/shell/nav';
   import { parentPath } from './parent-path';
+  import { recordVisit } from '$lib/stores/recent-pages';
+  import { collectDocLinkPaths } from '$lib/editor/link-nav';
   import { Skeleton } from '$lib/components/ui/skeleton';
   import PageEditor from '$lib/components/editor/PageEditor.svelte';
   import PageMeta from '$lib/components/editor/PageMeta.svelte';
@@ -111,6 +113,31 @@
   // keystroke/save; that's out of scope for this phase (see task-9 brief).
   let tokenEstimate = $state(0);
 
+  // Dangling-link set (Task C9) — resolved page-kind link targets on THIS
+  // page that don't exist on disk. Recomputed below on load/reload (the
+  // `content`-watching effect) and after each save (the `store.savedAt`-
+  // watching effect); passed straight to `PageEditor` so its decoration
+  // plugin and click-to-create dialog can use it. `path`/`docJson` are
+  // captured BEFORE the `await` and re-checked against `decodedPath`
+  // after, same staleness-guard shape as `applyReload`/
+  // `runExternalCheckLoop` below — a slow response for a page the reader
+  // has since navigated away from is simply dropped.
+  let dangling = $state<Set<string>>(new Set());
+
+  async function refreshDangling(path: string, docJson: Record<string, unknown>): Promise<void> {
+    const paths = collectDocLinkPaths(docJson, path);
+    if (paths.length === 0) {
+      if (path === decodedPath) dangling = new Set();
+      return;
+    }
+
+    const result = await api.icmPathsExist(paths);
+    if (!result.ok || path !== decodedPath) return;
+
+    const data = result.data as { results: { path: string; exists: boolean }[] };
+    dangling = new Set(data.results.filter((r) => !r.exists).map((r) => r.path));
+  }
+
   async function loadPage(path: string) {
     // A previous page's store may still hold an unflushed edit — save it
     // before tearing the store down and replacing it with a fresh one for
@@ -126,6 +153,7 @@
     viewMode = 'friendly';
     rawText = '';
     lastFetch = null;
+    dangling = new Set();
 
     const result = await api.icmPage(path);
     if (result.ok) {
@@ -134,6 +162,9 @@
       editorHash = data.hash;
       tokenEstimate = Math.round(data.content.length / 4);
       store = new PageEditorStore(api, path, { hash: data.hash });
+      // MRU (Task C9) — recorded on a genuine navigation-driven load, not
+      // on the silent reloads/raw-toggle refetches elsewhere in this file.
+      recordVisit(path);
     } else {
       loadFailed = true;
     }
@@ -145,6 +176,28 @@
     if (isPage && decodedPath !== loadedPath) {
       void loadPage(decodedPath);
     }
+  });
+
+  // Dangling check, "on page load" side: fires whenever `content` is
+  // (re)assigned — the initial `loadPage` fetch, `applyReload`, and
+  // `showFriendly`'s adoption of a fresher raw-view snapshot all just set
+  // `content`, so one effect here covers all three rather than duplicating
+  // the call at each site.
+  $effect(() => {
+    if (!content) return;
+    void refreshDangling(decodedPath, content.prosemirror);
+  });
+
+  // Dangling check, "after each save" side: `store.savedAt` changes on
+  // every successful save (debounced auto-save or an explicit `flush()`),
+  // so this effect is the "after each save flush" trigger from the brief.
+  // Reads the LIVE in-editor doc via `editorRef.getJSON()` (what was just
+  // saved), not the possibly-stale `content.prosemirror` from the initial
+  // load.
+  $effect(() => {
+    void store?.savedAt; // establishes the dependency; the value itself isn't needed
+    if (!store || !editorRef) return;
+    void refreshDangling(decodedPath, editorRef.getJSON());
   });
 
   /**
@@ -421,6 +474,7 @@
             bind:this={editorRef}
             content={content.prosemirror}
             pagePath={decodedPath}
+            {dangling}
             onChange={() => store?.noteChange(() => editorRef!.getJSON())}
           />
         </div>
