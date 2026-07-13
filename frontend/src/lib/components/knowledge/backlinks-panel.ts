@@ -54,3 +54,35 @@ export function impactLine(pageCount: number, workflowCount: number): string | n
   const verb = soleCount === 1 ? 'reads' : 'read';
   return `Also updates ${pagePart ?? workflowPart} that ${verb} this page.`;
 }
+
+/**
+ * Delete-appropriate impact line for the Delete dialog — uses "reference" and
+ * "reads" verbs (like `impactLine`) but frames deletion's consequences clearly:
+ * pages/workflows that reference this entry "will lose the link" or "will lose
+ * the reference" rather than being "updated". Matches `impactLine`'s structure
+ * exactly (singular/plural per kind, compound subjects with plural verb), but
+ * conveys that deletion BREAKS references rather than maintaining them.
+ *
+ * Returns `null` when both counts are zero (nothing to say).
+ */
+export function deleteImpactLine(pageCount: number, workflowCount: number): string | null {
+  if (pageCount === 0 && workflowCount === 0) return null;
+
+  const pagePart = pageCount > 0 ? `${pageCount} ${pageCount === 1 ? 'page' : 'pages'}` : null;
+  const workflowPart =
+    workflowCount > 0 ? `${workflowCount} ${workflowCount === 1 ? 'workflow' : 'workflows'}` : null;
+
+  if (pagePart && workflowPart) {
+    return `${pagePart} and ${workflowPart} reference this page and will lose the link.`;
+  }
+
+  // Exactly one of the two parts is set (the both-zero case returned above).
+  if (pagePart) {
+    const verb = pageCount === 1 ? 'references' : 'reference';
+    return `${pagePart} ${verb} this page and will lose the link.`;
+  }
+
+  // Only workflows
+  const verb = workflowCount === 1 ? 'reads' : 'read';
+  return `${workflowPart} ${verb} this page and will lose the reference.`;
+}

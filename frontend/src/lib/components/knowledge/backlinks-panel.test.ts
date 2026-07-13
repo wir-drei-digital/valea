@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupReferences, impactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
+import { groupReferences, impactLine, deleteImpactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
 
 const page: PageRef = { sourcePath: 'mounts/primary/Offers/Intro.md', mount: 'primary', linkText: 'the intro' };
 const page2: PageRef = { sourcePath: 'mounts/primary/Offers/Follow-up.md', mount: 'primary', linkText: 'follow up' };
@@ -79,5 +79,39 @@ describe('impactLine', () => {
 
   it('pluralizes both parts when both counts are greater than 1', () => {
     expect(impactLine(1, 2)).toBe('Also updates 1 page and 2 workflows that read this page.');
+  });
+});
+
+describe('deleteImpactLine', () => {
+  it('returns null when both counts are zero', () => {
+    expect(deleteImpactLine(0, 0)).toBeNull();
+  });
+
+  it('singularizes a lone page count of 1', () => {
+    expect(deleteImpactLine(1, 0)).toBe('1 page references this page and will lose the link.');
+  });
+
+  it('pluralizes a lone page count greater than 1', () => {
+    expect(deleteImpactLine(2, 0)).toBe('2 pages reference this page and will lose the link.');
+  });
+
+  it('singularizes a lone workflow count of 1', () => {
+    expect(deleteImpactLine(0, 1)).toBe('1 workflow reads this page and will lose the reference.');
+  });
+
+  it('pluralizes a lone workflow count greater than 1', () => {
+    expect(deleteImpactLine(0, 2)).toBe('2 workflows read this page and will lose the reference.');
+  });
+
+  it('joins both kinds with "and" and uses the plural verb for compound subject', () => {
+    expect(deleteImpactLine(1, 1)).toBe('1 page and 1 workflow reference this page and will lose the link.');
+  });
+
+  it('handles a mixed plural/singular pair with correct verb forms', () => {
+    expect(deleteImpactLine(2, 1)).toBe('2 pages and 1 workflow reference this page and will lose the link.');
+  });
+
+  it('pluralizes both parts when both counts are greater than 1', () => {
+    expect(deleteImpactLine(1, 2)).toBe('1 page and 2 workflows reference this page and will lose the link.');
   });
 });

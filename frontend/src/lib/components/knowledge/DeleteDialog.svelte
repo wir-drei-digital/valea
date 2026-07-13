@@ -12,7 +12,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { withBeforeMutate } from './before-mutate';
-  import { groupReferences, impactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
+  import { groupReferences, deleteImpactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
 
   let {
     path,
@@ -41,7 +41,7 @@
   let referencedPages = $state<PageRef[]>([]);
   let referencedWorkflows = $state<WorkflowRef[]>([]);
 
-  const impact = $derived(impactLine(referencedPages.length, referencedWorkflows.length));
+  const impact = $derived(deleteImpactLine(referencedPages.length, referencedWorkflows.length));
 
   $effect(() => {
     if (open) {
