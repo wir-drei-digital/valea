@@ -32,7 +32,8 @@ describe('normalizeDecidedItem', () => {
       title: 'Reply to Priya',
       kind: 'email_draft',
       mailboxOps: rawApproved.mailbox_ops,
-      createdAt: '2026-07-10T09:00:00Z'
+      createdAt: '2026-07-10T09:00:00Z',
+      decision: null
     });
   });
 
@@ -45,6 +46,25 @@ describe('normalizeDecidedItem', () => {
   it('defaults mailboxOps to null when absent (a non-email_draft decided item)', () => {
     const item = normalizeDecidedItem({ run_id: 'r1', decided: 'rejected', title: 'x', kind: 'note' });
     expect(item?.mailboxOps).toBeNull();
+  });
+
+  it('carries a rejection reason through (B6/B12)', () => {
+    const item = normalizeDecidedItem({
+      run_id: 'rr1',
+      decided: 'rejected',
+      title: 'Update x',
+      kind: 'memory_update',
+      decision: { reason: 'too pushy' }
+    });
+    expect(item?.decision).toEqual({ reason: 'too pushy' });
+  });
+
+  it('defaults decision to null when absent, blank, or malformed', () => {
+    expect(normalizeDecidedItem({ run_id: 'r1', decided: 'approved' })?.decision).toBeNull();
+    expect(
+      normalizeDecidedItem({ run_id: 'r2', decided: 'rejected', decision: { reason: '   ' } })?.decision
+    ).toBeNull();
+    expect(normalizeDecidedItem({ run_id: 'r3', decided: 'rejected', decision: 'nope' })?.decision).toBeNull();
   });
 });
 

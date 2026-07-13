@@ -7,9 +7,16 @@
  * Field shapes are sourced from the emitting Elixir code, not guessed:
  *  - decided list entry: `Valea.Queue.list_decided/0`'s `decided_entry/2`
  *    (`run_id`, `decided` ("approved" | "rejected"), `title`, `kind`, the
- *    raw `mailbox_ops` map or `nil`, `created_at`) — delivered RAW/snake_case
+ *    raw `mailbox_ops` map or `nil`, `created_at`, `decision` (`nil` |
+ *    `%{"reason" => reason}`, present only when `reject/3` was given a
+ *    non-blank reason — B6/B12), `decided_at`) — delivered RAW/snake_case
  *    over RPC (`list_decided_items`'s `items` field is deliberately
- *    UNCONSTRAINED, see `Valea.Api.Queue`'s moduledoc).
+ *    UNCONSTRAINED, see `Valea.Api.Queue`'s moduledoc). Note: this entry
+ *    shape does NOT carry the memory item's `target_path` (that only lives
+ *    inside the full pending/approved envelope, which `list_decided_items`
+ *    never reads) — the decided view falls back to the item's `title`
+ *    (`"Update <basename>"` / `"New page: <basename>"`, B12) for context
+ *    on an approved memory item rather than fabricate a path.
  *  - mailbox op status map: `Valea.Mail.MailboxOps`'s moduledoc ("Per-op
  *    status machine") — `"pending" | "done" | "unsupported" | "failed"`
  *    (plus `"skipped"`, seeded by `Valea.Queue`'s `mailbox_ops_for/3` for a
@@ -31,6 +38,8 @@ export type DecidedQueueItem = {
   /** Raw `mailbox_ops` map, or `null` for a non-`email_draft` decided item — feed straight into `mailboxOpRows`. */
   mailboxOps: unknown;
   createdAt: string | null;
+  /** The human's rejection reason (B6/B12), or `null` — never present on an approved item. */
+  decision: { reason: string } | null;
 };
 
 /** Narrows one raw `list_decided_items` entry; `null` for anything missing a usable `run_id`. */
@@ -47,8 +56,16 @@ export function normalizeDecidedItem(raw: unknown): DecidedQueueItem | null {
     title: typeof rec.title === 'string' ? rec.title : null,
     kind: typeof rec.kind === 'string' ? rec.kind : null,
     mailboxOps: rec.mailbox_ops ?? rec.mailboxOps ?? null,
-    createdAt: firstString(rec.created_at, rec.createdAt)
+    createdAt: firstString(rec.created_at, rec.createdAt),
+    decision: normalizeDecision(rec.decision)
   };
+}
+
+/** `nil`/absent → `null`; a `%{"reason" => "..."}` map with a non-blank string reason → `{reason}`; anything else (malformed) also collapses to `null` rather than rendering garbage. */
+function normalizeDecision(raw: unknown): { reason: string } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const reason = (raw as Record<string, unknown>).reason;
+  return typeof reason === 'string' && reason.trim() !== '' ? { reason } : null;
 }
 
 /** Finds `runId` among `list_decided_items`'s raw `items` array; `null` if absent (not decided, or genuinely gone). */

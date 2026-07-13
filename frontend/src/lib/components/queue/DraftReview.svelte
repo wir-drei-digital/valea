@@ -9,6 +9,7 @@
   // Reasoning is a verbatim quote in italic serif (§10 "rail cards": "italic
   // serif quote (verbatim only)").
   import { Button } from '$lib/components/ui/button/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
   import { queueStore } from '$lib/stores/queue.svelte';
   import type { QueueItemEnvelope } from '$lib/api/client';
   import QueueSourceChips from './QueueSourceChips.svelte';
@@ -61,6 +62,9 @@
   let status: Status = $state('idle');
   let errorMessage: string | null = $state(null);
   let actedAt: Date | null = $state(null);
+  // Optional skippable reject reason (B6/B12) — the queue's teaching signal,
+  // see docs/superpowers/specs/2026-07-12-methodology-depth-design.md §5.
+  let reason = $state('');
 
   function describeError(code: string): string {
     switch (code) {
@@ -102,7 +106,8 @@
   async function reject(): Promise<void> {
     status = 'busy';
     errorMessage = null;
-    const result = await queueStore.reject(runId, revision);
+    const trimmed = reason.trim();
+    const result = await queueStore.reject(runId, revision, trimmed || undefined);
     if (result.ok) {
       actedAt = new Date();
       status = 'rejected';
@@ -200,6 +205,13 @@
       <Button type="button" disabled={status === 'busy'} onclick={() => void approve()}>
         Approve — put in my drafts
       </Button>
+      <Input
+        type="text"
+        bind:value={reason}
+        disabled={status === 'busy'}
+        placeholder="Why? Optional — this teaches your assistant."
+        class="h-8 max-w-[280px]"
+      />
       <Button type="button" variant="outline" disabled={status === 'busy'} onclick={() => void reject()}>
         Don't send this
       </Button>

@@ -29,6 +29,7 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import type { QueueItemEnvelope } from '$lib/api/client';
   import DraftReview from '$lib/components/queue/DraftReview.svelte';
+  import MemoryUpdateReview from '$lib/components/queue/MemoryUpdateReview.svelte';
   import {
     findDecidedItem,
     mailboxOpRows,
@@ -95,6 +96,11 @@
   }
 
   const opRows = $derived.by(() => (decidedItem ? mailboxOpRows(decidedItem.mailboxOps) : []));
+  // A `memory_update` decided item never has mailbox ops (B4) — its terminal
+  // state is "the page was written" or "it was rejected", not a set of
+  // mailbox-op outcomes, so the decided view substitutes plain text for the
+  // ops list rather than rendering an always-empty section (see below).
+  const isMemoryKind = $derived.by(() => decidedItem?.kind === 'memory_update');
 
   let retrying = $state(false);
   let retryError: string | null = $state(null);
@@ -161,7 +167,30 @@
           </h1>
         </header>
 
-        {#if opRows.length > 0}
+        {#if isMemoryKind}
+          <!--
+            A memory item has no mailbox ops (B4) — its terminal state is
+            "the page was written" or "it was rejected". `target_path`
+            itself isn't in this RPC's raw entry shape (`list_decided_items`
+            only ever reads `decided_entry/2`'s selected fields — see
+            `queue-ops.ts`'s doc comment), so the applied outcome leans on
+            the title above (`"Update <basename>"` / `"New page: …"`)
+            instead of fabricating a path this view doesn't actually have.
+          -->
+          <p class="text-ink-body text-[13.5px]">
+            {#if decidedItem.decided === 'approved'}
+              Applied.
+            {:else if decidedItem.decision?.reason}
+              Rejected — &ldquo;{decidedItem.decision.reason}&rdquo;
+            {:else}
+              Rejected.
+            {/if}
+          </p>
+        {:else if decidedItem.decision?.reason}
+          <p class="text-ink-body text-[13.5px]">Rejected — &ldquo;{decidedItem.decision.reason}&rdquo;</p>
+        {/if}
+
+        {#if !isMemoryKind && opRows.length > 0}
           <div>
             <p class="text-overline mb-2">Mailbox</p>
             <ul class="flex flex-col gap-2.5">
@@ -201,7 +230,11 @@
         <a href="/" class="text-act hover:text-act-hover self-start text-[13px] font-semibold">Back to Today &rarr;</a>
       </div>
     {:else if item && revision}
-      <DraftReview {item} {revision} {runId} onReload={() => void load()} />
+      {#if item.payload?.kind === 'memory_update'}
+        <MemoryUpdateReview {item} {revision} {runId} onReload={() => void load()} />
+      {:else}
+        <DraftReview {item} {revision} {runId} onReload={() => void load()} />
+      {/if}
     {/if}
   {/snippet}
 </AppFrame>

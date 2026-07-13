@@ -11,7 +11,7 @@
 
   let { item }: { item: QueueItemEnvelope } = $props();
 
-  type Payload = { title?: unknown; summary?: unknown; sources?: unknown };
+  type Payload = { title?: unknown; summary?: unknown; sources?: unknown; kind?: unknown };
 
   const payload = $derived((item.payload ?? {}) as Payload);
   const title = $derived(typeof payload.title === 'string' ? payload.title : 'Untitled draft');
@@ -19,8 +19,27 @@
   const sources = $derived(
     Array.isArray(payload.sources) ? payload.sources.filter((s): s is string => typeof s === 'string') : []
   );
+  // B12: a `memory_update` item gets its own badge/link copy — approving it
+  // edits a mount page, not sending an email — but shares this card's
+  // anatomy and its single "review, never approve here" link action.
+  const isMemoryUpdate = $derived(payload.kind === 'memory_update');
 
+  // Kind-aware: nothing "goes out" for a memory_update — it edits a mount
+  // page, so the hint says so instead of carrying the email-only framing
+  // over unchanged.
   const riskHint = $derived.by(() => {
+    if (isMemoryUpdate) {
+      switch (item.risk_level) {
+        case 'high':
+          return 'Higher risk — worth a careful read before it changes your assistant.';
+        case 'medium':
+          return 'Medium risk — a quick read before it updates your memory.';
+        case 'low':
+          return 'Low risk.';
+        default:
+          return null;
+      }
+    }
     switch (item.risk_level) {
       case 'high':
         return 'Higher risk — worth a careful read before it goes out.';
@@ -40,7 +59,7 @@
   <span
     class="bg-act-tint text-act inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold tracking-[0.04em] uppercase"
   >
-    Reply drafted
+    {isMemoryUpdate ? 'Memory update suggested' : 'Reply drafted'}
   </span>
 
   <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{title}</h3>
@@ -58,7 +77,7 @@
       href={`/queue/${item.run_id}`}
       class="text-act hover:text-act-hover text-[13px] font-semibold"
     >
-      Review the draft &rarr;
+      {isMemoryUpdate ? 'Review the change →' : 'Review the draft →'}
     </a>
     <a
       href={`/chat?session=${item.session_id}`}
