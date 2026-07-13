@@ -366,7 +366,7 @@ defmodule Valea.ICM.WatcherTest do
     declare_external!(ws.path, "gone", missing_ref)
 
     Manager.close()
-    {:ok, _reopened} = Manager.open(ws.path)
+    {:ok, _reopened} = Manager.open_path(ws.path)
 
     watcher_pid = Process.whereis(Valea.ICM.Watcher)
     assert watcher_pid

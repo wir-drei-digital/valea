@@ -43,7 +43,7 @@ defmodule Valea.Workspace.ManagerTest do
   test "open rejects a non-workspace folder", %{parent: parent} do
     bogus = Path.join(parent, "bogus")
     File.mkdir_p!(bogus)
-    assert {:error, :not_a_workspace} = Manager.open(bogus)
+    assert {:error, :not_a_workspace} = Manager.open_path(bogus)
     assert {:error, :no_workspace} = Manager.current()
   end
 
@@ -59,7 +59,7 @@ defmodule Valea.Workspace.ManagerTest do
   test "reopen after close works (repo restart)", %{parent: parent} do
     {:ok, info} = Manager.create(parent, "W")
     :ok = Manager.close()
-    assert {:ok, ^info} = Manager.open(info.path)
+    assert {:ok, ^info} = Manager.open_path(info.path)
   end
 
   test "migration failure reaps the started repo instead of orphaning it", %{parent: parent} do
@@ -115,7 +115,7 @@ defmodule Valea.Workspace.ManagerTest do
     :ok = Manager.close()
     assert Manager.generation() == nil
 
-    assert {:ok, ^a} = Manager.open(a.path)
+    assert {:ok, ^a} = Manager.open_path(a.path)
     assert Manager.generation() == first_gen + 1
   end
 
@@ -179,13 +179,13 @@ defmodule Valea.Workspace.ManagerTest do
     end)
 
     # Re-open A cleanly (real migrations), then switch to B with broken ones.
-    assert {:ok, ^a} = Manager.open(a.path)
+    assert {:ok, ^a} = Manager.open_path(a.path)
     assert {:ok, ^a} = Manager.current()
 
     Application.put_env(:valea, :migrations_path, bad_migrations_dir)
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
 
-    assert {:error, {:migration_failed, _}} = Manager.open(b.path)
+    assert {:error, {:migration_failed, _}} = Manager.open_path(b.path)
 
     # The Manager must NOT still claim A (or B) is open with dead children.
     assert {:error, :no_workspace} = Manager.current()
@@ -195,8 +195,56 @@ defmodule Valea.Workspace.ManagerTest do
 
     # Recovery: reopening A with real migrations succeeds.
     Application.put_env(:valea, :migrations_path, real_migrations_path)
-    assert {:ok, ^a} = Manager.open(a.path)
+    assert {:ok, ^a} = Manager.open_path(a.path)
     assert {:ok, ^a} = Manager.current()
     assert Process.whereis(Valea.Repo)
+  end
+
+  # -- id-based create(name) / open(id) -------------------------------------
+
+  describe "create(name)/open(id) — id-based, app-owned v5 workspaces" do
+    test "create(name) places the workspace under the app-owned hidden dir" do
+      {:ok, ws} = Manager.create("Coaching business")
+      assert String.starts_with?(ws.path, Valea.App.Config.workspaces_dir())
+      assert Path.basename(ws.path) |> String.starts_with?("coaching-business-")
+      assert ws.name == "Coaching business"
+      assert is_binary(ws.id)
+      assert {:ok, %{id: id, name: "Coaching business"}} = Manager.current()
+      assert id == ws.id
+    end
+
+    test "open(id) reopens a previously created workspace by id" do
+      {:ok, ws} = Manager.create("Legal")
+      :ok = Manager.close()
+      {:ok, reopened} = Manager.open(ws.id)
+      assert reopened.id == ws.id
+      assert reopened.path == ws.path
+    end
+
+    test "open(unknown id) errors" do
+      assert {:error, :unknown_workspace} = Manager.open("nope")
+    end
+
+    test "reopening the same workspace reuses its id rather than double-registering" do
+      {:ok, ws} = Manager.create("Reused")
+      :ok = Manager.close()
+      {:ok, reopened} = Manager.open(ws.id)
+      assert reopened.id == ws.id
+
+      known = Valea.App.Config.read()["known_workspaces"]
+      assert Enum.count(known, &(&1["id"] == ws.id)) == 1
+    end
+
+    # ⚠️ Required fix (see Migration.migrate/1's version ceiling): opening a
+    # fresh v5 workspace must NOT run the legacy migration side effects —
+    # no stray `.claude/settings.json`, and the version marker stays 5.
+    test "create(name) opens a v5 workspace without running legacy migration side effects" do
+      {:ok, ws} = Manager.create("X")
+
+      refute File.exists?(Path.join(ws.path, ".claude/settings.json"))
+
+      yaml = File.read!(Path.join(ws.path, "config/workspace.yaml"))
+      assert yaml =~ "version: 5"
+    end
   end
 end

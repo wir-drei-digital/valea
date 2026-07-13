@@ -18,10 +18,32 @@ defmodule Valea.Workspace.Manager do
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @doc """
+  Mints a workspace id, scaffolds a fresh, app-owned v5 hidden workspace
+  named `name` under `Valea.App.Config.workspaces_dir/0`, opens it, and
+  records it by id. The NEW, id-based create entry point.
+  """
+  def create(name), do: GenServer.call(__MODULE__, {:create, name}, 30_000)
+
+  @doc """
+  LEGACY (v4, path-based) scaffold at an explicit `parent_dir` — still used
+  by `Valea.Workspace.Adopt` and any caller that hasn't moved to the
+  app-owned, id-based `create/1` yet. Kept working byte-for-byte; not
+  rewritten by this task.
+  """
   def create(parent_dir, name),
     do: GenServer.call(__MODULE__, {:create, parent_dir, name}, 30_000)
 
-  def open(path), do: GenServer.call(__MODULE__, {:open, path}, 30_000)
+  @doc "Opens a previously created/recorded workspace by id. The NEW, id-based open entry point."
+  def open(id), do: GenServer.call(__MODULE__, {:open, id}, 30_000)
+
+  @doc """
+  LEGACY (path-based) open — still used by `Valea.Workspace.Adopt` (which
+  scaffolds directly via `Scaffold.create/2` and has no registered id yet)
+  and any caller that hasn't moved to the id-based `open/1` yet.
+  """
+  def open_path(path), do: GenServer.call(__MODULE__, {:open_path, path}, 30_000)
+
   def close, do: GenServer.call(__MODULE__, :close)
   def current, do: GenServer.call(__MODULE__, :current)
 
@@ -42,23 +64,47 @@ defmodule Valea.Workspace.Manager do
 
   @impl true
   def handle_continue(:auto_open, state) do
-    case Config.read()["last_opened"] do
+    case Config.last_opened_id() do
       nil ->
         {:noreply, state}
 
-      path ->
-        case do_open(path, state) do
-          {:ok, state} ->
-            {:noreply, state}
-
-          {:error, _reason, state} ->
+      id ->
+        case Config.workspace_by_id(id) do
+          nil ->
             Config.clear_last_opened()
             {:noreply, state}
+
+          %{"path" => path} ->
+            case do_open(path, state) do
+              {:ok, state} ->
+                {:noreply, state}
+
+              {:error, _reason, state} ->
+                Config.clear_last_opened()
+                {:noreply, state}
+            end
         end
     end
   end
 
   @impl true
+  def handle_call({:create, name}, _from, state) do
+    id = Ecto.UUID.generate()
+    slug = Scaffold.slugify(name)
+    target = Path.join(Config.workspaces_dir(), "#{slug}-#{String.slice(id, 0, 8)}")
+
+    with :ok <- Scaffold.create(target, name, id),
+         {:ok, state} <- do_open(target, state) do
+      {:reply, {:ok, state.workspace}, state}
+    else
+      # Scaffold.create failed before any close — reply with the untouched state.
+      {:error, reason} -> {:reply, {:error, reason}, state}
+      # do_open closed the previous workspace before failing — reply with the
+      # closed state so `current/0` never reports a dead workspace as open.
+      {:error, reason, closed_state} -> {:reply, {:error, reason}, closed_state}
+    end
+  end
+
   def handle_call({:create, parent_dir, name}, _from, state) do
     target = Path.join(parent_dir, name)
 
@@ -74,12 +120,14 @@ defmodule Valea.Workspace.Manager do
     end
   end
 
-  def handle_call({:open, path}, _from, state) do
-    case do_open(path, state) do
-      {:ok, state} -> {:reply, {:ok, state.workspace}, state}
-      {:error, reason, closed_state} -> {:reply, {:error, reason}, closed_state}
+  def handle_call({:open, id}, _from, state) do
+    case Config.workspace_by_id(id) do
+      nil -> {:reply, {:error, :unknown_workspace}, state}
+      %{"path" => path} -> open_reply(path, state)
     end
   end
+
+  def handle_call({:open_path, path}, _from, state), do: open_reply(path, state)
 
   def handle_call(:close, _from, state) do
     {:reply, :ok, do_close(state)}
@@ -113,6 +161,16 @@ defmodule Valea.Workspace.Manager do
 
   def handle_call({:check_generation, _stale}, _from, state) do
     {:reply, {:error, :workspace_changed}, state}
+  end
+
+  # Shared reply-building for both open entry points ({:open, id} and
+  # {:open_path, path}) once each has resolved its own id/path down to a
+  # concrete filesystem path.
+  defp open_reply(path, state) do
+    case do_open(path, state) do
+      {:ok, state} -> {:reply, {:ok, state.workspace}, state}
+      {:error, reason, closed_state} -> {:reply, {:error, reason}, closed_state}
+    end
   end
 
   # On any failure, returns `{:error, reason, state}` where `state` reflects
@@ -179,16 +237,15 @@ defmodule Valea.Workspace.Manager do
   defp open_workspace_migrate(path, state, started, next_generation) do
     case Valea.Workspace.Migration.migrate(path) do
       {:ok, _version} ->
-        name = Path.basename(path)
-        info = %{path: path, name: name}
+        %{id: id, name: name} = read_workspace_meta(path)
+        info = %{path: path, name: name, id: id}
 
-        # `id` is a placeholder mint here — this Manager still opens
-        # workspaces by path, not id. The id-based open/create lifecycle
-        # (reading/minting the id from `config/workspace.yaml`, per
-        # `Valea.App.Config.workspace_by_id/1`) is the next task group's
-        # job; this keeps the id-keyed registry populated in the meantime.
+        # Reads the SAME persistent id back off `config/workspace.yaml` every
+        # time this workspace is opened (see `read_workspace_meta/1`), so
+        # `record_opened/1`'s id-keyed upsert reuses the one entry rather
+        # than minting a fresh registration per open.
         Config.record_opened(%{
-          id: Ecto.UUID.generate(),
+          id: id,
           name: name,
           slug: Scaffold.slugify(name),
           path: path
@@ -206,6 +263,35 @@ defmodule Valea.Workspace.Manager do
         rollback_with(started, reason, state)
     end
   end
+
+  # The persistent workspace id and (v5+) display name, read straight off
+  # `config/workspace.yaml` — the single source of truth both the id-based
+  # (`create/1`/`open/1`) and legacy path-based (`create/2`, `open_path/1`)
+  # flows converge on by the time this runs: `Migration.migrate/1` (just
+  # above) guarantees `id:` is present for every workspace version this
+  # Manager can open (v3+; a v5 scaffold writes it directly). `name` falls
+  # back to the folder's own basename for legacy (pre-v5) workspaces, which
+  # never stored a `name:` key — the folder itself IS the display name
+  # there. Falls back to a freshly minted id only in the pathological case
+  # of a missing/corrupt `id:` (should not happen for any workspace that
+  # already passed `Scaffold.valid?/1` and a successful migration).
+  defp read_workspace_meta(path) do
+    doc =
+      case YamlElixir.read_from_file(Path.join(path, "config/workspace.yaml")) do
+        {:ok, %{} = doc} -> doc
+        _ -> %{}
+      end
+
+    %{id: workspace_meta_id(doc), name: workspace_meta_name(doc, path)}
+  end
+
+  defp workspace_meta_id(%{"id" => id}) when is_binary(id) and id not in ["", "TEMPLATE"], do: id
+  defp workspace_meta_id(_doc), do: Ecto.UUID.generate()
+
+  defp workspace_meta_name(%{"name" => name}, _path) when is_binary(name) and name != "",
+    do: name
+
+  defp workspace_meta_name(_doc, path), do: Path.basename(path)
 
   defp rollback_with(started, reason, state) do
     rollback(started)

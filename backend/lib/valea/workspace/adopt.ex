@@ -246,7 +246,7 @@ defmodule Valea.Workspace.Adopt do
       :ok ->
         ensure_manifest!(mount_dir, icm_source_path)
         MountsMd.regenerate(target)
-        Manager.open(target)
+        Manager.open_path(target)
 
       {:error, reason} ->
         # Belt-and-suspenders: never delete target if it's the source

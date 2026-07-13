@@ -52,7 +52,7 @@ defmodule Valea.Api.Workspace do
       argument :path, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Manager.open(input.arguments.path) do
+        case Manager.open_path(input.arguments.path) do
           {:ok, info} -> {:ok, opened_payload(info)}
           {:error, reason} -> {:error, error_message(reason)}
         end

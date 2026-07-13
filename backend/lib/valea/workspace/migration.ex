@@ -56,12 +56,28 @@ defmodule Valea.Workspace.Migration do
 
   @spec migrate(String.t()) :: {:ok, integer()} | {:error, String.t()}
   def migrate(root) do
-    with {:ok, v} <- ensure_v2(root, read_version(root)),
-         {:ok, v} <- ensure_v3(root, v),
-         {:ok, _} <- ensure_v4(root, v) do
-      # Managed settings are regenerated on every open (and per session start).
-      Valea.Agents.ClaudeSettings.write!(root)
-      {:ok, @current_version}
+    version = read_version(root)
+
+    # v5+ (the hidden, mounts-less workspace shape — see
+    # `Valea.Workspace.Scaffold`'s moduledoc) is NOT this migration's
+    # business: `ensure_v2..v4` only short-circuit at `v >= their own
+    # version`, so without this ceiling a v5 workspace would fall through
+    # to the unconditional `ClaudeSettings.write!/1` below, silently
+    # writing a stray `.claude/settings.json` into a workspace whose whole
+    # point is carrying NO agent-routing files, and would misreport its
+    # version as the legacy `@current_version` (4). A v5+ workspace is
+    # already fully-formed by `Scaffold.create/3`; there is nothing here
+    # for it to migrate to.
+    if version >= 5 do
+      {:ok, version}
+    else
+      with {:ok, v} <- ensure_v2(root, version),
+           {:ok, v} <- ensure_v3(root, v),
+           {:ok, _} <- ensure_v4(root, v) do
+        # Managed settings are regenerated on every open (and per session start).
+        Valea.Agents.ClaudeSettings.write!(root)
+        {:ok, @current_version}
+      end
     end
   rescue
     e -> {:error, "migration failed: #{Exception.message(e)}"}
