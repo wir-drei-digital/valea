@@ -40,14 +40,25 @@ defmodule Valea.ICM.Search do
     end
   end
 
+  # A single shared deadline for the whole scan: `Task.yield_many/2` blocks
+  # at most `timeout` total (not per task), so N slow mounts still return in
+  # roughly `timeout` wall time instead of compounding to N * timeout. Any
+  # mount not finished when the shared deadline elapses is shut down and
+  # named in `skipped`. `yield_many/2` returns results in the same order as
+  # the input task list, so we zip mount names back in positionally.
   defp scan_mounts(workspace, mounts, terms, timeout) do
-    tasks =
+    named_tasks =
       Enum.map(mounts, fn mount ->
         {mount.name, Task.async(fn -> scan_mount(workspace, mount, terms) end)}
       end)
 
-    Enum.reduce(tasks, {[], []}, fn {name, task}, {hits, skipped} ->
-      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    tasks = Enum.map(named_tasks, fn {_name, task} -> task end)
+    names = Enum.map(named_tasks, fn {name, _task} -> name end)
+
+    names
+    |> Enum.zip(Task.yield_many(tasks, timeout))
+    |> Enum.reduce({[], []}, fn {name, {task, outcome}}, {hits, skipped} ->
+      case outcome || Task.shutdown(task, :brutal_kill) do
         {:ok, mount_hits} -> {hits ++ mount_hits, skipped}
         _ -> {hits, skipped ++ [name]}
       end

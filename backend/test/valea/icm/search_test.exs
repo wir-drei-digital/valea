@@ -66,6 +66,50 @@ defmodule Valea.ICM.SearchTest do
       Search.search(ws, "coaching", mounts: [mount], timeout_ms: 0)
   end
 
+  test "two mounts both over budget share one deadline, not a compounding one", %{
+    workspace: ws
+  } do
+    # Each mount root holds a single large file. Scanning it (downcase, regex
+    # snippet, term matching) takes far longer than either `timeout` or
+    # `2 * timeout` below, so both mounts are legitimately too slow under any
+    # implementation. What differs is the WALL TIME to find that out: the old
+    # sequential `Task.yield` reduce checks mounts one at a time, so mount two
+    # inherits a second full `timeout` window on top of mount one's — total
+    # wall time compounds toward `2 * timeout`. The shared-deadline fix
+    # (`Task.yield_many/2`) waits `timeout` once for every mount together, so
+    # total wall time stays close to `timeout` regardless of mount count.
+    slow_body = String.duplicate("the quick brown fox jumps over the lazy dog needle ", 240_000)
+
+    dir_a = Path.join(ws, "slow_a")
+    dir_b = Path.join(ws, "slow_b")
+    File.mkdir_p!(dir_a)
+    File.mkdir_p!(dir_b)
+    File.write!(Path.join(dir_a, "big.md"), slow_body)
+    File.write!(Path.join(dir_b, "big.md"), slow_body)
+
+    mounts = [
+      %{name: "slow_a", root: dir_a, rel_root: nil},
+      %{name: "slow_b", root: dir_b, rel_root: nil}
+    ]
+
+    timeout = 100
+
+    started = System.monotonic_time(:millisecond)
+
+    {:ok, %{results: [], skipped: skipped}} =
+      Search.search(ws, "needle", mounts: mounts, timeout_ms: timeout)
+
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    assert Enum.sort(skipped) == ["slow_a", "slow_b"]
+
+    # Well under 2 * timeout (200ms): a compounding sequential wait would
+    # land close to 200ms; a shared deadline lands close to 100ms.
+    assert elapsed < 1.5 * timeout,
+           "expected shared-deadline wall time (~#{timeout}ms), got #{elapsed}ms — " <>
+             "looks like the per-mount budget is compounding across mounts"
+  end
+
   test "empty and whitespace queries return nothing", %{workspace: ws} do
     assert {:ok, %{results: [], skipped: []}} = Search.search(ws, "   ")
   end
@@ -78,5 +122,35 @@ defmodule Valea.ICM.SearchTest do
 
     {:ok, %{results: results}} = Search.search(ws, "(150)")
     assert Enum.map(results, & &1.path) == ["mounts/primary/Offers/Weird.md"]
+  end
+
+  test "a query that is invalid as a regex is still treated as literal text", %{workspace: ws} do
+    # "[draft" has an unmatched `[`, so compiling it as a regex would fail
+    # (or need special error handling). It must still match literally via
+    # String.contains?/2, proving no Regex.compile/1 path exists.
+    File.write!(
+      Path.join(ws, "mounts/primary/Offers/Weird.md"),
+      "# Weird\n\nprice (150) [draft]\n"
+    )
+
+    assert {:error, _} = Regex.compile("[draft")
+
+    {:ok, %{results: results}} = Search.search(ws, "[draft")
+    assert Enum.map(results, & &1.path) == ["mounts/primary/Offers/Weird.md"]
+  end
+
+  test "snippet cutting survives downcase byte-growth pushing a match past the body's own length",
+       %{workspace: ws} do
+    # Turkish dotted capital İ (2 bytes in UTF-8) downcases to "i" + a
+    # combining dot above (3 bytes) — one extra byte per character. Enough
+    # of them ahead of a match term pushes the match's byte offset in the
+    # *downcased* body past `byte_size/1` of the *original* body, which used
+    # to drive `binary_part/3` to a negative length and crash. This locks in
+    # the fix (`safe_pos` clamp in `snippet/3`).
+    body = "# Turkish\n\n" <> String.duplicate("İ", 120) <> " target\n"
+    File.write!(Path.join(ws, "mounts/primary/Offers/Turkish.md"), body)
+
+    assert {:ok, %{results: results}} = Search.search(ws, "target")
+    assert Enum.any?(results, &(&1.path == "mounts/primary/Offers/Turkish.md"))
   end
 end
