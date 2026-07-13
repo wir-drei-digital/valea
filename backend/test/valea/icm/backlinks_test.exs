@@ -117,4 +117,35 @@ defmodule Valea.ICM.BacklinksTest do
     {:ok, links} = Backlinks.backlinks(ws, target)
     assert Enum.map(links, & &1.source_path) == ["mounts/primary/Offers/Nested/Deep.md"]
   end
+
+  test "a percent-encoded destination (e.g. %20 for a space) is still confirmed", %{
+    workspace: ws
+  } do
+    target = "mounts/primary/Pricing/Current Pricing.md"
+
+    File.write!(
+      Path.join(ws, "mounts/primary/Offers/Encoded.md"),
+      "# Encoded\n\n[p](<../Pricing/Current%20Pricing.md>)\n"
+    )
+
+    {:ok, links} = Backlinks.backlinks(ws, target)
+    assert Enum.map(links, & &1.source_path) == ["mounts/primary/Offers/Encoded.md"]
+  end
+
+  test "the FIRST matching link text wins when a page links to the target twice", %{
+    workspace: ws
+  } do
+    target = "mounts/primary/Target.md"
+    File.write!(Path.join(ws, target), "# Target\n")
+
+    File.write!(
+      Path.join(ws, "mounts/primary/Two Links.md"),
+      "First [alpha](<Target.md>) then [beta](<Target.md>).\n"
+    )
+
+    {:ok, links} = Backlinks.backlinks(ws, target)
+    hit = Enum.find(links, &(&1.source_path == "mounts/primary/Two Links.md"))
+    assert hit != nil
+    assert hit.link_text == "alpha"
+  end
 end

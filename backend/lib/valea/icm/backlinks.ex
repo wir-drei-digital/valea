@@ -34,6 +34,12 @@ defmodule Valea.ICM.Backlinks do
   def backlinks(workspace, target_path) do
     target_abs = to_abs(workspace, target_path)
     needle = Path.basename(target_path)
+    # Percent-encoded destinations (e.g. `%20` for a space) appear in raw
+    # file bytes as the encoded form, not the decoded basename — match
+    # either. This only catches a straight `URI.encode/1` of the basename;
+    # exotic/partial/mixed encodings of the same name are not caught (rare
+    # in practice — the common case is spaces encoded as `%20`).
+    encoded_needle = URI.encode(needle)
 
     links =
       for mount <- Mounts.enabled(workspace),
@@ -41,7 +47,7 @@ defmodule Valea.ICM.Backlinks do
           prefix = mount.rel_root || mount.root,
           abs <- Path.wildcard(Path.join(root, "**/*.md")),
           {:ok, content} <- [File.read(abs)],
-          String.contains?(content, needle),
+          String.contains?(content, needle) or String.contains?(content, encoded_needle),
           source_rel = Path.join(prefix, Path.relative_to(abs, root)),
           source_rel != target_path,
           text <- confirmed_link_texts(workspace, source_rel, content, target_abs) do
@@ -62,6 +68,11 @@ defmodule Valea.ICM.Backlinks do
 
         doc
         |> walk([])
+        # `walk/2` prepends as it recurses (reverse-preorder); reverse here —
+        # same compensation `plain_text/1` applies — so destinations come
+        # back in DOCUMENT order and `confirmed_link_texts`'s `hd/1` picks
+        # the FIRST matching link/image text, per this module's moduledoc.
+        |> Enum.reverse()
         |> Enum.flat_map(fn
           %MDEx.Link{url: url} = n -> dest_entry(url, source_dir, plain_text(n))
           %MDEx.Image{url: url} = n -> dest_entry(url, source_dir, plain_text(n))
@@ -103,10 +114,17 @@ defmodule Valea.ICM.Backlinks do
 
   defp dest_entry(url, source_dir, text) do
     cond do
-      not is_binary(url) or url == "" -> []
-      String.starts_with?(url, ["http://", "https://", "mailto:", "#"]) -> []
-      String.starts_with?(url, "/") -> [%{url: url, abs: Path.expand(url), text: text}]
-      true -> [%{url: url, abs: Path.expand(url, source_dir), text: text}]
+      not is_binary(url) or url == "" ->
+        []
+
+      String.starts_with?(url, ["http://", "https://", "mailto:", "#"]) ->
+        []
+
+      String.starts_with?(url, "/") ->
+        [%{url: url, abs: Path.expand(URI.decode(url)), text: text}]
+
+      true ->
+        [%{url: url, abs: Path.expand(URI.decode(url), source_dir), text: text}]
     end
   end
 
