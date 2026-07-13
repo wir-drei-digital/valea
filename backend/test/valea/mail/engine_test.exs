@@ -428,7 +428,12 @@ defmodule Valea.Mail.EngineTest do
     # full-green run.
     mount_dir = Path.join([root, "mounts", "starter"])
     File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-    Valea.Mounts.Manifest.write!(mount_dir, %{id: "starter-id", name: "Starter", description: ""})
+
+    Valea.Mounts.Manifest.write!(mount_dir, %{
+      id: "73de3db8-81d1-40ae-afc2-daa2424cc5e7",
+      name: "Starter",
+      description: ""
+    })
 
     File.write!(
       Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]),

@@ -68,7 +68,12 @@ defmodule ValeaWeb.WorkspaceRpcTest do
 
     test "classifies a dir with a parseable icm.yaml as \"icm\", surfacing its manifest name/description" do
       dir = tmp_dir("valea-icm")
-      write_manifest!(dir, %{id: "id-1", name: "Client Notes", description: "Old client work"})
+
+      write_manifest!(dir, %{
+        id: "4180e4f3-42f3-4f25-9b55-6148ba6a5252",
+        name: "Client Notes",
+        description: "Old client work"
+      })
 
       assert %{
                "success" => true,

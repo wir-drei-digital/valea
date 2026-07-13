@@ -88,7 +88,7 @@ defmodule ValeaWeb.IcmRpcTest do
       File.mkdir_p!(secondary_dir)
 
       Manifest.write!(secondary_dir, %{
-        id: "id-secondary",
+        id: "efe438ce-209f-4beb-8b14-16bb6483bf82",
         name: "Secondary",
         description: ""
       })
@@ -285,7 +285,7 @@ defmodule ValeaWeb.IcmRpcTest do
       File.mkdir_p!(Path.join(secondary_dir, "Templates"))
 
       Manifest.write!(secondary_dir, %{
-        id: "id-secondary",
+        id: "efe438ce-209f-4beb-8b14-16bb6483bf82",
         name: "Secondary",
         description: ""
       })

@@ -91,7 +91,7 @@ defmodule Valea.ICM.WatcherTest do
       File.mkdir_p!(mount_dir)
 
       Manifest.write!(mount_dir, %{
-        id: "id-b",
+        id: "6001e724-556c-4719-921e-3e552c09835c",
         name: "B",
         description: ""
       })
@@ -148,7 +148,12 @@ defmodule Valea.ICM.WatcherTest do
   test "removing a whole mounts/<name> dir broadcasts mounts_changed and icm_changed", %{ws: ws} do
     dir = Path.join(ws.path, "mounts/gone")
     File.mkdir_p!(dir)
-    Manifest.write!(dir, %{id: "id-gone", name: "Gone", description: ""})
+
+    Manifest.write!(dir, %{
+      id: "b22c7b72-133e-4b3b-b958-91462d555449",
+      name: "Gone",
+      description: ""
+    })
 
     Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
@@ -161,7 +166,7 @@ defmodule Valea.ICM.WatcherTest do
       File.mkdir_p!(warm_dir)
 
       Manifest.write!(warm_dir, %{
-        id: "id-warm",
+        id: "52a89977-72dd-4823-ba21-3e0191e98fd7",
         name: "Warm",
         description: ""
       })
@@ -270,7 +275,13 @@ defmodule Valea.ICM.WatcherTest do
 
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
-    Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+
+    Manifest.write!(dir, %{
+      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+      name: name,
+      description: ""
+    })
+
     dir
   end
 
@@ -322,7 +333,11 @@ defmodule Valea.ICM.WatcherTest do
     drain_any()
 
     poll_until_both(fn _i ->
-      Manifest.write!(ext, %{id: "ext-id", name: "Ext", description: "updated"})
+      Manifest.write!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: "updated"
+      })
     end)
   end
 

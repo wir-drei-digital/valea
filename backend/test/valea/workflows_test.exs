@@ -18,7 +18,7 @@ defmodule Valea.WorkflowsTest do
   defp write_mount!(ws_path, name, title) do
     dir = Path.join([ws_path, "mounts", name])
     File.mkdir_p!(dir)
-    Manifest.write!(dir, %{id: "id-" <> name, name: title, description: ""})
+    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: title, description: ""})
     dir
   end
 
@@ -64,7 +64,7 @@ defmodule Valea.WorkflowsTest do
 
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
-    Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: name, description: ""})
     dir
   end
 

@@ -190,7 +190,12 @@ defmodule Valea.Workflows.RunnerTest do
 
     File.mkdir_p!(Path.join(ext, "Workflows"))
     on_exit(fn -> File.rm_rf!(ext) end)
-    Manifest.write!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+    Manifest.write!(ext, %{
+      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+      name: "Ext",
+      description: ""
+    })
 
     File.write!(
       Path.join(ext, "Workflows/External Triage.md"),

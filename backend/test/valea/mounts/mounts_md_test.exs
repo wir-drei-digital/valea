@@ -79,7 +79,11 @@ defmodule Valea.Mounts.MountsMdTest do
 
     epsilon_dir = Path.join([root, "mounts", "epsilon"])
     File.mkdir_p!(epsilon_dir)
-    File.write!(Path.join(epsilon_dir, "icm.yaml"), "name: \"   \"\n")
+
+    File.write!(
+      Path.join(epsilon_dir, "icm.yaml"),
+      "id: \"#{Ecto.UUID.generate()}\"\nname: \"   \"\n"
+    )
 
     write_config!(root, """
     version: 1

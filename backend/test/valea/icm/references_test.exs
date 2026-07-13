@@ -64,7 +64,7 @@ defmodule Valea.ICM.ReferencesTest do
   defp write_mount!(ws_path, name, title) do
     dir = Path.join([ws_path, "mounts", name])
     File.mkdir_p!(dir)
-    Manifest.write!(dir, %{id: "id-" <> name, name: title, description: ""})
+    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: title, description: ""})
   end
 
   defp write_page!(ws_path, mount, inner_rel, content) do
@@ -343,7 +343,13 @@ defmodule Valea.ICM.ReferencesTest do
 
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
-      Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+
+      Manifest.write!(dir, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: name,
+        description: ""
+      })
+
       dir
     end
 

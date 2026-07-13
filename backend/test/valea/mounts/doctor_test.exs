@@ -47,7 +47,12 @@ defmodule Valea.Mounts.DoctorTest do
   describe "run/1 — embedded mounts" do
     test "a healthy embedded mount reports manifest_ok, nothing else" do
       root = tmp_dir!("vmounts-doctor")
-      write_manifest!(Path.join(root, "mounts/alpha"), %{id: "a", name: "Alpha", description: ""})
+
+      write_manifest!(Path.join(root, "mounts/alpha"), %{
+        id: "7cfae9ed-1105-4498-abf5-60c6f7c10961",
+        name: "Alpha",
+        description: ""
+      })
 
       {:ok, %{checks: checks, ok: ok}} = Doctor.run(root)
 
@@ -138,7 +143,12 @@ defmodule Valea.Mounts.DoctorTest do
     test "a guardrail-degraded ref (inside the workspace) surfaces its exact reason on ref_resolves" do
       root = tmp_dir!("vmounts-doctor")
       inside = Path.join(root, "nested/icm")
-      write_manifest!(inside, %{id: "in", name: "Inside", description: ""})
+
+      write_manifest!(inside, %{
+        id: "7b7beecf-7c67-4847-9d9a-7a648e785490",
+        name: "Inside",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -160,7 +170,12 @@ defmodule Valea.Mounts.DoctorTest do
       root = tmp_dir!("vmounts-doctor")
       parent = tmp_dir!("vmounts-doctor-parent")
       weird = Path.join(parent, "weird[1]")
-      write_manifest!(weird, %{id: "id", name: "Weird", description: ""})
+
+      write_manifest!(weird, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "Weird",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -207,7 +222,12 @@ defmodule Valea.Mounts.DoctorTest do
     defp healthy_external_workspace!(mount_name \\ "outside") do
       root = tmp_dir!("vmounts-doctor")
       ext = tmp_dir!("vmounts-doctor-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "External", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "External",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -291,7 +311,12 @@ defmodule Valea.Mounts.DoctorTest do
     test "a disabled external mount is 'unknown', not 'failed' — nothing to fix" do
       root = tmp_dir!("vmounts-doctor")
       ext = tmp_dir!("vmounts-doctor-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "External", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "External",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -325,10 +350,19 @@ defmodule Valea.Mounts.DoctorTest do
     test "both entries' checks get unique ids (kind-qualified), no duplicate id in the flat list" do
       root = tmp_dir!("vmounts-doctor")
 
-      write_manifest!(Path.join(root, "mounts/dup"), %{id: "id-dup", name: "Dup", description: ""})
+      write_manifest!(Path.join(root, "mounts/dup"), %{
+        id: "36488521-9cdc-4cd1-b23c-8431b13bbf95",
+        name: "Dup",
+        description: ""
+      })
 
       ext = tmp_dir!("vmounts-doctor-ext")
-      write_manifest!(ext, %{id: "ext-dup", name: "ExtDup", description: ""})
+
+      write_manifest!(ext, %{
+        id: "96674b80-7a45-4b5b-9464-26c906170454",
+        name: "ExtDup",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -452,7 +486,12 @@ defmodule Valea.Mounts.DoctorTest do
 
     test "a fully healthy, enabled, watched external mount is all ok", %{ws: ws} do
       ext = tmp_dir!("vmounts-doctor-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "External", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "External",
+        description: ""
+      })
 
       Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
       poll_until_mounts_changed(fn _i -> declare_external!(ws.path, "outside", ext) end)
@@ -472,7 +511,12 @@ defmodule Valea.Mounts.DoctorTest do
 
     test "watcher_live is ok for an enabled mount, then 'unknown' once disabled", %{ws: ws} do
       ext = tmp_dir!("vmounts-doctor-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "External", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "External",
+        description: ""
+      })
 
       Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
       poll_until_mounts_changed(fn _i -> declare_external!(ws.path, "outside", ext) end)

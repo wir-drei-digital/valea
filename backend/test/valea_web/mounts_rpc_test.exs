@@ -88,7 +88,13 @@ defmodule ValeaWeb.MountsRpcTest do
 
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
-    Valea.Mounts.Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+
+    Valea.Mounts.Manifest.write!(dir, %{
+      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+      name: name,
+      description: ""
+    })
+
     dir
   end
 
@@ -403,7 +409,12 @@ defmodule ValeaWeb.MountsRpcTest do
       home_child = Path.join(System.user_home!(), unique)
       on_exit(fn -> File.rm_rf!(home_child) end)
       File.mkdir_p!(home_child)
-      Valea.Mounts.Manifest.write!(home_child, %{id: "tilde-id", name: "Tilde", description: ""})
+
+      Valea.Mounts.Manifest.write!(home_child, %{
+        id: "32e69771-c3d2-4c3c-83fa-aa47d023fadc",
+        name: "Tilde",
+        description: ""
+      })
 
       ref = "~/#{unique}"
 

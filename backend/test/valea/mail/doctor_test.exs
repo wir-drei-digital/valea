@@ -57,7 +57,12 @@ defmodule Valea.Mail.DoctorTest do
   defp write_triage!(root, body) do
     mount_dir = Path.join([root, "mounts", "starter"])
     File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-    Manifest.write!(mount_dir, %{id: "starter-id", name: "Starter", description: ""})
+
+    Manifest.write!(mount_dir, %{
+      id: "73de3db8-81d1-40ae-afc2-daa2424cc5e7",
+      name: "Starter",
+      description: ""
+    })
 
     content = "---\nenabled: true\n---\n" <> body
     File.write!(Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]), content)
@@ -69,7 +74,12 @@ defmodule Valea.Mail.DoctorTest do
   defp write_unrelated_workflow!(root) do
     mount_dir = Path.join([root, "mounts", "other"])
     File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-    Manifest.write!(mount_dir, %{id: "other-id", name: "Other", description: ""})
+
+    Manifest.write!(mount_dir, %{
+      id: "b713d4f5-1dec-4b75-836b-02b26316b013",
+      name: "Other",
+      description: ""
+    })
 
     File.write!(
       Path.join([mount_dir, "Workflows", "Weekly Review.md"]),
@@ -480,7 +490,12 @@ defmodule Valea.Mail.DoctorTest do
     # has to skip past it to reach "starter"'s triage workflow.
     aaa_dir = Path.join([root, "mounts", "aaa"])
     File.mkdir_p!(aaa_dir)
-    Manifest.write!(aaa_dir, %{id: "aaa-id", name: "AAA", description: ""})
+
+    Manifest.write!(aaa_dir, %{
+      id: "e514363a-f535-4643-b6fb-101baafbe70c",
+      name: "AAA",
+      description: ""
+    })
 
     write_triage!(root, @good_triage)
 

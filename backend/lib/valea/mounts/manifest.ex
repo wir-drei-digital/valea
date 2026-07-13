@@ -3,14 +3,17 @@ defmodule Valea.Mounts.Manifest do
   `<icm_root>/icm.yaml` ⇄ `%Manifest{}` — the per-mount manifest that makes
   an ICM at `mounts/<name>/` a portable module (Plan A, "all mounts").
 
-  `id` is provenance, not identity: it is minted once (scaffold/migration)
-  and travels with the mount if it's copied or renamed, but nothing in this
-  module — or elsewhere — treats it as a uniqueness key. Two mounts sharing
-  an `id` is not an error this codec detects or cares about.
+  Format 2: `id` is a stable, validated identity, not mere provenance —
+  `load/1` requires it to be present and a well-formed UUID (rejecting a
+  missing, blank, or non-UUID `id` as `{:invalid, _}`), rather than the
+  format-1 codec's tolerance of any value. Nothing in THIS module enforces
+  uniqueness across mounts (that's `Valea.Mounts.list`'s concern), only
+  that the id, whatever it is, is a real UUID.
 
   `format` is a forward-compatible version tag for the manifest shape
-  itself; today only `format: 1` exists, and it defaults to `1` when the
-  key is absent (e.g. a hand-written manifest that predates the field).
+  itself; it defaults to `2` when the key is absent (e.g. a hand-written
+  manifest that predates the field), but a present value — including a
+  legacy `format: 1` — is preserved as-is rather than rewritten on load.
   Unknown keys are ignored, matching `Valea.Mail.Settings`'s stance: a
   stray hand-edited key must never brick loading a mount.
   """
@@ -18,7 +21,7 @@ defmodule Valea.Mounts.Manifest do
   alias __MODULE__
   alias Valea.Yaml
 
-  defstruct format: 1, id: nil, name: nil, description: nil
+  defstruct format: 2, id: nil, name: nil, description: nil
 
   @type t :: %__MODULE__{
           format: pos_integer(),
@@ -32,9 +35,10 @@ defmodule Valea.Mounts.Manifest do
 
   Returns `{:error, :missing}` when the file doesn't exist, and
   `{:error, {:invalid, reason}}` when it exists but isn't a valid YAML
-  mapping or its `name` is absent, blank, or not a string. `format`
-  defaults to `1` and `description` to `""` when absent; any other key is
-  ignored.
+  mapping, its `id` is absent, blank, or not a UUID, or its `name` is
+  absent, blank, or not a string. `format` defaults to `2` (a present
+  value is preserved) and `description` to `""` when absent; any other key
+  is ignored.
   """
   @spec load(String.t()) :: {:ok, t()} | {:error, :missing | {:invalid, String.t()}}
   def load(icm_root) when is_binary(icm_root) do
@@ -61,7 +65,7 @@ defmodule Valea.Mounts.Manifest do
   @doc """
   Renders a fresh `icm.yaml` document from `id`/`name`/`description` — used
   by scaffold/create/migration to mint a mount's manifest. Always emits
-  `format: 1`. String values are rendered through the injection-hardened
+  `format: 2`. String values are rendered through the injection-hardened
   `Valea.Yaml.escape/1`, so arbitrary user input (a mount name typed during
   create) can never inject a sibling key or break the YAML structure.
   """
@@ -69,7 +73,7 @@ defmodule Valea.Mounts.Manifest do
   def render(%{id: id, name: name, description: description})
       when is_binary(id) and is_binary(name) and is_binary(description) do
     """
-    format: 1
+    format: 2
     id: #{Yaml.escape(id)}
     name: #{Yaml.escape(name)}
     description: #{Yaml.escape(description)}
@@ -94,18 +98,28 @@ defmodule Valea.Mounts.Manifest do
   end
 
   defp build(doc) do
-    case fetch_name(doc) do
-      {:ok, name} ->
-        {:ok,
-         %Manifest{
-           format: Map.get(doc, "format", 1),
-           id: Map.get(doc, "id"),
-           name: name,
-           description: fetch_description(doc)
-         }}
+    with {:ok, id} <- fetch_id(doc),
+         {:ok, name} <- fetch_name(doc) do
+      {:ok,
+       %Manifest{
+         format: Map.get(doc, "format", 2),
+         id: id,
+         name: name,
+         description: fetch_description(doc)
+       }}
+    end
+  end
 
-      {:error, _} = error ->
-        error
+  defp fetch_id(doc) do
+    case doc |> Map.get("id") |> to_string() |> String.trim() do
+      "" ->
+        {:error, {:invalid, "id is required"}}
+
+      id ->
+        case Ecto.UUID.cast(id) do
+          {:ok, id} -> {:ok, id}
+          :error -> {:error, {:invalid, "id must be a UUID"}}
+        end
     end
   end
 

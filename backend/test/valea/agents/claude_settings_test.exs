@@ -77,7 +77,11 @@ defmodule Valea.Agents.ClaudeSettingsTest do
   end
 
   test "an embedded-only workspace has no absolute Read allows", %{root: root} do
-    write_manifest!(Path.join([root, "mounts", "a"]), %{id: "id-a", name: "A", description: ""})
+    write_manifest!(Path.join([root, "mounts", "a"]), %{
+      id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
+      name: "A",
+      description: ""
+    })
 
     :ok = ClaudeSettings.write!(root)
     assert read_perms(root)["allow"] == ["Read(./**)"]
@@ -85,7 +89,12 @@ defmodule Valea.Agents.ClaudeSettingsTest do
 
   test "one enabled external mount adds Read(<abs>/**) to the allow list", %{root: root} do
     ext = tmp_dir!("valea-cs-ext")
-    write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+    write_manifest!(ext, %{
+      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+      name: "Ext",
+      description: ""
+    })
 
     write_workspace_yaml!(root, """
     mounts:
@@ -102,9 +111,20 @@ defmodule Valea.Agents.ClaudeSettingsTest do
 
   test "two enabled external mounts each get their own Read(<abs>/**) allow entry", %{root: root} do
     ext_a = tmp_dir!("valea-cs-ext-a")
-    write_manifest!(ext_a, %{id: "ext-a-id", name: "ExtA", description: ""})
+
+    write_manifest!(ext_a, %{
+      id: "54261659-27ae-4d3d-b9a5-c45469520a7d",
+      name: "ExtA",
+      description: ""
+    })
+
     ext_b = tmp_dir!("valea-cs-ext-b")
-    write_manifest!(ext_b, %{id: "ext-b-id", name: "ExtB", description: ""})
+
+    write_manifest!(ext_b, %{
+      id: "08c28783-f335-4f21-9d69-b3578187801b",
+      name: "ExtB",
+      description: ""
+    })
 
     write_workspace_yaml!(root, """
     mounts:
@@ -130,7 +150,12 @@ defmodule Valea.Agents.ClaudeSettingsTest do
 
   test "disabling the external mount removes its Read allow on the next write!", %{root: root} do
     ext = tmp_dir!("valea-cs-ext-disable")
-    write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+    write_manifest!(ext, %{
+      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+      name: "Ext",
+      description: ""
+    })
 
     write_workspace_yaml!(root, """
     mounts:
@@ -162,7 +187,12 @@ defmodule Valea.Agents.ClaudeSettingsTest do
        %{root: root} do
     parent = tmp_dir!("valea-cs-ext-parent")
     weird = Path.join(parent, "weird[1]")
-    write_manifest!(weird, %{id: "weird-id", name: "Weird", description: ""})
+
+    write_manifest!(weird, %{
+      id: "35e0b88e-2f29-4a9e-a7dc-32c4035e5c41",
+      name: "Weird",
+      description: ""
+    })
 
     write_workspace_yaml!(root, """
     mounts:
@@ -185,7 +215,12 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     baseline_deny = read_perms(root)["deny"]
 
     ext = tmp_dir!("valea-cs-ext-deny")
-    write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+    write_manifest!(ext, %{
+      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+      name: "Ext",
+      description: ""
+    })
 
     write_workspace_yaml!(root, """
     mounts:

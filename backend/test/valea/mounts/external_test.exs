@@ -42,7 +42,12 @@ defmodule Valea.Mounts.ExternalTest do
     test "a valid external ref resolves to a mount struct: abs root, rel_root nil, manifest loaded" do
       ws = tmp_dir!("valea-ext-ws")
       ext = tmp_dir!("valea-ext-target")
-      write_manifest!(ext, %{id: "ext-id", name: "External ICM", description: "d"})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "External ICM",
+        description: "d"
+      })
 
       write_workspace_yaml!(ws, """
       version: 4
@@ -65,7 +70,12 @@ defmodule Valea.Mounts.ExternalTest do
     test "config enabled: false is preserved on the struct" do
       ws = tmp_dir!("valea-ext-ws")
       ext = tmp_dir!("valea-ext-target")
-      write_manifest!(ext, %{id: "ext-id", name: "External", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "External",
+        description: ""
+      })
 
       write_workspace_yaml!(ws, """
       mounts:
@@ -178,8 +188,18 @@ defmodule Valea.Mounts.ExternalTest do
       ws = tmp_dir!("valea-ext-ws")
       ext_z = tmp_dir!("valea-ext-z")
       ext_a = tmp_dir!("valea-ext-a")
-      write_manifest!(ext_z, %{id: "z", name: "Z", description: ""})
-      write_manifest!(ext_a, %{id: "a", name: "A", description: ""})
+
+      write_manifest!(ext_z, %{
+        id: "8bd603aa-d92d-40ee-927c-a1f0cb49816a",
+        name: "Z",
+        description: ""
+      })
+
+      write_manifest!(ext_a, %{
+        id: "7cfae9ed-1105-4498-abf5-60c6f7c10961",
+        name: "A",
+        description: ""
+      })
 
       write_workspace_yaml!(ws, """
       mounts:
@@ -197,7 +217,12 @@ defmodule Valea.Mounts.ExternalTest do
     test "symlink to a valid ICM resolves to its real (target) path" do
       ws = tmp_dir!("valea-ext-ws")
       real_target = tmp_dir!("valea-ext-real-target")
-      write_manifest!(real_target, %{id: "sym-id", name: "Symlinked", description: ""})
+
+      write_manifest!(real_target, %{
+        id: "c71d3ab0-8010-4e24-8e2e-bf0e527aa2a1",
+        name: "Symlinked",
+        description: ""
+      })
 
       link_parent = tmp_dir!("valea-ext-link-parent")
       link = Path.join(link_parent, "link-to-icm")
@@ -239,7 +264,11 @@ defmodule Valea.Mounts.ExternalTest do
       File.mkdir_p!(ws)
       # A manifest AT the ancestor — proves the guardrail fires before (and
       # regardless of) manifest loading.
-      write_manifest!(parent, %{id: "evil", name: "Evil Ancestor", description: ""})
+      write_manifest!(parent, %{
+        id: "07224a4b-8c75-41e7-82c4-7ba94ff793c4",
+        name: "Evil Ancestor",
+        description: ""
+      })
 
       write_workspace_yaml!(ws, """
       mounts:
@@ -261,7 +290,12 @@ defmodule Valea.Mounts.ExternalTest do
 
     test "ref == the workspace root itself is degraded" do
       ws = tmp_dir!("valea-ext-ws")
-      write_manifest!(ws, %{id: "self", name: "Self", description: ""})
+
+      write_manifest!(ws, %{
+        id: "f7c77e14-2fd3-4cf6-a0ee-a136f8fffcf2",
+        name: "Self",
+        description: ""
+      })
 
       write_workspace_yaml!(ws, """
       mounts:
@@ -279,7 +313,12 @@ defmodule Valea.Mounts.ExternalTest do
     test "a ref inside the workspace is degraded" do
       ws = tmp_dir!("valea-ext-ws")
       inside = Path.join(ws, "nested/icm")
-      write_manifest!(inside, %{id: "in", name: "Inside", description: ""})
+
+      write_manifest!(inside, %{
+        id: "7b7beecf-7c67-4847-9d9a-7a648e785490",
+        name: "Inside",
+        description: ""
+      })
 
       write_workspace_yaml!(ws, """
       mounts:
@@ -296,7 +335,12 @@ defmodule Valea.Mounts.ExternalTest do
     test "a symlink ref resolving inside the workspace is degraded (guardrail runs on the resolved path)" do
       ws = tmp_dir!("valea-ext-ws")
       inside = Path.join(ws, "target")
-      write_manifest!(inside, %{id: "in", name: "Inside", description: ""})
+
+      write_manifest!(inside, %{
+        id: "7b7beecf-7c67-4847-9d9a-7a648e785490",
+        name: "Inside",
+        description: ""
+      })
 
       link_parent = tmp_dir!("valea-ext-link-parent")
       link = Path.join(link_parent, "sneaky")
@@ -333,7 +377,12 @@ defmodule Valea.Mounts.ExternalTest do
       ws = tmp_dir!("valea-ext-ws")
       parent = tmp_dir!("valea-ext-parent")
       weird = Path.join(parent, "weird[1]")
-      write_manifest!(weird, %{id: "id", name: "Weird", description: ""})
+
+      write_manifest!(weird, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "Weird",
+        description: ""
+      })
 
       write_workspace_yaml!(ws, """
       mounts:
@@ -357,7 +406,12 @@ defmodule Valea.Mounts.ExternalTest do
       ws = tmp_dir!("valea-ext-ws")
       parent = tmp_dir!("valea-ext-parent")
       parens = Path.join(parent, "Projects (2024)")
-      write_manifest!(parens, %{id: "id", name: "Parens Project", description: ""})
+
+      write_manifest!(parens, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "Parens Project",
+        description: ""
+      })
 
       write_workspace_yaml!(ws, """
       mounts:
@@ -437,7 +491,12 @@ defmodule Valea.Mounts.ExternalTest do
 
       home_child = Path.join(System.user_home!(), unique)
       on_exit(fn -> File.rm_rf!(home_child) end)
-      write_manifest!(home_child, %{id: "tilde-id", name: "Tilde", description: ""})
+
+      write_manifest!(home_child, %{
+        id: "32e69771-c3d2-4c3c-83fa-aa47d023fadc",
+        name: "Tilde",
+        description: ""
+      })
 
       ws = tmp_dir!("valea-ext-ws")
 
@@ -459,7 +518,12 @@ defmodule Valea.Mounts.ExternalTest do
 
       home_child = Path.join(System.user_home!(), unique)
       on_exit(fn -> File.rm_rf!(home_child) end)
-      write_manifest!(home_child, %{id: "tilde-id", name: "Tilde", description: ""})
+
+      write_manifest!(home_child, %{
+        id: "32e69771-c3d2-4c3c-83fa-aa47d023fadc",
+        name: "Tilde",
+        description: ""
+      })
 
       ws = tmp_dir!("valea-ext-ws")
 
@@ -475,7 +539,12 @@ defmodule Valea.Mounts.ExternalTest do
 
     test "accepts a valid external ref outside the workspace, home, and root", %{ws: ws} do
       ext = tmp_dir!("valea-ext-target")
-      write_manifest!(ext, %{id: "id", name: "N", description: ""})
+
+      write_manifest!(ext, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "N",
+        description: ""
+      })
 
       assert {:ok, resolved} = External.validate_ref(ws, ext)
       assert resolved == real!(ext)
@@ -505,7 +574,12 @@ defmodule Valea.Mounts.ExternalTest do
       ws = Path.join(parent, "ws")
       sibling = Path.join(parent, "ws-other")
       File.mkdir_p!(ws)
-      write_manifest!(sibling, %{id: "sib", name: "Sibling", description: ""})
+
+      write_manifest!(sibling, %{
+        id: "ed8e4a14-5dce-460a-a1bd-b767b8043e1b",
+        name: "Sibling",
+        description: ""
+      })
 
       assert {:ok, _resolved} = External.validate_ref(ws, sibling)
     end
@@ -563,7 +637,12 @@ defmodule Valea.Mounts.ExternalTest do
     test "rejects a ref whose resolved directory name contains a glob metacharacter", %{ws: ws} do
       parent = tmp_dir!("valea-ext-parent")
       weird = Path.join(parent, "weird[1]")
-      write_manifest!(weird, %{id: "id", name: "Weird", description: ""})
+
+      write_manifest!(weird, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "Weird",
+        description: ""
+      })
 
       assert {:error, :unsafe_path} = External.validate_ref(ws, weird)
     end
@@ -571,7 +650,12 @@ defmodule Valea.Mounts.ExternalTest do
     test "rejects a ref containing a literal * in its resolved path", %{ws: ws} do
       parent = tmp_dir!("valea-ext-parent")
       weird = Path.join(parent, "v*1")
-      write_manifest!(weird, %{id: "id", name: "Star", description: ""})
+
+      write_manifest!(weird, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "Star",
+        description: ""
+      })
 
       assert {:error, :unsafe_path} = External.validate_ref(ws, weird)
     end
@@ -579,14 +663,24 @@ defmodule Valea.Mounts.ExternalTest do
     test "rejects a ref whose path contains parentheses", %{ws: ws} do
       parent = tmp_dir!("valea-ext-parent")
       weird = Path.join(parent, "Projects (2024)")
-      write_manifest!(weird, %{id: "id", name: "Parens", description: ""})
+
+      write_manifest!(weird, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "Parens",
+        description: ""
+      })
 
       assert {:error, :unsafe_path} = External.validate_ref(ws, weird)
     end
 
     test "resolves a symlink to its real path before applying guardrails", %{ws: ws} do
       real_target = tmp_dir!("valea-ext-real-target")
-      write_manifest!(real_target, %{id: "id", name: "N", description: ""})
+
+      write_manifest!(real_target, %{
+        id: "7d23ae36-9be4-45a1-9de6-a3359141e78e",
+        name: "N",
+        description: ""
+      })
 
       link_parent = tmp_dir!("valea-ext-link-parent")
       link = Path.join(link_parent, "link")

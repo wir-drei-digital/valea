@@ -53,7 +53,13 @@ defmodule Valea.ICMSymlinkContainmentTest do
 
   defp external_icm!(name) do
     dir = tmp_dir!("valea-symlink-ext")
-    Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+
+    Manifest.write!(dir, %{
+      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+      name: name,
+      description: ""
+    })
+
     dir
   end
 

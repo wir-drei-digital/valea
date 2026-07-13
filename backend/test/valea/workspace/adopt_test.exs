@@ -34,7 +34,12 @@ defmodule Valea.Workspace.AdoptTest do
 
     test "classifies a dir with a parseable icm.yaml (not a workspace) as :icm" do
       dir = tmp_dir("valea-icm")
-      write_manifest!(dir, %{id: "id-1", name: "My Notes", description: "Old client work"})
+
+      write_manifest!(dir, %{
+        id: "4180e4f3-42f3-4f25-9b55-6148ba6a5252",
+        name: "My Notes",
+        description: "Old client work"
+      })
 
       assert {:icm, manifest} = Adopt.classify_path(dir)
       assert manifest.name == "My Notes"
@@ -60,7 +65,12 @@ defmodule Valea.Workspace.AdoptTest do
     test "a workspace dir wins classification over :icm even if it somehow also has a root icm.yaml" do
       target = tmp_dir("valea-ws-icm")
       :ok = Scaffold.create(target, "Acme")
-      write_manifest!(target, %{id: "id-2", name: "Confusing", description: ""})
+
+      write_manifest!(target, %{
+        id: "d89442e0-4d2a-4f57-a709-4b3ac5b744ee",
+        name: "Confusing",
+        description: ""
+      })
 
       assert {:workspace, nil} = Adopt.classify_path(target)
     end
@@ -120,7 +130,12 @@ defmodule Valea.Workspace.AdoptTest do
 
     test "preserves an existing manifest rather than minting a new one", %{parent: parent} do
       source = tmp_dir("valea-source")
-      write_manifest!(source, %{id: "original-id", name: "Original Name", description: "Kept"})
+
+      write_manifest!(source, %{
+        id: "564053d3-ce0a-4a21-a272-99e708622c54",
+        name: "Original Name",
+        description: "Kept"
+      })
 
       assert {:ok, _info} = Adopt.create_with_icm(parent, "Wrap", source)
 
@@ -129,7 +144,7 @@ defmodule Valea.Workspace.AdoptTest do
       mount_dir = Path.join([target, "mounts", slug])
 
       assert {:ok, manifest} = Manifest.load(mount_dir)
-      assert manifest.id == "original-id"
+      assert manifest.id == "564053d3-ce0a-4a21-a272-99e708622c54"
       assert manifest.name == "Original Name"
       assert manifest.description == "Kept"
     end

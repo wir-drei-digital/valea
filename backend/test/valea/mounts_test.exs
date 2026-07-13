@@ -49,8 +49,18 @@ defmodule Valea.MountsTest do
     test "discovers two valid mounts + one manifest-less (degraded) dir, sorted by name", %{
       root: root
     } do
-      write_manifest!(mount_dir(root, "a"), %{id: "id-a", name: "A", description: ""})
-      write_manifest!(mount_dir(root, "b"), %{id: "id-b", name: "B", description: ""})
+      write_manifest!(mount_dir(root, "a"), %{
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
+        name: "A",
+        description: ""
+      })
+
+      write_manifest!(mount_dir(root, "b"), %{
+        id: "6001e724-556c-4719-921e-3e552c09835c",
+        name: "B",
+        description: ""
+      })
+
       # "c" exists on disk but has no icm.yaml at all -> degraded, still listed.
       File.mkdir_p!(mount_dir(root, "c"))
 
@@ -86,7 +96,12 @@ defmodule Valea.MountsTest do
       # not on manifest content (mirroring `c`'s manifest-driven degrade
       # above, this is the basename-driven degrade).
       dir = mount_dir(root, "evil\nname")
-      write_manifest!(dir, %{id: "id-evil", name: "Evil", description: ""})
+
+      write_manifest!(dir, %{
+        id: "7fcee2f0-79e5-4ac7-8bdc-517fbf51e768",
+        name: "Evil",
+        description: ""
+      })
 
       [m] = Mounts.list(root)
 
@@ -103,7 +118,12 @@ defmodule Valea.MountsTest do
 
     test "a directory basename with a DEL byte is degraded", %{root: root} do
       dir = mount_dir(root, "evil\x7Fname")
-      write_manifest!(dir, %{id: "id-evil2", name: "Evil2", description: ""})
+
+      write_manifest!(dir, %{
+        id: "146ed143-9ff0-436f-a4f5-b9805e9b156e",
+        name: "Evil2",
+        description: ""
+      })
 
       [m] = Mounts.list(root)
       assert m.degraded == "invalid mount directory name"
@@ -120,20 +140,30 @@ defmodule Valea.MountsTest do
       assert m.manifest == nil
     end
 
-    test "a hand-edited non-string manifest id does not crash discovery", %{root: root} do
+    test "a hand-edited non-uuid manifest id degrades the mount, not a crash", %{root: root} do
       dir = mount_dir(root, "weird")
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "icm.yaml"), "format: 1\nid: 12345\nname: \"Weird\"\n")
 
       [m] = Mounts.list(root)
-      assert m.degraded == nil
-      assert m.manifest.id == 12_345
+      assert m.degraded != nil
+      assert m.manifest == nil
     end
 
     test "config mounts:{b: {enabled: false}} disables b in enabled/1 but list/1 still shows it",
          %{root: root} do
-      write_manifest!(mount_dir(root, "a"), %{id: "id-a", name: "A", description: ""})
-      write_manifest!(mount_dir(root, "b"), %{id: "id-b", name: "B", description: ""})
+      write_manifest!(mount_dir(root, "a"), %{
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
+        name: "A",
+        description: ""
+      })
+
+      write_manifest!(mount_dir(root, "b"), %{
+        id: "6001e724-556c-4719-921e-3e552c09835c",
+        name: "B",
+        description: ""
+      })
+
       File.mkdir_p!(mount_dir(root, "c"))
 
       write_workspace_yaml!(root, """
@@ -164,9 +194,19 @@ defmodule Valea.MountsTest do
     end
 
     test "one embedded + one external declared mount both appear in enabled/1", %{root: root} do
-      write_manifest!(mount_dir(root, "a"), %{id: "id-a", name: "A", description: ""})
+      write_manifest!(mount_dir(root, "a"), %{
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
+        name: "A",
+        description: ""
+      })
+
       ext = tmp_dir!("valea-mounts-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -186,7 +226,12 @@ defmodule Valea.MountsTest do
       root: root
     } do
       ext = tmp_dir!("valea-mounts-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -202,7 +247,12 @@ defmodule Valea.MountsTest do
     test "disabling the external name (via config) drops it from enabled/1 but list/1 keeps it",
          %{root: root} do
       ext = tmp_dir!("valea-mounts-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -223,9 +273,19 @@ defmodule Valea.MountsTest do
 
     test "embedded/external name collision degrades BOTH entries and excludes both from enabled/1",
          %{root: root} do
-      write_manifest!(mount_dir(root, "dup"), %{id: "id-dup", name: "Dup", description: ""})
+      write_manifest!(mount_dir(root, "dup"), %{
+        id: "36488521-9cdc-4cd1-b23c-8431b13bbf95",
+        name: "Dup",
+        description: ""
+      })
+
       ext = tmp_dir!("valea-mounts-ext")
-      write_manifest!(ext, %{id: "ext-dup", name: "ExtDup", description: ""})
+
+      write_manifest!(ext, %{
+        id: "96674b80-7a45-4b5b-9464-26c906170454",
+        name: "ExtDup",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -270,7 +330,12 @@ defmodule Valea.MountsTest do
 
     test "two workspaces declaring the same external ICM each resolve it independently, unshared state" do
       shared = tmp_dir!("valea-mounts-shared")
-      write_manifest!(shared, %{id: "shared-id", name: "Shared", description: ""})
+
+      write_manifest!(shared, %{
+        id: "82e2b502-db26-406d-9c1f-9da6c49cba23",
+        name: "Shared",
+        description: ""
+      })
 
       ws1 = tmp_dir!("valea-mounts-ws1")
       ws2 = tmp_dir!("valea-mounts-ws2")
@@ -311,7 +376,13 @@ defmodule Valea.MountsTest do
         )
 
       File.mkdir_p!(root)
-      write_manifest!(mount_dir(root, "a"), %{id: "id-a", name: "A", description: ""})
+
+      write_manifest!(mount_dir(root, "a"), %{
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
+        name: "A",
+        description: ""
+      })
+
       on_exit(fn -> File.rm_rf!(root) end)
       %{root: root}
     end
@@ -336,10 +407,21 @@ defmodule Valea.MountsTest do
   describe "mount_for/2 — absolute paths (external mounts)" do
     setup do
       root = tmp_dir!("valea-mounts-abs")
-      write_manifest!(mount_dir(root, "a"), %{id: "id-a", name: "A", description: ""})
+
+      write_manifest!(mount_dir(root, "a"), %{
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
+        name: "A",
+        description: ""
+      })
 
       ext = tmp_dir!("valea-mounts-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
+
       File.mkdir_p!(Path.join(ext, "Offers"))
       File.write!(Path.join(ext, "Offers/X.md"), "# X")
 
@@ -457,8 +539,19 @@ defmodule Valea.MountsTest do
   defp nested_external_ws!(outer_name, inner_name) do
     outer = tmp_dir!("valea-mounts-outer")
     inner = Path.join(outer, "inner")
-    write_manifest!(outer, %{id: "id-outer", name: "Outer", description: ""})
-    write_manifest!(inner, %{id: "id-inner", name: "Inner", description: ""})
+
+    write_manifest!(outer, %{
+      id: "9fb23aa3-4d07-4f05-9410-b566667b0027",
+      name: "Outer",
+      description: ""
+    })
+
+    write_manifest!(inner, %{
+      id: "c26fff01-d8b8-4429-9951-fb9c9d77dce6",
+      name: "Inner",
+      description: ""
+    })
+
     File.write!(Path.join(inner, "X.md"), "# X")
 
     ws = tmp_dir!("valea-mounts-nested-ws")
@@ -577,7 +670,7 @@ defmodule Valea.MountsTest do
 
     test "list/1 reflects a disabled mount after set_enabled", %{ws: ws} do
       write_manifest!(Path.join([ws.path, "mounts", "a"]), %{
-        id: "id-a",
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
         name: "A",
         description: ""
       })
@@ -637,7 +730,12 @@ defmodule Valea.MountsTest do
       root: root
     } do
       ext = tmp_dir!("valea-mounts-declare-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       version: 4
@@ -676,7 +774,12 @@ defmodule Valea.MountsTest do
 
       home_child = Path.join(System.user_home!(), unique)
       on_exit(fn -> File.rm_rf!(home_child) end)
-      write_manifest!(home_child, %{id: "tilde-id", name: "Tilde", description: ""})
+
+      write_manifest!(home_child, %{
+        id: "32e69771-c3d2-4c3c-83fa-aa47d023fadc",
+        name: "Tilde",
+        description: ""
+      })
 
       root = tmp_dir!("valea-mounts-declare-tilde-ws")
       write_workspace_yaml!(root, "mounts: {}\n")
@@ -721,9 +824,20 @@ defmodule Valea.MountsTest do
       root: root
     } do
       ext1 = tmp_dir!("valea-mounts-declare-ext1")
-      write_manifest!(ext1, %{id: "ext1-id", name: "Ext1", description: ""})
+
+      write_manifest!(ext1, %{
+        id: "3ab6224b-3d88-422a-b94f-f8f4ec50b436",
+        name: "Ext1",
+        description: ""
+      })
+
       ext2 = tmp_dir!("valea-mounts-declare-ext2")
-      write_manifest!(ext2, %{id: "ext2-id", name: "Ext2", description: ""})
+
+      write_manifest!(ext2, %{
+        id: "ce182166-b631-4718-9014-2afe7fc89a65",
+        name: "Ext2",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -751,7 +865,12 @@ defmodule Valea.MountsTest do
 
     test "removes an external entry only, preserving other entries + version/id", %{root: root} do
       ext = tmp_dir!("valea-mounts-undeclare-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       version: 4
@@ -780,7 +899,12 @@ defmodule Valea.MountsTest do
 
     test "leaves the referenced external folder untouched on disk", %{root: root} do
       ext = tmp_dir!("valea-mounts-undeclare-ext2")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
 
       write_workspace_yaml!(root, """
       mounts:
@@ -798,7 +922,7 @@ defmodule Valea.MountsTest do
     test "an embedded mount's directory is left untouched -- errors instead of removing anything",
          %{root: root} do
       write_manifest!(mount_dir(root, "embedded"), %{
-        id: "id-e",
+        id: "d4d7db7c-1ec5-4f1c-9a99-f9def8834a72",
         name: "Embedded",
         description: ""
       })
@@ -861,7 +985,12 @@ defmodule Valea.MountsTest do
 
     test "declare_external audits mount_declared with name and resolved path", %{ws: ws} do
       ext = tmp_dir!("valea-mounts-audit-declare-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
 
       assert {:ok, resolved} = Mounts.declare_external(ws.path, "outside", ext)
 
@@ -873,7 +1002,13 @@ defmodule Valea.MountsTest do
 
     test "undeclare audits mount_undeclared with name and resolved path", %{ws: ws} do
       ext = tmp_dir!("valea-mounts-audit-undeclare-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
+
       {:ok, resolved} = Mounts.declare_external(ws.path, "outside", ext)
 
       assert {:ok, ^resolved} = Mounts.undeclare(ws.path, "outside")
@@ -887,7 +1022,13 @@ defmodule Valea.MountsTest do
     test "set_enabled audits mount_disabled/mount_enabled for an EXTERNAL mount, with resolved path",
          %{ws: ws} do
       ext = tmp_dir!("valea-mounts-audit-toggle-ext")
-      write_manifest!(ext, %{id: "ext-id", name: "Ext", description: ""})
+
+      write_manifest!(ext, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: "Ext",
+        description: ""
+      })
+
       {:ok, resolved} = Mounts.declare_external(ws.path, "outside", ext)
 
       assert :ok = Mounts.set_enabled("outside", false)
@@ -907,7 +1048,7 @@ defmodule Valea.MountsTest do
 
     test "set_enabled does NOT audit an EMBEDDED mount toggle", %{ws: ws} do
       write_manifest!(Path.join([ws.path, "mounts", "emb"]), %{
-        id: "id-e",
+        id: "d4d7db7c-1ec5-4f1c-9a99-f9def8834a72",
         name: "Emb",
         description: ""
       })
@@ -1049,7 +1190,7 @@ defmodule Valea.MountsTest do
 
     test "list/0 and enabled/0 mirror the /1 forms", %{ws: ws} do
       write_manifest!(Path.join([ws.path, "mounts", "a"]), %{
-        id: "id-a",
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
         name: "A",
         description: ""
       })
@@ -1060,7 +1201,7 @@ defmodule Valea.MountsTest do
 
     test "mount_for/1 resolves against the current workspace", %{ws: ws} do
       write_manifest!(Path.join([ws.path, "mounts", "a"]), %{
-        id: "id-a",
+        id: "d2fab426-4412-4ac0-8635-5eff502b5c6f",
         name: "A",
         description: ""
       })

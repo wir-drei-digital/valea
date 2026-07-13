@@ -347,7 +347,13 @@ defmodule Valea.ICMWriteTest do
 
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
-      Manifest.write!(dir, %{id: "ext-id", name: name, description: ""})
+
+      Manifest.write!(dir, %{
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        name: name,
+        description: ""
+      })
+
       dir
     end
 

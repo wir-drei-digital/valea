@@ -61,10 +61,57 @@ defmodule Valea.Mounts.ManifestTest do
       assert {:error, {:invalid, reason}} = Manifest.load(root)
       assert reason =~ "name"
     end
+
+    test "missing id key", %{root: root} do
+      write_yaml!(root, """
+      name: "Coaching"
+      """)
+
+      assert {:error, {:invalid, _reason}} = Manifest.load(root)
+    end
+
+    test "blank id", %{root: root} do
+      write_yaml!(root, """
+      id: "   "
+      name: "Coaching"
+      """)
+
+      assert {:error, {:invalid, _reason}} = Manifest.load(root)
+    end
+
+    test "non-uuid id", %{root: root} do
+      write_yaml!(root, """
+      id: not-a-uuid
+      name: "Coaching"
+      """)
+
+      assert {:error, {:invalid, _reason}} = Manifest.load(root)
+    end
+
+    test "rejects a manifest with no id or a non-uuid id", %{root: root} do
+      write_yaml!(root, "format: 2\nname: \"Coaching\"\n")
+      assert {:error, {:invalid, _}} = Manifest.load(root)
+
+      write_yaml!(root, "format: 2\nid: not-a-uuid\nname: \"Coaching\"\n")
+      assert {:error, {:invalid, _}} = Manifest.load(root)
+    end
   end
 
   describe "load/1 — success" do
-    test "full manifest parses into the struct", %{root: root} do
+    test "loads format 2 with a valid uuid id", %{root: root} do
+      write_yaml!(root, """
+      format: 2
+      id: 6f9f0c9e-3ccd-4fa5-a219-113a70618b55
+      name: "Coaching"
+      description: "x"
+      """)
+
+      assert {:ok,
+              %Manifest{format: 2, id: "6f9f0c9e-3ccd-4fa5-a219-113a70618b55", name: "Coaching"}} =
+               Manifest.load(root)
+    end
+
+    test "full manifest parses into the struct, preserving an explicit format", %{root: root} do
       write_yaml!(root, """
       format: 1
       id: 3f6a8f1e-9c2b-4e2a-9d3a-9a6a4c0f6a11
@@ -82,13 +129,13 @@ defmodule Valea.Mounts.ManifestTest do
                 }}
     end
 
-    test "format defaults to 1 when absent", %{root: root} do
+    test "format defaults to 2 when absent", %{root: root} do
       write_yaml!(root, """
       id: 3f6a8f1e-9c2b-4e2a-9d3a-9a6a4c0f6a11
       name: "Research Notes"
       """)
 
-      assert {:ok, %Manifest{format: 1}} = Manifest.load(root)
+      assert {:ok, %Manifest{format: 2}} = Manifest.load(root)
     end
 
     test "description defaults to \"\" when absent", %{root: root} do
@@ -102,7 +149,7 @@ defmodule Valea.Mounts.ManifestTest do
 
     test "unknown keys are ignored", %{root: root} do
       write_yaml!(root, """
-      format: 1
+      format: 2
       id: 3f6a8f1e-9c2b-4e2a-9d3a-9a6a4c0f6a11
       name: "Research Notes"
       description: "Personal research ICM"
@@ -126,7 +173,7 @@ defmodule Valea.Mounts.ManifestTest do
           description: "Personal research ICM"
         })
 
-      assert rendered =~ "format: 1"
+      assert rendered =~ "format: 2"
       assert rendered =~ ~s(id: "3f6a8f1e-9c2b-4e2a-9d3a-9a6a4c0f6a11")
       assert rendered =~ ~s(name: "Research Notes")
       assert rendered =~ ~s(description: "Personal research ICM")
@@ -161,7 +208,7 @@ defmodule Valea.Mounts.ManifestTest do
       assert Manifest.load(root) ==
                {:ok,
                 %Manifest{
-                  format: 1,
+                  format: 2,
                   id: attrs.id,
                   name: attrs.name,
                   description: attrs.description
