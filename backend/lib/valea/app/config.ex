@@ -22,6 +22,9 @@ defmodule Valea.App.Config do
     end
   end
 
+  @doc "App-owned parent directory for hidden workspace folders — `dir()/workspaces`."
+  def workspaces_dir, do: Path.join(dir(), "workspaces")
+
   def read do
     with {:ok, raw} <- File.read(Path.join(dir(), @file_name)),
          {:ok, %{} = data} <- Jason.decode(raw) do
@@ -31,24 +34,39 @@ defmodule Valea.App.Config do
     end
   end
 
-  def record_opened(path, name) do
+  @doc """
+  Id-keyed upsert into `known_workspaces`, setting `last_opened` to the id.
+  `path` stays in the registry as the internal on-disk locator the Manager
+  needs to boot the workspace — it is never sent to or accepted from the
+  UI, which addresses workspaces by `id` only (see `workspace_by_id/1`,
+  `last_opened_id/0`).
+  """
+  def record_opened(%{id: id, name: name, slug: slug, path: path}) do
     config = read()
 
     entry = %{
-      "path" => path,
+      "id" => id,
       "name" => name,
+      "slug" => slug,
+      "path" => path,
       "last_opened_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
     known =
-      [entry | Enum.reject(config["known_workspaces"], &(&1["path"] == path))]
+      [entry | Enum.reject(config["known_workspaces"], &(&1["id"] == id))]
 
-    write(%{config | "known_workspaces" => known, "last_opened" => path})
+    write(%{config | "known_workspaces" => known, "last_opened" => id})
   end
 
   def clear_last_opened do
     write(%{read() | "last_opened" => nil})
   end
+
+  @doc "The known-workspace registry entry for `id`, or `nil` if not found."
+  def workspace_by_id(id), do: Enum.find(read()["known_workspaces"], &(&1["id"] == id))
+
+  @doc "The id of the last-opened workspace, or `nil`."
+  def last_opened_id, do: read()["last_opened"]
 
   def recent do
     read()["known_workspaces"]

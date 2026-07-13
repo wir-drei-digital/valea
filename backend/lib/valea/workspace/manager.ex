@@ -179,8 +179,20 @@ defmodule Valea.Workspace.Manager do
   defp open_workspace_migrate(path, state, started, next_generation) do
     case Valea.Workspace.Migration.migrate(path) do
       {:ok, _version} ->
-        info = %{path: path, name: Path.basename(path)}
-        Config.record_opened(path, info.name)
+        name = Path.basename(path)
+        info = %{path: path, name: name}
+
+        # `id` is a placeholder mint here — this Manager still opens
+        # workspaces by path, not id. The id-based open/create lifecycle
+        # (reading/minting the id from `config/workspace.yaml`, per
+        # `Valea.App.Config.workspace_by_id/1`) is the next task group's
+        # job; this keeps the id-keyed registry populated in the meantime.
+        Config.record_opened(%{
+          id: Ecto.UUID.generate(),
+          name: name,
+          slug: Scaffold.slugify(name),
+          path: path
+        })
 
         Phoenix.PubSub.broadcast(
           Valea.PubSub,

@@ -29,29 +29,56 @@ defmodule Valea.App.ConfigTest do
            }
   end
 
+  test "workspaces_dir is under the app dir" do
+    assert Config.workspaces_dir() == Path.join(Config.dir(), "workspaces")
+  end
+
+  test "record_opened keys by id and sets last_opened to the id" do
+    ws = Path.join(Config.workspaces_dir(), "coaching-a2f3")
+    File.mkdir_p!(ws)
+    :ok = Config.record_opened(%{id: "id-1", name: "Coaching", slug: "coaching", path: ws})
+
+    assert Config.last_opened_id() == "id-1"
+    assert %{"id" => "id-1", "name" => "Coaching", "path" => ^ws} = Config.workspace_by_id("id-1")
+    assert [%{"id" => "id-1"}] = Config.recent()
+  end
+
   test "record_opened persists and read round-trips", %{dir: dir} do
     ws = Path.join(dir, "ws1")
     File.mkdir_p!(ws)
-    Config.record_opened(ws, "Test Workspace")
+    Config.record_opened(%{id: "id-1", name: "Test Workspace", slug: "test-workspace", path: ws})
 
-    assert %{"last_opened" => ^ws, "known_workspaces" => [entry]} = Config.read()
+    assert %{"last_opened" => "id-1", "known_workspaces" => [entry]} = Config.read()
     assert entry["name"] == "Test Workspace"
     assert entry["path"] == ws
   end
 
-  test "record_opened upserts by path (no duplicates)", %{dir: dir} do
+  test "record_opened upserts by id (no duplicates)", %{dir: dir} do
     ws = Path.join(dir, "ws1")
     File.mkdir_p!(ws)
-    Config.record_opened(ws, "A")
-    Config.record_opened(ws, "A renamed")
+    Config.record_opened(%{id: "id-1", name: "A", slug: "a", path: ws})
+    Config.record_opened(%{id: "id-1", name: "A renamed", slug: "a", path: ws})
     assert %{"known_workspaces" => [entry]} = Config.read()
     assert entry["name"] == "A renamed"
+  end
+
+  test "recent drops entries whose folder no longer exists" do
+    :ok =
+      Config.record_opened(%{
+        id: "gone",
+        name: "Gone",
+        slug: "gone",
+        path: Path.join(Config.workspaces_dir(), "gone-0000")
+      })
+
+    assert Config.recent() == []
+    assert Config.workspace_by_id("gone") == nil or match?(%{}, Config.workspace_by_id("gone"))
   end
 
   test "recent prunes workspaces missing on disk", %{dir: dir} do
     gone = Path.join(dir, "gone")
     File.mkdir_p!(gone)
-    Config.record_opened(gone, "Gone")
+    Config.record_opened(%{id: "id-1", name: "Gone", slug: "gone", path: gone})
     File.rm_rf!(gone)
     assert Config.recent() == []
   end
@@ -59,7 +86,7 @@ defmodule Valea.App.ConfigTest do
   test "clear_last_opened keeps known list", %{dir: dir} do
     ws = Path.join(dir, "ws1")
     File.mkdir_p!(ws)
-    Config.record_opened(ws, "A")
+    Config.record_opened(%{id: "id-1", name: "A", slug: "a", path: ws})
     Config.clear_last_opened()
     assert %{"last_opened" => nil, "known_workspaces" => [_]} = Config.read()
   end

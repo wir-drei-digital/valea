@@ -32,7 +32,10 @@ defmodule Valea.Workspace.ManagerTest do
     assert {:ok, ^info} = Manager.current()
     assert File.exists?(Path.join(info.path, "app.sqlite"))
     assert Process.whereis(Valea.Repo)
-    assert Valea.App.Config.read()["last_opened"] == info.path
+    last_opened_id = Valea.App.Config.read()["last_opened"]
+    assert is_binary(last_opened_id)
+    registered = Valea.App.Config.workspace_by_id(last_opened_id)
+    assert registered["path"] == info.path
     assert_receive {:workspace_opened, ^info, generation}
     assert generation == Manager.generation()
   end
