@@ -196,6 +196,19 @@ project's proven scaffold. Full decisions per feature live in
    mounts section — followed as Plan A2. *(Plan A2 — shipped, pending merge
    on the same `feat/icm-mounts` branch; spec:
    2026-07-12-icm-by-reference-design.md.)*
+8. **Methodology depth** — closes the teaching loop (principle 2/4, daily-loop
+   step 5): a server-derived risk tier makes a proposed edit's stakes
+   explicit (a mount's `Workflows/*.md`/`AGENTS.md`/`CLAUDE.md`/`icm.yaml`
+   are `high` — they change future agent behavior — everything else in a
+   mount is `medium`); the chat ask-gate dialog now renders a line diff and
+   that risk banner in the moment; workflow runs and a reflection workflow
+   ("Distill recent decisions", mining a server-compiled 30-day digest of
+   decided queue items) stage memory-update PROPOSAL PAIRS instead of editing
+   directly, applied by a hash-guarded queue executor with conflict
+   hand-back and content-hash crash recovery; rejections optionally carry a
+   one-line reason, visible in the decided history. *(Spec B — shipped,
+   pending merge on `feat/methodology-depth`; spec:
+   2026-07-12-methodology-depth-design.md.)*
 
 The MVP is complete when the core acceptance scenario runs end-to-end: open
 app → move Priya's inquiry to AI/Review → run triage workflow → review the

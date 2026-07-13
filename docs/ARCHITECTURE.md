@@ -892,6 +892,191 @@ across the transition; the onboarding flow explicitly navigates to
 banner is actually reachable (post-onboarding success still lands on
 Today, unchanged).
 
+## Methodology depth (Spec B)
+
+*(pending merge on `feat/methodology-depth`; spec:
+[2026-07-12-methodology-depth-design.md](superpowers/specs/2026-07-12-methodology-depth-design.md))*
+
+Closes the teaching loop from the vision's daily-loop step 5: knowledge
+flows into ICM through three doors, split by whether a human is present.
+**Chat** keeps direct edits — the agent writes a mount page with its native
+tools; the ask-gate dialog (below) reviews the diff in the moment, no queue
+involvement. **Workflow runs** and **reflection** (no user present) require
+the queue: the agent stages a memory-update PROPOSAL PAIR instead of
+editing, for the human to review later. All three surfaces share one
+server-derived risk tier and one apply executor.
+
+### Risk tiers
+
+`Valea.Agents.RiskTier.classify/2` (`backend/lib/valea/agents/risk_tier.ex`)
+is the one risk-tier classifier every surface below shares: `"high"` for a
+mount-relative path that is `AGENTS.md`, `CLAUDE.md`, `icm.yaml`, or starts
+with `Workflows/` (the mount's own instruction spine and stage contracts —
+an approved edit changes future agent behavior); `"medium"` for anything
+else inside a mount; `nil` for a path that does not attribute to any mount
+(via `Valea.Mounts.mount_for/2`) — the workspace shell, or nowhere. Display
+and envelope metadata only, never an access decision.
+
+### Chat teaching — the ask-gate dialog
+
+The existing permission-ask surface, unchanged in its allow/deny/ask
+semantics, gained a real review. `Valea.Agents.SessionServer`'s
+`enrich_item/2` (`backend/lib/valea/agents/session_server.ex`) stamps
+`risk_tier` onto a `"permission"`-type ACP item whenever its `rawInput`
+carries a file path and `RiskTier.classify/2` returns `"high"`/`"medium"` —
+folded into the item the client already renders, never consulted by the
+policy decision itself. Frontend: `derivePermissionView`
+(`frontend/src/lib/components/agent/permission-view.ts`) reads `risk_tier`
+and, for an Edit/Write tool call, builds a line diff from the raw
+`old_string`/`new_string` (or `content` for a create) via the shared
+`lineDiff` engine (`frontend/src/lib/diff/line-diff.ts` — LCS over lines,
+capped at 400 rows; an oversized input skips the LCS pass and renders a
+bounded delete-then-add instead); `tierCopy('high')` is the fixed high-tier
+banner copy, "Changes how your assistant behaves". `PermissionCard.svelte`
+renders the diff via the shared `DiffBlock.svelte` and a risk banner
+(terracotta `border-warn-*`/`bg-warn-tint`/`text-warn-ink` for `high`, amber
+`border-suggest-*`/`bg-suggest-tint`/`text-suggest-ink` for `medium`) above
+the allow/reject buttons; a permission item with no path/diff data falls
+back to today's plain display.
+
+### Workflow proposals — proposal pairs + staging grants
+
+A memory-update proposal is a sibling pair written into the run's
+already-granted staging dir: `queue/staging/<run_id>/proposals/<name>.md`
+(full new page content) + `<name>.json` (a `memory_update/v1` manifest:
+`schema`, `target_path`, `base_sha256` — 64-hex or `null` for "create" —
+`reason`, `sources`). `Valea.Workflows.MemoryProposal`
+(`backend/lib/valea/workflows/memory_proposal.ex`) owns loading/validating
+pairs (`load_pairs/1` — globs `proposals/*`, pairs `.json`↔`.md` by
+basename, reports an orphaned `.json`/`.md` as `{:error, :orphaned_content}`
+/ `:missing_content`, caps content at 1,000,000 bytes) and the server-owned
+containment check (`check_target/2` — the target must attribute to an
+ENABLED, non-degraded mount via `Valea.Mounts.mount_for/2`, and its physical
+resolution via `Valea.Paths.resolve_real/2` must stay inside that mount's
+own root; the manifest's own claims are never trusted). `Valea.Workflows.
+Runner`'s `start_run/5` (`backend/lib/valea/workflows/runner.ex`) grants the
+write through `Valea.Agents.PermissionPolicy`'s directory-scoped
+`write_roots` (`policy_ctx.write_roots: [Path.join(staging_dir,
+"proposals")]`) — deliberately NOT the staging dir itself, so the trusted
+`run.json` sidecar stays unwritable by the agent; `PermissionPolicy.
+decide/2`'s write-kind branch allows a path under `write_paths` (the exact
+`proposal.json` file) OR `write_roots` (anything under the granted
+directory, segment-boundary contained via `all_in_write_roots?/3`) for a
+`session_kind == "workflow"` session. The same call also extends the
+session's `read_roots` with the run's own staging dir
+(`SessionServer.default_read_roots/1`, extended, never re-derived) — a run
+may always read back what it may write.
+
+### Finalize — one queue item per pair, server-owned trust fields
+
+`Valea.Workflows.Runner.finalize/2` additionally globs `proposals/*.json`
+(via `MemoryProposal.load_pairs/1`); each valid pair becomes its own
+pending item with id `<run_id>-m1`, `-m2`, … (1-based over the full sorted
+pair list, so ids stay stable across re-finalizes even when some pairs are
+invalid). Every memory item's `risk_level` and target containment are
+computed HERE, from the target path alone, via `RiskTier.classify/2` +
+`MemoryProposal.check_target/2` — never taken from the agent's manifest. An
+invalid pair is audited `memory_proposal_invalid` (`run_id`, `file`,
+`reason`); the run's staging dir is kept whenever anything was invalid, so
+the bad pair stays inspectable next to the good item's now-removed source.
+Idempotence: before writing any pending item (primary or memory),
+`item_exists?/2` checks all four queue directories (`pending/processing/
+approved/rejected`) and skips silently if the id already exists — this is
+what lets `Valea.Workflows.Runner.recover_staging/1` (crash-recovery
+backstop, run at `Valea.Workspace.Runtime` startup, before any session can
+be created) re-run `finalize/2` on every leftover staging dir without
+resurrecting already-decided items.
+
+### Apply executor
+
+`Valea.Queue.approve/2` (`backend/lib/valea/queue.ex`) dispatches on
+`payload.kind`: a `"memory_update"` item executes `execute_memory/3` →
+`apply_page_content/2` instead of the email-draft path. It re-runs
+`MemoryProposal.check_target/2` against the CURRENT mount state (not the
+finalize-time result), then guards the write with a base-hash check
+(`check_base/2` — `nil` means "must not already exist"; otherwise the
+current bytes must sha256 to `base_sha256`). Any guard failure — or a write
+fault rescued in `write_page/2` (`File.Error`/`File.RenameError`) — means
+NOTHING was written: the claimed item is renamed straight back to
+`pending/`, `apply_conflict` is audited with the reason, and
+`{:error, :apply_conflict}` is returned. On success the page is written with
+an atomic tmp+rename (`write_page/2`, `mkdir -p` of parents, contained
+inside the mount only), then the SAME `queue_item/v2` upgrade-then-rename
+into `approved/` the email path uses — stamping `decided_at`, with no
+`mailbox_ops` (that map is added only when `payload.kind == "email_draft"`,
+`maybe_put_mailbox_ops/4`). `approve/2` returns `{:ok, %{draft_path: nil,
+applied_path: target_path}}` for a memory item, `{:ok, %{draft_path: ...,
+applied_path: nil}}` for an email item; `Valea.Api.Queue.approve_item`
+surfaces both fields typed, and the frontend's `MemoryUpdateReview.svelte`
+renders the `apply_conflict` error code as its own `conflict` FSM state
+(distinct from `changed`/`gone`), offering "reject it or re-run the
+workflow."
+
+### Crash recovery
+
+`Valea.Queue.recover/1`'s `classify_recovery/2` decides a `processing/`
+item's fate by KIND: a `memory_update` item is decided by CONTENT, not
+draft existence — the envelope's `content_markdown` is hashed against the
+target's CURRENT on-disk bytes (`memory_target_abs/2`); a match means the
+apply already landed, so `finish_recovered_memory/3` stamps the `v2`
+upgrade and completes the rename to `approved/` (audited `item_approved`,
+`recovered: true`, no mailbox broadcast); anything else (target missing, or
+present with different bytes) hands the item back to `pending/`
+(`repend!/3`, audited `approval_recovered`) for the human to re-decide.
+Every other kind falls through to the original draft-existence recovery,
+unchanged. `mailbox_ops` stays email-only throughout: `valid_mailbox_ops?/1`
+and `maybe_put_mailbox_ops/4` are both gated on `payload.kind ==
+"email_draft"`, so a memory item's decided envelope never carries the key.
+
+### Rejection reasons
+
+`Valea.Queue.reject/3` takes an optional one-line free-text `reason`
+(default `nil`, so every existing 2-arity call site is unaffected).
+`normalize_reason/1` trims, caps at 500 chars, and blank-collapses to `nil`
+(same as omitting it). A non-nil reason is stamped into the decided
+envelope as `"decision" => %{"reason" => reason}` (`maybe_put_decision/2`,
+part of the same `v1→v2` upgrade that stamps `decided_at` — both decision
+verbs, every kind) and included in the `item_rejected` audit entry.
+`Valea.Api.Queue.reject_item`'s `reason` argument is `allow_nil?: true,
+default: nil`; the frontend's `DraftReview.svelte` and `MemoryUpdateReview.
+svelte` both render a skippable single-line reason input alongside their
+reject button, and the decided-item view (`frontend/src/routes/queue/
+[run_id]/+page.svelte`, fed by `normalizeDecidedItem` in
+`frontend/src/lib/components/queue/queue-ops.ts`) shows the reason on a
+rejected item.
+
+### Reflection — the Distill Decisions workflow
+
+`Valea.Workflows.Distill.digest/1` (`backend/lib/valea/workflows/
+distill.ex`) compiles the reflection workflow's input server-side: every
+decided envelope (`queue/approved/*.json` + `queue/rejected/*.json`) with a
+`decided_at` inside a fixed 30-day window (an envelope without the stamp —
+pre-Spec-B — is EXCLUDED, not treated as always-in-window) is rendered into
+one markdown digest (kind, title, workflow, decision, date, rejection
+reason per item). `Valea.Workflows.Runner.run_generated/3` is the
+generated-input sibling of `run/2`: it writes the compiled digest into the
+run's OWN staging dir before the session starts (never `proposals/`, since
+it's server-owned input, not agent output) and reuses the exact same
+staging read grant described above — the read boundary never widens to
+`queue/` itself, the digest is self-contained. `distill_decisions`
+(`Valea.Api.Agents`) resolves the seeded contract via `Valea.Workflows.
+distill_path/0` (first enabled mount, in `list/0`'s own sort order, whose
+`Workflows/` glob yields a `Distill Decisions.md` basename —
+`workflow_not_found` if none), builds the digest (`no_recent_decisions` if
+the window is empty), and calls `run_generated/3`. `Valea.Cockpit.today/0`
+surfaces the same lookup as a live `"distill_workflow_path"` field so the
+UI can hide the action entirely when no mount seeds the contract. The
+starter mount ships `Workflows/Distill Decisions.md` (manual trigger,
+`risk_level: medium`, approval required, outputs restricted to
+`apply_page_content`) and a `Decisions/2026.md` seed page; the
+memory-update contract (manifest shape, `base_sha256` rules, the 1 MB
+content cap) lives in the root `AGENTS.md`'s "The memory-update contract"
+section. Frontend: `distillButtonState`/`distillErrorMessage`
+(`frontend/src/lib/today/distill.ts`) drive the "Distill recent decisions"
+action on both `frontend/src/routes/+page.svelte` (Today) and
+`frontend/src/routes/workflows/+page.svelte`, hidden entirely when
+`distillWorkflowPath` is `null`.
+
 ## Design system pointer
 
 UI follows the "paper & ink, with a green pen for approval" design system: [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (canonical source: `docs/design/cockpit-design-system-v1.pdf`). Two-layer token architecture (raw tokens → shadcn-svelte semantic variable mapping); feature code never touches raw Tailwind classes directly. Shell layout is a reusable four-column grid (Sidebar · optional ListPane · Main · optional Rail) implemented as an `AppShell` component family on shadcn-svelte primitives.
@@ -924,3 +1109,4 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-11-mail-design.md](superpowers/specs/2026-07-11-mail-design.md) — Mail: IMAP sync-to-files engine, normalized message file format, `queue_item/v2` mailbox ops, OS-keychain credential handoff, connection doctor, `/mail` UI.
 - [2026-07-12-icm-mounts-design.md](superpowers/specs/2026-07-12-icm-mounts-design.md) — ICM mounts (Plan A): `mounts/<name>/` replaces the single `icm/` tree, manifest-based discovery, `MOUNTS.md` generated routing, per-mount `read_roots`, v3→v4 migration, mounts-aware Knowledge UI, adopt-by-move onboarding.
 - [2026-07-12-icm-by-reference-design.md](superpowers/specs/2026-07-12-icm-by-reference-design.md) — By-reference mounts (Plan A2): external `kind: "path"` mounts referenced in place, root-set containment, managed-settings external `Read` allows, per-mount doctor, declare/undeclare RPCs + audit, by-reference-default onboarding.
+- [2026-07-12-methodology-depth-design.md](superpowers/specs/2026-07-12-methodology-depth-design.md) — Methodology depth (Spec B): server-derived risk tiers, memory-update proposal pairs + staging write/read grants, the queue's `apply_page_content` executor and content-hash crash recovery, optional rejection reasons, the decisions digest + Distill Decisions reflection workflow, and the diff/risk-tier ask-gate and memory-update review UI.
