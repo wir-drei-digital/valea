@@ -1,0 +1,16 @@
+account: mara@example.com
+imap:
+  host: imap.example.com
+  port: 993
+  username: mara@example.com
+folders:
+  review: "AI/Review"
+  processed: "AI/Processed"
+  drafts: "Drafts"
+sync:
+  interval_minutes: 5
+  max_message_bytes: 10485760   # 10 MB
+  inbox_index_limit: 200
+safety:
+  send_directly: false          # invariant; the engine has no send path
+  create_drafts_only: true

@@ -3,7 +3,10 @@ defmodule Valea.Markdown.DeterminismTest do
 
   alias Valea.Markdown.ProseMirror
 
-  @template Path.join(:code.priv_dir(:valea), "workspace_template/mounts/starter")
+  # The starter-mount seed content now lives under the LEGACY (v4,
+  # all-are-mounts) template — `priv/workspace_template` is the v5 hidden
+  # workspace shape and no longer ships a starter mount at all.
+  @template Path.join(:code.priv_dir(:valea), "legacy_workspace_template/mounts/starter")
 
   # Every seed ICM page — including the four Workflows/*.md pages that carry
   # a leading YAML frontmatter block — must round-trip byte-identically. The

@@ -399,7 +399,7 @@ defmodule Valea.Workspace.MigrationTest do
              "A reusable prompt fragment.\n"
 
     root_agents = File.read!(Path.join(root, "AGENTS.md"))
-    assert root_agents == File.read!(Path.join(Scaffold.template_dir(), "AGENTS.md"))
+    assert root_agents == File.read!(Path.join(Scaffold.legacy_template_dir(), "AGENTS.md"))
     assert root_agents =~ "@MOUNTS.md"
 
     assert File.exists?(Path.join(root, "MOUNTS.md"))

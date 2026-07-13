@@ -1,279 +1,77 @@
 defmodule Valea.Workspace.ScaffoldTest do
   use ExUnit.Case, async: true
 
-  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Scaffold
 
-  defp tmp_target do
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "valea-ws-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
-      )
-
-    on_exit(fn -> File.rm_rf!(dir) end)
-    dir
+  setup do
+    t = Path.join(System.tmp_dir!(), "vsc-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(t) end)
+    %{target: t}
   end
 
-  test "create/2 scaffolds the full v4 (all-are-mounts) template tree" do
-    target = tmp_target()
-    assert :ok = Scaffold.create(target, "Acme Coaching")
+  test "creates the hidden v5 layout with no agent-routing files", %{target: t} do
+    :ok = Scaffold.create(t, "Coaching business", "74fa36f2-0000-0000-0000-000000000000")
 
-    for dir <-
-          ~w(mounts mounts/acme-coaching mounts/acme-coaching/Workflows
-             mounts/acme-coaching/prompts queue/pending queue/approved queue/rejected
-             queue/applied queue/staging queue/processing logs sources/mail/messages
-             sources/mail/attachments config secrets) do
-      assert File.dir?(Path.join(target, dir)), "missing #{dir}"
-    end
+    assert Scaffold.valid?(t)
 
-    refute File.exists?(Path.join(target, "icm"))
-    refute File.exists?(Path.join(target, "prompts"))
+    for d <- ~w(config sources queue logs queue/staging queue/processing runtime),
+        do: assert(File.dir?(Path.join(t, d)), "missing #{d}")
 
-    assert File.exists?(
-             Path.join(target, "mounts/acme-coaching/Offers/Founder Coaching Package.md")
-           )
+    refute File.exists?(Path.join(t, "AGENTS.md"))
+    refute File.exists?(Path.join(t, "CLAUDE.md"))
+    refute File.exists?(Path.join(t, "MOUNTS.md"))
+    refute File.dir?(Path.join(t, "mounts"))
+    refute File.dir?(Path.join(t, ".claude"))
 
-    assert File.exists?(Path.join(target, "mounts/acme-coaching/Workflows/New Inquiry Triage.md"))
-
-    # v3: the legacy normalized JSON is gone, replaced by a seed markdown message
-    assert File.exists?(
-             Path.join(target, "sources/mail/messages/2026-07-09-priya-nair-seed0001.md")
-           )
-
-    refute File.exists?(Path.join(target, "sources/mail/normalized/priya-nair-inquiry.json"))
-    assert File.exists?(Path.join(target, "logs/audit.jsonl"))
-    assert File.exists?(Path.join(target, ".gitignore"))
-    refute File.exists?(Path.join(target, "gitignore"))
+    yaml = File.read!(Path.join(t, "config/workspace.yaml"))
+    assert yaml =~ "version: 5"
+    assert yaml =~ "74fa36f2-0000-0000-0000-000000000000"
+    assert yaml =~ ~s(name: "Coaching business")
+    assert yaml =~ "icms: {}"
   end
 
-  test "the starter mount's icm.yaml gets a real uuid and the given workspace name" do
-    target = tmp_target()
-    assert :ok = Scaffold.create(target, "Acme Coaching")
-
-    assert {:ok, manifest} = Manifest.load(Path.join(target, "mounts/acme-coaching"))
-    assert manifest.format == 1
-    assert manifest.name == "Acme Coaching"
-    assert manifest.description != ""
-    refute manifest.id == "TEMPLATE"
-    assert Regex.match?(~r/^[0-9a-f-]{36}$/, manifest.id)
-
-    # a second scaffold gets a different mount id
-    other = tmp_target()
-    :ok = Scaffold.create(other, "Acme Coaching")
-    {:ok, other_manifest} = Manifest.load(Path.join(other, "mounts/acme-coaching"))
-    refute other_manifest.id == manifest.id
+  test "creates .gitignore (not the template's un-dotted gitignore)", %{target: t} do
+    :ok = Scaffold.create(t, "Acme", "id-1")
+    assert File.exists?(Path.join(t, ".gitignore"))
+    refute File.exists?(Path.join(t, "gitignore"))
   end
 
-  test "create/2 slugifies the workspace name for the mount directory (lowercase, ascii-fold, dashed)" do
-    target = tmp_target()
-    assert :ok = Scaffold.create(target, "Café Löwen & Co.!!")
-
-    assert File.dir?(Path.join(target, "mounts/cafe-lowen-co"))
-    refute File.dir?(Path.join(target, "mounts/starter"))
+  test "refuses a non-empty target", %{target: t} do
+    File.mkdir_p!(t)
+    File.write!(Path.join(t, "existing.txt"), "x")
+    assert {:error, :target_not_empty} = Scaffold.create(t, "Acme", "id-1")
   end
 
-  test "create/2 falls back to a sane slug when the name has no alphanumeric characters" do
-    target = tmp_target()
-    assert :ok = Scaffold.create(target, "!!!")
-
-    assert File.dir?(Path.join(target, "mounts/mount"))
+  test "each scaffold carries the given id, not a minted one", %{target: t} do
+    :ok = Scaffold.create(t, "Acme", "fixed-id")
+    yaml = File.read!(Path.join(t, "config/workspace.yaml"))
+    assert yaml =~ "id: fixed-id"
   end
 
-  test "create/1 names the workspace after the target directory's own basename" do
-    parent =
-      Path.join(
-        System.tmp_dir!(),
-        "valea-ws-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
-      )
-
-    on_exit(fn -> File.rm_rf!(parent) end)
-    target = Path.join(parent, "My Workspace")
-
-    assert :ok = Scaffold.create(target)
-
-    assert {:ok, manifest} = Manifest.load(Path.join(target, "mounts/my-workspace"))
-    assert manifest.name == "My Workspace"
-  end
-
-  test "root AGENTS.md is rules-only: routes to @MOUNTS.md, carries no knowledge-tree content" do
-    target = tmp_target()
-    :ok = Scaffold.create(target, "Acme Coaching")
-
-    root_agents = File.read!(Path.join(target, "AGENTS.md"))
-    assert root_agents =~ "@MOUNTS.md"
-    assert root_agents =~ "proposal/v1"
-    refute root_agents =~ "Founder Coaching Package"
-    refute root_agents =~ "Best fit"
-    refute root_agents =~ "icm/Offers"
-  end
-
-  test "root CLAUDE.md still imports AGENTS.md" do
-    target = tmp_target()
-    :ok = Scaffold.create(target, "Acme Coaching")
-    assert File.read!(Path.join(target, "CLAUDE.md")) =~ "@AGENTS.md"
-  end
-
-  test "the starter mount's AGENTS.md is self-describing: its own taxonomy, not the shell rules" do
-    target = tmp_target()
-    :ok = Scaffold.create(target, "Acme Coaching")
-
-    mount_agents = File.read!(Path.join(target, "mounts/acme-coaching/AGENTS.md"))
-    assert mount_agents =~ "Offers/"
-    assert mount_agents =~ "Workflows/"
-    refute mount_agents =~ "@MOUNTS.md"
-    refute mount_agents =~ "proposal/v1"
-
-    assert File.read!(Path.join(target, "mounts/acme-coaching/CLAUDE.md")) =~ "@AGENTS.md"
-  end
-
-  test "MOUNTS.md is regenerated to list the real starter mount" do
-    target = tmp_target()
-    :ok = Scaffold.create(target, "Acme Coaching")
-
-    mounts_md = File.read!(Path.join(target, "MOUNTS.md"))
-    assert mounts_md =~ "Acme Coaching"
-    assert mounts_md =~ "mounts/acme-coaching"
-    assert mounts_md =~ "@mounts/acme-coaching/AGENTS.md"
-  end
-
-  test "create writes version 4 + a fresh workspace uuid (not the template placeholder)" do
-    target = tmp_target()
-    assert :ok = Scaffold.create(target)
-
-    yaml = File.read!(Path.join(target, "config/workspace.yaml"))
-    assert yaml =~ "version: 4"
-    assert [uuid] = Regex.run(~r/^id: ([0-9a-f-]{36})$/m, yaml, capture: :all_but_first)
-    refute uuid == "TEMPLATE"
-
-    # a second scaffold gets a different id
-    other = tmp_target()
-    :ok = Scaffold.create(other)
-    other_yaml = File.read!(Path.join(other, "config/workspace.yaml"))
-
-    assert [other_uuid] =
-             Regex.run(~r/^id: ([0-9a-f-]{36})$/m, other_yaml, capture: :all_but_first)
-
-    refute other_uuid == uuid
-  end
-
-  test "the seed message is byte-identical to MessageFile.render output (parses cleanly)" do
-    target = tmp_target()
-    :ok = Scaffold.create(target)
-
-    bytes =
-      File.read!(Path.join(target, "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"))
-
-    assert {:ok, %{frontmatter: fm, body: body}} = Valea.Mail.MessageFile.parse(bytes)
-    assert fm["id"] == "2026-07-09-priya-nair-seed0001"
-    assert fm["message_id"] == "<seed-priya-nair-inquiry@valea.seed>"
-    assert fm["source"] == "seed"
-    assert fm["source_ref"] == "email://seed/priya-nair-inquiry"
-    assert fm["status"] == "review"
-    assert String.starts_with?(body, "Hi Mara,")
-
-    # the file is exactly what the renderer produces — no drift between the
-    # committed seed and Valea.Mail.MessageFile
-    message = %Valea.Mail.Message{
-      message_id: "<seed-priya-nair-inquiry@valea.seed>",
-      from: %{name: "Priya Nair", email: "priya@example.com"},
-      to: [%{name: "Mara Lindt", email: "mara@example.com"}],
-      subject: "Question about leadership coaching",
-      date: ~U[2026-07-09 06:58:00Z],
-      body_text: body
-    }
-
-    rendered =
-      Valea.Mail.MessageFile.render(message, %{
-        msg_id: "2026-07-09-priya-nair-seed0001",
-        uid: nil,
-        status: "review",
-        source: "seed",
-        source_ref: "email://seed/priya-nair-inquiry",
-        attachments: []
-      })
-
-    assert rendered == bytes
-  end
-
-  test "create refuses a non-empty target" do
-    target = tmp_target()
-    File.mkdir_p!(target)
-    File.write!(Path.join(target, "existing.txt"), "x")
-    assert {:error, :target_not_empty} = Scaffold.create(target)
-  end
-
-  test "valid? recognizes a scaffolded workspace and rejects others" do
-    target = tmp_target()
-    :ok = Scaffold.create(target)
-    assert Scaffold.valid?(target)
+  test "valid? recognizes a scaffolded v5 workspace and rejects others", %{target: t} do
+    :ok = Scaffold.create(t, "Acme", "id-1")
+    assert Scaffold.valid?(t)
     refute Scaffold.valid?(System.tmp_dir!())
   end
 
-  test "valid? requires mounts/, not the legacy icm/" do
-    target = tmp_target()
-    :ok = Scaffold.create(target)
-    File.rm_rf!(Path.join(target, "mounts"))
-    refute Scaffold.valid?(target)
+  test "valid? requires every v5 marker dir, including runtime/", %{target: t} do
+    :ok = Scaffold.create(t, "Acme", "id-1")
+    File.rm_rf!(Path.join(t, "runtime"))
+    refute Scaffold.valid?(t)
   end
 
-  test "inspect_summary counts content across mounts" do
-    target = tmp_target()
-    :ok = Scaffold.create(target)
-    summary = Scaffold.inspect_summary(target)
+  test "inspect_summary reports a valid, empty (no ICMs yet) workspace", %{target: t} do
+    :ok = Scaffold.create(t, "Acme", "id-1")
+    summary = Scaffold.inspect_summary(t)
     assert summary.valid
-    assert summary.icm_pages >= 12
-    assert summary.workflows == 5
+    assert summary.icm_pages == 0
+    assert summary.workflows == 0
     assert summary.queue_pending == 0
     assert summary.has_audit_log
   end
 
-  # Task B9: the starter mount seeds a Distill Decisions workflow contract
-  # (the basename Valea.Workflows.distill_path/0 matches, Task B8), a
-  # Decisions/2026.md seed page, and the root + mount AGENTS.md both carry
-  # the memory-update contract's vocabulary.
-  test "create/2 seeds the Distill Decisions contract, a decision log, and the memory-update contract" do
-    target = tmp_target()
-    :ok = Scaffold.create(target, "Acme Coaching")
-
-    workflows = Valea.Workflows.list(target)
-
-    distill =
-      Enum.find(workflows, &(Path.basename(&1.path) == "Distill Decisions.md"))
-
-    assert distill, "expected a Distill Decisions.md workflow contract"
-    assert distill.name == "Distill Decisions"
-    assert distill.enabled == true
-    assert distill.risk_level == "medium"
-
-    assert File.exists?(Path.join(target, "mounts/acme-coaching/Decisions/2026.md"))
-
-    root_agents = File.read!(Path.join(target, "AGENTS.md"))
-    assert root_agents =~ "memory_update/v1"
-
-    mount_agents = File.read!(Path.join(target, "mounts/acme-coaching/AGENTS.md"))
-    assert mount_agents =~ "Decisions/"
-  end
-
-  # Task C5: the starter mount's Templates/ folder seeds Client.md and
-  # Decision.md (instantiation targets for `Valea.ICM.create_page_from_template/3`)
-  # alongside the pre-existing reply templates — neither replaces the other.
-  test "create/2 seeds Client and Decision page templates alongside the reply templates" do
-    target = tmp_target()
-    :ok = Scaffold.create(target, "Acme Coaching")
-
-    templates_dir = Path.join(target, "mounts/acme-coaching/Templates")
-    assert File.exists?(Path.join(templates_dir, "Client.md"))
-    assert File.exists?(Path.join(templates_dir, "Decision.md"))
-    assert File.exists?(Path.join(templates_dir, "Discovery Call Reply.md"))
-    assert File.exists?(Path.join(templates_dir, "Follow-up Email.md"))
-
-    client = File.read!(Path.join(templates_dir, "Client.md"))
-    assert client =~ "{{title}}"
-    assert client =~ "{{date}}"
-
-    decision = File.read!(Path.join(templates_dir, "Decision.md"))
-    assert decision =~ "{{title}}"
-    assert decision =~ "{{date}}"
+  test "slugify/1 is unchanged: lowercase, ascii-fold, dashed" do
+    assert Scaffold.slugify("Café Löwen & Co.!!") == "cafe-lowen-co"
+    assert Scaffold.slugify("!!!") == "mount"
   end
 end

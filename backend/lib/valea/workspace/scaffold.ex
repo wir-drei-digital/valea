@@ -1,37 +1,61 @@
 defmodule Valea.Workspace.Scaffold do
   @moduledoc """
-  Creates and validates workspace folders from the priv/workspace_template
-  seed. The workspace is the user's property: everything here must remain
-  plain, readable files.
+  Creates and validates workspace folders.
 
-  Every mount is a real mount (Plan A, "all mounts"): the template ships one
-  seeded starter mount at `mounts/starter/` (rich demo content — clients,
-  offers, policies, pricing, workflows — under a placeholder `icm.yaml`).
-  `create/2` mints that mount a fresh uuid and the workspace's own name,
-  renames its directory to a slug of that name, and regenerates the
-  workspace's `MOUNTS.md` — so a freshly scaffolded workspace never ships a
-  top-level `icm/` or `prompts/` tree, only `mounts/<slug>/`.
+  `create/3` scaffolds the CURRENT, v5 hidden-workspace shape from
+  `priv/workspace_template`: a bare marker tree (`config/`, `sources/`,
+  `queue/`, `logs/`, `runtime/`) plus a rendered `config/workspace.yaml`
+  (`version: 5`, the given `id`/`name`, `icms: {}`). No starter mount, no
+  root `AGENTS.md`/`CLAUDE.md`/`MOUNTS.md`, no `.claude/` — a fresh v5
+  workspace carries none of the agent-routing files a mounts-based (v4)
+  workspace did; ICMs are declared into `icms:` (Manager/Adopt's own
+  tasks), not seeded as a mount on disk.
+
+  `create/1` and `create/2` are the LEGACY (v4, all-are-mounts) scaffold,
+  sourced from `priv/legacy_workspace_template` — kept working, byte-for-byte
+  as before (starter mount, managed Claude settings, generated `MOUNTS.md`),
+  because `Valea.Workspace.Manager` and `Valea.Workspace.Adopt` still open
+  and adopt workspaces through this path pending their own id-based rework
+  (a later task group). The legacy scaffold also creates the (empty) v5
+  marker dir `runtime/`, so a legacy-scaffolded workspace still satisfies
+  `valid?/1` immediately after creation, the same as it always has.
   """
 
   alias Valea.Mounts.Manifest
   alias Valea.Mounts.MountsMd
 
-  @marker_dirs ~w(mounts queue logs queue/staging queue/processing)
+  @marker_dirs ~w(config sources queue logs queue/staging queue/processing runtime)
 
   def template_dir, do: Path.join(:code.priv_dir(:valea), "workspace_template")
 
-  @doc "Convenience form of `create/2`: names the workspace after the target directory's own basename."
+  @doc "The pre-v5 (all-are-mounts) template `create/1`/`create/2` scaffold from."
+  def legacy_template_dir, do: Path.join(:code.priv_dir(:valea), "legacy_workspace_template")
+
+  @doc "Convenience form of the legacy `create/2`: names the workspace after the target directory's own basename."
   def create(target), do: create(target, Path.basename(target))
 
   @doc """
-  Scaffolds a new workspace at `target`, named `name` (the workspace's own
-  display name — becomes the starter mount's `icm.yaml` `name:`, and is
-  slugified for that mount's directory name; see `mint_starter_mount!/2`).
+  LEGACY v4 scaffold (starter mount included) — see moduledoc. Fresh
+  hidden workspaces should use `create/3`.
   """
   def create(target, name) do
     cond do
       File.exists?(target) and not empty_dir?(target) -> {:error, :target_not_empty}
-      true -> do_create(target, name)
+      true -> do_create_legacy(target, name)
+    end
+  end
+
+  @doc """
+  Scaffolds a fresh v5 hidden workspace at `target`, named `name`, with
+  the given persistent `id`. Builds the bare marker tree from
+  `priv/workspace_template` and overwrites `config/workspace.yaml` with
+  `version: 5`, the given `id`, the escaped `name`, and `icms: {}`.
+  """
+  @spec create(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def create(target, name, id) do
+    cond do
+      File.exists?(target) and not empty_dir?(target) -> {:error, :target_not_empty}
+      true -> do_create_v5(target, name, id)
     end
   end
 
@@ -49,12 +73,34 @@ defmodule Valea.Workspace.Scaffold do
     }
   end
 
-  defp do_create(target, name) do
+  defp do_create_v5(target, name, id) do
     with :ok <- File.mkdir_p(target),
          {:ok, _} <- File.cp_r(template_dir(), target) do
       # template ships the gitignore un-dotted so tooling never ignores
       # template files; the real workspace gets the dotted name
       File.rename(Path.join(target, "gitignore"), Path.join(target, ".gitignore"))
+
+      File.write!(
+        Path.join(target, "config/workspace.yaml"),
+        "version: 5\nid: #{id}\nname: #{Valea.Yaml.escape(name)}\nicms: {}\n"
+      )
+
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+      {:error, reason, _file} -> {:error, reason}
+    end
+  end
+
+  defp do_create_legacy(target, name) do
+    with :ok <- File.mkdir_p(target),
+         {:ok, _} <- File.cp_r(legacy_template_dir(), target) do
+      # template ships the gitignore un-dotted so tooling never ignores
+      # template files; the real workspace gets the dotted name
+      File.rename(Path.join(target, "gitignore"), Path.join(target, ".gitignore"))
+      # so a legacy-scaffolded workspace satisfies the (v5) marker-dir set
+      # `valid?/1` checks, same as a v5 one — see moduledoc.
+      File.mkdir_p!(Path.join(target, "runtime"))
       # config/workspace.yaml ships with `id: TEMPLATE`; a real workspace
       # gets version 4 + a fresh, persistent UUID here (keychain entries key
       # on it, so it must survive the folder being moved or renamed — see the
@@ -139,7 +185,9 @@ defmodule Valea.Workspace.Scaffold do
   # "ICM pages" = curated markdown content across every mount, excluding a
   # mount's own AGENTS.md/CLAUDE.md (self-description, not curated content)
   # and anything under `prompts/` (a distinct content type from ICM pages,
-  # mirroring the pre-mounts top-level `icm/` vs `prompts/` split).
+  # mirroring the pre-mounts top-level `icm/` vs `prompts/` split). A fresh
+  # v5 workspace has no `mounts/` at all, so this (and `workflows` above)
+  # naturally comes out 0 via `Path.wildcard/1` on an absent directory.
   defp count_icm_pages(path) do
     path
     |> Path.join("mounts/*/**/*.md")

@@ -339,7 +339,7 @@ defmodule Valea.Workspace.Migration do
     target = Path.join(mount_dir, name)
 
     unless File.exists?(target) do
-      File.cp!(Path.join(Scaffold.template_dir(), template_rel), target)
+      File.cp!(Path.join(template_dir(), template_rel), target)
     end
   end
 
@@ -360,7 +360,7 @@ defmodule Valea.Workspace.Migration do
   # (shouldn't happen post-v2) → the template page.
   defp migrate_root_agents!(root) do
     path = Path.join(root, "AGENTS.md")
-    template = Path.join(Scaffold.template_dir(), "AGENTS.md")
+    template = Path.join(template_dir(), "AGENTS.md")
 
     cond do
       not File.exists?(path) ->
@@ -436,7 +436,11 @@ defmodule Valea.Workspace.Migration do
     end
   end
 
-  defp template_dir, do: Application.app_dir(:valea, "priv/workspace_template")
+  # Old-workspace migration (v1→v4) reads the LEGACY (v4, all-are-mounts)
+  # template — the current `priv/workspace_template` is the v5 hidden-workspace
+  # shape and no longer carries the root AGENTS.md/CLAUDE.md or the starter
+  # mount this migration fills a pre-v4 workspace's gaps from.
+  defp template_dir, do: Application.app_dir(:valea, "priv/legacy_workspace_template")
 
   defp convert_workflows!(root) do
     root

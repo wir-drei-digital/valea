@@ -96,7 +96,7 @@ defmodule Valea.Workspace.MigrationV3AuditTest do
     assert {:ok, 4} = Migration.migrate(root)
 
     assert File.read!(Path.join(root, "AGENTS.md")) ==
-             File.read!(Path.join(Valea.Workspace.Scaffold.template_dir(), "AGENTS.md"))
+             File.read!(Path.join(Valea.Workspace.Scaffold.legacy_template_dir(), "AGENTS.md"))
 
     {:ok, entries} = Valea.Audit.entries(20)
     refute Enum.any?(entries, &(&1["note"] =~ "root AGENTS.md kept"))
