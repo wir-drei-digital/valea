@@ -11,7 +11,7 @@ risk_level: medium
 approval:
   required: true
   reason: Email replies must be reviewed before sending.
-  actions: [create_email_draft]
+  actions: [create_email_draft, apply_page_content]
 audit: { log_sources: true, log_inputs: true, log_outputs: true, log_agent: true }
 ---
 # New Inquiry Triage

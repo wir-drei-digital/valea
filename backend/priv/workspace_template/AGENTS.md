@@ -71,6 +71,8 @@ change to business memory, write a PAIR of files under the run's staging
       "sources": ["paths you read"]
     }
 
+The `base_sha256` must be lowercase hex, exactly 64 characters. Page content is capped at 1 MB — split anything larger.
+
 Target paths use the same form you read them by: workspace-relative for
 mounts under `mounts/`, absolute for mounts listed with a real location
 in MOUNTS.md. The app verifies the target and shows the user a diff;
