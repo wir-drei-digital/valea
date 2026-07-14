@@ -36,6 +36,12 @@ defmodule Valea.Api.Cockpit do
 
   `distill_workflow_path` (Task B8) is the same shape, mirroring
   `triage_workflow_path` exactly — camelCases to `distillWorkflowPath`.
+
+  `triage_workflow_mount_key`/`triage_workflow_relative_path` (Task 7.2)
+  are two more NILABLE `:string` siblings of `triage_workflow_path` — the
+  `{mount_key, relative_path}` identity the new `run_workflow` RPC
+  addresses a workflow by; camelCase to `triageWorkflowMountKey`/
+  `triageWorkflowRelativePath`.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -94,6 +100,8 @@ defmodule Valea.Api.Cockpit do
                     ],
                     while_you_were_away: [type: {:array, :string}, allow_nil?: false],
                     triage_workflow_path: [type: :string, allow_nil?: true],
+                    triage_workflow_mount_key: [type: :string, allow_nil?: true],
+                    triage_workflow_relative_path: [type: :string, allow_nil?: true],
                     distill_workflow_path: [type: :string, allow_nil?: true],
                     mail: [
                       type: :map,

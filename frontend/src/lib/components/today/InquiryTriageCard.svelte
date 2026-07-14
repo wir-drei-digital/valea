@@ -72,13 +72,21 @@
     // `triageWorkflowPath` (T13's `Valea.Cockpit.today/0`), not a hardcoded
     // const — `null` when no enabled mount has a seeded triage workflow.
     // `routes/+page.svelte` passes `today?.triageWorkflowPath ?? null`.
-    triageWorkflowPath = null
+    triageWorkflowPath = null,
+    // Task 7.2: `run_workflow`'s new `{mountKey, relativePath}` identity —
+    // sourced from the SAME cockpit payload's `triageWorkflowMountKey`/
+    // `triageWorkflowRelativePath` (`null` together with `triageWorkflowPath`
+    // above whenever no enabled mount has one).
+    triageWorkflowMountKey = null,
+    triageWorkflowRelativePath = null
   }: {
     path?: string;
     fromName?: string;
     summary?: string;
     sources?: string[];
     triageWorkflowPath?: string | null;
+    triageWorkflowMountKey?: string | null;
+    triageWorkflowRelativePath?: string | null;
   } = $props();
 
   const title = $derived(triageTitle(fromName));
@@ -144,10 +152,16 @@
   });
 
   async function prepareReply(): Promise<void> {
-    if (!triageWorkflowPath) return; // defensive: the button is hidden whenever this is null
+    // defensive: the button is hidden whenever any of these is null
+    if (!triageWorkflowMountKey || !triageWorkflowRelativePath) return;
     preparing = true;
     prepareError = null;
-    const result = await api.runWorkflow(triageWorkflowPath, path, workspaceStore.generation ?? 0);
+    const result = await api.runWorkflow(
+      triageWorkflowMountKey,
+      triageWorkflowRelativePath,
+      { kind: 'workspace', path },
+      workspaceStore.generation ?? 0
+    );
     if (result.ok) {
       const data = result.data as { runId: string; sessionId: string };
       sessionId = data.sessionId;
@@ -202,10 +216,11 @@
     {#if sources.length > 0}
       <SourceChips {sources} />
     {/if}
-    {#if triageWorkflowPath}
-      <!-- A-T15: no seeded triage workflow (`triageWorkflowPath === null`)
-           means there is nothing to run — degrade gracefully by hiding the
-           action entirely rather than wiring a button to a dead link. -->
+    {#if triageWorkflowMountKey && triageWorkflowRelativePath}
+      <!-- A-T15: no seeded triage workflow (these are `null` together with
+           `triageWorkflowPath`) means there is nothing to run — degrade
+           gracefully by hiding the action entirely rather than wiring a
+           button to a dead link. -->
       <div class="flex flex-wrap items-center gap-2 pt-0.5">
         <Button variant="default" onclick={() => void prepareReply()}>Prepare a reply</Button>
         {#if prepareError}

@@ -42,12 +42,19 @@
 
   let {
     message,
-    // A-T15: sourced from the cockpit/today payload's live
-    // `triageWorkflowPath` (T13), not a hardcoded const — `null` when no
-    // enabled mount has a seeded triage workflow. `routes/mail/+page.svelte`
-    // fetches the cockpit payload and passes this through.
-    triageWorkflowPath = null
-  }: { message: MailMessageDetail; triageWorkflowPath?: string | null } = $props();
+    // A-T15/Task 7.2: `run_workflow`'s `{mountKey, relativePath}` identity,
+    // sourced from the cockpit/today payload's live
+    // `triageWorkflowMountKey`/`triageWorkflowRelativePath` (T13/7.2), not a
+    // hardcoded const — `null` when no enabled mount has a seeded triage
+    // workflow. `routes/mail/+page.svelte` fetches the cockpit payload and
+    // passes these through.
+    triageWorkflowMountKey = null,
+    triageWorkflowRelativePath = null
+  }: {
+    message: MailMessageDetail;
+    triageWorkflowMountKey?: string | null;
+    triageWorkflowRelativePath?: string | null;
+  } = $props();
 
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
   const status = $derived(typeof frontmatter.status === 'string' ? frontmatter.status : null);
@@ -84,10 +91,16 @@
   const canRun = $derived(canRunTriage(status, running || preparing));
 
   async function runTriage(): Promise<void> {
-    if (!triageWorkflowPath) return; // defensive: the button is hidden whenever this is null
+    // defensive: the button is hidden whenever any of these is null
+    if (!triageWorkflowMountKey || !triageWorkflowRelativePath) return;
     running = true;
     runError = null;
-    const result = await api.runWorkflow(triageWorkflowPath, message.path, workspaceStore.generation ?? 0);
+    const result = await api.runWorkflow(
+      triageWorkflowMountKey,
+      triageWorkflowRelativePath,
+      { kind: 'workspace', path: message.path },
+      workspaceStore.generation ?? 0
+    );
     running = false;
     if (result.ok) {
       preparing = true;
@@ -178,7 +191,7 @@
       >
         Processed
       </span>
-    {:else if triageWorkflowPath}
+    {:else if triageWorkflowMountKey && triageWorkflowRelativePath}
       <Button type="button" disabled={!canRun} onclick={() => void runTriage()}>Run triage</Button>
       {#if preparing}
         <p class="text-ink-meta text-[12.5px]">Preparing… watch Today/Queue.</p>

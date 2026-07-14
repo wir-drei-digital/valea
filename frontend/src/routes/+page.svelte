@@ -206,6 +206,8 @@
                   summary={genericSummary(subjectLabel(message.subject))}
                   sources={[]}
                   triageWorkflowPath={today.triageWorkflowPath}
+                  triageWorkflowMountKey={today.triageWorkflowMountKey}
+                  triageWorkflowRelativePath={today.triageWorkflowRelativePath}
                 />
               {/each}
             {:else}
@@ -213,6 +215,8 @@
                 summary={seedInquiry?.summary}
                 sources={seedInquiry?.usedSources}
                 triageWorkflowPath={today.triageWorkflowPath}
+                triageWorkflowMountKey={today.triageWorkflowMountKey}
+                triageWorkflowRelativePath={today.triageWorkflowRelativePath}
               />
             {/if}
             {#each otherPreparedItems as item (item.title)}

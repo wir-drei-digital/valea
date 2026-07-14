@@ -214,22 +214,40 @@ defmodule Valea.Api.Agents do
       end
     end
 
+    # Task 7.2: `path`/`input` (a bare opaque absolute path + a
+    # workspace-relative string) become `mount_key`/`relative_path` (the
+    # workflow's Task 7.1 `{mount_key, relative_path}` identity —
+    # `Valea.Workflows.get/2`) and `input_locator` (a `Valea.Icm.Locator`
+    # map: `%{"kind" => "workspace", "path" => "sources/..."}` for a
+    # workspace source, or `%{"kind" => "icm", "icm_id" => ..., "path" =>
+    # ...}` for a page in a mounted ICM). `input_locator` is an
+    # UNCONSTRAINED `:map` argument (mirrors `Valea.Api.ICM`'s
+    # `prosemirror`) — arbitrary caller-shaped JSON, decoded with STRING
+    # keys, passed straight through to `Valea.Icm.Locator.resolve/2` (which
+    # pattern-matches on those same string keys) with no
+    # atomize/camelize step needed on either side of this boundary.
     action :run_workflow, :map do
       constraints fields: [
                     run_id: [type: :string, allow_nil?: false],
                     session_id: [type: :string, allow_nil?: false]
                   ]
 
-      argument :path, :string, allow_nil?: false
-      argument :input, :string, allow_nil?: false
+      argument :mount_key, :string, allow_nil?: false
+      argument :relative_path, :string, allow_nil?: false
+      argument :input_locator, :map, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
       run fn action_input, _ctx ->
-        %{path: path, input: input_path, generation: generation} = action_input.arguments
+        %{
+          mount_key: mount_key,
+          relative_path: relative_path,
+          input_locator: input_locator,
+          generation: generation
+        } = action_input.arguments
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{run_id: run_id, session_id: session_id}} <-
-               Valea.Workflows.Runner.run(path, input_path) do
+               Valea.Workflows.Runner.run(mount_key, relative_path, input_locator, generation) do
           {:ok, %{run_id: run_id, session_id: session_id}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -249,11 +267,16 @@ defmodule Valea.Api.Agents do
         %{generation: generation} = action_input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, path} <- distill_workflow_path(),
+             {:ok, wf} <- distill_workflow(),
              {:ok, %{path: workspace}} <- Manager.current(),
              {:ok, md} <- recent_decisions_digest(workspace),
              {:ok, result} <-
-               Valea.Workflows.Runner.run_generated(path, "input-decisions.md", md) do
+               Valea.Workflows.Runner.run_generated(
+                 wf.mount_key,
+                 wf.relative_path,
+                 "input-decisions.md",
+                 md
+               ) do
           {:ok, result}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -335,10 +358,10 @@ defmodule Valea.Api.Agents do
   # Decisions contract (the starter-mount seed for it is Task B9's job), or
   # the digest window is genuinely empty (nothing decided in the last 30
   # days — see `Valea.Workflows.Distill.digest/1`).
-  defp distill_workflow_path do
-    case Valea.Workflows.distill_path() do
+  defp distill_workflow do
+    case Valea.Workflows.distill_workflow() do
       nil -> {:error, :workflow_not_found}
-      path -> {:ok, path}
+      wf -> {:ok, wf}
     end
   end
 

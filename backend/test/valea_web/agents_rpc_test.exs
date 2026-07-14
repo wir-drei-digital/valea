@@ -229,6 +229,8 @@ defmodule ValeaWeb.AgentsRpcTest do
     end
   end
 
+  defp ws_input(path), do: %{"kind" => "workspace", "path" => path}
+
   describe "run_workflow" do
     test "happy path returns run_id and session_id and eventually queues a proposal", %{
       generation: generation,
@@ -240,7 +242,12 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert %{"success" => true, "data" => %{"runId" => run_id, "sessionId" => session_id}} =
                rpc(
                  "run_workflow",
-                 %{"path" => wf_path(icm), "input" => @input_path, "generation" => generation},
+                 %{
+                   "mountKey" => icm.mount_key,
+                   "relativePath" => "Workflows/New Inquiry Triage.md",
+                   "inputLocator" => ws_input(@input_path),
+                   "generation" => generation
+                 },
                  ["runId", "sessionId"]
                )
 
@@ -256,8 +263,9 @@ defmodule ValeaWeb.AgentsRpcTest do
                rpc(
                  "run_workflow",
                  %{
-                   "path" => wf_path(icm),
-                   "input" => @input_path,
+                   "mountKey" => icm.mount_key,
+                   "relativePath" => "Workflows/New Inquiry Triage.md",
+                   "inputLocator" => ws_input(@input_path),
                    "generation" => generation - 1
                  },
                  ["runId", "sessionId"]
@@ -273,8 +281,9 @@ defmodule ValeaWeb.AgentsRpcTest do
                rpc(
                  "run_workflow",
                  %{
-                   "path" => disabled_wf_path(icm),
-                   "input" => @input_path,
+                   "mountKey" => icm.mount_key,
+                   "relativePath" => "Workflows/Weekly Admin Review.md",
+                   "inputLocator" => ws_input(@input_path),
                    "generation" => generation
                  },
                  ["runId", "sessionId"]
@@ -283,21 +292,59 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert inspect(errors) =~ "workflow_disabled"
     end
 
-    test "a missing input surfaces input_not_found", %{generation: generation, icm: icm} do
+    test "a missing input surfaces input_unavailable", %{generation: generation, icm: icm} do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "run_workflow",
                  %{
-                   "path" => wf_path(icm),
-                   "input" => "sources/mail/normalized/does-not-exist.json",
+                   "mountKey" => icm.mount_key,
+                   "relativePath" => "Workflows/New Inquiry Triage.md",
+                   "inputLocator" => ws_input("sources/mail/normalized/does-not-exist.json"),
                    "generation" => generation
                  },
                  ["runId", "sessionId"]
                )
 
-      assert inspect(errors) =~ "input_not_found"
+      assert inspect(errors) =~ "input_unavailable"
+    end
+
+    test "an input_locator whose ICM is unmounted surfaces input_unavailable", %{
+      generation: generation,
+      icm: icm,
+      workspace: workspace
+    } do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+      other =
+        AgentCase.mount_test_icm!(workspace,
+          name: "Other",
+          pages: %{"Notes/Doc.md" => "# Doc\n"}
+        )
+
+      # `inputLocator` is an UNCONSTRAINED `:map` argument (mirrors
+      # `save_icm_page`'s `prosemirror`) — ash_typescript never walks into
+      # an unconstrained map to camelCase its keys, so this must use the
+      # SAME snake_case string keys `Valea.Icm.Locator.resolve/2` pattern
+      # matches on, not the camelCased vocabulary the other top-level RPC
+      # arguments use.
+      locator = %{"kind" => "icm", "icm_id" => other.id, "path" => "Notes/Doc.md"}
+      {:ok, _} = Valea.Mounts.unmount(workspace, other.mount_key)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "run_workflow",
+                 %{
+                   "mountKey" => icm.mount_key,
+                   "relativePath" => "Workflows/New Inquiry Triage.md",
+                   "inputLocator" => locator,
+                   "generation" => generation
+                 },
+                 ["runId", "sessionId"]
+               )
+
+      assert inspect(errors) =~ "input_unavailable"
     end
   end
 

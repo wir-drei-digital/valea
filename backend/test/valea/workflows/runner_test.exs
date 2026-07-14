@@ -5,6 +5,8 @@ defmodule Valea.Workflows.RunnerTest do
   alias Valea.Workflows.Runner
 
   @input_path "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
+  @triage_relative_path "Workflows/New Inquiry Triage.md"
+  @weekly_relative_path "Workflows/Weekly Admin Review.md"
 
   # `New Inquiry Triage.md`/`Weekly Admin Review.md`/`Current Pricing.md`
   # verbatim from the legacy starter's rich seed content
@@ -98,53 +100,91 @@ defmodule Valea.Workflows.RunnerTest do
     %{workspace: ws.path, icm: icm}
   end
 
-  defp wf_path(icm), do: Path.join(icm.root, "Workflows/New Inquiry Triage.md")
-  defp disabled_wf_path(icm), do: Path.join(icm.root, "Workflows/Weekly Admin Review.md")
+  defp wf_path(icm), do: Path.join(icm.root, @triage_relative_path)
   defp pricing_path(icm), do: Path.join(icm.root, "Pricing/Current Pricing.md")
 
-  test "run/2 on a disabled workflow -> workflow_disabled", %{icm: icm} do
+  defp generation, do: Valea.Workspace.Manager.generation()
+
+  defp ws_input(path), do: %{"kind" => "workspace", "path" => path}
+  defp icm_input(icm_id, path), do: %{"kind" => "icm", "icm_id" => icm_id, "path" => path}
+
+  test "run/4 on a disabled workflow -> workflow_disabled", %{icm: icm} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-    assert {:error, :workflow_disabled} = Runner.run(disabled_wf_path(icm), @input_path)
+
+    assert {:error, :workflow_disabled} =
+             Runner.run(icm.mount_key, @weekly_relative_path, ws_input(@input_path), generation())
   end
 
-  test "run/2 on missing input -> input_not_found", %{icm: icm} do
+  test "run/4 on missing input -> input_unavailable", %{icm: icm} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
-    assert {:error, :input_not_found} =
-             Runner.run(wf_path(icm), "sources/mail/normalized/does-not-exist.json")
+    assert {:error, :input_unavailable} =
+             Runner.run(
+               icm.mount_key,
+               @triage_relative_path,
+               ws_input("sources/mail/normalized/does-not-exist.json"),
+               generation()
+             )
   end
 
-  test "run/2 on an unknown workflow path -> not_found", %{icm: icm} do
+  test "run/4 on an unknown workflow relative_path -> not_found", %{icm: icm} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
     assert {:error, :not_found} =
-             Runner.run(Path.join(icm.root, "Workflows/Nonexistent.md"), @input_path)
+             Runner.run(
+               icm.mount_key,
+               "Workflows/Nonexistent.md",
+               ws_input(@input_path),
+               generation()
+             )
   end
 
-  test "run/2 with an input_path that traverses out of the workspace -> input_not_found", %{
-    icm: icm
-  } do
+  test "run/4 with an unknown mount_key -> not_found", %{} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
-    assert {:error, :input_not_found} =
-             Runner.run(wf_path(icm), "../../../../../../../../etc/passwd")
+    assert {:error, :not_found} =
+             Runner.run(
+               "no-such-mount",
+               @triage_relative_path,
+               ws_input(@input_path),
+               generation()
+             )
   end
 
-  test "run/2 with a workflow_path that lexically starts with the mount's Workflows/ but traverses out of it -> not_found",
+  test "run/4 with an input_locator that traverses out of the workspace -> input_unavailable",
+       %{icm: icm} do
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+    assert {:error, :input_unavailable} =
+             Runner.run(
+               icm.mount_key,
+               @triage_relative_path,
+               ws_input("../../../../../../../../etc/passwd"),
+               generation()
+             )
+  end
+
+  test "run/4 with a relative_path that lexically starts with the mount's Workflows/ but traverses out of it -> not_found",
        %{icm: icm} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
     File.mkdir_p!(Path.join(icm.root, "Offers"))
     File.write!(Path.join(icm.root, "Offers/escaped.md"), "# Escaped\n")
 
     assert {:error, :not_found} =
-             Runner.run(Path.join(icm.root, "Workflows/../Offers/escaped.md"), @input_path)
+             Runner.run(
+               icm.mount_key,
+               "Workflows/../Offers/escaped.md",
+               ws_input(@input_path),
+               generation()
+             )
   end
 
-  test "run/2 when the harness is unavailable: workflow_run_started audit is paired with a start_failed workflow_run_finished audit",
+  test "run/4 when the harness is unavailable: workflow_run_started audit is paired with a start_failed workflow_run_finished audit",
        %{icm: icm} do
     Valea.App.Config.set_harness_command(["no-such-binary-zzz"])
 
-    assert {:error, :harness_unavailable} = Runner.run(wf_path(icm), @input_path)
+    assert {:error, :harness_unavailable} =
+             Runner.run(icm.mount_key, @triage_relative_path, ws_input(@input_path), generation())
 
     {:ok, entries} = Valea.Audit.entries(20)
     chain = entries |> Enum.reverse() |> Enum.map(& &1["type"])
@@ -158,6 +198,202 @@ defmodule Valea.Workflows.RunnerTest do
     assert finished["outcome"] == "start_failed"
   end
 
+  # Task 7.2's core TDD scenario (spec §"Related ICMs" / brief Step 1): an
+  # `input_locator` whose ICM is not mounted must fail preflight with
+  # `:input_unavailable` BEFORE any subprocess spawns — no run id
+  # generated, no staging dir created, no `workflow_run_started` audited.
+  test "an input_locator whose ICM is unmounted -> input_unavailable before any subprocess spawns",
+       %{workspace: workspace, icm: icm} do
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+    other =
+      AgentCase.mount_test_icm!(workspace,
+        name: "Other",
+        pages: %{"Notes/Doc.md" => "# Doc\n"}
+      )
+
+    locator = icm_input(other.id, "Notes/Doc.md")
+    {:ok, _} = Valea.Mounts.unmount(workspace, other.mount_key)
+
+    {:ok, before_entries} = Valea.Audit.entries(200)
+    started_before = Enum.count(before_entries, &(&1["type"] == "workflow_run_started"))
+
+    assert {:error, :input_unavailable} =
+             Runner.run(icm.mount_key, @triage_relative_path, locator, generation())
+
+    {:ok, after_entries} = Valea.Audit.entries(200)
+    started_after = Enum.count(after_entries, &(&1["type"] == "workflow_run_started"))
+
+    assert started_after == started_before
+
+    assert Path.join([workspace, "queue", "staging", "*"]) |> Path.wildcard() == []
+  end
+
+  test "run.json sidecar carries icm_id, mount_key, and icm_root (Task 7.3 dependency)", %{
+    workspace: workspace,
+    icm: icm
+  } do
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+    # `Runner.run/4` only returns after `start_run/6` has synchronously
+    # written the sidecar (before starting the session) — see the
+    # `run_generated/3`-describe comment below for the same "read
+    # immediately, no wait_until needed" reasoning.
+    assert {:ok, %{run_id: run_id}} =
+             Runner.run(icm.mount_key, @triage_relative_path, ws_input(@input_path), generation())
+
+    sidecar_path = Path.join([workspace, "queue", "staging", run_id, "run.json"])
+    sidecar = sidecar_path |> File.read!() |> Jason.decode!()
+
+    assert sidecar["icm_id"] == icm.id
+    assert sidecar["mount_key"] == icm.mount_key
+    assert sidecar["icm_root"] == icm.root
+  end
+
+  describe "run_generated/4" do
+    test "writes the generated input to staging before the session starts, and carries it through sidecar/envelope/audit",
+         %{workspace: workspace, icm: icm} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+      digest = "# Recent decisions (last 30 days)\n\nsome content\n"
+
+      assert {:ok, %{run_id: run_id, session_id: session_id}} =
+               Runner.run_generated(
+                 icm.mount_key,
+                 @triage_relative_path,
+                 "input-decisions.md",
+                 digest
+               )
+
+      expected_rel = Path.join(["queue", "staging", run_id, "input-decisions.md"])
+      input_abs = Path.join(workspace, expected_rel)
+
+      # `run_generated/4` only returns once `Valea.Agents.start_session/1`
+      # has, which is strictly after `start_run/6` materializes the
+      # generated input to staging — so the file is already there,
+      # BEFORE the fake harness's `workflow_happy` scenario ever receives
+      # its first `session/prompt`.
+      assert File.read!(input_abs) == digest
+
+      sidecar_path = Path.join([workspace, "queue", "staging", run_id, "run.json"])
+      sidecar = sidecar_path |> File.read!() |> Jason.decode!()
+      assert sidecar["input"] == expected_rel
+      assert is_binary(sidecar["input_hash"]) and byte_size(sidecar["input_hash"]) == 64
+      assert sidecar["icm_id"] == icm.id
+      assert sidecar["mount_key"] == icm.mount_key
+      assert sidecar["icm_root"] == icm.root
+
+      pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
+      wait_until(fn -> File.exists?(pending_path) end)
+
+      item = pending_path |> File.read!() |> Jason.decode!()
+      assert item["input"] == expected_rel
+      assert item["session_id"] == session_id
+      assert item["source_message"] == expected_rel
+      assert is_binary(item["input_hash"]) and byte_size(item["input_hash"]) == 64
+
+      {:ok, entries} = Valea.Audit.entries(50)
+
+      started =
+        Enum.find(entries, &(&1["type"] == "workflow_run_started" and &1["run_id"] == run_id))
+
+      assert started["input"] == expected_rel
+    end
+
+    test "a traversal-shaped input_name is contained to the staging dir (Path.basename defense-in-depth)",
+         %{workspace: workspace, icm: icm} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+      assert {:ok, %{run_id: run_id}} =
+               Runner.run_generated(
+                 icm.mount_key,
+                 @triage_relative_path,
+                 "../../../../etc/passwd",
+                 "digest bytes"
+               )
+
+      # Basenamed to "passwd" and written INSIDE this run's own staging dir —
+      # never escaping it (and never touching the real /etc/passwd, which
+      # this process has no write access to regardless).
+      expected_rel = Path.join(["queue", "staging", run_id, "passwd"])
+      assert File.read!(Path.join(workspace, expected_rel)) == "digest bytes"
+
+      sidecar_path = Path.join([workspace, "queue", "staging", run_id, "run.json"])
+      sidecar = sidecar_path |> File.read!() |> Jason.decode!()
+      assert sidecar["input"] == expected_rel
+    end
+
+    test "grants read of the generated input's absolute path (Task 7.2 fix — was ungranted since Task 5.5)",
+         %{workspace: workspace, icm: icm} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+      assert {:ok, %{run_id: run_id, session_id: session_id}} =
+               Runner.run_generated(
+                 icm.mount_key,
+                 @triage_relative_path,
+                 "input-decisions.md",
+                 "digest bytes"
+               )
+
+      on_exit(fn -> AgentCase.kill_session(session_id) end)
+
+      input_abs =
+        Path.join([workspace, "queue", "staging", run_id, "input-decisions.md"])
+
+      pid = GenServer.whereis({:via, Registry, {Valea.Agents.SessionRegistry, session_id}})
+      policy_ctx = :sys.get_state(pid).policy_ctx
+
+      assert input_abs in policy_ctx.read_roots
+    end
+  end
+
+  test "run/4 accepts a workflow whose relative_path resolves inside an enabled EXTERNAL mount root (A2-T5b)",
+       %{workspace: workspace} do
+    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+    ext =
+      AgentCase.mount_test_icm!(workspace,
+        name: "Ext",
+        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
+        pages: %{
+          "Workflows/External Triage.md" => """
+          ---
+          enabled: true
+          risk_level: medium
+          approval:
+            required: true
+          ---
+          # External Triage
+
+          ## Process
+
+          1. Do the thing.
+          """
+        }
+      )
+
+    ext_wf_path = Path.join(ext.root, "Workflows/External Triage.md")
+
+    assert {:ok, %{run_id: run_id}} =
+             Runner.run(
+               ext.mount_key,
+               "Workflows/External Triage.md",
+               ws_input(@input_path),
+               generation()
+             )
+
+    pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
+    wait_until(fn -> File.exists?(pending_path) end)
+
+    item = pending_path |> File.read!() |> Jason.decode!()
+    # `workflow` carries the ABSOLUTE physical path verbatim — the run
+    # input/queue-envelope/audit vocabulary for external content is the
+    # resolved absolute path, not a workspace-relative one (binding
+    # semantic 4).
+    assert item["workflow"] == ext_wf_path
+    assert item["payload"]["kind"] == "email_draft"
+  end
+
   test "happy path: pending queue item created, staging removed, audit chain", %{
     workspace: workspace,
     icm: icm
@@ -165,7 +401,7 @@ defmodule Valea.Workflows.RunnerTest do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
     assert {:ok, %{run_id: run_id, session_id: session_id}} =
-             Runner.run(wf_path(icm), @input_path)
+             Runner.run(icm.mount_key, @triage_relative_path, ws_input(@input_path), generation())
 
     assert is_binary(run_id)
     assert is_binary(session_id)
@@ -204,108 +440,6 @@ defmodule Valea.Workflows.RunnerTest do
       |> Enum.find(&(&1["type"] == "workflow_run_finished" and &1["run_id"] == run_id))
 
     assert finished["outcome"] == "proposal_created"
-  end
-
-  describe "run_generated/3" do
-    test "writes the generated input to staging before the session starts, and carries it through sidecar/envelope/audit",
-         %{workspace: workspace, icm: icm} do
-      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-
-      digest = "# Recent decisions (last 30 days)\n\nsome content\n"
-
-      assert {:ok, %{run_id: run_id, session_id: session_id}} =
-               Runner.run_generated(wf_path(icm), "input-decisions.md", digest)
-
-      expected_rel = Path.join(["queue", "staging", run_id, "input-decisions.md"])
-      input_abs = Path.join(workspace, expected_rel)
-
-      # `run_generated/3` only returns once `Valea.Agents.start_session/1`
-      # has, which is strictly after `start_run/5` materializes the
-      # generated input to staging — so the file is already there,
-      # BEFORE the fake harness's `workflow_happy` scenario ever receives
-      # its first `session/prompt`.
-      assert File.read!(input_abs) == digest
-
-      sidecar_path = Path.join([workspace, "queue", "staging", run_id, "run.json"])
-      sidecar = sidecar_path |> File.read!() |> Jason.decode!()
-      assert sidecar["input"] == expected_rel
-      assert is_binary(sidecar["input_hash"]) and byte_size(sidecar["input_hash"]) == 64
-
-      pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
-      wait_until(fn -> File.exists?(pending_path) end)
-
-      item = pending_path |> File.read!() |> Jason.decode!()
-      assert item["input"] == expected_rel
-      assert item["session_id"] == session_id
-      assert item["source_message"] == expected_rel
-      assert is_binary(item["input_hash"]) and byte_size(item["input_hash"]) == 64
-
-      {:ok, entries} = Valea.Audit.entries(50)
-
-      started =
-        Enum.find(entries, &(&1["type"] == "workflow_run_started" and &1["run_id"] == run_id))
-
-      assert started["input"] == expected_rel
-    end
-
-    test "a traversal-shaped input_name is contained to the staging dir (Path.basename defense-in-depth)",
-         %{workspace: workspace, icm: icm} do
-      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-
-      assert {:ok, %{run_id: run_id}} =
-               Runner.run_generated(wf_path(icm), "../../../../etc/passwd", "digest bytes")
-
-      # Basenamed to "passwd" and written INSIDE this run's own staging dir —
-      # never escaping it (and never touching the real /etc/passwd, which
-      # this process has no write access to regardless).
-      expected_rel = Path.join(["queue", "staging", run_id, "passwd"])
-      assert File.read!(Path.join(workspace, expected_rel)) == "digest bytes"
-
-      sidecar_path = Path.join([workspace, "queue", "staging", run_id, "run.json"])
-      sidecar = sidecar_path |> File.read!() |> Jason.decode!()
-      assert sidecar["input"] == expected_rel
-    end
-  end
-
-  test "run/2 accepts a workflow whose path resolves inside an enabled EXTERNAL mount root (A2-T5b)",
-       %{workspace: workspace} do
-    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-
-    ext =
-      AgentCase.mount_test_icm!(workspace,
-        name: "Ext",
-        id: "41d871cd-aadc-466f-a951-a5c47e197d47",
-        pages: %{
-          "Workflows/External Triage.md" => """
-          ---
-          enabled: true
-          risk_level: medium
-          approval:
-            required: true
-          ---
-          # External Triage
-
-          ## Process
-
-          1. Do the thing.
-          """
-        }
-      )
-
-    ext_wf_path = Path.join(ext.root, "Workflows/External Triage.md")
-
-    assert {:ok, %{run_id: run_id}} = Runner.run(ext_wf_path, @input_path)
-
-    pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
-    wait_until(fn -> File.exists?(pending_path) end)
-
-    item = pending_path |> File.read!() |> Jason.decode!()
-    # `workflow` carries the ABSOLUTE physical path verbatim — the run
-    # input/queue-envelope/audit vocabulary for external content is the
-    # resolved absolute path, not a workspace-relative one (binding
-    # semantic 4).
-    assert item["workflow"] == ext_wf_path
-    assert item["payload"]["kind"] == "email_draft"
   end
 
   test "finalize/2 with no staging file: outcome no_proposal, no pending item", %{
@@ -431,7 +565,9 @@ defmodule Valea.Workflows.RunnerTest do
     icm: icm
   } do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-    assert {:ok, %{run_id: run_id}} = Runner.run(wf_path(icm), @input_path)
+
+    assert {:ok, %{run_id: run_id}} =
+             Runner.run(icm.mount_key, @triage_relative_path, ws_input(@input_path), generation())
 
     pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
     wait_until(fn -> File.exists?(pending_path) end)
@@ -451,7 +587,8 @@ defmodule Valea.Workflows.RunnerTest do
     # on_turn_end("died") → finalize → no_proposal, or the run would orphan.
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("crash_mid_turn"))
 
-    assert {:ok, %{run_id: run_id}} = Runner.run(wf_path(icm), @input_path)
+    assert {:ok, %{run_id: run_id}} =
+             Runner.run(icm.mount_key, @triage_relative_path, ws_input(@input_path), generation())
 
     wait_until(fn ->
       {:ok, entries} = Valea.Audit.entries(50)
@@ -611,19 +748,27 @@ defmodule Valea.Workflows.RunnerTest do
     # policy_ctx is `:sys.get_state/1` on the SessionServer pid looked up via
     # the Registry — the exact pattern `session_read_roots_test.exs` already
     # uses for this same struct. `policy_ctx` is fixed at `init/1` time and
-    # never mutated afterward, so reading it right after `run/2` returns
+    # never mutated afterward, so reading it right after `run/4` returns
     # (which only returns once `init/1` — and thus policy_ctx construction —
     # has completed) is race-free regardless of how fast the fake harness's
     # async finalize runs.
-    test "run/2 grants: proposals dir writable, run.json not, read_roots is the owning ICM (Task 5.5 minimal scope)",
+    test "run/4 grants: proposals dir writable, run.json not, exact input read, cwd is the owning ICM (Task 7.2)",
          %{
            workspace: workspace,
            icm: icm
          } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
+      {:ok, expected_input_abs} =
+        Valea.Icm.Locator.resolve(workspace, ws_input(@input_path))
+
       assert {:ok, %{run_id: run_id, session_id: session_id}} =
-               Runner.run(wf_path(icm), @input_path)
+               Runner.run(
+                 icm.mount_key,
+                 @triage_relative_path,
+                 ws_input(@input_path),
+                 generation()
+               )
 
       on_exit(fn -> AgentCase.kill_session(session_id) end)
 
@@ -632,17 +777,37 @@ defmodule Valea.Workflows.RunnerTest do
 
       staging_dir = Path.join([workspace, "queue", "staging", run_id])
 
+      assert policy_ctx.cwd == icm.root
       assert policy_ctx.write_paths == [Path.join(staging_dir, "proposal.json")]
       assert policy_ctx.write_roots == [Path.join(staging_dir, "proposals")]
 
-      # Task 5.5's `start_run` builds the MINIMAL workflow scope
-      # (`read_paths: []`) — cwd (and thus `read_roots`) is the owning ICM's
-      # root, same as any other session; it no longer re-grants a read of
-      # the run's own staging dir back (the old workspace-relative
-      # `policy_ctx.read_roots` used to fold in `"queue/staging/<run_id>"`
-      # here). The full workflow input/grant/locator re-key with exact
-      # per-input read grants is Phase 7 (Tasks 7.1/7.2/7.3), not this one.
-      assert policy_ctx.read_roots == [icm.root]
+      # Task 7.2: the ONE exact input read grant, folded into read_roots
+      # alongside the primary ICM's own root — nothing else (no related
+      # ICMs declared in this fixture, so `additional_roots` is exactly
+      # `[input_abs]`).
+      assert policy_ctx.read_roots == [icm.root, expected_input_abs]
+
+      # Regression assertion (brief Step 1): a generic chat session in the
+      # SAME ICM gets no such grant — it cannot read this exact input.
+      {:ok, %{id: chat_session_id}} =
+        AgentCase.start_session(workspace, "happy", %{mount_key: icm.mount_key})
+
+      on_exit(fn -> AgentCase.kill_session(chat_session_id) end)
+
+      chat_pid =
+        GenServer.whereis({:via, Registry, {Valea.Agents.SessionRegistry, chat_session_id}})
+
+      chat_ctx = :sys.get_state(chat_pid).policy_ctx
+
+      refute expected_input_abs in chat_ctx.read_roots
+
+      read_item = %{
+        "kind" => "read",
+        "toolName" => "Read",
+        "rawInput" => %{"file_path" => expected_input_abs}
+      }
+
+      assert Valea.Agents.PermissionPolicy.decide(read_item, chat_ctx) == :ask
     end
   end
 
@@ -741,7 +906,7 @@ defmodule Valea.Workflows.RunnerTest do
   end
 
   # Mirrors the file's existing sidecar/staging setup (`sidecar/2` below,
-  # `start_run/5`'s own `run.json` shape) so `finalize/2` can be driven
+  # `start_run/6`'s own `run.json` shape) so `finalize/2` can be driven
   # directly against hand-seeded staging, same as every other finalize test
   # in this file.
   defp seed_run!(ws, run_id, icm) do

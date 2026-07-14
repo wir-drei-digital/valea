@@ -55,14 +55,26 @@ export type CockpitToday = {
   openLoops: OpenLoop[];
   whileYouWereAway: string[];
   /**
-   * The seeded New Inquiry Triage workflow's workspace-relative path (A-T13
+   * The seeded New Inquiry Triage workflow's ABSOLUTE resolved path (A-T13
    * — `Valea.Cockpit.today/0`'s live `triage_workflow_path` field), or
-   * `null` when no enabled mount has one. `today/InquiryTriageCard.svelte`
-   * and `mail/MessageView.svelte` run this workflow instead of a hardcoded
-   * `TRIAGE_WORKFLOW` const, and hide their "Prepare a reply"/"Run triage"
-   * action entirely when this is `null` — no dead link.
+   * `null` when no enabled mount has one. Used only to match this workflow
+   * against a pending queue item's own `workflow` field (which carries the
+   * same absolute path) — `run_workflow` itself (Task 7.2) is called with
+   * `triageWorkflowMountKey`/`triageWorkflowRelativePath` below, not this.
    */
   triageWorkflowPath: string | null;
+  /**
+   * The seeded New Inquiry Triage workflow's `{mountKey, relativePath}`
+   * identity (Task 7.2 — `Valea.Cockpit.today/0`'s live
+   * `triage_workflow_mount_key`/`triage_workflow_relative_path` fields),
+   * `null` together with `triageWorkflowPath` above when no enabled mount
+   * has one. `today/InquiryTriageCard.svelte` and `mail/MessageView.svelte`
+   * pass these straight to `api.runWorkflow` instead of a hardcoded
+   * `TRIAGE_WORKFLOW` const, and hide their "Prepare a reply"/"Run triage"
+   * action entirely when `null` — no dead link.
+   */
+  triageWorkflowMountKey: string | null;
+  triageWorkflowRelativePath: string | null;
   /**
    * The seeded Distill Decisions reflection workflow's workspace-relative
    * path (Task B8 — `Valea.Cockpit.today/0`'s live `distill_workflow_path`
@@ -136,6 +148,12 @@ export function normalizeCockpitToday(raw: RawMap): CockpitToday {
   const loops = pick(raw, 'openLoops', 'open_loops');
   const away = pick(raw, 'whileYouWereAway', 'while_you_were_away');
   const triageWorkflowPath = pick(raw, 'triageWorkflowPath', 'triage_workflow_path');
+  const triageWorkflowMountKey = pick(raw, 'triageWorkflowMountKey', 'triage_workflow_mount_key');
+  const triageWorkflowRelativePath = pick(
+    raw,
+    'triageWorkflowRelativePath',
+    'triage_workflow_relative_path'
+  );
   const distillWorkflowPath = pick(raw, 'distillWorkflowPath', 'distill_workflow_path');
 
   return {
@@ -148,6 +166,8 @@ export function normalizeCockpitToday(raw: RawMap): CockpitToday {
     openLoops: Array.isArray(loops) ? loops.map(normalizeOpenLoop) : [],
     whileYouWereAway: asStringList(away),
     triageWorkflowPath: asNullableString(triageWorkflowPath),
+    triageWorkflowMountKey: asNullableString(triageWorkflowMountKey),
+    triageWorkflowRelativePath: asNullableString(triageWorkflowRelativePath),
     distillWorkflowPath: asNullableString(distillWorkflowPath),
     mail: normalizeMailSummary(raw.mail)
   };

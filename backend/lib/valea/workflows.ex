@@ -104,6 +104,22 @@ defmodule Valea.Workflows do
   end
 
   @doc """
+  The FULL `list/0` record (`icm_id`/`mount_key`/`relative_path`/
+  `resolved_path`/...) for the seeded New Inquiry Triage workflow, or `nil`
+  — same first-match-in-`list/0`'s-own-sort-order, basename-matching
+  discovery as `triage_path/0`, but returning the whole record instead of
+  just `resolved_path`. Task 7.2's `run_workflow` RPC needs `mount_key`/
+  `relative_path` (the `{mount_key, relative_path}` identity
+  `Valea.Workflows.Runner.run/4` addresses a workflow by), not just the
+  display path `triage_path/0` still serves for `Valea.Cockpit`.
+  """
+  @spec triage_workflow() :: map() | nil
+  def triage_workflow do
+    {:ok, workflows} = list()
+    find_workflow_by_basename(workflows, @triage_filename)
+  end
+
+  @doc """
   The absolute `resolved_path` of the seeded Distill Decisions reflection
   workflow, or `nil` when no enabled mount has one — mirrors `triage_path/0`
   exactly (same first-match-in-`list/0`'s-own-sort-order, basename-matching
@@ -122,11 +138,27 @@ defmodule Valea.Workflows do
     workspace |> list() |> find_by_basename(@distill_filename)
   end
 
+  @doc """
+  The FULL `list/0` record for the seeded Distill Decisions reflection
+  workflow, or `nil` — mirrors `triage_workflow/0` exactly. Task 7.2's
+  `distill_decisions` RPC needs `mount_key`/`relative_path` to address
+  `Valea.Workflows.Runner.run_generated/4`.
+  """
+  @spec distill_workflow() :: map() | nil
+  def distill_workflow do
+    {:ok, workflows} = list()
+    find_workflow_by_basename(workflows, @distill_filename)
+  end
+
   defp find_by_basename(workflows, filename) do
-    case Enum.find(workflows, &(Path.basename(&1.relative_path) == filename)) do
+    case find_workflow_by_basename(workflows, filename) do
       nil -> nil
       wf -> wf.resolved_path
     end
+  end
+
+  defp find_workflow_by_basename(workflows, filename) do
+    Enum.find(workflows, &(Path.basename(&1.relative_path) == filename))
   end
 
   @doc """

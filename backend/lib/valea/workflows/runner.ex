@@ -1,39 +1,44 @@
 defmodule Valea.Workflows.Runner do
   @moduledoc """
-  Executes one workflow with a SERVER-OWNED run identity: `run/2` generates
+  Executes one workflow with a SERVER-OWNED run identity: `run/4` generates
   the run id, the staging directory, the exact proposal output path, and
   the workflow/input hashes — none of this is agent-controlled. It then
-  starts an agent session scoped (via `policy_ctx.write_paths`) to write
-  only that exact staging path, and asks the session to call back into
-  `finalize/2` once its first turn ends.
+  starts an agent session scoped (via `policy_ctx.write_paths`/
+  `policy_ctx.read_roots`) to write only that exact staging path and read
+  only the exact input it was handed, and asks the session to call back
+  into `finalize/2` once its first turn ends.
+
+  Task 7.2 re-keys `run/2` to `run/4`: a workflow is addressed by its Task
+  7.1 identity — `{mount_key, relative_path}`, validated via
+  `Valea.Workflows.get/2` — instead of the old opaque absolute
+  `workflow_path` string. The input is likewise addressed by an
+  `input_locator` (`Valea.Icm.Locator`'s `%{"kind" => "workspace", "path"
+  => ...}` for a workspace source, or `%{"kind" => "icm", "icm_id" => ...,
+  "path" => ...}` for a page in a mounted ICM) instead of a bare
+  workspace-relative string, resolved to its CURRENT absolute path via
+  `Locator.resolve/2` — the one exact grant this run's session gets to
+  read (`read_paths: [input_abs]`, folded into `policy_ctx.read_roots` by
+  `SessionScope.resolve/1`/`Valea.Harnesses.ClaudeCode.launch/2`). Any
+  resolution failure — the locator names an ICM that isn't mounted (or is
+  disabled/degraded), or its `path` escapes containment, or the shape is
+  invalid — collapses to `{:error, :input_unavailable}` BEFORE `start_run/6`
+  is ever called, i.e. before any staging directory exists, any run id is
+  generated, or any audit entry is written: a bad input locator can never
+  spawn a harness subprocess.
 
   The run record needed by `finalize/2` is never kept in process memory —
   it is written once, at run start, as a JSON sidecar
   (`queue/staging/<run_id>/run.json`, the `queue_item/v1` envelope minus
-  `payload`). This lets `finalize/2` be a pure function of `(run_id,
-  workspace)`, callable from the session's `on_turn_end` callback,
-  crash-recovery, or a test — and idempotent, since it only ever acts on
-  what it finds on disk.
-
-  `workflow_path` is an OPAQUE string throughout this module for hashing,
-  prompting, and the sidecar/queue envelope/audit entries — carried
-  verbatim, never parsed for those purposes. That means the Plan A mount
-  refactor (`Valea.Mounts`, T2) needed NO change here: `Valea.Workflows.
-  list/0`'s `path` field is `mounts/<name>/Workflows/<file>.md` for an
-  embedded mount instead of the old single hardcoded
-  `icm/Workflows/<file>.md`, and this module carries the new shape through
-  coherently by construction.
-
-  ONE exception (A2-T5b): `read_workflow/2`'s containment check needs to
-  know WHICH root to resolve `workflow_path` against — the workspace root
-  for an embedded (workspace-relative) path, or the owning EXTERNAL mount's
-  own absolute root for an absolute one (external content lives outside the
-  workspace, so containing it against the workspace would always fail).
-  `workflow_containment_root/2` answers that via `Valea.Mounts.mount_for/1`
-  — the same attribution primitive `Valea.Workflows.get/1` already used
-  moments earlier in this same call to resolve `wf`, so it is guaranteed to
-  agree. This is the one place `workflow_path`'s SHAPE (not its content) is
-  inspected; everything else about it downstream stays opaque.
+  `payload`), PLUS three identity fields `finalize/2` itself never reads
+  today but a later phase does: `icm_id`, `mount_key`, and `icm_root` — the
+  workflow's OWNING ICM, resolved once here via the same `mount_key` this
+  run was launched with. Task 7.3's `finalize/2` needs exactly this triple
+  to turn the agent's ICM-relative proposal `target_path` into a
+  `Valea.Icm.Locator` (and, downstream, classify its risk) WITHOUT
+  re-deriving the owning ICM from scratch — `finalize/2` stays a pure
+  function of `(run_id, workspace)`, callable from the session's
+  `on_turn_end` callback, crash-recovery, or a test, and idempotent, since
+  it only ever acts on what it finds on disk.
 
   This module also does NOT resolve a workflow contract's `sources:`
   frontmatter (the `%{id, type, path}` list of ICM pages the contract
@@ -52,6 +57,7 @@ defmodule Valea.Workflows.Runner do
 
   alias Valea.Agents.RiskTier
   alias Valea.Agents.SessionScope
+  alias Valea.Icm.Locator
   alias Valea.Mounts
   alias Valea.Workflows
   alias Valea.Workflows.MemoryProposal
@@ -68,52 +74,78 @@ defmodule Valea.Workflows.Runner do
   @rejected_dir ["queue", "rejected"]
 
   @doc """
-  Runs `workflow_path` (as returned by `Valea.Workflows.list/0`'s `path`
-  field) against `input_path` (workspace-relative). Starts the agent
-  session; the proposal is finalized asynchronously once the session's
-  first turn ends (see `finalize/2`).
+  Runs the workflow contract owned by `mount_key` at its ICM-relative
+  `relative_path` (`Valea.Workflows.get/2`'s own `{mount_key,
+  relative_path}` identity — Task 7.1) against `input_locator` (a
+  `Valea.Icm.Locator` map). `generation` is threaded straight into
+  `SessionScope.resolve/1` (spec §"Session scope and launch"), which fails
+  FIRST on a stale one, before any lookup.
+
+  Preflight order (nothing below spawns a subprocess until every step
+  succeeds):
+
+    1. workflow ownership (`Valea.Workflows.get/2`) and its `enabled` flag.
+    2. `input_locator` resolved to its CURRENT absolute path
+       (`Valea.Icm.Locator.resolve/2`) and read — any failure (unmounted/
+       disabled/degraded ICM, escaping/invalid path, missing file) is
+       `{:error, :input_unavailable}`.
+
+  Only once both succeed does `start_run/6` generate the run id, create the
+  staging directory, and grant the session `read_paths: [input_abs]` (the
+  ONE exact input read) plus its usual exact staging write grants. Starts
+  the agent session; the proposal is finalized asynchronously once the
+  session's first turn ends (see `finalize/2`).
   """
-  @spec run(String.t(), String.t()) ::
+  @spec run(String.t(), String.t(), map(), integer()) ::
           {:ok, %{run_id: String.t(), session_id: String.t()}}
           | {:error,
-             :not_found | :workflow_disabled | :input_not_found | :harness_unavailable | term()}
-  def run(workflow_path, input_path) do
+             :not_found | :workflow_disabled | :input_unavailable | :harness_unavailable | term()}
+  def run(mount_key, relative_path, input_locator, generation) do
     with {:ok, %{path: workspace}} <- current_workspace(),
-         {:ok, wf} <- fetch_workflow(workflow_path),
+         {:ok, wf} <- fetch_workflow(mount_key, relative_path),
          :ok <- ensure_enabled(wf),
-         {:ok, workflow_bytes} <- read_workflow(workspace, workflow_path),
-         {:ok, input_bytes} <- read_input(workspace, input_path) do
-      start_run(workspace, wf, workflow_path, workflow_bytes, {:file, input_path, input_bytes})
+         {:ok, workflow_bytes} <- read_workflow_bytes(wf),
+         {:ok, input_display, input_abs, input_bytes} <- resolve_input(workspace, input_locator) do
+      start_run(
+        workspace,
+        wf,
+        mount_key,
+        generation,
+        workflow_bytes,
+        {:file, input_display, input_abs, input_bytes}
+      )
     end
   end
 
   @doc """
-  Same contract as `run/2`, except the input is not a file already on disk —
-  `input_bytes` is written server-side to `queue/staging/<run_id>/<input_name>`
-  BEFORE the session starts (so it exists before the session's first prompt
-  ever fires), and `input_path` in the sidecar/queue-envelope/audit trail is
-  that staging-relative path, exactly as if it had been a real input file.
-  `input_hash` is `sha256(input_bytes)`, same as `run/2`.
+  Same contract as `run/4`, except the input is not resolved from a locator
+  — `input_bytes` is written server-side to
+  `queue/staging/<run_id>/<input_name>` BEFORE the session starts (so it
+  exists before the session's first prompt ever fires), and `input_path` in
+  the sidecar/queue-envelope/audit trail is that staging-relative path,
+  exactly as if it had been a real input file. `input_hash` is
+  `sha256(input_bytes)`, same as `run/4`.
 
   Built for `Valea.Workflows.Distill`'s decisions digest (B8): the digest is
   compiled in memory, not read off an existing source file, but the
-  session still needs a named FILE to point its prompt at — the B3 staging
-  read grant (`read_roots` extended with `queue/staging/<run_id>`) already
-  lets the session read it back, so no read-boundary widening is needed
-  here.
+  session still needs a named FILE to point its prompt at. Task 7.2 grants
+  it explicitly — `read_paths: [<the just-written staging file's absolute
+  path>]` — the same exact-grant discipline `run/4` uses for a real input
+  file, so the session can read back what was written for it.
   """
-  @spec run_generated(String.t(), String.t(), binary()) ::
+  @spec run_generated(String.t(), String.t(), String.t(), binary()) ::
           {:ok, %{run_id: String.t(), session_id: String.t()}}
           | {:error, :not_found | :workflow_disabled | :harness_unavailable | term()}
-  def run_generated(workflow_path, input_name, input_bytes) do
+  def run_generated(mount_key, relative_path, input_name, input_bytes) do
     with {:ok, %{path: workspace}} <- current_workspace(),
-         {:ok, wf} <- fetch_workflow(workflow_path),
+         {:ok, wf} <- fetch_workflow(mount_key, relative_path),
          :ok <- ensure_enabled(wf),
-         {:ok, workflow_bytes} <- read_workflow(workspace, workflow_path) do
+         {:ok, workflow_bytes} <- read_workflow_bytes(wf) do
       start_run(
         workspace,
         wf,
-        workflow_path,
+        mount_key,
+        Manager.generation(),
         workflow_bytes,
         {:generated, input_name, input_bytes}
       )
@@ -376,7 +408,7 @@ defmodule Valea.Workflows.Runner do
     audit_finished(run_id, outcome)
   end
 
-  ## run/2 helpers
+  ## run/4 helpers
 
   defp current_workspace do
     case Manager.current() do
@@ -388,119 +420,107 @@ defmodule Valea.Workflows.Runner do
   defp ensure_enabled(%{enabled: true}), do: :ok
   defp ensure_enabled(_wf), do: {:error, :workflow_disabled}
 
-  # `workflow_path` (opaque throughout this module — see moduledoc) is
-  # still the ABSOLUTE physical path `Valea.Workflows.list/0`'s
-  # `resolved_path` field carries. `Valea.Workflows.get/1` was re-keyed to
-  # `get/2` (Task 7.1: `{mount_key, relative_path}` identity) — this
-  # adapter bridges the two: attribute `workflow_path` to its owning mount
-  # the same way `workflow_containment_root/2` does moments later in this
-  # same call (`Mounts.mount_for/1`, ENABLED+healthy attribution only),
-  # derive the ICM-relative remainder, and look the contract up by its new
-  # keyed identity. The full `{mount_key, relative_path}`-addressed
-  # `run/2`/`run_generated/3` API is Task 7.2's job (the ICM-scoped run),
-  # not this one — `workflow_path` stays this module's own opaque address
-  # for now.
-  @spec fetch_workflow(String.t()) :: {:ok, map()} | {:error, :not_found}
-  defp fetch_workflow(workflow_path) do
-    case Mounts.mount_for(workflow_path) do
-      {:ok, %{name: mount_key, root: root}} ->
-        # `get/2`'s `:not_in_icm` (a path landing inside the mount but
-        # outside its OWN `Workflows/`) collapses to this module's existing
-        # `:not_found` — this module's public error vocabulary (see `run/2`
-        # `@spec`) predates the `{mount_key, relative_path}` re-key, and
-        # both atoms mean the same thing to every current caller: no
-        # runnable contract at `workflow_path`.
-        case Workflows.get(mount_key, Path.relative_to(workflow_path, root)) do
-          {:ok, wf} -> {:ok, wf}
-          {:error, _reason} -> {:error, :not_found}
-        end
-
-      _ ->
-        {:error, :not_found}
+  # `Valea.Workflows.get/2`'s `:not_in_icm` (a `relative_path` landing
+  # inside the mount but outside its OWN `Workflows/`) collapses to this
+  # module's existing `:not_found` — this module's public error vocabulary
+  # (see `run/4` `@spec`) predates the `{mount_key, relative_path}` re-key,
+  # and both atoms mean the same thing to every current caller: no runnable
+  # contract at that address.
+  @spec fetch_workflow(String.t(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  defp fetch_workflow(mount_key, relative_path) do
+    case Workflows.get(mount_key, relative_path) do
+      {:ok, wf} -> {:ok, wf}
+      {:error, _reason} -> {:error, :not_found}
     end
   end
 
-  # Containment-gated: `resolve_real/2` rejects any `..`/symlink traversal
-  # that would escape the containment root (realpath semantics, mirroring
-  # `PermissionPolicy`), and the read goes through the RESOLVED absolute
-  # path so the check actually gates what gets read.
-  defp read_workflow(workspace, workflow_path) do
-    with {:ok, root} <- workflow_containment_root(workspace, workflow_path),
-         {:ok, real} <- Valea.Paths.resolve_real(workflow_path, root),
-         {:ok, bytes} <- File.read(real) do
-      {:ok, bytes}
+  # `wf.resolved_path` was already containment-checked and read-verified by
+  # `Valea.Workflows.get/2` (via `Mounts.mount_by_key/2` +
+  # `Valea.Paths.resolve_real/2` + `File.regular?/1`) moments ago in this
+  # same `run/4`/`run_generated/4` call — no second containment walk is
+  # needed, just the read itself. `File.read/1` failing here (the file
+  # vanished in the narrow window since `get/2` parsed it) degrades to the
+  # same `:not_found` `get/2` itself would have returned.
+  defp read_workflow_bytes(wf) do
+    case File.read(wf.resolved_path) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, _reason} -> {:error, :not_found}
+    end
+  end
+
+  # Resolves `input_locator` (a `Valea.Icm.Locator` map) to its current
+  # absolute path and reads it. Every failure mode `Locator.resolve/2` can
+  # return — an ICM locator naming an unmounted/disabled/degraded ICM, a
+  # `path` that escapes containment or walks a symlink out, or a
+  # malformed/unrecognized locator shape — collapses to ONE atom,
+  # `:input_unavailable` (spec §"Related ICMs": "a workflow whose declared
+  # inputs require the missing ICM fails preflight before spawning a
+  # harness"). A file that resolves but can't be read (permissions, or
+  # vanishes between resolve and read) gets the same treatment — from this
+  # module's caller's point of view, an input it cannot read is simply not
+  # available.
+  #
+  # Returns the locator's own `"path"` (workspace- or ICM-relative,
+  # whichever the locator's `kind` was) as `input_display` — the SAME
+  # opaque string `run/2` used to store in the sidecar/queue-envelope/audit
+  # trail before locators existed, preserving `finalize/2`'s downstream
+  # `source_message` mailbox-op lookup (`Valea.Mail.MailboxOps.read_source/1`
+  # resolves it against the WORKSPACE root, which only holds for a workspace
+  # locator — every current mail-triage input is exactly that) and the
+  # frontend's own pending-item reconciliation (`triage-card.ts`'s
+  # `envelopeInputPath/1`, matched against the same workspace-relative path
+  # the caller passed in). `input_abs` (the resolved, symlink-hardened
+  # physical path) is used everywhere containment/reading matters: the
+  # exact `read_paths` grant, the prompt, and hashing.
+  @spec resolve_input(String.t(), map()) ::
+          {:ok, String.t(), String.t(), binary()} | {:error, :input_unavailable}
+  defp resolve_input(workspace, input_locator) do
+    with {:ok, abs} <- Locator.resolve(workspace, input_locator),
+         {:ok, bytes} <- File.read(abs) do
+      {:ok, Map.get(input_locator, "path"), abs, bytes}
     else
-      _ -> {:error, :not_found}
+      _ -> {:error, :input_unavailable}
     end
   end
 
-  # The root `workflow_path` must be contained within — the workspace for an
-  # embedded (workspace-relative `mounts/<name>/…`) path, unchanged from
-  # before mounts existed, or the owning EXTERNAL mount's own absolute root
-  # for an absolute one (A2-T5b — external content lives outside the
-  # workspace by definition, so containing it against the workspace would
-  # always fail). See moduledoc for why this is the one place `workflow_path`
-  # is inspected rather than treated opaquely.
-  defp workflow_containment_root(workspace, workflow_path) do
-    case Valea.Mounts.mount_for(workflow_path) do
-      {:ok, %{rel_root: nil, root: root}} -> {:ok, root}
-      {:ok, %{rel_root: rel_root}} when is_binary(rel_root) -> {:ok, workspace}
-      _ -> {:error, :not_found}
+  # The owning mount's current resolved root, or `nil` if it vanished out
+  # from under this run in the narrow window since `fetch_workflow/2`
+  # succeeded (mirrors the same race `SessionScope.resolve/1`'s own
+  # `mount_by_key/2` lookup moments later in `start_run/6` is exposed to —
+  # that lookup surfaces `:icm_unavailable` cleanly on its own, so a `nil`
+  # here just rides along into a sidecar for a run that's about to be
+  # torn down anyway).
+  defp icm_root_for(workspace, mount_key) do
+    case Mounts.mount_by_key(workspace, mount_key) do
+      %{root: root} -> root
+      nil -> nil
     end
   end
 
-  # Task 5.5: the workflow session's PRIMARY ICM (spec §"Workflow session")
-  # is the mount that OWNS `workflow_path` — the SAME attribution
-  # `workflow_containment_root/2` above already used moments earlier in
-  # this same `run/2`/`run_generated/3` call (via `read_workflow/2`), so it
-  # is guaranteed to agree here. `mount.name` is the workspace-local mount
-  # KEY `SessionScope.resolve/1` expects (never `mount.manifest.name`, the
-  # ICM's own display name — see `Valea.Mounts`'s moduledoc "Compatibility
-  # shim" section). `mount_for/1` only attributes among ENABLED,
-  # non-degraded mounts, so a workflow whose owning mount was disabled out
-  # from under this run between `read_workflow/2` succeeding and here would
-  # surface `:not_found` — an edge case narrow enough (the same run) that
-  # `run/2`'s own documented error vocabulary already covers it.
-  @spec owning_mount_key(String.t()) :: {:ok, String.t()} | {:error, :not_found}
-  defp owning_mount_key(workflow_path) do
-    case Mounts.mount_for(workflow_path) do
-      {:ok, %{name: mount_key}} -> {:ok, mount_key}
-      _ -> {:error, :not_found}
-    end
+  # `{:file, ...}`: nothing to do, `input_abs`/`input_bytes` were already
+  # resolved+read off a real source file by `resolve_input/2` — `input_display`
+  # is that locator's own opaque `"path"`, carried through unchanged.
+  defp materialize_input(_staging_dir, _run_id, {:file, input_display, input_abs, input_bytes}) do
+    {input_display, input_abs, input_bytes}
   end
 
-  defp read_input(workspace, input_path) do
-    with {:ok, real} <- Valea.Paths.resolve_real(input_path, workspace),
-         {:ok, bytes} <- File.read(real) do
-      {:ok, bytes}
-    else
-      _ -> {:error, :input_not_found}
-    end
-  end
-
-  # `{:file, ...}`: nothing to do, the bytes were already read off a real
-  # source file by `run/2` — `input_path` is that file's own
-  # workspace-relative path, carried through unchanged.
-  defp materialize_input(_staging_dir, _run_id, {:file, input_path, input_bytes}) do
-    {input_path, input_bytes}
-  end
-
-  # `{:generated, ...}`: no source file exists — `run_generated/3`'s caller
+  # `{:generated, ...}`: no source file exists — `run_generated/4`'s caller
   # handed us bytes compiled in memory. Write them into THIS run's own
   # staging dir (never the agent-writable `proposals/` subdir — this file is
   # server-owned input, not agent output) before the session starts, so the
-  # prompt can name a real file and the B3 staging read grant lets the
-  # session read it back. `Path.basename/1` is defense-in-depth against a
-  # `name` carrying `/`/`..` — every current caller passes a fixed literal
-  # (`"input-decisions.md"`), but this keeps the write contained to
-  # `staging_dir` regardless.
+  # prompt can name a real file and `start_run/6` can grant `read_paths`
+  # the exact absolute path just written, letting the session read it back.
+  # `Path.basename/1` is defense-in-depth against a `name` carrying `/`/`..`
+  # — every current caller passes a fixed literal (`"input-decisions.md"`),
+  # but this keeps the write contained to `staging_dir` regardless.
   defp materialize_input(staging_dir, run_id, {:generated, name, bytes}) do
     safe_name = Path.basename(name)
-    File.write!(Path.join(staging_dir, safe_name), bytes)
-    {Path.join(["queue", "staging", run_id, safe_name]), bytes}
+    abs = Path.join(staging_dir, safe_name)
+    File.write!(abs, bytes)
+    {Path.join(["queue", "staging", run_id, safe_name]), abs, bytes}
   end
 
-  defp start_run(workspace, wf, workflow_path, workflow_bytes, input) do
+  defp start_run(workspace, wf, mount_key, generation, workflow_bytes, input) do
     run_id = generate_run_id()
     staging_dir = staging_dir(workspace, run_id)
     File.mkdir_p!(staging_dir)
@@ -511,62 +531,67 @@ defmodule Valea.Workflows.Runner do
     staging_rel = Path.join([staging_dir_rel(run_id), "proposal.json"])
     staging_abs = Path.join(workspace, staging_rel)
 
-    # `:file` (run/2): the caller already has bytes read off an existing
-    # source file, `input_path` is that file's own workspace-relative path.
-    # `:generated` (run_generated/3): no source file exists yet — the bytes
+    # `:file` (run/4): the caller already resolved+read the input off its
+    # locator, `input_display` is that locator's own opaque `"path"`.
+    # `:generated` (run_generated/4): no source file exists yet — the bytes
     # are compiled server-side (e.g. `Valea.Workflows.Distill.digest/1`) and
-    # written HERE, before the session starts, so `input_path` becomes the
-    # staging-relative path of the file just created. Either way, everything
-    # downstream (sidecar, prompt, audit, queue envelope) uses `input_path`/
-    # `input_bytes` uniformly from this point on.
-    {input_path, input_bytes} = materialize_input(staging_dir, run_id, input)
+    # written HERE, before the session starts, so `input_display` becomes
+    # the staging-relative path of the file just created. Either way,
+    # `input_abs` is always the exact absolute path this run grants a read
+    # of (`read_paths`, below), and everything else downstream (sidecar,
+    # prompt, audit, queue envelope) uses `input_display`/`input_bytes`
+    # uniformly from this point on.
+    {input_display, input_abs, input_bytes} = materialize_input(staging_dir, run_id, input)
 
     run = %{
       "run_id" => run_id,
-      "workflow" => workflow_path,
+      "workflow" => wf.resolved_path,
       "workflow_hash" => sha256(workflow_bytes),
-      "input" => input_path,
+      "input" => input_display,
       "input_hash" => sha256(input_bytes),
       "risk_level" => wf.risk_level,
       "approval" => wf.approval,
-      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      # Task 7.2: the workflow's OWNING ICM, so `finalize/2` (Task 7.3) can
+      # turn an ICM-relative proposal `target_path` into a
+      # `Valea.Icm.Locator` without re-deriving it — see moduledoc.
+      "icm_id" => wf.icm_id,
+      "mount_key" => mount_key,
+      "icm_root" => icm_root_for(workspace, mount_key)
     }
 
     audit("workflow_run_started", %{
       "run_id" => run_id,
-      "workflow" => workflow_path,
-      "input" => input_path,
+      "workflow" => wf.resolved_path,
+      "input" => input_display,
       "workflow_hash" => run["workflow_hash"],
       "input_hash" => run["input_hash"]
     })
 
-    # Task 5.5: the session's PRIMARY ICM is the mount that OWNS this
-    # workflow contract (`workflow_path` already resolved through this same
-    # attribution — via `read_workflow/2` -> `workflow_containment_root/2` —
-    # moments ago in `run/2`/`run_generated/3`, so it is guaranteed to
-    # attribute again here), never a caller/model choice (spec §"Workflow
-    # session"). The session id is generated HERE, not inside
-    # `start_session/1`, because `SessionScope.resolve/1` needs it up front
-    # to derive `managed_context`'s path — mirrors
-    # `Valea.Api.Agents.create_session`'s identical "generate id -> resolve
-    # scope -> start_session(scope)" ordering.
+    # The session's PRIMARY ICM is the mount that OWNS this workflow
+    # contract — `mount_key` is the caller's own already-validated
+    # `{mount_key, relative_path}` identity (Task 7.1's `Workflows.get/2`,
+    # checked in `run/4`/`run_generated/4` moments ago), never a
+    # caller/model choice (spec §"Workflow session"). The session id is
+    # generated HERE, not inside `start_session/1`, because
+    # `SessionScope.resolve/1` needs it up front to derive
+    # `managed_context`'s path — mirrors `Valea.Api.Agents.create_session`'s
+    # identical "generate id -> resolve scope -> start_session(scope)"
+    # ordering.
     #
     # `write_paths`/`write_roots` are this run's exact staging grants,
-    # unchanged from before. `read_paths: []` is the MINIMAL workflow scope
-    # (this task's brief) — it deliberately does NOT re-grant the agent a
-    # read of its own staging dir back (the old `policy_ctx.read_roots`
-    # above used to fold in `"queue/staging/<run_id>"`); the full workflow
-    # input/grant/locator re-key with exact per-input reads is Phase 7
-    # (Tasks 7.1/7.2/7.3), not here.
+    # unchanged from before. `read_paths: [input_abs]` (Task 7.2) is this
+    # run's ONE exact input read grant — the agent's session can read this
+    # file and nothing else outside its primary ICM's own root; a plain
+    # chat session in the SAME ICM gets no such grant.
     session_id = Valea.Agents.generate_session_id()
 
     result =
-      with {:ok, mount_key} <- owning_mount_key(workflow_path),
-           {:ok, scope} <-
+      with {:ok, scope} <-
              SessionScope.resolve(%{
                kind: "workflow",
                mount_key: mount_key,
-               generation: Manager.generation(),
+               generation: generation,
                session_id: session_id,
                write_paths: [staging_abs],
                # Directory grant (B2's `write_roots`), scoped to `proposals/`
@@ -576,15 +601,15 @@ defmodule Valea.Workflows.Runner do
                # server-owned, carried verbatim into every queue envelope
                # `finalize/2` builds).
                write_roots: [Path.join(staging_dir, "proposals")],
-               read_paths: []
+               read_paths: [input_abs]
              }) do
         Valea.Agents.start_session(%{
           id: session_id,
           kind: "workflow",
           title: wf.name,
           scope: scope,
-          run: %{id: run_id, workflow: workflow_path},
-          initial_prompt: prompt(workflow_path, input_path, staging_abs),
+          run: %{id: run_id, workflow: wf.resolved_path},
+          initial_prompt: prompt(wf.resolved_path, input_abs, staging_abs),
           on_turn_end: fn _stop -> finalize(run_id, workspace) end
         })
       end
@@ -618,17 +643,19 @@ defmodule Valea.Workflows.Runner do
     stamp <> "-" <> suffix
   end
 
-  # `staging_proposal_abs` is the ABSOLUTE `write_paths` grant (Task 5.5) —
-  # NOT workspace-relative. Since the session's `cwd` is now the owning
-  # ICM's own root (never the workspace, per `SessionScope.resolve/1`), a
-  # workspace-relative instruction here would resolve against the wrong
-  # base and land outside every recognized write area; the absolute path is
-  # unambiguous regardless of `cwd`, and matches `write_paths`/`write_roots`
-  # (also absolute) exactly.
-  defp prompt(workflow_path, input_path, staging_proposal_abs) do
+  # `input_abs` (Task 7.2 fix — was `input_path`, a workspace-relative
+  # string that no longer resolves once cwd is the owning ICM's own root,
+  # not the workspace) and `staging_proposal_abs` (Task 5.5) are both
+  # ABSOLUTE. Since the session's `cwd` is the owning ICM's own root (never
+  # the workspace, per `SessionScope.resolve/1`), a workspace-relative
+  # instruction here would resolve against the wrong base and either land
+  # outside every recognized area or point at a nonexistent path; an
+  # absolute path is unambiguous regardless of `cwd`, and matches
+  # `read_paths`/`write_paths`/`write_roots` (also absolute) exactly.
+  defp prompt(workflow_path, input_abs, staging_proposal_abs) do
     """
     Read AGENTS.md first if you have not already. Then execute the workflow
-    contract at "#{workflow_path}" against the input file "#{input_path}".
+    contract at "#{workflow_path}" against the input file "#{input_abs}".
     Follow the contract's Process steps. Read only the pages its Inputs and
     sources name. If the contract's Outputs call for a proposal, write
     exactly one proposal/v1 JSON file to "#{staging_proposal_abs}". If you

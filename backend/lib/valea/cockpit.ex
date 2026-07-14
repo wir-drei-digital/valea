@@ -31,6 +31,15 @@ defmodule Valea.Cockpit do
   reads the filesystem directly and already degrades to `{:ok, []}` when no
   workspace is open.
 
+  Task 7.2 adds two sibling fields alongside it, `"triage_workflow_mount_key"`
+  and `"triage_workflow_relative_path"` (same nil-together discovery via
+  `Valea.Workflows.triage_workflow/0`) — the Task 7.1 `{mount_key,
+  relative_path}` identity `run_workflow`'s new signature addresses a
+  workflow by. `triage_workflow_path` itself stays (its `resolved_path` is
+  still what the pending-queue-item matching in
+  `InquiryTriageCard.svelte`/`MessageView.svelte` compares against, since
+  the queue envelope's own `workflow` field is still that absolute path).
+
   Task B8 adds a third live field, `"distill_workflow_path"`, the same
   discovery mirrored onto the seeded Distill Decisions reflection workflow
   (`Valea.Workflows.distill_path/0`) — `nil` until a mount carries one (the
@@ -51,6 +60,8 @@ defmodule Valea.Cockpit do
     - "while_you_were_away": background activity notifications
     - "mail": `%{"review_count", "inbox_count", "configured"}` — live, see moduledoc
     - "triage_workflow_path": seeded triage workflow's path, or nil — live, see moduledoc
+    - "triage_workflow_mount_key": seeded triage workflow's mount key, or nil — live, see moduledoc
+    - "triage_workflow_relative_path": seeded triage workflow's ICM-relative path, or nil — live, see moduledoc
     - "distill_workflow_path": seeded distill workflow's path, or nil — live, see moduledoc
   """
   def today do
@@ -146,8 +157,21 @@ defmodule Valea.Cockpit do
        ],
        "mail" => mail_summary(),
        "triage_workflow_path" => Valea.Workflows.triage_path(),
+       "triage_workflow_mount_key" => triage_workflow_field(:mount_key),
+       "triage_workflow_relative_path" => triage_workflow_field(:relative_path),
        "distill_workflow_path" => Valea.Workflows.distill_path()
      }}
+  end
+
+  # `nil` together with `triage_workflow_path` above whenever no enabled
+  # mount carries the seeded triage contract — same discovery
+  # (`Valea.Workflows.triage_workflow/0`), just reading a different field
+  # off the same record instead of re-deriving it.
+  defp triage_workflow_field(key) do
+    case Valea.Workflows.triage_workflow() do
+      nil -> nil
+      wf -> Map.fetch!(wf, key)
+    end
   end
 
   # See the moduledoc: `Process.whereis/1` is the SAME guard

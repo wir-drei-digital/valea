@@ -539,7 +539,12 @@ function callCreateFollowUpChannel(
 
 function callRunWorkflowChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { path: string; input: string; generation: number }
+  input: {
+    mountKey: string;
+    relativePath: string;
+    inputLocator: Record<string, any>;
+    generation: number;
+  }
 ) {
   return wrapChannelCall((handlers) =>
     runWorkflowChannel({ channel, input, fields: runWorkflowFields, ...handlers })
@@ -1241,11 +1246,39 @@ export const api = {
         )
     ),
 
-  runWorkflow: (path: string, input: string, generation: number) =>
+  // Task 7.2: `run_workflow`'s `{mountKey, relativePath}` identity (a
+  // workflow's Task 7.1 `Valea.Workflows.get/2` address) replaces the old
+  // opaque absolute `path`, and `inputLocator` (a `Valea.Icm.Locator`
+  // JSON shape — `{ kind: 'workspace', path: 'sources/...' }` for a
+  // workspace source, or `{ kind: 'icm', icm_id: '...', path: '...' }`
+  // for a page in a mounted ICM) replaces the old bare workspace-relative
+  // `input` string. `inputLocator` is typed `object` (not `Record<string,
+  // any>`), same rationale as `saveIcmPage`'s `prosemirror` above — it is
+  // an unconstrained `:map` action argument the backend passes straight
+  // to `Valea.Icm.Locator.resolve/2` without ash_typescript ever
+  // camelCasing its keys, so callers build it with the SNAKE_CASE keys
+  // `Locator.resolve/2` itself pattern-matches on (`icm_id`, not `icmId`).
+  runWorkflow: (mountKey: string, relativePath: string, inputLocator: object, generation: number) =>
     runRpc(
-      (channel) => callRunWorkflowChannel(channel, { path, input, generation }),
+      (channel) =>
+        callRunWorkflowChannel(channel, {
+          mountKey,
+          relativePath,
+          inputLocator: inputLocator as Record<string, any>,
+          generation
+        }),
       () =>
-        httpRunWorkflow(withAuth({ input: { path, input, generation }, fields: runWorkflowFields }))
+        httpRunWorkflow(
+          withAuth({
+            input: {
+              mountKey,
+              relativePath,
+              inputLocator: inputLocator as Record<string, any>,
+              generation
+            },
+            fields: runWorkflowFields
+          })
+        )
     ),
 
   distillDecisions: (generation: number) =>
