@@ -54,6 +54,22 @@ defmodule Valea.QueueTest do
     |> Map.merge(overrides)
   end
 
+  # Mounts a real EXTERNAL ICM carrying a `Pricing/Current Pricing.md` seed
+  # page — the target the `apply_page_content` tests below read/write.
+  # Post-task-3.2, `Valea.Mounts.list/1` no longer discovers the legacy
+  # scaffold's embedded `mounts/primary/` folder (config truth, `icms:`
+  # only), and `MemoryProposal.check_target/2`'s `Mounts.mount_for/2`
+  # can only attribute a page to a REGISTERED, external (absolute-rooted)
+  # mount — so any test that actually EXECUTES an `apply_page_content`
+  # (as opposed to merely rejecting/hashing against a file that happens to
+  # exist on disk) needs one of these, and its `target_path` must be the
+  # mounted ICM's absolute path, never the old `"mounts/primary/..."`
+  # workspace-relative literal.
+  defp mount_primary!(workspace, pages \\ %{}) do
+    default_pages = %{"Pricing/Current Pricing.md" => "# Current Pricing\n\nCHF 100\n"}
+    AgentCase.mount_test_icm!(workspace, name: "Primary", pages: Map.merge(default_pages, pages))
+  end
+
   defp pending_path(workspace, run_id),
     do: Path.join([workspace, "queue", "pending", run_id <> ".json"])
 
@@ -691,11 +707,13 @@ defmodule Valea.QueueTest do
 
     # Memory item with target_path
     memory_id = run_id("dec_memory")
+    icm = mount_primary!(workspace)
+    target = Path.join(icm.root, "Notes/Test.md")
 
     memory_envelope = %{
       "schema" => "queue_item/v2",
       "run_id" => memory_id,
-      "workflow" => "mounts/Primary/Workflows/Test.md",
+      "workflow" => Path.join(icm.root, "Workflows/Test.md"),
       "risk_level" => "low",
       "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "payload" => %{
@@ -705,7 +723,7 @@ defmodule Valea.QueueTest do
         "sources" => [],
         "proposed_action" => %{
           "type" => "apply_page_content",
-          "target_path" => "mounts/primary/Notes/Test.md",
+          "target_path" => target,
           "base_sha256" => nil,
           "content_markdown" => "# Test"
         }
@@ -726,7 +744,7 @@ defmodule Valea.QueueTest do
     assert is_nil(email_item.target_path)
 
     assert memory_item != nil
-    assert memory_item.target_path == "mounts/primary/Notes/Test.md"
+    assert memory_item.target_path == target
   end
 
   test "get_decided/1 returns the raw envelope and which dir it lives in", %{workspace: workspace} do
@@ -777,14 +795,15 @@ defmodule Valea.QueueTest do
 
   describe "apply_page_content" do
     test "approve applies an edit when the base hash matches", %{workspace: ws} do
-      target = "mounts/primary/Pricing/Current Pricing.md"
-      old = File.read!(Path.join(ws, target))
+      icm = mount_primary!(ws)
+      target = Path.join(icm.root, "Pricing/Current Pricing.md")
+      old = File.read!(target)
       base = :crypto.hash(:sha256, old) |> Base.encode16(case: :lower)
       pending_memory!(ws, "m1", target, base, "# Pricing\n\n150\n")
 
       {:ok, %{item: _, revision: rev}} = Queue.get("m1")
       assert {:ok, %{applied_path: ^target, draft_path: nil}} = Queue.approve("m1", rev)
-      assert File.read!(Path.join(ws, target)) == "# Pricing\n\n150\n"
+      assert File.read!(target) == "# Pricing\n\n150\n"
       assert File.exists?(Path.join(ws, "queue/approved/m1.json"))
 
       approved = Path.join(ws, "queue/approved/m1.json") |> File.read!() |> Jason.decode!()
@@ -793,18 +812,20 @@ defmodule Valea.QueueTest do
     end
 
     test "approve creates a page when base is null and target absent", %{workspace: ws} do
-      target = "mounts/primary/Decisions/2026-07.md"
+      icm = mount_primary!(ws)
+      target = Path.join(icm.root, "Decisions/2026-07.md")
       pending_memory!(ws, "m2", target, nil, "# Decisions\n")
       {:ok, %{revision: rev}} = Queue.get("m2")
       assert {:ok, %{applied_path: ^target}} = Queue.approve("m2", rev)
-      assert File.read!(Path.join(ws, target)) == "# Decisions\n"
+      assert File.read!(target) == "# Decisions\n"
     end
 
     test "approve success path audits in order and stamps target_path on action_executed", %{
       workspace: ws
     } do
-      target = "mounts/primary/Pricing/Current Pricing.md"
-      old = File.read!(Path.join(ws, target))
+      icm = mount_primary!(ws)
+      target = Path.join(icm.root, "Pricing/Current Pricing.md")
+      old = File.read!(target)
       base = :crypto.hash(:sha256, old) |> Base.encode16(case: :lower)
       pending_memory!(ws, "m1o", target, base, "# Pricing\n\n200\n")
 
@@ -846,30 +867,28 @@ defmodule Valea.QueueTest do
     end
 
     test "create-target-exists and disabled-mount are conflicts too", %{workspace: ws} do
-      target = "mounts/primary/Pricing/Current Pricing.md"
-      old = File.read!(Path.join(ws, target))
+      icm = mount_primary!(ws)
+      target = Path.join(icm.root, "Pricing/Current Pricing.md")
+      old = File.read!(target)
 
       pending_memory!(ws, "m4", target, nil, "x")
       {:ok, %{revision: rev}} = Queue.get("m4")
       assert {:error, :apply_conflict} = Queue.approve("m4", rev)
 
-      assert File.read!(Path.join(ws, target)) == old
+      assert File.read!(target) == old
       assert File.exists?(Path.join(ws, "queue/pending/m4.json"))
       refute File.exists?(Path.join(ws, "queue/processing/m4.json"))
 
-      base =
-        :crypto.hash(:sha256, File.read!(Path.join(ws, target))) |> Base.encode16(case: :lower)
+      base = :crypto.hash(:sha256, File.read!(target)) |> Base.encode16(case: :lower)
 
       pending_memory!(ws, "m5", target, base, "y")
-      # set_enabled/2 returns bare :ok (not {:ok, _}) — the brief's snippet
-      # assumed the {:ok, _} shape; adapted to the actual spec (confirmed
-      # against test/valea/mounts_test.exs and memory_proposal_test.exs).
-      :ok = Valea.Mounts.set_enabled("primary", false)
+      # set_enabled/3 returns bare :ok (not {:ok, _}).
+      :ok = Valea.Mounts.set_enabled(ws, icm.mount_key, false)
       {:ok, %{revision: rev5}} = Queue.get("m5")
       assert {:error, :apply_conflict} = Queue.approve("m5", rev5)
-      :ok = Valea.Mounts.set_enabled("primary", true)
+      :ok = Valea.Mounts.set_enabled(ws, icm.mount_key, true)
 
-      assert File.read!(Path.join(ws, target)) == old
+      assert File.read!(target) == old
       assert File.exists?(Path.join(ws, "queue/pending/m5.json"))
       refute File.exists?(Path.join(ws, "queue/processing/m5.json"))
     end
