@@ -269,6 +269,7 @@ defmodule Valea.Workspace.ManagerTest do
 
     test "reports the current workspace's live sessions", %{parent: parent} do
       {:ok, a} = Manager.create(parent, "A")
+      Valea.AgentCase.mount_test_icm!(a.path, name: "Primary")
       {:ok, %{id: sid}} = Valea.AgentCase.start_session(a.path, "happy")
 
       Valea.App.Config.record_opened(%{

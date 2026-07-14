@@ -3,31 +3,21 @@ defmodule Valea.Agents.SessionServerTest do
 
   import Valea.AgentCase, only: [start_session: 2, start_session: 3]
 
+  # Since Task 5.4 every session launches through a `SessionScope`
+  # (`Valea.Agents.SessionScope.resolve/1`), which resolves against the
+  # CURRENTLY OPEN workspace (`Valea.Workspace.Manager.current/0`) and a
+  # mounted, enabled primary ICM — a bare tmp dir (this suite's pre-5.4
+  # setup) is no longer enough. `open_workspace!/1` opens a real (legacy v4)
+  # workspace via the Manager — which also starts `Valea.Workspace.Runtime`
+  # (Audit, the agent SessionSupervisor, ...), so the manual
+  # `start_supervised!` calls this suite used to need are gone too —
+  # and `mount_test_icm!/2` mounts the "Primary" ICM every test in this
+  # file uses as its session's primary (see `AgentCase.start_session/3`'s
+  # own moduledoc: the first enabled mount is the implicit default).
   setup do
-    root = Path.join(System.tmp_dir!(), "vses-#{System.os_time(:nanosecond)}")
-    File.mkdir_p!(Path.join(root, "logs/sessions"))
-
-    app_dir =
-      Path.join(
-        System.tmp_dir!(),
-        "vses-app-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
-      )
-
-    System.put_env("VALEA_APP_DIR", app_dir)
-
-    on_exit(fn ->
-      File.rm_rf!(root)
-      File.rm_rf!(app_dir)
-      System.delete_env("VALEA_APP_DIR")
-    end)
-
-    start_supervised!({Valea.Audit, %{root: root, generation: 1}})
-
-    start_supervised!(
-      {DynamicSupervisor, name: Valea.Agents.SessionSupervisor, strategy: :one_for_one}
-    )
-
-    %{root: root}
+    ws = Valea.AgentCase.open_workspace!()
+    icm = Valea.AgentCase.mount_test_icm!(ws.path, name: "Primary")
+    %{root: ws.path, icm: icm}
   end
 
   test "happy path: handshake, prompt, transcript file, turn end", %{root: root} do
@@ -101,19 +91,15 @@ defmodule Valea.Agents.SessionServerTest do
   test "permission items carry the server-derived risk tier (display metadata only)", %{
     root: root
   } do
-    # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:`
-    # ONLY, and every mount is EXTERNAL — a bare `mounts/primary/...` dir
-    # under `root` names no mount at all (see that module's moduledoc).
-    # Mount a REAL external ICM and hand its resolved root to the fake
-    # adapter subprocess via `:harness_args` (it cannot discover this any
-    # other way — it only ever sees its own `cwd`, the workspace) so it can
-    # build rawInput paths that actually attribute to the mount.
-    File.mkdir_p!(Path.join(root, "config"))
-    icm = Valea.AgentCase.mount_test_icm!(root, name: "Primary")
-    File.mkdir_p!(Path.join(root, "sources/mail"))
-
+    # Every mount is EXTERNAL (`Valea.Mounts` is config-truth over `icms:`
+    # only) — the `setup` block above already mounted "Primary" (this
+    # session's cwd, per Task 5.4). `permission_risk_tier`'s two in-mount
+    # targets are built by the fake adapter against its OWN `cwd` (now the
+    # ICM root already); the third, out-of-mount target needs the
+    # WORKSPACE root instead, threaded through `:harness_args` (see
+    # `fake_adapter.exs`'s `main/1` two-arg clause).
     {:ok, %{id: id}} =
-      start_session(root, "permission_risk_tier", %{harness_args: [icm.root]})
+      start_session(root, "permission_risk_tier", %{harness_args: [root]})
 
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
 
@@ -195,5 +181,81 @@ defmodule Valea.Agents.SessionServerTest do
                on_turn_end: nil,
                policy_ctx: %{workspace: root, session_kind: "chat", write_paths: []}
              })
+  end
+
+  # -- Task 5.4: the redesign's core invariant ------------------------------
+
+  test "process cwd, ACP session/new cwd, additionalDirectories, and managedSettings all come from the scope",
+       %{root: root, icm: icm} do
+    related_id = Ecto.UUID.generate()
+    related = Valea.AgentCase.mount_test_icm!(root, name: "Related", id: related_id)
+
+    File.write!(Path.join(icm.root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - id: #{related_id}
+        name: "Related"
+    ---
+    """)
+
+    {:ok, %{id: id}} = start_session(root, "happy", %{mount_key: icm.mount_key})
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+    # The handshake only reaches :running once `session/new`'s reply is
+    # processed — by then the fake adapter has already written the echo
+    # file (it writes BEFORE replying, see fake_adapter.exs).
+    assert_receive {:session_status, :running}, 10_000
+
+    # The subprocess's own cwd is the primary ICM root — never the
+    # workspace — proven by where the fake adapter's echo file landed at
+    # all (ProcessRuntime set `{:cd, icm.root}`; ProcessRuntime.write/2's
+    # relay would have failed to spawn entirely under a bogus cwd).
+    echo_path = Path.join(icm.root, ".fake_adapter_session_new_params.json")
+    assert File.regular?(echo_path)
+    params = echo_path |> File.read!() |> Jason.decode!()
+
+    assert params["cwd"] == icm.root
+    assert related.root in (params["additionalDirectories"] || [])
+    assert is_binary(get_in(params, ["_meta", "claudeCode", "options", "managedSettings"]))
+  end
+
+  test "a relative Read resolves against the ICM cwd and is allowed; a workspace source path is :ask",
+       %{root: root} do
+    {:ok, %{id: id}} =
+      start_session(root, "permission_read_policy", %{harness_args: [root]})
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    :ok = Valea.Agents.SessionServer.prompt(id, "read")
+
+    # AGENTS.md (relative, resolves against cwd == the ICM root, a
+    # read_root member) is auto-ALLOWED by the split PermissionPolicy — no
+    # test-side answer needed, the server already answered it.
+    # `Connection.answer_permission/3`'s resolved item drops `title` (it's
+    # a minimal `%{id, type, resolved, outcome}` record — see its own
+    # moduledoc note on the earlier risk-tier test) — matched by `id`
+    # (`perm-rp1`, the fake adapter's own `toolCallId`) instead.
+    assert_receive {:session_event, _,
+                    %{
+                      "type" => "permission",
+                      "id" => "perm-rp1",
+                      "resolved" => true,
+                      "outcome" => "allow_once"
+                    }},
+                   10_000
+
+    # The absolute workspace `sources/...` path is granted to no
+    # read_root, so it falls through to :ask — never auto-allowed for a
+    # chat session, even though it's a plain Read.
+    assert_receive {:session_event, _,
+                    %{
+                      "type" => "permission",
+                      "title" => "Read workspace source",
+                      "resolved" => false
+                    } = ask},
+                   10_000
+
+    :ok = Valea.Agents.SessionServer.answer_permission(id, ask["id"], "allow_once")
+    assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
   end
 end

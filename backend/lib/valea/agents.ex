@@ -16,18 +16,25 @@ defmodule Valea.Agents do
 
   @doc """
   Starts a session. Resolves the harness command FIRST (so an unavailable
-  harness returns synchronously), generates the backend session id, then starts
-  the `SessionServer` child under `Valea.Agents.SessionSupervisor`.
+  harness returns synchronously), then starts the `SessionServer` child
+  under `Valea.Agents.SessionSupervisor`.
 
-  `opts` keys: `:kind`, `:title`, `:workspace`, `:generation`, `:run`,
-  `:initial_prompt`, `:on_turn_end`, `:policy_ctx`, and optionally
-  `:handshake_timeout_ms` (test override).
+  `opts` keys: `:kind`, `:title`, `:scope` (the C6 launch object from
+  `Valea.Agents.SessionScope.resolve/1` — the primary ICM root, related
+  ICMs, read/write grants, and the harness's folded launch directives;
+  `SessionServer.init/1` derives the subprocess/ACP cwd and the split
+  `PermissionPolicy` ctx from it), `:run`, `:initial_prompt`,
+  `:on_turn_end`, and optionally `:id` (a caller-generated session id — a
+  caller that already resolved `scope` with a specific `session_id` MUST
+  pass the SAME id here, so the running session and its `scope`'s
+  `managed_context` stay keyed to one identity; generated here when
+  absent) and `:handshake_timeout_ms` (test override).
   """
   @spec start_session(map()) :: {:ok, %{id: String.t()}} | {:error, term()}
   def start_session(opts) when is_map(opts) do
     with {:ok, spec} <-
            Valea.Harnesses.ClaudeCode.acp_command(%{env: Valea.Agents.Env.minimal()}) do
-      id = generate_id()
+      id = Map.get(opts, :id) || generate_id()
       child_opts = opts |> Map.put(:id, id) |> Map.put(:spec, spec)
 
       case DynamicSupervisor.start_child(

@@ -6,8 +6,14 @@ defmodule ValeaWeb.AgentSessionChannelTest do
 
   @endpoint ValeaWeb.Endpoint
 
+  # Since Task 5.4 a session launches through a `SessionScope` — which needs
+  # a mounted, enabled primary ICM (`AgentCase.start_session/3`'s own
+  # moduledoc: the first enabled mount is the implicit default when a test
+  # doesn't name one) — on top of the already-open workspace this suite's
+  # `AgentCase.start_session/2,3` calls have always needed.
   setup do
     ws = AgentCase.open_workspace!()
+    AgentCase.mount_test_icm!(ws.path, name: "Primary")
     %{workspace: ws.path}
   end
 

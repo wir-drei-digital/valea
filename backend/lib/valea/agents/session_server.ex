@@ -23,7 +23,6 @@ defmodule Valea.Agents.SessionServer do
 
   alias Valea.Acp.Connection
   alias Valea.Agents.ProcessRuntime
-  alias Valea.Mounts
 
   @handshake_timeout_ms 30_000
   @max_prompt_queue 50
@@ -82,62 +81,59 @@ defmodule Valea.Agents.SessionServer do
     # so an adapter subprocess never orphans.
     Process.flag(:trap_exit, true)
 
-    %{id: id, spec: spec, workspace: workspace} = opts
+    %{id: id, spec: spec, scope: scope} = opts
     timeout = Map.get(opts, :handshake_timeout_ms, @handshake_timeout_ms)
 
-    # Regenerate the managed .claude/settings.json for this workspace at every
-    # session start (forces writes/Bash through the ACP permission callback).
-    Valea.Agents.ClaudeSettings.write!(workspace)
-
-    # `read_roots` is likewise computed FRESH at every session start (never
-    # cached) so enabling/disabling a mount between sessions takes effect on
-    # the very next session without a restart — mirrors the ClaudeSettings
-    # regeneration above. `Map.put_new_lazy` only fills the key in when the
-    # caller's policy_ctx doesn't already carry one, so an explicit override
-    # (tests, a future caller) is never clobbered. This is the ONE place
-    # read_roots is computed — both `Valea.Api.Agents` (chat) and
-    # `Valea.Workflows.Runner` (workflow) start sessions through
-    # `Valea.Agents.start_session/1`, which lands here, so neither call site
-    # needs its own Mounts lookup.
-    #
-    # `extra_roots` follows the exact same pattern — fresh at every session
-    # start, `put_new_lazy` so an explicit override is never clobbered, one
-    # computation site both call sites share — for `PermissionPolicy`'s
-    # OTHER read root list (A2-T3): the absolute real roots of every
-    # ENABLED, EXTERNAL (by-reference) mount. The same forward-footgun
-    # applies here as for `read_roots`: a future caller that pre-populates
-    # `policy_ctx[:extra_roots]` before calling `start_session/1` silently
-    # wins over this computed value, so double-check any such override still
-    # reflects the CURRENT `Mounts.enabled/1` state.
-    policy_ctx =
-      opts
-      |> Map.get(:policy_ctx, %{})
-      |> Map.put_new_lazy(:read_roots, fn -> default_read_roots(workspace) end)
-      |> Map.put_new_lazy(:extra_roots, fn -> default_extra_roots(workspace) end)
+    # The split PermissionPolicy contract (Task 5.3): `workspace_root`
+    # protects operational state, `cwd` (the primary ICM's own root) is the
+    # base relative candidate paths resolve against, `read_roots` is the
+    # ONE absolute read surface (the primary ICM + every direct related ICM
+    # + any exact grant a caller resolved the scope with — already folded
+    # together by `SessionScope.resolve/1` into `scope.additional_roots`),
+    # `write_paths`/`write_roots` are the workflow-only exact grants. This
+    # is built FRESH from `scope` at every session start — never cached —
+    # so `SessionScope` (the ONE place mount-key lookup, related-ICM
+    # resolution, and read/write-root assembly live) is the single source
+    # of truth; `SessionServer` never re-derives any of it.
+    policy_ctx = %{
+      workspace_root: scope.workspace.root,
+      cwd: scope.cwd,
+      read_roots: [scope.primary_icm.root | scope.additional_roots],
+      session_kind: scope.kind,
+      write_paths: scope.write_paths,
+      write_roots: scope.write_roots
+    }
 
     case ProcessRuntime.start(
-           %{cmd: spec.cmd, args: spec.args, env: spec.env, cd: workspace},
+           %{
+             cmd: spec.cmd,
+             args: spec.args ++ scope.argv_extra,
+             env: Map.merge(spec.env, scope.env),
+             cd: scope.cwd
+           },
            self()
          ) do
       {:ok, handle} ->
         {conn, frames} =
           Connection.new(%{
-            cwd: workspace,
+            cwd: scope.cwd,
             mode: :new,
             conversation_id: nil,
             known_message_ids: MapSet.new(),
-            client_version: version()
+            client_version: version(),
+            additional_roots: scope.additional_roots,
+            managed_settings: scope.managed_settings
           })
 
         Enum.each(frames, &ProcessRuntime.write(handle, &1))
 
         watchdog = Process.send_after(self(), :handshake_timeout, timeout)
-        transcript = open_transcript(opts)
+        transcript = open_transcript(opts, scope)
 
         state = %{
           id: id,
           topic: "agent_session:" <> id,
-          workspace: workspace,
+          workspace: scope.workspace.root,
           conn: conn,
           handle: handle,
           transcript: transcript,
@@ -420,11 +416,14 @@ defmodule Valea.Agents.SessionServer do
 
   # Line 1 is the session metadata, written once at start (acp_session_id nil).
   # The later {:conversation_id} effect APPENDS a normal item — never a rewrite.
-  defp open_transcript(opts) do
-    %{id: id, workspace: workspace} = opts
+  # Always anchored to `scope.workspace.root` — the transcript stays keyed to
+  # the WORKSPACE (sessions/queue/audit all live there), never the primary
+  # ICM's own `cwd`, which is a different physical location entirely.
+  defp open_transcript(opts, scope) do
+    %{id: id} = opts
     run = Map.get(opts, :run)
 
-    path = Path.join([workspace, "logs", "sessions", id <> ".jsonl"])
+    path = Path.join([scope.workspace.root, "logs", "sessions", id <> ".jsonl"])
     File.mkdir_p!(Path.dirname(path))
 
     meta = %{
@@ -436,7 +435,7 @@ defmodule Valea.Agents.SessionServer do
       "title" => Map.get(opts, :title),
       "workflow" => run_field(run, "workflow"),
       "harness" => "claude_code",
-      "generation" => Map.get(opts, :generation),
+      "generation" => scope.workspace.generation,
       "started_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
@@ -536,42 +535,6 @@ defmodule Valea.Agents.SessionServer do
   defp cancel_watchdog(%{watchdog: ref} = state) do
     Process.cancel_timer(ref)
     %{state | watchdog: nil}
-  end
-
-  # `["sources"]` plus every ENABLED, EMBEDDED mount's `rel_root`
-  # ("mounts/<name>") — the read boundary `PermissionPolicy` checks reads
-  # against. A disabled or degraded mount is simply absent from this list
-  # (see `Valea.Mounts.enabled/1`), so its reads fall through to
-  # `PermissionPolicy`'s `:ask` — never a hard deny, deny is reserved for
-  # the protected dirs. EXTERNAL (by-reference) mounts have `rel_root: nil`
-  # (no workspace-relative form — `PermissionPolicy` would crash on it) and
-  # are deliberately absent too: their absolute roots join via extra_roots
-  # below (A2-T3).
-  #
-  # Public (not just `init/1`'s own `Map.put_new_lazy` call site above) so a
-  # caller building a `policy_ctx` with ADDITIONAL grants — e.g. B3's Runner
-  # adding a per-run staging read root — can EXTEND this list instead of
-  # re-deriving mount composition itself and risking drift from what a live
-  # session actually gets.
-  @doc "Default agent read roots: `[\"sources\"]` plus every enabled embedded mount's `rel_root`."
-  def default_read_roots(workspace) do
-    ["sources" | for(%{rel_root: rel} <- Mounts.enabled(workspace), rel != nil, do: rel)]
-  end
-
-  # The absolute, already-realpath-resolved real roots of every ENABLED,
-  # EXTERNAL (by-reference) mount — `rel_root: nil` is exactly the
-  # by-reference marker (an embedded mount's `rel_root` joins `read_roots`
-  # above instead). `PermissionPolicy` grants READS (never writes — write
-  # containment stays staging-path-only, see its moduledoc) under any of
-  # these, on top of the existing workspace `read_roots`. A disabled or
-  # degraded external mount is simply absent here too (`Mounts.enabled/1`
-  # excludes it), so its reads fall through to `PermissionPolicy`'s `:ask`
-  # — same non-deny treatment as a disabled embedded mount above.
-  #
-  # Public for the same EXTEND-not-replace reason as `default_read_roots/1`.
-  @doc "Default agent extra (external-mount) read roots — absolute, realpath-resolved."
-  def default_extra_roots(workspace) do
-    for %{rel_root: nil, root: root} <- Mounts.enabled(workspace), do: root
   end
 
   defp version, do: to_string(Application.spec(:valea, :vsn) || "0.0.0")

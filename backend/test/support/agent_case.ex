@@ -6,6 +6,7 @@
 # and `Valea.Agents.list_sessions/0`), so this stays a plain function module
 # rather than an ExUnit.Case `use` macro.
 defmodule Valea.AgentCase do
+  alias Valea.Agents.SessionScope
   alias Valea.Mounts
   alias Valea.Workspace.Manager
 
@@ -24,32 +25,90 @@ defmodule Valea.AgentCase do
   end
 
   @doc """
-  Points the harness at the fake adapter for `scenario`, then starts a session
-  rooted at `workspace` with `extra` merged over sane test defaults.
+  Points the harness at the fake adapter for `scenario`, resolves a
+  `Valea.Agents.SessionScope` for `workspace`'s primary ICM (Task 5.4 — a
+  session now launches with cwd = the primary ICM's own root, never the
+  workspace), then starts a session with `extra` merged over sane test
+  defaults.
 
-  `extra` may carry `:harness_args` — extra CLI args for the fake adapter
-  (see `fake_cmd/2`) — popped off before the rest is merged into the
-  session-start map.
+  `workspace` MUST be the CURRENTLY OPEN workspace
+  (`Valea.Workspace.Manager.current/0`) — `SessionScope.resolve/1` resolves
+  against the Manager's own tracked state (current workspace + generation),
+  not the `workspace` argument directly, so every caller needs an
+  `open_workspace!/1`-opened (or equivalent) workspace, not a bare tmp dir.
+
+  `extra` may carry, popped off before the rest is merged into the
+  session-start map:
+
+    * `:harness_args` — extra CLI args for the fake adapter (see
+      `fake_cmd/2`).
+    * `:mount_key` — the primary ICM's mount key (defaults to the first
+      `Valea.Mounts.enabled/1` mount — a test that only ever mounts one ICM,
+      the common case via `mount_test_icm!/2`, never needs to pass this).
+    * `:kind` — the scope's session kind (default `"chat"`).
+    * `:read_paths` / `:write_paths` / `:write_roots` — the exact grants
+      `SessionScope.resolve/1` folds into the scope verbatim (a workflow-kind
+      scope's per-run grants; empty by default).
+
+  Propagates `{:error, :icm_unavailable}` / `{:error, :workspace_changed}`
+  from `SessionScope.resolve/1` the same way `Valea.Agents.start_session/1`
+  itself propagates its own errors — a test asserting a start FAILURE (e.g.
+  a disabled primary mount) can match on the return value directly.
   """
   def start_session(workspace, scenario, extra \\ %{}) do
     {harness_args, extra} = Map.pop(extra, :harness_args, [])
+    {mount_key, extra} = Map.pop(extra, :mount_key, nil)
+    {kind, extra} = Map.pop(extra, :kind, "chat")
+    {read_paths, extra} = Map.pop(extra, :read_paths, [])
+    {write_paths, extra} = Map.pop(extra, :write_paths, [])
+    {write_roots, extra} = Map.pop(extra, :write_roots, [])
+
     Valea.App.Config.set_harness_command(fake_cmd(scenario, harness_args))
 
-    Valea.Agents.start_session(
-      Map.merge(
-        %{
-          kind: "chat",
-          title: "Test",
-          workspace: workspace,
-          generation: 1,
-          run: nil,
-          initial_prompt: nil,
-          on_turn_end: nil,
-          policy_ctx: %{workspace: workspace, session_kind: "chat", write_paths: []}
-        },
-        extra
+    id = "test-" <> Ecto.UUID.generate()
+    mount_key = mount_key || primary_mount_key!(workspace)
+
+    with {:ok, scope} <-
+           SessionScope.resolve(%{
+             kind: kind,
+             mount_key: mount_key,
+             generation: Manager.generation(),
+             session_id: id,
+             read_paths: read_paths,
+             write_paths: write_paths,
+             write_roots: write_roots
+           }) do
+      Valea.Agents.start_session(
+        Map.merge(
+          %{
+            id: id,
+            kind: kind,
+            title: "Test",
+            scope: scope,
+            run: nil,
+            initial_prompt: nil,
+            on_turn_end: nil
+          },
+          extra
+        )
       )
-    )
+    end
+  end
+
+  # The first enabled (non-degraded) mount in `workspace`, sorted by mount
+  # key (`Mounts.list/1`'s own order) — the common single-mount test setup's
+  # implicit primary, so a test that mounted exactly one ICM via
+  # `mount_test_icm!/2` never needs to name it. A test with more than one
+  # mount, or that needs a SPECIFIC one, passes `mount_key:` explicitly.
+  defp primary_mount_key!(workspace) do
+    case Mounts.enabled(workspace) do
+      [%{name: name} | _] ->
+        name
+
+      [] ->
+        raise "Valea.AgentCase.start_session/3: no enabled mount in #{workspace} — " <>
+                "call mount_test_icm!/2 in the test's setup first, or pass mount_key: explicitly"
+    end
   end
 
   @doc """

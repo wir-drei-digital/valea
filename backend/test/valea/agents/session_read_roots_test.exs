@@ -1,24 +1,28 @@
-# Session-start integration coverage for A-T10: read_roots is computed ONCE,
-# centrally, in `SessionServer.init/1` — both construction sites
-# (`Valea.Api.Agents.create_session` for chat, `Valea.Workflows.Runner.run`
-# for workflows) route through `Valea.Agents.start_session/1` and land here,
-# so this suite exercises the single real call path rather than re-deriving
-# the expected roots by hand at each site.
+# Session-start integration coverage for the split PermissionPolicy contract
+# (Task 5.3/5.4): `policy_ctx.read_roots` is now a SINGLE absolute list —
+# the primary ICM's own root, every direct related ICM's root, and any
+# caller-supplied `read_paths` grant (`SessionScope.resolve/1`'s
+# `additional_roots`, folded onto the scope by the harness `launch/2`
+# directives — see that module's moduledoc). The OLD workspace-relative
+# `read_roots` / absolute `extra_roots` split this file used to exercise,
+# and the embedded-vs-external mount distinction it existed for, are
+# retired: every mount is external and now contributes to the SAME list the
+# same way. `Valea.Agents.SessionServer.default_read_roots/1` /
+# `default_extra_roots/1` (what this file used to call out by name) are
+# GONE — `SessionScope` is the one place read/write-root assembly lives.
+#
+# `Valea.Api.Agents.create_session` (chat) and `Valea.Workflows.Runner.run`
+# (workflow) both route through `Valea.Agents.start_session/1`, same as
+# before, but Task 5.4 only lands the `SessionServer`/`AgentCase` half of
+# that migration (`Runner` itself moves to `SessionScope` in Task 5.5) — so
+# this suite exercises `SessionServer.init/1`'s read/write-root wiring
+# directly through `AgentCase.start_session/3`, including a workflow-kind
+# scope's grants, without depending on `Runner`.
 defmodule Valea.Agents.SessionReadRootsTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
 
-  # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:` ONLY
-  # — a freshly scaffolded (v5) workspace carries no seeded mount, and
-  # EVERY mount is now EXTERNAL (`rel_root: nil`). Per
-  # `SessionServer.default_read_roots/1`'s own moduledoc comment, an
-  # external mount's root NEVER joins `read_roots` (no workspace-relative
-  # form) — it joins `extra_roots` instead (`default_extra_roots/1`). So
-  # `read_roots` for a session is now just `["sources"]` plus any EXTRA
-  # grant a caller adds (e.g. B3's per-run staging dir) — no mount ever
-  # contributes to it any more; every mount's read grant flows through
-  # `extra_roots`.
   setup do
     ws = AgentCase.open_workspace!("Primary")
     icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
@@ -30,132 +34,98 @@ defmodule Valea.Agents.SessionReadRootsTest do
     :sys.get_state(pid).policy_ctx
   end
 
-  test "a started chat session's read_roots is just [\"sources\"] — no mount is embedded any more",
-       %{workspace: workspace} do
+  test "a started chat session's read_roots is exactly the primary ICM's root when there is no related ICM and no extra grant",
+       %{workspace: workspace, icm: icm} do
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
+    on_exit(fn -> AgentCase.kill_session(id) end)
+
+    assert %{read_roots: read_roots, cwd: cwd, workspace_root: workspace_root} =
+             policy_ctx_for(id)
+
+    assert cwd == icm.root
+    assert workspace_root == workspace
+    assert read_roots == [icm.root]
+  end
+
+  test "a direct related ICM's root joins read_roots on top of the primary's",
+       %{workspace: workspace, icm: icm} do
+    related_id = Ecto.UUID.generate()
+    related = AgentCase.mount_test_icm!(workspace, name: "Related", id: related_id)
+
+    File.write!(Path.join(icm.root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - id: #{related_id}
+        name: "Related"
+    ---
+    """)
+
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy", %{mount_key: icm.mount_key})
     on_exit(fn -> AgentCase.kill_session(id) end)
 
     assert %{read_roots: read_roots} = policy_ctx_for(id)
-    assert read_roots == ["sources"]
+    assert Enum.sort(read_roots) == Enum.sort([icm.root, related.root])
   end
 
-  test "the enabled primary mount's root is in extra_roots", %{workspace: workspace, icm: icm} do
-    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
+  test "an unmounted-but-declared related ICM does not appear in read_roots (it surfaces as a context issue, not a grant)",
+       %{workspace: workspace, icm: icm} do
+    File.write!(Path.join(icm.root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - id: 00000000-0000-0000-0000-000000000000
+        name: "Nope"
+    ---
+    """)
+
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy", %{mount_key: icm.mount_key})
     on_exit(fn -> AgentCase.kill_session(id) end)
 
-    assert %{extra_roots: extra_roots} = policy_ctx_for(id)
-    assert extra_roots == [icm.root]
+    assert %{read_roots: read_roots} = policy_ctx_for(id)
+    assert read_roots == [icm.root]
   end
 
-  test "disabling the mount BEFORE a session starts excludes its root from that session's extra_roots — its reads then ask-gate, not deny",
+  test "starting a session against a disabled primary mount fails with icm_unavailable — no session, no read_roots to leak",
        %{workspace: workspace, icm: icm} do
     :ok = Valea.Mounts.set_enabled(workspace, icm.mount_key, false)
 
-    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
-    on_exit(fn -> AgentCase.kill_session(id) end)
-
-    assert %{read_roots: ["sources"], extra_roots: []} = policy_ctx_for(id)
+    assert {:error, :icm_unavailable} =
+             AgentCase.start_session(workspace, "happy", %{mount_key: icm.mount_key})
   end
 
-  test "a second external mount stays OUT of read_roots but joins extra_roots (A2-T3) — the workspace-relative and absolute read surfaces are tracked separately",
+  test "a workflow-kind scope's read_paths join read_roots on top of the primary's",
        %{workspace: workspace, icm: icm} do
-    ext = AgentCase.mount_test_icm!(workspace, name: "Ext")
+    extra_read = Path.join([workspace, "queue", "staging", "r1"])
+    File.mkdir_p!(extra_read)
 
-    # Sanity: the external mount IS effective — it's excluded from
-    # read_roots deliberately (rel_root: nil has no workspace-relative
-    # form; PermissionPolicy would crash on it), not because it failed to
-    # resolve. Its real root is what extra_roots carries instead.
-    enabled = Valea.Mounts.enabled(workspace)
-    assert "ext" in Enum.map(enabled, & &1.name)
+    {:ok, %{id: id}} =
+      AgentCase.start_session(workspace, "happy", %{kind: "workflow", read_paths: [extra_read]})
 
-    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
     on_exit(fn -> AgentCase.kill_session(id) end)
 
-    assert %{read_roots: read_roots, extra_roots: extra_roots} = policy_ctx_for(id)
-    refute nil in read_roots
-    assert read_roots == ["sources"]
-    assert Enum.sort(extra_roots) == Enum.sort([icm.root, ext.root])
+    assert %{read_roots: read_roots, session_kind: "workflow"} = policy_ctx_for(id)
+    assert Enum.sort(read_roots) == Enum.sort([icm.root, extra_read])
   end
 
-  test "disabling the second external mount BEFORE a session starts excludes only its root from extra_roots",
-       %{workspace: workspace, icm: icm} do
-    ext = AgentCase.mount_test_icm!(workspace, name: "Ext")
-    :ok = Valea.Mounts.set_enabled(workspace, ext.mount_key, false)
-
-    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
-    on_exit(fn -> AgentCase.kill_session(id) end)
-
-    assert %{extra_roots: extra_roots} = policy_ctx_for(id)
-    assert extra_roots == [icm.root]
-  end
-
-  test "an explicit policy_ctx extra_roots is NOT clobbered by the computed default",
+  test "a workflow-kind scope's write_paths/write_roots land verbatim in policy_ctx; a chat scope's are empty",
        %{workspace: workspace} do
+    write_path = Path.join([workspace, "queue", "staging", "r1", "proposal.json"])
+    write_root = Path.join([workspace, "queue", "staging", "r1", "proposals"])
+
+    {:ok, %{id: chat_id}} = AgentCase.start_session(workspace, "happy")
+    on_exit(fn -> AgentCase.kill_session(chat_id) end)
+    assert %{write_paths: [], write_roots: []} = policy_ctx_for(chat_id)
+
     {:ok, %{id: id}} =
       AgentCase.start_session(workspace, "happy", %{
-        policy_ctx: %{
-          workspace: workspace,
-          session_kind: "chat",
-          write_paths: [],
-          extra_roots: ["/some/explicit/root"]
-        }
+        kind: "workflow",
+        write_paths: [write_path],
+        write_roots: [write_root]
       })
 
     on_exit(fn -> AgentCase.kill_session(id) end)
 
-    assert %{extra_roots: ["/some/explicit/root"]} = policy_ctx_for(id)
-  end
-
-  test "an explicit policy_ctx read_roots is NOT clobbered by the computed default",
-       %{workspace: workspace} do
-    {:ok, %{id: id}} =
-      AgentCase.start_session(workspace, "happy", %{
-        policy_ctx: %{
-          workspace: workspace,
-          session_kind: "chat",
-          write_paths: [],
-          read_roots: ["queue"]
-        }
-      })
-
-    on_exit(fn -> AgentCase.kill_session(id) end)
-
-    assert %{read_roots: ["queue"]} = policy_ctx_for(id)
-  end
-
-  test "a workflow session (via Valea.Workflows.Runner) also gets its own run staging dir in read_roots (B3), on top of the plain [\"sources\"] default",
-       %{workspace: _workspace, icm: icm} do
-    Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
-
-    File.mkdir_p!(Path.join(icm.root, "Workflows"))
-
-    File.write!(
-      Path.join(icm.root, "Workflows/New Inquiry Triage.md"),
-      """
-      ---
-      enabled: true
-      risk_level: medium
-      approval:
-        required: true
-      ---
-      # New Inquiry Triage
-
-      ## Process
-
-      1. Do the thing.
-      """
-    )
-
-    assert {:ok, %{run_id: run_id, session_id: id}} =
-             Valea.Workflows.Runner.run(
-               Path.join(icm.root, "Workflows/New Inquiry Triage.md"),
-               "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
-             )
-
-    on_exit(fn -> AgentCase.kill_session(id) end)
-
-    assert %{read_roots: read_roots} = policy_ctx_for(id)
-
-    assert Enum.sort(read_roots) == Enum.sort(["sources", "queue/staging/#{run_id}"])
+    assert %{write_paths: [^write_path], write_roots: [^write_root]} = policy_ctx_for(id)
   end
 end

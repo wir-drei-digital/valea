@@ -51,7 +51,6 @@ defmodule Valea.Workflows.Runner do
   """
 
   alias Valea.Agents.RiskTier
-  alias Valea.Agents.SessionServer
   alias Valea.Workflows
   alias Valea.Workflows.MemoryProposal
   alias Valea.Workspace.Manager
@@ -504,13 +503,18 @@ defmodule Valea.Workflows.Runner do
         # queue envelope `finalize/2` builds).
         write_roots: [Path.join(staging_dir, "proposals")],
         # The agent needs to read its own staging dir back (e.g. to check
-        # what it already wrote) in addition to the usual mount/sources
-        # surface — `default_read_roots/1` is the SAME single computation
-        # site `SessionServer.init/1` itself falls back to, extended (never
-        # re-derived) per that function's own contract.
-        read_roots:
-          SessionServer.default_read_roots(workspace) ++
-            [Path.join(["queue", "staging", run_id])]
+        # what it already wrote) in addition to the usual sources surface.
+        # STOPGAP (Task 5.4): `SessionServer.default_read_roots/1` was
+        # removed — every session now gets its `read_roots` from a
+        # `SessionScope` (Task 5.2), which this module does not build yet
+        # (that migration is Task 5.5, `start_run` -> `SessionScope
+        # .resolve/1`). Inlined verbatim (`default_read_roots/1` always
+        # evaluated to exactly `["sources"]` post-A2 — no mount has
+        # contributed to it since every mount became external) so this
+        # module keeps compiling; this `policy_ctx` shape is itself already
+        # stale (SessionServer.init/1 now requires a `scope`, not a
+        # `policy_ctx` opt) and goes red at runtime until Task 5.5 lands.
+        read_roots: ["sources", Path.join(["queue", "staging", run_id])]
       },
       initial_prompt: prompt(workflow_path, input_path, staging_rel),
       on_turn_end: fn _stop -> finalize(run_id, workspace) end

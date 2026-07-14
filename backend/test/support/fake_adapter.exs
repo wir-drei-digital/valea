@@ -1,6 +1,6 @@
 # Scripted ACP adapter for SessionServer integration tests.
-# Scenarios: happy | permission | permission_risk_tier | crash_mid_turn |
-# stderr_noise | hang | workflow_happy
+# Scenarios: happy | permission | permission_risk_tier | permission_read_policy |
+# crash_mid_turn | stderr_noise | hang | workflow_happy
 #
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
@@ -13,16 +13,16 @@ defmodule FakeAdapter do
     loop(%{scenario: scenario, session: "fake-sess-1"})
   end
 
-  # `permission_risk_tier` passes a second arg: the resolved root of a
-  # mounted EXTERNAL ICM (a real dir outside the workspace, minted by the
-  # test via `Valea.AgentCase.mount_test_icm!/2` and threaded through via
-  # `start_session/3`'s `:harness_args`) — the subprocess's own `cwd` (the
-  # workspace root) no longer names any mount post-task-3.2 (`Valea.Mounts`
-  # is config-truth over `icms:`, every mount external — see that module's
-  # moduledoc), so a path has to be built against the mount's OWN root to
-  # attribute to it at all.
-  def main([scenario, icm_root]) do
-    loop(%{scenario: scenario, session: "fake-sess-1", icm_root: icm_root})
+  # `permission_risk_tier`/`permission_read_policy` pass a second arg: the
+  # WORKSPACE root (minted by the test via `Valea.AgentCase.open_workspace!/1`
+  # and threaded through via `start_session/3`'s `:harness_args`). Since
+  # Task 5.4, the subprocess's own `cwd` (`File.cwd!/0`) IS the primary ICM's
+  # root already (`ProcessRuntime.start(%{cd: scope.cwd})`) — no longer the
+  # workspace — so a scenario that needs to build a path OUTSIDE any mount
+  # (e.g. a workspace `sources/...` path) has to be told the workspace root
+  # separately; a path INSIDE the mount just uses `File.cwd!/0` directly.
+  def main([scenario, workspace_root]) do
+    loop(%{scenario: scenario, session: "fake-sess-1", workspace_root: workspace_root})
   end
 
   defp loop(ctx) do
@@ -115,20 +115,20 @@ defmodule FakeAdapter do
         # Three asks in one turn: one behavior-bearing path inside the
         # mounted external ICM (high), one ordinary knowledge page inside
         # it (medium), one under the session's own workspace — outside any
-        # mount (no tier at all). `ctx.icm_root` is the mounted ICM's own
-        # resolved root (see `main/1`'s two-arg clause); `cwd` (ProcessRuntime
-        # sets the subprocess cwd to the workspace) is only used for the
-        # no-tier path. Waits for the answer between each so the
-        # SessionServer.answer_permission driving pattern matches the
+        # mount (no tier at all). Since Task 5.4 the subprocess `cwd` IS the
+        # primary ICM's own root, so `icm_root` needs no separate arg any
+        # more; `ctx.workspace_root` (see `main/1`'s two-arg clause) is only
+        # used for the no-tier path. Waits for the answer between each so
+        # the SessionServer.answer_permission driving pattern matches the
         # existing "permission" scenario.
-        cwd = File.cwd!()
-        icm_root = Map.get(ctx, :icm_root, cwd)
+        icm_root = File.cwd!()
+        workspace_root = Map.get(ctx, :workspace_root, icm_root)
 
         targets = [
           {"pr1", "Write Workflows page",
            Path.join([icm_root, "Workflows/New Inquiry Triage.md"])},
           {"pr2", "Write knowledge page", Path.join([icm_root, "Pricing/Current Pricing.md"])},
-          {"pr3", "Write source file", Path.join([cwd, "sources/mail/inbox.md"])}
+          {"pr3", "Write source file", Path.join([workspace_root, "sources/mail/inbox.md"])}
         ]
 
         Enum.each(targets, fn {rpc_id, title, path} ->
@@ -148,6 +148,64 @@ defmodule FakeAdapter do
 
           _ = IO.gets("") |> Jason.decode!()
         end)
+
+        update(ctx, %{
+          "sessionUpdate" => "agent_message_chunk",
+          "content" => %{"type" => "text", "text" => "done"}
+        })
+
+        reply(id, %{"stopReason" => "end_turn"})
+
+      "permission_read_policy" ->
+        # Two Read asks in one turn, proving the split PermissionPolicy
+        # (Task 5.3) is wired against the RIGHT bases post-5.4: a RELATIVE
+        # path resolves against `cwd` (== the primary ICM root) and is
+        # auto-allowed (it's a `read_root` member); an ABSOLUTE path under
+        # the WORKSPACE's own `sources/` is granted to no `read_root`, so it
+        # falls through to `:ask` — never auto-allowed for a chat session.
+        # `ctx.workspace_root` (see `main/1`'s two-arg clause) builds the
+        # second path; the first never needs `cwd` at all, since a relative
+        # `rawInput.file_path` is exactly the point being tested.
+        workspace_root = Map.get(ctx, :workspace_root, File.cwd!())
+
+        request("rp1", "session/request_permission", %{
+          "sessionId" => ctx.session,
+          "toolCall" => %{
+            "toolCallId" => "rp1",
+            "title" => "Read AGENTS.md",
+            "kind" => "read",
+            "rawInput" => %{"file_path" => "AGENTS.md"}
+          },
+          "options" => [
+            %{"optionId" => "y", "name" => "Allow", "kind" => "allow_once"},
+            %{"optionId" => "n", "name" => "Reject", "kind" => "reject_once"}
+          ]
+        })
+
+        # The FIRST ask is auto-allowed by PermissionPolicy — SessionServer
+        # answers it without any test-side intervention, so this just drains
+        # that answer off stdin before sending the next request.
+        _ = IO.gets("") |> Jason.decode!()
+
+        request("rp2", "session/request_permission", %{
+          "sessionId" => ctx.session,
+          "toolCall" => %{
+            "toolCallId" => "rp2",
+            "title" => "Read workspace source",
+            "kind" => "read",
+            "rawInput" => %{
+              "file_path" => Path.join([workspace_root, "sources/mail/inbox.md"])
+            }
+          },
+          "options" => [
+            %{"optionId" => "y", "name" => "Allow", "kind" => "allow_once"},
+            %{"optionId" => "n", "name" => "Reject", "kind" => "reject_once"}
+          ]
+        })
+
+        # The SECOND ask is `:ask` — nothing auto-answers it; this blocks
+        # until the TEST calls `SessionServer.answer_permission/3`.
+        _ = IO.gets("") |> Jason.decode!()
 
         update(ctx, %{
           "sessionUpdate" => "agent_message_chunk",
