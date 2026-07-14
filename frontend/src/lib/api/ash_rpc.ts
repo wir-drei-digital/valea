@@ -492,6 +492,153 @@ export async function listAgentSessionsChannel<Fields extends ListAgentSessionsF
 }
 
 
+export type ListRecentSessionsByIcmInput = {
+  limit: number;
+};
+
+export type ListRecentSessionsByIcmFields = UnifiedFieldSelection<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListRecentSessionsByIcmResult<
+  Fields extends ListRecentSessionsByIcmFields | undefined,
+> = InferResult<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListRecentSessionsByIcmResult<Fields extends ListRecentSessionsByIcmFields | undefined = undefined> = | { success: true; data: InferListRecentSessionsByIcmResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listRecentSessionsByIcm<Fields extends ListRecentSessionsByIcmFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListRecentSessionsByIcmInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListRecentSessionsByIcmResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_recent_sessions_by_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListRecentSessionsByIcmResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listRecentSessionsByIcmChannel<Fields extends ListRecentSessionsByIcmFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListRecentSessionsByIcmInput;
+  fields: Fields;
+  resultHandler: (result: ListRecentSessionsByIcmResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListRecentSessionsByIcmResult<Fields>>(
+    config.channel,
+    {
+    action: "list_recent_sessions_by_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListSessionsInput = {
+  mountKey: string;
+  cursor?: string | null;
+};
+
+export type ListSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}>[];
+
+export type InferListSessionsResult<
+  Fields extends ListSessionsFields | undefined,
+> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}, Fields>;
+
+export type ListSessionsResult<Fields extends ListSessionsFields | undefined = undefined> = | { success: true; data: InferListSessionsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listSessions<Fields extends ListSessionsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListSessionsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListSessionsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_sessions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListSessionsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function listSessionsChannel<Fields extends ListSessionsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListSessionsInput;
+  fields: Fields;
+  resultHandler: (result: ListSessionsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListSessionsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_sessions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type ListWorkflowsFields = UnifiedFieldSelection<{workflows: Array<{path: string, name: string, description: string | null, enabled: boolean, triggerSource: string | null, riskLevel: string | null, sourceCount: number, steps: Array<string>, mount: string, __type: "TypedMap", __primitiveFields: "path" | "name" | "description" | "enabled" | "triggerSource" | "riskLevel" | "sourceCount" | "steps" | "mount"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListWorkflowsResult<

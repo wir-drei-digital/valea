@@ -45,6 +45,10 @@ import {
   createAgentSessionChannel,
   listAgentSessions as httpListAgentSessions,
   listAgentSessionsChannel,
+  listRecentSessionsByIcm as httpListRecentSessionsByIcm,
+  listRecentSessionsByIcmChannel,
+  listSessions as httpListSessionsFor,
+  listSessionsChannel as listSessionsForChannel,
   runWorkflow as httpRunWorkflow,
   runWorkflowChannel,
   distillDecisions as httpDistillDecisions,
@@ -112,6 +116,8 @@ import type {
   IcmPathsExistFields,
   CreateAgentSessionFields,
   ListAgentSessionsFields,
+  ListRecentSessionsByIcmFields,
+  ListSessionsFields,
   RunWorkflowFields,
   DistillDecisionsFields,
   HarnessDoctorFields,
@@ -362,6 +368,22 @@ const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
 const listAgentSessionsFields = [
   { sessions: ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live'] }
 ] as unknown as ListAgentSessionsFields;
+
+// Task 6.2 — same anonymous-embedded-map-array codegen gap as
+// `listAgentSessionsFields` above: `groups`/`sessions` (and `sessions`
+// nested a level deeper inside each group) are `Array<TypedMap>`
+// action-return fields, which `ComplexFieldSelection` can't express, so the
+// generated `Fields` type collapses to `never` for the literal. The backend
+// action accepts this exact nested literal (verified by
+// `test/valea/api/agents_test.exs`).
+const sessionSummarySelection = ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live'];
+const listRecentSessionsByIcmFields = [
+  { groups: ['mountKey', 'icmName', { sessions: sessionSummarySelection }] }
+] as unknown as ListRecentSessionsByIcmFields;
+const listSessionsForFields = [
+  { sessions: sessionSummarySelection },
+  'nextCursor'
+] as unknown as ListSessionsFields;
 const harnessDoctorFields = [
   'ok',
   { checks: ['id', 'status', 'detail', 'remedy'] }
@@ -478,6 +500,24 @@ function callCreateAgentSessionChannel(
 function callListAgentSessionsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
   return wrapChannelCall((handlers) =>
     listAgentSessionsChannel({ channel, fields: listAgentSessionsFields, ...handlers })
+  );
+}
+
+function callListRecentSessionsByIcmChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { limit: number }
+) {
+  return wrapChannelCall((handlers) =>
+    listRecentSessionsByIcmChannel({ channel, input, fields: listRecentSessionsByIcmFields, ...handlers })
+  );
+}
+
+function callListSessionsForChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; cursor: string | null }
+) {
+  return wrapChannelCall((handlers) =>
+    listSessionsForChannel({ channel, input, fields: listSessionsForFields, ...handlers })
   );
 }
 
@@ -1146,6 +1186,28 @@ export const api = {
   listAgentSessions: () =>
     runRpc(callListAgentSessionsChannel, () =>
       httpListAgentSessions(withAuth({ fields: listAgentSessionsFields }))
+    ),
+
+  // Task 6.2 — grouped-by-ICM recent-session feed for the sidebar's project
+  // groups (Phase 9 consumes this; this task only wires the wrapper).
+  // `limit` defaults to 5 (spec §"ICM group behavior": up to five sessions
+  // per ICM row) so a Phase 9 caller can omit it entirely.
+  listRecentSessionsByIcm: (limit = 5) =>
+    runRpc(
+      (channel) => callListRecentSessionsByIcmChannel(channel, { limit }),
+      () => httpListRecentSessionsByIcm(withAuth({ input: { limit }, fields: listRecentSessionsByIcmFields }))
+    ),
+
+  // Task 6.2 — full filtered history for one ICM ("Show all…"), paged via
+  // `cursor` (`null`/omitted for the first page, otherwise the previous
+  // page's `nextCursor`). Named `listSessionsFor` (not `listSessions`) to
+  // stay distinct from `listAgentSessions` above — the underlying RPC
+  // action's external name IS `list_sessions` (see `Valea.Api`), just
+  // imported under a `httpListSessionsFor`/`listSessionsForChannel` alias.
+  listSessionsFor: (mountKey: string, cursor: string | null = null) =>
+    runRpc(
+      (channel) => callListSessionsForChannel(channel, { mountKey, cursor }),
+      () => httpListSessionsFor(withAuth({ input: { mountKey, cursor }, fields: listSessionsForFields }))
     ),
 
   runWorkflow: (path: string, input: string, generation: number) =>

@@ -35,6 +35,23 @@ defmodule Valea.Api.Agents do
   alias Valea.Api.Error
   alias Valea.Workspace.Manager
 
+  # Shared `constraints fields:` shape for a session summary (Task 6.2's
+  # `list_recent_sessions_by_icm`/`list_sessions_for`, both trimmed to
+  # exactly this shape by `Valea.Agents.trim_summary/1`) — a module
+  # attribute rather than a helper function since these DSL blocks expand
+  # at compile time, before any of this module's own functions exist yet;
+  # an attribute read is resolved by the Elixir compiler itself first.
+  @session_summary_fields [
+    id: [type: :string, allow_nil?: false],
+    kind: [type: :string, allow_nil?: false],
+    title: [type: :string, allow_nil?: false],
+    workflow: [type: :string, allow_nil?: true],
+    run_id: [type: :string, allow_nil?: true],
+    started_at: [type: :string, allow_nil?: false],
+    status: [type: :string, allow_nil?: false],
+    live: [type: :boolean, allow_nil?: false]
+  ]
+
   actions do
     action :create_session, :map do
       constraints fields: [id: [type: :string, allow_nil?: false]]
@@ -109,6 +126,70 @@ defmodule Valea.Api.Agents do
       run fn _input, _ctx ->
         {:ok, sessions} = Valea.Agents.list_sessions()
         {:ok, %{sessions: Enum.map(sessions, &atomize_session/1)}}
+      end
+    end
+
+    # Task 6.2 — grouped-by-ICM recent-session feed for the sidebar's
+    # project groups. `groups` wraps the bare list `Valea.Agents.
+    # list_recent_sessions_by_icm/1` returns (this domain's generic `:map`
+    # actions always need a named top-level field for ash_typescript's
+    # `constraints fields:` selection — mirrors `list_workflows`'s
+    # `workflows`/`list_agent_sessions`'s `sessions`). No `generation`
+    # argument: a read, not a mutation (mirrors `list_sessions`/
+    # `list_workflows`).
+    action :list_recent_sessions_by_icm, :map do
+      constraints fields: [
+                    groups: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            mount_key: [type: :string, allow_nil?: false],
+                            icm_name: [type: :string, allow_nil?: false],
+                            sessions: [
+                              type: {:array, :map},
+                              allow_nil?: false,
+                              constraints: [items: [fields: @session_summary_fields]]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :limit, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        {:ok, %{groups: Valea.Agents.list_recent_sessions_by_icm(input.arguments.limit)}}
+      end
+    end
+
+    # Task 6.2 — full filtered history for a single ICM (the sidebar
+    # group's "Show all…"), paged via `Valea.Agents.list_sessions_for/2`.
+    # External RPC name `list_sessions` (spec C9's `list_sessions(mount_key,
+    # cursor)`) — distinct from `list_agent_sessions`, this resource's
+    # existing workspace-wide listing (`:list_sessions` internal action
+    # name), so both coexist under different external names (see
+    # `Valea.Api`). No `generation` argument, same reasoning as
+    # `list_recent_sessions_by_icm` above.
+    action :list_sessions_for, :map do
+      constraints fields: [
+                    sessions: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [items: [fields: @session_summary_fields]]
+                    ],
+                    next_cursor: [type: :string, allow_nil?: true]
+                  ]
+
+      argument :mount_key, :string, allow_nil?: false
+      argument :cursor, :string, allow_nil?: true
+
+      run fn input, _ctx ->
+        %{mount_key: mount_key} = input.arguments
+        cursor = Map.get(input.arguments, :cursor)
+        {:ok, Valea.Agents.list_sessions_for(mount_key, cursor)}
       end
     end
 

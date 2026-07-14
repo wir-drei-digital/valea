@@ -12,6 +12,7 @@ defmodule Valea.Agents do
   """
 
   alias Valea.Agents.SessionServer
+  alias Valea.Mounts
   alias Valea.Workspace.Manager
 
   @doc """
@@ -147,21 +148,151 @@ defmodule Valea.Agents do
   def list_sessions do
     case Manager.current() do
       {:ok, %{path: workspace}} ->
-        {:ok,
-         workspace
-         |> sessions_dir()
-         |> transcript_files()
-         |> Enum.map(&session_summary/1)
-         |> Enum.reject(&is_nil/1)
-         |> Enum.sort_by(& &1["started_at"], :desc)}
+        {:ok, workspace |> raw_sessions() |> Enum.sort_by(& &1["started_at"], :desc)}
 
       {:error, :no_workspace} ->
         {:ok, []}
     end
   end
 
+  @doc """
+  Grouped-by-ICM recent-session feed for the sidebar's project groups (Task
+  6.2, spec §"ICM group behavior") — one group per `icm_mount` that has at
+  least one session (an enabled/degraded mount with NO sessions yet is the
+  sidebar's own concern to render via `Valea.Mounts.list/1` directly, not
+  this listing's job), at most `limit` sessions each, **live sessions
+  first** (newest-live first), **then newest-ended** — `Enum.split_with/2`
+  is stable, so splitting the already-`started_at`-desc-sorted group
+  preserves recency within each half.
+
+  Groups are ordered by `Valea.Mounts.list/1`'s own order (sorted by mount
+  key — the workspace's `icms:` config order) rather than by session
+  recency or insertion order; a group whose `icm_mount` isn't found there
+  (e.g. a transcript from an ICM since unmounted) sorts after every known
+  mount, keyed by its own mount_key for stability.
+
+  Each summary is the trimmed `%{id, kind, title, workflow, run_id,
+  started_at, status, live}` shape (`trim_summary/1`) — NOT the full C8
+  identity-snapshot map `list_sessions/0` returns (that stays untouched;
+  `Valea.Workspace.Manager.switch_preflight/1` depends on its string-keyed
+  shape). `[]` when no workspace is open or it has no sessions yet.
+  """
+  @spec list_recent_sessions_by_icm(pos_integer()) :: [
+          %{mount_key: String.t(), icm_name: String.t(), sessions: [map()]}
+        ]
+  def list_recent_sessions_by_icm(limit \\ 5) do
+    case Manager.current() do
+      {:ok, %{path: workspace}} ->
+        order_index =
+          workspace |> Mounts.list() |> Enum.map(& &1.name) |> Enum.with_index() |> Map.new()
+
+        workspace
+        |> raw_sessions()
+        |> Enum.group_by(& &1["icm_mount"])
+        |> Enum.sort_by(fn {mount_key, _sessions} ->
+          {Map.get(order_index, mount_key, :unmounted), mount_key}
+        end)
+        |> Enum.map(fn {mount_key, sessions} -> build_group(mount_key, sessions, limit) end)
+
+      {:error, :no_workspace} ->
+        []
+    end
+  end
+
+  defp build_group(mount_key, sessions, limit) do
+    sorted = Enum.sort_by(sessions, & &1["started_at"], :desc)
+    {live, ended} = Enum.split_with(sorted, & &1["live"])
+
+    %{
+      mount_key: mount_key,
+      icm_name: sorted |> List.first() |> Map.get("icm_name"),
+      sessions: (live ++ ended) |> Enum.take(limit) |> Enum.map(&trim_summary/1)
+    }
+  end
+
+  @page_size 20
+
+  @doc """
+  Full, filtered session history for a single ICM (Task 6.2's "Show all…"
+  history view) — every session whose `icm_mount == mount_key`, newest
+  `started_at` first, `@page_size` (#{@page_size}) per page.
+
+  Keyset-paged on session id (unique, and lexically sortable since
+  `generate_session_id/0`'s timestamp prefix): `cursor` is `nil` for the
+  first page, otherwise the previous page's `next_cursor` — the id of its
+  LAST (oldest-in-page) session. A `cursor` that no longer matches any
+  session (e.g. an ended session's transcript vanished) is treated as
+  "start from the top" rather than raising, since the caller can't tell the
+  difference from here.
+
+  `next_cursor` is `nil` once the page reaches the end of the filtered set.
+  `%{sessions: [], next_cursor: nil}` when no workspace is open or
+  `mount_key` has no sessions.
+
+  `page_size` is a third, optional argument (default `@page_size`) purely
+  so tests can exercise multi-page traversal without creating dozens of
+  real sessions — no RPC caller ever passes it.
+  """
+  @spec list_sessions_for(String.t(), String.t() | nil, pos_integer()) :: %{
+          sessions: [map()],
+          next_cursor: String.t() | nil
+        }
+  def list_sessions_for(mount_key, cursor, page_size \\ @page_size) do
+    case Manager.current() do
+      {:ok, %{path: workspace}} ->
+        remaining =
+          workspace
+          |> raw_sessions()
+          |> Enum.filter(&(&1["icm_mount"] == mount_key))
+          |> Enum.sort_by(& &1["started_at"], :desc)
+          |> skip_to_cursor(cursor)
+
+        {page, rest} = Enum.split(remaining, page_size)
+        next_cursor = if rest == [], do: nil, else: List.last(page)["id"]
+
+        %{sessions: Enum.map(page, &trim_summary/1), next_cursor: next_cursor}
+
+      {:error, :no_workspace} ->
+        %{sessions: [], next_cursor: nil}
+    end
+  end
+
+  defp skip_to_cursor(sorted, nil), do: sorted
+
+  defp skip_to_cursor(sorted, cursor) do
+    case Enum.find_index(sorted, &(&1["id"] == cursor)) do
+      nil -> sorted
+      idx -> Enum.drop(sorted, idx + 1)
+    end
+  end
+
+  defp trim_summary(s) do
+    %{
+      id: s["id"],
+      kind: s["kind"],
+      title: s["title"],
+      workflow: s["workflow"],
+      run_id: s["run_id"],
+      started_at: s["started_at"],
+      status: s["status"],
+      live: s["live"]
+    }
+  end
+
   defp sessions_dir(workspace), do: Path.join([workspace, "logs", "sessions"])
   defp transcript_path(workspace, id), do: Path.join(sessions_dir(workspace), id <> ".jsonl")
+
+  # Shared scan: every transcript's line-1 metadata + live status, UNSORTED
+  # (each caller sorts/groups/pages for its own purpose) — the common base
+  # `list_sessions/0`, `list_recent_sessions_by_icm/1`, and
+  # `list_sessions_for/3` all build on.
+  defp raw_sessions(workspace) do
+    workspace
+    |> sessions_dir()
+    |> transcript_files()
+    |> Enum.map(&session_summary/1)
+    |> Enum.reject(&is_nil/1)
+  end
 
   defp transcript_files(dir) do
     case File.ls(dir) do
