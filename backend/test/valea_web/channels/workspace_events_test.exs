@@ -4,6 +4,9 @@ defmodule ValeaWeb.WorkspaceEventsTest do
 
   @endpoint ValeaWeb.Endpoint
 
+  alias Valea.ICM.Watcher
+  alias Valea.Mounts.Manifest
+  alias Valea.Paths
   alias Valea.Workspace.Manager
 
   setup do
@@ -37,17 +40,80 @@ defmodule ValeaWeb.WorkspaceEventsTest do
   test "icm change pushes icm_changed", %{parent: parent} do
     {:ok, ws} = Manager.create(parent, "W")
 
+    # Since Task 8.1 the watcher watches every enabled ICM's own
+    # by-reference root (`Valea.Mounts.enabled/1`), not a workspace-local
+    # `mounts/` tree — declare one (bypassing the RPC layer, mirroring
+    # `Valea.ICM.WatcherTest`'s `declare_external!/3`) and wait for the
+    # live `Valea.ICM.Watcher` to pick it up via its own public
+    # `watched_roots/0`, so the discovery push this settling step also
+    # produces can't be mistaken for the content-write push asserted below.
+    ext = external_icm!()
+    declare_external!(ws.path, "ext", ext)
+    wait_until_watched!(ext)
+
     # macOS fsevents arms its native listener port asynchronously after
     # FileSystem.start_link/subscribe return (see
-    # test/valea/icm/watcher_test.exs), so a bare mkdir + assert_push can miss
-    # the event while the port is still spinning up. Retry the triggering
-    # write until the push lands, instead of padding assert_push's timeout.
-    #
-    # The watcher watches mounts/ (not the legacy icm/ tree — see
-    # A-T6/watcher.ex), so the trigger has to land under a mount.
+    # test/valea/icm/watcher_test.exs), so a bare write + assert_push can
+    # miss the event while the port is still spinning up. Retry the
+    # triggering write until the push lands, instead of padding
+    # assert_push's timeout.
     poll_until_pushed(fn i ->
-      File.mkdir_p!(Path.join(ws.path, "mounts/a/Fresh #{i}"))
+      File.write!(Path.join(ext, "fresh-#{i}.md"), "# fresh")
     end)
+  end
+
+  defp external_icm! do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-events-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: "Ext", description: ""})
+
+    dir
+  end
+
+  # Mirrors `Valea.ICM.WatcherTest`'s helper of the same name/shape: hand-
+  # edits `config/workspace.yaml` to declare an ICM, bypassing the RPC
+  # layer entirely.
+  defp declare_external!(ws_path, name, ref) do
+    config_path = Path.join(ws_path, "config/workspace.yaml")
+    {:ok, doc} = YamlElixir.read_from_file(config_path)
+    icms = (Map.get(doc, "icms") || %{}) |> Map.put(name, %{"path" => ref})
+    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
+
+    entries = [
+      "  #{name}:",
+      "    path: #{inspect(ref)}"
+    ]
+
+    File.write!(config_path, Enum.join(header ++ ["icms:"] ++ entries, "\n") <> "\n")
+    icms
+  end
+
+  defp wait_until_watched!(root, attempts_left \\ 40)
+
+  defp wait_until_watched!(_root, 0) do
+    flunk("ICM root was never picked up by the live watcher")
+  end
+
+  defp wait_until_watched!(root, attempts_left) do
+    resolved =
+      case Paths.resolve_real(".", root) do
+        {:ok, r} -> r
+        {:error, _} -> root
+      end
+
+    if resolved in Watcher.watched_roots() do
+      :ok
+    else
+      Process.sleep(50)
+      wait_until_watched!(root, attempts_left - 1)
+    end
   end
 
   defp poll_until_pushed(trigger, attempts_left \\ 10)
