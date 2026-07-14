@@ -1,21 +1,22 @@
 defmodule Valea.ICM.Backlinks do
   @moduledoc """
-  Inbound page links for a target within a single ICM: cheap filename
-  substring pre-filter across that mount's `.md` files, then AST
-  confirmation — only real Link/Image destinations that resolve to the
-  target count (the References trick, generalized; prose mentions and
-  code fences never match, because they are not Link nodes).
+  Inbound page links for a target: cheap filename substring pre-filter
+  across every `.md` file IN SCOPE, then AST confirmation — only real
+  Link/Image destinations that resolve to the target count (the References
+  trick, generalized; prose mentions and code fences never match, because
+  they are not Link nodes).
 
   Addressed by `mount_key` + a path relative to that ICM's own root (task
-  4.2's re-key). INTERIM SCOPE NARROWING: this scans only the ONE ICM
-  named by `mount_key`, not every enabled mount — a link living in a
-  DIFFERENT ICM that points at this one's content is no longer discovered
-  (a real, but narrower, regression from the pre-4.2 all-enabled-mounts
-  scan). Task 5.6 widens this back out to primary+related mounts once
-  `Mounts.Context.resolve/2` exists to define what "related" means; until
-  then, cross-mount backlinks are a known gap, not silently broken data
-  (nothing here corrupts or mis-attributes a link, it just doesn't look
-  outside the one ICM).
+  4.2's re-key). SCOPE (Task 5.6, spec decision (b)): the target's own
+  `mount_key` ICM, plus every ICM it directly declares related via its own
+  `CONTEXT.md` (`Valea.Mounts.scoped_roots/2`) — the same session-context
+  boundary the redesign enforces everywhere else. A link living in a
+  DIFFERENT, un-declared ICM that points at this target is still not
+  discovered (by design, not a gap: that ICM is outside the session
+  context boundary). Each returned link's `mount` field names the SPECIFIC
+  ICM the source page actually lives in — the primary when the link is
+  local, a related ICM's own key when it isn't — never blindly the queried
+  `mount_key`, so `(mount, source_path)` always addresses the real file.
   """
 
   alias Valea.Mounts
@@ -25,11 +26,11 @@ defmodule Valea.ICM.Backlinks do
 
   @doc """
   Inbound Link/Image references to `target_rel_path` (relative to
-  `mount_key`'s own root) within that ICM's own `.md` files (see moduledoc
-  for the interim single-ICM scan).
+  `mount_key`'s own root) within every `.md` file IN SCOPE (see moduledoc
+  "SCOPE").
 
-  Every candidate `.md` file under the mount whose raw content contains
-  the target's basename is parsed and walked; only a real
+  Every candidate `.md` file under a scoped mount whose raw content
+  contains the target's basename is parsed and walked; only a real
   `MDEx.Link`/`MDEx.Image` node whose destination RESOLVES (relative to the
   linking page's own directory, or absolute) to the target counts — a
   bare prose mention of the filename, or the same text inside a code span,
@@ -37,16 +38,18 @@ defmodule Valea.ICM.Backlinks do
   and `#anchor` destinations are ignored outright (never local content).
 
   Returns `{:ok, [%{source_path:, mount:, link_text:}]}`, sorted by
-  `source_path` (relative to `mount_key`'s root), with at most one entry
-  per source page (the first matching link/image text on that page wins if
-  it links to the target more than once). `{:error, :outside_workspace}`
-  when `mount_key` doesn't name a currently enabled, non-degraded mount;
-  `{:error, :no_workspace}` when no workspace is open.
+  `source_path` (relative to the SOURCE's own mount root — see moduledoc),
+  with at most one entry per source page (the first matching link/image
+  text on that page wins if it links to the target more than once).
+  `{:error, :outside_workspace}` when `mount_key` doesn't name a currently
+  enabled, non-degraded mount; `{:error, :no_workspace}` when no workspace
+  is open.
   """
   @spec backlinks(String.t(), String.t()) ::
           {:ok, [map()]} | {:error, :outside_workspace | :no_workspace}
   def backlinks(mount_key, target_rel_path) do
-    with {:ok, mount} <- resolve_mount(mount_key) do
+    with {:ok, mount} <- resolve_mount(mount_key),
+         {:ok, workspace} <- workspace_root() do
       target_abs = to_abs(mount.root, target_rel_path)
       needle = Path.basename(target_rel_path)
       # Percent-encoded destinations (e.g. `%20` for a space) appear in raw
@@ -57,13 +60,14 @@ defmodule Valea.ICM.Backlinks do
       encoded_needle = URI.encode(needle)
 
       links =
-        for abs <- Path.wildcard(Path.join(mount.root, "**/*.md")),
+        for scoped <- Mounts.scoped_roots(workspace, mount_key),
+            abs <- Path.wildcard(Path.join(scoped.root, "**/*.md")),
             {:ok, content} <- [File.read(abs)],
             String.contains?(content, needle) or String.contains?(content, encoded_needle),
-            source_rel = Path.relative_to(abs, mount.root),
-            source_rel != target_rel_path,
-            text <- confirmed_link_texts(mount.root, source_rel, content, target_abs) do
-          %{source_path: source_rel, mount: mount_key, link_text: text}
+            source_rel = Path.relative_to(abs, scoped.root),
+            not (scoped.root == mount.root and source_rel == target_rel_path),
+            text <- confirmed_link_texts(scoped.root, source_rel, content, target_abs) do
+          %{source_path: source_rel, mount: scoped.name, link_text: text}
         end
 
       {:ok, Enum.sort_by(links, & &1.source_path)}

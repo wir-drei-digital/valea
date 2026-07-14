@@ -93,7 +93,7 @@ defmodule Valea.ICM.SearchTest do
     [mount] = Valea.Mounts.enabled(ws)
 
     {:ok, %{results: [], skipped: [skipped_name]}} =
-      Search.search(ws, "coaching", mounts: [mount], timeout_ms: 0)
+      Search.search(ws, "coaching", nil, mounts: [mount], timeout_ms: 0)
 
     assert skipped_name == icm.mount_key
   end
@@ -129,7 +129,7 @@ defmodule Valea.ICM.SearchTest do
     started = System.monotonic_time(:millisecond)
 
     {:ok, %{results: [], skipped: skipped}} =
-      Search.search(ws, "needle", mounts: mounts, timeout_ms: timeout)
+      Search.search(ws, "needle", nil, mounts: mounts, timeout_ms: timeout)
 
     elapsed = System.monotonic_time(:millisecond) - started
 
@@ -191,5 +191,69 @@ defmodule Valea.ICM.SearchTest do
 
     assert {:ok, %{results: results}} = Search.search(ws, "target")
     assert Enum.any?(results, &(&1.path == turkish_path))
+  end
+
+  describe "scoped to primary + related ICMs (task 5.6)" do
+    test "a mount_key scopes the scan to itself plus its declared-related ICM, never an unrelated third",
+         %{workspace: ws} do
+      b =
+        AgentCase.mount_test_icm!(ws,
+          name: "B",
+          pages: %{"Note.md" => "# Note\n\ncoaching notes live here\n"}
+        )
+
+      c =
+        AgentCase.mount_test_icm!(ws,
+          name: "C",
+          pages: %{"Note.md" => "# Note\n\ncoaching notes live here too\n"}
+        )
+
+      a =
+        AgentCase.mount_test_icm!(ws,
+          name: "A",
+          pages: %{
+            "Home.md" => "# Home\n\ncoaching starts here\n",
+            "CONTEXT.md" => related_icms_frontmatter(b.id)
+          }
+        )
+
+      {:ok, %{results: results}} = Search.search(ws, "coaching", a.mount_key)
+      mounts_hit = results |> Enum.map(& &1.mount) |> Enum.uniq() |> Enum.sort()
+
+      assert mounts_hit == Enum.sort([a.mount_key, b.mount_key])
+      refute c.mount_key in mounts_hit
+    end
+
+    test "mount_key: nil preserves the pre-5.6 default of every enabled mount", %{workspace: ws} do
+      a =
+        AgentCase.mount_test_icm!(ws,
+          name: "A",
+          pages: %{"Home.md" => "# Home\n\ncoaching starts here\n"}
+        )
+
+      b =
+        AgentCase.mount_test_icm!(ws,
+          name: "B",
+          pages: %{"Note.md" => "# Note\n\ncoaching notes live here\n"}
+        )
+
+      {:ok, %{results: results}} = Search.search(ws, "coaching")
+      mounts_hit = results |> Enum.map(& &1.mount) |> Enum.uniq() |> Enum.sort()
+
+      assert mounts_hit == Enum.sort([a.mount_key, b.mount_key])
+    end
+  end
+
+  # Minimal `CONTEXT.md` frontmatter declaring `related_id` as a directly
+  # related ICM, mirroring `Valea.Mounts.ContextTest`'s own fixture shape.
+  defp related_icms_frontmatter(related_id) do
+    """
+    ---
+    format: 1
+    related_icms:
+      - id: #{related_id}
+        name: "Related"
+    ---
+    """
   end
 end

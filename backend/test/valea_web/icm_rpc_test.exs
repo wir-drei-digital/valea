@@ -470,11 +470,15 @@ defmodule ValeaWeb.IcmRpcTest do
     # `results`/`skipped` are the `:search` action's own `constraints
     # fields: [...]` typed return (Task C2) — `results` nests field
     # selection into an `Array<TypedMap>`, same shape as `icm_tree`'s
-    # `mounts` above. `search`/`paths_exist` are NOT part of task 4.2's
-    # re-key (they stay workspace-scoped, addressing every enabled mount by
-    # name) — only each result's `path` changed, from an absolute
-    # `icm.root`-joined literal to ICM-relative (mirroring every other ICM
-    # RPC surface's `(mount_key, rel_path)` addressing).
+    # `mounts` above. `paths_exist` is NOT part of task 4.2's re-key (it
+    # stays workspace-scoped, addressing every enabled mount by name) —
+    # only each result's `path` changed, from an absolute `icm.root`-joined
+    # literal to ICM-relative (mirroring every other ICM RPC surface's
+    # `(mount_key, rel_path)` addressing). `icm_search` itself carries an
+    # OPTIONAL `mountKey` (Task 5.6): omitted, it scans every enabled
+    # mount (unchanged pre-5.6 default); given, it scopes to that PRIMARY
+    # ICM plus every ICM it directly declares related (`Mounts.scoped_roots/2`),
+    # not just that one mount.
     @search_fields [%{"results" => ["path", "mount", "title", "snippet", "terms"]}, "skipped"]
 
     test "returns camelCased results with mount name for a seeded term", %{icm: icm} do
@@ -491,11 +495,12 @@ defmodule ValeaWeb.IcmRpcTest do
       assert hit["terms"] == ["founder", "coaching"]
     end
 
-    test "mount argument filters Mounts.enabled to that one mount before scanning", %{icm: icm} do
+    test "mountKey argument scopes to that ICM (plus any declared-related, here none) before scanning",
+         %{icm: icm} do
       assert %{"success" => true, "data" => %{"results" => results}} =
                rpc(
                  "icm_search",
-                 %{"query" => "coaching", "mount" => icm.mount_key},
+                 %{"query" => "coaching", "mountKey" => icm.mount_key},
                  @search_fields
                )
 
@@ -503,11 +508,11 @@ defmodule ValeaWeb.IcmRpcTest do
       assert Enum.all?(results, &(&1["mount"] == icm.mount_key))
     end
 
-    test "an unknown mount name yields no results, never an error" do
+    test "an unknown mountKey yields no results, never an error" do
       assert %{"success" => true, "data" => %{"results" => results}} =
                rpc(
                  "icm_search",
-                 %{"query" => "coaching", "mount" => "does-not-exist"},
+                 %{"query" => "coaching", "mountKey" => "does-not-exist"},
                  @search_fields
                )
 

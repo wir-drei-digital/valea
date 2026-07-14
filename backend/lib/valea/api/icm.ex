@@ -42,7 +42,6 @@ defmodule Valea.Api.ICM do
 
   alias Valea.Api.Error
   alias Valea.ICM.{Backlinks, References, Search}
-  alias Valea.Mounts
   alias Valea.Workflows.MemoryProposal
   alias Valea.Workspace.Manager
 
@@ -298,20 +297,22 @@ defmodule Valea.Api.ICM do
                   ]
 
       argument :query, :string, allow_nil?: false
-      # Optional: filters `Mounts.enabled/1` down to the one named mount
-      # BEFORE scanning (see `search_opts/2` below) — never taken as a
-      # mount struct from the caller, only ever used to filter the
-      # server's own enabled-mounts list, so a caller can't inject a
-      # mount that isn't enabled.
-      argument :mount, :string, allow_nil?: true, default: nil
+      # Optional: the PRIMARY ICM's mount_key (Task 5.6) — never taken as a
+      # mount struct or a root path from the caller, only ever passed
+      # through to `Search.search/4`, which resolves it against the
+      # server's OWN mount table (`Valea.Mounts.scoped_roots/2`) so a
+      # caller can't inject scope beyond what that ICM's own `CONTEXT.md`
+      # actually declares related. `nil` preserves the pre-5.6 default —
+      # every enabled mount — for the not-yet-ICM-scoped global palette.
+      argument :mount_key, :string, allow_nil?: true, default: nil
 
       run fn input, _ctx ->
         case Manager.current() do
           {:ok, %{path: root}} ->
-            mount_name = Map.get(input.arguments, :mount)
+            mount_key = Map.get(input.arguments, :mount_key)
 
             {:ok, %{results: results, skipped: skipped}} =
-              Search.search(root, input.arguments.query, search_opts(root, mount_name))
+              Search.search(root, input.arguments.query, mount_key)
 
             {:ok, %{results: results, skipped: skipped}}
 
@@ -379,19 +380,6 @@ defmodule Valea.Api.ICM do
       {:type, t} -> {"type", to_string(t)}
       {k, v} -> {to_string(k), v}
     end)
-  end
-
-  # `nil` (no mount filter) leaves `Search.search/3` to default to every
-  # enabled mount. A present `mount` name filters the server's OWN
-  # `Mounts.enabled/1` list down to the (at most one) entry with that
-  # name — a caller can only narrow the scan to a mount that is already
-  # enabled; an unknown or disabled name filters to `[]` (search
-  # trivially returns no results), never to a mount struct built from the
-  # argument itself.
-  defp search_opts(_root, nil), do: []
-
-  defp search_opts(root, mount_name) do
-    [mounts: root |> Mounts.enabled() |> Enum.filter(&(&1.name == mount_name))]
   end
 
   # A path "exists" only when it attributes to an ENABLED, non-degraded

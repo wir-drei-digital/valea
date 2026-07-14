@@ -757,7 +757,7 @@ function callIcmEntryReferencesChannel(
 
 function callIcmSearchChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { query: string; mount?: string | null }
+  input: { query: string; mountKey?: string | null }
 ) {
   return wrapChannelCall((handlers) =>
     icmSearchChannel({ channel, input, fields: icmSearchFields, ...handlers })
@@ -1102,14 +1102,19 @@ export const api = {
       () => httpIcmEntryReferences(withAuth({ input: { mountKey, path }, fields: icmEntryReferencesFields }))
     ),
 
-  // `icm_search`/`icm_paths_exist` (Task C2). `mount` filters the scan to a
-  // single already-enabled mount server-side (see `Valea.Api.ICM`'s
-  // `:search` action) — an omitted/undefined `mount` scans every enabled
-  // mount, matching `Valea.ICM.Search.search/3`'s default.
-  icmSearch: (query: string, mount?: string) =>
+  // `icm_search`/`icm_paths_exist` (Task C2). `mountKey` (Task 5.6) is the
+  // PRIMARY ICM to scope the scan to — that ICM plus every ICM it directly
+  // declares related via its own `CONTEXT.md` (see `Valea.Mounts.scoped_roots/2`
+  // and `Valea.Api.ICM`'s `:search` action) — an omitted/undefined
+  // `mountKey` scans every enabled mount, matching
+  // `Valea.ICM.Search.search/4`'s default. Callers don't yet pass a
+  // `mountKey` (full session-context wiring for the palette/backlinks
+  // panel is a later task); this only threads the plumbing through.
+  icmSearch: (query: string, mountKey?: string) =>
     runRpc(
-      (channel) => callIcmSearchChannel(channel, { query, mount: mount ?? null }),
-      () => httpIcmSearch(withAuth({ input: { query, mount: mount ?? null }, fields: icmSearchFields }))
+      (channel) => callIcmSearchChannel(channel, { query, mountKey: mountKey ?? null }),
+      () =>
+        httpIcmSearch(withAuth({ input: { query, mountKey: mountKey ?? null }, fields: icmSearchFields }))
     ),
 
   icmPathsExist: (paths: string[]) =>

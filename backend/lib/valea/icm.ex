@@ -589,15 +589,18 @@ defmodule Valea.ICM do
   Renames a page or folder in place (same parent, new basename), rewriting
   any workflow references to it (or, for a folder, to anything it
   contains) along the way, AND rewriting every inbound in-content
-  link/image destination — within `mount_key`'s own ICM (see
-  `Valea.ICM.LinkRewrite`'s moduledoc for the interim single-ICM scan) —
-  that a real Link/Image AST node confirms resolves to the OLD path.
+  link/image destination — within `mount_key`'s own ICM plus every ICM it
+  directly declares related (see `Valea.ICM.LinkRewrite`'s moduledoc
+  "SCOPE") — that a real Link/Image AST node confirms resolves to the OLD
+  path.
 
   Returns `{:ok, %{path: new_rel_path, updated_workflows: [names], updated_pages: [paths]}}`
   where `new_rel_path` is relative to `mount_key`'s root, `names` are the
   display names of the workflows whose `sources:` references were
-  rewritten (deduplicated, sorted), and `paths` are the (also
-  mount-relative) paths of the pages whose in-content links were rewritten
+  rewritten (deduplicated, sorted), and `paths` are the (each relative to
+  its OWN mount's root — see `LinkRewrite.rewrite_all/2`'s own doc for the
+  cross-mount collision caveat) paths of the pages whose in-content links
+  were rewritten
   (sorted).
 
   If a workflow or link rewrite fails, returns

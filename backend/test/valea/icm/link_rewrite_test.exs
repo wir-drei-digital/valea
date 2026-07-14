@@ -83,25 +83,41 @@ defmodule Valea.ICM.LinkRewriteTest do
              "# B\n\n[t](<Voice/Email Tone Guide.md>)\n"
   end
 
-  test "known limitation (task 4.2 interim narrowing): a link living in a DIFFERENT mount is NOT rewritten",
+  test "a link in a directly-related ICM IS rewritten (real cross-directory relative path recomputed); an unrelated ICM's link stays dangling",
        %{workspace: ws, icm: icm} do
-    second = AgentCase.mount_test_icm!(ws, name: "Second")
+    b = AgentCase.mount_test_icm!(ws, name: "B")
+    c = AgentCase.mount_test_icm!(ws, name: "C")
 
     target_abs = Path.join(icm.root, "Pricing/Current Pricing.md")
-    c_path = Path.join(second.root, "C.md")
+    new_abs = Path.join(icm.root, "Pricing/Rates.md")
 
-    File.write!(c_path, "# C\n\n[p](<#{target_abs}>)\n")
+    # B's link is written RELATIVE (from B's own root, a physically
+    # unrelated directory tree from A's) — not absolute — so this proves
+    # `confirmed_urls/5`'s absolute-path math (not naive mount-relative
+    # segment math) recomputes a genuinely correct cross-mount relative
+    # destination, not just the trivially-unambiguous absolute case.
+    b_src = Path.join(b.root, "FromB.md")
+    orig_dest = Valea.Paths.relative(b.root, target_abs)
+    File.write!(b_src, "# From B\n\n[p](<#{orig_dest}>)\n")
+
+    c_src = Path.join(c.root, "FromC.md")
+    File.write!(c_src, "# From C\n\n[p](<#{target_abs}>)\n")
+
+    File.write!(Path.join(icm.root, "CONTEXT.md"), related_icms_frontmatter(b.id))
 
     assert {:ok, %{updated_pages: updated}} =
              ICM.rename(icm.mount_key, "Pricing/Current Pricing.md", "Rates.md")
 
-    # `LinkRewrite.rewrite_all/2` (task 4.2) scans only `icm.mount_key`'s own
-    # root now (see its moduledoc's INTERIM SCOPE NARROWING) — the second
-    # mount's inbound link is left pointing at the old, now-missing path
-    # rather than being discovered and rewritten. This is a known, accepted
-    # regression until task 5.6 widens the scan to primary+related mounts.
-    refute "C.md" in updated
-    assert File.read!(c_path) == "# C\n\n[p](<#{target_abs}>)\n"
+    assert "FromB.md" in updated
+    refute "FromC.md" in updated
+
+    expected_dest = Valea.Paths.relative(b.root, new_abs)
+    assert File.read!(b_src) == "# From B\n\n[p](<#{expected_dest}>)\n"
+
+    # C is a mounted-but-unrelated ICM (A's CONTEXT.md never declares it) —
+    # outside the session-context boundary, so its inbound link is left
+    # dangling, exactly like a link in an unmounted location would be.
+    assert File.read!(c_src) == "# From C\n\n[p](<#{target_abs}>)\n"
   end
 
   test "a fence-only lookalike, with no real link to the renamed target anywhere in the file, is left untouched",
@@ -196,5 +212,18 @@ defmodule Valea.ICM.LinkRewriteTest do
     assert {:error, {:rewrite_failed, "F.md", _reason}} = result
     refute File.exists?(Path.join(target_dir, "Rates.md"))
     assert File.exists?(Path.join(target_dir, "Renamed.md"))
+  end
+
+  # Minimal `CONTEXT.md` frontmatter declaring `related_id` as a directly
+  # related ICM, mirroring `Valea.Mounts.ContextTest`'s own fixture shape.
+  defp related_icms_frontmatter(related_id) do
+    """
+    ---
+    format: 1
+    related_icms:
+      - id: #{related_id}
+        name: "Related"
+    ---
+    """
   end
 end

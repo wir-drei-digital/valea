@@ -11,10 +11,12 @@ defmodule Valea.ICM.BacklinksTest do
   # mounted via `AgentCase.mount_test_icm!/2`. Task 4.2 re-key:
   # `Backlinks.backlinks/2` takes `(mount_key, target_rel_path)` — both
   # `target_rel_path` and every expected `source_path` are ICM-relative
-  # (never a `Path.join(icm.root, ...)` absolute literal) — and, per
-  # `Backlinks`'s own moduledoc, scans only that ONE mount now (an interim
-  # narrowing task 5.6 widens later), so every fixture here lives inside
-  # the single mounted ICM.
+  # (never a `Path.join(icm.root, ...)` absolute literal). Task 5.6 widens
+  # the scan to `icm`'s own mount plus every ICM it directly declares
+  # related (see the "scoped to primary + related ICMs" describe block
+  # below); every OTHER test in this file has no `CONTEXT.md` at all, so
+  # its scope is exactly the single mounted `icm`, matching every fixture
+  # placed only inside it.
   setup do
     ws = AgentCase.open_workspace!()
     icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
@@ -155,8 +157,29 @@ defmodule Valea.ICM.BacklinksTest do
     assert {:error, :outside_workspace} = Backlinks.backlinks("does-not-exist", "Target.md")
   end
 
-  describe "interim single-ICM scope narrowing (task 4.2)" do
-    test "a link living in a DIFFERENT mount pointing at this one's page is NOT discovered", %{
+  describe "scoped to primary + related ICMs (task 5.6)" do
+    test "an inbound link authored in a directly-related ICM is found, attributed to ITS OWN mount key — an unrelated third ICM's link is not",
+         %{workspace: ws, icm: a} do
+      b = AgentCase.mount_test_icm!(ws, name: "B")
+      c = AgentCase.mount_test_icm!(ws, name: "C")
+
+      target = "Pricing/Current Pricing.md"
+      target_abs = Path.join(a.root, target)
+
+      File.write!(Path.join(b.root, "FromB.md"), "# From B\n\n[p](<#{target_abs}>)\n")
+      File.write!(Path.join(c.root, "FromC.md"), "# From C\n\n[p](<#{target_abs}>)\n")
+      File.write!(Path.join(a.root, "CONTEXT.md"), related_icms_frontmatter(b.id))
+
+      {:ok, links} = Backlinks.backlinks(a.mount_key, target)
+
+      from_b = Enum.find(links, &(&1.source_path == "FromB.md"))
+      assert from_b != nil
+      assert from_b.mount == b.mount_key
+
+      refute Enum.any?(links, &(&1.source_path == "FromC.md"))
+    end
+
+    test "a link living in an un-declared mount pointing at this one's page is NOT discovered", %{
       workspace: ws,
       icm: icm
     } do
@@ -168,5 +191,18 @@ defmodule Valea.ICM.BacklinksTest do
       {:ok, links} = Backlinks.backlinks(icm.mount_key, "Pricing/Current Pricing.md")
       refute Enum.any?(links, &(&1.source_path == "FromOther.md"))
     end
+  end
+
+  # Minimal `CONTEXT.md` frontmatter declaring `related_id` as a directly
+  # related ICM, mirroring `Valea.Mounts.ContextTest`'s own fixture shape.
+  defp related_icms_frontmatter(related_id) do
+    """
+    ---
+    format: 1
+    related_icms:
+      - id: #{related_id}
+        name: "Related"
+    ---
+    """
   end
 end

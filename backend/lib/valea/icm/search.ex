@@ -1,12 +1,23 @@
 defmodule Valea.ICM.Search do
   @moduledoc """
-  Scan-backed full-text search over enabled mounts. The filesystem is the
-  index (Spec C): per query, every mount is walked concurrently with a
-  hard per-mount budget; a mount that does not answer in time is skipped
-  and NAMED, never silently dropped. Query text is literal — terms are
-  matched with `String.contains?/2` on downcased text, no pattern syntax.
-  The RPC contract (`search/3`'s return shape) is deliberately
+  Scan-backed full-text search. The filesystem is the index (Spec C): per
+  query, every mount IN SCOPE is walked concurrently with a hard per-mount
+  budget; a mount that does not answer in time is skipped and NAMED, never
+  silently dropped. Query text is literal — terms are matched with
+  `String.contains?/2` on downcased text, no pattern syntax. The RPC
+  contract (`search/4`'s return shape) is deliberately
   implementation-agnostic: FTS5 can replace these internals later.
+
+  Scope (Task 5.6, spec decision (b)): a `mount_key` narrows the scan to
+  exactly that ICM plus every ICM it directly declares related via its own
+  `CONTEXT.md` (`Valea.Mounts.scoped_roots/2`) — the same session-context
+  boundary the redesign enforces everywhere else, so a search from within
+  ICM A never surfaces a hit from an unrelated mounted ICM B. `mount_key ==
+  nil` preserves the pre-5.6 default of scanning every ENABLED mount (the
+  global Cmd+K palette is not yet ICM-scoped — full wiring is a later
+  task); an unknown/disabled/degraded `mount_key` scopes to nothing
+  (`Mounts.scoped_roots/2` returns `[]`), so search degrades to zero
+  results rather than erroring.
 
   Each result's `path` (task 4.2's re-key) is relative to ITS OWN mount's
   root — paired with `mount` (that mount's key) to fully address it,
@@ -22,16 +33,16 @@ defmodule Valea.ICM.Search do
   @default_limit 20
   @snippet_radius 90
 
-  @spec search(String.t(), String.t(), keyword()) ::
+  @spec search(String.t(), String.t(), String.t() | nil, keyword()) ::
           {:ok, %{results: [map()], skipped: [String.t()]}}
-  def search(workspace, query, opts \\ []) do
+  def search(workspace, query, mount_key \\ nil, opts \\ []) do
     terms =
       query |> String.downcase() |> String.split(~r/\s+/u, trim: true) |> Enum.uniq()
 
     if terms == [] do
       {:ok, %{results: [], skipped: []}}
     else
-      mounts = Keyword.get_lazy(opts, :mounts, fn -> Mounts.enabled(workspace) end)
+      mounts = Keyword.get_lazy(opts, :mounts, fn -> scan_scope(workspace, mount_key) end)
       timeout = Keyword.get(opts, :timeout_ms, @default_timeout)
       limit = Keyword.get(opts, :limit, @default_limit)
 
@@ -46,6 +57,13 @@ defmodule Valea.ICM.Search do
       {:ok, %{results: results, skipped: skipped}}
     end
   end
+
+  # See moduledoc "Scope" — `nil` means "every enabled mount" (pre-5.6
+  # default, still used by the not-yet-ICM-scoped global palette); a
+  # concrete `mount_key` narrows to `Mounts.scoped_roots/2`'s primary +
+  # declared-related set.
+  defp scan_scope(workspace, nil), do: Mounts.enabled(workspace)
+  defp scan_scope(workspace, mount_key), do: Mounts.scoped_roots(workspace, mount_key)
 
   # A single shared deadline for the whole scan: `Task.yield_many/2` blocks
   # at most `timeout` total (not per task), so N slow mounts still return in

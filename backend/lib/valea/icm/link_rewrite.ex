@@ -10,15 +10,19 @@ defmodule Valea.ICM.LinkRewrite do
   prose mention or a code-fence lookalike is never a Link/Image node, so
   `destinations/3` never reports it, and it is left untouched.
 
-  Addressed by `mount_key` + paths relative to that ICM's own root (task
-  4.2's re-key). INTERIM SCOPE NARROWING: this scans only the ONE ICM
-  named by `mount_key`, not every enabled mount — an inbound link living in
-  a DIFFERENT ICM that points at a page renamed in this one is no longer
-  rewritten (it is left pointing at the old, now-missing path: a dangling
-  reference, not a corrupted one). Task 5.6 widens this back out to
-  primary+related mounts once `Mounts.Context.resolve/2` exists; until
-  then, cross-mount link rewriting is a known gap, matching
-  `Valea.ICM.Backlinks`'s own interim narrowing.
+  Addressed by `mount_key` + paths relative to the RENAMED target's own ICM
+  root (task 4.2's re-key). SCOPE (Task 5.6, spec decision (b)): source
+  pages are scanned across `mount_key`'s own ICM plus every ICM it directly
+  declares related via its own `CONTEXT.md` (`Valea.Mounts.scoped_roots/2`)
+  — the same session-context boundary the redesign enforces everywhere
+  else, matching `Valea.ICM.Backlinks`'s own scope. An inbound link living
+  in a DIFFERENT, un-declared ICM that points at a page renamed here is
+  still left dangling (by design, not a gap: that ICM is outside the
+  session context boundary) — see `confirmed_urls/4` for how a confirmed
+  cross-mount source's relative destination is recomputed correctly
+  through absolute-path math rather than mount-relative segment math
+  (source and target can be in physically unrelated directory trees once
+  the source lives in a different ICM than the renamed target).
 
   Known limitations (two more; neither ever corrupts a file — the worst
   outcome in either case is a link pointing at the wrong-but-plausible
@@ -72,34 +76,46 @@ defmodule Valea.ICM.LinkRewrite do
   alias Valea.Workspace.Manager
 
   @doc """
-  Rewrites `mount_key`'s own ICM's `.md` files whose confirmed Link/Image
-  destinations resolve to one of `pairs`' OLD paths, replacing each with
-  the recomputed destination for the corresponding NEW path. `pairs` are
-  `{old_rel, new_rel}`, both relative to `mount_key`'s own root — the same
-  shape `Valea.ICM.rename/3` already works in for its other return fields.
+  Rewrites every `.md` file IN SCOPE (see moduledoc "SCOPE") whose
+  confirmed Link/Image destinations resolve to one of `pairs`' OLD paths,
+  replacing each with the recomputed destination for the corresponding NEW
+  path. `pairs` are `{old_rel, new_rel}`, both relative to `mount_key`'s
+  own root (the RENAMED target's ICM) — the same shape `Valea.ICM.rename/3`
+  already works in for its other return fields.
 
-  Returns `{:ok, [updated_source_paths]}` (sorted, relative to `mount_key`'s
-  root) on success, or `{:error, {:rewrite_failed, file_basename, reason}}`
-  if any write fails — mirroring `Valea.ICM.References.rewrite/3`'s
-  contract: already-rewritten files are left on disk; the caller surfaces
-  the error. `{:error, :outside_workspace}` when `mount_key` doesn't name a
-  currently enabled, non-degraded mount; `{:error, :no_workspace}` when no
-  workspace is open.
+  Returns `{:ok, [updated_source_paths]}` (sorted) on success, or
+  `{:error, {:rewrite_failed, file_basename, reason}}` if any write fails —
+  mirroring `Valea.ICM.References.rewrite/3`'s contract: already-rewritten
+  files are left on disk; the caller surfaces the error. Each
+  `updated_source_paths` entry is relative to ITS OWN mount's root — when a
+  rewritten source lives in `mount_key`'s own ICM (the common case) that's
+  `mount_key`'s root; when it lives in a related ICM instead, it's that
+  ICM's own root. KNOWN LIMITATION: this list carries no mount qualifier
+  per entry (unlike `Valea.ICM.Backlinks`'s per-item `mount` field), so if
+  the SAME relative path happens to exist in `mount_key`'s ICM and in a
+  related one and BOTH get rewritten, the two entries in this list are
+  textually indistinguishable — a display/informational ambiguity only,
+  never a write-correctness one (each file was written to its own real,
+  correctly-resolved absolute path). `{:error, :outside_workspace}` when
+  `mount_key` doesn't name a currently enabled, non-degraded mount;
+  `{:error, :no_workspace}` when no workspace is open.
   """
   @spec rewrite_all(String.t(), [{String.t(), String.t()}]) ::
           {:ok, [String.t()]}
           | {:error, {:rewrite_failed, String.t(), term()} | :outside_workspace | :no_workspace}
   def rewrite_all(mount_key, pairs) do
-    with {:ok, mount} <- resolve_mount(mount_key) do
+    with {:ok, mount} <- resolve_mount(mount_key),
+         {:ok, workspace} <- workspace_root() do
       sources =
-        for abs <- Path.wildcard(Path.join(mount.root, "**/*.md")),
-            do: {Path.relative_to(abs, mount.root), abs}
+        for scoped <- Mounts.scoped_roots(workspace, mount_key),
+            abs <- Path.wildcard(Path.join(scoped.root, "**/*.md")),
+            do: {scoped.root, Path.relative_to(abs, scoped.root), abs}
 
       needles = basename_needles(pairs)
 
       sources
-      |> Enum.reduce_while({:ok, []}, fn {source_rel, abs}, {:ok, updated} ->
-        case rewrite_file(mount.root, source_rel, abs, pairs, needles) do
+      |> Enum.reduce_while({:ok, []}, fn {source_root, source_rel, abs}, {:ok, updated} ->
+        case rewrite_file(mount.root, source_root, source_rel, abs, pairs, needles) do
           :unchanged -> {:cont, {:ok, updated}}
           {:ok, _} -> {:cont, {:ok, [source_rel | updated]}}
           {:error, reason} -> {:halt, {:error, {:rewrite_failed, Path.basename(abs), reason}}}
@@ -150,18 +166,18 @@ defmodule Valea.ICM.LinkRewrite do
         do: needle
   end
 
-  defp rewrite_file(mount_root, source_rel, abs, pairs, needles) do
+  defp rewrite_file(target_root, source_root, source_rel, abs, pairs, needles) do
     with {:ok, content} <- File.read(abs) do
       if Enum.any?(needles, &String.contains?(content, &1)) do
-        splice_file(mount_root, source_rel, abs, content, pairs)
+        splice_file(target_root, source_root, source_rel, abs, content, pairs)
       else
         :unchanged
       end
     end
   end
 
-  defp splice_file(mount_root, source_rel, abs, content, pairs) do
-    confirmed = confirmed_urls(mount_root, source_rel, content, pairs)
+  defp splice_file(target_root, source_root, source_rel, abs, content, pairs) do
+    confirmed = confirmed_urls(target_root, source_root, source_rel, content, pairs)
 
     case splice_urls(content, confirmed) do
       ^content ->
@@ -178,45 +194,48 @@ defmodule Valea.ICM.LinkRewrite do
   # For every (old -> new) pair, this source's confirmed Link/Image
   # destinations (from Backlinks.destinations/3 — a real AST parse) whose
   # RESOLVED absolute path (`:abs`, already percent-decoded) matches the
-  # pair's old absolute path, are mapped RAW url string (`:url` — the
-  # exact on-disk bytes, unbracketed, un-decoded) to its replacement
-  # destination string.
-  defp confirmed_urls(mount_root, source_rel, content, pairs) do
-    dests = Backlinks.destinations(mount_root, source_rel, content)
-    source_dir = dirname_rel(source_rel)
+  # pair's old absolute path (resolved against `target_root` — the RENAMED
+  # target's own ICM root, since `pairs` is always in that ICM's
+  # vocabulary), are mapped RAW url string (`:url` — the exact on-disk
+  # bytes, unbracketed, un-decoded) to its replacement destination string.
+  #
+  # `source_root` is the SOURCE page's own mount root — the SAME as
+  # `target_root` for a same-ICM link (the common case), but a DIFFERENT
+  # physical directory tree entirely when the source lives in a related ICM
+  # (Task 5.6 scope widening). `Backlinks.destinations/3` is called with
+  # `source_root` so its `source_dir` (and therefore every resolved `:abs`)
+  # is computed from the file's REAL on-disk location, regardless of which
+  # ICM it lives in.
+  defp confirmed_urls(target_root, source_root, source_rel, content, pairs) do
+    dests = Backlinks.destinations(source_root, source_rel, content)
+    source_dir_abs = Path.dirname(to_abs(source_root, source_rel))
 
     for {old, new} <- pairs,
-        old_abs = to_abs(mount_root, old),
+        old_abs = to_abs(target_root, old),
+        new_abs = to_abs(target_root, new),
         %{url: url, abs: abs} <- dests,
         abs == old_abs,
         into: %{} do
-      {url, replacement(url, source_dir, new, mount_root)}
+      {url, replacement(url, source_dir_abs, new_abs)}
     end
   end
 
   # Path rule (editor spec): an absolute on-disk destination stays
   # absolute; every other destination is recomputed relative-from-the-
-  # linking-page, in the SAME vocabulary `new` is already in (mount-relative
-  # — `Valea.Paths.relative/2` is pure segment math, no filesystem access,
-  # so both sides must already agree on vocabulary).
-  defp replacement("/" <> _, _source_dir, new, mount_root), do: to_abs(mount_root, new)
-  defp replacement(_url, source_dir, new, _mount_root), do: Valea.Paths.relative(source_dir, new)
+  # linking-page. Both arguments here are already ABSOLUTE, real on-disk
+  # paths (never mount-relative strings) — `Valea.Paths.relative/2` is pure
+  # segment math (`Path.split/1` + a common-prefix drop), so it needs both
+  # sides in the SAME coordinate system to produce a sane result; using
+  # absolute paths makes that hold regardless of whether the source page
+  # and the renamed target live in the same ICM or in two unrelated
+  # directory trees (a related ICM mounted elsewhere on disk entirely).
+  # For a same-ICM link this produces byte-identical output to the old
+  # mount-relative computation (the shared `target_root`/`source_root`
+  # prefix simply drops out of the common-prefix match).
+  defp replacement("/" <> _, _source_dir_abs, new_abs), do: new_abs
 
-  # `Path.dirname/1` of a mount-root-relative path with no slash (a file
-  # living directly at the mount root, e.g. `"A.md"`) returns `"."` — a
-  # single, non-empty path segment. `Valea.Paths.relative/2` is pure
-  # segment math (`Path.split/1` + a common-prefix drop): feeding it `"."`
-  # instead of the mount root's own `""` sentinel makes it treat the
-  # source as one directory level DEEPER than it really is, prepending a
-  # spurious `../` to every recomputed destination. Normalize `"."` to
-  # `""` — the same root sentinel `Valea.ICM`'s own `parent_of/1` uses —
-  # before it ever reaches `relative/2`.
-  defp dirname_rel(rel_path) do
-    case Path.dirname(rel_path) do
-      "." -> ""
-      other -> other
-    end
-  end
+  defp replacement(_url, source_dir_abs, new_abs),
+    do: Valea.Paths.relative(source_dir_abs, new_abs)
 
   # Replaces each confirmed url's occurrences INSIDE link-closing syntax
   # only — `](url)` / `](<url>)` (an image `![alt](` ends with the same

@@ -1213,7 +1213,7 @@ export async function icmPathsExistChannel<Fields extends IcmPathsExistFields | 
 
 export type IcmSearchInput = {
   query: string;
-  mount?: string | null;
+  mountKey?: string | null;
 };
 
 export type IcmSearchFields = UnifiedFieldSelection<{results: Array<{path: string, mount: string, title: string, snippet: string, terms: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "mount" | "title" | "snippet" | "terms"}>, skipped: Array<string>, __type: "TypedMap", __primitiveFields: "skipped"}>[];

@@ -73,6 +73,7 @@ defmodule Valea.Mounts do
   the config key.
   """
 
+  alias Valea.Mounts.Context
   alias Valea.Mounts.External
   alias Valea.Mounts.Manifest
   alias Valea.Paths
@@ -212,6 +213,63 @@ defmodule Valea.Mounts do
     workspace
     |> list()
     |> Enum.find(&(&1.degraded == nil and &1.manifest != nil and &1.manifest.id == icm_id))
+  end
+
+  @doc """
+  The editor-time cross-ICM scan scope (search, backlinks, rename
+  link-rewrite — spec decision (b), Task 5.6): `mount_key`'s own mount plus
+  the mount of every ICM it DIRECTLY declares related via its own
+  `CONTEXT.md` (`Valea.Mounts.Context.resolve/2`). A declared related entry
+  that doesn't resolve (not mounted, disabled, degraded, duplicate id, or
+  an escaping entrypoint) is silently excluded from the scope, exactly as
+  `Context.resolve/2` excludes it from `related` (surfaced there instead as
+  an `issue`, which this function does not carry — a caller that needs the
+  issues, e.g. for a UI warning, calls `Context.resolve/2` itself). A
+  malformed `CONTEXT.md` that declares the primary's OWN id back is
+  excluded too — the primary is never duplicated in the returned scope.
+
+  Returns full `mount()` structs, not bare root paths — every caller scans
+  more than one ICM's worth of content and must attribute each hit/backlink
+  back to the SPECIFIC ICM it lives in (that ICM's OWN `mount_key`, for
+  `(mount_key, rel_path)` addressing), not just a physical directory; each
+  related entry's `mount()` is synthesized from `Context.resolve/2`'s own
+  resolved fields (already themselves sourced from a healthy, enabled
+  mount — see that module's moduledoc) rather than re-queried.
+
+  `[]` when `mount_key` does not name a currently ENABLED, non-degraded
+  mount in `workspace` — callers that need to distinguish "unknown/disabled
+  primary" from "a resolved primary with an empty declared-related list"
+  resolve the primary themselves first (mirroring every other ICM RPC's own
+  enabled+non-degraded gate, e.g. `Valea.ICM`'s own `resolve_mount/1`).
+  """
+  @spec scoped_roots(workspace :: String.t(), mount_key :: String.t()) :: [mount]
+  def scoped_roots(workspace, mount_key)
+      when is_binary(workspace) and is_binary(mount_key) do
+    case mount_by_key(workspace, mount_key) do
+      %{enabled: true, degraded: nil} = primary ->
+        related =
+          workspace
+          |> Context.resolve(primary)
+          |> Map.fetch!(:related)
+          |> Enum.reject(&(&1.mount_key == primary.name))
+          |> Enum.uniq_by(& &1.mount_key)
+          |> Enum.map(&related_to_mount/1)
+
+        [primary | related]
+
+      _not_a_healthy_primary ->
+        []
+    end
+  end
+
+  # `Context.resolve/2`'s `resolved` shape already carries everything a
+  # `mount()` needs except `rel_root`/`enabled`/`degraded` — every mount is
+  # external (`rel_root: nil`, moduledoc), and `Context`'s own
+  # `find_related_mount/2` already required `enabled: true` and healthy
+  # (`degraded == nil`, via `mount_by_id/2`) before this entry ever reached
+  # `related`.
+  defp related_to_mount(%{mount_key: key, root: root, manifest: manifest}) do
+    %{name: key, rel_root: nil, root: root, manifest: manifest, enabled: true, degraded: nil}
   end
 
   # With NESTED mount roots (one mount's folder inside another's), a path
