@@ -79,7 +79,7 @@ defmodule Valea.Workflows.MemoryProposal do
           {:ok, %{mount: map(), abs: String.t()}}
           | {:error, :not_in_mount | :mount_not_enabled | :outside_mount}
   def check_target(workspace, target_path) do
-    case Mounts.mount_for(workspace, target_path) do
+    case find_mount(workspace, target_path) do
       nil ->
         {:error, :not_in_mount}
 
@@ -97,6 +97,35 @@ defmodule Valea.Workflows.MemoryProposal do
       _mount ->
         {:error, :mount_not_enabled}
     end
+  end
+
+  # `Mounts.mount_for/2` attributes a path ONLY among EFFECTIVE (enabled AND
+  # non-degraded) mounts by design (see its own moduledoc) — a DISABLED
+  # mount is filtered out right alongside a degraded one, so it can never
+  # be the mount `mount_for/2` returns. That collapses the `_mount ->
+  # {:error, :mount_not_enabled}` clause above into dead code: this
+  # function needs to tell "names a real, healthy mount that happens to be
+  # disabled" apart from "names no mount at all," which `mount_for/2`'s
+  # contract cannot give it. So attribution here is independent —
+  # `Mounts.list/1` filtered to non-degraded entries only (mirroring
+  # `Mounts.mount_for/2`'s own segment-boundary, most-specific-root
+  # logic), deliberately WITHOUT the `enabled` filter, so a disabled
+  # mount is still attributed (and rejected with the specific
+  # `:mount_not_enabled` reason above) rather than masquerading as
+  # "not in any mount." A degraded mount's root stays excluded — same
+  # untrusted-root reasoning as `Mounts.mount_for/2`.
+  defp find_mount(workspace, target_path) do
+    workspace
+    |> Mounts.list()
+    |> Enum.filter(&(&1.degraded == nil and mount_prefix?(target_path, &1.root)))
+    |> most_specific_root()
+  end
+
+  defp most_specific_root([]), do: nil
+  defp most_specific_root(matches), do: Enum.max_by(matches, &byte_size(&1.root))
+
+  defp mount_prefix?(path, root) do
+    root != "" and (path == root or String.starts_with?(path <> "/", root <> "/"))
   end
 
   defp mount_root_abs(workspace, %{rel_root: rel}) when is_binary(rel),

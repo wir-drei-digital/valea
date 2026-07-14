@@ -1,9 +1,17 @@
 defmodule Valea.Workflows.MemoryProposalTest do
   use ExUnit.Case, async: false
 
+  alias Valea.AgentCase
   alias Valea.Workflows.MemoryProposal
   alias Valea.Workspace.Manager
 
+  # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:` ONLY —
+  # no more filesystem-glob discovery of an embedded `mounts/<name>` — so
+  # `check_target/2`'s tests below need a REAL mounted EXTERNAL ICM (via
+  # `AgentCase.mount_test_icm!/2`) rather than a bare "mounts/primary/..."
+  # literal that names nothing. Every target path in those tests is the
+  # mounted ICM's ABSOLUTE resolved path (`icm.root`-relative), never the
+  # old workspace-relative literal.
   setup do
     dir =
       Path.join(
@@ -18,13 +26,19 @@ defmodule Valea.Workflows.MemoryProposalTest do
     staging = Path.join(ws.path, "queue/staging/r1")
     File.mkdir_p!(Path.join(staging, "proposals"))
 
+    icm =
+      AgentCase.mount_test_icm!(ws.path,
+        name: "Primary",
+        pages: %{"Pricing/Current Pricing.md" => "# Current Pricing\n"}
+      )
+
     on_exit(fn ->
       Manager.close()
       File.rm_rf!(dir)
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    %{workspace: ws.path, staging: staging}
+    %{workspace: ws.path, staging: staging, icm: icm}
   end
 
   defp put_pair(staging, name, manifest, content) do
@@ -73,28 +87,31 @@ defmodule Valea.Workflows.MemoryProposalTest do
     assert results["h.json"] == {:error, :invalid_manifest}
   end
 
-  test "check_target accepts an enabled embedded mount page", %{workspace: ws} do
-    assert {:ok, %{abs: abs}} =
-             MemoryProposal.check_target(ws, "mounts/primary/Pricing/Current Pricing.md")
+  test "check_target accepts an enabled external mount page", %{workspace: ws, icm: icm} do
+    target = Path.join(icm.root, "Pricing/Current Pricing.md")
+    assert {:ok, %{abs: abs}} = MemoryProposal.check_target(ws, target)
 
-    assert String.ends_with?(abs, "/mounts/primary/Pricing/Current Pricing.md")
+    assert abs == target
   end
 
-  test "check_target rejects shell, traversal, and unknown-mount targets", %{workspace: ws} do
+  test "check_target rejects shell, traversal, and unknown-mount targets", %{
+    workspace: ws,
+    icm: icm
+  } do
     assert {:error, :not_in_mount} = MemoryProposal.check_target(ws, "AGENTS.md")
     assert {:error, :not_in_mount} = MemoryProposal.check_target(ws, "sources/mail/inbox.md")
 
     assert {:error, :outside_mount} =
-             MemoryProposal.check_target(ws, "mounts/primary/../../etc/passwd")
+             MemoryProposal.check_target(ws, Path.join(icm.root, "../../etc/passwd"))
 
     assert {:error, :not_in_mount} = MemoryProposal.check_target(ws, "/tmp/nope.md")
   end
 
-  test "check_target rejects a disabled mount", %{workspace: ws} do
-    :ok = Valea.Mounts.set_enabled("primary", false)
+  test "check_target rejects a disabled mount", %{workspace: ws, icm: icm} do
+    :ok = Valea.Mounts.set_enabled(ws, icm.mount_key, false)
 
-    assert {:error, :mount_not_enabled} =
-             MemoryProposal.check_target(ws, "mounts/primary/Pricing/Current Pricing.md")
+    target = Path.join(icm.root, "Pricing/Current Pricing.md")
+    assert {:error, :mount_not_enabled} = MemoryProposal.check_target(ws, target)
   end
 
   test "content exceeding 1_000_000 bytes is rejected", %{staging: staging} do
