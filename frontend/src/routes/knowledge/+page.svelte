@@ -83,13 +83,16 @@
   let reenabling: Record<string, boolean> = $state({});
   let reenableError: Record<string, string> = $state({});
 
-  async function reenable(name: string): Promise<void> {
-    reenabling = { ...reenabling, [name]: true };
-    reenableError = { ...reenableError, [name]: '' };
-    const result = await mountsStore.setEnabled(name, true, workspaceStore.generation ?? 0);
-    reenabling = { ...reenabling, [name]: false };
+  // `mountKey` (task 3.4) — `MountSummary.name` is now the ICM's DISPLAY
+  // name, not its stable `icms:` config key, so every call that mutates a
+  // mount must address it by `mountKey`, not `name`.
+  async function reenable(mountKey: string): Promise<void> {
+    reenabling = { ...reenabling, [mountKey]: true };
+    reenableError = { ...reenableError, [mountKey]: '' };
+    const result = await mountsStore.setEnabled(mountKey, true, workspaceStore.generation ?? 0);
+    reenabling = { ...reenabling, [mountKey]: false };
     if (!result.ok) {
-      reenableError = { ...reenableError, [name]: result.error };
+      reenableError = { ...reenableError, [mountKey]: result.error };
     }
   }
 
@@ -109,8 +112,9 @@
   let unmountTarget = $state('');
   let unmountOpen = $state(false);
 
-  function openUnmount(name: string): void {
-    unmountTarget = name;
+  // `mountKey` (task 3.4) — see `reenable`'s comment above.
+  function openUnmount(mountKey: string): void {
+    unmountTarget = mountKey;
     unmountOpen = true;
   }
 </script>
@@ -209,14 +213,14 @@
           <div>
             <SectionOverline label="Needs attention" />
             <ul class="flex flex-col gap-1.5 px-2 pb-3">
-              {#each classification.degraded as mount (mount.name)}
+              {#each classification.degraded as mount (mount.mountKey)}
                 <li
                   class="bg-warn-tint text-warn-ink flex items-start gap-2 rounded-md px-2.5 py-2 text-[12px]"
                   title={degradedChipLabel(mount)}
                 >
                   <TriangleAlert class="mt-0.5 size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
                   <span class="min-w-0 flex-1">
-                    <span class="block truncate font-semibold">{mount.title}</span>
+                    <span class="block truncate font-semibold">{mount.name}</span>
                     <span class="block text-[11px] opacity-90">{degradedChipLabel(mount)}</span>
                     {#if isExternalMount(mount)}
                       <span class="mt-0.5 block truncate font-mono text-[10.5px] opacity-80" title={mount.root}>
@@ -224,7 +228,7 @@
                       </span>
                       <button
                         type="button"
-                        onclick={() => openUnmount(mount.name)}
+                        onclick={() => openUnmount(mount.mountKey)}
                         class="mt-0.5 text-[11px] underline-offset-2 hover:underline"
                       >
                         Unmount
@@ -253,13 +257,13 @@
             </button>
             {#if deactivatedOpen}
               <ul class="flex flex-col gap-1 px-2 pb-3">
-                {#each classification.deactivated as mount (mount.name)}
+                {#each classification.deactivated as mount (mount.mountKey)}
                   <!-- The error line lives INSIDE the <li> — a <p> as a direct
                        child of <ul> is invalid markup. -->
                   <li class="flex flex-col gap-1 py-1">
                     <div class="flex items-center justify-between gap-2">
                       <span class="min-w-0 flex-1">
-                        <span class="text-ink-secondary block truncate text-[13px]">{mount.title}</span>
+                        <span class="text-ink-secondary block truncate text-[13px]">{mount.name}</span>
                         {#if isExternalMount(mount)}
                           <span class="text-ink-meta block truncate font-mono text-[10.5px]" title={mount.root}>
                             {mount.root}
@@ -268,7 +272,7 @@
                       </span>
                       <div class="flex shrink-0 items-center gap-1.5">
                         {#if isExternalMount(mount)}
-                          <Button type="button" variant="outline" size="sm" onclick={() => openUnmount(mount.name)}>
+                          <Button type="button" variant="outline" size="sm" onclick={() => openUnmount(mount.mountKey)}>
                             Unmount
                           </Button>
                         {/if}
@@ -276,15 +280,15 @@
                           type="button"
                           variant="outline"
                           size="sm"
-                          disabled={!!reenabling[mount.name]}
-                          onclick={() => void reenable(mount.name)}
+                          disabled={!!reenabling[mount.mountKey]}
+                          onclick={() => void reenable(mount.mountKey)}
                         >
-                          {reenabling[mount.name] ? 'Enabling…' : 'Enable'}
+                          {reenabling[mount.mountKey] ? 'Enabling…' : 'Enable'}
                         </Button>
                       </div>
                     </div>
-                    {#if reenableError[mount.name]}
-                      <p class="text-warn-ink text-[11px]" role="alert">{reenableError[mount.name]}</p>
+                    {#if reenableError[mount.mountKey]}
+                      <p class="text-warn-ink text-[11px]" role="alert">{reenableError[mount.mountKey]}</p>
                     {/if}
                   </li>
                 {/each}

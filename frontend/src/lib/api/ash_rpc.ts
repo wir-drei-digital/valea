@@ -1492,6 +1492,451 @@ export async function saveIcmPageChannel<Fields extends SaveIcmPageFields | unde
 }
 
 
+export type CreateIcmInput = {
+  name: string;
+  path: string;
+  generation: number;
+};
+
+export type CreateIcmFields = UnifiedFieldSelection<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}>[];
+
+export type InferCreateIcmResult<
+  Fields extends CreateIcmFields | undefined,
+> = InferResult<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}, Fields>;
+
+export type CreateIcmResult<Fields extends CreateIcmFields | undefined = undefined> = | { success: true; data: InferCreateIcmResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function createIcm<Fields extends CreateIcmFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateIcmInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateIcmResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateIcmResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function createIcmChannel<Fields extends CreateIcmFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateIcmInput;
+  fields: Fields;
+  resultHandler: (result: CreateIcmResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateIcmResult<Fields>>(
+    config.channel,
+    {
+    action: "create_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type IcmDoctorInput = {
+  mountKey: string;
+  generation: number;
+};
+
+export type IcmDoctorFields = UnifiedFieldSelection<{ok: boolean, checks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "ok" | "checks"}>[];
+
+export type InferIcmDoctorResult<
+  Fields extends IcmDoctorFields | undefined,
+> = InferResult<{ok: boolean, checks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "ok" | "checks"}, Fields>;
+
+export type IcmDoctorResult<Fields extends IcmDoctorFields | undefined = undefined> = | { success: true; data: InferIcmDoctorResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function icmDoctor<Fields extends IcmDoctorFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: IcmDoctorInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<IcmDoctorResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "icm_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<IcmDoctorResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function icmDoctorChannel<Fields extends IcmDoctorFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: IcmDoctorInput;
+  fields: Fields;
+  resultHandler: (result: IcmDoctorResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<IcmDoctorResult<Fields>>(
+    config.channel,
+    {
+    action: "icm_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListIcmsInput = {
+  generation: number;
+};
+
+export type ListIcmsFields = UnifiedFieldSelection<{icms: Array<{mountKey: string, id: string | null, name: string, description: string, root: string, enabled: boolean, degraded: string | null, __type: "TypedMap", __primitiveFields: "mountKey" | "id" | "name" | "description" | "root" | "enabled" | "degraded"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListIcmsResult<
+  Fields extends ListIcmsFields | undefined,
+> = InferResult<{icms: Array<{mountKey: string, id: string | null, name: string, description: string, root: string, enabled: boolean, degraded: string | null, __type: "TypedMap", __primitiveFields: "mountKey" | "id" | "name" | "description" | "root" | "enabled" | "degraded"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListIcmsResult<Fields extends ListIcmsFields | undefined = undefined> = | { success: true; data: InferListIcmsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function listIcms<Fields extends ListIcmsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListIcmsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListIcmsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_icms",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListIcmsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function listIcmsChannel<Fields extends ListIcmsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListIcmsInput;
+  fields: Fields;
+  resultHandler: (result: ListIcmsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListIcmsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_icms",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MountIcmInput = {
+  path: string;
+  generation: number;
+};
+
+export type MountIcmFields = UnifiedFieldSelection<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}>[];
+
+export type InferMountIcmResult<
+  Fields extends MountIcmFields | undefined,
+> = InferResult<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}, Fields>;
+
+export type MountIcmResult<Fields extends MountIcmFields | undefined = undefined> = | { success: true; data: InferMountIcmResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function mountIcm<Fields extends MountIcmFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MountIcmInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MountIcmResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mount_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MountIcmResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function mountIcmChannel<Fields extends MountIcmFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: MountIcmInput;
+  fields: Fields;
+  resultHandler: (result: MountIcmResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MountIcmResult<Fields>>(
+    config.channel,
+    {
+    action: "mount_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetIcmEnabledInput = {
+  mountKey: string;
+  enabled: boolean;
+  generation: number;
+};
+
+export type SetIcmEnabledFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];
+
+export type InferSetIcmEnabledResult<
+  Fields extends SetIcmEnabledFields | undefined,
+> = InferResult<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}, Fields>;
+
+export type SetIcmEnabledResult<Fields extends SetIcmEnabledFields | undefined = undefined> = | { success: true; data: InferSetIcmEnabledResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function setIcmEnabled<Fields extends SetIcmEnabledFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetIcmEnabledInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetIcmEnabledResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_icm_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetIcmEnabledResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function setIcmEnabledChannel<Fields extends SetIcmEnabledFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetIcmEnabledInput;
+  fields: Fields;
+  resultHandler: (result: SetIcmEnabledResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetIcmEnabledResult<Fields>>(
+    config.channel,
+    {
+    action: "set_icm_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type UnmountIcmInput = {
+  mountKey: string;
+  generation: number;
+};
+
+export type UnmountIcmFields = UnifiedFieldSelection<{unmounted: boolean, __type: "TypedMap", __primitiveFields: "unmounted"}>[];
+
+export type InferUnmountIcmResult<
+  Fields extends UnmountIcmFields | undefined,
+> = InferResult<{unmounted: boolean, __type: "TypedMap", __primitiveFields: "unmounted"}, Fields>;
+
+export type UnmountIcmResult<Fields extends UnmountIcmFields | undefined = undefined> = | { success: true; data: InferUnmountIcmResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function unmountIcm<Fields extends UnmountIcmFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: UnmountIcmInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<UnmountIcmResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "unmount_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<UnmountIcmResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function unmountIcmChannel<Fields extends UnmountIcmFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: UnmountIcmInput;
+  fields: Fields;
+  resultHandler: (result: UnmountIcmResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<UnmountIcmResult<Fields>>(
+    config.channel,
+    {
+    action: "unmount_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type CreateMailFoldersInput = {
   generation: number;
 };

@@ -1,57 +1,57 @@
 import { api, type Api } from '../api/client';
 import { icmStore } from './icm.svelte';
+import { workspaceStore } from './workspace.svelte';
 import type { Channel } from 'phoenix';
 
 /**
  * Minimal surface of `api` this store depends on — same `Pick<Api, ...>`
  * convention as the other T16+ stores, so tests can inject a fake without
- * implementing every wrapped call.
+ * implementing every wrapped call. Task 3.4: renamed to the `Valea.Api.Icms`
+ * (C9) wrappers — `listMounts`/`setMountEnabled`/`createMount`/
+ * `declareMount`/`undeclareMount`/`mountsDoctor` (still live on
+ * `Valea.Api.Mounts` until Phase 11 deletes it) are no longer called from
+ * this store.
  */
-type MountsApi = Pick<
-  Api,
-  'listMounts' | 'setMountEnabled' | 'createMount' | 'declareMount' | 'undeclareMount' | 'mountsDoctor'
->;
+type MountsApi = Pick<Api, 'listIcms' | 'setIcmEnabled' | 'createIcm' | 'mountIcm' | 'unmountIcm' | 'icmDoctor'>;
 
 /**
- * One row of `list_mounts` — mirrors `listMountsFields` in `api/client.ts`.
- * `relRoot`/`root`/`enabled`/`degraded` are NESTED array-item fields on the
- * backend's typed `:map` action (see `Valea.Api.Mounts`'s moduledoc), so
- * unlike a top-level boolean-returning field, they arrive already
- * camelCased with no falsy-map-field workaround needed. `degraded` is
- * `null` for a healthy mount, a reason string otherwise (e.g.
- * `"manifest_missing"`).
- *
- * `relRoot` is `null` for an EXTERNAL (by-reference, A2-T8) mount — it has
- * no workspace-relative path. `root` is the one field ALWAYS present
- * (never `null`): the mount's absolute directory, embedded or external —
- * use it (not `relRoot`) to show an external mount's real location.
+ * One row of `list_icms` — mirrors `listIcmsFields` in `api/client.ts`.
+ * Task 3.4: replaces the `Valea.Api.Mounts`-era shape (`name` = mount key,
+ * `title` = display name, `relRoot`/`root`) with the C9 id-based one —
+ * `mountKey` is now the stable `icms:` config key (what `name` used to
+ * mean), `name` is the ICM's own display name (what `title` used to mean),
+ * and `id` is the manifest's stable UUID (`null` for a degraded mount with
+ * no loadable manifest). `relRoot`/embedded-vs-external branching is gone
+ * from this payload entirely — post-A2, EVERY mount is by-reference, so
+ * `root` (the resolved absolute path) is always the real location, and
+ * there is no embedded form left to distinguish it from.
  */
 export type MountSummary = {
+  mountKey: string;
+  id: string | null;
   name: string;
-  title: string;
   description: string;
-  relRoot: string | null;
   root: string;
   enabled: boolean;
   degraded: string | null;
 };
 
 /**
- * The mount catalog (`config/workspace.yaml`'s `mounts:` section, A-T1/A-T2)
- * — every mount the current workspace knows about, enabled or not. Powers
- * the (T15) mounts-management UI: toggling a mount, creating a new one, and
- * staying live as the backend reports `mounts_changed` pushes (A-T6, mount
- * manifest edits or an RPC mutation — see `Valea.Api.Mounts`'s moduledoc).
+ * The mount catalog (`config/workspace.yaml`'s `icms:` map) — every ICM the
+ * current workspace has mounted, enabled or not. Powers the mounts-
+ * management UI: toggling a mount, mounting/creating one, and staying live
+ * as the backend reports `mounts_changed` pushes (a mount manifest edit or
+ * an RPC mutation — see `Valea.Api.Icms`'s moduledoc).
  */
 /**
  * A reference-adoption declare-stage failure carried across the
  * onboarding-to-app transition (fix wave 1, A2-T9): `workspaceStore.create`
  * flips `state = 'open'` — and the root layout reactively swaps the
- * Onboarding screen out — BEFORE `declare_mount` resolves, so a declare
- * failure landing after that flip has no live onboarding card left to
- * render on. `adoptByReference` (onboarding-path.ts) persists it here; the
- * Knowledge page renders it as a dismissible banner
- * (`adoptFailureBannerText`, mount-sections.ts).
+ * Onboarding screen out — BEFORE the mount resolves, so a failure landing
+ * after that flip has no live onboarding card left to render on.
+ * `adoptByReference` (onboarding-path.ts) persists it here; the Knowledge
+ * page renders it as a dismissible banner (`adoptFailureBannerText`,
+ * mount-sections.ts).
  */
 export type PendingAdoptError = {
   /** The by-reference mount name the declare was attempted with. */
@@ -91,30 +91,45 @@ export class MountsStore {
     this.pendingAdoptError = null;
   }
 
+  /**
+   * Task 3.4: unlike every mutating method below, `refresh` has no
+   * caller-supplied `generation` — it is called bare from `+page.svelte`'s
+   * `onMount` and from `handleMountsChanged` below, neither of which had a
+   * generation to thread before `list_icms` started guarding one (see
+   * `Valea.Api.Icms`'s moduledoc: it reads LIVE filesystem/manifest state,
+   * same "mutating-adjacent" posture `mounts_doctor` already had). Rather
+   * than push a `generation` parameter onto every zero-arg call site, this
+   * reads it off `workspaceStore` directly — the one deliberate exception
+   * to this module's usual "store-free api, caller supplies generation"
+   * convention (see `api/client.ts`'s header comment and `setEnabled`/
+   * `create`/`declare`/`undeclare` below, which keep taking it explicitly
+   * since they already had a caller-supplied value to thread).
+   */
   async refresh(): Promise<void> {
-    const result = await this.#api.listMounts();
+    const result = await this.#api.listIcms(workspaceStore.generation ?? 0);
     if (!result.ok) return;
 
-    const data = result.data as { mounts?: MountSummary[] };
-    this.mounts = data.mounts ?? [];
+    const data = result.data as { icms?: MountSummary[] };
+    this.mounts = data.icms ?? [];
     this.loaded = true;
   }
 
   /**
-   * Enables/disables a mount. `generation` is sourced from `workspaceStore`
-   * by the caller (not injected) — same store-free-api convention
-   * `api/client.ts`'s header comment documents; see `QueueStore.approve`
-   * for the identical pattern. Refetches the catalog on success — the
-   * disk-level change also arrives via `mounts_changed`
-   * (`handleMountsChanged` below), but that push isn't guaranteed to beat
-   * this refetch, and re-running it is harmless.
+   * Enables/disables a mount, addressed by `mountKey` (the `icms:` config
+   * key — `MountSummary.mountKey`, NOT the display `name`). `generation` is
+   * sourced from `workspaceStore` by the caller (not injected) — same
+   * store-free-api convention `api/client.ts`'s header comment documents;
+   * see `QueueStore.approve` for the identical pattern. Refetches the
+   * catalog on success — the disk-level change also arrives via
+   * `mounts_changed` (`handleMountsChanged` below), but that push isn't
+   * guaranteed to beat this refetch, and re-running it is harmless.
    */
   async setEnabled(
-    name: string,
+    mountKey: string,
     enabled: boolean,
     generation: number
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const result = await this.#api.setMountEnabled(name, enabled, generation);
+    const result = await this.#api.setIcmEnabled(mountKey, enabled, generation);
     if (!result.ok) return { ok: false, error: result.error };
 
     await this.refresh();
@@ -122,68 +137,72 @@ export class MountsStore {
   }
 
   /**
-   * Creates a new mount. Returns the backend-assigned `relRoot` (the
-   * mount's directory, relative to the workspace root) so a caller (e.g.
-   * T15's "new mount" dialog, or T16's onboarding adopt-by-move flow) can
-   * navigate straight to it without a second round trip. Refetches the
-   * catalog on success, same reasoning as `setEnabled`.
+   * Mints a brand-new external ICM at `path` (seeding the portable
+   * template, per `Valea.Mounts.create/3`) and mounts it. Returns the
+   * backend-assigned `mountKey`/`id` so a caller can navigate straight to
+   * it without a second round trip. Refetches the catalog on success, same
+   * reasoning as `setEnabled`.
    */
   async create(
     name: string,
-    description: string,
+    path: string,
     generation: number
-  ): Promise<{ ok: true; relRoot: string } | { ok: false; error: string }> {
-    const result = await this.#api.createMount(name, description, generation);
+  ): Promise<{ ok: true; mountKey: string; id: string } | { ok: false; error: string }> {
+    const result = await this.#api.createIcm(name, path, generation);
     if (!result.ok) return { ok: false, error: result.error };
 
-    const data = result.data as { relRoot: string };
+    const data = result.data as { mountKey: string; id: string };
     await this.refresh();
-    return { ok: true, relRoot: data.relRoot };
+    return { ok: true, mountKey: data.mountKey, id: data.id };
   }
 
   /**
-   * Declares an EXTERNAL (by-reference, A2-T8/A2-T9) mount: `name` becomes
-   * the config key, `ref` the folder's path (absolute or `~`-based — the
-   * onboarding "Use it where it is" flow and Knowledge's "Mount a folder
-   * from elsewhere…" dialog both pass the exact path the user picked,
-   * un-normalized, same as `workspaceStore.adopt`'s `icmSourcePath`).
-   * Rejections (the 8 `Valea.Mounts.External.validate_ref/2` reasons plus
-   * `invalid_mount_name`/`workspace_not_open`/`workspace_changed`) map to
-   * readable copy via `declareMountErrorMessage` below — this method itself
-   * only threads the raw code through, same "don't map errors in the
-   * store" convention `setEnabled`/`create` already use. Refetches the
-   * catalog on success, same reasoning as `setEnabled`/`create`.
+   * Mounts an already-existing, already-healthy external ICM folder at
+   * `ref` (`Valea.Mounts.mount/2`, exposed as `mount_icm`). `name` is kept
+   * as a parameter for call-site compatibility with the onboarding
+   * "Use it where it is" flow and Knowledge's "Mount a folder from
+   * elsewhere…" dialog (both still collect a name from the user) but is no
+   * longer sent to the backend — the mount key is now DERIVED from the
+   * target ICM's own manifest name (`Valea.Mounts.unique_mount_key/2`), the
+   * same minimal-compiling-stopgap posture `Valea.Api.Mounts.declare_mount`
+   * already documents for its own retired `name` argument. A real "pick a
+   * name" UI (or dropping the field) is deeper UI work, not this task's
+   * scope. Rejections (the 8 `Valea.Mounts.External.validate_ref/2`
+   * reasons plus `invalid_mount_name`/`workspace_not_open`/
+   * `workspace_changed`) map to readable copy via `declareMountErrorMessage`
+   * below. Refetches the catalog on success, same reasoning as
+   * `setEnabled`/`create`.
    */
   async declare(
     name: string,
     ref: string,
     generation: number
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const result = await this.#api.declareMount(name, ref, generation);
+    const result = await this.#api.mountIcm(ref, generation);
     if (!result.ok) return { ok: false, error: result.error };
 
-    // Fix wave 2: a successful declare IS the retry the adoption-failure
+    // Fix wave 2: a successful mount IS the retry the adoption-failure
     // banner points at ("Mount a folder from elsewhere…") — a user who just
     // mounted something shouldn't keep seeing "Couldn't mount…". A FAILED
-    // declare deliberately leaves it: the persisted failure is still true.
+    // mount deliberately leaves it: the persisted failure is still true.
     this.clearPendingAdoptError();
     await this.refresh();
     return { ok: true };
   }
 
   /**
-   * Undeclares (unmounts) an EXTERNAL mount named `name` — config-only,
-   * NEVER touches the folder itself (see `Valea.Mounts.undeclare/2`'s
+   * Unmounts (`unmount_icm`) the mount named `mountKey` — config-only,
+   * NEVER touches the folder itself (see `Valea.Mounts.unmount/2`'s
    * moduledoc: "never-delete promise" applies here as much as anywhere
-   * else in this codebase). Rejects with `mount_not_declared` when `name`
-   * isn't currently an external mount (embedded, or already gone).
-   * Refetches the catalog on success, same reasoning as `declare` above.
+   * else in this codebase). Rejects with `mount_not_found` when `mountKey`
+   * isn't a currently-mounted `icms:` entry. Refetches the catalog on
+   * success, same reasoning as `declare` above.
    */
   async undeclare(
-    name: string,
+    mountKey: string,
     generation: number
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const result = await this.#api.undeclareMount(name, generation);
+    const result = await this.#api.unmountIcm(mountKey, generation);
     if (!result.ok) return { ok: false, error: result.error };
 
     await this.refresh();
@@ -191,34 +210,42 @@ export class MountsStore {
   }
 
   /**
-   * Runs the mounts doctor (`Valea.Mounts.Doctor.run/1` via
-   * `mounts_doctor`) — per-mount health checks, same `{id, label, status,
-   * detail, remedy}` shape `Valea.Mail.Doctor`'s `mail_doctor` uses (see
-   * `MountsDoctorPanel.svelte`'s `normalizeMountsDoctorChecks` for the
-   * defensive narrowing of the unconstrained `checks` payload). Unlike
+   * Runs the ICM doctor (`icm_doctor` — a per-`mountKey` probe, see
+   * `Valea.Api.Icms`'s moduledoc) against EVERY currently-mounted ICM and
+   * flattens the results into the same `{ok, checks}` shape the old
+   * whole-workspace `mounts_doctor` returned, so `MountsDoctorPanel.svelte`
+   * needs no changes — it lists every mount via `list_icms`, then fans
+   * `icm_doctor` out across every `mountKey` in parallel. Unlike
    * `declare`/`undeclare`/`setEnabled`/`create`, this NEVER calls
    * `refresh()` on success — it is a read-only probe of live state (the
-   * watcher's current root set, the filesystem under each external mount's
-   * resolved root), not a config mutation, so there is nothing in
-   * `mounts`/`loaded` for it to have made stale.
+   * watcher's current root set, the filesystem under each mount's resolved
+   * root), not a config mutation, so there is nothing in `mounts`/`loaded`
+   * for it to have made stale.
    */
   async doctor(
     generation: number
   ): Promise<{ ok: true; data: { ok: boolean; checks: unknown[] } } | { ok: false; error: string }> {
-    const result = await this.#api.mountsDoctor(generation);
-    if (!result.ok) return { ok: false, error: result.error };
+    const listResult = await this.#api.listIcms(generation);
+    if (!listResult.ok) return { ok: false, error: listResult.error };
 
-    const data = result.data as { ok: boolean; checks: unknown[] };
-    return { ok: true, data };
+    const icms = (listResult.data as { icms?: MountSummary[] }).icms ?? [];
+    const results = await Promise.all(icms.map((icm) => this.#api.icmDoctor(icm.mountKey, generation)));
+
+    const firstFailure = results.find((r) => !r.ok);
+    if (firstFailure && !firstFailure.ok) return { ok: false, error: firstFailure.error };
+
+    const checks = results.flatMap((r) => (r.ok ? (r.data as { checks: unknown[] }).checks : []));
+    const ok = results.every((r) => r.ok && (r.data as { ok: boolean }).ok);
+    return { ok: true, data: { ok, checks } };
   }
 
   /**
    * Handles a `mounts_changed` push (wired below via `wireMountsEvents`).
    * Refetches BOTH this store's own catalog and `icmStore`'s tree: a mount
-   * being enabled/disabled/created changes not just `list_mounts`'s output
-   * but also `icm_tree`'s grouping (A-T11 — a newly-enabled mount gains a
-   * group, a disabled one loses one), so the two stores go stale together
-   * and must refresh together. `icmStore` is imported directly rather than
+   * being enabled/disabled/mounted changes not just `list_icms`'s output
+   * but also `icm_tree`'s grouping (a newly-enabled mount gains a group, a
+   * disabled one loses one), so the two stores go stale together and must
+   * refresh together. `icmStore` is imported directly rather than
    * injected — `icm.svelte.ts` imports `wireMountsEvents` back from this
    * module (to attach it alongside `wireQueueEvents`/`wireAuditEvents`/
    * `wireMailEvents` on the shared `workspace:events` join), so this pair
@@ -233,21 +260,21 @@ export class MountsStore {
 }
 
 /**
- * Readable copy for `declare_mount`'s error vocabulary
- * (`Valea.Api.Mounts.error_for/1`): the generation guard's own two codes,
- * `Valea.Mounts.validate_mount_name/1`'s `invalid_mount_name`, and all
- * EIGHT of `Valea.Mounts.External.validate_ref/2`'s reason atoms (that
- * function's `@doc` enumerates them: `not_absolute`, `inside_workspace`,
- * `ancestor_of_workspace`, `home_or_root`, `not_found`, `no_manifest`,
- * `unsafe_path`, and the 2-tuple `{:invalid_manifest, reason}` — which
- * `error_for/1` stringifies to the bare code `"invalid_manifest"`, same as
- * every other atom code, so this switch never needs the nested reason
- * string). Shared by the onboarding "Use it where it is" flow
- * (`onboarding-path.ts`'s `adoptByReference`) and Knowledge's "Mount a
- * folder from elsewhere…" dialog — both call `declare` above and need the
- * SAME mapping, so it lives here rather than being duplicated per caller
- * (mirrors `mail-shapes.ts` colocating `mailSetupErrorMessage` next to
- * `submitMailSetup`).
+ * Readable copy for `mount_icm`'s error vocabulary (`Valea.Api.Icms.error_for/1`,
+ * shared with `Valea.Api.Mounts.error_for/1`): the generation guard's own
+ * two codes, `Valea.Mounts.validate_mount_name/1`'s `invalid_mount_name`,
+ * and all EIGHT of `Valea.Mounts.External.validate_ref/2`'s reason atoms
+ * (that function's `@doc` enumerates them: `not_absolute`,
+ * `inside_workspace`, `ancestor_of_workspace`, `home_or_root`, `not_found`,
+ * `no_manifest`, `unsafe_path`, and the 2-tuple `{:invalid_manifest,
+ * reason}` — which `error_for/1` stringifies to the bare code
+ * `"invalid_manifest"`, same as every other atom code, so this switch never
+ * needs the nested reason string). Shared by the onboarding "Use it where
+ * it is" flow (`onboarding-path.ts`'s `adoptByReference`) and Knowledge's
+ * "Mount a folder from elsewhere…" dialog — both call `declare` above and
+ * need the SAME mapping, so it lives here rather than being duplicated per
+ * caller (mirrors `mail-shapes.ts` colocating `mailSetupErrorMessage` next
+ * to `submitMailSetup`).
  */
 export function declareMountErrorMessage(code: string): string {
   switch (code) {
@@ -279,11 +306,10 @@ export function declareMountErrorMessage(code: string): string {
 }
 
 /**
- * Readable copy for `undeclare_mount`'s error vocabulary
- * (`Valea.Api.Mounts.error_for/1` + `Valea.Mounts.undeclare/2`'s own
- * `:mount_not_declared` — `name` has no config entry, or has one that
- * isn't `kind: "path"`). Colocated with `declareMountErrorMessage` above
- * for the same reason.
+ * Readable copy for `unmount_icm`'s error vocabulary
+ * (`Valea.Api.Icms.error_for/1` + `Valea.Mounts.unmount/2`'s own
+ * `:mount_not_found` — `mountKey` has no `icms:` entry). Colocated with
+ * `declareMountErrorMessage` above for the same reason.
  */
 export function undeclareMountErrorMessage(code: string): string {
   switch (code) {
@@ -291,8 +317,8 @@ export function undeclareMountErrorMessage(code: string): string {
       return 'No workspace is open.';
     case 'workspace_changed':
       return 'Your workspace changed. Reopen it and try again.';
-    case 'mount_not_declared':
-      return "That mount isn't a by-reference mount — there's nothing to unmount.";
+    case 'mount_not_found':
+      return "That mount isn't currently mounted — there's nothing to unmount.";
     default:
       return 'Could not unmount that folder. Try again.';
   }

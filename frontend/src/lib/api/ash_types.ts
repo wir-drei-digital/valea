@@ -47,6 +47,20 @@ export type ICMAttributesOnlySchema = {
 };
 
 
+// Icms Schema
+export type IcmsResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type IcmsAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Mail Schema
 export type MailResourceSchema = {
   __type: "Resource";
@@ -130,6 +144,15 @@ export type ICMFilterInput = {
 
 
 };
+export type IcmsFilterInput = {
+  and?: Array<IcmsFilterInput>;
+  or?: Array<IcmsFilterInput>;
+  not?: Array<IcmsFilterInput>;
+
+
+
+
+};
 export type MailFilterInput = {
   and?: Array<MailFilterInput>;
   or?: Array<MailFilterInput>;
@@ -166,6 +189,8 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
 
 
 

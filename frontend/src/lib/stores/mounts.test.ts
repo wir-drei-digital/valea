@@ -7,203 +7,245 @@ import {
   undeclareMountErrorMessage
 } from './mounts.svelte';
 import { icmStore } from './icm.svelte';
+import { workspaceStore } from './workspace.svelte';
 import type { ApiResult } from '../api/client';
 import type { Channel } from 'phoenix';
 
-type ListResult = ApiResult<{ mounts: any[] }>;
+type ListResult = ApiResult<{ icms: any[] }>;
 type SetEnabledResult = ApiResult<{ saved: boolean }>;
-type CreateResult = ApiResult<{ relRoot: string }>;
-type DeclareResult = ApiResult<{ declared: boolean }>;
-type UndeclareResult = ApiResult<{ undeclared: boolean }>;
+type CreateResult = ApiResult<{ mountKey: string; id: string }>;
+type MountResult = ApiResult<{ mountKey: string; id: string }>;
+type UnmountResult = ApiResult<{ unmounted: boolean }>;
 type DoctorResult = ApiResult<{ ok: boolean; checks: unknown[] }>;
 
 function fakeApi(overrides: {
-  listMounts?: () => Promise<ListResult>;
-  setMountEnabled?: (name: string, enabled: boolean, generation: number) => Promise<SetEnabledResult>;
-  createMount?: (name: string, description: string, generation: number) => Promise<CreateResult>;
-  declareMount?: (name: string, ref: string, generation: number) => Promise<DeclareResult>;
-  undeclareMount?: (name: string, generation: number) => Promise<UndeclareResult>;
-  mountsDoctor?: (generation: number) => Promise<DoctorResult>;
+  listIcms?: (generation: number) => Promise<ListResult>;
+  setIcmEnabled?: (mountKey: string, enabled: boolean, generation: number) => Promise<SetEnabledResult>;
+  createIcm?: (name: string, path: string, generation: number) => Promise<CreateResult>;
+  mountIcm?: (path: string, generation: number) => Promise<MountResult>;
+  unmountIcm?: (mountKey: string, generation: number) => Promise<UnmountResult>;
+  icmDoctor?: (mountKey: string, generation: number) => Promise<DoctorResult>;
 }) {
   return {
-    listMounts: overrides.listMounts ?? (async () => ({ ok: true, data: { mounts: [] } }) as ListResult),
-    setMountEnabled:
-      overrides.setMountEnabled ?? (async () => ({ ok: true, data: { saved: true } }) as SetEnabledResult),
-    createMount:
-      overrides.createMount ?? (async () => ({ ok: true, data: { relRoot: 'mounts/x' } }) as CreateResult),
-    declareMount:
-      overrides.declareMount ?? (async () => ({ ok: true, data: { declared: true } }) as DeclareResult),
-    undeclareMount:
-      overrides.undeclareMount ?? (async () => ({ ok: true, data: { undeclared: true } }) as UndeclareResult),
-    mountsDoctor:
-      overrides.mountsDoctor ?? (async () => ({ ok: true, data: { ok: true, checks: [] } }) as DoctorResult)
+    listIcms: overrides.listIcms ?? (async () => ({ ok: true, data: { icms: [] } }) as ListResult),
+    setIcmEnabled:
+      overrides.setIcmEnabled ?? (async () => ({ ok: true, data: { saved: true } }) as SetEnabledResult),
+    createIcm:
+      overrides.createIcm ??
+      (async () => ({ ok: true, data: { mountKey: 'x', id: 'id-x' } }) as CreateResult),
+    mountIcm:
+      overrides.mountIcm ?? (async () => ({ ok: true, data: { mountKey: 'x', id: 'id-x' } }) as MountResult),
+    unmountIcm:
+      overrides.unmountIcm ?? (async () => ({ ok: true, data: { unmounted: true } }) as UnmountResult),
+    icmDoctor:
+      overrides.icmDoctor ?? (async () => ({ ok: true, data: { ok: true, checks: [] } }) as DoctorResult)
   };
 }
 
 describe('MountsStore.refresh', () => {
   it('populates mounts and flips loaded on success', async () => {
-    const rawMounts = [
+    const rawIcms = [
       {
-        name: 'primary',
-        title: 'Primary',
+        mountKey: 'primary',
+        id: '11111111-1111-1111-1111-111111111111',
+        name: 'Primary',
         description: 'The default mount',
-        relRoot: '',
+        root: '/ws/primary',
         enabled: true,
         degraded: null
       },
       {
-        name: 'clients',
-        title: 'Clients',
+        mountKey: 'clients',
+        id: null,
+        name: 'Clients',
         description: 'Client-facing docs',
-        relRoot: 'mounts/clients',
+        root: '/ws/clients',
         enabled: false,
         degraded: 'manifest_missing'
       }
     ];
-    const store = new MountsStore(fakeApi({ listMounts: async () => ({ ok: true, data: { mounts: rawMounts } }) }) as never);
+    const store = new MountsStore(fakeApi({ listIcms: async () => ({ ok: true, data: { icms: rawIcms } }) }) as never);
 
     await store.refresh();
 
     expect(store.loaded).toBe(true);
-    expect(store.mounts).toEqual(rawMounts);
+    expect(store.mounts).toEqual(rawIcms);
   });
 
   it('leaves mounts/loaded untouched on failure', async () => {
-    const store = new MountsStore(fakeApi({ listMounts: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never);
+    const store = new MountsStore(fakeApi({ listIcms: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never);
 
     await store.refresh();
 
     expect(store.loaded).toBe(false);
     expect(store.mounts).toEqual([]);
   });
+
+  it('reads generation off workspaceStore rather than taking a parameter', async () => {
+    workspaceStore.generation = 42;
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ listIcms }) as never);
+
+    await store.refresh();
+
+    expect(listIcms).toHaveBeenCalledWith(42);
+    workspaceStore.generation = null;
+  });
 });
 
 describe('MountsStore.setEnabled', () => {
-  it('threads name/enabled/generation to the api and refreshes on success', async () => {
-    const setMountEnabled = vi.fn(async () => ({ ok: true, data: { saved: true } }) as SetEnabledResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ setMountEnabled, listMounts }) as never);
+  it('threads mountKey/enabled/generation to the api and refreshes on success', async () => {
+    const setIcmEnabled = vi.fn(async () => ({ ok: true, data: { saved: true } }) as SetEnabledResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ setIcmEnabled, listIcms }) as never);
 
     const result = await store.setEnabled('clients', false, 5);
 
-    expect(setMountEnabled).toHaveBeenCalledWith('clients', false, 5);
-    expect(listMounts).toHaveBeenCalledTimes(1);
+    expect(setIcmEnabled).toHaveBeenCalledWith('clients', false, 5);
+    expect(listIcms).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ ok: true });
   });
 
   it('surfaces the error code and does not refresh on failure', async () => {
-    const setMountEnabled = vi.fn(async () => ({ ok: false, error: 'workspace_changed' }) as SetEnabledResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ setMountEnabled, listMounts }) as never);
+    const setIcmEnabled = vi.fn(async () => ({ ok: false, error: 'workspace_changed' }) as SetEnabledResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ setIcmEnabled, listIcms }) as never);
 
     const result = await store.setEnabled('clients', true, 1);
 
     expect(result).toEqual({ ok: false, error: 'workspace_changed' });
-    expect(listMounts).not.toHaveBeenCalled();
+    expect(listIcms).not.toHaveBeenCalled();
   });
 });
 
 describe('MountsStore.create', () => {
-  it('threads name/description/generation and returns relRoot on success', async () => {
-    const createMount = vi.fn(async () => ({ ok: true, data: { relRoot: 'mounts/new-mount' } }) as CreateResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ createMount, listMounts }) as never);
+  it('threads name/path/generation and returns mountKey/id on success', async () => {
+    const createIcm = vi.fn(async () => ({ ok: true, data: { mountKey: 'new-mount', id: 'id-1' } }) as CreateResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ createIcm, listIcms }) as never);
 
-    const result = await store.create('new-mount', 'A new mount', 9);
+    const result = await store.create('New Mount', '/Users/dev/new-mount', 9);
 
-    expect(createMount).toHaveBeenCalledWith('new-mount', 'A new mount', 9);
-    expect(listMounts).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ ok: true, relRoot: 'mounts/new-mount' });
+    expect(createIcm).toHaveBeenCalledWith('New Mount', '/Users/dev/new-mount', 9);
+    expect(listIcms).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true, mountKey: 'new-mount', id: 'id-1' });
   });
 
   it('surfaces the error code and does not refresh on failure', async () => {
-    const createMount = vi.fn(async () => ({ ok: false, error: 'already_exists' }) as CreateResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ createMount, listMounts }) as never);
+    const createIcm = vi.fn(async () => ({ ok: false, error: 'already_exists' }) as CreateResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ createIcm, listIcms }) as never);
 
     const result = await store.create('clients', '', 2);
 
     expect(result).toEqual({ ok: false, error: 'already_exists' });
-    expect(listMounts).not.toHaveBeenCalled();
+    expect(listIcms).not.toHaveBeenCalled();
   });
 });
 
 describe('MountsStore.declare', () => {
-  it('threads name/ref/generation to the api and refreshes on success (A2-T9)', async () => {
-    const declareMount = vi.fn(async () => ({ ok: true, data: { declared: true } }) as DeclareResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ declareMount, listMounts }) as never);
+  it('threads ref/generation to mountIcm (name is accepted but not sent) and refreshes on success', async () => {
+    const mountIcm = vi.fn(async () => ({ ok: true, data: { mountKey: 'client-notes', id: 'id-2' } }) as MountResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ mountIcm, listIcms }) as never);
 
     const result = await store.declare('client-notes', '/Users/mara/Documents/Client Notes', 3);
 
-    expect(declareMount).toHaveBeenCalledWith('client-notes', '/Users/mara/Documents/Client Notes', 3);
-    expect(listMounts).toHaveBeenCalledTimes(1);
+    expect(mountIcm).toHaveBeenCalledWith('/Users/mara/Documents/Client Notes', 3);
+    expect(listIcms).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ ok: true });
   });
 
   it('surfaces the error code and does not refresh on failure', async () => {
-    const declareMount = vi.fn(async () => ({ ok: false, error: 'inside_workspace' }) as DeclareResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ declareMount, listMounts }) as never);
+    const mountIcm = vi.fn(async () => ({ ok: false, error: 'inside_workspace' }) as MountResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ mountIcm, listIcms }) as never);
 
     const result = await store.declare('client-notes', '/workspace/mounts/primary', 3);
 
     expect(result).toEqual({ ok: false, error: 'inside_workspace' });
-    expect(listMounts).not.toHaveBeenCalled();
+    expect(listIcms).not.toHaveBeenCalled();
   });
 });
 
 describe('MountsStore.undeclare', () => {
-  it('threads name/generation to the api and refreshes on success (A2-T9)', async () => {
-    const undeclareMount = vi.fn(async () => ({ ok: true, data: { undeclared: true } }) as UndeclareResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ undeclareMount, listMounts }) as never);
+  it('threads mountKey/generation to unmountIcm and refreshes on success', async () => {
+    const unmountIcm = vi.fn(async () => ({ ok: true, data: { unmounted: true } }) as UnmountResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ unmountIcm, listIcms }) as never);
 
     const result = await store.undeclare('client-notes', 6);
 
-    expect(undeclareMount).toHaveBeenCalledWith('client-notes', 6);
-    expect(listMounts).toHaveBeenCalledTimes(1);
+    expect(unmountIcm).toHaveBeenCalledWith('client-notes', 6);
+    expect(listIcms).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ ok: true });
   });
 
   it('surfaces the error code and does not refresh on failure', async () => {
-    const undeclareMount = vi.fn(async () => ({ ok: false, error: 'mount_not_declared' }) as UndeclareResult);
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ undeclareMount, listMounts }) as never);
+    const unmountIcm = vi.fn(async () => ({ ok: false, error: 'mount_not_found' }) as UnmountResult);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ unmountIcm, listIcms }) as never);
 
     const result = await store.undeclare('primary', 6);
 
-    expect(result).toEqual({ ok: false, error: 'mount_not_declared' });
-    expect(listMounts).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, error: 'mount_not_found' });
+    expect(listIcms).not.toHaveBeenCalled();
   });
 });
 
 describe('MountsStore.doctor', () => {
-  it('threads generation to the api and returns the checks payload WITHOUT refreshing the catalog (a read-only probe, A2-T9)', async () => {
-    const mountsDoctor = vi.fn(
-      async () => ({ ok: true, data: { ok: false, checks: [{ id: 'manifest_ok:primary' }] } }) as DoctorResult
+  it('lists every mount then fans icmDoctor out per mountKey, flattening checks WITHOUT refreshing the catalog', async () => {
+    const listIcms = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          data: { icms: [{ mountKey: 'primary' }, { mountKey: 'clients' }] }
+        }) as ListResult
     );
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ mountsDoctor, listMounts }) as never);
+    const icmDoctor = vi.fn(async (mountKey: string) => ({
+      ok: true,
+      data: { ok: mountKey === 'primary', checks: [{ id: `manifest_ok:external:${mountKey}` }] }
+    })) as unknown as (mountKey: string, generation: number) => Promise<DoctorResult>;
+    const store = new MountsStore(fakeApi({ listIcms, icmDoctor }) as never);
 
     const result = await store.doctor(7);
 
-    expect(mountsDoctor).toHaveBeenCalledWith(7);
-    expect(listMounts).not.toHaveBeenCalled();
-    expect(result).toEqual({ ok: true, data: { ok: false, checks: [{ id: 'manifest_ok:primary' }] } });
+    expect(listIcms).toHaveBeenCalledWith(7);
+    expect(icmDoctor).toHaveBeenCalledWith('primary', 7);
+    expect(icmDoctor).toHaveBeenCalledWith('clients', 7);
+    expect(listIcms).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        ok: false,
+        checks: [{ id: 'manifest_ok:external:primary' }, { id: 'manifest_ok:external:clients' }]
+      }
+    });
   });
 
-  it('surfaces the error code on failure', async () => {
-    const mountsDoctor = vi.fn(async () => ({ ok: false, error: 'workspace_not_open' }) as DoctorResult);
-    const store = new MountsStore(fakeApi({ mountsDoctor }) as never);
+  it('surfaces the error code when listIcms fails', async () => {
+    const listIcms = vi.fn(async () => ({ ok: false, error: 'workspace_not_open' }) as ListResult);
+    const store = new MountsStore(fakeApi({ listIcms }) as never);
 
     const result = await store.doctor(1);
 
     expect(result).toEqual({ ok: false, error: 'workspace_not_open' });
   });
+
+  it('surfaces the error code when any icmDoctor call fails', async () => {
+    const listIcms = vi.fn(
+      async () => ({ ok: true, data: { icms: [{ mountKey: 'primary' }] } }) as ListResult
+    );
+    const icmDoctor = vi.fn(async () => ({ ok: false, error: 'workspace_changed' }) as DoctorResult);
+    const store = new MountsStore(fakeApi({ listIcms, icmDoctor }) as never);
+
+    const result = await store.doctor(1);
+
+    expect(result).toEqual({ ok: false, error: 'workspace_changed' });
+  });
 });
 
-// `declareMount`'s error vocabulary (`Valea.Api.Mounts.error_for/1`): the
+// `declareMount`'s error vocabulary (`Valea.Api.Icms.error_for/1`): the
 // generation guard's own two codes, `Valea.Mounts.validate_mount_name/1`'s
 // `invalid_mount_name`, and all EIGHT of
 // `Valea.Mounts.External.validate_ref/2`'s reason atoms (see that
@@ -243,7 +285,7 @@ describe('undeclareMountErrorMessage', () => {
   const cases: Array<[string, string]> = [
     ['workspace_not_open', 'No workspace is open.'],
     ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
-    ['mount_not_declared', "That mount isn't a by-reference mount — there's nothing to unmount."]
+    ['mount_not_found', "That mount isn't currently mounted — there's nothing to unmount."]
   ];
 
   it.each(cases)('maps %s to its exact readable message', (code, expected) => {
@@ -281,7 +323,7 @@ describe('MountsStore.pendingAdoptError', () => {
   });
 
   // Fix wave 2: a user who retries via "Mount a folder from elsewhere…" and
-  // succeeds shouldn't keep seeing "Couldn't mount…" — a successful declare
+  // succeeds shouldn't keep seeing "Couldn't mount…" — a successful mount
   // IS the retry the banner points at, so it clears the banner itself.
   it('a successful declare clears pendingAdoptError; a failed one leaves it (the failure is still true)', async () => {
     const okStore = new MountsStore(fakeApi({}) as never);
@@ -290,7 +332,7 @@ describe('MountsStore.pendingAdoptError', () => {
     expect(okStore.pendingAdoptError).toBeNull();
 
     const failStore = new MountsStore(
-      fakeApi({ declareMount: async () => ({ ok: false, error: 'not_found' }) }) as never
+      fakeApi({ mountIcm: async () => ({ ok: false, error: 'not_found' }) }) as never
     );
     failStore.setPendingAdoptError('client-notes', '/src', 'mapped message');
     await failStore.declare('client-notes', '/src', 2);
@@ -300,13 +342,13 @@ describe('MountsStore.pendingAdoptError', () => {
 
 describe('MountsStore.handleMountsChanged', () => {
   it('refetches mounts AND triggers the icm store refetch', async () => {
-    const listMounts = vi.fn(async () => ({ ok: true, data: { mounts: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ listMounts }) as never);
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ listIcms }) as never);
     const icmRefetch = vi.spyOn(icmStore, 'refetch').mockResolvedValue(undefined);
 
     await store.handleMountsChanged();
 
-    expect(listMounts).toHaveBeenCalledTimes(1);
+    expect(listIcms).toHaveBeenCalledTimes(1);
     expect(store.loaded).toBe(true);
     expect(icmRefetch).toHaveBeenCalledTimes(1);
 

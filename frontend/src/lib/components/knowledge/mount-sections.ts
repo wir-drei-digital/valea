@@ -59,26 +59,27 @@ export type MountsDisplay =
  * data actually exists and how many mounts are effectively enabled.
  * `mounts` (`mountsStore.mounts`) supplies each section's header
  * `description`, which `MountGroup` itself doesn't carry (see
- * `Valea.Api.Mounts.to_rpc_mount/1`). Joined by mount NAME — the stable
- * identifier both `MountGroup.mount` and `MountSummary.name` share, NOT
- * `title` (the human display name, which two mounts could coincidentally
- * share). A mount present in `groups` but missing from `mounts` (a
- * transient refetch-ordering gap between the two live stores, which
- * refresh together on `mounts_changed` but aren't atomic) degrades to an
- * empty description rather than throwing.
+ * `Valea.Api.Icms.to_rpc_icm/1`). Joined by mount KEY — the stable
+ * identifier both `MountGroup.mount` and `MountSummary.mountKey` share
+ * (task 3.4: this used to be `MountSummary.name`, before that field became
+ * the human display name), NOT `name` (which two mounts could
+ * coincidentally share). A mount present in `groups` but missing from
+ * `mounts` (a transient refetch-ordering gap between the two live stores,
+ * which refresh together on `mounts_changed` but aren't atomic) degrades to
+ * an empty description rather than throwing.
  */
 export function buildMountsDisplay(groups: MountGroup[], mounts: MountSummary[]): MountsDisplay {
   if (groups.length <= 1) {
     return { collapsed: true, tree: groups[0]?.tree ?? [], rootRel: groups[0]?.rootRel ?? '' };
   }
 
-  const descriptionByName = new Map(mounts.map((m) => [m.name, m.description]));
+  const descriptionByKey = new Map(mounts.map((m) => [m.mountKey, m.description]));
   return {
     collapsed: false,
     sections: groups.map((g) => ({
       mount: g.mount,
       title: g.title,
-      description: descriptionByName.get(g.mount) ?? '',
+      description: descriptionByKey.get(g.mount) ?? '',
       rootRel: g.rootRel,
       tree: g.tree
     }))
@@ -134,19 +135,18 @@ export function degradedChipLabel(mount: Pick<MountSummary, 'degraded'>): string
 }
 
 /**
- * True for an EXTERNAL (by-reference, A2-T8) `list_mounts` ROW —
- * `relRoot` is `null` only for an external mount (`Valea.Mounts.mount()`'s
- * own convention; see `MountSummary`'s doc comment in
- * `stores/mounts.svelte.ts`). Distinct from `isExternalRootRel` above,
- * which classifies a TREE SECTION's `rootRel` string (from `icm_tree`, a
- * different RPC) instead of a `list_mounts` summary — the deactivated and
- * degraded groups only ever have the latter (an inactive mount has no
- * `MountGroup`, since `icm_tree` only reports enabled, non-degraded
- * mounts), so THIS is what they use to decide when to show `mount.root`
- * as the real location and offer "Unmount".
+ * Task 3.4: post-A2, `Valea.Mounts.list/1`'s `rel_root` is ALWAYS `nil` —
+ * EVERY `list_icms` row is by-reference (external); there is no more
+ * embedded mount kind for this to disambiguate from, and the new C9
+ * `list_icms` payload doesn't even carry a `relRoot` field any more (see
+ * `MountSummary`'s doc comment in `stores/mounts.svelte.ts`). Kept
+ * (unconditionally `true`) rather than deleted, along with every
+ * `{#if isExternalMount(mount)}` gate in `+page.svelte`, purely to keep
+ * this task's diff to a rename — collapsing those gates away is deeper
+ * Knowledge-UI work for a later task.
  */
-export function isExternalMount(mount: Pick<MountSummary, 'relRoot'>): boolean {
-  return mount.relRoot === null;
+export function isExternalMount(_mount: MountSummary): boolean {
+  return true;
 }
 
 // -- mounts doctor: check-row shaping (backend: `Valea.Mounts.Doctor.run/1`,

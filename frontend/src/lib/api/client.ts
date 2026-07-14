@@ -85,18 +85,18 @@ import {
   retryMailboxOpsChannel,
   listDecidedQueueItems as httpListDecidedQueueItems,
   listDecidedQueueItemsChannel,
-  listMounts as httpListMounts,
-  listMountsChannel,
-  setMountEnabled as httpSetMountEnabled,
-  setMountEnabledChannel,
-  createMount as httpCreateMount,
-  createMountChannel,
-  declareMount as httpDeclareMount,
-  declareMountChannel,
-  undeclareMount as httpUndeclareMount,
-  undeclareMountChannel,
-  mountsDoctor as httpMountsDoctor,
-  mountsDoctorChannel
+  listIcms as httpListIcms,
+  listIcmsChannel,
+  mountIcm as httpMountIcm,
+  mountIcmChannel,
+  createIcm as httpCreateIcm,
+  createIcmChannel,
+  setIcmEnabled as httpSetIcmEnabled,
+  setIcmEnabledChannel,
+  unmountIcm as httpUnmountIcm,
+  unmountIcmChannel,
+  icmDoctor as httpIcmDoctor,
+  icmDoctorChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -133,12 +133,12 @@ import type {
   RetryMailboxOpsFields,
   ListDecidedQueueItemsFields,
   IcmTreeFields,
-  ListMountsFields,
-  SetMountEnabledFields,
-  CreateMountFields,
-  DeclareMountFields,
-  UndeclareMountFields,
-  MountsDoctorFields
+  ListIcmsFields,
+  MountIcmFields,
+  CreateIcmFields,
+  SetIcmEnabledFields,
+  UnmountIcmFields,
+  IcmDoctorFields
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -417,32 +417,28 @@ const getMailMessageFields: GetMailMessageFields = ['message', 'inbox'];
 const retryMailboxOpsFields: RetryMailboxOpsFields = ['accepted'];
 const listDecidedQueueItemsFields: ListDecidedQueueItemsFields = ['items'];
 
-// Mounts (A-T12/A-T14/A2-T8). Same anonymous-embedded-map-array codegen gap
-// as `listAgentSessionsFields`/`listWorkflowsFields`/`listQueueItemsFields`
-// above (see the comment on `icmEntryReferencesFields`) — `mounts` is an
-// `Array<TypedMap>` action-return field, which `ComplexFieldSelection`
-// can't express, so the generated `Fields` type collapses to `never` for
-// the literal. The backend action accepts this exact nested literal
-// (verified by the passing `mounts_rpc_test.exs` suite). `saved`/`relRoot`/
-// `declared`/`undeclared` are plain top-level fields
-// (`SetMountEnabledFields`/`CreateMountFields`/`DeclareMountFields`/
-// `UndeclareMountFields`) with no such gap, so no cast is needed for them —
-// same for `mountsDoctorFields` below (`checks` is the UNCONSTRAINED
+// Icms (task 3.4, `Valea.Api.Icms` — the C9 id/mount-key based replacement
+// for `Valea.Api.Mounts`, kept registered until Phase 11). Same anonymous-
+// embedded-map-array codegen gap as `listAgentSessionsFields`/
+// `listWorkflowsFields`/`listQueueItemsFields` above (see the comment on
+// `icmEntryReferencesFields`) — `icms` is an `Array<TypedMap>` action-return
+// field, which `ComplexFieldSelection` can't express, so the generated
+// `Fields` type collapses to `never` for the literal. The backend action
+// accepts this exact nested literal (verified by `test/valea/api/icms_test.exs`).
+// `mountKey`/`id` (`MountIcmFields`/`CreateIcmFields`), `saved`
+// (`SetIcmEnabledFields`), and `unmounted` (`UnmountIcmFields`) are plain
+// top-level fields with no such gap, so no cast is needed for them — same
+// for `icmDoctorFields` below (`checks` is the UNCONSTRAINED
 // `Array<Record<string, any>>` passthrough, not a nested `TypedMap`, so it
 // hits no gap either — mirrors `mailDoctorFields`).
-//
-// `root` (A2-T8: the mount's absolute directory, embedded or external —
-// see `MountSummary`'s doc comment in `stores/mounts.svelte.ts`) is
-// included here alongside `relRoot` — an external mount's real location is
-// only ever available through THIS field, `relRoot` is `null` for one.
-const listMountsFields = [
-  { mounts: ['name', 'title', 'description', 'relRoot', 'root', 'enabled', 'degraded'] }
-] as unknown as ListMountsFields;
-const setMountEnabledFields: SetMountEnabledFields = ['saved'];
-const createMountFields: CreateMountFields = ['relRoot'];
-const declareMountFields: DeclareMountFields = ['declared'];
-const undeclareMountFields: UndeclareMountFields = ['undeclared'];
-const mountsDoctorFields: MountsDoctorFields = ['ok', 'checks'];
+const listIcmsFields = [
+  { icms: ['mountKey', 'id', 'name', 'description', 'root', 'enabled', 'degraded'] }
+] as unknown as ListIcmsFields;
+const mountIcmFields: MountIcmFields = ['mountKey', 'id'];
+const createIcmFields: CreateIcmFields = ['mountKey', 'id'];
+const setIcmEnabledFields: SetIcmEnabledFields = ['saved'];
+const unmountIcmFields: UnmountIcmFields = ['unmounted'];
+const icmDoctorFields: IcmDoctorFields = ['ok', 'checks'];
 
 // `icm_tree` (A-T11). Same anonymous-embedded-map-array codegen gap as
 // `listMountsFields` above — `mounts` is an `Array<TypedMap>` action-return
@@ -629,52 +625,53 @@ function callListDecidedQueueItemsChannel(channel: NonNullable<ReturnType<typeof
   );
 }
 
-function callListMountsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) => listMountsChannel({ channel, fields: listMountsFields, ...handlers }));
-}
-
-function callSetMountEnabledChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { name: string; enabled: boolean; generation: number }
-) {
-  return wrapChannelCall((handlers) =>
-    setMountEnabledChannel({ channel, input, fields: setMountEnabledFields, ...handlers })
-  );
-}
-
-function callCreateMountChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { name: string; description: string; generation: number }
-) {
-  return wrapChannelCall((handlers) =>
-    createMountChannel({ channel, input, fields: createMountFields, ...handlers })
-  );
-}
-
-function callDeclareMountChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { name: string; ref: string; generation: number }
-) {
-  return wrapChannelCall((handlers) =>
-    declareMountChannel({ channel, input, fields: declareMountFields, ...handlers })
-  );
-}
-
-function callUndeclareMountChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { name: string; generation: number }
-) {
-  return wrapChannelCall((handlers) =>
-    undeclareMountChannel({ channel, input, fields: undeclareMountFields, ...handlers })
-  );
-}
-
-function callMountsDoctorChannel(
+function callListIcmsChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { generation: number }
 ) {
+  return wrapChannelCall((handlers) => listIcmsChannel({ channel, input, fields: listIcmsFields, ...handlers }));
+}
+
+function callMountIcmChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string; generation: number }
+) {
+  return wrapChannelCall((handlers) => mountIcmChannel({ channel, input, fields: mountIcmFields, ...handlers }));
+}
+
+function callCreateIcmChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { name: string; path: string; generation: number }
+) {
   return wrapChannelCall((handlers) =>
-    mountsDoctorChannel({ channel, input, fields: mountsDoctorFields, ...handlers })
+    createIcmChannel({ channel, input, fields: createIcmFields, ...handlers })
+  );
+}
+
+function callSetIcmEnabledChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; enabled: boolean; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setIcmEnabledChannel({ channel, input, fields: setIcmEnabledFields, ...handlers })
+  );
+}
+
+function callUnmountIcmChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    unmountIcmChannel({ channel, input, fields: unmountIcmFields, ...handlers })
+  );
+}
+
+function callIcmDoctorChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    icmDoctorChannel({ channel, input, fields: icmDoctorFields, ...handlers })
   );
 }
 
@@ -1212,50 +1209,56 @@ export const api = {
       httpListDecidedQueueItems(withAuth({ fields: listDecidedQueueItemsFields }))
     ),
 
-  // Mounts (A-T12/A-T14). `listMounts` delivers its `mounts` array RAW
-  // (unconstrained per-item shape at this layer, though already camelCased
-  // by ash_typescript — see `listMountsFields`'s comment above) —
+  // Icms (task 3.4, `Valea.Api.Icms`). `listIcms` delivers its `icms` array
+  // RAW (unconstrained per-item shape at this layer, though already
+  // camelCased by ash_typescript — see `listIcmsFields`'s comment above) —
   // `stores/mounts.svelte.ts` owns casting it to `MountSummary[]`, same
   // raw-delivery split `QueueStore`/`AuditStore` use for their list RPCs.
+  // Unlike the retired `list_mounts`, `list_icms` takes a `generation` —
+  // see `Valea.Api.Icms`'s moduledoc for why every action here guards one.
 
-  listMounts: () => runRpc(callListMountsChannel, () => httpListMounts(withAuth({ fields: listMountsFields }))),
-
-  setMountEnabled: (name: string, enabled: boolean, generation: number) =>
+  listIcms: (generation: number) =>
     runRpc(
-      (channel) => callSetMountEnabledChannel(channel, { name, enabled, generation }),
+      (channel) => callListIcmsChannel(channel, { generation }),
+      () => httpListIcms(withAuth({ input: { generation }, fields: listIcmsFields }))
+    ),
+
+  // `mountIcm`'s `path` is passed through EXACTLY as picked/typed (absolute
+  // or `~`-based) — see `Valea.Mounts.mount/2`'s moduledoc: the config
+  // value stays in the user's own portable form, never a resolved/
+  // normalized path.
+
+  mountIcm: (path: string, generation: number) =>
+    runRpc(
+      (channel) => callMountIcmChannel(channel, { path, generation }),
+      () => httpMountIcm(withAuth({ input: { path, generation }, fields: mountIcmFields }))
+    ),
+
+  createIcm: (name: string, path: string, generation: number) =>
+    runRpc(
+      (channel) => callCreateIcmChannel(channel, { name, path, generation }),
+      () => httpCreateIcm(withAuth({ input: { name, path, generation }, fields: createIcmFields }))
+    ),
+
+  setIcmEnabled: (mountKey: string, enabled: boolean, generation: number) =>
+    runRpc(
+      (channel) => callSetIcmEnabledChannel(channel, { mountKey, enabled, generation }),
       () =>
-        httpSetMountEnabled(
-          withAuth({ input: { name, enabled, generation }, fields: setMountEnabledFields })
+        httpSetIcmEnabled(
+          withAuth({ input: { mountKey, enabled, generation }, fields: setIcmEnabledFields })
         )
     ),
 
-  createMount: (name: string, description: string, generation: number) =>
+  unmountIcm: (mountKey: string, generation: number) =>
     runRpc(
-      (channel) => callCreateMountChannel(channel, { name, description, generation }),
-      () => httpCreateMount(withAuth({ input: { name, description, generation }, fields: createMountFields }))
+      (channel) => callUnmountIcmChannel(channel, { mountKey, generation }),
+      () => httpUnmountIcm(withAuth({ input: { mountKey, generation }, fields: unmountIcmFields }))
     ),
 
-  // By-reference mounts (A2-T8/A2-T9). `declareMount`'s `ref` is passed
-  // through EXACTLY as picked/typed (absolute or `~`-based) — see
-  // `Valea.Mounts.declare_external/3`'s moduledoc: the config value stays in
-  // the user's own portable form, never a resolved/normalized path.
-
-  declareMount: (name: string, ref: string, generation: number) =>
+  icmDoctor: (mountKey: string, generation: number) =>
     runRpc(
-      (channel) => callDeclareMountChannel(channel, { name, ref, generation }),
-      () => httpDeclareMount(withAuth({ input: { name, ref, generation }, fields: declareMountFields }))
-    ),
-
-  undeclareMount: (name: string, generation: number) =>
-    runRpc(
-      (channel) => callUndeclareMountChannel(channel, { name, generation }),
-      () => httpUndeclareMount(withAuth({ input: { name, generation }, fields: undeclareMountFields }))
-    ),
-
-  mountsDoctor: (generation: number) =>
-    runRpc(
-      (channel) => callMountsDoctorChannel(channel, { generation }),
-      () => httpMountsDoctor(withAuth({ input: { generation }, fields: mountsDoctorFields }))
+      (channel) => callIcmDoctorChannel(channel, { mountKey, generation }),
+      () => httpIcmDoctor(withAuth({ input: { mountKey, generation }, fields: icmDoctorFields }))
     ),
 
   // Images (Task C7). Plain HTTP, not Ash RPC — see `uploadImage`'s own doc

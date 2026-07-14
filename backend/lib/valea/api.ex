@@ -77,6 +77,15 @@ defmodule Valea.Api do
       rpc_action(:undeclare_mount, :undeclare_mount)
       rpc_action(:mounts_doctor, :mounts_doctor)
     end
+
+    resource Valea.Api.Icms do
+      rpc_action(:list_icms, :list_icms)
+      rpc_action(:mount_icm, :mount_icm)
+      rpc_action(:create_icm, :create_icm)
+      rpc_action(:set_icm_enabled, :set_icm_enabled)
+      rpc_action(:unmount_icm, :unmount_icm)
+      rpc_action(:icm_doctor, :icm_doctor)
+    end
   end
 
   resources do
@@ -87,5 +96,6 @@ defmodule Valea.Api do
     resource Valea.Api.Queue
     resource Valea.Api.Mail
     resource Valea.Api.Mounts
+    resource Valea.Api.Icms
   end
 end

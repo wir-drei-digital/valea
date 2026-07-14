@@ -31,19 +31,19 @@ const primaryGroup: MountGroup = { mount: 'primary', title: 'Primary', rootRel: 
 const clientsGroup: MountGroup = { mount: 'clients', title: 'Clients', rootRel: 'mounts/clients', tree: [clientsNode] };
 
 const primarySummary: MountSummary = {
-  name: 'primary',
-  title: 'Primary',
+  mountKey: 'primary',
+  id: '11111111-1111-1111-1111-111111111111',
+  name: 'Primary',
   description: 'The default mount',
-  relRoot: 'mounts/primary',
   root: '/Users/dev/workspace/mounts/primary',
   enabled: true,
   degraded: null
 };
 const clientsSummary: MountSummary = {
-  name: 'clients',
-  title: 'Clients',
+  mountKey: 'clients',
+  id: '22222222-2222-2222-2222-222222222222',
+  name: 'Clients',
   description: 'Client-facing docs',
-  relRoot: 'mounts/clients',
   root: '/Users/dev/workspace/mounts/clients',
   enabled: true,
   degraded: null
@@ -83,7 +83,7 @@ describe('buildMountsDisplay', () => {
     });
   });
 
-  it('passes an EXTERNAL mount group through with its absolute rootRel, alongside an embedded section (A2-T5b)', () => {
+  it('passes an EXTERNAL mount group through with its absolute rootRel, alongside another section', () => {
     const extNode: IcmNode = {
       name: 'Offers',
       path: '/Users/dev/ext-mount/Offers',
@@ -92,17 +92,11 @@ describe('buildMountsDisplay', () => {
       children: []
     };
     const extGroup: MountGroup = { mount: 'ext', title: 'Ext', rootRel: '/Users/dev/ext-mount', tree: [extNode] };
-    // `relRoot: null` (not the absolute path) — A2-T8 gave `list_mounts` a
-    // SEPARATE `root` field for an external mount's real location; `relRoot`
-    // stays `null` for one (`Valea.Mounts.mount()`'s own convention). This
-    // fixture predates that split; corrected here per the A2-T9 brief's
-    // "verify + extend tests if gaps" instruction for the deactivated/
-    // degraded groups' external handling.
     const extSummary: MountSummary = {
-      name: 'ext',
-      title: 'Ext',
+      mountKey: 'ext',
+      id: '33333333-3333-3333-3333-333333333333',
+      name: 'Ext',
       description: 'By-reference client folder',
-      relRoot: null,
       root: '/Users/dev/ext-mount',
       enabled: true,
       degraded: null
@@ -122,8 +116,8 @@ describe('buildMountsDisplay', () => {
     }
   });
 
-  it('joins each section\'s description by mount NAME, not title', () => {
-    const renamedSummary: MountSummary = { ...clientsSummary, name: 'clients', title: 'Renamed Display Title' };
+  it('joins each section\'s description by mount KEY, not display name (task 3.4)', () => {
+    const renamedSummary: MountSummary = { ...clientsSummary, mountKey: 'clients', name: 'Renamed Display Name' };
     const display = buildMountsDisplay([primaryGroup, clientsGroup], [primarySummary, renamedSummary]);
     expect(display.collapsed).toBe(false);
     if (!display.collapsed) {
@@ -144,28 +138,28 @@ describe('buildMountsDisplay', () => {
 
 describe('classifyMounts', () => {
   const deactivated: MountSummary = {
-    name: 'archive',
-    title: 'Archive',
+    mountKey: 'archive',
+    id: '44444444-4444-4444-4444-444444444444',
+    name: 'Archive',
     description: 'Old client work',
-    relRoot: 'mounts/archive',
     root: '/Users/dev/workspace/mounts/archive',
     enabled: false,
     degraded: null
   };
   const degradedButEnabled: MountSummary = {
+    mountKey: 'broken',
+    id: null,
     name: 'broken',
-    title: 'broken',
     description: '',
-    relRoot: 'mounts/broken',
     root: '/Users/dev/workspace/mounts/broken',
     enabled: true,
     degraded: 'icm.yaml is missing'
   };
   const degradedAndDisabled: MountSummary = {
+    mountKey: 'broken2',
+    id: null,
     name: 'broken2',
-    title: 'broken2',
     description: '',
-    relRoot: 'mounts/broken2',
     root: '/Users/dev/workspace/mounts/broken2',
     enabled: false,
     degraded: 'invalid mount directory name'
@@ -225,17 +219,13 @@ describe('degradedChipLabel', () => {
   });
 });
 
-// A2-T9: tells an EXTERNAL `list_mounts` row (`relRoot: null`, see
-// `MountSummary`'s doc comment) apart from an embedded one — used by the
-// deactivated/degraded groups (and the mount detail rows) to decide when to
-// show `mount.root` as the real location and offer "Unmount".
+// Task 3.4: post-A2, EVERY `list_icms` row is by-reference — this predicate
+// is unconditionally `true` now (see its doc comment in `mount-sections.ts`
+// for why it's kept rather than deleted).
 describe('isExternalMount', () => {
-  it('is true when relRoot is null (external, by-reference)', () => {
-    expect(isExternalMount({ relRoot: null })).toBe(true);
-  });
-
-  it('is false when relRoot is a workspace-relative string (embedded)', () => {
-    expect(isExternalMount({ relRoot: 'mounts/primary' })).toBe(false);
+  it('is always true (every mount is by-reference post-A2)', () => {
+    expect(isExternalMount(primarySummary)).toBe(true);
+    expect(isExternalMount(clientsSummary)).toBe(true);
   });
 });
 
