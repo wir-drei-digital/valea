@@ -267,12 +267,24 @@ defmodule Valea.Agents.SessionServer do
   # A permission ask is the human's decision point — stamp the same
   # server-derived risk tier the queue uses, so the dialog can say
   # plainly when an approval changes future agent behavior. Display
-  # metadata only; policy decisions never read it.
+  # metadata only; policy decisions never read it. The touched path is
+  # physical (absolute, or resolved against `cwd` upstream) — attribute it
+  # to a locator first (`Locator.for_path/2`, the same ICM-or-workspace
+  # attribution `RiskTier.classify/1` now expects) before classifying; a
+  # non-absolute/unattributable path degrades to a workspace locator,
+  # which classifies nil exactly as before (Task 7.5).
   defp enrich_item(%{"type" => "permission", "rawInput" => raw} = item, state)
        when is_map(raw) do
     path = raw["file_path"] || raw["path"] || raw["filePath"] || raw["notebook_path"]
 
-    case is_binary(path) && Valea.Agents.RiskTier.classify(state.workspace, path) do
+    tier =
+      if is_binary(path) do
+        state.workspace
+        |> Valea.Icm.Locator.for_path(path)
+        |> Valea.Agents.RiskTier.classify()
+      end
+
+    case tier do
       tier when tier in ["high", "medium"] -> Map.put(item, "risk_tier", tier)
       _ -> item
     end

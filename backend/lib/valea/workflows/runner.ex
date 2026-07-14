@@ -163,8 +163,9 @@ defmodule Valea.Workflows.Runner do
   its own `<run_id>-m<i>.json` (1-based over the FULL sorted pair list, so
   ids stay stable across calls even when some pairs are invalid). Every
   memory item's `risk_level` and target containment are computed HERE, from
-  the target path alone, via `RiskTier.classify/2` +
-  `MemoryProposal.check_target/2` — never taken from the agent's manifest.
+  the target locator alone, via `RiskTier.classify/1` +
+  `MemoryProposal.check_icm_target/2` — never taken from the agent's
+  manifest.
 
     * outcome `"proposal_created"` — at least one item (primary or memory)
       was created; `queue_item_created` audited once per item created
@@ -332,16 +333,12 @@ defmodule Valea.Workflows.Runner do
         if item_exists?(workspace, item_id) do
           :skipped
         else
-          # RiskTier is not yet ICM-locator-aware (Task 7.5) — it still
-          # classifies from the raw `target_path` string via
-          # `Mounts.mount_for/2`'s absolute/workspace-relative attribution,
-          # which an ICM-relative path (the ONLY shape `target_path` is now,
-          # post-7.2's cwd change) can never match, so this degrades to
-          # "medium" even for a behavior-bearing file (`Workflows/…`,
-          # `AGENTS.md`). Left as-is deliberately — see the Task 7.3 brief's
-          # explicit "Do NOT fix RiskTier here" note; Task 7.5 re-keys it
-          # onto ICM identity.
-          tier = RiskTier.classify(workspace, manifest["target_path"]) || "medium"
+          # `locator` is already the ICM locator `check_icm_target/2` built
+          # for this exact target — classify it directly (Task 7.5) rather
+          # than re-attributing `manifest["target_path"]` (an ICM-relative
+          # string) back to a mount via the old workspace/absolute-path
+          # vocabulary, which could never match post-7.2's cwd change.
+          tier = RiskTier.classify(locator) || "medium"
           envelope = memory_envelope(run, item_id, manifest, locator, content, tier)
           write_memory_pending!(workspace, item_id, envelope)
           audit("queue_item_created", %{"run_id" => item_id, "kind" => "memory_update"})

@@ -1,52 +1,44 @@
 defmodule Valea.Agents.RiskTier do
   @moduledoc """
-  Server-derived risk tier for a path that lives inside a mount: "high"
-  for behavior-bearing files (the mount's instruction spine and its
-  workflow contracts — an approved edit changes future agent behavior),
-  "medium" for everything else inside a mount, nil for paths that do not
-  attribute to any mount (the workspace shell, or nowhere). The tier is
-  display + envelope metadata, never an access decision.
-  """
+  Server-derived risk tier for a `Valea.Icm.Locator`: "high" for
+  behavior-bearing files (the ICM's instruction spine and its workflow
+  contracts — an approved edit changes future agent behavior), "medium"
+  for everything else inside the same ICM, nil for a workspace locator
+  (content that does not belong to any ICM at all). The tier is display +
+  envelope metadata, never an access decision.
 
-  alias Valea.Mounts
+  Classification works DIRECTLY off the locator's own `path` — which is
+  already relative to the ICM's root, by construction (`Locator.icm/2`,
+  `Locator.for_path/2`) — never by re-attributing a workspace-relative or
+  absolute physical path back to a mount via `Valea.Mounts.mount_for/2`.
+  That attribution step is exactly what broke once an agent session's
+  `cwd` became the ICM root itself (Task 5.4+): the agent's own
+  self-reported paths (a memory-proposal `target_path`, a tool call's
+  `rawInput.file_path`) are ICM-relative from the start, so re-deriving a
+  workspace-relative form to feed `mount_for/2` could only ever miss —
+  silently downgrading a behavior-changing edit to "medium". A locator
+  sidesteps that entirely: whoever built it (`Runner.finalize_pair` from
+  an already-resolved ICM identity, `SessionServer.enrich_item` via
+  `Locator.for_path/2`) already did the one real attribution; this module
+  just tiers the `path` it carries.
+  """
 
   @behavior_files ["AGENTS.md", "CLAUDE.md", "icm.yaml"]
 
-  @spec classify(String.t(), String.t() | nil) :: String.t() | nil
-  def classify(workspace, path) when is_binary(path) do
-    path = normalize(workspace, path)
-
-    case Mounts.mount_for(workspace, path) do
-      nil -> nil
-      mount -> tier(inner_path(mount, path))
-    end
-  end
-
-  def classify(_workspace, _path), do: nil
-
-  # An absolute path under the workspace is the same content addressed
-  # physically — attribute it as its workspace-relative form. Absolute
-  # paths elsewhere stay absolute (external-mount vocabulary).
-  defp normalize(workspace, "/" <> _ = abs) do
-    case Path.relative_to(abs, workspace) do
-      ^abs -> abs
-      rel -> rel
-    end
-  end
-
-  defp normalize(_workspace, rel), do: rel
-
-  defp inner_path(%{rel_root: rel}, path) when is_binary(rel),
-    do: String.replace_prefix(path, rel <> "/", "")
-
-  defp inner_path(%{root: root}, path),
-    do: String.replace_prefix(path, root <> "/", "")
-
-  defp tier(inner) do
-    if inner in @behavior_files or String.starts_with?(inner, "Workflows/") do
+  @doc """
+  Classifies an ICM locator's `path` against the behavior-file allowlist
+  and the `Workflows/` prefix. A workspace locator (or anything else that
+  isn't a well-formed ICM locator) is nil — it never attributes to any
+  ICM, so it carries no risk tier at all.
+  """
+  @spec classify(map()) :: String.t() | nil
+  def classify(%{"kind" => "icm", "path" => path}) when is_binary(path) do
+    if path in @behavior_files or String.starts_with?(path, "Workflows/") do
       "high"
     else
       "medium"
     end
   end
+
+  def classify(_locator), do: nil
 end

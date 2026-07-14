@@ -710,13 +710,11 @@ defmodule Valea.Workflows.RunnerTest do
 
       refute Map.has_key?(p1, "source_message")
 
-      # RiskTier is NOT yet ICM-locator-aware (Task 7.5, deferred by the
-      # Task 7.3 brief's explicit note): `target_path` is now ICM-relative,
-      # which `RiskTier.classify/2`'s `Mounts.mount_for/2`
-      # absolute/workspace-relative attribution can never match, so even a
-      # `Workflows/…` target degrades to "medium" here post-7.3. Task 7.5
-      # re-asserts "high" once RiskTier is re-keyed onto ICM identity.
-      assert p2["risk_level"] == "medium"
+      # Task 7.5: `RiskTier.classify/1` tiers the ICM locator directly (its
+      # `path` — ICM-relative by construction — against `@behavior_files`
+      # and the `Workflows/` prefix), so a `Workflows/…` target is "high"
+      # again even under cwd == the ICM root.
+      assert p2["risk_level"] == "high"
       assert p2["payload"]["title"] == "New page: New Inquiry Triage.md"
 
       assert p2["payload"]["proposed_action"]["target"]["locator"] == %{
@@ -726,6 +724,43 @@ defmodule Valea.Workflows.RunnerTest do
              }
 
       refute File.exists?(Path.join(ws, "queue/staging/r-mem-1"))
+    end
+
+    # Task 7.5's own TDD requirement, spelled out at the finalize_pair
+    # boundary: a memory-update proposal targeting the ICM's own
+    # `AGENTS.md` — a behavior-bearing file, not under `Workflows/` —
+    # must get `risk_level: "high"` end to end, not "medium".
+    test "a memory-update pair targeting AGENTS.md gets risk_level high", %{
+      workspace: ws,
+      icm: icm
+    } do
+      staging = seed_run!(ws, "r-mem-agents", icm)
+
+      File.write!(
+        Path.join(staging, "proposals/a-agents.json"),
+        Jason.encode!(%{
+          "schema" => "memory_update/v1",
+          "target_path" => "AGENTS.md",
+          "base_sha256" => nil,
+          "reason" => "tighten instructions",
+          "sources" => []
+        })
+      )
+
+      File.write!(Path.join(staging, "proposals/a-agents.md"), "# Agents\n")
+
+      :ok = Runner.finalize("r-mem-agents", ws)
+
+      item =
+        Path.join(ws, "queue/pending/r-mem-agents-m1.json") |> File.read!() |> Jason.decode!()
+
+      assert item["risk_level"] == "high"
+
+      assert item["payload"]["proposed_action"]["target"]["locator"] == %{
+               "kind" => "icm",
+               "icm_id" => icm.id,
+               "path" => "AGENTS.md"
+             }
     end
 
     test "invalid pair audits memory_proposal_invalid and keeps staging", %{
