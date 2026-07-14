@@ -38,12 +38,13 @@
 	type PMDoc = Record<string, unknown>;
 
 	/**
-	 * `pagePath` (Task C7) — the workspace-relative (or, for an external
-	 * mount, absolute) path of the page being edited. Needed for two things:
-	 * uploads are attributed to it (`api.uploadImage`, which the backend uses
-	 * to pick the target mount's `Assets/` folder and compute
-	 * `rel_from_page`), and the image extension's `renderHTML` resolves a
-	 * stored relative `src` against it (via `resolveImageSrc`) to build the
+	 * `pagePath` (Task C7) — the ICM-relative path of the page being edited
+	 * (relative to `mountKey`'s own root; task 4.2/4.3 re-key). Needed for
+	 * two things: uploads are attributed to `mountKey` (`api.uploadImage`,
+	 * task 4.4 — the backend uses `mountKey` to pick the target mount's
+	 * `Assets/` folder, and `pagePath` only to compute `rel_from_page`), and
+	 * the image extension's `renderHTML` resolves a stored relative `src`
+	 * against `pagePath` (via `resolveImageSrc`) to build the
 	 * `/files/raw?path=...` URL the `<img>` actually loads.
 	 *
 	 * `dangling` (Task C9) — the set of resolved page-kind link targets the
@@ -149,7 +150,7 @@
 		for (const file of files) {
 			if (!isAllowedImage(file)) continue;
 
-			const result = await api.uploadImage(file, pagePath);
+			const result = await api.uploadImage(file, mountKey, pagePath);
 			if (!editor) return;
 
 			if (!result.ok) {

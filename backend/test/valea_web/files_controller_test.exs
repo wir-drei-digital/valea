@@ -6,6 +6,7 @@ defmodule ValeaWeb.FilesControllerTest do
   @endpoint ValeaWeb.Endpoint
 
   alias Valea.AgentCase
+  alias Valea.Mounts
   alias Valea.Workspace.Manager
 
   setup do
@@ -17,9 +18,6 @@ defmodule ValeaWeb.FilesControllerTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    # Naming the workspace "Primary" lands the scaffolded mount at exactly
-    # `mounts/primary` (Valea.Workspace.Scaffold.slugify/1) — the path this
-    # suite addresses throughout, matching icm_write_test.exs's convention.
     {:ok, %{path: ws}} = Manager.create(Path.join(dir, "workspaces"), "Primary")
 
     on_exit(fn ->
@@ -27,13 +25,6 @@ defmodule ValeaWeb.FilesControllerTest do
       File.rm_rf!(dir)
       System.delete_env("VALEA_APP_DIR")
     end)
-
-    File.mkdir_p!(Path.join(ws, "mounts/primary/Clients"))
-
-    File.write!(
-      Path.join(ws, "mounts/primary/Clients/Julia Steiner.md"),
-      "# Julia Steiner\n"
-    )
 
     %{conn: build_conn(), workspace: ws}
   end
@@ -55,12 +46,10 @@ defmodule ValeaWeb.FilesControllerTest do
   defp with_token(conn), do: put_req_header(conn, "x-valea-token", "valea-dev-token")
 
   # Mounts a real EXTERNAL ICM carrying a `Clients/Julia Steiner.md` page --
-  # post-task-3.2 `page_path` must attribute to a REGISTERED, external
-  # (absolute-rooted) mount, so the workspace-relative
-  # `"mounts/primary/..."` literal this suite used to write directly under
-  # `ws` is dead for any test that actually exercises a successful
-  # upload/serve round trip. See `Valea.AgentCase.mount_test_icm!/2`'s
-  # moduledoc.
+  # task 4.4 re-key: `page_path` sent to `/files/upload`/`/files/raw` is now
+  # ICM-RELATIVE (never a `mounts/<name>/...` literal, never the ICM's
+  # absolute physical root), attributed by the accompanying `mount_key`. See
+  # `Valea.AgentCase.mount_test_icm!/2`'s moduledoc.
   defp mount_primary!(workspace) do
     AgentCase.mount_test_icm!(workspace,
       name: "Primary",
@@ -70,7 +59,6 @@ defmodule ValeaWeb.FilesControllerTest do
 
   test "upload lands in Assets and serve returns it", %{conn: conn, workspace: ws} do
     icm = mount_primary!(ws)
-    page_path = Path.join(icm.root, "Clients/Julia Steiner.md")
 
     upload = %Plug.Upload{
       path: write_tmp_png!(),
@@ -81,19 +69,47 @@ defmodule ValeaWeb.FilesControllerTest do
     conn1 =
       conn
       |> with_token()
-      |> post("/files/upload", %{"file" => upload, "page_path" => page_path})
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
+      })
 
     assert %{"path" => path, "rel_from_page" => rel} = json_response(conn1, 200)
 
-    assert path =~
-             ~r|^#{Regex.escape(icm.root)}/Assets/julia-steiner-[0-9a-f]{8}\.png$|
-
+    assert path =~ ~r|^Assets/julia-steiner-[0-9a-f]{8}\.png$|
     assert rel == "../Assets/" <> Path.basename(path)
-    assert File.exists?(path)
+    assert File.exists?(Path.join(icm.root, path))
 
-    conn2 = get(build_conn(), "/files/raw", %{"path" => path})
+    conn2 = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => path})
     assert response(conn2, 200)
     assert get_resp_header(conn2, "content-type") |> hd() =~ "image/png"
+  end
+
+  test "uploading from a top-level page computes rel_from_page without a spurious ../", %{
+    conn: conn,
+    workspace: ws
+  } do
+    icm = mount_primary!(ws)
+
+    upload = %Plug.Upload{
+      path: write_tmp_png!(),
+      filename: "shot.png",
+      content_type: "image/png"
+    }
+
+    conn1 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => icm.mount_key,
+        "page_path" => "Welcome.md"
+      })
+
+    assert %{"path" => path, "rel_from_page" => rel} = json_response(conn1, 200)
+    assert path =~ ~r|^Assets/welcome-[0-9a-f]{8}\.png$|
+    assert rel == path
   end
 
   test "re-uploading identical bytes is idempotent (same name, still succeeds)", %{
@@ -101,8 +117,6 @@ defmodule ValeaWeb.FilesControllerTest do
     workspace: ws
   } do
     icm = mount_primary!(ws)
-    page_path = Path.join(icm.root, "Clients/Julia Steiner.md")
-
     bytes = write_tmp_png!() |> File.read!()
 
     upload = fn ->
@@ -113,24 +127,40 @@ defmodule ValeaWeb.FilesControllerTest do
     conn1 =
       conn
       |> with_token()
-      |> post("/files/upload", %{"file" => upload.(), "page_path" => page_path})
+      |> post("/files/upload", %{
+        "file" => upload.(),
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
+      })
 
     assert %{"path" => path1} = json_response(conn1, 200)
 
     conn2 =
       conn
       |> with_token()
-      |> post("/files/upload", %{"file" => upload.(), "page_path" => page_path})
+      |> post("/files/upload", %{
+        "file" => upload.(),
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
+      })
 
     assert %{"path" => path2} = json_response(conn2, 200)
     assert path1 == path2
   end
 
-  test "upload without token is 401; bad type is 400; traversal serve is 404", %{conn: conn} do
+  test "upload without token is 401; bad type is 400; traversal serve is 404", %{
+    conn: conn,
+    workspace: ws
+  } do
+    icm = mount_primary!(ws)
     upload = %Plug.Upload{path: write_tmp_png!(), filename: "x.png", content_type: "image/png"}
 
     assert conn
-           |> post("/files/upload", %{"file" => upload, "page_path" => "mounts/primary/a.md"})
+           |> post("/files/upload", %{
+             "file" => upload,
+             "mount_key" => icm.mount_key,
+             "page_path" => "a.md"
+           })
            |> response(401)
 
     bad = %Plug.Upload{path: write_tmp_png!(), filename: "x.svg", content_type: "image/svg+xml"}
@@ -140,22 +170,23 @@ defmodule ValeaWeb.FilesControllerTest do
       |> with_token()
       |> post("/files/upload", %{
         "file" => bad,
-        "page_path" => "mounts/primary/Clients/Julia Steiner.md"
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
       })
 
     assert json_response(conn3, 400)
 
     assert build_conn()
-           |> get("/files/raw", %{"path" => "mounts/primary/../../secrets/x.png"})
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "../../secrets/x.png"})
            |> response(404)
 
-    assert build_conn() |> get("/files/raw", %{"path" => "logs/audit.jsonl"}) |> response(404)
+    assert build_conn()
+           |> get("/files/raw", %{"mount_key" => "no-such-mount", "path" => "x.png"})
+           |> response(404)
   end
 
   test "an oversized upload is rejected 413", %{conn: conn, workspace: ws} do
     icm = mount_primary!(ws)
-    page_path = Path.join(icm.root, "Clients/Julia Steiner.md")
-
     oversized = String.duplicate("a", 10_000_001)
 
     upload = %Plug.Upload{
@@ -167,12 +198,18 @@ defmodule ValeaWeb.FilesControllerTest do
     conn1 =
       conn
       |> with_token()
-      |> post("/files/upload", %{"file" => upload, "page_path" => page_path})
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
+      })
 
     assert json_response(conn1, 413)
   end
 
-  test "content_type/extension mismatch is rejected 400", %{conn: conn} do
+  test "content_type/extension mismatch is rejected 400", %{conn: conn, workspace: ws} do
+    icm = mount_primary!(ws)
+
     upload = %Plug.Upload{
       path: write_tmp_png!("not actually a png"),
       filename: "shot.png",
@@ -184,45 +221,82 @@ defmodule ValeaWeb.FilesControllerTest do
       |> with_token()
       |> post("/files/upload", %{
         "file" => upload,
-        "page_path" => "mounts/primary/Clients/Julia Steiner.md"
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
       })
 
     assert json_response(conn1, 400)
   end
 
   test "upload targeting a disabled mount is rejected 400", %{conn: conn, workspace: ws} do
-    File.mkdir_p!(Path.join(ws, "mounts/other"))
-
-    File.write!(
-      Path.join(ws, "config/workspace.yaml"),
-      "version: 4\nmounts:\n  other:\n    enabled: false\n"
-    )
+    icm = AgentCase.mount_test_icm!(ws, name: "Other", enabled: false)
 
     upload = %Plug.Upload{path: write_tmp_png!(), filename: "x.png", content_type: "image/png"}
 
     conn1 =
       conn
       |> with_token()
-      |> post("/files/upload", %{"file" => upload, "page_path" => "mounts/other/a.md"})
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => icm.mount_key,
+        "page_path" => "a.md"
+      })
 
     assert json_response(conn1, 400)
+  end
+
+  test "upload is rejected 400 for an unknown mount_key and for a page_path escaping the mount",
+       %{conn: conn, workspace: ws} do
+    icm = mount_primary!(ws)
+
+    upload = fn ->
+      %Plug.Upload{path: write_tmp_png!(), filename: "x.png", content_type: "image/png"}
+    end
+
+    conn1 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload.(),
+        "mount_key" => "no-such-mount",
+        "page_path" => "a.md"
+      })
+
+    assert json_response(conn1, 400)
+
+    conn2 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload.(),
+        "mount_key" => icm.mount_key,
+        "page_path" => "../../secrets/x.md"
+      })
+
+    assert json_response(conn2, 400)
   end
 
   test "serve rejects a non-image extension inside a real mount (404, not 500)", %{
     workspace: ws
   } do
-    File.write!(Path.join(ws, "mounts/primary/app.sqlite"), "not an image")
+    icm = mount_primary!(ws)
+    File.write!(Path.join(icm.root, "app.sqlite"), "not an image")
 
     assert build_conn()
-           |> get("/files/raw", %{"path" => "mounts/primary/app.sqlite"})
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "app.sqlite"})
            |> response(404)
 
     assert build_conn()
-           |> get("/files/raw", %{"path" => "mounts/primary/Clients/Julia Steiner.md"})
+           |> get("/files/raw", %{
+             "mount_key" => icm.mount_key,
+             "path" => "Clients/Julia Steiner.md"
+           })
            |> response(404)
   end
 
   test "serve rejects a symlink inside Assets escaping the mount", %{workspace: ws} do
+    icm = mount_primary!(ws)
+
     outside_dir =
       Path.join(
         System.tmp_dir!(),
@@ -232,16 +306,18 @@ defmodule ValeaWeb.FilesControllerTest do
     File.mkdir_p!(outside_dir)
     File.write!(Path.join(outside_dir, "evil.png"), "not really an image, but has the ext")
 
-    assets_dir = Path.join(ws, "mounts/primary/Assets")
+    assets_dir = Path.join(icm.root, "Assets")
     File.mkdir_p!(assets_dir)
     File.ln_s!(Path.join(outside_dir, "evil.png"), Path.join(assets_dir, "escape.png"))
 
     assert build_conn()
-           |> get("/files/raw", %{"path" => "mounts/primary/Assets/escape.png"})
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "Assets/escape.png"})
            |> response(404)
   end
 
   test "serve rejects a symlinked Assets DIRECTORY escaping the mount", %{workspace: ws} do
+    icm = mount_primary!(ws)
+
     outside_dir =
       Path.join(
         System.tmp_dir!(),
@@ -254,14 +330,16 @@ defmodule ValeaWeb.FilesControllerTest do
     # "Assets" ITSELF is a symlink pointing outside the mount root, not just
     # a file inside it — resolve_real must walk through the directory
     # component too, not just the leaf.
-    File.ln_s!(outside_dir, Path.join(ws, "mounts/primary/Assets"))
+    File.ln_s!(outside_dir, Path.join(icm.root, "Assets"))
 
     assert build_conn()
-           |> get("/files/raw", %{"path" => "mounts/primary/Assets/x.png"})
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "Assets/x.png"})
            |> response(404)
   end
 
   test "serve rejects an absolute-path escape attempt", %{workspace: ws} do
+    icm = mount_primary!(ws)
+
     outside_dir =
       Path.join(
         System.tmp_dir!(),
@@ -272,55 +350,40 @@ defmodule ValeaWeb.FilesControllerTest do
     outside_file = Path.join(outside_dir, "secret.png")
     File.write!(outside_file, "should never be served")
 
-    # Absolute paths only ever attribute to a DECLARED, enabled EXTERNAL
-    # mount root — an arbitrary absolute filesystem path must 404, not leak
-    # via `Path.expand` unifying it with a mount root by coincidence.
-    assert build_conn() |> get("/files/raw", %{"path" => outside_file}) |> response(404)
-    assert build_conn() |> get("/files/raw", %{"path" => "/etc/passwd"}) |> response(404)
+    # An absolute `path`, even paired with a valid `mount_key`, must never
+    # be honored — only a path relative to that mount's own root is.
+    assert build_conn()
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => outside_file})
+           |> response(404)
 
-    # Absolute path INSIDE the workspace but outside any mount (workspace
-    # root itself, not under mounts/<name>/) must 404 too — same extension
-    # as a legitimate asset, so this actually exercises containment rather
-    # than just the extension allowlist.
+    assert build_conn()
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "/etc/passwd"})
+           |> response(404)
+
+    # Absolute path INSIDE the workspace but outside the mount's own ICM
+    # root must 404 too — same extension as a legitimate asset, so this
+    # actually exercises containment rather than just the extension
+    # allowlist.
     workspace_root_png = Path.join(ws, "shadow.png")
     File.write!(workspace_root_png, "not under any mount")
 
     assert build_conn()
-           |> get("/files/raw", %{"path" => workspace_root_png})
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => workspace_root_png})
            |> response(404)
   end
 
-  test "serve rejects a URL-encoded traversal attempt", %{conn: _conn} do
+  test "serve rejects a URL-encoded traversal attempt", %{workspace: ws} do
+    icm = mount_primary!(ws)
+
     # Plug/Phoenix's router already percent-decodes the query string before
     # `params` reaches the controller, so an encoded ".." arrives identical
     # to a literal one — this asserts that decoding doesn't create a second,
     # unguarded code path.
     conn =
       build_conn()
-      |> get("/files/raw?path=mounts%2Fprimary%2F%2e%2e%2f%2e%2e%2fsecrets%2Fx.png")
+      |> get("/files/raw?mount_key=#{icm.mount_key}&path=%2e%2e%2f%2e%2e%2fsecrets%2Fx.png")
 
     assert response(conn, 404)
-  end
-
-  test "upload is rejected 400 when page_path attributes to no mount at all", %{conn: conn} do
-    upload = %Plug.Upload{path: write_tmp_png!(), filename: "x.png", content_type: "image/png"}
-
-    conn1 =
-      conn
-      |> with_token()
-      |> post("/files/upload", %{"file" => upload, "page_path" => "logs/audit.jsonl"})
-
-    assert json_response(conn1, 400)
-
-    conn2 =
-      conn
-      |> with_token()
-      |> post("/files/upload", %{
-        "file" => upload,
-        "page_path" => "mounts/primary/../../secrets/x.md"
-      })
-
-    assert json_response(conn2, 400)
   end
 
   test "serve includes anti-MIME-sniffing headers and no charset in content-type", %{
@@ -328,7 +391,6 @@ defmodule ValeaWeb.FilesControllerTest do
     workspace: ws
   } do
     icm = mount_primary!(ws)
-    page_path = Path.join(icm.root, "Clients/Julia Steiner.md")
 
     upload = %Plug.Upload{
       path: write_tmp_png!(),
@@ -339,11 +401,15 @@ defmodule ValeaWeb.FilesControllerTest do
     conn1 =
       conn
       |> with_token()
-      |> post("/files/upload", %{"file" => upload, "page_path" => page_path})
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
+      })
 
     assert %{"path" => path} = json_response(conn1, 200)
 
-    conn2 = get(build_conn(), "/files/raw", %{"path" => path})
+    conn2 = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => path})
     assert response(conn2, 200)
 
     # Assert x-content-type-options: nosniff header
@@ -355,5 +421,31 @@ defmodule ValeaWeb.FilesControllerTest do
     # Assert content-type has no charset (should be exactly "image/png", not "image/png; charset=utf-8")
     content_type = get_resp_header(conn2, "content-type") |> hd()
     assert content_type == "image/png"
+  end
+
+  test "Mounts.mount_by_key/2 is what upload/serve attribute against — a disabled mount via set_enabled/3 also 400s",
+       %{conn: conn, workspace: ws} do
+    icm = mount_primary!(ws)
+    :ok = Mounts.set_enabled(ws, icm.mount_key, false)
+
+    upload = %Plug.Upload{path: write_tmp_png!(), filename: "x.png", content_type: "image/png"}
+
+    conn1 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
+      })
+
+    assert json_response(conn1, 400)
+
+    assert build_conn()
+           |> get("/files/raw", %{
+             "mount_key" => icm.mount_key,
+             "path" => "Clients/Julia Steiner.md"
+           })
+           |> response(404)
   end
 end

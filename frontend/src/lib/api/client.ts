@@ -882,17 +882,24 @@ export type AuditEntry = {
 };
 
 /**
- * Uploads an image for `pagePath` (Task C7). Plain HTTP — `POST /files/upload`
- * is not an Ash RPC action (see `ValeaWeb.FilesController`'s moduledoc), so
+ * Uploads an image for `pagePath` inside `mountKey`'s ICM (Task C7; `mountKey`
+ * threaded through in task 4.4's re-key — `pagePath` is ICM-relative, never
+ * workspace-relative or absolute, see `ValeaWeb.FilesController`'s
+ * moduledoc). Plain HTTP — `POST /files/upload` is not an Ash RPC action, so
  * this bypasses `runRpc`/the generated client entirely and calls `fetch`
  * directly, carrying the same `x-valea-token` header `withAuth` injects for
  * the HTTP RPC fallback (`controlToken()` — see `socket.ts`). Response keys
  * are snake_case on the wire (`path`, `rel_from_page`); mapped to
  * `relFromPage` here, the app's one camelCase boundary for this endpoint.
  */
-async function uploadImage(file: File, pagePath: string): Promise<ApiResult<{ path: string; relFromPage: string }>> {
+async function uploadImage(
+  file: File,
+  mountKey: string,
+  pagePath: string
+): Promise<ApiResult<{ path: string; relFromPage: string }>> {
   const body = new FormData();
   body.append('file', file);
+  body.append('mount_key', mountKey);
   body.append('page_path', pagePath);
 
   let response: Response;

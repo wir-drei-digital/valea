@@ -1207,27 +1207,42 @@ with Spec B's `Decisions/` convention.
 
 `ValeaWeb.FilesController` (`backend/lib/valea_web/controllers/
 files_controller.ex`) writes to and serves `Assets/<page-slug>-<hash8>.
-<ext>` at the target mount's root. `POST /files/upload` is token-gated
-(its own `:files_upload` router pipeline mirrors `:rpc`'s `ValeaWeb.Plugs.
-ControlToken`), capped at 10 MB (`@max_upload_bytes 10_000_000`, checked
-via `File.stat/1` on the parsed upload — the transport-level `Plug.
-Parsers` `length:` in `endpoint.ex` is set higher, `12_000_000`, purely as
-headroom so this business check runs first), and allowlists BOTH extension
-and `content_type` (`.png/.jpg/.jpeg/.gif/.webp` → their exact MIME type —
-deliberately no `.svg`, which is scriptable). Both actions attribute the
-requested path to an ENABLED, non-degraded mount and contain it via
-`Valea.Workflows.MemoryProposal.check_target/2` (the same symlink-aware
-`Valea.Paths.resolve_real/2` containment the memory-update write path
-uses) — a symlink planted inside a mount's `Assets/` folder is defeated the
-same way. `GET /files/raw` is deliberately TOKEN-EXEMPT — its own
-unauthenticated `/files` scope on the plain `:api` pipeline in `router.
-ex` — because an `<img>` tag cannot send custom headers, and the
-Phoenix endpoint only ever binds loopback (127.0.0.1): the endpoint
-exposes only files a local process could already read. It sets
-`x-content-type-options: nosniff` and `content-disposition: inline`, and
-always derives `content-type` from the allowlisted file EXTENSION —
-never from anything client-supplied or stored — so a mismatched upload can
-never make the serve path emit an attacker-chosen content-type.
+<ext>` at the target mount's root, addressed by `(mount_key, ICM-relative
+path)` — task 4.4's re-key onto the same vocabulary `Valea.ICM` uses,
+never a raw workspace-relative or bare absolute path. `POST /files/upload`
+is token-gated (its own `:files_upload` router pipeline mirrors `:rpc`'s
+`ValeaWeb.Plugs.ControlToken`), capped at 10 MB (`@max_upload_bytes
+10_000_000`, checked via `File.stat/1` on the parsed upload — the
+transport-level `Plug.Parsers` `length:` in `endpoint.ex` is set higher,
+`12_000_000`, purely as headroom so this business check runs first), and
+allowlists BOTH extension and `content_type` (`.png/.jpg/.jpeg/.gif/.webp`
+→ their exact MIME type — deliberately no `.svg`, which is scriptable).
+Both actions resolve `mount_key` via `Valea.Mounts.mount_by_key/2`
+(requiring ENABLED + non-degraded) and contain the ICM-relative path
+against that mount's own root via the same symlink-aware
+`Valea.Paths.resolve_real/2` containment `Valea.ICM` uses — a symlink
+planted inside a mount's `Assets/` folder is defeated the same way. `GET
+/files/raw` is deliberately TOKEN-EXEMPT — its own unauthenticated
+`/files` scope on the plain `:api` pipeline in `router.ex` — because an
+`<img>` tag cannot send custom headers, and the Phoenix endpoint only
+ever binds loopback (127.0.0.1): the endpoint exposes only files a local
+process could already read. It sets `x-content-type-options: nosniff`
+and `content-disposition: inline`, and always derives `content-type` from
+the allowlisted file EXTENSION — never from anything client-supplied or
+stored — so a mismatched upload can never make the serve path emit an
+attacker-chosen content-type.
+
+**The `Assets/` stance.** Writing a pasted image into the external ICM's
+own `Assets/` folder is a deliberate, reviewed exception to "Valea-
+generated runtime/settings files never land inside a user-owned ICM"
+(spec invariant 9) — but not actually in tension with it: the image is
+USER CONTENT the human explicitly pasted/dropped into their own note, not
+a Valea-generated runtime/settings artifact, so it belongs in the ICM
+exactly the way the note's own text does. This is also why `upload/2`
+does NOT pass through the agent `Valea.Agents.PermissionPolicy` ask-gate
+— that gate mediates writes an AGENT initiates on the human's behalf; an
+image paste/drop is a human directly performing the write via an explicit
+UI gesture, so the human is already the approver.
 
 ### Frontend — image paste/drag, link picker, palette, backlinks UI
 
