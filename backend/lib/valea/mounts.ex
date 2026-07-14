@@ -1,68 +1,65 @@
 defmodule Valea.Mounts do
   @moduledoc """
-  Discovery, relationship state (enabled/disabled), and the effective
-  composition set for `mounts/<name>/` — the unit Plan A refactors the
-  single hardcoded `icm/` tree into.
+  CONFIG TRUTH: the set of mounted ICMs in a workspace is exactly the
+  `icms:` map in `config/workspace.yaml` — nothing is discovered by
+  scanning the filesystem. Every mounted ICM is BY-REFERENCE (external):
+  it lives OUTSIDE the workspace, at the `path:` an `icms:` entry names.
+  There is no more embedded `mounts/<name>/` directory concept; `list/1`
+  builds exactly one `mount()` per `icms:` entry.
 
-  Two independent sources of truth compose here:
-  - The filesystem (`mounts/<name>/icm.yaml`, via `Valea.Mounts.Manifest`)
-    is the source of truth for a mount's *identity* — its name is the
-    directory basename, nothing more.
-  - `config/workspace.yaml`'s `mounts:` section is the source of truth for
-    whether a mount is *enabled* — a purely relational, mutable overlay
-    that never touches the mount's own files.
+  ## Compatibility shim
 
-  A third kind joins these two at discovery time: `Valea.Mounts.External`
-  resolves `kind: "path"` entries in the same `mounts:` section into
-  BY-REFERENCE mounts living OUTSIDE the workspace (`rel_root: nil`). `list/1`
-  returns embedded ∪ external, sorted by name; a name declared as BOTH an
-  embedded directory AND an external entry is ambiguous, so BOTH entries are
-  marked degraded (`"name used by both an embedded and an external mount"`)
-  rather than either silently shadowing the other — excluding both from
-  `enabled/1` via the same `degraded != nil` convention below.
+  The `mount()` map keeps its historical field set (`name`, `rel_root`,
+  `root`, `manifest`, `enabled`, `degraded`), but `rel_root` is now ALWAYS
+  `nil` — every mount is external. `name` is the workspace-local **mount
+  key** (the `icms:` mapping key); `manifest.name` is the ICM's own
+  display name. Every existing consumer that already branches on
+  `rel_root` (`Valea.ICM`, `References`, `Search`, `ClaudeSettings`,
+  `Workflows`, ...) transparently takes its external branch — the dead
+  embedded branches are removed in a later phase, not here.
 
-  A mount is "degraded" when its `icm.yaml` is missing or invalid: it is
-  still discovered and listed (so the UI can show *something* is wrong and
-  the user can fix or remove it), but it is always excluded from
-  `enabled/0,1` regardless of its config `enabled` flag — the effective set
-  every later consumer (ICM tree, Workflows, References, ...) composes
-  over.
+  ## Resolution and degradation
 
-  A mount whose directory BASENAME itself carries a C0 control character or
-  DEL (e.g. a stray newline) is also always degraded — regardless of
-  whether its `icm.yaml` is otherwise fine — with reason `"invalid mount
-  directory name"`. This is a discovery-time guard, not a rendering one:
-  `Valea.Mounts.MountsMd` interpolates a mount's `rel_root` RAW into a live
-  `@`-import line for every enabled mount, so a corrupted basename reaching
-  that renderer at all would forge a line the routing file's own reader
-  can't distinguish from a real import. Quarantining it here — before
-  `rel_root` is ever built from the raw name — is the only layer that can
-  fix this without breaking the real `@`-import path for legitimately-named
-  mounts. `validate_mount_name/1` (used by `set_enabled/2`, `declare_external/3`,
-  `undeclare/2`, and `create/3`) rejects the same class of name outright for
-  anything this module writes itself.
+  For each `icms:` entry, `list/1` expands `~`, resolves symlinks
+  (`Valea.Paths.resolve_real/2`, self-base trick — mirrors
+  `Valea.Mounts.External`), boundary-validates the resolved path
+  (`Valea.Mounts.External.check_boundaries/2`: not inside the workspace,
+  not the home directory or filesystem root, not an ancestor of the
+  workspace), checks it is free of Claude Code permission-glob
+  metacharacters (`* ? [ ] { } ( )` — the resolved root is spliced into a
+  `Read(<root>/**)` allow entry later), confirms a folder exists there,
+  and loads its `icm.yaml` (`Valea.Mounts.Manifest.load/1`, format 2 —
+  requires a validated UUID `id`). Any failure at any step DEGRADES the
+  entry (`degraded: <reason>`) rather than dropping it — it stays listed
+  (for the UI to show something is wrong and the user to repair or remove
+  it) but is always excluded from `enabled/0,1` regardless of its config
+  `enabled` flag.
 
-  ## Audit — external mounts are boundary changes
+  After every entry resolves, two post-passes catch cross-entry collisions
+  a single-entry check cannot see: `degrade_duplicate_roots/1` degrades
+  EVERY entry whose resolved root is shared by another entry (a physical
+  ICM folder mounted twice under different keys), and
+  `degrade_duplicate_ids/1` degrades every currently-healthy entry whose
+  manifest `id` is shared by another currently-healthy entry (the same
+  portable ICM — or an ambiguous clone of it — mounted twice). `list/1` is
+  sorted by mount key (the `icms:` map key, `name` on the struct).
 
-  Declaring, undeclaring, enabling, or disabling an EXTERNAL (`kind:
-  "path"`) mount changes what filesystem locations OUTSIDE the workspace an
-  agent session can read — a workspace boundary change, not a purely
-  internal relational edit. `declare_external/3` audits `mount_declared`,
-  `undeclare/2` audits `mount_undeclared`, and `set_enabled/2` audits
-  `mount_enabled`/`mount_disabled` — but ONLY when the mount being touched
-  is external (`kind: "path"`); toggling an EMBEDDED mount never changes
-  any read boundary (it always lived inside the workspace), so it stays
-  unaudited, matching this function's pre-A2 behavior. Every audit entry
-  carries the mount's best-effort RESOLVED absolute path — the same `root`
-  value `Valea.Mounts.External.declared/1` computes, which survives even a
-  degraded/boundary-violating ref (`nil` only when the ref was never
-  absolute/`~`-based at all) — alongside the mount `name`, so the audit
-  trail names the real location being granted or revoked, not just the
-  config key.
+  ## Audit — every mount is a boundary change
+
+  Since every mounted ICM is by-reference, declaring, undeclaring,
+  enabling, or disabling one changes what filesystem locations OUTSIDE the
+  workspace an agent session can read. `declare_external/3` audits
+  `mount_declared`, `undeclare/2` audits `mount_undeclared`, and
+  `set_enabled/2` audits `mount_enabled`/`mount_disabled`. Every audit
+  entry carries the mount's best-effort RESOLVED absolute path (`nil` only
+  when the ref was never absolute/`~`-based at all) alongside the mount
+  `name`, so the audit trail names the real location being granted or
+  revoked, not just the config key.
   """
 
   alias Valea.Mounts.External
   alias Valea.Mounts.Manifest
+  alias Valea.Paths
   alias Valea.Workspace.Manager
   alias Valea.Workspace.Scaffold
   alias Valea.Yaml
@@ -84,9 +81,9 @@ defmodule Valea.Mounts do
         }
 
   @doc """
-  All discovered mounts in the current workspace — embedded ∪ declared
-  external (enabled + disabled + degraded) — sorted by name. See the
-  moduledoc for the embedded/external name-collision rule.
+  Every mount declared in the current workspace's `icms:` config (enabled +
+  disabled + degraded) — sorted by mount key. See the moduledoc for
+  resolution/degradation and the duplicate-root/duplicate-id rules.
   """
   @spec list() :: {:ok, [mount]} | {:error, :no_workspace}
   def list do
@@ -96,25 +93,19 @@ defmodule Valea.Mounts do
   end
 
   @doc """
-  Pure form of `list/0` — every discovered mount under `workspace` (embedded
-  ∪ declared external via `Valea.Mounts.External.declared/1`), sorted by
-  name.
+  Pure form of `list/0` — one `mount()` per `icms:` entry in `workspace`'s
+  `config/workspace.yaml`, resolved and degradation-checked (see
+  moduledoc), sorted by mount key.
   """
   @spec list(workspace :: String.t()) :: [mount]
   def list(workspace) when is_binary(workspace) do
-    config_mounts = read_config_mounts(workspace)
+    ws_resolved = resolve_best_effort(workspace)
 
-    embedded =
-      workspace
-      |> Path.join("mounts/*")
-      |> Path.wildcard()
-      |> Enum.filter(&File.dir?/1)
-      |> Enum.map(&build_mount(&1, config_mounts))
-
-    external = External.declared(workspace)
-
-    (embedded ++ external)
-    |> degrade_name_collisions()
+    workspace
+    |> read_icms_config()
+    |> Enum.map(fn {name, entry} -> build_icm_mount(name, entry, ws_resolved) end)
+    |> degrade_duplicate_roots()
+    |> degrade_duplicate_ids()
     |> Enum.sort_by(& &1.name)
   end
 
@@ -133,22 +124,19 @@ defmodule Valea.Mounts do
   end
 
   @doc """
-  Resolves a path to the mount that owns it, in the current workspace —
-  either a workspace-relative `mounts/<name>/…` path (embedded) or an
-  ABSOLUTE path under an enabled, non-degraded external mount's `root`
-  (by-reference). See `mount_for/2` for the full contract.
+  Resolves an ABSOLUTE path to the mount that owns it, in the current
+  workspace. See `mount_for/2` for the full contract.
 
   Attribution only — it does not validate or contain the path. Callers
-  that go on to do filesystem I/O with `rel_path` must independently
-  expand it and prefix-check it against the resolved mount's `root`
-  (mirroring `Valea.ICM.contain/2`); this function only identifies which
-  mount a path *names*, it does not authorize access to it.
+  that go on to do filesystem I/O with `path` must independently expand
+  it and prefix-check it against the resolved mount's `root` (mirroring
+  `Valea.ICM.contain/2`); this function only identifies which mount a path
+  *names*, it does not authorize access to it.
   """
-  @spec mount_for(rel_path :: String.t()) ::
-          {:ok, mount} | {:error, :not_in_mount | :no_workspace}
-  def mount_for(rel_path) when is_binary(rel_path) do
+  @spec mount_for(path :: String.t()) :: {:ok, mount} | {:error, :not_in_mount | :no_workspace}
+  def mount_for(path) when is_binary(path) do
     with {:ok, ws} <- workspace_root() do
-      case mount_for(ws, rel_path) do
+      case mount_for(ws, path) do
         nil -> {:error, :not_in_mount}
         mount -> {:ok, mount}
       end
@@ -158,64 +146,59 @@ defmodule Valea.Mounts do
   @doc """
   Pure form of `mount_for/1` for `workspace` — the owning mount, or `nil`.
 
-  Two path shapes are attributed:
+  Every mount is external (`rel_root: nil` always, see moduledoc), so
+  attribution is by ABSOLUTE-root prefix alone: `path` attributes to
+  whichever mount's `root` it falls under, segment-boundary (`/a/b` does
+  not match a `/a/bc` root) — but ONLY among ENABLED, non-degraded mounts.
+  A degraded mount's `root` may carry a resolved path a hand-edited config
+  pointed at `$HOME`, `/`, or an ancestor of the workspace (preserved on
+  the struct for recovery, never for trust); matching attribution against
+  it would let a dangerous path masquerade as a legitimate mount, so it is
+  excluded by construction. With NESTED mount roots (one mount's folder
+  inside another's), the most-specific (longest) matching root wins. This
+  function assumes the caller already resolved `path` to its real,
+  physical form (mirrors how `root` itself is realpath-resolved) — it only
+  compares, it does not resolve.
 
-    * a workspace-relative `mounts/<name>/…` path attributes to the
-      EMBEDDED mount named `<name>`, if `list/1` discovers one — regardless
-      of that mount's `enabled`/`degraded` state (unchanged from before
-      external mounts existed; every existing embedded-editor caller passes
-      this shape). An external-only name never matches this shape — the
-      `mounts/<name>` form is the embedded addressing scheme; external
-      content is addressed by absolute path only.
-    * an ABSOLUTE path (external content has no workspace-relative form —
-      it lives outside the workspace) attributes to whichever EXTERNAL
-      mount's `root` it falls under, segment-boundary (`/a/b` does not match
-      a `/a/bc` root); with NESTED declared roots the most-specific
-      (longest) matching root wins — but ONLY among ENABLED, non-degraded
-      external mounts. A degraded external mount's `root` may carry a resolved path
-      a hand-edited config pointed at `$HOME`, `/`, or an ancestor of the
-      workspace (preserved on the struct for recovery, never for trust —
-      see `Valea.Mounts.External`'s moduledoc); matching attribution
-      against it would let a dangerous path masquerade as a legitimate
-      mount, so it is excluded by construction. Embedded mounts are never
-      matched this way. This function assumes the caller already resolved
-      the path to its real, physical form (mirrors how `root` itself is
-      realpath-resolved) — it only compares, it does not resolve.
-
-  Neither shape validates or contains the path — attribution only. Callers
-  that go on to do filesystem I/O with the path must independently expand
-  it and prefix-check it against the resolved mount's `root` (mirroring
+  Does not validate or contain the path — attribution only. Callers that
+  go on to do filesystem I/O with the path must independently expand it
+  and prefix-check it against the resolved mount's `root` (mirroring
   `Valea.ICM.contain/2`); this function only identifies which mount a path
   *names*, it does not authorize access to it.
   """
-  @spec mount_for(workspace :: String.t(), rel_path :: String.t()) :: mount | nil
-  def mount_for(workspace, rel_path) when is_binary(workspace) and is_binary(rel_path) do
-    mounts = list(workspace)
-
-    case mount_name_from_rel_path(rel_path) do
-      nil ->
-        mounts
-        |> Enum.filter(&external_root_match?(&1, rel_path))
-        |> most_specific_root()
-
-      # The `mounts/<name>` rel-path shape is the EMBEDDED addressing
-      # scheme -- external content is addressed by absolute path only, so
-      # an external-only name never matches here (`rel_root: nil`).
-      name ->
-        Enum.find(mounts, &(&1.rel_root != nil and &1.name == name))
-    end
+  @spec mount_for(workspace :: String.t(), path :: String.t()) :: mount | nil
+  def mount_for(workspace, path) when is_binary(workspace) and is_binary(path) do
+    workspace
+    |> list()
+    |> Enum.filter(&(effective?(&1) and path_under_root?(path, &1.root)))
+    |> most_specific_root()
   end
 
-  # Only an ENABLED, non-degraded EXTERNAL mount's `root` is eligible for
-  # absolute-path attribution -- see the `mount_for/2` @doc for why a
-  # degraded one must never match.
-  defp external_root_match?(%{rel_root: nil} = mount, path) do
-    effective?(mount) and path_under_root?(path, mount.root)
+  @doc """
+  Direct lookup by the workspace-local mount key (the `icms:` mapping
+  key) — the mount named `mount_key` regardless of its `enabled`/`degraded`
+  state, or `nil` if no `icms:` entry has that key.
+  """
+  @spec mount_by_key(workspace :: String.t(), mount_key :: String.t()) :: mount | nil
+  def mount_by_key(workspace, mount_key) when is_binary(workspace) and is_binary(mount_key) do
+    workspace |> list() |> Enum.find(&(&1.name == mount_key))
   end
 
-  defp external_root_match?(_embedded, _path), do: false
+  @doc """
+  Lookup by stable ICM id (`icm.yaml`'s `id:`) among HEALTHY mounts
+  (`degraded == nil` — a degraded entry has no trustworthy `manifest` to
+  match against) — `nil` if no healthy mount carries that id. Duplicate ids
+  never reach here healthy: `degrade_duplicate_ids/1` degrades every
+  mount sharing an id before `list/1` returns.
+  """
+  @spec mount_by_id(workspace :: String.t(), icm_id :: String.t()) :: mount | nil
+  def mount_by_id(workspace, icm_id) when is_binary(workspace) and is_binary(icm_id) do
+    workspace
+    |> list()
+    |> Enum.find(&(&1.degraded == nil and &1.manifest != nil and &1.manifest.id == icm_id))
+  end
 
-  # With NESTED external roots (one declared root inside another), a path
+  # With NESTED mount roots (one mount's folder inside another's), a path
   # in the inner mount is under BOTH -- the most-specific (longest) root
   # owns it, never whichever name happens to sort first.
   defp most_specific_root([]), do: nil
@@ -225,7 +208,7 @@ defmodule Valea.Mounts do
   # `Valea.Mounts.External`'s own `under?/2`: a trailing-slash join, never a
   # lexical string prefix, so `/a/b` never matches an `/a/bc` root.
   defp path_under_root?(path, root) do
-    path == root or String.starts_with?(path <> "/", root <> "/")
+    root != "" and (path == root or String.starts_with?(path <> "/", root <> "/"))
   end
 
   @doc """
@@ -500,33 +483,197 @@ defmodule Valea.Mounts do
   defp effective?(%{enabled: true, degraded: nil}), do: true
   defp effective?(_), do: false
 
-  # A name declared as BOTH an embedded directory and an external `kind:
-  # "path"` entry is ambiguous -- degrade BOTH entries (never drop either;
-  # `list/1` keeps surfacing both for the UI to disambiguate) rather than
-  # letting one silently shadow the other. Any given name can only collide
-  # between exactly one embedded and one external entry (directory
-  # basenames are unique on the filesystem; config map keys are unique in
-  # YAML), so "more than one entry with this name" IS "one of each kind".
-  defp degrade_name_collisions(mounts) do
-    collided_names =
+  # -- icms: resolution (config truth, external-only) ---------------------
+
+  # One `icms:` entry -> one `mount()`. `enabled` reads the entry's own
+  # `enabled` key (default true when absent) regardless of what follows;
+  # every failure below DEGRADES (never drops) the entry, mirroring
+  # `Valea.Mounts.External`'s degrade-tolerant read path.
+  defp build_icm_mount(name, entry, ws_resolved) do
+    enabled = icm_enabled?(entry)
+
+    case icm_path(entry) do
+      {:ok, path} -> build_from_icm_path(name, path, enabled, ws_resolved)
+      :error -> degraded_icm_mount(name, "", enabled, "path is missing or invalid")
+    end
+  end
+
+  defp icm_path(entry) when is_map(entry) do
+    case Map.get(entry, "path") do
+      path when is_binary(path) -> {:ok, path}
+      _missing_or_invalid -> :error
+    end
+  end
+
+  defp icm_path(_not_a_map), do: :error
+
+  defp icm_enabled?(entry) when is_map(entry) do
+    case Map.get(entry, "enabled") do
+      false -> false
+      _absent_or_true -> true
+    end
+  end
+
+  defp icm_enabled?(_not_a_map), do: true
+
+  # A `path` must be absolute or `~`-based; anything else would silently
+  # anchor to the process CWD via `Path.expand/1` (nondeterministic in a
+  # release) — mirrors `Valea.Mounts.External`'s own `check_absolute/1`
+  # (private there, so duplicated here rather than exposed just for this).
+  defp build_from_icm_path(name, path, enabled, ws_resolved) do
+    if absolute_or_tilde?(path) do
+      resolved = resolve_best_effort(Path.expand(path))
+
+      case External.check_boundaries(resolved, ws_resolved) do
+        :ok ->
+          build_resolved_icm_mount(name, path, resolved, enabled)
+
+        {:error, boundary} ->
+          degraded_icm_mount(name, resolved, enabled, boundary_reason(boundary))
+      end
+    else
+      degraded_icm_mount(name, "", enabled, "path must be an absolute path (or start with ~)")
+    end
+  end
+
+  defp absolute_or_tilde?("/" <> _rest), do: true
+  defp absolute_or_tilde?("~"), do: true
+  defp absolute_or_tilde?("~/" <> _rest), do: true
+  defp absolute_or_tilde?(_relative), do: false
+
+  # Claude Code's permission globs (`Read(<root>/**)`, spliced in by
+  # `Valea.Agents.ClaudeSettings`) are matched by ITS OWN glob engine, not
+  # the filesystem — a resolved root containing a glob metacharacter would
+  # change that allow entry's match semantics. Checked on the RESOLVED path
+  # (post `~`-expansion, post symlink-walk), same guard
+  # `Valea.Mounts.External` runs, duplicated here for the same
+  # can't-call-a-private-function reason as `absolute_or_tilde?/1` above.
+  @glob_metacharacters ["*", "?", "[", "]", "{", "}", "(", ")"]
+
+  defp check_icm_glob_safety(resolved) do
+    if String.contains?(resolved, @glob_metacharacters), do: {:error, :unsafe_path}, else: :ok
+  end
+
+  defp build_resolved_icm_mount(name, path, resolved, enabled) do
+    case check_icm_glob_safety(resolved) do
+      :ok ->
+        if File.dir?(resolved) do
+          case Manifest.load(resolved) do
+            {:ok, manifest} ->
+              %{
+                name: name,
+                rel_root: nil,
+                root: resolved,
+                manifest: manifest,
+                enabled: enabled,
+                degraded: nil
+              }
+
+            {:error, :missing} ->
+              degraded_icm_mount(name, resolved, enabled, "icm.yaml is missing")
+
+            {:error, {:invalid, reason}} ->
+              degraded_icm_mount(name, resolved, enabled, reason)
+          end
+        else
+          degraded_icm_mount(name, resolved, enabled, "folder not found at #{path}")
+        end
+
+      {:error, :unsafe_path} ->
+        degraded_icm_mount(
+          name,
+          resolved,
+          enabled,
+          "path contains characters unsafe for permission globs: *, ?, [, ], {, }, (, )"
+        )
+    end
+  end
+
+  defp boundary_reason(:home_or_root),
+    do: "path points at the home directory or filesystem root — not mountable"
+
+  defp boundary_reason(:inside_workspace),
+    do: "path points at or inside the workspace — not mountable"
+
+  defp boundary_reason(:ancestor_of_workspace),
+    do: "path points at an ancestor of the workspace — not mountable"
+
+  defp degraded_icm_mount(name, root, enabled, reason) do
+    %{name: name, rel_root: nil, root: root, manifest: nil, enabled: enabled, degraded: reason}
+  end
+
+  # Fully resolve `path` (`~`-expanded — the caller already `Path.expand/1`s
+  # — symlinks walked) with a safe fallback to the lexically-expanded path
+  # on the (pathological — a symlink cycle exceeding the resolution budget)
+  # resolution failure, so this always returns a usable absolute string
+  # rather than an error tuple. The `resolve_real(p, p)` self-base trick:
+  # an `icms:` path is not naturally contained in any existing base, so
+  # resolving it against itself makes containment trivially satisfied and
+  # yields the fully-symlink-walked physical path — mirrors
+  # `Valea.Mounts.External`'s identically-named private helper.
+  defp resolve_best_effort(path) do
+    case Paths.resolve_real(path, path) do
+      {:ok, resolved} -> resolved
+      {:error, _reason} -> path
+    end
+  end
+
+  # Post-pass 1: any resolved, non-empty root shared by more than one
+  # `icms:` entry is ambiguous (the same physical folder mounted twice
+  # under different keys) -- ALL entries sharing it are degraded, healthy
+  # or not (a duplicate root is disqualifying on its own, regardless of
+  # what else is wrong with either entry).
+  defp degrade_duplicate_roots(mounts) do
+    dup_roots =
       mounts
-      |> Enum.frequencies_by(& &1.name)
-      |> Enum.filter(fn {_name, count} -> count > 1 end)
-      |> Enum.into(MapSet.new(), fn {name, _count} -> name end)
+      |> Enum.filter(&(&1.root != ""))
+      |> Enum.frequencies_by(& &1.root)
+      |> Enum.filter(fn {_root, count} -> count > 1 end)
+      |> Enum.into(MapSet.new(), fn {root, _count} -> root end)
 
     Enum.map(mounts, fn m ->
-      if MapSet.member?(collided_names, m.name) do
-        %{m | degraded: "name used by both an embedded and an external mount"}
+      if MapSet.member?(dup_roots, m.root) do
+        %{m | degraded: "duplicate root: shared with another mounted ICM in this workspace"}
       else
         m
       end
     end)
   end
 
-  defp mount_name_from_rel_path(rel_path) do
-    case Path.split(rel_path) do
-      ["mounts", name | _rest] when name not in ["", ".", ".."] -> name
-      _ -> nil
+  # Post-pass 2: among entries still HEALTHY after the duplicate-root pass,
+  # any manifest `id` shared by more than one is an ambiguous clone -- ALL
+  # entries sharing it are degraded. Only healthy entries participate (a
+  # degraded entry's `manifest` is `nil`, nothing to compare).
+  defp degrade_duplicate_ids(mounts) do
+    {healthy, other} = Enum.split_with(mounts, &(&1.degraded == nil))
+
+    dup_ids =
+      healthy
+      |> Enum.frequencies_by(& &1.manifest.id)
+      |> Enum.filter(fn {_id, count} -> count > 1 end)
+      |> Enum.into(MapSet.new(), fn {id, _count} -> id end)
+
+    degraded_healthy =
+      Enum.map(healthy, fn m ->
+        if MapSet.member?(dup_ids, m.manifest.id) do
+          %{m | degraded: "ambiguous id: shared with another mounted ICM in this workspace"}
+        else
+          m
+        end
+      end)
+
+    degraded_healthy ++ other
+  end
+
+  # `icms:` is a workspace-local map; `read_config_mounts/1` reads the
+  # LEGACY `mounts:` section (still used by the not-yet-retargeted
+  # `declare_external/3`/`undeclare/2`/`create/3` below) — kept as a
+  # SEPARATE reader rather than repointing that shared function, so this
+  # rewrite does not disturb `Valea.Mounts.External`'s own `mounts:`-based
+  # read path (`External.declared/1` and its test suite).
+  defp read_icms_config(workspace) do
+    case read_workspace_config(workspace) do
+      {:ok, doc} -> normalize_mounts(Map.get(doc, "icms"))
     end
   end
 
