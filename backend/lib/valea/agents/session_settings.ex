@@ -60,7 +60,7 @@ defmodule Valea.Agents.SessionSettings do
 
       {
         "schema": "memory_update/v1",
-        "target_path": "mounts/<mount>/Pricing/Current Pricing.md",
+        "target_path": "Pricing/Current Pricing.md",
         "base_sha256": "<sha256 hex of the target page exactly as you read it, or null to create a new page>",
         "reason": "one line: why this change",
         "sources": ["paths you read"]
@@ -68,10 +68,11 @@ defmodule Valea.Agents.SessionSettings do
 
   The `base_sha256` must be lowercase hex, exactly 64 characters. Page content is capped at 1 MB — split anything larger.
 
-  Target paths use the same form you read them by: workspace-relative for
-  mounts under `mounts/`, absolute for mounts listed with a real location
-  in MOUNTS.md. The app verifies the target and shows the user a diff;
-  nothing changes without their approval.
+  `target_path` is relative to your own working directory (this ICM's own
+  root) — the same form you'd use to read or write any other file here,
+  never prefixed with this ICM's name or mount key. The app verifies the
+  target and shows the user a diff; nothing changes without their
+  approval.
   """
 
   @spec content(map()) :: map()

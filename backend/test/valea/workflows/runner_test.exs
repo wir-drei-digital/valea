@@ -659,11 +659,14 @@ defmodule Valea.Workflows.RunnerTest do
 
       base = :crypto.hash(:sha256, File.read!(target)) |> Base.encode16(case: :lower)
 
+      # Task 7.3: `target_path` is the agent's OWN ICM-relative path (the
+      # agent's session `cwd` IS `icm.root`, post-7.2) — never the old
+      # absolute `icm.root`-joined literal.
       File.write!(
         Path.join(staging, "proposals/a-pricing.json"),
         Jason.encode!(%{
           "schema" => "memory_update/v1",
-          "target_path" => target,
+          "target_path" => "Pricing/Current Pricing.md",
           "base_sha256" => base,
           "reason" => "rate changed",
           "sources" => [target]
@@ -676,7 +679,7 @@ defmodule Valea.Workflows.RunnerTest do
         Path.join(staging, "proposals/b-wf.json"),
         Jason.encode!(%{
           "schema" => "memory_update/v1",
-          "target_path" => wf_path(icm),
+          "target_path" => @triage_relative_path,
           "base_sha256" => nil,
           "reason" => "tighten steps",
           "sources" => []
@@ -695,12 +698,32 @@ defmodule Valea.Workflows.RunnerTest do
       assert p1["payload"]["kind"] == "memory_update"
       assert p1["payload"]["summary"] == "rate changed"
       assert p1["payload"]["proposed_action"]["type"] == "apply_page_content"
-      assert p1["payload"]["proposed_action"]["content_markdown"] == "# Pricing\n\n150 EUR\n"
+
+      assert p1["payload"]["proposed_action"]["target"]["locator"] == %{
+               "kind" => "icm",
+               "icm_id" => icm.id,
+               "path" => "Pricing/Current Pricing.md"
+             }
+
+      assert p1["payload"]["proposed_action"]["target"]["content_markdown"] ==
+               "# Pricing\n\n150 EUR\n"
+
       refute Map.has_key?(p1, "source_message")
 
-      # server-derived tier overrides anything claimed: workflow target is high
-      assert p2["risk_level"] == "high"
+      # RiskTier is NOT yet ICM-locator-aware (Task 7.5, deferred by the
+      # Task 7.3 brief's explicit note): `target_path` is now ICM-relative,
+      # which `RiskTier.classify/2`'s `Mounts.mount_for/2`
+      # absolute/workspace-relative attribution can never match, so even a
+      # `Workflows/…` target degrades to "medium" here post-7.3. Task 7.5
+      # re-asserts "high" once RiskTier is re-keyed onto ICM identity.
+      assert p2["risk_level"] == "medium"
       assert p2["payload"]["title"] == "New page: New Inquiry Triage.md"
+
+      assert p2["payload"]["proposed_action"]["target"]["locator"] == %{
+               "kind" => "icm",
+               "icm_id" => icm.id,
+               "path" => @triage_relative_path
+             }
 
       refute File.exists?(Path.join(ws, "queue/staging/r-mem-1"))
     end
@@ -715,12 +738,16 @@ defmodule Valea.Workflows.RunnerTest do
         Path.join(staging, "proposals/bad.json"),
         Jason.encode!(%{
           "schema" => "memory_update/v1",
-          # Bare, unattributable to any mounted ICM (never even absolute) —
-          # `MemoryProposal.check_target/2`'s `Mounts.mount_for/2` rejects it
-          # with `:not_in_mount` regardless of `icm`'s absolute-path
-          # vocabulary; this is the same "server-owned containment rejects
-          # it" shape the pre-3.2 fixture exercised.
-          "target_path" => "AGENTS.md",
+          # Escapes the sidecar's icm_root via `..` —
+          # `MemoryProposal.check_icm_target/2` rejects it with
+          # `:outside_mount` regardless of what exists at the far end (same
+          # containment posture every other chokepoint in this codebase
+          # applies). A bare filename like "AGENTS.md" would no longer be
+          # invalid post-7.3 — it is now a perfectly valid ICM-relative
+          # target (`icm.root <> "/AGENTS.md"`), unlike the old
+          # `check_target/2`'s workspace-scan attribution this fixture used
+          # to exercise.
+          "target_path" => "../../etc/passwd",
           "base_sha256" => nil,
           "reason" => "x",
           "sources" => []
@@ -825,10 +852,9 @@ defmodule Valea.Workflows.RunnerTest do
         Path.join(staging, "proposals/bad.json"),
         Jason.encode!(%{
           "schema" => "memory_update/v1",
-          # Unattributable to any mount — see the identical comment in
-          # "invalid pair audits memory_proposal_invalid and keeps staging"
-          # above.
-          "target_path" => "AGENTS.md",
+          # Escapes icm_root — see the identical comment in "invalid pair
+          # audits memory_proposal_invalid and keeps staging" above.
+          "target_path" => "../../etc/passwd",
           "base_sha256" => nil,
           "reason" => "x",
           "sources" => []
@@ -922,7 +948,16 @@ defmodule Valea.Workflows.RunnerTest do
       "input_hash" => String.duplicate("b", 64),
       "risk_level" => "medium",
       "approval" => %{"required" => true},
-      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+      "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      # Task 7.2's real sidecar shape (verified by this file's own "run.json
+      # sidecar carries icm_id, mount_key, and icm_root" test) — Task 7.3's
+      # `MemoryProposal.check_icm_target/2` reads `icm_id`/`icm_root`
+      # straight off this map, so a hand-seeded sidecar without them would
+      # make every memory pair below `:icm_unavailable` regardless of its
+      # own `target_path`.
+      "icm_id" => icm.id,
+      "mount_key" => icm.mount_key,
+      "icm_root" => icm.root
     }
 
     File.write!(Path.join(staging, "run.json"), Jason.encode!(run))
@@ -939,7 +974,10 @@ defmodule Valea.Workflows.RunnerTest do
       "input_hash" => "cafebabe",
       "risk_level" => "medium",
       "approval" => %{"required" => true},
-      "created_at" => DateTime.to_iso8601(DateTime.utc_now())
+      "created_at" => DateTime.to_iso8601(DateTime.utc_now()),
+      "icm_id" => icm.id,
+      "mount_key" => icm.mount_key,
+      "icm_root" => icm.root
     }
   end
 

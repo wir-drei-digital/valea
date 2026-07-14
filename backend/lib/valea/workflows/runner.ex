@@ -322,18 +322,27 @@ defmodule Valea.Workflows.Runner do
          i,
          file
        ) do
-    case MemoryProposal.check_target(workspace, manifest["target_path"]) do
+    case MemoryProposal.check_icm_target(run, manifest["target_path"]) do
       {:error, reason} ->
         invalid_pair_audit(run_id, file, reason)
 
-      {:ok, _target} ->
+      {:ok, %{locator: locator}} ->
         item_id = "#{run_id}-m#{i}"
 
         if item_exists?(workspace, item_id) do
           :skipped
         else
+          # RiskTier is not yet ICM-locator-aware (Task 7.5) — it still
+          # classifies from the raw `target_path` string via
+          # `Mounts.mount_for/2`'s absolute/workspace-relative attribution,
+          # which an ICM-relative path (the ONLY shape `target_path` is now,
+          # post-7.2's cwd change) can never match, so this degrades to
+          # "medium" even for a behavior-bearing file (`Workflows/…`,
+          # `AGENTS.md`). Left as-is deliberately — see the Task 7.3 brief's
+          # explicit "Do NOT fix RiskTier here" note; Task 7.5 re-keys it
+          # onto ICM identity.
           tier = RiskTier.classify(workspace, manifest["target_path"]) || "medium"
-          envelope = memory_envelope(run, item_id, manifest, content, tier)
+          envelope = memory_envelope(run, item_id, manifest, locator, content, tier)
           write_memory_pending!(workspace, item_id, envelope)
           audit("queue_item_created", %{"run_id" => item_id, "kind" => "memory_update"})
           :created
@@ -354,7 +363,15 @@ defmodule Valea.Workflows.Runner do
   # `base_sha256: nil` is the create/1 sentinel (Spec B, proposal-pair
   # vocabulary) — the target page does not exist yet, so the title reads
   # "New page: …" rather than "Update …".
-  defp memory_envelope(run, item_id, manifest, content, tier) do
+  #
+  # Task 7.3: `proposed_action.target` replaces the old flat `target_path`
+  # sibling fields with the stable ICM `locator` (built by
+  # `MemoryProposal.check_icm_target/2`, never derived here) plus
+  # `base_sha256`/`content_markdown` nested alongside it — `Valea.Queue`'s
+  # `apply_page_content/2` re-resolves `locator` against the CURRENT mount
+  # table at approval time, instead of trusting a physical path snapshotted
+  # here that could go stale if the ICM moves before a human decides.
+  defp memory_envelope(run, item_id, manifest, locator, content, tier) do
     base = Path.basename(manifest["target_path"])
     title = if manifest["base_sha256"] == nil, do: "New page: " <> base, else: "Update " <> base
 
@@ -376,9 +393,11 @@ defmodule Valea.Workflows.Runner do
         "sources" => manifest["sources"],
         "proposed_action" => %{
           "type" => "apply_page_content",
-          "target_path" => manifest["target_path"],
-          "base_sha256" => manifest["base_sha256"],
-          "content_markdown" => content
+          "target" => %{
+            "locator" => locator,
+            "base_sha256" => manifest["base_sha256"],
+            "content_markdown" => content
+          }
         }
       }
     }
@@ -560,9 +579,18 @@ defmodule Valea.Workflows.Runner do
       "icm_root" => icm_root_for(workspace, mount_key)
     }
 
+    # Task 7.4: the workflow identity carries BOTH the stable
+    # `{icm_id, relative_path}` pair and the resolved physical path used
+    # for THIS run, for forensic reconstruction after a later move/remount
+    # — a bare `resolved_path` string alone (the pre-7.4 shape) could not
+    # be traced back to a moved ICM's new location.
     audit("workflow_run_started", %{
       "run_id" => run_id,
-      "workflow" => wf.resolved_path,
+      "workflow" => %{
+        "icm_id" => wf.icm_id,
+        "relative_path" => wf.relative_path,
+        "resolved_path" => wf.resolved_path
+      },
       "input" => input_display,
       "workflow_hash" => run["workflow_hash"],
       "input_hash" => run["input_hash"]

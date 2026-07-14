@@ -84,16 +84,17 @@ defmodule ValeaWeb.QueueRpcTest do
     envelope
   end
 
-  # Inlined/adapted from `Valea.QueueTest`'s `pending_memory!/5` (B4) — same
-  # minimal `queue_item/v2` + `memory_update` envelope shape, just written
-  # via this test's own `write_pending`-style raw-file helper instead of
-  # `AgentCase.open_workspace!/1`. `"workflow"` is a bare informational
-  # string here (never attributed to a real mount by `approve_queue_item`,
-  # mirrors `Valea.QueueTest`'s own `pending_memory!/5`, which leaves it as
-  # an untouched literal too) — only `target_path` (the actual
-  # `apply_page_content` target) needs to attribute to a real, mounted ICM,
-  # via `Mounts.mount_for/2`.
-  defp write_pending_memory(workspace, run_id, target, base, content) do
+  # Inlined/adapted from `Valea.QueueTest`'s `pending_memory!/5` (Task 7.3
+  # re-key) — same minimal `queue_item/v2` + `memory_update` envelope
+  # shape, just written via this test's own `write_pending`-style raw-file
+  # helper instead of `AgentCase.open_workspace!/1`. `"workflow"` is a bare
+  # informational string here (never attributed to a real mount by
+  # `approve_queue_item`, mirrors `Valea.QueueTest`'s own
+  # `pending_memory!/5`, which leaves it as an untouched literal too) —
+  # `locator` (a `Valea.Icm.Locator` map, the actual `apply_page_content`
+  # target) is what `Locator.resolve/2` re-resolves against the CURRENT
+  # mount table at approve time.
+  defp write_pending_memory(workspace, run_id, locator, base, content) do
     item = %{
       "schema" => "queue_item/v2",
       "run_id" => run_id,
@@ -107,9 +108,11 @@ defmodule ValeaWeb.QueueRpcTest do
         "sources" => [],
         "proposed_action" => %{
           "type" => "apply_page_content",
-          "target_path" => target,
-          "base_sha256" => base,
-          "content_markdown" => content
+          "target" => %{
+            "locator" => locator,
+            "base_sha256" => base,
+            "content_markdown" => content
+          }
         }
       }
     }
@@ -123,13 +126,11 @@ defmodule ValeaWeb.QueueRpcTest do
   # Mounts a real EXTERNAL ICM carrying a `Pricing/Current Pricing.md` seed
   # page — the target the `approve_queue_item` memory-update tests below
   # read/write. Post-task-3.2, `Valea.Mounts.list/1` no longer discovers an
-  # embedded `mounts/<name>/` folder (config truth, `icms:` only), and
-  # `MemoryProposal.check_target/2`'s `Mounts.mount_for/2` can only
-  # attribute a page to a REGISTERED, external (absolute-rooted) mount — so
-  # any test that actually EXECUTES an `apply_page_content` needs one of
-  # these, and its `target_path` must be the mounted ICM's absolute path,
-  # never the old `"mounts/w/..."` workspace-relative literal (mirrors
-  # `Valea.QueueTest`'s identically-named helper).
+  # embedded `mounts/<name>/` folder (config truth, `icms:` only), and Task
+  # 7.3's `Locator.resolve/2` can only resolve an ICM locator to a
+  # REGISTERED, external (absolute-rooted) mount — so any test that
+  # actually EXECUTES an `apply_page_content` needs one of these, and its
+  # locator's `icm_id` must be the mounted ICM's own stable id.
   defp mount_primary!(workspace, pages \\ %{}) do
     default_pages = %{"Pricing/Current Pricing.md" => "# Current Pricing\n\nCHF 100\n"}
     AgentCase.mount_test_icm!(workspace, name: "Primary", pages: Map.merge(default_pages, pages))
@@ -293,7 +294,8 @@ defmodule ValeaWeb.QueueRpcTest do
       target = Path.join(icm.root, "Pricing/Current Pricing.md")
       old = File.read!(target)
       base = :crypto.hash(:sha256, old) |> Base.encode16(case: :lower)
-      write_pending_memory(workspace, id, target, base, "# Pricing\n\n150\n")
+      loc = Valea.Icm.Locator.icm(icm.id, "Pricing/Current Pricing.md")
+      write_pending_memory(workspace, id, loc, base, "# Pricing\n\n150\n")
 
       assert %{"success" => true, "data" => %{"revision" => revision}} =
                rpc("get_queue_item", %{"runId" => id}, ["item", "revision"])
@@ -318,7 +320,8 @@ defmodule ValeaWeb.QueueRpcTest do
       icm = mount_primary!(workspace)
       target = Path.join(icm.root, "Pricing/Current Pricing.md")
       old = File.read!(target)
-      write_pending_memory(workspace, id, target, String.duplicate("0", 64), "# clobber\n")
+      loc = Valea.Icm.Locator.icm(icm.id, "Pricing/Current Pricing.md")
+      write_pending_memory(workspace, id, loc, String.duplicate("0", 64), "# clobber\n")
 
       assert %{"success" => true, "data" => %{"revision" => revision}} =
                rpc("get_queue_item", %{"runId" => id}, ["item", "revision"])

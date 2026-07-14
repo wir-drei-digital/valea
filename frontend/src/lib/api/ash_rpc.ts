@@ -3613,11 +3613,11 @@ export async function listDecidedQueueItemsChannel<Fields extends ListDecidedQue
 }
 
 
-export type ListQueueItemsFields = UnifiedFieldSelection<{items: Array<{runId: string, title: string | null, summary: string | null, kind: string | null, riskLevel: string | null, createdAt: string | null, workflow: string | null, valid: boolean, error: string | null, __type: "TypedMap", __primitiveFields: "runId" | "title" | "summary" | "kind" | "riskLevel" | "createdAt" | "workflow" | "valid" | "error"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListQueueItemsFields = UnifiedFieldSelection<{items: Array<{runId: string, title: string | null, summary: string | null, kind: string | null, riskLevel: string | null, createdAt: string | null, workflow: string | null, mountKey: string | null, path: string | null, icmName: string | null, valid: boolean, error: string | null, __type: "TypedMap", __primitiveFields: "runId" | "title" | "summary" | "kind" | "riskLevel" | "createdAt" | "workflow" | "mountKey" | "path" | "icmName" | "valid" | "error"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListQueueItemsResult<
   Fields extends ListQueueItemsFields | undefined,
-> = InferResult<{items: Array<{runId: string, title: string | null, summary: string | null, kind: string | null, riskLevel: string | null, createdAt: string | null, workflow: string | null, valid: boolean, error: string | null, __type: "TypedMap", __primitiveFields: "runId" | "title" | "summary" | "kind" | "riskLevel" | "createdAt" | "workflow" | "valid" | "error"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{items: Array<{runId: string, title: string | null, summary: string | null, kind: string | null, riskLevel: string | null, createdAt: string | null, workflow: string | null, mountKey: string | null, path: string | null, icmName: string | null, valid: boolean, error: string | null, __type: "TypedMap", __primitiveFields: "runId" | "title" | "summary" | "kind" | "riskLevel" | "createdAt" | "workflow" | "mountKey" | "path" | "icmName" | "valid" | "error"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListQueueItemsResult<Fields extends ListQueueItemsFields | undefined = undefined> = | { success: true; data: InferListQueueItemsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

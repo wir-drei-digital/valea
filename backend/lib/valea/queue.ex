@@ -98,7 +98,7 @@ defmodule Valea.Queue do
         |> pending_dir()
         |> Path.join("*.json")
         |> Path.wildcard()
-        |> Enum.map(&list_entry/1)
+        |> Enum.map(&list_entry(&1, workspace))
         |> Enum.sort_by(& &1.run_id, :desc)
 
       {:ok, entries}
@@ -110,6 +110,13 @@ defmodule Valea.Queue do
   hex of the raw file bytes). `revision` is only ever meaningful for the
   exact bytes it was computed from — pass it straight to `approve/2` or
   `reject/2`.
+
+  A `memory_update` item's `payload` is enriched (Task 7.3 C5) with
+  `mount_key`/`path`/`icm_name` — resolved FRESH from
+  `proposed_action.target.locator` against the CURRENT mount table, never
+  cached — so the frontend can build a Knowledge link and fetch the
+  current page for the diff preview without re-deriving mount identity
+  from a physical path itself (see `memory_display_fields/2`).
   """
   @spec get(String.t()) ::
           {:ok, %{item: map(), revision: revision()}}
@@ -118,7 +125,7 @@ defmodule Valea.Queue do
     with {:ok, workspace} <- resolve(run_id),
          {:ok, bytes} <- read_pending(workspace, run_id) do
       case decode_envelope(bytes) do
-        {:ok, item} -> {:ok, %{item: item, revision: sha256(bytes)}}
+        {:ok, item} -> {:ok, %{item: enrich_item(workspace, item), revision: sha256(bytes)}}
         {:error, _reason} -> {:error, :queue_item_invalid}
       end
     end
@@ -141,15 +148,20 @@ defmodule Valea.Queue do
        upgrade-then-rename to `approved/` with seeded `mailbox_ops`,
        `item_approved`, `{:mailbox_ops_pending, run_id}` broadcast).
 
-  For `memory_update`, step 4 re-runs `Valea.Workflows.MemoryProposal.check_target/2`
-  against the CURRENT mount state (the boundary may have changed since the
-  item was finalized), then guards the write with a hash check against
+  For `memory_update`, step 4 re-resolves `proposed_action.target.locator`
+  (Task 7.3 — a `Valea.Icm.Locator`) via `Valea.Icm.Locator.resolve/2`
+  against the CURRENT mount table (the ICM may have been unmounted,
+  disabled, degraded, or re-mounted at a new physical location since the
+  item was finalized — a moved-but-still-mounted ICM re-resolves fine and
+  still applies), then guards the write with a hash check against
   `base_sha256` (`nil` means "must not already exist" — a create). Any guard
-  failure — `:not_in_mount` / `:mount_not_enabled` / `:outside_mount` from
-  `check_target/2`, or `:target_exists` / `:page_missing` / `:page_changed`
-  from the hash guard — means NOTHING was written, so the claimed item is
-  renamed straight back to `pending/`, `apply_conflict` is audited with the
-  reason, and `{:error, :apply_conflict}` is returned. On success the page is
+  failure — `:icm_not_mounted` / `:icm_disabled` / `:icm_degraded` /
+  `:outside` / `:invalid` from `Locator.resolve/2`, or `:target_exists` /
+  `:page_missing` / `:page_changed` from the hash guard — means NOTHING was
+  written, so the claimed item is renamed straight back to `pending/`,
+  `apply_conflict` is audited with the reason (carrying the locator, plus
+  the resolved physical path when resolution itself succeeded — Task 7.4),
+  and `{:error, :apply_conflict}` is returned. On success the page is
   written with an atomic tmp+rename, then the SAME upgrade-then-rename to
   `approved/` as the email path runs (stamping `queue_item/v2` + `decided_at`;
   `mailbox_ops` is only added for `email_draft`, so a memory item's approved
@@ -158,7 +170,9 @@ defmodule Valea.Queue do
   watcher instead.
 
   Returns `{:ok, %{draft_path: ..., applied_path: nil}}` for an email item or
-  `{:ok, %{draft_path: nil, applied_path: target_path}}` for a memory item.
+  `{:ok, %{draft_path: nil, applied_path: resolved_path}}` for a memory item
+  (the resolved PHYSICAL path actually written, per the locator's CURRENT
+  resolution — not the locator itself).
   """
   @spec approve(String.t(), revision()) ::
           {:ok, %{draft_path: String.t() | nil, applied_path: String.t() | nil}}
@@ -193,9 +207,11 @@ defmodule Valea.Queue do
   end
 
   # approve/2's memory_update execute step: apply the proposed edit to the
-  # target mount page, guarded by check_target/2 (re-run at approve time, not
-  # cached from finalize) and a base_sha256 hash check. Any guard failure
-  # means apply_page_content/2 wrote NOTHING — see its @doc — so the item is
+  # target mount page, guarded by Locator.resolve/2 (re-run at approve time,
+  # NEVER cached from finalize — the mount table may have changed since:
+  # unmounted, disabled, degraded, or the ICM moved to a new physical
+  # location) and a base_sha256 hash check. Any guard failure means
+  # apply_page_content/2 wrote NOTHING — see its @doc — so the item is
   # handed back to pending/ untouched rather than left claimed. The rename
   # back is itself atomic (a single File.rename!/2): a crash before it leaves
   # the item safely in processing/ (nothing observable happened, same as any
@@ -207,13 +223,17 @@ defmodule Valea.Queue do
     action = item["payload"]["proposed_action"]
 
     case apply_page_content(workspace, action) do
-      {:ok, target} ->
-        audit("action_executed", %{"run_id" => run_id, "target_path" => target})
+      {:ok, locator, resolved_path} ->
+        audit("action_executed", %{
+          "run_id" => run_id,
+          "target" => %{"locator" => locator, "resolved_path" => resolved_path}
+        })
+
         complete_approval(workspace, run_id, item)
         audit("item_approved", %{"run_id" => run_id})
-        {:ok, %{draft_path: nil, applied_path: target}}
+        {:ok, %{draft_path: nil, applied_path: resolved_path}}
 
-      {:error, reason} ->
+      {:error, reason, locator, resolved_path} ->
         # Nothing observable happened — hand the CLAIMED item back to
         # pending/ for the human to re-decide with fresh context. Same
         # recovery posture as a crashed pre-execute approve.
@@ -222,7 +242,7 @@ defmodule Valea.Queue do
 
         audit("apply_conflict", %{
           "run_id" => run_id,
-          "target_path" => action["target_path"],
+          "target" => %{"locator" => locator, "resolved_path" => resolved_path},
           "reason" => reason_string(reason)
         })
 
@@ -230,17 +250,32 @@ defmodule Valea.Queue do
     end
   end
 
-  # Re-runs check_target/2 (the finalize-time result is NOT cached — the
-  # mount boundary may have changed since) then guards the write with a hash
-  # check. Writes only after BOTH guards pass; any error here means the
-  # filesystem is untouched.
+  # Re-resolves `target.locator` (Task 7.3 — the finalize-time result is NOT
+  # cached, since the mount table may have changed since) then guards the
+  # write with a hash check. Writes only after BOTH guards pass; any error
+  # here means the filesystem is untouched. Returns the resolved physical
+  # path alongside EITHER outcome (Task 7.4 — forensic reconstruction: an
+  # `apply_conflict` audit still names the exact file a hash/write guard
+  # rejected, when resolution itself got far enough to find one; `nil` when
+  # `Locator.resolve/2` itself is what failed, since there is no physical
+  # path to report).
+  @spec apply_page_content(String.t(), map()) ::
+          {:ok, map(), String.t()} | {:error, atom(), map() | nil, String.t() | nil}
   defp apply_page_content(workspace, action) do
-    target = action["target_path"]
+    target = action["target"] || %{}
+    locator = target["locator"]
 
-    with {:ok, %{abs: abs}} <- Valea.Workflows.MemoryProposal.check_target(workspace, target),
-         :ok <- check_base(abs, action["base_sha256"]),
-         :ok <- write_page(abs, action["content_markdown"]) do
-      {:ok, target}
+    case Valea.Icm.Locator.resolve(workspace, locator) do
+      {:ok, abs} ->
+        with :ok <- check_base(abs, target["base_sha256"]),
+             :ok <- write_page(abs, target["content_markdown"]) do
+          {:ok, locator, abs}
+        else
+          {:error, reason} -> {:error, reason, locator, abs}
+        end
+
+      {:error, reason} ->
+        {:error, reason, locator, nil}
     end
   end
 
@@ -410,8 +445,8 @@ defmodule Valea.Queue do
   def list_decided do
     with {:ok, workspace} <- workspace_root() do
       entries =
-        (decided_entries(approved_dir(workspace), "approved") ++
-           decided_entries(rejected_dir(workspace), "rejected"))
+        (decided_entries(approved_dir(workspace), "approved", workspace) ++
+           decided_entries(rejected_dir(workspace), "rejected", workspace))
         |> Enum.sort_by(& &1.run_id, :desc)
 
       {:ok, entries}
@@ -492,7 +527,7 @@ defmodule Valea.Queue do
 
   ## list/1 helpers
 
-  defp list_entry(path) do
+  defp list_entry(path, workspace) do
     run_id = Path.basename(path, ".json")
 
     case File.read(path) do
@@ -501,13 +536,15 @@ defmodule Valea.Queue do
 
       {:ok, bytes} ->
         case decode_envelope(bytes) do
-          {:ok, item} -> summary(run_id, item)
+          {:ok, item} -> summary(run_id, item, workspace)
           {:error, reason} -> invalid_entry(run_id, reason)
         end
     end
   end
 
-  defp summary(run_id, item) do
+  defp summary(run_id, item, workspace) do
+    display = memory_display_fields(workspace, item["payload"])
+
     %{
       run_id: run_id,
       title: item["payload"]["title"],
@@ -516,6 +553,9 @@ defmodule Valea.Queue do
       risk_level: item["risk_level"],
       created_at: item["created_at"],
       workflow: item["workflow"],
+      mount_key: display.mount_key,
+      path: display.path,
+      icm_name: display.icm_name,
       valid: true
     }
   end
@@ -529,9 +569,70 @@ defmodule Valea.Queue do
       risk_level: nil,
       created_at: nil,
       workflow: nil,
+      mount_key: nil,
+      path: nil,
+      icm_name: nil,
       valid: false,
       error: to_string(reason)
     }
+  end
+
+  # Task 7.3 C5: display-only enrichment for a `memory_update` item's
+  # target — `mount_key` (the workspace-local `icms:` config key),
+  # ICM-relative `path`, and `icm_name` (the mount's OWN manifest display
+  # name), all resolved FRESH from `proposed_action.target.locator`
+  # against the CURRENT mount table (`Valea.Mounts.mount_by_id/2` — never
+  # cached/stored on disk), so a renamed mount key or an edited `icm.yaml`
+  # `name:` is reflected immediately rather than a stale finalize-time
+  # snapshot. `path` comes straight from the locator's own `"path"` field
+  # (already ICM-relative, per `Valea.Icm.Locator`'s contract) regardless
+  # of whether the mount itself still resolves — only `mount_key`/`icm_name`
+  # need a live, healthy mount to fill in. Every field is `nil` for a
+  # non-`memory_update` item, a missing/malformed locator, or an `icm_id`
+  # that no longer names a healthy mount (unmounted/disabled/degraded/
+  # duplicate-id) — the frontend already treats a nil `mountKey` as "no
+  # Knowledge link, unfetched preview" gracefully.
+  @spec memory_display_fields(String.t(), map() | term()) :: %{
+          mount_key: String.t() | nil,
+          path: String.t() | nil,
+          icm_name: String.t() | nil
+        }
+  defp memory_display_fields(workspace, %{"kind" => "memory_update"} = payload) do
+    case get_in(payload, ["proposed_action", "target", "locator"]) do
+      %{"kind" => "icm", "icm_id" => icm_id, "path" => path}
+      when is_binary(icm_id) and is_binary(path) ->
+        case Valea.Mounts.mount_by_id(workspace, icm_id) do
+          %{name: mount_key, manifest: %{name: icm_name}} ->
+            %{mount_key: mount_key, path: path, icm_name: icm_name}
+
+          _not_a_healthy_mount ->
+            %{mount_key: nil, path: path, icm_name: nil}
+        end
+
+      _missing_or_malformed_locator ->
+        %{mount_key: nil, path: nil, icm_name: nil}
+    end
+  end
+
+  defp memory_display_fields(_workspace, _payload),
+    do: %{mount_key: nil, path: nil, icm_name: nil}
+
+  # `get/1`'s enrichment: merges the SAME display fields `summary/3` computes
+  # for the pending list into the raw envelope's `payload` (STRING keys,
+  # matching every other payload field) — `get_item`'s `item` return is
+  # deliberately unconstrained (`Valea.Api.Queue`'s moduledoc), so adding
+  # keys here rides straight through to the frontend with no RPC schema
+  # change needed.
+  defp enrich_item(workspace, item) do
+    display = memory_display_fields(workspace, item["payload"])
+
+    payload =
+      (item["payload"] || %{})
+      |> Map.put("mount_key", display.mount_key)
+      |> Map.put("path", display.path)
+      |> Map.put("icm_name", display.icm_name)
+
+    Map.put(item, "payload", payload)
   end
 
   ## get/1 + envelope validation (mirrors Runner's proposal/v1 checks, one
@@ -594,18 +695,33 @@ defmodule Valea.Queue do
   # `memory_update` gets its own action shape (apply_page_content); every
   # other kind (today: `email_draft`) keeps going through `valid_action?/1`
   # unchanged.
+  #
+  # Task 7.3: `target` is now a nested map carrying the stable ICM
+  # `locator` alongside `base_sha256`/`content_markdown` — replaces the old
+  # flat `target_path` sibling field. A memory-update target is always an
+  # ICM locator (never a workspace one — the memory-update contract only
+  # ever proposes edits to pages inside a mounted ICM), so `valid_target_locator?/1`
+  # only accepts `"kind" => "icm"`.
   defp valid_action_for_kind?("memory_update", %{
          "type" => "apply_page_content",
-         "target_path" => target,
-         "base_sha256" => base,
-         "content_markdown" => content
+         "target" => %{
+           "locator" => locator,
+           "base_sha256" => base,
+           "content_markdown" => content
+         }
        })
-       when is_binary(target) and is_binary(content) do
-    nonempty_string?(target) and (is_nil(base) or hex64?(base))
+       when is_binary(content) do
+    valid_target_locator?(locator) and (is_nil(base) or hex64?(base))
   end
 
   defp valid_action_for_kind?("memory_update", _action), do: false
   defp valid_action_for_kind?(_kind, action), do: valid_action?(action)
+
+  defp valid_target_locator?(%{"kind" => "icm", "icm_id" => icm_id, "path" => path}) do
+    nonempty_string?(icm_id) and nonempty_string?(path)
+  end
+
+  defp valid_target_locator?(_locator), do: false
 
   defp valid_action?(%{
          "type" => "create_email_draft",
@@ -833,24 +949,27 @@ defmodule Valea.Queue do
   # Memory items are decided by CONTENT: the envelope carries the exact
   # bytes the apply would have written, so "did the apply happen" is a pure
   # hash comparison against the target — no draft file to consult. A
-  # memory-kind envelope whose action is malformed (missing or non-binary
-  # target_path / content_markdown) is treated like any unreadable file —
-  # the :email fallback's draft-absent default repends it for a human.
-  # Every other kind (including an unreadable/invalid processing file, which
-  # cannot possibly be a memory_update) falls through to :email, which
-  # preserves the ORIGINAL draft-existence recovery unchanged.
+  # memory-kind envelope whose action is malformed (missing/non-map locator,
+  # non-binary content_markdown) OR whose locator no longer resolves at all
+  # (Task 7.3 — the ICM could have been unmounted between claim and crash)
+  # is treated like any unreadable file — the :email fallback's
+  # draft-absent default repends it for a human. Every other kind
+  # (including an unreadable/invalid processing file, which cannot possibly
+  # be a memory_update) falls through to :email, which preserves the
+  # ORIGINAL draft-existence recovery unchanged.
   defp classify_recovery(workspace, path) do
     with {:ok, bytes} <- File.read(path),
          {:ok,
           %{
             "payload" => %{
               "kind" => "memory_update",
-              "proposed_action" => %{"target_path" => target, "content_markdown" => content}
+              "proposed_action" => %{
+                "target" => %{"locator" => locator, "content_markdown" => content}
+              }
             }
           }} <- Jason.decode(bytes),
-         true <- is_binary(target) and is_binary(content) do
-      abs = memory_target_abs(workspace, target)
-
+         true <- is_map(locator) and is_binary(content),
+         {:ok, abs} <- Valea.Icm.Locator.resolve(workspace, locator) do
       case File.read(abs) do
         {:ok, current} ->
           if sha256(current) == sha256(content),
@@ -864,9 +983,6 @@ defmodule Valea.Queue do
       _ -> :email
     end
   end
-
-  defp memory_target_abs(_workspace, "/" <> _ = abs), do: abs
-  defp memory_target_abs(workspace, rel), do: Path.join(workspace, rel)
 
   # The original email recovery: draft existence is the sole signal, exactly
   # as before this refactor — the email crash-recovery contract is
@@ -944,18 +1060,20 @@ defmodule Valea.Queue do
 
   ## list_decided/0 + get_decided/1 + update_mailbox_op/3 helpers
 
-  defp decided_entries(dir, decided) do
+  defp decided_entries(dir, decided, workspace) do
     dir
     |> Path.join("*.json")
     |> Path.wildcard()
-    |> Enum.flat_map(&decided_entry(&1, decided))
+    |> Enum.flat_map(&decided_entry(&1, decided, workspace))
   end
 
-  defp decided_entry(path, decided) do
+  defp decided_entry(path, decided, workspace) do
     run_id = Path.basename(path, ".json")
 
     with {:ok, bytes} <- File.read(path),
          {:ok, %{} = item} <- Jason.decode(bytes) do
+      display = memory_display_fields(workspace, item["payload"])
+
       [
         %{
           run_id: run_id,
@@ -966,7 +1084,9 @@ defmodule Valea.Queue do
           created_at: item["created_at"],
           decision: item["decision"],
           decided_at: item["decided_at"],
-          target_path: get_in(item, ["payload", "proposed_action", "target_path"])
+          mount_key: display.mount_key,
+          path: display.path,
+          icm_name: display.icm_name
         }
       ]
     else

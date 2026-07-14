@@ -1,16 +1,36 @@
 defmodule Valea.Workflows.MemoryProposal do
   @moduledoc """
   Loading + validation for agent-staged memory-update proposal pairs
-  (`proposals/<name>.json` manifest + sibling `<name>.md` content), and
-  the server-owned target containment check. Trust boundary: everything
-  here treats the pair as untrusted input; the manifest's claims are
-  verified, never carried (risk tier is derived elsewhere, from the
-  target path alone).
+  (`proposals/<name>.json` manifest + sibling `<name>.md` content), and the
+  server-owned target containment check. Trust boundary: everything here
+  treats the pair as untrusted input; the manifest's claims are verified,
+  never carried (risk tier is derived elsewhere, from the target path
+  alone).
+
+  Two DISTINCT containment checks live here, never merged into one:
+
+    * `check_target/2` — general-purpose, scans EVERY mounted ICM
+      (`Mounts.mount_for/2`) to attribute an arbitrary workspace-relative
+      or absolute path to its owning mount. `Valea.Api.ICM`'s
+      `paths_exist` action (editor dangling-link detection) is its sole
+      caller — a bulk existence check over raw path strings that could
+      each name a DIFFERENT ICM, so there is no single "owning ICM" to
+      scope the search to.
+    * `check_icm_target/2` (Task 7.3) — scoped to exactly ONE already-known
+      ICM (a workflow run's OWN sidecar `icm_id`/`icm_root`, since the
+      agent's session `cwd` for that run IS that ICM's root — Task 7.2).
+      `Runner.finalize_pair/6` is its sole caller: a memory-update
+      proposal's `target_path` is the agent's own ICM-relative path, never
+      re-attributed across every mount, and the result is an ICM locator
+      (`Valea.Icm.Locator`) rather than a physical path — the queue payload
+      stores the LOCATOR so it survives the ICM being moved/re-mounted
+      later (re-resolved at approval via `Locator.resolve/2`).
 
   Content size is capped at 1_000_000 bytes (agent-authored input, inlined
   into the envelope).
   """
 
+  alias Valea.Icm.Locator
   alias Valea.Mounts
 
   @max_content_bytes 1_000_000
@@ -98,6 +118,42 @@ defmodule Valea.Workflows.MemoryProposal do
         {:error, :mount_not_enabled}
     end
   end
+
+  @doc """
+  Finalize-time containment for a memory-update target (Task 7.3):
+  `target_path` is the agent's OWN ICM-relative path, relative to `run`'s
+  `"icm_root"` — the workflow's OWNING ICM, captured in the Task 7.2 run
+  sidecar (`Runner.start_run/6`'s `"icm_id"`/`"icm_root"` fields), since
+  the agent's session `cwd` IS that root (Task 7.2). Unlike `check_target/2`
+  below, this never re-attributes across every mounted ICM
+  (`Mounts.mount_for/2`) — there is exactly ONE candidate, already known —
+  so it is a direct `Valea.Paths.resolve_real/2` containment check against
+  `run["icm_root"]` alone: `..` or a symlink escaping it is rejected the
+  same way every other containment chokepoint in this codebase rejects it
+  (create targets may not exist yet — `resolve_real` appends the missing
+  remainder literally but still applies `..` physically).
+
+  Returns the ICM locator built DIRECTLY from `run["icm_id"]` + the
+  UNCHANGED `target_path` string — never converted to/through an absolute
+  intermediate (`Valea.Icm.Locator`'s moduledoc: an icm locator's `path`
+  is always relative to its own root already) — alongside the resolved
+  absolute path. `run["icm_id"]`/`run["icm_root"]` missing or non-binary
+  (the owning mount vanished in the narrow race window
+  `Runner.icm_root_for/2` documents) is `:icm_unavailable`; anything that
+  escapes containment is `:outside_mount`.
+  """
+  @spec check_icm_target(map(), term()) ::
+          {:ok, %{locator: map(), abs: String.t()}}
+          | {:error, :icm_unavailable | :outside_mount}
+  def check_icm_target(%{"icm_id" => icm_id, "icm_root" => icm_root}, target_path)
+      when is_binary(icm_id) and is_binary(icm_root) and is_binary(target_path) do
+    case Valea.Paths.resolve_real(target_path, icm_root) do
+      {:ok, abs} -> {:ok, %{locator: Locator.icm(icm_id, target_path), abs: abs}}
+      {:error, _reason} -> {:error, :outside_mount}
+    end
+  end
+
+  def check_icm_target(_run, _target_path), do: {:error, :icm_unavailable}
 
   # `Mounts.mount_for/2` attributes a path ONLY among EFFECTIVE (enabled AND
   # non-degraded) mounts by design (see its own moduledoc) — a DISABLED

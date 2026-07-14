@@ -45,6 +45,9 @@ defmodule Valea.Api.Queue do
                             risk_level: [type: :string, allow_nil?: true],
                             created_at: [type: :string, allow_nil?: true],
                             workflow: [type: :string, allow_nil?: true],
+                            mount_key: [type: :string, allow_nil?: true],
+                            path: [type: :string, allow_nil?: true],
+                            icm_name: [type: :string, allow_nil?: true],
                             valid: [type: :boolean, allow_nil?: false],
                             error: [type: :string, allow_nil?: true]
                           ]

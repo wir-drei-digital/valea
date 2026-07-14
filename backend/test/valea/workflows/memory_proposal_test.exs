@@ -114,6 +114,57 @@ defmodule Valea.Workflows.MemoryProposalTest do
     assert {:error, :mount_not_enabled} = MemoryProposal.check_target(ws, target)
   end
 
+  ## check_icm_target/2 (Task 7.3) — scoped to ONE already-known ICM via a
+  ## run sidecar's icm_id/icm_root, never re-attributed across every mount.
+
+  defp run_sidecar(icm), do: %{"icm_id" => icm.id, "icm_root" => icm.root}
+
+  test "check_icm_target accepts an ICM-relative path inside the sidecar's icm_root", %{icm: icm} do
+    assert {:ok, %{locator: locator, abs: abs}} =
+             MemoryProposal.check_icm_target(run_sidecar(icm), "Pricing/Current Pricing.md")
+
+    assert locator == %{
+             "kind" => "icm",
+             "icm_id" => icm.id,
+             "path" => "Pricing/Current Pricing.md"
+           }
+
+    assert abs == Path.join(icm.root, "Pricing/Current Pricing.md")
+  end
+
+  test "check_icm_target's locator carries the path UNCHANGED — no absolute intermediate", %{
+    icm: icm
+  } do
+    # A create target (does not exist on disk yet) still resolves and still
+    # produces a locator whose `path` is exactly the agent's own string —
+    # `resolve_real/2`'s missing-remainder-appended-literally behavior, not
+    # a round trip through `for_path/2` re-attribution.
+    assert {:ok, %{locator: %{"path" => "Decisions/2026-07.md"}}} =
+             MemoryProposal.check_icm_target(run_sidecar(icm), "Decisions/2026-07.md")
+  end
+
+  test "check_icm_target rejects a target_path that escapes icm_root via ..", %{icm: icm} do
+    assert {:error, :outside_mount} =
+             MemoryProposal.check_icm_target(run_sidecar(icm), "../../etc/passwd")
+  end
+
+  test "check_icm_target is :icm_unavailable when the sidecar's icm_root is missing", %{icm: icm} do
+    sidecar = %{"icm_id" => icm.id, "icm_root" => nil}
+    assert {:error, :icm_unavailable} = MemoryProposal.check_icm_target(sidecar, "x.md")
+  end
+
+  test "check_icm_target never scans other mounts — a DIFFERENT mounted ICM's page is still :outside_mount unless it happens to nest under THIS icm_root",
+       %{workspace: ws, icm: icm} do
+    other = AgentCase.mount_test_icm!(ws, name: "Other", pages: %{"Notes/Doc.md" => "# Doc\n"})
+
+    # Even though `other` is validly mounted, check_icm_target only ever
+    # resolves against the ONE icm_root it was given — it never falls back
+    # to scanning `Mounts.list/1` for a different owner the way
+    # `check_target/2` would.
+    assert {:error, :outside_mount} =
+             MemoryProposal.check_icm_target(run_sidecar(icm), other.root <> "/Notes/Doc.md")
+  end
+
   test "content exceeding 1_000_000 bytes is rejected", %{staging: staging} do
     put_pair(
       staging,
