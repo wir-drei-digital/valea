@@ -7,7 +7,10 @@ import type { AuditEntry } from '$lib/api/client';
  * guess:
  *
  *   - `Valea.Workflows.Runner` (`run/2`/`finalize/2`):
- *     `workflow_run_started` {run_id, workflow, input, workflow_hash, input_hash},
+ *     `workflow_run_started` {run_id, workflow, input, workflow_hash, input_hash}
+ *     — `workflow` is a `{icm_id, relative_path, resolved_path}` map as of
+ *     Task 7.4 (was a bare `resolved_path` string pre-7.4; older audit.jsonl
+ *     entries on disk still carry the string shape, so both are handled),
  *     `workflow_run_finished` {run_id, outcome, reason?} (outcome one of
  *     "no_proposal" | "invalid_proposal" | "proposal_created" | "start_failed"),
  *     `queue_item_created` {run_id, kind}.
@@ -46,6 +49,23 @@ function basename(path: unknown): string {
   return file.endsWith('.md') ? file.slice(0, -3) : file;
 }
 
+/**
+ * `workflow_run_started`'s `workflow` field: a bare path string pre-Task-7.4,
+ * or a `{icm_id, relative_path, resolved_path}` map as of Task 7.4 (see
+ * `Valea.Workflows.Runner`'s audit call). Prefers `relative_path` (the
+ * stable `{icm_id, relative_path}` identity) over `resolved_path` (the
+ * physical path used for that one run, which a later move/remount can
+ * change), falling back to `resolved_path` if `relative_path` is somehow
+ * missing. Never throws on an unexpected shape — see module doc.
+ */
+function workflowName(workflow: unknown): string {
+  if (workflow && typeof workflow === 'object') {
+    const w = workflow as Record<string, unknown>;
+    return basename(str(w.relative_path) || str(w.resolved_path));
+  }
+  return basename(workflow);
+}
+
 /** "allow_once" -> "allow once"; "email.selected" -> "email selected". */
 function humanize(value: unknown): string {
   const s = str(value);
@@ -59,7 +79,7 @@ function capitalize(s: string): string {
 export function sentence(entry: AuditEntry): string {
   switch (entry.type) {
     case 'workflow_run_started': {
-      const name = basename(entry.workflow);
+      const name = workflowName(entry.workflow);
       const input = str(entry.input);
       return input ? `Started "${name}" on ${input}.` : `Started "${name}".`;
     }

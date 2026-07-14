@@ -13,7 +13,34 @@ function entry(type: string, fields: Record<string, unknown> = {}): AuditEntry {
 }
 
 describe('sentence', () => {
-  it('workflow_run_started: names the workflow (basename, no .md) and the input', () => {
+  it('workflow_run_started: names the workflow ({icm_id, relative_path, resolved_path} object, Task 7.4 shape) and the input', () => {
+    expect(
+      sentence(
+        entry('workflow_run_started', {
+          run_id: 'r1',
+          workflow: {
+            icm_id: 'icm-1',
+            relative_path: 'Workflows/New Inquiry Triage.md',
+            resolved_path: '/workspace/icm-1/Workflows/New Inquiry Triage.md'
+          },
+          input: 'sources/mail/normalized/priya.json'
+        })
+      )
+    ).toBe('Started "New Inquiry Triage" on sources/mail/normalized/priya.json.');
+  });
+
+  it('workflow_run_started: object shape falls back to resolved_path when relative_path is missing', () => {
+    expect(
+      sentence(
+        entry('workflow_run_started', {
+          run_id: 'r1',
+          workflow: { icm_id: 'icm-1', resolved_path: '/workspace/icm-1/Workflows/X.md' }
+        })
+      )
+    ).toBe('Started "X".');
+  });
+
+  it('workflow_run_started: back-compat with the pre-7.4 plain-path string shape', () => {
     expect(
       sentence(
         entry('workflow_run_started', {
@@ -29,6 +56,12 @@ describe('sentence', () => {
     expect(
       sentence(entry('workflow_run_started', { run_id: 'r1', workflow: 'icm/Workflows/X.md' }))
     ).toBe('Started "X".');
+  });
+
+  it('workflow_run_started: falls back to "a workflow" when the object shape has neither path field', () => {
+    expect(
+      sentence(entry('workflow_run_started', { run_id: 'r1', workflow: { icm_id: 'icm-1' } }))
+    ).toBe('Started "a workflow".');
   });
 
   it.each([
