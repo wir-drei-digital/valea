@@ -166,14 +166,23 @@ defmodule Valea.Agents.PermissionPolicy do
   # Case-INSENSITIVE match: on a case-insensitive filesystem (macOS APFS
   # default) `SECRETS/x` and `Secrets/x` resolve to the same protected dir as
   # `secrets/x`, so the hard-deny must not be defeated by casing.
+  #
+  # Scoped to `workspace_root`: this check only ever hard-denies
+  # `<workspace_root>/{logs,config,secrets,runtime,.git}` and
+  # `<workspace_root>/app.sqlite*` (spec §PermissionPolicy step 1). A
+  # resolved candidate that is NOT under `workspace_root` at all — e.g. a
+  # file in a granted `read_root` that happens to be named `app.sqlite.md`,
+  # or an exact task input outside the workspace — must not be swept into
+  # this deny just because `Path.basename/1` matches the db prefix; that
+  # would over-deny territory the spec never asked this check to cover.
+  # `Path.relative_to/2` on a path outside `workspace_root` returns it
+  # unchanged, so the basename/top-segment tests below are only meaningful
+  # once containment is confirmed first.
   defp split_protected?({:error, _}, _workspace_root), do: false
 
   defp split_protected?({:ok, resolved}, workspace_root) do
-    rel = Path.relative_to(resolved, workspace_root)
-    top = rel |> Path.split() |> List.first()
-
-    (is_binary(top) and String.downcase(top) in @protected_dirs) or
-      String.starts_with?(String.downcase(Path.basename(rel)), @db_prefix)
+    split_under_root?(resolved, workspace_root) and
+      protected_relative?(resolved, workspace_root, @protected_dirs, @db_prefix)
   end
 
   # A relative candidate that lexically escapes `cwd` (the only base relative
@@ -309,12 +318,15 @@ defmodule Valea.Agents.PermissionPolicy do
   defp legacy_denied?({:error, :outside}, _ws), do: true
   defp legacy_denied?({:error, _}, _ws), do: false
 
+  # Scoped to `ws` (the legacy workspace base), mirroring `split_protected?`
+  # above: this must only hard-deny `<ws>/{secrets,logs,.claude,.git}` and
+  # `<ws>/app.sqlite*`, never a same-named file living outside `ws` entirely
+  # (e.g. reached via `extra_roots`). `legacy_under_lexical?/2` is the same
+  # segment-boundary containment test `legacy_escaped_root?/6` already uses
+  # elsewhere in this module.
   defp legacy_denied?({:ok, path}, ws) do
-    rel = Path.relative_to(path, ws)
-    top = rel |> Path.split() |> List.first()
-
-    (is_binary(top) and String.downcase(top) in @legacy_protected_dirs) or
-      String.starts_with?(String.downcase(Path.basename(rel)), @legacy_db_prefix)
+    legacy_under_lexical?(path, ws) and
+      protected_relative?(path, ws, @legacy_protected_dirs, @legacy_db_prefix)
   end
 
   defp legacy_all_in_read_roots?(resolved, ws, read_roots, extra_roots) do
@@ -378,6 +390,20 @@ defmodule Valea.Agents.PermissionPolicy do
   ## ===========================================================================
   ## Shared
   ## ===========================================================================
+
+  # Protected-dir / db-prefix test against an ALREADY-CONFIRMED-contained
+  # `path` (callers must check containment under `root` first — see
+  # `split_protected?/2` and `legacy_denied?/2` above). Both the split and
+  # legacy protected checks share this shape: a hard-deny if the resolved
+  # path's top segment (relative to `root`) is a protected dir name, or its
+  # basename starts with the db prefix — both compared case-insensitively.
+  defp protected_relative?(path, root, protected_dirs, db_prefix) do
+    rel = Path.relative_to(path, root)
+    top = rel |> Path.split() |> List.first()
+
+    (is_binary(top) and String.downcase(top) in protected_dirs) or
+      String.starts_with?(String.downcase(Path.basename(rel)), db_prefix)
+  end
 
   defp extract_paths(item) do
     raw = item["rawInput"] || %{}

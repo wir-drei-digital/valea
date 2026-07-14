@@ -126,6 +126,33 @@ defmodule Valea.Agents.PermissionPolicyTest do
     assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
   end
 
+  test "write targeting app.sqlite-wal -> deny", %{ws: ws} do
+    db = Path.join(ws, "app.sqlite-wal")
+    ctx = %{workspace: ws, session_kind: "workflow", write_paths: [db]}
+    it = item("edit", %{"file_path" => db})
+    assert {:deny, "reject_once"} = PermissionPolicy.decide(it, ctx)
+  end
+
+  # Regression: the db-prefix hard-deny must be scoped to `<workspace>/app.sqlite*`
+  # — a same-named file reached via an enabled extra_roots member (a granted
+  # external read root, not the workspace) must not be swept into the same
+  # deny just because its basename happens to match the prefix.
+  test "a file named app.sqlite.md in an extra_roots member -> NOT denied by the db-prefix check",
+       %{ws: ws} do
+    ext = external_root!()
+    File.write!(Path.join(ext, "app.sqlite.md"), "hi")
+    File.write!(Path.join(ext, "app.sqlite"), "hi")
+    ctx = extra_ctx(ws, [ext])
+
+    it_md = item("read", %{"file_path" => Path.join(ext, "app.sqlite.md")})
+    it_exact = item("read", %{"file_path" => Path.join(ext, "app.sqlite")})
+
+    refute match?({:deny, _}, PermissionPolicy.decide(it_md, ctx))
+    refute match?({:deny, _}, PermissionPolicy.decide(it_exact, ctx))
+    assert {:allow, "allow_once"} = PermissionPolicy.decide(it_md, ctx)
+    assert {:allow, "allow_once"} = PermissionPolicy.decide(it_exact, ctx)
+  end
+
   test "kind execute (Bash) -> ask even with workspace paths in rawInput", %{ws: ws, chat: chat} do
     it = item("execute", %{"file_path" => Path.join([ws, "sources", "note.md"])})
     assert :ask = PermissionPolicy.decide(it, chat)
@@ -491,6 +518,31 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
   test "workspace operational state is denied", %{ctx: ctx, ws: ws} do
     assert {:deny, _} = P.decide(read(Path.join(ws, "logs/audit.jsonl")), ctx)
     assert {:deny, _} = P.decide(read(Path.join(ws, "secrets/x")), ctx)
+  end
+
+  test "workspace app.sqlite* files are still hard-denied", %{ctx: ctx, ws: ws} do
+    assert {:deny, _} = P.decide(read(Path.join(ws, "app.sqlite")), ctx)
+    assert {:deny, _} = P.decide(read(Path.join(ws, "app.sqlite-wal")), ctx)
+  end
+
+  # Regression: `split_protected?/2`'s db-prefix clause used to run on the
+  # basename regardless of whether the resolved candidate was actually under
+  # `workspace_root` — so ANY file whose basename started with `app.sqlite`
+  # was hard-denied, even inside a legitimately-granted `read_root` outside
+  # the workspace entirely. The spec scopes that deny to
+  # `<workspace_root>/app.sqlite*` only; a related-root file merely named
+  # `app.sqlite*` must fall through to the ordinary read-root allow instead.
+  test "a related read_root file merely named app.sqlite* is not hard-denied", %{
+    ctx: ctx,
+    rel: rel
+  } do
+    File.write!(Path.join(rel, "app.sqlite.md"), "hi")
+    File.write!(Path.join(rel, "app.sqlite"), "hi")
+
+    refute match?({:deny, _}, P.decide(read(Path.join(rel, "app.sqlite.md")), ctx))
+    refute match?({:deny, _}, P.decide(read(Path.join(rel, "app.sqlite")), ctx))
+    assert {:allow, _} = P.decide(read(Path.join(rel, "app.sqlite.md")), ctx)
+    assert {:allow, _} = P.decide(read(Path.join(rel, "app.sqlite")), ctx)
   end
 
   test "reading the workspace sources is not auto-allowed for a chat", %{ctx: ctx, ws: ws} do
