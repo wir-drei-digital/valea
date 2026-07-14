@@ -713,11 +713,11 @@ export async function listSessionsChannel<Fields extends ListSessionsFields | un
 }
 
 
-export type ListWorkflowsFields = UnifiedFieldSelection<{workflows: Array<{path: string, name: string, description: string | null, enabled: boolean, triggerSource: string | null, riskLevel: string | null, sourceCount: number, steps: Array<string>, mount: string, __type: "TypedMap", __primitiveFields: "path" | "name" | "description" | "enabled" | "triggerSource" | "riskLevel" | "sourceCount" | "steps" | "mount"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListWorkflowsFields = UnifiedFieldSelection<{workflows: Array<{icmId: string, mountKey: string, icmName: string, relativePath: string, resolvedPath: string, name: string, description: string | null, enabled: boolean, triggerSource: string | null, riskLevel: string | null, sourceCount: number, steps: Array<string>, __type: "TypedMap", __primitiveFields: "icmId" | "mountKey" | "icmName" | "relativePath" | "resolvedPath" | "name" | "description" | "enabled" | "triggerSource" | "riskLevel" | "sourceCount" | "steps"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListWorkflowsResult<
   Fields extends ListWorkflowsFields | undefined,
-> = InferResult<{workflows: Array<{path: string, name: string, description: string | null, enabled: boolean, triggerSource: string | null, riskLevel: string | null, sourceCount: number, steps: Array<string>, mount: string, __type: "TypedMap", __primitiveFields: "path" | "name" | "description" | "enabled" | "triggerSource" | "riskLevel" | "sourceCount" | "steps" | "mount"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{workflows: Array<{icmId: string, mountKey: string, icmName: string, relativePath: string, resolvedPath: string, name: string, description: string | null, enabled: boolean, triggerSource: string | null, riskLevel: string | null, sourceCount: number, steps: Array<string>, __type: "TypedMap", __primitiveFields: "icmId" | "mountKey" | "icmName" | "relativePath" | "resolvedPath" | "name" | "description" | "enabled" | "triggerSource" | "riskLevel" | "sourceCount" | "steps"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListWorkflowsResult<Fields extends ListWorkflowsFields | undefined = undefined> = | { success: true; data: InferListWorkflowsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

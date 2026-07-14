@@ -78,7 +78,7 @@ defmodule Valea.WorkflowsTest do
   3. Draft a warm reply using the tone guide and the relevant offer. Respect the no-medical-advice policy.
   """
 
-  test "list/0 unions two enabled mounts, each workflow with distinct path + mount provenance",
+  test "list/0 unions two enabled mounts, each workflow keyed by {icm_id, relative_path} with mount_key/resolved_path provenance",
        %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
     write_workflow!(a.root, "Triage.md", @triage_frontmatter, @triage_body)
@@ -95,24 +95,27 @@ defmodule Valea.WorkflowsTest do
     assert {:ok, workflows} = Workflows.list()
     assert length(workflows) == 2
 
-    wf_a_path = Path.join(a.root, "Workflows/Triage.md")
-    wf_b_path = Path.join(b.root, "Workflows/Review.md")
-
-    wf_a = Enum.find(workflows, &(&1.path == wf_a_path))
-    assert wf_a.mount == "A"
+    wf_a = Enum.find(workflows, &(&1.mount_key == a.mount_key))
+    assert wf_a.icm_id == a.id
+    assert wf_a.relative_path == "Workflows/Triage.md"
+    assert wf_a.resolved_path == Path.join(a.root, "Workflows/Triage.md")
     assert wf_a.name == "New Inquiry Triage"
     assert wf_a.enabled == true
 
-    wf_b = Enum.find(workflows, &(&1.path == wf_b_path))
-    assert wf_b.mount == "B"
+    wf_b = Enum.find(workflows, &(&1.mount_key == b.mount_key))
+    assert wf_b.icm_id == b.id
+    assert wf_b.relative_path == "Workflows/Review.md"
+    assert wf_b.resolved_path == Path.join(b.root, "Workflows/Review.md")
     assert wf_b.name == "Review"
     assert wf_b.enabled == false
 
-    # sorted by path
-    assert Enum.map(workflows, & &1.path) == Enum.sort(Enum.map(workflows, & &1.path))
+    # sorted by resolved_path
+    assert Enum.map(workflows, & &1.resolved_path) ==
+             Enum.sort(Enum.map(workflows, & &1.resolved_path))
   end
 
-  test "same workflow filename in two mounts coexists without shadowing", %{workspace: ws} do
+  test "same workflow filename in two mounts coexists without shadowing (same relative_path, distinct icm_id/mount_key/resolved_path)",
+       %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
 
     write_workflow!(
@@ -132,22 +135,20 @@ defmodule Valea.WorkflowsTest do
     )
 
     assert {:ok, workflows} = Workflows.list()
-    paths = Enum.map(workflows, & &1.path)
-
-    wf_a_path = Path.join(a.root, "Workflows/Shared.md")
-    wf_b_path = Path.join(b.root, "Workflows/Shared.md")
-
-    assert wf_a_path in paths
-    assert wf_b_path in paths
     assert length(workflows) == 2
+    assert Enum.all?(workflows, &(&1.relative_path == "Workflows/Shared.md"))
 
-    a_wf = Enum.find(workflows, &(&1.path == wf_a_path))
-    b_wf = Enum.find(workflows, &(&1.path == wf_b_path))
+    a_wf = Enum.find(workflows, &(&1.mount_key == a.mount_key))
+    b_wf = Enum.find(workflows, &(&1.mount_key == b.mount_key))
+    assert a_wf.icm_id == a.id
+    assert b_wf.icm_id == b.id
+    assert a_wf.resolved_path == Path.join(a.root, "Workflows/Shared.md")
+    assert b_wf.resolved_path == Path.join(b.root, "Workflows/Shared.md")
     assert a_wf.name == "A Shared"
     assert b_wf.name == "B Shared"
   end
 
-  test "external mounts' workflows are surfaced in list/1 with absolute paths (A2-T5b), alongside embedded",
+  test "list/1 surfaces every enabled mount's workflows with absolute resolved_path",
        %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
 
@@ -169,19 +170,21 @@ defmodule Valea.WorkflowsTest do
 
     workflows = Workflows.list(ws)
 
-    assert Enum.map(workflows, & &1.path) |> Enum.sort() ==
+    assert Enum.map(workflows, & &1.resolved_path) |> Enum.sort() ==
              Enum.sort([
                Path.join(a.root, "Workflows/Triage.md"),
                Path.join(ext.root, "Workflows/External.md")
              ])
 
-    ext_wf = Enum.find(workflows, &(&1.mount == "Ext"))
-    assert ext_wf.path == Path.join(ext.root, "Workflows/External.md")
+    ext_wf = Enum.find(workflows, &(&1.mount_key == ext.mount_key))
+    assert ext_wf.icm_id == ext.id
+    assert ext_wf.resolved_path == Path.join(ext.root, "Workflows/External.md")
+    assert ext_wf.relative_path == "Workflows/External.md"
     assert ext_wf.name == "Ext WF"
     assert ext_wf.enabled == true
   end
 
-  test "a DISABLED external mount drops out of list/1 AND its absolute path no longer resolves via get/1 (unlike a disabled embedded mount — see Mounts.mount_for/1's enabled-only external attribution)",
+  test "a DISABLED mount drops out of list/1, but get/2 by {mount_key, relative_path} still resolves it (keyed lookup, not path-attribution — see Workflows moduledoc DECISION)",
        %{workspace: ws} do
     ext = AgentCase.mount_test_icm!(ws, name: "Ext")
 
@@ -192,52 +195,27 @@ defmodule Valea.WorkflowsTest do
       "# Ext WF\n\nBody.\n"
     )
 
-    ext_wf_path = Path.join(ext.root, "Workflows/External.md")
-
     assert {:ok, [_one]} = Workflows.list()
-    assert {:ok, _wf} = Workflows.get(ext_wf_path)
+    assert {:ok, _wf} = Workflows.get(ext.mount_key, "Workflows/External.md")
 
     :ok = Mounts.set_enabled(ws, ext.mount_key, false)
 
     assert {:ok, []} = Workflows.list()
-    assert {:error, :not_found} = Workflows.get(ext_wf_path)
+    assert {:ok, wf} = Workflows.get(ext.mount_key, "Workflows/External.md")
+    assert wf.mount_key == ext.mount_key
   end
 
-  # Every mount is external now, so Mounts.mount_for/1's enabled-only
-  # attribution applies uniformly: the old embedded-mount "T3 posture"
-  # (get/1 kept resolving a disabled mount's explicit path even after
-  # list/0 dropped it) no longer holds for ANY mount — mirrors the
-  # DISABLED-external-mount test above.
-  test "disabling a mount drops its workflows from list/0, and get/1 by explicit path no longer resolves it either (T3 posture superseded)",
+  test "get/2 parses frontmatter (trigger.source, risk_level, approval.actions) and steps_preview",
        %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
     write_workflow!(a.root, "Triage.md", @triage_frontmatter, @triage_body)
 
-    wf_path = Path.join(a.root, "Workflows/Triage.md")
+    assert {:ok, wf} = Workflows.get(a.mount_key, "Workflows/Triage.md")
 
-    assert {:ok, wf} = Workflows.get(wf_path)
-    assert wf.name == "New Inquiry Triage"
-    assert wf.mount == "A"
-    assert wf.path == wf_path
-
-    assert {:ok, [_one]} = Workflows.list()
-
-    assert :ok = Mounts.set_enabled(ws, a.mount_key, false)
-
-    assert {:ok, []} = Workflows.list()
-    assert {:error, :not_found} = Workflows.get(wf_path)
-  end
-
-  test "get/1 parses frontmatter (trigger.source, risk_level, approval.actions) and steps_preview",
-       %{workspace: ws} do
-    a = AgentCase.mount_test_icm!(ws, name: "A")
-    write_workflow!(a.root, "Triage.md", @triage_frontmatter, @triage_body)
-
-    wf_path = Path.join(a.root, "Workflows/Triage.md")
-    assert {:ok, wf} = Workflows.get(wf_path)
-
-    assert wf.path == wf_path
-    assert wf.mount == "A"
+    assert wf.icm_id == a.id
+    assert wf.mount_key == a.mount_key
+    assert wf.relative_path == "Workflows/Triage.md"
+    assert wf.resolved_path == Path.join(a.root, "Workflows/Triage.md")
     assert wf.name == "New Inquiry Triage"
     assert wf.enabled == true
     assert wf.trigger["source"] == "email.selected"
@@ -253,7 +231,9 @@ defmodule Valea.WorkflowsTest do
            ]
   end
 
-  test "get/1 on a disabled workflow still returns it (enabled: false)", %{workspace: ws} do
+  test "get/2 on a disabled workflow (frontmatter enabled: false) still returns it", %{
+    workspace: ws
+  } do
     a = AgentCase.mount_test_icm!(ws, name: "A")
 
     write_workflow!(
@@ -263,107 +243,85 @@ defmodule Valea.WorkflowsTest do
       "# Weekly\n\nBody.\n"
     )
 
-    wf_path = Path.join(a.root, "Workflows/Weekly.md")
-    assert {:ok, wf} = Workflows.get(wf_path)
+    assert {:ok, wf} = Workflows.get(a.mount_key, "Workflows/Weekly.md")
     assert wf.enabled == false
     assert wf.risk_level == "low"
   end
 
-  test "get/1 on a missing path returns not_found", %{workspace: ws} do
+  test "get/2 on a missing relative_path returns not_found", %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
-    assert {:error, :not_found} = Workflows.get(Path.join(a.root, "Workflows/Nonexistent.md"))
+    assert {:error, :not_found} = Workflows.get(a.mount_key, "Workflows/Nonexistent.md")
   end
 
-  test "get/1 outside mounts/<name>/Workflows/ returns not_found", %{workspace: ws} do
+  test "get/2 with a mount_key that names no mount returns not_found", %{workspace: ws} do
+    AgentCase.mount_test_icm!(ws, name: "A")
+    assert {:error, :not_found} = Workflows.get("no-such-mount", "Workflows/Triage.md")
+  end
+
+  test "get/2 outside the mount's own Workflows/ returns not_in_icm", %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
     File.mkdir_p!(Path.join(a.root, "Offers"))
     File.write!(Path.join(a.root, "Offers/X.md"), "---\nenabled: true\n---\n# X\n")
 
-    assert {:error, :not_found} = Workflows.get(Path.join(a.root, "Offers/X.md"))
+    assert {:error, :not_in_icm} = Workflows.get(a.mount_key, "Offers/X.md")
   end
 
-  test "get/1 with a path that doesn't name a mount at all returns not_found", %{workspace: ws} do
-    AgentCase.mount_test_icm!(ws, name: "A")
-    assert {:error, :not_found} = Workflows.get("sources/mail/messages/x.md")
-  end
-
-  test "get/1 with a path containing .. that escapes the mount returns not_found", %{
-    workspace: ws
-  } do
-    a = AgentCase.mount_test_icm!(ws, name: "A")
-
-    escape_path =
-      Path.join([a.root, "Workflows", String.duplicate("../", 15) <> "etc/passwd"])
-
-    assert {:error, :not_found} = Workflows.get(escape_path)
-  end
-
-  test "get/1 with a path that lexically starts with mounts/<name>/Workflows/ but traverses out of it (while staying inside the mount) returns not_found",
+  test "get/2 with a relative_path that traverses out of Workflows/ but stays inside the mount returns not_in_icm (acceptance case)",
        %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
     File.mkdir_p!(Path.join(a.root, "Offers"))
     File.write!(Path.join(a.root, "Offers/escaped.md"), "# Escaped\n")
 
-    assert {:error, :not_found} =
-             Workflows.get(Path.join(a.root, "Workflows/../Offers/escaped.md"))
+    assert {:error, :not_in_icm} = Workflows.get(a.mount_key, "Workflows/../Offers/escaped.md")
+
+    # The exact acceptance-test path from the task brief: escaping into the
+    # mount's own icm.yaml.
+    assert {:error, :not_in_icm} = Workflows.get(a.mount_key, "Workflows/../icm.yaml")
   end
 
-  test "get/1 with a path that traverses from one mount into another returns not_found", %{
+  test "get/2 with a relative_path that escapes the mount's root entirely returns not_found", %{
     workspace: ws
   } do
+    a = AgentCase.mount_test_icm!(ws, name: "A")
+
+    escape_path = Path.join(["Workflows", String.duplicate("../", 15) <> "etc/passwd"])
+
+    assert {:error, :not_found} = Workflows.get(a.mount_key, escape_path)
+  end
+
+  test "get/2 with a relative_path that traverses from one mount into a sibling mount returns not_found",
+       %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
     b = AgentCase.mount_test_icm!(ws, name: "B")
     write_workflow!(b.root, "Secret.md", "enabled: true\n", "# Secret\n\nBody.\n")
 
-    # Lexically starts with `a.root`'s own Workflows/ (so `mount_for/2`'s
-    # prefix attribution first ties this to mount "a"), but two ".." hops
-    # climb out of "a" entirely and back down into sibling mount "b"'s own
+    # Lexically starts inside `a`'s own Workflows/, but two ".." hops climb
+    # out of `a` entirely and back down into sibling mount `b`'s own
     # Workflows/ — `a` and `b` are both direct children of the same tmp
     # parent (`AgentCase.mount_test_icm!/2` always mints them there), so
-    # this reaches `b`'s real file while staying a real, resolvable path.
-    escape_path =
-      Path.join(a.root, "Workflows") <>
-        "/../../" <> Path.basename(b.root) <> "/Workflows/Secret.md"
+    # this reaches `b`'s real file while staying a real, resolvable path —
+    # but it escapes `a`'s OWN root, which `get/2` resolves `relative_path`
+    # against, so it is rejected as `:not_found`, not attributed to `b`.
+    escape_path = "Workflows/../../" <> Path.basename(b.root) <> "/Workflows/Secret.md"
 
-    assert {:error, :not_found} = Workflows.get(escape_path)
+    assert {:error, :not_found} = Workflows.get(a.mount_key, escape_path)
   end
 
-  test "a Workflows/ page without frontmatter is not a contract: list/0 skips it, get/1 -> not_found",
+  test "a Workflows/ page without frontmatter is not a contract: list/0 skips it, get/2 -> not_found",
        %{workspace: ws} do
     a = AgentCase.mount_test_icm!(ws, name: "A")
     write_workflow!(a.root, "Triage.md", @triage_frontmatter, @triage_body)
 
-    no_fm_path = Path.join(a.root, "Workflows/No Frontmatter.md")
-
     File.write!(
-      no_fm_path,
+      Path.join(a.root, "Workflows/No Frontmatter.md"),
       "# No Frontmatter\n\nJust a plain page, no YAML header.\n"
     )
 
-    assert {:error, :not_found} = Workflows.get(no_fm_path)
+    assert {:error, :not_found} = Workflows.get(a.mount_key, "Workflows/No Frontmatter.md")
 
     assert {:ok, workflows} = Workflows.list()
     assert length(workflows) == 1
-    refute Enum.any?(workflows, &(&1.path == no_fm_path))
-  end
-
-  test "get/1 on an external mount's absolute path outside its Workflows/ returns not_found",
-       %{workspace: ws} do
-    ext = AgentCase.mount_test_icm!(ws, name: "Ext")
-    File.mkdir_p!(Path.join(ext.root, "Offers"))
-    File.write!(Path.join(ext.root, "Offers/X.md"), "---\nenabled: true\n---\n# X\n")
-
-    assert {:error, :not_found} = Workflows.get(Path.join(ext.root, "Offers/X.md"))
-  end
-
-  test "get/1 on an external mount's absolute path that traverses out of its Workflows/ (while staying inside the mount) returns not_found",
-       %{workspace: ws} do
-    ext = AgentCase.mount_test_icm!(ws, name: "Ext")
-    File.mkdir_p!(Path.join(ext.root, "Offers"))
-    File.write!(Path.join(ext.root, "Offers/escaped.md"), "# Escaped\n")
-
-    escape_path = Path.join(ext.root, "Workflows/../Offers/escaped.md")
-    assert {:error, :not_found} = Workflows.get(escape_path)
+    refute Enum.any?(workflows, &(&1.relative_path == "Workflows/No Frontmatter.md"))
   end
 
   test "no workspace open returns an empty list" do
@@ -371,12 +329,12 @@ defmodule Valea.WorkflowsTest do
     assert {:ok, []} = Workflows.list()
   end
 
-  test "no workspace open: get/1 returns not_found" do
+  test "no workspace open: get/2 returns not_found" do
     Valea.Workspace.Manager.close()
-    assert {:error, :not_found} = Workflows.get("mounts/a/Workflows/Triage.md")
+    assert {:error, :not_found} = Workflows.get("a", "Workflows/Triage.md")
   end
 
-  test "list/0 gracefully skips mounts with degraded (invalid) manifests",
+  test "list/0 gracefully skips mounts with degraded (invalid) manifests, and get/2 on the degraded mount_key returns not_found",
        %{workspace: ws} do
     # A valid, healthy external mount with a workflow.
     valid = AgentCase.mount_test_icm!(ws, name: "Valid Mount")
@@ -409,8 +367,13 @@ defmodule Valea.WorkflowsTest do
     # list/0 should return only the valid mount's workflow, not raise
     assert {:ok, workflows} = Workflows.list()
     assert length(workflows) == 1
-    assert hd(workflows).path == Path.join(valid.root, "Workflows/Good.md")
-    assert hd(workflows).mount == "Valid Mount"
+    assert hd(workflows).resolved_path == Path.join(valid.root, "Workflows/Good.md")
+    assert hd(workflows).mount_key == valid.mount_key
+
+    # get/2 keyed on the degraded mount's key has no trustworthy manifest to
+    # resolve `icm_id` from, so it fails closed rather than returning a
+    # contract with no identity.
+    assert {:error, :not_found} = Workflows.get("degraded", "Workflows/BadMount.md")
   end
 
   # -- list/1 (pure form) and triage_path/0,1 (Task A-T13) --------------------
@@ -436,7 +399,7 @@ defmodule Valea.WorkflowsTest do
   end
 
   describe "triage_path/0,1 (seeded-workflow discovery, Task A-T13)" do
-    test "finds the triage workflow's path in the first (alphabetically) enabled mount that has one",
+    test "finds the triage workflow's resolved_path in the first (alphabetically) enabled mount that has one",
          %{workspace: ws} do
       a = AgentCase.mount_test_icm!(ws, name: "A")
       write_workflow!(a.root, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
@@ -481,7 +444,7 @@ defmodule Valea.WorkflowsTest do
       assert Workflows.triage_path() == nil
     end
 
-    test "finds the triage workflow seeded in an enabled EXTERNAL mount (A2-T5b acceptance: registry discovery keeps working)",
+    test "finds the triage workflow seeded in an enabled mount (A2-T5b acceptance: registry discovery keeps working)",
          %{workspace: ws} do
       ext = AgentCase.mount_test_icm!(ws, name: "Ext")
       write_workflow!(ext.root, "New Inquiry Triage.md", @triage_frontmatter, @triage_body)
@@ -511,7 +474,7 @@ defmodule Valea.WorkflowsTest do
   # task, so a fresh scaffold's own mount never carries one yet; every test
   # below hand-writes the file the way `triage_path/0,1`'s tests do.
   describe "distill_path/0,1 (Task B8, mirrors triage_path/0,1)" do
-    test "finds the distill workflow's path in the first (alphabetically) enabled mount that has one",
+    test "finds the distill workflow's resolved_path in the first (alphabetically) enabled mount that has one",
          %{workspace: ws} do
       a = AgentCase.mount_test_icm!(ws, name: "A")
       write_workflow!(a.root, "Distill Decisions.md", @triage_frontmatter, @triage_body)

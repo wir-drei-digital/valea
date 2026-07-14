@@ -304,15 +304,18 @@ defmodule Valea.Api.Agents do
                       constraints: [
                         items: [
                           fields: [
-                            path: [type: :string, allow_nil?: false],
+                            icm_id: [type: :string, allow_nil?: false],
+                            mount_key: [type: :string, allow_nil?: false],
+                            icm_name: [type: :string, allow_nil?: false],
+                            relative_path: [type: :string, allow_nil?: false],
+                            resolved_path: [type: :string, allow_nil?: false],
                             name: [type: :string, allow_nil?: false],
                             description: [type: :string, allow_nil?: true],
                             enabled: [type: :boolean, allow_nil?: false],
                             trigger_source: [type: :string, allow_nil?: true],
                             risk_level: [type: :string, allow_nil?: true],
                             source_count: [type: :integer, allow_nil?: false],
-                            steps: [type: {:array, :string}, allow_nil?: false],
-                            mount: [type: :string, allow_nil?: false]
+                            steps: [type: {:array, :string}, allow_nil?: false]
                           ]
                         ]
                       ]
@@ -321,7 +324,8 @@ defmodule Valea.Api.Agents do
 
       run fn _input, _ctx ->
         {:ok, workflows} = Valea.Workflows.list()
-        {:ok, %{workflows: Enum.map(workflows, &flatten_workflow/1)}}
+        icm_names = icm_names_by_mount_key()
+        {:ok, %{workflows: Enum.map(workflows, &flatten_workflow(&1, icm_names))}}
       end
     end
   end
@@ -381,24 +385,45 @@ defmodule Valea.Api.Agents do
   # Flattens `Valea.Workflows.list/0`'s per-workflow map (nested `trigger`/
   # `sources` maps) into the typed shape the card list needs — the full
   # nested contract (trigger conditions, approval policy, ...) is one click
-  # away via `Valea.Workflows.get/1` in Knowledge, not duplicated here.
+  # away via `Valea.Workflows.get/2` in Knowledge, not duplicated here.
   #
-  # `mount` (A-T15) passes through `wf.mount` — the owning mount's manifest
-  # display name, already carried by `Valea.Workflows.list/0`'s per-workflow
-  # map (see its moduledoc) but previously dropped here, so the RPC surface
-  # never exposed which mount a workflow card belongs to. Powers
-  # `WorkflowCard.svelte`'s "· <mount>" provenance chip.
-  defp flatten_workflow(wf) do
+  # Task 7.1 re-keys the registry: `icm_id`/`mount_key`/`relative_path`/
+  # `resolved_path` pass straight through from `Valea.Workflows.list/0`'s
+  # new per-workflow map (its own moduledoc has the full identity
+  # rationale). `icm_name` is NOT one of `Valea.Workflows.list/0`'s own
+  # fields (that module deliberately stays mount-display-name-agnostic,
+  # see its moduledoc) — this RPC layer resolves it itself from
+  # `icm_names` (built once per call by `icm_names_by_mount_key/0`, mirrors
+  # `list_recent_sessions_by_icm`'s own `mount_key`+`icm_name` pairing
+  # above) so `WorkflowCard.svelte`'s "· <mount>" provenance chip keeps
+  # working off a friendly display name, not a raw UUID or config key.
+  defp flatten_workflow(wf, icm_names) do
     %{
-      path: wf.path,
+      icm_id: wf.icm_id,
+      mount_key: wf.mount_key,
+      icm_name: Map.get(icm_names, wf.mount_key, wf.mount_key),
+      relative_path: wf.relative_path,
+      resolved_path: wf.resolved_path,
       name: wf.name,
       description: wf.description,
       enabled: wf.enabled,
       trigger_source: Map.get(wf.trigger || %{}, "source"),
       risk_level: wf.risk_level,
       source_count: length(wf.sources || []),
-      steps: wf.steps_preview,
-      mount: wf.mount
+      steps: wf.steps_preview
     }
+  end
+
+  # `mount_key => manifest display name` for every currently ENABLED mount —
+  # every workflow `Valea.Workflows.list/0` returns is sourced from an
+  # enabled mount (see its moduledoc), so this always has an entry for any
+  # `wf.mount_key` `flatten_workflow/2` looks up; `Map.get/3`'s fallback to
+  # the bare `mount_key` above is defense-in-depth only (e.g. a mount
+  # disabled in the narrow window between the two calls).
+  defp icm_names_by_mount_key do
+    case Valea.Mounts.enabled() do
+      {:ok, mounts} -> Map.new(mounts, &{&1.name, &1.manifest.name})
+      {:error, :no_workspace} -> %{}
+    end
   end
 end

@@ -5,28 +5,40 @@ defmodule Valea.Workflows do
   preview (H1 name, first paragraph description, numbered `## Process`
   steps). The filesystem is the source of truth; a `Workflows/` page with
   no frontmatter is not a contract (skipped by `list/0`, `{:error,
-  :not_found}` from `get/1`). `Valea.Workflows.Runner` executes a workflow
+  :not_found}` from `get/2`). `Valea.Workflows.Runner` executes a workflow
   this module describes.
 
   `list/0` unions `Workflows/*.md` across `Valea.Mounts.enabled/0` — one
-  glob per mount, sorted by the union's `path`. Each entry's `path` is
-  workspace-relative (`mounts/<name>/Workflows/<file>.md`, replacing the
-  old single hardcoded `icm/Workflows/<file>.md`) for an EMBEDDED mount, or
-  the ABSOLUTE physical `<root>/Workflows/<file>.md` for an EXTERNAL
-  (`rel_root: nil`) mount (A2-T5b) — external content is addressed by its
-  resolved absolute path in this registry, same as everywhere else. Every
-  entry carries a `mount` field — the owning mount's manifest display name
-  (`manifest.name`) — for provenance. Because `path` is namespaced by mount
-  (by directory prefix or by absolute root), two mounts may each have a
-  same-named `Workflows/<file>.md` without one shadowing the other.
+  glob per mount, sorted by the union's `resolved_path`. Every mount is now
+  BY-REFERENCE (external, `Valea.Mounts`'s "Compatibility shim" section:
+  `rel_root` is always `nil`), so `resolved_path` is always an absolute
+  physical path.
+
+  Task 7.1 re-keys the registry: a workflow's identity is `{icm_id,
+  relative_path}` — `icm_id` the owning mount's manifest `id` (a stable
+  UUID that survives the ICM being moved or re-mounted under a different
+  `mount_key`), `relative_path` the ICM-relative `"Workflows/<file>.md"`.
+  Each `list/0,1` entry ALSO carries `mount_key` (the workspace-local
+  `icms:` config key — needed to address the ICM by `get/2`, since
+  `Mounts.mount_by_key/2` is keyed by it, not by `icm_id`) and
+  `resolved_path` (the current absolute path, for direct filesystem
+  access/display — NOT part of the identity, since it changes if the ICM
+  folder moves and mount_key/icm_id do not). The old single opaque `path`
+  field (and the `mount` display-name field) are gone; a caller that wants
+  the owning ICM's display name looks it up via `Valea.Mounts.mount_by_key/2`
+  itself.
 
   DECISION (mirrors `Valea.ICM`'s DECISION for `page/1`, T3): `list/0` uses
   `Mounts.enabled/0`, so a DISABLED (or degraded) mount's workflows drop
   out of it entirely — the registry surfaces only the effective
-  composition set. `get/1`, by contrast, resolves the owning mount via
-  `Mounts.mount_for/1` REGARDLESS of that mount's enabled state: a disabled
-  mount's workflow contract still parses fine by explicit path
-  (editor-style access). Enabled-gating what a workflow RUN may actually
+  composition set. `get/2`, by contrast, resolves the owning mount via
+  `Mounts.mount_by_key/2` REGARDLESS of that mount's enabled state (keyed
+  lookup, not path-attribution, so there is no reason to require
+  enabled/healthy the way `Mounts.mount_for/1`'s path-based attribution
+  does) — a disabled mount's workflow contract still parses fine by
+  explicit `{mount_key, relative_path}` (editor-style access), restoring
+  the original pre-A2-T5b posture that path-based attribution had
+  temporarily narrowed. Enabled-gating what a workflow RUN may actually
   execute is `Valea.Workflows.Runner`'s `ensure_enabled/1` check on the
   returned `enabled` frontmatter flag, not this lookup's concern.
   """
@@ -59,110 +71,122 @@ defmodule Valea.Workflows do
     end
   end
 
-  @doc "Pure form of `list/0` — every workflow contract across `workspace`'s enabled mounts, sorted by path."
+  @doc "Pure form of `list/0` — every workflow contract across `workspace`'s enabled mounts, sorted by `resolved_path`."
   @spec list(workspace :: String.t()) :: [map()]
   def list(workspace) when is_binary(workspace) do
     workspace
     |> Mounts.enabled()
     |> Enum.flat_map(&workflows_for_mount/1)
-    |> Enum.sort_by(& &1.path)
+    |> Enum.sort_by(& &1.resolved_path)
   end
 
   @doc """
-  The workspace-relative path of the seeded New Inquiry Triage workflow, or
+  The absolute `resolved_path` of the seeded New Inquiry Triage workflow, or
   `nil` when no enabled mount has one — the discovery `Valea.Cockpit` and
   `Valea.Mail.Doctor` both use in place of the old hardcoded
   `icm/Workflows/New Inquiry Triage.md` (Task A-T13).
 
-  Picks the FIRST match in `list/0`'s own sort order (by `path`). Since
-  A2-T5b an EXTERNAL mount's `path` is the ABSOLUTE physical path while an
-  EMBEDDED mount's is still workspace-relative `mounts/<name>/...`, and
-  `"/"` sorts before `"m"` byte-wise — so EVERY external mount's workflow
-  sorts before EVERY embedded one, regardless of mount name; only within
-  each of those two groups does the sort fall back to alphabetical (by
-  mount root, then filename). A mount earlier in that order without the
+  Picks the FIRST match in `list/0`'s own sort order (by `resolved_path`) —
+  a `{mount_key, relative_path}` lookup over that same union, matching on
+  `relative_path`'s basename. A mount earlier in that order without the
   file is skipped, not a dead end — see `triage_path/1`'s sibling doc.
   """
   @spec triage_path() :: String.t() | nil
   def triage_path do
     {:ok, workflows} = list()
-    find_triage(workflows)
+    find_by_basename(workflows, @triage_filename)
   end
 
   @doc "Pure form of `triage_path/0` for `workspace`."
   @spec triage_path(workspace :: String.t()) :: String.t() | nil
   def triage_path(workspace) when is_binary(workspace) do
-    workspace |> list() |> find_triage()
-  end
-
-  defp find_triage(workflows) do
-    case Enum.find(workflows, &(Path.basename(&1.path) == @triage_filename)) do
-      nil -> nil
-      wf -> wf.path
-    end
+    workspace |> list() |> find_by_basename(@triage_filename)
   end
 
   @doc """
-  The workspace-relative (or, for an external mount, absolute physical)
-  path of the seeded Distill Decisions reflection workflow, or `nil` when
-  no enabled mount has one — mirrors `triage_path/0` exactly (same
-  first-match-in-`list/0`'s-own-sort-order semantics; see its doc for the
-  full external/embedded sort-order rationale). Task B8's `distill_decisions`
-  RPC uses this in place of a hardcoded path.
+  The absolute `resolved_path` of the seeded Distill Decisions reflection
+  workflow, or `nil` when no enabled mount has one — mirrors `triage_path/0`
+  exactly (same first-match-in-`list/0`'s-own-sort-order, basename-matching
+  `{mount_key, relative_path}` lookup; see its doc). Task B8's
+  `distill_decisions` RPC uses this in place of a hardcoded path.
   """
   @spec distill_path() :: String.t() | nil
   def distill_path do
     {:ok, workflows} = list()
-    find_distill(workflows)
+    find_by_basename(workflows, @distill_filename)
   end
 
   @doc "Pure form of `distill_path/0` for `workspace`."
   @spec distill_path(workspace :: String.t()) :: String.t() | nil
   def distill_path(workspace) when is_binary(workspace) do
-    workspace |> list() |> find_distill()
+    workspace |> list() |> find_by_basename(@distill_filename)
   end
 
-  defp find_distill(workflows) do
-    case Enum.find(workflows, &(Path.basename(&1.path) == @distill_filename)) do
+  defp find_by_basename(workflows, filename) do
+    case Enum.find(workflows, &(Path.basename(&1.relative_path) == filename)) do
       nil -> nil
-      wf -> wf.path
+      wf -> wf.resolved_path
     end
   end
 
   @doc """
-  One workflow contract by its `list/0`-shaped `path` (workspace-relative
-  `"mounts/primary/Workflows/New Inquiry Triage.md"` for an embedded mount,
-  or the ABSOLUTE physical `<root>/Workflows/<file>.md` for an external one,
-  A2-T5b). Resolves the owning mount via `Mounts.mount_for/1` — for an
-  embedded path, regardless of that mount's enabled state (see moduledoc
-  DECISION); for an absolute external path, `mount_for/1`'s own attribution
-  rule requires an ENABLED, non-degraded mount (mirrors `Valea.ICM`'s editor
-  ops, A2-T5b binding semantic 2) — a disabled/degraded external mount's
-  path simply fails to attribute and falls through to `:not_found` below,
-  same as any other unrecognized path. `{:error, :not_found}` when the path
-  doesn't name a (currently eligible) mount, doesn't land under that
-  mount's `Workflows/`, is missing, or has no parseable frontmatter block.
+  One workflow contract owned by `mount_key`, addressed by its ICM-relative
+  `relative_path` (e.g. `"Workflows/New Inquiry Triage.md"`) — the current
+  workspace's `{mount_key, relative_path}` identity pair (Task 7.1).
+
+  Resolves the owning mount via `Mounts.mount_by_key/2` — a direct keyed
+  lookup, so (unlike `list/0`) it does NOT require the mount to be enabled
+  or healthy-attributed by path; only that `mount_key` names SOME mount
+  with a loadable manifest (see moduledoc DECISION). `relative_path` is
+  then containment-checked against THAT mount's OWN `Workflows/` directory
+  (realpath-resolved, `..`/symlink-hardened — mirrors `Valea.ICM.contain/2`):
+
+    * `{:error, :not_found}` — `mount_key` names no mount, or its manifest
+      failed to load (degraded), or `relative_path` escapes the mount's own
+      root entirely, or it lands inside the mount but the target file is
+      missing / unreadable / has no parseable frontmatter block.
+    * `{:error, :not_in_icm}` — `relative_path` resolves to somewhere
+      INSIDE the mount but OUTSIDE that mount's own `Workflows/` directory
+      (e.g. `"Workflows/../icm.yaml"`, or a page under `Offers/`) — the
+      mount does not OWN this workflow.
   """
-  @spec get(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get(rel_path) do
-    with {:ok, mount} <- Mounts.mount_for(rel_path),
+  @spec get(mount_key :: String.t(), relative_path :: String.t()) ::
+          {:ok, map()} | {:error, :not_found | :not_in_icm}
+  def get(mount_key, relative_path)
+      when is_binary(mount_key) and is_binary(relative_path) do
+    with {:ok, workspace} <- workspace_root(),
+         mount when not is_nil(mount) <- Mounts.mount_by_key(workspace, mount_key),
          %Manifest{} <- mount.manifest,
-         mount_rel <- mount_relative(rel_path, mount),
-         true <- valid_workflow_rel?(mount_rel),
-         {:ok, real} <- Valea.Paths.resolve_real(mount_rel, mount.root),
-         true <- under_workflows_dir?(real, mount.root),
-         # `real` is realpath-resolved (symlinks followed, e.g. macOS's
-         # /var -> /private/var) purely for the containment check above —
-         # reads/parsing go through the LITERAL `abs` (mount.root's own,
-         # unresolved, string form) so `parse/2`'s `Path.relative_to/2`
-         # below has a matching prefix to strip. Mirrors the pre-mounts
-         # `get/1`'s identical abs/real split.
-         abs <- Path.join(mount.root, mount_rel),
-         true <- File.regular?(abs),
-         %{} = wf <- parse(abs, mount) do
-      {:ok, wf}
+         {:ok, real} <- Valea.Paths.resolve_real(relative_path, mount.root) do
+      contained_get(real, mount, relative_path)
     else
       _ -> {:error, :not_found}
+    end
+  end
+
+  defp workspace_root do
+    case Manager.current() do
+      {:ok, %{path: ws}} -> {:ok, ws}
+      {:error, :no_workspace} -> {:error, :no_workspace}
+    end
+  end
+
+  # `real` already resolved+containment-checked against `mount.root` itself
+  # (by `resolve_real/2` above) — this second check confirms it is
+  # specifically inside the mount's OWN `Workflows/`, not merely inside the
+  # mount (mirrors the pre-7.1 `under_workflows_dir?/2` containment gate).
+  defp contained_get(real, mount, relative_path) do
+    if under_workflows_dir?(real, mount.root) do
+      abs = Path.join(mount.root, relative_path)
+
+      with true <- File.regular?(abs),
+           %{} = wf <- parse(abs, mount) do
+        {:ok, wf}
+      else
+        _ -> {:error, :not_found}
+      end
+    else
+      {:error, :not_in_icm}
     end
   end
 
@@ -179,15 +203,6 @@ defmodule Valea.Workflows do
   # Mounts.enabled/0 already filters these out, but guard here to be safe.
   defp workflows_for_mount(_mount), do: []
 
-  # Cheap lexical pre-filter — NOT the containment check. A mount-relative
-  # remainder can lexically start with "Workflows/" and end in ".md" while
-  # still traversing out via "..", so this only short-circuits the
-  # obviously-wrong case before the real `resolve_real/2` +
-  # `under_workflows_dir?/2` checks below.
-  defp valid_workflow_rel?(mount_rel) do
-    String.starts_with?(mount_rel, "Workflows/") and String.ends_with?(mount_rel, ".md")
-  end
-
   # Confirms the realpath-resolved target is actually inside the mount's
   # own Workflows/, not merely inside the mount's root — a path like
   # "Workflows/../Offers/x.md" resolves within the mount (so a bare
@@ -200,37 +215,15 @@ defmodule Valea.Workflows do
     end
   end
 
-  # The path relative to `mount`'s OWN root. Mirrors `Valea.ICM`'s private
-  # `mount_relative/2` (kept local for the same reason `Valea.ICM.References`
-  # keeps its own copy too: a small, self-contained helper, not worth a
-  # shared dependency for):
-  #
-  #   * embedded: strips the leading `mounts/<name>` segment off the
-  #     workspace-relative `rel_path`.
-  #   * external (A2-T5b, `rel_root: nil`): strips `mount.root` itself off
-  #     the ABSOLUTE `rel_path`.
-  defp mount_relative(rel_path, %{rel_root: nil, root: root}) do
-    cond do
-      rel_path == root -> ""
-      String.starts_with?(rel_path, root <> "/") -> String.trim_leading(rel_path, root <> "/")
-      true -> rel_path
-    end
-  end
-
-  defp mount_relative(rel_path, _mount) do
-    case Path.split(rel_path) do
-      ["mounts", _name | rest] -> Enum.join(rest, "/")
-      _ -> rel_path
-    end
-  end
-
   defp parse(abs, mount) do
     with {:ok, content} <- File.read(abs),
          {block, body} <- Valea.ICM.split_frontmatter(content),
          %{} = fm <- parse_frontmatter(block) do
       %{
-        path: workflow_path(mount, abs),
-        mount: mount.manifest.name,
+        icm_id: mount.manifest.id,
+        mount_key: mount.name,
+        relative_path: Path.relative_to(abs, mount.root),
+        resolved_path: abs,
         name: name_of(body, abs),
         description: description_of(body),
         enabled: !!Map.get(fm, "enabled", false),
@@ -244,13 +237,6 @@ defmodule Valea.Workflows do
       _ -> nil
     end
   end
-
-  # A workflow's `list/0`-shaped `path`: workspace-relative (`mounts/<name>/…`)
-  # for an embedded mount; `abs` itself (already the absolute physical path —
-  # it came straight off `mount.root`'s own glob/join) for an external one
-  # (A2-T5b).
-  defp workflow_path(%{rel_root: nil}, abs), do: abs
-  defp workflow_path(mount, abs), do: Path.join(mount.rel_root, Path.relative_to(abs, mount.root))
 
   defp parse_frontmatter(""), do: nil
 

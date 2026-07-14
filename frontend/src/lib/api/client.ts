@@ -395,15 +395,18 @@ const harnessDoctorFields = [
 const listWorkflowsFields = [
   {
     workflows: [
-      'path',
+      'icmId',
+      'mountKey',
+      'icmName',
+      'relativePath',
+      'resolvedPath',
       'name',
       'description',
       'enabled',
       'triggerSource',
       'riskLevel',
       'sourceCount',
-      'steps',
-      'mount'
+      'steps'
     ]
   }
 ] as unknown as ListWorkflowsFields;

@@ -79,7 +79,7 @@ defmodule Valea.Workflows.Runner do
              :not_found | :workflow_disabled | :input_not_found | :harness_unavailable | term()}
   def run(workflow_path, input_path) do
     with {:ok, %{path: workspace}} <- current_workspace(),
-         {:ok, wf} <- Workflows.get(workflow_path),
+         {:ok, wf} <- fetch_workflow(workflow_path),
          :ok <- ensure_enabled(wf),
          {:ok, workflow_bytes} <- read_workflow(workspace, workflow_path),
          {:ok, input_bytes} <- read_input(workspace, input_path) do
@@ -107,7 +107,7 @@ defmodule Valea.Workflows.Runner do
           | {:error, :not_found | :workflow_disabled | :harness_unavailable | term()}
   def run_generated(workflow_path, input_name, input_bytes) do
     with {:ok, %{path: workspace}} <- current_workspace(),
-         {:ok, wf} <- Workflows.get(workflow_path),
+         {:ok, wf} <- fetch_workflow(workflow_path),
          :ok <- ensure_enabled(wf),
          {:ok, workflow_bytes} <- read_workflow(workspace, workflow_path) do
       start_run(
@@ -387,6 +387,38 @@ defmodule Valea.Workflows.Runner do
 
   defp ensure_enabled(%{enabled: true}), do: :ok
   defp ensure_enabled(_wf), do: {:error, :workflow_disabled}
+
+  # `workflow_path` (opaque throughout this module — see moduledoc) is
+  # still the ABSOLUTE physical path `Valea.Workflows.list/0`'s
+  # `resolved_path` field carries. `Valea.Workflows.get/1` was re-keyed to
+  # `get/2` (Task 7.1: `{mount_key, relative_path}` identity) — this
+  # adapter bridges the two: attribute `workflow_path` to its owning mount
+  # the same way `workflow_containment_root/2` does moments later in this
+  # same call (`Mounts.mount_for/1`, ENABLED+healthy attribution only),
+  # derive the ICM-relative remainder, and look the contract up by its new
+  # keyed identity. The full `{mount_key, relative_path}`-addressed
+  # `run/2`/`run_generated/3` API is Task 7.2's job (the ICM-scoped run),
+  # not this one — `workflow_path` stays this module's own opaque address
+  # for now.
+  @spec fetch_workflow(String.t()) :: {:ok, map()} | {:error, :not_found}
+  defp fetch_workflow(workflow_path) do
+    case Mounts.mount_for(workflow_path) do
+      {:ok, %{name: mount_key, root: root}} ->
+        # `get/2`'s `:not_in_icm` (a path landing inside the mount but
+        # outside its OWN `Workflows/`) collapses to this module's existing
+        # `:not_found` — this module's public error vocabulary (see `run/2`
+        # `@spec`) predates the `{mount_key, relative_path}` re-key, and
+        # both atoms mean the same thing to every current caller: no
+        # runnable contract at `workflow_path`.
+        case Workflows.get(mount_key, Path.relative_to(workflow_path, root)) do
+          {:ok, wf} -> {:ok, wf}
+          {:error, _reason} -> {:error, :not_found}
+        end
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
 
   # Containment-gated: `resolve_real/2` rejects any `..`/symlink traversal
   # that would escape the containment root (realpath semantics, mirroring

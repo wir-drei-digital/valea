@@ -437,25 +437,32 @@ defmodule ValeaWeb.AgentsRpcTest do
   end
 
   describe "list_workflows" do
-    test "flattens the seeded workflow contracts", %{icm: icm} do
+    test "flattens the seeded workflow contracts, keyed by {icm_id, relative_path} with ICM provenance (Task 7.1)",
+         %{icm: icm} do
       assert %{"success" => true, "data" => %{"workflows" => workflows}} =
                rpc("list_workflows", %{}, [
                  %{
                    "workflows" => [
-                     "path",
+                     "icmId",
+                     "mountKey",
+                     "icmName",
+                     "relativePath",
+                     "resolvedPath",
                      "name",
                      "description",
                      "enabled",
                      "triggerSource",
                      "riskLevel",
                      "sourceCount",
-                     "steps",
-                     "mount"
+                     "steps"
                    ]
                  }
                ])
 
-      assert triage = Enum.find(workflows, &(&1["path"] == wf_path(icm)))
+      assert triage = Enum.find(workflows, &(&1["resolvedPath"] == wf_path(icm)))
+      assert triage["icmId"] == icm.id
+      assert triage["mountKey"] == icm.mount_key
+      assert triage["relativePath"] == "Workflows/New Inquiry Triage.md"
       assert triage["name"] == "New Inquiry Triage"
       assert triage["enabled"] == true
       assert triage["triggerSource"] == "email.selected"
@@ -463,11 +470,11 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert triage["sourceCount"] == 5
       assert is_list(triage["steps"])
       assert triage["steps"] != []
-      # A-T15: mount provenance (the owning mount's manifest display name) —
-      # this suite's `setup` mounts the seeded ICM as "Primary".
-      assert triage["mount"] == "Primary"
+      # A-T15/Task 7.1: ICM provenance (the owning ICM's manifest display
+      # name) — this suite's `setup` mounts the seeded ICM as "Primary".
+      assert triage["icmName"] == "Primary"
 
-      assert weekly = Enum.find(workflows, &(&1["path"] == disabled_wf_path(icm)))
+      assert weekly = Enum.find(workflows, &(&1["resolvedPath"] == disabled_wf_path(icm)))
       assert weekly["enabled"] == false
     end
   end

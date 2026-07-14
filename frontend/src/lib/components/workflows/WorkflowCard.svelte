@@ -14,11 +14,11 @@
     Array.isArray(workflow.steps) ? workflow.steps.filter((s): s is string => typeof s === 'string') : []
   );
 
-  const editHref = $derived(workflowEditHref(workflow.path));
+  const editHref = $derived(workflowEditHref(workflow.resolvedPath));
   // A-T15: "· <mount>" provenance — only rendered once multiple mounts can
-  // carry a same-named Workflows/ contract; `null` (missing/blank mount)
+  // carry a same-named Workflows/ contract; `null` (missing/blank name)
   // renders nothing rather than a bare "·".
-  const provenance = $derived(mountProvenanceLabel(workflow.mount));
+  const provenance = $derived(mountProvenanceLabel(workflow.icmName));
 
   const riskStyle: Record<string, string> = {
     low: 'bg-act-tint text-act',

@@ -20,10 +20,12 @@
   import { distillButtonState, distillErrorMessage, type DistillPhase } from '$lib/today/distill';
 
   // "Distill recent decisions" (Task B13) — same action as the Today page's,
-  // rendered on whichever card's `path` matches the cockpit payload's
-  // `distillWorkflowPath` (Task B8). This route otherwise never fetches
-  // cockpit data, so a small standalone fetch on mount is enough — the
-  // field is the only thing this page needs off that payload.
+  // rendered on whichever card's `resolvedPath` matches the cockpit
+  // payload's `distillWorkflowPath` (Task B8 — still a bare absolute-path
+  // string; `Valea.Workflows.distill_path/0` returns `resolved_path`, see
+  // its Task 7.1 doc). This route otherwise never fetches cockpit data, so
+  // a small standalone fetch on mount is enough — the field is the only
+  // thing this page needs off that payload.
   let distillWorkflowPath: string | null = $state(null);
   let distillPhase: DistillPhase = $state('idle');
   let distillSessionId: string | null = $state(null);
@@ -80,10 +82,10 @@
       />
     {:else}
       <div class="flex flex-col gap-4">
-        {#each workflowsStore.list as workflow (workflow.path)}
+        {#each workflowsStore.list as workflow (workflow.icmId + workflow.relativePath)}
           <div class="flex flex-col gap-2.5">
             <WorkflowCard {workflow} />
-            {#if workflow.path === distillWorkflowPath && distillState.visible}
+            {#if workflow.resolvedPath === distillWorkflowPath && distillState.visible}
               <div class="flex flex-wrap items-center gap-2.5 px-1">
                 <Button
                   variant="outline"
