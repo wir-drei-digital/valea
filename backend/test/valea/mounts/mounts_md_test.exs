@@ -1,6 +1,18 @@
 defmodule Valea.Mounts.MountsMdTest do
   use ExUnit.Case, async: true
 
+  # TODO(Phase 11): Valea.Mounts.MountsMd is deleted in Phase 11 (backend
+  # legacy deletions, per docs/superpowers/plans/2026-07-13-icm-project-workspaces.md).
+  # Task 3.2 rewrote Valea.Mounts.list/1 to config truth (icms:-only,
+  # external-only) — MountsMd's whole reason for existing (rendering a
+  # MOUNTS.md index that routes into an embedded `mounts/<name>/AGENTS.md`
+  # via `@mounts/<name>/AGENTS.md`) no longer matches any mount `list/1`
+  # can produce (rel_root is always nil now), and every fixture in this
+  # file hand-writes the retired embedded-mount shape. Not migrated: the
+  # subject module itself is on a named deletion path, not reworked in
+  # place.
+  @moduletag :skip
+
   alias Valea.Mounts.MountsMd
   alias Valea.Paths
 

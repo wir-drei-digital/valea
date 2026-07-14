@@ -29,6 +29,31 @@ defmodule Valea.Mounts.DoctorTest do
     File.write!(Path.join(root, "config/workspace.yaml"), contents)
   end
 
+  # `icms:` fixture writer — post-3.2, `Valea.Mounts.list/1` is config
+  # truth over `icms:` ONLY (no more `mounts:`/`kind: path`/`ref:`); every
+  # mount is external (`rel_root: nil`), so `Doctor`'s `check_id/2` always
+  # emits the `:external:` qualifier. `entries` is a list of
+  # `{mount_key, path_or_nil, extra_kw}` — `extra_kw` may carry
+  # `enabled: false`.
+  defp write_icms!(root, entries) do
+    lines =
+      Enum.flat_map(entries, fn
+        {key, nil, _extra} ->
+          ["  #{key}:"]
+
+        {key, path, extra} ->
+          enabled_line =
+            case Keyword.get(extra, :enabled) do
+              nil -> []
+              enabled -> ["    enabled: #{enabled}"]
+            end
+
+          ["  #{key}:", "    path: \"#{path}\""] ++ enabled_line
+      end)
+
+    write_workspace_yaml!(root, Enum.join(["icms:" | lines], "\n") <> "\n")
+  end
+
   defp find(checks, id), do: Enum.find(checks, &(&1["id"] == id))
 
   # No live process required for most of this suite (`Doctor.run/1` is pure
@@ -44,7 +69,18 @@ defmodule Valea.Mounts.DoctorTest do
 
   # -- embedded mounts: manifest_ok only ----------------------------------------
 
+  # TODO(Phase 8): Doctor is reworked in Phase 8 (per
+  # docs/superpowers/plans/2026-07-13-icm-project-workspaces.md — "P8: [8.2
+  # doctor]"). Task 3.2 rewrote `Valea.Mounts.list/1` to config truth
+  # (`icms:`-only, external-only, `rel_root` always `nil`) — there is no
+  # more "embedded mount" for `Doctor.run/1` to discover from a bare
+  # `mounts/<name>/icm.yaml` on disk (no `icms:` entry means `list/1`
+  # never sees it at all), so this describe block's subject no longer
+  # exists in the current design. Not migrated: the embedded-mount
+  # concept itself is retired, not just this fixture.
   describe "run/1 — embedded mounts" do
+    @describetag :skip
+
     test "a healthy embedded mount reports manifest_ok, nothing else" do
       root = tmp_dir!("vmounts-doctor")
 
@@ -93,14 +129,9 @@ defmodule Valea.Mounts.DoctorTest do
   # -- external mounts: ref_resolves gates the rest -----------------------------
 
   describe "run/1 — external mounts: ref_resolves gating" do
-    test "a missing ref key fails ref_resolves and marks every later check unknown" do
+    test "a missing path key fails ref_resolves and marks every later check unknown" do
       root = tmp_dir!("vmounts-doctor")
-
-      write_workspace_yaml!(root, """
-      mounts:
-        outside:
-          kind: path
-      """)
+      write_workspace_yaml!(root, "icms:\n  outside: {}\n")
 
       {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
 
@@ -125,12 +156,7 @@ defmodule Valea.Mounts.DoctorTest do
       root = tmp_dir!("vmounts-doctor")
       missing = Path.join(tmp_dir!("vmounts-doctor-parent"), "does-not-exist")
 
-      write_workspace_yaml!(root, """
-      mounts:
-        outside:
-          kind: path
-          ref: "#{missing}"
-      """)
+      write_icms!(root, [{"outside", missing, []}])
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
@@ -150,12 +176,7 @@ defmodule Valea.Mounts.DoctorTest do
         description: ""
       })
 
-      write_workspace_yaml!(root, """
-      mounts:
-        insider:
-          kind: path
-          ref: "#{inside}"
-      """)
+      write_icms!(root, [{"insider", inside, []}])
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
@@ -177,12 +198,7 @@ defmodule Valea.Mounts.DoctorTest do
         description: ""
       })
 
-      write_workspace_yaml!(root, """
-      mounts:
-        weird:
-          kind: path
-          ref: "#{weird}"
-      """)
+      write_icms!(root, [{"weird", weird, []}])
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
@@ -199,12 +215,7 @@ defmodule Valea.Mounts.DoctorTest do
       root = tmp_dir!("vmounts-doctor")
       ext = tmp_dir!("vmounts-doctor-ext")
 
-      write_workspace_yaml!(root, """
-      mounts:
-        outside:
-          kind: path
-          ref: "#{ext}"
-      """)
+      write_icms!(root, [{"outside", ext, []}])
 
       {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
 
@@ -229,12 +240,7 @@ defmodule Valea.Mounts.DoctorTest do
         description: ""
       })
 
-      write_workspace_yaml!(root, """
-      mounts:
-        #{mount_name}:
-          kind: path
-          ref: "#{ext}"
-      """)
+      write_icms!(root, [{mount_name, ext, []}])
 
       {root, ext}
     end
@@ -318,13 +324,7 @@ defmodule Valea.Mounts.DoctorTest do
         description: ""
       })
 
-      write_workspace_yaml!(root, """
-      mounts:
-        outside:
-          kind: path
-          ref: "#{ext}"
-          enabled: false
-      """)
+      write_icms!(root, [{"outside", ext, enabled: false}])
 
       {:ok, %{checks: checks}} = Doctor.run(root)
       check = find(checks, "watcher_live:external:outside")
@@ -346,7 +346,18 @@ defmodule Valea.Mounts.DoctorTest do
 
   # -- embedded/external name collision: check ids stay unique -----------------
 
+  # TODO(Phase 8): see the "embedded mounts" describe block's note above —
+  # this test's subject is the retired embedded-vs-external name-collision
+  # duality (`Doctor`'s `check_id/2` kind-qualifier existed specifically to
+  # disambiguate an embedded mount and an external mount sharing a name).
+  # Post-3.2 every mount is external, so this collision shape cannot occur
+  # any more; `degrade_duplicate_ids/1` in `Valea.Mounts` now covers the
+  # analogous "same manifest id mounted twice" case with its OWN reason
+  # string ("ambiguous id: ..."), which is a different check than this
+  # test asserts.
   describe "run/1 — embedded/external name collision" do
+    @describetag :skip
+
     test "both entries' checks get unique ids (kind-qualified), no duplicate id in the flat list" do
       root = tmp_dir!("vmounts-doctor")
 
@@ -446,14 +457,14 @@ defmodule Valea.Mounts.DoctorTest do
       config_path = Path.join(ws_path, "config/workspace.yaml")
       {:ok, doc} = YamlElixir.read_from_file(config_path)
 
-      mounts =
-        (Map.get(doc, "mounts") || %{})
-        |> Map.put(name, %{"kind" => "path", "ref" => ref})
+      icms =
+        (Map.get(doc, "icms") || %{})
+        |> Map.put(name, %{"path" => ref})
 
       header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
 
       entries =
-        Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+        Enum.flat_map(Enum.sort_by(icms, &elem(&1, 0)), fn {n, entry} ->
           [
             "  #{n}:"
             | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
@@ -462,7 +473,7 @@ defmodule Valea.Mounts.DoctorTest do
           ]
         end)
 
-      File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+      File.write!(config_path, Enum.join(header ++ ["icms:"] ++ entries, "\n") <> "\n")
     end
 
     defp render_scalar(v) when is_binary(v), do: inspect(v)
@@ -524,7 +535,7 @@ defmodule Valea.Mounts.DoctorTest do
       {:ok, %{checks: checks}} = Doctor.run(ws.path)
       assert find(checks, "watcher_live:external:outside")["status"] == "ok"
 
-      poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("outside", false) end)
+      poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled(ws.path, "outside", false) end)
 
       {:ok, %{checks: checks}} = Doctor.run(ws.path)
       check = find(checks, "watcher_live:external:outside")

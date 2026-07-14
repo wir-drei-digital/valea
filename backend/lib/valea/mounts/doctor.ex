@@ -188,27 +188,32 @@ defmodule Valea.Mounts.Doctor do
   defp ref_resolves_ok?(%{degraded: nil}), do: true
   defp ref_resolves_ok?(%{degraded: reason}), do: not ref_resolution_failure?(reason)
 
-  # `Valea.Mounts.External`'s fixed reason-string vocabulary for a ref/path
-  # failure (`check_absolute/1`, `check_boundaries/2`, `check_glob_safety/1`,
-  # `check_folder/1` — see its moduledoc/@doc for the full list this
-  # mirrors). Anything NOT matching one of these prefixes is a
-  # manifest/collision-level reason instead ("icm.yaml is missing", an
-  # invalid-manifest message, or "name used by both an embedded and an
-  # external mount") and surfaces under `manifest_ok` instead. If
-  # `Valea.Mounts.External`'s wording ever changes, this list must move with
-  # it — this module's own tests (built on real `Mounts.list/1` output, not
-  # mocked reasons) will catch drift.
+  # `Valea.Mounts`'s (post-3.2, `icms:`-only) fixed reason-string vocabulary
+  # for a path/location failure (`icm_path/1`, `build_from_icm_path/4`'s
+  # `absolute_or_tilde?/1` + `Valea.Mounts.External.check_boundaries/2`,
+  # `build_resolved_icm_mount/4`'s `check_icm_glob_safety/1` + folder-exists
+  # check, and the `degrade_duplicate_roots/1` post-pass — see that
+  # module's moduledoc/@doc for the full list this mirrors). Anything NOT
+  # matching one of these prefixes is a manifest/identity-level reason
+  # instead ("icm.yaml is missing", an invalid-manifest message, or the
+  # `degrade_duplicate_ids/1` post-pass's "ambiguous id: ...") and surfaces
+  # under `manifest_ok` instead. If `Valea.Mounts`'s wording ever changes,
+  # this list must move with it — this module's own tests (built on real
+  # `Mounts.list/1` output, not mocked reasons) will catch drift.
   @ref_failure_prefixes [
-    # check_absolute/1 rejecting a relative ref, and a config entry with the
-    # `ref:` key itself missing/invalid.
-    "ref is missing or invalid",
-    "ref must be an absolute path",
-    # check_boundaries/2 -- home_or_root, inside_workspace, ancestor_of_workspace
-    "ref points at",
-    # check_glob_safety/1
+    # icm_path/1 -- the `icms:` entry's `path:` key itself missing/invalid.
+    "path is missing or invalid",
+    # absolute_or_tilde?/1 rejecting a relative path.
+    "path must be an absolute path",
+    # External.check_boundaries/2 -- home_or_root, inside_workspace, ancestor_of_workspace
+    "path points at",
+    # check_icm_glob_safety/1
     "path contains characters unsafe for permission globs",
-    # check_folder/1
-    "folder not found at"
+    # build_resolved_icm_mount/4's folder-exists check
+    "folder not found at",
+    # degrade_duplicate_roots/1 -- the same physical folder mounted twice
+    # under different keys; a location problem, not a manifest one.
+    "duplicate root:"
   ]
 
   defp ref_resolution_failure?(reason) when is_binary(reason) do
