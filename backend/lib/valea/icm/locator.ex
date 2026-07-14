@@ -125,7 +125,10 @@ defmodule Valea.Icm.Locator do
   an ICM locator (id + path relative to the owning mount's root) when
   `physical_abs` falls under a currently enabled, non-degraded mount
   (`Valea.Mounts.mount_for/2`), otherwise a workspace locator (path
-  relative to `workspace`).
+  relative to `workspace`). `workspace` is symlink-resolved first (best
+  effort) so a genuinely workspace-relative path comes out even when the
+  caller's `workspace` string is unresolved but `physical_abs` already
+  isn't (see the private `resolve_best_effort/1` below).
   """
   @spec for_path(workspace :: String.t(), physical_abs :: String.t()) :: map()
   def for_path(workspace, physical_abs)
@@ -135,7 +138,29 @@ defmodule Valea.Icm.Locator do
         icm(id, Path.relative_to(physical_abs, root))
 
       nil ->
-        workspace(Path.relative_to(physical_abs, workspace))
+        workspace(Path.relative_to(physical_abs, resolve_best_effort(workspace)))
+    end
+  end
+
+  # `physical_abs` is already known-good and symlink-resolved (the ICM
+  # branch above gets this for free from `mount.root`, which `Mounts.list/1`
+  # resolves via `Valea.Paths.resolve_real/2` before ever building a
+  # `mount()`). The workspace branch has no such indirection: `workspace` is
+  # whatever string the caller has on hand — often unresolved (e.g. `/var/…`
+  # on macOS, where `physical_abs` has already been walked to `/private/var/…`
+  # by an earlier `resolve_real/2` call). `Path.relative_to/2` is purely
+  # lexical, so feeding it an unresolved `workspace` against a resolved
+  # `physical_abs` silently returns `physical_abs` UNCHANGED (absolute) when
+  # there's no common lexical prefix — defeating the whole point of a
+  # workspace-relative locator. Resolving `workspace` here first closes that
+  # gap; mirrors `Valea.Mounts`'s identically-named private helper (the
+  # `resolve_real(path, path)` self-base trick), falling back to the input on
+  # the (pathological) resolution failure so this always returns a usable
+  # string rather than an error tuple.
+  defp resolve_best_effort(path) do
+    case Paths.resolve_real(path, path) do
+      {:ok, resolved} -> resolved
+      {:error, _reason} -> path
     end
   end
 end
