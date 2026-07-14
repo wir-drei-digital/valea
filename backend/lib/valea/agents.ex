@@ -134,6 +134,14 @@ defmodule Valea.Agents do
   `started_at` first, merging in live status from the Registry via
   `SessionServer.attach/1`. `{:ok, []}` when no workspace is open or it has
   no sessions yet — this never fails the caller.
+
+  Each summary carries the C8 workspace + ICM identity snapshot
+  (`workspace_id`, `workspace_name`, `icm_mount`, `icm_id`, `icm_name`,
+  `icm_root`, `generation`) straight off that transcript's own line 1 —
+  never re-resolved against the live mount table — so a transcript from an
+  ICM that's since been unmounted/renamed still reports what it actually
+  ran against. `icm_mount` is the grouped-by-ICM listing's (Task 6.2) group
+  key.
   """
   @spec list_sessions() :: {:ok, [map()]}
   def list_sessions do
@@ -180,7 +188,17 @@ defmodule Valea.Agents do
         "run_id" => meta["run_id"],
         "started_at" => meta["started_at"],
         "status" => status,
-        "live" => live?
+        "live" => live?,
+        # C8 identity fields (Task 6.1) — carried through so the grouped-by-ICM
+        # listing (Task 6.2) can key off `icm_mount` without re-reading every
+        # transcript's line 1 itself.
+        "workspace_id" => meta["workspace_id"],
+        "workspace_name" => meta["workspace_name"],
+        "icm_mount" => meta["icm_mount"],
+        "icm_id" => meta["icm_id"],
+        "icm_name" => meta["icm_name"],
+        "icm_root" => meta["icm_root"],
+        "generation" => meta["generation"]
       }
     else
       _ -> nil

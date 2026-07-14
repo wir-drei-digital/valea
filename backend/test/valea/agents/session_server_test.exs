@@ -17,7 +17,7 @@ defmodule Valea.Agents.SessionServerTest do
   setup do
     ws = Valea.AgentCase.open_workspace!()
     icm = Valea.AgentCase.mount_test_icm!(ws.path, name: "Primary")
-    %{root: ws.path, icm: icm}
+    %{root: ws.path, ws: ws, icm: icm}
   end
 
   test "happy path: handshake, prompt, transcript file, turn end", %{root: root} do
@@ -41,6 +41,40 @@ defmodule Valea.Agents.SessionServerTest do
     [meta | rest] = String.split(transcript, "\n", trim: true)
     assert %{"schema" => "session/v1", "kind" => "chat"} = Jason.decode!(meta)
     assert length(rest) >= 3
+  end
+
+  test "transcript line 1 (session/v1) snapshots workspace + ICM identity", %{
+    root: root,
+    ws: ws,
+    icm: icm
+  } do
+    {:ok, %{id: id}} = start_session(root, "happy")
+
+    transcript = File.read!(Path.join(root, "logs/sessions/#{id}.jsonl"))
+    [meta_line | _rest] = String.split(transcript, "\n", trim: true)
+    meta = Jason.decode!(meta_line)
+
+    assert meta == %{
+             "schema" => "session/v1",
+             "id" => id,
+             "acp_session_id" => nil,
+             "workspace_id" => ws.id,
+             "workspace_name" => ws.name,
+             "icm_mount" => icm.mount_key,
+             "icm_id" => icm.id,
+             "icm_name" => "Primary",
+             "icm_root" => icm.root,
+             "kind" => "chat",
+             "workflow" => nil,
+             "run_id" => nil,
+             "title" => "Test",
+             "harness" => "claude_code",
+             "generation" => meta["generation"],
+             "started_at" => meta["started_at"]
+           }
+
+    assert is_integer(meta["generation"])
+    assert is_binary(meta["started_at"])
   end
 
   test "prompt appends a user echo item first, before the assistant reply", %{root: root} do

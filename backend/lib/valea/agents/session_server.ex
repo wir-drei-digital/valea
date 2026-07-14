@@ -419,6 +419,13 @@ defmodule Valea.Agents.SessionServer do
   # Always anchored to `scope.workspace.root` — the transcript stays keyed to
   # the WORKSPACE (sessions/queue/audit all live there), never the primary
   # ICM's own `cwd`, which is a different physical location entirely.
+  #
+  # C8 (`session/v1`): the full workspace + ICM identity snapshot, built
+  # ENTIRELY from `scope` (never re-derived from a live lookup) so the
+  # transcript stays a faithful record of what this session actually ran
+  # against, even after the workspace/mount table later changes — grouped
+  # listing (Task 6.2) keys off `icm_mount`, and `create_follow_up` (Task
+  # 6.3) re-resolves a fresh scope for that same `mount_key`.
   defp open_transcript(opts, scope) do
     %{id: id} = opts
     run = Map.get(opts, :run)
@@ -430,10 +437,16 @@ defmodule Valea.Agents.SessionServer do
       "schema" => "session/v1",
       "id" => id,
       "acp_session_id" => nil,
+      "workspace_id" => scope.workspace.id,
+      "workspace_name" => scope.workspace.name,
+      "icm_mount" => scope.primary_icm.mount_key,
+      "icm_id" => scope.primary_icm.id,
+      "icm_name" => scope.primary_icm.manifest.name,
+      "icm_root" => scope.primary_icm.root,
       "kind" => Map.get(opts, :kind),
+      "workflow" => run_field(run, "workflow"),
       "run_id" => run_field(run, "id"),
       "title" => Map.get(opts, :title),
-      "workflow" => run_field(run, "workflow"),
       "harness" => "claude_code",
       "generation" => scope.workspace.generation,
       "started_at" => DateTime.utc_now() |> DateTime.to_iso8601()
