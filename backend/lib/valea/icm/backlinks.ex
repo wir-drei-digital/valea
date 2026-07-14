@@ -1,70 +1,83 @@
 defmodule Valea.ICM.Backlinks do
   @moduledoc """
-  Inbound page links for a target: cheap filename substring pre-filter
-  across enabled mounts, then AST confirmation — only real Link/Image
-  destinations that resolve to the target count (the References trick,
-  generalized; prose mentions and code fences never match, because they
-  are not Link nodes).
+  Inbound page links for a target within a single ICM: cheap filename
+  substring pre-filter across that mount's `.md` files, then AST
+  confirmation — only real Link/Image destinations that resolve to the
+  target count (the References trick, generalized; prose mentions and
+  code fences never match, because they are not Link nodes).
+
+  Addressed by `mount_key` + a path relative to that ICM's own root (task
+  4.2's re-key). INTERIM SCOPE NARROWING: this scans only the ONE ICM
+  named by `mount_key`, not every enabled mount — a link living in a
+  DIFFERENT ICM that points at this one's content is no longer discovered
+  (a real, but narrower, regression from the pre-4.2 all-enabled-mounts
+  scan). Task 5.6 widens this back out to primary+related mounts once
+  `Mounts.Context.resolve/2` exists to define what "related" means; until
+  then, cross-mount backlinks are a known gap, not silently broken data
+  (nothing here corrupts or mis-attributes a link, it just doesn't look
+  outside the one ICM).
   """
 
   alias Valea.Mounts
+  alias Valea.Workspace.Manager
 
   @mdex_extensions [table: true, tasklist: true, strikethrough: true]
 
   @doc """
-  Inbound Link/Image references to `target_path` across every enabled,
-  non-degraded mount. `target_path` is in tree vocabulary (workspace-relative
-  `mounts/<name>/…` for an embedded page, absolute for an external one) —
-  same shape `Valea.ICM.References.referencing_workflows/1` takes.
+  Inbound Link/Image references to `target_rel_path` (relative to
+  `mount_key`'s own root) within that ICM's own `.md` files (see moduledoc
+  for the interim single-ICM scan).
 
-  Every candidate `.md` file under an enabled mount whose raw content
-  contains the target's basename is parsed and walked; only a real
+  Every candidate `.md` file under the mount whose raw content contains
+  the target's basename is parsed and walked; only a real
   `MDEx.Link`/`MDEx.Image` node whose destination RESOLVES (relative to the
-  linking page's own directory, or absolute) to `target_path` counts — a
+  linking page's own directory, or absolute) to the target counts — a
   bare prose mention of the filename, or the same text inside a code span,
   is never a Link/Image node and so never matches. `http(s)://`, `mailto:`,
   and `#anchor` destinations are ignored outright (never local content).
 
   Returns `{:ok, [%{source_path:, mount:, link_text:}]}`, sorted by
-  `source_path`, with at most one entry per source page (the first matching
-  link/image text on that page wins if it links to the target more than
-  once).
+  `source_path` (relative to `mount_key`'s root), with at most one entry
+  per source page (the first matching link/image text on that page wins if
+  it links to the target more than once). `{:error, :outside_workspace}`
+  when `mount_key` doesn't name a currently enabled, non-degraded mount;
+  `{:error, :no_workspace}` when no workspace is open.
   """
-  @spec backlinks(String.t(), String.t()) :: {:ok, [map()]}
-  def backlinks(workspace, target_path) do
-    target_abs = to_abs(workspace, target_path)
-    needle = Path.basename(target_path)
-    # Percent-encoded destinations (e.g. `%20` for a space) appear in raw
-    # file bytes as the encoded form, not the decoded basename — match
-    # either. This only catches a straight `URI.encode/1` of the basename;
-    # exotic/partial/mixed encodings of the same name are not caught (rare
-    # in practice — the common case is spaces encoded as `%20`).
-    encoded_needle = URI.encode(needle)
+  @spec backlinks(String.t(), String.t()) ::
+          {:ok, [map()]} | {:error, :outside_workspace | :no_workspace}
+  def backlinks(mount_key, target_rel_path) do
+    with {:ok, mount} <- resolve_mount(mount_key) do
+      target_abs = to_abs(mount.root, target_rel_path)
+      needle = Path.basename(target_rel_path)
+      # Percent-encoded destinations (e.g. `%20` for a space) appear in raw
+      # file bytes as the encoded form, not the decoded basename — match
+      # either. This only catches a straight `URI.encode/1` of the basename;
+      # exotic/partial/mixed encodings of the same name are not caught (rare
+      # in practice — the common case is spaces encoded as `%20`).
+      encoded_needle = URI.encode(needle)
 
-    links =
-      for mount <- Mounts.enabled(workspace),
-          root = mount_root(workspace, mount),
-          prefix = mount.rel_root || mount.root,
-          abs <- Path.wildcard(Path.join(root, "**/*.md")),
-          {:ok, content} <- [File.read(abs)],
-          String.contains?(content, needle) or String.contains?(content, encoded_needle),
-          source_rel = Path.join(prefix, Path.relative_to(abs, root)),
-          source_rel != target_path,
-          text <- confirmed_link_texts(workspace, source_rel, content, target_abs) do
-        %{source_path: source_rel, mount: mount.name, link_text: text}
-      end
+      links =
+        for abs <- Path.wildcard(Path.join(mount.root, "**/*.md")),
+            {:ok, content} <- [File.read(abs)],
+            String.contains?(content, needle) or String.contains?(content, encoded_needle),
+            source_rel = Path.relative_to(abs, mount.root),
+            source_rel != target_rel_path,
+            text <- confirmed_link_texts(mount.root, source_rel, content, target_abs) do
+          %{source_path: source_rel, mount: mount_key, link_text: text}
+        end
 
-    {:ok, Enum.sort_by(links, & &1.source_path)}
+      {:ok, Enum.sort_by(links, & &1.source_path)}
+    end
   end
 
-  @doc "All Link/Image destinations of `content` (parsed as if it lived at `source_rel`), resolved to absolute paths, with their text."
+  @doc "All Link/Image destinations of `content` (parsed as if it lived at `source_rel`, relative to `mount_root`), resolved to absolute paths, with their text."
   @spec destinations(String.t(), String.t(), String.t()) :: [
           %{url: String.t(), abs: String.t(), text: String.t()}
         ]
-  def destinations(workspace, source_rel, content) do
+  def destinations(mount_root, source_rel, content) do
     case parse(content) do
       {:ok, doc} ->
-        source_dir = Path.dirname(to_abs(workspace, source_rel))
+        source_dir = Path.dirname(to_abs(mount_root, source_rel))
 
         doc
         |> walk([])
@@ -81,6 +94,26 @@ defmodule Valea.ICM.Backlinks do
 
       :error ->
         []
+    end
+  end
+
+  # Resolves `mount_key` to its mount via `Mounts.mount_by_key/2`, requiring
+  # it to be currently ENABLED and non-degraded — mirrors `Valea.ICM`'s own
+  # `resolve_mount/1` (kept local rather than shared: a small,
+  # self-contained module).
+  defp resolve_mount(mount_key) do
+    with {:ok, ws} <- workspace_root() do
+      case Mounts.mount_by_key(ws, mount_key) do
+        %{enabled: true, degraded: nil} = mount -> {:ok, mount}
+        _ -> {:error, :outside_workspace}
+      end
+    end
+  end
+
+  defp workspace_root do
+    case Manager.current() do
+      {:ok, %{path: ws}} -> {:ok, ws}
+      {:error, :no_workspace} -> {:error, :no_workspace}
     end
   end
 
@@ -101,8 +134,8 @@ defmodule Valea.ICM.Backlinks do
     ArgumentError -> :error
   end
 
-  defp confirmed_link_texts(workspace, source_rel, content, target_abs) do
-    workspace
+  defp confirmed_link_texts(mount_root, source_rel, content, target_abs) do
+    mount_root
     |> destinations(source_rel, content)
     |> Enum.filter(&(&1.abs == target_abs))
     |> Enum.map(& &1.text)
@@ -156,9 +189,6 @@ defmodule Valea.ICM.Backlinks do
     |> String.trim()
   end
 
-  defp mount_root(workspace, %{rel_root: rel}) when is_binary(rel), do: Path.join(workspace, rel)
-  defp mount_root(_workspace, %{root: root}), do: root
-
-  defp to_abs(_workspace, "/" <> _ = abs), do: Path.expand(abs)
-  defp to_abs(workspace, rel), do: Path.expand(rel, workspace)
+  defp to_abs(_mount_root, "/" <> _ = abs), do: Path.expand(abs)
+  defp to_abs(mount_root, rel), do: Path.expand(rel, mount_root)
 end

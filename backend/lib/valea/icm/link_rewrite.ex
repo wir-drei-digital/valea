@@ -6,12 +6,23 @@ defmodule Valea.ICM.LinkRewrite do
   never round-tripped through the converter, so the determinism contract
   holds. A destination is only rewritten when it is confirmed, via
   `Valea.ICM.Backlinks.destinations/3` (a real AST parse), to be an actual
-  Link/Image node resolving to one of the renamed `pairs`' OLD absolute
-  path — a prose mention or a code-fence lookalike is never a Link/Image
-  node, so `destinations/3` never reports it, and it is left untouched.
+  Link/Image node resolving to one of the renamed `pairs`' OLD path — a
+  prose mention or a code-fence lookalike is never a Link/Image node, so
+  `destinations/3` never reports it, and it is left untouched.
 
-  Known limitations (two; neither ever corrupts a file — the worst outcome
-  in either case is a link pointing at the wrong-but-plausible place):
+  Addressed by `mount_key` + paths relative to that ICM's own root (task
+  4.2's re-key). INTERIM SCOPE NARROWING: this scans only the ONE ICM
+  named by `mount_key`, not every enabled mount — an inbound link living in
+  a DIFFERENT ICM that points at a page renamed in this one is no longer
+  rewritten (it is left pointing at the old, now-missing path: a dangling
+  reference, not a corrupted one). Task 5.6 widens this back out to
+  primary+related mounts once `Mounts.Context.resolve/2` exists; until
+  then, cross-mount link rewriting is a known gap, matching
+  `Valea.ICM.Backlinks`'s own interim narrowing.
+
+  Known limitations (two more; neither ever corrupts a file — the worst
+  outcome in either case is a link pointing at the wrong-but-plausible
+  place):
 
     * Fence-duplicate rewrite. The splice itself is TEXTUAL, not
       positional — once a destination string is confirmed (by the
@@ -58,43 +69,66 @@ defmodule Valea.ICM.LinkRewrite do
 
   alias Valea.ICM.{Backlinks, Splice}
   alias Valea.Mounts
+  alias Valea.Workspace.Manager
 
   @doc """
-  Rewrites every enabled mount's `.md` files whose confirmed Link/Image
-  destinations resolve to one of `pairs`' OLD absolute paths, replacing
-  each with the recomputed destination for the corresponding NEW path.
-  `pairs` are `{old_path, new_path}` in TREE VOCABULARY (workspace-relative
-  `mounts/<name>/…` for an embedded path, absolute for an external one) —
-  the same shape `Valea.ICM.rename/2` already works in for its other
-  return fields.
+  Rewrites `mount_key`'s own ICM's `.md` files whose confirmed Link/Image
+  destinations resolve to one of `pairs`' OLD paths, replacing each with
+  the recomputed destination for the corresponding NEW path. `pairs` are
+  `{old_rel, new_rel}`, both relative to `mount_key`'s own root — the same
+  shape `Valea.ICM.rename/3` already works in for its other return fields.
 
-  Returns `{:ok, [updated_source_paths]}` (sorted, tree vocabulary) on
-  success, or `{:error, {:rewrite_failed, file_basename, reason}}` if any
-  write fails — mirroring `Valea.ICM.References.rewrite/2`'s contract:
-  already-rewritten files are left on disk; the caller surfaces the error.
+  Returns `{:ok, [updated_source_paths]}` (sorted, relative to `mount_key`'s
+  root) on success, or `{:error, {:rewrite_failed, file_basename, reason}}`
+  if any write fails — mirroring `Valea.ICM.References.rewrite/3`'s
+  contract: already-rewritten files are left on disk; the caller surfaces
+  the error. `{:error, :outside_workspace}` when `mount_key` doesn't name a
+  currently enabled, non-degraded mount; `{:error, :no_workspace}` when no
+  workspace is open.
   """
   @spec rewrite_all(String.t(), [{String.t(), String.t()}]) ::
-          {:ok, [String.t()]} | {:error, {:rewrite_failed, String.t(), term()}}
-  def rewrite_all(workspace, pairs) do
-    sources =
-      for mount <- Mounts.enabled(workspace),
-          root = mount_root(workspace, mount),
-          prefix = mount.rel_root || mount.root,
-          abs <- Path.wildcard(Path.join(root, "**/*.md")),
-          do: {Path.join(prefix, Path.relative_to(abs, root)), abs}
+          {:ok, [String.t()]}
+          | {:error, {:rewrite_failed, String.t(), term()} | :outside_workspace | :no_workspace}
+  def rewrite_all(mount_key, pairs) do
+    with {:ok, mount} <- resolve_mount(mount_key) do
+      sources =
+        for abs <- Path.wildcard(Path.join(mount.root, "**/*.md")),
+            do: {Path.relative_to(abs, mount.root), abs}
 
-    needles = basename_needles(pairs)
+      needles = basename_needles(pairs)
 
-    Enum.reduce_while(sources, {:ok, []}, fn {source_rel, abs}, {:ok, updated} ->
-      case rewrite_file(workspace, source_rel, abs, pairs, needles) do
-        :unchanged -> {:cont, {:ok, updated}}
-        {:ok, _} -> {:cont, {:ok, [source_rel | updated]}}
-        {:error, reason} -> {:halt, {:error, {:rewrite_failed, Path.basename(abs), reason}}}
+      sources
+      |> Enum.reduce_while({:ok, []}, fn {source_rel, abs}, {:ok, updated} ->
+        case rewrite_file(mount.root, source_rel, abs, pairs, needles) do
+          :unchanged -> {:cont, {:ok, updated}}
+          {:ok, _} -> {:cont, {:ok, [source_rel | updated]}}
+          {:error, reason} -> {:halt, {:error, {:rewrite_failed, Path.basename(abs), reason}}}
+        end
+      end)
+      |> case do
+        {:ok, updated} -> {:ok, Enum.sort(updated)}
+        err -> err
       end
-    end)
-    |> case do
-      {:ok, updated} -> {:ok, Enum.sort(updated)}
-      err -> err
+    end
+  end
+
+  # Resolves `mount_key` to its mount via `Mounts.mount_by_key/2`, requiring
+  # it to be currently ENABLED and non-degraded — mirrors `Valea.ICM`'s own
+  # `resolve_mount/1` (kept local rather than shared: a small,
+  # self-contained module).
+  defp resolve_mount(mount_key) do
+    with {:ok, ws} <- workspace_root() do
+      case Mounts.mount_by_key(ws, mount_key) do
+        %{enabled: true, degraded: nil} = mount -> {:ok, mount}
+        _ -> {:error, :outside_workspace}
+      end
+    end
+  end
+
+  defp workspace_root do
+    case Manager.current() do
+      {:ok, %{path: ws}} -> {:ok, ws}
+      {:error, :no_workspace} -> {:error, :no_workspace}
     end
   end
 
@@ -116,18 +150,18 @@ defmodule Valea.ICM.LinkRewrite do
         do: needle
   end
 
-  defp rewrite_file(workspace, source_rel, abs, pairs, needles) do
+  defp rewrite_file(mount_root, source_rel, abs, pairs, needles) do
     with {:ok, content} <- File.read(abs) do
       if Enum.any?(needles, &String.contains?(content, &1)) do
-        splice_file(workspace, source_rel, abs, content, pairs)
+        splice_file(mount_root, source_rel, abs, content, pairs)
       else
         :unchanged
       end
     end
   end
 
-  defp splice_file(workspace, source_rel, abs, content, pairs) do
-    confirmed = confirmed_urls(workspace, source_rel, content, pairs)
+  defp splice_file(mount_root, source_rel, abs, content, pairs) do
+    confirmed = confirmed_urls(mount_root, source_rel, content, pairs)
 
     case splice_urls(content, confirmed) do
       ^content ->
@@ -147,26 +181,42 @@ defmodule Valea.ICM.LinkRewrite do
   # pair's old absolute path, are mapped RAW url string (`:url` — the
   # exact on-disk bytes, unbracketed, un-decoded) to its replacement
   # destination string.
-  defp confirmed_urls(workspace, source_rel, content, pairs) do
-    dests = Backlinks.destinations(workspace, source_rel, content)
-    source_dir = Path.dirname(source_rel)
+  defp confirmed_urls(mount_root, source_rel, content, pairs) do
+    dests = Backlinks.destinations(mount_root, source_rel, content)
+    source_dir = dirname_rel(source_rel)
 
     for {old, new} <- pairs,
-        old_abs = to_abs(workspace, old),
+        old_abs = to_abs(mount_root, old),
         %{url: url, abs: abs} <- dests,
         abs == old_abs,
         into: %{} do
-      {url, replacement(url, source_dir, new, workspace)}
+      {url, replacement(url, source_dir, new, mount_root)}
     end
   end
 
-  # Path rule (editor spec): an absolute on-disk destination (either end in
-  # an external mount) stays absolute; every other destination is recomputed
-  # relative-from-the-linking-page, in the SAME vocabulary `new` is already
-  # in (tree vocabulary — `Valea.Paths.relative/2` is pure segment math, no
-  # filesystem access, so both sides must already agree on vocabulary).
-  defp replacement("/" <> _, _source_dir, new, workspace), do: to_abs(workspace, new)
-  defp replacement(_url, source_dir, new, _workspace), do: Valea.Paths.relative(source_dir, new)
+  # Path rule (editor spec): an absolute on-disk destination stays
+  # absolute; every other destination is recomputed relative-from-the-
+  # linking-page, in the SAME vocabulary `new` is already in (mount-relative
+  # — `Valea.Paths.relative/2` is pure segment math, no filesystem access,
+  # so both sides must already agree on vocabulary).
+  defp replacement("/" <> _, _source_dir, new, mount_root), do: to_abs(mount_root, new)
+  defp replacement(_url, source_dir, new, _mount_root), do: Valea.Paths.relative(source_dir, new)
+
+  # `Path.dirname/1` of a mount-root-relative path with no slash (a file
+  # living directly at the mount root, e.g. `"A.md"`) returns `"."` — a
+  # single, non-empty path segment. `Valea.Paths.relative/2` is pure
+  # segment math (`Path.split/1` + a common-prefix drop): feeding it `"."`
+  # instead of the mount root's own `""` sentinel makes it treat the
+  # source as one directory level DEEPER than it really is, prepending a
+  # spurious `../` to every recomputed destination. Normalize `"."` to
+  # `""` — the same root sentinel `Valea.ICM`'s own `parent_of/1` uses —
+  # before it ever reaches `relative/2`.
+  defp dirname_rel(rel_path) do
+    case Path.dirname(rel_path) do
+      "." -> ""
+      other -> other
+    end
+  end
 
   # Replaces each confirmed url's occurrences INSIDE link-closing syntax
   # only — `](url)` / `](<url>)` (an image `![alt](` ends with the same
@@ -193,9 +243,6 @@ defmodule Valea.ICM.LinkRewrite do
     with :ok <- File.write(tmp, bytes), do: File.rename(tmp, abs)
   end
 
-  defp mount_root(workspace, %{rel_root: rel}) when is_binary(rel), do: Path.join(workspace, rel)
-  defp mount_root(_workspace, %{root: root}), do: root
-
-  defp to_abs(_workspace, "/" <> _ = abs), do: Path.expand(abs)
-  defp to_abs(workspace, rel), do: Path.expand(rel, workspace)
+  defp to_abs(_mount_root, "/" <> _ = abs), do: Path.expand(abs)
+  defp to_abs(mount_root, rel), do: Path.expand(rel, mount_root)
 end

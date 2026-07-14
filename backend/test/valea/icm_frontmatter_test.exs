@@ -20,8 +20,8 @@ defmodule Valea.ICMFrontmatterTest do
   # Post-3.2, `Valea.Mounts.list/1` is config truth over `icms:` only, so a
   # fresh workspace seeds no mount at all — `AgentCase.mount_test_icm!/2`
   # mounts a REAL EXTERNAL ICM carrying just the two fixture pages this
-  # suite needs, at `icm.root` (never a `mounts/primary/...`
-  # workspace-relative literal).
+  # suite needs. Task 4.2 re-key: `ICM.page/2`/`ICM.save_page/4` take
+  # `(mount_key, rel_path)`, `rel_path` relative to `icm.root`.
   setup do
     ws = AgentCase.open_workspace!("Primary")
 
@@ -52,36 +52,36 @@ defmodule Valea.ICMFrontmatterTest do
     end
   end
 
-  describe "page/1 + save_page/3 with frontmatter" do
+  describe "page/2 + save_page/4 with frontmatter" do
     test "page returns parsed frontmatter, whole-file content, body-only prosemirror", %{
       icm: icm
     } do
-      {:ok, page} = ICM.page(Path.join(icm.root, "Workflows/Contract.md"))
+      {:ok, page} = ICM.page(icm.mount_key, "Workflows/Contract.md")
       assert page.frontmatter == %{"enabled" => true, "risk_level" => "medium"}
       assert String.starts_with?(page.content, "---\n")
       refute inspect(page.prosemirror) =~ "enabled: true"
     end
 
     test "save without edits reattaches frontmatter byte-identically (round trip)", %{icm: icm} do
-      contract_path = Path.join(icm.root, "Workflows/Contract.md")
-      {:ok, page} = ICM.page(contract_path)
+      contract_path = "Workflows/Contract.md"
+      {:ok, page} = ICM.page(icm.mount_key, contract_path)
 
-      {:ok, _} = ICM.save_page(contract_path, page.prosemirror, page.hash)
+      {:ok, _} = ICM.save_page(icm.mount_key, contract_path, page.prosemirror, page.hash)
 
       # canonical body may differ from the fixture's blank-line formatting,
       # but the frontmatter block must be byte-identical and the round trip
       # must be stable: a second open+save writes nothing new.
-      {:ok, page2} = ICM.page(contract_path)
+      {:ok, page2} = ICM.page(icm.mount_key, contract_path)
       assert String.starts_with?(page2.content, "---\nenabled: true\nrisk_level: medium\n---\n")
 
-      {:ok, _} = ICM.save_page(contract_path, page2.prosemirror, page2.hash)
+      {:ok, _} = ICM.save_page(icm.mount_key, contract_path, page2.prosemirror, page2.hash)
 
-      {:ok, page3} = ICM.page(contract_path)
+      {:ok, page3} = ICM.page(icm.mount_key, contract_path)
       assert page3.content == page2.content
     end
 
     test "malformed yaml -> frontmatter nil, page still readable", %{icm: icm} do
-      {:ok, page} = ICM.page(Path.join(icm.root, "Workflows/Broken.md"))
+      {:ok, page} = ICM.page(icm.mount_key, "Workflows/Broken.md")
       assert page.frontmatter == nil
       assert page.title
     end

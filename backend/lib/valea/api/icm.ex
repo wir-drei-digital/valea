@@ -1,22 +1,22 @@
 defmodule Valea.Api.ICM do
   @moduledoc """
-  Data-layer-less Ash resource exposing the workspace's mounted ICM trees
-  over RPC.
+  Data-layer-less Ash resource exposing ONE ICM at a time over RPC, keyed
+  by `mount_key` (the `icms:` config key) + a path relative to that ICM's
+  own root (task 4.2's re-key — see `Valea.ICM`'s own moduledoc). Every
+  action below wraps the matching `Valea.ICM` function 1:1 and converts its
+  atom-keyed return into a string-keyed map; `error_for/1` translates the
+  `:no_workspace` reason into the frontend's `"workspace_not_open"` error
+  string.
 
-  Wraps `Valea.ICM`; converts its atom-keyed nodes into string-keyed maps
-  and translates the `:no_workspace` reason into the frontend's
-  `"workspace_not_open"` error string. `Valea.ICM.tree/0` (Task A-T3)
-  returns a list of per-mount groups (`%{mount:, title:, root_rel:, tree:
-  [...]}`) instead of a flat node list; the `:tree` action (Task A-T11)
-  declares `constraints fields: [mounts: [...]]` on that OUTER shape —
-  `mount`/`title`/`root_rel`/`tree` are typed, camelCase fields like every
-  other `constraints fields: [...]` action below — while each per-node
-  `tree` value stays unconstrained (no `items: [fields: ...]`; a
-  `folder`/`page` node can nest arbitrarily deep via `:children`, which
-  Ash's field-constraint system has no way to describe recursively).
-  `stringify/1` below still walks that unconstrained `tree` list by hand,
-  same as it always has for `:children` and for the unconstrained `:page`
-  return.
+  `:tree` (RPC name `icm_tree`) replaces the old grouped-all-mounts
+  `Valea.ICM.tree/0` result with a single ICM's `%{mount_key:, title:,
+  tree:}` (`Valea.ICM.tree_for/1`) — a caller that needs every enabled
+  mount's tree fetches the mount list itself (`Valea.Api.Icms`'s
+  `list_icms`) and calls this once per mount key. It guards `generation`
+  the same way `Valea.Api.Icms`'s `list_icms` does (Task 3.4's
+  moduledoc) — it reads LIVE filesystem/manifest state, not a cached
+  value, so a stale `generation` short-circuits to `workspace_changed`
+  before touching the filesystem.
 
   The write actions (`save_page`, `create_page`, `create_folder`, `rename`,
   `delete`, `references`) declare `constraints fields: [...]` on their `:map`
@@ -25,14 +25,14 @@ defmodule Valea.Api.ICM do
   "Return types and constraints" and ash_typescript
   `advanced/custom-types.md` — "Maps with field constraints ... still generate
   typed objects"). The `:page` action stays unconstrained (Phase-1) but its
-  return map now also carries `hash`, `prosemirror`, and `frontmatter`
-  (Task 4). `frontmatter` rides along unchanged through the generic
-  `to_string(k)` top-level stringify below — it's already a string-keyed map
-  (parsed by `YamlElixir.read_from_string/1`, which returns string keys), and
-  since the action is unconstrained, ash_typescript never walks into it to
-  camelCase anything. That's intentional: frontmatter keys are user-authored
-  YAML data (workflow contract fields like `risk_level`), not wire-format
-  field names, and must be delivered to the frontend byte-for-byte raw.
+  return map now also carries `hash`, `prosemirror`, and `frontmatter` (Task
+  4). `frontmatter` rides along unchanged through the generic `to_string(k)`
+  top-level stringify below — it's already a string-keyed map (parsed by
+  `YamlElixir.read_from_string/1`, which returns string keys), and since the
+  action is unconstrained, ash_typescript never walks into it to camelCase
+  anything. That's intentional: frontmatter keys are user-authored YAML data
+  (workflow contract fields like `risk_level`), not wire-format field names,
+  and must be delivered to the frontend byte-for-byte raw.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -41,7 +41,7 @@ defmodule Valea.Api.ICM do
   end
 
   alias Valea.Api.Error
-  alias Valea.ICM.Search
+  alias Valea.ICM.{Backlinks, References, Search}
   alias Valea.Mounts
   alias Valea.Workflows.MemoryProposal
   alias Valea.Workspace.Manager
@@ -49,45 +49,35 @@ defmodule Valea.Api.ICM do
   actions do
     action :tree, :map do
       constraints fields: [
-                    mounts: [
-                      type: {:array, :map},
-                      allow_nil?: false,
-                      constraints: [
-                        items: [
-                          fields: [
-                            mount: [type: :string, allow_nil?: false],
-                            title: [type: :string, allow_nil?: false],
-                            root_rel: [type: :string, allow_nil?: false],
-                            # Unconstrained on purpose — see moduledoc.
-                            tree: [type: {:array, :map}, allow_nil?: false]
-                          ]
-                        ]
-                      ]
-                    ]
+                    mount_key: [type: :string, allow_nil?: false],
+                    title: [type: :string, allow_nil?: false],
+                    # Unconstrained on purpose — see moduledoc.
+                    tree: [type: {:array, :map}, allow_nil?: false]
                   ]
 
-      run fn _input, _ctx ->
-        case Valea.ICM.tree() do
-          {:ok, groups} ->
-            {:ok,
-             %{
-               mounts:
-                 Enum.map(groups, fn %{mount: mount, title: title, root_rel: root_rel, tree: tree} ->
-                   %{mount: mount, title: title, root_rel: root_rel, tree: stringify(tree)}
-                 end)
-             }}
+      argument :mount_key, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
 
-          {:error, reason} ->
-            {:error, error_for(reason)}
+      run fn input, _ctx ->
+        %{mount_key: mount_key, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{mount_key: mk, title: title, tree: tree}} <- Valea.ICM.tree_for(mount_key) do
+          {:ok, %{mount_key: mk, title: title, tree: stringify(tree)}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
         end
       end
     end
 
     action :page, :map do
+      argument :mount_key, :string, allow_nil?: false
       argument :path, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Valea.ICM.page(input.arguments.path) do
+        %{mount_key: mount_key, path: path} = input.arguments
+
+        case Valea.ICM.page(mount_key, path) do
           {:ok, page} -> {:ok, Map.new(page, fn {k, v} -> {to_string(k), v} end)}
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -100,6 +90,7 @@ defmodule Valea.Api.ICM do
                     saved_at: [type: :string, allow_nil?: false]
                   ]
 
+      argument :mount_key, :string, allow_nil?: false
       argument :path, :string, allow_nil?: false
       argument :prosemirror, :map, allow_nil?: false
       argument :base_hash, :string, allow_nil?: false
@@ -112,14 +103,17 @@ defmodule Valea.Api.ICM do
       argument :generation, :integer, allow_nil?: true, default: nil
 
       run fn input, _ctx ->
-        %{path: path, prosemirror: pm, base_hash: base_hash} = input.arguments
+        %{mount_key: mount_key, path: path, prosemirror: pm, base_hash: base_hash} =
+          input.arguments
+
         # `Map.get/3` (not a destructure) — ash_typescript only puts keys the
         # caller actually sent into `input.arguments`, so an omitted optional
         # argument is ABSENT, not `nil`, despite the `default: nil` above.
         generation = Map.get(input.arguments, :generation)
 
         with :ok <- check_generation_if_present(generation),
-             {:ok, %{hash: hash, saved_at: saved_at}} <- Valea.ICM.save_page(path, pm, base_hash) do
+             {:ok, %{hash: hash, saved_at: saved_at}} <-
+               Valea.ICM.save_page(mount_key, path, pm, base_hash) do
           {:ok, %{hash: hash, saved_at: saved_at}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -130,11 +124,14 @@ defmodule Valea.Api.ICM do
     action :create_page, :map do
       constraints fields: [path: [type: :string, allow_nil?: false]]
 
+      argument :mount_key, :string, allow_nil?: false
       argument :parent_path, :string, allow_nil?: false, constraints: [allow_empty?: true]
       argument :name, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Valea.ICM.create_page(input.arguments.parent_path, input.arguments.name) do
+        %{mount_key: mount_key, parent_path: parent_path, name: name} = input.arguments
+
+        case Valea.ICM.create_page(mount_key, parent_path, name) do
           {:ok, %{path: path}} -> {:ok, %{path: path}}
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -144,14 +141,28 @@ defmodule Valea.Api.ICM do
     action :create_page_from_template, :map do
       constraints fields: [path: [type: :string, allow_nil?: false]]
 
+      argument :mount_key, :string, allow_nil?: false
       argument :parent_path, :string, allow_nil?: false, constraints: [allow_empty?: true]
       argument :name, :string, allow_nil?: false
+      argument :template_mount_key, :string, allow_nil?: false
       argument :template_path, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        %{parent_path: parent_path, name: name, template_path: template_path} = input.arguments
+        %{
+          mount_key: mount_key,
+          parent_path: parent_path,
+          name: name,
+          template_mount_key: template_mount_key,
+          template_path: template_path
+        } = input.arguments
 
-        case Valea.ICM.create_page_from_template(parent_path, name, template_path) do
+        case Valea.ICM.create_page_from_template(
+               mount_key,
+               parent_path,
+               name,
+               template_mount_key,
+               template_path
+             ) do
           {:ok, %{path: path}} -> {:ok, %{path: path}}
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -161,11 +172,14 @@ defmodule Valea.Api.ICM do
     action :create_folder, :map do
       constraints fields: [path: [type: :string, allow_nil?: false]]
 
+      argument :mount_key, :string, allow_nil?: false
       argument :parent_path, :string, allow_nil?: false, constraints: [allow_empty?: true]
       argument :name, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Valea.ICM.create_folder(input.arguments.parent_path, input.arguments.name) do
+        %{mount_key: mount_key, parent_path: parent_path, name: name} = input.arguments
+
+        case Valea.ICM.create_folder(mount_key, parent_path, name) do
           {:ok, %{path: path}} -> {:ok, %{path: path}}
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -179,11 +193,14 @@ defmodule Valea.Api.ICM do
                     updated_pages: [type: {:array, :string}, allow_nil?: false]
                   ]
 
+      argument :mount_key, :string, allow_nil?: false
       argument :path, :string, allow_nil?: false
       argument :new_name, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Valea.ICM.rename(input.arguments.path, input.arguments.new_name) do
+        %{mount_key: mount_key, path: path, new_name: new_name} = input.arguments
+
+        case Valea.ICM.rename(mount_key, path, new_name) do
           {:ok, %{path: path, updated_workflows: workflows, updated_pages: pages}} ->
             {:ok, %{path: path, updated_workflows: workflows, updated_pages: pages}}
 
@@ -196,10 +213,13 @@ defmodule Valea.Api.ICM do
     action :delete, :map do
       constraints fields: [deleted: [type: :boolean, allow_nil?: false]]
 
+      argument :mount_key, :string, allow_nil?: false
       argument :path, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Valea.ICM.delete(input.arguments.path) do
+        %{mount_key: mount_key, path: path} = input.arguments
+
+        case Valea.ICM.delete(mount_key, path) do
           {:ok, %{deleted: deleted}} -> {:ok, %{deleted: deleted}}
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -235,27 +255,24 @@ defmodule Valea.Api.ICM do
                     ]
                   ]
 
+      argument :mount_key, :string, allow_nil?: false
       argument :path, :string, allow_nil?: false
 
       run fn input, _ctx ->
-        case Manager.current() do
-          {:ok, %{path: root}} ->
-            with {:ok, refs} <- Valea.ICM.References.referencing_workflows(input.arguments.path),
-                 {:ok, pages} <- Valea.ICM.Backlinks.backlinks(root, input.arguments.path) do
-              {:ok,
-               %{
-                 workflows: Enum.map(refs, &%{file: &1.file, name: &1.name}),
-                 pages:
-                   Enum.map(pages, fn p ->
-                     %{source_path: p.source_path, mount: p.mount, link_text: p.link_text}
-                   end)
-               }}
-            else
-              {:error, reason} -> {:error, error_for(reason)}
-            end
+        %{mount_key: mount_key, path: path} = input.arguments
 
-          {:error, reason} ->
-            {:error, error_for(reason)}
+        with {:ok, refs} <- References.referencing_workflows(mount_key, path),
+             {:ok, pages} <- Backlinks.backlinks(mount_key, path) do
+          {:ok,
+           %{
+             workflows: Enum.map(refs, &%{file: &1.file, name: &1.name}),
+             pages:
+               Enum.map(pages, fn p ->
+                 %{source_path: p.source_path, mount: p.mount, link_text: p.link_text}
+               end)
+           }}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
         end
       end
     end

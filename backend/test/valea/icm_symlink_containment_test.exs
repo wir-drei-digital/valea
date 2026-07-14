@@ -26,6 +26,11 @@ defmodule Valea.ICMSymlinkContainmentTest do
     * a symlink pointing WITHIN the same mount is unaffected — legitimate
       internal links (and ordinary, non-symlink ops) keep working exactly
       as before.
+
+  Task 4.2 re-key: every `Valea.ICM` function takes `(mount_key, rel_path)`
+  now, `rel_path` relative to that ICM's own root — a symlink's own
+  relative path (`"EscapeLink.md"`), never an `icm.root`-joined absolute
+  literal.
   """
 
   use ExUnit.Case, async: false
@@ -53,8 +58,7 @@ defmodule Valea.ICMSymlinkContainmentTest do
   # Post-3.2, `Valea.Mounts.list/1` is config truth over `icms:` only, so a
   # fresh workspace seeds no mount at all — `AgentCase.mount_test_icm!/2`
   # mounts a REAL EXTERNAL ICM ("primary") this whole suite plants its
-  # symlinks inside, addressed by `icm.root` (never a
-  # `mounts/primary/...` workspace-relative literal).
+  # symlinks inside, addressed by `(icm.mount_key, rel_path)`.
   setup do
     ws = AgentCase.open_workspace!("Primary")
     icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
@@ -77,13 +81,15 @@ defmodule Valea.ICMSymlinkContainmentTest do
 
     test "page/save_page/rename/delete all reject it as :outside_workspace, target and link untouched",
          %{icm: icm, secret_path: secret_path, link_abs: link_abs} do
-      assert {:error, :outside_workspace} = ICM.page(link_abs)
+      assert {:error, :outside_workspace} = ICM.page(icm.mount_key, "EscapeLink.md")
 
       {:ok, pm} = ProseMirror.from_markdown("# hijacked\n")
-      assert {:error, :outside_workspace} = ICM.save_page(link_abs, pm, zero_hash())
 
-      assert {:error, :outside_workspace} = ICM.rename(link_abs, "Renamed")
-      assert {:error, :outside_workspace} = ICM.delete(link_abs)
+      assert {:error, :outside_workspace} =
+               ICM.save_page(icm.mount_key, "EscapeLink.md", pm, zero_hash())
+
+      assert {:error, :outside_workspace} = ICM.rename(icm.mount_key, "EscapeLink.md", "Renamed")
+      assert {:error, :outside_workspace} = ICM.delete(icm.mount_key, "EscapeLink.md")
 
       # Neither the symlink target nor the symlink itself was touched.
       assert File.read!(secret_path) == "TOP SECRET\n"
@@ -105,18 +111,20 @@ defmodule Valea.ICMSymlinkContainmentTest do
       link_abs = Path.join(ext.root, "EscapeLink.md")
       File.ln_s!(secret_path, link_abs)
 
-      %{outside: outside, secret_path: secret_path, link_abs: link_abs}
+      %{ext: ext, outside: outside, secret_path: secret_path, link_abs: link_abs}
     end
 
     test "page/save_page/rename/delete all reject it as :outside_workspace, target and link untouched",
-         %{secret_path: secret_path, link_abs: link_abs} do
-      assert {:error, :outside_workspace} = ICM.page(link_abs)
+         %{ext: ext, secret_path: secret_path, link_abs: link_abs} do
+      assert {:error, :outside_workspace} = ICM.page(ext.mount_key, "EscapeLink.md")
 
       {:ok, pm} = ProseMirror.from_markdown("# hijacked\n")
-      assert {:error, :outside_workspace} = ICM.save_page(link_abs, pm, zero_hash())
 
-      assert {:error, :outside_workspace} = ICM.rename(link_abs, "Renamed")
-      assert {:error, :outside_workspace} = ICM.delete(link_abs)
+      assert {:error, :outside_workspace} =
+               ICM.save_page(ext.mount_key, "EscapeLink.md", pm, zero_hash())
+
+      assert {:error, :outside_workspace} = ICM.rename(ext.mount_key, "EscapeLink.md", "Renamed")
+      assert {:error, :outside_workspace} = ICM.delete(ext.mount_key, "EscapeLink.md")
 
       assert File.read!(secret_path) == "EXTERNAL SECRET\n"
       assert File.exists?(link_abs)
@@ -136,11 +144,14 @@ defmodule Valea.ICMSymlinkContainmentTest do
     end
 
     test "create_page/create_folder into it are rejected, nothing is minted outside", %{
-      outside: outside,
-      dirlink_abs: dirlink_abs
+      icm: icm,
+      outside: outside
     } do
-      assert {:error, :outside_workspace} = ICM.create_page(dirlink_abs, "Intruder")
-      assert {:error, :outside_workspace} = ICM.create_folder(dirlink_abs, "IntruderFolder")
+      assert {:error, :outside_workspace} =
+               ICM.create_page(icm.mount_key, "EscapeDir", "Intruder")
+
+      assert {:error, :outside_workspace} =
+               ICM.create_folder(icm.mount_key, "EscapeDir", "IntruderFolder")
 
       refute File.exists?(Path.join(outside, "Intruder.md"))
       refute File.exists?(Path.join(outside, "IntruderFolder"))
@@ -160,8 +171,8 @@ defmodule Valea.ICMSymlinkContainmentTest do
       %{real_path: real_path, link_path: link_path}
     end
 
-    test "page reads through it fine", %{link_path: link_path} do
-      assert {:ok, page} = ICM.page(link_path)
+    test "page reads through it fine", %{icm: icm} do
+      assert {:ok, page} = ICM.page(icm.mount_key, "InternalLink.md")
       assert page.content == "# Real\n"
     end
 
@@ -170,8 +181,10 @@ defmodule Valea.ICMSymlinkContainmentTest do
       real_path: real_path,
       link_path: link_path
     } do
-      assert {:ok, %{path: renamed_path}} = ICM.rename(link_path, "RenamedLink")
-      assert renamed_path == Path.join(icm.root, "RenamedLink.md")
+      assert {:ok, %{path: renamed_path}} =
+               ICM.rename(icm.mount_key, "InternalLink.md", "RenamedLink")
+
+      assert renamed_path == "RenamedLink.md"
       refute File.exists?(link_path)
       assert File.read!(real_path) == "# Real\n"
     end
@@ -182,18 +195,18 @@ defmodule Valea.ICMSymlinkContainmentTest do
   test "ordinary create/rename/delete/page/save_page still work with no symlinks involved", %{
     icm: icm
   } do
-    assert {:ok, %{path: plain_path}} = ICM.create_page(icm.root, "Plain")
-    assert plain_path == Path.join(icm.root, "Plain.md")
-    assert {:ok, page} = ICM.page(plain_path)
+    assert {:ok, %{path: plain_path}} = ICM.create_page(icm.mount_key, "", "Plain")
+    assert plain_path == "Plain.md"
+    assert {:ok, page} = ICM.page(icm.mount_key, plain_path)
 
     {:ok, pm} = ProseMirror.from_markdown("# Plain\n\nEdited.\n")
-    assert {:ok, %{hash: new_hash}} = ICM.save_page(page.path, pm, page.hash)
+    assert {:ok, %{hash: new_hash}} = ICM.save_page(icm.mount_key, page.path, pm, page.hash)
     refute new_hash == page.hash
 
-    assert {:ok, %{path: renamed_path}} = ICM.rename(plain_path, "Renamed")
-    assert renamed_path == Path.join(icm.root, "Renamed.md")
+    assert {:ok, %{path: renamed_path}} = ICM.rename(icm.mount_key, plain_path, "Renamed")
+    assert renamed_path == "Renamed.md"
 
-    assert {:ok, %{deleted: true}} = ICM.delete(renamed_path)
-    refute File.exists?(renamed_path)
+    assert {:ok, %{deleted: true}} = ICM.delete(icm.mount_key, renamed_path)
+    refute File.exists?(Path.join(icm.root, renamed_path))
   end
 end

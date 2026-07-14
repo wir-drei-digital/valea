@@ -49,15 +49,22 @@ defmodule ValeaWeb.RpcTest do
   end
 
   test "icm_tree requires a workspace" do
-    # `:tree` is now a `constraints fields: [...]` typed action (Task
-    # A-T11), so it needs an explicit, non-empty field selection like any
-    # other typed action here — otherwise ash_typescript rejects the
-    # request with `empty_fields_array` before the `run` callback (and
-    # this resource's own `workspace_not_open` check) ever executes.
+    # `:tree` is a `constraints fields: [...]` typed action taking
+    # `mountKey` + `generation` (task 4.2's re-key — one ICM's tree,
+    # generation-guarded the same way `Valea.Api.Icms.list_icms` is: see
+    # `Valea.Api.ICM`'s moduledoc). With no workspace open,
+    # `Manager.check_generation/1` itself is what rejects the call (a
+    # closed workspace never matches any generation), so this surfaces
+    # `workspace_changed`, not `workspace_not_open` — `Valea.ICM.tree_for/1`'s
+    # own `:no_workspace` check never even runs.
     assert %{"success" => false, "errors" => errors} =
-             rpc("icm_tree", %{}, [%{"mounts" => ["mount"]}])
+             rpc(
+               "icm_tree",
+               %{"mountKey" => "primary", "generation" => 0},
+               ["mountKey", "title", "tree"]
+             )
 
-    assert inspect(errors) =~ "workspace_not_open"
+    assert inspect(errors) =~ "workspace_changed"
   end
 
   # `create_workspace` returns as soon as `Manager.create/2` does — it does
@@ -93,10 +100,17 @@ defmodule ValeaWeb.RpcTest do
 
     icm = AgentCase.mount_test_icm!(ws.path, name: "Primary", pages: %{"Offers/X.md" => "# X\n"})
 
-    assert %{"success" => true, "data" => %{"mounts" => [mount]}} =
-             rpc("icm_tree", %{}, [%{"mounts" => ["mount", "title", "rootRel", "tree"]}])
+    assert %{"success" => true, "data" => %{"generation" => generation}} =
+             rpc("get_workspace", %{})
 
-    assert mount["mount"] == icm.mount_key
+    assert %{"success" => true, "data" => mount} =
+             rpc(
+               "icm_tree",
+               %{"mountKey" => icm.mount_key, "generation" => generation},
+               ["mountKey", "title", "tree"]
+             )
+
+    assert mount["mountKey"] == icm.mount_key
     assert Enum.any?(mount["tree"], &(&1["name"] == "Offers"))
 
     assert %{

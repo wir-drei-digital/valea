@@ -7,6 +7,13 @@ defmodule Valea.ICM.Search do
   matched with `String.contains?/2` on downcased text, no pattern syntax.
   The RPC contract (`search/3`'s return shape) is deliberately
   implementation-agnostic: FTS5 can replace these internals later.
+
+  Each result's `path` (task 4.2's re-key) is relative to ITS OWN mount's
+  root — paired with `mount` (that mount's key) to fully address it,
+  mirroring every other ICM RPC surface's `(mount_key, rel_path)`
+  addressing. There is no more embedded-vs-external prefix to compute
+  (every mount is external post-3.2 — `Valea.Mounts`'s `rel_root` is
+  always `nil`), so this scans each mount's OWN root directly.
   """
 
   alias Valea.Mounts
@@ -65,25 +72,21 @@ defmodule Valea.ICM.Search do
     end)
   end
 
-  defp scan_mount(workspace, mount, terms) do
-    root = mount_root(workspace, mount)
-    prefix = mount.rel_root || mount.root
+  defp scan_mount(_workspace, mount, terms) do
+    root = mount.root
 
     root
     |> Path.join("**/*.md")
     |> Path.wildcard()
     |> Enum.flat_map(fn abs ->
       case File.read(abs) do
-        {:ok, content} -> score_file(prefix, root, abs, mount.name, content, terms)
+        {:ok, content} -> score_file(root, abs, mount.name, content, terms)
         _ -> []
       end
     end)
   end
 
-  defp mount_root(workspace, %{rel_root: rel}) when is_binary(rel), do: Path.join(workspace, rel)
-  defp mount_root(_workspace, %{root: root}), do: root
-
-  defp score_file(prefix, root, abs, mount_name, content, terms) do
+  defp score_file(root, abs, mount_name, content, terms) do
     {_fm, body} = Valea.ICM.split_frontmatter(content)
     title = title_of(body, abs)
     headings = headings_of(body)
@@ -104,7 +107,7 @@ defmodule Valea.ICM.Search do
             occurrences(body_down, t)
         end)
 
-      rel = Path.join(prefix, Path.relative_to(abs, root))
+      rel = Path.relative_to(abs, root)
 
       [
         %{

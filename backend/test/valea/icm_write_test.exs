@@ -17,9 +17,11 @@ defmodule Valea.ICMWriteTest do
   # rename/reference-rewrite assertion below addresses), so it's copied
   # fresh into an EXTERNAL tmp dir and mounted via `Mounts.mount/2`, landing
   # at mount key "primary" (name "Primary" slugifies to "primary" —
-  # `Valea.Workspace.Scaffold.slugify/1`), exactly the vocabulary every path
-  # below addresses (via `icm.root`, never a `mounts/primary/...`
-  # workspace-relative literal).
+  # `Valea.Workspace.Scaffold.slugify/1`).
+  #
+  # Task 4.2 re-key: every `Valea.ICM` function now takes `(mount_key,
+  # rel_path)`, `rel_path` relative to `icm.root` — `""` addresses the
+  # mount's own root.
   defp mount_starter_icm!(workspace, name \\ "Primary") do
     dir =
       Path.join(
@@ -60,90 +62,91 @@ defmodule Valea.ICMWriteTest do
     %{ws: ws.path, icm: icm}
   end
 
-  defp load(path) do
-    {:ok, page} = ICM.page(path)
+  defp load(mount_key, rel_path) do
+    {:ok, page} = ICM.page(mount_key, rel_path)
     page
   end
 
   test "page returns hash and prosemirror", %{icm: icm} do
-    page = load(Path.join(icm.root, "Offers/Founder Coaching Package.md"))
+    page = load(icm.mount_key, "Offers/Founder Coaching Package.md")
     assert page.hash =~ ~r/^[0-9a-f]{64}$/
     assert %{"type" => "doc"} = page.prosemirror
   end
 
   test "save_page round-trips an edit and returns a new hash", %{icm: icm} do
-    page = load(Path.join(icm.root, "Policies/No Medical Advice.md"))
+    page = load(icm.mount_key, "Policies/No Medical Advice.md")
     {:ok, pm} = ProseMirror.from_markdown(page.content <> "\nOne more line.\n")
-    {:ok, %{hash: new_hash}} = ICM.save_page(page.path, pm, page.hash)
+    {:ok, %{hash: new_hash}} = ICM.save_page(icm.mount_key, page.path, pm, page.hash)
     refute new_hash == page.hash
-    assert load(page.path).content =~ "One more line."
+    assert load(icm.mount_key, page.path).content =~ "One more line."
   end
 
   test "save_page rejects a stale base hash", %{icm: icm} do
-    page = load(Path.join(icm.root, "Policies/No Medical Advice.md"))
+    page = load(icm.mount_key, "Policies/No Medical Advice.md")
     {:ok, pm} = ProseMirror.from_markdown("# Changed\n")
-    {:ok, _} = ICM.save_page(page.path, pm, page.hash)
-    assert {:error, :page_changed} = ICM.save_page(page.path, pm, page.hash)
+    {:ok, _} = ICM.save_page(icm.mount_key, page.path, pm, page.hash)
+    assert {:error, :page_changed} = ICM.save_page(icm.mount_key, page.path, pm, page.hash)
   end
 
   test "save_page enforces containment and existence", %{icm: icm} do
     {:ok, pm} = ProseMirror.from_markdown("# X\n")
 
     assert {:error, :outside_workspace} =
-             ICM.save_page("../logs/audit.jsonl", pm, String.duplicate("0", 64))
+             ICM.save_page(icm.mount_key, "../logs/audit.jsonl", pm, String.duplicate("0", 64))
 
     assert {:error, :not_found} =
              ICM.save_page(
-               Path.join(icm.root, "Offers/Nope.md"),
+               icm.mount_key,
+               "Offers/Nope.md",
                pm,
                String.duplicate("0", 64)
              )
   end
 
   test "unchanged save is byte-identical (determinism through the write path)", %{icm: icm} do
-    page = load(Path.join(icm.root, "Offers/Founder Coaching Package.md"))
-    {:ok, %{hash: h2}} = ICM.save_page(page.path, page.prosemirror, page.hash)
+    page = load(icm.mount_key, "Offers/Founder Coaching Package.md")
+    {:ok, %{hash: h2}} = ICM.save_page(icm.mount_key, page.path, page.prosemirror, page.hash)
     assert h2 == page.hash
   end
 
   test "create_page seeds title and appends .md", %{icm: icm} do
-    {:ok, %{path: path}} = ICM.create_page(Path.join(icm.root, "Decisions"), "Pricing Call")
-    assert path == Path.join(icm.root, "Decisions/Pricing Call.md")
-    assert load(path).content == "# Pricing Call"
+    {:ok, %{path: path}} = ICM.create_page(icm.mount_key, "Decisions", "Pricing Call")
+    assert path == "Decisions/Pricing Call.md"
+    assert load(icm.mount_key, path).content == "# Pricing Call"
   end
 
   test "create_page's seed round-trips byte-identically through the write path (determinism contract)",
        %{icm: icm} do
-    {:ok, %{path: path}} = ICM.create_page(Path.join(icm.root, "Decisions"), "Pricing Call")
-    content = load(path).content
+    {:ok, %{path: path}} = ICM.create_page(icm.mount_key, "Decisions", "Pricing Call")
+    content = load(icm.mount_key, path).content
 
     assert {:ok, pm} = ProseMirror.from_markdown(content)
     assert {:ok, ^content} = ProseMirror.to_markdown(pm)
   end
 
   test "create_page at mount root, create_folder, duplicate and invalid names", %{icm: icm} do
-    assert {:ok, %{path: scratch_path}} = ICM.create_page(icm.root, "Scratch")
-    assert scratch_path == Path.join(icm.root, "Scratch.md")
+    assert {:ok, %{path: scratch_path}} = ICM.create_page(icm.mount_key, "", "Scratch")
+    assert scratch_path == "Scratch.md"
 
-    assert {:ok, %{path: projects_path}} = ICM.create_folder(icm.root, "Projects")
-    assert projects_path == Path.join(icm.root, "Projects")
+    assert {:ok, %{path: projects_path}} = ICM.create_folder(icm.mount_key, "", "Projects")
+    assert projects_path == "Projects"
 
-    assert {:error, :already_exists} = ICM.create_folder(icm.root, "Projects")
-    assert {:error, :already_exists} = ICM.create_page(icm.root, "Scratch")
+    assert {:error, :already_exists} = ICM.create_folder(icm.mount_key, "", "Projects")
+    assert {:error, :already_exists} = ICM.create_page(icm.mount_key, "", "Scratch")
 
     for bad <- ["", "  ", "a/b", "a\\b", ".hidden"] do
-      assert {:error, :name_invalid} = ICM.create_page(icm.root, bad)
-      assert {:error, :name_invalid} = ICM.create_folder(icm.root, bad)
+      assert {:error, :name_invalid} = ICM.create_page(icm.mount_key, "", bad)
+      assert {:error, :name_invalid} = ICM.create_folder(icm.mount_key, "", bad)
     end
 
-    assert {:error, :outside_workspace} = ICM.create_page("..", "x")
+    assert {:error, :outside_workspace} = ICM.create_page(icm.mount_key, "..", "x")
   end
 
   test "create_page normalizes unicode and trims whitespace into the written path", %{icm: icm} do
-    {:ok, %{path: path}} = ICM.create_page(icm.root, " Café ")
-    assert path == Path.join(icm.root, "Café.md")
+    {:ok, %{path: path}} = ICM.create_page(icm.mount_key, "", " Café ")
+    assert path == "Café.md"
     assert path == String.normalize(path, :nfc)
-    assert load(path).title == "Café"
+    assert load(icm.mount_key, path).title == "Café"
   end
 
   test "create under a file parent returns name_invalid, and x. gets a single extension", %{
@@ -151,12 +154,13 @@ defmodule Valea.ICMWriteTest do
   } do
     assert {:error, :name_invalid} =
              ICM.create_page(
-               Path.join(icm.root, "Offers/Founder Coaching Package.md"),
+               icm.mount_key,
+               "Offers/Founder Coaching Package.md",
                "Child"
              )
 
-    {:ok, %{path: path}} = ICM.create_page(icm.root, "Trailing.")
-    assert path == Path.join(icm.root, "Trailing.md")
+    {:ok, %{path: path}} = ICM.create_page(icm.mount_key, "", "Trailing.")
+    assert path == "Trailing.md"
   end
 
   test "create_page_from_template substitutes title and date, code fences included", %{icm: icm} do
@@ -167,15 +171,17 @@ defmodule Valea.ICMWriteTest do
 
     {:ok, %{path: path}} =
       ICM.create_page_from_template(
-        Path.join(icm.root, "Clients"),
+        icm.mount_key,
+        "Clients",
         "Anna Roth",
-        Path.join(icm.root, "Templates/T.md")
+        icm.mount_key,
+        "Templates/T.md"
       )
 
-    assert path == Path.join(icm.root, "Clients/Anna Roth.md")
+    assert path == "Clients/Anna Roth.md"
     today = Date.utc_today() |> Date.to_iso8601()
 
-    assert File.read!(path) ==
+    assert File.read!(Path.join(icm.root, path)) ==
              "# Anna Roth\n\nSince #{today}.\n\n```\nAnna Roth in a fence\n```\n\n{{unknown}} stays\n"
   end
 
@@ -188,17 +194,15 @@ defmodule Valea.ICMWriteTest do
 
     on_exit(fn -> File.rm_rf!(second_dir) end)
 
-    assert {:ok, %{mount_key: mount_key}} = Mounts.create(ws, "second", second_dir)
-    # Derive the template path from the EFFECTIVE mount's realpath-resolved
-    # root, not the raw tmp path — on macOS the raw `/var/folders/...` tmp
-    # path never string-matches the resolved `/private/var/...` root.
-    second_root = Mounts.mount_by_key(ws, mount_key).root
+    assert {:ok, %{mount_key: second_key}} = Mounts.create(ws, "second", second_dir)
 
     assert {:error, :cross_mount_template} =
              ICM.create_page_from_template(
-               Path.join(icm.root, "Clients"),
+               icm.mount_key,
+               "Clients",
                "X",
-               Path.join(second_root, "Templates/T.md")
+               second_key,
+               "Templates/T.md"
              )
   end
 
@@ -208,25 +212,31 @@ defmodule Valea.ICMWriteTest do
 
     assert {:error, :name_invalid} =
              ICM.create_page_from_template(
-               Path.join(icm.root, "Clients"),
+               icm.mount_key,
+               "Clients",
                "a/b",
-               Path.join(icm.root, "Templates/T.md")
+               icm.mount_key,
+               "Templates/T.md"
              )
 
     assert {:error, :already_exists} =
              ICM.create_page_from_template(
-               Path.join(icm.root, "Clients"),
+               icm.mount_key,
+               "Clients",
                "Lea Brunner",
-               Path.join(icm.root, "Templates/T.md")
+               icm.mount_key,
+               "Templates/T.md"
              )
   end
 
   test "create_page_from_template: an unreadable template is rejected", %{icm: icm} do
     assert {:error, :template_not_found} =
              ICM.create_page_from_template(
-               Path.join(icm.root, "Clients"),
+               icm.mount_key,
+               "Clients",
                "Ghost",
-               Path.join(icm.root, "Templates/Nope.md")
+               icm.mount_key,
+               "Templates/Nope.md"
              )
   end
 
@@ -240,13 +250,15 @@ defmodule Valea.ICMWriteTest do
 
     {:ok, %{path: path}} =
       ICM.create_page_from_template(
-        Path.join(icm.root, "Clients"),
+        icm.mount_key,
+        "Clients",
         "Report {{date}}",
-        Path.join(icm.root, "Templates/Report.md")
+        icm.mount_key,
+        "Templates/Report.md"
       )
 
     today = Date.utc_today() |> Date.to_iso8601()
-    content = File.read!(path)
+    content = File.read!(Path.join(icm.root, path))
 
     # The page name should be preserved verbatim in the title
     assert content =~ "# Report {{date}}"
@@ -267,11 +279,12 @@ defmodule Valea.ICMWriteTest do
               updated_workflows: ["New Inquiry Triage"]
             }} =
              ICM.rename(
-               Path.join(icm.root, "Offers/Founder Coaching Package.md"),
+               icm.mount_key,
+               "Offers/Founder Coaching Package.md",
                "Founder Package"
              )
 
-    assert new_path == Path.join(icm.root, "Offers/Founder Package.md")
+    assert new_path == "Offers/Founder Package.md"
 
     refute File.exists?(Path.join(icm.root, "Offers/Founder Coaching Package.md"))
     assert File.exists?(Path.join(icm.root, "Offers/Founder Package.md"))
@@ -283,20 +296,21 @@ defmodule Valea.ICMWriteTest do
 
   test "rename to an invalid or already-existing name", %{icm: icm} do
     assert {:error, :name_invalid} =
-             ICM.rename(Path.join(icm.root, "Offers/Founder Coaching Package.md"), "a/b")
+             ICM.rename(icm.mount_key, "Offers/Founder Coaching Package.md", "a/b")
 
     assert {:error, :already_exists} =
              ICM.rename(
-               Path.join(icm.root, "Offers/Founder Coaching Package.md"),
+               icm.mount_key,
+               "Offers/Founder Coaching Package.md",
                "Discovery Call"
              )
   end
 
   test "renaming a folder containing a referenced page rewrites the workflow", %{icm: icm} do
     assert {:ok, %{path: new_path, updated_workflows: ["New Inquiry Triage"]}} =
-             ICM.rename(Path.join(icm.root, "Offers"), "Offerings")
+             ICM.rename(icm.mount_key, "Offers", "Offerings")
 
-    assert new_path == Path.join(icm.root, "Offerings")
+    assert new_path == "Offerings"
 
     refute File.exists?(Path.join(icm.root, "Offers"))
 
@@ -309,11 +323,11 @@ defmodule Valea.ICMWriteTest do
 
   test "renaming a folder does not corrupt references to a sibling folder whose name is a prefix superset",
        %{icm: icm} do
-    {:ok, %{path: extra_path}} = ICM.create_folder(icm.root, "Offers Extra")
-    assert extra_path == Path.join(icm.root, "Offers Extra")
+    {:ok, %{path: extra_path}} = ICM.create_folder(icm.mount_key, "", "Offers Extra")
+    assert extra_path == "Offers Extra"
 
-    {:ok, %{path: sidecar_path}} = ICM.create_page(extra_path, "Sidecar")
-    assert sidecar_path == Path.join(icm.root, "Offers Extra/Sidecar.md")
+    {:ok, %{path: sidecar_path}} = ICM.create_page(icm.mount_key, extra_path, "Sidecar")
+    assert sidecar_path == "Offers Extra/Sidecar.md"
 
     workflow_path = Path.join(icm.root, "Workflows/New Inquiry Triage.md")
 
@@ -323,8 +337,8 @@ defmodule Valea.ICMWriteTest do
         "\n  - id: sidecar\n    type: icm\n    path: \"Offers Extra/Sidecar.md\"\n"
     )
 
-    assert {:ok, %{path: offerings_path}} = ICM.rename(Path.join(icm.root, "Offers"), "Offerings")
-    assert offerings_path == Path.join(icm.root, "Offerings")
+    assert {:ok, %{path: offerings_path}} = ICM.rename(icm.mount_key, "Offers", "Offerings")
+    assert offerings_path == "Offerings"
 
     page = workflow_page(icm)
     assert page =~ ~s(path: "Offerings/Founder Coaching Package.md")
@@ -343,9 +357,9 @@ defmodule Valea.ICMWriteTest do
     assert post_session.() =~ ~s(path: "Clients/*")
 
     assert {:ok, %{path: new_path, updated_workflows: updated_workflows}} =
-             ICM.rename(Path.join(icm.root, "Clients"), "Customers")
+             ICM.rename(icm.mount_key, "Clients", "Customers")
 
-    assert new_path == Path.join(icm.root, "Customers")
+    assert new_path == "Customers"
 
     assert "Session Prep Brief" in updated_workflows
     assert "Post-Session Follow-up" in updated_workflows
@@ -362,18 +376,18 @@ defmodule Valea.ICMWriteTest do
   test "delete a page removes it and leaves workflows untouched", %{icm: icm} do
     before_page = workflow_page(icm)
 
-    assert {:ok, %{deleted: true}} = ICM.delete(Path.join(icm.root, "Clients/Lea Brunner.md"))
+    assert {:ok, %{deleted: true}} = ICM.delete(icm.mount_key, "Clients/Lea Brunner.md")
     refute File.exists?(Path.join(icm.root, "Clients/Lea Brunner.md"))
     assert workflow_page(icm) == before_page
   end
 
   test "delete a folder recursively removes its contents", %{icm: icm} do
-    assert {:ok, %{deleted: true}} = ICM.delete(Path.join(icm.root, "Templates"))
+    assert {:ok, %{deleted: true}} = ICM.delete(icm.mount_key, "Templates")
     refute File.exists?(Path.join(icm.root, "Templates"))
   end
 
   test "delete a non-existent path returns not_found", %{icm: icm} do
-    assert {:error, :not_found} = ICM.delete(Path.join(icm.root, "Offers/Nope.md"))
+    assert {:error, :not_found} = ICM.delete(icm.mount_key, "Offers/Nope.md")
   end
 
   describe "external mounts (A2-T5b)" do
@@ -400,38 +414,37 @@ defmodule Valea.ICMWriteTest do
       ext = external_icm!("Ext")
       File.mkdir_p!(Path.join(ext, "Offers"))
       File.write!(Path.join(ext, "Offers/External.md"), "# External Page\n")
-      {:ok, _} = Mounts.mount(ws, ext)
+      {:ok, %{mount_key: ext_key}} = Mounts.mount(ws, ext)
 
-      [m] = Enum.filter(Mounts.enabled(ws), &(&1.name == "ext"))
-      %{mount: m}
+      [m] = Enum.filter(Mounts.enabled(ws), &(&1.name == ext_key))
+      %{mount: m, mount_key: ext_key}
     end
 
     test "save_page round-trips an edit and returns a new hash, guarded by base_hash", %{
-      mount: m
+      mount_key: mount_key
     } do
-      page_path = Path.join(m.root, "Offers/External.md")
-      page = load(page_path)
+      page = load(mount_key, "Offers/External.md")
 
       {:ok, pm} = ProseMirror.from_markdown(page.content <> "\nOne more line.\n")
-      {:ok, %{hash: new_hash}} = ICM.save_page(page_path, pm, page.hash)
+      {:ok, %{hash: new_hash}} = ICM.save_page(mount_key, page.path, pm, page.hash)
       refute new_hash == page.hash
-      assert load(page_path).content =~ "One more line."
+      assert load(mount_key, page.path).content =~ "One more line."
 
       # A stale base_hash is rejected — the guard applies to external pages
       # exactly as it does to embedded ones.
-      assert {:error, :page_changed} = ICM.save_page(page_path, pm, page.hash)
+      assert {:error, :page_changed} = ICM.save_page(mount_key, page.path, pm, page.hash)
     end
 
-    test "create_page/create_folder at the external mount's own root", %{mount: m} do
-      assert {:ok, %{path: page_path}} = ICM.create_page(m.root, "Scratch")
-      assert page_path == Path.join(m.root, "Scratch.md")
-      assert load(page_path).content == "# Scratch"
+    test "create_page/create_folder at the mount's own root", %{mount: m, mount_key: mount_key} do
+      assert {:ok, %{path: page_path}} = ICM.create_page(mount_key, "", "Scratch")
+      assert page_path == "Scratch.md"
+      assert load(mount_key, page_path).content == "# Scratch"
 
-      assert {:ok, %{path: folder_path}} = ICM.create_folder(m.root, "Projects")
-      assert folder_path == Path.join(m.root, "Projects")
-      assert File.dir?(folder_path)
+      assert {:ok, %{path: folder_path}} = ICM.create_folder(mount_key, "", "Projects")
+      assert folder_path == "Projects"
+      assert File.dir?(Path.join(m.root, folder_path))
 
-      assert {:error, :already_exists} = ICM.create_folder(m.root, "Projects")
+      assert {:error, :already_exists} = ICM.create_folder(mount_key, "", "Projects")
     end
   end
 end

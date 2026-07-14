@@ -26,17 +26,16 @@ defmodule Valea.ICM.SearchTest do
   end
 
   test "AND semantics across title and body, ranked title-first", %{workspace: ws} do
-    icm =
-      AgentCase.mount_test_icm!(ws,
-        name: "Primary",
-        pages: %{
-          "Offers/Retainer.md" => "# Retainer\n\nMonthly coaching retainer.\n",
-          "Clients/Note.md" => "# Note\n\nDiscussed a retainer with Julia.\n"
-        }
-      )
+    AgentCase.mount_test_icm!(ws,
+      name: "Primary",
+      pages: %{
+        "Offers/Retainer.md" => "# Retainer\n\nMonthly coaching retainer.\n",
+        "Clients/Note.md" => "# Note\n\nDiscussed a retainer with Julia.\n"
+      }
+    )
 
-    retainer_path = Path.join(icm.root, "Offers/Retainer.md")
-    note_path = Path.join(icm.root, "Clients/Note.md")
+    retainer_path = "Offers/Retainer.md"
+    note_path = "Clients/Note.md"
 
     {:ok, %{results: results}} = Search.search(ws, "retainer")
     paths = Enum.map(results, & &1.path)
@@ -148,13 +147,12 @@ defmodule Valea.ICM.SearchTest do
   end
 
   test "regex metacharacters are literal text", %{workspace: ws} do
-    icm =
-      AgentCase.mount_test_icm!(ws,
-        name: "Primary",
-        pages: %{"Offers/Weird.md" => "# Weird\n\nprice (150) [draft]\n"}
-      )
+    AgentCase.mount_test_icm!(ws,
+      name: "Primary",
+      pages: %{"Offers/Weird.md" => "# Weird\n\nprice (150) [draft]\n"}
+    )
 
-    weird_path = Path.join(icm.root, "Offers/Weird.md")
+    weird_path = "Offers/Weird.md"
 
     {:ok, %{results: results}} = Search.search(ws, "(150)")
     assert Enum.map(results, & &1.path) == [weird_path]
@@ -164,13 +162,12 @@ defmodule Valea.ICM.SearchTest do
     # "[draft" has an unmatched `[`, so compiling it as a regex would fail
     # (or need special error handling). It must still match literally via
     # String.contains?/2, proving no Regex.compile/1 path exists.
-    icm =
-      AgentCase.mount_test_icm!(ws,
-        name: "Primary",
-        pages: %{"Offers/Weird.md" => "# Weird\n\nprice (150) [draft]\n"}
-      )
+    AgentCase.mount_test_icm!(ws,
+      name: "Primary",
+      pages: %{"Offers/Weird.md" => "# Weird\n\nprice (150) [draft]\n"}
+    )
 
-    weird_path = Path.join(icm.root, "Offers/Weird.md")
+    weird_path = "Offers/Weird.md"
 
     assert {:error, _} = Regex.compile("[draft")
 
@@ -188,10 +185,9 @@ defmodule Valea.ICM.SearchTest do
     # the fix (`safe_pos` clamp in `snippet/3`).
     body = "# Turkish\n\n" <> String.duplicate("İ", 120) <> " target\n"
 
-    icm =
-      AgentCase.mount_test_icm!(ws, name: "Primary", pages: %{"Offers/Turkish.md" => body})
+    AgentCase.mount_test_icm!(ws, name: "Primary", pages: %{"Offers/Turkish.md" => body})
 
-    turkish_path = Path.join(icm.root, "Offers/Turkish.md")
+    turkish_path = "Offers/Turkish.md"
 
     assert {:ok, %{results: results}} = Search.search(ws, "target")
     assert Enum.any?(results, &(&1.path == turkish_path))

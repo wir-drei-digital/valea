@@ -8,10 +8,10 @@ defmodule Valea.ICM.ReferencesTest do
   # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:` ONLY —
   # every mount is external (by-reference), so `setup` mounts TWO real
   # external ICMs (`AgentCase.mount_test_icm!/2`) instead of hand-writing
-  # manifests under a workspace-embedded `mounts/<name>/` directory (which
-  # `Mounts.list/1` can no longer see at all). Every path a test needs is
-  # built against `a.root`/`b.root` (the mounted ICM's REALPATH-resolved
-  # absolute root), never a hand-written `"mounts/<name>/..."` literal.
+  # manifests under a workspace-embedded `mounts/<name>/` directory. Task
+  # 4.2 re-key: `referencing_workflows/2`/`rewrite/3` take `mount_key` + an
+  # ICM-relative path — never a hand-written `"mounts/<name>/..."` literal,
+  # never an absolute `icm.root`-joined one.
   setup do
     ws = AgentCase.open_workspace!("W")
 
@@ -82,21 +82,21 @@ defmodule Valea.ICM.ReferencesTest do
 
   test "finds workflows (within the owning mount) referencing a page", %{a: a} do
     {:ok, refs} =
-      References.referencing_workflows(Path.join(a.root, "Offers/Founder Coaching Package.md"))
+      References.referencing_workflows(a.mount_key, "Offers/Founder Coaching Package.md")
 
     assert [%{file: "New Inquiry Triage.md", name: "New Inquiry Triage"}] = refs
 
-    {:ok, []} = References.referencing_workflows(Path.join(a.root, "Clients/Lea Brunner.md"))
+    {:ok, []} = References.referencing_workflows(a.mount_key, "Clients/Lea Brunner.md")
   end
 
   test "a same-named page in a different mount is NOT matched (mount isolation)", %{a: a, b: b} do
     {:ok, refs_a} =
-      References.referencing_workflows(Path.join(a.root, "Offers/Founder Coaching Package.md"))
+      References.referencing_workflows(a.mount_key, "Offers/Founder Coaching Package.md")
 
     assert Enum.map(refs_a, & &1.file) == ["New Inquiry Triage.md"]
 
     {:ok, refs_b} =
-      References.referencing_workflows(Path.join(b.root, "Offers/Founder Coaching Package.md"))
+      References.referencing_workflows(b.mount_key, "Offers/Founder Coaching Package.md")
 
     assert Enum.map(refs_b, & &1.file) == ["B Triage.md"]
   end
@@ -107,8 +107,9 @@ defmodule Valea.ICM.ReferencesTest do
   } do
     assert {:ok, ["New Inquiry Triage.md", "Post-Session Follow-up.md"]} =
              References.rewrite(
-               Path.join(a.root, "Tone & Voice/Email Tone Guide.md"),
-               Path.join(a.root, "Tone & Voice/Voice Guide.md")
+               a.mount_key,
+               "Tone & Voice/Email Tone Guide.md",
+               "Tone & Voice/Voice Guide.md"
              )
 
     for file <- ["New Inquiry Triage.md", "Post-Session Follow-up.md"] do
@@ -124,20 +125,17 @@ defmodule Valea.ICM.ReferencesTest do
 
   test "rewrite returns empty list when no workflow references the path", %{a: a} do
     {:ok, []} =
-      References.rewrite(
-        Path.join(a.root, "Clients/Lea Brunner.md"),
-        Path.join(a.root, "Clients/Someone Else.md")
-      )
+      References.rewrite(a.mount_key, "Clients/Lea Brunner.md", "Clients/Someone Else.md")
   end
 
-  test "rewrite rejects a cross-mount pair — a rename never crosses mounts", %{a: a, b: b} do
-    assert {:error, :cross_mount_rename} =
-             References.rewrite(
-               Path.join(a.root, "Offers/Founder Coaching Package.md"),
-               Path.join(b.root, "Offers/Renamed.md")
-             )
-
-    # Neither mount's workflows were touched.
+  test "rewrite never crosses mounts — only one mount_key is ever addressable per call", %{
+    a: a,
+    b: b
+  } do
+    # There is no signature under the (mount_key, old_rel, new_rel) shape
+    # that could even NAME a cross-mount pair any more — a rename is
+    # structurally confined to the one mount_key given. Confirm both
+    # mounts' workflows stay exactly as seeded.
     a_page = File.read!(Path.join(workflows_dir(a), "New Inquiry Triage.md"))
     assert a_page =~ "Offers/Founder Coaching Package.md"
 
@@ -153,24 +151,23 @@ defmodule Valea.ICM.ReferencesTest do
 
     result =
       References.rewrite(
-        Path.join(a.root, "Tone & Voice/Email Tone Guide.md"),
-        Path.join(a.root, "Tone & Voice/Voice Guide.md")
+        a.mount_key,
+        "Tone & Voice/Email Tone Guide.md",
+        "Tone & Voice/Voice Guide.md"
       )
 
     assert {:error, {:rewrite_failed, filename, _reason}} = result
     assert filename in ["New Inquiry Triage.md", "Post-Session Follow-up.md"]
   end
 
-  test "referencing_workflows rejects a path that doesn't name a real mount" do
-    assert {:error, :outside_workspace} = References.referencing_workflows("Offers/Nope.md")
-
+  test "referencing_workflows rejects an unknown/disabled mount key" do
     assert {:error, :outside_workspace} =
-             References.referencing_workflows("mounts/does-not-exist/Nope.md")
+             References.referencing_workflows("does-not-exist", "Nope.md")
   end
 
-  test "rewrite rejects a path that doesn't name a real mount" do
+  test "rewrite rejects an unknown/disabled mount key" do
     assert {:error, :outside_workspace} =
-             References.rewrite("Offers/Nope.md", "Offers/Also-Nope.md")
+             References.rewrite("does-not-exist", "Offers/Nope.md", "Offers/Also-Nope.md")
   end
 
   describe "anchored needle matching" do
@@ -185,11 +182,10 @@ defmodule Valea.ICM.ReferencesTest do
       write_workflow!(a, "Special Ref.md", ["Special Offers/X.md"])
       before = File.read!(Path.join(workflows_dir(a), "Special Ref.md"))
 
-      {:ok, refs} = References.referencing_workflows(Path.join(a.root, "Offers/X.md"))
+      {:ok, refs} = References.referencing_workflows(a.mount_key, "Offers/X.md")
       refute Enum.any?(refs, &(&1.file == "Special Ref.md"))
 
-      {:ok, updated} =
-        References.rewrite(Path.join(a.root, "Offers/X.md"), Path.join(a.root, "Offers/Y.md"))
+      {:ok, updated} = References.rewrite(a.mount_key, "Offers/X.md", "Offers/Y.md")
 
       refute "Special Ref.md" in updated
       assert File.read!(Path.join(workflows_dir(a), "Special Ref.md")) == before
@@ -199,11 +195,10 @@ defmodule Valea.ICM.ReferencesTest do
       write_workflow!(a, "More Ref.md", ["MoreOffers/X.md"])
       before = File.read!(Path.join(workflows_dir(a), "More Ref.md"))
 
-      {:ok, refs} = References.referencing_workflows(Path.join(a.root, "Offers/X.md"))
+      {:ok, refs} = References.referencing_workflows(a.mount_key, "Offers/X.md")
       refute Enum.any?(refs, &(&1.file == "More Ref.md"))
 
-      {:ok, updated} =
-        References.rewrite(Path.join(a.root, "Offers/X.md"), Path.join(a.root, "Offers/Y.md"))
+      {:ok, updated} = References.rewrite(a.mount_key, "Offers/X.md", "Offers/Y.md")
 
       refute "More Ref.md" in updated
       assert File.read!(Path.join(workflows_dir(a), "More Ref.md")) == before
@@ -226,11 +221,10 @@ defmodule Valea.ICM.ReferencesTest do
 
       write_page!(a, "Workflows/Anchor Forms.md", content)
 
-      {:ok, refs} = References.referencing_workflows(Path.join(a.root, "Offers/X.md"))
+      {:ok, refs} = References.referencing_workflows(a.mount_key, "Offers/X.md")
       assert Enum.any?(refs, &(&1.file == "Anchor Forms.md"))
 
-      {:ok, updated} =
-        References.rewrite(Path.join(a.root, "Offers/X.md"), Path.join(a.root, "Offers/Y.md"))
+      {:ok, updated} = References.rewrite(a.mount_key, "Offers/X.md", "Offers/Y.md")
 
       assert "Anchor Forms.md" in updated
 
@@ -253,11 +247,10 @@ defmodule Valea.ICM.ReferencesTest do
       write_workflow!(a, "Wildcard.md", ["Clients/*"])
       before = File.read!(Path.join(workflows_dir(a), "My Wildcard.md"))
 
-      {:ok, refs} = References.referencing_workflows(Path.join(a.root, "Clients/*"))
+      {:ok, refs} = References.referencing_workflows(a.mount_key, "Clients/*")
       assert Enum.map(refs, & &1.file) == ["Wildcard.md"]
 
-      {:ok, updated} =
-        References.rewrite(Path.join(a.root, "Clients/*"), Path.join(a.root, "Customers/*"))
+      {:ok, updated} = References.rewrite(a.mount_key, "Clients/*", "Customers/*")
 
       assert updated == ["Wildcard.md"]
       assert File.read!(Path.join(workflows_dir(a), "My Wildcard.md")) == before
@@ -277,11 +270,10 @@ defmodule Valea.ICM.ReferencesTest do
       write_workflow!(a, "Notes Ref.md", ["Notes/X.md"])
       before = File.read!(Path.join(workflows_dir(a), "Lea Ref.md"))
 
-      {:ok, refs} = References.referencing_workflows(Path.join(a.root, "Notes/X.md"))
+      {:ok, refs} = References.referencing_workflows(a.mount_key, "Notes/X.md")
       assert Enum.map(refs, & &1.file) == ["Notes Ref.md"]
 
-      {:ok, updated} =
-        References.rewrite(Path.join(a.root, "Notes/X.md"), Path.join(a.root, "Notes/Y.md"))
+      {:ok, updated} = References.rewrite(a.mount_key, "Notes/X.md", "Notes/Y.md")
 
       assert updated == ["Notes Ref.md"]
       assert File.read!(Path.join(workflows_dir(a), "Lea Ref.md")) == before
@@ -292,21 +284,26 @@ defmodule Valea.ICM.ReferencesTest do
     end
   end
 
-  test "a bare mount-root path is invalid for both functions", %{a: a} do
-    assert {:error, :invalid_path} = References.referencing_workflows(a.root)
-    assert {:error, :invalid_path} = References.rewrite(a.root, Path.join(a.root, "Offers/X.md"))
-    assert {:error, :invalid_path} = References.rewrite(Path.join(a.root, "Offers/X.md"), a.root)
+  test "a bare mount-root path (\"\") is invalid for both functions", %{a: a} do
+    assert {:error, :invalid_path} = References.referencing_workflows(a.mount_key, "")
+    assert {:error, :invalid_path} = References.rewrite(a.mount_key, "", "Offers/X.md")
+    assert {:error, :invalid_path} = References.rewrite(a.mount_key, "Offers/X.md", "")
   end
 
   test "errors without a workspace", %{a: a} do
-    target = Path.join(a.root, "Offers/Founder Coaching Package.md")
-    new_target = Path.join(a.root, "Offers/Renamed.md")
+    mount_key = a.mount_key
 
     Manager.close()
 
-    assert {:error, :no_workspace} = References.referencing_workflows(target)
+    assert {:error, :no_workspace} =
+             References.referencing_workflows(mount_key, "Offers/Founder Coaching Package.md")
 
-    assert {:error, :no_workspace} = References.rewrite(target, new_target)
+    assert {:error, :no_workspace} =
+             References.rewrite(
+               mount_key,
+               "Offers/Founder Coaching Package.md",
+               "Offers/Renamed.md"
+             )
   end
 
   describe "external mounts (A2-T5b)" do
@@ -330,20 +327,16 @@ defmodule Valea.ICM.ReferencesTest do
       %{mount: ext}
     end
 
-    test "finds workflows referencing a page by its absolute physical path, needle is mount-relative",
+    test "finds workflows referencing a page by (mount_key, ICM-relative path)",
          %{mount: m} do
-      page_abs = Path.join(m.root, "Offers/X.md")
-
       assert {:ok, [%{file: "Ext Triage.md", name: "Ext Triage"}]} =
-               References.referencing_workflows(page_abs)
+               References.referencing_workflows(m.mount_key, "Offers/X.md")
     end
 
     test "rewrite updates the external mount's own workflow, another mount's workflows untouched",
          %{mount: m, a: a} do
-      old_abs = Path.join(m.root, "Offers/X.md")
-      new_abs = Path.join(m.root, "Offers/Y.md")
-
-      assert {:ok, ["Ext Triage.md"]} = References.rewrite(old_abs, new_abs)
+      assert {:ok, ["Ext Triage.md"]} =
+               References.rewrite(m.mount_key, "Offers/X.md", "Offers/Y.md")
 
       page = File.read!(Path.join(m.root, "Workflows/Ext Triage.md"))
       assert page =~ ~s(path: "Offers/Y.md")
@@ -355,25 +348,9 @@ defmodule Valea.ICM.ReferencesTest do
       assert a_page =~ "Offers/Founder Coaching Package.md"
     end
 
-    test "cross-mount rename between two external mounts is rejected", %{mount: m, a: a} do
-      assert {:error, :cross_mount_rename} =
-               References.rewrite(
-                 Path.join(a.root, "Offers/Founder Coaching Package.md"),
-                 Path.join(m.root, "Offers/Renamed.md")
-               )
-
-      assert {:error, :cross_mount_rename} =
-               References.rewrite(
-                 Path.join(m.root, "Offers/X.md"),
-                 Path.join(a.root, "Offers/Renamed.md")
-               )
-    end
-
-    test "a bare external mount-root path is invalid (empty needle)", %{mount: m} do
-      assert {:error, :invalid_path} = References.referencing_workflows(m.root)
-
-      assert {:error, :invalid_path} =
-               References.rewrite(m.root, Path.join(m.root, "Offers/X.md"))
+    test "a bare external mount-root path (\"\") is invalid (empty needle)", %{mount: m} do
+      assert {:error, :invalid_path} = References.referencing_workflows(m.mount_key, "")
+      assert {:error, :invalid_path} = References.rewrite(m.mount_key, "", "Offers/X.md")
     end
   end
 end

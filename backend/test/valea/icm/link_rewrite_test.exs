@@ -9,11 +9,9 @@ defmodule Valea.ICM.LinkRewriteTest do
   # every mount is external (by-reference), so `setup` mounts a REAL
   # external ICM (`AgentCase.mount_test_icm!/2`) seeded with the pages this
   # suite renames (`Pricing/Current Pricing.md`, `Tone & Voice/Email Tone
-  # Guide.md`), instead of relying on the legacy scaffold's embedded
-  # `mounts/primary/` starter mount, which `Mounts.list/1` can no longer
-  # see. Every path a test needs is built against `icm.root` (the mounted
-  # ICM's REALPATH-resolved absolute root), never a hand-written
-  # `"mounts/primary/..."` literal.
+  # Guide.md`). Task 4.2 re-key: `ICM.rename/3` takes `(mount_key, rel_path,
+  # new_name)` — every path a test needs is relative to `icm.root`, never a
+  # hand-written absolute `Path.join(icm.root, ...)` literal.
   setup do
     ws = AgentCase.open_workspace!("Primary")
 
@@ -30,7 +28,6 @@ defmodule Valea.ICM.LinkRewriteTest do
   end
 
   test "rename rewrites only the destination bytes", %{icm: icm} do
-    target = Path.join(icm.root, "Pricing/Current Pricing.md")
     src = Path.join(icm.root, "Offers/Uses Pricing.md")
 
     body =
@@ -40,7 +37,8 @@ defmodule Valea.ICM.LinkRewriteTest do
     File.mkdir_p!(Path.dirname(src))
     File.write!(src, body)
 
-    assert {:ok, %{updated_pages: [^src]}} = ICM.rename(target, "Rates.md")
+    assert {:ok, %{updated_pages: ["Offers/Uses Pricing.md"]}} =
+             ICM.rename(icm.mount_key, "Pricing/Current Pricing.md", "Rates.md")
 
     after_bytes = File.read!(src)
 
@@ -64,7 +62,7 @@ defmodule Valea.ICM.LinkRewriteTest do
       "# A\n\n![x](Pricing/Rates.md)\n"
     )
 
-    assert {:ok, _} = ICM.rename(Path.join(icm.root, "Pricing/Rates.md"), "Rate Card.md")
+    assert {:ok, _} = ICM.rename(icm.mount_key, "Pricing/Rates.md", "Rate Card.md")
 
     assert File.read!(Path.join(icm.root, "A.md")) ==
              "# A\n\n![x](<Pricing/Rate Card.md>)\n"
@@ -76,7 +74,7 @@ defmodule Valea.ICM.LinkRewriteTest do
       "# B\n\n[t](<Tone & Voice/Email Tone Guide.md>)\n"
     )
 
-    assert {:ok, _} = ICM.rename(Path.join(icm.root, "Tone & Voice"), "Voice")
+    assert {:ok, _} = ICM.rename(icm.mount_key, "Tone & Voice", "Voice")
 
     # The original destination was bracketed on disk — the splice keeps
     # the bracket form it found rather than stripping now-unneeded ones
@@ -85,7 +83,8 @@ defmodule Valea.ICM.LinkRewriteTest do
              "# B\n\n[t](<Voice/Email Tone Guide.md>)\n"
   end
 
-  test "cross-mount inbound links are rewritten too", %{workspace: ws, icm: icm} do
+  test "known limitation (task 4.2 interim narrowing): a link living in a DIFFERENT mount is NOT rewritten",
+       %{workspace: ws, icm: icm} do
     second = AgentCase.mount_test_icm!(ws, name: "Second")
 
     target_abs = Path.join(icm.root, "Pricing/Current Pricing.md")
@@ -93,11 +92,16 @@ defmodule Valea.ICM.LinkRewriteTest do
 
     File.write!(c_path, "# C\n\n[p](<#{target_abs}>)\n")
 
-    assert {:ok, _} = ICM.rename(target_abs, "Rates.md")
+    assert {:ok, %{updated_pages: updated}} =
+             ICM.rename(icm.mount_key, "Pricing/Current Pricing.md", "Rates.md")
 
-    new_abs = Path.join(icm.root, "Pricing/Rates.md")
-
-    assert File.read!(c_path) == "# C\n\n[p](<#{new_abs}>)\n"
+    # `LinkRewrite.rewrite_all/2` (task 4.2) scans only `icm.mount_key`'s own
+    # root now (see its moduledoc's INTERIM SCOPE NARROWING) — the second
+    # mount's inbound link is left pointing at the old, now-missing path
+    # rather than being discovered and rewritten. This is a known, accepted
+    # regression until task 5.6 widens the scan to primary+related mounts.
+    refute "C.md" in updated
+    assert File.read!(c_path) == "# C\n\n[p](<#{target_abs}>)\n"
   end
 
   test "a fence-only lookalike, with no real link to the renamed target anywhere in the file, is left untouched",
@@ -111,9 +115,9 @@ defmodule Valea.ICM.LinkRewriteTest do
     File.write!(src, body)
 
     assert {:ok, %{updated_pages: updated}} =
-             ICM.rename(Path.join(icm.root, "Pricing/Current Pricing.md"), "Rates.md")
+             ICM.rename(icm.mount_key, "Pricing/Current Pricing.md", "Rates.md")
 
-    refute src in updated
+    refute "D.md" in updated
     assert File.read!(src) == body
   end
 
@@ -131,8 +135,8 @@ defmodule Valea.ICM.LinkRewriteTest do
 
     File.write!(src, body)
 
-    assert {:ok, %{updated_pages: [^src]}} =
-             ICM.rename(Path.join(icm.root, "Pricing/Rates.md"), "Rate Card.md")
+    assert {:ok, %{updated_pages: ["E.md"]}} =
+             ICM.rename(icm.mount_key, "Pricing/Rates.md", "Rate Card.md")
 
     # The real link's destination changes (and gains brackets, since the
     # new name has a space) — and so, per the documented limitation, does
@@ -143,7 +147,7 @@ defmodule Valea.ICM.LinkRewriteTest do
   end
 
   test "known limitation: a confirmed link written in HTML-entity form is left dangling, not corrupted",
-       %{icm: icm, workspace: ws} do
+       %{icm: icm} do
     # MDEx entity-decodes `&amp;` -> `&` while parsing, so `Backlinks.destinations/3`
     # reports this link's `:url` as "Foo&Bar.md" — NOT the raw on-disk bytes
     # ("Foo&amp;Bar.md"). Confirm the premise first: on the installed MDEx,
@@ -157,11 +161,13 @@ defmodule Valea.ICM.LinkRewriteTest do
     body = "# G\n\nSee [x](Foo&amp;Bar.md) here.\n"
     File.write!(src, body)
 
-    assert [%{url: "Foo&Bar.md", abs: ^target_abs}] = Backlinks.destinations(ws, src, body)
+    assert [%{url: "Foo&Bar.md", abs: ^target_abs}] =
+             Backlinks.destinations(icm.root, "G.md", body)
 
-    assert {:ok, %{updated_pages: updated}} = ICM.rename(target_abs, "Renamed.md")
+    assert {:ok, %{updated_pages: updated}} =
+             ICM.rename(icm.mount_key, "Foo&Bar.md", "Renamed.md")
 
-    refute src in updated
+    refute "G.md" in updated
     assert File.read!(src) == body
   end
 
@@ -185,7 +191,7 @@ defmodule Valea.ICM.LinkRewriteTest do
     File.chmod!(mount_dir, 0o555)
     on_exit(fn -> File.chmod!(mount_dir, 0o755) end)
 
-    result = ICM.rename(Path.join(icm.root, "Pricing/Rates.md"), "Renamed.md")
+    result = ICM.rename(icm.mount_key, "Pricing/Rates.md", "Renamed.md")
 
     assert {:error, {:rewrite_failed, "F.md", _reason}} = result
     refute File.exists?(Path.join(target_dir, "Rates.md"))

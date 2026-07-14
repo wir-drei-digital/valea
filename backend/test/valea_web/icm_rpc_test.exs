@@ -17,12 +17,13 @@ defmodule ValeaWeb.IcmRpcTest do
   # longer see, `setup` mounts a REAL EXTERNAL ICM (via
   # `AgentCase.mount_test_icm!/2`) carrying this same content, read straight
   # off disk — mirrors `Valea.Markdown.DeterminismTest`'s identical
-  # `@template`/filter. Every mount is external now, so every path this
-  # suite addresses is the ICM's ABSOLUTE resolved path (`icm.root`-relative,
-  # via `Path.join/2`), never the old `mounts/primary/...`
-  # workspace-relative literal — see `Valea.ICM`'s `mount_root_for/1` and
-  # `Valea.Mounts.mount_for/2`, both of which only accept that vocabulary
-  # for an external mount now.
+  # `@template`/filter.
+  #
+  # Task 4.2 re-key: every ICM RPC action now takes a `mountKey` argument
+  # alongside `path` (ICM-relative, relative to `icm.root` — never the old
+  # `mounts/primary/...`/absolute literal), and `icm_tree` returns ONE
+  # ICM's `{mountKey, title, tree}` instead of an all-mounts grouped
+  # envelope.
   @template Path.join(:code.priv_dir(:valea), "legacy_workspace_template/mounts/starter")
 
   defp seed_pages do
@@ -73,39 +74,40 @@ defmodule ValeaWeb.IcmRpcTest do
     |> json_response(200)
   end
 
+  defp get_generation do
+    %{"success" => true, "data" => %{"generation" => generation}} = rpc("get_workspace", %{})
+    generation
+  end
+
   describe "icm_tree" do
-    # The `:tree` action's outer mount-group shape (`mount`/`title`/
-    # `rootRel`/`tree`) is now a `constraints fields: [...]` typed return
-    # (Task A-T11) — camelCase like every other typed field on this
-    # resource, and selected explicitly like `icm_entry_references`'
-    # nested `workflows` field below. The per-node `tree` value stays
-    # unconstrained (see moduledoc), so nodes inside it keep snake_case,
-    # same as pre-A-T11.
-    @mount_fields [%{"mounts" => ["mount", "title", "rootRel", "tree"]}]
+    @mount_fields ["mountKey", "title", "tree"]
 
-    test "returns one entry per mount, grouped, with string keys all the way down", %{icm: icm} do
-      assert %{"success" => true, "data" => %{"mounts" => [mount]}} =
-               rpc("icm_tree", %{}, @mount_fields)
+    test "returns one ICM's tree, string keys all the way down", %{icm: icm} do
+      generation = get_generation()
 
-      assert mount["mount"] == icm.mount_key
+      assert %{"success" => true, "data" => mount} =
+               rpc(
+                 "icm_tree",
+                 %{"mountKey" => icm.mount_key, "generation" => generation},
+                 @mount_fields
+               )
+
+      assert mount["mountKey"] == icm.mount_key
       assert mount["title"] == "Primary"
-      assert mount["rootRel"] == icm.root
       assert is_list(mount["tree"])
 
       offers = Enum.find(mount["tree"], &(&1["name"] == "Offers"))
       assert offers["type"] == "folder"
-      assert offers["path"] == Path.join(icm.root, "Offers")
+      assert offers["path"] == "Offers"
       assert is_list(offers["children"])
 
       page = Enum.find(offers["children"], &(&1["name"] == "Founder Coaching Package"))
       assert page["type"] == "page"
-      assert page["path"] == Path.join(icm.root, "Offers/Founder Coaching Package.md")
-
-      assert page["uri"] ==
-               "icm://" <> Path.join(icm.root, "Offers/Founder Coaching Package.md")
+      assert page["path"] == "Offers/Founder Coaching Package.md"
+      assert page["uri"] == "icm://Offers/Founder Coaching Package.md"
     end
 
-    test "groups per enabled mount, sorted by name, each with its own title", %{
+    test "a second mount's tree is addressed by its own mount key, independently of the first", %{
       workspace: workspace,
       icm: icm
     } do
@@ -115,29 +117,66 @@ defmodule ValeaWeb.IcmRpcTest do
           id: "efe438ce-209f-4beb-8b14-16bb6483bf82"
         )
 
-      assert %{"success" => true, "data" => %{"mounts" => mounts}} =
-               rpc("icm_tree", %{}, @mount_fields)
+      generation = get_generation()
 
-      assert Enum.map(mounts, & &1["mount"]) == [icm.mount_key, secondary.mount_key]
+      assert %{"success" => true, "data" => secondary_mount} =
+               rpc(
+                 "icm_tree",
+                 %{"mountKey" => secondary.mount_key, "generation" => generation},
+                 @mount_fields
+               )
 
-      secondary_group = Enum.find(mounts, &(&1["mount"] == secondary.mount_key))
-      assert secondary_group["title"] == "Secondary"
-      assert secondary_group["rootRel"] == secondary.root
+      assert secondary_mount["mountKey"] == secondary.mount_key
+      assert secondary_mount["title"] == "Secondary"
 
       # `mount_test_icm!/2` always seeds an AGENTS.md (every real external
       # ICM ships one) — with no other pages passed, that's the only node
       # in the tree: the "no ICM content" equivalent of the pre-3.2 empty
       # embedded-mount fixture.
-      assert Enum.map(secondary_group["tree"], & &1["name"]) == ["AGENTS"]
+      assert Enum.map(secondary_mount["tree"], & &1["name"]) == ["AGENTS"]
+
+      assert %{"success" => true, "data" => primary_mount} =
+               rpc(
+                 "icm_tree",
+                 %{"mountKey" => icm.mount_key, "generation" => generation},
+                 @mount_fields
+               )
+
+      assert primary_mount["mountKey"] == icm.mount_key
+    end
+
+    test "an unknown mount key surfaces outside_workspace", %{} do
+      generation = get_generation()
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "icm_tree",
+                 %{"mountKey" => "does-not-exist", "generation" => generation},
+                 @mount_fields
+               )
+
+      assert inspect(errors) =~ "outside_workspace"
+    end
+
+    test "a stale generation surfaces workspace_changed", %{icm: icm} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "icm_tree",
+                 %{"mountKey" => icm.mount_key, "generation" => 999_999},
+                 @mount_fields
+               )
+
+      assert inspect(errors) =~ "workspace_changed"
     end
   end
 
   describe "save_icm_page" do
     test "mutates and persists: load, append paragraph, save, re-fetch, verify", %{icm: icm} do
-      path = Path.join(icm.root, "Offers/Discovery Call.md")
+      path = "Offers/Discovery Call.md"
 
       # Load the original page
-      assert %{"success" => true, "data" => page} = rpc("icm_page", %{"path" => path})
+      assert %{"success" => true, "data" => page} =
+               rpc("icm_page", %{"mountKey" => icm.mount_key, "path" => path})
 
       original_hash = page["hash"]
       assert is_binary(original_hash)
@@ -160,6 +199,7 @@ defmodule ValeaWeb.IcmRpcTest do
                rpc(
                  "save_icm_page",
                  %{
+                   "mountKey" => icm.mount_key,
                    "path" => path,
                    "prosemirror" => mutated_prosemirror,
                    "baseHash" => original_hash
@@ -174,7 +214,8 @@ defmodule ValeaWeb.IcmRpcTest do
       assert saved_hash != original_hash
 
       # Re-fetch the page to verify persistence
-      assert %{"success" => true, "data" => refetched} = rpc("icm_page", %{"path" => path})
+      assert %{"success" => true, "data" => refetched} =
+               rpc("icm_page", %{"mountKey" => icm.mount_key, "path" => path})
 
       # Verify the content was persisted and contains the added text
       refetched_content = refetched["content"]
@@ -186,14 +227,16 @@ defmodule ValeaWeb.IcmRpcTest do
     end
 
     test "stale base hash surfaces page_changed", %{icm: icm} do
-      path = Path.join(icm.root, "Offers/Discovery Call.md")
+      path = "Offers/Discovery Call.md"
 
-      assert %{"success" => true, "data" => page} = rpc("icm_page", %{"path" => path})
+      assert %{"success" => true, "data" => page} =
+               rpc("icm_page", %{"mountKey" => icm.mount_key, "path" => path})
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "save_icm_page",
                  %{
+                   "mountKey" => icm.mount_key,
                    "path" => path,
                    "prosemirror" => page["prosemirror"],
                    "baseHash" => "deadbeef"
@@ -205,14 +248,16 @@ defmodule ValeaWeb.IcmRpcTest do
     end
 
     test "a stale generation surfaces workspace_changed and does not save", %{icm: icm} do
-      path = Path.join(icm.root, "Offers/Discovery Call.md")
+      path = "Offers/Discovery Call.md"
 
-      assert %{"success" => true, "data" => page} = rpc("icm_page", %{"path" => path})
+      assert %{"success" => true, "data" => page} =
+               rpc("icm_page", %{"mountKey" => icm.mount_key, "path" => path})
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "save_icm_page",
                  %{
+                   "mountKey" => icm.mount_key,
                    "path" => path,
                    "prosemirror" => page["prosemirror"],
                    "baseHash" => page["hash"],
@@ -224,23 +269,25 @@ defmodule ValeaWeb.IcmRpcTest do
       assert inspect(errors) =~ "workspace_changed"
 
       # Untouched: re-fetching still shows the original hash.
-      assert %{"success" => true, "data" => refetched} = rpc("icm_page", %{"path" => path})
+      assert %{"success" => true, "data" => refetched} =
+               rpc("icm_page", %{"mountKey" => icm.mount_key, "path" => path})
 
       assert refetched["hash"] == page["hash"]
     end
 
     test "a matching generation saves normally", %{icm: icm} do
-      assert %{"success" => true, "data" => %{"generation" => generation}} =
-               rpc("get_workspace", %{})
+      generation = get_generation()
 
-      path = Path.join(icm.root, "Offers/Discovery Call.md")
+      path = "Offers/Discovery Call.md"
 
-      assert %{"success" => true, "data" => page} = rpc("icm_page", %{"path" => path})
+      assert %{"success" => true, "data" => page} =
+               rpc("icm_page", %{"mountKey" => icm.mount_key, "path" => path})
 
       assert %{"success" => true, "data" => saved} =
                rpc(
                  "save_icm_page",
                  %{
+                   "mountKey" => icm.mount_key,
                    "path" => path,
                    "prosemirror" => page["prosemirror"],
                    "baseHash" => page["hash"],
@@ -258,33 +305,37 @@ defmodule ValeaWeb.IcmRpcTest do
       assert %{"success" => true, "data" => %{"path" => path}} =
                rpc(
                  "create_icm_page",
-                 %{"parentPath" => Path.join(icm.root, "Offers"), "name" => "New Offer"},
+                 %{"mountKey" => icm.mount_key, "parentPath" => "Offers", "name" => "New Offer"},
                  ["path"]
                )
 
-      assert path == Path.join(icm.root, "Offers/New Offer.md")
+      assert path == "Offers/New Offer.md"
     end
 
     test "create_icm_page at the mount root succeeds", %{icm: icm} do
       assert %{"success" => true, "data" => %{"path" => path}} =
                rpc(
                  "create_icm_page",
-                 %{"parentPath" => icm.root, "name" => "Root Test"},
+                 %{"mountKey" => icm.mount_key, "parentPath" => "", "name" => "Root Test"},
                  ["path"]
                )
 
-      assert path == Path.join(icm.root, "Root Test.md")
+      assert path == "Root Test.md"
     end
 
     test "create_icm_folder returns the new path", %{icm: icm} do
       assert %{"success" => true, "data" => %{"path" => path}} =
                rpc(
                  "create_icm_folder",
-                 %{"parentPath" => Path.join(icm.root, "Offers"), "name" => "New Section"},
+                 %{
+                   "mountKey" => icm.mount_key,
+                   "parentPath" => "Offers",
+                   "name" => "New Section"
+                 },
                  ["path"]
                )
 
-      assert path == Path.join(icm.root, "Offers/New Section")
+      assert path == "Offers/New Section"
     end
 
     test "create_icm_page_from_template substitutes title and date", %{icm: icm} do
@@ -292,17 +343,19 @@ defmodule ValeaWeb.IcmRpcTest do
                rpc(
                  "create_icm_page_from_template",
                  %{
-                   "parentPath" => Path.join(icm.root, "Clients"),
+                   "mountKey" => icm.mount_key,
+                   "parentPath" => "Clients",
                    "name" => "Anna Roth",
-                   "templatePath" => Path.join(icm.root, "Templates/Client.md")
+                   "templateMountKey" => icm.mount_key,
+                   "templatePath" => "Templates/Client.md"
                  },
                  ["path"]
                )
 
-      assert path == Path.join(icm.root, "Clients/Anna Roth.md")
+      assert path == "Clients/Anna Roth.md"
 
       assert %{"success" => true, "data" => page} =
-               rpc("icm_page", %{"path" => path})
+               rpc("icm_page", %{"mountKey" => icm.mount_key, "path" => path})
 
       assert page["content"] =~ "# Anna Roth"
       assert page["content"] =~ Date.utc_today() |> Date.to_iso8601()
@@ -323,9 +376,11 @@ defmodule ValeaWeb.IcmRpcTest do
                rpc(
                  "create_icm_page_from_template",
                  %{
-                   "parentPath" => Path.join(icm.root, "Clients"),
+                   "mountKey" => icm.mount_key,
+                   "parentPath" => "Clients",
                    "name" => "X",
-                   "templatePath" => Path.join(secondary.root, "Templates/T.md")
+                   "templateMountKey" => secondary.mount_key,
+                   "templatePath" => "Templates/T.md"
                  },
                  ["path"]
                )
@@ -338,13 +393,14 @@ defmodule ValeaWeb.IcmRpcTest do
                rpc(
                  "rename_icm_entry",
                  %{
-                   "path" => Path.join(icm.root, "Templates/Follow-up Email.md"),
+                   "mountKey" => icm.mount_key,
+                   "path" => "Templates/Follow-up Email.md",
                    "newName" => "Follow-up Note"
                  },
                  ["path", "updatedWorkflows"]
                )
 
-      assert data["path"] == Path.join(icm.root, "Templates/Follow-up Note.md")
+      assert data["path"] == "Templates/Follow-up Note.md"
       assert is_list(data["updatedWorkflows"])
       assert data["updatedWorkflows"] != []
       assert "Post-Session Follow-up" in data["updatedWorkflows"]
@@ -354,7 +410,7 @@ defmodule ValeaWeb.IcmRpcTest do
       assert %{"success" => true, "data" => %{"deleted" => true}} =
                rpc(
                  "delete_icm_entry",
-                 %{"path" => Path.join(icm.root, "Offers/Discovery Call.md")},
+                 %{"mountKey" => icm.mount_key, "path" => "Offers/Discovery Call.md"},
                  ["deleted"]
                )
     end
@@ -363,7 +419,7 @@ defmodule ValeaWeb.IcmRpcTest do
       assert %{"success" => true, "data" => %{"workflows" => workflows}} =
                rpc(
                  "icm_entry_references",
-                 %{"path" => Path.join(icm.root, "Templates/Follow-up Email.md")},
+                 %{"mountKey" => icm.mount_key, "path" => "Templates/Follow-up Email.md"},
                  [%{"workflows" => ["file", "name"]}]
                )
 
@@ -390,7 +446,7 @@ defmodule ValeaWeb.IcmRpcTest do
       assert %{"success" => true, "data" => %{"workflows" => workflows, "pages" => pages}} =
                rpc(
                  "icm_entry_references",
-                 %{"path" => Path.join(icm.root, "Templates/Follow-up Email.md")},
+                 %{"mountKey" => icm.mount_key, "path" => "Templates/Follow-up Email.md"},
                  [
                    %{"workflows" => ["file", "name"]},
                    %{"pages" => ["sourcePath", "mount", "linkText"]}
@@ -400,10 +456,9 @@ defmodule ValeaWeb.IcmRpcTest do
       assert is_list(workflows)
       assert is_list(pages)
 
-      refute Enum.any?(pages, &(&1["sourcePath"] == Path.join(icm.root, "Offers/Not A Link.md")))
+      refute Enum.any?(pages, &(&1["sourcePath"] == "Offers/Not A Link.md"))
 
-      hit =
-        Enum.find(pages, &(&1["sourcePath"] == Path.join(icm.root, "Offers/Backlink Source.md")))
+      hit = Enum.find(pages, &(&1["sourcePath"] == "Offers/Backlink Source.md"))
 
       assert hit != nil
       assert hit["mount"] == icm.mount_key
@@ -415,7 +470,11 @@ defmodule ValeaWeb.IcmRpcTest do
     # `results`/`skipped` are the `:search` action's own `constraints
     # fields: [...]` typed return (Task C2) — `results` nests field
     # selection into an `Array<TypedMap>`, same shape as `icm_tree`'s
-    # `mounts` above.
+    # `mounts` above. `search`/`paths_exist` are NOT part of task 4.2's
+    # re-key (they stay workspace-scoped, addressing every enabled mount by
+    # name) — only each result's `path` changed, from an absolute
+    # `icm.root`-joined literal to ICM-relative (mirroring every other ICM
+    # RPC surface's `(mount_key, rel_path)` addressing).
     @search_fields [%{"results" => ["path", "mount", "title", "snippet", "terms"]}, "skipped"]
 
     test "returns camelCased results with mount name for a seeded term", %{icm: icm} do
@@ -424,11 +483,7 @@ defmodule ValeaWeb.IcmRpcTest do
 
       assert is_list(skipped)
 
-      hit =
-        Enum.find(
-          results,
-          &(&1["path"] == Path.join(icm.root, "Offers/Founder Coaching Package.md"))
-        )
+      hit = Enum.find(results, &(&1["path"] == "Offers/Founder Coaching Package.md"))
 
       assert hit["mount"] == icm.mount_key
       assert hit["title"] == "Founder Coaching Package"
