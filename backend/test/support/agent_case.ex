@@ -9,20 +9,31 @@ defmodule Valea.AgentCase do
   alias Valea.Mounts
   alias Valea.Workspace.Manager
 
-  @doc "Command spec for the fake ACP adapter test double, for a given scenario name."
-  def fake_cmd(scenario) do
+  @doc """
+  Command spec for the fake ACP adapter test double, for a given scenario
+  name. `extra_args` are appended after the scenario name (e.g. a mounted
+  external ICM's resolved root, for a scenario that needs to address a path
+  outside the workspace — see `"permission_risk_tier"` in
+  `test/support/fake_adapter.exs`).
+  """
+  def fake_cmd(scenario, extra_args \\ []) do
     elixir = System.find_executable("elixir")
     jason = Path.expand("_build/test/lib/jason/ebin")
     script = Path.expand("test/support/fake_adapter.exs")
-    [elixir, "-pa", jason, script, scenario]
+    [elixir, "-pa", jason, script, scenario | extra_args]
   end
 
   @doc """
   Points the harness at the fake adapter for `scenario`, then starts a session
   rooted at `workspace` with `extra` merged over sane test defaults.
+
+  `extra` may carry `:harness_args` — extra CLI args for the fake adapter
+  (see `fake_cmd/2`) — popped off before the rest is merged into the
+  session-start map.
   """
   def start_session(workspace, scenario, extra \\ %{}) do
-    Valea.App.Config.set_harness_command(fake_cmd(scenario))
+    {harness_args, extra} = Map.pop(extra, :harness_args, [])
+    Valea.App.Config.set_harness_command(fake_cmd(scenario, harness_args))
 
     Valea.Agents.start_session(
       Map.merge(

@@ -97,10 +97,9 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     })
 
     write_workspace_yaml!(root, """
-    mounts:
+    icms:
       ext:
-        kind: path
-        ref: "#{ext}"
+        path: "#{ext}"
     """)
 
     ext_root = resolved_root(root, "ext")
@@ -127,13 +126,11 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     })
 
     write_workspace_yaml!(root, """
-    mounts:
+    icms:
       ext-a:
-        kind: path
-        ref: "#{ext_a}"
+        path: "#{ext_a}"
       ext-b:
-        kind: path
-        ref: "#{ext_b}"
+        path: "#{ext_b}"
     """)
 
     ext_a_root = resolved_root(root, "ext-a")
@@ -158,10 +155,9 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     })
 
     write_workspace_yaml!(root, """
-    mounts:
+    icms:
       ext:
-        kind: path
-        ref: "#{ext}"
+        path: "#{ext}"
     """)
 
     ext_root = resolved_root(root, "ext")
@@ -170,10 +166,9 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     assert "Read(#{ext_root}/**)" in read_perms(root)["allow"]
 
     write_workspace_yaml!(root, """
-    mounts:
+    icms:
       ext:
-        kind: path
-        ref: "#{ext}"
+        path: "#{ext}"
         enabled: false
     """)
 
@@ -195,10 +190,9 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     })
 
     write_workspace_yaml!(root, """
-    mounts:
+    icms:
       weird:
-        kind: path
-        ref: "#{weird}"
+        path: "#{weird}"
     """)
 
     :ok = ClaudeSettings.write!(root)
@@ -223,10 +217,9 @@ defmodule Valea.Agents.ClaudeSettingsTest do
     })
 
     write_workspace_yaml!(root, """
-    mounts:
+    icms:
       ext:
-        kind: path
-        ref: "#{ext}"
+        path: "#{ext}"
     """)
 
     :ok = ClaudeSettings.write!(root)

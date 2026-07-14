@@ -101,22 +101,20 @@ defmodule Valea.Agents.SessionServerTest do
   test "permission items carry the server-derived risk tier (display metadata only)", %{
     root: root
   } do
-    # The fake adapter subprocess reads its OWN `File.cwd!()` (set via
-    # erlexec's `{:cd, workspace}`) to build its rawInput paths — and on
-    # macOS a tmp dir path lexically differs from what `getcwd()` reports
-    # after chdir (`/var/...` vs the physical `/private/var/...`, same
-    # symlink quirk `PermissionPolicy`'s moduledoc already documents).
-    # Resolve `root` to that same physical form up front so the workspace
-    # this test starts the session with is the exact string the subprocess
-    # will echo back — otherwise `RiskTier.classify`'s lexical
-    # `Path.relative_to` would silently fail to attribute the path to its
-    # mount.
-    {:ok, root} = Valea.Paths.resolve_real(root, root)
-
-    File.mkdir_p!(Path.join(root, "mounts/primary/Workflows"))
+    # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:`
+    # ONLY, and every mount is EXTERNAL — a bare `mounts/primary/...` dir
+    # under `root` names no mount at all (see that module's moduledoc).
+    # Mount a REAL external ICM and hand its resolved root to the fake
+    # adapter subprocess via `:harness_args` (it cannot discover this any
+    # other way — it only ever sees its own `cwd`, the workspace) so it can
+    # build rawInput paths that actually attribute to the mount.
+    File.mkdir_p!(Path.join(root, "config"))
+    icm = Valea.AgentCase.mount_test_icm!(root, name: "Primary")
     File.mkdir_p!(Path.join(root, "sources/mail"))
 
-    {:ok, %{id: id}} = start_session(root, "permission_risk_tier")
+    {:ok, %{id: id}} =
+      start_session(root, "permission_risk_tier", %{harness_args: [icm.root]})
+
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
 
     :ok = Valea.Agents.SessionServer.prompt(id, "write")

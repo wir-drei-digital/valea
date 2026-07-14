@@ -13,6 +13,18 @@ defmodule FakeAdapter do
     loop(%{scenario: scenario, session: "fake-sess-1"})
   end
 
+  # `permission_risk_tier` passes a second arg: the resolved root of a
+  # mounted EXTERNAL ICM (a real dir outside the workspace, minted by the
+  # test via `Valea.AgentCase.mount_test_icm!/2` and threaded through via
+  # `start_session/3`'s `:harness_args`) — the subprocess's own `cwd` (the
+  # workspace root) no longer names any mount post-task-3.2 (`Valea.Mounts`
+  # is config-truth over `icms:`, every mount external — see that module's
+  # moduledoc), so a path has to be built against the mount's OWN root to
+  # attribute to it at all.
+  def main([scenario, icm_root]) do
+    loop(%{scenario: scenario, session: "fake-sess-1", icm_root: icm_root})
+  end
+
   defp loop(ctx) do
     case IO.gets("") do
       :eof ->
@@ -100,20 +112,22 @@ defmodule FakeAdapter do
         reply(id, %{"stopReason" => "end_turn"})
 
       "permission_risk_tier" ->
-        # Three asks in one turn, each against a real path under the
-        # session's own workspace (ProcessRuntime sets the subprocess cwd
-        # to the workspace) — one behavior-bearing (high), one ordinary
-        # knowledge page (medium), one outside any mount (no tier at all).
-        # Waits for the answer between each so the SessionServer.answer_
-        # permission driving pattern matches the existing "permission"
-        # scenario.
+        # Three asks in one turn: one behavior-bearing path inside the
+        # mounted external ICM (high), one ordinary knowledge page inside
+        # it (medium), one under the session's own workspace — outside any
+        # mount (no tier at all). `ctx.icm_root` is the mounted ICM's own
+        # resolved root (see `main/1`'s two-arg clause); `cwd` (ProcessRuntime
+        # sets the subprocess cwd to the workspace) is only used for the
+        # no-tier path. Waits for the answer between each so the
+        # SessionServer.answer_permission driving pattern matches the
+        # existing "permission" scenario.
         cwd = File.cwd!()
+        icm_root = Map.get(ctx, :icm_root, cwd)
 
         targets = [
           {"pr1", "Write Workflows page",
-           Path.join([cwd, "mounts/primary/Workflows/New Inquiry Triage.md"])},
-          {"pr2", "Write knowledge page",
-           Path.join([cwd, "mounts/primary/Pricing/Current Pricing.md"])},
+           Path.join([icm_root, "Workflows/New Inquiry Triage.md"])},
+          {"pr2", "Write knowledge page", Path.join([icm_root, "Pricing/Current Pricing.md"])},
           {"pr3", "Write source file", Path.join([cwd, "sources/mail/inbox.md"])}
         ]
 
