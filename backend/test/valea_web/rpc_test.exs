@@ -5,6 +5,7 @@ defmodule ValeaWeb.RpcTest do
 
   @endpoint ValeaWeb.Endpoint
 
+  alias Valea.AgentCase
   alias Valea.Mail.Engine
   alias Valea.Workspace.Manager
 
@@ -79,23 +80,23 @@ defmodule ValeaWeb.RpcTest do
   end
 
   test "icm_tree and cockpit_today succeed with a workspace open", %{parent: parent} do
-    # A fresh scaffold (T8) mints its own real mount from the template's
-    # seed content at `mounts/<slug-of-name>` — naming the workspace
-    # "Primary" lands it at exactly `mounts/primary`, with no separate
-    # seed step needed.
-    # Legacy path-based `Manager.create/2` (v4, starter mount) — called
-    # directly rather than through the `create_workspace` RPC, which is now
-    # the C9 id-based surface (`Manager.create/1`, v5, no `mounts/`). This
-    # test exercises the seeded `mounts/primary/...` content the id-based
-    # create can't provide yet (Phase 3 introduces the config-backed ICM
-    # registry) — see `Valea.Api.Workspace`'s moduledoc.
-    {:ok, _} = Manager.create(parent, "Primary")
+    # Legacy path-based `Manager.create/2` (v4) — called directly rather
+    # than through the `create_workspace` RPC, which is now the C9
+    # id-based surface (`Manager.create/1`, v5, no `mounts/`). Post-3.2,
+    # `Valea.Mounts.list/1` is config truth over `icms:` only — a fresh
+    # scaffold seeds no mount at all any more — so the ICM content this
+    # test exercises comes from a REAL EXTERNAL ICM mounted via
+    # `AgentCase.mount_test_icm!/2`, never the old seeded embedded
+    # `mounts/primary/...` starter content.
+    {:ok, ws} = Manager.create(parent, "Primary")
     await_engine_active!()
+
+    icm = AgentCase.mount_test_icm!(ws.path, name: "Primary", pages: %{"Offers/X.md" => "# X\n"})
 
     assert %{"success" => true, "data" => %{"mounts" => [mount]}} =
              rpc("icm_tree", %{}, [%{"mounts" => ["mount", "title", "rootRel", "tree"]}])
 
-    assert mount["mount"] == "primary"
+    assert mount["mount"] == icm.mount_key
     assert Enum.any?(mount["tree"], &(&1["name"] == "Offers"))
 
     assert %{
