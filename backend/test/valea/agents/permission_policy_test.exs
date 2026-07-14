@@ -1,6 +1,15 @@
 defmodule Valea.Agents.PermissionPolicyTest do
   use ExUnit.Case, async: true
 
+  # This suite covers the LEGACY ctx shape (`ctx.workspace` / ws-relative
+  # `read_roots` / `extra_roots`) that `SessionServer.init/1` and
+  # `Valea.Workflows.Runner` still build as of Task 5.3 — `PermissionPolicy`
+  # dispatches to `decide_legacy/2` for any ctx that lacks a `:workspace_root`
+  # key, so this whole file stays green as regression coverage for the
+  # pre-split contract until those callers migrate (5.4/5.5). The NEW
+  # `workspace_root` / `cwd` / `read_roots` (absolute) split contract has its
+  # own coverage in `PermissionPolicySplitTest` below this module.
+
   alias Valea.Agents.PermissionPolicy
 
   setup do
@@ -421,5 +430,87 @@ defmodule Valea.Agents.PermissionPolicyTest do
 
       assert :ask = PermissionPolicy.decide(it, ctx)
     end
+  end
+end
+
+# Task 5.3: the NEW `workspace_root` / `cwd` / `read_roots` (absolute) split
+# contract. `PermissionPolicy.decide/2` dispatches here whenever `ctx` carries
+# a `:workspace_root` key. `ctx.workspace` / ws-relative `ctx.read_roots` /
+# `ctx.extra_roots` are gone from this contract — `read_roots` is now an
+# absolute list (primary root + related roots + exact task inputs), `cwd` is
+# the absolute primary ICM root relative candidates resolve against, and
+# `workspace_root` is the absolute base the protected-dir deny-list checks
+# against. This is the exact test suite from the Task 5.3 brief, verbatim.
+defmodule Valea.Agents.PermissionPolicySplitTest do
+  use ExUnit.Case, async: true
+  alias Valea.Agents.PermissionPolicy, as: P
+
+  setup do
+    tmp = Path.join(System.tmp_dir!(), "pp-#{System.unique_integer([:positive])}")
+    ws = Path.join(tmp, "ws")
+    icm = Path.join(tmp, "icm")
+    rel = Path.join(tmp, "related")
+
+    for d <- [Path.join(ws, "logs"), Path.join(ws, "secrets"), icm, rel, Path.join(ws, "sources")],
+        do: File.mkdir_p!(d)
+
+    File.write!(Path.join(icm, "AGENTS.md"), "x")
+    File.write!(Path.join(rel, "CONTEXT.md"), "x")
+    on_exit(fn -> File.rm_rf!(tmp) end)
+
+    %{
+      ctx: %{
+        workspace_root: ws,
+        cwd: icm,
+        read_roots: [icm, rel],
+        session_kind: "chat",
+        write_paths: [],
+        write_roots: []
+      },
+      ws: ws,
+      icm: icm,
+      rel: rel
+    }
+  end
+
+  defp read(path),
+    do: %{"rawInput" => %{"file_path" => path}, "toolName" => "Read", "kind" => "read"}
+
+  defp write(path),
+    do: %{"rawInput" => %{"file_path" => path}, "toolName" => "Write", "kind" => "write"}
+
+  test "relative read resolves against the primary ICM cwd, not the workspace", %{ctx: ctx} do
+    # resolves under cwd == icm
+    assert {:allow, _} = P.decide(read("AGENTS.md"), ctx)
+  end
+
+  test "reads in a related root are allowed", %{ctx: ctx, rel: rel} do
+    assert {:allow, _} = P.decide(read(Path.join(rel, "CONTEXT.md")), ctx)
+  end
+
+  test "workspace operational state is denied", %{ctx: ctx, ws: ws} do
+    assert {:deny, _} = P.decide(read(Path.join(ws, "logs/audit.jsonl")), ctx)
+    assert {:deny, _} = P.decide(read(Path.join(ws, "secrets/x")), ctx)
+  end
+
+  test "reading the workspace sources is not auto-allowed for a chat", %{ctx: ctx, ws: ws} do
+    assert :ask = P.decide(read(Path.join(ws, "sources/mail/messages/1.md")), ctx)
+  end
+
+  test "chat writes ask; workflow writes to an exact grant allow", %{ctx: ctx, icm: icm} do
+    assert :ask = P.decide(write(Path.join(icm, "Pricing/x.md")), ctx)
+    grant = %{ctx | session_kind: "workflow", write_paths: [Path.join(icm, "out.json")]}
+    assert {:allow, _} = P.decide(write(Path.join(icm, "out.json")), grant)
+  end
+
+  test "a related root that is not granted is denied on symlink escape", %{ctx: ctx} do
+    assert {:deny, _} = P.decide(read("/etc/passwd"), ctx)
+  end
+
+  test "root instruction files resolve against the primary ICM cwd, not the workspace", %{
+    ctx: ctx
+  } do
+    # @root_files, now cwd == ICM-relative
+    assert {:allow, _} = P.decide(read("CLAUDE.md"), ctx)
   end
 end
