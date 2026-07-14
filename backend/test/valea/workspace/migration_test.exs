@@ -404,6 +404,24 @@ defmodule Valea.Workspace.MigrationTest do
 
     assert File.exists?(Path.join(root, "MOUNTS.md"))
     mounts_md = File.read!(Path.join(root, "MOUNTS.md"))
+
+    # KNOWN FAILING (reported, not papered over — see the migration
+    # report): the v3->v4 step mints this mount by RENAMING `icm/` to
+    # `mounts/<slug>` (embedded, INSIDE the workspace) but never writes an
+    # `icms:` config entry for it. `Valea.Mounts.list/1` is config truth
+    # over `icms:` ONLY now, so `MountsMd.regenerate/1` (which reads
+    # `Mounts.list/1`) can never see this mount — and even a hand-written
+    # `icms:` entry pointing at it would be degraded on read by
+    # `Valea.Mounts.External.check_boundaries/2`'s `:inside_workspace`
+    # rule, which is unconditional and by design (every declared mount
+    # must resolve OUTSIDE the workspace). Same root cause, same
+    # resolution options, as the identical gap in
+    # `test/valea/workspace/adopt_test.exs`'s "moves the folder into
+    # mounts/<slug>..." test — fixing it needs a product decision above
+    # this test's scope (either `Migration` mounts by reference instead of
+    # renaming in place, or `Mounts` grows a legitimate in-workspace mount
+    # concept, a change to the forbidden `lib/valea/mounts.ex` / its
+    # `external.ex` boundary rules). Left failing rather than weakened.
     assert mounts_md =~ "@mounts/#{slug}/AGENTS.md"
 
     yaml = File.read!(Path.join(root, "config/workspace.yaml"))

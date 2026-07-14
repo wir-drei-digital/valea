@@ -113,7 +113,7 @@ defmodule Valea.Workspace.AdoptTest do
       # a manifest was minted (source had none), named from the folder
       assert {:ok, manifest} = Manifest.load(mount_dir)
       assert manifest.name == Path.basename(source)
-      refute manifest.id == nil
+      assert Regex.match?(~r/^[0-9a-f-]{36}$/, manifest.id)
 
       # only ONE mount — the starter mount scaffold seeds is gone (removed
       # pre-open, never opened, never surfaced)
@@ -121,6 +121,24 @@ defmodule Valea.Workspace.AdoptTest do
                Path.wildcard(Path.join(target, "mounts/*"))
                |> Enum.map(&Path.relative_to(&1, target))
 
+      # KNOWN FAILING (reported, not papered over — see the migration
+      # report): `create_with_icm/3` mints this mount by MOVING the folder
+      # to `mounts/<slug>` (embedded, INSIDE the workspace) but never
+      # writes an `icms:` config entry for it. `Valea.Mounts.list/1` is
+      # config truth over `icms:` ONLY now, so `MountsMd.regenerate/1`
+      # (which reads `Mounts.list/1`) can never see this mount, no matter
+      # what — and even a hand-written `icms:` entry pointing at it would
+      # be degraded on read by `Valea.Mounts.External.check_boundaries/2`'s
+      # `:inside_workspace` rule, which is unconditional and by design
+      # (every declared mount must resolve OUTSIDE the workspace). Fixing
+      # this needs a product decision above this test's scope: either
+      # `Adopt` mounts by reference instead of moving (a bigger behavioral
+      # change — would also break the "never copied — the source path no
+      # longer exists at all" assertion above), or `Mounts` grows a
+      # legitimate in-workspace mount concept (a change to the forbidden
+      # `lib/valea/mounts.ex` / its `external.ex` boundary rules, which are
+      # extensively documented as intentional). Left failing rather than
+      # weakened.
       mounts_md = File.read!(Path.join(target, "MOUNTS.md"))
       assert mounts_md =~ "@mounts/#{slug}/AGENTS.md"
 
