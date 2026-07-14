@@ -193,6 +193,27 @@ defmodule Valea.Api.Agents do
       end
     end
 
+    # Task 6.3 — follow-up inherits the ORIGINAL session's own primary ICM
+    # (never a caller-supplied `mount_key`); see `Valea.Agents.
+    # create_follow_up/2`'s moduledoc for the full error-mapping rationale
+    # (`original_not_found` / `icm_unavailable` / `workspace_changed`, all
+    # covered for free by `error_for/1`'s generic atom clause below).
+    action :create_follow_up, :map do
+      constraints fields: [id: [type: :string, allow_nil?: false]]
+
+      argument :session_id, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{session_id: session_id, generation: generation} = input.arguments
+
+        case Valea.Agents.create_follow_up(session_id, generation) do
+          {:ok, %{id: id}} -> {:ok, %{id: id}}
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :run_workflow, :map do
       constraints fields: [
                     run_id: [type: :string, allow_nil?: false],

@@ -11,6 +11,7 @@ defmodule Valea.Agents do
   workspace-wide session index for the SPA's session list).
   """
 
+  alias Valea.Agents.SessionScope
   alias Valea.Agents.SessionServer
   alias Valea.Mounts
   alias Valea.Workspace.Manager
@@ -277,6 +278,60 @@ defmodule Valea.Agents do
       status: s["status"],
       live: s["live"]
     }
+  end
+
+  @doc """
+  Starts a follow-up session for `session_id` (Task 6.3, spec §"Session
+  persistence"): reads the ORIGINAL transcript's own `icm_mount` (never a
+  caller-supplied one — a follow-up always inherits its parent's primary
+  ICM) and resolves a FRESH `SessionScope` for that `mount_key` via
+  `SessionScope.resolve/1` — the single scope authority; no root is
+  re-derived here. `{:error, :original_not_found}` when `session_id` names
+  no transcript in the CURRENTLY open workspace (including when no
+  workspace is open at all). `resolve/1`'s own errors
+  (`:workspace_changed` for a stale `generation`, `:icm_unavailable` for an
+  original ICM that's since been unmounted/disabled/degraded) pass through
+  unchanged — the original transcript itself is untouched either way, so it
+  stays viewable (the UI's repair action is a later phase's concern).
+  """
+  @spec create_follow_up(String.t(), integer()) ::
+          {:ok, %{id: String.t()}}
+          | {:error, :original_not_found | :icm_unavailable | :workspace_changed}
+  def create_follow_up(session_id, generation) do
+    with {:ok, %{mount_key: mount_key, kind: kind}} <- original_session(session_id) do
+      id = generate_session_id()
+
+      with {:ok, scope} <-
+             SessionScope.resolve(%{
+               kind: kind,
+               mount_key: mount_key,
+               generation: generation,
+               session_id: id
+             }) do
+        start_session(%{
+          id: id,
+          kind: kind,
+          title: "New session",
+          scope: scope,
+          run: nil,
+          initial_prompt: nil,
+          on_turn_end: nil
+        })
+      end
+    end
+  end
+
+  defp original_session(session_id) do
+    case Manager.current() do
+      {:ok, %{path: workspace}} ->
+        case read_meta(transcript_path(workspace, session_id)) do
+          {:ok, meta} -> {:ok, %{mount_key: meta["icm_mount"], kind: meta["kind"]}}
+          :error -> {:error, :original_not_found}
+        end
+
+      {:error, :no_workspace} ->
+        {:error, :original_not_found}
+    end
   end
 
   defp sessions_dir(workspace), do: Path.join([workspace, "logs", "sessions"])

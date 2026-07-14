@@ -1,8 +1,9 @@
 defmodule Valea.AgentsTest do
   @moduledoc """
-  Direct coverage for `Valea.Agents`' Task 6.2 additions (grouped-by-ICM
-  recent listing, per-ICM history paging). Uses `Valea.AgentCase`
-  throughout, same as `test/valea/agents/session_server_test.exs`.
+  Direct coverage for `Valea.Agents`' Task 6.2 (grouped-by-ICM recent
+  listing, per-ICM history paging) and Task 6.3 (`create_follow_up/2`)
+  additions. Uses `Valea.AgentCase` throughout, same as
+  `test/valea/agents/session_server_test.exs`.
   """
   use ExUnit.Case, async: false
 
@@ -15,6 +16,7 @@ defmodule Valea.AgentsTest do
     ]
 
   alias Valea.Agents
+  alias Valea.Mounts
   alias Valea.Workspace.Manager
 
   setup do
@@ -161,6 +163,65 @@ defmodule Valea.AgentsTest do
         Agents.list_sessions_for(mount_key, cursor, 10)
 
       {Enum.map(sessions, & &1.id), next_cursor}
+    end
+  end
+
+  describe "create_follow_up/2" do
+    test "starts a new session with the SAME icm_mount as the original", %{
+      ws: ws,
+      generation: generation,
+      alpha: alpha
+    } do
+      {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
+      on_exit(fn -> kill_session(original_id) end)
+
+      assert {:ok, %{id: follow_up_id}} = Agents.create_follow_up(original_id, generation)
+      on_exit(fn -> kill_session(follow_up_id) end)
+
+      assert follow_up_id != original_id
+
+      transcript = File.read!(Path.join(ws, "logs/sessions/#{follow_up_id}.jsonl"))
+      [meta_line | _] = String.split(transcript, "\n", trim: true)
+      meta = Jason.decode!(meta_line)
+
+      assert meta["icm_mount"] == alpha.mount_key
+      assert meta["kind"] == "chat"
+    end
+
+    test "an unknown original session id surfaces original_not_found", %{generation: generation} do
+      assert {:error, :original_not_found} = Agents.create_follow_up("nope", generation)
+    end
+
+    test "no open workspace surfaces original_not_found" do
+      Manager.close()
+      assert {:error, :original_not_found} = Agents.create_follow_up("nope", 1)
+    end
+
+    test "a stale generation surfaces workspace_changed", %{
+      ws: ws,
+      generation: generation,
+      alpha: alpha
+    } do
+      {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
+      on_exit(fn -> kill_session(original_id) end)
+
+      assert {:error, :workspace_changed} =
+               Agents.create_follow_up(original_id, generation - 1)
+    end
+
+    test "an unmounted ICM surfaces icm_unavailable; the original transcript stays viewable", %{
+      ws: ws,
+      generation: generation,
+      alpha: alpha
+    } do
+      {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
+      kill_session(original_id)
+
+      {:ok, _path} = Mounts.unmount(ws, alpha.mount_key)
+
+      assert {:error, :icm_unavailable} = Agents.create_follow_up(original_id, generation)
+
+      assert {:ok, %{status: "ended"}} = Agents.attach_or_replay(original_id)
     end
   end
 end

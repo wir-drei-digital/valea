@@ -289,6 +289,80 @@ export async function createAgentSessionChannel<Fields extends CreateAgentSessio
 }
 
 
+export type CreateFollowUpInput = {
+  sessionId: string;
+  generation: number;
+};
+
+export type CreateFollowUpFields = UnifiedFieldSelection<{id: string, __type: "TypedMap", __primitiveFields: "id"}>[];
+
+export type InferCreateFollowUpResult<
+  Fields extends CreateFollowUpFields | undefined,
+> = InferResult<{id: string, __type: "TypedMap", __primitiveFields: "id"}, Fields>;
+
+export type CreateFollowUpResult<Fields extends CreateFollowUpFields | undefined = undefined> = | { success: true; data: InferCreateFollowUpResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function createFollowUp<Fields extends CreateFollowUpFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateFollowUpInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateFollowUpResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_follow_up",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateFollowUpResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function createFollowUpChannel<Fields extends CreateFollowUpFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateFollowUpInput;
+  fields: Fields;
+  resultHandler: (result: CreateFollowUpResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateFollowUpResult<Fields>>(
+    config.channel,
+    {
+    action: "create_follow_up",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type DistillDecisionsInput = {
   generation: number;
 };
