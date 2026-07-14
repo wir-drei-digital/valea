@@ -244,14 +244,14 @@ defmodule Valea.ICM.WatcherTest do
     config_path = Path.join(ws_path, "config/workspace.yaml")
     {:ok, doc} = YamlElixir.read_from_file(config_path)
 
-    mounts =
-      (Map.get(doc, "mounts") || %{})
-      |> Map.put(name, %{"kind" => "path", "ref" => ref})
+    icms =
+      (Map.get(doc, "icms") || %{})
+      |> Map.put(name, %{"path" => ref})
 
     header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
 
     entries =
-      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
+      Enum.flat_map(Enum.sort_by(icms, &elem(&1, 0)), fn {n, entry} ->
         [
           "  #{n}:"
           | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
@@ -260,7 +260,7 @@ defmodule Valea.ICM.WatcherTest do
         ]
       end)
 
-    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
+    File.write!(config_path, Enum.join(header ++ ["icms:"] ++ entries, "\n") <> "\n")
   end
 
   defp render_scalar(v) when is_binary(v), do: inspect(v)
@@ -298,6 +298,44 @@ defmodule Valea.ICM.WatcherTest do
       {:mounts_changed} -> :ok
     after
       300 -> poll_until_mounts_changed(trigger, attempts_left - 1)
+    end
+  end
+
+  # A stronger settle than `drain_any/0` alone: `poll_until_mounts_changed/2`
+  # only waits for ONE `{:mounts_changed}` broadcast, but its own retry loop
+  # can fire the trigger more than once (macOS FSEvents port-arming lag can
+  # delay delivery enough that a retried, idempotent write produces its OWN
+  # separate, un-coalesced flush) -- a LATER-arriving duplicate from an
+  # earlier retry can otherwise straggle into a subsequent assertion window
+  # and satisfy IT prematurely, before ITS OWN triggering write has actually
+  # been processed. `mounts_timer` is armed (non-nil) on `Valea.ICM.Watcher`
+  # whenever a not-yet-flushed discovery-relevant event is pending, so
+  # polling it directly (rather than trusting a single fixed-timeout silent
+  # window) confirms no such straggler remains in flight. Two nil readings
+  # 250ms apart -- long enough for a delayed duplicate's fs event to arrive
+  # and get armed -- before trusting the quiescent reading.
+  defp settle_watcher! do
+    drain_any()
+    wait_for_nil_mounts_timer!()
+    Process.sleep(250)
+    wait_for_nil_mounts_timer!()
+    drain_any()
+  end
+
+  defp wait_for_nil_mounts_timer!(attempts_left \\ 20)
+
+  defp wait_for_nil_mounts_timer!(0) do
+    flunk("Valea.ICM.Watcher never settled (mounts_timer stayed armed)")
+  end
+
+  defp wait_for_nil_mounts_timer!(attempts_left) do
+    case :sys.get_state(Valea.ICM.Watcher) do
+      %{mounts_timer: nil} ->
+        :ok
+
+      _ ->
+        Process.sleep(50)
+        wait_for_nil_mounts_timer!(attempts_left - 1)
     end
   end
 
@@ -359,7 +397,7 @@ defmodule Valea.ICM.WatcherTest do
     # Disabling via `Mounts.set_enabled/2` directly (not the RPC layer)
     # writes `config/workspace.yaml` — the ONLY reason this broadcasts at
     # all is this watcher's own config/ discovery handling.
-    poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("ext", false) end)
+    poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled(ws.path, "ext", false) end)
     drain_any()
 
     File.write!(Path.join(ext, "post-disable.md"), "nope")
@@ -446,9 +484,9 @@ defmodule Valea.ICM.WatcherTest do
     assert state.fixed_watcher == fixed_before
     assert is_pid(state.external_watcher)
 
-    drain_any()
+    settle_watcher!()
 
-    poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("ext", false) end)
+    poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled(ws.path, "ext", false) end)
 
     state = :sys.get_state(Valea.ICM.Watcher)
     assert state.fixed_watcher == fixed_before
@@ -457,6 +495,21 @@ defmodule Valea.ICM.WatcherTest do
 
   test "a regeneration failure (unwritable workspace root) is rescued -- the watcher stays alive and still broadcasts",
        %{ws: ws} do
+    # A fresh v5 workspace seeds no mount at all (unlike the legacy v4
+    # scaffold's "w" starter mount this test originally toggled) -- register
+    # a real external one directly via the mutation API. Registration
+    # alone doesn't need the WATCHER to have noticed anything
+    # (`Mounts.list/1` reads config fresh off disk, no live process
+    # involved) -- only the DISABLE step below is under test, so this
+    # deliberately does NOT subscribe/wait for this registration's own
+    # (eventually-consistent) discovery broadcast: doing so would leave a
+    # window in which that broadcast's OWN (successful, pre-chmod) regen
+    # could straggle in and satisfy the disable step's `poll_until_mounts_changed`
+    # before the disable's own (post-chmod, failing) regen ever runs,
+    # making `log` empty and this assertion flaky.
+    ext = external_icm!("W")
+    {:ok, %{mount_key: mount_key}} = Valea.Mounts.mount(ws.path, ext)
+
     Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
 
     # `config/workspace.yaml` lives in a SUBdirectory, whose own
@@ -471,7 +524,9 @@ defmodule Valea.ICM.WatcherTest do
 
     log =
       capture_log(fn ->
-        poll_until_mounts_changed(fn _i -> Valea.Mounts.set_enabled("w", false) end)
+        poll_until_mounts_changed(fn _i ->
+          Valea.Mounts.set_enabled(ws.path, mount_key, false)
+        end)
       end)
 
     assert log =~ "Valea.ICM.Watcher: workspace metadata regeneration failed"

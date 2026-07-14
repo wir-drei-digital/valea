@@ -1,6 +1,7 @@
 defmodule Valea.ICM.SearchTest do
   use ExUnit.Case, async: false
 
+  alias Valea.AgentCase
   alias Valea.ICM.Search
   alias Valea.Workspace.Manager
 
@@ -25,26 +26,36 @@ defmodule Valea.ICM.SearchTest do
   end
 
   test "AND semantics across title and body, ranked title-first", %{workspace: ws} do
-    File.write!(
-      Path.join(ws, "mounts/primary/Offers/Retainer.md"),
-      "# Retainer\n\nMonthly coaching retainer.\n"
-    )
+    icm =
+      AgentCase.mount_test_icm!(ws,
+        name: "Primary",
+        pages: %{
+          "Offers/Retainer.md" => "# Retainer\n\nMonthly coaching retainer.\n",
+          "Clients/Note.md" => "# Note\n\nDiscussed a retainer with Julia.\n"
+        }
+      )
 
-    File.write!(
-      Path.join(ws, "mounts/primary/Clients/Note.md"),
-      "# Note\n\nDiscussed a retainer with Julia.\n"
-    )
+    retainer_path = Path.join(icm.root, "Offers/Retainer.md")
+    note_path = Path.join(icm.root, "Clients/Note.md")
 
     {:ok, %{results: results}} = Search.search(ws, "retainer")
     paths = Enum.map(results, & &1.path)
-    assert Enum.at(paths, 0) == "mounts/primary/Offers/Retainer.md"
-    assert "mounts/primary/Clients/Note.md" in paths
+    assert Enum.at(paths, 0) == retainer_path
+    assert note_path in paths
 
     {:ok, %{results: both}} = Search.search(ws, "retainer julia")
-    assert Enum.map(both, & &1.path) == ["mounts/primary/Clients/Note.md"]
+    assert Enum.map(both, & &1.path) == [note_path]
   end
 
   test "workflow contracts are searchable; snippet carries the match", %{workspace: ws} do
+    AgentCase.mount_test_icm!(ws,
+      name: "Primary",
+      pages: %{
+        "Workflows/New Inquiry Triage.md" =>
+          "# New Inquiry Triage\n\nClassify incoming inquiries by intent.\n"
+      }
+    )
+
     {:ok, %{results: results}} = Search.search(ws, "classify")
     assert Enum.any?(results, &String.contains?(&1.path, "Workflows/"))
     hit = Enum.find(results, &String.contains?(&1.path, "Workflows/"))
@@ -53,17 +64,39 @@ defmodule Valea.ICM.SearchTest do
   end
 
   test "disabled mounts are excluded", %{workspace: ws} do
-    :ok = Valea.Mounts.set_enabled("primary", false)
+    icm =
+      AgentCase.mount_test_icm!(ws,
+        name: "Primary",
+        pages: %{"Offers/Retainer.md" => "# Retainer\n\nMonthly coaching retainer.\n"}
+      )
+
+    :ok = Valea.Mounts.set_enabled(ws, icm.mount_key, false)
     {:ok, %{results: results}} = Search.search(ws, "coaching")
     assert results == []
-    :ok = Valea.Mounts.set_enabled("primary", true)
+    :ok = Valea.Mounts.set_enabled(ws, icm.mount_key, true)
   end
 
   test "a mount over budget is skipped and reported", %{workspace: ws} do
-    {:ok, [mount]} = Valea.Mounts.enabled()
+    # A large body (mirrors the "two mounts both over budget" fixture
+    # below) so the scan genuinely cannot finish within `timeout_ms: 0`
+    # regardless of scheduler timing -- a trivial one-line fixture can
+    # race ahead of `Task.yield_many/2`'s own zero-wait check on a
+    # fast/idle machine.
+    slow_body =
+      String.duplicate("the quick brown fox jumps over the lazy dog coaching ", 240_000)
 
-    {:ok, %{results: [], skipped: ["primary"]}} =
+    icm =
+      AgentCase.mount_test_icm!(ws,
+        name: "Primary",
+        pages: %{"Offers/Retainer.md" => slow_body}
+      )
+
+    [mount] = Valea.Mounts.enabled(ws)
+
+    {:ok, %{results: [], skipped: [skipped_name]}} =
       Search.search(ws, "coaching", mounts: [mount], timeout_ms: 0)
+
+    assert skipped_name == icm.mount_key
   end
 
   test "two mounts both over budget share one deadline, not a compounding one", %{
@@ -115,28 +148,34 @@ defmodule Valea.ICM.SearchTest do
   end
 
   test "regex metacharacters are literal text", %{workspace: ws} do
-    File.write!(
-      Path.join(ws, "mounts/primary/Offers/Weird.md"),
-      "# Weird\n\nprice (150) [draft]\n"
-    )
+    icm =
+      AgentCase.mount_test_icm!(ws,
+        name: "Primary",
+        pages: %{"Offers/Weird.md" => "# Weird\n\nprice (150) [draft]\n"}
+      )
+
+    weird_path = Path.join(icm.root, "Offers/Weird.md")
 
     {:ok, %{results: results}} = Search.search(ws, "(150)")
-    assert Enum.map(results, & &1.path) == ["mounts/primary/Offers/Weird.md"]
+    assert Enum.map(results, & &1.path) == [weird_path]
   end
 
   test "a query that is invalid as a regex is still treated as literal text", %{workspace: ws} do
     # "[draft" has an unmatched `[`, so compiling it as a regex would fail
     # (or need special error handling). It must still match literally via
     # String.contains?/2, proving no Regex.compile/1 path exists.
-    File.write!(
-      Path.join(ws, "mounts/primary/Offers/Weird.md"),
-      "# Weird\n\nprice (150) [draft]\n"
-    )
+    icm =
+      AgentCase.mount_test_icm!(ws,
+        name: "Primary",
+        pages: %{"Offers/Weird.md" => "# Weird\n\nprice (150) [draft]\n"}
+      )
+
+    weird_path = Path.join(icm.root, "Offers/Weird.md")
 
     assert {:error, _} = Regex.compile("[draft")
 
     {:ok, %{results: results}} = Search.search(ws, "[draft")
-    assert Enum.map(results, & &1.path) == ["mounts/primary/Offers/Weird.md"]
+    assert Enum.map(results, & &1.path) == [weird_path]
   end
 
   test "snippet cutting survives downcase byte-growth pushing a match past the body's own length",
@@ -148,9 +187,13 @@ defmodule Valea.ICM.SearchTest do
     # to drive `binary_part/3` to a negative length and crash. This locks in
     # the fix (`safe_pos` clamp in `snippet/3`).
     body = "# Turkish\n\n" <> String.duplicate("İ", 120) <> " target\n"
-    File.write!(Path.join(ws, "mounts/primary/Offers/Turkish.md"), body)
+
+    icm =
+      AgentCase.mount_test_icm!(ws, name: "Primary", pages: %{"Offers/Turkish.md" => body})
+
+    turkish_path = Path.join(icm.root, "Offers/Turkish.md")
 
     assert {:ok, %{results: results}} = Search.search(ws, "target")
-    assert Enum.any?(results, &(&1.path == "mounts/primary/Offers/Turkish.md"))
+    assert Enum.any?(results, &(&1.path == turkish_path))
   end
 end
