@@ -34,7 +34,7 @@ defmodule Valea.Agents do
   def start_session(opts) when is_map(opts) do
     with {:ok, spec} <-
            Valea.Harnesses.ClaudeCode.acp_command(%{env: Valea.Agents.Env.minimal()}) do
-      id = Map.get(opts, :id) || generate_id()
+      id = Map.get(opts, :id) || generate_session_id()
       child_opts = opts |> Map.put(:id, id) |> Map.put(:spec, spec)
 
       case DynamicSupervisor.start_child(
@@ -48,8 +48,20 @@ defmodule Valea.Agents do
     end
   end
 
-  # Backend-generated session id: UTC timestamp + "-" + 6-byte hex suffix.
-  defp generate_id do
+  @doc """
+  Backend-generated session id: UTC timestamp + "-" + 6-byte hex suffix.
+  Public (Task 5.5) so a caller that needs to resolve a `SessionScope`
+  BEFORE starting the session (`SessionScope.resolve/1` requires a
+  `session_id` up front, to derive `managed_context`'s path) can generate
+  the SAME id it then passes to `start_session/1` as `:id` — the recommended
+  "generate id -> resolve scope -> start_session(scope)" flow both
+  `Valea.Api.Agents.create_session` and `Valea.Workflows.Runner.start_run`
+  follow. `start_session/1` itself still falls back to calling this when no
+  `:id` is given, so an existing caller that doesn't need the scope-first
+  ordering is unaffected.
+  """
+  @spec generate_session_id() :: String.t()
+  def generate_session_id do
     stamp =
       DateTime.utc_now()
       |> DateTime.to_iso8601(:basic)

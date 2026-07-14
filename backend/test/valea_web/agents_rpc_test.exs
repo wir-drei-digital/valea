@@ -109,18 +109,28 @@ defmodule ValeaWeb.AgentsRpcTest do
   end
 
   describe "create_agent_session" do
-    test "happy path returns a session id and it shows up in list_agent_sessions", %{
-      generation: generation
-    } do
+    test "happy path returns a session id, launches inside the named mount's ICM, and shows up in list_agent_sessions",
+         %{
+           generation: generation,
+           icm: icm
+         } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
 
       assert %{"success" => true, "data" => %{"id" => id}} =
-               rpc("create_agent_session", %{"kind" => "chat", "generation" => generation}, [
-                 "id"
-               ])
+               rpc(
+                 "create_agent_session",
+                 %{"kind" => "chat", "mountKey" => icm.mount_key, "generation" => generation},
+                 ["id"]
+               )
 
       assert is_binary(id)
       on_exit(fn -> AgentCase.kill_session(id) end)
+
+      # Task 5.5: `create_session` resolves a `SessionScope` for `mountKey`
+      # and launches the session with cwd = that mount's own ICM root —
+      # never the workspace, never a caller-chosen path.
+      pid = GenServer.whereis({:via, Registry, {Valea.Agents.SessionRegistry, id}})
+      assert :sys.get_state(pid).policy_ctx.cwd == icm.root
 
       assert %{"success" => true, "data" => %{"sessions" => sessions}} =
                rpc("list_agent_sessions", %{}, [
@@ -147,7 +157,7 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert is_binary(session["startedAt"])
     end
 
-    test "a stale generation surfaces workspace_changed without starting a session", %{
+    test "an unknown mount_key surfaces icm_unavailable without starting a session", %{
       generation: generation
     } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
@@ -155,20 +165,45 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "create_agent_session",
-                 %{"kind" => "chat", "generation" => generation - 1},
+                 %{"kind" => "chat", "mountKey" => "nope", "generation" => generation},
+                 ["id"]
+               )
+
+      assert inspect(errors) =~ "icm_unavailable"
+    end
+
+    test "a stale generation surfaces workspace_changed without starting a session", %{
+      generation: generation,
+      icm: icm
+    } do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "create_agent_session",
+                 %{
+                   "kind" => "chat",
+                   "mountKey" => icm.mount_key,
+                   "generation" => generation - 1
+                 },
                  ["id"]
                )
 
       assert inspect(errors) =~ "workspace_changed"
     end
 
-    test "an unavailable harness surfaces harness_unavailable", %{generation: generation} do
+    test "an unavailable harness surfaces harness_unavailable", %{
+      generation: generation,
+      icm: icm
+    } do
       Valea.App.Config.set_harness_command(["no-such-binary-zzz"])
 
       assert %{"success" => false, "errors" => errors} =
-               rpc("create_agent_session", %{"kind" => "chat", "generation" => generation}, [
-                 "id"
-               ])
+               rpc(
+                 "create_agent_session",
+                 %{"kind" => "chat", "mountKey" => icm.mount_key, "generation" => generation},
+                 ["id"]
+               )
 
       assert inspect(errors) =~ "harness_unavailable"
     end

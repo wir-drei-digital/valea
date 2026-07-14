@@ -51,6 +51,8 @@ defmodule Valea.Workflows.Runner do
   """
 
   alias Valea.Agents.RiskTier
+  alias Valea.Agents.SessionScope
+  alias Valea.Mounts
   alias Valea.Workflows
   alias Valea.Workflows.MemoryProposal
   alias Valea.Workspace.Manager
@@ -415,6 +417,26 @@ defmodule Valea.Workflows.Runner do
     end
   end
 
+  # Task 5.5: the workflow session's PRIMARY ICM (spec §"Workflow session")
+  # is the mount that OWNS `workflow_path` — the SAME attribution
+  # `workflow_containment_root/2` above already used moments earlier in
+  # this same `run/2`/`run_generated/3` call (via `read_workflow/2`), so it
+  # is guaranteed to agree here. `mount.name` is the workspace-local mount
+  # KEY `SessionScope.resolve/1` expects (never `mount.manifest.name`, the
+  # ICM's own display name — see `Valea.Mounts`'s moduledoc "Compatibility
+  # shim" section). `mount_for/1` only attributes among ENABLED,
+  # non-degraded mounts, so a workflow whose owning mount was disabled out
+  # from under this run between `read_workflow/2` succeeding and here would
+  # surface `:not_found` — an edge case narrow enough (the same run) that
+  # `run/2`'s own documented error vocabulary already covers it.
+  @spec owning_mount_key(String.t()) :: {:ok, String.t()} | {:error, :not_found}
+  defp owning_mount_key(workflow_path) do
+    case Mounts.mount_for(workflow_path) do
+      {:ok, %{name: mount_key}} -> {:ok, mount_key}
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp read_input(workspace, input_path) do
     with {:ok, real} <- Valea.Paths.resolve_real(input_path, workspace),
          {:ok, bytes} <- File.read(real) do
@@ -486,41 +508,56 @@ defmodule Valea.Workflows.Runner do
       "input_hash" => run["input_hash"]
     })
 
-    session_opts = %{
-      kind: "workflow",
-      title: wf.name,
-      workspace: workspace,
-      generation: Manager.generation(),
-      run: %{id: run_id, workflow: workflow_path},
-      policy_ctx: %{
-        workspace: workspace,
-        session_kind: "workflow",
-        write_paths: [staging_abs],
-        # Directory grant (B2's `write_roots`), scoped to `proposals/` only —
-        # NEVER the staging dir itself, so the trusted `run.json` sidecar
-        # this module writes below stays unwritable by the agent (security
-        # invariant: the sidecar is server-owned, carried verbatim into every
-        # queue envelope `finalize/2` builds).
-        write_roots: [Path.join(staging_dir, "proposals")],
-        # The agent needs to read its own staging dir back (e.g. to check
-        # what it already wrote) in addition to the usual sources surface.
-        # STOPGAP (Task 5.4): `SessionServer.default_read_roots/1` was
-        # removed — every session now gets its `read_roots` from a
-        # `SessionScope` (Task 5.2), which this module does not build yet
-        # (that migration is Task 5.5, `start_run` -> `SessionScope
-        # .resolve/1`). Inlined verbatim (`default_read_roots/1` always
-        # evaluated to exactly `["sources"]` post-A2 — no mount has
-        # contributed to it since every mount became external) so this
-        # module keeps compiling; this `policy_ctx` shape is itself already
-        # stale (SessionServer.init/1 now requires a `scope`, not a
-        # `policy_ctx` opt) and goes red at runtime until Task 5.5 lands.
-        read_roots: ["sources", Path.join(["queue", "staging", run_id])]
-      },
-      initial_prompt: prompt(workflow_path, input_path, staging_rel),
-      on_turn_end: fn _stop -> finalize(run_id, workspace) end
-    }
+    # Task 5.5: the session's PRIMARY ICM is the mount that OWNS this
+    # workflow contract (`workflow_path` already resolved through this same
+    # attribution — via `read_workflow/2` -> `workflow_containment_root/2` —
+    # moments ago in `run/2`/`run_generated/3`, so it is guaranteed to
+    # attribute again here), never a caller/model choice (spec §"Workflow
+    # session"). The session id is generated HERE, not inside
+    # `start_session/1`, because `SessionScope.resolve/1` needs it up front
+    # to derive `managed_context`'s path — mirrors
+    # `Valea.Api.Agents.create_session`'s identical "generate id -> resolve
+    # scope -> start_session(scope)" ordering.
+    #
+    # `write_paths`/`write_roots` are this run's exact staging grants,
+    # unchanged from before. `read_paths: []` is the MINIMAL workflow scope
+    # (this task's brief) — it deliberately does NOT re-grant the agent a
+    # read of its own staging dir back (the old `policy_ctx.read_roots`
+    # above used to fold in `"queue/staging/<run_id>"`); the full workflow
+    # input/grant/locator re-key with exact per-input reads is Phase 7
+    # (Tasks 7.1/7.2/7.3), not here.
+    session_id = Valea.Agents.generate_session_id()
 
-    case Valea.Agents.start_session(session_opts) do
+    result =
+      with {:ok, mount_key} <- owning_mount_key(workflow_path),
+           {:ok, scope} <-
+             SessionScope.resolve(%{
+               kind: "workflow",
+               mount_key: mount_key,
+               generation: Manager.generation(),
+               session_id: session_id,
+               write_paths: [staging_abs],
+               # Directory grant (B2's `write_roots`), scoped to `proposals/`
+               # only — NEVER the staging dir itself, so the trusted
+               # `run.json` sidecar this module writes below stays
+               # unwritable by the agent (security invariant: the sidecar is
+               # server-owned, carried verbatim into every queue envelope
+               # `finalize/2` builds).
+               write_roots: [Path.join(staging_dir, "proposals")],
+               read_paths: []
+             }) do
+        Valea.Agents.start_session(%{
+          id: session_id,
+          kind: "workflow",
+          title: wf.name,
+          scope: scope,
+          run: %{id: run_id, workflow: workflow_path},
+          initial_prompt: prompt(workflow_path, input_path, staging_abs),
+          on_turn_end: fn _stop -> finalize(run_id, workspace) end
+        })
+      end
+
+    case result do
       {:ok, %{id: session_id}} ->
         write_sidecar(staging_dir, Map.put(run, "session_id", session_id))
         {:ok, %{run_id: run_id, session_id: session_id}}
@@ -549,20 +586,27 @@ defmodule Valea.Workflows.Runner do
     stamp <> "-" <> suffix
   end
 
-  defp prompt(workflow_path, input_path, staging_rel) do
+  # `staging_proposal_abs` is the ABSOLUTE `write_paths` grant (Task 5.5) —
+  # NOT workspace-relative. Since the session's `cwd` is now the owning
+  # ICM's own root (never the workspace, per `SessionScope.resolve/1`), a
+  # workspace-relative instruction here would resolve against the wrong
+  # base and land outside every recognized write area; the absolute path is
+  # unambiguous regardless of `cwd`, and matches `write_paths`/`write_roots`
+  # (also absolute) exactly.
+  defp prompt(workflow_path, input_path, staging_proposal_abs) do
     """
     Read AGENTS.md first if you have not already. Then execute the workflow
     contract at "#{workflow_path}" against the input file "#{input_path}".
     Follow the contract's Process steps. Read only the pages its Inputs and
     sources name. If the contract's Outputs call for a proposal, write
-    exactly one proposal/v1 JSON file to "#{staging_rel}". If you noticed
-    business knowledge that is stale, missing, or contradicted, you may
-    additionally propose memory updates: for each one, write a pair of
-    files under "#{Path.dirname(staging_rel)}/proposals/" — <name>.md (the
-    complete new page content) and <name>.json (a memory_update/v1
-    manifest) — following the memory-update contract in AGENTS.md. Write
-    nothing else. When done, state in one sentence what you prepared, and
-    stop.
+    exactly one proposal/v1 JSON file to "#{staging_proposal_abs}". If you
+    noticed business knowledge that is stale, missing, or contradicted, you
+    may additionally propose memory updates: for each one, write a pair of
+    files under "#{Path.dirname(staging_proposal_abs)}/proposals/" —
+    <name>.md (the complete new page content) and <name>.json (a
+    memory_update/v1 manifest) — following the memory-update contract in
+    AGENTS.md. Write nothing else. When done, state in one sentence what
+    you prepared, and stop.
     """
   end
 

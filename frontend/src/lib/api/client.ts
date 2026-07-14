@@ -468,7 +468,7 @@ const mailInboxFields = [{ entries: ['uid', 'fromText', 'subject', 'date'] }] as
 
 function callCreateAgentSessionChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { kind: string; generation: number }
+  input: { kind: string; mountKey: string; generation: number }
 ) {
   return wrapChannelCall((handlers) =>
     createAgentSessionChannel({ channel, input, fields: createAgentSessionFields, ...handlers })
@@ -1123,12 +1123,18 @@ export const api = {
   // header comment). The T16+ stores are responsible for sourcing it from
   // the open workspace and passing it in.
 
-  createAgentSession: (kind: string, generation: number) =>
+  // Task 5.5: `mountKey` names the session's PRIMARY ICM — the caller must
+  // resolve which mount before calling this (for now, the chat page
+  // defaults to the first enabled ICM or a `?icm=` query; Phase 9's sidebar
+  // `+` will supply a real choice). An unknown/disabled/degraded mount key
+  // surfaces as `icm_unavailable` from the backend, same shape as any other
+  // RPC error this wrapper propagates.
+  createAgentSession: (kind: string, mountKey: string, generation: number) =>
     runRpc(
-      (channel) => callCreateAgentSessionChannel(channel, { kind, generation }),
+      (channel) => callCreateAgentSessionChannel(channel, { kind, mountKey, generation }),
       () =>
         httpCreateAgentSession(
-          withAuth({ input: { kind, generation }, fields: createAgentSessionFields })
+          withAuth({ input: { kind, mountKey, generation }, fields: createAgentSessionFields })
         )
     ),
 

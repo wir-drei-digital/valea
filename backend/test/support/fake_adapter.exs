@@ -240,10 +240,17 @@ defmodule FakeAdapter do
 
   defp prompt_text(_params), do: ""
 
+  # Task 5.5: `Valea.Workflows.Runner.prompt/3` now embeds the ABSOLUTE
+  # `write_paths` grant (never a workspace-relative path) — cwd is the
+  # owning ICM's own root, not the workspace, so only an absolute
+  # destination is unambiguous. Capture whatever's inside the surrounding
+  # quotes, not just a "queue/staging/..." suffix, so this scenario writes
+  # to the SAME location the real ACP write-permission check would resolve
+  # against.
   defp staging_path!(text) do
-    case Regex.run(~r{queue/staging/[^"\s]+/proposal\.json}, text) do
-      [path] -> path
-      nil -> raise "workflow_happy: no queue/staging/.../proposal.json path in prompt"
+    case Regex.run(~r{"([^"]*/proposal\.json)"}, text) do
+      [_, path] -> path
+      nil -> raise "workflow_happy: no .../proposal.json path in prompt"
     end
   end
 

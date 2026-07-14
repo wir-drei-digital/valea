@@ -12,6 +12,7 @@
   import MessageSquare from '@lucide/svelte/icons/message-square';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { mountsStore } from '$lib/stores/mounts.svelte';
   import { SessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel } from '$lib/components/agent';
@@ -20,7 +21,28 @@
 
   onMount(() => {
     void sessionsList.refresh();
+    // `mountsStore` has no other consumer before this page unless Knowledge
+    // was already visited this session (it's a shared singleton — see
+    // `mounts.svelte.ts`) — `startSession` needs `mounts` populated to pick
+    // a primary ICM, so refresh it here too.
+    void mountsStore.refresh();
   });
+
+  // Task 5.5: `create_session` now requires a `mountKey` naming the
+  // session's primary ICM — the sidebar `+` that will let the user CHOOSE
+  // one is Phase 9. Until then: an explicit `?icm=<mountKey>` query param
+  // wins (lets a link from elsewhere target a specific ICM), otherwise the
+  // first enabled, non-degraded mount in `mountsStore.mounts` — the same
+  // "effective composition set" ordering `Valea.Mounts.enabled/1` uses
+  // server-side. `null` when neither is available (no ICM mounted yet, or
+  // every mount is disabled/degraded) — `startSession` surfaces that as a
+  // calm inline error rather than calling the RPC with a bogus key.
+  function primaryMountKey(): string | null {
+    const fromQuery = page.url.searchParams.get('icm');
+    if (fromQuery) return fromQuery;
+    const firstEnabled = mountsStore.mounts.find((m) => m.enabled && !m.degraded);
+    return firstEnabled?.mountKey ?? null;
+  }
 
   const selectedId = $derived(page.url.searchParams.get('session'));
 
@@ -52,7 +74,12 @@
 
   async function startSession(): Promise<void> {
     startError = null;
-    const result = await api.createAgentSession('chat', workspaceStore.generation ?? 0);
+    const mountKey = primaryMountKey();
+    if (!mountKey) {
+      startError = 'No ICM is mounted yet. Add one in Knowledge first.';
+      return;
+    }
+    const result = await api.createAgentSession('chat', mountKey, workspaceStore.generation ?? 0);
     if (result.ok) {
       const data = result.data as { id: string };
       doctorOverride = false;
@@ -61,8 +88,9 @@
     } else if (result.error === 'harness_unavailable') {
       doctorOverride = true;
     } else {
-      // Any other failure (workspace_not_open, workspace_changed, …) — surface
-      // it calmly instead of a silent no-op on the button.
+      // Any other failure (workspace_not_open, workspace_changed,
+      // icm_unavailable, …) — surface it calmly instead of a silent no-op
+      // on the button.
       startError = errorMessage(result.error);
     }
   }
@@ -73,6 +101,8 @@
         return 'Your workspace changed. Reopen it and try again.';
       case 'workspace_not_open':
         return 'No workspace is open.';
+      case 'icm_unavailable':
+        return "That ICM isn't available. Enable it in Knowledge and try again.";
       default:
         return 'The session could not be started. Please try again.';
     }

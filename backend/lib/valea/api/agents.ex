@@ -31,6 +31,7 @@ defmodule Valea.Api.Agents do
     type_name("Agents")
   end
 
+  alias Valea.Agents.SessionScope
   alias Valea.Api.Error
   alias Valea.Workspace.Manager
 
@@ -39,23 +40,42 @@ defmodule Valea.Api.Agents do
       constraints fields: [id: [type: :string, allow_nil?: false]]
 
       argument :kind, :string, allow_nil?: false
+      argument :mount_key, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
+      # Task 5.5: `create_session` gains `mount_key` — the session's
+      # PRIMARY ICM, chosen by the caller (for now, the frontend defaults to
+      # the first enabled ICM until Phase 9's sidebar `+` supplies a real
+      # choice). The id is generated HERE (not inside `start_session/1`) so
+      # `SessionScope.resolve/1` — which needs a `session_id` up front to
+      # derive `managed_context`'s path — can run BEFORE the session starts;
+      # `start_session/1` is then handed the same id plus the resolved
+      # `scope`, never a raw `policy_ctx`/`workspace` pair. `resolve/1`'s own
+      # errors (`:workspace_changed` from a stale generation, checked FIRST;
+      # `:icm_unavailable` for an unknown/disabled/degraded mount_key) flow
+      # through `error_for/1` exactly like any other action's error atom —
+      # no separate `Manager.check_generation/1` call is needed here
+      # anymore, `resolve/1` already does it as its first gate.
       run fn input, _ctx ->
-        %{kind: kind, generation: generation} = input.arguments
+        %{kind: kind, mount_key: mount_key, generation: generation} = input.arguments
+        id = Valea.Agents.generate_session_id()
 
-        with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current(),
+        with {:ok, scope} <-
+               SessionScope.resolve(%{
+                 kind: kind,
+                 mount_key: mount_key,
+                 generation: generation,
+                 session_id: id
+               }),
              {:ok, %{id: id}} <-
                Valea.Agents.start_session(%{
+                 id: id,
                  kind: kind,
                  title: "New session",
-                 workspace: root,
-                 generation: generation,
+                 scope: scope,
                  run: nil,
                  initial_prompt: nil,
-                 on_turn_end: nil,
-                 policy_ctx: %{workspace: root, session_kind: "chat", write_paths: []}
+                 on_turn_end: nil
                }) do
           {:ok, %{id: id}}
         else

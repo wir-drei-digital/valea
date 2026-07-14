@@ -615,10 +615,11 @@ defmodule Valea.Workflows.RunnerTest do
     # (which only returns once `init/1` — and thus policy_ctx construction —
     # has completed) is race-free regardless of how fast the fake harness's
     # async finalize runs.
-    test "run/2 grants: proposals dir writable, run.json not, staging readable", %{
-      workspace: workspace,
-      icm: icm
-    } do
+    test "run/2 grants: proposals dir writable, run.json not, read_roots is the owning ICM (Task 5.5 minimal scope)",
+         %{
+           workspace: workspace,
+           icm: icm
+         } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
 
       assert {:ok, %{run_id: run_id, session_id: session_id}} =
@@ -633,7 +634,15 @@ defmodule Valea.Workflows.RunnerTest do
 
       assert policy_ctx.write_paths == [Path.join(staging_dir, "proposal.json")]
       assert policy_ctx.write_roots == [Path.join(staging_dir, "proposals")]
-      assert Path.join(["queue", "staging", run_id]) in policy_ctx.read_roots
+
+      # Task 5.5's `start_run` builds the MINIMAL workflow scope
+      # (`read_paths: []`) — cwd (and thus `read_roots`) is the owning ICM's
+      # root, same as any other session; it no longer re-grants a read of
+      # the run's own staging dir back (the old workspace-relative
+      # `policy_ctx.read_roots` used to fold in `"queue/staging/<run_id>"`
+      # here). The full workflow input/grant/locator re-key with exact
+      # per-input read grants is Phase 7 (Tasks 7.1/7.2/7.3), not this one.
+      assert policy_ctx.read_roots == [icm.root]
     end
   end
 

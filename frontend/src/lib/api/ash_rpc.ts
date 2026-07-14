@@ -216,6 +216,7 @@ export async function executeActionChannelPush<T>(
 
 export type CreateAgentSessionInput = {
   kind: string;
+  mountKey: string;
   generation: number;
 };
 
