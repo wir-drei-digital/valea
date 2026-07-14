@@ -9,12 +9,20 @@ defmodule Valea.Agents.SessionReadRootsTest do
 
   alias Valea.AgentCase
 
-  # A fresh scaffold (T8) mints its own real, ENABLED mount at
-  # `mounts/<slug-of-name>` from the template — naming the workspace
-  # "Primary" lands it at exactly `mounts/primary`.
+  # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:` ONLY
+  # — a freshly scaffolded (v5) workspace carries no seeded mount, and
+  # EVERY mount is now EXTERNAL (`rel_root: nil`). Per
+  # `SessionServer.default_read_roots/1`'s own moduledoc comment, an
+  # external mount's root NEVER joins `read_roots` (no workspace-relative
+  # form) — it joins `extra_roots` instead (`default_extra_roots/1`). So
+  # `read_roots` for a session is now just `["sources"]` plus any EXTRA
+  # grant a caller adds (e.g. B3's per-run staging dir) — no mount ever
+  # contributes to it any more; every mount's read grant flows through
+  # `extra_roots`.
   setup do
     ws = AgentCase.open_workspace!("Primary")
-    %{workspace: ws.path}
+    icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+    %{workspace: ws.path, icm: icm}
   end
 
   defp policy_ctx_for(id) do
@@ -22,77 +30,36 @@ defmodule Valea.Agents.SessionReadRootsTest do
     :sys.get_state(pid).policy_ctx
   end
 
-  # Declares an external (kind: "path") mount in the workspace's existing
-  # config/workspace.yaml, preserving version/id and every existing mount
-  # entry.
-  defp declare_external!(ws_path, name, ref) do
-    config_path = Path.join(ws_path, "config/workspace.yaml")
-    {:ok, doc} = YamlElixir.read_from_file(config_path)
-
-    mounts =
-      (Map.get(doc, "mounts") || %{})
-      |> Map.put(name, %{"kind" => "path", "ref" => ref})
-
-    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
-
-    entries =
-      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
-        [
-          "  #{n}:"
-          | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
-              "    #{k}: #{render_scalar(v)}"
-            end)
-        ]
-      end)
-
-    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
-  end
-
-  defp render_scalar(v) when is_binary(v), do: inspect(v)
-  defp render_scalar(v), do: to_string(v)
-
-  defp external_icm!(name) do
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "valea-ext-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf!(dir) end)
-
-    Valea.Mounts.Manifest.write!(dir, %{
-      id: "41d871cd-aadc-466f-a951-a5c47e197d47",
-      name: name,
-      description: ""
-    })
-
-    dir
-  end
-
-  test "a started chat session's read_roots is [\"sources\", \"mounts/primary\"] — computed from Mounts.enabled",
+  test "a started chat session's read_roots is just [\"sources\"] — no mount is embedded any more",
        %{workspace: workspace} do
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
     on_exit(fn -> AgentCase.kill_session(id) end)
 
     assert %{read_roots: read_roots} = policy_ctx_for(id)
-    assert Enum.sort(read_roots) == Enum.sort(["sources", "mounts/primary"])
+    assert read_roots == ["sources"]
   end
 
-  test "disabling the mount BEFORE a session starts excludes it from that session's read_roots — its reads then ask-gate, not deny",
-       %{workspace: workspace} do
-    :ok = Valea.Mounts.set_enabled("primary", false)
+  test "the enabled primary mount's root is in extra_roots", %{workspace: workspace, icm: icm} do
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
+    on_exit(fn -> AgentCase.kill_session(id) end)
+
+    assert %{extra_roots: extra_roots} = policy_ctx_for(id)
+    assert extra_roots == [icm.root]
+  end
+
+  test "disabling the mount BEFORE a session starts excludes its root from that session's extra_roots — its reads then ask-gate, not deny",
+       %{workspace: workspace, icm: icm} do
+    :ok = Valea.Mounts.set_enabled(workspace, icm.mount_key, false)
 
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
     on_exit(fn -> AgentCase.kill_session(id) end)
 
-    assert %{read_roots: ["sources"]} = policy_ctx_for(id)
+    assert %{read_roots: ["sources"], extra_roots: []} = policy_ctx_for(id)
   end
 
-  test "external mounts stay OUT of read_roots but join extra_roots (A2-T3) — the workspace-relative and absolute read surfaces are tracked separately",
-       %{workspace: workspace} do
-    ext = external_icm!("Ext")
-    declare_external!(workspace, "ext", ext)
+  test "a second external mount stays OUT of read_roots but joins extra_roots (A2-T3) — the workspace-relative and absolute read surfaces are tracked separately",
+       %{workspace: workspace, icm: icm} do
+    ext = AgentCase.mount_test_icm!(workspace, name: "Ext")
 
     # Sanity: the external mount IS effective — it's excluded from
     # read_roots deliberately (rel_root: nil has no workspace-relative
@@ -100,27 +67,26 @@ defmodule Valea.Agents.SessionReadRootsTest do
     # resolve. Its real root is what extra_roots carries instead.
     enabled = Valea.Mounts.enabled(workspace)
     assert "ext" in Enum.map(enabled, & &1.name)
-    assert %{root: ext_root} = Enum.find(enabled, &(&1.name == "ext"))
 
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
     on_exit(fn -> AgentCase.kill_session(id) end)
 
     assert %{read_roots: read_roots, extra_roots: extra_roots} = policy_ctx_for(id)
     refute nil in read_roots
-    assert Enum.sort(read_roots) == ["mounts/primary", "sources"]
-    assert extra_roots == [ext_root]
+    assert read_roots == ["sources"]
+    assert Enum.sort(extra_roots) == Enum.sort([icm.root, ext.root])
   end
 
-  test "disabling the external mount BEFORE a session starts excludes its root from that session's extra_roots — its reads then ask-gate, not deny",
-       %{workspace: workspace} do
-    ext = external_icm!("Ext")
-    declare_external!(workspace, "ext", ext)
-    :ok = Valea.Mounts.set_enabled("ext", false)
+  test "disabling the second external mount BEFORE a session starts excludes only its root from extra_roots",
+       %{workspace: workspace, icm: icm} do
+    ext = AgentCase.mount_test_icm!(workspace, name: "Ext")
+    :ok = Valea.Mounts.set_enabled(workspace, ext.mount_key, false)
 
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
     on_exit(fn -> AgentCase.kill_session(id) end)
 
-    assert %{extra_roots: []} = policy_ctx_for(id)
+    assert %{extra_roots: extra_roots} = policy_ctx_for(id)
+    assert extra_roots == [icm.root]
   end
 
   test "an explicit policy_ctx extra_roots is NOT clobbered by the computed default",
@@ -157,13 +123,32 @@ defmodule Valea.Agents.SessionReadRootsTest do
     assert %{read_roots: ["queue"]} = policy_ctx_for(id)
   end
 
-  test "a workflow session (via Valea.Workflows.Runner) also gets read_roots from Mounts.enabled, plus its own run staging dir (B3)",
-       %{workspace: _workspace} do
+  test "a workflow session (via Valea.Workflows.Runner) also gets its own run staging dir in read_roots (B3), on top of the plain [\"sources\"] default",
+       %{workspace: _workspace, icm: icm} do
     Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
+
+    File.mkdir_p!(Path.join(icm.root, "Workflows"))
+
+    File.write!(
+      Path.join(icm.root, "Workflows/New Inquiry Triage.md"),
+      """
+      ---
+      enabled: true
+      risk_level: medium
+      approval:
+        required: true
+      ---
+      # New Inquiry Triage
+
+      ## Process
+
+      1. Do the thing.
+      """
+    )
 
     assert {:ok, %{run_id: run_id, session_id: id}} =
              Valea.Workflows.Runner.run(
-               "mounts/primary/Workflows/New Inquiry Triage.md",
+               Path.join(icm.root, "Workflows/New Inquiry Triage.md"),
                "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
              )
 
@@ -171,7 +156,6 @@ defmodule Valea.Agents.SessionReadRootsTest do
 
     assert %{read_roots: read_roots} = policy_ctx_for(id)
 
-    assert Enum.sort(read_roots) ==
-             Enum.sort(["sources", "mounts/primary", "queue/staging/#{run_id}"])
+    assert Enum.sort(read_roots) == Enum.sort(["sources", "queue/staging/#{run_id}"])
   end
 end

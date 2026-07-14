@@ -13,7 +13,6 @@ defmodule Valea.CockpitTest do
   alias Valea.Mail.Store
   alias Valea.Mail.Engine
   alias Valea.Mounts
-  alias Valea.Mounts.Manifest
 
   test "today returns the seeded narrative" do
     {:ok, today} = Valea.Cockpit.today()
@@ -238,13 +237,6 @@ defmodule Valea.CockpitTest do
   end
 
   describe "today/0 triage_workflow_path (Task A-T13: seeded-workflow discovery)" do
-    defp write_mount!(ws_path, name, title) do
-      dir = Path.join([ws_path, "mounts", name])
-      File.mkdir_p!(dir)
-      Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: title, description: ""})
-      dir
-    end
-
     defp write_triage_workflow!(mount_dir) do
       File.mkdir_p!(Path.join(mount_dir, "Workflows"))
 
@@ -261,28 +253,43 @@ defmodule Valea.CockpitTest do
       File.write!(Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]), content)
     end
 
-    test "carries the real mounts/<slug>/Workflows/... path from a freshly scaffolded workspace" do
+    # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:`
+    # ONLY — a freshly scaffolded (v5) workspace carries no seeded mount at
+    # all (no more legacy-v4 embedded `mounts/<slug>` glob discovery), so
+    # every mount in this describe block is now a REAL EXTERNAL ICM,
+    # mounted via `AgentCase.mount_test_icm!/2`, and every expected
+    # workflow path is that ICM's ABSOLUTE resolved path
+    # (`Valea.Workflows.workflow_path/2`'s `rel_root: nil` branch returns
+    # `abs` verbatim) — never a `mounts/<name>/...` workspace-relative
+    # literal.
+    test "carries the real absolute Workflows/... path from a mounted external ICM" do
       ws = AgentCase.open_workspace!()
 
-      # T8's scaffold seeds the triage workflow in its one enabled starter
-      # mount — named from the workspace's own name, slugified
-      # (`Scaffold.mint_starter_mount!/2`), not necessarily literally
-      # "starter" (`AgentCase.open_workspace!/1`'s default name "W" slugs
-      # to "w").
-      [mount] = Mounts.list(ws.path)
+      icm =
+        AgentCase.mount_test_icm!(ws.path,
+          name: "Primary",
+          pages: %{
+            "Workflows/New Inquiry Triage.md" => """
+            ---
+            enabled: true
+            risk_level: medium
+            ---
+            # New Inquiry Triage
+
+            Body.
+            """
+          }
+        )
 
       {:ok, today} = Valea.Cockpit.today()
 
       assert today["triage_workflow_path"] ==
-               "mounts/#{mount.name}/Workflows/New Inquiry Triage.md"
+               Path.join(icm.root, "Workflows/New Inquiry Triage.md")
     end
 
     test "is nil when no enabled mount has a triage workflow" do
       ws = AgentCase.open_workspace!()
-
-      # Disable the scaffold's own mount (which carries the seeded triage
-      # workflow) so no enabled mount has one.
-      Enum.each(Mounts.list(ws.path), &Mounts.set_enabled(&1.name, false))
+      AgentCase.mount_test_icm!(ws.path, name: "Empty")
 
       {:ok, today} = Valea.Cockpit.today()
       assert today["triage_workflow_path"] == nil
@@ -290,16 +297,16 @@ defmodule Valea.CockpitTest do
 
     test "is found in a second mount when the first (alphabetically) enabled mount lacks one" do
       ws = AgentCase.open_workspace!()
-      Enum.each(Mounts.list(ws.path), &Mounts.set_enabled(&1.name, false))
-
-      write_mount!(ws.path, "aaa", "Mount AAA")
-      # "aaa" sorts before "bbb" and has no Workflows/ at all.
-
-      bbb = write_mount!(ws.path, "bbb", "Mount BBB")
-      write_triage_workflow!(bbb)
+      # "aaa" sorts before "bbb" (mount keys are the slugified display
+      # name) and has no Workflows/ at all.
+      AgentCase.mount_test_icm!(ws.path, name: "aaa")
+      bbb = AgentCase.mount_test_icm!(ws.path, name: "bbb")
+      write_triage_workflow!(bbb.root)
 
       {:ok, today} = Valea.Cockpit.today()
-      assert today["triage_workflow_path"] == "mounts/bbb/Workflows/New Inquiry Triage.md"
+
+      assert today["triage_workflow_path"] ==
+               Path.join(bbb.root, "Workflows/New Inquiry Triage.md")
     end
   end
 
@@ -320,25 +327,45 @@ defmodule Valea.CockpitTest do
       File.write!(Path.join([mount_dir, "Workflows", "Distill Decisions.md"]), content)
     end
 
-    test "carries the seeded starter-mount path on a freshly scaffolded workspace (Task B9)" do
-      AgentCase.open_workspace!()
+    # Task B9's promise ("a freshly scaffolded workspace already has the
+    # Distill workflow available, no explicit action needed") depended on
+    # the legacy v4 scaffold auto-seeding ONE starter mount. Post-3.2 a
+    # fresh v5 workspace has NO default `icms:` entry at all (config
+    # truth, nothing implicit) — the equivalent promise now lives one
+    # layer up, at `Valea.Mounts.create/3` (task 3.5): every ICM created
+    # through the app's normal create flow is seeded from
+    # `priv/icm_template/`, which carries `Workflows/Distill Decisions.md`
+    # out of the box. This test asserts THAT promise instead.
+    test "carries the seeded path once an ICM is created via Mounts.create/3 (Task B9 promise, relocated to create/3 + icm_template)" do
+      ws = AgentCase.open_workspace!()
+
+      target =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-cockpit-distill-#{System.unique_integer([:positive])}"
+        )
+
+      on_exit(fn -> File.rm_rf!(target) end)
+
+      {:ok, %{mount_key: mount_key}} = Mounts.create(ws.path, "W", target)
+      created = Mounts.mount_by_key(ws.path, mount_key)
 
       {:ok, today} = Valea.Cockpit.today()
-      assert today["distill_workflow_path"] == "mounts/w/Workflows/Distill Decisions.md"
+
+      assert today["distill_workflow_path"] ==
+               Path.join(created.root, "Workflows/Distill Decisions.md")
     end
 
-    test "carries the real mounts/<name>/Workflows/... path once an enabled mount has one" do
+    test "carries the real absolute Workflows/... path once an enabled mount has one" do
       ws = AgentCase.open_workspace!()
-      Enum.each(Mounts.list(ws.path), &Mounts.set_enabled(&1.name, false))
-
-      write_mount!(ws.path, "aaa", "Mount AAA")
-      # "aaa" sorts before "bbb" and has no Workflows/ at all.
-
-      bbb = write_mount!(ws.path, "bbb", "Mount BBB")
-      write_distill_workflow!(bbb)
+      AgentCase.mount_test_icm!(ws.path, name: "aaa")
+      bbb = AgentCase.mount_test_icm!(ws.path, name: "bbb")
+      write_distill_workflow!(bbb.root)
 
       {:ok, today} = Valea.Cockpit.today()
-      assert today["distill_workflow_path"] == "mounts/bbb/Workflows/Distill Decisions.md"
+
+      assert today["distill_workflow_path"] ==
+               Path.join(bbb.root, "Workflows/Distill Decisions.md")
     end
   end
 end
