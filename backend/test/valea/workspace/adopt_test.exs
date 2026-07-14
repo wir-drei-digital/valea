@@ -92,6 +92,11 @@ defmodule Valea.Workspace.AdoptTest do
       %{parent: Path.join(dir, "workspaces")}
     end
 
+    # TODO(Phase 11): adopt-by-move mints an embedded mount inside the workspace
+    # (mounts/<slug>/), which the external-only config-truth Valea.Mounts (Phase 3)
+    # rejects by the unconditional :inside_workspace boundary rule. Adopt is deleted in
+    # Phase 11 (replaced by Phase 10 "Use existing ICM" = mount by reference in place).
+    @tag skip: "Phase 11: adopt-by-move incompatible with external-only Mounts"
     test "moves the folder into mounts/<slug>, mints a manifest when absent, regenerates MOUNTS.md, opens it",
          %{parent: parent} do
       source = tmp_dir("valea-source")

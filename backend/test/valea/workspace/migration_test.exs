@@ -372,6 +372,11 @@ defmodule Valea.Workspace.MigrationTest do
     root
   end
 
+  # TODO(Phase 11): v3→v4 migration mints an embedded mount inside the workspace
+  # (mounts/<slug>/), which the external-only config-truth Valea.Mounts (Phase 3)
+  # rejects by the unconditional :inside_workspace boundary rule. The whole Migration
+  # chain is deleted in Phase 11; this test goes with it.
+  @tag skip: "Phase 11: embedded-mount minting incompatible with external-only Mounts"
   test "v3 → v4: icm/ gone, mounts/<slug>/ minted (manifest + AGENTS.md + CLAUDE.md), " <>
          "prompts moved, root AGENTS.md replaced (pristine), MOUNTS.md present, version 4" do
     root = v3_workspace!()
