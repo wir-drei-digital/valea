@@ -47,14 +47,12 @@ defmodule Valea.Api.Icms do
   `Valea.Api.Mounts`/`Valea.Api.Queue`/`Valea.Api.Mail` all use for a
   top-level boolean-returning generic action.
 
-  `icm_doctor` wraps `Valea.Mounts.Doctor.run/1` (the whole-workspace probe)
-  and filters its `checks` down to the ones whose kind-qualified id
-  (`Doctor`'s `check_id/2` — every mount is external post-A2, so always
-  `"<check>:external:<mount_key>"`) names the requested `mount_key`, so this
-  RPC's contract is single-mount even though `Doctor` itself has no
-  per-mount entry point yet. Phase 8 enriches this doctor surface; this is a
-  deliberately thin wrap for now, not a `Doctor.run/2` — adding a real
-  per-mount API to `Valea.Mounts.Doctor` is left to that later work.
+  `icm_doctor` wraps `Valea.Mounts.Doctor.run/2` (Phase 8's real per-mount
+  entry point) — `path_resolves`, `manifest_format2`, `unique_id`,
+  `related_icms`, `secrets_hygiene`, `watcher_live`, scoped to the one
+  requested `mount_key`. `:mount_not_found` (no `icms:` entry at all for
+  that key) maps to the same error vocabulary every other mutating action
+  here uses.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -192,9 +190,7 @@ defmodule Valea.Api.Icms do
     # Read-only probe (like `Valea.Api.Mounts.mounts_doctor`) — takes/guards
     # `generation` even though it never writes config, since it inspects LIVE
     # state (the watcher's current root set, the filesystem under the
-    # requested mount's resolved root). See moduledoc for why this filters
-    # `Doctor.run/1`'s full-workspace result rather than calling a
-    # `Doctor.run/2` that doesn't exist yet.
+    # requested mount's resolved root).
     action :icm_doctor, :map do
       constraints fields: [
                     ok: [type: :boolean, allow_nil?: false],
@@ -209,9 +205,8 @@ defmodule Valea.Api.Icms do
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
-             {:ok, %{checks: checks}} <- Doctor.run(root) do
-          mine = Enum.filter(checks, &check_for_mount?(&1, mount_key))
-          {:ok, %{"ok" => Enum.all?(mine, &(&1["status"] == "ok")), "checks" => mine}}
+             {:ok, %{checks: checks, ok: ok}} <- Doctor.run(root, mount_key) do
+          {:ok, %{"ok" => ok, "checks" => checks}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -253,13 +248,6 @@ defmodule Valea.Api.Icms do
 
   defp description_for(%{manifest: %{description: description}}), do: description
   defp description_for(_mount), do: ""
-
-  # `Valea.Mounts.Doctor.check_id/2`'s kind-qualified id: every mount is
-  # external post-A2, so always `"<check>:external:<mount_key>"` — matched
-  # by exact suffix (not `String.contains?/2`) so a mount key that happens
-  # to be a suffix of another's (e.g. "ab" vs. "cab") can't cross-match.
-  defp check_for_mount?(%{"id" => id}, mount_key),
-    do: String.ends_with?(id, ":external:#{mount_key}")
 
   # Mirrors `Valea.ICM.Watcher`'s own discovery-change broadcast EXACTLY
   # (same module, same topic, same message shape) — see moduledoc.

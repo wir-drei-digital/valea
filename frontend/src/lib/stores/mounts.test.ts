@@ -204,7 +204,7 @@ describe('MountsStore.doctor', () => {
     );
     const icmDoctor = vi.fn(async (mountKey: string) => ({
       ok: true,
-      data: { ok: mountKey === 'primary', checks: [{ id: `manifest_ok:external:${mountKey}` }] }
+      data: { ok: mountKey === 'primary', checks: [{ id: `manifest_format2:${mountKey}` }] }
     })) as unknown as (mountKey: string, generation: number) => Promise<DoctorResult>;
     const store = new MountsStore(fakeApi({ listIcms, icmDoctor }) as never);
 
@@ -218,7 +218,7 @@ describe('MountsStore.doctor', () => {
       ok: true,
       data: {
         ok: false,
-        checks: [{ id: 'manifest_ok:external:primary' }, { id: 'manifest_ok:external:clients' }]
+        checks: [{ id: 'manifest_format2:primary' }, { id: 'manifest_format2:clients' }]
       }
     });
   });

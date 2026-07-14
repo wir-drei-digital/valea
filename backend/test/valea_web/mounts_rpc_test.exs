@@ -739,7 +739,7 @@ defmodule ValeaWeb.MountsRpcTest do
 
       assert Enum.any?(
                checks,
-               &(&1["id"] == "manifest_ok:external:primary" and &1["status"] == "ok")
+               &(&1["id"] == "manifest_format2:primary" and &1["status"] == "ok")
              )
     end
 
@@ -756,7 +756,7 @@ defmodule ValeaWeb.MountsRpcTest do
 
       assert Enum.any?(
                checks,
-               &(&1["id"] == "ref_resolves:external:outside" and &1["status"] == "failed")
+               &(&1["id"] == "path_resolves:outside" and &1["status"] == "failed")
              )
     end
 

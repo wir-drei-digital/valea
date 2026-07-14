@@ -95,7 +95,7 @@ defmodule Valea.Api.IcmsTest do
 
     assert is_boolean(ok)
     assert checks != []
-    assert Enum.all?(checks, &String.ends_with?(&1["id"], ":external:#{icm.mount_key}"))
+    assert Enum.all?(checks, &String.ends_with?(&1["id"], ":#{icm.mount_key}"))
     assert ok == Enum.all?(checks, &(&1["status"] == "ok"))
   end
 

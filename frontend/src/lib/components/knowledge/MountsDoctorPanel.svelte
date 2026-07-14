@@ -5,8 +5,8 @@
   // The label comes straight off the check payload (`check.label`), same as
   // `MailDoctorPanel` (not a hardcoded id->label map like the agent
   // harness's fixed-4-check doctor) — `Valea.Mounts.Doctor.run/1` runs over
-  // a VARIABLE number of subjects (every discovered mount), so its own
-  // `"<check>:<mount name>"` ids and human `label`s are the only stable
+  // a VARIABLE number of subjects (every mounted ICM), so its own
+  // `"<check>:<mount key>"` ids and human `label`s are the only stable
   // thing to key off (see `normalizeMountsDoctorChecks` in
   // `mount-sections.ts`).
   //
@@ -61,8 +61,8 @@
   <div class="flex flex-col gap-1.5">
     <h2 class="font-display text-[19px] text-ink-heading">Checking your mounts</h2>
     <p class="max-w-[480px] text-[13px] text-ink-body">
-      Reference resolution, manifests, secrets hygiene, and watcher coverage for every mount — embedded and
-      by-reference.
+      Path resolution, manifests, unique ids, related ICMs, secrets hygiene, and watcher coverage for every
+      mounted ICM.
     </p>
   </div>
 

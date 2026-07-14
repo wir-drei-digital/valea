@@ -194,23 +194,35 @@ describe('isExternalMount', () => {
 describe('normalizeMountsDoctorChecks', () => {
   it('narrows a well-formed checks array', () => {
     const raw = [
-      { id: 'manifest_ok:primary', label: 'primary: manifest', status: 'ok', detail: 'icm.yaml loads.', remedy: null },
       {
-        id: 'ref_resolves:client-notes',
-        label: 'client-notes: reference resolves',
+        id: 'manifest_format2:primary',
+        label: 'primary: manifest',
+        status: 'ok',
+        detail: 'icm.yaml loads.',
+        remedy: null
+      },
+      {
+        id: 'path_resolves:client-notes',
+        label: 'client-notes: path resolves',
         status: 'failed',
         detail: 'folder not found at ~/Client Notes',
-        remedy: 'Check this mount\'s reference in Settings.'
+        remedy: "Check this mount's path in Settings."
       }
     ];
     expect(normalizeMountsDoctorChecks(raw)).toEqual([
-      { id: 'manifest_ok:primary', label: 'primary: manifest', status: 'ok', detail: 'icm.yaml loads.', remedy: null },
       {
-        id: 'ref_resolves:client-notes',
-        label: 'client-notes: reference resolves',
+        id: 'manifest_format2:primary',
+        label: 'primary: manifest',
+        status: 'ok',
+        detail: 'icm.yaml loads.',
+        remedy: null
+      },
+      {
+        id: 'path_resolves:client-notes',
+        label: 'client-notes: path resolves',
         status: 'failed',
         detail: 'folder not found at ~/Client Notes',
-        remedy: 'Check this mount\'s reference in Settings.'
+        remedy: "Check this mount's path in Settings."
       }
     ]);
   });

@@ -4,43 +4,60 @@ defmodule Valea.Mounts.Doctor do
   product framing" + "Error handling"): per-mount health, same shape and
   spirit as `Valea.Agents.Doctor` / `Valea.Mail.Doctor` — a list of checks,
   each with a status and a copyable remedy — but this one runs over a
-  VARIABLE number of subjects (every mount `Valea.Mounts.list/1` discovers,
-  embedded ∪ external, enabled + disabled + degraded) rather than a fixed
-  pipeline, so each check's `"id"` is `"<check>:<mount name>"` for an
-  EMBEDDED mount, or `"<check>:external:<mount name>"` for an EXTERNAL one
-  — the kind qualifier keeps every external check id disjoint from an
-  embedded one even in the one state where the same `<check>` name and the
-  same mount `name` can otherwise coincide: an embedded/external name
-  collision (see `manifest_ok_check/1`'s own doc) degrades BOTH entries,
-  each surfacing its OWN `manifest_ok` check — without the qualifier
-  they'd share the literal id `"manifest_ok:<name>"`, which is exactly the
-  duplicate Svelte 5's keyed `{#each}` cannot tolerate (`each_key_duplicate`
-  in dev). See `check_id/2`.
+  VARIABLE number of subjects (every mount `Valea.Mounts.list/1` discovers:
+  enabled + disabled + degraded) rather than a fixed pipeline, so each
+  check's `"id"` is `"<check>:<mount key>"` — the mount-key qualifier keeps
+  every check id disjoint across mounts when `run/1` flattens all of them
+  into one list (and when a caller of `run/2` flattens several single-mount
+  results together, e.g. the doctor panel fanning `icm_doctor` out across
+  every mount — see `check_id/2`).
 
-  Checks, per mount kind:
+  Phase 8: config truth is EXTERNAL-ONLY (`Valea.Mounts.list/1`'s `rel_root`
+  is always `nil` now) — there is no more embedded/external duality, so
+  every mount runs the SAME six checks, in a single two-level gate:
 
-    * EMBEDDED (`rel_root` is `"mounts/<name>"`) gets one check:
-      `manifest_ok` — is `icm.yaml` present and valid, and is the mount
-      otherwise not degraded (e.g. a name collision with an external
-      mount)? An embedded mount is always physically present the moment
-      `Valea.Mounts.list/1` discovers it (it IS a directory under
-      `mounts/`), so there is no analogous "does it exist" check to run
-      first.
-    * EXTERNAL (`rel_root: nil`) gets four, in a single gate:
-      1. `ref_resolves` — does the declared reference resolve to a real
-         folder AND pass `Valea.Mounts.External`'s boundary/glob guardrails?
-         A degraded external mount's `mount.degraded` reason is shown
-         verbatim as this check's `detail` when the reason is ref/path-level
-         (see `ref_resolution_failure?/1` for the exact classification of
-         `Valea.Mounts.External`'s fixed reason vocabulary — icm.yaml
-         problems and name collisions are NOT ref-level, they surface under
-         `manifest_ok` instead, same as embedded).
-      2. `manifest_ok`, `secrets_hygiene`, `watcher_live` — independent
-         siblings that only run when `ref_resolves` is `"ok"` (mirroring
-         `Valea.Mail.Doctor`'s `tls_ok` gating `login_ok`/`folders`/
-         `move_capability`); when `ref_resolves` fails, all three are
-         `"unknown"` rather than probing a root that may not exist, may not
-         be a folder, or may be an unsafe glob target.
+    1. `path_resolves` — does the `icms:` entry's `path:` expand (`~`,
+       symlinks) and resolve to a real, boundary-safe, permission-glob-safe
+       folder? A degraded mount's `mount.degraded` reason is shown verbatim
+       as this check's `detail` when the reason is PATH-level (see
+       `path_level_failure?/1` for the exact classification of
+       `Valea.Mounts`'s fixed reason vocabulary — manifest problems and
+       duplicate ids are NOT path-level, they surface under
+       `manifest_format2`/`unique_id` instead).
+    2. `manifest_format2`, `unique_id`, `related_icms`, `secrets_hygiene`,
+       `watcher_live` — only run when `path_resolves` is `"ok"` (mirroring
+       `Valea.Mail.Doctor`'s `tls_ok` gating `login_ok`/`folders`/
+       `move_capability`); when `path_resolves` fails, all five are
+       `"unknown"` rather than probing a root that may not exist, may not
+       be a folder, or may be an unsafe glob target.
+       * `manifest_format2` — ok iff `Valea.Mounts.list/1` already loaded a
+         valid format-2 manifest (`mount.manifest != nil` — a stable,
+         validated UUID `id` and a non-blank `name`; see
+         `Valea.Mounts.Manifest`'s moduledoc for why THAT validation, not a
+         literal `format: 2` field, IS the format-2 contract). This field
+         survives both of `Valea.Mounts.list/1`'s post-passes untouched
+         (`degrade_duplicate_roots/1`/`degrade_duplicate_ids/1` only ever
+         overwrite `degraded`, never clear an already-loaded `manifest`),
+         so a mount degraded ONLY by a duplicate id still reports
+         `manifest_format2: "ok"` — that reason belongs to `unique_id`
+         alone.
+       * `unique_id` — gated on `manifest_format2`; ok iff no OTHER
+         ENABLED mount in the same `all_mounts` snapshot carries the same
+         manifest `id`. Computed independently of
+         `Valea.Mounts.degrade_duplicate_ids/1`'s own (enabled-blind)
+         post-pass, deliberately narrower: a disabled twin sharing this id
+         is not a LIVE conflict for an already-enabled mount, so it does
+         not fail this mount's `unique_id` — but it does fail the disabled
+         twin's own (a heads-up that enabling it would collide).
+       * `related_icms` — every ICM this mount's OWN `CONTEXT.md` directly
+         declares under `related_icms:` must resolve
+         (`Valea.Mounts.Context.resolve/2`); any issue (`:not_mounted`,
+         `:disabled`, `:degraded`, `:duplicate_id`, `:entrypoint_escapes`)
+         fails this check with a WARN framing (Valea does not stop you
+         mounting an ICM with a broken cross-reference — this only flags
+         it). Gated on `path_resolves` alone (reads `CONTEXT.md` off the
+         resolved root directly), NOT on `manifest_format2` — a mount can
+         have a broken icm.yaml and a perfectly fine CONTEXT.md.
 
   `secrets_hygiene` is a WARNING-class check per the design spec ("the
   doctor warns, does not deny") — Valea's workspace deny-list does not
@@ -55,38 +72,50 @@ defmodule Valea.Mounts.Doctor do
 
   `watcher_live` asks `Valea.ICM.Watcher.watched_roots/0` (best-effort — an
   empty set, never a crash, when the watcher isn't running) whether this
-  mount's resolved root is in the CURRENT watched set. A DISABLED external
-  mount is never in that set by design (the watcher only ever watches
-  enabled, non-degraded external roots), so `watcher_live` is `"unknown"`
-  (not checked — nothing to fix, the mount is intentionally off) rather than
-  `"failed"` for a disabled mount; only an ENABLED mount whose root the
-  watcher currently is NOT covering reports `"failed"`.
+  mount's resolved root is in the CURRENT watched set. A DISABLED mount is
+  never in that set by design (the watcher only ever watches enabled,
+  non-degraded roots), so `watcher_live` is `"unknown"` (not checked —
+  nothing to fix, the mount is intentionally off) rather than `"failed"`
+  for a disabled mount; only an ENABLED mount whose root the watcher
+  currently is NOT covering reports `"failed"`.
 
   Never reads or leaks file CONTENTS — `secrets_hygiene` only lists
-  directory ENTRY NAMES at the mount root (`File.ls/1`), never opens a file.
-  Paths are fine to show throughout (they're user-declared, already visible
-  in Settings/MOUNTS.md).
+  directory ENTRY NAMES at the mount root (`File.ls/1`), never opens a
+  file, and `related_icms` only reads `CONTEXT.md`'s own frontmatter
+  (`Valea.Mounts.Context.resolve/2`), never any other file's body. Paths
+  are fine to show throughout (they're user-declared, already visible in
+  Settings).
 
-  `run/1` never raises: every filesystem probe (`File.ls/1`,
-  `Watcher.watched_roots/0`) is either inherently non-raising or explicitly
-  guarded, matching the "the doctor never crashes the caller" posture of its
-  siblings.
+  `run/1`/`run/2` never raise: every filesystem probe (`File.ls/1`,
+  `File.read/1` via `Context.resolve/2`, `Watcher.watched_roots/0`) is
+  either inherently non-raising or explicitly guarded, matching the "the
+  doctor never crashes the caller" posture of its siblings. A degraded or
+  disabled mount always gets a full report — its reason surfaces under
+  whichever check owns it, plus a repair remedy — never an RPC error; only
+  a `mount_key` with NO `icms:` entry at all is an error (`run/2`'s
+  `:mount_not_found`), since there is nothing to report on.
   """
 
   alias Valea.ICM.Watcher
   alias Valea.Mounts
+  alias Valea.Mounts.Context
   alias Valea.Workspace.Manager
 
   @type check :: %{String.t() => String.t() | nil}
 
-  @ref_gate_detail "not checked — this mount's reference did not resolve (see ref_resolves)."
+  @gate_detail_path "not checked — this mount's path did not resolve (see path_resolves)."
+  @gate_detail_manifest "not checked — this mount's manifest did not load (see manifest_format2)."
 
-  @ref_remedy "Check this mount's reference in Settings — the folder may have moved, been " <>
-                "renamed, or unplugged, or the path itself isn't allowed (inside the " <>
-                "workspace, an ancestor of it, your home directory, the filesystem root, or " <>
-                "containing a permission-glob character)."
+  @path_remedy "Check this mount's path in Settings — the folder may have moved, been " <>
+                 "renamed, or unplugged, or the path itself isn't allowed (inside the " <>
+                 "workspace, an ancestor of it, your home directory, the filesystem root, or " <>
+                 "containing a permission-glob character)."
   @manifest_remedy "Add or fix icm.yaml at this mount's root — it must be valid YAML with a " <>
-                     "non-blank name."
+                     "UUID id and a non-blank name."
+  @unique_id_remedy "Each mounted ICM needs a unique id — unmount one of the conflicting " <>
+                      "mounts, or edit its icm.yaml to a fresh id (a new UUID)."
+  @related_icms_remedy "Fix or remove the related_icms entry in this ICM's CONTEXT.md, or " <>
+                         "mount and enable the ICM it points at."
   @secrets_remedy "Valea's workspace deny-list does not reach into external folders — move " <>
                     "secrets out of this mount's root, keep them elsewhere, or leave this " <>
                     "mount disabled while it holds them."
@@ -94,7 +123,7 @@ defmodule Valea.Mounts.Doctor do
   @watcher_stale_remedy "If this mount was just enabled, give the watcher a moment to catch " <>
                           "up; otherwise reopen the workspace."
 
-  @doc "Runs the mounts doctor against the currently open workspace."
+  @doc "Runs the mounts doctor against the currently open workspace (every mount)."
   @spec run() :: {:ok, %{checks: [check], ok: boolean}} | {:error, :no_workspace}
   def run do
     case Manager.current() do
@@ -103,104 +132,117 @@ defmodule Valea.Mounts.Doctor do
     end
   end
 
-  @doc "Pure form of `run/0` against an explicit `workspace` root — always succeeds."
+  @doc """
+  Pure form of `run/0` against an explicit `workspace` root — every mount
+  `Valea.Mounts.list/1` discovers, flattened into one check list. Always
+  succeeds; see the moduledoc for gating/status rules.
+  """
   @spec run(workspace :: String.t()) :: {:ok, %{checks: [check], ok: boolean}}
   def run(workspace) when is_binary(workspace) do
-    checks = workspace |> Mounts.list() |> Enum.flat_map(&mount_checks/1)
+    all_mounts = Mounts.list(workspace)
+    checks = Enum.flat_map(all_mounts, &mount_checks(workspace, &1, all_mounts))
     {:ok, %{checks: checks, ok: Enum.all?(checks, &(&1["status"] == "ok"))}}
   end
 
-  # -- per-mount dispatch ----------------------------------------------------
+  @doc """
+  Runs the doctor for a single mount, addressed by `mount_key` (the
+  `icms:` config key) — the per-ICM probe backing `icm_doctor`
+  (`Valea.Api.Icms`). `{:error, :mount_not_found}` when `mount_key` names
+  no `icms:` entry at all in `workspace`; otherwise always succeeds — see
+  the moduledoc's closing paragraph for why a degraded/disabled mount is
+  never an error here.
+  """
+  @spec run(workspace :: String.t(), mount_key :: String.t()) ::
+          {:ok, %{mount_key: String.t(), checks: [check], ok: boolean}}
+          | {:error, :mount_not_found}
+  def run(workspace, mount_key) when is_binary(workspace) and is_binary(mount_key) do
+    all_mounts = Mounts.list(workspace)
 
-  defp mount_checks(%{rel_root: nil} = mount), do: external_checks(mount)
-  defp mount_checks(%{rel_root: rel} = mount) when is_binary(rel), do: [manifest_ok_check(mount)]
+    case Enum.find(all_mounts, &(&1.name == mount_key)) do
+      nil ->
+        {:error, :mount_not_found}
 
-  # Kind-qualified check id: `"<check>:<mount name>"` for an embedded mount
-  # (bare — the historical, still-unique-on-its-own form), or
-  # `"<check>:external:<mount name>"` for an external one. Applied to EVERY
-  # external check (not just `manifest_ok`, the one that can actually
-  # collide with an embedded mount's) so the id scheme is uniform — a
-  # reader can tell a check's mount kind from its id alone, and no future
-  # embedded-only check name can accidentally collide with an external one
-  # either.
-  defp check_id(%{rel_root: nil, name: name}, check_name), do: "#{check_name}:external:#{name}"
-  defp check_id(%{name: name}, check_name), do: "#{check_name}:#{name}"
+      mount ->
+        checks = mount_checks(workspace, mount, all_mounts)
 
-  # -- embedded + external shared: manifest_ok --------------------------------
-
-  # Ok iff the mount is not degraded at all — `degraded == nil` implies a
-  # loaded manifest for BOTH embedded and external mounts (see
-  # `Valea.Mounts`/`Valea.Mounts.External`'s construction invariants), so a
-  # degrade reason of ANY kind (missing/invalid icm.yaml, an invalid
-  # directory basename, a name collision) surfaces here — for an embedded
-  # mount this is the ONLY check, so every degrade reason has to land
-  # somewhere; for an external mount this only runs once `ref_resolves` has
-  # already confirmed the reason isn't ref/path-level. An embedded/external
-  # NAME COLLISION degrades BOTH mount entries (see `Valea.Mounts`'s
-  # `degrade_name_collisions/1`), so this same function is called once per
-  # side with the SAME `mount.name` — `check_id/2`'s kind qualifier is what
-  # keeps their two `manifest_ok` checks from colliding on id.
-  defp manifest_ok_check(mount) do
-    id = check_id(mount, "manifest_ok")
-    label = "#{mount.name}: manifest"
-
-    case mount.degraded do
-      nil -> ok(id, label, "icm.yaml loads (#{mount.manifest.name}).")
-      reason -> failed(id, label, reason, @manifest_remedy)
+        {:ok,
+         %{mount_key: mount_key, checks: checks, ok: Enum.all?(checks, &(&1["status"] == "ok"))}}
     end
   end
 
-  # -- external: ref_resolves gates manifest_ok / secrets_hygiene / watcher_live
+  # -- per-mount check pipeline ------------------------------------------------
 
-  defp external_checks(mount) do
-    if ref_resolves_ok?(mount) do
-      [
-        ref_resolves_check(mount),
-        manifest_ok_check(mount),
-        secrets_hygiene_check(mount),
-        watcher_live_check(mount)
-      ]
+  defp mount_checks(workspace, mount, all_mounts) do
+    path = path_resolves_check(mount)
+
+    if path["status"] == "ok" do
+      manifest = manifest_format2_check(mount)
+      unique_id = unique_id_check(mount, all_mounts, manifest["status"] == "ok")
+      related_icms = related_icms_check(workspace, mount)
+      secrets = secrets_hygiene_check(mount)
+      watcher = watcher_live_check(mount)
+      [path, manifest, unique_id, related_icms, secrets, watcher]
     else
       [
-        ref_resolves_check(mount),
-        unknown(check_id(mount, "manifest_ok"), "#{mount.name}: manifest", @ref_gate_detail),
+        path,
+        unknown(
+          check_id(mount, "manifest_format2"),
+          "#{mount.name}: manifest",
+          @gate_detail_path
+        ),
+        unknown(check_id(mount, "unique_id"), "#{mount.name}: unique id", @gate_detail_path),
+        unknown(
+          check_id(mount, "related_icms"),
+          "#{mount.name}: related ICMs",
+          @gate_detail_path
+        ),
         unknown(
           check_id(mount, "secrets_hygiene"),
           "#{mount.name}: secrets hygiene",
-          @ref_gate_detail
+          @gate_detail_path
         ),
-        unknown(check_id(mount, "watcher_live"), "#{mount.name}: watcher live", @ref_gate_detail)
+        unknown(check_id(mount, "watcher_live"), "#{mount.name}: watcher live", @gate_detail_path)
       ]
     end
   end
 
-  defp ref_resolves_check(mount) do
-    id = check_id(mount, "ref_resolves")
-    label = "#{mount.name}: reference resolves"
+  # Mount-key-qualified check id: `"<check>:<mount key>"` — every mount is
+  # external post-Phase-3 (no more embedded/external duality to disambiguate
+  # via a kind infix), but a check id still has to stay unique once
+  # flattened across every mount in `run/1`'s list (or across several
+  # `run/2` results a caller flattens together), so the mount key itself is
+  # the qualifier.
+  defp check_id(%{name: name}, check_name), do: "#{check_name}:#{name}"
 
-    if ref_resolves_ok?(mount) do
+  # -- 1. path_resolves ---------------------------------------------------------
+
+  defp path_resolves_check(mount) do
+    id = check_id(mount, "path_resolves")
+    label = "#{mount.name}: path resolves"
+
+    if path_resolves_ok?(mount) do
       ok(id, label, "#{mount.root} resolves and is reachable.")
     else
-      failed(id, label, mount.degraded, @ref_remedy)
+      failed(id, label, mount.degraded, @path_remedy)
     end
   end
 
-  defp ref_resolves_ok?(%{degraded: nil}), do: true
-  defp ref_resolves_ok?(%{degraded: reason}), do: not ref_resolution_failure?(reason)
+  defp path_resolves_ok?(%{degraded: nil}), do: true
+  defp path_resolves_ok?(%{degraded: reason}), do: not path_level_failure?(reason)
 
-  # `Valea.Mounts`'s (post-3.2, `icms:`-only) fixed reason-string vocabulary
-  # for a path/location failure (`icm_path/1`, `build_from_icm_path/4`'s
-  # `absolute_or_tilde?/1` + `Valea.Mounts.External.check_boundaries/2`,
-  # `build_resolved_icm_mount/4`'s `check_icm_glob_safety/1` + folder-exists
-  # check, and the `degrade_duplicate_roots/1` post-pass — see that
-  # module's moduledoc/@doc for the full list this mirrors). Anything NOT
-  # matching one of these prefixes is a manifest/identity-level reason
-  # instead ("icm.yaml is missing", an invalid-manifest message, or the
-  # `degrade_duplicate_ids/1` post-pass's "ambiguous id: ...") and surfaces
-  # under `manifest_ok` instead. If `Valea.Mounts`'s wording ever changes,
-  # this list must move with it — this module's own tests (built on real
-  # `Mounts.list/1` output, not mocked reasons) will catch drift.
-  @ref_failure_prefixes [
+  # `Valea.Mounts`'s fixed reason-string vocabulary for a path/location
+  # failure (`icm_path/1`, `build_from_icm_path/4`'s `absolute_or_tilde?/1` +
+  # `Valea.Mounts.External.check_boundaries/2`, `build_resolved_icm_mount/4`'s
+  # `check_icm_glob_safety/1` + folder-exists check, and the
+  # `degrade_duplicate_roots/1` post-pass — see that module's moduledoc for
+  # the full list this mirrors). Anything NOT matching one of these prefixes
+  # is a manifest/identity-level reason instead ("icm.yaml is missing", an
+  # invalid-manifest message, or the `degrade_duplicate_ids/1` post-pass's
+  # "ambiguous id: ...") and surfaces under `manifest_format2`/`unique_id`
+  # instead. If `Valea.Mounts`'s wording ever changes, this list must move
+  # with it — this module's own tests (built on real `Mounts.list/1` output,
+  # not mocked reasons) will catch drift.
+  @path_failure_prefixes [
     # icm_path/1 -- the `icms:` entry's `path:` key itself missing/invalid.
     "path is missing or invalid",
     # absolute_or_tilde?/1 rejecting a relative path.
@@ -216,11 +258,90 @@ defmodule Valea.Mounts.Doctor do
     "duplicate root:"
   ]
 
-  defp ref_resolution_failure?(reason) when is_binary(reason) do
-    Enum.any?(@ref_failure_prefixes, &String.starts_with?(reason, &1))
+  defp path_level_failure?(reason) when is_binary(reason) do
+    Enum.any?(@path_failure_prefixes, &String.starts_with?(reason, &1))
   end
 
-  # -- external: secrets_hygiene ----------------------------------------------
+  # -- 2a. manifest_format2 ------------------------------------------------------
+
+  # Ok iff `Valea.Mounts.list/1` already loaded a manifest — that loader
+  # (`Valea.Mounts.Manifest.load/1`) IS the format-2 validation (a stable,
+  # validated UUID `id`, a non-blank `name`), and `mount.manifest` survives
+  # both post-passes untouched (see moduledoc), so this reports `ok` even
+  # for a mount later degraded ONLY by a duplicate root/id.
+  defp manifest_format2_check(mount) do
+    id = check_id(mount, "manifest_format2")
+    label = "#{mount.name}: manifest"
+
+    case mount.manifest do
+      %{name: name} ->
+        ok(id, label, "icm.yaml loads as a valid format-2 manifest (#{name}).")
+
+      nil ->
+        failed(id, label, mount.degraded, @manifest_remedy)
+    end
+  end
+
+  # -- 2b. unique_id, gated on manifest_format2 ---------------------------------
+
+  defp unique_id_check(mount, _all_mounts, false) do
+    unknown(check_id(mount, "unique_id"), "#{mount.name}: unique id", @gate_detail_manifest)
+  end
+
+  defp unique_id_check(mount, all_mounts, true) do
+    id = check_id(mount, "unique_id")
+    label = "#{mount.name}: unique id"
+    manifest_id = mount.manifest.id
+
+    conflicts =
+      all_mounts
+      |> Enum.filter(fn other ->
+        other.name != mount.name and other.enabled and other.manifest != nil and
+          other.manifest.id == manifest_id
+      end)
+      |> Enum.map(& &1.name)
+      |> Enum.sort()
+
+    case conflicts do
+      [] ->
+        ok(id, label, "No other enabled mount shares this ICM's id.")
+
+      keys ->
+        failed(
+          id,
+          label,
+          "This ICM's id is also used by the enabled mount(s): #{Enum.join(keys, ", ")}.",
+          @unique_id_remedy
+        )
+    end
+  end
+
+  # -- 2c. related_icms, gated on path_resolves alone ---------------------------
+
+  defp related_icms_check(workspace, mount) do
+    id = check_id(mount, "related_icms")
+    label = "#{mount.name}: related ICMs"
+
+    case Context.resolve(workspace, mount) do
+      %{issues: []} ->
+        ok(id, label, "Every related ICM declared in this mount's CONTEXT.md resolves.")
+
+      %{issues: issues} ->
+        failed(id, label, related_icms_detail(issues), @related_icms_remedy)
+    end
+  end
+
+  defp related_icms_detail(issues), do: Enum.map_join(issues, " ", &related_icm_issue_text/1)
+
+  defp related_icm_issue_text(%{name: name, id: id, reason: reason}) do
+    "#{related_icm_label(name, id)}: #{reason}."
+  end
+
+  defp related_icm_label(name, _id) when is_binary(name), do: "Related ICM \"#{name}\""
+  defp related_icm_label(_name, id) when is_binary(id), do: "Related ICM #{id}"
+  defp related_icm_label(_name, _id), do: "A declared related ICM"
+
+  # -- 2d. secrets_hygiene -------------------------------------------------------
 
   defp secrets_hygiene_check(mount) do
     id = check_id(mount, "secrets_hygiene")
@@ -257,7 +378,7 @@ defmodule Valea.Mounts.Doctor do
   defp env_like?(".env"), do: true
   defp env_like?(name), do: String.starts_with?(name, ".env.")
 
-  # -- external: watcher_live --------------------------------------------------
+  # -- 2e. watcher_live -----------------------------------------------------------
 
   defp watcher_live_check(mount) do
     id = check_id(mount, "watcher_live")
@@ -268,13 +389,13 @@ defmodule Valea.Mounts.Doctor do
         unknown(id, label, @watcher_disabled_detail)
 
       MapSet.member?(Watcher.watched_roots(), mount.root) ->
-        ok(id, label, "#{mount.root} is in the watcher's current external-root set.")
+        ok(id, label, "#{mount.root} is in the watcher's current root set.")
 
       true ->
         failed(
           id,
           label,
-          "#{mount.root} is not currently in the watcher's external-root set.",
+          "#{mount.root} is not currently in the watcher's root set.",
           @watcher_stale_remedy
         )
     end
