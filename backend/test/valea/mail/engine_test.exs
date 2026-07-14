@@ -79,6 +79,7 @@ defmodule Valea.Mail.EngineTest do
 
   import ExUnit.CaptureLog
 
+  alias Valea.AgentCase
   alias Valea.Mail.Engine
 
   setup do
@@ -425,19 +426,17 @@ defmodule Valea.Mail.EngineTest do
     # `Valea.Workflows.triage_path/1` requires a real mount — valid
     # icm.yaml manifest plus a parseable frontmatter block — not just a
     # file at the old hardcoded path) so this test proves a genuine
-    # full-green run.
-    mount_dir = Path.join([root, "mounts", "starter"])
-    File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-
-    Valea.Mounts.Manifest.write!(mount_dir, %{
-      id: "73de3db8-81d1-40ae-afc2-daa2424cc5e7",
+    # full-green run. Post-task-3.2, `Valea.Mounts.list/1` is config truth
+    # over `icms:` ONLY — no more filesystem-glob discovery of an embedded
+    # `mounts/<name>` — so this must be a REAL, REGISTERED external ICM
+    # (`AgentCase.mount_test_icm!/2`), not a bare folder on disk.
+    AgentCase.mount_test_icm!(root,
       name: "Starter",
-      description: ""
-    })
-
-    File.write!(
-      Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]),
-      "---\nenabled: true\n---\n# New Inquiry Triage\n\nInputs: a `sources/mail/messages/*.md` file.\n"
+      id: "73de3db8-81d1-40ae-afc2-daa2424cc5e7",
+      pages: %{
+        "Workflows/New Inquiry Triage.md" =>
+          "---\nenabled: true\n---\n# New Inquiry Triage\n\nInputs: a `sources/mail/messages/*.md` file.\n"
+      }
     )
 
     start_engine!(root, 18)

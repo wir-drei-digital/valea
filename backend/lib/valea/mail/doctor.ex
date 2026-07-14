@@ -367,8 +367,17 @@ defmodule Valea.Mail.Doctor do
     end
   end
 
+  # `Valea.Workflows.triage_path/1` returns a workspace-relative path for an
+  # EMBEDDED mount but the ABSOLUTE physical path for an EXTERNAL
+  # (by-reference) mount (see its moduledoc) — every mount is external now,
+  # so `rel_path` here is normally already absolute. `Path.join/2` does NOT
+  # special-case an absolute second argument (it lexically appends,
+  # producing a bogus nested path), so an absolute `rel_path` must be read
+  # directly, never joined onto `root`.
   defp workflow_contract_read(root, rel_path) do
-    case File.read(Path.join(root, rel_path)) do
+    abs = if Path.type(rel_path) == :absolute, do: rel_path, else: Path.join(root, rel_path)
+
+    case File.read(abs) do
       {:ok, content} -> workflow_contract_result(content, rel_path)
       {:error, _reason} -> workflow_contract_absent()
     end

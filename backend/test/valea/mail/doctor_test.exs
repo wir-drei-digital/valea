@@ -1,9 +1,9 @@
 defmodule Valea.Mail.DoctorTest do
   use ExUnit.Case, async: false
 
+  alias Valea.AgentCase
   alias Valea.Mail.Doctor
   alias Valea.Mail.Settings
-  alias Valea.Mounts.Manifest
 
   @review "AI/Review"
   @processed "AI/Processed"
@@ -41,49 +41,48 @@ defmodule Valea.Mail.DoctorTest do
         "vmail-doctor-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
       )
 
-    File.mkdir_p!(root)
+    # `config/` must exist up front: `Valea.Mounts.mount/2` (used below by
+    # `AgentCase.mount_test_icm!/2`) writes straight to
+    # `config/workspace.yaml` and never creates the parent dir itself.
+    File.mkdir_p!(Path.join(root, "config"))
     ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(root) end)
     root
   end
 
-  # `New Inquiry Triage.md` under `root/mounts/starter/Workflows/` — the T8
-  # scaffold's layout (Task A-T13: `workflow_contract` discovers it via
-  # `Valea.Workflows.triage_path/1`, which requires a valid `icm.yaml`
-  # manifest AND a parseable frontmatter block before the file counts as a
-  # registry entry at all — hence the minimal `---\nenabled: true\n---\n`
-  # prepended here, on top of whatever body `write_triage!/2`'s caller
-  # passes (the OLD hardcoded-path fixtures below had no frontmatter of
-  # their own, since the old `File.read`-based check never parsed one).
+  # Mounts a REAL EXTERNAL ICM (via `AgentCase.mount_test_icm!/2`) carrying
+  # `Workflows/New Inquiry Triage.md`, and returns that page's ABSOLUTE
+  # resolved path. Post-task-3.2, `Valea.Mounts.list/1` is config truth
+  # over `icms:` ONLY (no more filesystem-glob discovery of an embedded
+  # `mounts/<name>`), so `workflow_contract` can only discover this page
+  # through a properly REGISTERED mount — a bare `mounts/starter/...`
+  # folder on disk is invisible to it now (Task A-T13: `workflow_contract`
+  # discovers the page via `Valea.Workflows.triage_path/1`, which requires
+  # a valid `icm.yaml` manifest AND a parseable frontmatter block — hence
+  # the minimal `---\nenabled: true\n---\n` prepended here, on top of
+  # whatever body `write_triage!/2`'s caller passes).
   defp write_triage!(root, body) do
-    mount_dir = Path.join([root, "mounts", "starter"])
-    File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-
-    Manifest.write!(mount_dir, %{
-      id: "73de3db8-81d1-40ae-afc2-daa2424cc5e7",
-      name: "Starter",
-      description: ""
-    })
-
     content = "---\nenabled: true\n---\n" <> body
-    File.write!(Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]), content)
+
+    icm =
+      AgentCase.mount_test_icm!(root,
+        name: "Starter",
+        id: "73de3db8-81d1-40ae-afc2-daa2424cc5e7",
+        pages: %{"Workflows/New Inquiry Triage.md" => content}
+      )
+
+    Path.join(icm.root, "Workflows/New Inquiry Triage.md")
   end
 
-  # A mount with a Workflows/ page, but not the triage one — for the
-  # "registry non-empty, no triage match" case, distinct from "no mounts at
-  # all" (see the `workspace_root/0`-only tests below).
+  # A registered mount with a Workflows/ page, but not the triage one — for
+  # the "registry non-empty, no triage match" case, distinct from "no
+  # mounts at all" (see the `workspace_root/0`-only tests below).
   defp write_unrelated_workflow!(root) do
-    mount_dir = Path.join([root, "mounts", "other"])
-    File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-
-    Manifest.write!(mount_dir, %{
-      id: "b713d4f5-1dec-4b75-836b-02b26316b013",
+    AgentCase.mount_test_icm!(root,
       name: "Other",
-      description: ""
-    })
-
-    File.write!(
-      Path.join([mount_dir, "Workflows", "Weekly Review.md"]),
-      "---\nenabled: true\n---\n# Weekly Review\n\nBody.\n"
+      id: "b713d4f5-1dec-4b75-836b-02b26316b013",
+      pages: %{
+        "Workflows/Weekly Review.md" => "---\nenabled: true\n---\n# Weekly Review\n\nBody.\n"
+      }
     )
   end
 
@@ -447,13 +446,13 @@ defmodule Valea.Mail.DoctorTest do
 
   test "workflow_contract: legacy JSON reference fails with the update remedy" do
     root = workspace_root()
-    write_triage!(root, @legacy_triage)
+    triage_path = write_triage!(root, @legacy_triage)
 
     assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
     contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
     assert contract["status"] == "failed"
     assert contract["remedy"] =~ "sources/mail/messages/*.md"
-    assert contract["detail"] =~ "mounts/starter/Workflows/New Inquiry Triage.md"
+    assert contract["detail"] =~ triage_path
   end
 
   test "workflow_contract: absent file is unknown, not failed" do
@@ -485,24 +484,23 @@ defmodule Valea.Mail.DoctorTest do
   test "workflow_contract: finds the triage workflow in a second mount when the first (alphabetically) enabled mount lacks one" do
     root = workspace_root()
     write_unrelated_workflow!(root)
-    # "other" (write_unrelated_workflow!) sorts after "starter" — write a
-    # first-alphabetically mount with no Workflows/ at all, so discovery
-    # has to skip past it to reach "starter"'s triage workflow.
-    aaa_dir = Path.join([root, "mounts", "aaa"])
-    File.mkdir_p!(aaa_dir)
+    # Every mount is now an independently-rooted EXTERNAL ICM (config
+    # truth, `icms:`-only) rather than a `mounts/<name>` subdirectory
+    # sharing the workspace's own alphabetical ordering, so a mount's KEY
+    # name no longer controls `Valea.Workflows.list/1`'s sort (that's now
+    # by each workflow's absolute physical path). What this test actually
+    # exercises still holds regardless of order: a mount with no
+    # `Workflows/` at all coexists with the one that does, and
+    # `Valea.Workflows.triage_path/1`'s basename-match `Enum.find/2` must
+    # skip past the former to find the latter.
+    AgentCase.mount_test_icm!(root, name: "AAA", id: "e514363a-f535-4643-b6fb-101baafbe70c")
 
-    Manifest.write!(aaa_dir, %{
-      id: "e514363a-f535-4643-b6fb-101baafbe70c",
-      name: "AAA",
-      description: ""
-    })
-
-    write_triage!(root, @good_triage)
+    triage_path = write_triage!(root, @good_triage)
 
     assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
     contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
     assert contract["status"] == "ok"
-    assert contract["detail"] =~ "mounts/starter/Workflows/New Inquiry Triage.md"
+    assert contract["detail"] =~ triage_path
   end
 
   # -- credential redaction ------------------------------------------------------------
