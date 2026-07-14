@@ -1,5 +1,6 @@
 import { api, type Api } from '../api/client';
 import type { IcmNode } from '../shell/nav';
+import { workspaceStore } from './workspace.svelte';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 import { wireQueueEvents } from './queue.svelte';
 import { wireAuditEvents } from './audit.svelte';
@@ -7,35 +8,40 @@ import { wireMailEvents } from './mail.svelte';
 import { wireMountsEvents } from './mounts.svelte';
 import { workflowsStore } from './workflows.svelte';
 
-type IcmApi = Pick<Api, 'icmTree'>;
+type IcmApi = Pick<Api, 'icmTree' | 'listIcms'>;
+
+/** Minimal shape this store needs from `list_icms` — see `MountSummary` in `stores/mounts.svelte.ts` for the full row. */
+type IcmListRow = { mountKey: string; enabled: boolean; degraded: string | null };
 
 /**
- * One entry of the grouped `icm_tree` RPC (A-T11) — one per enabled mount.
- * `mount` is the mount's stable name (`Valea.Mounts`'s `name`), `title`/
- * `rootRel` mirror `MountSummary`'s `title`/`relRoot` (named `rootRel` here
- * to match the `icm_tree` action's own field name — see `IcmTreeFields` in
- * `api/ash_rpc.ts` — a naming difference from `list_mounts`'s `relRoot`
- * that's a generated-type fact, not a typo). `tree` is that mount's
- * ICM tree, already normalized to `IcmNode[]` the same way the old flat
- * `nodes` array was.
+ * One ICM's tree (task 4.2/4.3 re-key) — `mount` is the mount's stable key
+ * (`Valea.Mounts`'s `name`), `title` its display name. `tree` is that
+ * mount's ICM tree, already normalized to `IcmNode[]` — every node stamped
+ * with `mountKey` (see `normalizeIcmNode`) so it stays self-describing once
+ * flattened across mounts (`flattenMountGroups`, `lib/shell/nav.ts`).
+ *
+ * `rootRel` (A-T11) is gone: `icm_tree` is now single-ICM (`Valea.Api.ICM`'s
+ * `:tree` action takes `mountKey` + `generation`), and "the mount's own
+ * root" is simply `""` in the new ICM-relative addressing — no separate
+ * field needed to name it.
  */
 export type MountGroup = {
   mount: string;
   title: string;
-  rootRel: string;
   tree: IcmNode[];
 };
 
 /**
- * Normalizes a raw RPC tree node into `IcmNode`. The backend returns plain
- * :map objects that bypass ash_typescript's camelCase formatter, so fields
+ * Normalizes a raw RPC tree node into `IcmNode`, stamping `mountKey` onto
+ * every node (including nested children) — the backend returns plain :map
+ * objects that bypass ash_typescript's camelCase formatter, so fields
  * arrive snake_case (e.g., `page_count`, not `pageCount`). This function
  * handles both formats for robustness while mapping to the canonical
  * camelCase `IcmNode` structure. Folder/page distinction already line up,
  * but this keeps the mapping explicit and defends against `Record<string, any>`
  * typing (`InferIcmTreeResult`) drifting from the shape at runtime.
  */
-export function normalizeIcmNode(raw: Record<string, any>): IcmNode {
+export function normalizeIcmNode(raw: Record<string, any>, mountKey: string): IcmNode {
   if (raw.type === 'folder') {
     const pageCount = typeof raw.page_count === 'number'
       ? raw.page_count
@@ -44,8 +50,9 @@ export function normalizeIcmNode(raw: Record<string, any>): IcmNode {
     return {
       name: raw.name,
       path: raw.path,
+      mountKey,
       type: 'folder',
-      children: Array.isArray(raw.children) ? raw.children.map(normalizeIcmNode) : [],
+      children: Array.isArray(raw.children) ? raw.children.map((c: Record<string, any>) => normalizeIcmNode(c, mountKey)) : [],
       pageCount
     };
   }
@@ -57,6 +64,7 @@ export function normalizeIcmNode(raw: Record<string, any>): IcmNode {
     return {
       name: raw.name,
       path: raw.path,
+      mountKey,
       type: 'file',
       ext: typeof raw.ext === 'string' ? raw.ext : ''
     };
@@ -67,20 +75,20 @@ export function normalizeIcmNode(raw: Record<string, any>): IcmNode {
   return {
     name: raw.name,
     path: raw.path,
+    mountKey,
     type: 'page',
     uri: raw.uri
   };
 }
 
-function normalizeNode(raw: Record<string, any>): IcmNode {
-  return normalizeIcmNode(raw);
-}
-
 export class IcmStore {
   /**
-   * Grouped ICM tree (A-T11) — one `MountGroup` per enabled mount, in the
-   * order the backend reports them. This is the real, current shape of
-   * `icm_tree`'s result; `nodes` below is a back-compat shim over it.
+   * One `MountGroup` per ENABLED, non-degraded mount, in `list_icms`'s
+   * order. `icm_tree` (task 4.2 re-key) is now single-ICM, so `refetch`
+   * fans out: it lists the mount catalog, then fetches each enabled mount's
+   * tree in parallel and assembles the same grouped shape this store
+   * always exposed — every other consumer (`mount-sections.ts`, the
+   * Knowledge routes) is unaffected by the RPC split underneath.
    */
   groups: MountGroup[] = $state([]);
   /**
@@ -100,18 +108,30 @@ export class IcmStore {
   }
 
   async refetch(): Promise<void> {
-    const result = await this.#api.icmTree();
-    if (!result.ok) return;
+    const generation = workspaceStore.generation ?? 0;
 
-    const data = result.data as {
-      mounts?: Array<{ mount: string; title: string; rootRel: string; tree?: Record<string, any>[] }>;
-    };
-    this.groups = (data.mounts ?? []).map((g) => ({
-      mount: g.mount,
-      title: g.title,
-      rootRel: g.rootRel,
-      tree: (g.tree ?? []).map(normalizeNode)
-    }));
+    const listResult = await this.#api.listIcms(generation);
+    if (!listResult.ok) return;
+
+    const icms = ((listResult.data as { icms?: IcmListRow[] }).icms ?? []).filter(
+      (m) => m.enabled && !m.degraded
+    );
+
+    const treeResults = await Promise.all(icms.map((m) => this.#api.icmTree(m.mountKey, generation)));
+
+    const groups: MountGroup[] = [];
+    treeResults.forEach((result, i) => {
+      if (!result.ok) return;
+      const data = result.data as { mountKey: string; title: string; tree?: Record<string, any>[] };
+      const mountKey = icms[i].mountKey;
+      groups.push({
+        mount: mountKey,
+        title: data.title,
+        tree: (data.tree ?? []).map((n) => normalizeIcmNode(n, mountKey))
+      });
+    });
+
+    this.groups = groups;
     this.loaded = true;
   }
 

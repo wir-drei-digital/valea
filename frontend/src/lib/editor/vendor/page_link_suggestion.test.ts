@@ -11,6 +11,7 @@ function makeExtension(overrides = {}) {
   return createPageLinkSuggestion({
     char: '[[',
     name: 'pageLinkBracket',
+    mountKey: 'primary',
     pagePath: 'Notes/A.md',
     api: {},
     ...overrides

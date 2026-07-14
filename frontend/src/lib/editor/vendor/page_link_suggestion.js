@@ -179,13 +179,13 @@ class PageLinkList {
 // Adapts a pure `PickerItem` (page-link.ts) into the menu-item shape
 // `PageLinkList`/the `Suggestion` plugin expect: the same data plus a bound
 // `command({editor, range})` that performs this item's actual edit,
-// closing over `pagePath`/`api` from the factory call below.
-function toMenuItem(item, { pagePath, api }) {
+// closing over `pagePath`/`mountKey`/`api` from the factory call below.
+function toMenuItem(item, { pagePath, mountKey, api }) {
   if (item.kind === "create") {
     return {
       ...item,
       command: async ({ editor, range }) => {
-        const result = await api.createIcmPage(parentOf(pagePath), item.query)
+        const result = await api.createIcmPage(mountKey, parentOf(pagePath), item.query)
         // Guard mirrors PageEditor.svelte's uploadAndInsertAll: the editor
         // may have been destroyed while the create call was in flight.
         // Deliberately does NOT delete `range`/insert anything on failure —
@@ -243,8 +243,15 @@ function toMenuItem(item, { pagePath, api }) {
  * `mara@example` never opens the picker mid-word, since the character
  * before the `@` there is a letter, not an allowed prefix.
  */
-export function createPageLinkSuggestion({ char, name, pagePath, api, allowedPrefixes = [" "] }) {
-  const search = debounced((query) => api.icmSearch(query), SEARCH_DEBOUNCE_MS)
+export function createPageLinkSuggestion({ char, name, mountKey, pagePath, api, allowedPrefixes = [" "] }) {
+  // Scoped to `mountKey` — the page being edited — so a picker result can
+  // never belong to a DIFFERENT mount than `pagePath`'s own (`page-link.ts`'s
+  // `linkDestination` computes a lexical relative path assuming both sides
+  // share a vocabulary; a cross-mount result would silently produce a
+  // nonsensical relative link under the new ICM-relative addressing, task
+  // 4.2's re-key). `icmSearch`'s `mount` argument already exists for
+  // exactly this (Task C2).
+  const search = debounced((query) => api.icmSearch(query, mountKey), SEARCH_DEBOUNCE_MS)
 
   return Extension.create({
     name,
@@ -288,7 +295,7 @@ export function createPageLinkSuggestion({ char, name, pagePath, api, allowedPre
           items: async ({ query }) => {
             const result = await search(query)
             const results = result.ok ? result.data.results : []
-            return pickerItems(results, query).map((item) => toMenuItem(item, { pagePath, api }))
+            return pickerItems(results, query).map((item) => toMenuItem(item, { pagePath, mountKey, api }))
           },
           render: renderMenu,
         }),

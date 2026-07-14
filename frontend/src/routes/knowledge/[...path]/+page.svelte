@@ -5,7 +5,7 @@
   import { AppFrame, ListPane, PageHeader, SegmentedControl } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { api, type IcmPageData } from '$lib/api/client';
-  import { encodePath, flattenMountGroups, type IcmNode } from '$lib/shell/nav';
+  import { encodePath, type IcmNode } from '$lib/shell/nav';
   import { parentPath } from './parent-path';
   import { recordVisit } from '$lib/stores/recent-pages';
   import { collectDocLinkPaths } from '$lib/editor/link-nav';
@@ -31,15 +31,16 @@
     newEntryOpen = true;
   }
 
-  // Route params arrive URL-encoded per segment (e.g. `Tone%20%26%20Voice`);
-  // decode each segment rather than the whole param so a literal `%2F` in a
+  // Route params (task 4.3): `/knowledge/<mountKey>/<rel...>` — the FIRST
+  // segment is the mount key, everything after it is the ICM-relative path
+  // (task 4.2's re-key: node paths are relative to their own mount's root
+  // now, no longer globally unique across mounts, so the mount has to ride
+  // in the URL alongside the path). Each segment arrives URL-encoded;
+  // decode individually rather than the whole param so a literal `%2F` in a
   // filename would never be mistaken for a path separator.
-  const decodedPath = $derived(
-    (page.params.path ?? '')
-      .split('/')
-      .map((segment) => decodeURIComponent(segment))
-      .join('/')
-  );
+  const rawSegments = $derived((page.params.path ?? '').split('/'));
+  const mountKey = $derived(rawSegments[0] ? decodeURIComponent(rawSegments[0]) : '');
+  const decodedPath = $derived(rawSegments.slice(1).map((segment) => decodeURIComponent(segment)).join('/'));
 
   function findNode(nodes: IcmNode[], path: string): IcmNode | undefined {
     for (const node of nodes) {
@@ -52,17 +53,12 @@
     return undefined;
   }
 
-  // A-T15: this route only ever needs a flat search-by-path (never a
-  // per-mount grouped display — that's `/knowledge`'s own concern, see
-  // `buildMountsDisplay` in `components/knowledge/mount-sections.ts`), so it
-  // flattens `icmStore.groups` rather than reading the deleted
-  // `icmStore.nodes` back-compat getter. Safe: every node `path` is
-  // workspace-relative (`mounts/<name>/…`, A-T3) and therefore unique across
-  // mounts, so flattening never conflates two different mounts' same-named
-  // folders/pages.
-  const flatNodes = $derived(flattenMountGroups(icmStore.groups));
+  // Scoped to THIS route's own mount — never flattened across every enabled
+  // mount (task 4.2 re-key: a bare path is no longer unique across mounts,
+  // so searching every mount's tree for it could find the wrong page).
+  const mountTree = $derived(icmStore.groups.find((g) => g.mount === mountKey)?.tree ?? []);
 
-  const node = $derived(findNode(flatNodes, decodedPath));
+  const node = $derived(findNode(mountTree, decodedPath));
   const isPage = $derived(node?.type === 'page');
 
   // Overline above the page title — the parent folder the page lives in
@@ -83,11 +79,11 @@
       return { title: node.name, path: node.path, entries: node.children ?? [] };
     }
     const parentDir = parentPath(decodedPath);
-    const parent = parentDir ? findNode(flatNodes, parentDir) : undefined;
+    const parent = parentDir ? findNode(mountTree, parentDir) : undefined;
     if (parent?.type === 'folder') {
       return { title: parent.name, path: parent.path, entries: parent.children ?? [] };
     }
-    return { title: 'Knowledge', path: '', entries: flatNodes };
+    return { title: 'Knowledge', path: '', entries: mountTree };
   });
 
   type PageContent = IcmPageData;
@@ -139,7 +135,7 @@
     dangling = new Set(data.results.filter((r) => !r.exists).map((r) => r.path));
   }
 
-  async function loadPage(path: string) {
+  async function loadPage(mount: string, path: string) {
     // A previous page's store may still hold an unflushed edit — save it
     // before tearing the store down and replacing it with a fresh one for
     // the new path.
@@ -156,16 +152,16 @@
     lastFetch = null;
     dangling = new Set();
 
-    const result = await api.icmPage(path);
+    const result = await api.icmPage(mount, path);
     if (result.ok) {
       const data = result.data as PageContent;
       content = data;
       editorHash = data.hash;
       tokenEstimate = Math.round(data.content.length / 4);
-      store = new PageEditorStore(api, path, { hash: data.hash });
+      store = new PageEditorStore(api, mount, path, { hash: data.hash });
       // MRU (Task C9) — recorded on a genuine navigation-driven load, not
       // on the silent reloads/raw-toggle refetches elsewhere in this file.
-      recordVisit(path);
+      recordVisit(mount, path);
     } else {
       loadFailed = true;
     }
@@ -175,7 +171,7 @@
 
   $effect(() => {
     if (isPage && decodedPath !== loadedPath) {
-      void loadPage(decodedPath);
+      void loadPage(mountKey, decodedPath);
     }
   });
 
@@ -210,7 +206,7 @@
   async function applyReload(): Promise<void> {
     if (!store) return;
     const path = decodedPath;
-    const result = await api.icmPage(path);
+    const result = await api.icmPage(mountKey, path);
     if (!result.ok || path !== decodedPath) return; // stale — a newer nav has since taken over
 
     const data = result.data as PageContent;
@@ -249,7 +245,7 @@
         if (!activeStore) break;
 
         try {
-          const result = await api.icmPage(path);
+          const result = await api.icmPage(mountKey, path);
           // Stale if a newer nav (or teardown) has since taken over.
           if (activeStore !== store || path !== decodedPath) continue;
 
@@ -302,7 +298,7 @@
     // editor currently holds.
     await store.flush();
     const path = decodedPath;
-    const result = await api.icmPage(path);
+    const result = await api.icmPage(mountKey, path);
     if (result.ok && path === decodedPath) {
       const data = result.data as PageContent;
       rawText = data.content;
@@ -383,7 +379,7 @@
             {:else}
               <li class="group relative">
                 <a
-                  href={`/knowledge/${encodePath(child.path)}`}
+                  href={`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(child.path)}`}
                   class="flex items-center gap-2 border-l-[3px] py-2 pr-9 pl-3 text-[13px] transition-colors hover:bg-paper-pill"
                   class:border-act={selected}
                   class:border-transparent={!selected}
@@ -402,6 +398,7 @@
                   {/if}
                 </a>
                 <EntryMenu
+                  {mountKey}
                   path={child.path}
                   name={child.name}
                   isFolder={child.type === 'folder'}
@@ -474,6 +471,7 @@
           <PageEditor
             bind:this={editorRef}
             content={content.prosemirror}
+            {mountKey}
             pagePath={decodedPath}
             {dangling}
             onChange={() => store?.noteChange(() => editorRef!.getJSON())}
@@ -485,7 +483,7 @@
 
         <PageMeta frontmatter={content.frontmatter} />
 
-        <BacklinksPanel path={decodedPath} />
+        <BacklinksPanel {mountKey} path={decodedPath} />
 
         <div class="bg-paper-pill rounded-xl px-4 py-3">
           <p class="text-[13px] text-ink-body">
@@ -497,4 +495,4 @@
   {/snippet}
 </AppFrame>
 
-<NewEntryDialog mode={newEntryMode} parentPath={listContext.path} bind:open={newEntryOpen} />
+<NewEntryDialog mode={newEntryMode} {mountKey} parentPath={listContext.path} bind:open={newEntryOpen} />

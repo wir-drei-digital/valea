@@ -38,7 +38,7 @@ describe('recent-pages — no localStorage (SSR/guard)', () => {
   });
 
   it('recordVisit does not throw when localStorage is unavailable', () => {
-    expect(() => recordVisit('Notes/A.md')).not.toThrow();
+    expect(() => recordVisit('primary', 'Notes/A.md')).not.toThrow();
   });
 });
 
@@ -51,33 +51,49 @@ describe('recent-pages — persisted round trip', () => {
   });
 
   it('records a visit and returns it', () => {
-    recordVisit('Notes/A.md');
-    expect(recentPages()).toEqual(['Notes/A.md']);
+    recordVisit('primary', 'Notes/A.md');
+    expect(recentPages()).toEqual([{ mountKey: 'primary', path: 'Notes/A.md' }]);
   });
 
   it('orders most-recent-first', () => {
-    recordVisit('Notes/A.md');
-    recordVisit('Notes/B.md');
-    recordVisit('Notes/C.md');
-    expect(recentPages()).toEqual(['Notes/C.md', 'Notes/B.md', 'Notes/A.md']);
+    recordVisit('primary', 'Notes/A.md');
+    recordVisit('primary', 'Notes/B.md');
+    recordVisit('primary', 'Notes/C.md');
+    expect(recentPages()).toEqual([
+      { mountKey: 'primary', path: 'Notes/C.md' },
+      { mountKey: 'primary', path: 'Notes/B.md' },
+      { mountKey: 'primary', path: 'Notes/A.md' }
+    ]);
   });
 
-  it('dedupes — revisiting a page moves it to the front instead of duplicating it', () => {
-    recordVisit('Notes/A.md');
-    recordVisit('Notes/B.md');
-    recordVisit('Notes/A.md');
-    expect(recentPages()).toEqual(['Notes/A.md', 'Notes/B.md']);
+  it('dedupes on the (mountKey, path) pair — revisiting a page moves it to the front instead of duplicating it', () => {
+    recordVisit('primary', 'Notes/A.md');
+    recordVisit('primary', 'Notes/B.md');
+    recordVisit('primary', 'Notes/A.md');
+    expect(recentPages()).toEqual([
+      { mountKey: 'primary', path: 'Notes/A.md' },
+      { mountKey: 'primary', path: 'Notes/B.md' }
+    ]);
+  });
+
+  it('treats the same relative path in two different mounts as distinct entries', () => {
+    recordVisit('primary', 'Notes/A.md');
+    recordVisit('clients', 'Notes/A.md');
+    expect(recentPages()).toEqual([
+      { mountKey: 'clients', path: 'Notes/A.md' },
+      { mountKey: 'primary', path: 'Notes/A.md' }
+    ]);
   });
 
   it('caps at 10 entries, dropping the oldest', () => {
     for (let i = 1; i <= 12; i++) {
-      recordVisit(`Notes/${i}.md`);
+      recordVisit('primary', `Notes/${i}.md`);
     }
     const result = recentPages();
     expect(result).toHaveLength(10);
-    expect(result[0]).toBe('Notes/12.md');
-    expect(result).not.toContain('Notes/1.md');
-    expect(result).not.toContain('Notes/2.md');
+    expect(result[0]).toEqual({ mountKey: 'primary', path: 'Notes/12.md' });
+    expect(result.map((r) => r.path)).not.toContain('Notes/1.md');
+    expect(result.map((r) => r.path)).not.toContain('Notes/2.md');
   });
 
   it('survives a corrupted stored value rather than throwing', () => {
@@ -88,5 +104,10 @@ describe('recent-pages — persisted round trip', () => {
   it('ignores a stored value that is not an array', () => {
     localStorage.setItem('valea.recent-pages', JSON.stringify({ not: 'an array' }));
     expect(recentPages()).toEqual([]);
+  });
+
+  it('drops a pre-re-key entry (a bare string, no mountKey) rather than guessing its mount', () => {
+    localStorage.setItem('valea.recent-pages', JSON.stringify(['Notes/A.md', { mountKey: 'primary', path: 'Notes/B.md' }]));
+    expect(recentPages()).toEqual([{ mountKey: 'primary', path: 'Notes/B.md' }]);
   });
 });

@@ -5,7 +5,13 @@
  * C5 acceptance tests), holding ordinary `.md` pages that
  * `createIcmPageFromTemplate` instantiates. That RPC requires the template
  * and the new page to live in the SAME mount (see its own moduledoc), so
- * this only ever offers templates from the mount that owns `parentPath`.
+ * this only ever offers templates from `mountKey`'s own group.
+ *
+ * Task 4.2/4.3 re-key: template/page paths are ICM-relative now, so there
+ * is no more `rootRel` string prefix to match `parentPath` against — the
+ * owning mount is simply looked up by `mountKey` directly (the same key the
+ * caller already has, since a create action always names its target mount
+ * explicitly).
  */
 
 import type { MountGroup } from '$lib/stores/icm.svelte';
@@ -14,28 +20,15 @@ import type { IcmNode } from '$lib/shell/nav';
 export type TemplateOption = { label: string; path: string };
 
 /**
- * Finds the `MountGroup` that owns `parentPath` — a prefix match on
- * `rootRel`, true either at the mount's own root or for a folder nested
- * under it (the `/` boundary keeps `"mounts/primary2"` from falsely
- * matching a `"mounts/primary"` group). Handles an embedded mount's
- * workspace-relative `rootRel` (`"mounts/primary"`) and an external mount's
- * absolute one (`"/Users/dev/ext-mount"`, A2-T5b) identically: both are
- * plain string prefixes of `parentPath` in their own vocabulary.
- */
-function ownerGroup(groups: MountGroup[], parentPath: string): MountGroup | undefined {
-  return groups.find((g) => parentPath === g.rootRel || parentPath.startsWith(`${g.rootRel}/`));
-}
-
-/**
  * Options for the "Start from" select — one per `.md` page directly inside
- * the owning mount's `Templates/` folder, in tree order (already
+ * `mountKey`'s own `Templates/` folder, in tree order (already
  * name-sorted by the backend — see `build_tree/2`'s `Enum.sort_by`). Empty
- * when `parentPath` doesn't resolve to a known mount, that mount has no
+ * when `mountKey` doesn't name a currently-loaded group, that mount has no
  * `Templates/` folder, or the folder holds no pages (only subfolders, or
  * nothing at all).
  */
-export function templateOptions(groups: MountGroup[], parentPath: string): TemplateOption[] {
-  const group = ownerGroup(groups, parentPath);
+export function templateOptions(groups: MountGroup[], mountKey: string): TemplateOption[] {
+  const group = groups.find((g) => g.mount === mountKey);
   if (!group) return [];
 
   const templatesFolder = group.tree.find((n) => n.type === 'folder' && n.name === 'Templates');

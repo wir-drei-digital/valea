@@ -62,6 +62,7 @@ export class PageEditorStore {
   needsReload: boolean = $state(false);
 
   #api: PageEditorApi;
+  #mountKey: string;
   #path: string;
   #debounceMs: number;
   #timer: ReturnType<typeof setTimeout> | null = null;
@@ -71,8 +72,15 @@ export class PageEditorStore {
   #pendingExternalHash: string | null = null;
   #generation: number | null;
 
-  constructor(api: PageEditorApi, path: string, initial: { hash: string }, opts?: { debounceMs?: number }) {
+  constructor(
+    api: PageEditorApi,
+    mountKey: string,
+    path: string,
+    initial: { hash: string },
+    opts?: { debounceMs?: number }
+  ) {
     this.#api = api;
+    this.#mountKey = mountKey;
     this.#path = path;
     this.hash = initial.hash;
     this.#debounceMs = opts?.debounceMs ?? 1000;
@@ -169,7 +177,7 @@ export class PageEditorStore {
    */
   async resolveKeepMine(): Promise<void> {
     this.#clearTimer();
-    const result = await this.#api.icmPage(this.#path);
+    const result = await this.#api.icmPage(this.#mountKey, this.#path);
     if (result.ok) {
       const data = result.data as { hash: string };
       this.hash = data.hash;
@@ -227,7 +235,7 @@ export class PageEditorStore {
 
     const run = (async () => {
       try {
-        const result = await this.#api.saveIcmPage(this.#path, getJson(), baseHash, generation);
+        const result = await this.#api.saveIcmPage(this.#mountKey, this.#path, getJson(), baseHash, generation);
 
         if (result.ok) {
           const data = result.data as { hash: string; savedAt: string };

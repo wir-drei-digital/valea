@@ -67,6 +67,7 @@
             {/if}
           </button>
           <EntryMenu
+            mountKey={node.mountKey}
             path={node.path}
             name={node.label}
             isFolder={true}
@@ -92,6 +93,7 @@
             <span class="flex-1 truncate">{node.label}</span>
           </a>
           <EntryMenu
+            mountKey={node.mountKey}
             path={node.path}
             name={node.label}
             isFolder={false}

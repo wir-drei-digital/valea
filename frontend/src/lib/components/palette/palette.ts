@@ -24,7 +24,12 @@ import { encodePath } from '$lib/shell/nav';
 export type PaletteResultItem = {
   path: string;
   title: string;
-  /** `null` for an MRU-derived row (Task C9 doesn't look up a path's mount just to render the palette). */
+  /**
+   * The mount this page lives in — required to build a `/knowledge/<mountKey>/<path>`
+   * href (task 4.2/4.3 re-key: paths are ICM-relative, no longer globally
+   * unique across mounts). `null` only for a row this reducer can't safely
+   * link anywhere (defensive; every real search or MRU row carries one).
+   */
   mount: string | null;
   /** `null` for an MRU-derived row (no search snippet to show). */
   snippet: string | null;
@@ -93,11 +98,14 @@ export function paletteReduce(state: PaletteState, event: PaletteEvent): Palette
 
     case 'enter': {
       const item = state.results[state.active];
-      if (!item) return { state };
+      // A row with no mount can't be linked anywhere under the
+      // `/knowledge/<mountKey>/<path>` scheme (task 4.3) — defensive only,
+      // every real row (search result or MRU) carries one.
+      if (!item || !item.mount) return { state };
 
       return {
         state: { ...state, open: false },
-        goto: `/knowledge/${encodePath(item.path)}`
+        goto: `/knowledge/${encodeURIComponent(item.mount)}/${encodePath(item.path)}`
       };
     }
   }

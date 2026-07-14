@@ -15,12 +15,14 @@
   import { groupReferences, deleteImpactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
 
   let {
+    mountKey,
     path,
     name,
     isFolder,
     open = $bindable(false),
     onBeforeMutate
   }: {
+    mountKey: string;
     path: string;
     name: string;
     isFolder: boolean;
@@ -54,7 +56,7 @@
         loadingRefs = false;
       } else {
         loadingRefs = true;
-        void api.icmEntryReferences(path).then((result) => {
+        void api.icmEntryReferences(mountKey, path).then((result) => {
           loadingRefs = false;
           if (result.ok) {
             const data = result.data as { workflows?: WorkflowRef[]; pages?: PageRef[] };
@@ -82,7 +84,7 @@
     error = null;
     submitting = true;
     try {
-      const result = await withBeforeMutate(onBeforeMutate, () => api.deleteIcmEntry(path));
+      const result = await withBeforeMutate(onBeforeMutate, () => api.deleteIcmEntry(mountKey, path));
 
       if (!result.ok) {
         error = mapError(result.error);
@@ -94,7 +96,7 @@
       // Deleting the entry the reader currently has open (or, for a folder,
       // any page nested under it) leaves the URL pointing at nothing — send
       // them back to the Knowledge root rather than showing a dead page.
-      const encoded = `/knowledge/${encodePath(path)}`;
+      const encoded = `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
       const current = page.url.pathname;
       if (current === encoded || (isFolder && current.startsWith(`${encoded}/`))) {
         void goto('/knowledge');

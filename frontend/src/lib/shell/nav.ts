@@ -12,10 +12,13 @@ import ListChecks from '@lucide/svelte/icons/list-checks';
 
 export type IcmNode = {
   name: string;
+  /** Relative to `mountKey`'s own ICM root (task 4.2 re-key) — never workspace-relative, never absolute. */
   path: string;
+  /** The ICM this node belongs to (`Valea.Mounts`'s `icms:` config key) — every node self-describes its own mount so a flattened, multi-mount list (`flattenMountGroups`) can still build a correct href per node. */
+  mountKey: string;
   /**
    * `'file'` (A-T15 fix wave) is a non-.md regular file (media, PDF, ...) —
-   * listed by `Valea.ICM.tree/0` as a leaf with `ext` (lowercase, e.g.
+   * listed by `Valea.ICM.tree_for/1` as a leaf with `ext` (lowercase, e.g.
    * `".pdf"`) for icon selection, but never editable/navigable: only `.md`
    * pages open in the editor.
    */
@@ -37,6 +40,8 @@ export type NavTreeItem = {
   href: string;
   /** Raw (undecoded, unencoded) icm/ path — what the CRUD API calls expect. */
   path: string;
+  /** The ICM this item belongs to — what the CRUD API calls' `mountKey` argument expects (task 4.2/4.3 re-key). */
+  mountKey: string;
   count?: number;
   children?: NavTreeItem[];
 };
@@ -90,14 +95,20 @@ export function flattenMountGroups(groups: Array<{ tree: IcmNode[] }>): IcmNode[
   return groups.flatMap((g) => g.tree);
 }
 
+/** `/knowledge/<mountKey>/<rel>` (task 4.3) — mountKey and the ICM-relative path are each independently URL-encoded, then joined, so a `/` inside a mount key (never legal per `Valea.Mounts`'s own validation) can't be confused with the path separator. */
+function knowledgeHref(mountKey: string, path: string): string {
+  return `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
+}
+
 export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
   return nodes.flatMap((n): NavTreeItem[] => {
     if (n.type === 'folder') {
       return [
         {
           label: n.name,
-          href: `/knowledge/${encodePath(n.path)}`,
+          href: knowledgeHref(n.mountKey, n.path),
           path: n.path,
+          mountKey: n.mountKey,
           count: n.pageCount,
           children: icmToNav(n.children ?? [])
         }
@@ -110,6 +121,6 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
     if (n.type === 'file') {
       return [];
     }
-    return [{ label: n.name, href: `/knowledge/${encodePath(n.path)}`, path: n.path }];
+    return [{ label: n.name, href: knowledgeHref(n.mountKey, n.path), path: n.path, mountKey: n.mountKey }];
   });
 }

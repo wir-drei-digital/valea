@@ -1,7 +1,7 @@
 /**
  * Pure decision logic for the mounts-aware Knowledge UI (A-T15) — how
  * `icmStore.groups` (one `MountGroup` per ENABLED, non-degraded mount — see
- * `Valea.ICM.tree/0`'s moduledoc) and `mountsStore.mounts` (every
+ * `Valea.ICM.tree_for/1`'s moduledoc) and `mountsStore.mounts` (every
  * discovered mount, enabled or not, degraded or not — see
  * `Valea.Mounts.list/0`) combine into what the Knowledge page renders.
  * Same "extract the logic, no component render harness" convention as
@@ -17,48 +17,34 @@ export type MountSection = {
   title: string;
   description: string;
   /**
-   * The mount's own root (`MountGroup.rootRel`) — where this section's "New
-   * page/folder" action creates into. For an EMBEDDED mount this is the
-   * workspace-relative `"mounts/<name>"`; for an EXTERNAL (by-reference)
-   * mount (A2-T5b) it is instead that mount's ABSOLUTE physical root — see
-   * `isExternalRootRel` below for telling the two apart.
+   * The mount's own resolved absolute physical root (`MountSummary.root`)
+   * — shown as this section's location subtitle, since every mount is
+   * by-reference (post-A2) and lives outside the workspace. Task 4.2
+   * re-key: this is no longer usable as a create-parent path (that's now
+   * always `""`, paired with `mount` — see `Valea.ICM.create_page/3`'s
+   * `(mount_key, "", name)` shape) — it is presentation-only.
    */
-  rootRel: string;
+  root: string;
   tree: IcmNode[];
 };
-
-/**
- * True when `rootRel` is an external mount's ABSOLUTE physical root rather
- * than an embedded mount's workspace-relative `mounts/<name>` form (A2-T5b
- * — `Valea.ICM.tree/0`'s `root_rel` carries a different vocabulary per
- * mount kind, see its moduledoc: `root_rel` stays a string either way, just
- * a different vocabulary). An embedded `rootRel` is always relative (never
- * starts with `/`); an external one is always the resolved absolute root,
- * which always does. Used to show a section's physical location (binding
- * semantic 6's "title + description + location") only for external mounts
- * — an embedded mount's location is implicit (it's inside the workspace).
- */
-export function isExternalRootRel(rootRel: string): boolean {
-  return rootRel.startsWith('/');
-}
 
 /**
  * `collapsed: true` — the pre-mounts look: render `tree` directly at the
  * top level, no per-mount header. Chosen whenever there is AT MOST one
  * enabled mount (zero enabled mounts collapses to an empty `tree`, with
- * `rootRel: ''` — there's nothing to group, and nowhere to create into).
+ * `mount: ''` — there's nothing to group, and nowhere to create into).
  * `collapsed: false` — two or more enabled mounts: one `MountSection`
  * (title + description header) per mount, backend order preserved.
  */
 export type MountsDisplay =
-  | { collapsed: true; tree: IcmNode[]; rootRel: string }
+  | { collapsed: true; mount: string; tree: IcmNode[] }
   | { collapsed: false; sections: MountSection[] };
 
 /**
  * `groups` is `icmStore.groups` — the direct source of truth for what tree
  * data actually exists and how many mounts are effectively enabled.
  * `mounts` (`mountsStore.mounts`) supplies each section's header
- * `description`, which `MountGroup` itself doesn't carry (see
+ * `description`/`root`, which `MountGroup` itself doesn't carry (see
  * `Valea.Api.Icms.to_rpc_icm/1`). Joined by mount KEY — the stable
  * identifier both `MountGroup.mount` and `MountSummary.mountKey` share
  * (task 3.4: this used to be `MountSummary.name`, before that field became
@@ -66,21 +52,21 @@ export type MountsDisplay =
  * coincidentally share). A mount present in `groups` but missing from
  * `mounts` (a transient refetch-ordering gap between the two live stores,
  * which refresh together on `mounts_changed` but aren't atomic) degrades to
- * an empty description rather than throwing.
+ * an empty description/root rather than throwing.
  */
 export function buildMountsDisplay(groups: MountGroup[], mounts: MountSummary[]): MountsDisplay {
   if (groups.length <= 1) {
-    return { collapsed: true, tree: groups[0]?.tree ?? [], rootRel: groups[0]?.rootRel ?? '' };
+    return { collapsed: true, mount: groups[0]?.mount ?? '', tree: groups[0]?.tree ?? [] };
   }
 
-  const descriptionByKey = new Map(mounts.map((m) => [m.mountKey, m.description]));
+  const byKey = new Map(mounts.map((m) => [m.mountKey, m]));
   return {
     collapsed: false,
     sections: groups.map((g) => ({
       mount: g.mount,
       title: g.title,
-      description: descriptionByKey.get(g.mount) ?? '',
-      rootRel: g.rootRel,
+      description: byKey.get(g.mount)?.description ?? '',
+      root: byKey.get(g.mount)?.root ?? '',
       tree: g.tree
     }))
   };

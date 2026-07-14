@@ -131,21 +131,34 @@ describe('paletteReduce — arrow', () => {
 });
 
 describe('paletteReduce — enter', () => {
-  it('returns a /knowledge/<encodePath> goto for the active result and closes', () => {
+  it('returns a /knowledge/<mount>/<encodePath> goto for the active result and closes', () => {
     const state: PaletteState = {
       open: true,
       query: 'tone',
-      results: [item({ path: 'Guides/Tone & Voice.md' })],
+      results: [item({ mount: 'primary', path: 'Guides/Tone & Voice.md' })],
       skippedNote: null,
       active: 0
     };
     const result = paletteReduce(state, { type: 'enter' });
-    expect(result.goto).toBe('/knowledge/Guides/Tone%20%26%20Voice.md');
+    expect(result.goto).toBe('/knowledge/primary/Guides/Tone%20%26%20Voice.md');
     expect(result.state.open).toBe(false);
   });
 
   it('is a no-op (no goto, state unchanged) when nothing is active', () => {
     const state: PaletteState = { ...initialPaletteState, open: true };
+    const result = paletteReduce(state, { type: 'enter' });
+    expect(result.goto).toBeUndefined();
+    expect(result.state).toEqual(state);
+  });
+
+  it('is a no-op when the active result has no mount (defensive)', () => {
+    const state: PaletteState = {
+      open: true,
+      query: 'tone',
+      results: [item({ mount: null })],
+      skippedNote: null,
+      active: 0
+    };
     const result = paletteReduce(state, { type: 'enter' });
     expect(result.goto).toBeUndefined();
     expect(result.state).toEqual(state);

@@ -18,12 +18,14 @@
   import DeleteDialog from './DeleteDialog.svelte';
 
   let {
+    mountKey,
     path,
     name,
     isFolder,
     class: className = '',
     onBeforeMutate
   }: {
+    mountKey: string;
     path: string;
     name: string;
     isFolder: boolean;
@@ -71,5 +73,5 @@
   </DropdownMenu.Content>
 </DropdownMenu.Root>
 
-<RenameDialog {path} currentName={name} {isFolder} bind:open={renameOpen} {onBeforeMutate} />
-<DeleteDialog {path} {name} {isFolder} bind:open={deleteOpen} {onBeforeMutate} />
+<RenameDialog {mountKey} {path} currentName={name} {isFolder} bind:open={renameOpen} {onBeforeMutate} />
+<DeleteDialog {mountKey} {path} {name} {isFolder} bind:open={deleteOpen} {onBeforeMutate} />

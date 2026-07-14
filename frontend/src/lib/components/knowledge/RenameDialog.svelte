@@ -18,12 +18,14 @@
   import { groupReferences, impactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
 
   let {
+    mountKey,
     path,
     currentName,
     isFolder,
     open = $bindable(false),
     onBeforeMutate
   }: {
+    mountKey: string;
     path: string;
     currentName: string;
     isFolder: boolean;
@@ -59,7 +61,7 @@
         loadingRefs = false;
       } else {
         loadingRefs = true;
-        void api.icmEntryReferences(path).then((result) => {
+        void api.icmEntryReferences(mountKey, path).then((result) => {
           loadingRefs = false;
           if (result.ok) {
             const data = result.data as { workflows?: WorkflowRef[]; pages?: PageRef[] };
@@ -88,14 +90,14 @@
   // now-dead path — the watcher will refresh the tree, but it can't fix up
   // the address bar.
   function navigateIfOpen(newPath: string): void {
-    const oldEncoded = `/knowledge/${encodePath(path)}`;
+    const oldEncoded = `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
     const current = page.url.pathname;
 
     if (current === oldEncoded) {
-      void goto(`/knowledge/${encodePath(newPath)}`);
+      void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(newPath)}`);
     } else if (isFolder && current.startsWith(`${oldEncoded}/`)) {
       const suffix = current.slice(oldEncoded.length);
-      void goto(`/knowledge/${encodePath(newPath)}${suffix}`);
+      void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(newPath)}${suffix}`);
     }
   }
 
@@ -111,7 +113,7 @@
     error = null;
     submitting = true;
     try {
-      const result = await withBeforeMutate(onBeforeMutate, () => api.renameIcmEntry(path, trimmed));
+      const result = await withBeforeMutate(onBeforeMutate, () => api.renameIcmEntry(mountKey, path, trimmed));
 
       if (!result.ok) {
         error = mapError(result.error);

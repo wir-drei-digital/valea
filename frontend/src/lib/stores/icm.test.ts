@@ -4,20 +4,21 @@ import type { IcmNode } from '../shell/nav';
 import type { ApiResult } from '../api/client';
 
 describe('normalizeIcmNode', () => {
-  it('normalizes snake_case page_count from the wire', () => {
+  it('normalizes snake_case page_count from the wire, stamping mountKey', () => {
     const raw = {
       name: 'My Folder',
-      path: '/my-folder',
+      path: 'my-folder',
       type: 'folder',
       page_count: 3,
       children: []
     };
 
-    const result = normalizeIcmNode(raw);
+    const result = normalizeIcmNode(raw, 'primary');
 
     expect(result).toEqual<IcmNode>({
       name: 'My Folder',
-      path: '/my-folder',
+      path: 'my-folder',
+      mountKey: 'primary',
       type: 'folder',
       pageCount: 3,
       children: []
@@ -27,17 +28,18 @@ describe('normalizeIcmNode', () => {
   it('normalizes camelCase pageCount for backward compatibility', () => {
     const raw = {
       name: 'My Folder',
-      path: '/my-folder',
+      path: 'my-folder',
       type: 'folder',
       pageCount: 5,
       children: []
     };
 
-    const result = normalizeIcmNode(raw);
+    const result = normalizeIcmNode(raw, 'primary');
 
     expect(result).toEqual<IcmNode>({
       name: 'My Folder',
-      path: '/my-folder',
+      path: 'my-folder',
+      mountKey: 'primary',
       type: 'folder',
       pageCount: 5,
       children: []
@@ -47,63 +49,67 @@ describe('normalizeIcmNode', () => {
   it('defaults pageCount to 0 when missing', () => {
     const raw = {
       name: 'Empty Folder',
-      path: '/empty',
+      path: 'empty',
       type: 'folder',
       children: []
     };
 
-    const result = normalizeIcmNode(raw);
+    const result = normalizeIcmNode(raw, 'primary');
 
     expect(result).toEqual<IcmNode>({
       name: 'Empty Folder',
-      path: '/empty',
+      path: 'empty',
+      mountKey: 'primary',
       type: 'folder',
       pageCount: 0,
       children: []
     });
   });
 
-  it('normalizes nested children with snake_case counts', () => {
+  it('normalizes nested children with snake_case counts, stamping the same mountKey throughout', () => {
     const raw = {
       name: 'Parent',
-      path: '/parent',
+      path: 'parent',
       type: 'folder',
       page_count: 2,
       children: [
         {
           name: 'Child Folder',
-          path: '/parent/child',
+          path: 'parent/child',
           type: 'folder',
           page_count: 1,
           children: []
         },
         {
           name: 'Page',
-          path: '/parent/page',
+          path: 'parent/page',
           type: 'page',
           uri: 'page-uri-123'
         }
       ]
     };
 
-    const result = normalizeIcmNode(raw);
+    const result = normalizeIcmNode(raw, 'primary');
 
     expect(result).toEqual<IcmNode>({
       name: 'Parent',
-      path: '/parent',
+      path: 'parent',
+      mountKey: 'primary',
       type: 'folder',
       pageCount: 2,
       children: [
         {
           name: 'Child Folder',
-          path: '/parent/child',
+          path: 'parent/child',
+          mountKey: 'primary',
           type: 'folder',
           pageCount: 1,
           children: []
         },
         {
           name: 'Page',
-          path: '/parent/page',
+          path: 'parent/page',
+          mountKey: 'primary',
           type: 'page',
           uri: 'page-uri-123'
         }
@@ -114,16 +120,17 @@ describe('normalizeIcmNode', () => {
   it('normalizes page nodes without pageCount', () => {
     const raw = {
       name: 'My Page',
-      path: '/my-page',
+      path: 'my-page',
       type: 'page',
       uri: 'page-uri-456'
     };
 
-    const result = normalizeIcmNode(raw);
+    const result = normalizeIcmNode(raw, 'primary');
 
     expect(result).toEqual<IcmNode>({
       name: 'My Page',
-      path: '/my-page',
+      path: 'my-page',
+      mountKey: 'primary',
       type: 'page',
       uri: 'page-uri-456'
     });
@@ -132,24 +139,25 @@ describe('normalizeIcmNode', () => {
   it('prefers snake_case over camelCase when both present', () => {
     const raw = {
       name: 'Folder',
-      path: '/folder',
+      path: 'folder',
       type: 'folder',
       page_count: 10,
       pageCount: 5, // snake_case should win
       children: []
     };
 
-    const result = normalizeIcmNode(raw);
+    const result = normalizeIcmNode(raw, 'primary');
 
     expect(result.pageCount).toBe(10);
   });
 
   it('preserves file leaves (A-T15 fix wave) — type "file" with the ext passed through', () => {
-    const raw = { name: 'X.pdf', path: 'mounts/primary/Offers/X.pdf', type: 'file', ext: '.pdf' };
+    const raw = { name: 'X.pdf', path: 'Offers/X.pdf', type: 'file', ext: '.pdf' };
 
-    expect(normalizeIcmNode(raw)).toEqual<IcmNode>({
+    expect(normalizeIcmNode(raw, 'primary')).toEqual<IcmNode>({
       name: 'X.pdf',
-      path: 'mounts/primary/Offers/X.pdf',
+      path: 'Offers/X.pdf',
+      mountKey: 'primary',
       type: 'file',
       ext: '.pdf'
     });
@@ -158,53 +166,74 @@ describe('normalizeIcmNode', () => {
   it('normalizes file leaves nested inside folder children', () => {
     const raw = {
       name: 'Offers',
-      path: 'mounts/primary/Offers',
+      path: 'Offers',
       type: 'folder',
       page_count: 1,
       children: [
-        { name: 'Founder Coaching', path: 'mounts/primary/Offers/Founder Coaching.md', type: 'page', uri: 'u' },
-        { name: 'logo.png', path: 'mounts/primary/Offers/logo.png', type: 'file', ext: '.png' }
+        { name: 'Founder Coaching', path: 'Offers/Founder Coaching.md', type: 'page', uri: 'u' },
+        { name: 'logo.png', path: 'Offers/logo.png', type: 'file', ext: '.png' }
       ]
     };
 
-    const result = normalizeIcmNode(raw);
+    const result = normalizeIcmNode(raw, 'primary');
 
     expect(result.children?.[1]).toEqual<IcmNode>({
       name: 'logo.png',
-      path: 'mounts/primary/Offers/logo.png',
+      path: 'Offers/logo.png',
+      mountKey: 'primary',
       type: 'file',
       ext: '.png'
     });
   });
 
   it('still coerces an unknown type to page (defensive default, unchanged)', () => {
-    const raw = { name: 'Mystery', path: '/mystery', type: 'something_else', uri: 'u' };
+    const raw = { name: 'Mystery', path: 'mystery', type: 'something_else', uri: 'u' };
 
-    expect(normalizeIcmNode(raw).type).toBe('page');
+    expect(normalizeIcmNode(raw, 'primary').type).toBe('page');
+  });
+
+  it('stamps a different mountKey for a different call', () => {
+    const raw = { name: 'X', path: 'X.md', type: 'page', uri: 'u' };
+    expect(normalizeIcmNode(raw, 'clients').mountKey).toBe('clients');
   });
 });
 
-// The backend's `icm_tree` RPC (A-T11) returns a GROUPED envelope —
-// `{ mounts: [{ mount, title, rootRel, tree }] }` — one entry per enabled
-// mount, rather than a single flat `nodes` array. Every fixture below uses
-// this shape; `IcmStore.refetch` is what parses it into `groups`.
-function groupedResult(mounts: Array<{ mount: string; title: string; rootRel: string; tree: any[] }>): ApiResult<any> {
-  return { ok: true, data: { mounts } } as ApiResult<any>;
+// `IcmStore.refetch` (task 4.2/4.3 re-key) now fans out: `list_icms`
+// (Task 3.4) reports the mount catalog, then `icm_tree` — single-ICM per
+// call (Task 4.2) — is fetched once per enabled, non-degraded mount and
+// assembled into the same grouped `MountGroup[]` shape this store always
+// exposed. `icms` rows only need `mountKey`/`enabled`/`degraded` for this
+// fan-out; `tree` rows only need `mountKey`/`title`/`tree`.
+function fakeApi(
+  icms: Array<{ mountKey: string; enabled: boolean; degraded: string | null }>,
+  trees: Record<string, { title: string; tree: any[] } | undefined>
+) {
+  return {
+    listIcms: async () => ({ ok: true, data: { icms } }) as ApiResult<any>,
+    icmTree: async (mountKey: string) => {
+      const tree = trees[mountKey];
+      if (!tree) return { ok: false, error: 'outside_workspace' } as ApiResult<any>;
+      return { ok: true, data: { mountKey, ...tree } } as ApiResult<any>;
+    }
+  };
 }
 
 describe('IcmStore.loaded', () => {
   it('starts false before any refetch resolves', () => {
-    const store = new IcmStore({ icmTree: async () => groupedResult([]) });
+    const store = new IcmStore(fakeApi([], {}));
 
     expect(store.loaded).toBe(false);
     expect(store.groups).toEqual([]);
   });
 
   it('flips true after a successful refetch, alongside populated groups', async () => {
-    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore({
-      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
-    });
+    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore(
+      fakeApi(
+        [{ mountKey: 'primary', enabled: true, degraded: null }],
+        { primary: { title: 'Primary', tree: [raw] } }
+      )
+    );
 
     await store.refetch();
 
@@ -212,9 +241,10 @@ describe('IcmStore.loaded', () => {
     expect(store.groups).toHaveLength(1);
   });
 
-  it('stays false when the fetch fails, so callers keep showing the loading state', async () => {
+  it('stays false when the mount list fetch fails, so callers keep showing the loading state', async () => {
     const store = new IcmStore({
-      icmTree: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any>
+      listIcms: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any>,
+      icmTree: async () => ({ ok: true, data: { mountKey: 'primary', title: 'Primary', tree: [] } }) as ApiResult<any>
     });
 
     await store.refetch();
@@ -224,11 +254,13 @@ describe('IcmStore.loaded', () => {
 
   it('remains true on subsequent refetches (never reverts to a loading state)', async () => {
     let call = 0;
+    const api = fakeApi([], {});
     const store = new IcmStore({
-      icmTree: async () => {
+      listIcms: async () => {
         call += 1;
-        return groupedResult([]);
-      }
+        return api.listIcms();
+      },
+      icmTree: api.icmTree
     });
 
     await store.refetch();
@@ -240,17 +272,23 @@ describe('IcmStore.loaded', () => {
   });
 });
 
-describe('IcmStore.refetch (grouped tree parsing)', () => {
-  it('parses each mount entry into a MountGroup with a normalized tree', async () => {
-    const rawPrimary = { name: 'Folder A', path: '/folder-a', type: 'folder', page_count: 1, children: [] };
-    const rawClients = { name: 'Folder B', path: '/folder-b', type: 'folder', pageCount: 2, children: [] };
-    const store = new IcmStore({
-      icmTree: async () =>
-        groupedResult([
-          { mount: 'primary', title: 'Primary', rootRel: '', tree: [rawPrimary] },
-          { mount: 'clients', title: 'Clients', rootRel: 'mounts/clients', tree: [rawClients] }
-        ])
-    });
+describe('IcmStore.refetch (fan-out tree assembly)', () => {
+  it('fetches one tree per ENABLED, non-degraded mount and assembles a MountGroup per one', async () => {
+    const rawPrimary = { name: 'Folder A', path: 'folder-a', type: 'folder', page_count: 1, children: [] };
+    const rawClients = { name: 'Folder B', path: 'folder-b', type: 'folder', pageCount: 2, children: [] };
+
+    const store = new IcmStore(
+      fakeApi(
+        [
+          { mountKey: 'primary', enabled: true, degraded: null },
+          { mountKey: 'clients', enabled: true, degraded: null }
+        ],
+        {
+          primary: { title: 'Primary', tree: [rawPrimary] },
+          clients: { title: 'Clients', tree: [rawClients] }
+        }
+      )
+    );
 
     await store.refetch();
 
@@ -258,62 +296,37 @@ describe('IcmStore.refetch (grouped tree parsing)', () => {
       {
         mount: 'primary',
         title: 'Primary',
-        rootRel: '',
-        tree: [{ name: 'Folder A', path: '/folder-a', type: 'folder', pageCount: 1, children: [] }]
+        tree: [{ name: 'Folder A', path: 'folder-a', mountKey: 'primary', type: 'folder', pageCount: 1, children: [] }]
       },
       {
         mount: 'clients',
         title: 'Clients',
-        rootRel: 'mounts/clients',
-        tree: [{ name: 'Folder B', path: '/folder-b', type: 'folder', pageCount: 2, children: [] }]
+        tree: [{ name: 'Folder B', path: 'folder-b', mountKey: 'clients', type: 'folder', pageCount: 2, children: [] }]
       }
     ]);
   });
 
-  it('parses an EXTERNAL mount group (A2-T5b) — rootRel and every node path stay the absolute physical vocabulary the backend sent, unmodified', async () => {
-    const extPage = {
-      name: 'X',
-      path: '/Users/dev/ext-mount/Offers/X.md',
-      type: 'page',
-      uri: 'icm:///Users/dev/ext-mount/Offers/X.md'
-    };
-    const extFolder = {
-      name: 'Offers',
-      path: '/Users/dev/ext-mount/Offers',
-      type: 'folder',
-      page_count: 1,
-      children: [extPage]
-    };
-    const store = new IcmStore({
-      icmTree: async () =>
-        groupedResult([
-          { mount: 'primary', title: 'Primary', rootRel: 'mounts/primary', tree: [] },
-          { mount: 'ext', title: 'Ext', rootRel: '/Users/dev/ext-mount', tree: [extFolder] }
-        ])
-    });
+  it('excludes a disabled or degraded mount from the fan-out entirely', async () => {
+    const raw = { name: 'Folder A', path: 'folder-a', type: 'folder', page_count: 0, children: [] };
+
+    const store = new IcmStore(
+      fakeApi(
+        [
+          { mountKey: 'primary', enabled: true, degraded: null },
+          { mountKey: 'off', enabled: false, degraded: null },
+          { mountKey: 'broken', enabled: true, degraded: 'icm.yaml is missing' }
+        ],
+        { primary: { title: 'Primary', tree: [raw] } }
+      )
+    );
 
     await store.refetch();
 
-    const extGroup = store.groups.find((g) => g.mount === 'ext');
-    expect(extGroup?.rootRel).toBe('/Users/dev/ext-mount');
-    expect(extGroup?.tree[0]).toEqual({
-      name: 'Offers',
-      path: '/Users/dev/ext-mount/Offers',
-      type: 'folder',
-      pageCount: 1,
-      children: [
-        {
-          name: 'X',
-          path: '/Users/dev/ext-mount/Offers/X.md',
-          type: 'page',
-          uri: 'icm:///Users/dev/ext-mount/Offers/X.md'
-        }
-      ]
-    });
+    expect(store.groups.map((g) => g.mount)).toEqual(['primary']);
   });
 
-  it('defaults to an empty groups array when `mounts` is missing', async () => {
-    const store = new IcmStore({ icmTree: async () => ({ ok: true, data: {} }) as ApiResult<any> });
+  it('defaults to an empty groups array when there are no enabled mounts', async () => {
+    const store = new IcmStore(fakeApi([], {}));
 
     await store.refetch();
 
@@ -321,14 +334,35 @@ describe('IcmStore.refetch (grouped tree parsing)', () => {
     expect(store.loaded).toBe(true);
   });
 
-  it('leaves groups untouched on failure', async () => {
-    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore({
-      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
-    });
+  it('drops a mount whose individual icm_tree call fails, keeping the others', async () => {
+    const raw = { name: 'Folder A', path: 'folder-a', type: 'folder', page_count: 0, children: [] };
+
+    const store = new IcmStore(
+      fakeApi(
+        [
+          { mountKey: 'primary', enabled: true, degraded: null },
+          { mountKey: 'gone', enabled: true, degraded: null }
+        ],
+        { primary: { title: 'Primary', tree: [raw] } }
+      )
+    );
+
     await store.refetch();
 
-    const failing = new IcmStore({ icmTree: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any> });
+    expect(store.groups.map((g) => g.mount)).toEqual(['primary']);
+  });
+
+  it('leaves groups untouched on a mount-list failure', async () => {
+    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore(
+      fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], { primary: { title: 'Primary', tree: [raw] } })
+    );
+    await store.refetch();
+
+    const failing = new IcmStore({
+      listIcms: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any>,
+      icmTree: async () => ({ ok: true, data: { mountKey: 'primary', title: 'Primary', tree: [] } }) as ApiResult<any>
+    });
     await failing.refetch();
 
     expect(failing.groups).toEqual([]);
@@ -337,10 +371,10 @@ describe('IcmStore.refetch (grouped tree parsing)', () => {
 
 describe('IcmStore.reset', () => {
   it('empties groups and clears loaded', async () => {
-    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore({
-      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
-    });
+    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore(
+      fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], { primary: { title: 'Primary', tree: [raw] } })
+    );
 
     await store.refetch();
     expect(store.loaded).toBe(true);
@@ -353,7 +387,7 @@ describe('IcmStore.reset', () => {
   });
 
   it('is safe to call before any refetch has resolved', () => {
-    const store = new IcmStore({ icmTree: async () => groupedResult([]) });
+    const store = new IcmStore(fakeApi([], {}));
 
     store.reset();
 
@@ -362,10 +396,10 @@ describe('IcmStore.reset', () => {
   });
 
   it('allows a subsequent refetch to repopulate the tree after reset', async () => {
-    const raw = { name: 'Folder', path: '/folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore({
-      icmTree: async () => groupedResult([{ mount: 'primary', title: 'Primary', rootRel: '', tree: [raw] }])
-    });
+    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
+    const store = new IcmStore(
+      fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], { primary: { title: 'Primary', tree: [raw] } })
+    );
 
     await store.refetch();
     store.reset();

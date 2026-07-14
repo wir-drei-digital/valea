@@ -24,7 +24,6 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { queueStore } from '$lib/stores/queue.svelte';
-  import { api } from '$lib/api/client';
   import type { QueueItemEnvelope, IcmPageData } from '$lib/api/client';
   import { encodePath } from '$lib/shell/nav';
   import { tierCopy } from '$lib/components/agent/permission-view';
@@ -75,10 +74,22 @@
   const targetHref = $derived(!review.isCreate && linkableTarget ? `/knowledge/${encodePath(review.targetPath)}` : null);
   const appliedHref = $derived(linkableTarget ? `/knowledge/${encodePath(review.targetPath)}` : null);
 
+  // Task 4.2 KNOWN GAP: `review.targetPath` comes from
+  // `Valea.Workflows.MemoryProposal`'s `proposed_action.target_path` — an
+  // absolute physical path, a vocabulary `icm_page` (task 4.2's re-key)
+  // no longer accepts on its own; it now requires an explicit `mountKey`
+  // alongside an ICM-relative path, and MemoryProposal/Queue's own
+  // addressing was NOT re-keyed by this task (out of scope — see the
+  // task-4.2 brief). There is no `mountKey` this component can derive from
+  // `targetPath` client-side (the backend-only `Valea.Icm.Locator.for_path/2`,
+  // built for exactly this attribution, isn't wired to any RPC yet), so the
+  // "current on-disk page" preview is left unfetched — `page` stays
+  // `undefined`, and `buildMemoryReview` already treats that the same as a
+  // failed fetch (an all-add diff of the proposed content, same as create
+  // mode), so review still renders something reasonable, just without the
+  // "Could not read the current page" notice this used to show.
   async function loadPage(): Promise<void> {
-    if (review.isCreate || !review.targetPath.endsWith('.md')) return;
-    const result = await api.icmPage(review.targetPath);
-    page = result.ok ? result.data : null;
+    return;
   }
 
   onMount(() => {

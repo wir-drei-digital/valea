@@ -697,6 +697,7 @@ export async function cockpitTodayChannel<Fields extends CockpitTodayFields | un
 
 
 export type CreateIcmFolderInput = {
+  mountKey: string;
   parentPath: string;
   name: string;
 };
@@ -771,6 +772,7 @@ export async function createIcmFolderChannel<Fields extends CreateIcmFolderField
 
 
 export type CreateIcmPageInput = {
+  mountKey: string;
   parentPath: string;
   name: string;
 };
@@ -845,8 +847,10 @@ export async function createIcmPageChannel<Fields extends CreateIcmPageFields | 
 
 
 export type CreateIcmPageFromTemplateInput = {
+  mountKey: string;
   parentPath: string;
   name: string;
+  templateMountKey: string;
   templatePath: string;
 };
 
@@ -920,6 +924,7 @@ export async function createIcmPageFromTemplateChannel<Fields extends CreateIcmP
 
 
 export type DeleteIcmEntryInput = {
+  mountKey: string;
   path: string;
 };
 
@@ -993,6 +998,7 @@ export async function deleteIcmEntryChannel<Fields extends DeleteIcmEntryFields 
 
 
 export type IcmEntryReferencesInput = {
+  mountKey: string;
   path: string;
 };
 
@@ -1066,6 +1072,7 @@ export async function icmEntryReferencesChannel<Fields extends IcmEntryReference
 
 
 export type IcmPageInput = {
+  mountKey: string;
   path: string;
 };
 
@@ -1277,11 +1284,16 @@ export async function icmSearchChannel<Fields extends IcmSearchFields | undefine
 }
 
 
-export type IcmTreeFields = UnifiedFieldSelection<{mounts: Array<{mount: string, title: string, rootRel: string, tree: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mount" | "title" | "rootRel" | "tree"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type IcmTreeInput = {
+  mountKey: string;
+  generation: number;
+};
+
+export type IcmTreeFields = UnifiedFieldSelection<{mountKey: string, title: string, tree: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "title" | "tree"}>[];
 
 export type InferIcmTreeResult<
   Fields extends IcmTreeFields | undefined,
-> = InferResult<{mounts: Array<{mount: string, title: string, rootRel: string, tree: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mount" | "title" | "rootRel" | "tree"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{mountKey: string, title: string, tree: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "title" | "tree"}, Fields>;
 
 export type IcmTreeResult<Fields extends IcmTreeFields | undefined = undefined> = | { success: true; data: InferIcmTreeResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -1296,6 +1308,7 @@ export type IcmTreeResult<Fields extends IcmTreeFields | undefined = undefined> 
 export async function icmTree<Fields extends IcmTreeFields | undefined = undefined>(
   config: {
   tenant?: string;
+  input: IcmTreeInput;
   fields: Fields;
   headers?: Record<string, string>;
   fetchOptions?: RequestInit;
@@ -1305,6 +1318,7 @@ export async function icmTree<Fields extends IcmTreeFields | undefined = undefin
   const payload = {
     action: "icm_tree",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
   };
 
@@ -1323,6 +1337,7 @@ export async function icmTree<Fields extends IcmTreeFields | undefined = undefin
 export async function icmTreeChannel<Fields extends IcmTreeFields | undefined = undefined>(config: {
   channel: Channel;
   tenant?: string;
+  input: IcmTreeInput;
   fields: Fields;
   resultHandler: (result: IcmTreeResult<Fields>) => void;
   errorHandler?: (error: any) => void;
@@ -1334,6 +1349,7 @@ export async function icmTreeChannel<Fields extends IcmTreeFields | undefined = 
     {
     action: "icm_tree",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
   },
     config.timeout,
@@ -1343,6 +1359,7 @@ export async function icmTreeChannel<Fields extends IcmTreeFields | undefined = 
 
 
 export type RenameIcmEntryInput = {
+  mountKey: string;
   path: string;
   newName: string;
 };
@@ -1417,6 +1434,7 @@ export async function renameIcmEntryChannel<Fields extends RenameIcmEntryFields 
 
 
 export type SaveIcmPageInput = {
+  mountKey: string;
   path: string;
   prosemirror: Record<string, any>;
   baseHash: string;

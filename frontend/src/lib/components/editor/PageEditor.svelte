@@ -57,9 +57,17 @@
 	let {
 		content,
 		onChange,
+		mountKey,
 		pagePath,
 		dangling = new Set<string>()
-	}: { content: PMDoc; onChange: () => void; pagePath: string; dangling?: Set<string> } = $props();
+	}: {
+		content: PMDoc;
+		onChange: () => void;
+		/** The ICM this page lives in (`Valea.Mounts`'s `icms:` config key) — task 4.2/4.3 re-key. */
+		mountKey: string;
+		pagePath: string;
+		dangling?: Set<string>;
+	} = $props();
 
 	let host = $state<HTMLElement | null>(null);
 	let editor: Editor | null = null;
@@ -99,7 +107,7 @@
 
 		createSubmitting = true;
 		createError = null;
-		const result = await api.createIcmPage(createTarget.parentDir, createTarget.name);
+		const result = await api.createIcmPage(mountKey, createTarget.parentDir, createTarget.name);
 		createSubmitting = false;
 
 		if (!result.ok) {
@@ -109,7 +117,7 @@
 
 		createDialogOpen = false;
 		const path = (result.data as { path: string }).path;
-		void goto(`/knowledge/${encodePath(path)}`);
+		void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`);
 	}
 
 	// Set on a failed paste/drop upload, cleared on the next successful one.
@@ -306,7 +314,7 @@
 		if (dangling.has(classification.path)) {
 			openCreateDialogFor(classification.path);
 		} else {
-			void goto(`/knowledge/${encodePath(classification.path)}`);
+			void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(classification.path)}`);
 		}
 		return true;
 	}
@@ -401,8 +409,8 @@
 						// (relative-link math is computed from the page being edited) and
 						// the same injected `api` (icmSearch for results, createIcmPage
 						// for the create-on-empty item).
-						createPageLinkSuggestion({ char: '[[', name: 'pageLinkBracket', pagePath, api }),
-						createPageLinkSuggestion({ char: '@', name: 'pageLinkMention', pagePath, api }),
+						createPageLinkSuggestion({ char: '[[', name: 'pageLinkBracket', mountKey, pagePath, api }),
+						createPageLinkSuggestion({ char: '@', name: 'pageLinkMention', mountKey, pagePath, api }),
 						// Formatting bubble on selection — bold/italic/strike/link only
 						// this phase (see vendor/bubble_menu.js's header comment for why
 						// underline/code were trimmed from the vendored button row).

@@ -22,9 +22,10 @@
 
   let {
     mode,
+    mountKey,
     parentPath,
     open = $bindable(false)
-  }: { mode: 'page' | 'folder'; parentPath: string; open?: boolean } = $props();
+  }: { mode: 'page' | 'folder'; mountKey: string; parentPath: string; open?: boolean } = $props();
 
   let name = $state('');
   let submitting = $state(false);
@@ -35,7 +36,7 @@
   // never reads this.
   let templatePath = $state('');
 
-  const options = $derived(mode === 'page' ? templateOptions(icmStore.groups, parentPath) : []);
+  const options = $derived(mode === 'page' ? templateOptions(icmStore.groups, mountKey) : []);
 
   // Reset to a clean slate every time the dialog opens — it's a shared
   // instance reused across many create actions, not remounted per open.
@@ -70,10 +71,10 @@
     submitting = true;
     const result =
       mode === 'folder'
-        ? await api.createIcmFolder(parentPath, trimmed)
+        ? await api.createIcmFolder(mountKey, parentPath, trimmed)
         : templatePath
-          ? await api.createIcmPageFromTemplate(parentPath, trimmed, templatePath)
-          : await api.createIcmPage(parentPath, trimmed);
+          ? await api.createIcmPageFromTemplate(mountKey, parentPath, trimmed, mountKey, templatePath)
+          : await api.createIcmPage(mountKey, parentPath, trimmed);
     submitting = false;
 
     if (!result.ok) {
@@ -84,7 +85,7 @@
     const path = (result.data as { path: string }).path;
     open = false;
     if (mode === 'page') {
-      void goto(`/knowledge/${encodePath(path)}`);
+      void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`);
     }
   }
 

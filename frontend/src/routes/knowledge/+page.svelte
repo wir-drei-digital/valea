@@ -20,7 +20,6 @@
     buildMountsDisplay,
     classifyMounts,
     degradedChipLabel,
-    isExternalRootRel,
     isExternalMount
   } from '$lib/components/knowledge/mount-sections';
   import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
@@ -64,17 +63,19 @@
 
   let newEntryMode: 'page' | 'folder' = $state('page');
   let newEntryOpen = $state(false);
+  let newEntryMountKey = $state('');
+  // The mount's own root is always `""` now (task 4.2 re-key — every ICM
+  // path is relative to ITS OWN root, so "the mount's own root" needs no
+  // string of its own any more; `create_page(mount_key, "", name)` is how
+  // the backend already spells "at the mount root"). What identifies WHICH
+  // mount to create into is `newEntryMountKey` above. When there is nowhere
+  // to create into (zero enabled mounts), `openNew` is simply never wired
+  // to a control — see the collapsed-with-no-mount guard below.
   let newEntryParent = $state('');
 
-  // `parentRoot` is the mount's own workspace-relative root (`rootRel`,
-  // e.g. `"mounts/primary"`) — NOT `""`. A page/folder create RPC resolves
-  // its owning mount from the parent path alone (`Valea.Mounts.mount_for/1`
-  // — see `Valea.ICM`'s moduledoc), and `""` doesn't name any mount, so an
-  // empty parentRoot would 404 as `outside_workspace`. When there is
-  // nowhere to create into (zero enabled mounts), `openNew` is simply never
-  // wired to a control — see the collapsed-with-no-rootRel guard below.
-  function openNew(parentRoot: string, mode: 'page' | 'folder') {
-    newEntryParent = parentRoot;
+  function openNew(mountKey: string, parentPath: string, mode: 'page' | 'folder') {
+    newEntryMountKey = mountKey;
+    newEntryParent = parentPath;
     newEntryMode = mode;
     newEntryOpen = true;
   }
@@ -119,16 +120,17 @@
   }
 </script>
 
-{#snippet folderRow(folder: IcmNode)}
+{#snippet folderRow(folder: IcmNode, mountKey: string)}
   <li class="group relative">
     <a
-      href={`/knowledge/${encodePath(folder.path)}`}
+      href={`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(folder.path)}`}
       class="text-ink-body hover:bg-paper-pill flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-9 pl-3 text-[13px] transition-colors"
     >
       <span class="min-w-0 flex-1 truncate">{folder.name}</span>
       <span class="text-ink-meta text-[11px] tabular-nums">{folder.pageCount ?? 0}</span>
     </a>
     <EntryMenu
+      {mountKey}
       path={folder.path}
       name={folder.name}
       isFolder={true}
@@ -156,15 +158,15 @@
   {#snippet list()}
     <ListPane title="Knowledge">
       {#snippet action()}
-        {#if display.collapsed && display.rootRel}
-          <NewEntryButton onNew={(mode) => openNew(display.rootRel, mode)} />
+        {#if display.collapsed && display.mount}
+          <NewEntryButton onNew={(mode) => openNew(display.mount, '', mode)} />
         {/if}
       {/snippet}
       {#snippet children()}
         {#if display.collapsed}
           <ul class="flex flex-col py-1">
             {#each folders(display.tree) as folder (folder.path)}
-              {@render folderRow(folder)}
+              {@render folderRow(folder, display.mount)}
             {/each}
             {#each fileLeaves(display.tree) as file (file.path)}
               {@render fileRow(file)}
@@ -179,12 +181,12 @@
                   {#if section.description}
                     <p class="text-ink-meta mt-0.5 truncate text-[11.5px]">{section.description}</p>
                   {/if}
-                  {#if isExternalRootRel(section.rootRel)}
+                  {#if section.root}
                     <!-- A2-T5b: an external (by-reference) mount's content lives
                          outside the workspace — show WHERE, since that's not
                          otherwise implied the way an embedded mount's is. -->
-                    <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={section.rootRel}>
-                      {section.rootRel}
+                    <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={section.root}>
+                      {section.root}
                     </p>
                     <button
                       type="button"
@@ -195,11 +197,11 @@
                     </button>
                   {/if}
                 </div>
-                <NewEntryButton onNew={(mode) => openNew(section.rootRel, mode)} />
+                <NewEntryButton onNew={(mode) => openNew(section.mount, '', mode)} />
               </div>
               <ul class="flex flex-col py-1">
                 {#each folders(section.tree) as folder (folder.path)}
-                  {@render folderRow(folder)}
+                  {@render folderRow(folder, section.mount)}
                 {/each}
                 {#each fileLeaves(section.tree) as file (file.path)}
                   {@render fileRow(file)}
@@ -368,6 +370,6 @@
   {/snippet}
 </AppFrame>
 
-<NewEntryDialog mode={newEntryMode} parentPath={newEntryParent} bind:open={newEntryOpen} />
+<NewEntryDialog mode={newEntryMode} mountKey={newEntryMountKey} parentPath={newEntryParent} bind:open={newEntryOpen} />
 <MountFromElsewhereDialog bind:open={mountFromElsewhereOpen} />
 <UnmountDialog name={unmountTarget} bind:open={unmountOpen} />

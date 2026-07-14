@@ -51,10 +51,10 @@
   }
 
   function recentItems(): PaletteResultItem[] {
-    return recentPages().map((path) => ({
+    return recentPages().map(({ mountKey, path }) => ({
       path,
       title: basenameNoExt(path),
-      mount: null,
+      mount: mountKey,
       snippet: null,
       terms: []
     }));

@@ -10,7 +10,7 @@
   import SectionOverline from '$lib/components/shell/SectionOverline.svelte';
   import { groupReferences, type PageRef, type WorkflowRef } from './backlinks-panel';
 
-  let { path }: { path: string } = $props();
+  let { mountKey, path }: { mountKey: string; path: string } = $props();
 
   let pages = $state<PageRef[]>([]);
   let workflows = $state<WorkflowRef[]>([]);
@@ -20,7 +20,7 @@
     pages = [];
     workflows = [];
 
-    void api.icmEntryReferences(requested).then((result) => {
+    void api.icmEntryReferences(mountKey, requested).then((result) => {
       // Stale — a newer nav has since taken over; drop a slow response
       // rather than showing backlinks for a page the reader has left.
       if (!result.ok || requested !== path) return;
@@ -42,7 +42,7 @@
       {#each pages as ref (ref.sourcePath)}
         <li class="text-[13px]">
           <a
-            href={`/knowledge/${encodePath(ref.sourcePath)}`}
+            href={`/knowledge/${encodeURIComponent(ref.mount)}/${encodePath(ref.sourcePath)}`}
             class="text-ink-body hover:text-ink-heading hover:underline"
           >
             {ref.linkText || ref.sourcePath}

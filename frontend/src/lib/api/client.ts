@@ -287,11 +287,17 @@ function callAdoptWorkspaceChannel(
   return wrapChannelCall((handlers) => adoptWorkspaceChannel({ channel, input, ...handlers }));
 }
 
-function callIcmTreeChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) => icmTreeChannel({ channel, fields: icmTreeFields, ...handlers }));
+function callIcmTreeChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; generation: number }
+) {
+  return wrapChannelCall((handlers) => icmTreeChannel({ channel, input, fields: icmTreeFields, ...handlers }));
 }
 
-function callIcmPageChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>, input: { path: string }) {
+function callIcmPageChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; path: string }
+) {
   return wrapChannelCall((handlers) => icmPageChannel({ channel, input, ...handlers }));
 }
 
@@ -440,12 +446,13 @@ const setIcmEnabledFields: SetIcmEnabledFields = ['saved'];
 const unmountIcmFields: UnmountIcmFields = ['unmounted'];
 const icmDoctorFields: IcmDoctorFields = ['ok', 'checks'];
 
-// `icm_tree` (A-T11). Same anonymous-embedded-map-array codegen gap as
-// `listMountsFields` above — `mounts` is an `Array<TypedMap>` action-return
-// field. `tree` itself stays an unconstrained `Array<Record<string, any>>`
-// (the recursive folder/page tree), so it needs no nested selection of its
-// own, just the bare field name.
-const icmTreeFields = [{ mounts: ['mount', 'title', 'rootRel', 'tree'] }] as unknown as IcmTreeFields;
+// `icm_tree` (task 4.2 re-key) — a single ICM's `{mountKey, title, tree}`,
+// no more all-mounts grouped envelope (`mounts: [...]`). `mountKey`/`title`
+// are plain typed top-level fields with no codegen gap; `tree` stays an
+// unconstrained `Array<Record<string, any>>` (the recursive folder/page
+// tree), so it needs no nested selection of its own, just the bare field
+// name.
+const icmTreeFields: IcmTreeFields = ['mountKey', 'title', 'tree'];
 
 // Same anonymous-embedded-map-array codegen gap as `listAgentSessionsFields`/
 // `listWorkflowsFields`/`listQueueItemsFields` above (see the comment on
@@ -677,14 +684,20 @@ function callIcmDoctorChannel(
 
 function callSaveIcmPageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { path: string; prosemirror: Record<string, any>; baseHash: string; generation?: number | null }
+  input: {
+    mountKey: string;
+    path: string;
+    prosemirror: Record<string, any>;
+    baseHash: string;
+    generation?: number | null;
+  }
 ) {
   return wrapChannelCall((handlers) => saveIcmPageChannel({ channel, input, fields: saveIcmPageFields, ...handlers }));
 }
 
 function callCreateIcmPageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { parentPath: string; name: string }
+  input: { mountKey: string; parentPath: string; name: string }
 ) {
   return wrapChannelCall((handlers) =>
     createIcmPageChannel({ channel, input, fields: createIcmPageFields, ...handlers })
@@ -693,7 +706,13 @@ function callCreateIcmPageChannel(
 
 function callCreateIcmPageFromTemplateChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { parentPath: string; name: string; templatePath: string }
+  input: {
+    mountKey: string;
+    parentPath: string;
+    name: string;
+    templateMountKey: string;
+    templatePath: string;
+  }
 ) {
   return wrapChannelCall((handlers) =>
     createIcmPageFromTemplateChannel({ channel, input, fields: createIcmPageFromTemplateFields, ...handlers })
@@ -702,7 +721,7 @@ function callCreateIcmPageFromTemplateChannel(
 
 function callCreateIcmFolderChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { parentPath: string; name: string }
+  input: { mountKey: string; parentPath: string; name: string }
 ) {
   return wrapChannelCall((handlers) =>
     createIcmFolderChannel({ channel, input, fields: createIcmFolderFields, ...handlers })
@@ -711,7 +730,7 @@ function callCreateIcmFolderChannel(
 
 function callRenameIcmEntryChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { path: string; newName: string }
+  input: { mountKey: string; path: string; newName: string }
 ) {
   return wrapChannelCall((handlers) =>
     renameIcmEntryChannel({ channel, input, fields: renameIcmEntryFields, ...handlers })
@@ -720,7 +739,7 @@ function callRenameIcmEntryChannel(
 
 function callDeleteIcmEntryChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { path: string }
+  input: { mountKey: string; path: string }
 ) {
   return wrapChannelCall((handlers) =>
     deleteIcmEntryChannel({ channel, input, fields: deleteIcmEntryFields, ...handlers })
@@ -729,7 +748,7 @@ function callDeleteIcmEntryChannel(
 
 function callIcmEntryReferencesChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { path: string }
+  input: { mountKey: string; path: string }
 ) {
   return wrapChannelCall((handlers) =>
     icmEntryReferencesChannel({ channel, input, fields: icmEntryReferencesFields, ...handlers })
@@ -961,12 +980,22 @@ export const api = {
       () => httpAdoptWorkspace(withAuth({ input: { parentDir, name, icmSourcePath } }))
     ),
 
-  icmTree: () => runRpc(callIcmTreeChannel, () => httpIcmTree(withAuth({ fields: icmTreeFields }))),
-
-  icmPage: (path: string) =>
+  // `icm_tree` (task 4.2 re-key) — one ICM's tree at a time, keyed by
+  // `mountKey` and generation-guarded (mirrors `listIcms`'s own
+  // generation-guarded read — see `Valea.Api.ICM`'s moduledoc). Callers
+  // that need every enabled mount's tree fetch the mount list themselves
+  // (`listIcms`) and call this once per mount key — `IcmStore.refetch`
+  // (`stores/icm.svelte.ts`) is the one place that does.
+  icmTree: (mountKey: string, generation: number) =>
     runRpc(
-      (channel) => callIcmPageChannel(channel, { path }),
-      () => httpIcmPage(withAuth({ input: { path } }))
+      (channel) => callIcmTreeChannel(channel, { mountKey, generation }),
+      () => httpIcmTree(withAuth({ input: { mountKey, generation }, fields: icmTreeFields }))
+    ),
+
+  icmPage: (mountKey: string, path: string) =>
+    runRpc(
+      (channel) => callIcmPageChannel(channel, { mountKey, path }),
+      () => httpIcmPage(withAuth({ input: { mountKey, path } }))
     ).then(
       (result): ApiResult<IcmPageData> =>
         result.ok ? { ok: true, data: normalizeIcmPage(result.data as Record<string, any>) } : result
@@ -986,56 +1015,84 @@ export const api = {
   // at load, giving `workspace_changed` a backstop against a switch that
   // happened after the frontend's own local generation check (T21) passed
   // but before the write landed.
-  saveIcmPage: (path: string, prosemirror: object, baseHash: string, generation?: number | null) =>
+  saveIcmPage: (
+    mountKey: string,
+    path: string,
+    prosemirror: object,
+    baseHash: string,
+    generation?: number | null
+  ) =>
     runRpc(
       (channel) =>
-        callSaveIcmPageChannel(channel, { path, prosemirror: prosemirror as Record<string, any>, baseHash, generation }),
+        callSaveIcmPageChannel(channel, {
+          mountKey,
+          path,
+          prosemirror: prosemirror as Record<string, any>,
+          baseHash,
+          generation
+        }),
       () =>
         httpSaveIcmPage(
           withAuth({
-            input: { path, prosemirror: prosemirror as Record<string, any>, baseHash, generation },
+            input: { mountKey, path, prosemirror: prosemirror as Record<string, any>, baseHash, generation },
             fields: saveIcmPageFields
           })
         )
     ),
 
-  createIcmPage: (parentPath: string, name: string) =>
+  createIcmPage: (mountKey: string, parentPath: string, name: string) =>
     runRpc(
-      (channel) => callCreateIcmPageChannel(channel, { parentPath, name }),
-      () => httpCreateIcmPage(withAuth({ input: { parentPath, name }, fields: createIcmPageFields }))
+      (channel) => callCreateIcmPageChannel(channel, { mountKey, parentPath, name }),
+      () => httpCreateIcmPage(withAuth({ input: { mountKey, parentPath, name }, fields: createIcmPageFields }))
     ),
 
-  createIcmPageFromTemplate: (parentPath: string, name: string, templatePath: string) =>
+  createIcmPageFromTemplate: (
+    mountKey: string,
+    parentPath: string,
+    name: string,
+    templateMountKey: string,
+    templatePath: string
+  ) =>
     runRpc(
-      (channel) => callCreateIcmPageFromTemplateChannel(channel, { parentPath, name, templatePath }),
+      (channel) =>
+        callCreateIcmPageFromTemplateChannel(channel, {
+          mountKey,
+          parentPath,
+          name,
+          templateMountKey,
+          templatePath
+        }),
       () =>
         httpCreateIcmPageFromTemplate(
-          withAuth({ input: { parentPath, name, templatePath }, fields: createIcmPageFromTemplateFields })
+          withAuth({
+            input: { mountKey, parentPath, name, templateMountKey, templatePath },
+            fields: createIcmPageFromTemplateFields
+          })
         )
     ),
 
-  createIcmFolder: (parentPath: string, name: string) =>
+  createIcmFolder: (mountKey: string, parentPath: string, name: string) =>
     runRpc(
-      (channel) => callCreateIcmFolderChannel(channel, { parentPath, name }),
-      () => httpCreateIcmFolder(withAuth({ input: { parentPath, name }, fields: createIcmFolderFields }))
+      (channel) => callCreateIcmFolderChannel(channel, { mountKey, parentPath, name }),
+      () => httpCreateIcmFolder(withAuth({ input: { mountKey, parentPath, name }, fields: createIcmFolderFields }))
     ),
 
-  renameIcmEntry: (path: string, newName: string) =>
+  renameIcmEntry: (mountKey: string, path: string, newName: string) =>
     runRpc(
-      (channel) => callRenameIcmEntryChannel(channel, { path, newName }),
-      () => httpRenameIcmEntry(withAuth({ input: { path, newName }, fields: renameIcmEntryFields }))
+      (channel) => callRenameIcmEntryChannel(channel, { mountKey, path, newName }),
+      () => httpRenameIcmEntry(withAuth({ input: { mountKey, path, newName }, fields: renameIcmEntryFields }))
     ),
 
-  deleteIcmEntry: (path: string) =>
+  deleteIcmEntry: (mountKey: string, path: string) =>
     runRpc(
-      (channel) => callDeleteIcmEntryChannel(channel, { path }),
-      () => httpDeleteIcmEntry(withAuth({ input: { path }, fields: deleteIcmEntryFields }))
+      (channel) => callDeleteIcmEntryChannel(channel, { mountKey, path }),
+      () => httpDeleteIcmEntry(withAuth({ input: { mountKey, path }, fields: deleteIcmEntryFields }))
     ),
 
-  icmEntryReferences: (path: string) =>
+  icmEntryReferences: (mountKey: string, path: string) =>
     runRpc(
-      (channel) => callIcmEntryReferencesChannel(channel, { path }),
-      () => httpIcmEntryReferences(withAuth({ input: { path }, fields: icmEntryReferencesFields }))
+      (channel) => callIcmEntryReferencesChannel(channel, { mountKey, path }),
+      () => httpIcmEntryReferences(withAuth({ input: { mountKey, path }, fields: icmEntryReferencesFields }))
     ),
 
   // `icm_search`/`icm_paths_exist` (Task C2). `mount` filters the scan to a

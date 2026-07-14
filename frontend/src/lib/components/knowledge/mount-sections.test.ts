@@ -4,7 +4,6 @@ import {
   buildMountsDisplay,
   classifyMounts,
   degradedChipLabel,
-  isExternalRootRel,
   isExternalMount,
   normalizeMountsDoctorChecks
 } from './mount-sections';
@@ -14,21 +13,23 @@ import type { IcmNode } from '$lib/shell/nav';
 
 const primaryNode: IcmNode = {
   name: 'Clients',
-  path: 'mounts/primary/Clients',
+  path: 'Clients',
+  mountKey: 'primary',
   type: 'folder',
   pageCount: 2,
   children: []
 };
 const clientsNode: IcmNode = {
   name: 'Contracts',
-  path: 'mounts/clients/Contracts',
+  path: 'Contracts',
+  mountKey: 'clients',
   type: 'folder',
   pageCount: 1,
   children: []
 };
 
-const primaryGroup: MountGroup = { mount: 'primary', title: 'Primary', rootRel: 'mounts/primary', tree: [primaryNode] };
-const clientsGroup: MountGroup = { mount: 'clients', title: 'Clients', rootRel: 'mounts/clients', tree: [clientsNode] };
+const primaryGroup: MountGroup = { mount: 'primary', title: 'Primary', tree: [primaryNode] };
+const clientsGroup: MountGroup = { mount: 'clients', title: 'Clients', tree: [clientsNode] };
 
 const primarySummary: MountSummary = {
   mountKey: 'primary',
@@ -52,12 +53,12 @@ const clientsSummary: MountSummary = {
 describe('buildMountsDisplay', () => {
   it('collapses to the single mount\'s tree at the top level when there is exactly one enabled mount', () => {
     const display = buildMountsDisplay([primaryGroup], [primarySummary]);
-    expect(display).toEqual({ collapsed: true, tree: [primaryNode], rootRel: 'mounts/primary' });
+    expect(display).toEqual({ collapsed: true, mount: 'primary', tree: [primaryNode] });
   });
 
-  it('collapses to an empty tree with an empty rootRel when there are zero enabled mounts', () => {
+  it('collapses to an empty tree with an empty mount key when there are zero enabled mounts', () => {
     const display = buildMountsDisplay([], []);
-    expect(display).toEqual({ collapsed: true, tree: [], rootRel: '' });
+    expect(display).toEqual({ collapsed: true, mount: '', tree: [] });
   });
 
   it('splits into one section per mount, in backend order, once two or more mounts are enabled', () => {
@@ -69,54 +70,21 @@ describe('buildMountsDisplay', () => {
           mount: 'primary',
           title: 'Primary',
           description: 'The default mount',
-          rootRel: 'mounts/primary',
+          root: '/Users/dev/workspace/mounts/primary',
           tree: [primaryNode]
         },
         {
           mount: 'clients',
           title: 'Clients',
           description: 'Client-facing docs',
-          rootRel: 'mounts/clients',
+          root: '/Users/dev/workspace/mounts/clients',
           tree: [clientsNode]
         }
       ]
     });
   });
 
-  it('passes an EXTERNAL mount group through with its absolute rootRel, alongside another section', () => {
-    const extNode: IcmNode = {
-      name: 'Offers',
-      path: '/Users/dev/ext-mount/Offers',
-      type: 'folder',
-      pageCount: 1,
-      children: []
-    };
-    const extGroup: MountGroup = { mount: 'ext', title: 'Ext', rootRel: '/Users/dev/ext-mount', tree: [extNode] };
-    const extSummary: MountSummary = {
-      mountKey: 'ext',
-      id: '33333333-3333-3333-3333-333333333333',
-      name: 'Ext',
-      description: 'By-reference client folder',
-      root: '/Users/dev/ext-mount',
-      enabled: true,
-      degraded: null
-    };
-
-    const display = buildMountsDisplay([primaryGroup, extGroup], [primarySummary, extSummary]);
-    expect(display.collapsed).toBe(false);
-    if (!display.collapsed) {
-      const extSection = display.sections.find((s) => s.mount === 'ext');
-      expect(extSection).toEqual({
-        mount: 'ext',
-        title: 'Ext',
-        description: 'By-reference client folder',
-        rootRel: '/Users/dev/ext-mount',
-        tree: [extNode]
-      });
-    }
-  });
-
-  it('joins each section\'s description by mount KEY, not display name (task 3.4)', () => {
+  it('joins each section\'s description/root by mount KEY, not display name (task 3.4)', () => {
     const renamedSummary: MountSummary = { ...clientsSummary, mountKey: 'clients', name: 'Renamed Display Name' };
     const display = buildMountsDisplay([primaryGroup, clientsGroup], [primarySummary, renamedSummary]);
     expect(display.collapsed).toBe(false);
@@ -124,14 +92,16 @@ describe('buildMountsDisplay', () => {
       // The section's own `title` still comes from the MountGroup (the tree's own title), not the summary.
       expect(display.sections[1].title).toBe('Clients');
       expect(display.sections[1].description).toBe('Client-facing docs');
+      expect(display.sections[1].root).toBe('/Users/dev/workspace/mounts/clients');
     }
   });
 
-  it('defaults a section\'s description to "" when no matching MountSummary is found (a transient refetch-ordering gap)', () => {
+  it('defaults a section\'s description/root to "" when no matching MountSummary is found (a transient refetch-ordering gap)', () => {
     const display = buildMountsDisplay([primaryGroup, clientsGroup], [primarySummary]);
     expect(display.collapsed).toBe(false);
     if (!display.collapsed) {
       expect(display.sections[1].description).toBe('');
+      expect(display.sections[1].root).toBe('');
     }
   });
 });
@@ -192,20 +162,6 @@ describe('classifyMounts', () => {
 
   it('returns empty buckets for an empty catalog', () => {
     expect(classifyMounts([])).toEqual({ active: [], degraded: [], deactivated: [] });
-  });
-});
-
-describe('isExternalRootRel (A2-T5b)', () => {
-  it('is false for an embedded mount\'s workspace-relative rootRel', () => {
-    expect(isExternalRootRel('mounts/primary')).toBe(false);
-  });
-
-  it('is false for the collapsed zero-mounts empty rootRel', () => {
-    expect(isExternalRootRel('')).toBe(false);
-  });
-
-  it('is true for an external mount\'s absolute physical rootRel', () => {
-    expect(isExternalRootRel('/Users/dev/ext-mount')).toBe(true);
   });
 });
 

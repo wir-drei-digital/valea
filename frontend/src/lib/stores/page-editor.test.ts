@@ -9,8 +9,14 @@ type SaveResult = ApiResult<{ hash: string; savedAt: string }>;
 type PageResult = ApiResult<{ hash: string }>;
 
 function fakeApi(overrides: {
-  saveIcmPage?: (path: string, json: object, baseHash: string, generation?: number | null) => Promise<SaveResult>;
-  icmPage?: (path: string) => Promise<PageResult>;
+  saveIcmPage?: (
+    mountKey: string,
+    path: string,
+    json: object,
+    baseHash: string,
+    generation?: number | null
+  ) => Promise<SaveResult>;
+  icmPage?: (mountKey: string, path: string) => Promise<PageResult>;
 }) {
   return {
     saveIcmPage:
@@ -30,18 +36,18 @@ afterEach(() => {
 
 describe('PageEditorStore', () => {
   it('happy path: dirty -> saving -> clean, adopts returned hash + savedAt', async () => {
-    const save = vi.fn(async (_path: string, _json: object, _baseHash: string) => ({
+    const save = vi.fn(async (_mountKey: string, _path: string, _json: object, _baseHash: string) => ({
       ok: true as const,
       data: { hash: 'h2', savedAt: 'ts2' }
     }));
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ doc: 1 }));
     expect(store.state).toBe('dirty');
 
     await wait(30);
 
-    expect(save).toHaveBeenCalledWith('/p', { doc: 1 }, 'h1', null);
+    expect(save).toHaveBeenCalledWith('m', '/p', { doc: 1 }, 'h1', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h2');
     expect(store.savedAt).toBe('ts2');
@@ -50,7 +56,7 @@ describe('PageEditorStore', () => {
 
   it('save returning page_changed moves to conflict', async () => {
     const save = vi.fn(async () => ({ ok: false as const, error: 'page_changed' }));
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ doc: 1 }));
     await wait(30);
@@ -67,7 +73,7 @@ describe('PageEditorStore', () => {
           resolveSave = resolve;
         })
     );
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
     store.noteChange(() => ({ doc: 1 }));
     const flushPromise = store.flush();
@@ -94,7 +100,7 @@ describe('PageEditorStore', () => {
   it('flush() drains fully when a redirty re-arms after the in-flight save it awaited', async () => {
     let resolveFirst: (v: SaveResult) => void = () => {};
     const save = vi
-      .fn<(path: string, json: object, baseHash: string) => Promise<SaveResult>>()
+      .fn<(mountKey: string, path: string, json: object, baseHash: string) => Promise<SaveResult>>()
       .mockImplementationOnce(
         () =>
           new Promise<SaveResult>((resolve) => {
@@ -103,7 +109,7 @@ describe('PageEditorStore', () => {
       )
       .mockImplementationOnce(async () => ({ ok: true, data: { hash: 'h3', savedAt: 'ts3' } }));
 
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
     store.noteChange(() => ({ v: 1 }));
     void store.flush(); // triggers save #1 immediately (long debounce not reached)
@@ -118,13 +124,13 @@ describe('PageEditorStore', () => {
     await flushPromise;
 
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2', null);
+    expect(save).toHaveBeenNthCalledWith(2, 'm', '/p', { v: 2 }, 'h2', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h3');
   });
 
   it('externalChange while clean sets needsReload without touching state', () => {
-    const store = new PageEditorStore(fakeApi({}) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+    const store = new PageEditorStore(fakeApi({}) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
     store.externalChange('h2');
 
@@ -133,7 +139,7 @@ describe('PageEditorStore', () => {
   });
 
   it('externalChange is a no-op when the hash matches', () => {
-    const store = new PageEditorStore(fakeApi({}) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+    const store = new PageEditorStore(fakeApi({}) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
     store.externalChange('h1');
 
@@ -142,7 +148,7 @@ describe('PageEditorStore', () => {
   });
 
   it('externalChange while dirty moves to conflict', () => {
-    const store = new PageEditorStore(fakeApi({}) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+    const store = new PageEditorStore(fakeApi({}) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
     store.noteChange(() => ({ doc: 1 }));
     store.externalChange('h2');
@@ -153,12 +159,13 @@ describe('PageEditorStore', () => {
 
   it('resolveKeepMine refetches the current hash then saves own JSON, landing clean', async () => {
     const icmPage = vi.fn(async () => ({ ok: true as const, data: { hash: 'h3' } }));
-    const save = vi.fn(async (_path: string, _json: object, _baseHash: string) => ({
+    const save = vi.fn(async (_mountKey: string, _path: string, _json: object, _baseHash: string) => ({
       ok: true as const,
       data: { hash: 'h4', savedAt: 'ts4' }
     }));
     const store = new PageEditorStore(
       fakeApi({ saveIcmPage: save, icmPage }) as never,
+      'm',
       '/p',
       { hash: 'h1' },
       { debounceMs: 1000 }
@@ -170,15 +177,15 @@ describe('PageEditorStore', () => {
 
     await store.resolveKeepMine();
 
-    expect(icmPage).toHaveBeenCalledWith('/p');
-    expect(save).toHaveBeenCalledWith('/p', { doc: 'mine' }, 'h3', null);
+    expect(icmPage).toHaveBeenCalledWith('m', '/p');
+    expect(save).toHaveBeenCalledWith('m', '/p', { doc: 'mine' }, 'h3', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h4');
     expect(store.savedAt).toBe('ts4');
   });
 
   it('resolveReload adopts the refetched page and clears conflict/needsReload/error', () => {
-    const store = new PageEditorStore(fakeApi({}) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+    const store = new PageEditorStore(fakeApi({}) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
     store.noteChange(() => ({ doc: 1 }));
     store.externalChange('h2');
@@ -196,7 +203,7 @@ describe('PageEditorStore', () => {
   it('a change during saving re-arms the debounce instead of losing the edit', async () => {
     let resolveFirst: (v: SaveResult) => void = () => {};
     const save = vi
-      .fn<(path: string, json: object, baseHash: string) => Promise<SaveResult>>()
+      .fn<(mountKey: string, path: string, json: object, baseHash: string) => Promise<SaveResult>>()
       .mockImplementationOnce(
         () =>
           new Promise<SaveResult>((resolve) => {
@@ -205,7 +212,7 @@ describe('PageEditorStore', () => {
       )
       .mockImplementationOnce(async () => ({ ok: true, data: { hash: 'h3', savedAt: 'ts3' } }));
 
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ v: 1 }));
     await wait(15); // debounce fires, first save is now in flight (unresolved)
@@ -227,7 +234,7 @@ describe('PageEditorStore', () => {
     await wait(15); // the re-armed debounce fires, saving the latest edit
 
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2', null);
+    expect(save).toHaveBeenNthCalledWith(2, 'm', '/p', { v: 2 }, 'h2', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h3');
   });
@@ -240,7 +247,7 @@ describe('PageEditorStore', () => {
           resolveSave = resolve;
         })
     );
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ doc: 1 }));
     await wait(15); // debounce fires; save is now in flight (unresolved)
@@ -270,7 +277,7 @@ describe('PageEditorStore', () => {
           resolveSave = resolve;
         })
     );
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ doc: 1 }));
     await wait(15);
@@ -292,7 +299,7 @@ describe('PageEditorStore', () => {
   it('a redirty during a save that is echoed as a conflict is not lost (full interleaving)', async () => {
     let resolveFirst: (v: SaveResult) => void = () => {};
     const save = vi
-      .fn<(path: string, json: object, baseHash: string) => Promise<SaveResult>>()
+      .fn<(mountKey: string, path: string, json: object, baseHash: string) => Promise<SaveResult>>()
       .mockImplementationOnce(
         () =>
           new Promise<SaveResult>((resolve) => {
@@ -301,7 +308,7 @@ describe('PageEditorStore', () => {
       )
       .mockImplementationOnce(async () => ({ ok: true, data: { hash: 'h3', savedAt: 'ts3' } }));
 
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ v: 1 }));
     await wait(15); // debounce fires; S1 is now in flight (unresolved)
@@ -328,18 +335,18 @@ describe('PageEditorStore', () => {
     await wait(15); // the re-armed debounce fires, saving the redirtied edit
 
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenNthCalledWith(2, '/p', { v: 2 }, 'h2', null);
+    expect(save).toHaveBeenNthCalledWith(2, 'm', '/p', { v: 2 }, 'h2', null);
     expect(store.state).toBe('clean');
     expect(store.hash).toBe('h3');
   });
 
   it('a failed save stays dirty with an error; the next change retries', async () => {
     const save = vi
-      .fn<(path: string, json: object, baseHash: string) => Promise<SaveResult>>()
+      .fn<(mountKey: string, path: string, json: object, baseHash: string) => Promise<SaveResult>>()
       .mockImplementationOnce(async () => ({ ok: false, error: 'channel_timeout' }))
       .mockImplementationOnce(async () => ({ ok: true, data: { hash: 'h2', savedAt: 'ts2' } }));
 
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ v: 1 }));
     await wait(20);
@@ -360,19 +367,19 @@ describe('PageEditorStore', () => {
   it('captures the workspace generation at construction and passes it to saveIcmPage', async () => {
     workspaceStore.generation = 7;
     const save = vi.fn(async () => ({ ok: true as const, data: { hash: 'h2', savedAt: 'ts2' } }));
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     store.noteChange(() => ({ doc: 1 }));
     await wait(30);
 
-    expect(save).toHaveBeenCalledWith('/p', { doc: 1 }, 'h1', 7);
+    expect(save).toHaveBeenCalledWith('m', '/p', { doc: 1 }, 'h1', 7);
     expect(store.state).toBe('clean');
   });
 
   it('stale-generation save aborts locally: stays dirty with workspace_changed, never calls saveIcmPage', async () => {
     workspaceStore.generation = 1;
     const save = vi.fn(async () => ({ ok: true as const, data: { hash: 'h2', savedAt: 'ts2' } }));
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 5 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 5 });
 
     // The user switches to a different workspace (WorkspaceSwitcher) while
     // this editor instance is still alive — `workspaceStore.generation`
@@ -391,7 +398,7 @@ describe('PageEditorStore', () => {
   it('stale-generation guard also aborts an explicit flush()', async () => {
     workspaceStore.generation = 1;
     const save = vi.fn(async () => ({ ok: true as const, data: { hash: 'h2', savedAt: 'ts2' } }));
-    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, '/p', { hash: 'h1' }, { debounceMs: 1000 });
+    const store = new PageEditorStore(fakeApi({ saveIcmPage: save }) as never, 'm', '/p', { hash: 'h1' }, { debounceMs: 1000 });
 
     store.noteChange(() => ({ doc: 1 }));
     workspaceStore.generation = 2;
