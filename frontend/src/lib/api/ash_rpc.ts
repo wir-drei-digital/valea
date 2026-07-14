@@ -2206,15 +2206,15 @@ export async function setupMailAccountChannel<Fields extends SetupMailAccountFie
 
 export type CreateMountInput = {
   name: string;
-  description: string;
+  path: string;
   generation: number;
 };
 
-export type CreateMountFields = UnifiedFieldSelection<{relRoot: string, __type: "TypedMap", __primitiveFields: "relRoot"}>[];
+export type CreateMountFields = UnifiedFieldSelection<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}>[];
 
 export type InferCreateMountResult<
   Fields extends CreateMountFields | undefined,
-> = InferResult<{relRoot: string, __type: "TypedMap", __primitiveFields: "relRoot"}, Fields>;
+> = InferResult<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}, Fields>;
 
 export type CreateMountResult<Fields extends CreateMountFields | undefined = undefined> = | { success: true; data: InferCreateMountResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

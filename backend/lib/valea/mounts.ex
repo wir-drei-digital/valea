@@ -44,17 +44,33 @@ defmodule Valea.Mounts do
   portable ICM — or an ambiguous clone of it — mounted twice). `list/1` is
   sorted by mount key (the `icms:` map key, `name` on the struct).
 
+  ## Mutations
+
+  `mount/2` registers an already-existing, already-healthy external ICM
+  folder; `create/3` mints a brand-new one (seeding the portable
+  `priv/icm_template/` tree) and then mounts it — the only mutation that
+  writes into an ICM's own folder. `set_enabled/3` flips a mount's
+  `enabled` flag; `unmount/2` removes its config entry (the folder is
+  never touched). All four operate purely on `config/workspace.yaml`'s
+  `icms:` map, preserving every other top-level key (`version`, `id`,
+  `name`, and any unknown key — including a legacy `mounts:` section, if
+  one is still present) byte-for-byte via a generic recursive YAML
+  encoder (`render_icms_doc/2`). A mount's `path` is stored EXACTLY as
+  given to `mount/2`/`create/3` (the user's own `~`-form survives) — the
+  resolved absolute path this module computes is never persisted, only
+  audited.
+
   ## Audit — every mount is a boundary change
 
-  Since every mounted ICM is by-reference, declaring, undeclaring,
-  enabling, or disabling one changes what filesystem locations OUTSIDE the
-  workspace an agent session can read. `declare_external/3` audits
-  `mount_declared`, `undeclare/2` audits `mount_undeclared`, and
-  `set_enabled/2` audits `mount_enabled`/`mount_disabled`. Every audit
-  entry carries the mount's best-effort RESOLVED absolute path (`nil` only
-  when the ref was never absolute/`~`-based at all) alongside the mount
-  `name`, so the audit trail names the real location being granted or
-  revoked, not just the config key.
+  Since every mounted ICM is by-reference, mounting, unmounting, enabling,
+  or disabling one changes what filesystem locations OUTSIDE the workspace
+  an agent session can read. `mount/2` and `create/3` audit `icm_mounted`,
+  `unmount/2` audits `icm_unmounted`, and `set_enabled/3` audits
+  `icm_enabled`/`icm_disabled`. Every audit entry carries the mount's
+  best-effort RESOLVED absolute path (`nil` only when the config `path`
+  was never absolute/`~`-based at all) alongside the `mount_key`, so the
+  audit trail names the real location being granted or revoked, not just
+  the config key.
   """
 
   alias Valea.Mounts.External
@@ -211,30 +227,96 @@ defmodule Valea.Mounts do
     root != "" and (path == root or String.starts_with?(path <> "/", root <> "/"))
   end
 
+  # -- mutations: mount / create / set_enabled / unmount (icms:-only) ------
+
   @doc """
-  Sets `mounts.<name>.enabled` in the current workspace's
-  `config/workspace.yaml`, writing atomically. Preserves `version`, `id`,
-  and every other key on every mount entry (including this one) — so
-  hand-added or by-reference-mount fields like `kind`/`ref` survive.
+  Mounts a healthy, format-2 external ICM found at `path` into
+  `workspace`'s `icms:` config — validates the folder (boundary,
+  permission-glob safety, existence, a loadable format-2 `icm.yaml`),
+  rejects it if its resolved physical root OR its manifest `id` is already
+  mounted in this workspace (`:duplicate_root` / `:duplicate_id`), derives
+  a unique mount key from the manifest's `name` (`unique_mount_key/2`),
+  and writes `icms.<key> = %{path: <path>, enabled: true}` — `path` is
+  stored EXACTLY as given (a `~`-form path stays `~`-form), never the
+  resolved absolute form. Never copies, moves, or writes anything under
+  `path` — that is `create/3`'s job alone.
 
-  Rejects a `name` containing `/`, `..`, or a C0 control character/DEL
-  (defense in depth: a mount name is a safe directory basename).
-
-  Audits `mount_enabled`/`mount_disabled` with `name` and the mount's
-  best-effort resolved path — but ONLY when `name` names an EXTERNAL
-  (`kind: "path"`) entry; toggling an embedded mount stays unaudited (see
-  moduledoc, "Audit — external mounts are boundary changes").
+  Audits `icm_mounted` with the mount key, the RESOLVED path, and the
+  manifest id.
   """
-  @spec set_enabled(name :: String.t(), boolean()) :: :ok | {:error, term()}
-  def set_enabled(name, enabled) when is_binary(name) and is_boolean(enabled) do
-    with :ok <- validate_mount_name(name),
-         {:ok, ws} <- workspace_root(),
-         {:ok, doc} <- read_workspace_config_for_write(ws) do
-      mounts = doc |> Map.get("mounts") |> normalize_mounts()
+  @spec mount(workspace :: String.t(), path :: String.t()) ::
+          {:ok, %{mount_key: String.t(), id: String.t()}} | {:error, term()}
+  def mount(workspace, path) when is_binary(workspace) and is_binary(path) do
+    with {:ok, resolved, manifest} <- validate_mountable(workspace, path),
+         :ok <- reject_duplicate_root(workspace, resolved),
+         :ok <- reject_duplicate_id(workspace, manifest.id) do
+      key = unique_mount_key(workspace, manifest.name)
+      icms = workspace |> read_icms_config() |> Map.put(key, %{"path" => path, "enabled" => true})
 
-      case write_workspace_config(ws, render_config(doc, name, enabled)) do
+      case write_icms(workspace, icms) do
         :ok ->
-          audit_toggle(ws, mounts, name, enabled)
+          audit("icm_mounted", %{"mount_key" => key, "path" => resolved, "id" => manifest.id})
+          {:ok, %{mount_key: key, id: manifest.id}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  Mints a brand-new external ICM at `path`: creates the folder if it
+  doesn't exist, seeds the portable `priv/icm_template/` tree into it
+  (substituting `{{name}}` in `AGENTS.md`/`CONTEXT.md` with `name`), writes
+  a fresh format-2 `icm.yaml` (a new UUID `id`, `name`, empty
+  `description`) over the template's placeholder one, then mounts it via
+  `mount/2`. The ONLY mutation that writes into an ICM's own folder.
+
+  Rejects `path` when it already holds an `icm.yaml` (`:already_exists` —
+  refuses to clobber an existing ICM) or is an existing non-directory
+  (`:not_a_directory`), same boundary/glob guardrails as `mount/2`.
+
+  Audits `icm_mounted` (via `mount/2` — see its own @doc).
+  """
+  @spec create(workspace :: String.t(), name :: String.t(), path :: String.t()) ::
+          {:ok, %{mount_key: String.t(), id: String.t()}} | {:error, term()}
+  def create(workspace, name, path)
+      when is_binary(workspace) and is_binary(name) and is_binary(path) do
+    with :ok <- validate_display_name(name),
+         :ok <- check_create_target(workspace, path) do
+      resolved = resolve_best_effort(Path.expand(path))
+      File.mkdir_p!(resolved)
+      seed_template!(resolved, name)
+      Manifest.write!(resolved, %{id: Ecto.UUID.generate(), name: name, description: ""})
+      mount(workspace, path)
+    end
+  end
+
+  @doc """
+  Sets `icms.<mount_key>.enabled` in `workspace`'s `config/workspace.yaml`,
+  preserving every other key on every entry (including this one) and every
+  other top-level key in the document. Rejects `mount_key` the same way
+  `unmount/2` does (a mount key is a safe config-key / directory-basename
+  string: no `/`, no `..`, no C0 control char/DEL), and rejects a
+  `mount_key` with no `icms:` entry at all (`:mount_not_found`).
+
+  Audits `icm_enabled`/`icm_disabled` with `mount_key` and the mount's
+  best-effort resolved path (see moduledoc).
+  """
+  @spec set_enabled(workspace :: String.t(), mount_key :: String.t(), enabled :: boolean()) ::
+          :ok | {:error, term()}
+  def set_enabled(workspace, mount_key, enabled)
+      when is_binary(workspace) and is_binary(mount_key) and is_boolean(enabled) do
+    with :ok <- validate_mount_name(mount_key),
+         icms = read_icms_config(workspace),
+         :ok <- ensure_icm_present(icms, mount_key) do
+      path = icm_root_for_audit(workspace, mount_key)
+      new_icms = Map.update!(icms, mount_key, &Map.put(&1, "enabled", enabled))
+
+      case write_icms(workspace, new_icms) do
+        :ok ->
+          type = if enabled, do: "icm_enabled", else: "icm_disabled"
+          audit(type, %{"mount_key" => mount_key, "path" => path})
           :ok
 
         {:error, reason} ->
@@ -244,43 +326,29 @@ defmodule Valea.Mounts do
   end
 
   @doc """
-  Declares a BY-REFERENCE (external) mount named `name` under `workspace`,
-  validating `ref` via `Valea.Mounts.External.validate_ref/2` FIRST — a
-  candidate that fails any guardrail or has no loadable manifest is
-  rejected outright with the SAME error reason `validate_ref/2` returns,
-  with NO config write at all.
+  Removes the `icms.<mount_key>` config entry from `workspace`'s
+  `config/workspace.yaml` — config-only, the ICM's own folder is NEVER
+  touched. Preserves every other entry and every other top-level key.
 
-  On success, writes `mounts.<name>: {kind: "path", ref: <ref>, enabled:
-  true}` to `config/workspace.yaml`, preserving `version`, `id`, and every
-  OTHER mount entry untouched — same atomic-write,
-  preserve-everything-else contract as `set_enabled/2`. `ref` is written
-  EXACTLY as given (a `~`-form ref stays `~`-form in the config) — the
-  resolved absolute path this function returns (and audits) is derived
-  fresh, never stored; keeping the config value in the user's own portable
-  form is the whole point of a by-reference mount surviving a move to
-  another machine where `~` resolves differently.
+  Rejects `mount_key` the same way `set_enabled/3` does, and rejects a
+  `mount_key` with no `icms:` entry at all (`:mount_not_found`).
 
-  Re-declaring an already-declared name overwrites that ONE entry with the
-  new `kind`/`ref`/`enabled: true` (every other entry is still preserved)
-  — there is no separate "update" operation.
-
-  Rejects `name` the same way `set_enabled/2` does (a mount name is a
-  config key / safe directory basename).
-
-  Audits `mount_declared` with `name` and the resolved absolute path (see
-  moduledoc).
+  Audits `icm_unmounted` with `mount_key` and the mount's best-effort
+  resolved path, captured BEFORE the entry is removed (see moduledoc).
   """
-  @spec declare_external(workspace :: String.t(), name :: String.t(), ref :: String.t()) ::
-          {:ok, resolved :: String.t()} | {:error, term()}
-  def declare_external(workspace, name, ref)
-      when is_binary(workspace) and is_binary(name) and is_binary(ref) do
-    with :ok <- validate_mount_name(name),
-         {:ok, resolved} <- External.validate_ref(workspace, ref),
-         {:ok, doc} <- read_workspace_config_for_write(workspace) do
-      case write_workspace_config(workspace, render_declare(doc, name, ref)) do
+  @spec unmount(workspace :: String.t(), mount_key :: String.t()) ::
+          {:ok, path :: String.t() | nil} | {:error, term()}
+  def unmount(workspace, mount_key) when is_binary(workspace) and is_binary(mount_key) do
+    with :ok <- validate_mount_name(mount_key),
+         icms = read_icms_config(workspace),
+         :ok <- ensure_icm_present(icms, mount_key) do
+      path = icm_root_for_audit(workspace, mount_key)
+      new_icms = Map.delete(icms, mount_key)
+
+      case write_icms(workspace, new_icms) do
         :ok ->
-          audit("mount_declared", %{"name" => name, "path" => resolved})
-          {:ok, resolved}
+          audit("icm_unmounted", %{"mount_key" => mount_key, "path" => path})
+          {:ok, path}
 
         {:error, reason} ->
           {:error, reason}
@@ -289,105 +357,111 @@ defmodule Valea.Mounts do
   end
 
   @doc """
-  Removes the EXTERNAL (`kind: "path"`) config entry named `name` from
-  `workspace`'s `config/workspace.yaml` — config-only, NEVER touches any
-  folder (neither the external target nor, obviously, any `mounts/<name>`
-  directory — an embedded mount has no config entry to remove in the first
-  place). Preserves `version`, `id`, and every other mount entry
-  untouched.
-
-  Rejects with `:mount_not_declared` when `name` has no config entry at
-  all, OR when it has one that isn't `kind: "path"` (an embedded-only
-  relational entry, e.g. a bare `{enabled: false}`, or a declared entry of
-  some other `kind` altogether) — there is nothing external here to
-  undeclare.
-
-  Audits `mount_undeclared` with `name` and the mount's best-effort
-  resolved path, captured BEFORE the entry is removed (see moduledoc);
-  `nil` only when the ref was never absolute/`~`-based to begin with.
+  Derives a workspace-unique `icms:` mount key from a display `name`:
+  `Valea.Workspace.Scaffold.slugify/1` of `name`, then a `-2`, `-3`, ...
+  numeric suffix if the slug already names an existing `icms:` entry in
+  `workspace`'s current config.
   """
-  @spec undeclare(workspace :: String.t(), name :: String.t()) ::
-          {:ok, resolved_path :: String.t() | nil} | {:error, term()}
-  def undeclare(workspace, name) when is_binary(workspace) and is_binary(name) do
-    with :ok <- validate_mount_name(name),
-         {:ok, doc} <- read_workspace_config_for_write(workspace) do
-      mounts = doc |> Map.get("mounts") |> normalize_mounts()
+  @spec unique_mount_key(workspace :: String.t(), name :: String.t()) :: String.t()
+  def unique_mount_key(workspace, name) when is_binary(workspace) and is_binary(name) do
+    existing = workspace |> read_icms_config() |> Map.keys() |> MapSet.new()
+    base = Scaffold.slugify(name)
+    unique_key(base, existing, 1)
+  end
 
-      case Map.get(mounts, name) do
-        %{"kind" => "path"} ->
-          path = external_root_for_audit(workspace, name)
+  defp unique_key(base, existing, n) do
+    candidate = if n == 1, do: base, else: "#{base}-#{n}"
+    if MapSet.member?(existing, candidate), do: unique_key(base, existing, n + 1), else: candidate
+  end
 
-          case write_workspace_config(workspace, render_undeclare(doc, name)) do
-            :ok ->
-              audit("mount_undeclared", %{"name" => name, "path" => path})
-              {:ok, path}
+  # Shared `mount/2` validation: absolute/`~`-based, boundary-safe,
+  # glob-safe, an existing folder with a loadable format-2 manifest.
+  # Returns the RESOLVED path (for audit/duplicate-checks) and the loaded
+  # manifest.
+  defp validate_mountable(workspace, path) do
+    if absolute_or_tilde?(path) do
+      resolved = resolve_best_effort(Path.expand(path))
+      ws_resolved = resolve_best_effort(workspace)
 
-            {:error, reason} ->
-              {:error, reason}
-          end
-
-        _not_external ->
-          {:error, :mount_not_declared}
+      with :ok <- External.check_boundaries(resolved, ws_resolved),
+           :ok <- check_icm_glob_safety(resolved),
+           :ok <- check_folder_exists(resolved) do
+        case Manifest.load(resolved) do
+          {:ok, manifest} -> {:ok, resolved, manifest}
+          {:error, :missing} -> {:error, :no_manifest}
+          {:error, {:invalid, reason}} -> {:error, {:invalid_manifest, reason}}
+        end
       end
+    else
+      {:error, :not_absolute}
     end
   end
 
-  @doc """
-  Scaffolds a brand-new, empty mount under `workspace` — `mounts/<slug>`,
-  where `<slug>` is `Scaffold.slugify/1` of `name` (the same slugging a
-  fresh workspace scaffold gives its starter mount). `name` here is a
-  DISPLAY name, not a directory basename — "Sales/Marketing" or
-  "Ops (EU/APAC)" are legitimate business names — so it gets the narrower
-  `validate_display_name/1` (non-blank, no C0 control chars/DEL), NOT
-  `set_enabled/2`'s strict basename validator: the raw name only ever
-  flows into `Scaffold.slugify/1` (which strips everything outside
-  `[a-z0-9-]` before any filesystem use), `Manifest.render/1` (which
-  `Valea.Yaml.escape/1`s it), and this module's own AGENTS.md skeleton
-  heading — a single line, which is exactly why control chars stay
-  rejected. It becomes the minted manifest's `name:` (the GIVEN name, not
-  the slug).
+  defp check_folder_exists(resolved) do
+    if File.dir?(resolved), do: :ok, else: {:error, :not_found}
+  end
 
-  Mints a fresh manifest (uuid4 `id`, `name`, `description`) via
-  `Manifest.write!/2`, and a minimal self-describing `AGENTS.md` +
-  `CLAUDE.md` (`@AGENTS.md`) skeleton — the mount's ICM is empty at
-  creation; the skeleton says so and invites it to grow. A directory
-  collision (the slug already exists) is rejected outright
-  (`{:error, :already_exists}`) rather than disambiguated, mirroring
-  `Valea.ICM.create_page/2`'s stance on name collisions.
+  defp reject_duplicate_root(workspace, resolved) do
+    if Enum.any?(list(workspace), &(&1.root == resolved)) do
+      {:error, :duplicate_root}
+    else
+      :ok
+    end
+  end
 
-  Does NOT touch `config/workspace.yaml` (a freshly created mount is
-  enabled by default — `config_enabled?/2`'s absent-means-true default
-  already covers it) or regenerate `MOUNTS.md` — callers that need it
-  refreshed (the `create_mount` RPC action) call
-  `Valea.Mounts.MountsMd.regenerate/1` themselves, same as `set_enabled/2`'s
-  callers already do.
-  """
-  @spec create(workspace :: String.t(), name :: String.t(), description :: String.t()) ::
-          {:ok, mount} | {:error, term()}
-  def create(workspace, name, description)
-      when is_binary(workspace) and is_binary(name) and is_binary(description) do
-    with :ok <- validate_display_name(name) do
-      slug = Scaffold.slugify(name)
-      dir = Path.join([workspace, "mounts", slug])
+  defp reject_duplicate_id(workspace, id) do
+    if Enum.any?(list(workspace), &(&1.manifest != nil and &1.manifest.id == id)) do
+      {:error, :duplicate_id}
+    else
+      :ok
+    end
+  end
 
-      if File.exists?(dir) do
-        {:error, :already_exists}
-      else
-        do_create(dir, name, description, workspace)
+  # `create/3`'s own guardrails: same absolute/boundary/glob checks
+  # `mount/2` runs (via `validate_mountable/2`, called again inside the
+  # `mount/2` this function ultimately delegates to), plus two that only
+  # matter for a WRITE target: an existing non-directory can't become an
+  # ICM folder, and an existing `icm.yaml` must never be clobbered.
+  defp check_create_target(workspace, path) do
+    if absolute_or_tilde?(path) do
+      resolved = resolve_best_effort(Path.expand(path))
+      ws_resolved = resolve_best_effort(workspace)
+
+      with :ok <- External.check_boundaries(resolved, ws_resolved),
+           :ok <- check_icm_glob_safety(resolved),
+           :ok <- check_not_a_file(resolved),
+           :ok <- check_not_already_an_icm(resolved) do
+        :ok
       end
+    else
+      {:error, :not_absolute}
+    end
+  end
+
+  defp check_not_a_file(resolved) do
+    if File.exists?(resolved) and not File.dir?(resolved) do
+      {:error, :not_a_directory}
+    else
+      :ok
+    end
+  end
+
+  defp check_not_already_an_icm(resolved) do
+    if File.exists?(Path.join(resolved, "icm.yaml")) do
+      {:error, :already_exists}
+    else
+      :ok
     end
   end
 
   # Display-name validator for `create/3` — deliberately NARROWER than
-  # `validate_mount_name/1` (the directory-basename validator `set_enabled/2`
-  # keeps): a display name may legitimately contain `/` or `..`
-  # ("Sales/Marketing"), since `Scaffold.slugify/1` strips everything outside
-  # [a-z0-9-] before the name ever touches the filesystem and
-  # `Manifest.render/1` Yaml.escape's it. Control chars/DEL stay rejected
-  # (the raw name lands single-line in the AGENTS.md skeleton heading), and
-  # a blank (all-whitespace) name is rejected too — it would slugify to the
-  # "mount" fallback and mint a manifest that `Manifest.load/1` immediately
-  # degrades ("name must not be blank").
+  # `validate_mount_name/1` (the config-key validator `set_enabled/3` and
+  # `unmount/2` keep): a display name may legitimately contain `/` or `..`
+  # ("Sales/Marketing"), since `Scaffold.slugify/1` strips everything
+  # outside `[a-z0-9-]` before the name ever touches the filesystem and
+  # `Manifest.render/1` `Yaml.escape/1`s it. Control chars/DEL stay
+  # rejected (the raw name lands single-line in the seeded `AGENTS.md`'s
+  # heading), and a blank (all-whitespace) name is rejected too.
   defp validate_display_name(name) do
     if String.trim(name) == "" or control_chars?(name) do
       {:error, :invalid_mount_name}
@@ -396,89 +470,48 @@ defmodule Valea.Mounts do
     end
   end
 
-  defp do_create(dir, name, description, workspace) do
-    File.mkdir_p!(dir)
+  # Copies `priv/icm_template/` into `dest` (already an existing, empty-or-
+  # new directory) and substitutes `{{name}}` in the two template files
+  # that carry it. `icm.yaml` is deliberately NOT templated here — `create/3`
+  # always overwrites it with a freshly minted manifest right after this
+  # call.
+  defp seed_template!(dest, name) do
+    File.cp_r!(icm_template_dir(), dest)
 
-    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: name, description: description})
-    File.write!(Path.join(dir, "AGENTS.md"), agents_md_skeleton(name, description))
-    File.write!(Path.join(dir, "CLAUDE.md"), "@AGENTS.md\n")
+    for rel <- ["AGENTS.md", "CONTEXT.md"] do
+      path = Path.join(dest, rel)
 
-    {:ok, build_mount(dir, read_config_mounts(workspace))}
+      if File.exists?(path) do
+        File.write!(path, path |> File.read!() |> String.replace("{{name}}", name))
+      end
+    end
+
+    :ok
   end
 
-  defp agents_md_skeleton(name, description) do
-    body = if String.trim(description) == "", do: "No description yet.", else: description
+  defp icm_template_dir, do: Application.app_dir(:valea, "priv/icm_template")
 
-    """
-    # This mount: #{name}
+  defp ensure_icm_present(icms, key) do
+    if Map.has_key?(icms, key), do: :ok, else: {:error, :mount_not_found}
+  end
 
-    #{body}
-
-    This mount is new and empty — it has no pages yet. As Clients, Offers,
-    Workflows, or other pages are added here, describe them in this file
-    the way another mount's own AGENTS.md does, so an agent reading this
-    file knows what it can rely on.
-    """
+  # The currently-mounted ICM named `mount_key`'s best-effort resolved
+  # `root`, or `nil` — reuses `list/1` (the SAME degrade-tolerant
+  # resolution every consumer sees) rather than re-validating, so a
+  # boundary-violating or currently-missing path still yields its resolved
+  # path for the audit trail. Only a path that was never absolute/`~`-based
+  # at all resolves to the empty-string sentinel, which becomes `nil` here.
+  # Must be called BEFORE any config write that would remove the entry
+  # (`unmount/2`) — `list/1` only sees what's still on disk.
+  defp icm_root_for_audit(workspace, mount_key) do
+    case mount_by_key(workspace, mount_key) do
+      nil -> nil
+      %{root: ""} -> nil
+      %{root: root} -> root
+    end
   end
 
   # -- discovery ---------------------------------------------------------
-
-  defp build_mount(dir, config_mounts) do
-    name = Path.basename(dir)
-
-    if control_chars?(name) do
-      degraded_basename_mount(dir, name, config_mounts)
-    else
-      {manifest, degraded} = load_manifest(dir)
-
-      %{
-        name: name,
-        rel_root: Path.join("mounts", name),
-        root: Path.expand(dir),
-        manifest: manifest,
-        enabled: config_enabled?(config_mounts, name),
-        degraded: degraded
-      }
-    end
-  end
-
-  # A directory basename carrying a C0 control char or DEL (e.g. a newline)
-  # is quarantined unconditionally — degraded regardless of whether its
-  # icm.yaml is otherwise valid, so it can never reach `effective?/1` (never
-  # enabled) or `MountsMd`'s enabled/deactivated render paths, which both
-  # interpolate `rel_root` RAW into a live `@`-import line. `rel_root` here
-  # is built from a SANITIZED display name (control-char runs collapsed to a
-  # single space, mirroring `MountsMd`'s own `sanitize/1`) rather than the
-  # raw basename: `rel_root` is the one field a degraded mount still renders
-  # into MOUNTS.md (the "Needs attention" line), so this is the layer where
-  # that value must already be safe — the renderer cannot fix it without
-  # corrupting the real `@`-import path for legitimately-named mounts. `name`
-  # stays the raw basename (round-trips identification; MountsMd's own
-  # `sanitize/1` already neutralizes it at that render site), and `root`
-  # stays the real, unsanitized absolute path — filesystem calls, unlike
-  # text rendered into a routing file, don't care about control chars.
-  defp degraded_basename_mount(dir, name, config_mounts) do
-    %{
-      name: name,
-      rel_root: Path.join("mounts", sanitize_display(name)),
-      root: Path.expand(dir),
-      manifest: nil,
-      enabled: config_enabled?(config_mounts, name),
-      degraded: "invalid mount directory name"
-    }
-  end
-
-  defp control_chars?(name), do: Regex.match?(~r/[\x00-\x1F\x7F]/, name)
-
-  defp sanitize_display(name), do: String.replace(name, ~r/[\x00-\x1F\x7F]+/, " ")
-
-  defp load_manifest(dir) do
-    case Manifest.load(dir) do
-      {:ok, manifest} -> {manifest, nil}
-      {:error, :missing} -> {nil, "icm.yaml is missing"}
-      {:error, {:invalid, reason}} -> {nil, reason}
-    end
-  end
 
   defp effective?(%{enabled: true, degraded: nil}), do: true
   defp effective?(_), do: false
@@ -666,11 +699,10 @@ defmodule Valea.Mounts do
   end
 
   # `icms:` is a workspace-local map; `read_config_mounts/1` reads the
-  # LEGACY `mounts:` section (still used by the not-yet-retargeted
-  # `declare_external/3`/`undeclare/2`/`create/3` below) — kept as a
-  # SEPARATE reader rather than repointing that shared function, so this
-  # rewrite does not disturb `Valea.Mounts.External`'s own `mounts:`-based
-  # read path (`External.declared/1` and its test suite).
+  # LEGACY `mounts:` section (still used by `Valea.Mounts.External`'s own
+  # `mounts:`-based read path, `External.declared/1`, and its test suite)
+  # — kept as a SEPARATE reader rather than repointing that shared
+  # function, so this rewrite does not disturb it.
   defp read_icms_config(workspace) do
     case read_workspace_config(workspace) do
       {:ok, doc} -> normalize_mounts(Map.get(doc, "icms"))
@@ -684,7 +716,7 @@ defmodule Valea.Mounts do
     end
   end
 
-  # -- relationship-state config (config/workspace.yaml `mounts:`) -------
+  # -- relationship-state config (config/workspace.yaml `icms:`) ---------
 
   defp config_path(workspace), do: Path.join(workspace, "config/workspace.yaml")
 
@@ -701,9 +733,9 @@ defmodule Valea.Mounts do
   # to treat as an empty config (there is nothing on disk to lose). Any
   # other failure to read an EXISTING file — parse error, or a document
   # that didn't parse to a map — must not fall through to `%{}`: doing so
-  # would make `set_enabled/2` atomically overwrite a real (if currently
-  # unreadable) config, discarding `version`/`id` and anything else in it.
-  # Callers must treat this as a hard stop, not a fail-open default.
+  # would make a mutation atomically overwrite a real (if currently
+  # unreadable) config, discarding `version`/`id`/`name` and anything else
+  # in it. Callers must treat this as a hard stop, not a fail-open default.
   defp read_workspace_config_for_write(workspace) do
     case YamlElixir.read_from_file(config_path(workspace)) do
       {:ok, doc} when is_map(doc) -> {:ok, doc}
@@ -715,9 +747,9 @@ defmodule Valea.Mounts do
 
   @doc false
   # Internal-public for `Valea.Mounts.External` (BY-REFERENCE mounts): reads
-  # the same `mounts:` section this module's own discovery reads, keyed by
-  # config name, string keys/values as parsed by YamlElixir. Not part of the
-  # public contract — do not call from outside the `Valea.Mounts` namespace.
+  # the LEGACY `mounts:` section, keyed by config name, string keys/values
+  # as parsed by YamlElixir. Not part of the public contract — do not call
+  # from outside the `Valea.Mounts` namespace.
   @spec read_config_mounts(workspace :: String.t()) :: map()
   def read_config_mounts(workspace) do
     case read_workspace_config(workspace) do
@@ -728,12 +760,7 @@ defmodule Valea.Mounts do
   defp normalize_mounts(mounts) when is_map(mounts), do: mounts
   defp normalize_mounts(_not_a_map), do: %{}
 
-  defp config_enabled?(config_mounts, name) do
-    case config_mounts[name] do
-      %{"enabled" => false} -> false
-      _ -> true
-    end
-  end
+  defp control_chars?(name), do: Regex.match?(~r/[\x00-\x1F\x7F]/, name)
 
   defp validate_mount_name(name) do
     if name == "" or String.contains?(name, "/") or String.contains?(name, "..") or
@@ -753,131 +780,78 @@ defmodule Valea.Mounts do
     end
   end
 
-  # -- audit (see moduledoc, "Audit — external mounts are boundary changes")
-
-  # `set_enabled/2`'s audit gate — fires `mount_enabled`/`mount_disabled`
-  # ONLY when `name` names an EXTERNAL (`kind: "path"`) entry in `mounts`
-  # (the PRE-write config map — kind/ref never change on a plain
-  # enable/disable toggle, so reading it before or after the write is
-  # equivalent here). An embedded mount's toggle is a no-op for this
-  # function, matching pre-A2 behavior.
-  defp audit_toggle(workspace, mounts, name, enabled) do
-    case Map.get(mounts, name) do
-      %{"kind" => "path"} ->
-        type = if enabled, do: "mount_enabled", else: "mount_disabled"
-        audit(type, %{"name" => name, "path" => external_root_for_audit(workspace, name)})
-
-      _not_external ->
-        :ok
+  # Read-current-doc, rewrite-icms:, write-atomically — the one place every
+  # `icms:` mutation (`mount/2`, `set_enabled/3`, `unmount/2`) funnels
+  # through.
+  defp write_icms(workspace, icms) do
+    with {:ok, doc} <- read_workspace_config_for_write(workspace) do
+      write_workspace_config(workspace, render_icms_doc(doc, icms))
     end
   end
 
-  # The currently-declared EXTERNAL mount named `name`'s best-effort
-  # resolved `root`, or `nil` — reuses this module's own `list/1` (embedded
-  # ∪ external, the SAME degrade-tolerant resolution
-  # `Valea.Mounts.External` performs) rather than re-validating, so a
-  # BOUNDARY-VIOLATING or currently-missing ref still yields its resolved
-  # path for the audit trail (see `Valea.Mounts.External`'s moduledoc:
-  # `root` survives even a degraded mount). Only a ref that was never
-  # absolute/`~`-based at all resolves to the empty-string sentinel, which
-  # becomes `nil` here. Must be called BEFORE any config write that would
-  # remove the entry (`undeclare/2`) — `list/1` only sees what's still on
-  # disk.
-  defp external_root_for_audit(workspace, name) do
-    workspace
-    |> list()
-    |> Enum.find(&(&1.name == name and &1.rel_root == nil))
-    |> case do
-      nil -> nil
-      %{root: ""} -> nil
-      %{root: root} -> root
-    end
-  end
+  # -- audit (see moduledoc, "Audit — every mount is a boundary change") --
 
   defp audit(type, fields) do
     if Process.whereis(Valea.Audit), do: Valea.Audit.append(type, fields)
     :ok
   end
 
-  # -- rendering: preserves version/id + every key on every mount entry --
+  # -- rendering: generic recursive YAML doc writer, preserves every key --
 
-  defp render_config(doc, name, enabled) do
-    mounts =
-      doc
-      |> Map.get("mounts")
-      |> normalize_mounts()
-      |> put_enabled(name, enabled)
+  # Rewrites `doc`'s `icms:` section to `icms` (a full replacement map),
+  # preserving every OTHER top-level key (`version`, `id`, `name`, and any
+  # unknown key — including a legacy `mounts:` section, if a workspace
+  # still carries one) via the same generic recursive encoder. `version`,
+  # `id`, `name` sort first (in that order) when present, for readability;
+  # every other key follows alphabetically; `icms:` always renders last.
+  defp render_icms_doc(doc, icms) do
+    doc = Map.put(doc, "icms", icms)
+    keys = Map.keys(doc)
+    priority = Enum.filter(["version", "id", "name"], &(&1 in keys))
+    rest = keys |> Kernel.--(["version", "id", "name", "icms"]) |> Enum.sort()
+    ordered = priority ++ rest ++ ["icms"]
 
-    render_doc(doc, mounts)
+    ordered
+    |> Enum.flat_map(fn key -> render_yaml_entry(key, Map.fetch!(doc, key), "") end)
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
   end
 
-  # `declare_external/3`'s writer — replaces (never merges) the ONE entry
-  # named `name` with its full new declared shape, preserving every OTHER
-  # entry untouched. `ref` is stored EXACTLY as given (see
-  # `declare_external/3`'s @doc for why raw/`~`-form survives).
-  defp render_declare(doc, name, ref) do
-    mounts =
-      doc
-      |> Map.get("mounts")
-      |> normalize_mounts()
-      |> Map.put(name, %{"kind" => "path", "ref" => ref, "enabled" => true})
-
-    render_doc(doc, mounts)
-  end
-
-  # `undeclare/2`'s writer — drops the entry named `name` entirely,
-  # preserving every other entry untouched.
-  defp render_undeclare(doc, name) do
-    mounts = doc |> Map.get("mounts") |> normalize_mounts() |> Map.delete(name)
-    render_doc(doc, mounts)
-  end
-
-  defp render_doc(doc, mounts) do
-    header = [top_level_line(doc, "version"), top_level_line(doc, "id")] |> Enum.reject(&is_nil/1)
-    lines = header ++ render_mounts_section(mounts)
-    Enum.join(lines, "\n") <> "\n"
-  end
-
-  defp put_enabled(mounts, name, enabled) do
-    entry =
-      case Map.get(mounts, name) do
-        m when is_map(m) -> m
-        _absent_or_invalid -> %{}
-      end
-
-    Map.put(mounts, name, Map.put(entry, "enabled", enabled))
-  end
-
-  defp top_level_line(doc, key) do
-    case Map.fetch(doc, key) do
-      {:ok, value} -> "#{key}: #{render_scalar(value)}"
-      :error -> nil
+  # A map value nests one indent level deeper (or renders `{}` inline when
+  # empty); anything else (including a list — no config shape this module
+  # writes ever nests one, so it falls through to `render_scalar/1`'s own
+  # `inspect/1` catch-all rather than a dedicated branch) renders as a
+  # single `key: scalar` line.
+  defp render_yaml_entry(key, value, indent) when is_map(value) do
+    if map_size(value) == 0 do
+      ["#{indent}#{yaml_key(key)}: {}"]
+    else
+      ["#{indent}#{yaml_key(key)}:" | render_yaml_map(value, indent <> "  ")]
     end
   end
 
-  defp render_mounts_section(mounts) when map_size(mounts) == 0, do: ["mounts: {}"]
-
-  defp render_mounts_section(mounts) do
-    entries =
-      mounts
-      |> Enum.sort_by(fn {name, _entry} -> name end)
-      |> Enum.flat_map(fn {name, entry} ->
-        ["  #{yaml_key(name)}:" | render_entry_lines(entry)]
-      end)
-
-    ["mounts:" | entries]
+  defp render_yaml_entry(key, value, indent) do
+    ["#{indent}#{yaml_key(key)}: #{render_scalar(value)}"]
   end
 
-  defp render_entry_lines(entry) when map_size(entry) == 0, do: ["    {}"]
-
-  defp render_entry_lines(entry) do
-    entry
-    |> Enum.sort_by(fn {key, _value} -> key end)
-    |> Enum.map(fn {key, value} -> "    #{yaml_key(key)}: #{render_scalar(value)}" end)
+  defp render_yaml_map(map, indent) do
+    map
+    |> Enum.sort_by(fn {k, _v} -> to_string(k) end)
+    |> Enum.flat_map(fn {k, v} -> render_yaml_entry(k, v, indent) end)
   end
 
-  defp yaml_key(key) when is_binary(key), do: Yaml.escape(key)
-  defp yaml_key(key), do: Yaml.escape(to_string(key))
+  # Bare (unquoted) when `key` is a simple identifier — every structural key
+  # this module writes (`version`, `id`, `name`, `icms`, `path`, `enabled`,
+  # and every `Scaffold.slugify/1`-derived mount key) qualifies, matching
+  # the human-authored style `priv/workspace_template/config/workspace.yaml`
+  # ships with. Anything else (an arbitrary preserved unknown key, or a
+  # legacy hand-edited one) falls back to `Yaml.escape/1`'s quoted,
+  # injection-hardened form — never unsafe, just less pretty.
+  defp yaml_key(key) when is_binary(key) do
+    if Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_-]*$/, key), do: key, else: Yaml.escape(key)
+  end
+
+  defp yaml_key(key), do: yaml_key(to_string(key))
 
   defp render_scalar(value) when is_binary(value), do: Yaml.escape(value)
   defp render_scalar(value) when is_boolean(value), do: to_string(value)

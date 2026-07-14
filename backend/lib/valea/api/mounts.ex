@@ -142,7 +142,7 @@ defmodule Valea.Api.Mounts do
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
-             :ok <- Mounts.set_enabled(name, enabled) do
+             :ok <- Mounts.set_enabled(root, name, enabled) do
           regenerate_workspace_metadata(root)
           broadcast_mounts_changed()
           {:ok, %{"saved" => true}}
@@ -152,32 +152,46 @@ defmodule Valea.Api.Mounts do
       end
     end
 
+    # NOTE (task 3.3+3.5): `Valea.Mounts.create/3`'s signature changed from
+    # `(workspace, name, description)` (mint an EMBEDDED `mounts/<slug>`
+    # scaffold) to `(workspace, name, path)` (seed the portable
+    # `priv/icm_template/` tree into an EXTERNAL folder at `path`, then
+    # mount it — see `Valea.Mounts` moduledoc). This action's `description`
+    # argument is retargeted to `path` here as a minimal compiling
+    # stopgap; task 3.4 ("Api.Icms") owns the real RPC-surface redesign
+    # (id/mount-key based, per the Phase 3 exit check) and the matching
+    # frontend path-selection UI.
     action :create_mount, :map do
-      constraints fields: [rel_root: [type: :string, allow_nil?: false]]
+      constraints fields: [
+                    mount_key: [type: :string, allow_nil?: false],
+                    id: [type: :string, allow_nil?: false]
+                  ]
 
       argument :name, :string, allow_nil?: false
-
-      argument :description, :string,
-        allow_nil?: false,
-        constraints: [allow_empty?: true]
-
+      argument :path, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
-        %{name: name, description: description, generation: generation} = input.arguments
+        %{name: name, path: path, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
-             {:ok, mount} <- Mounts.create(root, name, description) do
+             {:ok, %{mount_key: mount_key, id: id}} <- Mounts.create(root, name, path) do
           regenerate_workspace_metadata(root)
           broadcast_mounts_changed()
-          {:ok, %{rel_root: mount.rel_root}}
+          {:ok, %{mount_key: mount_key, id: id}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
       end
     end
 
+    # NOTE (task 3.3+3.5): retargeted from the retired `mounts:`-based
+    # `Mounts.declare_external/3` to the `icms:`-based `Mounts.mount/2` —
+    # the mount key is now DERIVED from the target ICM's own manifest name
+    # (`Mounts.unique_mount_key/2`), not caller-supplied, so `name` is
+    # accepted but unused. Left as a minimal compiling stopgap; task 3.4
+    # owns the real RPC-surface redesign.
     action :declare_mount, :map do
       constraints fields: [declared: [type: :boolean, allow_nil?: false]]
 
@@ -186,11 +200,11 @@ defmodule Valea.Api.Mounts do
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
-        %{name: name, ref: ref, generation: generation} = input.arguments
+        %{ref: ref, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
-             {:ok, _resolved} <- Mounts.declare_external(root, name, ref) do
+             {:ok, _mounted} <- Mounts.mount(root, ref) do
           regenerate_workspace_metadata(root)
           broadcast_mounts_changed()
           {:ok, %{"declared" => true}}
@@ -200,6 +214,9 @@ defmodule Valea.Api.Mounts do
       end
     end
 
+    # NOTE (task 3.3+3.5): retargeted from the retired `Mounts.undeclare/2`
+    # to the `icms:`-based `Mounts.unmount/2` (config-only; the ICM's own
+    # folder is never touched).
     action :undeclare_mount, :map do
       constraints fields: [undeclared: [type: :boolean, allow_nil?: false]]
 
@@ -211,7 +228,7 @@ defmodule Valea.Api.Mounts do
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
-             {:ok, _path} <- Mounts.undeclare(root, name) do
+             {:ok, _path} <- Mounts.unmount(root, name) do
           regenerate_workspace_metadata(root)
           broadcast_mounts_changed()
           {:ok, %{"undeclared" => true}}
