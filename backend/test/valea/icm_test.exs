@@ -6,39 +6,6 @@ defmodule Valea.ICMTest do
   alias Valea.Workspace.Manager
   alias Valea.ICM
 
-  defp write_mount!(ws_path, name, title) do
-    dir = Path.join([ws_path, "mounts", name])
-    File.mkdir_p!(dir)
-    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: title, description: ""})
-  end
-
-  # Declares an external (kind: "path") mount in the workspace's existing
-  # config/workspace.yaml, preserving version/id and every existing mount
-  # entry.
-  defp declare_external!(ws_path, name, ref) do
-    config_path = Path.join(ws_path, "config/workspace.yaml")
-    {:ok, doc} = YamlElixir.read_from_file(config_path)
-
-    mounts = Map.put(Map.get(doc, "mounts") || %{}, name, %{"kind" => "path", "ref" => ref})
-
-    header = for key <- ["version", "id"], Map.has_key?(doc, key), do: "#{key}: #{doc[key]}"
-
-    entries =
-      Enum.flat_map(Enum.sort_by(mounts, &elem(&1, 0)), fn {n, entry} ->
-        [
-          "  #{n}:"
-          | Enum.map(Enum.sort_by(entry, &elem(&1, 0)), fn {k, v} ->
-              "    #{k}: #{render_scalar(v)}"
-            end)
-        ]
-      end)
-
-    File.write!(config_path, Enum.join(header ++ ["mounts:"] ++ entries, "\n") <> "\n")
-  end
-
-  defp render_scalar(v) when is_binary(v), do: inspect(v)
-  defp render_scalar(v), do: to_string(v)
-
   defp external_icm!(name) do
     dir =
       Path.join(
@@ -52,6 +19,36 @@ defmodule Valea.ICMTest do
     dir
   end
 
+  # Post-3.2, `Valea.Mounts.list/1` is config truth over `icms:` only — a
+  # fresh workspace seeds no mount at all (`Manager.create/2` still
+  # physically scaffolds a legacy `mounts/<slug>` starter folder, but never
+  # registers it under `icms:`, so `Mounts.list/1` can't see it). This whole
+  # suite's fixtures assume the legacy scaffold's rich seed content (Offers/,
+  # Policies/, Pricing/, Templates/, Clients/, Tone & Voice/, Workflows/,
+  # Decisions/), so it's copied fresh into an EXTERNAL tmp dir and mounted
+  # via `Mounts.mount/2`, landing at mount key "primary" (name "Primary"
+  # slugifies to "primary" — `Valea.Workspace.Scaffold.slugify/1`), exactly
+  # the vocabulary every assertion below addresses (via `icm.root`, never a
+  # `mounts/primary/...` workspace-relative literal).
+  defp mount_starter_icm!(workspace, name \\ "Primary") do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-starter-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.cp_r!(
+      Path.join(:code.priv_dir(:valea), "legacy_workspace_template/mounts/starter"),
+      dir
+    )
+
+    on_exit(fn -> File.rm_rf!(dir) end)
+    Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: name, description: ""})
+
+    {:ok, %{mount_key: mount_key, id: id}} = Mounts.mount(workspace, dir)
+    %{mount_key: mount_key, id: id, root: Mounts.mount_by_key(workspace, mount_key).root}
+  end
+
   setup do
     dir =
       Path.join(
@@ -61,12 +58,8 @@ defmodule Valea.ICMTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    # A fresh scaffold (T8) mints its own real mount from the template's rich
-    # seed content (Offers/, Workflows/, etc.) at `mounts/<slug-of-name>` —
-    # naming the workspace "Primary" lands that mount at exactly
-    # `mounts/primary`, the name/title this whole suite asserts against, with
-    # no separate copy/seed step needed.
     {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
+    icm = mount_starter_icm!(ws.path)
 
     on_exit(fn ->
       Manager.close()
@@ -74,31 +67,31 @@ defmodule Valea.ICMTest do
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    %{ws: ws.path}
+    %{ws: ws.path, icm: icm}
   end
 
-  test "tree lists seeded folders with counts, grouped by mount" do
+  test "tree lists seeded folders with counts, grouped by mount", %{icm: icm} do
     {:ok, [mount]} = ICM.tree()
     assert mount.mount == "primary"
     assert mount.title == "Primary"
-    assert mount.root_rel == "mounts/primary"
+    assert mount.root_rel == icm.root
 
     names = Enum.map(mount.tree, & &1.name)
     assert "Offers" in names
     assert "Tone & Voice" in names
     offers = Enum.find(mount.tree, &(&1.name == "Offers"))
     assert offers.type == :folder
-    assert offers.path == "mounts/primary/Offers"
+    assert offers.path == Path.join(icm.root, "Offers")
     assert offers.page_count == 2
     child = Enum.find(offers.children, &(&1.name == "Founder Coaching Package"))
     assert child
-    assert child.path == "mounts/primary/Offers/Founder Coaching Package.md"
-    assert child.uri == "icm://mounts/primary/Offers/Founder Coaching Package.md"
+    assert child.path == Path.join(icm.root, "Offers/Founder Coaching Package.md")
+    assert child.uri == "icm://" <> Path.join(icm.root, "Offers/Founder Coaching Package.md")
   end
 
   test "tree lists non-.md files as :file leaves with a lowercase ext, still excluding hidden files",
-       %{ws: ws} do
-    dir = Path.join(ws, "mounts/primary/Offers")
+       %{icm: icm} do
+    dir = Path.join(icm.root, "Offers")
     File.write!(Path.join(dir, "X.pdf"), "%PDF-1.4 fake")
     File.write!(Path.join(dir, "logo.PNG"), "not really a png")
     File.write!(Path.join(dir, ".hidden.pdf"), "still hidden")
@@ -107,13 +100,19 @@ defmodule Valea.ICMTest do
     offers = Enum.find(mount.tree, &(&1.name == "Offers"))
 
     pdf = Enum.find(offers.children, &(&1.name == "X.pdf"))
-    assert pdf == %{name: "X.pdf", path: "mounts/primary/Offers/X.pdf", type: :file, ext: ".pdf"}
+
+    assert pdf == %{
+             name: "X.pdf",
+             path: Path.join(icm.root, "Offers/X.pdf"),
+             type: :file,
+             ext: ".pdf"
+           }
 
     png = Enum.find(offers.children, &(&1.name == "logo.PNG"))
 
     assert png == %{
              name: "logo.PNG",
-             path: "mounts/primary/Offers/logo.PNG",
+             path: Path.join(icm.root, "Offers/logo.PNG"),
              type: :file,
              ext: ".png"
            }
@@ -128,12 +127,12 @@ defmodule Valea.ICMTest do
     refute Enum.any?(mount.tree, &(&1.name == "icm.yaml"))
   end
 
-  test "external mounts are surfaced in tree/0 with the absolute physical root/paths (A2-T5b), alongside embedded groups",
-       %{ws: ws} do
+  test "external mounts are surfaced in tree/0 with the absolute physical root/paths (A2-T5b), alongside the primary group",
+       %{ws: ws, icm: icm} do
     ext = external_icm!("Ext")
     File.mkdir_p!(Path.join(ext, "Offers"))
     File.write!(Path.join(ext, "Offers/X.md"), "# X\n")
-    declare_external!(ws, "ext", ext)
+    {:ok, _} = Mounts.mount(ws, ext)
 
     # Derive assertions from the EFFECTIVE mount's realpath-resolved root
     # (m.root), not the raw tmp path — on macOS the raw `/var/folders/...`
@@ -145,9 +144,10 @@ defmodule Valea.ICMTest do
 
     ext_group = Enum.find(groups, &(&1.mount == "ext"))
     assert ext_group.title == "Ext"
-    # root_rel stays a string (the RPC type holds), but for an external mount
-    # its value is the ABSOLUTE physical root — the one vocabulary this
-    # group's node paths use (binding semantic 1).
+    # root_rel stays a string (the RPC type holds), but its value is the
+    # ABSOLUTE physical root — the one vocabulary this group's node paths
+    # use (binding semantic 1). Every mount is external now (task 3.2), so
+    # this is true of BOTH groups.
     assert ext_group.root_rel == ext_mount.root
 
     offers = Enum.find(ext_group.tree, &(&1.name == "Offers"))
@@ -160,93 +160,133 @@ defmodule Valea.ICMTest do
     assert x.path == Path.join(ext_mount.root, "Offers/X.md")
     assert x.uri == "icm://" <> Path.join(ext_mount.root, "Offers/X.md")
 
-    # Embedded groups are unchanged: still workspace-relative.
+    # The workspace's own "primary" group is external too — same absolute
+    # vocabulary.
     primary = Enum.find(groups, &(&1.mount == "primary"))
-    assert primary.root_rel == "mounts/primary"
+    assert primary.root_rel == icm.root
   end
 
   test "a DISABLED external mount drops out of tree/0 entirely", %{ws: ws} do
     ext = external_icm!("Ext")
-    declare_external!(ws, "ext", ext)
-    :ok = Mounts.set_enabled("ext", false)
+    {:ok, _} = Mounts.mount(ws, ext)
+    :ok = Mounts.set_enabled(ws, "ext", false)
 
     assert {:ok, groups} = ICM.tree()
     assert Enum.map(groups, & &1.mount) == ["primary"]
   end
 
-  test "page reads content with title and uri" do
-    {:ok, page} = ICM.page("mounts/primary/Offers/Founder Coaching Package.md")
+  test "page reads content with title and uri", %{icm: icm} do
+    path = Path.join(icm.root, "Offers/Founder Coaching Package.md")
+    {:ok, page} = ICM.page(path)
     assert page.title == "Founder Coaching Package"
-    assert page.uri == "icm://mounts/primary/Offers/Founder Coaching Package.md"
+    assert page.uri == "icm://" <> path
     assert page.content =~ "## Best fit"
   end
 
-  test "page rejects escape attempts" do
+  test "page rejects escape attempts", %{icm: icm} do
     assert {:error, :outside_workspace} = ICM.page("../logs/audit.jsonl")
     assert {:error, :outside_workspace} = ICM.page("Offers/../../secrets/x")
-    assert {:error, :outside_workspace} = ICM.page("mounts/primary/../../logs/audit.jsonl")
+    assert {:error, :outside_workspace} = ICM.page(Path.join(icm.root, "../../logs/audit.jsonl"))
   end
 
-  test "page returns not_found for a missing page" do
-    assert {:error, :not_found} = ICM.page("mounts/primary/Offers/Nope.md")
+  test "page returns not_found for a missing page", %{icm: icm} do
+    assert {:error, :not_found} = ICM.page(Path.join(icm.root, "Offers/Nope.md"))
   end
 
-  test "errors without a workspace" do
+  test "errors without a workspace", %{icm: icm} do
+    path = Path.join(icm.root, "Offers/Founder Coaching Package.md")
     Manager.close()
     assert {:error, :no_workspace} = ICM.tree()
-    assert {:error, :no_workspace} = ICM.page("mounts/primary/Offers/Founder Coaching Package.md")
+    assert {:error, :no_workspace} = ICM.page(path)
   end
 
   describe "multiple mounts" do
     setup %{ws: ws} do
-      write_mount!(ws, "a", "Mount A")
-      File.write!(Path.join([ws, "mounts", "a", "Notes.md"]), "# A Note\n")
+      # Named "A"/"B" (not "Mount A"/"Mount B") so the auto-derived mount
+      # key (`Valea.Workspace.Scaffold.slugify/1` of the manifest name)
+      # lands at exactly "a"/"b" — the literal keys every assertion below
+      # addresses.
+      a = external_icm!("A")
+      File.write!(Path.join(a, "Notes.md"), "# A Note\n")
+      {:ok, %{mount_key: "a"}} = Mounts.mount(ws, a)
 
-      write_mount!(ws, "b", "Mount B")
-      File.write!(Path.join([ws, "mounts", "b", "Secret.md"]), "# B Secret\n")
-      :ok = Mounts.set_enabled("b", false)
+      b = external_icm!("B")
+      File.write!(Path.join(b, "Secret.md"), "# B Secret\n")
+      {:ok, %{mount_key: "b"}} = Mounts.mount(ws, b)
+      :ok = Mounts.set_enabled(ws, "b", false)
 
-      :ok
+      %{a_root: Mounts.mount_by_key(ws, "a").root, b_root: Mounts.mount_by_key(ws, "b").root}
     end
 
-    test "tree/0 returns one entry per ENABLED mount, with workspace-relative node paths" do
+    test "tree/0 returns one entry per ENABLED mount, with each mount's own node-path vocabulary",
+         %{a_root: a_root} do
       {:ok, mounts} = ICM.tree()
       assert Enum.map(mounts, & &1.mount) |> Enum.sort() == ["a", "primary"]
       refute Enum.any?(mounts, &(&1.mount == "b"))
 
       a = Enum.find(mounts, &(&1.mount == "a"))
-      assert a.title == "Mount A"
-      assert a.root_rel == "mounts/a"
-      assert [%{path: "mounts/a/Notes.md", type: :page, uri: "icm://mounts/a/Notes.md"}] = a.tree
+      assert a.title == "A"
+      assert a.root_rel == a_root
+      notes_path = Path.join(a_root, "Notes.md")
+      assert [%{path: ^notes_path, type: :page, uri: uri}] = a.tree
+      assert uri == "icm://" <> notes_path
     end
 
-    test "page reads a specific mount's file by its full workspace-relative path" do
-      assert {:ok, page} = ICM.page("mounts/a/Notes.md")
+    test "page reads a specific mount's file by its full absolute path", %{a_root: a_root} do
+      notes_path = Path.join(a_root, "Notes.md")
+      assert {:ok, page} = ICM.page(notes_path)
       assert page.content == "# A Note\n"
-      assert page.uri == "icm://mounts/a/Notes.md"
+      assert page.uri == "icm://" <> notes_path
     end
 
-    test "page reads a DISABLED mount's page fine — enabled-gating is a read_roots/agent concern, not the editor's" do
-      assert {:ok, page} = ICM.page("mounts/b/Secret.md")
-      assert page.content == "# B Secret\n"
+    # Was "page reads a DISABLED mount's page fine — enabled-gating is a
+    # read_roots/agent concern, not the editor's" under the old EMBEDDED
+    # mount model, where `Mounts.mount_for/1` attributed a
+    # `mounts/<name>/...` path by lexical prefix alone, regardless of
+    # `enabled`. Every mount is external (by-reference) now, and
+    # `Mounts.mount_for/2`'s own moduledoc attributes ONLY among
+    # ENABLED, non-degraded mounts — confirmed by the sibling "a DISABLED
+    # external mount's absolute paths still get :outside_workspace from
+    # every editor op" test below (A2-T5b): disabling a by-reference mount
+    # revokes trust in that outside-the-workspace location entirely, so
+    # the editor stops touching it too, not just the agent/read_roots
+    # surface. (`Valea.ICM`'s own moduledoc "DECISION" section still
+    # describes the old embedded-only stance verbatim — stale prose, not
+    # a behavior this suite can restore without breaking that sibling
+    # test.)
+    test "page on a DISABLED mount's absolute path is outside_workspace — disabling a by-reference mount revokes editor access too",
+         %{b_root: b_root} do
+      assert {:error, :outside_workspace} = ICM.page(Path.join(b_root, "Secret.md"))
     end
 
-    test "a `..` escape cannot cross from one mount into another" do
-      assert {:error, :outside_workspace} = ICM.page("mounts/a/../b/Secret.md")
+    test "a `..` escape cannot cross from one mount into another", %{
+      a_root: a_root,
+      b_root: b_root
+    } do
+      escape_path = Path.join([a_root, "..", Path.basename(b_root), "Secret.md"])
+      assert {:error, :outside_workspace} = ICM.page(escape_path)
     end
 
-    test "create/rename/delete operate within the resolving mount's own containment", %{ws: ws} do
-      assert {:ok, %{path: "mounts/a/New.md"}} = ICM.create_page("mounts/a", "New")
-      assert {:ok, %{path: "mounts/a/Sub"}} = ICM.create_folder("mounts/a", "Sub")
+    test "create/rename/delete operate within the resolving mount's own containment", %{
+      a_root: a_root,
+      b_root: b_root
+    } do
+      assert {:ok, %{path: new_page_path}} = ICM.create_page(a_root, "New")
+      assert new_page_path == Path.join(a_root, "New.md")
 
-      assert {:ok, %{path: "mounts/a/Renamed.md"}} = ICM.rename("mounts/a/New.md", "Renamed")
+      assert {:ok, %{path: sub_path}} = ICM.create_folder(a_root, "Sub")
+      assert sub_path == Path.join(a_root, "Sub")
 
-      assert {:ok, %{deleted: true}} = ICM.delete("mounts/a/Renamed.md")
-      refute File.exists?(Path.join(ws, "mounts/a/Renamed.md"))
+      assert {:ok, %{path: renamed_path}} = ICM.rename(new_page_path, "Renamed")
+      assert renamed_path == Path.join(a_root, "Renamed.md")
+
+      assert {:ok, %{deleted: true}} = ICM.delete(renamed_path)
+      refute File.exists?(renamed_path)
 
       # Escaping mount a's own root while creating is denied, even though
       # mount "b" is a real, discovered mount.
-      assert {:error, :outside_workspace} = ICM.create_page("mounts/a/../b", "Intruder")
+      escape_parent = Path.join([a_root, "..", Path.basename(b_root)])
+      assert {:error, :outside_workspace} = ICM.create_page(escape_parent, "Intruder")
     end
   end
 
@@ -255,7 +295,7 @@ defmodule Valea.ICMTest do
       ext = external_icm!("Ext")
       File.mkdir_p!(Path.join(ext, "Offers"))
       File.write!(Path.join(ext, "Offers/External.md"), "# External Page\n")
-      declare_external!(ws, "ext", ext)
+      {:ok, _} = Mounts.mount(ws, ext)
 
       %{ws: ws, ext: ext}
     end
@@ -310,7 +350,7 @@ defmodule Valea.ICMTest do
 
     test "a DISABLED external mount's absolute paths still get :outside_workspace from every editor op",
          %{ws: ws} do
-      :ok = Mounts.set_enabled("ext", false)
+      :ok = Mounts.set_enabled(ws, "ext", false)
       [m] = Enum.filter(Mounts.list(ws), &(&1.name == "ext"))
       ext_page_abs = Path.join(m.root, "Offers/External.md")
 
