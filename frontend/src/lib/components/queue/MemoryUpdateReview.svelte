@@ -24,8 +24,9 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { queueStore } from '$lib/stores/queue.svelte';
+  import { api } from '$lib/api/client';
   import type { QueueItemEnvelope, IcmPageData } from '$lib/api/client';
-  import { encodePath } from '$lib/shell/nav';
+  import { knowledgeHref } from '$lib/shell/nav';
   import { tierCopy } from '$lib/components/agent/permission-view';
   import DiffBlock from '$lib/components/diff/DiffBlock.svelte';
   import QueueSourceChips from './QueueSourceChips.svelte';
@@ -57,39 +58,46 @@
 
   const review = $derived(buildMemoryReview(item, page ?? null));
 
-  // Same shape rule as `workflowHref.ts`'s `workflowEditHref` (kept local
-  // rather than imported — that helper's doc is workflow-specific, and
-  // duplicating one guard clause beats a cross-domain import for it): only
-  // a workspace-relative `mounts/…` or absolute `.md` target has a
-  // Knowledge page to link to.
-  const linkableTarget = $derived(
-    review.targetPath.endsWith('.md') && (review.targetPath.startsWith('mounts/') || review.targetPath.startsWith('/'))
-  );
+  // Task 7.3 closes the FE gap `MemoryUpdateReview` carried since task 4.2:
+  // the queue item's display payload now carries a real `mountKey`
+  // (backend-resolved from `proposed_action.target.locator` via the
+  // current mount table — `Valea.Queue.memory_display_fields/2`), so a
+  // Knowledge link/page fetch no longer has to guess a mount from path
+  // text. A target is linkable when it names a page (`.md`) AND a
+  // healthy mount resolved (`review.mountKey` non-null) — an unmounted or
+  // degraded ICM's target still shows in the diff, just without a link.
+  const linkableTarget = $derived(review.mountKey !== null && review.targetPath.endsWith('.md'));
   // The header's own link is gated on `!isCreate` too: a create target has
   // no Knowledge page to open until AFTER approval writes it — linking to
   // it beforehand would land on Knowledge's not-found state. The
   // post-approval "Open in Knowledge" link (below) uses `appliedHref`
   // instead, which is NOT create-gated, since by then the page exists
   // regardless of which mode created it.
-  const targetHref = $derived(!review.isCreate && linkableTarget ? `/knowledge/${encodePath(review.targetPath)}` : null);
-  const appliedHref = $derived(linkableTarget ? `/knowledge/${encodePath(review.targetPath)}` : null);
+  const targetHref = $derived(
+    !review.isCreate && linkableTarget && review.mountKey
+      ? knowledgeHref(review.mountKey, review.targetPath)
+      : null
+  );
+  const appliedHref = $derived(
+    linkableTarget && review.mountKey ? knowledgeHref(review.mountKey, review.targetPath) : null
+  );
 
-  // Task 4.2 KNOWN GAP: `review.targetPath` comes from
-  // `Valea.Workflows.MemoryProposal`'s `proposed_action.target_path` — an
-  // absolute physical path, a vocabulary `icm_page` (task 4.2's re-key)
-  // no longer accepts on its own; it now requires an explicit `mountKey`
-  // alongside an ICM-relative path, and MemoryProposal/Queue's own
-  // addressing was NOT re-keyed by this task (out of scope — see the
-  // task-4.2 brief). There is no `mountKey` this component can derive from
-  // `targetPath` client-side (the backend-only `Valea.Icm.Locator.for_path/2`,
-  // built for exactly this attribution, isn't wired to any RPC yet), so the
-  // "current on-disk page" preview is left unfetched — `page` stays
-  // `undefined`, and `buildMemoryReview` already treats that the same as a
-  // failed fetch (an all-add diff of the proposed content, same as create
-  // mode), so review still renders something reasonable, just without the
-  // "Could not read the current page" notice this used to show.
+  // Fetches the CURRENT on-disk page for the diff preview — skipped for a
+  // create target (nothing to diff against yet) or when no healthy mount
+  // resolved (`review.mountKey` null: unmounted/disabled/degraded ICM),
+  // same as `linkableTarget`'s gate. A failed fetch (page vanished,
+  // permissions) leaves `page` `null`, which `buildMemoryReview` already
+  // treats the same as "nothing to compare" — an all-add diff of the
+  // proposed content, plus the "Could not read the current page" notice
+  // below.
   async function loadPage(): Promise<void> {
-    return;
+    if (review.isCreate || !review.mountKey) {
+      page = null;
+      return;
+    }
+
+    const result = await api.icmPage(review.mountKey, review.targetPath);
+    page = result.ok ? result.data : null;
   }
 
   onMount(() => {

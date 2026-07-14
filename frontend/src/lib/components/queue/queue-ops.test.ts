@@ -34,7 +34,9 @@ describe('normalizeDecidedItem', () => {
       mailboxOps: rawApproved.mailbox_ops,
       createdAt: '2026-07-10T09:00:00Z',
       decision: null,
-      targetPath: null
+      mountKey: null,
+      path: null,
+      icmName: null
     });
   });
 
@@ -68,21 +70,48 @@ describe('normalizeDecidedItem', () => {
     expect(normalizeDecidedItem({ run_id: 'r3', decided: 'rejected', decision: 'nope' })?.decision).toBeNull();
   });
 
-  it('carries target_path through for memory-kind items (B12)', () => {
+  it('carries mount_key/path/icm_name through for memory-kind items (Task 7.3 C5)', () => {
     const item = normalizeDecidedItem({
       run_id: 'm1',
       decided: 'approved',
       title: 'Update test',
       kind: 'memory_update',
-      target_path: 'mounts/primary/Notes/Test.md'
+      mount_key: 'primary',
+      path: 'Notes/Test.md',
+      icm_name: 'Primary'
     });
-    expect(item?.targetPath).toBe('mounts/primary/Notes/Test.md');
+    expect(item?.mountKey).toBe('primary');
+    expect(item?.path).toBe('Notes/Test.md');
+    expect(item?.icmName).toBe('Primary');
   });
 
-  it('defaults targetPath to null when absent or non-string', () => {
-    expect(normalizeDecidedItem({ run_id: 'e1', decided: 'approved' })?.targetPath).toBeNull();
-    expect(normalizeDecidedItem({ run_id: 'e2', decided: 'approved', target_path: 123 })?.targetPath).toBeNull();
-    expect(normalizeDecidedItem({ run_id: 'e3', decided: 'approved', target_path: null })?.targetPath).toBeNull();
+  it('defaults mountKey/path/icmName to null when absent or non-string', () => {
+    const empty = normalizeDecidedItem({ run_id: 'e1', decided: 'approved' });
+    expect(empty?.mountKey).toBeNull();
+    expect(empty?.path).toBeNull();
+    expect(empty?.icmName).toBeNull();
+
+    const wrongTypes = normalizeDecidedItem({
+      run_id: 'e2',
+      decided: 'approved',
+      mount_key: 123,
+      path: 123,
+      icm_name: 123
+    });
+    expect(wrongTypes?.mountKey).toBeNull();
+    expect(wrongTypes?.path).toBeNull();
+    expect(wrongTypes?.icmName).toBeNull();
+
+    const nulls = normalizeDecidedItem({
+      run_id: 'e3',
+      decided: 'approved',
+      mount_key: null,
+      path: null,
+      icm_name: null
+    });
+    expect(nulls?.mountKey).toBeNull();
+    expect(nulls?.path).toBeNull();
+    expect(nulls?.icmName).toBeNull();
   });
 });
 

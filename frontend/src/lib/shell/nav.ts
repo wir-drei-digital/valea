@@ -95,8 +95,8 @@ export function flattenMountGroups(groups: Array<{ tree: IcmNode[] }>): IcmNode[
   return groups.flatMap((g) => g.tree);
 }
 
-/** `/knowledge/<mountKey>/<rel>` (task 4.3) — mountKey and the ICM-relative path are each independently URL-encoded, then joined, so a `/` inside a mount key (never legal per `Valea.Mounts`'s own validation) can't be confused with the path separator. */
-function knowledgeHref(mountKey: string, path: string): string {
+/** `/knowledge/<mountKey>/<rel>` (task 4.3) — mountKey and the ICM-relative path are each independently URL-encoded, then joined, so a `/` inside a mount key (never legal per `Valea.Mounts`'s own validation) can't be confused with the path separator. Exported (Task 7.3) for `MemoryUpdateReview.svelte`/`queue-ops.ts`, whose queue-item envelopes now carry a real `mountKey` (backend-resolved from the target locator) instead of guessing one from path text. */
+export function knowledgeHref(mountKey: string, path: string): string {
   return `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
 }
 

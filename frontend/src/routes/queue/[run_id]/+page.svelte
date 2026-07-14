@@ -27,7 +27,7 @@
   import { queueStore } from '$lib/stores/queue.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { encodePath } from '$lib/shell/nav';
+  import { knowledgeHref } from '$lib/shell/nav';
   import type { QueueItemEnvelope } from '$lib/api/client';
   import DraftReview from '$lib/components/queue/DraftReview.svelte';
   import MemoryUpdateReview from '$lib/components/queue/MemoryUpdateReview.svelte';
@@ -103,16 +103,16 @@
   // ops list rather than rendering an always-empty section (see below).
   const isMemoryKind = $derived.by(() => decidedItem?.kind === 'memory_update');
 
-  // Same shape rule as `MemoryUpdateReview.svelte`'s `linkableTarget` (B12):
-  // only a workspace-relative `mounts/…` or absolute `.md` target has a
-  // Knowledge page to link to.
+  // Same shape rule as `MemoryUpdateReview.svelte`'s `linkableTarget`
+  // (Task 7.3): a real `mountKey` (backend-resolved from the target
+  // locator, Task 7.3 C5) plus a `.md` path is what makes a Knowledge
+  // link buildable.
   const linkableTarget = $derived.by(() => {
-    const targetPath = decidedItem?.targetPath;
-    return targetPath?.endsWith('.md') && (targetPath.startsWith('mounts/') || targetPath.startsWith('/'));
+    return decidedItem?.mountKey != null && (decidedItem?.path?.endsWith('.md') ?? false);
   });
   const appliedHref = $derived.by(() =>
-    linkableTarget && decidedItem?.targetPath
-      ? `/knowledge/${encodePath(decidedItem.targetPath)}`
+    linkableTarget && decidedItem?.mountKey && decidedItem?.path
+      ? knowledgeHref(decidedItem.mountKey, decidedItem.path)
       : null
   );
 
@@ -184,8 +184,8 @@
         {#if isMemoryKind}
           <p class="text-ink-body text-[13.5px]">
             {#if decidedItem.decided === 'approved'}
-              {#if decidedItem.targetPath}
-                Applied to <span class="font-mono text-[11.5px]">{decidedItem.targetPath}</span>
+              {#if decidedItem.path}
+                Applied to <span class="font-mono text-[11.5px]">{decidedItem.path}</span>
                 {#if appliedHref}
                   · <a href={appliedHref} class="text-act hover:text-act-hover font-semibold">Open in Knowledge &rarr;</a>
                 {/if}

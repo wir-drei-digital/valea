@@ -9,14 +9,14 @@
  *    (`run_id`, `decided` ("approved" | "rejected"), `title`, `kind`, the
  *    raw `mailbox_ops` map or `nil`, `created_at`, `decision` (`nil` |
  *    `%{"reason" => reason}`, present only when `reject/3` was given a
- *    non-blank reason — B6/B12), `decided_at`) — delivered RAW/snake_case
- *    over RPC (`list_decided_items`'s `items` field is deliberately
- *    UNCONSTRAINED, see `Valea.Api.Queue`'s moduledoc). Note: this entry
- *    shape does NOT carry the memory item's `target_path` (that only lives
- *    inside the full pending/approved envelope, which `list_decided_items`
- *    never reads) — the decided view falls back to the item's `title`
- *    (`"Update <basename>"` / `"New page: <basename>"`, B12) for context
- *    on an approved memory item rather than fabricate a path.
+ *    non-blank reason — B6/B12), `decided_at`, `mount_key`/`path`/
+ *    `icm_name` (Task 7.3 C5 — display-only, resolved fresh from the
+ *    memory item's target locator against the CURRENT mount table; `null`
+ *    for a non-`memory_update` item or a locator whose ICM no longer
+ *    names a healthy mount, same `memory_display_fields/2` enrichment
+ *    `Valea.Queue.get/1` applies to a pending item)) — delivered
+ *    RAW/snake_case over RPC (`list_decided_items`'s `items` field is
+ *    deliberately UNCONSTRAINED, see `Valea.Api.Queue`'s moduledoc).
  *  - mailbox op status map: `Valea.Mail.MailboxOps`'s moduledoc ("Per-op
  *    status machine") — `"pending" | "done" | "unsupported" | "failed"`
  *    (plus `"skipped"`, seeded by `Valea.Queue`'s `mailbox_ops_for/3` for a
@@ -40,8 +40,12 @@ export type DecidedQueueItem = {
   createdAt: string | null;
   /** The human's rejection reason (B6/B12), or `null` — never present on an approved item. */
   decision: { reason: string } | null;
-  /** The applied target path for memory-kind items (B12), or `null` for email or absent paths. */
-  targetPath: string | null;
+  /** The ICM this target lives in (Task 7.3 C5), or `null` for email items or an unresolvable ICM. Feeds `knowledgeHref`. */
+  mountKey: string | null;
+  /** ICM-relative target path for memory-kind items, or `null` for email items. */
+  path: string | null;
+  /** The target ICM's own display name (Task 7.3 C5), or `null`. */
+  icmName: string | null;
 };
 
 /** Narrows one raw `list_decided_items` entry; `null` for anything missing a usable `run_id`. */
@@ -60,7 +64,9 @@ export function normalizeDecidedItem(raw: unknown): DecidedQueueItem | null {
     mailboxOps: rec.mailbox_ops ?? rec.mailboxOps ?? null,
     createdAt: firstString(rec.created_at, rec.createdAt),
     decision: normalizeDecision(rec.decision),
-    targetPath: typeof rec.target_path === 'string' ? rec.target_path : null
+    mountKey: firstString(rec.mount_key, rec.mountKey),
+    path: typeof rec.path === 'string' ? rec.path : null,
+    icmName: firstString(rec.icm_name, rec.icmName)
   };
 }
 
