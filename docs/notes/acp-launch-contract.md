@@ -476,6 +476,25 @@ independently live-verified**. Treat that live gap as a hard precondition,
 not a formality, before Task 1.2/1.3 route a real ICM session through this
 mechanism with writes or secrets enabled.
 
+> **✅ PRECONDITION SATISFIED — live-verified 2026-07-16 (Phase 9 browser
+> verification, session `20260715T224007.701935Z-f4bb3d95603e`).** Against a
+> real `claude-agent-acp` subprocess with a live model turn (the rate limit
+> had lifted), in a chat session whose cwd was the primary ICM root:
+> (a) a `Write hello.md` attempt was **`ask`-gated** — the permission card
+> (kind `edit`, `perm-0`) surfaced in the UI with the diff preview and was
+> resolved `allow_once` by an actual user click, after which the file
+> appeared at `<icm_root>/hello.md` with the exact requested content;
+> (b) a `Read <workspace>/secrets/api_key.txt` attempt raised `perm-1`
+> (kind `read`) through the ACP `session/request_permission` callback and
+> was **auto-resolved `reject_once` by `Valea.Agents.PermissionPolicy`**
+> with zero user interaction (transcript seq 34→35 adjacent; no card
+> shown); the tool call failed with "User refused permission to run tool"
+> and the secret content never reached the model. Both halves round-tripped
+> through the callback — the CLI resolved neither on its own. Evidence:
+> the session transcript in the verification workspace's
+> `logs/sessions/<id>.jsonl` and the SDD ledger's Phase-9
+> browser-verification entry.
+
 This callback-answers-the-ask half is not hypothetical for Claude Code — it
 is how Valea's existing chat/workflow session path **already** operates in
 production today (posture-assisted via `ClaudeSettings.write!/1`'s
