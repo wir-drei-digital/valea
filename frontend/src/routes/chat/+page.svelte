@@ -13,6 +13,8 @@
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
+  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { resolveIcmSelection } from '$lib/shell/icm-route';
   import { SessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel } from '$lib/components/agent';
@@ -28,22 +30,25 @@
     void mountsStore.refresh();
   });
 
-  // Task 5.5: `create_session` now requires a `mountKey` naming the
-  // session's primary ICM — the sidebar `+` that will let the user CHOOSE
-  // one is Phase 9. Until then: an explicit `?icm=<mountKey>` query param
-  // wins (lets a link from elsewhere target a specific ICM), otherwise the
-  // first enabled, non-degraded mount in `mountsStore.mounts` — the same
-  // "effective composition set" ordering `Valea.Mounts.enabled/1` uses
-  // server-side. `null` when neither is available (no ICM mounted yet, or
-  // every mount is disabled/degraded) — `startSession` surfaces that as a
-  // calm inline error rather than calling the RPC with a bogus key.
+  // Task 9.4 formalizes the `?icm` / `?session` route scheme: `?icm=<key>`
+  // ONLY ever selects the ICM for a brand-new session (`resolveIcmSelection`,
+  // shared with Knowledge's identical default — see `icm-route.ts`),
+  // falling back to the first enabled, non-degraded mount (config order)
+  // when absent. `primaryMountKey` is only ever called from `startSession`
+  // — i.e. only when CREATING a session (the empty state's "Start a
+  // session", the list pane's "New session", and "Start a follow-up
+  // session") — so it deliberately never looks at `?session=`: a currently
+  // open transcript (whatever `selectedId`/`store` below are showing) is
+  // never reassigned by either query param; starting a new session is a
+  // wholly independent action from whatever happens to already be open.
   function primaryMountKey(): string | null {
-    const fromQuery = page.url.searchParams.get('icm');
-    if (fromQuery) return fromQuery;
-    const firstEnabled = mountsStore.mounts.find((m) => m.enabled && !m.degraded);
-    return firstEnabled?.mountKey ?? null;
+    const enabledMountKeys = mountsStore.mounts.filter((m) => m.enabled && !m.degraded).map((m) => m.mountKey);
+    return resolveIcmSelection(page.url.searchParams.get('icm'), enabledMountKeys);
   }
 
+  // Authoritative for the open transcript (Task 9.4) — driven ENTIRELY by
+  // `?session=`; `?icm=` is never consulted here, so it can never reassign
+  // which session's channel this page joins.
   const selectedId = $derived(page.url.searchParams.get('session'));
 
   // True whenever the most recent "start a session" attempt (from either the
@@ -70,6 +75,42 @@
     return () => {
       session.dispose();
     };
+  });
+
+  // Task 9.3's KNOWN GAP, closed here (frontend-only, sanctioned — see the
+  // brief): there is no workspace-level "a session's status changed"
+  // broadcast (`recent-sessions.svelte.ts`'s `wireRecentSessionsEvents` doc
+  // comment explains why — `SessionServer`'s status push only rides the
+  // per-session `agent_session:<id>` topic this page already joins, never
+  // the shared `workspace:events` join `recentSessionsStore` listens on).
+  // So: observe the OPEN session's own `status` here (the one place this
+  // page already has a live per-session subscription) and refresh the
+  // sidebar's project groups whenever it actually TRANSITIONS — an ended/
+  // failed/exited session elsewhere would otherwise show as live in the
+  // sidebar until some unrelated `mounts_changed` push happened to refresh
+  // it. Deliberately only-on-transition, not on every render: switching
+  // `store` to a DIFFERENT (or no) session resets tracking without firing —
+  // that session's own creation/selection already triggered whatever
+  // refresh it needed (`IcmProjects.svelte`'s `startSession` refreshes
+  // right after `createAgentSession` succeeds), so re-observing its
+  // starting status here would be a redundant, not a missing, refresh.
+  let statusEffectStore: AgentSessionStore | null = null;
+  let previousStatus: string | null = null;
+
+  $effect(() => {
+    const current = store;
+    const status = current?.status ?? null;
+
+    if (current !== statusEffectStore) {
+      statusEffectStore = current;
+      previousStatus = status;
+      return;
+    }
+
+    if (status !== previousStatus) {
+      previousStatus = status;
+      void recentSessionsStore.refresh();
+    }
   });
 
   async function startSession(): Promise<void> {

@@ -8,6 +8,7 @@
   // first-load `refetch()`, same convention as `icmStore`/`queueStore` on
   // Today.
   import { onMount } from 'svelte';
+  import { page } from '$app/state';
   import { AppFrame, EmptyState, PageHeader } from '$lib/components/shell';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -18,6 +19,7 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { normalizeCockpitToday } from '$lib/today/cockpit';
   import { distillButtonState, distillErrorMessage, type DistillPhase } from '$lib/today/distill';
+  import { filterByMountKey } from '$lib/shell/icm-route';
 
   // "Distill recent decisions" (Task B13) — same action as the Today page's,
   // rendered on whichever card's `resolvedPath` matches the cockpit
@@ -39,6 +41,13 @@
   }
 
   const distillState = $derived(distillButtonState({ distillWorkflowPath }, distillPhase, distillErrorText));
+
+  // Task 9.4: optional `?icm=<mount-key>` filter — narrows the catalog down
+  // to one ICM's workflows (`WorkflowListItem.mountKey`, Task 7.1's
+  // re-keyed identity). `null`/absent shows every workflow, same as before
+  // this task.
+  const icmFilter = $derived(page.url.searchParams.get('icm'));
+  const filteredWorkflows = $derived(filterByMountKey(workflowsStore.list, icmFilter));
 
   async function runDistill(): Promise<void> {
     if (!distillWorkflowPath) return; // defensive: the button is hidden whenever this is null
@@ -80,9 +89,15 @@
         title="No workflow contracts yet."
         body="Add a page under icm/Workflows/ with a trigger and risk level, and it shows up here."
       />
+    {:else if filteredWorkflows.length === 0}
+      <EmptyState
+        icon={RefreshCw}
+        title="No workflows for this ICM."
+        body="This ICM doesn't have any workflow contracts yet — pick a different one from the sidebar, or add a page under its Workflows/ folder."
+      />
     {:else}
       <div class="flex flex-col gap-4">
-        {#each workflowsStore.list as workflow (workflow.icmId + workflow.relativePath)}
+        {#each filteredWorkflows as workflow (workflow.icmId + workflow.relativePath)}
           <div class="flex flex-col gap-2.5">
             <WorkflowCard {workflow} />
             {#if workflow.resolvedPath === distillWorkflowPath && distillState.visible}
