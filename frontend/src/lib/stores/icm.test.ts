@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { normalizeIcmNode, IcmStore } from './icm.svelte';
+import { describe, it, expect, vi } from 'vitest';
+import { normalizeIcmNode, IcmStore, refreshSidebarProjectStores } from './icm.svelte';
+import { mountsStore } from './mounts.svelte';
+import { recentSessionsStore } from './recent-sessions.svelte';
 import type { IcmNode } from '../shell/nav';
 import type { ApiResult } from '../api/client';
 
@@ -407,5 +409,26 @@ describe('IcmStore.reset', () => {
 
     expect(store.loaded).toBe(true);
     expect(store.groups).toHaveLength(1);
+  });
+});
+
+// Cold-load fix wave (browser-verified): `WorkspaceEventsChannel.join/3`
+// pushes NOTHING on join — the `workspace` push (and with it `wireIcmEvents`'s
+// `onWorkspace` handler) only fires on live `workspace_opened`/
+// `workspace_closed` PubSub broadcasts, never on initial page load. The
+// sidebar's project stores therefore need a second, cold-load call site: the
+// root layout calls this once its bootstrap `get_workspace` resolves open.
+describe('refreshSidebarProjectStores', () => {
+  it('refreshes mountsStore AND recentSessionsStore — the two stores IcmProjects derives the sidebar groups from', () => {
+    const mountsRefresh = vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
+    const recentRefresh = vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
+
+    refreshSidebarProjectStores();
+
+    expect(mountsRefresh).toHaveBeenCalledTimes(1);
+    expect(recentRefresh).toHaveBeenCalledTimes(1);
+
+    mountsRefresh.mockRestore();
+    recentRefresh.mockRestore();
   });
 });

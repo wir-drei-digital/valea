@@ -149,6 +149,36 @@ export class IcmStore {
 
 export const icmStore = new IcmStore(api);
 
+/**
+ * Refreshes the two stores the sidebar's ICM project groups
+ * (`IcmProjects.svelte`) derive from — `mountsStore` (the group rows) and
+ * `recentSessionsStore` (each group's sessions). TWO call sites, one per
+ * path a workspace becomes "open" on:
+ *
+ * - COLD LOAD: the root layout (`+layout.svelte`) calls this once its
+ *   bootstrap `workspaceStore.refresh()` (the `get_workspace` RPC) resolves
+ *   with an open workspace. This call site exists because the backend's
+ *   `WorkspaceEventsChannel.join/3` pushes NOTHING on join — the `workspace`
+ *   push (and with it `wireIcmEvents`'s `onWorkspace` handler below) only
+ *   fires on live `workspace_opened`/`workspace_closed` PubSub broadcasts,
+ *   never on an initial page load — so without it, a cold load on any route
+ *   that doesn't refresh these stores in its own `onMount` (everything but
+ *   `/chat`, which refreshes `mountsStore` for `startSession`, and
+ *   `/knowledge`) leaves the sidebar's ICM section empty.
+ * - LIVE SWITCH: `wireIcmEvents`'s `onWorkspace` open branch below, right
+ *   after the unconditional resets.
+ *
+ * Fire-and-forget (`void`) internally, same as every other push-driven
+ * refresh in this module. `icmStore.refetch()` is deliberately NOT part of
+ * this helper: on cold load every route already refetches it in its own
+ * `onMount` (`AppFrame.svelte`, Today's inline shell), and the switch path
+ * calls it separately alongside this.
+ */
+export function refreshSidebarProjectStores(): void {
+  void mountsStore.refresh();
+  void recentSessionsStore.refresh();
+}
+
 let icmEventsWired = false;
 
 /**
@@ -217,19 +247,21 @@ let icmEventsWired = false;
  * `mounts_changed` (not `icm_changed`) is the trigger, and why a live
  * per-session-status push isn't wired here.
  *
- * CARRY-FORWARD (browser-verified fix wave — sidebar ICM groups on cold
- * load): `mountsStore` is reset unconditionally and refreshed directly from
- * `onWorkspace` below, same place and same reasoning as `icmStore`/
- * `recentSessionsStore` immediately above. Before this fix, `mountsStore`
- * (which `IcmProjects.svelte`'s sidebar groups derive from) was only ever
- * refreshed from `/chat` and `/knowledge`'s own `onMount` (plus
- * `handleMountsChanged` on a `mounts_changed` push) — landing on `/`
- * (Today) or any other route first left the sidebar's ICM section empty
- * until the user happened to visit one of those two routes. Refreshing here,
- * at shell level, guarantees `mountsStore` populates on EVERY route the same
- * way `icmStore`/`recentSessionsStore` already do. The route-level
- * `refresh()` calls in `chat`/`knowledge` stay in place — a redundant fetch
- * on top of this one, same as `icmStore`'s existing double-fetch pattern.
+ * CARRY-FORWARD (browser-verified fix wave — sidebar ICM groups): the
+ * sidebar's project stores stay coherent across BOTH paths a workspace
+ * becomes open on. LIVE SWITCH: `mountsStore` is reset unconditionally and
+ * refreshed on open directly from `onWorkspace` below, same place and same
+ * reasoning as `icmStore`/`recentSessionsStore` immediately above (before
+ * this fix it had neither, so a workspace switch left the previous
+ * workspace's catalog in place until a route-level `refresh()` happened to
+ * run). COLD LOAD: `onWorkspace` NEVER runs on initial page load — the
+ * backend's `WorkspaceEventsChannel.join/3` pushes nothing on join; the
+ * `workspace` push only fires on live `workspace_opened`/`workspace_closed`
+ * PubSub broadcasts — so the root layout's bootstrap covers that path by
+ * calling `refreshSidebarProjectStores()` (above) once its `get_workspace`
+ * RPC resolves open. The route-level `refresh()` calls in `chat`/`knowledge`
+ * stay in place — a redundant fetch on top of these, same as `icmStore`'s
+ * existing double-fetch pattern.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -258,21 +290,21 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
       // `refresh()` (only fired on open, below). Same reasoning as
       // `icmStore.reset()` immediately above.
       //
-      // `mountsStore.reset()`/`refresh()` ride the same pair (browser-verified
-      // fix wave) — this is also what makes the sidebar's ICM groups populate
-      // on EVERY route, not just `/chat`/`/knowledge`: this `onWorkspace`
-      // handler runs on initial load (the root layout wires it unconditionally,
-      // see `+layout.svelte`), so a cold load on `/` now refreshes
-      // `mountsStore` here instead of leaving it at its cold-start empty
-      // `mounts: []` until the user happens to visit a route that calls
-      // `mountsStore.refresh()` itself.
+      // `mountsStore.reset()` rides the same pair (browser-verified fix
+      // wave) — it previously had no reset either, so a workspace switch
+      // left the PREVIOUS workspace's mount catalog (and with it the
+      // sidebar's ICM group rows) in place. NOTE this handler only ever
+      // runs on a LIVE workspace change — the backend pushes nothing on
+      // channel join, so an initial page load never reaches this code;
+      // the cold-load path is the root layout's bootstrap calling
+      // `refreshSidebarProjectStores()` after `get_workspace` resolves
+      // (see that helper's doc comment above).
       icmStore.reset();
       recentSessionsStore.reset();
       mountsStore.reset();
       if (payload.open) {
         void icmStore.refetch();
-        void recentSessionsStore.refresh();
-        void mountsStore.refresh();
+        refreshSidebarProjectStores();
       }
       onWorkspace?.(payload);
     },

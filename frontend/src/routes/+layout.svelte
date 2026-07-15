@@ -8,7 +8,7 @@
   import { onMount } from 'svelte';
   import Onboarding from '$lib/components/onboarding/Onboarding.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { wireIcmEvents } from '$lib/stores/icm.svelte';
+  import { refreshSidebarProjectStores, wireIcmEvents } from '$lib/stores/icm.svelte';
   import SearchPalette from '$lib/components/palette/SearchPalette.svelte';
 
   let { children } = $props();
@@ -26,7 +26,19 @@
   // branch and log a spurious console.warn on completely normal operation —
   // that warn is meant to flag a genuine second call site, not this one.
   onMount(() => {
-    workspaceStore.refresh();
+    // COLD-LOAD bootstrap: `get_workspace` (via `workspaceStore.refresh()`)
+    // is the ONLY way this window learns the current workspace on initial
+    // load — `WorkspaceEventsChannel.join/3` pushes nothing on join, so the
+    // `onWorkspace` handler below only ever fires on a LIVE switch (a
+    // `workspace_opened`/`workspace_closed` broadcast), never now. The
+    // sidebar's ICM project stores therefore refresh HERE once the
+    // bootstrap resolves open; the switch path refreshes them from
+    // `wireIcmEvents`'s own `onWorkspace` handler instead — see
+    // `refreshSidebarProjectStores`'s doc comment (icm.svelte.ts) for the
+    // two-call-site pattern.
+    void workspaceStore.refresh().then(() => {
+      if (workspaceStore.state === 'open') refreshSidebarProjectStores();
+    });
     wireIcmEvents(() => {
       void workspaceStore.refresh();
     });
