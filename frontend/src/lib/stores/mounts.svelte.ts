@@ -257,6 +257,21 @@ export class MountsStore {
     await this.refresh();
     await icmStore.refetch();
   }
+
+  /**
+   * Clears the catalog back to its cold-start shape. Called on every
+   * workspace-change push, same as `icmStore.reset()`/
+   * `recentSessionsStore.reset()` (see `wireIcmEvents`'s `onWorkspace`
+   * handler in `icm.svelte.ts`) — a stale `mounts` list from the previous
+   * workspace can never be mistaken for the new one's. Mirrors
+   * `IcmStore.reset()` exactly; deliberately leaves `pendingAdoptError`
+   * untouched — that banner's lifecycle is dismiss-or-overwrite (see its own
+   * doc comment above), not workspace-scoped.
+   */
+  reset(): void {
+    this.mounts = [];
+    this.loaded = false;
+  }
 }
 
 /**

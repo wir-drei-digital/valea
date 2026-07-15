@@ -340,6 +340,76 @@ describe('MountsStore.pendingAdoptError', () => {
   });
 });
 
+// Browser-verified fix wave: `MountsStore` previously had no `reset()` at
+// all, so `wireIcmEvents`'s `onWorkspace` handler (`icm.svelte.ts`) had
+// nothing to call on a workspace close/switch — mirrors `IcmStore.reset`'s
+// test block in `icm.test.ts` exactly (same three cases).
+describe('MountsStore.reset', () => {
+  it('empties mounts and clears loaded', async () => {
+    const rawIcms = [
+      {
+        mountKey: 'primary',
+        id: '11111111-1111-1111-1111-111111111111',
+        name: 'Primary',
+        description: 'The default mount',
+        root: '/ws/primary',
+        enabled: true,
+        degraded: null
+      }
+    ];
+    const store = new MountsStore(fakeApi({ listIcms: async () => ({ ok: true, data: { icms: rawIcms } }) }) as never);
+
+    await store.refresh();
+    expect(store.loaded).toBe(true);
+    expect(store.mounts).toHaveLength(1);
+
+    store.reset();
+
+    expect(store.loaded).toBe(false);
+    expect(store.mounts).toEqual([]);
+  });
+
+  it('is safe to call before any refresh has resolved', () => {
+    const store = new MountsStore(fakeApi({}) as never);
+
+    store.reset();
+
+    expect(store.loaded).toBe(false);
+    expect(store.mounts).toEqual([]);
+  });
+
+  it('allows a subsequent refresh to repopulate the catalog after reset', async () => {
+    const rawIcms = [
+      {
+        mountKey: 'primary',
+        id: '11111111-1111-1111-1111-111111111111',
+        name: 'Primary',
+        description: 'The default mount',
+        root: '/ws/primary',
+        enabled: true,
+        degraded: null
+      }
+    ];
+    const store = new MountsStore(fakeApi({ listIcms: async () => ({ ok: true, data: { icms: rawIcms } }) }) as never);
+
+    await store.refresh();
+    store.reset();
+    await store.refresh();
+
+    expect(store.loaded).toBe(true);
+    expect(store.mounts).toHaveLength(1);
+  });
+
+  it('leaves pendingAdoptError untouched — that banner is dismiss-or-overwrite, not workspace-scoped', async () => {
+    const store = new MountsStore(fakeApi({}) as never);
+    store.setPendingAdoptError('client-notes', '/src', 'mapped message');
+
+    store.reset();
+
+    expect(store.pendingAdoptError).toEqual({ name: 'client-notes', ref: '/src', message: 'mapped message' });
+  });
+});
+
 describe('MountsStore.handleMountsChanged', () => {
   it('refetches mounts AND triggers the icm store refetch', async () => {
     const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
