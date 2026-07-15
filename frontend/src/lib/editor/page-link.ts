@@ -24,18 +24,16 @@ function dirnameOf(path: string): string {
 	return idx === -1 ? '' : path.slice(0, idx);
 }
 
-/** Workspace-relative paths never start with `/`; absolute (external-mount) physical paths always do — that leading slash is the ONLY vocabulary tag the FE has. */
-function isAbsolute(path: string): boolean {
-	return path.startsWith('/');
-}
-
 /**
  * Lexical relative path from `fromDir` to `toPath` — mirrors
  * `Valea.Paths.relative/2` (backend/lib/valea/paths.ex) exactly: split both
  * on `/`, drop the common leading segments, then join one `".."` per
  * remaining `fromDir` segment with the remaining `toPath` segments. Pure
- * segment math, no filesystem access; both arguments must already be in the
- * same vocabulary (both workspace-relative, or both absolute).
+ * segment math, no filesystem access; both arguments are ICM-relative paths
+ * within the same `mountKey` (Phase 4's `(mount_key, ICM-relative path)`
+ * re-key collapsed the old "leading slash ⇒ external mount" vocabulary —
+ * mount identity now rides `mountKey`, never a leading `/` on the path
+ * itself).
  */
 function relative(fromDir: string, toPath: string): string {
 	const from = fromDir.split('/').filter((seg) => seg.length > 0);
@@ -53,27 +51,19 @@ function relative(fromDir: string, toPath: string): string {
 /**
  * The on-disk `href` for a link from `sourcePath` (the page being edited,
  * Task C7's `pagePath`) to `targetPath` (a search result's or newly-created
- * page's `path`). Per the editor spec's path rule:
+ * page's `path`) — the lexical relative path from the source's directory to
+ * the target (the `relative` math above).
  *
- *   - both workspace-relative -> relative path from the source's directory
- *     (the `relative` math above);
- *   - `targetPath` absolute -> `targetPath` verbatim (an external-mount
- *     target is only addressable by its physical path, regardless of where
- *     the source lives);
- *   - `targetPath` workspace-relative but `sourcePath` absolute -> also
- *     `targetPath` verbatim: workspace-relative is the one vocabulary the FE
- *     has for it, and there is no physical path from an external-mount
- *     source's perspective to compute a lexical relative from. This is the
- *     non-portable cross-boundary case the spec accepts as-is (correct only
- *     for a reader inside the same workspace).
- *
- * The two "verbatim" branches collapse to the same result (return
- * `targetPath` unchanged whenever EITHER side is absolute) — spelled out
- * above because the two have different justifications, even though the code
- * is one condition.
+ * `sourcePath` and `targetPath` are always ICM-relative within the SAME
+ * `mountKey`: the caller (`page_link_suggestion.js`'s `createPageLinkSuggestion`)
+ * scopes `icmSearch`/`createIcmPage` to `pagePath`'s own `mountKey` before
+ * either ever reaches this function, so there is no cross-mount case to
+ * resolve here (Task 9.6 removed the old "leading slash ⇒ external mount,
+ * return verbatim" fork along with the vocabulary it was reading — Phase 4's
+ * `(mount_key, ICM-relative path)` re-key means mount identity rides
+ * `mountKey`, never the path string itself).
  */
 export function linkDestination(sourcePath: string, targetPath: string): string {
-	if (isAbsolute(targetPath) || isAbsolute(sourcePath)) return targetPath;
 	return relative(dirnameOf(sourcePath), targetPath);
 }
 
@@ -100,11 +90,10 @@ export function pickerItems(results: SearchResult[], query: string): PickerItem[
 }
 
 /**
- * The directory `pagePath` lives in, in `pagePath`'s own vocabulary
- * (workspace-relative or absolute) — the `parentPath` argument
- * `api.createIcmPage` expects when creating a new sibling page from the
- * picker's create-on-empty item. A root-level page (`"Welcome.md"`) has no
- * parent segment, so this returns `""` (the workspace root, matching
+ * The directory `pagePath` (ICM-relative) lives in — the `parentPath`
+ * argument `api.createIcmPage` expects when creating a new sibling page from
+ * the picker's create-on-empty item. A root-level page (`"Welcome.md"`) has
+ * no parent segment, so this returns `""` (the ICM root, matching
  * `dirnameOf`'s empty-string convention used throughout the editor's pure
  * modules, e.g. `image-upload.ts`).
  */

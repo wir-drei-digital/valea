@@ -6,14 +6,8 @@ function makeFile(name: string, type: string): File {
 }
 
 describe('joinRelative', () => {
-  it('resolves a relative-from-page path lexically (workspace-relative page dir)', () => {
+  it('resolves a relative-from-page path lexically (ICM-relative page dir)', () => {
     expect(joinRelative('mounts/m/Clients', '../Assets/x.png')).toBe('mounts/m/Assets/x.png');
-  });
-
-  it('resolves a relative-from-page path lexically (absolute page dir, external mount)', () => {
-    expect(joinRelative('/Users/daniel/External/Clients', '../Assets/x.png')).toBe(
-      '/Users/daniel/External/Assets/x.png'
-    );
   });
 
   it('handles a same-directory reference with no leading ../', () => {
@@ -34,37 +28,42 @@ describe('joinRelative', () => {
 });
 
 describe('resolveImageSrc', () => {
-  it('maps a relative on-disk src to /files/raw with the resolved, encoded workspace path', () => {
-    expect(resolveImageSrc('../Assets/x.png', 'mounts/m/Clients/Acme.md')).toBe(
-      '/files/raw?path=mounts%2Fm%2FAssets%2Fx.png'
+  it('maps a relative on-disk src to /files/raw with mount_key + the resolved, encoded ICM-relative path', () => {
+    // Task 9.6: FilesController.serve/2 addresses content by (mount_key,
+    // ICM-relative path) — never a bare path — so resolveImageSrc must
+    // thread the page's mountKey through into the query string.
+    expect(resolveImageSrc('../Assets/x.png', 'coaching', 'mounts/m/Clients/Acme.md')).toBe(
+      '/files/raw?mount_key=coaching&path=mounts%2Fm%2FAssets%2Fx.png'
     );
   });
 
-  it('maps an absolute on-disk src (external mount) to /files/raw unchanged apart from encoding', () => {
-    expect(resolveImageSrc('/Users/daniel/External/Assets/x.png', '/Users/daniel/External/Clients/Acme.md')).toBe(
-      '/files/raw?path=' + encodeURIComponent('/Users/daniel/External/Assets/x.png')
-    );
-  });
-
-  it('leaves an http(s) src unchanged', () => {
-    expect(resolveImageSrc('https://example.com/pic.png', 'mounts/m/Clients/Acme.md')).toBe(
+  it('leaves an http(s) src unchanged (mountKey irrelevant — nothing to resolve)', () => {
+    expect(resolveImageSrc('https://example.com/pic.png', 'coaching', 'mounts/m/Clients/Acme.md')).toBe(
       'https://example.com/pic.png'
     );
   });
 
   it('leaves a data: src unchanged', () => {
     const dataUri = 'data:image/png;base64,AAAA';
-    expect(resolveImageSrc(dataUri, 'mounts/m/Clients/Acme.md')).toBe(dataUri);
+    expect(resolveImageSrc(dataUri, 'coaching', 'mounts/m/Clients/Acme.md')).toBe(dataUri);
   });
 
   it('leaves an http src (non-s) unchanged too', () => {
-    expect(resolveImageSrc('http://example.com/pic.png', 'mounts/m/Clients/Acme.md')).toBe(
+    expect(resolveImageSrc('http://example.com/pic.png', 'coaching', 'mounts/m/Clients/Acme.md')).toBe(
       'http://example.com/pic.png'
     );
   });
 
-  it('resolves a top-level page (no parent folder) correctly', () => {
-    expect(resolveImageSrc('Assets/x.png', 'Welcome.md')).toBe('/files/raw?path=Assets%2Fx.png');
+  it('resolves a top-level page (no parent folder) correctly, matching the brief\'s exact example', () => {
+    expect(resolveImageSrc('Assets/x.png', 'coaching', 'Welcome.md')).toBe(
+      '/files/raw?mount_key=coaching&path=Assets%2Fx.png'
+    );
+  });
+
+  it('encodes a mountKey containing reserved URL characters', () => {
+    expect(resolveImageSrc('Assets/x.png', 'client notes', 'Welcome.md')).toBe(
+      '/files/raw?mount_key=client%20notes&path=Assets%2Fx.png'
+    );
   });
 });
 

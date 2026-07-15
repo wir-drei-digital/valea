@@ -44,8 +44,9 @@
 	 * task 4.4 — the backend uses `mountKey` to pick the target mount's
 	 * `Assets/` folder, and `pagePath` only to compute `rel_from_page`), and
 	 * the image extension's `renderHTML` resolves a stored relative `src`
-	 * against `pagePath` (via `resolveImageSrc`) to build the
-	 * `/files/raw?path=...` URL the `<img>` actually loads.
+	 * against `mountKey`/`pagePath` (via `resolveImageSrc`, Task 9.6) to
+	 * build the `/files/raw?mount_key=...&path=...` URL the `<img>` actually
+	 * loads.
 	 *
 	 * `dangling` (Task C9) — the set of resolved page-kind link targets the
 	 * route has confirmed do NOT exist on disk (`collectDocLinkPaths` +
@@ -382,15 +383,19 @@
 							placeholder: "Write it the way you'd tell a new assistant…"
 						}),
 						Link.configure({ openOnClick: false, autolink: true }),
-						// `src` attrs stay the ON-DISK value (relative-from-page, or
-						// absolute for an external mount) — `renderHTML` maps it through
-						// `resolveImageSrc` for the DOM `<img>` only, at display time, so
-						// the stored/serialized attribute is never the `/files/raw` URL.
+						// `src` attrs stay the ON-DISK value (ICM-relative-from-page) —
+						// `renderHTML` maps it through `resolveImageSrc` (now threading
+						// `mountKey`, Task 9.6 — the endpoint requires it) for the DOM
+						// `<img>` only, at display time, so the stored/serialized
+						// attribute is never the `/files/raw` URL.
 						Image.extend({
 							renderHTML({ HTMLAttributes }) {
 								return [
 									'img',
-									{ ...HTMLAttributes, src: resolveImageSrc(String(HTMLAttributes.src ?? ''), pagePath) }
+									{
+										...HTMLAttributes,
+										src: resolveImageSrc(String(HTMLAttributes.src ?? ''), mountKey, pagePath)
+									}
 								];
 							}
 						}),

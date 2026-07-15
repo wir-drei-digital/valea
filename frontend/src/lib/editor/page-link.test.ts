@@ -21,7 +21,7 @@ describe('linkDestination', () => {
 		expect(linkDestination('Notes/A.md', 'Offers/X.md')).toBe('../Offers/X.md');
 	});
 
-	it('links across embedded mounts (both workspace-relative, different mount-prefix segments)', () => {
+	it('links between distant top-level folders within one ICM (multiple ../ hops)', () => {
 		expect(linkDestination('first/Sub/A.md', 'second/C.md')).toBe('../../second/C.md');
 	});
 
@@ -33,20 +33,21 @@ describe('linkDestination', () => {
 		expect(linkDestination('Notes/A.md', 'B.md')).toBe('../B.md');
 	});
 
-	it('returns an absolute target verbatim when the source is workspace-relative', () => {
-		expect(linkDestination('Notes/A.md', '/Users/daniel/External/B.md')).toBe(
-			'/Users/daniel/External/B.md'
+	it('computes a destination scoped entirely within one ICM (e.g. "coaching"), using ordinary relative path math for every case', () => {
+		// sourcePath/targetPath are both ICM-relative within the SAME mountKey — the
+		// caller (page_link_suggestion.js) scopes icmSearch/createIcmPage to
+		// pagePath's own mountKey before either ever reaches this function, so
+		// there is no "external mount" case to special-case here.
+		expect(linkDestination('Sessions/Week1.md', 'Templates/Intake Form.md')).toBe(
+			'../Templates/Intake Form.md'
 		);
 	});
 
-	it('returns an absolute target verbatim when the source is also absolute', () => {
-		expect(linkDestination('/Users/daniel/External/A.md', '/Users/daniel/External/B.md')).toBe(
-			'/Users/daniel/External/B.md'
-		);
-	});
-
-	it('returns a workspace-relative target verbatim when the source is absolute (non-portable cross-boundary case)', () => {
-		expect(linkDestination('/Users/daniel/External/A.md', 'Notes/B.md')).toBe('Notes/B.md');
+	it('never treats a leading slash as a vocabulary tag — Task 9.6 removed the external-mount absolute-path fork', () => {
+		// A leading slash is just an ordinary (if unusual) path character now;
+		// every real path is ICM-relative within its own mountKey. This guards
+		// against the old fork (return targetPath verbatim) coming back.
+		expect(linkDestination('Notes/A.md', '/Offers/B.md')).toBe('../Offers/B.md');
 	});
 
 	it('preserves spaces in the destination (the <> wrapping is the converter’s job, not this)', () => {
@@ -112,9 +113,5 @@ describe('parentOf', () => {
 
 	it('returns an empty string for a root-level page', () => {
 		expect(parentOf('A.md')).toBe('');
-	});
-
-	it('returns the directory of an absolute (external-mount) page', () => {
-		expect(parentOf('/Users/daniel/External/Clients/Acme.md')).toBe('/Users/daniel/External/Clients');
 	});
 });

@@ -5,13 +5,16 @@
  * `image-upload.test.ts`. `PageEditor.svelte` is the only impure caller
  * (DOM events, `api.uploadImage`, editor mutation).
  *
- * On-disk truth: an image node's `src` attr holds the `rel_from_page` value
- * the upload endpoint returned (or an absolute physical path for a page
- * inside an external mount) — never the `/files/raw?...` URL. That URL is a
- * DISPLAY-time mapping only, applied by `resolveImageSrc` inside the
- * extension's `renderHTML` (see `PageEditor.svelte`), so the markdown a page
- * serializes to stays a portable relative (or absolute-external) reference
- * rather than a copy of this app's local file-serving endpoint.
+ * On-disk truth: an image node's `src` attr holds the `relFromPage` value
+ * the upload endpoint returned — an ICM-relative reference, regardless of
+ * whether the mount is embedded or external (Phase 4's `(mount_key,
+ * ICM-relative path)` re-key collapsed that distinction; mount identity now
+ * rides `mountKey`, a separate value, never a leading `/` on the path
+ * itself) — never the `/files/raw?...` URL. That URL is a DISPLAY-time
+ * mapping only, applied by `resolveImageSrc` inside the extension's
+ * `renderHTML` (see `PageEditor.svelte`), so the markdown a page serializes
+ * to stays a portable relative reference rather than a copy of this app's
+ * local file-serving endpoint.
  */
 
 // Mirrors `ValeaWeb.FilesController`'s `@allowed_types` exactly (extension
@@ -60,13 +63,13 @@ function dirnameOf(path: string): string {
  * Lexically resolves `rel` (a `../`-relative reference, as stored in an
  * image node's `src`) against `pageDir`, the directory the referencing page
  * lives in. Pure segment math, no filesystem access — mirrors
- * `Valea.Paths.relative/2`'s inverse on the backend. `pageDir` may be
- * workspace-relative (embedded mount) or an absolute physical path (external
- * mount); the result stays in the same vocabulary (a leading `/` on
- * `pageDir` is preserved on the output).
+ * `Valea.Paths.relative/2`'s inverse on the backend. `pageDir` is always
+ * ICM-relative (Task 9.6: Phase 4's `(mount_key, ICM-relative path)` re-key
+ * collapsed the old "leading slash ⇒ external mount" vocabulary this used
+ * to preserve on output — mount identity now rides `mountKey`, a separate
+ * value passed alongside the path, never a leading `/` on the path itself).
  */
 export function joinRelative(pageDir: string, rel: string): string {
-  const isAbsolute = pageDir.startsWith('/');
   const segments = [...pageDir.split('/'), ...rel.split('/')].filter((seg) => seg.length > 0);
 
   const stack: string[] = [];
@@ -79,22 +82,27 @@ export function joinRelative(pageDir: string, rel: string): string {
     }
   }
 
-  const joined = stack.join('/');
-  return isAbsolute ? `/${joined}` : joined;
+  return stack.join('/');
 }
 
 const EXTERNAL_SRC_RE = /^(?:https?:|data:)/i;
 
 /**
- * Maps an image node's on-disk `src` (relative-from-page, or absolute for an
- * external-mount page) to a `/files/raw?path=...` URL for DISPLAY. `http(s):`
- * and `data:` sources (not produced by this app's own upload flow, but valid
- * hand-authored markdown) pass through unchanged — they're already directly
- * renderable and have nothing to resolve against the page's location.
+ * Maps an image node's on-disk `src` (ICM-relative-from-page) to a
+ * `/files/raw?mount_key=...&path=...` URL for DISPLAY — matching
+ * `FilesController.serve/2`'s `(mount_key, ICM-relative path)` addressing
+ * exactly (backend/lib/valea_web/controllers/files_controller.ex; Task 9.6
+ * fixes the ledger'd bug where this omitted `mount_key` entirely, 404-ing a
+ * freshly-uploaded image's `<img>` re-render). `mountKey` is the page's own
+ * mount (`PageEditor.svelte`'s prop, threaded straight through — never
+ * re-derived here). `http(s):` and `data:` sources (not produced by this
+ * app's own upload flow, but valid hand-authored markdown) pass through
+ * unchanged — they're already directly renderable and have nothing to
+ * resolve against the page's location or mount.
  */
-export function resolveImageSrc(src: string, pagePath: string): string {
+export function resolveImageSrc(src: string, mountKey: string, pagePath: string): string {
   if (EXTERNAL_SRC_RE.test(src)) return src;
 
-  const resolved = src.startsWith('/') ? src : joinRelative(dirnameOf(pagePath), src);
-  return `/files/raw?path=${encodeURIComponent(resolved)}`;
+  const resolved = joinRelative(dirnameOf(pagePath), src);
+  return `/files/raw?mount_key=${encodeURIComponent(mountKey)}&path=${encodeURIComponent(resolved)}`;
 }

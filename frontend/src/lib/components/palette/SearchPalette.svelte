@@ -17,8 +17,11 @@
   // avoided rather than fought.
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import { recentPages } from '$lib/stores/recent-pages';
+  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { resolveActiveMountKey } from '$lib/shell/icm-route';
   import {
     paletteReduce,
     initialPaletteState,
@@ -44,6 +47,21 @@
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let searchToken = 0;
 
+  // Task 9.6: scope `icmSearch` to the ICM the current route is "on" — the
+  // SAME resolution `AppFrame.svelte` uses to highlight the sidebar's active
+  // ICM group (Task 9.4's `resolveActiveMountKey`, already exercised by
+  // `icm-route.test.ts` across every route shape: `/knowledge/<mountKey>/…`,
+  // `/chat?session=`, `?icm=`). Cmd+K'ing from inside `coaching`'s Knowledge
+  // tree (or its chat) should search `coaching` (+ its declared-related
+  // ICMs, per `Valea.ICM.Search`'s scope), not silently return hits from
+  // every other mounted ICM. `null` (no route-scoped ICM — e.g. Today, or a
+  // route with neither a path nor `?icm=`) falls back to an unscoped,
+  // all-mounts search: `icmSearch`'s own default (`mount_key \\ nil` in
+  // `Valea.ICM.Search.search/4`) when no mountKey is passed at all.
+  const activeMountKey = $derived(
+    resolveActiveMountKey(page.url.pathname, page.url.searchParams, recentSessionsStore.groups)
+  );
+
   function basenameNoExt(path: string): string {
     const noExt = path.replace(/\.md$/i, '');
     const idx = noExt.lastIndexOf('/');
@@ -67,7 +85,7 @@
 
   async function runSearch(query: string): Promise<void> {
     const token = ++searchToken;
-    const result = await api.icmSearch(query);
+    const result = await api.icmSearch(query, activeMountKey ?? undefined);
     if (token !== searchToken) return; // a later keystroke already superseded this search
 
     if (result.ok) {
