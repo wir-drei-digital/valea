@@ -39,6 +39,13 @@ defmodule Valea.CockpitTest do
     assert length(today["prepared_items"]) == 3
     [priya, lea, julia] = today["prepared_items"]
 
+    # icm_name (Task 9.5) — no workspace is open in this test, so
+    # `seed_icm_name/0` has no triage workflow to derive an owning ICM
+    # from (same no-workspace-open reasoning as triage_workflow_path).
+    assert priya["icm_name"] == nil
+    assert lea["icm_name"] == nil
+    assert julia["icm_name"] == nil
+
     # Priya Nair - reply_drafted
     assert priya["type"] == "reply_drafted"
     assert priya["title"] == "Priya Nair · new inquiry"
@@ -366,6 +373,53 @@ defmodule Valea.CockpitTest do
 
       assert today["distill_workflow_path"] ==
                Path.join(bbb.root, "Workflows/Distill Decisions.md")
+    end
+  end
+
+  describe "today/0 prepared_items icm_name (Task 9.5: seeded-item ICM provenance)" do
+    test "is nil on every prepared item when no enabled mount has a triage workflow" do
+      ws = AgentCase.open_workspace!()
+      AgentCase.mount_test_icm!(ws.path, name: "Empty")
+
+      {:ok, today} = Valea.Cockpit.today()
+
+      assert Enum.map(today["prepared_items"], & &1["icm_name"]) == [nil, nil, nil]
+    end
+
+    # Post-3.2, a mount's config-truth `mount_key` need not equal its
+    # manifest display `name` — `mount_test_icm!/2`'s `name:` opt controls
+    # ONLY the manifest (icm.yaml `name:`), never the derived mount_key, so
+    # asserting `icm_name` (the manifest's own display name) rather than
+    # `mount_key` here is the one honest way to distinguish this field
+    # from `triage_workflow_mount_key`'s own assertions above.
+    test "carries the triage workflow's owning mount's manifest display name on every prepared item" do
+      ws = AgentCase.open_workspace!()
+
+      icm =
+        AgentCase.mount_test_icm!(ws.path,
+          name: "Mara Lindt Coaching",
+          pages: %{
+            "Workflows/New Inquiry Triage.md" => """
+            ---
+            enabled: true
+            risk_level: medium
+            ---
+            # New Inquiry Triage
+
+            Body.
+            """
+          }
+        )
+
+      {:ok, today} = Valea.Cockpit.today()
+
+      assert today["triage_workflow_mount_key"] == icm.mount_key
+
+      assert Enum.map(today["prepared_items"], & &1["icm_name"]) == [
+               "Mara Lindt Coaching",
+               "Mara Lindt Coaching",
+               "Mara Lindt Coaching"
+             ]
     end
   end
 end

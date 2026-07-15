@@ -53,6 +53,9 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import SourceChips from './SourceChips.svelte';
   import ApprovalCard from '$lib/components/queue/ApprovalCard.svelte';
+  // Task 9.5: "· <mount>" provenance — same formatter `WorkflowCard.svelte`
+  // uses for a workflow's owning ICM.
+  import { mountProvenanceLabel } from '$lib/components/workflows/workflowHref';
   import {
     SEED_TRIAGE_PATH,
     SEED_TRIAGE_FROM_NAME,
@@ -78,7 +81,13 @@
     // `triageWorkflowRelativePath` (`null` together with `triageWorkflowPath`
     // above whenever no enabled mount has one).
     triageWorkflowMountKey = null,
-    triageWorkflowRelativePath = null
+    triageWorkflowRelativePath = null,
+    // Task 9.5: the owning ICM's display name (sourced from the cockpit
+    // payload's `preparedItems` entry for this seeded narrative — see
+    // `routes/+page.svelte`'s `seedInquiry` derivation), or `null` when
+    // underivable. Shown next to the title so this card, like every other
+    // workspace-wide Today item, names its owning ICM.
+    icmName = null
   }: {
     path?: string;
     fromName?: string;
@@ -87,9 +96,11 @@
     triageWorkflowPath?: string | null;
     triageWorkflowMountKey?: string | null;
     triageWorkflowRelativePath?: string | null;
+    icmName?: string | null;
   } = $props();
 
   const title = $derived(triageTitle(fromName));
+  const icmLabel = $derived(mountProvenanceLabel(icmName));
 
   let preparing = $state(false);
   let sessionId: string | null = $state(null);
@@ -189,7 +200,12 @@
     >
       Preparing
     </span>
-    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{title}</h3>
+    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">
+      {title}
+      {#if icmLabel}
+        <span class="text-ink-meta text-[12.5px] font-normal">{icmLabel}</span>
+      {/if}
+    </h3>
     <p class="text-ink-body text-[13.5px] leading-normal">
       Drafting a reply — reading her email, your offer, and your tone guide.
     </p>
@@ -211,7 +227,12 @@
     >
       New inquiry
     </span>
-    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{title}</h3>
+    <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">
+      {title}
+      {#if icmLabel}
+        <span class="text-ink-meta text-[12.5px] font-normal">{icmLabel}</span>
+      {/if}
+    </h3>
     <p class="text-ink-body text-[13.5px] leading-normal">{summary}</p>
     {#if sources.length > 0}
       <SourceChips {sources} />

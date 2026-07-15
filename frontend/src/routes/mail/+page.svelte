@@ -14,33 +14,27 @@
   import { syncNowErrorMessage } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { api } from '$lib/api/client';
-  import { normalizeCockpitToday } from '$lib/today/cockpit';
+  import { workflowsStore } from '$lib/stores/workflows.svelte';
+  import { triageCandidates } from '$lib/components/mail/triage-workflows';
   import MessageList from '$lib/components/mail/MessageList.svelte';
   import InboxSection from '$lib/components/mail/InboxSection.svelte';
   import SyncStatusLine from '$lib/components/mail/SyncStatusLine.svelte';
   import MessageView from '$lib/components/mail/MessageView.svelte';
   import SetupPanel from '$lib/components/mail/SetupPanel.svelte';
 
-  // A-T15/Task 7.2: `MessageView`'s "Run triage" needs the SAME live
-  // `{mountKey, relativePath}` identity Today reads off the cockpit payload
-  // (T13/7.2 — `triageWorkflowMountKey`/`triageWorkflowRelativePath`)
-  // rather than a hardcoded const — this route has no other reason to load
-  // the cockpit payload, so it fetches just these fields for itself instead
-  // of standing up a shared cockpit store for a single value. `null` while
-  // loading (or on fetch failure) degrades the same way an absent seeded
-  // workflow does: the action stays hidden, never a dead link.
-  let triageWorkflowMountKey: string | null = $state(null);
-  let triageWorkflowRelativePath: string | null = $state(null);
+  // Task 9.5: "Mail does not choose an ICM themselves" — `MessageView`'s
+  // "Run triage" action used to run the cockpit payload's single SEEDED
+  // workflow (the first enabled mount, by sort order, that happens to
+  // carry one), silently picking an ICM out from under the message
+  // whenever more than one mount carries its own copy. This route now
+  // loads the FULL workflow catalog instead and derives every enabled
+  // candidate (`triageCandidates`) — `MessageView` runs directly when
+  // there's exactly one (a workflow that already identifies its ICM) and
+  // opens a compact ICM picker otherwise (spec §"Workspace-wide views").
+  const candidates = $derived(triageCandidates(workflowsStore.list));
 
   onMount(() => {
-    void api.cockpitToday().then((result) => {
-      if (result.ok) {
-        const today = normalizeCockpitToday(result.data as Record<string, any>);
-        triageWorkflowMountKey = today.triageWorkflowMountKey;
-        triageWorkflowRelativePath = today.triageWorkflowRelativePath;
-      }
-    });
+    void workflowsStore.refetch();
   });
 
   // `mail_status`/`mail_sync`/`mail_message`/`mailbox_ops` are wired ONCE,
@@ -191,7 +185,7 @@
         <EmptyState icon={MailIcon} title="Mail" body="Messages you move to AI/Review appear here." />
       {/if}
     {:else if activeId === selectedId && activeDetail}
-      <MessageView message={activeDetail} {triageWorkflowMountKey} {triageWorkflowRelativePath} />
+      <MessageView message={activeDetail} {candidates} />
     {:else if loadError}
       <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
     {:else}

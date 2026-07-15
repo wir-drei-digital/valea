@@ -42,6 +42,12 @@ defmodule Valea.Api.Cockpit do
   `{mount_key, relative_path}` identity the new `run_workflow` RPC
   addresses a workflow by; camelCase to `triageWorkflowMountKey`/
   `triageWorkflowRelativePath`.
+
+  `prepared_items[].icm_name` (Task 9.5) is a NILABLE `:string` nested
+  inside each prepared item — the seeded narrative's owning ICM, so a
+  workspace-wide Today aggregating prepared work across ICMs can still
+  show every item's provenance (spec §"Workspace-wide views"). See
+  `Valea.Cockpit.today/0`'s moduledoc for how it's derived.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -81,7 +87,8 @@ defmodule Valea.Api.Cockpit do
                             summary: [type: :string, allow_nil?: false],
                             used_sources: [type: {:array, :string}, allow_nil?: false],
                             primary_action: [type: :string, allow_nil?: false],
-                            secondary_action: [type: :string, allow_nil?: true]
+                            secondary_action: [type: :string, allow_nil?: true],
+                            icm_name: [type: :string, allow_nil?: true]
                           ]
                         ]
                       ]

@@ -217,6 +217,7 @@
                   triageWorkflowPath={today.triageWorkflowPath}
                   triageWorkflowMountKey={today.triageWorkflowMountKey}
                   triageWorkflowRelativePath={today.triageWorkflowRelativePath}
+                  icmName={seedInquiry?.icmName ?? null}
                 />
               {/each}
             {:else}
@@ -226,6 +227,7 @@
                 triageWorkflowPath={today.triageWorkflowPath}
                 triageWorkflowMountKey={today.triageWorkflowMountKey}
                 triageWorkflowRelativePath={today.triageWorkflowRelativePath}
+                icmName={seedInquiry?.icmName ?? null}
               />
             {/if}
             {#each otherPreparedItems as item (item.title)}

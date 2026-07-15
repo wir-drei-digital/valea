@@ -24,6 +24,15 @@ export type PreparedItem = {
   usedSources: string[];
   primaryAction: string;
   secondaryAction?: string;
+  /**
+   * The item's owning ICM display name (Task 9.5), or `null` when
+   * underivable — see `Valea.Cockpit.today/0`'s Task 9.5 moduledoc note.
+   * Every seeded `prepared_items` entry carries the SAME derived value
+   * today (the seeded narrative has no per-item provenance of its own),
+   * but the field is per-item so a future real aggregation across ICMs
+   * can vary it without a shape change here.
+   */
+  icmName: string | null;
 };
 
 export type OpenLoop = {
@@ -115,13 +124,15 @@ function normalizeScheduleItem(raw: RawMap): ScheduleItem {
 
 function normalizePreparedItem(raw: RawMap): PreparedItem {
   const secondary = pick(raw, 'secondaryAction', 'secondary_action');
+  const icmName = pick(raw, 'icmName', 'icm_name');
   return {
     type: asString(raw.type),
     title: asString(raw.title),
     summary: asString(raw.summary),
     usedSources: asStringList(pick(raw, 'usedSources', 'used_sources')),
     primaryAction: asString(pick(raw, 'primaryAction', 'primary_action')),
-    secondaryAction: typeof secondary === 'string' ? secondary : undefined
+    secondaryAction: typeof secondary === 'string' ? secondary : undefined,
+    icmName: typeof icmName === 'string' ? icmName : null
   };
 }
 

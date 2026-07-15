@@ -182,3 +182,87 @@ export function formatAuditTimestamp(ts: string): string {
   if (Number.isNaN(parsed.getTime())) return '';
   return parsed.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
+
+// -- ICM provenance (Task 9.5) ---------------------------------------------
+
+/**
+ * A row from `list_icms` — the minimal shape `auditIcmName` needs to
+ * resolve an entry's owning ICM to a display name. Declared locally
+ * (rather than importing `MountSummary` from `stores/mounts.svelte.ts`) to
+ * keep this module free of a store dependency, same "no component render
+ * harness, pure logic only" posture as the rest of this file; a real
+ * `MountSummary[]` (which has these three fields plus more) satisfies this
+ * structurally.
+ */
+export type AuditIcmDirectoryEntry = { id: string | null; mountKey: string; name: string };
+
+/**
+ * The `icm_id` an audit entry names, or `null` — the audit trail is
+ * heterogeneous by `type` (see module doc), so only the shapes an actual
+ * `Valea.Audit.append`/`append_sync` call site is known to carry are
+ * checked, defensively (never throws on a malformed/future entry):
+ *
+ *   - `workflow_run_started`'s `workflow` field: `{icm_id, relative_path,
+ *     resolved_path}` (Task 7.4) — the SAME object `workflowName` reads,
+ *     minus the pre-7.4 bare-string back-compat case (a bare string names
+ *     no ICM).
+ *   - `action_executed`/`apply_conflict`'s `target` field (`Valea.Queue`'s
+ *     memory-update path only — an `email_draft`'s `action_executed` has
+ *     no `target` at all): `{locator: {kind: "icm", icm_id, path},
+ *     resolved_path}`.
+ */
+function auditIcmId(entry: AuditEntry): string | null {
+  const workflow = entry.workflow;
+  if (workflow && typeof workflow === 'object') {
+    const id = str((workflow as Record<string, unknown>).icm_id);
+    if (id) return id;
+  }
+
+  const target = entry.target;
+  if (target && typeof target === 'object') {
+    const locator = (target as Record<string, unknown>).locator;
+    if (locator && typeof locator === 'object') {
+      const id = str((locator as Record<string, unknown>).icm_id);
+      if (id) return id;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The `mount_key` an audit entry names directly, or `null` — only
+ * `Valea.Mounts`'s own `icm_mounted`/`icm_unmounted` audit calls carry
+ * this (already the workspace-local config key, no id-to-key resolution
+ * needed).
+ */
+function auditMountKey(entry: AuditEntry): string | null {
+  return str(entry.mount_key) || null;
+}
+
+/**
+ * The display name of the ICM an audit entry names, resolved against
+ * `mounts` (`list_icms`, already fetched app-wide by the shared sidebar —
+ * see `AuditRow.svelte`), or `null` when the entry names no ICM at all, or
+ * names one no longer in `mounts` (unmounted since, or a degraded mount
+ * with no `id`). Tries `icm_id` first (stable across a mount being
+ * renamed/re-keyed), then falls back to `mount_key` (the one signal
+ * `icm_mounted`/`icm_unmounted` carry, since by the time an ICM is
+ * unmounted its id is no longer worth resolving by) — never invents a
+ * name for an entry that doesn't carry one.
+ */
+export function auditIcmName(entry: AuditEntry, mounts: AuditIcmDirectoryEntry[]): string | null {
+  const icmId = auditIcmId(entry);
+  if (icmId) {
+    const byId = mounts.find((m) => m.id === icmId);
+    if (byId) return byId.name;
+  }
+
+  const mountKey = auditMountKey(entry);
+  if (mountKey) {
+    const byMountKey = mounts.find((m) => m.mountKey === mountKey);
+    if (byMountKey) return byMountKey.name;
+  }
+
+  return null;
+}

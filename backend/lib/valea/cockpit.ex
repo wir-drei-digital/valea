@@ -44,6 +44,17 @@ defmodule Valea.Cockpit do
   discovery mirrored onto the seeded Distill Decisions reflection workflow
   (`Valea.Workflows.distill_path/0`) — `nil` until a mount carries one (the
   starter-template seed for it is Task B9's job).
+
+  Task 9.5 adds `"icm_name"` to every entry of `"prepared_items"` — the
+  workspace-wide Today page aggregates prepared work with no per-item
+  provenance in this seeded narrative's own data (spec §"Workspace-wide
+  views": "Today may aggregate prepared work across ICMs; every item
+  shows its owning ICM"), so each item is stamped with the ONE ICM this
+  demo narrative can honestly be attributed to: the seeded New Inquiry
+  Triage workflow's owning mount (`seed_icm_name/0`, same discovery
+  `triage_workflow_field/1` uses, resolved to that mount's own manifest
+  display name). `nil` together with `triage_workflow_path` whenever no
+  enabled mount carries the seeded workflow — never an invented name.
   """
 
   @doc """
@@ -65,6 +76,8 @@ defmodule Valea.Cockpit do
     - "distill_workflow_path": seeded distill workflow's path, or nil — live, see moduledoc
   """
   def today do
+    icm_name = seed_icm_name()
+
     {:ok,
      %{
        "workspace" => "Mara Lindt Coaching",
@@ -111,7 +124,8 @@ defmodule Valea.Cockpit do
              "Policies › No medical advice"
            ],
            "primary_action" => "Review draft",
-           "secondary_action" => "Snooze"
+           "secondary_action" => "Snooze",
+           "icm_name" => icm_name
          },
          %{
            "type" => "prep_brief",
@@ -120,7 +134,8 @@ defmodule Valea.Cockpit do
              "One page from your approved notes: her homework was the pricing conversation with her first client; two open commitments from session 2.",
            "used_sources" => ["Clients › Lea", "session notes", "open commitments"],
            "primary_action" => "Open brief",
-           "secondary_action" => "Snooze to 10:45"
+           "secondary_action" => "Snooze to 10:45",
+           "icm_name" => icm_name
          },
          %{
            "type" => "follow_up_drafted",
@@ -129,7 +144,8 @@ defmodule Valea.Cockpit do
              "Monday's session still has no follow-up. Drafted from your session notes: the two agreed next steps and the article you promised her.",
            "used_sources" => ["Clients › Julia", "session notes", "Tone guide"],
            "primary_action" => "Review draft",
-           "secondary_action" => "Skip this one"
+           "secondary_action" => "Skip this one",
+           "icm_name" => icm_name
          }
        ],
        "open_loops" => [
@@ -171,6 +187,26 @@ defmodule Valea.Cockpit do
     case Valea.Workflows.triage_workflow() do
       nil -> nil
       wf -> Map.fetch!(wf, key)
+    end
+  end
+
+  # Task 9.5: the ONE ICM every seeded `prepared_items` entry is stamped
+  # with — see the moduledoc's Task 9.5 note. Derived from the seeded
+  # triage workflow's owning mount (same `Valea.Workflows.triage_workflow/0`
+  # discovery `triage_workflow_field/1` uses above), resolved to that
+  # mount's OWN manifest display name via `Valea.Mounts.mount_by_key/2` —
+  # mirrors `Valea.Queue.memory_display_fields/2`'s identical
+  # locator-to-display-name pattern. `nil` (never an invented name)
+  # whenever no enabled mount carries the seeded workflow, the mount
+  # lookup can't find a healthy manifest, or (defensively) no workspace is
+  # open at all.
+  defp seed_icm_name do
+    with %{mount_key: mount_key} <- Valea.Workflows.triage_workflow(),
+         {:ok, %{path: workspace}} <- Valea.Workspace.Manager.current(),
+         %{manifest: %{name: name}} <- Valea.Mounts.mount_by_key(workspace, mount_key) do
+      name
+    else
+      _ -> nil
     end
   end
 

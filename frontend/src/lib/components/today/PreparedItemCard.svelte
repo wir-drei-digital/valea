@@ -3,6 +3,10 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import SourceChips from './SourceChips.svelte';
+  // Task 9.5: "· <mount>" provenance — same formatter `WorkflowCard.svelte`
+  // uses for a workflow's owning ICM, reused here so a workspace-wide
+  // Today's prepared items read with the identical visual language.
+  import { mountProvenanceLabel } from '$lib/components/workflows/workflowHref';
 
   // The reusable approval-card anatomy (DESIGN_SYSTEM §6):
   // kind badge → title → summary → source chips → actions.
@@ -25,6 +29,8 @@
       classes: 'bg-paper-track text-ink-secondary'
     }
   );
+
+  const icmLabel = $derived(mountProvenanceLabel(item.icmName));
 
   let whyOpen = $state(false);
 
@@ -50,7 +56,12 @@
     {kind.label}
   </span>
 
-  <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{item.title}</h3>
+  <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">
+    {item.title}
+    {#if icmLabel}
+      <span class="text-ink-meta text-[12.5px] font-normal">{icmLabel}</span>
+    {/if}
+  </h3>
 
   <p class="text-ink-body text-[13.5px] leading-normal">{item.summary}</p>
 

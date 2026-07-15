@@ -9,7 +9,14 @@ import type { Channel } from 'phoenix';
  */
 type QueueApi = Pick<Api, 'listQueueItems' | 'getQueueItem' | 'approveQueueItem' | 'rejectQueueItem'>;
 
-/** One row of `list_queue_items` — mirrors `listQueueItemsFields` in `api/client.ts`. */
+/**
+ * One row of `list_queue_items` — mirrors `listQueueItemsFields` in
+ * `api/client.ts`. `mountKey`/`path`/`icmName` (Task 9.5) are the SAME
+ * Task 7.3 C5 display-only enrichment `Valea.Queue.list/0`'s `summary/3`
+ * already computes for a `memory_update` item's target (fresh off the
+ * current mount table, never cached) — `null` together for every other
+ * kind (e.g. `email_draft`, which has no ICM-owned target to attribute).
+ */
 export type QueueListItem = {
   runId: string;
   title: string;
@@ -18,6 +25,9 @@ export type QueueListItem = {
   riskLevel: string;
   createdAt: string;
   workflow: string;
+  mountKey?: string | null;
+  path?: string | null;
+  icmName?: string | null;
   valid: boolean;
   error?: string | null;
 };

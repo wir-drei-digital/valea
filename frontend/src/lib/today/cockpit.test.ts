@@ -20,7 +20,8 @@ const rawSnake = {
       summary: 'Good-fit inquiry.',
       used_sources: ['her email', 'Tone guide'],
       primary_action: 'Review draft',
-      secondary_action: 'Snooze'
+      secondary_action: 'Snooze',
+      icm_name: 'Mara Lindt Coaching'
     }
   ],
   open_loops: [{ title: 'Send proposal to Priya', source: 'from her email · yesterday' }],
@@ -43,6 +44,7 @@ describe('normalizeCockpitToday', () => {
     expect(today.preparedItems[0].usedSources).toEqual(['her email', 'Tone guide']);
     expect(today.preparedItems[0].primaryAction).toBe('Review draft');
     expect(today.preparedItems[0].secondaryAction).toBe('Snooze');
+    expect(today.preparedItems[0].icmName).toBe('Mara Lindt Coaching');
     expect(today.openLoops[0].source).toBe('from her email · yesterday');
     expect(today.whileYouWereAway).toHaveLength(1);
     expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
@@ -59,7 +61,9 @@ describe('normalizeCockpitToday', () => {
       greeting: 'G',
       summary: 'S',
       schedule: [],
-      preparedItems: [{ type: 't', title: 'x', summary: 's', usedSources: ['a'], primaryAction: 'p' }],
+      preparedItems: [
+        { type: 't', title: 'x', summary: 's', usedSources: ['a'], primaryAction: 'p', icmName: 'Studio' }
+      ],
       openLoops: [],
       whileYouWereAway: [],
       triageWorkflowPath: 'mounts/primary/Workflows/New Inquiry Triage.md',
@@ -72,6 +76,7 @@ describe('normalizeCockpitToday', () => {
     expect(today.dateLabel).toBe('D');
     expect(today.preparedItems[0].usedSources).toEqual(['a']);
     expect(today.preparedItems[0].secondaryAction).toBeUndefined();
+    expect(today.preparedItems[0].icmName).toBe('Studio');
     expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
     expect(today.triageWorkflowMountKey).toBe('primary');
     expect(today.triageWorkflowRelativePath).toBe('Workflows/New Inquiry Triage.md');
@@ -90,6 +95,14 @@ describe('normalizeCockpitToday', () => {
     expect(today.triageWorkflowRelativePath).toBeNull();
     expect(today.distillWorkflowPath).toBeNull();
     expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
+  });
+
+  it('normalizes a prepared item with no icm_name (underivable — Task 9.5) to null, not undefined', () => {
+    const today = normalizeCockpitToday({
+      ...rawSnake,
+      prepared_items: [{ ...rawSnake.prepared_items[0], icm_name: null }]
+    });
+    expect(today.preparedItems[0].icmName).toBeNull();
   });
 
   it('normalizes an explicit null triageWorkflowPath (no enabled mount has a seeded triage workflow) to null, not the string "null"', () => {

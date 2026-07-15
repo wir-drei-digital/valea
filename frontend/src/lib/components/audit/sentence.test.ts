@@ -4,7 +4,9 @@ import {
   auditDot,
   transcriptHref,
   reviewHref,
-  formatAuditTimestamp
+  formatAuditTimestamp,
+  auditIcmName,
+  type AuditIcmDirectoryEntry
 } from './sentence';
 import type { AuditEntry } from '$lib/api/client';
 
@@ -207,6 +209,81 @@ describe('reviewHref', () => {
 
   it('returns null when run_id is absent', () => {
     expect(reviewHref(entry('permission_asked', { item_id: 'p1' }))).toBeNull();
+  });
+});
+
+describe('auditIcmName', () => {
+  const mounts: AuditIcmDirectoryEntry[] = [
+    { id: 'icm-1', mountKey: 'primary', name: 'Mara Lindt Coaching' },
+    { id: null, mountKey: 'degraded-one', name: 'Degraded' }
+  ];
+
+  it('resolves workflow_run_started (Task 7.4 object shape) by workflow.icm_id', () => {
+    expect(
+      auditIcmName(
+        entry('workflow_run_started', {
+          workflow: { icm_id: 'icm-1', relative_path: 'Workflows/X.md', resolved_path: '/x' }
+        }),
+        mounts
+      )
+    ).toBe('Mara Lindt Coaching');
+  });
+
+  it('returns null for the pre-7.4 bare-string workflow shape (names no ICM)', () => {
+    expect(auditIcmName(entry('workflow_run_started', { workflow: 'icm/Workflows/X.md' }), mounts)).toBeNull();
+  });
+
+  it('resolves a memory-update action_executed by target.locator.icm_id', () => {
+    expect(
+      auditIcmName(
+        entry('action_executed', {
+          run_id: 'r1',
+          target: { locator: { kind: 'icm', icm_id: 'icm-1', path: 'Pricing/X.md' }, resolved_path: '/x' }
+        }),
+        mounts
+      )
+    ).toBe('Mara Lindt Coaching');
+  });
+
+  it('resolves an apply_conflict entry the same way as action_executed', () => {
+    expect(
+      auditIcmName(
+        entry('apply_conflict', {
+          run_id: 'r1',
+          target: { locator: { kind: 'icm', icm_id: 'icm-1', path: 'Pricing/X.md' }, resolved_path: '/x' },
+          reason: 'page_changed'
+        }),
+        mounts
+      )
+    ).toBe('Mara Lindt Coaching');
+  });
+
+  it('returns null for an email_draft action_executed (no target field at all)', () => {
+    expect(auditIcmName(entry('action_executed', { run_id: 'r1' }), mounts)).toBeNull();
+  });
+
+  it('resolves icm_mounted/icm_unmounted by mount_key directly', () => {
+    expect(auditIcmName(entry('icm_mounted', { mount_key: 'primary', path: '/x', id: 'icm-1' }), mounts)).toBe(
+      'Mara Lindt Coaching'
+    );
+    expect(auditIcmName(entry('icm_unmounted', { mount_key: 'primary', path: '/x' }), mounts)).toBe(
+      'Mara Lindt Coaching'
+    );
+  });
+
+  it('returns null when the named ICM is no longer in the directory (unmounted since)', () => {
+    expect(auditIcmName(entry('icm_unmounted', { mount_key: 'gone', path: '/x' }), mounts)).toBeNull();
+  });
+
+  it('returns null for entry types that name no ICM at all (queue_item_created, permission_*, item_approved, ...)', () => {
+    expect(auditIcmName(entry('queue_item_created', { run_id: 'r1', kind: 'email_draft' }), mounts)).toBeNull();
+    expect(auditIcmName(entry('permission_asked', { item_id: 'p1', title: 'Write x' }), mounts)).toBeNull();
+    expect(auditIcmName(entry('item_approved', { run_id: 'r1' }), mounts)).toBeNull();
+  });
+
+  it('never throws on a bare-minimum entry or an empty directory', () => {
+    expect(() => auditIcmName({ ts: '', type: 'workflow_run_started', generation: null }, [])).not.toThrow();
+    expect(auditIcmName(entry('workflow_run_started', { workflow: { icm_id: 'icm-1' } }), [])).toBeNull();
   });
 });
 

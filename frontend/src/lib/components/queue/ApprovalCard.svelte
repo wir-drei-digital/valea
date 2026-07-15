@@ -8,10 +8,13 @@
   // a filled button), not "Approve" — clicking it never sends anything.
   import type { QueueItemEnvelope } from '$lib/api/client';
   import QueueSourceChips from './QueueSourceChips.svelte';
+  // Task 9.5: "· <mount>" provenance — same formatter `WorkflowCard.svelte`
+  // uses for a workflow's owning ICM.
+  import { mountProvenanceLabel } from '$lib/components/workflows/workflowHref';
 
   let { item }: { item: QueueItemEnvelope } = $props();
 
-  type Payload = { title?: unknown; summary?: unknown; sources?: unknown; kind?: unknown };
+  type Payload = { title?: unknown; summary?: unknown; sources?: unknown; kind?: unknown; icm_name?: unknown };
 
   const payload = $derived((item.payload ?? {}) as Payload);
   const title = $derived(typeof payload.title === 'string' ? payload.title : 'Untitled draft');
@@ -23,6 +26,14 @@
   // edits a mount page, not sending an email — but shares this card's
   // anatomy and its single "review, never approve here" link action.
   const isMemoryUpdate = $derived(payload.kind === 'memory_update');
+  // Task 9.5: `payload.icm_name` (Task 7.3 C5 display enrichment,
+  // `Valea.Queue.memory_display_fields/2`) is only ever populated for a
+  // `memory_update` item — an `email_draft` item has no ICM-owned target
+  // to attribute, so `icmLabel` is `null` and no chip renders, same
+  // "omit gracefully when underivable" posture as every other item here.
+  const icmLabel = $derived(
+    mountProvenanceLabel(typeof payload.icm_name === 'string' ? payload.icm_name : null)
+  );
 
   // Kind-aware: nothing "goes out" for a memory_update — it edits a mount
   // page, so the hint says so instead of carrying the email-only framing
@@ -62,7 +73,12 @@
     {isMemoryUpdate ? 'Memory update suggested' : 'Reply drafted'}
   </span>
 
-  <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">{title}</h3>
+  <h3 class="text-ink-heading text-[14.5px] [font-weight:650]">
+    {title}
+    {#if icmLabel}
+      <span class="text-ink-meta text-[12.5px] font-normal">{icmLabel}</span>
+    {/if}
+  </h3>
 
   <p class="text-ink-body text-[13.5px] leading-normal">{summary}</p>
 

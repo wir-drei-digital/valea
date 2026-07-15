@@ -23,9 +23,19 @@
   // drops back to the plain button; the message's own `status` (flips to
   // "processed" once the run is approved and its mailbox ops land — see
   // `MailStore.handleMailboxOps`) is the durable, authoritative signal.
+  //
+  // Task 9.5: "Run triage" no longer trusts a single global seeded
+  // workflow — `candidates` is EVERY enabled mount's own copy of
+  // `New Inquiry Triage.md` (`triageCandidates`, `routes/mail/+page.svelte`).
+  // Exactly one candidate runs directly (a workflow that already
+  // identifies its ICM — spec §"Workspace-wide views"); more than one
+  // opens a compact `DropdownMenu` picker instead of guessing which ICM
+  // this message belongs to.
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Paperclip from '@lucide/svelte/icons/paperclip';
   import {
     addressEmail,
@@ -38,22 +48,20 @@
     subjectLabel,
     type RawAddress
   } from './mail-shapes';
+  import type { TriageCandidate } from './triage-workflows';
   import type { MailMessageDetail } from '$lib/stores/mail.svelte';
 
   let {
     message,
-    // A-T15/Task 7.2: `run_workflow`'s `{mountKey, relativePath}` identity,
-    // sourced from the cockpit/today payload's live
-    // `triageWorkflowMountKey`/`triageWorkflowRelativePath` (T13/7.2), not a
-    // hardcoded const — `null` when no enabled mount has a seeded triage
-    // workflow. `routes/mail/+page.svelte` fetches the cockpit payload and
-    // passes these through.
-    triageWorkflowMountKey = null,
-    triageWorkflowRelativePath = null
+    // Task 9.5: every enabled mount's own "New Inquiry Triage.md" —
+    // `routes/mail/+page.svelte`'s `triageCandidates(workflowsStore.list)`.
+    // Empty means no enabled mount has one (the action stays hidden, never
+    // a dead link — same degrade-gracefully posture the old single-workflow
+    // props had).
+    candidates = []
   }: {
     message: MailMessageDetail;
-    triageWorkflowMountKey?: string | null;
-    triageWorkflowRelativePath?: string | null;
+    candidates?: TriageCandidate[];
   } = $props();
 
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
@@ -89,15 +97,19 @@
   });
 
   const canRun = $derived(canRunTriage(status, running || preparing));
+  // Exactly one candidate runs directly — "a workflow that already
+  // identifies one" (spec §"Workspace-wide views") needs no picker.
+  // Zero hides the action entirely (unchanged from before this task);
+  // more than one renders the `DropdownMenu` picker instead of this plain
+  // button.
+  const soleCandidate = $derived(candidates.length === 1 ? candidates[0] : null);
 
-  async function runTriage(): Promise<void> {
-    // defensive: the button is hidden whenever any of these is null
-    if (!triageWorkflowMountKey || !triageWorkflowRelativePath) return;
+  async function runTriage(candidate: TriageCandidate): Promise<void> {
     running = true;
     runError = null;
     const result = await api.runWorkflow(
-      triageWorkflowMountKey,
-      triageWorkflowRelativePath,
+      candidate.mountKey,
+      candidate.relativePath,
       { kind: 'workspace', path: message.path },
       workspaceStore.generation ?? 0
     );
@@ -191,8 +203,36 @@
       >
         Processed
       </span>
-    {:else if triageWorkflowMountKey && triageWorkflowRelativePath}
-      <Button type="button" disabled={!canRun} onclick={() => void runTriage()}>Run triage</Button>
+    {:else if soleCandidate}
+      <Button type="button" disabled={!canRun} onclick={() => void runTriage(soleCandidate)}>Run triage</Button>
+      {#if preparing}
+        <p class="text-ink-meta text-[12.5px]">Preparing… watch Today/Queue.</p>
+      {/if}
+      {#if runError}
+        <p class="text-warn-ink text-[12.5px]" role="alert">{runError}</p>
+      {/if}
+    {:else if candidates.length > 1}
+      <!-- Task 9.5: more than one enabled ICM carries this workflow — Mail
+           must not guess which one this message belongs to (spec
+           §"Workspace-wide views"), so "Run triage" opens a compact picker
+           naming each candidate ICM instead of running one silently. -->
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger>
+          {#snippet child({ props })}
+            <Button type="button" disabled={!canRun} {...props}>
+              Run triage
+              <ChevronDown class="text-ink-meta" aria-hidden="true" />
+            </Button>
+          {/snippet}
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content align="start">
+          {#each candidates as candidate (candidate.mountKey)}
+            <DropdownMenu.Item onSelect={() => void runTriage(candidate)}>
+              In {candidate.icmName}
+            </DropdownMenu.Item>
+          {/each}
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
       {#if preparing}
         <p class="text-ink-meta text-[12.5px]">Preparing… watch Today/Queue.</p>
       {/if}

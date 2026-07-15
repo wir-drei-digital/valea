@@ -411,7 +411,22 @@ const listWorkflowsFields = [
   }
 ] as unknown as ListWorkflowsFields;
 const listQueueItemsFields = [
-  { items: ['runId', 'title', 'summary', 'kind', 'riskLevel', 'createdAt', 'workflow', 'valid', 'error'] }
+  {
+    items: [
+      'runId',
+      'title',
+      'summary',
+      'kind',
+      'riskLevel',
+      'createdAt',
+      'workflow',
+      'mountKey',
+      'path',
+      'icmName',
+      'valid',
+      'error'
+    ]
+  }
 ] as unknown as ListQueueItemsFields;
 
 // Cockpit (Task 18 typed the whole `today` action — see `Valea.Api.Cockpit`'s
@@ -428,7 +443,17 @@ const cockpitTodayFields = [
   'greeting',
   'summary',
   { schedule: ['time', 'title', 'subtitle', 'status'] },
-  { preparedItems: ['type', 'title', 'summary', 'usedSources', 'primaryAction', 'secondaryAction'] },
+  {
+    preparedItems: [
+      'type',
+      'title',
+      'summary',
+      'usedSources',
+      'primaryAction',
+      'secondaryAction',
+      'icmName'
+    ]
+  },
   { openLoops: ['title', 'source'] },
   'whileYouWereAway',
   'triageWorkflowPath',
