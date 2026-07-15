@@ -1,5 +1,6 @@
 import type { Channel } from 'phoenix';
 import { api, type Api } from '../api/client';
+import { SESSIONS_PER_GROUP } from '../components/shell/icm-projects';
 import type { AgentSessionSummary } from './sessions-list.svelte';
 
 /** Minimal surface of `api` this store depends on — same `Pick<Api, ...>` convention as the other stores. */
@@ -12,7 +13,11 @@ type RecentSessionsApi = Pick<Api, 'listRecentSessionsByIcm'>;
  * `Valea.Agents.trim_summary/1` server-side), already live-first/newest
  * ordered and capped at the requested limit by the backend
  * (`Valea.Agents.list_recent_sessions_by_icm/1`'s `build_group/3`) — this
- * store preserves that order rather than re-sorting.
+ * store preserves that RAW, un-sliced list (up to `SESSIONS_PER_GROUP + 1`
+ * items — see `refresh()` below) rather than re-sorting or capping it
+ * further; `icm-projects.ts`'s `orderGroups` is what slices display down to
+ * `SESSIONS_PER_GROUP` and derives `hasMore` from whether this list
+ * overflowed that cap.
  */
 export type RecentSessionGroup = {
   mountKey: string;
@@ -43,13 +48,21 @@ export class RecentSessionsStore {
   }
 
   /**
-   * `limit` is always 5 here (spec §"ICM group behavior": up to five
-   * sessions per ICM row) — explicit rather than relying on
-   * `api.listRecentSessionsByIcm`'s own default so this store's contract
+   * Requests `SESSIONS_PER_GROUP + 1` (6), not `SESSIONS_PER_GROUP` (5) —
+   * fix wave, Finding 1: the backend truncates server-side
+   * (`Valea.Agents.list_recent_sessions_by_icm/1`'s `Enum.take(limit)`), so
+   * a group requested at exactly 5 can NEVER come back with more than 5,
+   * and `icm-projects.ts`'s `orderGroups` (`hasMore: all.length >
+   * SESSIONS_PER_GROUP`) could never observe an overflow — "Show all…"
+   * would be permanently dead. The one extra session is a pure overflow
+   * SIGNAL, not a display item: `orderGroups` still slices its own display
+   * list down to `SESSIONS_PER_GROUP` and treats a 6th entry here purely as
+   * "this ICM has more than the display cap". Explicit (not relying on
+   * `api.listRecentSessionsByIcm`'s own default) so this store's contract
    * doesn't silently drift if that wrapper's default ever changes.
    */
   async refresh(): Promise<void> {
-    const result = await this.#api.listRecentSessionsByIcm(5);
+    const result = await this.#api.listRecentSessionsByIcm(SESSIONS_PER_GROUP + 1);
     if (!result.ok) return;
 
     const data = result.data as { groups?: RecentSessionGroup[] };
@@ -60,6 +73,19 @@ export class RecentSessionsStore {
   /** This ICM's recent sessions, server order preserved; `[]` when the ICM has none (or isn't in `groups` yet). */
   sessionsFor(mountKey: string): AgentSessionSummary[] {
     return this.groups.find((g) => g.mountKey === mountKey)?.sessions ?? [];
+  }
+
+  /**
+   * Clears back to cold-start shape (empty `groups`, `loaded` false) — fix
+   * wave, Finding 2: called from `wireIcmEvents`'s `onWorkspace` handler in
+   * the same place `icmStore.reset()` already is, on every workspace
+   * event (close, open, or switch), so the previous workspace's session
+   * groups are never mistaken for the new one's. Mirrors `IcmStore.reset()`
+   * in `icm.svelte.ts` exactly.
+   */
+  reset(): void {
+    this.groups = [];
+    this.loaded = false;
   }
 }
 

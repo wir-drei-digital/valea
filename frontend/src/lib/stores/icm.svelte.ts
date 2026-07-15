@@ -208,12 +208,14 @@ let icmEventsWired = false;
  * `list_mounts`'s output, so the two stores go stale together.
  *
  * CARRY-FORWARD (Task 9.1 — sidebar project groups): `recentSessionsStore`
- * is refreshed directly from `onWorkspace` below (on open, alongside
- * `icmStore.refetch()`), and `wireRecentSessionsEvents` is wired onto this
- * same shared channel for `mounts_changed`, same reasoning as
- * `wireMountsEvents` — see that function's own doc comment in
- * `recent-sessions.svelte.ts` for why `mounts_changed` (not `icm_changed`)
- * is the trigger, and why a live per-session-status push isn't wired here.
+ * is reset unconditionally and refreshed directly from `onWorkspace` below
+ * (reset on every workspace change, refetch only on open, alongside
+ * `icmStore.reset()`/`refetch()` — fix wave, Finding 2), and
+ * `wireRecentSessionsEvents` is wired onto this same shared channel for
+ * `mounts_changed`, same reasoning as `wireMountsEvents` — see that
+ * function's own doc comment in `recent-sessions.svelte.ts` for why
+ * `mounts_changed` (not `icm_changed`) is the trigger, and why a live
+ * per-session-status push isn't wired here.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -234,7 +236,15 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
       // before the external `onWorkspace` callback so downstream
       // consumers (e.g. route guards reacting to `workspaceStore`) never
       // observe a `loaded: true` tree that belongs to the old workspace.
+      //
+      // `recentSessionsStore.reset()` rides the same unconditional reset
+      // (fix wave, Finding 2) — it previously had no reset at all, so a
+      // workspace close/switch left its sidebar project groups pointing at
+      // sessions from the PREVIOUS workspace until the next successful
+      // `refresh()` (only fired on open, below). Same reasoning as
+      // `icmStore.reset()` immediately above.
       icmStore.reset();
+      recentSessionsStore.reset();
       if (payload.open) {
         void icmStore.refetch();
         void recentSessionsStore.refresh();

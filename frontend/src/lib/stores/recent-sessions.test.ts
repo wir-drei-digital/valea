@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { RecentSessionsStore, recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
+import { SESSIONS_PER_GROUP } from '../components/shell/icm-projects';
 import type { ApiResult } from '../api/client';
 import type { Channel } from 'phoenix';
 
@@ -67,13 +68,43 @@ describe('RecentSessionsStore.refresh', () => {
     expect(store.groups).toEqual([]);
   });
 
-  it('requests up to 5 sessions per group (spec §"ICM group behavior")', async () => {
+  it('requests SESSIONS_PER_GROUP + 1 sessions per group — the extra one is a pure overflow signal (Finding 1): the backend truncates server-side, so `orderGroups` can only ever see >5 to set hasMore if the store asks for 6', async () => {
     const listRecentSessionsByIcm = vi.fn(async () => ({ ok: true, data: { groups: [] } }) as RecentResult);
     const store = new RecentSessionsStore(fakeApi({ listRecentSessionsByIcm }));
 
     await store.refresh();
 
-    expect(listRecentSessionsByIcm).toHaveBeenCalledWith(5);
+    expect(listRecentSessionsByIcm).toHaveBeenCalledWith(SESSIONS_PER_GROUP + 1);
+  });
+});
+
+describe('RecentSessionsStore.reset', () => {
+  it('clears groups and loaded back to cold-start, so sessionsFor no longer returns a previously-populated ICM\'s stale sessions', async () => {
+    const raw = [
+      { mountKey: 'coaching', icmName: 'Coaching', sessions: [{ id: 's1', kind: 'chat', title: 'Session 1', workflow: null, runId: null, startedAt: '2026-07-14T10:00:00Z', status: 'running', live: true }] }
+    ];
+    const store = new RecentSessionsStore(
+      fakeApi({ listRecentSessionsByIcm: async () => ({ ok: true, data: { groups: raw } }) as RecentResult })
+    );
+
+    await store.refresh();
+    expect(store.loaded).toBe(true);
+    expect(store.groups).toHaveLength(1);
+
+    store.reset();
+
+    expect(store.loaded).toBe(false);
+    expect(store.groups).toEqual([]);
+    expect(store.sessionsFor('coaching')).toEqual([]);
+  });
+
+  it('is safe to call before any refresh has resolved', () => {
+    const store = new RecentSessionsStore(fakeApi({}));
+
+    store.reset();
+
+    expect(store.loaded).toBe(false);
+    expect(store.groups).toEqual([]);
   });
 });
 

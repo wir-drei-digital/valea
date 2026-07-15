@@ -81,3 +81,31 @@ export function isGroupExpanded(
   if (group.hasLiveSession) return true;
   return !collapsed[group.mountKey];
 }
+
+/**
+ * Turns an `icm_doctor` result into the sidebar's one-line "Diagnose"
+ * summary (`IcmProjects.svelte`'s kebab action). Fix wave, Finding 3: counts
+ * every check whose status ISN'T `"ok"`, not just `"failed"` —
+ * `Valea.Mounts.Doctor.run/1` also reports `"unknown"` for a warn-style
+ * check (e.g. secrets_hygiene) or one skipped after an earlier check in its
+ * own gate failed (see `MountsDoctorPanel.svelte`'s doc comment and
+ * `normalizeMountsDoctorChecks` in `mount-sections.ts`, which defaults a
+ * missing status to `"unknown"` the same way). Counting only `"failed"`
+ * meant an `ok: false` result made entirely of `"unknown"` checks rendered
+ * as "0 checks failed" — reading as healthy when it wasn't.
+ */
+export function diagnosisSummary(data: { ok: boolean; checks: Array<{ status?: string }> }): {
+  ok: boolean;
+  summary: string;
+} {
+  if (data.ok) return { ok: true, summary: 'All checks passed.' };
+
+  const needsAttention = data.checks.filter((c) => c.status !== 'ok').length;
+  return {
+    ok: false,
+    summary:
+      needsAttention === 1
+        ? '1 check needs attention — see Knowledge for details.'
+        : `${needsAttention} checks need attention — see Knowledge for details.`
+  };
+}

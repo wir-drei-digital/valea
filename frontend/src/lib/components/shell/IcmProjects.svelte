@@ -14,7 +14,7 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { degradedChipLabel } from '$lib/components/knowledge/mount-sections';
   import type { AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
-  import { orderGroups, isGroupExpanded } from './icm-projects';
+  import { orderGroups, isGroupExpanded, diagnosisSummary } from './icm-projects';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Plus from '@lucide/svelte/icons/plus';
@@ -106,6 +106,9 @@
   // `MountsDoctorPanel`'s copy-feedback (`mount-sections.ts`'s
   // `normalizeMountsDoctorChecks` shapes the same `checks` payload for the
   // full Knowledge-page panel; this is the one-ICM, one-line summary).
+  // Summary wording is `icm-projects.ts`'s `diagnosisSummary` (fix wave,
+  // Finding 3) — counts every non-"ok" check, not just "failed", so an
+  // `ok: false` result made of "unknown" checks doesn't misread as healthy.
   async function diagnose(mountKey: string): Promise<void> {
     diagnosing = { ...diagnosing, [mountKey]: true };
     diagnosis = { ...diagnosis, [mountKey]: null };
@@ -118,16 +121,7 @@
     }
 
     const data = result.data as { ok: boolean; checks: Array<{ status?: string }> };
-    const failed = data.checks.filter((c) => c.status === 'failed').length;
-    diagnosis = {
-      ...diagnosis,
-      [mountKey]: {
-        ok: data.ok,
-        summary: data.ok
-          ? 'All checks passed.'
-          : `${failed} check${failed === 1 ? '' : 's'} failed — see Knowledge for details.`
-      }
-    };
+    diagnosis = { ...diagnosis, [mountKey]: diagnosisSummary(data) };
   }
 </script>
 

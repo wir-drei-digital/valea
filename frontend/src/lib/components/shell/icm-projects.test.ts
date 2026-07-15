@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { orderGroups, isGroupExpanded, SESSIONS_PER_GROUP } from './icm-projects';
+import { orderGroups, isGroupExpanded, diagnosisSummary, SESSIONS_PER_GROUP } from './icm-projects';
 import type { MountSummary } from '$lib/stores/mounts.svelte';
 import type { RecentSessionGroup } from '$lib/stores/recent-sessions.svelte';
 import type { AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
@@ -88,19 +88,23 @@ describe('orderGroups', () => {
     expect(groups[0].hasLiveSession).toBe(true);
   });
 
-  it('reports hasMore (Show all…) only when the ICM has more than 5 sessions', () => {
-    const fewSessions = [session({ id: 'a' }), session({ id: 'b' })];
-    const manySessions = Array.from({ length: SESSIONS_PER_GROUP + 1 }, (_, i) => session({ id: `s${i}` }));
-    const mounts = [mount({ mountKey: 'few' }), mount({ mountKey: 'many' })];
+  it('reports hasMore (Show all…) only when the RAW server response overflows the display cap — a 6-item response (the store\'s SESSIONS_PER_GROUP + 1 overflow-probe request) yields 5 displayed + hasMore, a 5-item response yields 5 displayed + no hasMore', () => {
+    const exactlyFive = Array.from({ length: SESSIONS_PER_GROUP }, (_, i) => session({ id: `five-${i}` }));
+    const overflowing = Array.from({ length: SESSIONS_PER_GROUP + 1 }, (_, i) => session({ id: `over-${i}` }));
+    const mounts = [mount({ mountKey: 'exact' }), mount({ mountKey: 'over' })];
     const recent: RecentSessionGroup[] = [
-      { mountKey: 'few', icmName: 'Few', sessions: fewSessions },
-      { mountKey: 'many', icmName: 'Many', sessions: manySessions }
+      { mountKey: 'exact', icmName: 'Exact', sessions: exactlyFive },
+      { mountKey: 'over', icmName: 'Over', sessions: overflowing }
     ];
 
     const groups = orderGroups(mounts, recent);
+    const exact = groups.find((g) => g.mountKey === 'exact');
+    const over = groups.find((g) => g.mountKey === 'over');
 
-    expect(groups.find((g) => g.mountKey === 'few')?.hasMore).toBe(false);
-    expect(groups.find((g) => g.mountKey === 'many')?.hasMore).toBe(true);
+    expect(exact?.sessions).toHaveLength(SESSIONS_PER_GROUP);
+    expect(exact?.hasMore).toBe(false);
+    expect(over?.sessions).toHaveLength(SESSIONS_PER_GROUP);
+    expect(over?.hasMore).toBe(true);
   });
 });
 
@@ -119,5 +123,46 @@ describe('isGroupExpanded', () => {
 
   it('respects local collapse state for an inactive, non-live group', () => {
     expect(isGroupExpanded({ mountKey: 'clients', hasLiveSession: false }, null, { clients: true })).toBe(false);
+  });
+});
+
+describe('diagnosisSummary', () => {
+  it('reports "All checks passed." when ok, regardless of check contents', () => {
+    expect(diagnosisSummary({ ok: true, checks: [{ status: 'ok' }] })).toEqual({
+      ok: true,
+      summary: 'All checks passed.'
+    });
+  });
+
+  it('counts every non-"ok" check, not just "failed" — an all-"unknown" failure must not read as "0 checks failed"', () => {
+    const data = { ok: false, checks: [{ status: 'ok' }, { status: 'unknown' }, { status: 'unknown' }] };
+
+    expect(diagnosisSummary(data)).toEqual({
+      ok: false,
+      summary: '2 checks need attention — see Knowledge for details.'
+    });
+  });
+
+  it('also counts genuinely "failed" checks alongside "unknown" ones', () => {
+    const data = { ok: false, checks: [{ status: 'failed' }, { status: 'unknown' }, { status: 'ok' }] };
+
+    expect(diagnosisSummary(data)).toEqual({
+      ok: false,
+      summary: '2 checks need attention — see Knowledge for details.'
+    });
+  });
+
+  it('uses singular wording for exactly one non-ok check', () => {
+    expect(diagnosisSummary({ ok: false, checks: [{ status: 'failed' }] })).toEqual({
+      ok: false,
+      summary: '1 check needs attention — see Knowledge for details.'
+    });
+  });
+
+  it('treats a missing status as non-ok (defensive — mirrors normalizeMountsDoctorChecks defaulting a missing status to "unknown")', () => {
+    expect(diagnosisSummary({ ok: false, checks: [{}] })).toEqual({
+      ok: false,
+      summary: '1 check needs attention — see Knowledge for details.'
+    });
   });
 });
