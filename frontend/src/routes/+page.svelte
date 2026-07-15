@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import { AppShell, Sidebar } from '$lib/components/shell';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { queueStore } from '$lib/stores/queue.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
-  import { icmToNav, flattenMountGroups } from '$lib/shell/nav';
+  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { resolveActiveMountKey } from '$lib/shell/icm-route';
   import { normalizeCockpitToday, splitTrustClause, mailSummaryLine, type CockpitToday } from '$lib/today/cockpit';
   import { distillButtonState, distillErrorMessage, type DistillPhase } from '$lib/today/distill';
   import { fromLabel, subjectLabel } from '$lib/components/mail/mail-shapes';
@@ -95,7 +97,14 @@
     return mailStore.onMailStatus(() => void refresh());
   });
 
-  const icmNav = $derived(icmToNav(flattenMountGroups(icmStore.groups)));
+  // Task 9.3: the sidebar's file tree is gone (Knowledge owns it now) — see
+  // `AppFrame.svelte`'s identical derivation, which every other route gets
+  // for free. Today composes `Sidebar` directly rather than through
+  // `AppFrame` (its `main` snippet doesn't fit AppFrame's shape), so it
+  // derives `activeMountKey` the same way here.
+  const activeMountKey = $derived(
+    resolveActiveMountKey(page.url.pathname, page.url.searchParams, recentSessionsStore.groups)
+  );
   const trust = $derived.by(() => splitTrustClause(today?.summary ?? ''));
 
   const otherPreparedItems = $derived.by(() =>
@@ -145,7 +154,7 @@
 
 <AppShell>
   {#snippet sidebar()}
-    <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {icmNav} />
+    <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {activeMountKey} />
   {/snippet}
 
   {#snippet main()}

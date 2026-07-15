@@ -1,23 +1,26 @@
 <script lang="ts">
-  // Knowledge index (A-T15: mounts-aware). With exactly one enabled mount
-  // this looks EXACTLY like the pre-mounts page: top-level folders in a
-  // flat list, one "New" action in the pane header. With two or more
-  // enabled mounts, the tree splits into one section per mount (title +
-  // description header, its own "New" action targeting THAT mount's own
-  // root) — see `buildMountsDisplay` in `mount-sections.ts` for the
-  // collapse decision. A collapsed "Deactivated" group at the bottom lists
+  // Knowledge index. Task 9.3 relocated the sidebar's old flat/nested file
+  // tree here — this pane now shows exactly ONE ICM's full recursive tree at
+  // a time (`IcmTree`, reused from the shell — see its own doc comment),
+  // selected by `?icm=<mount-key>` (Task 9.4's route scheme; see
+  // `resolveIcmSelection` in `icm-route.ts`). With no `?icm=` yet, the first
+  // enabled mount (config order) is selected and reflected into the URL via
+  // `replaceState` (ambiguity resolution: cheap enough to always do — see
+  // the effect below). A collapsed "Deactivated" group at the bottom lists
   // every disabled, non-degraded mount with a re-enable toggle; a degraded
   // mount (manifest missing/invalid, regardless of its enabled flag) shows
   // as a non-clickable warning chip instead — see `classifyMounts`.
   import { onMount } from 'svelte';
-  import { AppFrame, ListPane, PageHeader, SectionOverline } from '$lib/components/shell';
+  import { page } from '$app/state';
+  import { replaceState } from '$app/navigation';
+  import { AppFrame, ListPane, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { encodePath, type IcmNode } from '$lib/shell/nav';
+  import { icmToNav, type IcmNode } from '$lib/shell/nav';
+  import { resolveIcmSelection } from '$lib/shell/icm-route';
   import {
     adoptFailureBannerText,
-    buildMountsDisplay,
     classifyMounts,
     degradedChipLabel,
     isExternalMount
@@ -25,7 +28,6 @@
   import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
-  import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
   import MountFromElsewhereDialog from '$lib/components/knowledge/MountFromElsewhereDialog.svelte';
   import MountsDoctorPanel from '$lib/components/knowledge/MountsDoctorPanel.svelte';
   import UnmountDialog from '$lib/components/knowledge/UnmountDialog.svelte';
@@ -47,16 +49,37 @@
     void mountsStore.refresh();
   });
 
-  const display = $derived(buildMountsDisplay(icmStore.groups, mountsStore.mounts));
+  const enabledMountKeys = $derived(
+    mountsStore.mounts.filter((m) => m.enabled && !m.degraded).map((m) => m.mountKey)
+  );
+  const selectedMountKey = $derived(resolveIcmSelection(page.url.searchParams.get('icm'), enabledMountKeys));
+  const selectedGroup = $derived(icmStore.groups.find((g) => g.mount === selectedMountKey));
+  const selectedMount = $derived(mountsStore.mounts.find((m) => m.mountKey === selectedMountKey));
+  const treeNav = $derived(icmToNav(selectedGroup?.tree ?? []));
+
   const classification = $derived(classifyMounts(mountsStore.mounts));
 
-  function folders(tree: IcmNode[]): IcmNode[] {
-    return tree.filter((n) => n.type === 'folder');
-  }
+  // Task 9.4: no `?icm=` yet, but a mount resolved anyway (the "default to
+  // first enabled" branch of `resolveIcmSelection`) — reflect that choice
+  // into the URL so the address bar and a later reload agree on which ICM is
+  // showing. `replaceState` doesn't trigger a real navigation, so this is
+  // cheap enough to just always do (ambiguity resolution). Self-limiting:
+  // once the param is set, `page.url.searchParams.get('icm')` is truthy on
+  // the next run, so the branch never re-fires for the same selection.
+  $effect(() => {
+    if (!page.url.searchParams.get('icm') && selectedMountKey) {
+      const url = new URL(page.url);
+      url.searchParams.set('icm', selectedMountKey);
+      replaceState(url, page.state);
+    }
+  });
 
   // A-T15 fix wave: non-.md file leaves (media/PDF) at a mount's top level.
-  // Rendered as non-clickable rows below the folders — visible ("reveal"),
-  // but never navigable: only .md pages open in the editor.
+  // Rendered as non-clickable rows below the tree — visible ("reveal"), but
+  // never navigable: only .md pages open in the editor. `IcmTree` (like the
+  // `NavTreeItem`/`icmToNav` it's built on) deliberately never carries file
+  // leaves — see `nav.ts`'s `icmToNav` doc comment — so they're listed here
+  // instead, same as before Task 9.3's relocation.
   function fileLeaves(tree: IcmNode[]): IcmNode[] {
     return tree.filter((n) => n.type === 'file');
   }
@@ -68,9 +91,7 @@
   // path is relative to ITS OWN root, so "the mount's own root" needs no
   // string of its own any more; `create_page(mount_key, "", name)` is how
   // the backend already spells "at the mount root"). What identifies WHICH
-  // mount to create into is `newEntryMountKey` above. When there is nowhere
-  // to create into (zero enabled mounts), `openNew` is simply never wired
-  // to a control — see the collapsed-with-no-mount guard below.
+  // mount to create into is `newEntryMountKey` above.
   let newEntryParent = $state('');
 
   function openNew(mountKey: string, parentPath: string, mode: 'page' | 'folder') {
@@ -108,8 +129,9 @@
   let doctorOpen = $state(false);
 
   // "Unmount" (A2-T9) — one dialog instance for every external-mount row
-  // across the active sections, degraded chips, and deactivated list (same
-  // per-row-props pattern `DeleteDialog`/`RenameDialog` use via `EntryMenu`).
+  // across the selected mount's header, degraded chips, and deactivated
+  // list (same per-row-props pattern `DeleteDialog`/`RenameDialog` use via
+  // `EntryMenu`).
   let unmountTarget = $state('');
   let unmountOpen = $state(false);
 
@@ -119,25 +141,6 @@
     unmountOpen = true;
   }
 </script>
-
-{#snippet folderRow(folder: IcmNode, mountKey: string)}
-  <li class="group relative">
-    <a
-      href={`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(folder.path)}`}
-      class="text-ink-body hover:bg-paper-pill flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-9 pl-3 text-[13px] transition-colors"
-    >
-      <span class="min-w-0 flex-1 truncate">{folder.name}</span>
-      <span class="text-ink-meta text-[11px] tabular-nums">{folder.pageCount ?? 0}</span>
-    </a>
-    <EntryMenu
-      {mountKey}
-      path={folder.path}
-      name={folder.name}
-      isFolder={true}
-      class="absolute top-1/2 right-0.5 -translate-y-1/2"
-    />
-  </li>
-{/snippet}
 
 {#snippet fileRow(file: IcmNode)}
   <!-- Non-clickable by design: only .md pages open in the editor. -->
@@ -158,57 +161,49 @@
   {#snippet list()}
     <ListPane title="Knowledge">
       {#snippet action()}
-        {#if display.collapsed && display.mount}
-          <NewEntryButton onNew={(mode) => openNew(display.mount, '', mode)} />
+        {#if selectedMountKey}
+          {@const mountKey = selectedMountKey}
+          <NewEntryButton onNew={(mode) => openNew(mountKey, '', mode)} />
         {/if}
       {/snippet}
       {#snippet children()}
-        {#if display.collapsed}
-          <ul class="flex flex-col py-1">
-            {#each folders(display.tree) as folder (folder.path)}
-              {@render folderRow(folder, display.mount)}
-            {/each}
-            {#each fileLeaves(display.tree) as file (file.path)}
-              {@render fileRow(file)}
-            {/each}
-          </ul>
-        {:else}
-          {#each display.sections as section (section.mount)}
-            <div>
-              <div class="flex items-start justify-between gap-2 px-2 pt-4 pb-1">
-                <div class="min-w-0">
-                  <p class="text-overline">{section.title}</p>
-                  {#if section.description}
-                    <p class="text-ink-meta mt-0.5 truncate text-[11.5px]">{section.description}</p>
-                  {/if}
-                  {#if section.root}
-                    <!-- A2-T5b: an external (by-reference) mount's content lives
-                         outside the workspace — show WHERE, since that's not
-                         otherwise implied the way an embedded mount's is. -->
-                    <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={section.root}>
-                      {section.root}
-                    </p>
-                    <button
-                      type="button"
-                      onclick={() => openUnmount(section.mount)}
-                      class="text-ink-meta hover:text-warn-ink mt-0.5 text-[11px] underline-offset-2 hover:underline"
-                    >
-                      Unmount
-                    </button>
-                  {/if}
-                </div>
-                <NewEntryButton onNew={(mode) => openNew(section.mount, '', mode)} />
-              </div>
-              <ul class="flex flex-col py-1">
-                {#each folders(section.tree) as folder (folder.path)}
-                  {@render folderRow(folder, section.mount)}
-                {/each}
-                {#each fileLeaves(section.tree) as file (file.path)}
-                  {@render fileRow(file)}
-                {/each}
-              </ul>
+        {#if selectedMountKey}
+          {@const mountKey = selectedMountKey}
+          <div class="flex items-start justify-between gap-2 px-2 pt-4 pb-1">
+            <div class="min-w-0">
+              <p class="text-overline">{selectedMount?.name ?? selectedGroup?.title ?? mountKey}</p>
+              {#if selectedMount?.description}
+                <p class="text-ink-meta mt-0.5 truncate text-[11.5px]">{selectedMount.description}</p>
+              {/if}
+              {#if selectedMount?.root}
+                <!-- A2-T5b: an external (by-reference) mount's content lives
+                     outside the workspace — show WHERE, since that's not
+                     otherwise implied the way an embedded mount's is. -->
+                <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={selectedMount.root}>
+                  {selectedMount.root}
+                </p>
+                <button
+                  type="button"
+                  onclick={() => openUnmount(mountKey)}
+                  class="text-ink-meta hover:text-warn-ink mt-0.5 text-[11px] underline-offset-2 hover:underline"
+                >
+                  Unmount
+                </button>
+              {/if}
             </div>
-          {/each}
+          </div>
+          <div class="px-1 pb-1">
+            <IcmTree nodes={treeNav} activePath={page.url.pathname} />
+          </div>
+          {#if fileLeaves(selectedGroup?.tree ?? []).length > 0}
+            <ul class="flex flex-col py-1">
+              {#each fileLeaves(selectedGroup?.tree ?? []) as file (file.path)}
+                {@render fileRow(file)}
+              {/each}
+            </ul>
+          {/if}
+        {:else}
+          <p class="text-ink-meta px-3 py-4 text-[12.5px]">No ICM is mounted yet.</p>
         {/if}
 
         {#if classification.degraded.length > 0}

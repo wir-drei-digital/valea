@@ -2,10 +2,10 @@
   import { page } from '$app/state';
   import { beforeNavigate, goto } from '$app/navigation';
   import { onDestroy } from 'svelte';
-  import { AppFrame, ListPane, PageHeader, SegmentedControl } from '$lib/components/shell';
+  import { AppFrame, ListPane, PageHeader, SegmentedControl, IcmTree } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { api, type IcmPageData } from '$lib/api/client';
-  import { encodePath, type IcmNode } from '$lib/shell/nav';
+  import { icmToNav, type IcmNode } from '$lib/shell/nav';
   import { parentPath } from './parent-path';
   import { recordVisit } from '$lib/stores/recent-pages';
   import { collectDocLinkPaths } from '$lib/editor/link-nav';
@@ -16,7 +16,6 @@
   import { PageEditorStore } from '$lib/stores/page-editor.svelte';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
-  import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
   import BacklinksPanel from '$lib/components/knowledge/BacklinksPanel.svelte';
   import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import ImageIcon from '@lucide/svelte/icons/image';
@@ -57,6 +56,21 @@
   // mount (task 4.2 re-key: a bare path is no longer unique across mounts,
   // so searching every mount's tree for it could find the wrong page).
   const mountTree = $derived(icmStore.groups.find((g) => g.mount === mountKey)?.tree ?? []);
+
+  // Task 9.3: the list pane renders this mount's FULL recursive tree
+  // (`IcmTree`, relocated from the old sidebar) rather than just the
+  // open folder's direct children — `activePath` (below) still highlights
+  // where you are within it. `?icm=` is deliberately never read on this
+  // route (ambiguity resolution, Task 9.4): the mount key rides the PATH
+  // here, and the path always wins over any `?icm=` a stale link might
+  // carry.
+  const treeNav = $derived(icmToNav(mountTree));
+  // Same "visible, never navigable" file-leaf treatment `/knowledge`'s
+  // index keeps — see its own doc comment. Top-level only, matching what
+  // this route ever exposed pre-9.3 too (a file leaf nested under a
+  // specific folder was only ever visible by navigating INTO that folder,
+  // which no longer has its own dedicated list view).
+  const topLevelFileLeaves = $derived(mountTree.filter((n) => n.type === 'file'));
 
   const node = $derived(findNode(mountTree, decodedPath));
   const isPage = $derived(node?.type === 'page');
@@ -340,10 +354,18 @@
   onDestroy(() => {
     if (store) void store.flush();
   });
-</script>
 
-<AppFrame
-  onBeforeMutateActive={async () => {
+  /**
+   * Flushes the currently open page's pending edit before a mutation that
+   * would otherwise lose it — passed to `AppFrame` (workspace switch,
+   * `WorkspaceSwitcher`'s doc comment) AND to `IcmTree` below (rename/delete
+   * on the tree row matching this page's own path — `IcmTree` only ever
+   * forwards it to the row whose `href` equals `activePath`, so every other
+   * row's rename/delete skips straight to the mutate call with nothing to
+   * flush). Same shape `RenameDialog`/`DeleteDialog` expect via
+   * `before-mutate.ts`'s `withBeforeMutate`.
+   */
+  async function flushBeforeMutate(): Promise<void> {
     if (!store) return Promise.resolve();
     await store.flush();
     // If the store is still dirty with an error after flushing, throw so the
@@ -351,63 +373,38 @@
     if (store.state === 'dirty' && store.error) {
       throw new Error('unsaved_changes');
     }
-  }}
->
+  }
+</script>
+
+<AppFrame onBeforeMutateActive={flushBeforeMutate}>
   {#snippet list()}
     <ListPane title={listContext.title}>
       {#snippet action()}
         <NewEntryButton onNew={openNew} />
       {/snippet}
       {#snippet children()}
-        <ul class="flex flex-col py-1">
-          {#each listContext.entries as child (child.path)}
-            {@const selected = child.path === decodedPath}
-            {#if child.type === 'file'}
+        <div class="px-1 pt-1">
+          <IcmTree nodes={treeNav} activePath={page.url.pathname} onBeforeMutate={flushBeforeMutate} />
+        </div>
+        {#if topLevelFileLeaves.length > 0}
+          <ul class="flex flex-col py-1">
+            {#each topLevelFileLeaves as file (file.path)}
               <!-- A-T15 fix wave: non-.md file leaf — visible but
                    non-clickable (only .md pages open in the editor). -->
               <li class="text-ink-secondary flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-[13px]">
-                {#if fileLeafKind(child.ext) === 'image'}
+                {#if fileLeafKind(file.ext) === 'image'}
                   <ImageIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-                {:else if fileLeafKind(child.ext) === 'pdf'}
+                {:else if fileLeafKind(file.ext) === 'pdf'}
                   <FileText class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
                 {:else}
                   <FileIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
                 {/if}
-                <span class="min-w-0 flex-1 truncate">{child.name}</span>
-                <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">{fileLeafLabel(child.ext)}</span>
+                <span class="min-w-0 flex-1 truncate">{file.name}</span>
+                <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">{fileLeafLabel(file.ext)}</span>
               </li>
-            {:else}
-              <li class="group relative">
-                <a
-                  href={`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(child.path)}`}
-                  class="flex items-center gap-2 border-l-[3px] py-2 pr-9 pl-3 text-[13px] transition-colors hover:bg-paper-pill"
-                  class:border-act={selected}
-                  class:border-transparent={!selected}
-                  class:bg-paper-card={selected}
-                >
-                  <span
-                    class={[
-                      'min-w-0 flex-1 truncate',
-                      selected ? 'text-ink-heading [font-weight:650]' : 'text-ink-body'
-                    ]}
-                  >
-                    {child.name}
-                  </span>
-                  {#if child.type === 'folder'}
-                    <span class="text-ink-meta text-[11px] tabular-nums">{child.pageCount ?? 0}</span>
-                  {/if}
-                </a>
-                <EntryMenu
-                  {mountKey}
-                  path={child.path}
-                  name={child.name}
-                  isFolder={child.type === 'folder'}
-                  class="absolute top-1/2 right-0.5 -translate-y-1/2"
-                />
-              </li>
-            {/if}
-          {/each}
-        </ul>
+            {/each}
+          </ul>
+        {/if}
       {/snippet}
     </ListPane>
   {/snippet}
