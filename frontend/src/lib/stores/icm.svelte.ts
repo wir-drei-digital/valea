@@ -7,6 +7,7 @@ import { wireAuditEvents } from './audit.svelte';
 import { wireMailEvents } from './mail.svelte';
 import { wireMountsEvents } from './mounts.svelte';
 import { workflowsStore } from './workflows.svelte';
+import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
 
 type IcmApi = Pick<Api, 'icmTree' | 'listIcms'>;
 
@@ -205,6 +206,14 @@ let icmEventsWired = false;
  * `MountsStore.handleMountsChanged`'s doc comment in `mounts.svelte.ts`) —
  * a mount toggling changes `icm_tree`'s grouping (A-T11), not just
  * `list_mounts`'s output, so the two stores go stale together.
+ *
+ * CARRY-FORWARD (Task 9.1 — sidebar project groups): `recentSessionsStore`
+ * is refreshed directly from `onWorkspace` below (on open, alongside
+ * `icmStore.refetch()`), and `wireRecentSessionsEvents` is wired onto this
+ * same shared channel for `mounts_changed`, same reasoning as
+ * `wireMountsEvents` — see that function's own doc comment in
+ * `recent-sessions.svelte.ts` for why `mounts_changed` (not `icm_changed`)
+ * is the trigger, and why a live per-session-status push isn't wired here.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -228,6 +237,7 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
       icmStore.reset();
       if (payload.open) {
         void icmStore.refetch();
+        void recentSessionsStore.refresh();
       }
       onWorkspace?.(payload);
     },
@@ -241,4 +251,5 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
   wireAuditEvents(channel);
   wireMailEvents(channel);
   wireMountsEvents(channel);
+  wireRecentSessionsEvents(channel);
 }
