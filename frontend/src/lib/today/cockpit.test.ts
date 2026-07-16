@@ -94,7 +94,7 @@ describe('normalizeCockpitToday', () => {
           open_loops: 'nope'
         }
       ],
-      mail: { review_count: null, inbox_count: undefined, configured: 'yes' },
+      mail: { review_count: null, inbox_count: 'not-a-number', configured: 'yes' },
       recent_sessions: 'nope'
     });
 
@@ -104,6 +104,9 @@ describe('normalizeCockpitToday', () => {
     expect(section.prepared).toEqual([{ title: 'ok', summary: null, page: null }]);
     expect(section.openLoops).toEqual([]);
 
+    // `inbox_count: 'not-a-number'` would `Number(...)` to `NaN` without the
+    // `Number.isFinite` guard — degrades to 0 like every other wrong-typed
+    // field in this normalizer, rather than propagating NaN into the UI.
     expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
     expect(today.recentSessions).toEqual([]);
   });

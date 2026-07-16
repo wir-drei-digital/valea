@@ -20,8 +20,8 @@
   import MessageView from '$lib/components/mail/MessageView.svelte';
   import SetupPanel from '$lib/components/mail/SetupPanel.svelte';
 
-  // `mail_status`/`mail_sync`/`mail_message`/`mailbox_ops` are wired ONCE,
-  // at the layout (`wireMailEvents`, called from `wireIcmEvents` in
+  // `mail_status`/`mail_sync`/`mail_message` are wired ONCE, at the layout
+  // (`wireMailEvents`, called from `wireIcmEvents` in
   // `icm.svelte.ts`'s single `workspace:events` join site — see that
   // function's doc comment for why this route must not join a second
   // channel itself). This mount just does the route's own initial reads;

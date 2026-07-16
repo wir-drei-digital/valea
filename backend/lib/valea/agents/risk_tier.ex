@@ -12,14 +12,17 @@ defmodule Valea.Agents.RiskTier do
   absolute physical path back to a mount via `Valea.Mounts.mount_for/2`.
   That attribution step is exactly what broke once an agent session's
   `cwd` became the ICM root itself (Task 5.4+): the agent's own
-  self-reported paths (a memory-proposal `target_path`, a tool call's
-  `rawInput.file_path`) are ICM-relative from the start, so re-deriving a
-  workspace-relative form to feed `mount_for/2` could only ever miss —
-  silently downgrading a behavior-changing edit to "medium". A locator
-  sidesteps that entirely: whoever built it (`Runner.finalize_pair` from
-  an already-resolved ICM identity, `SessionServer.enrich_item` via
-  `Locator.for_path/2`) already did the one real attribution; this module
-  just tiers the `path` it carries.
+  self-reported paths (a tool call's `rawInput.file_path`) are
+  ICM-relative from the start, so re-deriving a workspace-relative form to
+  feed `mount_for/2` could only ever miss — silently downgrading a
+  behavior-changing edit to "medium". A locator sidesteps that entirely:
+  whoever built it (`SessionServer.enrich_item` via `Locator.for_path/2`,
+  from an already-resolved ICM identity) already did the one real
+  attribution; this module just tiers the `path` it carries.
+
+  The tier is display + envelope metadata, never an access decision — it
+  labels a permission ask for the human deciding on it, but nothing in the
+  approve/deny path reads or gates on it.
   """
 
   @behavior_basenames ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"]

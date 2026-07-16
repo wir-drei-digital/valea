@@ -55,8 +55,8 @@ defmodule Valea.Api.Agents do
       argument :mount_key, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
       # Spec D §B: both optional, both raw string-keyed locator maps
-      # (unconstrained :map — same convention the deleted run_workflow used
-      # for input_locator; the FE sends "kind"/"icm_id"/"path" verbatim).
+      # (unconstrained :map — same convention the deleted workflow-run action
+      # used for input_locator; the FE sends "kind"/"icm_id"/"path" verbatim).
       argument :context_doc, :map, allow_nil?: true
       argument :input, :map, allow_nil?: true
 
@@ -282,7 +282,7 @@ defmodule Valea.Api.Agents do
   # Central error mapping for every action in this resource — mirrors
   # `Valea.Api.ICM.error_for/1`. `:no_workspace` becomes the frontend's
   # `"workspace_not_open"`; every other atom this resource's dependencies can
-  # return (`:workspace_changed`, `:harness_unavailable`, `:workflow_disabled`,
+  # return (`:workspace_changed`, `:harness_unavailable`, `:input_unavailable`,
   # `:input_not_found`, `:not_found`, ...) already stringifies to the exact
   # code the frontend expects, so the generic atom clause covers them without
   # individual case clauses.

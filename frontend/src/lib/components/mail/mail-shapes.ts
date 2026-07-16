@@ -14,7 +14,7 @@
  *    string keys, `from`/`reply_to` are `{name, email} | null`, `to` is
  *    `[{name, email}]`, `attachments` is `[{filename, path, bytes}]`.
  *  - status values: `"review" | "processed"` (`MessageFile.parse/1`'s doc
- *    comment; flipped by `Valea.Mail.MailboxOps.flip_status/2`).
+ *    comment; flipped by `Valea.Mail.MessageFile.flip_status/2`).
  *  - engine state: `"idle" | "inactive" | "syncing" | "auth_failed"`
  *    (`MailStatusPush`'s doc comment in `socket.ts`).
  */

@@ -225,8 +225,8 @@ export class MountsStore {
    * disabled one loses one), so the two stores go stale together and must
    * refresh together. `icmStore` is imported directly rather than
    * injected — `icm.svelte.ts` imports `wireMountsEvents` back from this
-   * module (to attach it alongside `wireAuditEvents`/`wireMailEvents` on
-   * the shared `workspace:events` join), so this pair of modules is
+   * module (to attach it alongside `wireMailEvents` on the shared
+   * `workspace:events` join), so this pair of modules is
    * intentionally mutually-referencing; the cross-references
    * only ever run inside method bodies (never at module top-level
    * evaluation), which is safe under ES module circular resolution.
@@ -370,15 +370,13 @@ let mountsEventsWired = false;
  * Attaches a `mounts_changed` listener to an already-joined channel and
  * keeps `mountsStore` (and, via `handleMountsChanged`, `icmStore`) fresh.
  * Takes the channel as a parameter rather than joining its own — same
- * reason `wireAuditEvents`/`wireMailEvents` do (see their doc comments):
- * Phoenix's JS client only reliably delivers pushes to ONE join per topic
- * per socket, so every store rides the single `workspace:events` join
- * `wireIcmEvents` (`icm.svelte.ts`) owns, rather than opening a second one
- * here.
+ * reason `wireMailEvents` does (see its doc comment): Phoenix's JS client
+ * only reliably delivers pushes to ONE join per topic per socket, so every
+ * store rides the single `workspace:events` join `wireIcmEvents`
+ * (`icm.svelte.ts`) owns, rather than opening a second one here.
  *
  * SINGLE CALL SITE: wired from `wireIcmEvents` itself, alongside
- * `wireAuditEvents`/`wireMailEvents` — see that function's doc comment in
- * `icm.svelte.ts`.
+ * `wireMailEvents` — see that function's doc comment in `icm.svelte.ts`.
  *
  * Idempotent against repeat calls, same spirit as those — a second call is
  * a no-op rather than attaching a second `mounts_changed` handler (which

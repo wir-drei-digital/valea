@@ -599,6 +599,11 @@ defmodule Valea.Mounts do
         end
 
       {:error, _reason} ->
+        # Safe no-op: `cp_r!` (in `seed_template!` above) already seeded
+        # `dest`'s CLAUDE.md with the exact same one-line `@AGENTS.md`
+        # fallback text the `ln_s` error branch above would otherwise write,
+        # so leaving whatever `File.rm` couldn't remove in place is
+        # equivalent to the symlink-unsupported fallback.
         :ok
     end
   end

@@ -137,3 +137,35 @@ UI) and one switch-refresh bug (fixed in a follow-up wave); 6 is partially
 observed live with its structural core automated-verified and a precise recipe
 for the remaining live case. `just test` green (backend 962/0/0, frontend 680,
 check 0) at the time of the run.
+
+## Spec D re-scope (2026-07-16)
+
+Scenario 6 above ("Workflow") is **superseded** by [Spec D — Agent-native
+ICMs](../specs/2026-07-16-agent-native-icms-design.md): the workflow
+registry, the staged-approval queue, and the "Distill recent decisions"
+reflection workflow it exercised are all deleted outright (§A). There is no
+more `run_workflow`/`Valea.Workflows.Runner` for a "live workflow run" to
+exercise, and no more `queue/approved|rejected` for `Distill.digest/1` to
+compile — both are gone from the codebase.
+
+Its replacement is the session-with-context primitive (§B): **start a
+session with a workflow document (`context_doc`) and an input file
+(`input`), observe ask-gated execution.** This exact mechanism — a chat
+session whose cwd is the primary ICM root, with a write attempt surfacing
+the live permission-ask card and a secret-path read auto-denied by
+`PermissionPolicy` with zero user interaction — was **live-verified
+2026-07-16** against a real `claude-agent-acp` subprocess and a real model
+turn; see `docs/notes/acp-launch-contract.md`'s "✅ PRECONDITION SATISFIED"
+addendum (session `20260715T224007.701935Z-f4bb3d95603e`) for the full
+transcript-level evidence: an `ask`-gated `Write` resolved `allow_once` by
+an actual user click, and a `Read` under `secrets/` auto-resolved
+`reject_once` with no card shown. `context_doc`/`input` themselves are
+fail-closed at session creation (`:context_doc_unavailable`/
+`:input_unavailable` — see `ARCHITECTURE.md`'s "Session creation,
+permission asks, and audit"), unit-tested per the Spec D design's own
+testing strategy (§Testing strategy: scope tests for the read-root fold-in,
+fail-closed-on-unavailable-input, and `session/v1` metadata provenance).
+
+No other scenario in this acceptance run is affected: Scenarios 1–5 describe
+workspace/ICM-mount mechanics Spec D leaves untouched (it is explicitly "not
+reopened" by Spec D's own design doc).

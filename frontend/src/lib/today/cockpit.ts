@@ -34,6 +34,12 @@ function str(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
+/** Same defensive-degrade stance as `str()` above, for numeric fields: non-numeric raw input degrades to 0 rather than propagating `NaN`. */
+function num(v: unknown): number {
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function pick(raw: Record<string, unknown>, snake: string, camel: string): unknown {
   return raw[snake] !== undefined ? raw[snake] : raw[camel];
 }
@@ -65,8 +71,8 @@ export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToda
       .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
       .map(normalizeSection),
     mail: {
-      reviewCount: Number(pick(mail, 'review_count', 'reviewCount') ?? 0),
-      inboxCount: Number(pick(mail, 'inbox_count', 'inboxCount') ?? 0),
+      reviewCount: num(pick(mail, 'review_count', 'reviewCount')),
+      inboxCount: num(pick(mail, 'inbox_count', 'inboxCount')),
       configured: pick(mail, 'configured', 'configured') === true
     },
     recentSessions: (Array.isArray(recent) ? recent : [])

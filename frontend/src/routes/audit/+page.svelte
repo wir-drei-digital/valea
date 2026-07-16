@@ -1,10 +1,11 @@
 <script lang="ts">
   // The receipts trail (DESIGN_SYSTEM §8 dense rows): every audited action —
   // synced, drafted, approved, permission decisions — reverse-chron, plain
-  // sentences, nothing hidden. Live refresh rides `queue_changed` via the
-  // single shared `workspace:events` join (`wireAuditEvents`, wired from
-  // `wireIcmEvents` in `icm.svelte.ts`); this route only needs the
-  // first-load `refetch()`.
+  // sentences, nothing hidden. No live push keeps this fresh mid-session
+  // (the queue-decision push listener that used to do so was removed
+  // alongside the queue/workflow subsystem, Spec D deletion wave — see
+  // `icm.svelte.ts`'s `wireIcmEvents` doc comment); this route only needs
+  // the first-load `refetch()`.
   import { onMount } from 'svelte';
   import { AppFrame, EmptyState, PageHeader } from '$lib/components/shell';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';

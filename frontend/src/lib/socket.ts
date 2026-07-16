@@ -123,9 +123,6 @@ export type MailSyncPush = { phase: 'started' | 'finished'; newMessages: number 
 /** `mail_message` push payload — one mail message file was created/updated on disk (`SyncPass`). */
 export type MailMessagePush = { path: string };
 
-/** `mailbox_ops` push payload — a decided queue item's post-approval mailbox ops changed state. */
-export type MailboxOpsPush = { runId: string };
-
 export function joinWorkspaceEvents(handlers: {
   onWorkspace?: (payload: WorkspaceEventPayload) => void;
   onIcmChanged?: () => void;
@@ -133,7 +130,6 @@ export function joinWorkspaceEvents(handlers: {
   onMailStatus?: (payload: MailStatusPush) => void;
   onMailSync?: (payload: MailSyncPush) => void;
   onMailMessage?: (payload: MailMessagePush) => void;
-  onMailboxOps?: (payload: MailboxOpsPush) => void;
 }): Channel {
   const sock = connectSocket();
   const channel = sock.channel('workspace:events', {});
@@ -155,9 +151,6 @@ export function joinWorkspaceEvents(handlers: {
   }
   if (handlers.onMailMessage) {
     channel.on('mail_message', (payload: MailMessagePush) => handlers.onMailMessage?.(payload));
-  }
-  if (handlers.onMailboxOps) {
-    channel.on('mailbox_ops', (payload: MailboxOpsPush) => handlers.onMailboxOps?.(payload));
   }
 
   channel.join();

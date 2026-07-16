@@ -96,7 +96,7 @@ let recentSessionsEventsWired = false;
 /**
  * Attaches a `mounts_changed` listener to an already-joined channel and
  * keeps `recentSessionsStore` fresh — same reason/pattern as
- * `wireMountsEvents`/`wireAuditEvents`/`wireMailEvents`
+ * `wireMountsEvents`/`wireMailEvents`
  * (see their doc comments in `mounts.svelte.ts` etc.): Phoenix's JS client
  * only reliably delivers pushes to ONE join per topic per socket, so this
  * rides the single `workspace:events` join `wireIcmEvents` (`icm.svelte.ts`)

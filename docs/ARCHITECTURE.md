@@ -25,6 +25,24 @@ rationale, and grows with each feature/spec.
 > it is not automatically part of another ICM's context. Every agent session
 > runs inside exactly one primary ICM, and Valea supplies only the related
 > context and working artifacts that the ICM or task explicitly names.
+>
+> **Spec D (agent-native ICMs)** — [Agent-native ICMs
+> design](superpowers/specs/2026-07-16-agent-native-icms-design.md) — deleted
+> the entire Phase-3/Spec-B workflow pipeline outright (`Valea.Workflows`,
+> `Valea.Workflows.Runner`, `Valea.Workflows.MemoryProposal`/`Distill`,
+> `Valea.Queue`'s proposal kinds and executors, `Valea.Mail.MailboxOps`/
+> `DraftMime`, and every RPC/UI surface built on them — `/workflows`,
+> `/queue/[run_id]`, the Distill/triage actions) and replaced it with one
+> kind-agnostic **session-with-context primitive**, a **today.json** cockpit
+> the agent maintains directly, **adopt-a-folder** mounting, a **depth-aware**
+> `RiskTier`, ICM-internal **secrets deny-by-default**, and a **3-layer prose**
+> starter seed (see "Agent slice" and "Dynamic-tree riders" below). Valea no
+> longer interprets ICM structure at all — the agent interprets an ICM's
+> prose; Valea supplies containment, identity, ask-gated approval, sync, and
+> UI. The 2026-07-12 Methodology Depth design (Spec B) and the 2026-07-10
+> Agent Slice design's queue/workflow sections are superseded by this; both
+> remain only as historical record (see the Spec index at the bottom of this
+> file).
 
 ## System shape
 
@@ -129,12 +147,15 @@ below); nothing canonical lives in the workspace folder itself.
 
 ## API layer
 
-- **`ash_typescript`**: Ash actions on the `Valea.Api` domain (`backend/lib/valea/api.ex`, extension `AshTypescript.Rpc`) exposed as typed RPC, with a generated TypeScript client (`frontend/src/lib/api/ash_rpc.ts`, committed) giving end-to-end type safety. No AshJsonApi, no hand-maintained client types. All three resources (`Workspace`, `ICM`, `Cockpit`) are data-layer-less Ash resources — thin adapters over plain Elixir modules (`Valea.Workspace.Manager`, `Valea.ICM`, `Valea.Cockpit`), not Ecto-backed.
+- **`ash_typescript`**: Ash actions on the `Valea.Api` domain (`backend/lib/valea/api.ex`, extension `AshTypescript.Rpc`) exposed as typed RPC, with a generated TypeScript client (`frontend/src/lib/api/ash_rpc.ts`, committed) giving end-to-end type safety. No AshJsonApi, no hand-maintained client types. All seven resources (`Workspace`, `ICM`, `Cockpit`, `Agents`, `Audit`, `Mail`, `Icms`) are data-layer-less Ash resources — thin adapters over plain Elixir modules (`Valea.Workspace.Manager`, `Valea.ICM`, `Valea.Cockpit`, `Valea.Agents`, `Valea.Audit`, `Valea.Mail.*`, `Valea.Mounts`), not Ecto-backed.
 - **RPC action list** (`rpc_action(:name, :action)` in `Valea.Api`, generated TS function name in parens):
   - `Valea.Api.Workspace`: `get_workspace` → `:current` (`getWorkspace`) — reports `{open, path, name, id}`, `open: false` when no workspace; `create_workspace` → `:create_workspace` (`createWorkspace`, arg `name` — the path is app-owned, never a caller argument); `open_workspace` → `:open_workspace` (`openWorkspace`, arg `id`); `close_workspace` → `:close_workspace` (`closeWorkspace`); `recent_workspaces` → `:recent` (`recentWorkspaces`); `workspace_switch_preflight` → `:workspace_switch_preflight` (`workspaceSwitchPreflight`, arg `id` — reports the CURRENTLY open workspace's live sessions a switch to `id` would stop); `runtime_check` → `:runtime_check` (`runtimeCheck`).
   - `Valea.Api.ICM`: `icm_tree` → `:tree` (`icmTree`, arg `mount_key`) — ONE mounted ICM's tree, `{mount_key:, title:, tree:}`, every node `path` relative to that ICM's own root (task 4.2's re-key; a caller that needs every enabled ICM's tree calls this once per mount key); `icm_page` → `:page` (`icmPage`, args `mount_key, path`).
-  - `Valea.Api.Icms`: `list_icms` → `:list_icms` (`listIcms`) — every `icms:`-config entry (enabled/disabled/degraded), typed `mountKey`/`id`/`name`/`description`/`root`/`enabled`/`degraded` (`id` the manifest's stable UUID, `null` for a degraded mount with no loadable manifest; `root` always the resolved absolute path — every mount is by-reference, there is no embedded form); `mount_icm` → `:mount_icm` (`mountIcm`, args `path, generation`) — mounts an existing, already-healthy external ICM folder; `create_icm` → `:create_icm` (`createIcm`, args `name, path, generation`) — mints a brand-new ICM at `path` (seeding `backend/priv/icm_template/`) and mounts it, the only mutation that writes into an ICM's own folder; `set_icm_enabled` → `:set_icm_enabled` (`setIcmEnabled`, args `mount_key, enabled, generation`); `unmount_icm` → `:unmount_icm` (`unmountIcm`, args `mount_key, generation`) — config-only, never touches the folder; `icm_doctor` → `:icm_doctor` (`icmDoctor`, args `mount_key, generation`) — per-mount health checks; `inspect_icm` → `:inspect_icm` (`inspectIcm`, arg `path`) — the "what's in this folder" mount/onboarding preview. See [ICM project workspaces](#icm-project-workspaces) below.
-  - `Valea.Api.Cockpit`: `cockpit_today` → `:today` (`cockpitToday`) — the seeded §17 narrative.
+  - `Valea.Api.Icms`: `list_icms` → `:list_icms` (`listIcms`) — every `icms:`-config entry (enabled/disabled/degraded), typed `mountKey`/`id`/`name`/`description`/`root`/`enabled`/`degraded` (`id` the manifest's stable UUID, `null` for a degraded mount with no loadable manifest; `root` always the resolved absolute path — every mount is by-reference, there is no embedded form); `mount_icm` → `:mount_icm` (`mountIcm`, args `path, generation`) — mounts an existing, already-healthy external ICM folder; `adopt_icm` → `:adopt_icm` (`adoptIcm`, args `path, name, generation`) — mints a minimal `{format: 2, id, name}` identity file into a manifest-less folder (the ONLY write) and mounts it (see "Dynamic-tree riders" → adopt-a-folder below); `create_icm` → `:create_icm` (`createIcm`, args `name, path, generation`) — mints a brand-new ICM at `path` (seeding `backend/priv/icm_template/`) and mounts it, the only other mutation that writes into an ICM's own folder; `set_icm_enabled` → `:set_icm_enabled` (`setIcmEnabled`, args `mount_key, enabled, generation`); `unmount_icm` → `:unmount_icm` (`unmountIcm`, args `mount_key, generation`) — config-only, never touches the folder; `icm_doctor` → `:icm_doctor` (`icmDoctor`, args `mount_key, generation`) — per-mount health checks; `inspect_icm` → `:inspect_icm` (`inspectIcm`, arg `path`) — the "what's in this folder" mount/onboarding preview, now also reporting `adoptable`. See [ICM project workspaces](#icm-project-workspaces) below.
+  - `Valea.Api.Cockpit`: `cockpit_today` → `:today` (`cockpitToday`) — the `today.json` cockpit aggregation (see "Today = a file the agent maintains" below).
+  - `Valea.Api.Agents`: `create_agent_session` → `:create_session` (`createAgentSession`, args `mount_key, generation`, optional `context_doc, input`) — the session-with-context primitive (see "Session creation, permission asks, and audit" below); `list_agent_sessions` → `:list_sessions` (`listAgentSessions`); `list_recent_sessions_by_icm` → same name (`listRecentSessionsByIcm`, arg `limit`); `list_sessions` → `:list_sessions_for` (`listSessions`, args `mount_key`, optional `cursor`); `create_follow_up` → same name (`createFollowUp`, args `session_id, generation`); `harness_doctor` → same name (`harnessDoctor`).
+  - `Valea.Api.Audit`: `list_audit_entries` → same name (`listAuditEntries`, arg `limit`) — relocated from the deleted `Valea.Api.Queue` (Spec D §A); `Valea.Audit` itself is queue-independent.
+  - `Valea.Api.Mail`: see "RPC + channel events" under Mail below.
 - **Transport: Phoenix channels first, HTTP fallback.** One socket (`ValeaWeb.UserSocket`, path `/socket`) carries two independent channel topics: `ash_typescript_rpc:client` (ash_typescript's channel-RPC transport — every `icmTree()`-style call goes here when the channel is joined) and the single consolidated **`workspace:events`** channel, joined once from `frontend/src/routes/+layout.svelte` via `wireIcmEvents()` (`frontend/src/lib/stores/icm.svelte.ts`) and pushing two event names: `workspace` (`{open, name?, path?}`, on open/close) and `icm_changed` (`{}`, on any change under `{workspace}/icm`, debounced 200ms by `Valea.ICM.Watcher`). There is no per-feature channel sprawl — `workspace:events` is the one realtime channel, and non-realtime RPC prefers `ash_typescript_rpc:client` but transparently falls back to plain `POST /rpc/run` (`ValeaWeb.RpcController.run/2`) when the socket/channel isn't joined (see `frontend/src/lib/api/client.ts`).
 - Plain controllers only where RPC doesn't fit — e.g. `GET /api/health` (`ValeaWeb.HealthController`, returns `{"status":"ok"}`) for sidecar port polling from Tauri.
 - Codegen is part of the build: `just codegen` runs `mix ash_typescript.codegen`; `just test` fails if the checked-in client is stale.
@@ -145,17 +166,23 @@ below); nothing canonical lives in the workspace folder itself.
 
 - **Markdown ↔ ProseMirror converter** (`backend/lib/valea/markdown/prose_mirror.ex`, `.../profile.ex`): vendored from `magus/lib/magus/markdown/prose_mirror.ex` (header comment records the origin + Valea's divergences — positional `profile` arg, `to_markdown/2` returns `{:ok, md}`, blockquote serializer drops the trailing space on blank quote lines). MDEx-based, pure/IO-free. `Valea.Markdown.Profile` is the Valea profile: every callback (`post_process/1`, `node_to_markdown/1`, `inline_node_to_markdown/1`) is the identity/default — no custom node lifting, standard CommonMark + GFM only (the paper's "plain text as interface" principle; no callouts/wikilinks/tags/`magus://` links/image blocks). **Determinism contract** (`backend/test/valea/markdown/determinism_test.exs`): every seed ICM page under this suite's own fixture copy of the starter-mount content, `backend/test/fixtures/starter_icm/**/*.md` (a v5 hidden workspace's `priv/workspace_template` ships no starter ICM at all, so nothing under `priv/` carries this content anymore — the fixture was copied once, Task 11.3, to stay stable independent of what any workspace scaffold ships), excluding the ICM's own `AGENTS.md`/`CLAUDE.md` and `prompts/*.md`, round-trips `markdown → PM JSON → markdown` byte-identically, and a second pass is a fixed point — enforced by test, not just convention; the editor never sees markdown, only tiptap's ProseMirror JSON, converted at the backend boundary.
 - **`Valea.ICM` write operations** (`backend/lib/valea/icm.ex`): `save_page(rel_path, pm_map, base_hash)` — SHA-256-hex hash guard (`sha256_hex/1` of the current file bytes must equal `base_hash` or the call returns `{:error, :page_changed}`, magus-style optimistic concurrency adapted to files, no lock files, no mtime), then `ProseMirror.to_markdown/1` and an atomic write; `create_page/2` / `create_folder/2` (shared `normalize_name/1` — NFC-normalize, trim, reject empty/`/`/`\`/leading `.`, `.md` auto-appended for pages; parent-must-be-a-directory guard); `rename/2` and `delete/1` work for both pages and folders (folder rename collects every nested `.md` first, then rewrites references for each). All writes share one `atomic_write/2` helper (tmp file + `File.rename!` in the same directory) and pass through the existing containment chokepoint (`contain/2`). `page/1` (existing read) now also returns `hash` (SHA-256 hex of the bytes at read time) and `prosemirror` (converted JSON) — a conversion failure is loud (`{:error, {:conversion_failed, msg}}`), never a silently-degraded page.
-- **`Valea.ICM.References`** (`backend/lib/valea/icm/references.ex`): plain-string scan, scoped to a single ICM addressed by `mount_key`, of that ICM's own `Workflows/*.md` pages for a literal ICM-relative needle (relative to that ICM's own root — e.g. `Offers/X.md`, never prefixed with the mount key or the ICM's own name — no YAML parsing needed; the paths are load-bearing `sources:` entries in Layer-2 stage contracts per the ICM paper). `referencing_workflows/2` and `rewrite/3` both take `mount_key` plus that ICM-relative path directly and scan/rewrite only that ICM's own `Workflows/*.md` — a same-named page in a different mounted ICM is never matched (isolation is by directory, not by the needle string), and a rename can never cross ICMs. `referencing_workflows/2` returns `[%{file:, name:}]` (`name:` via `~r/^name:\s*(.+)$/m`, falls back to the filename); `rewrite/3` string-replaces the old needle with the new one in every referencing file, atomically, and reports which files it touched — `Valea.ICM.rename/2` calls this after a successful move and returns `updated_workflows` (the human-readable names) to the caller; if a rewrite fails partway, the error is reported truthfully as `{:rewrite_failed, file, reason}` rather than claimed as success (no rename rollback — a known, documented gap, same posture as the workspace-scaffold rollback gap above). `delete/1` deliberately does NOT touch workflows; `icm_entry_references/1` lets the UI warn before a destructive delete.
+- **Rename/delete reference safety**: `delete/1` performs no reference cleanup of its own; `icm_entry_references/1` (backed by `Valea.ICM.Backlinks` — see "Backlinks" under Knowledge & editor depth below) lets the UI warn before a destructive delete. A rename's own link-rewrite is `Valea.ICM.LinkRewrite`'s job (see "Link conventions and the rename rewrite" below); the workflow-frontmatter reference union `Valea.ICM.References` used to also maintain (`Workflows/*.md` `sources:` entries) was deleted along with the workflow subsystem (Spec D §A) — page-link rename integrity is unaffected, it was always `LinkRewrite`'s job alone.
 - **RPC — first constrained/typed returns**: `save_icm_page`, `create_icm_page`, `create_icm_folder`, `rename_icm_entry`, `delete_icm_entry`, `icm_entry_references` (all on `Valea.Api.ICM`) are the first RPC actions in the app to declare `constraints fields: [...]` on their `:map` return, so ash_typescript emits real typed TS interfaces instead of `Record<string, any>` — e.g. generated `SaveIcmPageFields = UnifiedFieldSelection<{hash: string, savedAt: string, ...}>[]`, not the Phase-1 `Record<string, any>` shape described above. This begins retiring that caveat for new surface without retro-typing `icm_tree`/`icm_page`/`cockpit_today` (out of scope). `Valea.Api.ICM.error_for/1` centralizes error mapping for every action on the resource: `:no_workspace` → `"workspace_not_open"`, other atoms → `to_string/1`, anything else (tuple reasons like `{:conversion_failed, msg}` or `{:rewrite_failed, file, reason}`) → `inspect/1` (never `to_string/1` on a tuple — it raises). Root-level creates use `argument :parent_path, :string, constraints: [allow_empty?: true]` so `create_icm_page("", "Name")` is valid. The existing `:page` action stays unconstrained (Phase-1, not retro-typed) but its map now carries the two new fields (`hash`, `prosemirror`) alongside the old ones.
 - **Editor component family** (`frontend/src/lib/components/editor/`): `PageEditor.svelte` — tiptap 2.27.x on Svelte 5 (magus lifecycle pattern: editor built in `$effect` + `untrack`, destroyed in cleanup + `onDestroy`, exported `getJSON/setContent/focus/isEmpty`). Extensions: StarterKit, Placeholder, Link, Typography, TaskList/TaskItem, Table family, plus three framework-agnostic extensions vendored from `tiptap_phoenix` into `frontend/src/lib/editor/vendor/` (`slash_command.js`, `bubble_menu.js`, `drag_handle.js` — each with an origin header, `pushEvent`/LiveView plumbing stripped) and its `tiptap.css` (every `--ttp-*` variable re-mapped onto Paper & ink tokens, no DaisyUI vars live). `PageMeta.svelte` renders the save-status + context-cost meta line; `ConflictBanner.svelte` renders the amber suggestion-card conflict UI. `frontend/src/lib/stores/page-editor.svelte.ts` (`PageEditorStore`, one instance per open page, no singleton) is the save-loop state machine: states `clean | dirty | saving | conflict`; `noteChange` arms a 1000ms debounce, redirties (rather than losing an edit) if a change lands while a save is already in flight; `flush()` awaits an immediate save (called on route-leave and before the raw-view toggle); `externalChange(hash)` — driven by the route re-checking `icm_page`'s hash whenever the watcher's `icm_changed` fires — silently reloads while `clean`, or raises `conflict` while `dirty`/`saving`, with own-echo detection (a save's own resulting hash is not mistaken for a foreign conflict); `resolveReload()` discards local edits for disk truth, `resolveKeepMine()` refetches the hash and resaves the local JSON on top (last-write-wins recovery). `frontend/src/lib/api/client.ts` is still the sole `ash_rpc` importer, wrapping the six new generated calls (`saveIcmPage`, `createIcmPage`, `createIcmFolder`, `renameIcmEntry`, `deleteIcmEntry`, `icmEntryReferences`) in the same `{ok,data}|{ok:false,error}` envelope as Phase 1. Tree CRUD UI (`frontend/src/lib/components/knowledge/`: `NewEntryDialog`, `RenameDialog`, `DeleteDialog`, `EntryMenu`) shows the reference impact before a rename/delete confirms (`icmEntryReferences`) and never does optimistic tree surgery — the existing watcher → `icm_changed` pipeline is what refreshes the nav tree and list pane after every write.
 
-## Agent slice (Phase 3)
+## Agent slice
 
-The full AI-prepares-human-approves loop: real ACP agent sessions running in
-the workspace, a chat UI, workflow execution on the seeded mock email, a
-hardened approval queue, and an audit log. No external integrations (mail/
-calendar are Phase 4/5); zero custom tools or MCP servers — the workspace
-file tree is the agent's entire API (VISION.md principle 5).
+Real ACP agent sessions running against a primary ICM, a chat UI, and a
+live, ask-gated permission model — the agent reads and interprets an ICM's
+own prose (its `AGENTS.md`/`CLAUDE.md` map, `CONTEXT.md` routing tables, and
+whatever documents a session names), and every side effect the agent
+attempts passes through the same permission ask-gate a human answers in the
+moment. There is no separate staged-approval queue and no
+Valea-interpreted "workflow" format (Spec D §A deleted that pipeline
+outright — see the Spec D banner at the top of this file); a document that
+used to be a workflow contract is now just a markdown file the agent is told
+to read and follow. Zero custom tools or MCP servers — the workspace file
+tree is the agent's entire API (VISION.md principle 5).
 
 ### Trust model
 
@@ -166,12 +193,14 @@ provides is defense-in-depth for an honest-but-fallible agent, in layers: (1)
 an in-memory `managedSettings` posture (never written to disk — see
 "Permission model" below) routes risky operations to Valea's ACP permission
 callback instead of silent auto-approval; (2) `PermissionPolicy`
-decides allow/deny/ask with hard-deny precedence and audits every decision;
-(3) the server owns all run identity and execution — the agent only
-*proposes*, writing one JSON payload to an exact path it's told; everything
-else (validation, the queue envelope, the draft file) is backend-authored;
-(4) `logs/audit.jsonl` + per-session transcript files make every action
-reconstructable.
+decides allow/deny/ask with hard-deny precedence — including a hard
+deny-by-default on ICM-internal secret material (see "Dynamic-tree riders"
+below) — and audits every decision; (3) every write the agent makes goes
+through that same ask-gate live, in the moment — there is no backend-staged
+proposal file or deferred approval step for the agent to hand off to; the
+human reviewing a permission ask (via `PermissionCard`'s line-diff, see
+"Chat teaching" below) IS the approval; (4) `logs/audit.jsonl` + per-session
+transcript files make every action reconstructable.
 
 ### Agent runtime
 
@@ -199,8 +228,13 @@ sidecar (Task 1). stderr is logged and truncated, never fed to the JSON
 decoder. A 30 s handshake watchdog fails the session with a doctor-readable
 reason if the adapter never answers `initialize`. Every timeline item is
 appended to `logs/sessions/<id>.jsonl` as it arrives — line 1 is a
-`session/v1` metadata record (id, `acp_session_id`, kind, workflow, harness,
-generation, `started_at`); the file is canonical, so a backend crash loses
+`session/v1` metadata record — a full workspace + ICM identity snapshot
+(`workspace_id`/`workspace_name`/`icm_mount`/`icm_id`/`icm_name`/`icm_root`)
+plus `id`, `acp_session_id`, `kind` (always `"chat"` now — see the
+session-with-context primitive below), `workflow`/`run_id` (kept in the
+schema, always `nil` post-Spec-D), `context_doc`/`input` (the
+session-with-context primitive's own two locators, recorded verbatim),
+`harness`, `generation`, `started_at`; the file is canonical, so a backend crash loses
 nothing and a restart replays sessions read-only straight from disk
 (`Valea.Agents.attach_or_replay/1`: live Registry hit, else fold the file).
 Broadcasts go out on PubSub topic `agent_session:<id>`, generation-stamped.
@@ -241,7 +275,14 @@ resolved related ICM + each exact task input/write grant; `ask` covers
 `Write`, `Edit`, `Bash`; `deny` covers the WORKSPACE's own protected
 subdirectories (`logs/`, `config/`, `secrets/`, `runtime/`, `.git/`) and
 SQLite files, plus `WebFetch`/`WebSearch` (no network at the harness layer
-either). This posture is conveyed to the adapter **in memory only** —
+either) — AND, since Spec D §D5, a glob mirror of the ICM-internal secrets
+deny tier: `Read`/`Edit`/`Write` denied on any `secrets/` directory segment,
+`.env`/`.env.*` basename, `*.pem`, `*.key`, or `*credentials*` basename
+under the primary or any related ICM root (case-sensitive here — globs
+can't express the `.env.example` exception or case-insensitivity, so this
+is defense-in-depth on top of, never a substitute for, `PermissionPolicy`'s
+own case-insensitive `secret_relative?/1` check, which is the authoritative
+enforcement). This posture is conveyed to the adapter **in memory only** —
 `Valea.Harnesses.ClaudeCode.launch/2` JSON-encodes `content/1`'s map and
 passes it via the SDK's `Options.managedSettings` channel
 (`_meta.claudeCode.options.managedSettings` on `session/new` →
@@ -252,9 +293,9 @@ root-owned files." The value is restrictive-only-filtered by the SDK itself
 (a permissive key like `permissions.allow` would be silently dropped if it
 tried to widen anything, though Valea's own posture never includes one for
 that reason); `materialize!/1` writes only `context.md` (the session
-bootstrap: primary/related ICM map, plus the injected workflow-contract
-text for a workflow session) under
-`<workspace>/runtime/sessions/<id>/`, never a settings file. This is what
+bootstrap: primary/related ICM map — Spec D §A deleted the
+`@workflow_contract` block this used to also inject for a workflow session)
+under `<workspace>/runtime/sessions/<id>/`, never a settings file. This is what
 makes Valea's ACP permission callback *reachable* — the posture forces
 writes/Bash to fall through to `ask` before the callback is ever consulted,
 closing the gap a bare callback with no upstream posture would leave open
@@ -301,55 +342,62 @@ bound), shared with the ICM containment chokepoint. This closes both the
 from any recognized root; a path resolving anywhere outside the whole
 recognized universe is a hard deny, not merely an `ask`.
 
-### Queue / approval / audit flow
+### Session creation, permission asks, and audit
 
-The agent writes only a `proposal/v1` payload (`schema`, `kind`, `title`,
-`summary`, `sources`, `proposed_action` — MVP vocabulary
-`create_email_draft` only — `reasoning`) to the exact staging path its run
-names: `Valea.Workflows.Runner.run/2` generates a server-owned `run_id`
-(`yyyymmddThhmmssZ-xxxxxx`), the staging dir `queue/staging/<run_id>/`, and
-sha256 hashes of the workflow page and input file **before the agent ever
-runs** — the session's opening prompt names the workflow contract, the
-input, and `queue/staging/<run_id>/proposal.json` as the only path it may
-write. On turn end `Runner.finalize/2` looks only at that exact path: valid
-→ the canonical envelope `queue_item/v1` (`schema`, `run_id`, `session_id`,
-`workflow`, `workflow_hash`, `input`, `input_hash`, `risk_level`,
-`approval`, `created_at`, `payload`) is written atomically to
-`queue/pending/<run_id>.json` and staging is cleaned; missing → "finished
-without producing anything for review"; invalid → a visible-but-unreadable
-state (staging left in place for inspection, raw file one toggle away). No
-timestamp-window correlation — the run id is the only link.
+There is no more staged-approval queue (Spec D §A deleted `Valea.Workflows`,
+`Valea.Workflows.Runner`, and `Valea.Queue`'s proposal kinds/executors
+outright — no migration, clean cut, no prod users). What replaced "run a
+workflow" is one kind-agnostic **session-with-context primitive**:
+`Valea.Api.Agents.create_session` (RPC `create_agent_session`) takes
+`mount_key`/`generation` plus two OPTIONAL raw locator-map arguments:
 
-`Valea.Queue` treats the containing directory as the state machine:
-`pending → processing → approved` (approve) or `pending → rejected`
-(reject), both guarded by a **revision hash** (sha256 of the exact file
-bytes) so a stale approve on a changed item returns `queue_item_changed`
-rather than acting on the wrong content. `approve/2`'s exact order: (1)
-re-hash and compare the revision; (2) atomically claim
-`pending/<id>.json → processing/<id>.json` (already moved →
-`queue_item_gone`); (3) append the `approval_intent` audit record
-**synchronously** (`Valea.Audit.append_sync/2`) so a crash mid-execution
-always leaves a readable trail *before* anything is executed; (4) execute
-idempotently — the draft path is deterministic
-(`sources/mail/drafts/<run_id>.md`; an existing draft is treated as already
-executed, never rewritten); (5) audit `action_executed`; (6) rename
-`processing/ → approved/`; (7) audit `item_approved`. Crash recovery
-(`Valea.Queue.recover/1`, run as a one-shot `Task` when the workspace
-`Runtime` supervisor starts) resolves anything left in `processing/`: draft
-exists → complete it into `approved/`; draft absent → hand back to
-`pending/` — audited either way (`approval_recovered`).
+- `context_doc` — an ICM locator (`{kind: "icm", icm_id, path}`) of a
+  document to execute/consult. It gets NO extra permission grant — it lives
+  inside the primary (or a related) ICM, already covered by
+  `SessionScope.resolve/1`'s own read roots. The frontend composes the
+  session's opening prompt to reference the document by its cwd-relative
+  path ("Read and follow `<path>`…"); there is no server-side prompt
+  template beyond that — the document itself is the program the agent
+  interprets.
+- `input` — an ICM or workspace locator granted as ONE exact read path,
+  folded into `read_roots` by `SessionScope.resolve/1` (both the
+  managedSettings `Read(<path>)` allow and the ACP `additional_roots`) —
+  the same mechanism a workflow run's input grant used to use, now
+  available to any session.
 
-`Valea.Audit` is a single GenServer serializing append-only writes to
-`logs/audit.jsonl` (`append/2` casts, `append_sync/2` calls but still never
-raises to the caller — audit write failures are logged loudly server-side
-but never block the underlying file-move action, which remains the source
-of truth). Every entry carries `ts`, `type`, and the workspace `generation`.
-Entry types across the slice: `workflow_run_started`/`workflow_run_finished`
-(outcome `no_proposal`/`invalid_proposal`/`proposal_created`/
-`start_failed`), `queue_item_created`, `permission_auto_allowed`/
+Both locators resolve **fail-closed, before the session starts**: `Manager.
+check_generation/1` runs first (stale generation → `workspace_changed`),
+then each locator resolves against the open workspace and must name a real,
+readable file — `context_doc` failing that returns
+`:context_doc_unavailable`, `input` returns `:input_unavailable`; either
+aborts session creation entirely rather than starting a session that
+silently lacks its context. On success, `Valea.Audit.append/2` records
+`session_started` with `session_id`/`mount_key`/`context_doc`/`input`, and
+`Valea.Agents.start_session/1` starts the `SessionServer` (see "Agent
+runtime" above) with both locators threaded into the transcript's
+`session/v1` metadata. The session's `kind` field itself collapses to
+`"chat"` — kept in the schema for a future kind, but every session created
+today is one.
+
+Once the session is running, every side effect it attempts (an Edit/Write
+tool call, a Bash command, a network fetch) goes through
+`PermissionPolicy.decide/2` exactly as described above — there is no
+second, queue-specific execution path. `Valea.Audit` is a single GenServer
+serializing append-only writes to `logs/audit.jsonl` (`append/2` casts,
+`append_sync/2` calls but still never raises to the caller — audit write
+failures are logged loudly server-side but never block the underlying
+action). Every entry carries `ts`, `type`, and the workspace `generation`.
+Entry types include `session_started`, `permission_auto_allowed`/
 `permission_auto_denied`/`permission_asked`/`permission_answered`,
-`approval_intent`, `item_approved`/`item_rejected`, `action_executed`,
-`approval_recovered`, `session_exited`.
+`session_exited`, plus the ICM-mount lifecycle (`icm_mounted`/
+`icm_unmounted`/`icm_enabled`/`icm_disabled`) and mail-sync entries (see
+Mail below) — not an exhaustive list. Historical entries from the deleted
+workflow/queue pipeline (`workflow_run_started`, `queue_item_created`,
+`approval_intent`, `item_approved`, …) remain on disk in any workspace old
+enough to carry them; `Valea.Api.Audit`'s `list_audit_entries` RPC (the
+surface relocated from the deleted `Valea.Api.Queue`) and the frontend's
+audit-sentence renderer both treat an unrecognized entry `type` leniently —
+a neutral generic sentence, never a crash.
 
 ### Control-plane authentication
 
@@ -375,15 +423,17 @@ the `/rpc` origin/CSRF gap carried forward from the foundation review.
 ### Workspace runtime supervisor and generations
 
 All workspace-bound processes now live under one `Valea.Workspace.Runtime`
-supervisor (`:one_for_one`): `Valea.ICM.Watcher`, `Valea.Audit`, a one-shot
-queue-recovery `Task`, and `Valea.Agents.SessionSupervisor` (a
+supervisor (`:one_for_one`): `Valea.ICM.Watcher`, `Valea.Audit`,
+`Valea.Mail.Engine`, and `Valea.Agents.SessionSupervisor` (a
 `DynamicSupervisor` — every live agent session is its child, so it dies with
-the workspace). `Valea.Workspace.Manager` stamps a monotonic **generation**
-integer on every successful open; every runtime process and broadcast
-carries it, and every mutating RPC (`approve_item`, `create_session`,
-`run_workflow`, `save_icm_page`, …) checks it via
-`Manager.check_generation/1` — a stale generation returns `workspace_changed`
-instead of silently acting on the wrong workspace. A workspace switch
+the workspace). There is no more one-shot queue-recovery `Task` — that
+crash-recovery backstop belonged to the deleted queue subsystem (Spec D
+§A) and was removed with it. `Valea.Workspace.Manager` stamps a monotonic
+**generation** integer on every successful open; every runtime process and
+broadcast carries it, and every mutating RPC (`create_agent_session`,
+`save_icm_page`, `mount_icm`, …) checks it via `Manager.check_generation/1`
+— a stale generation returns `workspace_changed` instead of silently acting
+on the wrong workspace. A workspace switch
 (`do_close/1` then `do_open/2`) fully terminates the old `Runtime` and every
 child **before** the new one starts, so no process of the old workspace can
 touch the new one; any failure partway through open rolls back every pid
@@ -421,8 +471,9 @@ send anywhere (see Safety invariants below).
   `{:workspace_opened, info, generation}` broadcast for its own generation;
   a pass runs in a monitored `Task` (single-flight via `state.sync_task`),
   triggered only by the poll timer or `sync_now/0`. `auth_failed` pauses
-  polling until `set_credential/1` supplies a new secret. Also single-flights
-  post-approval mailbox ops *per `run_id`* (`state.ops_tasks`).
+  polling until `set_credential/1` supplies a new secret. The former
+  per-`run_id` post-approval mailbox-ops single-flight (`state.ops_tasks`)
+  was removed with `MailboxOps` (see "Mail interim" above).
 - **`Valea.Mail.SyncPass`** — one pass: connect, sync the Review folder
   (per-UID outcome tracking so a failed message retries, an oversized one
   doesn't re-fetch), sync INBOX headers (awareness index only), logout.
@@ -446,17 +497,6 @@ send anywhere (see Safety invariants below).
   (byte-preserving, never re-serializes the rest of the file), injection-
   hardened frontmatter (`yaml_string/1`: UTF-8 scrub, C0/DEL → space, `\`/`"`
   escaped — a mail header can never break the frontmatter block).
-- **`Valea.Mail.DraftMime`** — composes the RFC822 bytes for an approved
-  reply: `To`/`In-Reply-To`/`References` come from the *source* message's
-  frontmatter (a reply threads onto what it answers), `Subject`/body from
-  the approved draft. Deterministic `Message-ID:
-  <valea.draft.<run_id>@valea.invalid>` (RFC 6761 `.invalid`) — the
-  idempotence guard `MailboxOps` searches on before ever appending.
-- **`Valea.Mail.MailboxOps`** — executes the two post-approval ops
-  (`draft_append`, `archive_source`) for a decided queue item; see the
-  lifecycle below. Never blocks an approval: a connect failure marks
-  actionable ops `"failed"` and returns, the human's decision stays
-  untouched. Independent ops — one failing never stops the other.
 - **`Valea.Mail.Settings`** — `config/mail.yaml` v3 ⇄ `%Settings{}`
   (`account`, `imap.{host,port,username}`, `folders.{review,processed,drafts}`,
   `sync.{interval_minutes,max_message_bytes,inbox_index_limit}`, the fixed
@@ -500,41 +540,30 @@ send anywhere (see Safety invariants below).
 sources/mail/
   messages/<msg_id>.md      # landed Review-folder messages (canonical; Store is cache)
   attachments/<msg_id>/     # landed attachment files, deduped filenames
-  drafts/<run_id>.md        # human-approved reply draft, pre-append
+  drafts/                   # agent-authored reply drafts (Spec D §E — freeform, ask-gated)
   inbox.md                  # regenerated every pass — INBOX awareness table, do not edit
 ```
 
 `config/mail.yaml` (v3) lives outside `sources/`, alongside the other
 workspace config; the credential never lives in either.
 
-### `queue_item/v2` + mailbox_ops lifecycle
+### Mail interim (Spec D §E)
 
-Phase 3's queue (`Valea.Queue`) gained a schema bump on the decide path. On
-`approve/2`/`reject/2`, the already-claimed `processing/` file is atomically
-rewritten from `queue_item/v1` to `queue_item/v2` — adding a `mailbox_ops`
-map — before the final rename into `approved/`/`rejected/`:
-
-- `approve/2` on an `email_draft` payload stamps `{"draft_append" =>
-  %{"status" => status}, "archive_source" => %{"status" => status}}`;
-  `reject/2` stamps only `{"archive_source" => %{"status" => status}}`.
-- That seeded `status` (shared by all named ops) is `"skipped"` when the
-  source message's leading frontmatter says `source: seed` (or is
-  absent/unreadable) — Phase 3's mock data leaves nothing to append/move —
-  otherwise `"pending"`.
-- Landing `approved/`/`rejected/` broadcasts `{:mailbox_ops_pending, run_id}`
-  on the `"mail_ops"` PubSub topic; `Valea.Mail.Engine` picks it up and runs
-  `MailboxOps.execute/1` in an unlinked, per-`run_id` single-flight task.
-  Activation also re-sweeps any item still `"pending"` (a missed broadcast);
-  `"failed"` ops wait for the user's explicit retry
-  (`Engine.retry_ops/1` → `retry_mailbox_ops` RPC), never auto-retried.
-- Each op resolves independently to `"done"` (append/move succeeded, or the
-  draft was already present — the idempotence guard), `"unsupported"` (no
-  MOVE/UIDPLUS — the *local* file still flips to `processed`, since the human
-  review already happened regardless of server capability), or `"failed"`
-  (retryable). `Queue.update_mailbox_op/3` records the outcome and
-  broadcasts `{:mailbox_ops_updated, run_id}`.
-- `Valea.Queue.recover/1` (crash recovery) includes the v2 upgrade: a
-  recovered approval never lands without its `mailbox_ops` map.
+Reading, sync, the inbox list, and the message view are unaffected by the
+Spec D deletion wave. What changed: "Run triage" (the old queue-backed
+workflow trigger from the mail message view) is gone, replaced by "Start a
+session about this message" — the session-with-context primitive above,
+with `input` set to the message file's locator. Drafting a reply is now an
+ordinary agent activity: the agent writes a draft file (e.g. under
+`sources/mail/drafts/`) through the live permission ask-gate, the same as
+any other ICM write — there is no more server-composed RFC822 draft MIME
+and no automatic append-to-Drafts/archive-source pipeline.
+`Valea.Mail.MailboxOps` (the two post-approval ops, `draft_append`/
+`archive_source`) and `Valea.Mail.DraftMime` (the RFC822 composer they
+depended on) lost their only caller with the queue and were deleted along
+with it — outbound mailbox mutations (moving a reply into the account's own
+Drafts folder, archiving the source message) are manual until a future
+mail redesign designs their own approval surface.
 
 ### Credential path
 
@@ -574,20 +603,19 @@ parens): `mail_status` → `:mail_status` (`mailStatus`); `setup_mail_account`
 (`mailDoctor`, arg `generation`); `create_mail_folders`
 (`createMailFolders`, arg `generation`); `list_mail_messages`
 (`listMailMessages`); `get_mail_message` (`getMailMessage`, arg `msg_id`);
-`mail_inbox` (`mailInbox`); `retry_mailbox_ops` (`retryMailboxOps`, args
-`run_id, generation`). Every mutating action takes `generation` and guards
+`mail_inbox` (`mailInbox`). Every mutating action takes `generation` and guards
 via `Manager.check_generation/1`; every read-only one still resolves
 `Manager.current/0` first (surfaces `"workspace_not_open"` instead of a
-`Repo`/`:noproc` crash).
+`Repo`/`:noproc` crash). The old `retry_mailbox_ops` action was deleted with
+`MailboxOps` itself (see "Mail interim" above).
 
 `ValeaWeb.WorkspaceEventsChannel` (topic `workspace:events`) subscribes to
-two more PubSub topics this phase, `"mail"` and `"mail_ops"`, and pushes:
-`mail_status` (the full status map, string-keyed), `mail_sync`
-(`{phase: "started"|"finished", newMessages}`), `mail_message` (`{path}` —
-one landed/updated message), `mailbox_ops` (`{runId}` — an op's outcome
-changed). `{:mailbox_ops_pending, _}` is deliberately not pushed — it is the
-Engine's own internal trigger, nothing for the UI to react to until
-`mailbox_ops` (the terminal signal) follows.
+one more PubSub topic this phase, `"mail"`, and pushes: `mail_status` (the
+full status map, string-keyed), `mail_sync` (`{phase: "started"|"finished",
+newMessages}`), `mail_message` (`{path}` — one landed/updated message). The
+old `"mail_ops"` topic and its `mailbox_ops` push were deleted along with
+`MailboxOps` (see "Mail interim" above) — there is no more post-decide
+op-outcome signal to push.
 
 ### Doctor checks (`Valea.Mail.Doctor.run/1`)
 
@@ -595,17 +623,12 @@ Sequential, each gated on the one before it (a failure marks everything
 downstream `"unknown"`, not attempted): `config_present` → `credential_present`
 → `tcp_reachable` → one `transport.connect/3` call fanning out to `tls_ok` +
 `login_ok` + `folders` (missing `AI/Review`/`AI/Processed`/Drafts) +
-`move_capability` (MOVE vs. UIDPLUS vs. neither) → `workflow_contract`
-(gated on `config_present` alone — a local file check: discovers the seeded
-New Inquiry Triage workflow via `Valea.Workflows.triage_path/1` (Task
-A-T13 — the first enabled mount, by the registry's own sort order, with a
-`Workflows/New Inquiry Triage.md`; no more hardcoded
-`icm/Workflows/New Inquiry Triage.md` path) and warns if it still
-references the legacy JSON input instead of `sources/mail/messages/*.md`).
-Never raises; every check
-carries a copyable remedy string. The credential is resolved once at the
-`connect/3` boundary and scrubbed out of any error text that would
-otherwise embed it.
+`move_capability` (MOVE vs. UIDPLUS vs. neither). Seven checks total; the
+former `workflow_contract` check (a local file probe for the seeded triage
+workflow) was removed along with the workflow contract it checked for
+(Spec D §E). Never raises; every check carries a copyable remedy string.
+The credential is resolved once at the `connect/3` boundary and scrubbed
+out of any error text that would otherwise embed it.
 
 ### Safety invariants
 
@@ -624,10 +647,13 @@ otherwise embed it.
 - **Never-send.** `config/mail.yaml`'s `safety:` block is a fixed,
   non-configurable invariant (`send_directly: false`,
   `create_drafts_only: true`) and `Valea.Mail.Transport` has no send/SMTP
-  callback at all — the only mailbox-writing operations anywhere in the
-  phase are `append` (Drafts folder only, via `DraftMime`) and `uid_move`
-  (Review → Processed). An approved reply always lands as a draft for the
-  human to review and send themselves.
+  callback at all. `Transport`'s `append/4` (Drafts-folder append) and
+  `uid_move/3` (Review → Processed) remain on the transport behaviour, but
+  neither has a production caller today — the automatic
+  approve-then-append/archive pipeline that used to call them was deleted
+  with `MailboxOps`/`DraftMime` (see "Mail interim" above); a reply lands
+  as a plain agent-authored draft file for the human to review and send
+  themselves through their own mail client.
 
 ## ICM project workspaces
 
@@ -741,33 +767,30 @@ a physical path — the one place containment matters — by first looking the
 ICM locator's `icm_id` up against the workspace's CURRENT mount table
 (`Mounts.mount_by_id/2`: no match → `:icm_not_mounted`; a disabled mount →
 `:icm_disabled`; a degraded one → `:icm_degraded`) and only then handing the
-resolved root to `Valea.Paths.resolve_real/2` as the containment base — so
-a persisted locator keeps resolving correctly across an ICM move or
-re-mount under a different key, and a queue memory-update target
-re-resolves id, path, and hash at approval time rather than trusting a
-stale physical path. `for_path/2` is the inverse — given an already-known-good
-physical path, attribute it to the owning mount (an ICM locator) or, if it
-isn't inside any mount, to the workspace (a workspace locator) — used to
-snapshot a locator for something persisted later (an audit entry, a
-workflow registry entry). `Valea.Workflows.list/0,1` is keyed the same way:
-a workflow's identity is `{icm_id, relative_path}`, with `mount_key` and the
-current `resolved_path` carried alongside for display/direct access but
-never part of identity. `Valea.Agents.RiskTier.classify/1` (unchanged
-"high" for `AGENTS.md`/`CLAUDE.md`/`icm.yaml`/`Workflows/*`, "medium" for
-everything else in an ICM, `nil` for a workspace locator) now classifies
-directly off a locator's own `path` rather than re-attributing a physical
-path via `Mounts.mount_for/2` — the agent's own self-reported paths are
-already ICM-relative from the moment its cwd became the ICM root, so
-re-deriving a workspace-relative form to feed a path-attribution function
-could only ever miss.
+resolved root to `Valea.Paths.resolve_real/2` as the containment base — so a
+persisted locator keeps resolving correctly across an ICM move or re-mount
+under a different key. `Valea.Api.Agents.create_session`'s
+`context_doc`/`input` arguments (the session-with-context primitive — see
+"Session creation, permission asks, and audit" above) are exactly this
+shape, and `resolve/2` is what fail-closes them at session start. `for_path/2`
+is the inverse — given an already-known-good physical path, attribute it to
+the owning mount (an ICM locator) or, if it isn't inside any mount, to the
+workspace (a workspace locator) — used to snapshot a locator for something
+persisted later; `Valea.Agents.SessionServer`'s `enrich_item/2` is the one
+caller today, attributing a permission ask's touched path before
+`RiskTier.classify/1` tiers it (see "Depth-aware RiskTier" under "Dynamic-tree
+riders" below for the current classification rule — the `Workflows/*`-prefix
+rule this used to apply was deleted with the workflow subsystem, Spec D
+§A/§D3).
 
 ### Session scope and launch
 
 `Valea.Agents.SessionScope.resolve/1` (`backend/lib/valea/agents/session_scope.ex`)
 is the **single launch authority** — the only place mount-key lookup,
 direct related-ICM resolution, and read/write-root assembly live. Neither
-`Valea.Api.Agents` nor `Valea.Workflows.Runner` re-derives any of these
-rules; both call `resolve/1` and use the scope it returns. The pipeline: (1)
+`Valea.Api.Agents.create_session` nor `Valea.Agents.create_follow_up/2`
+re-derives any of these rules; both call `resolve/1` and use the scope it
+returns. The pipeline: (1)
 `Manager.check_generation/1` fails first on a stale generation
 (`workspace_changed`); (2) `Manager.current/0` for the open workspace; (3)
 `Mounts.mount_by_key/2` for the primary ICM, requiring enabled and
@@ -835,20 +858,24 @@ load automatically").
 ### Watcher and doctor
 
 `Valea.ICM.Watcher` (`backend/lib/valea/icm/watcher.ex`) watches the
-workspace's own `queue/`, `sources/`, `config/` trees (a FIXED listener,
-started once, never restarted) plus every ENABLED, non-degraded ICM's real
-root (a DYNAMIC listener, swapped whenever that root set actually
-changes — there is no more historical fixed `mounts/` watch, since no ICM
-lives inside the workspace anymore). Any change under an enabled ICM root
-broadcasts `{:icm_changed}` on `"icm"`; a change to an ICM root's own
-`icm.yaml`, or to `config/workspace.yaml` itself (the source of truth for
-both enabled/disabled state and every ICM's `path:` declaration),
-additionally broadcasts `{:mounts_changed}` on `"mounts"` and triggers a
-root-set recompute. `queue/` changes broadcast `{:queue_changed}` on
-`"queue"`, independently debounced. Unlike the deleted Plan-A/A2 watcher,
-this one performs no metadata regeneration of its own (there is no
-`MOUNTS.md` or `.claude/settings.json` left to regenerate) — it only
-broadcasts and recomputes its own watched set.
+workspace's own `sources/`, `config/` trees (a FIXED listener, started
+once, never restarted) plus every ENABLED, non-degraded ICM's real root (a
+DYNAMIC listener, swapped whenever that root set actually changes — there
+is no more historical fixed `mounts/` watch, since no ICM lives inside the
+workspace anymore). Any change under an enabled ICM root broadcasts
+`{:icm_changed}` on `"icm"` — this is what a `today.json` edit rides too
+(see "Today = a file the agent maintains" above): no dedicated watcher
+wiring, just an ordinary content change under a watched ICM root. A change
+to an ICM root's own `icm.yaml`, or to `config/workspace.yaml` itself (the
+source of truth for both enabled/disabled state and every ICM's `path:`
+declaration), additionally broadcasts `{:mounts_changed}` on `"mounts"` and
+triggers a root-set recompute. The former fixed `queue/` watch and its
+`{:queue_changed}` broadcast on a `"queue"` topic were removed along with
+the `queue/` directory itself (Spec D §A deleted it from the workspace
+template). Unlike the deleted Plan-A/A2 watcher, this one performs no
+metadata regeneration of its own (there is no `MOUNTS.md` or
+`.claude/settings.json` left to regenerate) — it only broadcasts and
+recomputes its own watched set.
 
 `Valea.Mounts.Doctor` (`backend/lib/valea/mounts/doctor.ex`) runs the SAME
 six checks over every mount `Mounts.list/1` discovers — there is no more
@@ -898,72 +925,78 @@ what the ICM/business is called, offers a visible default ICM location
 (`~/Documents/Valea/<name>/` with "choose another location"), creates the
 portable ICM there, creates the hidden workspace automatically, mounts the
 new ICM by reference, and opens its guided first session. **Use an existing
-ICM** picks a folder, validates it (`icm.yaml`, entrypoints, duplicate
-identity), previews name/description/location, creates the hidden
-workspace automatically, and mounts the selected ICM in place without
-copying or moving it. Both flows are one atomic-feeling sequence with no
-separate "adopt" step and no move-based fallback — the prior Plan-A2
-by-reference-vs-move onboarding choice no longer exists.
+ICM** picks a folder, previews it via `inspect_icm` FIRST — before
+anything mounts — then creates the hidden workspace automatically and
+mounts the folder in place without copying or moving it. There is still no
+move-based fallback — the prior Plan-A2 by-reference-vs-move onboarding
+choice no longer exists — but a preview reporting `adoptable: true` (a
+plain folder with no `icm.yaml` at all, boundary-safe otherwise — see
+"Adopt-a-folder mounting" under "Dynamic-tree riders" below) now offers one
+extra consent step in place of the ordinary mount step: "Add a small
+identity file (`icm.yaml`) so Valea can recognize this folder", editable
+name, then `adopt_icm` mints that one file and mounts by reference —
+`frontend/src/lib/components/onboarding/onboarding-path.ts`'s
+`adoptExistingIcm`, the sidebar Mount flow's own twin. Every other outcome
+of a healthy or invalid/non-adoptable preview follows the same
+create-workspace-then-mount sequence `useExistingIcm` always has.
 
-### Session persistence and workflow ownership
+### Session persistence
 
 Session metadata (`session/v1`, line 1 of every `logs/sessions/<id>.jsonl`
 transcript) carries a full identity snapshot: `workspace_id`,
 `workspace_name`, `icm_mount` (the mount key), `icm_id`, `icm_name`,
-`icm_root`, alongside the existing `kind`/`workflow`/`run_id`/`harness`/
-`generation`/`started_at` fields. A follow-up session inherits the original
-session's workspace and primary ICM; if that ICM is no longer mounted or
-healthy, the transcript stays viewable but follow-up creation is disabled
-with a repair action. There is no reader for a pre-redesign transcript —
-`Valea.Agents.list_sessions/0` silently skips any file whose line 1 is not
-this exact schema.
+`icm_root`, alongside `kind` (always `"chat"` post-Spec-D),
+`workflow`/`run_id` (kept in the schema, always `nil` now),
+`context_doc`/`input` (the session-with-context primitive's own two
+locators — see "Session creation, permission asks, and audit" above),
+`harness`, `generation`, `started_at`. A follow-up session inherits the
+original session's workspace and primary ICM; if that ICM is no longer
+mounted or healthy, the transcript stays viewable but follow-up creation is
+disabled with a repair action. There is no reader for a pre-redesign
+transcript — `Valea.Agents.list_sessions/0` silently skips any file whose
+line 1 is not this exact schema.
 
-A workflow's owning ICM is always its session's primary ICM — no model or
-user choice is needed once the workflow itself has been selected.
-`Valea.Workflows.Runner.start_run/6` resolves the session scope the same
-way a chat session does and grants the run's exact, validated inputs and
-staging paths through it; the server continues to own run id, hashes,
-sidecars, queue envelopes, validation, and finalization exactly as before —
-only the addressing under all of it changed from workspace-relative
-`mounts/<name>/…` paths to `(mount_key, ICM-relative path)` / stable ICM
-locators.
+## Agent-native ICMs (Spec D)
 
-## Methodology depth (Spec B)
+*(spec: [Agent-native ICMs design](superpowers/specs/2026-07-16-agent-native-icms-design.md).
+Supersedes the Methodology Depth (Spec B) design's queue-backed
+memory-update pipeline outright — see the banner at the top of this file
+for the full deletion list. The two subsections below — risk tiers and the
+chat ask-gate dialog — are Spec B survivors, updated in place for the
+deletion; everything after them is new Spec D ground: the today.json
+cockpit, the 3-layer starter seed, adopt-a-folder mounting, and the
+ICM-internal secrets deny tier.)*
 
-*(pending merge on `feat/methodology-depth`; spec:
-[2026-07-12-methodology-depth-design.md](superpowers/specs/2026-07-12-methodology-depth-design.md))*
-
-Closes the teaching loop from the vision's daily-loop step 5: knowledge
-flows into ICM through three doors, split by whether a human is present.
-**Chat** keeps direct edits — the agent writes a mount page with its native
-tools; the ask-gate dialog (below) reviews the diff in the moment, no queue
-involvement. **Workflow runs** and **reflection** (no user present) require
-the queue: the agent stages a memory-update PROPOSAL PAIR instead of
-editing, for the human to review later. All three surfaces share one
-server-derived risk tier and one apply executor.
-
-### Risk tiers
+### Risk tiers — depth-aware
 
 `Valea.Agents.RiskTier.classify/1` (`backend/lib/valea/agents/risk_tier.ex`)
-is the one risk-tier classifier every surface below shares: `"high"` for an
-ICM locator whose ICM-relative `path` is `AGENTS.md`, `CLAUDE.md`,
-`icm.yaml`, or starts with `Workflows/` (the ICM's own instruction spine and
-stage contracts — an approved edit changes future agent behavior);
-`"medium"` for anything else an ICM locator names; `nil` for a workspace
-locator (content that does not belong to any ICM at all). Classification
+is the one risk-tier classifier the ask-gate dialog below shares with every
+permission-ask enrichment: `"high"` for an ICM locator whose ICM-relative
+`path` has a basename in `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` AT ANY DEPTH
+(case-sensitive basenames, any directory — real ICMs route with nested
+`CONTEXT.md` files, so the tier can't be root-only), or is `icm.yaml` AT
+THE ROOT; `"medium"` for anything else an ICM locator names; `nil` for a
+workspace locator (content that does not belong to any ICM at all). The
+`Workflows/`-prefix rule this classifier used to also apply was deleted
+along with the workflow subsystem (Spec D §A/§D3) — an ICM's instruction
+spine is now exactly its `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` files,
+wherever they live in the tree, plus the root identity file. Classification
 works directly off the locator's own `path` — already relative to the ICM's
 root by construction (`Valea.Icm.Locator.icm/2`, `Locator.for_path/2`) —
 never by re-attributing a workspace-relative or absolute physical path back
 to a mount via `Valea.Mounts.mount_for/2` (that attribution step broke once
 an agent session's `cwd` became the ICM root itself: the agent's own
 self-reported paths are ICM-relative from the start, so re-deriving a
-workspace-relative form to feed `mount_for/2` could only ever miss).
-Display and envelope metadata only, never an access decision.
+workspace-relative form to feed `mount_for/2` could only ever miss). The
+tier is display + envelope metadata, never an access decision — it labels
+a permission ask for the human deciding on it, but nothing in the
+allow/deny/ask policy path reads or gates on it.
 
 ### Chat teaching — the ask-gate dialog
 
-The existing permission-ask surface, unchanged in its allow/deny/ask
-semantics, gained a real review. `Valea.Agents.SessionServer`'s
+The permission-ask surface — unchanged in its allow/deny/ask semantics
+(`PermissionPolicy.decide/2`, see "Trust model"/"Permission model" above) —
+carries a real review UI on top. `Valea.Agents.SessionServer`'s
 `enrich_item/2` (`backend/lib/valea/agents/session_server.ex`) stamps
 `risk_tier` onto a `"permission"`-type ACP item whenever its `rawInput`
 carries a file path and `RiskTier.classify/1` returns `"high"`/`"medium"` —
@@ -980,163 +1013,88 @@ renders the diff via the shared `DiffBlock.svelte` and a risk banner
 (terracotta `border-warn-*`/`bg-warn-tint`/`text-warn-ink` for `high`, amber
 `border-suggest-*`/`bg-suggest-tint`/`text-suggest-ink` for `medium`) above
 the allow/reject buttons; a permission item with no path/diff data falls
-back to today's plain display.
+back to today's plain display. This IS the human-in-the-loop surface for
+every agent write now — see "Session creation, permission asks, and audit"
+above for why there is no separate staged-approval path anymore.
 
-### Workflow proposals — proposal pairs + staging grants
+### Today = a file the agent maintains
 
-A memory-update proposal is a sibling pair written into the run's
-already-granted staging dir: `queue/staging/<run_id>/proposals/<name>.md`
-(full new page content) + `<name>.json` (a `memory_update/v1` manifest:
-`schema`, `target_path`, `base_sha256` — 64-hex or `null` for "create" —
-`reason`, `sources`). `Valea.Workflows.MemoryProposal`
-(`backend/lib/valea/workflows/memory_proposal.ex`) owns loading/validating
-pairs (`load_pairs/1` — globs `proposals/*`, pairs `.json`↔`.md` by
-basename, reports a `.json` with no sibling `.md` as `{:error, :missing_content}`
-and a `.md` with no claiming `.json` as `{:error, :orphaned_content}`, caps
-content at 1,000,000 bytes) and the server-owned containment check. Two
-distinct containment checks live in this module, never merged into one:
-`check_target/2` scans every mounted ICM (`Valea.Mounts.mount_for/2`) to
-attribute an arbitrary workspace-relative or absolute path to its owning
-mount — the general-purpose form, whose sole caller today is the editor's
-`icm_paths_exist` dangling-link check, which has no single owning ICM to
-scope a search to; `check_icm_target/2` is scoped to exactly ONE
-already-known ICM — a workflow run's own sidecar `icm_id`/`icm_root`, since
-the agent's session `cwd` for that run IS that ICM's root — and is the one
-`Runner.finalize_pair/6` (below) actually calls: a memory-update proposal's
-`target_path` is the agent's own ICM-relative path, never re-attributed
-across every mount, and the result is a `Valea.Icm.Locator` rather than a
-physical path, so the queue payload stores the LOCATOR and survives the ICM
-being moved or re-mounted later. Either way the manifest's own claims are
-never trusted — containment is re-derived server-side. `Valea.Workflows.
-Runner`'s `start_run/6` (`backend/lib/valea/workflows/runner.ex`) grants the
-write through `Valea.Agents.PermissionPolicy`'s directory-scoped
-`write_roots` (`policy_ctx.write_roots: [Path.join(staging_dir,
-"proposals")]`) — deliberately NOT the staging dir itself, so the trusted
-`run.json` sidecar stays unwritable by the agent; `PermissionPolicy.
-decide/2`'s write-kind branch allows a path under `write_paths` (the exact
-`proposal.json` file) OR `write_roots` (anything under the granted
-directory, segment-boundary contained via `all_in_write_roots?/3`) for a
-`session_kind == "workflow"` session. The same call also extends the
-session's `read_roots` with the run's own staging dir
-(`SessionServer.default_read_roots/1`, extended, never re-derived) — a run
-may always read back what it may write.
+The cockpit renders files instead of Valea-generated content. Contract:
+`today.json` at an ICM's root (tree-visible; not dot-prefixed), lenient
+schema, all fields optional, unknown fields ignored — `updated_at`,
+`prepared: [{title, summary, page}]` (`page` an ICM-relative path rendered
+as a Knowledge link), `open_loops: [{title, source}]`, `notes`.
+`Valea.Cockpit.today/0` (`backend/lib/valea/cockpit.ex`) merges `today.json`
+across every enabled ICM (`Valea.Mounts.enabled/0` order, each section
+provenance-labeled with the ICM name) with live state Valea itself owns:
+mail counts (`review_count`/`inbox_count`/`configured`, degrading to zero
+when the Mail Engine isn't up rather than crashing the whole payload) and
+the 5 most recent sessions. Leniency contract: an ICM with no `today.json`
+at all gets no section (not an error); unreadable/malformed JSON gets a
+section with `"ok" => false` (the FE renders a calm "today.json couldn't be
+read" note, never an error state); wrong-typed fields degrade to `nil`/`[]`
+rather than failing the parse (mirrored on the frontend by
+`normalizeCockpitToday` in `frontend/src/lib/today/cockpit.ts`, whose own
+numeric fields degrade non-finite raw input to `0` the same way). `today.json`
+changes ride the existing `icm_changed` watcher events — no new watcher
+wiring. Valea itself never writes this file — the seeded `AGENTS.md`
+documents the convention for the agent to maintain it; there is no more
+seeded demo content standing in for it.
 
-### Finalize — one queue item per pair, server-owned trust fields
+### 3-layer starter seed
 
-`Valea.Workflows.Runner.finalize/2` additionally globs `proposals/*.json`
-(via `MemoryProposal.load_pairs/1`); each valid pair becomes its own
-pending item with id `<run_id>-m1`, `-m2`, … (1-based over the full sorted
-pair list, so ids stay stable across re-finalizes even when some pairs are
-invalid). Every memory item's `risk_level` and target containment are
-computed HERE, from the target path alone, via `RiskTier.classify/1` +
-`MemoryProposal.check_icm_target/2` — never taken from the agent's
-manifest; `check_icm_target/2` returns a `Valea.Icm.Locator`, which the
-queue payload stores instead of a physical path. An
-invalid pair is audited `memory_proposal_invalid` (`run_id`, `file`,
-`reason`); the run's staging dir is kept whenever anything was invalid —
-the whole directory stays in place for inspection when any pair failed — or
-fully removed when all pairs were valid, never partially cleaned.
-Idempotence: before writing any pending item (primary or memory),
-`item_exists?/2` checks all four queue directories (`pending/processing/
-approved/rejected`) and skips silently if the id already exists — this is
-what lets `Valea.Workflows.Runner.recover_staging/1` (crash-recovery
-backstop, run at `Valea.Workspace.Runtime` startup, before any session can
-be created) re-run `finalize/2` on every leftover staging dir without
-resurrecting already-decided items.
+`backend/priv/icm_template/` (Spec D §D1) is the "start fresh"/`create_icm`
+seed, now a 3-layer prose pattern instead of a structured-folder
+convention: `icm.yaml` (identity); `AGENTS.md` (the map — folder tree,
+naming rules, the `today.json` convention, secrets rules — kept under
+~100 lines) with `CLAUDE.md` as a relative symlink to it (`Valea.Mounts`'s
+`link_claude_md!/1`, falling back to a one-line `@AGENTS.md` import file on
+a filesystem/platform without symlink support); `CONTEXT.md` (a prose
+router table, `| Task | Go here | You'll also need |`, plus a
+`related_icms:` frontmatter block); one example domain folder (`clients/`)
+containing its own `CONTEXT.md` and a `docs/` subfolder. There is no more
+`Workflows/`, `Templates/`, or `Decisions/` in the seed — an ICM's internal
+structure is now entirely up to the user and their agent; Valea supplies
+containment and identity, not a taxonomy.
 
-### Apply executor
+### Adopt-a-folder mounting
 
-`Valea.Queue.approve/2` (`backend/lib/valea/queue.ex`) dispatches on
-`payload.kind`: a `"memory_update"` item executes `execute_memory/3` →
-`apply_page_content/2` instead of the email-draft path. It re-resolves the
-stored `Valea.Icm.Locator` via `Locator.resolve/2` against the CURRENT
-workspace mount table (not the finalize-time result) — missing, disabled,
-degraded, or moved-outside-root all fail here rather than trusting a stale
-physical path — then guards the write with a base-hash check
-(`check_base/2` — `nil` means "must not already exist"; otherwise the
-current bytes must sha256 to `base_sha256`). Any guard failure — or a write
-fault rescued in `write_page/2` (`File.Error`/`File.RenameError`) — means
-NOTHING was written: the claimed item is renamed straight back to
-`pending/`, `apply_conflict` is audited with the reason, and
-`{:error, :apply_conflict}` is returned. On success the page is written with
-an atomic tmp+rename (`write_page/2`, `mkdir -p` of parents, contained
-inside the mount only), then the SAME `queue_item/v2` upgrade-then-rename
-into `approved/` the email path uses — stamping `decided_at`, with no
-`mailbox_ops` (that map is added only when `payload.kind == "email_draft"`,
-`maybe_put_mailbox_ops/4`). `approve/2` returns `{:ok, %{draft_path: nil,
-applied_path: target_path}}` for a memory item, `{:ok, %{draft_path: ...,
-applied_path: nil}}` for an email item; `Valea.Api.Queue.approve_item`
-surfaces both fields typed, and the frontend's `MemoryUpdateReview.svelte`
-renders the `apply_conflict` error code as its own `conflict` FSM state
-(distinct from `changed`/`gone`), offering "reject it or re-run the
-workflow."
+`inspect_icm` (`Valea.Api.Icms`) on a manifest-less folder that otherwise
+passes every boundary/glob-safety check returns `ok: false` with a
+human-readable `reason` AND `adoptable: true` (Task 12, Spec D §D4) —
+`Valea.Mounts.Manifest.load/1` returning `{:error, :missing}` is the
+`adoptable` signal; a healthy, an invalid, or a boundary-rejected folder
+alike all report `adoptable: false`. Onboarding's "Use existing ICM" path
+and the sidebar's Mount flow both offer one consent step on an adoptable
+result — "Add a small identity file (`icm.yaml`) so Valea can recognize
+this folder", with an editable name — which calls `adopt_icm`
+(`Valea.Mounts.adopt/3`, `backend/lib/valea/mounts.ex`): mints a minimal
+`{format: 2, id: <fresh uuid>, name}` manifest (the ONLY write this flow
+ever performs inside the user's folder) and then mounts by reference
+exactly like `mount_icm` does. A folder that already carries ANY
+`icm.yaml` (valid or not) is refused adoption outright — adopting never
+overwrites an existing identity. A mint failure aborts before any mount
+config is touched (no partial mount). See "Onboarding" above for the full
+onboarding-flow integration.
 
-### Crash recovery
+### ICM-internal secrets deny-by-default
 
-`Valea.Queue.recover/1`'s `classify_recovery/2` decides a `processing/`
-item's fate by KIND: a `memory_update` item is decided by CONTENT, not
-draft existence — the envelope's `content_markdown` is hashed against the
-target's CURRENT on-disk bytes (`memory_target_abs/2`); a match means the
-apply already landed, so `finish_recovered_memory/3` stamps the `v2`
-upgrade and completes the rename to `approved/` (audited `item_approved`,
-`recovered: true`, no mailbox broadcast); anything else (target missing, or
-present with different bytes) hands the item back to `pending/`
-(`repend!/3`, audited `approval_recovered`) for the human to re-decide.
-Every other kind falls through to the original draft-existence recovery,
-unchanged. `mailbox_ops` stays email-only throughout: `maybe_put_mailbox_ops/4`
-is gated on `payload.kind == "email_draft"` (adding the map only for email
-drafts), while `valid_mailbox_ops?/1` simply checks that `mailbox_ops`, if
-present, is a map with no kind requirement — so a memory item's decided
-envelope never carries the key (nil passes the generic map check).
-
-### Rejection reasons
-
-`Valea.Queue.reject/3` takes an optional one-line free-text `reason`
-(default `nil`, so every existing 2-arity call site is unaffected).
-`normalize_reason/1` trims, caps at 500 chars, and blank-collapses to `nil`
-(same as omitting it). A non-nil reason is stamped into the decided
-envelope as `"decision" => %{"reason" => reason}` (`maybe_put_decision/2`,
-part of the same `v1→v2` upgrade that stamps `decided_at` — both decision
-verbs, every kind) and included in the `item_rejected` audit entry.
-`Valea.Api.Queue.reject_item`'s `reason` argument is `allow_nil?: true,
-default: nil`; the frontend's `DraftReview.svelte` and `MemoryUpdateReview.
-svelte` both render a skippable single-line reason input alongside their
-reject button, and the decided-item view (`frontend/src/routes/queue/
-[run_id]/+page.svelte`, fed by `normalizeDecidedItem` in
-`frontend/src/lib/components/queue/queue-ops.ts`) shows the reason on a
-rejected item.
-
-### Reflection — the Distill Decisions workflow
-
-`Valea.Workflows.Distill.digest/1` (`backend/lib/valea/workflows/
-distill.ex`) compiles the reflection workflow's input server-side: every
-decided envelope (`queue/approved/*.json` + `queue/rejected/*.json`) with a
-`decided_at` inside a fixed 30-day window (an envelope without the stamp —
-pre-Spec-B — is EXCLUDED, not treated as always-in-window) is rendered into
-one markdown digest (kind, title, workflow, decision, date, rejection
-reason per item). `Valea.Workflows.Runner.run_generated/3` is the
-generated-input sibling of `run/2`: it writes the compiled digest into the
-run's OWN staging dir before the session starts (never `proposals/`, since
-it's server-owned input, not agent output) and reuses the exact same
-staging read grant described above — the read boundary never widens to
-`queue/` itself, the digest is self-contained. `distill_decisions`
-(`Valea.Api.Agents`) resolves the seeded contract via `Valea.Workflows.
-distill_path/0` (first enabled mount, in `list/0`'s own sort order, whose
-`Workflows/` glob yields a `Distill Decisions.md` basename —
-`workflow_not_found` if none), builds the digest (`no_recent_decisions` if
-the window is empty), and calls `run_generated/3`. `Valea.Cockpit.today/0`
-surfaces the same lookup as a live `"distill_workflow_path"` field so the
-UI can hide the action entirely when no mount seeds the contract. The
-starter mount ships `Workflows/Distill Decisions.md` (manual trigger,
-`risk_level: medium`, approval required, outputs restricted to
-`apply_page_content`) and a `Decisions/2026.md` seed page; the
-memory-update contract (manifest shape, `base_sha256` rules, the 1 MB
-content cap) lives in the root `AGENTS.md`'s "The memory-update contract"
-section. Frontend: `distillButtonState`/`distillErrorMessage`
-(`frontend/src/lib/today/distill.ts`) drive the "Distill recent decisions"
-action on both `frontend/src/routes/+page.svelte` (Today) and
-`frontend/src/routes/workflows/+page.svelte`, hidden entirely when
-`distillWorkflowPath` is `null`.
+`Valea.Agents.PermissionPolicy.decide/2` denies (not asks — the same
+hard-deny tier the workspace's own protected subdirectories get) any
+resolved candidate matching, at ANY depth inside the primary or any related
+ICM root: a `secrets` directory segment, a `.env`/`.env.*` basename (except
+`.env.example`), a `*.pem`/`*.key` basename, or a basename containing
+`credentials` — all case-insensitive (`secret_relative?/1`, public
+specifically so the managedSettings glob mirror's tests can assert the
+same pattern set — see "Permission model" above for that mirror). Checked
+against each ICM root by the candidate's ICM-relative segments, so
+`mysecrets/`/`secretsfoo/` never false-positive-match a `secrets` SEGMENT.
+`ctx.icm_roots` (`[primary_icm.root | related_icm.roots]`) is threaded in
+by `SessionServer.init/1` alongside the existing `workspace_root`/`cwd`/
+`read_roots`/`write_paths`/`write_roots` fields. There is no per-ICM
+override in this spec — Doctor's existing `secrets_hygiene` warning (see
+"Watcher and doctor" above) stays the visibility layer for a mount that
+carries secret-shaped files at all.
 
 ## Knowledge & editor depth (Spec C)
 
@@ -1165,11 +1123,15 @@ moduledoc states the seam explicitly: the RPC's return shape
 (`%{results:, skipped:}`) is implementation-agnostic on purpose, so FTS5
 can replace these scan internals later without a contract break. RPC:
 `icm_search` → `:search` (`icmSearch`, args `query`, optional `mount`) and
-`icm_paths_exist` → `:paths_exist` (`icmPathsExist`, arg `paths` —
-resolves each through the same mount-containment check
-(`Valea.Workflows.MemoryProposal.check_target/2`) the memory-update write
-path uses, then a plain `File.regular?/1`) on `Valea.Api.ICM`
-(`backend/lib/valea/api/icm.ex`).
+`icm_paths_exist` → `:paths_exist` (`icmPathsExist`, arg `paths` — resolves
+each through `Valea.Api.ICM`'s own local `contained_target/2` helper
+(attributes the path to an enabled, non-degraded mount via `find_mount/2`
+and confirms the physical resolution stays inside that mount's root), then
+a plain `File.regular?/1`) on `Valea.Api.ICM` (`backend/lib/valea/api/icm.ex`).
+The general-purpose cross-mount containment check this dangling-link check
+used to share with the deleted memory-update proposal pipeline
+(`Valea.Workflows.MemoryProposal.check_target/2`) was reimplemented locally
+here once that module was deleted (Spec D §A).
 
 ### Backlinks — AST-confirmed, never a text match
 
@@ -1186,11 +1148,11 @@ node, so it never matches. `http(s)://`/`mailto:`/`#anchor` destinations
 are ignored outright. Returns document-order text (`walk/2` prepends
 during its reverse-preorder recursion, reversed once at the end), one
 entry per source page (first matching link/image wins). The `references`
-RPC (`icm_entry_references` → `:references`) now returns BOTH kinds in one
-call — `{workflows: [...], pages: [...]}` — unifying `Valea.ICM.
-References.referencing_workflows/1` (Layer-2 stage-contract `sources:`
-entries) with `Backlinks.backlinks/2` (in-page links) behind one RPC
-surface.
+RPC (`icm_entry_references` → `:references`) returns `{pages: [...]}` —
+`Backlinks.backlinks/2` (in-page links) behind the RPC surface. It used to
+also return a `workflows` key (`Valea.ICM.References.referencing_workflows/1`,
+Layer-2 stage-contract `sources:` entries) before that module was deleted
+along with the workflow subsystem (Spec D §A).
 
 ### Link conventions and the rename rewrite
 
@@ -1205,15 +1167,15 @@ every enabled mount's confirmed inbound Link/Image destinations on a
 rename — BYTE-SURGICALLY: only the destination bytes (plus `<>` wrapping
 via its own `wrap/1` when the new destination needs it) change, using the
 same right-to-left byte-offset splice `Valea.ICM.Splice.splice/3`
-(`backend/lib/valea/icm/splice.ex`, extracted from `References` so both
-modules share it) that `Valea.ICM.References` already uses — the
-REFERENCING file is never round-tripped through the markdown↔ProseMirror
-converter, so the determinism contract holds. Confirmation runs through
+(`backend/lib/valea/icm/splice.ex`) — the REFERENCING file is never
+round-tripped through the markdown↔ProseMirror converter, so the
+determinism contract holds. Confirmation runs through
 `Backlinks.destinations/3` (the same real AST parse backlinks uses); the
 new destination is computed via `Valea.Paths.relative/2` (workspace-
 relative pairs) or kept absolute (either end external).
-`Valea.ICM.rename/2` returns `updated_pages` (this module's output)
-alongside the pre-existing `updated_workflows`.
+`Valea.ICM.rename/2` returns `updated_pages` (this module's output) — the
+workflow-reference sibling this once returned alongside
+(`updated_workflows`) was removed with the workflow subsystem (Spec D §A).
 
 Two documented limitations, neither of which ever corrupts a file:
 
@@ -1248,9 +1210,14 @@ date pass. Any other `{{...}}` placeholder is left byte-for-byte verbatim
 page must attribute to the SAME mount (`:cross_mount_template` otherwise).
 RPC: `create_icm_page_from_template` → `:create_page_from_template`
 (`createIcmPageFromTemplate`, args `parent_path, name, template_path`) on
-`Valea.Api.ICM`. Starter content: `mounts/starter/Templates/{Client,
-Decision,Follow-up Email,Discovery Call Reply}.md` — `Decision.md` pairs
-with Spec B's `Decisions/` convention.
+`Valea.Api.ICM` — the RPC itself never restricted where a template could
+live; that restriction lived only in the frontend's discovery layer, and
+Spec D §D2 made discovery recursive (any folder named `templates/`,
+case-insensitive, at any depth — see "template select" under "Frontend —
+image paste/drag..." below). The 3-layer starter seed (Spec D §D1, see
+"Dynamic-tree riders" below) ships no `Templates/` folder at all — a mount
+that wants templates creates its own `templates/` folder(s) wherever makes
+sense for that ICM.
 
 ### Images — `Assets/` + `/files` endpoints
 
@@ -1343,12 +1310,20 @@ UI gesture, so the human is already the approver.
   backlinks-panel.ts` (`groupReferences`, `impactLine`/`deleteImpactLine`
   — singular/plural, compound-subject copy, "updates" framing for rename
   vs. "will lose the link/reference" framing for delete) share one source
-  of truth over `icm_entry_references`'s `{workflows, pages}`;
+  of truth over `icm_entry_references`'s `{pages}` (the workflow-reference
+  half of this RPC was deleted with the workflow subsystem — Spec D §A).
   `RenameDialog`/`DeleteDialog` render the same impact line before the
   user confirms. `frontend/src/lib/components/knowledge/
-  template-options.ts`'s `templateOptions` (mount-scoped — only offers
-  templates from the mount that owns the target parent folder) feeds
-  `NewEntryDialog`'s "Start from" select.
+  template-options.ts`'s `templateGroups` (Spec D §D2, Task 14) is
+  recursive rather than mount-scoped-to-one-folder: it discovers every
+  folder named `templates` (case-insensitive) at ANY depth in the target
+  mount's tree and offers one select group per folder found (each group's
+  `.md` pages, tree-sorted) — the backend RPC
+  (`create_icm_page_from_template`) never restricted template location,
+  this discovery layer was the only thing that used to pin templates to a
+  single top-level folder. Still same-mount only (the RPC requires
+  template and new page to share a mount). Feeds `NewEntryDialog`'s
+  "Start from" select.
 
 ## Design system pointer
 
@@ -1374,17 +1349,18 @@ UI follows the "paper & ink, with a green pen for approval" design system: [docs
 Related, not under `shell/` but part of the same top-level chrome:
 
 - `frontend/src/lib/components/onboarding/` — `Onboarding.svelte` (root two-card + trust bar screen, rendered by `+layout.svelte` when `workspaceStore.state === 'none'`), `CreateWorkspaceDialog.svelte`, `OpenWorkspaceFlow.svelte`, `WhatsInAWorkspace.svelte`, `TrustBar.svelte`.
-- `frontend/src/lib/components/today/` — `ScheduleList.svelte`, `PreparedItemCard.svelte` (renders the "Why this?" source dialog over `usedSources`), `SourceChips.svelte`, `OpenLoops.svelte`, `AwayList.svelte` — the §17 Today cockpit.
+- `frontend/src/lib/components/today/` — `OpenLoops.svelte` (plain checklist rows over the `today.json`-sourced `open_loops`; the checkbox is visual only, no interactive control yet), the sole surviving component of the pre-Spec-D Today cockpit. Prepared items and the mail summary line are now rendered directly inline in `frontend/src/routes/+page.svelte` itself (the `today.json` rewrite, Spec D §C) rather than through a dedicated per-item card component — see "Today = a file the agent maintains" above.
 - `frontend/src/lib/components/ui/` — shadcn-svelte primitives (button, dialog, input, label, badge, separator, skeleton, scroll-area, tooltip).
 
 ## Spec index
 
 - [2026-07-09-valea-foundation-design.md](superpowers/specs/2026-07-09-valea-foundation-design.md) — Foundation: monorepo scaffold, workspace creation/selection, app shell, Today cockpit (seeded), ICM tree in nav.
 - [2026-07-10-icm-editor-design.md](superpowers/specs/2026-07-10-icm-editor-design.md) — ICM editor: markdown↔ProseMirror converter + determinism contract, version-guarded saves, reference-aware tree CRUD, typed RPC.
-- [2026-07-10-agent-slice-design.md](superpowers/specs/2026-07-10-agent-slice-design.md) — Agent slice: ACP agent runtime, trust/permission model, queue/audit approval flow, control-plane auth, workspace runtime generations, ICM layer mapping.
-- [2026-07-11-mail-design.md](superpowers/specs/2026-07-11-mail-design.md) — Mail: IMAP sync-to-files engine, normalized message file format, `queue_item/v2` mailbox ops, OS-keychain credential handoff, connection doctor, `/mail` UI.
+- [2026-07-10-agent-slice-design.md](superpowers/specs/2026-07-10-agent-slice-design.md) — Agent slice: ACP agent runtime, trust/permission model, control-plane auth, workspace runtime generations, ICM layer mapping. **Its queue/audit approval-flow sections are superseded** by Spec D's session-with-context primitive + live ask-gate (see the banner at the top of this file and "Session creation, permission asks, and audit" above) — historical record only for that part; the rest still describes the live agent runtime.
+- [2026-07-11-mail-design.md](superpowers/specs/2026-07-11-mail-design.md) — Mail: IMAP sync-to-files engine, normalized message file format, OS-keychain credential handoff, connection doctor, `/mail` UI. **Its `queue_item/v2` mailbox-ops section is superseded** by Spec D §E (see "Mail interim" above) — `MailboxOps`/`DraftMime` are deleted; the rest of the sync/read path is unchanged.
 - [2026-07-12-icm-mounts-design.md](superpowers/specs/2026-07-12-icm-mounts-design.md) — **Superseded**, historical record only (see its own banner). ICM mounts (Plan A): `mounts/<name>/` replaced the single `icm/` tree, manifest-based discovery, `MOUNTS.md` generated routing, per-mount `read_roots`, v3→v4 migration, mounts-aware Knowledge UI, adopt-by-move onboarding.
 - [2026-07-12-icm-by-reference-design.md](superpowers/specs/2026-07-12-icm-by-reference-design.md) — **Superseded**, historical record only (see its own banner). By-reference mounts (Plan A2): external `kind: "path"` mounts referenced in place, root-set containment, managed-settings external `Read` allows, per-mount doctor, declare/undeclare RPCs + audit, by-reference-default onboarding.
-- [2026-07-12-methodology-depth-design.md](superpowers/specs/2026-07-12-methodology-depth-design.md) — Methodology depth (Spec B): server-derived risk tiers, memory-update proposal pairs + staging write/read grants, the queue's `apply_page_content` executor and content-hash crash recovery, optional rejection reasons, the decisions digest + Distill Decisions reflection workflow, and the diff/risk-tier ask-gate and memory-update review UI.
-- [2026-07-12-knowledge-depth-design.md](superpowers/specs/2026-07-12-knowledge-depth-design.md) — Knowledge & editor depth (Spec C): scan-backed search with an FTS5 upgrade seam, AST-confirmed backlinks, byte-surgical rename link-rewrite, page templates, contained image upload/serve endpoints, the `[[`/`@` page-link picker, the Cmd+K search palette + MRU + dangling-link handling, and the backlinks panel + page-aware impact dialogs + template select UI.
-- [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — **Shipped** (see [ICM project workspaces](#icm-project-workspaces) above): private, hidden, id-based Valea workspace profiles; user-owned ICM projects mounted only by reference; one primary ICM and `cwd` per session; explicit cross-ICM context; project/session navigation; simplified onboarding. Supersedes Plan A/A2 outright — their implementation has been fully removed (Phase 11 clean-cut).
+- [2026-07-12-methodology-depth-design.md](superpowers/specs/2026-07-12-methodology-depth-design.md) — **Superseded**, historical record only (see the banner at the top of this file). Methodology depth (Spec B): server-derived risk tiers (its `Workflows/`-prefix tier rule is gone, replaced by Spec D §D3's depth-aware rule — the risk-tier classifier and the chat ask-gate dialog itself both survive, updated in place), memory-update proposal pairs + staging write/read grants, the queue's `apply_page_content` executor and content-hash crash recovery, optional rejection reasons, and the decisions digest + Distill Decisions reflection workflow — this queue-backed proposal machinery is deleted outright by Spec D §A.
+- [2026-07-12-knowledge-depth-design.md](superpowers/specs/2026-07-12-knowledge-depth-design.md) — Knowledge & editor depth (Spec C): scan-backed search with an FTS5 upgrade seam, AST-confirmed backlinks, byte-surgical rename link-rewrite, page templates, contained image upload/serve endpoints, the `[[`/`@` page-link picker, the Cmd+K search palette + MRU + dangling-link handling, and the backlinks panel + page-aware impact dialogs + template select UI. Its workflow-frontmatter reference union (`Valea.ICM.References`) is deleted by Spec D §A; page-link rename integrity (`Valea.ICM.LinkRewrite`) is unaffected. Template discovery is made recursive by Spec D §D2.
+- [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — **Shipped** (see [ICM project workspaces](#icm-project-workspaces) above): private, hidden, id-based Valea workspace profiles; user-owned ICM projects mounted only by reference; one primary ICM and `cwd` per session; explicit cross-ICM context; project/session navigation; simplified onboarding. Supersedes Plan A/A2 outright — their implementation has been fully removed (Phase 11 clean-cut). Substrate for Spec D below; not reopened by it.
+- [2026-07-16-agent-native-icms-design.md](superpowers/specs/2026-07-16-agent-native-icms-design.md) — **Shipped** (Spec D — see the banner at the top of this file and every section it points to). Deletes the workflow subsystem outright; replaces "run" with the session-with-context primitive (`context_doc`/`input`); makes Today a file (`today.json`) the agent maintains; adds adopt-a-folder mounting, a depth-aware `RiskTier`, an ICM-internal secrets deny tier, and the 3-layer prose starter seed; re-scopes Mail's outbound path to manual until a future mail redesign.

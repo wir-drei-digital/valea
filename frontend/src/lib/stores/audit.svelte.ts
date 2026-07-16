@@ -1,5 +1,4 @@
 import { api, type Api, type AuditEntry } from '../api/client';
-import type { Channel } from 'phoenix';
 
 /** Minimal surface of `api` this store depends on — same `Pick<Api, ...>` convention as the other T16+ stores. */
 type AuditApi = Pick<Api, 'listAuditEntries'>;
@@ -33,19 +32,3 @@ export class AuditStore {
 }
 
 export const auditStore = new AuditStore(api);
-
-let auditEventsWired = false;
-
-/**
- * No-op placeholder kept for `wireIcmEvents`'s (`icm.svelte.ts`) shared-channel
- * wiring call site. Used to attach a `queue_changed` listener that kept
- * `auditStore` fresh live while any route was mounted — the queue/workflow
- * subsystem that emitted `queue_changed` is gone (Spec D deletion wave), and
- * dies on the backend in Task 2. `auditStore` now only refetches on route
- * load (`routes/audit/+page.svelte`'s `onMount`), which is sufficient since
- * there is no more live queue activity to reflect mid-session.
- */
-export function wireAuditEvents(channel: Channel): void {
-  if (auditEventsWired) return;
-  auditEventsWired = true;
-}

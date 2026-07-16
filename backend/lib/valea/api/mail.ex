@@ -3,8 +3,8 @@ defmodule Valea.Api.Mail do
   Data-layer-less Ash resource exposing the mail account, its sync engine,
   and its indexed messages over RPC (mail design spec, §RPC surface).
 
-  Wraps `Valea.Mail.Engine` (status/setup/credential/sync/doctor/folders/
-  retry), `Valea.Mail.Settings.write!/2` (account setup), and
+  Wraps `Valea.Mail.Engine` (status/setup/credential/sync/doctor/folders),
+  `Valea.Mail.Settings.write!/2` (account setup), and
   `Valea.Mail.Store` + `Valea.Mail.MessageFile.parse/1` (the read side —
   files under `sources/mail/messages/` are canonical, `Store` is only ever
   a cache of them, so `get_mail_message` reads the file, not the cache row).
@@ -283,7 +283,7 @@ defmodule Valea.Api.Mail do
 
   @doc false
   # Central error mapping for every action in this resource — mirrors
-  # `Valea.Api.Queue.error_for/1`. `:no_workspace` becomes the frontend's
+  # `Valea.Api.ICM.error_for/1`. `:no_workspace` becomes the frontend's
   # `"workspace_not_open"`; every other atom this resource's dependencies
   # return (`:workspace_changed`, `:not_configured`, `:no_credential`,
   # `:inactive`, `:not_found`, ...) already stringifies to the exact code

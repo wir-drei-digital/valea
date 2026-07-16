@@ -248,54 +248,6 @@ describe('MailStore.handleMailSync', () => {
   });
 });
 
-describe('MailStore.handleMailboxOps', () => {
-  it('triggers refreshMessages (a mailbox-ops run finishing can flip a message from review to processed)', async () => {
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-
-    store.handleMailboxOps({ runId: 'run-1' });
-    await Promise.resolve();
-
-    expect(listMailMessages).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('MailStore.onMailboxOps', () => {
-  it('notifies subscribers of every mailbox_ops push, alongside refreshMessages', () => {
-    const store = new MailStore(fakeApi({}) as never);
-    const listener = vi.fn();
-
-    store.onMailboxOps(listener);
-    store.handleMailboxOps({ runId: 'run-1' });
-
-    expect(listener).toHaveBeenCalledWith({ runId: 'run-1' });
-  });
-
-  it('stops notifying once unsubscribed', () => {
-    const store = new MailStore(fakeApi({}) as never);
-    const listener = vi.fn();
-
-    const unsubscribe = store.onMailboxOps(listener);
-    unsubscribe();
-    store.handleMailboxOps({ runId: 'run-1' });
-
-    expect(listener).not.toHaveBeenCalled();
-  });
-
-  it('supports multiple independent subscribers', () => {
-    const store = new MailStore(fakeApi({}) as never);
-    const a = vi.fn();
-    const b = vi.fn();
-
-    store.onMailboxOps(a);
-    store.onMailboxOps(b);
-    store.handleMailboxOps({ runId: 'run-2' });
-
-    expect(a).toHaveBeenCalledWith({ runId: 'run-2' });
-    expect(b).toHaveBeenCalledWith({ runId: 'run-2' });
-  });
-});
-
 describe('MailStore.handleMailStatus', () => {
   it('normalizes and stores status, and refetches messages + inbox (T13 activation race)', async () => {
     const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
@@ -428,11 +380,10 @@ describe('resupplyCredential', () => {
 // keeping the "first call wins" assertion deterministic instead of
 // depending on test execution order.
 describe('wireMailEvents', () => {
-  it('attaches all four mail handlers to the first channel only, each driving the singleton mailStore', () => {
+  it('attaches all three mail handlers to the first channel only, each driving the singleton mailStore', () => {
     const handleMailStatus = vi.spyOn(mailStore, 'handleMailStatus').mockImplementation(() => {});
     const handleMailSync = vi.spyOn(mailStore, 'handleMailSync').mockImplementation(() => {});
     const handleMailMessage = vi.spyOn(mailStore, 'handleMailMessage').mockImplementation(() => {});
-    const handleMailboxOps = vi.spyOn(mailStore, 'handleMailboxOps').mockImplementation(() => {});
 
     const handlersA: Record<string, (payload: unknown) => void> = {};
     const channelA = { on: (event: string, cb: (payload: unknown) => void) => (handlersA[event] = cb) } as unknown as Channel;
@@ -445,22 +396,18 @@ describe('wireMailEvents', () => {
     expect(handlersA['mail_status']).toBeTypeOf('function');
     expect(handlersA['mail_sync']).toBeTypeOf('function');
     expect(handlersA['mail_message']).toBeTypeOf('function');
-    expect(handlersA['mailbox_ops']).toBeTypeOf('function');
     expect(handlersB['mail_status']).toBeUndefined();
 
     handlersA['mail_status']({ configured: true });
     handlersA['mail_sync']({ phase: 'finished' });
     handlersA['mail_message']({ path: 'x' });
-    handlersA['mailbox_ops']({ runId: 'r1' });
 
     expect(handleMailStatus).toHaveBeenCalledWith({ configured: true });
     expect(handleMailSync).toHaveBeenCalledWith({ phase: 'finished' });
     expect(handleMailMessage).toHaveBeenCalledWith({ path: 'x' });
-    expect(handleMailboxOps).toHaveBeenCalledWith({ runId: 'r1' });
 
     handleMailStatus.mockRestore();
     handleMailSync.mockRestore();
     handleMailMessage.mockRestore();
-    handleMailboxOps.mockRestore();
   });
 });

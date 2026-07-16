@@ -2,7 +2,6 @@ import { api, type Api } from '../api/client';
 import type { IcmNode } from '../shell/nav';
 import { workspaceStore } from './workspace.svelte';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
-import { wireAuditEvents } from './audit.svelte';
 import { wireMailEvents } from './mail.svelte';
 import { mountsStore, wireMountsEvents } from './mounts.svelte';
 import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
@@ -285,23 +284,22 @@ export function handleWorkspaceEvent(payload: WorkspaceEventPayload): void {
  * function needs to grow support for multiple subscribers instead of being
  * called again.
  *
- * CARRY-FORWARD (T20, post Spec-D deletion wave): also wires `wireAuditEvents`
- * onto the SAME channel this join returns, right here — not a second call
- * site. `wireAuditEvents` takes an already-joined channel rather than
- * joining its own for exactly this reason: a second independent
- * `workspace:events` join races this one and only one reliably receives
- * pushes. `wireAuditEvents` is currently a no-op placeholder (its
- * `queue_changed` listener was removed alongside the queue/workflow
- * subsystem — see its own doc comment in `audit.svelte.ts`); left wired here
- * so a future live audit event has a ready call site.
- *
  * CARRY-FORWARD (T16 — `/mail` route): also wires `wireMailEvents` onto the
- * same shared channel, same reasoning again — `mail_status`/`mail_sync`/
- * `mail_message`/`mailbox_ops` all ride this one `workspace:events` join
- * rather than the `/mail` route opening its own (see `wireMailEvents`'s doc
- * comment in `mail.svelte.ts` for why a route-local join would race this
- * one). `mailStore` stays live in the background exactly like `auditStore`
- * already does, not only while `/mail` is mounted.
+ * same shared channel, right here — not a second call site. `wireMailEvents`
+ * takes an already-joined channel rather than joining its own for exactly
+ * this reason: a second independent `workspace:events` join races this one
+ * and only one reliably receives pushes. `mail_status`/`mail_sync`/
+ * `mail_message` all ride this one `workspace:events` join rather than the
+ * `/mail` route opening its own (see `wireMailEvents`'s doc comment in
+ * `mail.svelte.ts` for why a route-local join would race this one).
+ * `mailStore` stays live in the background, not only while `/mail` is
+ * mounted.
+ *
+ * `auditStore` has no live push to react to — the queue-decision push
+ * listener that used to keep it fresh mid-session was removed alongside the
+ * queue/workflow subsystem (Spec D deletion wave); it now only refetches on
+ * `routes/audit/+page.svelte`'s `onMount`, which is sufficient since there
+ * is no more live queue activity to reflect mid-session.
  *
  * CARRY-FORWARD (A-T14): also wires `wireMountsEvents` onto the same shared
  * channel, same reasoning again — `mounts_changed` (A-T6/A-T12: a mount
@@ -382,7 +380,6 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
     onIcmChanged: () => icmStore.handleIcmChanged()
   });
 
-  wireAuditEvents(channel);
   wireMailEvents(channel);
   wireMountsEvents(channel);
   wireRecentSessionsEvents(channel);

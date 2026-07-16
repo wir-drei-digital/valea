@@ -1,7 +1,7 @@
 import { api, type Api } from '../api/client';
 import { workspaceStore } from './workspace.svelte';
 import { inDesktop, keychainGet } from '../keychain';
-import type { MailStatusPush, MailSyncPush, MailMessagePush, MailboxOpsPush } from '../socket';
+import type { MailStatusPush, MailSyncPush, MailMessagePush } from '../socket';
 import type { Channel } from 'phoenix';
 
 /**
@@ -130,12 +130,11 @@ export class MailStore {
   #api: MailApi;
 
   /**
-   * `mailbox_ops`/`mail_status` push subscribers beyond this store's own
-   * refetch reactions (see `handleMailboxOps`/`handleMailStatus` below) —
-   * `onMailboxOps`'s doc comment explains why these exist instead of routes
-   * opening their own `channel.on(...)` bindings.
+   * `mail_status` push subscribers beyond this store's own refetch reaction
+   * (see `handleMailStatus` below) — `onMailStatus`'s doc comment explains
+   * why these exist instead of routes opening their own `channel.on(...)`
+   * bindings.
    */
-  #mailboxOpsListeners = new Set<(payload: MailboxOpsPush) => void>();
   #mailStatusListeners = new Set<(payload: MailStatusPush) => void>();
 
   constructor(api: MailApi) {
@@ -231,49 +230,15 @@ export class MailStore {
   }
 
   /**
-   * `mailbox_ops` push handler — a decided queue item's post-approval
-   * mailbox ops finished (`WorkspaceEventsChannel`'s `:mailbox_ops_updated`
-   * clause). The terminal step of that pipeline flips the source message's
-   * on-disk `status:` from `"review"` to `"processed"` and updates the
-   * `MessageIndex` row to match (`Valea.Mail.MailboxOps.append_done/2` →
-   * `Store.set_message_status/2`) — this store has no per-message
-   * cache to patch in place, so (same "just refetch on any related push"
-   * simplicity as `handleMailMessage`/`handleMailStatus`) a full
-   * `refreshMessages()` picks up the new status. `runId` carries nothing
-   * else this store currently reacts to.
-   */
-  handleMailboxOps(payload: MailboxOpsPush): void {
-    void this.refreshMessages();
-    this.#mailboxOpsListeners.forEach((listener) => listener(payload));
-  }
-
-  /**
-   * Subscribes to `mailbox_ops` pushes as they arrive, IN ADDITION to this
-   * store's own `refreshMessages()` reaction above — for a route that needs
-   * to react to a specific `runId` (`routes/queue/[run_id]/+page.svelte`'s
-   * decided-item mailbox-op rows, Task 18) without opening a second,
-   * racing `channel.on('mailbox_ops', ...)` binding on the shared
-   * `workspace:events` channel (see `wireMailEvents`'s doc comment: only
-   * ONE join per topic reliably receives pushes, and this store's
-   * `handleMailboxOps` is already the sole handler wired to that one join).
-   * Returns an unsubscribe function — call it from the caller's cleanup
-   * (e.g. `onMount`'s returned callback) so a route that unmounts mid-run
-   * doesn't leak a listener that outlives it.
-   */
-  onMailboxOps(listener: (payload: MailboxOpsPush) => void): () => void {
-    this.#mailboxOpsListeners.add(listener);
-    return () => this.#mailboxOpsListeners.delete(listener);
-  }
-
-  /**
-   * Subscribes to `mail_status` pushes — same shape and rationale as
-   * `onMailboxOps` above. The Today page (`routes/+page.svelte`) hooks this
-   * to refetch `cockpit_today`: the payload's `mail` counts are computed
-   * backend-side at request time, and the Engine's async activation (plus
-   * every later credential/settings/sync transition) announces itself with
-   * exactly this push — without the refetch, Today would freeze whatever
-   * pre-activation snapshot (`configured: false`, zero counts) its single
-   * mount-time load happened to catch.
+   * Subscribes to `mail_status` pushes — beyond this store's own refetch
+   * reaction (see `handleMailStatus` above). The Today page
+   * (`routes/+page.svelte`) hooks this to refetch `cockpit_today`: the
+   * payload's `mail` counts are computed backend-side at request time, and
+   * the Engine's async activation (plus every later credential/settings/sync
+   * transition) announces itself with exactly this push — without the
+   * refetch, Today would freeze whatever pre-activation snapshot
+   * (`configured: false`, zero counts) its single mount-time load happened
+   * to catch.
    */
   onMailStatus(listener: (payload: MailStatusPush) => void): () => void {
     this.#mailStatusListeners.add(listener);
@@ -291,28 +256,27 @@ export const mailStore = new MailStore(api);
 let mailEventsWired = false;
 
 /**
- * Attaches the four mail push handlers (`mail_status`/`mail_sync`/
- * `mail_message`/`mailbox_ops`) to an already-joined `workspace:events`
- * channel, driving the singleton `mailStore`. Takes the channel as a
- * parameter rather than joining its own — same reason `wireAuditEvents`
- * does (see its doc comment in `audit.svelte.ts`, and `wireIcmEvents`'s in
- * `icm.svelte.ts`): Phoenix's JS client only reliably delivers pushes to ONE
- * join per topic per socket, so every store rides the single
+ * Attaches the three mail push handlers (`mail_status`/`mail_sync`/
+ * `mail_message`) to an already-joined `workspace:events` channel, driving
+ * the singleton `mailStore`. Takes the channel as a parameter rather than
+ * joining its own — same reason `wireIcmEvents` does (see its own doc
+ * comment in `icm.svelte.ts`): Phoenix's JS client only reliably delivers
+ * pushes to ONE join per topic per socket, so every store rides the single
  * `workspace:events` join `wireIcmEvents` (`routes/+layout.svelte`'s one
  * call site) owns, rather than opening a second one here.
  *
  * SINGLE CALL SITE: wired from `wireIcmEvents` itself (`icm.svelte.ts`),
- * alongside `wireAuditEvents` — NOT from the `/mail` route directly. A
- * route-local `onMount` can't safely call `joinWorkspaceEvents` itself
- * (that would be a second, racing join to the same topic — see above), and
- * the layout already holds the one shared channel, so wiring happens
- * there, once, before any route mounts. This keeps mail pushes flowing
- * (and `mailStore` fresh) even when the user isn't currently on `/mail` —
- * same as `auditStore` staying live in the background today.
+ * alongside `wireMountsEvents`/`wireRecentSessionsEvents` — NOT from the
+ * `/mail` route directly. A route-local `onMount` can't safely call
+ * `joinWorkspaceEvents` itself (that would be a second, racing join to the
+ * same topic — see above), and the layout already holds the one shared
+ * channel, so wiring happens there, once, before any route mounts. This
+ * keeps mail pushes flowing (and `mailStore` fresh) even when the user
+ * isn't currently on `/mail`.
  *
- * Idempotent against repeat calls, same spirit as `wireAuditEvents` — a
- * second call is a no-op rather than attaching a second set of handlers
- * (which would double-refetch on every push).
+ * Idempotent against repeat calls — a second call is a no-op rather than
+ * attaching a second set of handlers (which would double-refetch on every
+ * push).
  */
 export function wireMailEvents(channel: Channel): void {
   if (mailEventsWired) return;
@@ -321,7 +285,6 @@ export function wireMailEvents(channel: Channel): void {
   channel.on('mail_status', (payload: MailStatusPush) => mailStore.handleMailStatus(payload));
   channel.on('mail_sync', (payload: MailSyncPush) => mailStore.handleMailSync(payload));
   channel.on('mail_message', (payload: MailMessagePush) => mailStore.handleMailMessage(payload));
-  channel.on('mailbox_ops', (payload: MailboxOpsPush) => mailStore.handleMailboxOps(payload));
 }
 
 /**
