@@ -1,101 +1,141 @@
 <script lang="ts">
-  // Guided fallback for "Start the conversation" until the chat-based setup
-  // assistant exists (Phase 6+). Card copy ships as designed; only the
-  // behavior behind the button is this dialog.
+  // "Start fresh" (Task 10.2): name your first ICM, confirm (or override) the
+  // folder it lives in, and go — `startFresh` (onboarding-path.ts) scaffolds
+  // the hidden workspace and THEN mints the ICM at that folder; nothing else
+  // is asked of the user here. Supersedes this component's earlier "guided
+  // fallback for the chat-based setup assistant" incarnation — that
+  // assistant never landed, and Tasks 10.2/10.3 rebuild onboarding around
+  // two direct paths instead of a wizard.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
+  import { goto } from '$app/navigation';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { mountsStore, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
+  import { startFresh, defaultIcmFolder, type StartFreshDeps } from './onboarding-path';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
-  let name = $state('My business');
-  let parentDir = $state('');
+  let name = $state('');
+  let folder = $state(defaultIcmFolder(''));
+  // Tracks whether the user picked/typed a folder themselves — once true,
+  // `folder` stops following `name`'s live default suggestion. Same
+  // touched-field convention `MountFromElsewhereDialog.svelte`'s
+  // `nameEdited` uses for its own name/path pair, mirrored here for the
+  // folder/name pair instead (the direction reverses: there, the picked path
+  // suggests a name; here, the typed name suggests a folder).
+  let folderEdited = $state(false);
   let submitting = $state(false);
   let error = $state<string | null>(null);
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+  $effect(() => {
+    if (open) {
+      name = '';
+      folder = defaultIcmFolder('');
+      folderEdited = false;
+      submitting = false;
+      error = null;
+    }
+  });
+
+  function onNameInput() {
+    if (!folderEdited) folder = defaultIcmFolder(name);
+  }
+
   async function pickFolder() {
     const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
     const selected = await openDialog({ directory: true });
     if (typeof selected === 'string') {
-      parentDir = selected;
+      folder = selected;
+      folderEdited = true;
     }
   }
 
-  function mapErrorCode(code: string): string {
-    switch (code) {
-      case 'target_not_empty':
-        return 'That folder already has files in it. Pick an empty spot for a new workspace.';
-      case 'not_a_workspace':
-        return "This folder doesn't look like a Valea workspace.";
-      default:
-        return 'Something went wrong while creating the workspace. Try again.';
-    }
+  function onFolderInput() {
+    folderEdited = true;
   }
+
+  const deps: StartFreshDeps = {
+    // `workspaceStore.create`'s `parentDir` is accepted-but-ignored
+    // (app-owned, id-based create — see that method's own doc comment); no
+    // caller here has a filesystem location to give it.
+    createWorkspace: (n) => workspaceStore.create('', n),
+    createIcm: (n, path, generation) => mountsStore.create(n, path, generation),
+    currentGeneration: () => workspaceStore.generation,
+    setPendingIcmError: (n, ref, message) => mountsStore.setPendingAdoptError(n, ref, message),
+    goToKnowledge: () => void goto('/knowledge'),
+    goToFirstSession: (mountKey) => void goto(`/chat?icm=${mountKey}`)
+  };
 
   async function submit() {
     error = null;
-    if (!parentDir.trim()) {
-      error = 'Choose a folder to create the workspace in.';
+
+    if (!name.trim()) {
+      error = 'Give it a name.';
       return;
     }
-    if (!name.trim()) {
-      error = 'Give the workspace a name.';
+    if (!folder.trim()) {
+      error = 'Choose a folder.';
       return;
     }
 
     submitting = true;
-    const result = await workspaceStore.create(parentDir.trim(), name.trim());
+    const outcome = await startFresh(name.trim(), folder.trim(), deps);
     submitting = false;
 
-    if (!result.ok) {
-      error = mapErrorCode(result.error);
+    // A create-ICM-stage failure already flipped the workspace open and
+    // navigated to Knowledge with the error persisted there (see
+    // `startFresh`'s doc comment) — this card is unmounted by the time that
+    // resolves, so there is nothing left here to render into. Only a
+    // create-workspace-stage failure still has this dialog on screen.
+    if (!outcome.ok && outcome.stage === 'create-workspace') {
+      error = declareMountErrorMessage(outcome.error);
       return;
     }
 
-    open = false;
+    if (outcome.ok) {
+      open = false;
+    }
   }
 </script>
 
 <Dialog.Root bind:open>
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
-      <Dialog.Title class="font-display text-[19px] text-ink-heading">Set up your workspace</Dialog.Title>
+      <Dialog.Title class="font-display text-[19px] text-ink-heading">Start fresh</Dialog.Title>
       <Dialog.Description class="text-ink-body">
-        Choose a name and a folder. The app scaffolds a workspace there and opens it — nothing connects without
+        This folder is yours — plain files you can open, export, or hand off anytime. Nothing connects without
         asking you.
       </Dialog.Description>
     </Dialog.Header>
 
     <div class="flex flex-col gap-4">
       <div class="flex flex-col gap-1.5">
-        <Label for="workspace-name">Workspace name</Label>
-        <Input id="workspace-name" bind:value={name} disabled={submitting} placeholder="My business" />
+        <Label for="fresh-icm-name">Name</Label>
+        <Input
+          id="fresh-icm-name"
+          bind:value={name}
+          oninput={onNameInput}
+          disabled={submitting}
+          placeholder="Coaching Practice"
+        />
       </div>
 
       <div class="flex flex-col gap-1.5">
-        <Label for="workspace-parent-dir">Parent folder</Label>
+        <Label for="fresh-icm-folder">Folder</Label>
         {#if isTauri}
           <div class="flex gap-2">
-            <Input
-              id="workspace-parent-dir"
-              bind:value={parentDir}
-              disabled={submitting}
-              readonly
-              placeholder="Choose a folder…"
-            />
-            <Button type="button" variant="outline" onclick={pickFolder} disabled={submitting}>Browse…</Button>
+            <Input id="fresh-icm-folder" bind:value={folder} disabled={submitting} readonly />
+            <Button type="button" variant="outline" onclick={pickFolder} disabled={submitting}>
+              Choose another location…
+            </Button>
           </div>
         {:else}
-          <Input
-            id="workspace-parent-dir"
-            bind:value={parentDir}
-            disabled={submitting}
-            placeholder="/Users/you/Documents"
-          />
+          <Input id="fresh-icm-folder" bind:value={folder} oninput={onFolderInput} disabled={submitting} />
+          <p class="text-ink-meta text-[11px]">Dev only — the desktop app suggests this automatically.</p>
         {/if}
       </div>
 
@@ -107,7 +147,7 @@
     <Dialog.Footer>
       <Button type="button" variant="outline" onclick={() => (open = false)} disabled={submitting}>Cancel</Button>
       <Button type="button" onclick={submit} disabled={submitting}>
-        {submitting ? 'Setting up…' : 'Create workspace'}
+        {submitting ? 'Setting up…' : 'Create'}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>

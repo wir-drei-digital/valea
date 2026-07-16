@@ -15,12 +15,6 @@
   let explainOpen = $state(false);
   let openError = $state<string | null>(null);
 
-  const steps = [
-    'Connect email & calendar — Gmail, Microsoft 365, Infomaniak, or any IMAP / CalDAV',
-    'Tell it about your offers, prices and how you write',
-    "Pick your first workflow — it drafts, you approve"
-  ];
-
   async function openRecent(id: string) {
     openError = null;
     const result = await workspaceStore.open(id);
@@ -54,20 +48,15 @@
       <!-- Card 1: start fresh -->
       <section class="border-paper-border bg-paper-card shadow-card flex flex-col gap-4 rounded-xl border p-6">
         <p class="text-overline text-act">START FRESH · MOST PEOPLE BEGIN HERE</p>
-        <h2 class="font-display text-ink-heading text-[20px] font-medium">Set it up in conversation</h2>
+        <h2 class="font-display text-ink-heading text-[20px] font-medium">Create your first ICM</h2>
         <p class="text-ink-body text-[13.5px]">
-          About 15 minutes of talking. The assistant builds your workspace as you go, and you approve each page it
-          writes.
+          Give it a name and a folder. Valea creates a small starter knowledge module there — plain Markdown pages
+          you own — and opens it straight into your first chat.
         </p>
 
         <ol class="flex flex-col">
-          {#each steps as step, i}
-            <li
-              class={[
-                'flex items-start gap-3.5 py-3',
-                i < steps.length - 1 ? 'border-b border-paper-hairline' : ''
-              ]}
-            >
+          {#each ['A folder of Markdown pages, yours to keep', "You choose where it lives — export or move it anytime", 'Chat with it right away — nothing connects without asking you'] as step, i}
+            <li class={['flex items-start gap-3.5 py-3', i < 2 ? 'border-b border-paper-hairline' : '']}>
               <span class="text-ink-meta w-4 shrink-0 text-[13px] tabular-nums">{i + 1}</span>
               <span class="text-ink-body text-[13px] leading-relaxed">{step}</span>
             </li>
@@ -75,27 +64,19 @@
         </ol>
 
         <div class="mt-auto flex flex-wrap items-center gap-3 pt-1">
-          <Button type="button" onclick={() => (createOpen = true)}>Start the conversation</Button>
-          <span class="text-ink-meta text-[12px]">nothing connects without asking you</span>
+          <Button type="button" onclick={() => (createOpen = true)}>Start fresh</Button>
+          <span class="text-ink-meta text-[12px]">takes under a minute</span>
         </div>
       </section>
 
-      <!-- Card 2: continue -->
+      <!-- Card 2: use an existing ICM -->
       <section class="border-paper-border bg-paper-panel shadow-card flex flex-col gap-4 rounded-xl border p-6">
-        <p class="text-overline">CONTINUE · FROM A HANDOFF OR BACKUP</p>
-        <h2 class="font-display text-ink-heading text-[20px] font-medium">Open an existing workspace</h2>
+        <p class="text-overline">USE EXISTING ICM · BRING YOUR OWN FOLDER</p>
+        <h2 class="font-display text-ink-heading text-[20px] font-medium">Use an existing ICM folder</h2>
         <p class="text-ink-body text-[13.5px]">
-          From a consultant, a backup, or another machine. Everything picks up where it left off — memory, workflows,
-          history.
+          From a consultant, a backup, or another machine. Point at the folder — we'll show you what's inside before
+          anything mounts. Nothing is copied or moved; it stays exactly where it is.
         </p>
-
-        <div
-          class="border-paper-chip-border bg-paper-surface flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-9 text-center"
-        >
-          <p class="text-ink-heading text-[13.5px] font-semibold">Drop your folder here</p>
-          <p class="text-ink-meta font-mono text-[11px]">icm/ · workflows/ · queue/ · logs/</p>
-          <p class="text-ink-subtitle text-[12px]">We'll show you what's inside before anything runs.</p>
-        </div>
 
         <div class="mt-auto">
           <OpenWorkspaceFlow />

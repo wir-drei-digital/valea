@@ -227,3 +227,107 @@ export async function adoptByReference(
 
   return { ok: true };
 }
+
+// -- Task 10.2: "Start fresh" ------------------------------------------------
+
+/**
+ * Default folder suggestion for a brand-new ICM, shown live as the user
+ * types its name in `CreateWorkspaceDialog.svelte` ("Start fresh"):
+ * `~/Documents/Valea/<name>`, a `~`-form path passed straight through to
+ * `createIcm` untouched (mirrors `mountIcm`'s own "stored exactly as
+ * picked/typed" contract — see `api/client.ts`'s `mountIcm` doc comment). A
+ * blank/whitespace-only name falls back to the bare `~/Documents/Valea`
+ * folder, so the live suggestion never carries a trailing empty segment
+ * while the name field is still untouched.
+ */
+export function defaultIcmFolder(name: string): string {
+  const trimmed = name.trim();
+  return trimmed ? `~/Documents/Valea/${trimmed}` : '~/Documents/Valea';
+}
+
+/**
+ * Dependencies `startFresh` needs, injected the same way `adoptByReference`
+ * above is — testable without a real store or RPC round trip.
+ */
+export type StartFreshDeps = {
+  /** `Valea.Api.Workspace.create_workspace` (id-based, app-owned — no path). */
+  createWorkspace: (name: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * `Valea.Api.Icms.create_icm` — mints a brand-new ICM at `folder` (seeding
+   * the portable template) and mounts it. Reads the CURRENT generation via
+   * `currentGeneration`, same post-create-only-trusted rule
+   * `ReferenceAdoptDeps.currentGeneration` documents above.
+   */
+  createIcm: (
+    name: string,
+    folder: string,
+    generation: number
+  ) => Promise<{ ok: true; mountKey: string } | { ok: false; error: string }>;
+  /** Reads the CURRENT generation — see `ReferenceAdoptDeps.currentGeneration` above for why this is a closure, not a value, and always called AFTER `createWorkspace` resolves. */
+  currentGeneration: () => number | null;
+  /**
+   * Persists a create-ICM-stage failure so it survives the onboarding-to-app
+   * transition, same fix-wave-1 reasoning `ReferenceAdoptDeps.setPendingAdoptError`
+   * documents: `createWorkspace` already flipped `workspaceStore.state` to
+   * 'open' by the time this can fail, unmounting the onboarding card that
+   * would otherwise render a local error. Wired to the SAME
+   * `mountsStore.setPendingAdoptError` field `adoptByReference` uses — a
+   * successful "Mount a folder from elsewhere…" retry against the same
+   * `folder` clears it either way, and `createIcm` may have already written
+   * a healthy `icm.yaml` to `folder` before the mount step itself failed,
+   * making that retry path a real recovery, not a dead end.
+   */
+  setPendingIcmError: (name: string, folder: string, message: string) => void;
+  /** Navigates to Knowledge — the surface that renders the persisted error, same reasoning as `ReferenceAdoptDeps.goToKnowledge`. */
+  goToKnowledge: () => void;
+  /** Navigates to the new ICM's first chat session (`/chat?icm=<mountKey>`) on success. */
+  goToFirstSession: (mountKey: string) => void;
+};
+
+export type StartFreshOutcome =
+  | { ok: true; mountKey: string }
+  | { ok: false; stage: 'create-workspace' | 'create-icm'; error: string };
+
+/**
+ * Orchestrates "Start fresh" (Task 10.2): scaffolds a brand-new, hidden,
+ * id-based workspace (`createWorkspace`), then mints a brand-new ICM at
+ * `folder` inside it (`createIcm`) — Valea never creates ICM content under
+ * the hidden workspace itself; the ICM always lives at the user-chosen
+ * `folder`. `name` is shared by both calls: the ICM's display name doubles
+ * as the workspace's own internal display name (the workspace's id/path are
+ * never shown to the user, so there is nothing for a second name to
+ * disambiguate).
+ *
+ * Short-circuits on the create-workspace step's failure — nothing to clean
+ * up, no workspace was ever created (mirrors `adoptByReference`'s own
+ * create-stage short-circuit).
+ *
+ * A create-ICM-stage failure (including the generation-unavailable guard) —
+ * both happen AFTER the workspace already exists and the onboarding UI is
+ * gone — is persisted via `deps.setPendingIcmError` and takes the user to
+ * Knowledge, same fix-wave-1/2 treatment `adoptByReference` gives its own
+ * declare-stage failure. The workspace itself staying open with no ICM
+ * mounted yet is non-destructive; the persisted error is what keeps that
+ * from being SILENT.
+ */
+export async function startFresh(name: string, folder: string, deps: StartFreshDeps): Promise<StartFreshOutcome> {
+  const createResult = await deps.createWorkspace(name);
+  if (!createResult.ok) return { ok: false, stage: 'create-workspace', error: createResult.error };
+
+  const generation = deps.currentGeneration();
+  if (generation == null) {
+    deps.setPendingIcmError(name, folder, declareMountErrorMessage('workspace_not_open'));
+    deps.goToKnowledge();
+    return { ok: false, stage: 'create-icm', error: 'workspace_not_open' };
+  }
+
+  const icmResult = await deps.createIcm(name, folder, generation);
+  if (!icmResult.ok) {
+    deps.setPendingIcmError(name, folder, declareMountErrorMessage(icmResult.error));
+    deps.goToKnowledge();
+    return { ok: false, stage: 'create-icm', error: icmResult.error };
+  }
+
+  deps.goToFirstSession(icmResult.mountKey);
+  return { ok: true, mountKey: icmResult.mountKey };
+}

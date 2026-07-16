@@ -4,9 +4,12 @@ import {
   basename,
   decideOnboardingMode,
   defaultAdoptAction,
+  defaultIcmFolder,
   dirname,
   slugify,
-  type ReferenceAdoptDeps
+  startFresh,
+  type ReferenceAdoptDeps,
+  type StartFreshDeps
 } from './onboarding-path';
 import type { PathInspection } from '$lib/api/client';
 
@@ -282,6 +285,126 @@ describe('adoptByReference', () => {
     expect(result).toEqual({ ok: false, stage: 'declare', error: 'workspace_not_open' });
     expect(declareMount).not.toHaveBeenCalled();
     expect(setPendingAdoptError).toHaveBeenCalledWith('mount', '/src', 'No workspace is open.');
+    expect(goToKnowledge).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Task 10.2: "Start fresh" — live folder suggestion shown in
+// `CreateWorkspaceDialog.svelte` as the ICM name field is typed.
+describe('defaultIcmFolder', () => {
+  it('suggests ~/Documents/Valea/<name> for a non-blank name', () => {
+    expect(defaultIcmFolder('Coaching Practice')).toBe('~/Documents/Valea/Coaching Practice');
+  });
+
+  it('trims surrounding whitespace before building the suggestion', () => {
+    expect(defaultIcmFolder('  Client Notes  ')).toBe('~/Documents/Valea/Client Notes');
+  });
+
+  it('falls back to the bare Valea folder for a blank/whitespace-only name', () => {
+    expect(defaultIcmFolder('')).toBe('~/Documents/Valea');
+    expect(defaultIcmFolder('   ')).toBe('~/Documents/Valea');
+  });
+});
+
+// Task 10.2: the "Start fresh" orchestration — same fake-deps-injection
+// convention as `adoptByReference` above.
+describe('startFresh', () => {
+  function fakeDeps(overrides: Partial<StartFreshDeps> = {}): StartFreshDeps {
+    return {
+      createWorkspace: overrides.createWorkspace ?? (async () => ({ ok: true })),
+      createIcm: overrides.createIcm ?? (async () => ({ ok: true, mountKey: 'coaching-practice' })),
+      currentGeneration: overrides.currentGeneration ?? (() => 1),
+      setPendingIcmError: overrides.setPendingIcmError ?? (() => {}),
+      goToKnowledge: overrides.goToKnowledge ?? (() => {}),
+      goToFirstSession: overrides.goToFirstSession ?? (() => {})
+    };
+  }
+
+  it('creates the workspace, then creates the ICM at folder using the POST-CREATE generation, then navigates to its first session', async () => {
+    const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
+    const createIcm = vi.fn(async () => ({ ok: true, mountKey: 'coaching-practice' }) as const);
+    const currentGeneration = vi.fn(() => 3);
+    const goToFirstSession = vi.fn();
+
+    const result = await startFresh(
+      'Coaching Practice',
+      '~/Documents/Valea/Coaching Practice',
+      fakeDeps({ createWorkspace, createIcm, currentGeneration, goToFirstSession })
+    );
+
+    expect(createWorkspace).toHaveBeenCalledWith('Coaching Practice');
+    expect(createIcm).toHaveBeenCalledWith('Coaching Practice', '~/Documents/Valea/Coaching Practice', 3);
+    // generation is read AFTER createWorkspace resolves, never before.
+    expect(currentGeneration).toHaveBeenCalledTimes(1);
+    expect(goToFirstSession).toHaveBeenCalledWith('coaching-practice');
+    expect(result).toEqual({ ok: true, mountKey: 'coaching-practice' });
+  });
+
+  it('short-circuits on a create-workspace failure — never calls createIcm, never persists an error, never navigates', async () => {
+    const createIcm = vi.fn(async () => ({ ok: true, mountKey: 'x' }) as const);
+    const setPendingIcmError = vi.fn();
+    const goToKnowledge = vi.fn();
+    const goToFirstSession = vi.fn();
+
+    const result = await startFresh(
+      'Name',
+      '~/Documents/Valea/Name',
+      fakeDeps({
+        createWorkspace: async () => ({ ok: false, error: 'some_error' }),
+        createIcm,
+        setPendingIcmError,
+        goToKnowledge,
+        goToFirstSession
+      })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'create-workspace', error: 'some_error' });
+    expect(createIcm).not.toHaveBeenCalled();
+    expect(setPendingIcmError).not.toHaveBeenCalled();
+    expect(goToKnowledge).not.toHaveBeenCalled();
+    expect(goToFirstSession).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a create-ICM failure at the "create-icm" stage, persists it with the MAPPED message, and navigates to Knowledge', async () => {
+    const setPendingIcmError = vi.fn();
+    const goToKnowledge = vi.fn();
+    const goToFirstSession = vi.fn();
+
+    const result = await startFresh(
+      'Name',
+      '~/Documents/Valea/Name',
+      fakeDeps({
+        createIcm: async () => ({ ok: false, error: 'already_exists' }),
+        setPendingIcmError,
+        goToKnowledge,
+        goToFirstSession
+      })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'create-icm', error: 'already_exists' });
+    expect(setPendingIcmError).toHaveBeenCalledWith(
+      'Name',
+      '~/Documents/Valea/Name',
+      'Could not mount that folder. Check the path and try again.'
+    );
+    expect(goToKnowledge).toHaveBeenCalledTimes(1);
+    expect(goToFirstSession).not.toHaveBeenCalled();
+  });
+
+  it('surfaces workspace_not_open at the create-icm stage when the post-create generation is unavailable, without calling createIcm — persists AND navigates too (the transition already happened)', async () => {
+    const createIcm = vi.fn(async () => ({ ok: true, mountKey: 'x' }) as const);
+    const setPendingIcmError = vi.fn();
+    const goToKnowledge = vi.fn();
+
+    const result = await startFresh(
+      'Name',
+      '~/Documents/Valea/Name',
+      fakeDeps({ currentGeneration: () => null, createIcm, setPendingIcmError, goToKnowledge })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'create-icm', error: 'workspace_not_open' });
+    expect(createIcm).not.toHaveBeenCalled();
+    expect(setPendingIcmError).toHaveBeenCalledWith('Name', '~/Documents/Valea/Name', 'No workspace is open.');
     expect(goToKnowledge).toHaveBeenCalledTimes(1);
   });
 });
