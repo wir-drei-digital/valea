@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, test, vi } from 'vitest';
 import {
+  adoptExisting,
   createNewIcm,
   mountExisting,
+  type AdoptExistingDeps,
   type CreateNewIcmDeps,
   type IcmInspection,
   type MountExistingDeps
@@ -15,13 +17,15 @@ describe('mountExisting', () => {
     ok: true,
     name: 'Client Notes',
     description: 'Old client work',
-    reason: null
+    reason: null,
+    adoptable: false
   };
   const unhealthyInspection: IcmInspection = {
     ok: false,
     name: null,
     description: null,
-    reason: 'no icm.yaml found in that folder'
+    reason: 'no icm.yaml found in that folder',
+    adoptable: false
   };
 
   function fakeDeps(overrides: Partial<MountExistingDeps> = {}): MountExistingDeps {
@@ -80,6 +84,72 @@ describe('mountExisting', () => {
     );
 
     expect(result).toEqual({ ok: false, stage: 'mount', error: 'no_manifest' });
+  });
+
+  test('mountExisting surfaces an adoptable folder instead of a dead-end error', async () => {
+    const deps = {
+      inspectIcm: async () => ({
+        ok: true as const,
+        data: { ok: false, name: null, description: null, reason: 'no icm.yaml found in that folder', adoptable: true }
+      }),
+      mountIcm: async () => {
+        throw new Error('must not mount');
+      }
+    };
+    const outcome = await mountExisting('/tmp/life', 1, deps);
+    expect(outcome).toEqual({
+      ok: false,
+      stage: 'adoptable',
+      inspection: expect.objectContaining({ adoptable: true })
+    });
+  });
+
+  test('a non-adoptable inspect failure keeps the old inspect-stage shape', async () => {
+    const deps = {
+      inspectIcm: async () => ({
+        ok: true as const,
+        data: { ok: false, name: null, description: null, reason: 'manifest is garbage', adoptable: false }
+      }),
+      mountIcm: async () => ({ ok: true as const, mountKey: 'x' })
+    };
+    const outcome = await mountExisting('/tmp/x', 1, deps);
+    expect(outcome).toEqual({ ok: false, stage: 'inspect', error: 'manifest is garbage' });
+  });
+});
+
+// Task 13: minting the identity file (icm.yaml) into a folder that isn't a
+// Valea ICM yet, then mounting it by reference — the one consented write the
+// adoptable-folder flag exists to gate. Same shape as `mountExisting`'s
+// mount step, ONE call.
+describe('adoptExisting', () => {
+  function fakeDeps(overrides: Partial<AdoptExistingDeps> = {}): AdoptExistingDeps {
+    return {
+      adoptIcm: overrides.adoptIcm ?? (async () => ({ ok: true, mountKey: 'life' }))
+    };
+  }
+
+  test('adoptExisting mints then reports the mount key', async () => {
+    const calls: unknown[] = [];
+    const deps = {
+      adoptIcm: async (path: string, name: string, generation: number) => {
+        calls.push([path, name, generation]);
+        return { ok: true as const, mountKey: 'life' };
+      }
+    };
+    const outcome = await adoptExisting('/tmp/life', 'Life', 1, deps);
+    expect(outcome).toEqual({ ok: true, mountKey: 'life' });
+    expect(calls).toEqual([['/tmp/life', 'Life', 1]]);
+  });
+
+  it('surfaces an adopt failure at the "mount" stage with the raw code', async () => {
+    const result = await adoptExisting(
+      '/tmp/life',
+      'Life',
+      1,
+      fakeDeps({ adoptIcm: async () => ({ ok: false, error: 'already_exists' }) })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'mount', error: 'already_exists' });
   });
 });
 

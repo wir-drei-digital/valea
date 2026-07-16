@@ -73,6 +73,8 @@ import {
   listIcmsChannel,
   mountIcm as httpMountIcm,
   mountIcmChannel,
+  adoptIcm as httpAdoptIcm,
+  adoptIcmChannel,
   createIcm as httpCreateIcm,
   createIcmChannel,
   setIcmEnabled as httpSetIcmEnabled,
@@ -115,6 +117,7 @@ import type {
   InspectIcmFields,
   ListIcmsFields,
   MountIcmFields,
+  AdoptIcmFields,
   CreateIcmFields,
   SetIcmEnabledFields,
   UnmountIcmFields,
@@ -397,6 +400,9 @@ const listIcmsFields = [
   { icms: ['mountKey', 'id', 'name', 'description', 'root', 'enabled', 'degraded'] }
 ] as unknown as ListIcmsFields;
 const mountIcmFields: MountIcmFields = ['mountKey', 'id'];
+// `adopt_icm` (Task 12/13) — mints the identity file and mounts by
+// reference in one step; same plain top-level field shape as `mountIcmFields`.
+const adoptIcmFields: AdoptIcmFields = ['mountKey', 'id'];
 const createIcmFields: CreateIcmFields = ['mountKey', 'id'];
 const setIcmEnabledFields: SetIcmEnabledFields = ['saved'];
 const unmountIcmFields: UnmountIcmFields = ['unmounted'];
@@ -405,7 +411,10 @@ const icmDoctorFields: IcmDoctorFields = ['ok', 'checks'];
 // `inspect_icm` (Task 10.1) — onboarding's mount-preview primitive, no
 // `generation`/open-workspace requirement (see `Valea.Api.Icms`'s
 // moduledoc). Plain top-level fields, same as `mountIcmFields` above.
-const inspectIcmFields: InspectIcmFields = ['ok', 'name', 'description', 'reason'];
+// `adoptable` (Task 12) flags a plain folder Valea could adopt by writing a
+// small identity file into it — see `IcmInspection.adoptable`'s doc comment
+// in onboarding-path.ts.
+const inspectIcmFields: InspectIcmFields = ['ok', 'name', 'description', 'reason', 'adoptable'];
 
 // `icm_tree` (task 4.2 re-key) — a single ICM's `{mountKey, title, tree}`,
 // no more all-mounts grouped envelope (`mounts: [...]`). `mountKey`/`title`
@@ -569,6 +578,13 @@ function callMountIcmChannel(
   input: { path: string; generation: number }
 ) {
   return wrapChannelCall((handlers) => mountIcmChannel({ channel, input, fields: mountIcmFields, ...handlers }));
+}
+
+function callAdoptIcmChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string; name: string; generation: number }
+) {
+  return wrapChannelCall((handlers) => adoptIcmChannel({ channel, input, fields: adoptIcmFields, ...handlers }));
 }
 
 function callCreateIcmChannel(
@@ -1208,6 +1224,18 @@ export const api = {
     runRpc(
       (channel) => callMountIcmChannel(channel, { path, generation }),
       () => httpMountIcm(withAuth({ input: { path, generation }, fields: mountIcmFields }))
+    ),
+
+  // `adopt_icm` (Task 12/13) — mints a small identity file (`icm.yaml`,
+  // `{format: 2, id, name}`) into a plain folder that isn't a Valea ICM yet
+  // (see `IcmInspection.adoptable`'s doc comment in onboarding-path.ts),
+  // then mounts it by reference in the same step — the one consented write
+  // the adopt-a-folder consent step gates. `path` is passed through exactly
+  // as picked/typed, same contract `mountIcm` documents above.
+  adoptIcm: (path: string, name: string, generation: number) =>
+    runRpc(
+      (channel) => callAdoptIcmChannel(channel, { path, name, generation }),
+      () => httpAdoptIcm(withAuth({ input: { path, name, generation }, fields: adoptIcmFields }))
     ),
 
   createIcm: (name: string, path: string, generation: number) =>

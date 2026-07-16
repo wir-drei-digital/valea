@@ -157,6 +157,16 @@ export type IcmInspection = {
   name: string | null;
   description: string | null;
   reason: string | null;
+  /**
+   * Task 12/13: true when `path` isn't a Valea ICM yet, but IS a plain
+   * folder Valea could adopt by writing a small identity file (`icm.yaml`)
+   * into it — the ONLY file the consent step (`adoptExistingIcm`/
+   * `adoptExisting`) ever writes. Always `false` when `ok` is true (a
+   * healthy ICM needs no adopting) and always `false` for the RPC-level
+   * failure branch (`inspectIcm` returning `{ok: false, error}` — no
+   * `IcmInspection` payload exists there to be adoptable).
+   */
+  adoptable: boolean;
 };
 
 /**
@@ -188,7 +198,14 @@ export type UseExistingIcmDeps = {
 
 export type UseExistingIcmOutcome =
   | { ok: true; mountKey: string }
-  | { ok: false; stage: 'inspect' | 'create-workspace' | 'mount'; error: string };
+  | { ok: false; stage: 'inspect' | 'create-workspace' | 'mount'; error: string }
+  /**
+   * Task 13: `path` isn't a healthy ICM, but IS adoptable (see
+   * `IcmInspection.adoptable`'s doc comment) — nothing was created or
+   * mounted. Carries the full `inspection` so the caller's consent-step UI
+   * can render without a second `inspect_icm` round trip.
+   */
+  | { ok: false; stage: 'adoptable'; inspection: IcmInspection };
 
 /**
  * Orchestrates "Use existing ICM" (Task 10.3): previews `path` via
@@ -227,6 +244,9 @@ export async function useExistingIcm(
 
   const inspection = inspectResult.data;
   if (!inspection.ok) {
+    if (inspection.adoptable) {
+      return { ok: false, stage: 'adoptable', inspection };
+    }
     return { ok: false, stage: 'inspect', error: inspection.reason ?? 'not_a_healthy_icm' };
   }
 
@@ -254,4 +274,80 @@ export async function useExistingIcm(
 
   deps.goToMountedIcm(mountResult.mountKey);
   return { ok: true, mountKey: mountResult.mountKey };
+}
+
+// -- Task 13: adopt-a-folder consent step ------------------------------------
+
+/**
+ * Dependencies `adoptExistingIcm` needs — the onboarding twin of
+ * `mount-icm-action.ts`'s `AdoptExistingDeps`, injected the same way
+ * `UseExistingIcmDeps` above is. No `inspectIcm` here: this only ever runs
+ * AFTER `useExistingIcm`'s own `inspect_icm` call already flagged the folder
+ * `adoptable` (the `'adoptable'` outcome above) and the consent-step UI
+ * confirmed with the user.
+ */
+export type AdoptExistingIcmDeps = {
+  /** `Valea.Api.Workspace.create_workspace` (id-based, app-owned — no path). */
+  createWorkspace: (name: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** `Valea.Api.Icms.adopt_icm` — mints `{format: 2, id, name}` into the folder (the one consented write), then mounts it by reference. */
+  adoptIcm: (path: string, name: string, generation: number) => Promise<{ ok: true; mountKey: string } | { ok: false; error: string }>;
+  /** Reads the CURRENT generation — a closure, not a value, and always called AFTER `createWorkspace` resolves. `null` means the workspace isn't open (unexpected). */
+  currentGeneration: () => number | null;
+  /** Persists a mount-stage failure so it survives the onboarding-to-app transition — same `mountsStore.setPendingAdoptError` field `useExistingIcm`'s own mount-stage failure uses above. */
+  setPendingMountError: (name: string, path: string, message: string) => void;
+  /** Bare navigation to Knowledge for the failure path — same reasoning `UseExistingIcmDeps.goToKnowledge` documents above. */
+  goToKnowledge: () => void;
+  /** Navigates to the newly-adopted-and-mounted ICM's own Knowledge view on success. */
+  goToMountedIcm: (mountKey: string) => void;
+};
+
+/**
+ * Orchestrates the adopt-a-folder consent step (Task 13, Spec D §D4): the
+ * SAME create-workspace → post-create-generation → mount-stage shape
+ * `useExistingIcm` runs above, with `deps.adoptIcm(path, name, generation)`
+ * — which mints the folder's identity file AND mounts it in one step — in
+ * place of `deps.mountIcm(path, generation)`. `name` is the user-typed
+ * field from the consent UI (defaulting to the folder's basename): unlike
+ * `useExistingIcm`, there is no manifest yet to read a name from, so this
+ * function never falls back to one.
+ *
+ * `workspaceName` keeps the same "secondary, editable, defaults from the
+ * ICM name" contract `useExistingIcm`'s own parameter has — `null`/blank
+ * falls back to `name` here rather than a manifest name.
+ *
+ * Short-circuits on a create-workspace failure — nothing to clean up, no
+ * workspace was ever created. A mount-stage failure (including the
+ * generation-unavailable guard) — happening AFTER the workspace already
+ * exists and the onboarding UI is gone — is persisted via
+ * `deps.setPendingMountError` and takes the user to Knowledge, same
+ * treatment `useExistingIcm` gives its own mount-stage failure.
+ */
+export async function adoptExistingIcm(
+  path: string,
+  workspaceName: string | null,
+  name: string,
+  deps: AdoptExistingIcmDeps
+): Promise<UseExistingIcmOutcome> {
+  const trimmedWorkspaceName = workspaceName?.trim();
+  const finalWorkspaceName = trimmedWorkspaceName ? trimmedWorkspaceName : name;
+
+  const createResult = await deps.createWorkspace(finalWorkspaceName);
+  if (!createResult.ok) return { ok: false, stage: 'create-workspace', error: createResult.error };
+
+  const generation = deps.currentGeneration();
+  if (generation == null) {
+    deps.setPendingMountError(name, path, declareMountErrorMessage('workspace_not_open'));
+    deps.goToKnowledge();
+    return { ok: false, stage: 'mount', error: 'workspace_not_open' };
+  }
+
+  const adoptResult = await deps.adoptIcm(path, name, generation);
+  if (!adoptResult.ok) {
+    deps.setPendingMountError(name, path, declareMountErrorMessage(adoptResult.error));
+    deps.goToKnowledge();
+    return { ok: false, stage: 'mount', error: adoptResult.error };
+  }
+
+  deps.goToMountedIcm(adoptResult.mountKey);
+  return { ok: true, mountKey: adoptResult.mountKey };
 }

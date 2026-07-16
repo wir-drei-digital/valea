@@ -26,7 +26,14 @@ export type MountExistingDeps = {
 
 export type MountExistingOutcome =
   | { ok: true; mountKey: string }
-  | { ok: false; stage: 'inspect' | 'mount'; error: string };
+  | { ok: false; stage: 'inspect' | 'mount'; error: string }
+  /**
+   * Task 13: `path` isn't a healthy ICM, but IS adoptable (see
+   * `IcmInspection.adoptable`'s doc comment in onboarding-path.ts) — nothing
+   * was mounted. Carries the full `inspection` so the caller's consent-step
+   * UI can render without a second `inspect_icm` round trip.
+   */
+  | { ok: false; stage: 'adoptable'; inspection: IcmInspection };
 
 /**
  * Orchestrates "Mount an existing ICM…" for an already-open workspace:
@@ -55,6 +62,9 @@ export async function mountExisting(
 
   const inspection = inspectResult.data;
   if (!inspection.ok) {
+    if (inspection.adoptable) {
+      return { ok: false, stage: 'adoptable', inspection };
+    }
     return { ok: false, stage: 'inspect', error: inspection.reason ?? 'not_a_healthy_icm' };
   }
 
@@ -62,6 +72,37 @@ export async function mountExisting(
   if (!mountResult.ok) return { ok: false, stage: 'mount', error: mountResult.error };
 
   return { ok: true, mountKey: mountResult.mountKey };
+}
+
+/** Dependencies `adoptExisting` needs, injected the same way `mountExisting` above is. */
+export type AdoptExistingDeps = {
+  /** `Valea.Api.Icms.adopt_icm` — mints `{format: 2, id, name}` into the folder (the one consented write), then mounts it by reference. */
+  adoptIcm: (
+    path: string,
+    name: string,
+    generation: number
+  ) => Promise<{ ok: true; mountKey: string } | { ok: false; error: string }>;
+};
+
+/**
+ * Orchestrates the adopt-a-folder consent step for an already-open workspace
+ * (Task 13, Spec D §D4): mints the folder's identity file AND mounts it in
+ * ONE call (`adoptIcm`) — the running-app counterpart to
+ * `onboarding-path.ts`'s `adoptExistingIcm`, minus its `createWorkspace`
+ * step (same deliberate difference `mountExisting`/`useExistingIcm` share —
+ * see this module's header comment). Failures are returned to the caller for
+ * INLINE handling, same as `mountExisting`'s own mount stage — no
+ * `setPendingXError`/`goToKnowledge` here.
+ */
+export async function adoptExisting(
+  path: string,
+  name: string,
+  generation: number,
+  deps: AdoptExistingDeps
+): Promise<MountExistingOutcome> {
+  const result = await deps.adoptIcm(path, name, generation);
+  if (!result.ok) return { ok: false, stage: 'mount', error: result.error };
+  return { ok: true, mountKey: result.mountKey };
 }
 
 /** Dependencies `createNewIcm` needs, injected the same way `mountExisting` above is. */

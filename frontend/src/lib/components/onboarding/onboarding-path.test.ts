@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, test, vi } from 'vitest';
 import {
+  adoptExistingIcm,
   basename,
   defaultIcmFolder,
   startFresh,
   useExistingIcm,
+  type AdoptExistingIcmDeps,
   type IcmInspection,
   type StartFreshDeps,
   type UseExistingIcmDeps
@@ -202,9 +204,16 @@ describe('useExistingIcm', () => {
     ok: true,
     name: 'Client Notes',
     description: 'Old client work',
-    reason: null
+    reason: null,
+    adoptable: false
   };
-  const unhealthyInspection: IcmInspection = { ok: false, name: null, description: null, reason: 'no icm.yaml found in that folder' };
+  const unhealthyInspection: IcmInspection = {
+    ok: false,
+    name: null,
+    description: null,
+    reason: 'no icm.yaml found in that folder',
+    adoptable: false
+  };
 
   function fakeDeps(overrides: Partial<UseExistingIcmDeps> = {}): UseExistingIcmDeps {
     return {
@@ -259,7 +268,7 @@ describe('useExistingIcm', () => {
   it('falls back to the folder basename when the manifest has no (or a blank) name', async () => {
     const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
     const inspectIcm = async () =>
-      ({ ok: true, data: { ok: true, name: '  ', description: null, reason: null } }) as const;
+      ({ ok: true, data: { ok: true, name: '  ', description: null, reason: null, adoptable: false } }) as const;
 
     await useExistingIcm('/Users/mara/Documents/my-notes', null, fakeDeps({ inspectIcm, createWorkspace }));
 
@@ -363,6 +372,152 @@ describe('useExistingIcm', () => {
       '/Users/mara/Documents/Client Notes',
       'No workspace is open.'
     );
+    expect(goToKnowledge).toHaveBeenCalledTimes(1);
+  });
+
+  test('useExistingIcm surfaces an adoptable folder instead of a dead-end error, BEFORE creating a workspace', async () => {
+    const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
+    const mountIcm = vi.fn(async () => ({ ok: true, mountKey: 'x' }) as const);
+
+    const outcome = await useExistingIcm(
+      '/tmp/life',
+      null,
+      fakeDeps({
+        inspectIcm: async () => ({
+          ok: true,
+          data: { ok: false, name: null, description: null, reason: 'no icm.yaml found in that folder', adoptable: true }
+        }),
+        createWorkspace,
+        mountIcm
+      })
+    );
+
+    expect(outcome).toEqual({
+      ok: false,
+      stage: 'adoptable',
+      inspection: expect.objectContaining({ adoptable: true })
+    });
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(mountIcm).not.toHaveBeenCalled();
+  });
+});
+
+// Task 13: the onboarding twin of `mount-icm-action.ts`'s `adoptExisting` —
+// runs AFTER the consent step's own `inspect_icm` call already flagged the
+// folder `adoptable`, so it takes no `inspectIcm` dependency of its own.
+// Same create-workspace/post-create-generation/mount-stage shape
+// `useExistingIcm` gives its own mount step above, with `adoptIcm` in place
+// of `mountIcm` and the user-typed `name` (no manifest exists yet) standing
+// in for the manifest name everywhere `useExistingIcm` would have read one.
+describe('adoptExistingIcm', () => {
+  function fakeDeps(overrides: Partial<AdoptExistingIcmDeps> = {}): AdoptExistingIcmDeps {
+    return {
+      createWorkspace: overrides.createWorkspace ?? (async () => ({ ok: true })),
+      adoptIcm: overrides.adoptIcm ?? (async () => ({ ok: true, mountKey: 'life' })),
+      currentGeneration: overrides.currentGeneration ?? (() => 1),
+      setPendingMountError: overrides.setPendingMountError ?? (() => {}),
+      goToKnowledge: overrides.goToKnowledge ?? (() => {}),
+      goToMountedIcm: overrides.goToMountedIcm ?? (() => {})
+    };
+  }
+
+  test('creates the workspace, then adopts using the POST-CREATE generation, then navigates to the mounted ICM', async () => {
+    const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
+    const adoptIcm = vi.fn(async () => ({ ok: true, mountKey: 'life' }) as const);
+    const currentGeneration = vi.fn(() => 5);
+    const goToMountedIcm = vi.fn();
+
+    const result = await adoptExistingIcm(
+      '/tmp/life',
+      null,
+      'Life',
+      fakeDeps({ createWorkspace, adoptIcm, currentGeneration, goToMountedIcm })
+    );
+
+    // no explicit workspaceName -> the workspace name defaults to the user-typed ICM name.
+    expect(createWorkspace).toHaveBeenCalledWith('Life');
+    expect(adoptIcm).toHaveBeenCalledWith('/tmp/life', 'Life', 5);
+    expect(currentGeneration).toHaveBeenCalledTimes(1);
+    expect(goToMountedIcm).toHaveBeenCalledWith('life');
+    expect(result).toEqual({ ok: true, mountKey: 'life' });
+  });
+
+  test('uses the explicit workspaceName when given, instead of the user-typed ICM name', async () => {
+    const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
+
+    await adoptExistingIcm('/tmp/life', 'Mara Coaching Co', 'Life', fakeDeps({ createWorkspace }));
+
+    expect(createWorkspace).toHaveBeenCalledWith('Mara Coaching Co');
+  });
+
+  it('short-circuits on a create-workspace failure — never calls adoptIcm, never persists an error, never navigates', async () => {
+    const adoptIcm = vi.fn(async () => ({ ok: true, mountKey: 'x' }) as const);
+    const setPendingMountError = vi.fn();
+    const goToKnowledge = vi.fn();
+    const goToMountedIcm = vi.fn();
+
+    const result = await adoptExistingIcm(
+      '/tmp/life',
+      null,
+      'Life',
+      fakeDeps({
+        createWorkspace: async () => ({ ok: false, error: 'some_error' }),
+        adoptIcm,
+        setPendingMountError,
+        goToKnowledge,
+        goToMountedIcm
+      })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'create-workspace', error: 'some_error' });
+    expect(adoptIcm).not.toHaveBeenCalled();
+    expect(setPendingMountError).not.toHaveBeenCalled();
+    expect(goToKnowledge).not.toHaveBeenCalled();
+    expect(goToMountedIcm).not.toHaveBeenCalled();
+  });
+
+  test('surfaces an adopt failure at the "mount" stage, persists it with the MAPPED message, and navigates to (bare) Knowledge', async () => {
+    const setPendingMountError = vi.fn();
+    const goToKnowledge = vi.fn();
+    const goToMountedIcm = vi.fn();
+
+    const result = await adoptExistingIcm(
+      '/tmp/life',
+      null,
+      'Life',
+      fakeDeps({
+        adoptIcm: async () => ({ ok: false, error: 'already_exists' }),
+        setPendingMountError,
+        goToKnowledge,
+        goToMountedIcm
+      })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'mount', error: 'already_exists' });
+    expect(setPendingMountError).toHaveBeenCalledWith(
+      'Life',
+      '/tmp/life',
+      'Could not mount that folder. Check the path and try again.'
+    );
+    expect(goToKnowledge).toHaveBeenCalledTimes(1);
+    expect(goToMountedIcm).not.toHaveBeenCalled();
+  });
+
+  it('surfaces workspace_not_open at the mount stage when the post-create generation is unavailable, without calling adoptIcm — persists AND navigates too (the transition already happened)', async () => {
+    const adoptIcm = vi.fn(async () => ({ ok: true, mountKey: 'x' }) as const);
+    const setPendingMountError = vi.fn();
+    const goToKnowledge = vi.fn();
+
+    const result = await adoptExistingIcm(
+      '/tmp/life',
+      null,
+      'Life',
+      fakeDeps({ currentGeneration: () => null, adoptIcm, setPendingMountError, goToKnowledge })
+    );
+
+    expect(result).toEqual({ ok: false, stage: 'mount', error: 'workspace_not_open' });
+    expect(adoptIcm).not.toHaveBeenCalled();
+    expect(setPendingMountError).toHaveBeenCalledWith('Life', '/tmp/life', 'No workspace is open.');
     expect(goToKnowledge).toHaveBeenCalledTimes(1);
   });
 });
