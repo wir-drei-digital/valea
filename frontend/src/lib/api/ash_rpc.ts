@@ -1084,11 +1084,11 @@ export type IcmEntryReferencesInput = {
   path: string;
 };
 
-export type IcmEntryReferencesFields = UnifiedFieldSelection<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, pages: Array<{sourcePath: string, mount: string, linkText: string, __type: "TypedMap", __primitiveFields: "sourcePath" | "mount" | "linkText"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type IcmEntryReferencesFields = UnifiedFieldSelection<{pages: Array<{sourcePath: string, mount: string, linkText: string, __type: "TypedMap", __primitiveFields: "sourcePath" | "mount" | "linkText"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferIcmEntryReferencesResult<
   Fields extends IcmEntryReferencesFields | undefined,
-> = InferResult<{workflows: Array<{file: string, name: string, __type: "TypedMap", __primitiveFields: "file" | "name"}>, pages: Array<{sourcePath: string, mount: string, linkText: string, __type: "TypedMap", __primitiveFields: "sourcePath" | "mount" | "linkText"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{pages: Array<{sourcePath: string, mount: string, linkText: string, __type: "TypedMap", __primitiveFields: "sourcePath" | "mount" | "linkText"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type IcmEntryReferencesResult<Fields extends IcmEntryReferencesFields | undefined = undefined> = | { success: true; data: InferIcmEntryReferencesResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -1446,11 +1446,11 @@ export type RenameIcmEntryInput = {
   newName: string;
 };
 
-export type RenameIcmEntryFields = UnifiedFieldSelection<{path: string, updatedWorkflows: Array<string>, updatedPages: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows" | "updatedPages"}>[];
+export type RenameIcmEntryFields = UnifiedFieldSelection<{path: string, updatedPages: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedPages"}>[];
 
 export type InferRenameIcmEntryResult<
   Fields extends RenameIcmEntryFields | undefined,
-> = InferResult<{path: string, updatedWorkflows: Array<string>, updatedPages: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedWorkflows" | "updatedPages"}, Fields>;
+> = InferResult<{path: string, updatedPages: Array<string>, __type: "TypedMap", __primitiveFields: "path" | "updatedPages"}, Fields>;
 
 export type RenameIcmEntryResult<Fields extends RenameIcmEntryFields | undefined = undefined> = | { success: true; data: InferRenameIcmEntryResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

@@ -1,10 +1,9 @@
 <script lang="ts">
   // Delete confirmation for a page or folder. Pages fetch their reference
-  // list on open so the warning can name the pages and workflows that would
-  // break (Task C10: both kinds, not just workflows); folders skip the
-  // fetch (see RenameDialog's note — the backend's reference search is a
-  // substring match, not a real folder-scoped query) and show a fixed
-  // caution line instead.
+  // list on open so the warning can name the pages that would break (Task
+  // C10); folders skip the fetch (see RenameDialog's note — the backend's
+  // reference search resolves a single exact target path, not a real
+  // folder-scoped query) and show a fixed caution line instead.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { api } from '$lib/api/client';
@@ -12,7 +11,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { withBeforeMutate } from './before-mutate';
-  import { groupReferences, deleteImpactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
+  import { groupReferences, deleteImpactLine, type PageRef } from './backlinks-panel';
 
   let {
     mountKey,
@@ -41,16 +40,14 @@
   let error = $state<string | null>(null);
   let loadingRefs = $state(false);
   let referencedPages = $state<PageRef[]>([]);
-  let referencedWorkflows = $state<WorkflowRef[]>([]);
 
-  const impact = $derived(deleteImpactLine(referencedPages.length, referencedWorkflows.length));
+  const impact = $derived(deleteImpactLine(referencedPages.length));
 
   $effect(() => {
     if (open) {
       error = null;
       submitting = false;
       referencedPages = [];
-      referencedWorkflows = [];
 
       if (isFolder) {
         loadingRefs = false;
@@ -59,10 +56,9 @@
         void api.icmEntryReferences(mountKey, path).then((result) => {
           loadingRefs = false;
           if (result.ok) {
-            const data = result.data as { workflows?: WorkflowRef[]; pages?: PageRef[] };
+            const data = result.data as { pages?: PageRef[] };
             const grouped = groupReferences(data);
             referencedPages = grouped.pages;
-            referencedWorkflows = grouped.workflows;
           }
         });
       }
@@ -120,7 +116,7 @@
 
     <div class="flex flex-col gap-3">
       {#if isFolder}
-        <p class="text-warn-ink text-[12.5px]">Workflows and pages may reference entries inside this folder.</p>
+        <p class="text-warn-ink text-[12.5px]">Pages may reference entries inside this folder.</p>
       {:else if loadingRefs}
         <p class="text-ink-meta text-[12.5px]">Checking references…</p>
       {:else if impact}
@@ -128,9 +124,6 @@
         <ul class="flex flex-col gap-1">
           {#each referencedPages as ref (ref.sourcePath)}
             <li class="text-warn-ink text-[12.5px]">{ref.linkText || ref.sourcePath} links here — that link will break.</li>
-          {/each}
-          {#each referencedWorkflows as workflow (workflow.file)}
-            <li class="text-warn-ink text-[12.5px]">{workflow.name} reads this page — it will fail to find it.</li>
           {/each}
         </ul>
       {/if}

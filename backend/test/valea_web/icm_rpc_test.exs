@@ -8,8 +8,8 @@ defmodule ValeaWeb.IcmRpcTest do
   alias Valea.AgentCase
   alias Valea.Workspace.Manager
 
-  # The starter-mount's rich seed content (Offers/, Templates/, Workflows/,
-  # ...) is preserved under `test/fixtures/starter_icm/` (Task 11.3) — a v5
+  # The starter-mount's rich seed content (Offers/, Templates/, ...) is
+  # preserved under `test/fixtures/starter_icm/` (Task 11.3) — a v5
   # hidden workspace (`priv/workspace_template`) ships no starter mount at
   # all. `Valea.Mounts.list/1` is config truth over `icms:` ONLY (no
   # filesystem-glob discovery of an embedded `mounts/<name>`), so `setup`
@@ -380,7 +380,12 @@ defmodule ValeaWeb.IcmRpcTest do
       assert inspect(errors) =~ "cross_mount_template"
     end
 
-    test "rename_icm_entry of a referenced page reports the updated workflows", %{icm: icm} do
+    test "rename_icm_entry of a linked page reports the updated pages (Spec D §A)", %{icm: icm} do
+      File.write!(
+        Path.join(icm.root, "Offers/Uses Follow-up.md"),
+        "# Uses Follow-up\n\nSee the [template](<../Templates/Follow-up Email.md>) for details.\n"
+      )
+
       assert %{"success" => true, "data" => data} =
                rpc(
                  "rename_icm_entry",
@@ -389,13 +394,11 @@ defmodule ValeaWeb.IcmRpcTest do
                    "path" => "Templates/Follow-up Email.md",
                    "newName" => "Follow-up Note"
                  },
-                 ["path", "updatedWorkflows"]
+                 ["path", "updatedPages"]
                )
 
       assert data["path"] == "Templates/Follow-up Note.md"
-      assert is_list(data["updatedWorkflows"])
-      assert data["updatedWorkflows"] != []
-      assert "Post-Session Follow-up" in data["updatedWorkflows"]
+      assert data["updatedPages"] == ["Offers/Uses Follow-up.md"]
     end
 
     test "delete_icm_entry returns deleted: true", %{icm: icm} do
@@ -407,20 +410,7 @@ defmodule ValeaWeb.IcmRpcTest do
                )
     end
 
-    test "icm_entry_references lists referencing workflows", %{icm: icm} do
-      assert %{"success" => true, "data" => %{"workflows" => workflows}} =
-               rpc(
-                 "icm_entry_references",
-                 %{"mountKey" => icm.mount_key, "path" => "Templates/Follow-up Email.md"},
-                 [%{"workflows" => ["file", "name"]}]
-               )
-
-      assert is_list(workflows)
-      assert Enum.all?(workflows, &(is_binary(&1["file"]) and is_binary(&1["name"])))
-      assert Enum.any?(workflows, &(&1["name"] == "Post-Session Follow-up"))
-    end
-
-    test "icm_entry_references also lists AST-confirmed page backlinks (Task C3)", %{icm: icm} do
+    test "icm_entry_references lists AST-confirmed page backlinks (Task C3)", %{icm: icm} do
       # A real Link node resolving (relative-from-source) to the target —
       # must be confirmed.
       File.write!(
@@ -435,17 +425,13 @@ defmodule ValeaWeb.IcmRpcTest do
         "# Not A Link\n\nTemplates/Follow-up Email.md is mentioned in prose only.\n"
       )
 
-      assert %{"success" => true, "data" => %{"workflows" => workflows, "pages" => pages}} =
+      assert %{"success" => true, "data" => %{"pages" => pages}} =
                rpc(
                  "icm_entry_references",
                  %{"mountKey" => icm.mount_key, "path" => "Templates/Follow-up Email.md"},
-                 [
-                   %{"workflows" => ["file", "name"]},
-                   %{"pages" => ["sourcePath", "mount", "linkText"]}
-                 ]
+                 [%{"pages" => ["sourcePath", "mount", "linkText"]}]
                )
 
-      assert is_list(workflows)
       assert is_list(pages)
 
       refute Enum.any?(pages, &(&1["sourcePath"] == "Offers/Not A Link.md"))

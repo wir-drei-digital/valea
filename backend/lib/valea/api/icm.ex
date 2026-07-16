@@ -41,7 +41,7 @@ defmodule Valea.Api.ICM do
   end
 
   alias Valea.Api.Error
-  alias Valea.ICM.{Backlinks, References, Search}
+  alias Valea.ICM.{Backlinks, Search}
   alias Valea.Mounts
   alias Valea.Workspace.Manager
 
@@ -188,7 +188,6 @@ defmodule Valea.Api.ICM do
     action :rename, :map do
       constraints fields: [
                     path: [type: :string, allow_nil?: false],
-                    updated_workflows: [type: {:array, :string}, allow_nil?: false],
                     updated_pages: [type: {:array, :string}, allow_nil?: false]
                   ]
 
@@ -200,8 +199,8 @@ defmodule Valea.Api.ICM do
         %{mount_key: mount_key, path: path, new_name: new_name} = input.arguments
 
         case Valea.ICM.rename(mount_key, path, new_name) do
-          {:ok, %{path: path, updated_workflows: workflows, updated_pages: pages}} ->
-            {:ok, %{path: path, updated_workflows: workflows, updated_pages: pages}}
+          {:ok, %{path: path, updated_pages: pages}} ->
+            {:ok, %{path: path, updated_pages: pages}}
 
           {:error, reason} ->
             {:error, error_for(reason)}
@@ -227,18 +226,6 @@ defmodule Valea.Api.ICM do
 
     action :references, :map do
       constraints fields: [
-                    workflows: [
-                      type: {:array, :map},
-                      allow_nil?: false,
-                      constraints: [
-                        items: [
-                          fields: [
-                            file: [type: :string, allow_nil?: false],
-                            name: [type: :string, allow_nil?: false]
-                          ]
-                        ]
-                      ]
-                    ],
                     pages: [
                       type: {:array, :map},
                       allow_nil?: false,
@@ -260,18 +247,18 @@ defmodule Valea.Api.ICM do
       run fn input, _ctx ->
         %{mount_key: mount_key, path: path} = input.arguments
 
-        with {:ok, refs} <- References.referencing_workflows(mount_key, path),
-             {:ok, pages} <- Backlinks.backlinks(mount_key, path) do
-          {:ok,
-           %{
-             workflows: Enum.map(refs, &%{file: &1.file, name: &1.name}),
-             pages:
-               Enum.map(pages, fn p ->
-                 %{source_path: p.source_path, mount: p.mount, link_text: p.link_text}
-               end)
-           }}
-        else
-          {:error, reason} -> {:error, error_for(reason)}
+        case Backlinks.backlinks(mount_key, path) do
+          {:ok, pages} ->
+            {:ok,
+             %{
+               pages:
+                 Enum.map(pages, fn p ->
+                   %{source_path: p.source_path, mount: p.mount, link_text: p.link_text}
+                 end)
+             }}
+
+          {:error, reason} ->
+            {:error, error_for(reason)}
         end
       end
     end

@@ -3,9 +3,9 @@
   // before the confirm button is usable (`icmEntryReferences` is a per-page
   // lookup — see the backend note in DeleteDialog); folders skip that fetch
   // entirely and show a fixed caution line instead, since the backend's
-  // reference search isn't a real folder-scoped query (it's a substring
-  // match against workflow YAML, which folder paths would abuse via prefix
-  // collisions rather than answer correctly).
+  // reference search resolves a single exact target path (AST-confirmed
+  // page links only — see `Valea.ICM.Backlinks`), not a real folder-scoped
+  // query.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -15,7 +15,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { withBeforeMutate } from './before-mutate';
-  import { groupReferences, impactLine, type PageRef, type WorkflowRef } from './backlinks-panel';
+  import { groupReferences, impactLine, type PageRef } from './backlinks-panel';
 
   let {
     mountKey,
@@ -44,10 +44,9 @@
   let error = $state<string | null>(null);
   let loadingRefs = $state(false);
   let referencePages = $state<PageRef[]>([]);
-  let referenceWorkflows = $state<WorkflowRef[]>([]);
   let inputRef = $state<HTMLInputElement | null>(null);
 
-  const impact = $derived(impactLine(referencePages.length, referenceWorkflows.length));
+  const impact = $derived(impactLine(referencePages.length));
 
   $effect(() => {
     if (open) {
@@ -55,7 +54,6 @@
       error = null;
       submitting = false;
       referencePages = [];
-      referenceWorkflows = [];
 
       if (isFolder) {
         loadingRefs = false;
@@ -64,10 +62,9 @@
         void api.icmEntryReferences(mountKey, path).then((result) => {
           loadingRefs = false;
           if (result.ok) {
-            const data = result.data as { workflows?: WorkflowRef[]; pages?: PageRef[] };
+            const data = result.data as { pages?: PageRef[] };
             const grouped = groupReferences(data);
             referencePages = grouped.pages;
-            referenceWorkflows = grouped.workflows;
           }
         });
       }
@@ -120,7 +117,7 @@
         return;
       }
 
-      const newPath = (result.data as { path: string; updatedWorkflows: string[] }).path;
+      const newPath = (result.data as { path: string; updatedPages: string[] }).path;
       open = false;
       navigateIfOpen(newPath);
     } catch (err) {

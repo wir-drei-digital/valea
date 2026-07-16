@@ -22,7 +22,7 @@ defmodule Valea.ICMTest do
   # `Valea.Mounts.list/1` is config truth over `icms:` only — a fresh v5
   # workspace seeds no mount at all. This whole suite's fixtures assume the
   # old starter mount's rich seed content (Offers/, Policies/, Pricing/,
-  # Templates/, Clients/, Tone & Voice/, Workflows/, Decisions/), preserved
+  # Templates/, Clients/, Tone & Voice/, Decisions/), preserved
   # under `test/fixtures/starter_icm/` (Task 11.3), so it's copied fresh
   # into an EXTERNAL tmp dir and mounted via `Mounts.mount/2`, landing at
   # mount key "primary" (name "Primary" slugifies to "primary" —

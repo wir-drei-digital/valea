@@ -10,11 +10,9 @@ defmodule Valea.ICMWriteTest do
   # `Valea.Mounts.list/1` is config truth over `icms:` only — a fresh v5
   # workspace seeds no mount at all. This whole suite's fixtures assume the
   # old starter mount's rich seed content (Offers/, Policies/, Pricing/,
-  # Templates/, Clients/, Workflows/ — including the `Workflows/*.md`
-  # `path:` frontmatter convention every rename/reference-rewrite assertion
-  # below addresses), preserved under `test/fixtures/starter_icm/` (Task
-  # 11.3), so it's copied fresh into an EXTERNAL tmp dir and mounted via
-  # `Mounts.mount/2`, landing at mount key "primary" (name "Primary"
+  # Templates/, Clients/), preserved under `test/fixtures/starter_icm/`
+  # (Task 11.3), so it's copied fresh into an EXTERNAL tmp dir and mounted
+  # via `Mounts.mount/2`, landing at mount key "primary" (name "Primary"
   # slugifies to "primary" — `Valea.Workspace.Scaffold.slugify/1`).
   #
   # Task 4.2 re-key: every `Valea.ICM` function now takes `(mount_key,
@@ -263,32 +261,6 @@ defmodule Valea.ICMWriteTest do
     assert String.contains?(content, ["# Report {{date}}", "Generated on #{today}"])
   end
 
-  defp workflow_page(icm) do
-    File.read!(Path.join(icm.root, "Workflows/New Inquiry Triage.md"))
-  end
-
-  test "rename a referenced page moves the file and rewrites referencing workflows", %{icm: icm} do
-    assert {:ok,
-            %{
-              path: new_path,
-              updated_workflows: ["New Inquiry Triage"]
-            }} =
-             ICM.rename(
-               icm.mount_key,
-               "Offers/Founder Coaching Package.md",
-               "Founder Package"
-             )
-
-    assert new_path == "Offers/Founder Package.md"
-
-    refute File.exists?(Path.join(icm.root, "Offers/Founder Coaching Package.md"))
-    assert File.exists?(Path.join(icm.root, "Offers/Founder Package.md"))
-
-    page = workflow_page(icm)
-    assert page =~ ~s(path: "Offers/Founder Package.md")
-    refute page =~ "Offers/Founder Coaching Package.md"
-  end
-
   test "rename to an invalid or already-existing name", %{icm: icm} do
     assert {:error, :name_invalid} =
              ICM.rename(icm.mount_key, "Offers/Founder Coaching Package.md", "a/b")
@@ -301,79 +273,20 @@ defmodule Valea.ICMWriteTest do
              )
   end
 
-  test "renaming a folder containing a referenced page rewrites the workflow", %{icm: icm} do
-    assert {:ok, %{path: new_path, updated_workflows: ["New Inquiry Triage"]}} =
-             ICM.rename(icm.mount_key, "Offers", "Offerings")
+  test "rename's return map has exactly two keys, path and updated_pages (Spec D §A)", %{
+    icm: icm
+  } do
+    assert {:ok, result} =
+             ICM.rename(icm.mount_key, "Offers/Founder Coaching Package.md", "Founder Package")
 
-    assert new_path == "Offerings"
-
-    refute File.exists?(Path.join(icm.root, "Offers"))
-
-    assert File.exists?(Path.join(icm.root, "Offerings/Founder Coaching Package.md"))
-
-    page = workflow_page(icm)
-    assert page =~ ~s(path: "Offerings/Founder Coaching Package.md")
-    refute page =~ "Offers/Founder Coaching Package.md"
+    assert Enum.sort(Map.keys(result)) == [:path, :updated_pages]
+    assert result.path == "Offers/Founder Package.md"
+    assert result.updated_pages == []
   end
 
-  test "renaming a folder does not corrupt references to a sibling folder whose name is a prefix superset",
-       %{icm: icm} do
-    {:ok, %{path: extra_path}} = ICM.create_folder(icm.mount_key, "", "Offers Extra")
-    assert extra_path == "Offers Extra"
-
-    {:ok, %{path: sidecar_path}} = ICM.create_page(icm.mount_key, extra_path, "Sidecar")
-    assert sidecar_path == "Offers Extra/Sidecar.md"
-
-    workflow_path = Path.join(icm.root, "Workflows/New Inquiry Triage.md")
-
-    File.write!(
-      workflow_path,
-      File.read!(workflow_path) <>
-        "\n  - id: sidecar\n    type: icm\n    path: \"Offers Extra/Sidecar.md\"\n"
-    )
-
-    assert {:ok, %{path: offerings_path}} = ICM.rename(icm.mount_key, "Offers", "Offerings")
-    assert offerings_path == "Offerings"
-
-    page = workflow_page(icm)
-    assert page =~ ~s(path: "Offerings/Founder Coaching Package.md")
-    assert page =~ ~s(path: "Offers Extra/Sidecar.md")
-    refute page =~ "Offerings Extra/Sidecar.md"
-  end
-
-  test "renaming a folder rewrites wildcard workflow references to it", %{icm: icm} do
-    session_prep = fn -> File.read!(Path.join(icm.root, "Workflows/Session Prep Brief.md")) end
-
-    post_session = fn ->
-      File.read!(Path.join(icm.root, "Workflows/Post-Session Follow-up.md"))
-    end
-
-    assert session_prep.() =~ ~s(path: "Clients/*")
-    assert post_session.() =~ ~s(path: "Clients/*")
-
-    assert {:ok, %{path: new_path, updated_workflows: updated_workflows}} =
-             ICM.rename(icm.mount_key, "Clients", "Customers")
-
-    assert new_path == "Customers"
-
-    assert "Session Prep Brief" in updated_workflows
-    assert "Post-Session Follow-up" in updated_workflows
-
-    refute File.exists?(Path.join(icm.root, "Clients"))
-    assert File.exists?(Path.join(icm.root, "Customers"))
-
-    assert session_prep.() =~ ~s(path: "Customers/*")
-    refute session_prep.() =~ "Clients/*"
-    assert post_session.() =~ ~s(path: "Customers/*")
-    refute post_session.() =~ "Clients/*"
-  end
-
-  test "delete a page removes it and leaves workflows untouched", %{icm: icm} do
-    before_page = workflow_page(icm)
-
+  test "delete a page removes it", %{icm: icm} do
     assert {:ok, %{deleted: true}} = ICM.delete(icm.mount_key, "Clients/Lea Brunner.md")
     refute File.exists?(Path.join(icm.root, "Clients/Lea Brunner.md"))
-    assert workflow_page(icm) == before_page
   end
 
   test "delete a folder recursively removes its contents", %{icm: icm} do

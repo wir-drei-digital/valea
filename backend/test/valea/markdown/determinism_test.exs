@@ -11,8 +11,7 @@ defmodule Valea.Markdown.DeterminismTest do
   # independent of what any workspace scaffold ships.
   @template Path.expand("../../fixtures/starter_icm", __DIR__)
 
-  # Every seed ICM page — including the four Workflows/*.md pages that carry
-  # a leading YAML frontmatter block — must round-trip byte-identically. The
+  # Every seed ICM page must round-trip byte-identically. The
   # mount's own AGENTS.md/CLAUDE.md (self-description, not a curated ICM
   # page a user edits through the ICM page editor) and `prompts/*.md`
   # (reference fragments, same non-ICM-page status) are excluded — the same

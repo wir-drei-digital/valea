@@ -276,7 +276,7 @@ const saveIcmPageFields: SaveIcmPageFields = ['hash', 'savedAt'];
 const createIcmPageFields: CreateIcmPageFields = ['path'];
 const createIcmPageFromTemplateFields: CreateIcmPageFromTemplateFields = ['path'];
 const createIcmFolderFields: CreateIcmFolderFields = ['path'];
-const renameIcmEntryFields: RenameIcmEntryFields = ['path', 'updatedWorkflows', 'updatedPages'];
+const renameIcmEntryFields: RenameIcmEntryFields = ['path', 'updatedPages'];
 const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
 // Note: the generated `IcmEntryReferencesFields` type can't actually express
 // nested field selection into an `Array<TypedMap>` (a real ash_typescript
@@ -286,11 +286,10 @@ const deleteIcmEntryFields: DeleteIcmEntryFields = ['deleted'];
 // falls through to `never`. The backend action itself DOES accept this exact
 // nested literal (confirmed in Task 5), so the assertion below is trusted
 // runtime knowledge overriding an incomplete generated type, not a guess.
-// `pages` (Task C3) is the AST-confirmed backlinks union alongside the
-// original `workflows` — same cast pattern, same codegen gap, one more
-// nested field selection in the same literal.
+// `pages` (Task C3) is the AST-confirmed backlinks union — the workflow-
+// frontmatter reference union (`workflows`) was deleted in Task 5 (Spec D
+// §A); page-link rename integrity remains `Valea.ICM.LinkRewrite`'s job.
 const icmEntryReferencesFields = [
-  { workflows: ['file', 'name'] },
   { pages: ['sourcePath', 'mount', 'linkText'] }
 ] as unknown as IcmEntryReferencesFields;
 
