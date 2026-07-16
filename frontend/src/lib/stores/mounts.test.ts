@@ -78,7 +78,7 @@ describe('MountsStore.refresh', () => {
     expect(store.mounts).toEqual([]);
   });
 
-  it('reads generation off workspaceStore rather than taking a parameter', async () => {
+  it('falls back to workspaceStore.generation when called bare (no explicit generation)', async () => {
     workspaceStore.generation = 42;
     const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
     const store = new MountsStore(fakeApi({ listIcms }) as never);
@@ -86,6 +86,62 @@ describe('MountsStore.refresh', () => {
     await store.refresh();
 
     expect(listIcms).toHaveBeenCalledWith(42);
+    workspaceStore.generation = null;
+  });
+
+  // Acceptance fix wave (Task 9.3/9.4 re-review Finding 2 — generation-coherent
+  // refresh): `handleWorkspaceEvent` (icm.svelte.ts) needs to override the
+  // workspaceStore fallback with the workspace-change push's OWN generation,
+  // since workspaceStore.generation is guaranteed stale (still the OUTGOING
+  // workspace's value) at that exact call site — see that function's doc
+  // comment.
+  it('prefers an explicit generation argument over workspaceStore.generation', async () => {
+    workspaceStore.generation = 1; // stale — the OUTGOING workspace's generation
+    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
+    const store = new MountsStore(fakeApi({ listIcms }) as never);
+
+    await store.refresh(7); // the INCOMING workspace's generation, from the event payload
+
+    expect(listIcms).toHaveBeenCalledWith(7);
+    workspaceStore.generation = null;
+  });
+
+  // Reproduces the actual bug: a fake backend that only accepts the CURRENT
+  // (incoming) generation, exactly like `Valea.Api.Icms`'s `check_generation/1`
+  // guard rejecting a stale one with `workspace_changed`. Calling `refresh()`
+  // bare while `workspaceStore.generation` still holds the outgoing value
+  // fails and leaves the catalog empty (the bug); threading the event's own
+  // generation explicitly succeeds and populates it (the fix).
+  it('reproduces the switch-refresh bug: stale workspaceStore.generation is rejected, the event-supplied generation is not', async () => {
+    const CURRENT_GENERATION = 7;
+    workspaceStore.generation = 1; // stale, from before the switch
+    const rawIcms = [
+      {
+        mountKey: 'consulting-legal',
+        id: '22222222-2222-2222-2222-222222222222',
+        name: 'Legal',
+        description: '',
+        root: '/ws/legal',
+        enabled: true,
+        degraded: null
+      }
+    ];
+    const listIcms = vi.fn(async (generation: number) =>
+      generation === CURRENT_GENERATION
+        ? ({ ok: true, data: { icms: rawIcms } } as ListResult)
+        : ({ ok: false, error: 'workspace_changed' } as ListResult)
+    );
+
+    const buggyStore = new MountsStore(fakeApi({ listIcms }) as never);
+    await buggyStore.refresh(); // bare — falls back to the stale workspaceStore.generation
+    expect(buggyStore.loaded).toBe(false);
+    expect(buggyStore.mounts).toEqual([]);
+
+    const fixedStore = new MountsStore(fakeApi({ listIcms }) as never);
+    await fixedStore.refresh(CURRENT_GENERATION); // explicit — the event's own generation
+    expect(fixedStore.loaded).toBe(true);
+    expect(fixedStore.mounts).toEqual(rawIcms);
+
     workspaceStore.generation = null;
   });
 });

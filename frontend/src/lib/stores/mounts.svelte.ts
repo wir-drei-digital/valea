@@ -95,20 +95,30 @@ export class MountsStore {
 
   /**
    * Task 3.4: unlike every mutating method below, `refresh` has no
-   * caller-supplied `generation` — it is called bare from `+page.svelte`'s
-   * `onMount` and from `handleMountsChanged` below, neither of which had a
-   * generation to thread before `list_icms` started guarding one (see
-   * `Valea.Api.Icms`'s moduledoc: it reads LIVE filesystem/manifest state,
-   * same "mutating-adjacent" posture `mounts_doctor` already had). Rather
-   * than push a `generation` parameter onto every zero-arg call site, this
-   * reads it off `workspaceStore` directly — the one deliberate exception
-   * to this module's usual "store-free api, caller supplies generation"
-   * convention (see `api/client.ts`'s header comment and `setEnabled`/
-   * `create`/`undeclare` below, which keep taking it explicitly since they
-   * already had a caller-supplied value to thread).
+   * REQUIRED caller-supplied `generation` — it is called bare from
+   * `+page.svelte`'s `onMount` and from `handleMountsChanged` below, neither
+   * of which had a generation to thread before `list_icms` started guarding
+   * one (see `Valea.Api.Icms`'s moduledoc: it reads LIVE filesystem/manifest
+   * state, same "mutating-adjacent" posture `mounts_doctor` already had).
+   * Rather than push a `generation` parameter onto every zero-arg call site,
+   * a bare call reads it off `workspaceStore` directly — the one deliberate
+   * exception to this module's usual "store-free api, caller supplies
+   * generation" convention (see `api/client.ts`'s header comment and
+   * `setEnabled`/`create`/`undeclare` below, which keep taking it explicitly
+   * since they already had a caller-supplied value to thread).
+   *
+   * Acceptance fix wave (Task 9.3/9.4 re-review Finding 2 — generation-coherent
+   * refresh): `generation` IS now an optional explicit override, taken by
+   * `icm.svelte.ts`'s `handleWorkspaceEvent` (the LIVE-SWITCH path) so it can
+   * pass the workspace-change PUSH'S OWN `generation` instead of
+   * `workspaceStore.generation` — which, at that exact call site, is
+   * guaranteed to still be the OUTGOING workspace's value (see
+   * `handleWorkspaceEvent`'s doc comment for why). Every other caller keeps
+   * calling this bare and gets the `workspaceStore.generation` fallback,
+   * unchanged.
    */
-  async refresh(): Promise<void> {
-    const result = await this.#api.listIcms(workspaceStore.generation ?? 0);
+  async refresh(generation?: number): Promise<void> {
+    const result = await this.#api.listIcms(generation ?? workspaceStore.generation ?? 0);
     if (!result.ok) return;
 
     const data = result.data as { icms?: MountSummary[] };

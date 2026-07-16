@@ -108,17 +108,25 @@ export class IcmStore {
     this.#api = api;
   }
 
-  async refetch(): Promise<void> {
-    const generation = workspaceStore.generation ?? 0;
+  /**
+   * `generation` is optional — every cold-load/route-level caller (`AppFrame`,
+   * `+page.svelte`, `handleMountsChanged`, `onIcmChanged` below) still calls
+   * this bare and gets `workspaceStore.generation` as before. The one caller
+   * that MUST supply it explicitly is `handleWorkspaceEvent` below (the LIVE
+   * SWITCH path): see its doc comment for why reading `workspaceStore.generation`
+   * at that call site is a guaranteed-stale read, not just a possible race.
+   */
+  async refetch(generation?: number): Promise<void> {
+    const gen = generation ?? workspaceStore.generation ?? 0;
 
-    const listResult = await this.#api.listIcms(generation);
+    const listResult = await this.#api.listIcms(gen);
     if (!listResult.ok) return;
 
     const icms = ((listResult.data as { icms?: IcmListRow[] }).icms ?? []).filter(
       (m) => m.enabled && !m.degraded
     );
 
-    const treeResults = await Promise.all(icms.map((m) => this.#api.icmTree(m.mountKey, generation)));
+    const treeResults = await Promise.all(icms.map((m) => this.#api.icmTree(m.mountKey, gen)));
 
     const groups: MountGroup[] = [];
     treeResults.forEach((result, i) => {
@@ -165,21 +173,56 @@ export const icmStore = new IcmStore(api);
  *   that doesn't refresh these stores in its own `onMount` (everything but
  *   `/chat`, which refreshes `mountsStore` for `startSession`, and
  *   `/knowledge`) leaves the sidebar's ICM section empty.
- * - LIVE SWITCH: `wireIcmEvents`'s `onWorkspace` open branch below, right
- *   after the unconditional resets.
+ * - LIVE SWITCH: `handleWorkspaceEvent` below, right after the unconditional
+ *   resets.
  *
  * Fire-and-forget (`void`) internally, same as every other push-driven
  * refresh in this module. `icmStore.refetch()` is deliberately NOT part of
  * this helper: on cold load every route already refetches it in its own
  * `onMount` (`AppFrame.svelte`, Today's inline shell), and the switch path
  * calls it separately alongside this.
+ *
+ * `generation` is optional and forwarded ONLY to `mountsStore.refresh` —
+ * `recentSessionsStore.refresh` takes no `generation` at all (`Valea.Agents.
+ * list_recent_sessions_by_icm/1` is a plain read, unguarded — see its own
+ * moduledoc). The cold-load call site (`+layout.svelte`) calls this bare,
+ * same as before: by the time it runs, `workspaceStore.refresh()` has
+ * already resolved, so `mountsStore.refresh()`'s own `workspaceStore.generation`
+ * fallback is already correct. `handleWorkspaceEvent` is the one caller that
+ * MUST supply this explicitly — see its doc comment.
  */
-export function refreshSidebarProjectStores(): void {
-  void mountsStore.refresh();
+export function refreshSidebarProjectStores(generation?: number): void {
+  void mountsStore.refresh(generation);
   void recentSessionsStore.refresh();
 }
 
 let icmEventsWired = false;
+
+/**
+ * Runs the LIVE-SWITCH reset+refresh sequence for a `workspace` channel
+ * push. Extracted from `wireIcmEvents`'s `onWorkspace` handler (below) into
+ * its own exported function so it can be unit-tested directly — `wireIcmEvents`
+ * itself only ever wires this onto a real `joinWorkspaceEvents` socket
+ * connection, which nothing in this test suite stands up.
+ *
+ * The store owns its own coherence: on every workspace change (close, open,
+ * or switch), the previous workspace's tree/catalog/session-groups are no
+ * longer valid, so all three are dropped before anything else runs. When the
+ * new workspace is open, immediately refetch/refresh so `loaded` reflects
+ * the NEW data rather than sitting on the stale one — and see the
+ * "CARRY-FORWARD (acceptance fix wave...)" paragraph on `wireIcmEvents`
+ * below for exactly why `payload.generation` (not `workspaceStore.generation`)
+ * is what gets threaded into that refetch/refresh.
+ */
+export function handleWorkspaceEvent(payload: WorkspaceEventPayload): void {
+  icmStore.reset();
+  recentSessionsStore.reset();
+  mountsStore.reset();
+  if (payload.open) {
+    void icmStore.refetch(payload.generation);
+    refreshSidebarProjectStores(payload.generation);
+  }
+}
 
 /**
  * Joins `workspace:events` and keeps the tree fresh when the backend reports
@@ -262,6 +305,33 @@ let icmEventsWired = false;
  * RPC resolves open. The route-level `refresh()` calls in `chat`/`knowledge`
  * stay in place — a redundant fetch on top of these, same as `icmStore`'s
  * existing double-fetch pattern.
+ *
+ * CARRY-FORWARD (acceptance fix wave, Task 9.3/9.4 re-review Finding 2 —
+ * generation-coherent refresh): the LIVE-SWITCH branch (`handleWorkspaceEvent`
+ * below) threads the PUSH'S OWN `payload.generation` into `icmStore.refetch`/
+ * `mountsStore.refresh`, NOT `workspaceStore.generation`. At the moment this
+ * handler runs, `workspaceStore.generation` is GUARANTEED to still hold the
+ * OUTGOING workspace's value, not a rare race: the root layout's `onWorkspace`
+ * pass-through (called at the end of `handleWorkspaceEvent`'s caller, below)
+ * is what re-syncs `workspaceStore` via `workspaceStore.refresh()` — an async
+ * RPC round trip that hasn't even been kicked off yet, let alone resolved,
+ * while this synchronous handler body is still running. So every LIVE switch
+ * sent `list_icms`/`icm_tree` the OUTGOING generation while the backend's
+ * `Valea.Workspace.Manager.current/0` already reflected the incoming
+ * workspace — `Valea.Api.Icms`'s `check_generation/1` guard rejected every
+ * one of them with `workspace_changed`, `icmStore`/`mountsStore` stayed reset
+ * (empty) forever, and the sidebar's ICM groups + recent sessions rendered
+ * empty until a manual reload re-ran the cold-load bootstrap. The backend's
+ * `workspace_opened` broadcast already carries the correct NEW `generation`
+ * in the SAME push (`WorkspaceEventsChannel.handle_info/2`) — threading it
+ * straight through sidesteps the ordering dependency entirely, rather than
+ * sequencing these refreshes after `workspaceStore.refresh()` resolves.
+ * `recentSessionsStore.refresh()` needs no such argument — `list_recent_sessions_by_icm`
+ * is a plain unguarded read (see its own moduledoc) — but it was still
+ * collateral damage: `IcmProjects.svelte`'s rows are `mountsStore.mounts`
+ * filtered/mapped (`icm-projects.ts`'s `orderGroups`), so an empty
+ * `mountsStore.mounts` alone renders zero sidebar rows regardless of what
+ * `recentSessionsStore` holds.
  */
 export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => void): void {
   if (icmEventsWired) {
@@ -274,38 +344,7 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
 
   const channel = joinWorkspaceEvents({
     onWorkspace: (payload) => {
-      // The store owns its own coherence: on every workspace change
-      // (close, open, or switch), the previous workspace's tree is no
-      // longer valid, so drop it before anything else runs. When the new
-      // workspace is open, immediately refetch so `loaded` reflects the
-      // NEW tree rather than sitting on the stale one. This must happen
-      // before the external `onWorkspace` callback so downstream
-      // consumers (e.g. route guards reacting to `workspaceStore`) never
-      // observe a `loaded: true` tree that belongs to the old workspace.
-      //
-      // `recentSessionsStore.reset()` rides the same unconditional reset
-      // (fix wave, Finding 2) — it previously had no reset at all, so a
-      // workspace close/switch left its sidebar project groups pointing at
-      // sessions from the PREVIOUS workspace until the next successful
-      // `refresh()` (only fired on open, below). Same reasoning as
-      // `icmStore.reset()` immediately above.
-      //
-      // `mountsStore.reset()` rides the same pair (browser-verified fix
-      // wave) — it previously had no reset either, so a workspace switch
-      // left the PREVIOUS workspace's mount catalog (and with it the
-      // sidebar's ICM group rows) in place. NOTE this handler only ever
-      // runs on a LIVE workspace change — the backend pushes nothing on
-      // channel join, so an initial page load never reaches this code;
-      // the cold-load path is the root layout's bootstrap calling
-      // `refreshSidebarProjectStores()` after `get_workspace` resolves
-      // (see that helper's doc comment above).
-      icmStore.reset();
-      recentSessionsStore.reset();
-      mountsStore.reset();
-      if (payload.open) {
-        void icmStore.refetch();
-        refreshSidebarProjectStores();
-      }
+      handleWorkspaceEvent(payload);
       onWorkspace?.(payload);
     },
     onIcmChanged: () => {
