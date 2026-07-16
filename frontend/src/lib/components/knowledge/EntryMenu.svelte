@@ -14,8 +14,15 @@
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import Pencil from '@lucide/svelte/icons/pencil';
   import Trash2 from '@lucide/svelte/icons/trash-2';
+  import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import RenameDialog from './RenameDialog.svelte';
   import DeleteDialog from './DeleteDialog.svelte';
+  import { goto } from '$app/navigation';
+  import { api } from '$lib/api/client';
+  import { mountsStore } from '$lib/stores/mounts.svelte';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { setInitialPrompt, pageSessionPrompt } from '$lib/stores/initial-prompt';
 
   let {
     mountKey,
@@ -42,6 +49,37 @@
   let menuOpen = $state(false);
   let renameOpen = $state(false);
   let deleteOpen = $state(false);
+  let sessionError = $state<string | null>(null);
+
+  /**
+   * "Start a session with this page" (Spec D §B) — page rows only. Mints a
+   * session pre-loaded with this page as a `context_doc` grant (Task 9's
+   * `api.createAgentSession` `opts.contextDoc`), stashes the opening prompt
+   * under the new session id (`initial-prompt.ts`'s one-shot handoff — the
+   * chat route takes it and `AgentSessionStore` fires it as the first user
+   * turn on join), and navigates there. Same refresh-then-navigate order as
+   * `IcmProjects.svelte`'s `startSession`, so the sidebar's recent-sessions
+   * list is current by the time the chat route's own list renders.
+   */
+  async function startSessionWithPage() {
+    sessionError = null;
+    const icmId = mountsStore.mounts.find((m) => m.mountKey === mountKey)?.id;
+    if (!icmId) {
+      sessionError = 'This ICM has no loadable identity — run Diagnose from the sidebar.';
+      return;
+    }
+    const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {
+      contextDoc: { kind: 'icm', icm_id: icmId, path }
+    });
+    if (!result.ok) {
+      sessionError = `Couldn't start the session (${result.error}).`;
+      return;
+    }
+    const data = result.data as { id: string };
+    setInitialPrompt(data.id, pageSessionPrompt(path));
+    await recentSessionsStore.refresh();
+    void goto(`/chat?session=${data.id}`);
+  }
 </script>
 
 <DropdownMenu.Root bind:open={menuOpen}>
@@ -62,6 +100,12 @@
     {/snippet}
   </DropdownMenu.Trigger>
   <DropdownMenu.Content align="end">
+    {#if !isFolder}
+      <DropdownMenu.Item onSelect={() => void startSessionWithPage()}>
+        <MessageSquarePlus class="size-3.5" strokeWidth={1.5} />
+        Start a session with this page
+      </DropdownMenu.Item>
+    {/if}
     <DropdownMenu.Item onSelect={() => (renameOpen = true)}>
       <Pencil class="size-3.5" strokeWidth={1.5} />
       Rename
@@ -72,6 +116,10 @@
     </DropdownMenu.Item>
   </DropdownMenu.Content>
 </DropdownMenu.Root>
+
+{#if sessionError}
+  <p role="alert" class="text-warn-ink text-[12.5px]">{sessionError}</p>
+{/if}
 
 <RenameDialog {mountKey} {path} currentName={name} {isFolder} bind:open={renameOpen} {onBeforeMutate} />
 <DeleteDialog {mountKey} {path} {name} {isFolder} bind:open={deleteOpen} {onBeforeMutate} />

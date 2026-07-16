@@ -31,11 +31,20 @@ type JoinFn = (id: string) => Channel;
  *    snapshot) — the server's `busy` flag is authoritative on every
  *    join/rejoin, exactly as the donor's own comment describes.
  *
- * Second constructor argument (`join`) is dependency injection purely for
+ * Third constructor argument (`join`) is dependency injection purely for
  * tests — mirrors `PageEditorStore`/`WorkspaceStore` taking their API surface
  * as a constructor argument rather than importing a singleton, so tests can
  * hand this a fake `Channel` (fake `.on`/`.join`/`.push`/`.leave`) instead of
  * opening a real socket. Real call sites just do `new AgentSessionStore(id)`.
+ *
+ * Second constructor argument (`opts.initialPrompt`) is the "Start a
+ * session with this page" handoff (`initial-prompt.ts`) — a composed
+ * opening prompt to push as the first user turn the moment the join
+ * succeeds. Pushed at most once per store instance: cleared to `null`
+ * right after firing, so a Phoenix auto-rejoin (which redelivers the join
+ * reply through the same `.receive('ok', ...)` callback — see
+ * `agent-session.test.ts`'s "replay merge is idempotent" case) never
+ * re-sends it.
  */
 export class AgentSessionStore {
   items: AcpItem[] = $state([]);
@@ -46,8 +55,10 @@ export class AgentSessionStore {
   #channel: Channel;
   #byId = new Map<string, AcpItem>();
   #cursor = 0;
+  #initialPrompt: string | null;
 
-  constructor(id: string, join: JoinFn = joinAgentSession) {
+  constructor(id: string, opts: { initialPrompt?: string | null } = {}, join: JoinFn = joinAgentSession) {
+    this.#initialPrompt = opts.initialPrompt ?? null;
     this.#channel = join(id);
 
     this.#channel.on('event', (payload: { seq: number; item: AcpItem }) => {
@@ -72,6 +83,14 @@ export class AgentSessionStore {
         // snapshot — see class doc.
         this.busy = reply.busy ?? false;
         if (reply.status) this.status = reply.status as AgentSessionStatus;
+
+        // Fire the handed-off opening prompt (see class doc) exactly once —
+        // nulled immediately so a redelivered join reply on auto-rejoin
+        // never re-sends it.
+        if (this.#initialPrompt) {
+          this.prompt(this.#initialPrompt);
+          this.#initialPrompt = null;
+        }
       })
       .receive('error', (payload: { reason?: string } | undefined) => {
         this.error = payload?.reason ?? 'join_failed';

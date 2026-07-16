@@ -55,14 +55,14 @@ describe('AgentSessionStore', () => {
     const fake = fakeChannel();
     const join = vi.fn(() => fake.channel);
 
-    new AgentSessionStore('sess-1', join);
+    new AgentSessionStore('sess-1', {}, join);
 
     expect(join).toHaveBeenCalledWith('sess-1');
   });
 
   it('upsert dedup: an event at/behind cursor for a known id is dropped', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
 
     fake.resolveJoinOk({
       items: [{ id: 'a', type: 'msg', text: 'original' }],
@@ -85,7 +85,7 @@ describe('AgentSessionStore', () => {
 
   it('replay merge is idempotent across repeated join replies (simulated rejoin)', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
     const reply = {
       items: [
         { id: 'a', type: 'msg', text: 'hi' },
@@ -109,9 +109,44 @@ describe('AgentSessionStore', () => {
     expect(store.items.map((i) => i.text)).toEqual(['hi', 'yo']);
   });
 
+  it('pushes a provided initial prompt as the first user turn once the join succeeds', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s1', { initialPrompt: 'Read `notes.md` and follow it.' }, () => fake.channel);
+
+    // Not sent before the join resolves.
+    expect(fake.pushed).toEqual([]);
+
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
+
+    expect(fake.pushed).toEqual([{ event: 'prompt', payload: { content: 'Read `notes.md` and follow it.' } }]);
+  });
+
+  it('does not re-push the initial prompt on a redelivered join reply (simulated rejoin)', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s1', { initialPrompt: 'hello' }, () => fake.channel);
+
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
+    expect(fake.pushed).toHaveLength(1);
+
+    // Phoenix redelivers the same join reply through the same `.receive`
+    // callback on an auto-rejoin — the initial prompt must have been nulled
+    // out after the first push, so it does not fire again.
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
+    expect(fake.pushed).toHaveLength(1);
+  });
+
+  it('does nothing extra when no initial prompt is provided', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s1', {}, () => fake.channel);
+
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
+
+    expect(fake.pushed).toEqual([]);
+  });
+
   it('busy flips false (falling edge) when a turn item arrives via an event push', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
 
     fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
 
@@ -125,7 +160,7 @@ describe('AgentSessionStore', () => {
 
   it('busy seeds from the join reply LAST, overriding a turn item already in the snapshot', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
 
     // The snapshot's own `turn` item would clear busy if seeding happened
     // BEFORE the replay loop — the server's busy: true (a new turn already
@@ -143,7 +178,7 @@ describe('AgentSessionStore', () => {
 
   it('answerPermission pushes item_id/kind and does not locally mutate the item; only a server echo resolves it', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
 
     fake.resolveJoinOk({
       items: [{ id: 'perm1', type: 'permission', resolved: false }],
@@ -169,7 +204,7 @@ describe('AgentSessionStore', () => {
 
   it('prompt/cancel/setConfigOption/stop push the expected events and payloads', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
     fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
 
     store.prompt('do the thing');
@@ -187,7 +222,7 @@ describe('AgentSessionStore', () => {
 
   it('status push and exit push update status; exit forces status to exited', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
     fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'starting' });
 
     fake.emit('status', { status: 'running' });
@@ -199,7 +234,7 @@ describe('AgentSessionStore', () => {
 
   it('a join error sets status failed and records the reason', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
 
     fake.resolveJoinError({ reason: 'session_not_found' });
 
@@ -209,7 +244,7 @@ describe('AgentSessionStore', () => {
 
   it('dispose leaves the channel', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', () => fake.channel);
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
 
     store.dispose();
 

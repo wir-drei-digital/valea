@@ -17,6 +17,7 @@
   import { resolveIcmSelection } from '$lib/shell/icm-route';
   import { SessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
+  import { takeInitialPrompt } from '$lib/stores/initial-prompt';
   import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel } from '$lib/components/agent';
 
   const sessionsList = new SessionsListStore(api);
@@ -70,7 +71,12 @@
       store = null;
       return;
     }
-    const session = new AgentSessionStore(id);
+    // `takeInitialPrompt` consumes the one-shot handoff (`initial-prompt.ts`)
+    // stashed by a session entry point (e.g. Knowledge's "Start a session
+    // with this page") right before it navigated here — the store fires it
+    // as the first user turn once its channel join succeeds. A plain
+    // sessions-list click or a reload finds nothing pending, which is safe.
+    const session = new AgentSessionStore(id, { initialPrompt: takeInitialPrompt(id) });
     store = session;
     return () => {
       session.dispose();
