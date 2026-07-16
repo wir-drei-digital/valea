@@ -3,7 +3,6 @@ import {
   sentence,
   auditDot,
   transcriptHref,
-  reviewHref,
   formatAuditTimestamp,
   auditIcmName,
   type AuditIcmDirectoryEntry
@@ -15,77 +14,6 @@ function entry(type: string, fields: Record<string, unknown> = {}): AuditEntry {
 }
 
 describe('sentence', () => {
-  it('workflow_run_started: names the workflow ({icm_id, relative_path, resolved_path} object, Task 7.4 shape) and the input', () => {
-    expect(
-      sentence(
-        entry('workflow_run_started', {
-          run_id: 'r1',
-          workflow: {
-            icm_id: 'icm-1',
-            relative_path: 'Workflows/New Inquiry Triage.md',
-            resolved_path: '/workspace/icm-1/Workflows/New Inquiry Triage.md'
-          },
-          input: 'sources/mail/normalized/priya.json'
-        })
-      )
-    ).toBe('Started "New Inquiry Triage" on sources/mail/normalized/priya.json.');
-  });
-
-  it('workflow_run_started: object shape falls back to resolved_path when relative_path is missing', () => {
-    expect(
-      sentence(
-        entry('workflow_run_started', {
-          run_id: 'r1',
-          workflow: { icm_id: 'icm-1', resolved_path: '/workspace/icm-1/Workflows/X.md' }
-        })
-      )
-    ).toBe('Started "X".');
-  });
-
-  it('workflow_run_started: back-compat with the pre-7.4 plain-path string shape', () => {
-    expect(
-      sentence(
-        entry('workflow_run_started', {
-          run_id: 'r1',
-          workflow: 'icm/Workflows/New Inquiry Triage.md',
-          input: 'sources/mail/normalized/priya.json'
-        })
-      )
-    ).toBe('Started "New Inquiry Triage" on sources/mail/normalized/priya.json.');
-  });
-
-  it('workflow_run_started: falls back gracefully with no input', () => {
-    expect(
-      sentence(entry('workflow_run_started', { run_id: 'r1', workflow: 'icm/Workflows/X.md' }))
-    ).toBe('Started "X".');
-  });
-
-  it('workflow_run_started: falls back to "a workflow" when the object shape has neither path field', () => {
-    expect(
-      sentence(entry('workflow_run_started', { run_id: 'r1', workflow: { icm_id: 'icm-1' } }))
-    ).toBe('Started "a workflow".');
-  });
-
-  it.each([
-    ['proposal_created', 'Workflow run finished — a proposal is waiting for review.'],
-    ['no_proposal', 'Workflow run finished — no proposal was produced.'],
-    ['invalid_proposal', "Workflow run finished — the proposal couldn't be read."],
-    ['start_failed', 'Workflow run failed to start.'],
-    ['something_new', 'Workflow run finished.']
-  ])('workflow_run_finished outcome=%s', (outcome, expected) => {
-    expect(sentence(entry('workflow_run_finished', { run_id: 'r1', outcome }))).toBe(expected);
-  });
-
-  it('queue_item_created: humanizes the kind', () => {
-    expect(sentence(entry('queue_item_created', { run_id: 'r1', kind: 'email_draft' }))).toBe(
-      'New proposal queued: email draft.'
-    );
-  });
-
-  it('queue_item_created: falls back with no kind', () => {
-    expect(sentence(entry('queue_item_created', { run_id: 'r1' }))).toBe('New proposal queued.');
-  });
-
   it('permission_auto_allowed: quotes the tool-call title', () => {
     expect(
       sentence(
@@ -95,8 +23,8 @@ describe('sentence', () => {
   });
 
   it('permission_auto_denied: quotes the tool-call title', () => {
-    expect(sentence(entry('permission_auto_denied', { item_id: 'p1', title: 'Delete queue/pending' }))).toBe(
-      'Denied automatically: Delete queue/pending.'
+    expect(sentence(entry('permission_auto_denied', { item_id: 'p1', title: 'Delete staging/x.json' }))).toBe(
+      'Denied automatically: Delete staging/x.json.'
     );
   });
 
@@ -118,38 +46,6 @@ describe('sentence', () => {
     );
   });
 
-  it('approval_intent', () => {
-    expect(sentence(entry('approval_intent', { run_id: 'r1' }))).toBe(
-      'Approval started — about to act on this proposal.'
-    );
-  });
-
-  it('item_approved', () => {
-    expect(sentence(entry('item_approved', { run_id: 'r1' }))).toBe(
-      'You approved this proposal — draft created.'
-    );
-  });
-
-  it('item_approved: recovered flag changes the sentence', () => {
-    expect(sentence(entry('item_approved', { run_id: 'r1', recovered: true }))).toBe(
-      'You approved this proposal after a restart — draft created.'
-    );
-  });
-
-  it('item_rejected', () => {
-    expect(sentence(entry('item_rejected', { run_id: 'r1' }))).toBe('You rejected this proposal.');
-  });
-
-  it('action_executed', () => {
-    expect(sentence(entry('action_executed', { run_id: 'r1' }))).toBe('Draft created.');
-  });
-
-  it('approval_recovered', () => {
-    expect(sentence(entry('approval_recovered', { run_id: 'r1' }))).toBe(
-      'An interrupted approval was recovered — returned to pending for review.'
-    );
-  });
-
   it('unknown type: humanizes the type string instead of crashing', () => {
     expect(sentence(entry('session_exited', { code: 0 }))).toBe('Session exited.');
   });
@@ -159,7 +55,6 @@ describe('sentence', () => {
   });
 
   it('never throws on a bare-minimum entry (only ts/type/generation)', () => {
-    expect(() => sentence({ ts: '', type: 'workflow_run_started', generation: null })).not.toThrow();
     expect(() => sentence({ ts: '', type: 'permission_auto_allowed', generation: null })).not.toThrow();
     expect(() => sentence({ ts: '', type: 'totally_unknown_future_type', generation: null })).not.toThrow();
   });
@@ -173,17 +68,6 @@ describe('auditDot', () => {
     expect(auditDot('permission_answered')).toBe('amber');
   });
 
-  it('maps item_approved and action_executed to green', () => {
-    expect(auditDot('item_approved')).toBe('green');
-    expect(auditDot('action_executed')).toBe('green');
-  });
-
-  it('maps item_rejected and workflow_run_* to ink (neutral)', () => {
-    expect(auditDot('item_rejected')).toBe('ink');
-    expect(auditDot('workflow_run_started')).toBe('ink');
-    expect(auditDot('workflow_run_finished')).toBe('ink');
-  });
-
   it('falls back to ink for anything unrecognized', () => {
     expect(auditDot('session_exited')).toBe('ink');
     expect(auditDot('')).toBe('ink');
@@ -192,23 +76,11 @@ describe('auditDot', () => {
 
 describe('transcriptHref', () => {
   it('links to /chat?session=<id> when session_id is present', () => {
-    expect(transcriptHref(entry('workflow_run_started', { session_id: 'sess-1' }))).toBe(
-      '/chat?session=sess-1'
-    );
+    expect(transcriptHref(entry('session_exited', { session_id: 'sess-1' }))).toBe('/chat?session=sess-1');
   });
 
   it('returns null when session_id is absent', () => {
-    expect(transcriptHref(entry('item_approved', { run_id: 'r1' }))).toBeNull();
-  });
-});
-
-describe('reviewHref', () => {
-  it('links to /queue/<run_id> when run_id is present', () => {
-    expect(reviewHref(entry('item_approved', { run_id: 'r1' }))).toBe('/queue/r1');
-  });
-
-  it('returns null when run_id is absent', () => {
-    expect(reviewHref(entry('permission_asked', { item_id: 'p1' }))).toBeNull();
+    expect(transcriptHref(entry('session_exited'))).toBeNull();
   });
 });
 
@@ -217,50 +89,6 @@ describe('auditIcmName', () => {
     { id: 'icm-1', mountKey: 'primary', name: 'Mara Lindt Coaching' },
     { id: null, mountKey: 'degraded-one', name: 'Degraded' }
   ];
-
-  it('resolves workflow_run_started (Task 7.4 object shape) by workflow.icm_id', () => {
-    expect(
-      auditIcmName(
-        entry('workflow_run_started', {
-          workflow: { icm_id: 'icm-1', relative_path: 'Workflows/X.md', resolved_path: '/x' }
-        }),
-        mounts
-      )
-    ).toBe('Mara Lindt Coaching');
-  });
-
-  it('returns null for the pre-7.4 bare-string workflow shape (names no ICM)', () => {
-    expect(auditIcmName(entry('workflow_run_started', { workflow: 'icm/Workflows/X.md' }), mounts)).toBeNull();
-  });
-
-  it('resolves a memory-update action_executed by target.locator.icm_id', () => {
-    expect(
-      auditIcmName(
-        entry('action_executed', {
-          run_id: 'r1',
-          target: { locator: { kind: 'icm', icm_id: 'icm-1', path: 'Pricing/X.md' }, resolved_path: '/x' }
-        }),
-        mounts
-      )
-    ).toBe('Mara Lindt Coaching');
-  });
-
-  it('resolves an apply_conflict entry the same way as action_executed', () => {
-    expect(
-      auditIcmName(
-        entry('apply_conflict', {
-          run_id: 'r1',
-          target: { locator: { kind: 'icm', icm_id: 'icm-1', path: 'Pricing/X.md' }, resolved_path: '/x' },
-          reason: 'page_changed'
-        }),
-        mounts
-      )
-    ).toBe('Mara Lindt Coaching');
-  });
-
-  it('returns null for an email_draft action_executed (no target field at all)', () => {
-    expect(auditIcmName(entry('action_executed', { run_id: 'r1' }), mounts)).toBeNull();
-  });
 
   it('resolves icm_mounted/icm_unmounted by mount_key directly', () => {
     expect(auditIcmName(entry('icm_mounted', { mount_key: 'primary', path: '/x', id: 'icm-1' }), mounts)).toBe(
@@ -275,15 +103,14 @@ describe('auditIcmName', () => {
     expect(auditIcmName(entry('icm_unmounted', { mount_key: 'gone', path: '/x' }), mounts)).toBeNull();
   });
 
-  it('returns null for entry types that name no ICM at all (queue_item_created, permission_*, item_approved, ...)', () => {
-    expect(auditIcmName(entry('queue_item_created', { run_id: 'r1', kind: 'email_draft' }), mounts)).toBeNull();
+  it('returns null for entry types that name no ICM at all (permission_*, session_exited, ...)', () => {
     expect(auditIcmName(entry('permission_asked', { item_id: 'p1', title: 'Write x' }), mounts)).toBeNull();
-    expect(auditIcmName(entry('item_approved', { run_id: 'r1' }), mounts)).toBeNull();
+    expect(auditIcmName(entry('session_exited', { code: 0 }), mounts)).toBeNull();
   });
 
   it('never throws on a bare-minimum entry or an empty directory', () => {
-    expect(() => auditIcmName({ ts: '', type: 'workflow_run_started', generation: null }, [])).not.toThrow();
-    expect(auditIcmName(entry('workflow_run_started', { workflow: { icm_id: 'icm-1' } }), [])).toBeNull();
+    expect(() => auditIcmName({ ts: '', type: 'session_exited', generation: null }, [])).not.toThrow();
+    expect(auditIcmName(entry('icm_mounted', { mount_key: 'primary' }), [])).toBeNull();
   });
 });
 

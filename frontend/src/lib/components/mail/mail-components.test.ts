@@ -12,7 +12,6 @@ import {
   formatDateTime,
   attachmentsFromFrontmatter,
   formatBytes,
-  canRunTriage,
   mailStateLabel,
   syncErrorText,
   syncNowErrorMessage
@@ -197,28 +196,6 @@ describe('formatBytes', () => {
   it('never throws on negative or non-finite input', () => {
     expect(formatBytes(-5)).toBe('0 B');
     expect(formatBytes(Number.NaN)).toBe('0 B');
-  });
-});
-
-describe('canRunTriage', () => {
-  it('is disabled while a run is in flight', () => {
-    expect(canRunTriage('review', true)).toBe(false);
-  });
-
-  it('is disabled for a processed message even when idle', () => {
-    expect(canRunTriage('processed', false)).toBe(false);
-  });
-
-  it('is disabled for a processed message that is ALSO (impossibly) mid-run', () => {
-    expect(canRunTriage('processed', true)).toBe(false);
-  });
-
-  it('is enabled for a review message that is idle', () => {
-    expect(canRunTriage('review', false)).toBe(true);
-  });
-
-  it('treats a null/unknown status as runnable (not yet indexed as processed)', () => {
-    expect(canRunTriage(null, false)).toBe(true);
   });
 });
 

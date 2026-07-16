@@ -120,7 +120,7 @@ export class MailStore {
    * In-flight flag for `select()` (the one async call heavy/slow enough —
    * it reads a whole message file — to warrant a UI spinner). `refreshStatus`/
    * `refreshMessages`/`refreshInbox` don't get their own flags: unlike the
-   * single-collection stores elsewhere (`icmStore.loaded`, `queueStore.loaded`,
+   * single-collection stores elsewhere (`icmStore.loaded`, `auditStore.loaded`,
    * ...), this store's brief only calls for the one `loading` field, and an
    * empty `messages`/`inbox` array before the first successful refetch is
    * an adequate "not loaded yet" signal for those three.
@@ -201,8 +201,8 @@ export class MailStore {
    * completes, so refetching here closes that race. Every other reason a
    * `mail_status` push fires (credential set, settings reload, sync
    * finish) makes the refetch a harmless no-op re-read — same "just
-   * refetch on any related push" simplicity `icmStore`/`queueStore`/
-   * `auditStore` already use for their own change pushes.
+   * refetch on any related push" simplicity `icmStore`/`auditStore` already
+   * use for their own change pushes.
    */
   handleMailStatus(payload: MailStatusPush): void {
     this.#applyStatus(payload);
@@ -294,25 +294,23 @@ let mailEventsWired = false;
  * Attaches the four mail push handlers (`mail_status`/`mail_sync`/
  * `mail_message`/`mailbox_ops`) to an already-joined `workspace:events`
  * channel, driving the singleton `mailStore`. Takes the channel as a
- * parameter rather than joining its own — same reason `wireQueueEvents`/
- * `wireAuditEvents` do (see their doc comments in `queue.svelte.ts`/
- * `audit.svelte.ts`, and `wireIcmEvents`'s in `icm.svelte.ts`): Phoenix's JS
- * client only reliably delivers pushes to ONE join per topic per socket, so
- * every store rides the single `workspace:events` join `wireIcmEvents`
- * (`routes/+layout.svelte`'s one call site) owns, rather than opening a
- * second one here.
+ * parameter rather than joining its own — same reason `wireAuditEvents`
+ * does (see its doc comment in `audit.svelte.ts`, and `wireIcmEvents`'s in
+ * `icm.svelte.ts`): Phoenix's JS client only reliably delivers pushes to ONE
+ * join per topic per socket, so every store rides the single
+ * `workspace:events` join `wireIcmEvents` (`routes/+layout.svelte`'s one
+ * call site) owns, rather than opening a second one here.
  *
  * SINGLE CALL SITE: wired from `wireIcmEvents` itself (`icm.svelte.ts`),
- * alongside `wireQueueEvents`/`wireAuditEvents` — NOT from the `/mail`
- * route directly. A route-local `onMount` can't safely call
- * `joinWorkspaceEvents` itself (that would be a second, racing join to the
- * same topic — see above), and the layout already holds the one shared
- * channel, so wiring happens there, once, before any route mounts. This
- * keeps mail pushes flowing (and `mailStore` fresh) even when the user
- * isn't currently on `/mail` — same as `queueStore`/`auditStore` staying
- * live in the background today.
+ * alongside `wireAuditEvents` — NOT from the `/mail` route directly. A
+ * route-local `onMount` can't safely call `joinWorkspaceEvents` itself
+ * (that would be a second, racing join to the same topic — see above), and
+ * the layout already holds the one shared channel, so wiring happens
+ * there, once, before any route mounts. This keeps mail pushes flowing
+ * (and `mailStore` fresh) even when the user isn't currently on `/mail` —
+ * same as `auditStore` staying live in the background today.
  *
- * Idempotent against repeat calls, same spirit as `wireQueueEvents` — a
+ * Idempotent against repeat calls, same spirit as `wireAuditEvents` — a
  * second call is a no-op rather than attaching a second set of handlers
  * (which would double-refetch on every push).
  */

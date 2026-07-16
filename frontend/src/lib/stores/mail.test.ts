@@ -422,8 +422,8 @@ describe('resupplyCredential', () => {
 });
 
 // `mailEventsWired` is a module-level latch (see `wireMailEvents` in
-// `mail.svelte.ts`), so — same caveat as `wireQueueEvents`'s own test in
-// `queue.test.ts` — it can only be meaningfully exercised ONCE per test
+// `mail.svelte.ts`), so — same caveat every other `wire*Events` latch test
+// in this codebase has — it can only be meaningfully exercised ONCE per test
 // file. This is the single test in the file that calls `wireMailEvents`,
 // keeping the "first call wins" assertion deterministic instead of
 // depending on test execution order.

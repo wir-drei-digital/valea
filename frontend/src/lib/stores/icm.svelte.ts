@@ -2,11 +2,9 @@ import { api, type Api } from '../api/client';
 import type { IcmNode } from '../shell/nav';
 import { workspaceStore } from './workspace.svelte';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
-import { wireQueueEvents } from './queue.svelte';
 import { wireAuditEvents } from './audit.svelte';
 import { wireMailEvents } from './mail.svelte';
 import { mountsStore, wireMountsEvents } from './mounts.svelte';
-import { workflowsStore } from './workflows.svelte';
 import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
 
 type IcmApi = Pick<Api, 'icmTree' | 'listIcms'>;
@@ -245,31 +243,23 @@ export function handleWorkspaceEvent(payload: WorkspaceEventPayload): void {
  * function needs to grow support for multiple subscribers instead of being
  * called again.
  *
- * CARRY-FORWARD (T19): also wires `wireQueueEvents` onto the SAME channel
- * this join returns, right here — not a second call site. `wireQueueEvents`
- * takes an already-joined channel rather than joining its own for exactly
- * this reason (see its doc comment in `queue.svelte.ts`): a second
- * independent `workspace:events` join races this one and only one
- * reliably receives pushes, so `queue_changed` has to ride the same join
- * `icm_changed` does.
- *
- * CARRY-FORWARD (T20): `workflowsStore.refetch()` is called directly from
- * `onIcmChanged` below, alongside `icmStore.refetch()` — workflow
- * definitions live under `icm/Workflows/*.md` (see `WorkflowsStore`'s doc
- * comment in `workflows.svelte.ts`), so any `icm_changed` push that
- * invalidates the ICM tree invalidates the workflow catalog too. Also wires
- * `wireAuditEvents` onto the same shared channel, same reasoning as
- * `wireQueueEvents` above: the audit trail grows on every queue mutation,
- * so it rides `queue_changed` on this one join rather than opening a
- * second.
+ * CARRY-FORWARD (T20, post Spec-D deletion wave): also wires `wireAuditEvents`
+ * onto the SAME channel this join returns, right here — not a second call
+ * site. `wireAuditEvents` takes an already-joined channel rather than
+ * joining its own for exactly this reason: a second independent
+ * `workspace:events` join races this one and only one reliably receives
+ * pushes. `wireAuditEvents` is currently a no-op placeholder (its
+ * `queue_changed` listener was removed alongside the queue/workflow
+ * subsystem — see its own doc comment in `audit.svelte.ts`); left wired here
+ * so a future live audit event has a ready call site.
  *
  * CARRY-FORWARD (T16 — `/mail` route): also wires `wireMailEvents` onto the
  * same shared channel, same reasoning again — `mail_status`/`mail_sync`/
  * `mail_message`/`mailbox_ops` all ride this one `workspace:events` join
  * rather than the `/mail` route opening its own (see `wireMailEvents`'s doc
  * comment in `mail.svelte.ts` for why a route-local join would race this
- * one). `mailStore` stays live in the background exactly like `queueStore`/
- * `auditStore` already do, not only while `/mail` is mounted.
+ * one). `mailStore` stays live in the background exactly like `auditStore`
+ * already does, not only while `/mail` is mounted.
  *
  * CARRY-FORWARD (A-T14): also wires `wireMountsEvents` onto the same shared
  * channel, same reasoning again — `mounts_changed` (A-T6/A-T12: a mount
@@ -349,11 +339,9 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
     },
     onIcmChanged: () => {
       void icmStore.refetch();
-      void workflowsStore.refetch();
     }
   });
 
-  wireQueueEvents(channel);
   wireAuditEvents(channel);
   wireMailEvents(channel);
   wireMountsEvents(channel);

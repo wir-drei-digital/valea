@@ -50,7 +50,7 @@ export function resolveIcmSelection(icmParam: string | null, enabledMountKeys: s
  *    consulted as a fallback here either, same "session is authoritative,
  *    icm is never a reassignment" rule this module's header doc states.
  *  - Every other route (`/knowledge` with no path, `/chat` with no session,
- *    `/workflows`, and any future ICM-scoped route) reads `?icm=` directly.
+ *    and any future ICM-scoped route) reads `?icm=` directly.
  */
 export function resolveActiveMountKey(
   pathname: string,
@@ -73,7 +73,7 @@ export function resolveActiveMountKey(
   return searchParams.get('icm');
 }
 
-/** Filters a `{mountKey}`-carrying list down to one mount when `mountKey` is given; passes everything through when it's `null` (no filter selected) — `/workflows`' optional `?icm=` filter. */
+/** Filters a `{mountKey}`-carrying list down to one mount when `mountKey` is given; passes everything through when it's `null` (no filter selected). */
 export function filterByMountKey<T extends { mountKey: string }>(items: T[], mountKey: string | null): T[] {
   return mountKey ? items.filter((item) => item.mountKey === mountKey) : items;
 }

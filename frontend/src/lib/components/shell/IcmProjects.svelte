@@ -22,7 +22,6 @@
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import BookOpen from '@lucide/svelte/icons/book-open';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import PowerOff from '@lucide/svelte/icons/power-off';
   import Stethoscope from '@lucide/svelte/icons/stethoscope';
 
@@ -192,10 +191,6 @@
           <DropdownMenu.Item onSelect={() => void goto(`/knowledge?icm=${encodeURIComponent(group.mountKey)}`)}>
             <BookOpen class="size-3.5" strokeWidth={1.5} />
             Open knowledge
-          </DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={() => void goto(`/workflows?icm=${encodeURIComponent(group.mountKey)}`)}>
-            <RefreshCw class="size-3.5" strokeWidth={1.5} />
-            Show workflows
           </DropdownMenu.Item>
           <DropdownMenu.Item disabled={!!diagnosing[group.mountKey]} onSelect={() => void diagnose(group.mountKey)}>
             <Stethoscope class="size-3.5" strokeWidth={1.5} />

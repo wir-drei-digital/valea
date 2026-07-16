@@ -55,9 +55,9 @@ describe('resolveActiveMountKey', () => {
     expect(resolveActiveMountKey('/chat', params, [])).toBe('clients');
   });
 
-  it('reads ?icm on /workflows', () => {
+  it('reads ?icm on /knowledge', () => {
     const params = new URLSearchParams('icm=clients');
-    expect(resolveActiveMountKey('/workflows', params, [])).toBe('clients');
+    expect(resolveActiveMountKey('/knowledge', params, [])).toBe('clients');
   });
 
   it('is null on an unscoped route like / with no ?icm', () => {

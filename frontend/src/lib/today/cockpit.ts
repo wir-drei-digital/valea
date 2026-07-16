@@ -45,8 +45,7 @@ export type OpenLoop = {
  * `Valea.Cockpit.today/0`'s `"mail"` field (`review_count`/`inbox_count`
  * from `Valea.Mail.Store`, `configured` from `Valea.Mail.Engine.status/0`,
  * all zero/false when no workspace/engine is up). `configured` gates
- * `routes/+page.svelte`'s choice between the single seed
- * `InquiryTriageCard` and one card per real review message.
+ * whether `routes/+page.svelte`'s mail summary line renders.
  */
 export type MailSummary = {
   reviewCount: number;
@@ -77,10 +76,10 @@ export type CockpitToday = {
    * identity (Task 7.2 — `Valea.Cockpit.today/0`'s live
    * `triage_workflow_mount_key`/`triage_workflow_relative_path` fields),
    * `null` together with `triageWorkflowPath` above when no enabled mount
-   * has one. `today/InquiryTriageCard.svelte` and `mail/MessageView.svelte`
-   * pass these straight to `api.runWorkflow` instead of a hardcoded
-   * `TRIAGE_WORKFLOW` const, and hide their "Prepare a reply"/"Run triage"
-   * action entirely when `null` — no dead link.
+   * has one. Unused by the frontend since the Spec D deletion wave removed
+   * every "Run triage"/"Prepare a reply" consumer — kept here because the
+   * backend action still returns it unchanged; a later task drops the field
+   * alongside the backend RPC.
    */
   triageWorkflowMountKey: string | null;
   triageWorkflowRelativePath: string | null;

@@ -6,18 +6,6 @@ import type { AuditEntry } from '$lib/api/client';
  * `append_sync` call sites — the exact field set each type carries, not a
  * guess:
  *
- *   - `Valea.Workflows.Runner` (`run/2`/`finalize/2`):
- *     `workflow_run_started` {run_id, workflow, input, workflow_hash, input_hash}
- *     — `workflow` is a `{icm_id, relative_path, resolved_path}` map as of
- *     Task 7.4 (was a bare `resolved_path` string pre-7.4; older audit.jsonl
- *     entries on disk still carry the string shape, so both are handled),
- *     `workflow_run_finished` {run_id, outcome, reason?} (outcome one of
- *     "no_proposal" | "invalid_proposal" | "proposal_created" | "start_failed"),
- *     `queue_item_created` {run_id, kind}.
- *   - `Valea.Queue` (`approve/2`/`reject/2`/`recover/1`):
- *     `approval_intent` {run_id}, `action_executed` {run_id},
- *     `item_approved` {run_id, recovered?}, `item_rejected` {run_id},
- *     `approval_recovered` {run_id}.
  *   - `Valea.Agents.SessionServer` (`policy_decide/2`/`answer_permission`):
  *     `permission_auto_allowed` {item_id, title, kind, decision},
  *     `permission_auto_denied` {item_id, title, kind, decision},
@@ -27,43 +15,20 @@ import type { AuditEntry } from '$lib/api/client';
  * None of these carry a `title` for the underlying proposal (only the
  * permission_* family's ACP tool-call title) or a `session_id` — the audit
  * trail is a forensic record of WHAT HAPPENED, not a denormalized copy of
- * the queue item. Sentences below read naturally off exactly the fields
- * that exist; `run_id`/`session_id` (when present, defensively — see
- * `reviewHref`/`transcriptHref`) drive the row's "review →"/"transcript →"
- * links instead of being spelled out in prose.
+ * whatever produced it. Sentences below read naturally off exactly the
+ * fields that exist; `session_id` (when present, defensively — see
+ * `transcriptHref`) drives the row's "transcript →" link instead of being
+ * spelled out in prose.
  *
  * The `default` branch must never crash and must never throw on a
  * partially-shaped entry — this reads directly off the wire (see
  * `AuditEntry`'s doc comment in `api/client.ts`), so a future audit type
- * this file hasn't been taught about yet still renders SOMETHING sane.
+ * this file hasn't been taught about yet still renders SOMETHING sane (e.g.
+ * `session_exited` has no dedicated case and relies on this fallback).
  */
 
 function str(value: unknown): string {
   return typeof value === 'string' && value !== '' ? value : '';
-}
-
-function basename(path: unknown): string {
-  const p = str(path);
-  if (!p) return 'a workflow';
-  const file = p.split('/').pop() ?? p;
-  return file.endsWith('.md') ? file.slice(0, -3) : file;
-}
-
-/**
- * `workflow_run_started`'s `workflow` field: a bare path string pre-Task-7.4,
- * or a `{icm_id, relative_path, resolved_path}` map as of Task 7.4 (see
- * `Valea.Workflows.Runner`'s audit call). Prefers `relative_path` (the
- * stable `{icm_id, relative_path}` identity) over `resolved_path` (the
- * physical path used for that one run, which a later move/remount can
- * change), falling back to `resolved_path` if `relative_path` is somehow
- * missing. Never throws on an unexpected shape — see module doc.
- */
-function workflowName(workflow: unknown): string {
-  if (workflow && typeof workflow === 'object') {
-    const w = workflow as Record<string, unknown>;
-    return basename(str(w.relative_path) || str(w.resolved_path));
-  }
-  return basename(workflow);
 }
 
 /** "allow_once" -> "allow once"; "email.selected" -> "email selected". */
@@ -78,32 +43,6 @@ function capitalize(s: string): string {
 
 export function sentence(entry: AuditEntry): string {
   switch (entry.type) {
-    case 'workflow_run_started': {
-      const name = workflowName(entry.workflow);
-      const input = str(entry.input);
-      return input ? `Started "${name}" on ${input}.` : `Started "${name}".`;
-    }
-
-    case 'workflow_run_finished': {
-      switch (entry.outcome) {
-        case 'proposal_created':
-          return 'Workflow run finished — a proposal is waiting for review.';
-        case 'no_proposal':
-          return 'Workflow run finished — no proposal was produced.';
-        case 'invalid_proposal':
-          return "Workflow run finished — the proposal couldn't be read.";
-        case 'start_failed':
-          return 'Workflow run failed to start.';
-        default:
-          return 'Workflow run finished.';
-      }
-    }
-
-    case 'queue_item_created': {
-      const kind = humanize(entry.kind);
-      return kind ? `New proposal queued: ${kind}.` : 'New proposal queued.';
-    }
-
     case 'permission_auto_allowed': {
       const title = str(entry.title);
       return title ? `Allowed automatically: ${title}.` : 'Allowed automatically by policy.';
@@ -124,23 +63,6 @@ export function sentence(entry: AuditEntry): string {
       return kind ? `You answered a permission request: ${kind}.` : 'You answered a permission request.';
     }
 
-    case 'approval_intent':
-      return 'Approval started — about to act on this proposal.';
-
-    case 'item_approved':
-      return entry.recovered === true
-        ? 'You approved this proposal after a restart — draft created.'
-        : 'You approved this proposal — draft created.';
-
-    case 'item_rejected':
-      return 'You rejected this proposal.';
-
-    case 'action_executed':
-      return 'Draft created.';
-
-    case 'approval_recovered':
-      return 'An interrupted approval was recovered — returned to pending for review.';
-
     default: {
       const label = humanize(entry.type);
       return label ? `${capitalize(label)}.` : 'Unrecognized event.';
@@ -153,7 +75,6 @@ export type AuditDotColor = 'amber' | 'green' | 'ink';
 
 export function auditDot(type: string): AuditDotColor {
   if (type.startsWith('permission_')) return 'amber';
-  if (type === 'item_approved' || type === 'action_executed') return 'green';
   return 'ink';
 }
 
@@ -168,12 +89,6 @@ export const AUDIT_DOT_CLASS: Record<AuditDotColor, string> = {
 export function transcriptHref(entry: AuditEntry): string | null {
   const sessionId = str(entry.session_id);
   return sessionId ? `/chat?session=${encodeURIComponent(sessionId)}` : null;
-}
-
-/** `/queue/<run_id>` when the entry carries a `run_id`, else `null`. */
-export function reviewHref(entry: AuditEntry): string | null {
-  const runId = str(entry.run_id);
-  return runId ? `/queue/${encodeURIComponent(runId)}` : null;
 }
 
 /** "14:32" local time, or "" for an unparseable timestamp — mirrors `PageMeta.svelte`'s `formatSavedAt`. */
@@ -200,33 +115,14 @@ export type AuditIcmDirectoryEntry = { id: string | null; mountKey: string; name
  * The `icm_id` an audit entry names, or `null` — the audit trail is
  * heterogeneous by `type` (see module doc), so only the shapes an actual
  * `Valea.Audit.append`/`append_sync` call site is known to carry are
- * checked, defensively (never throws on a malformed/future entry):
- *
- *   - `workflow_run_started`'s `workflow` field: `{icm_id, relative_path,
- *     resolved_path}` (Task 7.4) — the SAME object `workflowName` reads,
- *     minus the pre-7.4 bare-string back-compat case (a bare string names
- *     no ICM).
- *   - `action_executed`/`apply_conflict`'s `target` field (`Valea.Queue`'s
- *     memory-update path only — an `email_draft`'s `action_executed` has
- *     no `target` at all): `{locator: {kind: "icm", icm_id, path},
- *     resolved_path}`.
+ * checked, defensively (never throws on a malformed/future entry). No
+ * currently-surviving entry type carries an `icm_id`-bearing field (the
+ * `workflow`/`target` shapes that used to were removed with the
+ * queue/workflow subsystem, Spec D deletion wave) — kept as its own
+ * function so a future ICM-scoped entry type has a single place to add a
+ * lookup branch, rather than inlining `null` into `auditIcmName` below.
  */
-function auditIcmId(entry: AuditEntry): string | null {
-  const workflow = entry.workflow;
-  if (workflow && typeof workflow === 'object') {
-    const id = str((workflow as Record<string, unknown>).icm_id);
-    if (id) return id;
-  }
-
-  const target = entry.target;
-  if (target && typeof target === 'object') {
-    const locator = (target as Record<string, unknown>).locator;
-    if (locator && typeof locator === 'object') {
-      const id = str((locator as Record<string, unknown>).icm_id);
-      if (id) return id;
-    }
-  }
-
+function auditIcmId(_entry: AuditEntry): string | null {
   return null;
 }
 

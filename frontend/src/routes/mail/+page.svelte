@@ -1,10 +1,10 @@
 <script lang="ts">
   // Mail route (spec Task 16): indexed messages + collapsed raw inbox +
-  // sync status in the list pane, read pane + "Run triage" in main.
-  // Composed the same way as `/chat` (AppFrame + ListPane), with
-  // `?message=<msg_id>` selection instead of `?session=<id>` — mail
-  // messages aren't part of the ICM file tree either, so a query param
-  // (not a path segment) is the right selection mechanism here too.
+  // sync status in the list pane, read pane in main. Composed the same way
+  // as `/chat` (AppFrame + ListPane), with `?message=<msg_id>` selection
+  // instead of `?session=<id>` — mail messages aren't part of the ICM file
+  // tree either, so a query param (not a path segment) is the right
+  // selection mechanism here too.
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { onMount, untrack } from 'svelte';
@@ -14,28 +14,11 @@
   import { syncNowErrorMessage } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { workflowsStore } from '$lib/stores/workflows.svelte';
-  import { triageCandidates } from '$lib/components/mail/triage-workflows';
   import MessageList from '$lib/components/mail/MessageList.svelte';
   import InboxSection from '$lib/components/mail/InboxSection.svelte';
   import SyncStatusLine from '$lib/components/mail/SyncStatusLine.svelte';
   import MessageView from '$lib/components/mail/MessageView.svelte';
   import SetupPanel from '$lib/components/mail/SetupPanel.svelte';
-
-  // Task 9.5: "Mail does not choose an ICM themselves" — `MessageView`'s
-  // "Run triage" action used to run the cockpit payload's single SEEDED
-  // workflow (the first enabled mount, by sort order, that happens to
-  // carry one), silently picking an ICM out from under the message
-  // whenever more than one mount carries its own copy. This route now
-  // loads the FULL workflow catalog instead and derives every enabled
-  // candidate (`triageCandidates`) — `MessageView` runs directly when
-  // there's exactly one (a workflow that already identifies its ICM) and
-  // opens a compact ICM picker otherwise (spec §"Workspace-wide views").
-  const candidates = $derived(triageCandidates(workflowsStore.list));
-
-  onMount(() => {
-    void workflowsStore.refetch();
-  });
 
   // `mail_status`/`mail_sync`/`mail_message`/`mailbox_ops` are wired ONCE,
   // at the layout (`wireMailEvents`, called from `wireIcmEvents` in
@@ -185,7 +168,7 @@
         <EmptyState icon={MailIcon} title="Mail" body="Messages you move to AI/Review appear here." />
       {/if}
     {:else if activeId === selectedId && activeDetail}
-      <MessageView message={activeDetail} {candidates} />
+      <MessageView message={activeDetail} />
     {:else if loadError}
       <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
     {:else}

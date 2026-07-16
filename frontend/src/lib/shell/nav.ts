@@ -4,7 +4,6 @@ import Mail from '@lucide/svelte/icons/mail';
 import Calendar from '@lucide/svelte/icons/calendar';
 import MessageSquare from '@lucide/svelte/icons/message-square';
 import ListTodo from '@lucide/svelte/icons/list-todo';
-import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 import BookOpen from '@lucide/svelte/icons/book-open';
 import Folder from '@lucide/svelte/icons/folder';
 import Plug from '@lucide/svelte/icons/plug';
@@ -61,7 +60,6 @@ export function mainNav(): NavSection[] {
     {
       label: 'Assistant',
       items: [
-        { id: 'workflows', label: 'Workflows', href: '/workflows', icon: RefreshCw },
         { id: 'knowledge', label: 'Knowledge', href: '/knowledge', icon: BookOpen },
         { id: 'files', label: 'Files', href: '/files', icon: Folder }
       ]
@@ -95,7 +93,7 @@ export function flattenMountGroups(groups: Array<{ tree: IcmNode[] }>): IcmNode[
   return groups.flatMap((g) => g.tree);
 }
 
-/** `/knowledge/<mountKey>/<rel>` (task 4.3) — mountKey and the ICM-relative path are each independently URL-encoded, then joined, so a `/` inside a mount key (never legal per `Valea.Mounts`'s own validation) can't be confused with the path separator. Exported (Task 7.3) for `MemoryUpdateReview.svelte`/`queue-ops.ts`, whose queue-item envelopes now carry a real `mountKey` (backend-resolved from the target locator) instead of guessing one from path text. */
+/** `/knowledge/<mountKey>/<rel>` (task 4.3) — mountKey and the ICM-relative path are each independently URL-encoded, then joined, so a `/` inside a mount key (never legal per `Valea.Mounts`'s own validation) can't be confused with the path separator. */
 export function knowledgeHref(mountKey: string, path: string): string {
   return `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
 }

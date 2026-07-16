@@ -5,46 +5,27 @@
   import { AppShell, Sidebar } from '$lib/components/shell';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
-  import { queueStore } from '$lib/stores/queue.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { resolveActiveMountKey } from '$lib/shell/icm-route';
   import { normalizeCockpitToday, splitTrustClause, mailSummaryLine, type CockpitToday } from '$lib/today/cockpit';
-  import { distillButtonState, distillErrorMessage, type DistillPhase } from '$lib/today/distill';
-  import { fromLabel, subjectLabel } from '$lib/components/mail/mail-shapes';
-  import { genericSummary } from '$lib/components/today/triage-card';
-  import PreparedItemCard from '$lib/components/today/PreparedItemCard.svelte';
-  import InquiryTriageCard from '$lib/components/today/InquiryTriageCard.svelte';
   import ScheduleList from '$lib/components/today/ScheduleList.svelte';
   import OpenLoops from '$lib/components/today/OpenLoops.svelte';
   import AwayList from '$lib/components/today/AwayList.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 
-  // The seeded cockpit narrative's Priya Nair entry — Task 18 stopped
-  // rendering it (and its rich seed copy) inline via `InquiryTriageCard
-  // {item}`; that card is now generalized (`{path, fromName, summary,
-  // sources}` props) and rendered separately below: once, fed this exact
-  // payload entry's summary/usedSources, when mail isn't configured (so the
-  // seed card looks IDENTICAL to the pre-Task-18 render), or once per real
-  // review message with generic copy when it is. This title also filters
-  // the entry back out of the generic `PreparedItemCard` loop so it doesn't
-  // render twice.
-  const SEED_INQUIRY_TITLE = 'Priya Nair · new inquiry';
+  // Spec D deletion wave: this is an INTERIM trim, not the final page — the
+  // whole "Prepared for you" section (its per-item cards, the queue-backed
+  // prepare flow, and the "Distill recent decisions" action) is gone along
+  // with the whole queue/workflow subsystem. What remains still renders
+  // straight off the unchanged `cockpit_today` payload: schedule, open
+  // loops, the away list, and the mail summary line. A later task rewrites
+  // this page wholesale.
 
   let today: CockpitToday | null = $state(null);
   let failed = $state(false);
   let loading = $state(true);
-
-  // "Distill recent decisions" action (Task B13) — local run phase for the
-  // quiet secondary button under "Prepared for you". Stays in the
-  // `'running'` phase once a run starts successfully: the resulting queue
-  // items surface wherever queue items already render, via the existing
-  // `queue_changed` refetch (see `distill.ts`'s header doc), so there is no
-  // "run finished" signal here to revert the button to idle from.
-  let distillPhase: DistillPhase = $state('idle');
-  let distillSessionId: string | null = $state(null);
-  let distillErrorText: string | undefined = $state(undefined);
 
   async function load() {
     loading = true;
@@ -77,18 +58,6 @@
     // First render of the shared sidebar — populate the ICM tree once here;
     // live refetch wiring (workspace:events) lands with Task 18.
     void icmStore.refetch();
-    // Populates queueStore.items on first load so a reload after a previous
-    // "Prepare a reply" run picks the InquiryTriageCard straight into its
-    // approval-card state instead of flashing the seeded idle card first.
-    // Live updates after this are pushed via `queue_changed` (wired at the
-    // shared `workspace:events` join — see `wireIcmEvents` in `icm.svelte.ts`).
-    void queueStore.refetch();
-    // Populates `mailStore.messages` so a configured workspace's Today page
-    // can render one `InquiryTriageCard` per review message. Live updates
-    // arrive via the same shared join's mail pushes (`wireMailEvents`,
-    // wired once from `wireIcmEvents`) — same "refetch once on mount, pushes
-    // keep it fresh" convention `/mail`'s own `onMount` uses.
-    void mailStore.refreshMessages();
     // Unfreeze the cockpit snapshot on every `mail_status` push (Engine
     // activation, credential set, settings save, sync finish — each can
     // change `mail.configured` or the counts). Subscribed via the mail
@@ -106,50 +75,6 @@
     resolveActiveMountKey(page.url.pathname, page.url.searchParams, recentSessionsStore.groups)
   );
   const trust = $derived.by(() => splitTrustClause(today?.summary ?? ''));
-
-  const otherPreparedItems = $derived.by(() =>
-    (today?.preparedItems ?? []).filter((item) => item.title !== SEED_INQUIRY_TITLE)
-  );
-
-  // The cockpit payload's own Priya Nair entry — its summary/usedSources are
-  // handed to the seed card below so the unconfigured render stays sourced
-  // from the payload (byte-identical to the pre-Task-18 `{item}` render),
-  // with the card's own SEED_* defaults as the fallback if this entry is
-  // ever absent.
-  const seedInquiry = $derived.by(() =>
-    (today?.preparedItems ?? []).find((item) => item.title === SEED_INQUIRY_TITLE)
-  );
-
-  // Only messages with an indexed path can actually be run through the
-  // triage workflow (`api.runWorkflow` needs a real `input` path) — a
-  // defensive filter, not an expected case (`Store.list_messages/0` always
-  // carries the file's own path).
-  const reviewMessages = $derived(
-    mailStore.messages.filter((m): m is typeof m & { path: string } => m.status === 'review' && !!m.path)
-  );
-
-  const preparedCount = $derived.by(() => {
-    if (!today) return 0;
-    return otherPreparedItems.length + (today.mail.configured ? reviewMessages.length : 1);
-  });
-
-  const distillState = $derived(distillButtonState(today, distillPhase, distillErrorText));
-
-  async function runDistill(): Promise<void> {
-    if (!today?.distillWorkflowPath) return; // defensive: the button is hidden whenever this is null
-    distillPhase = 'running';
-    distillErrorText = undefined;
-    const result = await api.distillDecisions(workspaceStore.generation ?? 0);
-    if (result.ok) {
-      const data = result.data as { runId: string; sessionId: string };
-      distillSessionId = data.sessionId;
-    } else if (result.error === 'no_recent_decisions') {
-      distillPhase = 'empty';
-    } else {
-      distillPhase = 'error';
-      distillErrorText = distillErrorMessage(result.error);
-    }
-  }
 </script>
 
 <AppShell>
@@ -202,63 +127,6 @@
         <section>
           <p class="text-overline mb-2">Today's schedule</p>
           <ScheduleList items={today.schedule} />
-        </section>
-
-        <section>
-          <p class="text-overline mb-3">Prepared for you · {preparedCount}</p>
-          <div class="flex flex-col gap-4">
-            {#if today.mail.configured}
-              {#each reviewMessages as message (message.msgId)}
-                <InquiryTriageCard
-                  path={message.path}
-                  fromName={fromLabel(message)}
-                  summary={genericSummary(subjectLabel(message.subject))}
-                  sources={[]}
-                  triageWorkflowPath={today.triageWorkflowPath}
-                  triageWorkflowMountKey={today.triageWorkflowMountKey}
-                  triageWorkflowRelativePath={today.triageWorkflowRelativePath}
-                  icmName={seedInquiry?.icmName ?? null}
-                />
-              {/each}
-            {:else}
-              <InquiryTriageCard
-                summary={seedInquiry?.summary}
-                sources={seedInquiry?.usedSources}
-                triageWorkflowPath={today.triageWorkflowPath}
-                triageWorkflowMountKey={today.triageWorkflowMountKey}
-                triageWorkflowRelativePath={today.triageWorkflowRelativePath}
-                icmName={seedInquiry?.icmName ?? null}
-              />
-            {/if}
-            {#each otherPreparedItems as item (item.title)}
-              <PreparedItemCard {item} />
-            {/each}
-          </div>
-          {#if distillState.visible}
-            <div class="mt-4 flex flex-wrap items-center gap-2.5">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={distillState.disabled}
-                onclick={() => void runDistill()}
-              >
-                {distillState.label}
-              </Button>
-              {#if distillPhase === 'running' && distillSessionId}
-                <a
-                  href={`/chat?session=${distillSessionId}`}
-                  class="text-act hover:text-act-hover text-[12.5px] font-semibold"
-                >
-                  Watching the run &rarr;
-                </a>
-              {/if}
-              {#if distillState.note}
-                <p class="text-[12.5px] {distillPhase === 'error' ? 'text-warn-ink' : 'text-ink-meta'}">
-                  {distillState.note}
-                </p>
-              {/if}
-            </div>
-          {/if}
         </section>
       </div>
 

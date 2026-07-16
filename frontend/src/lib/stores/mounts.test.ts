@@ -494,7 +494,7 @@ describe('MountsStore.handleMountsChanged', () => {
 
 // `mountsEventsWired` is a module-level latch (see `mounts.svelte.ts`), so it
 // can only be meaningfully exercised ONCE per test file — same convention as
-// `wireQueueEvents`'s test in `queue.test.ts`.
+// every other `wire*Events` latch test in this codebase.
 describe('wireMountsEvents', () => {
   it('attaches mounts_changed to the first channel only, and calls handleMountsChanged on that push', () => {
     const handleMountsChanged = vi.spyOn(mountsStore, 'handleMountsChanged').mockResolvedValue(undefined);

@@ -45,22 +45,8 @@ import {
   listSessionsChannel as listSessionsForChannel,
   createFollowUp as httpCreateFollowUp,
   createFollowUpChannel,
-  runWorkflow as httpRunWorkflow,
-  runWorkflowChannel,
-  distillDecisions as httpDistillDecisions,
-  distillDecisionsChannel,
   harnessDoctor as httpHarnessDoctor,
   harnessDoctorChannel,
-  listWorkflows as httpListWorkflows,
-  listWorkflowsChannel,
-  listQueueItems as httpListQueueItems,
-  listQueueItemsChannel,
-  getQueueItem as httpGetQueueItem,
-  getQueueItemChannel,
-  approveQueueItem as httpApproveQueueItem,
-  approveQueueItemChannel,
-  rejectQueueItem as httpRejectQueueItem,
-  rejectQueueItemChannel,
   listAuditEntries as httpListAuditEntries,
   listAuditEntriesChannel,
   mailStatus as httpMailStatus,
@@ -81,10 +67,6 @@ import {
   getMailMessageChannel,
   mailInbox as httpMailInbox,
   mailInboxChannel,
-  retryMailboxOps as httpRetryMailboxOps,
-  retryMailboxOpsChannel,
-  listDecidedQueueItems as httpListDecidedQueueItems,
-  listDecidedQueueItemsChannel,
   inspectIcm as httpInspectIcm,
   inspectIcmChannel,
   listIcms as httpListIcms,
@@ -117,14 +99,7 @@ import type {
   ListRecentSessionsByIcmFields,
   ListSessionsFields,
   CreateFollowUpFields,
-  RunWorkflowFields,
-  DistillDecisionsFields,
   HarnessDoctorFields,
-  ListWorkflowsFields,
-  ListQueueItemsFields,
-  GetQueueItemFields,
-  ApproveQueueItemFields,
-  RejectQueueItemFields,
   ListAuditEntriesFields,
   MailStatusFields,
   SetupMailAccountFields,
@@ -135,8 +110,6 @@ import type {
   ListMailMessagesFields,
   GetMailMessageFields,
   MailInboxFields,
-  RetryMailboxOpsFields,
-  ListDecidedQueueItemsFields,
   IcmTreeFields,
   InspectIcmFields,
   ListIcmsFields,
@@ -328,7 +301,7 @@ const icmEntryReferencesFields = [
 // literal; cast, not inferred. Booleans ride INSIDE `icmPathsExistFields`'s
 // `results` array item (`exists`), not as a top-level action-return field, so
 // the top-level falsy-map-field workaround documented on
-// `listQueueItemsFields`/`mailDoctorFields` does not apply here — see
+// `mailDoctorFields` does not apply here — see
 // `Valea.Api.ICM`'s `:paths_exist` action.
 const icmSearchFields = [
   { results: ['path', 'mount', 'title', 'snippet', 'terms'] },
@@ -337,11 +310,6 @@ const icmSearchFields = [
 const icmPathsExistFields = [{ results: ['path', 'exists'] }] as unknown as IcmPathsExistFields;
 
 const createAgentSessionFields: CreateAgentSessionFields = ['id'];
-const runWorkflowFields: RunWorkflowFields = ['runId', 'sessionId'];
-const distillDecisionsFields: DistillDecisionsFields = ['runId', 'sessionId'];
-const getQueueItemFields: GetQueueItemFields = ['item', 'revision'];
-const approveQueueItemFields: ApproveQueueItemFields = ['draftPath', 'appliedPath'];
-const rejectQueueItemFields: RejectQueueItemFields = ['rejected'];
 const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
 
 // Same anonymous-embedded-map-array codegen gap as `icmEntryReferencesFields`
@@ -349,7 +317,7 @@ const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
 // `Array<TypedMap>` action-return field, which `ComplexFieldSelection` can't
 // express, so the generated `Fields` type collapses to `never` for the
 // literal. The backend actions accept these exact nested literals (verified
-// by the passing `agents_rpc_test.exs` / `queue_rpc_test.exs` suites).
+// by the passing `agents_rpc_test.exs` suite).
 const listAgentSessionsFields = [
   { sessions: ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live'] }
 ] as unknown as ListAgentSessionsFields;
@@ -374,46 +342,10 @@ const harnessDoctorFields = [
   'ok',
   { checks: ['id', 'status', 'detail', 'remedy'] }
 ] as unknown as HarnessDoctorFields;
-const listWorkflowsFields = [
-  {
-    workflows: [
-      'icmId',
-      'mountKey',
-      'icmName',
-      'relativePath',
-      'resolvedPath',
-      'name',
-      'description',
-      'enabled',
-      'triggerSource',
-      'riskLevel',
-      'sourceCount',
-      'steps'
-    ]
-  }
-] as unknown as ListWorkflowsFields;
-const listQueueItemsFields = [
-  {
-    items: [
-      'runId',
-      'title',
-      'summary',
-      'kind',
-      'riskLevel',
-      'createdAt',
-      'workflow',
-      'mountKey',
-      'path',
-      'icmName',
-      'valid',
-      'error'
-    ]
-  }
-] as unknown as ListQueueItemsFields;
 
 // Cockpit (Task 18 typed the whole `today` action — see `Valea.Api.Cockpit`'s
 // moduledoc). Same anonymous-embedded-map-array codegen gap as
-// `listWorkflowsFields`/`icmEntryReferencesFields` above (`schedule`/
+// `icmEntryReferencesFields` above (`schedule`/
 // `preparedItems`/`openLoops` are `Array<TypedMap>`, and `mail` on top of
 // that is a nested `TypedMap` field), so the generated `CockpitTodayFields`
 // type can't express this literal either — cast, not inferred. Selects
@@ -456,14 +388,11 @@ const mailSyncNowFields: MailSyncNowFields = ['started'];
 const mailDoctorFields: MailDoctorFields = ['ok', 'checks'];
 const createMailFoldersFields: CreateMailFoldersFields = ['created'];
 const getMailMessageFields: GetMailMessageFields = ['message', 'inbox'];
-const retryMailboxOpsFields: RetryMailboxOpsFields = ['accepted'];
-const listDecidedQueueItemsFields: ListDecidedQueueItemsFields = ['items'];
 
 // Icms (task 3.4, `Valea.Api.Icms` — the C9 id/mount-key based replacement
 // for `Valea.Api.Mounts`, kept registered until Phase 11). Same anonymous-
-// embedded-map-array codegen gap as `listAgentSessionsFields`/
-// `listWorkflowsFields`/`listQueueItemsFields` above (see the comment on
-// `icmEntryReferencesFields`) — `icms` is an `Array<TypedMap>` action-return
+// embedded-map-array codegen gap as `listAgentSessionsFields` above (see
+// the comment on `icmEntryReferencesFields`) — `icms` is an `Array<TypedMap>` action-return
 // field, which `ComplexFieldSelection` can't express, so the generated
 // `Fields` type collapses to `never` for the literal. The backend action
 // accepts this exact nested literal (verified by `test/valea/api/icms_test.exs`).
@@ -495,8 +424,8 @@ const inspectIcmFields: InspectIcmFields = ['ok', 'name', 'description', 'reason
 // name.
 const icmTreeFields: IcmTreeFields = ['mountKey', 'title', 'tree'];
 
-// Same anonymous-embedded-map-array codegen gap as `listAgentSessionsFields`/
-// `listWorkflowsFields`/`listQueueItemsFields` above (see the comment on
+// Same anonymous-embedded-map-array codegen gap as `listAgentSessionsFields`
+// above (see the comment on
 // `icmEntryReferencesFields`) — `messages`/`entries` are `Array<TypedMap>`
 // action-return fields, which `ComplexFieldSelection` can't express, so the
 // generated `Fields` type collapses to `never` for the literal. The backend
@@ -549,71 +478,9 @@ function callCreateFollowUpChannel(
   );
 }
 
-function callRunWorkflowChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: {
-    mountKey: string;
-    relativePath: string;
-    inputLocator: Record<string, any>;
-    generation: number;
-  }
-) {
-  return wrapChannelCall((handlers) =>
-    runWorkflowChannel({ channel, input, fields: runWorkflowFields, ...handlers })
-  );
-}
-
-function callDistillDecisionsChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { generation: number }
-) {
-  return wrapChannelCall((handlers) =>
-    distillDecisionsChannel({ channel, input, fields: distillDecisionsFields, ...handlers })
-  );
-}
-
 function callHarnessDoctorChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
   return wrapChannelCall((handlers) =>
     harnessDoctorChannel({ channel, fields: harnessDoctorFields, ...handlers })
-  );
-}
-
-function callListWorkflowsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) =>
-    listWorkflowsChannel({ channel, fields: listWorkflowsFields, ...handlers })
-  );
-}
-
-function callListQueueItemsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) =>
-    listQueueItemsChannel({ channel, fields: listQueueItemsFields, ...handlers })
-  );
-}
-
-function callGetQueueItemChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { runId: string }
-) {
-  return wrapChannelCall((handlers) =>
-    getQueueItemChannel({ channel, input, fields: getQueueItemFields, ...handlers })
-  );
-}
-
-function callApproveQueueItemChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { runId: string; revision: string; generation: number }
-) {
-  return wrapChannelCall((handlers) =>
-    approveQueueItemChannel({ channel, input, fields: approveQueueItemFields, ...handlers })
-  );
-}
-
-function callRejectQueueItemChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { runId: string; revision: string; generation: number; reason?: string | null }
-) {
-  return wrapChannelCall((handlers) =>
-    rejectQueueItemChannel({ channel, input, fields: rejectQueueItemFields, ...handlers })
   );
 }
 
@@ -688,21 +555,6 @@ function callGetMailMessageChannel(
 
 function callMailInboxChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
   return wrapChannelCall((handlers) => mailInboxChannel({ channel, fields: mailInboxFields, ...handlers }));
-}
-
-function callRetryMailboxOpsChannel(
-  channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { runId: string; generation: number }
-) {
-  return wrapChannelCall((handlers) =>
-    retryMailboxOpsChannel({ channel, input, fields: retryMailboxOpsFields, ...handlers })
-  );
-}
-
-function callListDecidedQueueItemsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) =>
-    listDecidedQueueItemsChannel({ channel, fields: listDecidedQueueItemsFields, ...handlers })
-  );
 }
 
 function callInspectIcmChannel(
@@ -935,29 +787,6 @@ export function normalizeIcmPage(raw: Record<string, any>): IcmPageData {
     frontmatter: raw.frontmatter ?? null
   };
 }
-
-/**
- * Raw `queue_item/v1` envelope — the shape `Valea.Workflows.Runner` writes
- * to `queue/pending/<run_id>.json` and `get_queue_item` hands back. Its
- * field names stay SNAKE_CASE and `approval`/`payload` stay untouched
- * nested maps: `get_item`'s `item` field is deliberately unconstrained on
- * the backend (see `Valea.Api.Queue`'s moduledoc) so this whole envelope —
- * including the workflow-authored `payload` — rides through byte-for-byte,
- * the same raw-delivery contract `IcmPageData.frontmatter` uses.
- */
-export type QueueItemEnvelope = {
-  schema: string;
-  run_id: string;
-  session_id: string;
-  workflow: string;
-  workflow_hash: string;
-  input: string;
-  input_hash: string;
-  risk_level: string;
-  approval: Record<string, unknown>;
-  created_at: string;
-  payload: Record<string, unknown>;
-};
 
 /**
  * Raw audit log entry (`{root}/logs/audit.jsonl`). Every entry carries
@@ -1261,94 +1090,8 @@ export const api = {
         )
     ),
 
-  // Task 7.2: `run_workflow`'s `{mountKey, relativePath}` identity (a
-  // workflow's Task 7.1 `Valea.Workflows.get/2` address) replaces the old
-  // opaque absolute `path`, and `inputLocator` (a `Valea.Icm.Locator`
-  // JSON shape — `{ kind: 'workspace', path: 'sources/...' }` for a
-  // workspace source, or `{ kind: 'icm', icm_id: '...', path: '...' }`
-  // for a page in a mounted ICM) replaces the old bare workspace-relative
-  // `input` string. `inputLocator` is typed `object` (not `Record<string,
-  // any>`), same rationale as `saveIcmPage`'s `prosemirror` above — it is
-  // an unconstrained `:map` action argument the backend passes straight
-  // to `Valea.Icm.Locator.resolve/2` without ash_typescript ever
-  // camelCasing its keys, so callers build it with the SNAKE_CASE keys
-  // `Locator.resolve/2` itself pattern-matches on (`icm_id`, not `icmId`).
-  runWorkflow: (mountKey: string, relativePath: string, inputLocator: object, generation: number) =>
-    runRpc(
-      (channel) =>
-        callRunWorkflowChannel(channel, {
-          mountKey,
-          relativePath,
-          inputLocator: inputLocator as Record<string, any>,
-          generation
-        }),
-      () =>
-        httpRunWorkflow(
-          withAuth({
-            input: {
-              mountKey,
-              relativePath,
-              inputLocator: inputLocator as Record<string, any>,
-              generation
-            },
-            fields: runWorkflowFields
-          })
-        )
-    ),
-
-  distillDecisions: (generation: number) =>
-    runRpc(
-      (channel) => callDistillDecisionsChannel(channel, { generation }),
-      () =>
-        httpDistillDecisions(
-          withAuth({ input: { generation }, fields: distillDecisionsFields })
-        )
-    ),
-
   harnessDoctor: () =>
     runRpc(callHarnessDoctorChannel, () => httpHarnessDoctor(withAuth({ fields: harnessDoctorFields }))),
-
-  listWorkflows: () =>
-    runRpc(callListWorkflowsChannel, () => httpListWorkflows(withAuth({ fields: listWorkflowsFields }))),
-
-  listQueueItems: () =>
-    runRpc(callListQueueItemsChannel, () =>
-      httpListQueueItems(withAuth({ fields: listQueueItemsFields }))
-    ),
-
-  getQueueItem: (runId: string) =>
-    runRpc(
-      (channel) => callGetQueueItemChannel(channel, { runId }),
-      () => httpGetQueueItem(withAuth({ input: { runId }, fields: getQueueItemFields }))
-    ).then(
-      (result): ApiResult<{ item: QueueItemEnvelope; revision: string }> => {
-        if (!result.ok) return result;
-        const data = result.data as Record<string, any>;
-        return { ok: true, data: { item: data.item as QueueItemEnvelope, revision: data.revision as string } };
-      }
-    ),
-
-  approveQueueItem: (runId: string, revision: string, generation: number) =>
-    runRpc(
-      (channel) => callApproveQueueItemChannel(channel, { runId, revision, generation }),
-      () =>
-        httpApproveQueueItem(
-          withAuth({ input: { runId, revision, generation }, fields: approveQueueItemFields })
-        )
-    ),
-
-  rejectQueueItem: (runId: string, revision: string, generation: number, reason?: string | null) =>
-    runRpc(
-      (channel) =>
-        callRejectQueueItemChannel(channel, { runId, revision, generation, reason: reason ?? null }),
-      () =>
-        httpRejectQueueItem(
-          withAuth({
-            input: { runId, revision, generation, reason: reason ?? null },
-            fields: rejectQueueItemFields
-          })
-        )
-    ),
 
   listAuditEntries: (limit: number) =>
     runRpc(
@@ -1366,7 +1109,7 @@ export const api = {
   // deliver their `status`/`message` payloads RAW (unconstrained `:map`,
   // see `MailStatusFields`/`GetMailMessageFields` above) — `stores/mail.svelte.ts`
   // owns normalizing those into camelCase app-facing shapes, same
-  // raw-delivery split `IcmPageData.frontmatter`/`QueueItemEnvelope` use.
+  // raw-delivery split `IcmPageData.frontmatter` uses.
 
   mailStatus: () => runRpc(callMailStatusChannel, () => httpMailStatus(withAuth({ fields: mailStatusFields }))),
 
@@ -1414,22 +1157,11 @@ export const api = {
 
   mailInbox: () => runRpc(callMailInboxChannel, () => httpMailInbox(withAuth({ fields: mailInboxFields }))),
 
-  retryMailboxOps: (runId: string, generation: number) =>
-    runRpc(
-      (channel) => callRetryMailboxOpsChannel(channel, { runId, generation }),
-      () => httpRetryMailboxOps(withAuth({ input: { runId, generation }, fields: retryMailboxOpsFields }))
-    ),
-
-  listDecidedQueueItems: () =>
-    runRpc(callListDecidedQueueItemsChannel, () =>
-      httpListDecidedQueueItems(withAuth({ fields: listDecidedQueueItemsFields }))
-    ),
-
   // Icms (task 3.4, `Valea.Api.Icms`). `listIcms` delivers its `icms` array
   // RAW (unconstrained per-item shape at this layer, though already
   // camelCased by ash_typescript — see `listIcmsFields`'s comment above) —
   // `stores/mounts.svelte.ts` owns casting it to `MountSummary[]`, same
-  // raw-delivery split `QueueStore`/`AuditStore` use for their list RPCs.
+  // raw-delivery split `AuditStore` uses for its own list RPC.
   // Unlike the retired `list_mounts`, `list_icms` takes a `generation` —
   // see `Valea.Api.Icms`'s moduledoc for why every action here guards one.
 

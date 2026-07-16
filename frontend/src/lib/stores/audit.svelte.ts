@@ -37,24 +37,15 @@ export const auditStore = new AuditStore(api);
 let auditEventsWired = false;
 
 /**
- * Attaches a `queue_changed` listener to an already-joined channel and keeps
- * `auditStore` fresh — every queue mutation (approve/reject/new proposal)
- * writes an audit entry, so the same push that refreshes `queueStore`
- * (`wireQueueEvents`, `queue.svelte.ts`) also means the audit trail grew.
- * Takes the channel as a parameter rather than joining its own, same reason
- * `wireQueueEvents` does (see its doc comment and `wireIcmEvents` in
- * `icm.svelte.ts`): a second independent `workspace:events` join races the
- * shared one and only one reliably receives pushes.
- *
- * Idempotent against repeat calls, same spirit as `wireQueueEvents` — a
- * second call is a no-op rather than attaching a second `queue_changed`
- * handler (which would double-refetch).
+ * No-op placeholder kept for `wireIcmEvents`'s (`icm.svelte.ts`) shared-channel
+ * wiring call site. Used to attach a `queue_changed` listener that kept
+ * `auditStore` fresh live while any route was mounted — the queue/workflow
+ * subsystem that emitted `queue_changed` is gone (Spec D deletion wave), and
+ * dies on the backend in Task 2. `auditStore` now only refetches on route
+ * load (`routes/audit/+page.svelte`'s `onMount`), which is sufficient since
+ * there is no more live queue activity to reflect mid-session.
  */
 export function wireAuditEvents(channel: Channel): void {
   if (auditEventsWired) return;
   auditEventsWired = true;
-
-  channel.on('queue_changed', () => {
-    void auditStore.refetch();
-  });
 }

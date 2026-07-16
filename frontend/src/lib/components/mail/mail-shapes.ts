@@ -161,16 +161,6 @@ export function formatBytes(bytes: number): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
-// -- Run triage gating (mirrors `today/InquiryTriageCard.svelte`'s in-flight
-// guard; `processed` additionally locks the action out entirely — a
-// processed message renders a "Processed" badge instead of the button, see
-// `MessageView.svelte`) -------------------------------------------------------
-
-/** `false` while a run is in flight, or once the message is already `processed` — a `null`/unknown status is treated as runnable. */
-export function canRunTriage(status: string | null | undefined, busy: boolean): boolean {
-  return status !== 'processed' && !busy;
-}
-
 // -- SyncStatusLine ------------------------------------------------------------
 
 export function mailStateLabel(state: string | null | undefined): string {

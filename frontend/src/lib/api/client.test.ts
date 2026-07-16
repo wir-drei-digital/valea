@@ -4,17 +4,17 @@ import { normalizeIcmPage } from './client';
 describe('normalizeIcmPage', () => {
   it('passes frontmatter through untouched, including its own snake_case keys', () => {
     const raw = {
-      path: 'Workflows/Contract.md',
+      path: 'Notes/Contract.md',
       title: 'Contract',
-      uri: 'icm://Workflows/Contract.md',
-      content: '---\nenabled: true\nrisk_level: medium\n---\n# Contract',
+      uri: 'icm://Notes/Contract.md',
+      content: '---\nstatus: active\nreview_date: 2026-08-01\n---\n# Contract',
       hash: 'abc123',
       prosemirror: { type: 'doc', content: [] },
       frontmatter: {
-        enabled: true,
-        risk_level: 'medium',
-        trigger: { type: 'manual', source: 'email.selected' },
-        sources: [{ id: 'a' }, { id: 'b' }]
+        status: 'active',
+        review_date: '2026-08-01',
+        owner: { name: 'Dana', email: 'dana@example.com' },
+        tags: ['a', 'b']
       }
     };
 
@@ -43,9 +43,9 @@ describe('normalizeIcmPage', () => {
 
   it('preserves frontmatter: null (malformed YAML on the backend) rather than substituting a default', () => {
     const raw = {
-      path: 'Workflows/Broken.md',
+      path: 'Notes/Broken.md',
       title: 'Broken',
-      uri: 'icm://Workflows/Broken.md',
+      uri: 'icm://Notes/Broken.md',
       content: '---\n{ broken\n---\n# X',
       hash: 'ghi789',
       prosemirror: { type: 'doc', content: [] },
