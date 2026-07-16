@@ -11,11 +11,19 @@
   //
   // Spec D deletion wave: the "Run triage" workflow action that used to
   // live in the actions strip below the hairline is gone along with the
-  // whole queue/workflow subsystem. The strip currently renders only the
-  // "Processed" badge for an already-processed message and is otherwise
-  // empty — a later task (Task 11) fills it back in with whatever replaces
-  // triage.
+  // whole queue/workflow subsystem. Task 11 replaces it with "Start a
+  // session about this message" — same exact-read-grant + one-shot opening
+  // prompt pattern as Knowledge's "Start a session with this page"
+  // (`EntryMenu.svelte`'s `startSessionWithPage`), just keyed off
+  // `message.path` and `contextDoc` swapped for `input` (a workspace
+  // locator, not an ICM one — mail messages live outside any ICM's tree).
   import Paperclip from '@lucide/svelte/icons/paperclip';
+  import { goto } from '$app/navigation';
+  import { Button } from '$lib/components/ui/button/index.js';
+  import { api } from '$lib/api/client';
+  import { icmStore } from '$lib/stores/icm.svelte';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { setInitialPrompt } from '$lib/stores/initial-prompt';
   import {
     addressEmail,
     addressListLabel,
@@ -23,6 +31,7 @@
     attachmentsFromFrontmatter,
     formatBytes,
     formatDateTime,
+    messageSessionPrompt,
     subjectLabel,
     type RawAddress
   } from './mail-shapes';
@@ -47,13 +56,16 @@
   const attachments = $derived(attachmentsFromFrontmatter(message.frontmatter));
 
   let copiedPath: string | null = $state(null);
+  let starting = $state(false);
+  let sessionError = $state<string | null>(null);
 
   // A different message was opened — drop this session's local "just
-  // copied a path" affordance so it never bleeds into the newly-selected
-  // message's view.
+  // copied a path" affordance and any stale session-start error so neither
+  // bleeds into the newly-selected message's view.
   $effect(() => {
     void message.path;
     copiedPath = null;
+    sessionError = null;
   });
 
   async function copyAttachmentPath(path: string): Promise<void> {
@@ -66,6 +78,44 @@
     } catch {
       // Clipboard access can fail (permissions, insecure context) — a
       // convenience action failing silently beats a scary error dialog.
+    }
+  }
+
+  /**
+   * "Start a session about this message" (Spec D §B/§E) — mints a session
+   * granted read access to exactly this message file (`opts.input`, a
+   * workspace locator — mail messages live under `sources/mail/`, outside
+   * any ICM's own tree, unlike Knowledge's `contextDoc` grant), stashes the
+   * opening prompt under the new session id, and navigates there. Mount
+   * selection mirrors `routes/chat/+page.svelte`'s `primaryMountKey()`
+   * fallback: the first enabled, non-degraded mount (`icmStore.groups` is
+   * already filtered to exactly that set — see `icm.svelte.ts`).
+   */
+  async function startSession(): Promise<void> {
+    if (!message.path) return;
+    starting = true;
+    sessionError = null;
+    try {
+      const mountKey = icmStore.groups[0]?.mount;
+      if (!mountKey) {
+        sessionError = 'No enabled ICM to host the session — enable one in the sidebar.';
+        return;
+      }
+      const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {
+        input: { kind: 'workspace', path: message.path }
+      });
+      if (!result.ok) {
+        sessionError =
+          result.error === 'input_unavailable'
+            ? "This message file isn't available on disk anymore."
+            : `Couldn't start the session (${result.error}).`;
+        return;
+      }
+      const data = result.data as { id: string; inputPath: string | null };
+      setInitialPrompt(data.id, messageSessionPrompt(data.inputPath ?? message.path));
+      void goto(`/chat?session=${data.id}`);
+    } finally {
+      starting = false;
     }
   }
 </script>
@@ -117,6 +167,11 @@
   <div class="border-paper-hairline flex flex-wrap items-center gap-2.5 border-t pt-4">
     {#if status === 'processed'}
       <span class="text-ink-meta text-[11px] tracking-[0.08em] uppercase">Processed</span>
+    {:else}
+      <Button type="button" disabled={starting || !message.path} onclick={() => void startSession()}>
+        Start a session about this message
+      </Button>
+      {#if sessionError}<p class="text-warn-ink text-[12.5px]" role="alert">{sessionError}</p>{/if}
     {/if}
   </div>
 </article>

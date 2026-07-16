@@ -14,7 +14,8 @@ import {
   formatBytes,
   mailStateLabel,
   syncErrorText,
-  syncNowErrorMessage
+  syncNowErrorMessage,
+  messageSessionPrompt
 } from './mail-shapes';
 import type { MailStatus } from '$lib/stores/mail.svelte';
 
@@ -252,5 +253,13 @@ describe('syncNowErrorMessage', () => {
     ['anything_else', 'Could not start a sync. Please try again.']
   ])('maps error code=%s to a calm sentence', (code, expected) => {
     expect(syncNowErrorMessage(code)).toBe(expected);
+  });
+});
+
+describe('messageSessionPrompt', () => {
+  it('references the granted absolute path', () => {
+    const prompt = messageSessionPrompt('/ws/sources/mail/messages/m1.md');
+    expect(prompt).toContain('`/ws/sources/mail/messages/m1.md`');
+    expect(prompt).toContain('do not send anything');
   });
 });

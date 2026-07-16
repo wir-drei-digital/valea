@@ -403,3 +403,21 @@ export function createFoldersErrorMessage(code: string): string {
       return 'Could not create the folders. Check the connection and try again.';
   }
 }
+
+// -- MessageView: "Start a session about this message" (Spec D §B/§E) --------
+//
+// Replaces the deleted "Run triage" workflow action. `api.createAgentSession`
+// grants the session read access to exactly ONE file via `opts.input`
+// (`{kind: 'workspace', path: message.path}`) and echoes the resolved
+// absolute path back as `inputPath` — same "opening prompt names the exact
+// path the session was granted" convention as `initial-prompt.ts`'s
+// `pageSessionPrompt` (Knowledge's "Start a session with this page").
+
+/** Opening prompt for a mail-message session — `inputPath` is the resolved absolute path `createAgentSession` echoed back (falls back to the pre-resolve `message.path` if that's ever null). */
+export function messageSessionPrompt(inputPath: string): string {
+  return [
+    `Read the mail message at \`${inputPath}\` — you have read access to exactly that file.`,
+    `Summarize who it's from and what they need, then help me decide how to handle it.`,
+    `If a reply is warranted, draft it as a new file in this ICM through the normal approval flow — do not send anything.`
+  ].join(' ');
+}
