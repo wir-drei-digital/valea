@@ -1,14 +1,13 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { goto } from '$app/navigation';
   import { mainNav } from '$lib/shell/nav';
   import SidebarItem from './SidebarItem.svelte';
   import SectionOverline from './SectionOverline.svelte';
   import IcmProjects from './IcmProjects.svelte';
+  import MountIcmAction from './MountIcmAction.svelte';
   import StatusPill from './StatusPill.svelte';
   import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import Plus from '@lucide/svelte/icons/plus';
 
   let {
     workspaceName,
@@ -69,14 +68,7 @@
 
     <SectionOverline label="ICMs" />
     <IcmProjects {activeMountKey} />
-    <button
-      type="button"
-      onclick={() => void goto('/knowledge')}
-      class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading mt-1 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors"
-    >
-      <Plus class="size-3" strokeWidth={1.5} aria-hidden="true" />
-      Mount an ICM
-    </button>
+    <MountIcmAction />
   </nav>
 
   <footer class="mt-auto flex flex-col gap-2 px-3 pb-3">
