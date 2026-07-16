@@ -205,8 +205,14 @@
     if (!outcome.ok) {
       // `adoptExisting` never re-inspects, so only the 'mount' stage is
       // actually reachable here — the other two `MountExistingOutcome`
-      // variants exist for `mountExisting`'s sake, not this call site's.
-      mountError = outcome.stage === 'mount' ? declareMountErrorMessage(outcome.error) : outcome.stage;
+      // variants exist for `mountExisting`'s sake, not this call site's. If
+      // that ever widens, fall back to human copy instead of leaking the
+      // raw stage literal.
+      if (outcome.stage === 'mount') {
+        mountError = declareMountErrorMessage(outcome.error);
+      } else {
+        mountError = "Couldn't adopt this folder — re-check it with Inspect and try again.";
+      }
       return;
     }
 
