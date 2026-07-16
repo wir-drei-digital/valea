@@ -76,11 +76,10 @@ export class WorkspaceStore {
 
   // NOTE (Phase 2, id-based create): `parentDir` is now ACCEPTED BUT
   // IGNORED — `create_workspace` is app-owned (Task 2.5); no caller
-  // supplies a filesystem location anymore. Kept in the signature so
-  // existing onboarding call sites (`CreateWorkspaceDialog.svelte`,
-  // `adoptByReference`'s `ReferenceAdoptDeps.createWorkspace`) keep
-  // compiling without a rework — the deeper id-consuming onboarding UI
-  // lands in Phase 10.
+  // supplies a filesystem location anymore. Kept in the signature so both
+  // Task 10.2/10.3 onboarding call sites (`onboarding-path.ts`'s
+  // `startFresh`/`useExistingIcm`, wired from `CreateWorkspaceDialog.svelte`/
+  // `OpenWorkspaceFlow.svelte`) keep compiling without a rework.
   async create(parentDir: string, name: string): Promise<{ ok: true } | { ok: false; error: string }> {
     void parentDir;
     const result = await this.#api.createWorkspace(name);
@@ -91,10 +90,10 @@ export class WorkspaceStore {
   }
 
   // NOTE (Phase 2, id-based open): `id` was `path` pre-Task-2.5 — every
-  // caller (`OpenWorkspaceFlow.svelte`'s "open an existing workspace by
-  // path" flow, `WorkspaceSwitcher`/`Onboarding`'s recent-workspace list)
-  // now passes a workspace id string, not a filesystem path; the deeper
-  // rework of those call sites lands in Phase 10.
+  // caller (`WorkspaceSwitcher`/`Onboarding.svelte`'s recent-workspace list —
+  // the only two remaining callers as of Task 10.3, since onboarding's own
+  // "Start fresh"/"Use existing ICM" paths call `create` above, not `open`)
+  // now passes a workspace id string, not a filesystem path.
   async open(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const result = await this.#api.openWorkspace(id);
     if (!result.ok) return { ok: false, error: result.error };
@@ -110,6 +109,12 @@ export class WorkspaceStore {
    * only refreshes on success, so a rejected adopt (source already a
    * workspace, nested in one, a cycle, cross-device, ...) leaves the
    * store's current state untouched.
+   *
+   * UNUSED as of Task 10.3: `OpenWorkspaceFlow.svelte`'s move-adopt branch
+   * (the one caller) was replaced by `useExistingIcm`'s mount-by-reference
+   * flow — see `onboarding-path.ts`. Kept, not deleted: `Valea.Workspace.Adopt`
+   * itself stays registered on the backend until Phase 11 deletes it, and
+   * this wrapper is cheap to keep compiling alongside it.
    */
   async adopt(
     parentDir: string,

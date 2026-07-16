@@ -1,231 +1,26 @@
-// Pure branch-decision logic for the open/create dialog's ICM-aware
-// onboarding: given an `inspect_path` RPC result (see
-// `Valea.Workspace.Adopt.classify_path/1` on the backend) and the raw path
-// the user picked, decides which of the three UI modes `OpenWorkspaceFlow`
-// should show. Kept pure and separate from the component so the branch
-// decision — the part most worth getting exactly right — is testable
-// without mounting Svelte.
-import type { PathInspection } from '$lib/api/client';
-// Value import (not type-only) — `adoptByReference` maps a declare-stage
-// failure to readable copy at the moment it persists it, since this is the
-// one place holding name/ref/code together. Importing the pure function
-// from the store module doesn't drag any Svelte runtime in at test time
-// (mounts.svelte.ts is already imported directly by its own vitest suite).
+// Pure orchestration for the two onboarding paths (Tasks 10.2/10.3):
+// "Start fresh" (`startFresh`, create a hidden workspace + a brand-new ICM)
+// and "Use existing ICM" (`useExistingIcm`, preview a folder via `inspect_icm`
+// then create a hidden workspace + mount that folder by reference). Kept
+// pure and separate from the components so the orchestration order — the
+// part most worth getting exactly right, since a wrong step order can leave
+// a half-open workspace with a silently-lost error — is testable without
+// mounting Svelte.
+//
+// Task 10.3 removes this module's earlier `decideOnboardingMode`/
+// `adoptByReference` machinery (the A-T16/A2-T9 `inspect_path`-based
+// open-or-adopt-by-move-or-adopt-by-reference branch, superseded by
+// `inspect_icm`-based onboarding across BOTH paths — see `Valea.Api.Icms`'s
+// moduledoc for why `inspect_icm` needs no open workspace either) —
+// `Valea.Workspace.Adopt`/`inspect_path`/`adopt_workspace` stay registered
+// on the backend (Phase 11 deletes them), just no longer called from here.
 import { declareMountErrorMessage } from '$lib/stores/mounts.svelte';
-
-export type OnboardingMode =
-  | { mode: 'open' }
-  | { mode: 'adopt'; originalPath: string; suggestedName: string; description: string | null }
-  | { mode: 'unsupported' };
-
-/**
- * `kind: "workspace"` -> the existing "inspect then open" path.
- * `kind: "other"` -> the existing "doesn't look like a Valea workspace"
- * error — unchanged from before this task.
- * `kind: "icm"` -> the new adopt-by-move consent step. `originalPath` is
- * the EXACT path the user picked (not re-derived or normalized) — the
- * consent step shows this verbatim so the user can verify what's about to
- * move. `suggestedName` prefills the new workspace's name field: the
- * manifest's own `name` when it's a real (non-blank) string, otherwise the
- * source folder's own basename.
- *
- * Collision guard: the consent step also prefills `parentDir` with the
- * source's own parent (`dirname(originalPath)`), so a suggested name equal
- * to the source folder's basename would make the default TARGET path the
- * source itself — the backend rejects that (`:target_is_source`), but the
- * default configuration must never be a rejected one. When the candidate
- * name matches the basename ("Client Notes" inside `.../Client Notes` —
- * the common case, since adopted manifests are often named after their
- * folder), " Workspace" is appended: "Client Notes Workspace". The
- * basename-fallback case always gets this adjustment, by construction.
- */
-export function decideOnboardingMode(inspection: PathInspection, path: string): OnboardingMode {
-  switch (inspection.kind) {
-    case 'workspace':
-      return { mode: 'open' };
-
-    case 'other':
-      return { mode: 'unsupported' };
-
-    case 'icm': {
-      const trimmedName = inspection.name?.trim();
-      const candidate = trimmedName ? trimmedName : basename(path);
-      const suggestedName = candidate === basename(path) ? `${candidate} Workspace` : candidate;
-      return {
-        mode: 'adopt',
-        originalPath: path,
-        suggestedName,
-        description: inspection.description
-      };
-    }
-  }
-}
 
 /** Last path segment, ignoring a trailing slash. POSIX paths only (macOS/Linux). */
 export function basename(path: string): string {
   const trimmed = path.replace(/\/+$/, '');
   const idx = trimmed.lastIndexOf('/');
   return idx === -1 ? trimmed : trimmed.slice(idx + 1);
-}
-
-/**
- * Parent directory, ignoring a trailing slash — used to prefill the adopt
- * dialog's default parent folder (the source's own parent, since the new
- * workspace can't be scaffolded AT the source path itself). Returns "/"
- * for a top-level path or the root path itself.
- */
-export function dirname(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-  const idx = trimmed.lastIndexOf('/');
-  return idx <= 0 ? '/' : trimmed.slice(0, idx);
-}
-
-/**
- * Mirrors `Valea.Workspace.Scaffold.slugify/1` exactly (lowercase, NFD
- * ascii-fold stripping non-spacing marks, non-alphanumeric runs collapsed
- * to a single `-`, leading/trailing `-` trimmed, "mount" fallback) — used
- * only for DISPLAY: the consent card shows the `mounts/<slug>` destination
- * the backend will move the folder into. The backend recomputes the slug
- * itself from the source basename; this never feeds a filesystem path.
- */
-export function slugify(name: string): string {
-  const slug = name
-    .normalize('NFD')
-    .replace(/\p{Mn}/gu, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug === '' ? 'mount' : slug;
-}
-
-// -- A2-T9: adopt-by-reference is now the DEFAULT --------------------------
-
-export type AdoptAction = 'reference' | 'move';
-
-/**
- * Which adopt action gets the primary/emphasized button on the consent
- * card — the single source of truth `OpenWorkspaceFlow.svelte` reads for
- * button order/emphasis, so "reference is the default" is an assertion
- * this test file can check directly rather than something only visible by
- * reading template markup. `null` for any non-"adopt" mode (nothing to
- * default: "open" and "unsupported" have no adopt buttons at all).
- *
- * Per the Plan A2 design decision: pointing the open dialog at an ICM now
- * offers "Use it where it is" (declare `kind: "path"` — see
- * `adoptByReference` below) FIRST; "Move it into the workspace" (the
- * original A-T16 move-adopt flow, `workspaceStore.adopt`) stays available
- * as the explicit secondary choice, never removed — some folders genuinely
- * should move (a handoff, a backup import), so reference isn't a
- * replacement, just the safer/more-reversible default.
- */
-export function defaultAdoptAction(mode: OnboardingMode): AdoptAction | null {
-  return mode.mode === 'adopt' ? 'reference' : null;
-}
-
-export type ReferenceAdoptDeps = {
-  createWorkspace: (parentDir: string, name: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-  declareMount: (
-    name: string,
-    ref: string,
-    generation: number
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
-  /**
-   * Reads the CURRENT generation — a closure, not a value, and always
-   * called AFTER `createWorkspace` resolves (mirrors `mail-shapes.ts`'s
-   * `refreshWorkspaceId`): the only generation this function can trust is
-   * the freshly-created workspace's own, never one the caller cached
-   * beforehand. `null` means the workspace isn't open (unexpected — surfaces
-   * as `workspace_not_open` on the declare stage rather than calling
-   * `declareMount` with a bogus generation).
-   */
-  currentGeneration: () => number | null;
-  /**
-   * Persists a DECLARE-stage failure so it survives the onboarding-to-app
-   * transition (fix wave 1): a successful `createWorkspace` flips
-   * `workspaceStore.state` to `'open'`, the root layout reactively swaps
-   * the Onboarding screen out, and any component-local error state set
-   * after that point is a write to a dead component. Called with the
-   * already-MAPPED readable message (`declareMountErrorMessage`) — this
-   * function is the one place holding all three of name/ref/code together.
-   * Wired to `mountsStore.setPendingAdoptError`; the Knowledge page renders
-   * it as a dismissible banner. NEVER called for a create-stage failure —
-   * that happens before the state flip, while the onboarding card is still
-   * mounted and rendering its own `referenceError`.
-   */
-  setPendingAdoptError: (name: string, ref: string, message: string) => void;
-  /**
-   * Navigates to the Knowledge page — the surface that renders
-   * `pendingAdoptError`'s banner and hosts the "Mount a folder from
-   * elsewhere…" retry affordance (fix wave 2). Called ONLY on the two
-   * declare-stage failure paths, right after `setPendingAdoptError`:
-   * post-onboarding the user otherwise lands on Today (`/`), where the
-   * banner never renders, leaving the persisted error unreachable in
-   * practice. Safe to navigate at that point — the workspace state flip
-   * already happened, so the route exists. Success keeps landing on Today
-   * as before (no forced navigation), and a create-stage failure never
-   * navigates (the onboarding screen is still up, rendering its own
-   * error). Wired to SvelteKit's `goto('/knowledge')` by
-   * `OpenWorkspaceFlow.svelte`; injected so this stays testable without
-   * SvelteKit's runtime.
-   */
-  goToKnowledge: () => void;
-};
-
-export type ReferenceAdoptOutcome = { ok: true } | { ok: false; stage: 'create' | 'declare'; error: string };
-
-/**
- * Orchestrates "Use it where it is": scaffolds a brand-new workspace the
- * NORMAL way (`createWorkspace` — starter mount included, same as "Start
- * fresh"; deliberately NOT an empty-shell workspace, per the Plan A2
- * design decision — the starter mount is the workspace's own knowledge
- * home, and the external ICM arrives as a SECOND, referenced mount
- * alongside it, not a replacement for it), then declares the external
- * folder into it as a by-reference mount (`mountName`/`icmSourcePath` ->
- * `declareMount`).
- *
- * There is no backend "adopt by reference" endpoint — `Valea.Workspace.Adopt`
- * is move-only (see its moduledoc) — so this frontend-side sequencing IS
- * the by-reference adoption path; keeping it here (pure, deps-injected)
- * rather than inline in the component is what makes it testable without a
- * real store or RPC round trip.
- *
- * Short-circuits on the create step's failure — nothing to clean up, since
- * no mount was ever declared and no workspace-scoped mutation happened
- * beyond the (now-existing but reference-less) new workspace itself, which
- * the user can just retry into or abandon.
- *
- * A declare-stage failure (including the generation-unavailable guard —
- * both happen after the create already succeeded and the onboarding UI is
- * gone) is additionally persisted via `deps.setPendingAdoptError` — see
- * that dep's doc comment. The workspace itself staying open with the mount
- * not declared is fine and non-destructive; the persisted error is what
- * keeps it from being SILENT.
- */
-export async function adoptByReference(
-  parentDir: string,
-  workspaceName: string,
-  mountName: string,
-  icmSourcePath: string,
-  deps: ReferenceAdoptDeps
-): Promise<ReferenceAdoptOutcome> {
-  const createResult = await deps.createWorkspace(parentDir, workspaceName);
-  if (!createResult.ok) return { ok: false, stage: 'create', error: createResult.error };
-
-  const generation = deps.currentGeneration();
-  if (generation == null) {
-    deps.setPendingAdoptError(mountName, icmSourcePath, declareMountErrorMessage('workspace_not_open'));
-    deps.goToKnowledge();
-    return { ok: false, stage: 'declare', error: 'workspace_not_open' };
-  }
-
-  const declareResult = await deps.declareMount(mountName, icmSourcePath, generation);
-  if (!declareResult.ok) {
-    deps.setPendingAdoptError(mountName, icmSourcePath, declareMountErrorMessage(declareResult.error));
-    deps.goToKnowledge();
-    return { ok: false, stage: 'declare', error: declareResult.error };
-  }
-
-  return { ok: true };
 }
 
 // -- Task 10.2: "Start fresh" ------------------------------------------------
@@ -246,8 +41,8 @@ export function defaultIcmFolder(name: string): string {
 }
 
 /**
- * Dependencies `startFresh` needs, injected the same way `adoptByReference`
- * above is — testable without a real store or RPC round trip.
+ * Dependencies `startFresh` needs, injected the same way `useExistingIcm`
+ * below is — testable without a real store or RPC round trip.
  */
 export type StartFreshDeps = {
   /** `Valea.Api.Workspace.create_workspace` (id-based, app-owned — no path). */
@@ -256,29 +51,29 @@ export type StartFreshDeps = {
    * `Valea.Api.Icms.create_icm` — mints a brand-new ICM at `folder` (seeding
    * the portable template) and mounts it. Reads the CURRENT generation via
    * `currentGeneration`, same post-create-only-trusted rule
-   * `ReferenceAdoptDeps.currentGeneration` documents above.
+   * `UseExistingIcmDeps.currentGeneration` documents below.
    */
   createIcm: (
     name: string,
     folder: string,
     generation: number
   ) => Promise<{ ok: true; mountKey: string } | { ok: false; error: string }>;
-  /** Reads the CURRENT generation — see `ReferenceAdoptDeps.currentGeneration` above for why this is a closure, not a value, and always called AFTER `createWorkspace` resolves. */
+  /** Reads the CURRENT generation — a closure, not a value, and always called AFTER `createWorkspace` resolves (mirrors `mail-shapes.ts`'s `refreshWorkspaceId`): the only generation this function can trust is the freshly-created workspace's own. `null` means the workspace isn't open (unexpected). */
   currentGeneration: () => number | null;
   /**
    * Persists a create-ICM-stage failure so it survives the onboarding-to-app
-   * transition, same fix-wave-1 reasoning `ReferenceAdoptDeps.setPendingAdoptError`
-   * documents: `createWorkspace` already flipped `workspaceStore.state` to
-   * 'open' by the time this can fail, unmounting the onboarding card that
-   * would otherwise render a local error. Wired to the SAME
-   * `mountsStore.setPendingAdoptError` field `adoptByReference` uses — a
+   * transition: `createWorkspace` already flipped `workspaceStore.state` to
+   * 'open' by the time this can fail — the root layout reactively swaps the
+   * Onboarding screen out, unmounting the card that would otherwise render a
+   * local error. Wired to `mountsStore.setPendingAdoptError` — the SAME
+   * store field `useExistingIcm`'s own mount-stage failure uses below — a
    * successful "Mount a folder from elsewhere…" retry against the same
    * `folder` clears it either way, and `createIcm` may have already written
    * a healthy `icm.yaml` to `folder` before the mount step itself failed,
    * making that retry path a real recovery, not a dead end.
    */
   setPendingIcmError: (name: string, folder: string, message: string) => void;
-  /** Navigates to Knowledge — the surface that renders the persisted error, same reasoning as `ReferenceAdoptDeps.goToKnowledge`. */
+  /** Navigates to Knowledge — the surface that renders the persisted error (the Knowledge page's dismissible banner). */
   goToKnowledge: () => void;
   /** Navigates to the new ICM's first chat session (`/chat?icm=<mountKey>`) on success. */
   goToFirstSession: (mountKey: string) => void;
@@ -299,16 +94,13 @@ export type StartFreshOutcome =
  * disambiguate).
  *
  * Short-circuits on the create-workspace step's failure — nothing to clean
- * up, no workspace was ever created (mirrors `adoptByReference`'s own
- * create-stage short-circuit).
+ * up, no workspace was ever created.
  *
  * A create-ICM-stage failure (including the generation-unavailable guard) —
  * both happen AFTER the workspace already exists and the onboarding UI is
  * gone — is persisted via `deps.setPendingIcmError` and takes the user to
- * Knowledge, same fix-wave-1/2 treatment `adoptByReference` gives its own
- * declare-stage failure. The workspace itself staying open with no ICM
- * mounted yet is non-destructive; the persisted error is what keeps that
- * from being SILENT.
+ * Knowledge. The workspace itself staying open with no ICM mounted yet is
+ * non-destructive; the persisted error is what keeps that from being SILENT.
  */
 export async function startFresh(name: string, folder: string, deps: StartFreshDeps): Promise<StartFreshOutcome> {
   const createResult = await deps.createWorkspace(name);
@@ -330,4 +122,120 @@ export async function startFresh(name: string, folder: string, deps: StartFreshD
 
   deps.goToFirstSession(icmResult.mountKey);
   return { ok: true, mountKey: icmResult.mountKey };
+}
+
+// -- Task 10.3: "Use existing ICM" -------------------------------------------
+
+/**
+ * Shape of an `inspect_icm` RPC result's `data` payload (Task 10.1's
+ * onboarding preview primitive — `Valea.Api.Icms.inspect_icm`, see its
+ * moduledoc). Unlike `PathInspection`/`inspect_path`, this action never
+ * rejects with an RPC-level error and needs no open workspace: `ok`
+ * discriminates a healthy, format-2 ICM (`name`/`description` from its
+ * manifest, `reason` null) from anything else (`name`/`description` null,
+ * `reason` a human-readable sentence — surfaced VERBATIM in the preview UI
+ * per the 10.1 flag, never remapped).
+ */
+export type IcmInspection = {
+  ok: boolean;
+  name: string | null;
+  description: string | null;
+  reason: string | null;
+};
+
+/**
+ * Dependencies `useExistingIcm` needs, injected the same way `startFresh`
+ * above is — testable without a real store or RPC round trip.
+ */
+export type UseExistingIcmDeps = {
+  /** `Valea.Api.Icms.inspect_icm` — read-only preview, no workspace needed. */
+  inspectIcm: (path: string) => Promise<{ ok: true; data: IcmInspection } | { ok: false; error: string }>;
+  /** `Valea.Api.Workspace.create_workspace` (id-based, app-owned — no path). */
+  createWorkspace: (name: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** `Valea.Api.Icms.mount_icm` — mounts the ALREADY-HEALTHY folder at `path` by reference; never copies or moves it. */
+  mountIcm: (path: string, generation: number) => Promise<{ ok: true; mountKey: string } | { ok: false; error: string }>;
+  /** Reads the CURRENT generation — a closure, not a value, and always called AFTER `createWorkspace` resolves. `null` means the workspace isn't open (unexpected). */
+  currentGeneration: () => number | null;
+  /**
+   * Persists a mount-stage failure so it survives the onboarding-to-app
+   * transition — same fix-wave-1 reasoning `StartFreshDeps.setPendingIcmError`
+   * documents above, and wired to the SAME `mountsStore.setPendingAdoptError`
+   * field: a successful "Mount a folder from elsewhere…" retry against the
+   * same `path` clears it either way.
+   */
+  setPendingMountError: (name: string, path: string, message: string) => void;
+  /** Bare navigation to Knowledge for the failure path — no mount succeeded, so there is no `mountKey` to select; the default-first-enabled-mount fallback picks something reasonable while the persisted error explains what went wrong. */
+  goToKnowledge: () => void;
+  /** Navigates to the newly-mounted ICM's own Knowledge view (`/knowledge?icm=<mountKey>`) on success — the sidebar's per-mount "New session" action is what makes that landing "prominent", not anything special about this navigation itself. */
+  goToMountedIcm: (mountKey: string) => void;
+};
+
+export type UseExistingIcmOutcome =
+  | { ok: true; mountKey: string }
+  | { ok: false; stage: 'inspect' | 'create-workspace' | 'mount'; error: string };
+
+/**
+ * Orchestrates "Use existing ICM" (Task 10.3): previews `path` via
+ * `inspectIcm` FIRST (per spec: "we'll show you what's inside before
+ * anything mounts") and blocks before creating anything when it isn't a
+ * healthy, format-2 ICM — either an RPC-level failure, or `data.ok: false`
+ * (surfaced via `data.reason`, a human-readable sentence — see
+ * `IcmInspection`'s doc comment). Only then scaffolds a brand-new, hidden,
+ * id-based workspace (`createWorkspace`) and mounts `path` into it BY
+ * REFERENCE (`mountIcm`) — nothing is copied or moved; the folder stays
+ * exactly where it is.
+ *
+ * `workspaceName` is the secondary, editable field in
+ * `OpenWorkspaceFlow.svelte`'s preview card — `null`/blank falls back to the
+ * ICM's own manifest name (or the folder's basename, when the manifest name
+ * itself is blank), same "adjustable, defaults from the ICM name" contract
+ * the brief specifies.
+ *
+ * Short-circuits on an inspect failure — nothing is created. Short-circuits
+ * on a create-workspace failure too — nothing to clean up, no workspace was
+ * ever created.
+ *
+ * A mount-stage failure (including the generation-unavailable guard) — both
+ * happen AFTER the workspace already exists and the onboarding UI is gone —
+ * is persisted via `deps.setPendingMountError` and takes the user to
+ * Knowledge, same treatment `startFresh` gives its own create-ICM-stage
+ * failure above.
+ */
+export async function useExistingIcm(
+  path: string,
+  workspaceName: string | null,
+  deps: UseExistingIcmDeps
+): Promise<UseExistingIcmOutcome> {
+  const inspectResult = await deps.inspectIcm(path);
+  if (!inspectResult.ok) return { ok: false, stage: 'inspect', error: inspectResult.error };
+
+  const inspection = inspectResult.data;
+  if (!inspection.ok) {
+    return { ok: false, stage: 'inspect', error: inspection.reason ?? 'not_a_healthy_icm' };
+  }
+
+  const trimmedIcmName = inspection.name?.trim();
+  const icmName = trimmedIcmName ? trimmedIcmName : basename(path);
+  const trimmedWorkspaceName = workspaceName?.trim();
+  const finalWorkspaceName = trimmedWorkspaceName ? trimmedWorkspaceName : icmName;
+
+  const createResult = await deps.createWorkspace(finalWorkspaceName);
+  if (!createResult.ok) return { ok: false, stage: 'create-workspace', error: createResult.error };
+
+  const generation = deps.currentGeneration();
+  if (generation == null) {
+    deps.setPendingMountError(icmName, path, declareMountErrorMessage('workspace_not_open'));
+    deps.goToKnowledge();
+    return { ok: false, stage: 'mount', error: 'workspace_not_open' };
+  }
+
+  const mountResult = await deps.mountIcm(path, generation);
+  if (!mountResult.ok) {
+    deps.setPendingMountError(icmName, path, declareMountErrorMessage(mountResult.error));
+    deps.goToKnowledge();
+    return { ok: false, stage: 'mount', error: mountResult.error };
+  }
+
+  deps.goToMountedIcm(mountResult.mountKey);
+  return { ok: true, mountKey: mountResult.mountKey };
 }

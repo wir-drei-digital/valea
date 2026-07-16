@@ -1,102 +1,49 @@
 <script lang="ts">
-  // "Choose folder…" flow for the Continue card: pick a path, classify it
-  // before doing anything (per spec: "we'll show you what's inside before
-  // anything runs"), then branch three ways per `decideOnboardingMode`
-  // (`./onboarding-path.ts`):
-  //   - kind "workspace" -> the original "inspect then open" step.
-  //   - kind "other" -> the original "doesn't look like a Valea workspace"
-  //     error, unchanged.
-  //   - kind "icm" (A-T16, ICM-aware onboarding; A2-T9, by-reference) -> a
-  //     consent step offering TWO actions on the SAME source path:
-  //       - "Use it where it is" (PRIMARY/default per `defaultAdoptAction`,
-  //         A2-T9) — declares the folder as a by-reference mount into a
-  //         BRAND-NEW workspace (`confirmReference` -> `adoptByReference`).
-  //         Nothing moves; the folder never leaves its original location.
-  //       - "Move it into the workspace" (secondary, unchanged A-T16
-  //         behavior) — moves (never copies — see `Valea.Workspace.Adopt`'s
-  //         moduledoc) the folder into the new workspace's `mounts/`.
+  // "Use existing ICM" (Task 10.3): pick a folder, preview it via
+  // `inspect_icm` BEFORE anything mounts (per spec: "we'll show you what's
+  // inside before anything mounts"), then — only if it's a healthy,
+  // format-2 ICM — create a brand-new hidden workspace and mount that
+  // folder into it BY REFERENCE (`useExistingIcm`, onboarding-path.ts).
+  // Nothing is ever copied or moved; the folder stays exactly where it is.
+  //
+  // Supersedes this component's earlier `inspect_path`-based three-way
+  // branch (open-an-existing-workspace / adopt-by-move / adopt-by-reference,
+  // A-T16/A2-T9) — that whole `decideOnboardingMode` flow is gone from
+  // onboarding-path.ts as of this task. `Valea.Workspace.Adopt`/
+  // `inspect_path`/`adopt_workspace` stay registered on the backend (Phase
+  // 11 deletes them); this component just no longer calls them.
   import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { mountsStore } from '$lib/stores/mounts.svelte';
-  import {
-    adoptByReference,
-    basename,
-    decideOnboardingMode,
-    dirname,
-    slugify,
-    type OnboardingMode
-  } from './onboarding-path';
-
-  type Inspection = {
-    valid: boolean;
-    icm_pages: number;
-    workflows: number;
-    queue_pending: number;
-    has_audit_log: boolean;
-  };
-
-  type AdoptStep = {
-    originalPath: string;
-    name: string;
-    parentDir: string;
-    description: string | null;
-  };
+  import { mountsStore, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
+  import { basename, useExistingIcm, type IcmInspection, type UseExistingIcmDeps } from './onboarding-path';
 
   let path = $state('');
   let inspecting = $state(false);
-  let opening = $state(false);
-  let error = $state<string | null>(null);
-  let inspection = $state<Inspection | null>(null);
+  let inspectError = $state<string | null>(null);
+  let inspection = $state<IcmInspection | null>(null);
 
-  // ICM-aware onboarding (A-T16). `name`/`parentDir` prefill from
-  // `decideOnboardingMode` but stay editable — the default config is
-  // guaranteed collision-free (`decideOnboardingMode` appends " Workspace"
-  // when the name would make target == source), and if the user edits it
-  // back into a collision, the backend's `:target_is_source` /
-  // `:target_not_empty` / `:cycle` rejections catch it with a clear error.
-  let adopt = $state<AdoptStep | null>(null);
-  let adopting = $state(false);
-  let adoptError = $state<string | null>(null);
+  // The preview card's editable "workspace name" field — defaults to the
+  // ICM's own manifest name (or the folder's basename, when the manifest
+  // name is itself blank) but stays independently editable, per the brief:
+  // "the workspace name defaults from the ICM name, editable, path never
+  // shown". `null` (untouched) lets `useExistingIcm` apply that fallback
+  // itself; once the user types, this holds their literal override.
+  let workspaceName = $state<string | null>(null);
 
-  // A2-T9: "Use it where it is" — the by-reference sibling of the move flow
-  // above, sharing the SAME `adopt` state (source path, target workspace
-  // name/parent). Kept in separate state from `adopting`/`adoptError` since
-  // the two actions can't run concurrently but DO have distinct in-flight
-  // labels and error vocabularies (`adoptByReference`'s two stages map
-  // through different code tables — `mapCreateErrorCode` for a "create"
-  // failure, `declareMountErrorMessage` for a "declare" one, see
-  // `confirmReference` below).
-  let referenceAdopting = $state(false);
-  let referenceError = $state<string | null>(null);
-
-  // Resolved destination, live as name/parentDir are edited: the workspace
-  // that will be created, and the exact `mounts/<slug>` inside it the
-  // folder will move into (slug recomputed the same way the backend does —
-  // from the SOURCE folder's basename, not the workspace name). Shown on
-  // the consent card so a collision or a wrong-location pick is visible
-  // before clicking, not after a backend rejection.
-  const adoptTargetPath = $derived(
-    adopt ? `${adopt.parentDir.trim().replace(/\/+$/, '')}/${adopt.name.trim()}` : ''
-  );
-  const adoptMountPath = $derived(
-    adopt ? `${adoptTargetPath}/mounts/${slugify(basename(adopt.originalPath))}` : ''
-  );
-
-  // A2-T9: the by-reference mount's name inside the NEW workspace — the
-  // source folder's own basename, same default `MountFromElsewhereDialog`
-  // uses for Knowledge's "Mount a folder from elsewhere…" flow. Not
-  // separately editable here (unlike the workspace name/parent above) —
-  // keeps the consent card to the two fields that actually need a
-  // decision; `declare_mount`'s `invalid_mount_name` rejection (surfaced
-  // via `declareMountErrorMessage`) is the backstop for a pathological
-  // basename.
-  const referenceMountName = $derived(adopt ? basename(adopt.originalPath) : '');
+  let mounting = $state(false);
+  let mountError = $state<string | null>(null);
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  const icmName = $derived.by(() => {
+    if (!inspection || !inspection.ok) return '';
+    const trimmed = inspection.name?.trim();
+    return trimmed ? trimmed : basename(path);
+  });
 
   async function pickFolder() {
     const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
@@ -108,292 +55,143 @@
   }
 
   async function inspect() {
-    error = null;
+    inspectError = null;
     inspection = null;
-    adopt = null;
-    adoptError = null;
-    referenceError = null;
-    if (!path.trim()) {
-      error = 'Choose a folder to open.';
-      return;
-    }
+    mountError = null;
+    workspaceName = null;
 
     const trimmedPath = path.trim();
+    if (!trimmedPath) {
+      inspectError = 'Choose a folder to preview.';
+      return;
+    }
+
     inspecting = true;
-    const result = await api.inspectPath(trimmedPath);
-
-    if (!result.ok) {
-      inspecting = false;
-      error = "This folder doesn't look like a Valea workspace.";
-      return;
-    }
-
-    await applyMode(decideOnboardingMode(result.data, trimmedPath), trimmedPath);
-  }
-
-  async function applyMode(mode: OnboardingMode, trimmedPath: string) {
-    if (mode.mode === 'unsupported') {
-      inspecting = false;
-      error = "This folder doesn't look like a Valea workspace.";
-      return;
-    }
-
-    if (mode.mode === 'adopt') {
-      inspecting = false;
-      adopt = {
-        originalPath: mode.originalPath,
-        name: mode.suggestedName,
-        parentDir: dirname(mode.originalPath),
-        description: mode.description
-      };
-      return;
-    }
-
-    // mode.mode === 'open' — same detailed-summary step as before this task.
-    const summary = await api.inspectWorkspace(trimmedPath);
+    const result = await api.inspectIcm(trimmedPath);
     inspecting = false;
 
-    if (!summary.ok || !(summary.data as Inspection).valid) {
-      error = "This folder doesn't look like a Valea workspace.";
-      return;
-    }
-
-    inspection = summary.data as Inspection;
-  }
-
-  async function confirmOpen() {
-    opening = true;
-    const result = await workspaceStore.open(path.trim());
-    opening = false;
-
     if (!result.ok) {
-      error = "Couldn't open this workspace. Try again.";
-      inspection = null;
+      inspectError = 'Something went wrong while reading that folder. Try again.';
       return;
     }
+
+    inspection = result.data as IcmInspection;
   }
 
-  function mapAdoptErrorCode(code: string): string {
-    switch (code) {
-      case 'source_is_workspace':
-      case 'source_is_open_workspace':
-        return 'That folder is already a Valea workspace.';
-      case 'source_in_workspace':
-        return 'That folder is already part of another Valea workspace.';
-      case 'cycle':
-        return "The new workspace can't be created inside the knowledge folder itself. Choose a different name or location.";
-      case 'target_is_source':
-        return 'The new workspace would be the knowledge folder itself. Choose a different name or location.';
-      case 'target_not_empty':
-        return 'That folder already has files in it. Pick an empty spot for the new workspace.';
-      case 'cross_device':
-        return 'Keep the knowledge folder on the same disk as the new workspace for now.';
-      case 'source_not_found':
-        return 'That folder no longer exists.';
-      case 'move_failed':
-        return "The folder couldn't be moved — it's untouched at its original location. Try again.";
-      default:
-        return 'Something went wrong while adopting this folder. Try again.';
-    }
+  // `api.inspectIcm`'s result already carries `{ok, name, description,
+  // reason}` (the exact `IcmInspection` shape — see that type's doc
+  // comment) once it's a channel/HTTP success; only the outer `data` cast
+  // is needed since the generated client infers its own structural type per
+  // requested field set rather than reusing this module's named type.
+  async function inspectIcmDep(p: string): ReturnType<UseExistingIcmDeps['inspectIcm']> {
+    const result = await api.inspectIcm(p);
+    if (!result.ok) return result;
+    return { ok: true, data: result.data as unknown as IcmInspection };
   }
 
-  async function confirmAdopt() {
-    if (!adopt) return;
-    adoptError = null;
-
-    if (!adopt.name.trim()) {
-      adoptError = 'Give the workspace a name.';
-      return;
-    }
-    if (!adopt.parentDir.trim()) {
-      adoptError = 'Choose a folder to create the workspace in.';
-      return;
-    }
-
-    adopting = true;
-    const result = await workspaceStore.adopt(adopt.parentDir.trim(), adopt.name.trim(), adopt.originalPath);
-    adopting = false;
-
-    if (!result.ok) {
-      adoptError = mapAdoptErrorCode(result.error);
-      return;
-    }
+  // Bypasses `mountsStore.declare` (which discards the RPC's `mountKey` —
+  // it was designed for Knowledge's "Mount a folder from elsewhere…"
+  // dialog, which has no post-mount navigation target to build) and calls
+  // `mountIcm` directly so this flow can navigate straight to the new
+  // mount's own Knowledge view. Refreshes the catalog on success, same
+  // reasoning as every other mutating `MountsStore` method.
+  async function mountIcmDep(p: string, generation: number): ReturnType<UseExistingIcmDeps['mountIcm']> {
+    const result = await api.mountIcm(p, generation);
+    if (!result.ok) return result;
+    const data = result.data as { mountKey: string; id: string };
+    mountsStore.clearPendingAdoptError();
+    await mountsStore.refresh();
+    return { ok: true, mountKey: data.mountKey };
   }
 
-  // `Valea.Workspace.Manager.create/2`'s error vocabulary — same two codes
-  // `CreateWorkspaceDialog.svelte`'s own (unshared, per that component's
-  // precedent) `mapErrorCode` maps for the "Start fresh" flow; this is the
-  // `adoptByReference` orchestration's "create" stage.
-  function mapCreateErrorCode(code: string): string {
-    switch (code) {
-      case 'target_not_empty':
-        return 'That folder already has files in it. Pick an empty spot for the new workspace.';
-      case 'not_a_workspace':
-        return "This folder doesn't look like a Valea workspace.";
-      default:
-        return 'Something went wrong while creating the workspace. Try again.';
-    }
-  }
+  const deps: UseExistingIcmDeps = {
+    inspectIcm: inspectIcmDep,
+    // `workspaceStore.create`'s `parentDir` is accepted-but-ignored
+    // (app-owned, id-based create — see that method's own doc comment).
+    createWorkspace: (n) => workspaceStore.create('', n),
+    mountIcm: mountIcmDep,
+    currentGeneration: () => workspaceStore.generation,
+    setPendingMountError: (n, ref, message) => mountsStore.setPendingAdoptError(n, ref, message),
+    goToKnowledge: () => void goto('/knowledge'),
+    goToMountedIcm: (mountKey) => void goto(`/knowledge?icm=${mountKey}`)
+  };
 
-  async function confirmReference() {
-    if (!adopt) return;
-    referenceError = null;
+  async function confirmMount() {
+    if (!inspection || !inspection.ok) return;
+    mountError = null;
 
-    if (!adopt.name.trim()) {
-      referenceError = 'Give the workspace a name.';
-      return;
-    }
-    if (!adopt.parentDir.trim()) {
-      referenceError = 'Choose a folder to create the workspace in.';
-      return;
-    }
+    mounting = true;
+    const outcome = await useExistingIcm(path.trim(), workspaceName, deps);
+    mounting = false;
 
-    referenceAdopting = true;
-    const outcome = await adoptByReference(
-      adopt.parentDir.trim(),
-      adopt.name.trim(),
-      referenceMountName,
-      adopt.originalPath,
-      {
-        createWorkspace: (parentDir, name) => workspaceStore.create(parentDir, name), // parentDir ignored (Phase 2, app-owned)
-        declareMount: (name, ref, generation) => mountsStore.declare(name, ref, generation),
-        currentGeneration: () => workspaceStore.generation,
-        // Declare-stage failures land AFTER workspaceStore.create flipped
-        // state to 'open' — this component is unmounted by then (the root
-        // layout swaps Onboarding out reactively), so any local error state
-        // set at that point is a dead write. The store field survives the
-        // transition; the Knowledge page renders it as a dismissible banner
-        // (fix wave 1) — and the user is taken THERE rather than Today,
-        // where the banner (and its retry affordance) would be out of sight
-        // (fix wave 2).
-        setPendingAdoptError: (name, ref, message) => mountsStore.setPendingAdoptError(name, ref, message),
-        goToKnowledge: () => void goto('/knowledge')
-      }
-    );
-    referenceAdopting = false;
-
-    // Only a CREATE-stage failure still has this card on screen to render
-    // into (the workspace never opened, so the state flip never happened).
-    // A declare-stage failure was already persisted via setPendingAdoptError
-    // above — setting referenceError for it would be a no-op nobody sees.
-    if (!outcome.ok && outcome.stage === 'create') {
-      referenceError = mapCreateErrorCode(outcome.error);
-      return;
-    }
-  }
-
-  async function pickAdoptParentFolder() {
-    if (!adopt) return;
-    const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
-    const selected = await openDialog({ directory: true });
-    if (typeof selected === 'string') {
-      adopt.parentDir = selected;
+    // A mount-stage failure already flipped the workspace open and
+    // navigated to Knowledge with the error persisted there (see
+    // `useExistingIcm`'s doc comment) — this card is unmounted by the time
+    // that resolves. Only a create-workspace-stage failure still has this
+    // card on screen to render into ("inspect" can't fail here — the
+    // Confirm button only shows once `inspection.ok` is already true).
+    if (!outcome.ok && outcome.stage === 'create-workspace') {
+      mountError = declareMountErrorMessage(outcome.error);
     }
   }
 
   function cancel() {
+    path = '';
     inspection = null;
-    adopt = null;
-    error = null;
-    adoptError = null;
-    referenceError = null;
+    inspectError = null;
+    mountError = null;
+    workspaceName = null;
   }
 </script>
 
 <div class="flex flex-col gap-3">
-  {#if adopt}
+  {#if inspection}
     <div class="border-paper-border bg-paper-card flex flex-col gap-3 rounded-lg border p-4">
-      <p class="text-ink-body text-[13px]">
-        This looks like a knowledge folder, not a Valea workspace yet{#if adopt.description}
-          — {adopt.description}{/if}.
-      </p>
+      {#if inspection.ok}
+        <div class="flex flex-col gap-1">
+          <span class="text-ink-meta text-[11px] tracking-wide uppercase">Location</span>
+          <p class="text-ink-meta font-mono text-[11.5px] break-all">{path}</p>
+        </div>
 
-      <div class="flex flex-col gap-1">
-        <span class="text-ink-meta text-[11px] tracking-wide uppercase">Original location</span>
-        <p class="text-ink-meta font-mono text-[11.5px] break-all">{adopt.originalPath}</p>
-      </div>
+        <div class="flex flex-col gap-1">
+          <span class="text-ink-meta text-[11px] tracking-wide uppercase">Name</span>
+          <p class="text-ink-heading text-[13.5px] font-semibold">{icmName}</p>
+        </div>
 
-      <p class="text-ink-body text-[12.5px]">
-        By default, Valea reads it right where it is — nothing moves. You can also move it into the new
-        workspace's <code class="font-mono text-[11.5px]">mounts/</code> instead; either way, nothing is ever
-        copied.
-      </p>
-
-      <div class="flex flex-col gap-1.5">
-        <Label for="adopt-name">Workspace name</Label>
-        <Input
-          id="adopt-name"
-          bind:value={adopt.name}
-          disabled={adopting || referenceAdopting}
-          placeholder="My business"
-        />
-      </div>
-
-      <div class="flex flex-col gap-1.5">
-        <Label for="adopt-parent-dir">Create the workspace in</Label>
-        {#if isTauri}
-          <div class="flex gap-2">
-            <Input id="adopt-parent-dir" bind:value={adopt.parentDir} disabled={adopting || referenceAdopting} readonly />
-            <Button
-              type="button"
-              variant="outline"
-              onclick={pickAdoptParentFolder}
-              disabled={adopting || referenceAdopting}
-            >
-              Browse…
-            </Button>
-          </div>
-        {:else}
-          <Input id="adopt-parent-dir" bind:value={adopt.parentDir} disabled={adopting || referenceAdopting} />
+        {#if inspection.description}
+          <p class="text-ink-body text-[13px]">{inspection.description}</p>
         {/if}
-      </div>
 
-      <div class="flex flex-col gap-1">
-        <span class="text-ink-meta text-[11px] tracking-wide uppercase">New workspace</span>
-        <p class="text-ink-meta font-mono text-[11.5px] break-all">{adoptTargetPath}</p>
-        <span class="text-ink-meta text-[11px] tracking-wide uppercase">Mounted here as (stays in place)</span>
-        <p class="text-ink-meta font-mono text-[11.5px] break-all">{referenceMountName}</p>
-        <span class="text-ink-meta text-[11px] tracking-wide uppercase">Or, if moved instead</span>
-        <p class="text-ink-meta font-mono text-[11.5px] break-all">{adoptMountPath}</p>
-      </div>
+        <p class="text-ink-body text-[12.5px]">
+          Nothing is copied or moved — Valea reads it right where it already lives.
+        </p>
 
-      {#if referenceError}
-        <p role="alert" class="text-warn-ink text-[12.5px]">{referenceError}</p>
+        <div class="flex flex-col gap-1.5">
+          <Label for="use-existing-workspace-name">Workspace name</Label>
+          <Input
+            id="use-existing-workspace-name"
+            value={workspaceName ?? icmName}
+            oninput={(e) => (workspaceName = e.currentTarget.value)}
+            disabled={mounting}
+          />
+        </div>
+
+        {#if mountError}
+          <p role="alert" class="text-warn-ink text-[12.5px]">{mountError}</p>
+        {/if}
+
+        <div class="flex flex-wrap gap-2">
+          <Button type="button" onclick={confirmMount} disabled={mounting}>
+            {mounting ? 'Setting up…' : 'Use this folder'}
+          </Button>
+          <Button type="button" variant="outline" onclick={cancel} disabled={mounting}>Cancel</Button>
+        </div>
+      {:else}
+        <!-- 10.1 flag: `inspection.reason` is a human-readable sentence —
+             surfaced verbatim, calm styling, never remapped. -->
+        <p class="text-ink-body text-[13px]">{inspection.reason}</p>
+        <Button type="button" variant="outline" onclick={cancel}>Choose a different folder</Button>
       {/if}
-      {#if adoptError}
-        <p role="alert" class="text-warn-ink text-[12.5px]">{adoptError}</p>
-      {/if}
-
-      <div class="flex flex-wrap gap-2">
-        <Button type="button" onclick={confirmReference} disabled={adopting || referenceAdopting}>
-          {referenceAdopting ? 'Setting up…' : 'Use it where it is'}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onclick={confirmAdopt}
-          disabled={adopting || referenceAdopting}
-        >
-          {adopting ? 'Moving…' : 'Move it into the workspace'}
-        </Button>
-        <Button type="button" variant="outline" onclick={cancel} disabled={adopting || referenceAdopting}>
-          Cancel
-        </Button>
-      </div>
-    </div>
-  {:else if inspection}
-    <div class="border-paper-border bg-paper-card flex flex-col gap-3 rounded-lg border p-4">
-      <p class="text-ink-meta font-mono text-[11.5px]">{path}</p>
-      <p class="text-ink-body text-[13px]">
-        {inspection.icm_pages} memory pages · {inspection.workflows} workflows · {inspection.queue_pending} pending approvals
-        · audit log {inspection.has_audit_log ? 'present' : 'missing'}
-      </p>
-      <div class="flex gap-2">
-        <Button type="button" onclick={confirmOpen} disabled={opening}>
-          {opening ? 'Opening…' : 'Open'}
-        </Button>
-        <Button type="button" variant="outline" onclick={cancel} disabled={opening}>Cancel</Button>
-      </div>
     </div>
   {:else if isTauri}
     <Button type="button" variant="outline" onclick={pickFolder} disabled={inspecting}>
@@ -408,7 +206,7 @@
     </div>
   {/if}
 
-  {#if error}
-    <p role="alert" class="text-warn-ink text-[12.5px]">{error}</p>
+  {#if inspectError}
+    <p role="alert" class="text-warn-ink text-[12.5px]">{inspectError}</p>
   {/if}
 </div>

@@ -44,13 +44,14 @@ export type MountSummary = {
  * an RPC mutation — see `Valea.Api.Icms`'s moduledoc).
  */
 /**
- * A reference-adoption declare-stage failure carried across the
- * onboarding-to-app transition (fix wave 1, A2-T9): `workspaceStore.create`
- * flips `state = 'open'` — and the root layout reactively swaps the
- * Onboarding screen out — BEFORE the mount resolves, so a failure landing
- * after that flip has no live onboarding card left to render on.
- * `adoptByReference` (onboarding-path.ts) persists it here; the Knowledge
- * page renders it as a dismissible banner (`adoptFailureBannerText`,
+ * A create-ICM/declare-stage failure carried across the onboarding-to-app
+ * transition (originally fix wave 1, A2-T9; shared by Task 10.2's
+ * `startFresh` and Task 10.3's `useExistingIcm` as of this task):
+ * `workspaceStore.create` flips `state = 'open'` — and the root layout
+ * reactively swaps the Onboarding screen out — BEFORE the ICM step
+ * resolves, so a failure landing after that flip has no live onboarding
+ * card left to render on. `onboarding-path.ts` persists it here; the
+ * Knowledge page renders it as a dismissible banner (`adoptFailureBannerText`,
  * mount-sections.ts).
  */
 export type PendingAdoptError = {
@@ -67,12 +68,13 @@ export class MountsStore {
   loaded = $state(false);
 
   /**
-   * Non-null only between a declare-stage reference-adoption failure and
+   * Non-null only between a post-workspace-creation mount/create-ICM
+   * failure (Task 10.2's `startFresh`, Task 10.3's `useExistingIcm`) and
    * the user dismissing the Knowledge page's banner (or a later
-   * `setPendingAdoptError` overwriting it). Never set by a create-stage
-   * failure — that happens while the onboarding card is still mounted,
-   * which renders its own `referenceError` instead (see
-   * `adoptByReference`'s doc comment in onboarding-path.ts).
+   * `setPendingAdoptError` overwriting it). Never set by a
+   * create-WORKSPACE-stage failure — that happens while the onboarding card
+   * is still mounted, which renders its own local error state instead (see
+   * `startFresh`'s/`useExistingIcm`'s doc comments in onboarding-path.ts).
    */
   pendingAdoptError: PendingAdoptError | null = $state(null);
 
@@ -284,12 +286,16 @@ export class MountsStore {
  * `no_manifest`, `unsafe_path`, and the 2-tuple `{:invalid_manifest,
  * reason}` — which `error_for/1` stringifies to the bare code
  * `"invalid_manifest"`, same as every other atom code, so this switch never
- * needs the nested reason string). Shared by the onboarding "Use it where
- * it is" flow (`onboarding-path.ts`'s `adoptByReference`) and Knowledge's
- * "Mount a folder from elsewhere…" dialog — both call `declare` above and
- * need the SAME mapping, so it lives here rather than being duplicated per
- * caller (mirrors `mail-shapes.ts` colocating `mailSetupErrorMessage` next
- * to `submitMailSetup`).
+ * needs the nested reason string). `create_icm`'s validation gate overlaps
+ * this same vocabulary (see `Valea.Mounts.create/3`'s moduledoc), so this is
+ * ALSO reused for Task 10.2's `startFresh` create-ICM-stage failures, not
+ * just `mount_icm`. Shared by Task 10.3's "Use existing ICM" flow
+ * (`onboarding-path.ts`'s `useExistingIcm`), Task 10.2's "Start fresh" flow
+ * (`useExistingIcm`'s sibling `startFresh`), and Knowledge's "Mount a folder
+ * from elsewhere…" dialog (which calls `declare` above) — all three need the
+ * SAME mapping, so it lives here rather than being duplicated per caller
+ * (mirrors `mail-shapes.ts` colocating `mailSetupErrorMessage` next to
+ * `submitMailSetup`).
  */
 export function declareMountErrorMessage(code: string): string {
   switch (code) {
