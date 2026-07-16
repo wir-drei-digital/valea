@@ -19,16 +19,16 @@ defmodule Valea.Workspace.ManagerTest do
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    %{parent: Path.join(dir, "workspaces")}
+    :ok
   end
 
   test "no workspace open by default" do
     assert {:error, :no_workspace} = Manager.current()
   end
 
-  test "create scaffolds, opens, starts repo, records config", %{parent: parent} do
+  test "create scaffolds, opens, starts repo, records config" do
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
-    assert {:ok, %{name: "Mara Coaching"} = info} = Manager.create(parent, "Mara Coaching")
+    assert {:ok, %{name: "Mara Coaching"} = info} = Manager.create("Mara Coaching")
     assert {:ok, ^info} = Manager.current()
     assert File.exists?(Path.join(info.path, "app.sqlite"))
     assert Process.whereis(Valea.Repo)
@@ -40,15 +40,18 @@ defmodule Valea.Workspace.ManagerTest do
     assert generation == Manager.generation()
   end
 
-  test "open rejects a non-workspace folder", %{parent: parent} do
-    bogus = Path.join(parent, "bogus")
+  test "open rejects a known id whose on-disk folder isn't a valid workspace" do
+    bogus = Path.join(System.tmp_dir!(), "valea-bogus-#{System.os_time(:nanosecond)}")
     File.mkdir_p!(bogus)
-    assert {:error, :not_a_workspace} = Manager.open_path(bogus)
+
+    Valea.App.Config.record_opened(%{id: "bogus-id", name: "Bogus", slug: "bogus", path: bogus})
+
+    assert {:error, :not_a_workspace} = Manager.open("bogus-id")
     assert {:error, :no_workspace} = Manager.current()
   end
 
-  test "close stops the repo and clears current", %{parent: parent} do
-    {:ok, _} = Manager.create(parent, "W")
+  test "close stops the repo and clears current" do
+    {:ok, _} = Manager.create("W")
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
     :ok = Manager.close()
     assert {:error, :no_workspace} = Manager.current()
@@ -56,13 +59,13 @@ defmodule Valea.Workspace.ManagerTest do
     assert_receive {:workspace_closed}
   end
 
-  test "reopen after close works (repo restart)", %{parent: parent} do
-    {:ok, info} = Manager.create(parent, "W")
+  test "reopen after close works (repo restart)" do
+    {:ok, info} = Manager.create("W")
     :ok = Manager.close()
-    assert {:ok, ^info} = Manager.open_path(info.path)
+    assert {:ok, ^info} = Manager.open(info.id)
   end
 
-  test "migration failure reaps the started repo instead of orphaning it", %{parent: parent} do
+  test "migration failure reaps the started repo instead of orphaning it" do
     real_migrations_path = Application.get_env(:valea, :migrations_path)
 
     bad_migrations_dir =
@@ -88,39 +91,39 @@ defmodule Valea.Workspace.ManagerTest do
 
     Application.put_env(:valea, :migrations_path, bad_migrations_dir)
 
-    assert {:error, {:migration_failed, _}} = Manager.create(parent, "Bad")
+    assert {:error, {:migration_failed, _}} = Manager.create("Bad")
     assert Process.whereis(Valea.Repo) == nil
     assert {:error, :no_workspace} = Manager.current()
 
     Application.put_env(:valea, :migrations_path, real_migrations_path)
 
-    assert {:ok, %{name: "Good"} = info} = Manager.create(parent, "Good")
+    assert {:ok, %{name: "Good"} = info} = Manager.create("Good")
     assert {:ok, ^info} = Manager.current()
 
     assert [[_seq, _name, file_path]] = Valea.Repo.query!("PRAGMA database_list").rows
-    assert Path.basename(Path.dirname(file_path)) == "Good"
+    assert Path.basename(Path.dirname(file_path)) == Path.basename(info.path)
     assert Path.basename(file_path) == "app.sqlite"
   end
 
-  test "generation increments per open and is nil when closed", %{parent: parent} do
+  test "generation increments per open and is nil when closed" do
     # `Manager` is a long-lived singleton, so the counter is monotonic across
     # the whole test run, not per-test — assert relative movement, not an
     # absolute value.
     assert Manager.generation() == nil
 
-    {:ok, a} = Manager.create(parent, "A")
+    {:ok, a} = Manager.create("A")
     first_gen = Manager.generation()
     assert is_integer(first_gen)
 
     :ok = Manager.close()
     assert Manager.generation() == nil
 
-    assert {:ok, ^a} = Manager.open_path(a.path)
+    assert {:ok, ^a} = Manager.open(a.id)
     assert Manager.generation() == first_gen + 1
   end
 
-  test "check_generation returns workspace_changed for a stale generation", %{parent: parent} do
-    {:ok, _} = Manager.create(parent, "A")
+  test "check_generation returns workspace_changed for a stale generation" do
+    {:ok, _} = Manager.create("A")
     gen = Manager.generation()
 
     assert :ok = Manager.check_generation(gen)
@@ -130,12 +133,12 @@ defmodule Valea.Workspace.ManagerTest do
     assert {:error, :workspace_changed} = Manager.check_generation(gen)
   end
 
-  test "switching workspaces stops the previous runtime processes", %{parent: parent} do
-    {:ok, _a} = Manager.create(parent, "A")
+  test "switching workspaces stops the previous runtime processes" do
+    {:ok, _a} = Manager.create("A")
     watcher_pid = Process.whereis(Valea.ICM.Watcher)
     assert watcher_pid
 
-    {:ok, _b} = Manager.create(parent, "B")
+    {:ok, _b} = Manager.create("B")
     refute Process.alive?(watcher_pid)
 
     new_watcher_pid = Process.whereis(Valea.ICM.Watcher)
@@ -143,16 +146,16 @@ defmodule Valea.Workspace.ManagerTest do
     assert new_watcher_pid != watcher_pid
   end
 
-  test "failed switch reports no workspace, not the stale one", %{parent: parent} do
+  test "failed switch reports no workspace, not the stale one" do
     # Open workspace A cleanly.
-    {:ok, a} = Manager.create(parent, "A")
+    {:ok, a} = Manager.create("A")
     assert {:ok, ^a} = Manager.current()
     assert Process.whereis(Valea.Repo)
 
     # Scaffold a valid target B on disk, then force its open to fail AFTER
     # A is closed by making migrations blow up.
     Manager.close()
-    {:ok, b} = Manager.create(parent, "B")
+    {:ok, b} = Manager.create("B")
     Manager.close()
 
     real_migrations_path = Application.get_env(:valea, :migrations_path)
@@ -179,13 +182,13 @@ defmodule Valea.Workspace.ManagerTest do
     end)
 
     # Re-open A cleanly (real migrations), then switch to B with broken ones.
-    assert {:ok, ^a} = Manager.open_path(a.path)
+    assert {:ok, ^a} = Manager.open(a.id)
     assert {:ok, ^a} = Manager.current()
 
     Application.put_env(:valea, :migrations_path, bad_migrations_dir)
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
 
-    assert {:error, {:migration_failed, _}} = Manager.open_path(b.path)
+    assert {:error, {:migration_failed, _}} = Manager.open(b.id)
 
     # The Manager must NOT still claim A (or B) is open with dead children.
     assert {:error, :no_workspace} = Manager.current()
@@ -195,7 +198,7 @@ defmodule Valea.Workspace.ManagerTest do
 
     # Recovery: reopening A with real migrations succeeds.
     Application.put_env(:valea, :migrations_path, real_migrations_path)
-    assert {:ok, ^a} = Manager.open_path(a.path)
+    assert {:ok, ^a} = Manager.open(a.id)
     assert {:ok, ^a} = Manager.current()
     assert Process.whereis(Valea.Repo)
   end
@@ -235,9 +238,8 @@ defmodule Valea.Workspace.ManagerTest do
       assert Enum.count(known, &(&1["id"] == ws.id)) == 1
     end
 
-    # ⚠️ Required fix (see Migration.migrate/1's version ceiling): opening a
-    # fresh v5 workspace must NOT run the legacy migration side effects —
-    # no stray `.claude/settings.json`, and the version marker stays 5.
+    # A fresh v5 workspace carries no agent-routing files at all — no stray
+    # `.claude/settings.json` — and its version marker stays 5.
     test "create(name) opens a v5 workspace without running legacy migration side effects" do
       {:ok, ws} = Manager.create("X")
 
@@ -253,8 +255,8 @@ defmodule Valea.Workspace.ManagerTest do
       assert {:error, :unknown_workspace} = Manager.switch_preflight("nope")
     end
 
-    test "no live sessions in the current workspace -> empty list", %{parent: parent} do
-      {:ok, _a} = Manager.create(parent, "A")
+    test "no live sessions in the current workspace -> empty list" do
+      {:ok, _a} = Manager.create("A")
 
       Valea.App.Config.record_opened(%{
         id: "preflight-target-empty",
@@ -267,8 +269,8 @@ defmodule Valea.Workspace.ManagerTest do
                Manager.switch_preflight("preflight-target-empty")
     end
 
-    test "reports the current workspace's live sessions", %{parent: parent} do
-      {:ok, a} = Manager.create(parent, "A")
+    test "reports the current workspace's live sessions" do
+      {:ok, a} = Manager.create("A")
       Valea.AgentCase.mount_test_icm!(a.path, name: "Primary")
       {:ok, %{id: sid}} = Valea.AgentCase.start_session(a.path, "happy")
 

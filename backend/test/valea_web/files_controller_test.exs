@@ -18,7 +18,7 @@ defmodule ValeaWeb.FilesControllerTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, %{path: ws}} = Manager.create(Path.join(dir, "workspaces"), "Primary")
+    {:ok, %{path: ws}} = Manager.create("Primary")
 
     on_exit(fn ->
       Manager.close()

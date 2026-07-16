@@ -9,9 +9,8 @@ defmodule Valea.Workflows do
   this module describes.
 
   `list/0` unions `Workflows/*.md` across `Valea.Mounts.enabled/0` — one
-  glob per mount, sorted by the union's `resolved_path`. Every mount is now
-  BY-REFERENCE (external, `Valea.Mounts`'s "Compatibility shim" section:
-  `rel_root` is always `nil`), so `resolved_path` is always an absolute
+  glob per mount, sorted by the union's `resolved_path`. Every mount is
+  BY-REFERENCE (external), so `resolved_path` is always an absolute
   physical path.
 
   Task 7.1 re-keys the registry: a workflow's identity is `{icm_id,

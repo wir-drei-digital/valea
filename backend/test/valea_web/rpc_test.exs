@@ -25,7 +25,7 @@ defmodule ValeaWeb.RpcTest do
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    %{parent: Path.join(dir, "workspaces")}
+    :ok
   end
 
   defp rpc(action, input, fields \\ []) do
@@ -86,16 +86,12 @@ defmodule ValeaWeb.RpcTest do
     end)
   end
 
-  test "icm_tree and cockpit_today succeed with a workspace open", %{parent: parent} do
-    # Legacy path-based `Manager.create/2` (v4) — called directly rather
-    # than through the `create_workspace` RPC, which is now the C9
-    # id-based surface (`Manager.create/1`, v5, no `mounts/`). Post-3.2,
-    # `Valea.Mounts.list/1` is config truth over `icms:` only — a fresh
-    # scaffold seeds no mount at all any more — so the ICM content this
-    # test exercises comes from a REAL EXTERNAL ICM mounted via
-    # `AgentCase.mount_test_icm!/2`, never the old seeded embedded
-    # `mounts/primary/...` starter content.
-    {:ok, ws} = Manager.create(parent, "Primary")
+  test "icm_tree and cockpit_today succeed with a workspace open" do
+    # `Valea.Mounts.list/1` is config truth over `icms:` only — a fresh v5
+    # workspace seeds no mount at all — so the ICM content this test
+    # exercises comes from a REAL EXTERNAL ICM mounted via
+    # `AgentCase.mount_test_icm!/2`.
+    {:ok, ws} = Manager.create("Primary")
     await_engine_active!()
 
     icm = AgentCase.mount_test_icm!(ws.path, name: "Primary", pages: %{"Offers/X.md" => "# X\n"})

@@ -35,10 +35,9 @@ defmodule Valea.Mounts.DoctorTest do
   end
 
   # `icms:` fixture writer — config truth is `icms:` ONLY (no more
-  # `mounts:`/`kind: path`/`ref:`); every mount is external (`rel_root:
-  # nil`), so `Doctor`'s `check_id/2` is always the bare `"<check>:<mount
-  # key>"` form (no more embedded/external kind qualifier — Phase 8 dropped
-  # it along with the embedded-mount concept itself). `entries` is a list of
+  # `mounts:`/`kind: path`/`ref:`); every mount is external, so `Doctor`'s
+  # `check_id/2` is always the bare `"<check>:<mount key>"` form (no
+  # embedded/external kind qualifier). `entries` is a list of
   # `{mount_key, path_or_nil, extra_kw}` — `extra_kw` may carry
   # `enabled: false`.
   defp write_icms!(root, entries) do
@@ -599,7 +598,7 @@ defmodule Valea.Mounts.DoctorTest do
 
       System.put_env("VALEA_APP_DIR", dir)
       Manager.close()
-      {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
+      {:ok, ws} = Manager.create("W")
 
       on_exit(fn ->
         Manager.close()

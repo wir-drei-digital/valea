@@ -7,16 +7,9 @@ defmodule Valea.Mounts do
   There is no more embedded `mounts/<name>/` directory concept; `list/1`
   builds exactly one `mount()` per `icms:` entry.
 
-  ## Compatibility shim
-
-  The `mount()` map keeps its historical field set (`name`, `rel_root`,
-  `root`, `manifest`, `enabled`, `degraded`), but `rel_root` is now ALWAYS
-  `nil` — every mount is external. `name` is the workspace-local **mount
-  key** (the `icms:` mapping key); `manifest.name` is the ICM's own
-  display name. Every existing consumer that already branches on
-  `rel_root` (`Valea.ICM`, `References`, `Search`, `Workflows`, ...)
-  transparently takes its external branch — the dead embedded branches
-  are removed in a later phase, not here.
+  `mount()`'s field set is `name`, `root`, `manifest`, `enabled`,
+  `degraded`. `name` is the workspace-local **mount key** (the `icms:`
+  mapping key); `manifest.name` is the ICM's own display name.
 
   ## Resolution and degradation
 
@@ -79,15 +72,13 @@ defmodule Valea.Mounts do
   alias Valea.Workspace.Scaffold
   alias Valea.Yaml
 
-  # A resolved mount. `root` is the ABSOLUTE path; `rel_root` is
-  # workspace-relative ("mounts/<name>") for embedded mounts and `nil` for
-  # external (by-reference) mounts — an ICM outside the workspace has no
-  # workspace-relative path. `enabled` from config. `degraded` carries a
-  # reason string when the manifest is missing/broken (still listed for
-  # the UI, excluded from the effective set).
+  # A resolved mount. `root` is the ABSOLUTE path — every mount is
+  # external (by-reference), so there is no workspace-relative path to
+  # carry. `enabled` from config. `degraded` carries a reason string when
+  # the manifest is missing/broken (still listed for the UI, excluded from
+  # the effective set).
   @type mount :: %{
           name: String.t(),
-          rel_root: String.t() | nil,
           root: String.t(),
           manifest: %Valea.Mounts.Manifest{} | nil,
           enabled: boolean(),
@@ -160,10 +151,10 @@ defmodule Valea.Mounts do
   @doc """
   Pure form of `mount_for/1` for `workspace` — the owning mount, or `nil`.
 
-  Every mount is external (`rel_root: nil` always, see moduledoc), so
-  attribution is by ABSOLUTE-root prefix alone: `path` attributes to
-  whichever mount's `root` it falls under, segment-boundary (`/a/b` does
-  not match a `/a/bc` root) — but ONLY among ENABLED, non-degraded mounts.
+  Every mount is external, so attribution is by ABSOLUTE-root prefix
+  alone: `path` attributes to whichever mount's `root` it falls under,
+  segment-boundary (`/a/b` does not match a `/a/bc` root) — but ONLY
+  among ENABLED, non-degraded mounts.
   A degraded mount's `root` may carry a resolved path a hand-edited config
   pointed at `$HOME`, `/`, or an ancestor of the workspace (preserved on
   the struct for recovery, never for trust); matching attribution against
@@ -260,13 +251,12 @@ defmodule Valea.Mounts do
   end
 
   # `Context.resolve/2`'s `resolved` shape already carries everything a
-  # `mount()` needs except `rel_root`/`enabled`/`degraded` — every mount is
-  # external (`rel_root: nil`, moduledoc), and `Context`'s own
+  # `mount()` needs except `enabled`/`degraded` — `Context`'s own
   # `find_related_mount/2` already required `enabled: true` and healthy
   # (`degraded == nil`, via `mount_by_id/2`) before this entry ever reached
   # `related`.
   defp related_to_mount(%{mount_key: key, root: root, manifest: manifest}) do
-    %{name: key, rel_root: nil, root: root, manifest: manifest, enabled: true, degraded: nil}
+    %{name: key, root: root, manifest: manifest, enabled: true, degraded: nil}
   end
 
   # With NESTED mount roots (one mount's folder inside another's), a path
@@ -680,7 +670,6 @@ defmodule Valea.Mounts do
             {:ok, manifest} ->
               %{
                 name: name,
-                rel_root: nil,
                 root: resolved,
                 manifest: manifest,
                 enabled: enabled,
@@ -717,7 +706,7 @@ defmodule Valea.Mounts do
     do: "path points at an ancestor of the workspace — not mountable"
 
   defp degraded_icm_mount(name, root, enabled, reason) do
-    %{name: name, rel_root: nil, root: root, manifest: nil, enabled: enabled, degraded: reason}
+    %{name: name, root: root, manifest: nil, enabled: enabled, degraded: reason}
   end
 
   # Fully resolve `path` (`~`-expanded — the caller already `Path.expand/1`s

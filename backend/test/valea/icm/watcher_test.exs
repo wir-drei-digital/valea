@@ -15,7 +15,7 @@ defmodule Valea.ICM.WatcherTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "W")
+    {:ok, ws} = Manager.create("W")
 
     on_exit(fn ->
       Manager.close()
@@ -28,14 +28,11 @@ defmodule Valea.ICM.WatcherTest do
 
   # -- watched_roots/0 -----------------------------------------------------
 
-  # Post-Task-8.1: the watched set is every enabled, non-degraded ICM root
-  # (config truth, `Valea.Mounts.enabled/1` — there is no more embedded
-  # `mounts/<name>/` directory concept) plus the workspace's own `queue/`
-  # and `sources/` trees. The legacy v4 scaffold this suite's `setup`
-  # creates still mints a PHYSICAL `mounts/w/` folder on disk (byte-for-byte
-  # legacy behavior, see `Valea.Workspace.Scaffold`), which makes the
-  # negative half of this assertion non-trivial: that folder is never
-  # registered in `icms:`, so it must NOT show up here.
+  # The watched set is every enabled, non-degraded ICM root (config truth,
+  # `Valea.Mounts.enabled/1` — there is no embedded `mounts/<name>/`
+  # directory concept in a v5 workspace) plus the workspace's own `queue/`
+  # and `sources/` trees; a v5 workspace has no `mounts/` path at all, so
+  # the negative half of this assertion holds trivially.
   test "watched_roots/0 contains every enabled ICM root plus queue/sources, and no mounts/ path",
        %{ws: ws} do
     ext_a = external_icm!("A")
@@ -147,7 +144,7 @@ defmodule Valea.ICM.WatcherTest do
     declare_external!(ws.path, "gone", missing_ref)
 
     Manager.close()
-    {:ok, _reopened} = Manager.open_path(ws.path)
+    {:ok, _reopened} = Manager.open(ws.id)
 
     watcher_pid = Process.whereis(Valea.ICM.Watcher)
     assert watcher_pid

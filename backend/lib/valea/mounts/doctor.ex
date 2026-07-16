@@ -12,9 +12,8 @@ defmodule Valea.Mounts.Doctor do
   results together, e.g. the doctor panel fanning `icm_doctor` out across
   every mount — see `check_id/2`).
 
-  Phase 8: config truth is EXTERNAL-ONLY (`Valea.Mounts.list/1`'s `rel_root`
-  is always `nil` now) — there is no more embedded/external duality, so
-  every mount runs the SAME six checks, in a single two-level gate:
+  Config truth is EXTERNAL-ONLY — there is no embedded/external duality,
+  so every mount runs the SAME six checks, in a single two-level gate:
 
     1. `path_resolves` — does the `icms:` entry's `path:` expand (`~`,
        symlinks) and resolve to a real, boundary-safe, permission-glob-safe

@@ -9,12 +9,10 @@ defmodule ValeaWeb.AgentsRpcTest do
 
   @input_path "sources/mail/messages/2026-07-09-priya-nair-seed0001.md"
 
-  # Verbatim from the legacy starter's rich seed content
-  # (priv/legacy_workspace_template/mounts/starter/Workflows/) — this suite
-  # exercises `run_workflow`/`distill_decisions`/`list_workflows` against
-  # this same content, seeded into a REAL external ICM (see `setup` below)
-  # rather than relying on the legacy scaffold's now-unregistered
-  # `mounts/primary/` folder.
+  # Verbatim from the old starter mount's rich seed content (preserved at
+  # `test/fixtures/starter_icm/Workflows/`) — this suite exercises
+  # `run_workflow`/`distill_decisions`/`list_workflows` against this same
+  # content, seeded into a REAL external ICM (see `setup` below).
   @new_inquiry_triage """
   ---
   enabled: true
@@ -94,7 +92,7 @@ defmodule ValeaWeb.AgentsRpcTest do
 
     %{"data" => %{"generation" => generation}} = rpc("get_workspace", %{})
 
-    %{workspace: ws.path, parent: Path.dirname(ws.path), generation: generation, icm: icm}
+    %{workspace: ws.path, generation: generation, icm: icm}
   end
 
   defp wf_path(icm), do: Path.join(icm.root, "Workflows/New Inquiry Triage.md")
@@ -234,7 +232,7 @@ defmodule ValeaWeb.AgentsRpcTest do
   describe "run_workflow" do
     test "happy path returns run_id and session_id and eventually queues a proposal", %{
       generation: generation,
-      parent: parent,
+      workspace: workspace,
       icm: icm
     } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
@@ -254,7 +252,7 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert is_binary(run_id)
       assert is_binary(session_id)
 
-      pending_path = Path.join([parent, "Primary", "queue", "pending", run_id <> ".json"])
+      pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
       wait_until(fn -> File.exists?(pending_path) end)
     end
 
@@ -371,7 +369,7 @@ defmodule ValeaWeb.AgentsRpcTest do
       )
     end
 
-    defp write_decided_item!(parent, dir, run_id, decided_at, icm) do
+    defp write_decided_item!(workspace, dir, run_id, decided_at, icm) do
       item = %{
         "schema" => "queue_item/v2",
         "run_id" => run_id,
@@ -393,21 +391,21 @@ defmodule ValeaWeb.AgentsRpcTest do
         }
       }
 
-      d = Path.join([parent, "Primary", "queue", dir])
+      d = Path.join([workspace, "queue", dir])
       File.mkdir_p!(d)
       File.write!(Path.join(d, run_id <> ".json"), Jason.encode!(item))
     end
 
     test "happy path returns run_id and session_id and eventually queues a proposal", %{
       generation: generation,
-      parent: parent,
+      workspace: workspace,
       icm: icm
     } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("workflow_happy"))
       write_distill_workflow!(icm)
 
       recent = DateTime.utc_now() |> DateTime.add(-2, :day) |> DateTime.to_iso8601()
-      write_decided_item!(parent, "approved", "d1", recent, icm)
+      write_decided_item!(workspace, "approved", "d1", recent, icm)
 
       assert %{"success" => true, "data" => %{"runId" => run_id, "sessionId" => session_id}} =
                rpc("distill_decisions", %{"generation" => generation}, ["runId", "sessionId"])
@@ -416,12 +414,12 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert is_binary(session_id)
 
       input_path =
-        Path.join([parent, "Primary", "queue", "staging", run_id, "input-decisions.md"])
+        Path.join([workspace, "queue", "staging", run_id, "input-decisions.md"])
 
       wait_until(fn -> File.exists?(input_path) end)
       assert File.read!(input_path) =~ "T-d1"
 
-      pending_path = Path.join([parent, "Primary", "queue", "pending", run_id <> ".json"])
+      pending_path = Path.join([workspace, "queue", "pending", run_id <> ".json"])
       wait_until(fn -> File.exists?(pending_path) end)
     end
 

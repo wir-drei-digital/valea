@@ -49,8 +49,7 @@ defmodule Valea.MountsTest do
     real_root = real!(root)
 
     assert [
-             %{name: "coaching", root: ^real_root, rel_root: nil, degraded: nil, enabled: true} =
-               m
+             %{name: "coaching", root: ^real_root, degraded: nil, enabled: true} = m
            ] = Mounts.list(ws)
 
     assert m.manifest.id == "6f9f0c9e-3ccd-4fa5-a219-113a70618b55"

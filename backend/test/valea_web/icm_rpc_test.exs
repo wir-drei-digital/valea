@@ -9,22 +9,20 @@ defmodule ValeaWeb.IcmRpcTest do
   alias Valea.Workspace.Manager
 
   # The starter-mount's rich seed content (Offers/, Templates/, Workflows/,
-  # ...) now lives only under the LEGACY (v4, all-are-mounts) template —
-  # `priv/workspace_template` (v5) no longer ships a starter mount at all.
-  # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:` ONLY
-  # (no more filesystem-glob discovery of an embedded `mounts/<name>`), so
-  # instead of relying on a legacy-scaffold-seeded folder `list/1` can no
-  # longer see, `setup` mounts a REAL EXTERNAL ICM (via
-  # `AgentCase.mount_test_icm!/2`) carrying this same content, read straight
-  # off disk — mirrors `Valea.Markdown.DeterminismTest`'s identical
-  # `@template`/filter.
+  # ...) is preserved under `test/fixtures/starter_icm/` (Task 11.3) — a v5
+  # hidden workspace (`priv/workspace_template`) ships no starter mount at
+  # all. `Valea.Mounts.list/1` is config truth over `icms:` ONLY (no
+  # filesystem-glob discovery of an embedded `mounts/<name>`), so `setup`
+  # mounts a REAL EXTERNAL ICM (via `AgentCase.mount_test_icm!/2`) carrying
+  # this same content, read straight off disk — mirrors
+  # `Valea.Markdown.DeterminismTest`'s identical `@template`/filter.
   #
   # Task 4.2 re-key: every ICM RPC action now takes a `mountKey` argument
   # alongside `path` (ICM-relative, relative to `icm.root` — never the old
   # `mounts/primary/...`/absolute literal), and `icm_tree` returns ONE
   # ICM's `{mountKey, title, tree}` instead of an all-mounts grouped
   # envelope.
-  @template Path.join(:code.priv_dir(:valea), "legacy_workspace_template/mounts/starter")
+  @template Path.expand("../fixtures/starter_icm", __DIR__)
 
   defp seed_pages do
     @template
@@ -53,13 +51,7 @@ defmodule ValeaWeb.IcmRpcTest do
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    # Legacy path-based `Manager.create/2` (v4) — called directly rather
-    # than through the `create_workspace` RPC, which is now the C9 id-based
-    # surface (`Manager.create/1`, v5, no `mounts/`). Either scaffold works
-    # here since the ICM content this suite exercises comes from the
-    # EXTERNAL mount below, not from anything the scaffold itself seeds.
-    parent = Path.join(dir, "workspaces")
-    {:ok, ws} = Manager.create(parent, "Primary")
+    {:ok, ws} = Manager.create("Primary")
 
     icm = AgentCase.mount_test_icm!(ws.path, name: "Primary", pages: seed_pages())
 

@@ -287,11 +287,10 @@ defmodule Valea.Agents.PermissionPolicyTest do
   # --- root-set containment: extra_roots (A2-T3, by-reference/external mounts) ---
   #
   # `ctx[:extra_roots]` is a list of ABSOLUTE, already-resolved-real external
-  # mount roots (mirroring `Valea.Mounts.enabled/1`'s `root` for a
-  # `rel_root: nil` mount). The read surface PermissionPolicy grants is the
-  # workspace root (existing read_roots logic, unchanged) UNION every
-  # extra_roots member. Write containment never consults extra_roots — reads
-  # only.
+  # mount roots (mirroring `Valea.Mounts.enabled/1`'s `root`). The read
+  # surface PermissionPolicy grants is the workspace root (existing
+  # read_roots logic, unchanged) UNION every extra_roots member. Write
+  # containment never consults extra_roots — reads only.
 
   defp external_root! do
     dir =

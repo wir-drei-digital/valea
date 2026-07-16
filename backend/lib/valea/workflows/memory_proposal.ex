@@ -103,8 +103,7 @@ defmodule Valea.Workflows.MemoryProposal do
       nil ->
         {:error, :not_in_mount}
 
-      %{enabled: true, degraded: nil} = mount ->
-        root = mount_root_abs(workspace, mount)
+      %{enabled: true, degraded: nil, root: root} = mount ->
         abs = target_abs(workspace, target_path)
 
         with true <- String.starts_with?(abs, root <> "/"),
@@ -183,11 +182,6 @@ defmodule Valea.Workflows.MemoryProposal do
   defp mount_prefix?(path, root) do
     root != "" and (path == root or String.starts_with?(path <> "/", root <> "/"))
   end
-
-  defp mount_root_abs(workspace, %{rel_root: rel}) when is_binary(rel),
-    do: Path.join(workspace, rel)
-
-  defp mount_root_abs(_workspace, %{root: root}), do: root
 
   defp target_abs(_workspace, "/" <> _ = abs), do: Path.expand(abs)
   defp target_abs(workspace, rel), do: Path.expand(rel, workspace)

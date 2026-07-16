@@ -21,7 +21,7 @@ defmodule Valea.Workflows.MemoryProposalTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
+    {:ok, ws} = Manager.create("Primary")
 
     staging = Path.join(ws.path, "queue/staging/r1")
     File.mkdir_p!(Path.join(staging, "proposals"))

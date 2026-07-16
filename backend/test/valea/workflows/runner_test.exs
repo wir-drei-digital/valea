@@ -9,13 +9,11 @@ defmodule Valea.Workflows.RunnerTest do
   @weekly_relative_path "Workflows/Weekly Admin Review.md"
 
   # `New Inquiry Triage.md`/`Weekly Admin Review.md`/`Current Pricing.md`
-  # verbatim from the legacy starter's rich seed content
-  # (priv/legacy_workspace_template/mounts/starter/) — this whole suite
-  # exercises the Runner against these three pages. Post-task-3.2,
-  # `Valea.Mounts.list/1` is config truth over `icms:` ONLY (no more
-  # filesystem-glob discovery of an embedded `mounts/<name>`), so instead
-  # of relying on a legacy-scaffold-seeded folder that `list/1` can no
-  # longer see, `setup` mounts a REAL EXTERNAL ICM (via
+  # verbatim from the old starter mount's rich seed content (preserved at
+  # `test/fixtures/starter_icm/`) — this whole suite exercises the Runner
+  # against these three pages. `Valea.Mounts.list/1` is config truth over
+  # `icms:` ONLY (no filesystem-glob discovery of an embedded
+  # `mounts/<name>`), so `setup` mounts a REAL EXTERNAL ICM (via
   # `AgentCase.mount_test_icm!/2`) carrying this same content. Every mount
   # is external now, so every workflow/target path in this file is the
   # ICM's ABSOLUTE resolved path (`icm.root`-relative), never the old

@@ -112,10 +112,16 @@ defmodule Valea.AgentCase do
   end
 
   @doc """
-  Isolated `VALEA_APP_DIR` + a freshly created, opened workspace — for tests
-  that need `Valea.Workspace.Manager.current/0` to resolve (channel join
-  replay, `Valea.Agents.list_sessions/0`). Registers `on_exit` cleanup and
-  returns the opened workspace map (`%{path: ..., ...}`).
+  Isolated `VALEA_APP_DIR` + a freshly created, opened v5 (id-based, hidden
+  under `Valea.App.Config.workspaces_dir/0`) workspace — for tests that
+  need `Valea.Workspace.Manager.current/0` to resolve (channel join replay,
+  `Valea.Agents.list_sessions/0`). Registers `on_exit` cleanup and returns
+  the opened workspace map (`%{path: ..., ...}`).
+
+  Every caller of this helper must be `async: false` (a hard requirement:
+  the isolation below mutates the `VALEA_APP_DIR` process env var, which is
+  GLOBAL to the VM — safe only because ExUnit never runs an `async: false`
+  test concurrently with anything else).
   """
   def open_workspace!(name \\ "W") do
     dir =
@@ -133,7 +139,7 @@ defmodule Valea.AgentCase do
       System.delete_env("VALEA_APP_DIR")
     end)
 
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), name)
+    {:ok, ws} = Manager.create(name)
     ws
   end
 

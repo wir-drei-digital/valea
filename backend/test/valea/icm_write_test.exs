@@ -7,17 +7,15 @@ defmodule Valea.ICMWriteTest do
   alias Valea.ICM
   alias Valea.Markdown.ProseMirror
 
-  # Post-3.2, `Valea.Mounts.list/1` is config truth over `icms:` only — a
-  # fresh workspace seeds no mount at all (`Manager.create/2` still
-  # physically scaffolds a legacy `mounts/<slug>` starter folder, but never
-  # registers it under `icms:`, so `Mounts.list/1` can't see it). This whole
-  # suite's fixtures assume the legacy scaffold's rich seed content (Offers/,
-  # Policies/, Pricing/, Templates/, Clients/, Workflows/ — including the
-  # `Workflows/*.md` `path:` frontmatter convention every
-  # rename/reference-rewrite assertion below addresses), so it's copied
-  # fresh into an EXTERNAL tmp dir and mounted via `Mounts.mount/2`, landing
-  # at mount key "primary" (name "Primary" slugifies to "primary" —
-  # `Valea.Workspace.Scaffold.slugify/1`).
+  # `Valea.Mounts.list/1` is config truth over `icms:` only — a fresh v5
+  # workspace seeds no mount at all. This whole suite's fixtures assume the
+  # old starter mount's rich seed content (Offers/, Policies/, Pricing/,
+  # Templates/, Clients/, Workflows/ — including the `Workflows/*.md`
+  # `path:` frontmatter convention every rename/reference-rewrite assertion
+  # below addresses), preserved under `test/fixtures/starter_icm/` (Task
+  # 11.3), so it's copied fresh into an EXTERNAL tmp dir and mounted via
+  # `Mounts.mount/2`, landing at mount key "primary" (name "Primary"
+  # slugifies to "primary" — `Valea.Workspace.Scaffold.slugify/1`).
   #
   # Task 4.2 re-key: every `Valea.ICM` function now takes `(mount_key,
   # rel_path)`, `rel_path` relative to `icm.root` — `""` addresses the
@@ -29,10 +27,7 @@ defmodule Valea.ICMWriteTest do
         "valea-starter-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
       )
 
-    File.cp_r!(
-      Path.join(:code.priv_dir(:valea), "legacy_workspace_template/mounts/starter"),
-      dir
-    )
+    File.cp_r!(Path.expand("../fixtures/starter_icm", __DIR__), dir)
 
     on_exit(fn -> File.rm_rf!(dir) end)
     Manifest.write!(dir, %{id: Ecto.UUID.generate(), name: name, description: ""})
@@ -50,7 +45,7 @@ defmodule Valea.ICMWriteTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
+    {:ok, ws} = Manager.create("Primary")
     icm = mount_starter_icm!(ws.path)
 
     on_exit(fn ->

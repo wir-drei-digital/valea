@@ -29,16 +29,16 @@ defmodule ValeaWeb.WorkspaceEventsTest do
       socket(ValeaWeb.UserSocket, nil, %{})
       |> subscribe_and_join(ValeaWeb.WorkspaceEventsChannel, "workspace:events")
 
-    %{socket: socket, parent: Path.join(dir, "workspaces")}
+    %{socket: socket}
   end
 
-  test "workspace open pushes workspace event", %{parent: parent} do
-    {:ok, _} = Manager.create(parent, "W")
+  test "workspace open pushes workspace event", %{socket: _socket} do
+    {:ok, _} = Manager.create("W")
     assert_push "workspace", %{"open" => true, "name" => "W"}
   end
 
-  test "icm change pushes icm_changed", %{parent: parent} do
-    {:ok, ws} = Manager.create(parent, "W")
+  test "icm change pushes icm_changed", %{socket: _socket} do
+    {:ok, ws} = Manager.create("W")
 
     # Since Task 8.1 the watcher watches every enabled ICM's own
     # by-reference root (`Valea.Mounts.enabled/1`), not a workspace-local
@@ -137,8 +137,8 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     assert_push "mounts_changed", %{}
   end
 
-  test "queue change pushes queue_changed", %{parent: parent} do
-    {:ok, ws} = Manager.create(parent, "W")
+  test "queue change pushes queue_changed" do
+    {:ok, ws} = Manager.create("W")
 
     poll_until_queue_pushed(fn i ->
       File.write!(Path.join(ws.path, "queue/pending/probe-#{i}.json"), "{}")

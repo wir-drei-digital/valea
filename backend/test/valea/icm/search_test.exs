@@ -14,7 +14,7 @@ defmodule Valea.ICM.SearchTest do
 
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
-    {:ok, ws} = Manager.create(Path.join(dir, "workspaces"), "Primary")
+    {:ok, ws} = Manager.create("Primary")
 
     on_exit(fn ->
       Manager.close()
@@ -120,8 +120,8 @@ defmodule Valea.ICM.SearchTest do
     File.write!(Path.join(dir_b, "big.md"), slow_body)
 
     mounts = [
-      %{name: "slow_a", root: dir_a, rel_root: nil},
-      %{name: "slow_b", root: dir_b, rel_root: nil}
+      %{name: "slow_a", root: dir_a},
+      %{name: "slow_b", root: dir_b}
     ]
 
     timeout = 100

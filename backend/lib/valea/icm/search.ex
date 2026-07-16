@@ -22,9 +22,8 @@ defmodule Valea.ICM.Search do
   Each result's `path` (task 4.2's re-key) is relative to ITS OWN mount's
   root — paired with `mount` (that mount's key) to fully address it,
   mirroring every other ICM RPC surface's `(mount_key, rel_path)`
-  addressing. There is no more embedded-vs-external prefix to compute
-  (every mount is external post-3.2 — `Valea.Mounts`'s `rel_root` is
-  always `nil`), so this scans each mount's OWN root directly.
+  addressing. There is no embedded-vs-external prefix to compute (every
+  mount is external), so this scans each mount's OWN root directly.
   """
 
   alias Valea.Mounts

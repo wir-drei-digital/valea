@@ -260,15 +260,12 @@ defmodule Valea.CockpitTest do
       File.write!(Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]), content)
     end
 
-    # Post-task-3.2, `Valea.Mounts.list/1` is config truth over `icms:`
-    # ONLY — a freshly scaffolded (v5) workspace carries no seeded mount at
-    # all (no more legacy-v4 embedded `mounts/<slug>` glob discovery), so
-    # every mount in this describe block is now a REAL EXTERNAL ICM,
-    # mounted via `AgentCase.mount_test_icm!/2`, and every expected
-    # workflow path is that ICM's ABSOLUTE resolved path
-    # (`Valea.Workflows.workflow_path/2`'s `rel_root: nil` branch returns
-    # `abs` verbatim) — never a `mounts/<name>/...` workspace-relative
-    # literal.
+    # `Valea.Mounts.list/1` is config truth over `icms:` ONLY — a freshly
+    # scaffolded (v5) workspace carries no seeded mount at all, so every
+    # mount in this describe block is a REAL EXTERNAL ICM, mounted via
+    # `AgentCase.mount_test_icm!/2`, and every expected workflow path is
+    # that ICM's ABSOLUTE resolved path — never a `mounts/<name>/...`
+    # workspace-relative literal.
     test "carries the real absolute Workflows/... path from a mounted external ICM" do
       ws = AgentCase.open_workspace!()
 
