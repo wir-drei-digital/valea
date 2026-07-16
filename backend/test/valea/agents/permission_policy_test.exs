@@ -118,6 +118,25 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
     assert {:allow, "allow_once"} = P.decide(write(Path.join(icm, "out.json")), grant)
   end
 
+  # Regression (Task 6 review, Spec D): the write-allow clause (step 4) was
+  # widened to be kind-agnostic, but deny (step 1, `split_protected?/2`)
+  # still runs BEFORE write-allow in `decide_split/2`'s `cond`, so an
+  # explicit write grant pointing INTO a protected workspace dir (or an
+  # `app.sqlite*` db file) must still be denied — a grant can never buy its
+  # way past the hard-deny. The deleted legacy suite covered this; nothing
+  # in the split suite asserted it, so lock it here.
+  test "deny wins over an explicit write grant into a protected path", %{ctx: ctx, ws: ws} do
+    protected_log = Path.join(ws, "logs/audit.jsonl")
+    db_file = Path.join(ws, "app.sqlite")
+
+    grant = %{ctx | write_paths: [protected_log, db_file]}
+    assert {:deny, "reject_once"} = P.decide(write(protected_log), grant)
+    assert {:deny, "reject_once"} = P.decide(write(db_file), grant)
+
+    root_grant = %{ctx | write_roots: [Path.join(ws, "logs")]}
+    assert {:deny, "reject_once"} = P.decide(write(protected_log), root_grant)
+  end
+
   test "a related root that is not granted is denied on symlink escape", %{ctx: ctx} do
     assert {:deny, _} = P.decide(read("/etc/passwd"), ctx)
   end
