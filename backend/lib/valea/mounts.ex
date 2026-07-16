@@ -565,10 +565,11 @@ defmodule Valea.Mounts do
   end
 
   # Copies `priv/icm_template/` into `dest` (already an existing, empty-or-
-  # new directory) and substitutes `{{name}}` in the two template files
-  # that carry it. `icm.yaml` is deliberately NOT templated here — `create/3`
-  # always overwrites it with a freshly minted manifest right after this
-  # call.
+  # new directory), substitutes `{{name}}` in the two template files that
+  # carry it, and turns the template's `CLAUDE.md` into a symlink to
+  # `AGENTS.md` (`link_claude_md!/1`). `icm.yaml` is deliberately NOT
+  # templated here — `create/3` always overwrites it with a freshly minted
+  # manifest right after this call.
   defp seed_template!(dest, name) do
     File.cp_r!(icm_template_dir(), dest)
 
@@ -580,7 +581,26 @@ defmodule Valea.Mounts do
       end
     end
 
+    link_claude_md!(dest)
     :ok
+  end
+
+  # CLAUDE.md is a RELATIVE symlink to AGENTS.md (one map, two harness
+  # entry names). Filesystems/platforms without symlink support keep the
+  # template's one-line `@AGENTS.md` import file instead (Spec D §D1).
+  defp link_claude_md!(dest) do
+    path = Path.join(dest, "CLAUDE.md")
+
+    case File.rm(path) do
+      :ok ->
+        case File.ln_s("AGENTS.md", path) do
+          :ok -> :ok
+          {:error, _reason} -> File.write!(path, "@AGENTS.md\n")
+        end
+
+      {:error, _reason} ->
+        :ok
+    end
   end
 
   defp icm_template_dir, do: Application.app_dir(:valea, "priv/icm_template")

@@ -161,27 +161,58 @@ defmodule Valea.Mounts.MutationTest do
       assert {:ok, %{mount_key: "coaching", id: id}} = Mounts.create(ws, "Coaching", target)
       assert {:ok, _} = Ecto.UUID.cast(id)
 
-      refute File.dir?(Path.join(target, "Workflows"))
-      assert File.exists?(Path.join(target, "Decisions/2026.md"))
-      assert File.exists?(Path.join(target, "Templates/Client.md"))
-      assert File.exists?(Path.join(target, "Templates/Decision.md"))
-      assert File.exists?(Path.join(target, "CONTEXT.md"))
-      assert File.exists?(Path.join(target, "CLAUDE.md"))
-
       icm_yaml = File.read!(Path.join(target, "icm.yaml"))
       assert icm_yaml =~ "format: 2"
       assert icm_yaml =~ "id: \"#{id}\""
       assert icm_yaml =~ "name: \"Coaching\""
 
-      agents_md = File.read!(Path.join(target, "AGENTS.md"))
-      assert agents_md =~ "Coaching"
-      refute agents_md =~ "{{name}}"
-
-      context_md = File.read!(Path.join(target, "CONTEXT.md"))
-      refute context_md =~ "{{name}}"
-
       assert [%{name: "coaching", root: root, degraded: nil, enabled: true}] = Mounts.list(ws)
       assert root == real!(target)
+    end
+
+    test "create/3 seeds the 3-layer prose pattern", %{ws: ws, home: home} do
+      target = Path.join(home, "Mara Coaching")
+
+      assert {:ok, %{mount_key: key}} = Mounts.create(ws, "Mara Coaching", target)
+      root = Mounts.mount_by_key(ws, key).root
+
+      agents = File.read!(Path.join(root, "AGENTS.md"))
+      assert agents =~ "Mara Coaching"
+      assert agents =~ "today.json"
+      assert agents =~ "secrets"
+      refute agents =~ "{{name}}"
+      assert length(String.split(agents, "\n")) < 100
+
+      context = File.read!(Path.join(root, "CONTEXT.md"))
+      assert context =~ "| Task |"
+      assert context =~ "related_icms"
+      refute context =~ "{{name}}"
+
+      assert File.exists?(Path.join(root, "clients/CONTEXT.md"))
+      assert File.exists?(Path.join(root, "clients/docs/working-with-clients.md"))
+
+      refute File.dir?(Path.join(root, "Workflows"))
+      refute File.dir?(Path.join(root, "Templates"))
+      refute File.dir?(Path.join(root, "Decisions"))
+
+      claude = Path.join(root, "CLAUDE.md")
+
+      case File.read_link(claude) do
+        {:ok, link_target} -> assert link_target == "AGENTS.md"
+        {:error, _reason} -> assert File.read!(claude) == "@AGENTS.md\n"
+      end
+    end
+
+    test "seeded CONTEXT.md frontmatter parses as an empty related_icms declaration", %{
+      ws: ws,
+      home: home
+    } do
+      target = Path.join(home, "Mara Coaching")
+
+      assert {:ok, %{mount_key: key}} = Mounts.create(ws, "Mara Coaching", target)
+      mount = Mounts.mount_by_key(ws, key)
+
+      assert %{related: [], issues: []} = Valea.Mounts.Context.resolve(ws, mount)
     end
 
     test "refuses to clobber a folder that already holds an icm.yaml", %{ws: ws, home: home} do

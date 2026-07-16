@@ -1,40 +1,50 @@
-# This ICM: {{name}}
+# {{name}} — agent map
 
-You are working inside {{name}}'s knowledge module. This folder is its
-entire memory relevant to your job: every fact you may rely on, and every
-piece of work you produce, is a plain file here (or named exactly by the
-job that invoked you). If it is not in a file, you do not know it.
+This folder is an ICM: a portable, user-owned context project. You (the
+agent) interpret its prose — nothing in here is a schema, and no folder
+name is magic. Start at `CONTEXT.md`, the router, before any task.
 
-## The map
+## How this ICM is organized
 
-- `Workflows/` — job contracts. Each page states its Inputs, Process, and
-  Outputs; a workflow's `sources:` frontmatter lists the pages relevant to
-  that job, as paths relative to THIS folder's own root — never prefixed
-  with this ICM's name.
-- `Decisions/` — the decision log: dated entries recording decisions, why
-  they were made, and where they came from.
-- `Templates/` — starting points for new pages, not verbatim scripts.
-  `{{title}}` and `{{date}}` are filled in when a page is created from
-  one — use `Templates/Client.md`/`Templates/Decision.md` so new pages
-  stay consistent.
+- `CONTEXT.md` — the router: a prose table mapping tasks to places. Every
+  domain folder that grows keeps its own `CONTEXT.md` router too.
+- One folder per domain of work (`clients/` is the seeded example). Keep
+  documents next to the work they describe; nesting is fine and normal.
+- `docs/` inside a domain folder holds its reference material.
+- Prose files are Markdown. Name files lowercase-with-dashes.
 
-This ICM is new — add folders as it grows (e.g. `Clients/`, `Offers/`,
-`Policies/`, `Pricing/`) and describe each one here the way this section
-describes `Workflows/`, `Decisions/`, and `Templates/`, so a session
-reading this file knows exactly what it can rely on.
+## Conventions you maintain
 
-## How to use this
+### today.json
 
-- Read only the pages a job's Inputs (or a workflow's `sources:`) name.
-  Do not read the whole tree.
-- Never edit a page here directly — if something looks wrong or out of
-  date, say so in your reply instead; the owner curates this content by
-  hand.
-- You prepare drafts and suggestions only. You never send, delete, or act
-  directly beyond what the current job's contract allows.
+`today.json` at this ICM's root is what Valea's Today page renders. Valea
+never writes it — you do, whenever you prepare work or notice open loops.
+All fields optional; unknown fields are ignored:
 
-## Routing
+    {
+      "updated_at": "2026-07-16T08:00:00Z",
+      "prepared": [{ "title": "…", "summary": "…", "page": "relative/path.md" }],
+      "open_loops": [{ "title": "…", "source": "…" }],
+      "notes": ""
+    }
 
-`@CONTEXT.md` is what a session working in a DIFFERENT ICM reads to
-decide whether it needs anything from here. Keep it in sync when this map
-changes.
+`page` values are paths relative to this ICM's root; Valea renders them as
+links into Knowledge.
+
+### Secrets
+
+Documents store POINTERS to secrets ("the API key lives in the system
+keychain"), never values. Valea denies reads and writes on `secrets/`
+folders, `.env*` files, key material (`*.pem`, `*.key`), and anything named
+like credentials — do not route work through such files.
+
+### Routing
+
+When you add a folder or a significant document, add a row to the nearest
+`CONTEXT.md` so the next session can find it without searching.
+
+## Working style
+
+- Follow the routing tables rather than globbing the tree.
+- Every file change you make is reviewed live by the user through Valea's
+  permission gate — propose precise, minimal edits.
