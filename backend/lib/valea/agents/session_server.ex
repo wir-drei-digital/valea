@@ -464,6 +464,12 @@ defmodule Valea.Agents.SessionServer do
       "kind" => Map.get(opts, :kind),
       "workflow" => run_field(run, "workflow"),
       "run_id" => run_field(run, "id"),
+      # Spec D §B (Task 9): the session-with-context primitive's own two
+      # locators, recorded verbatim (raw string-keyed maps, or nil) — never
+      # re-derived from `input_path`, so a follow-up reading this meta later
+      # sees exactly what the caller named.
+      "context_doc" => Map.get(opts, :context_doc),
+      "input" => Map.get(opts, :input),
       "title" => Map.get(opts, :title),
       "harness" => "claude_code",
       "generation" => scope.workspace.generation,

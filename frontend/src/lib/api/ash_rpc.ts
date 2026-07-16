@@ -215,16 +215,17 @@ export async function executeActionChannelPush<T>(
 
 
 export type CreateAgentSessionInput = {
-  kind: string;
   mountKey: string;
   generation: number;
+  contextDoc?: Record<string, any> | null;
+  input?: Record<string, any> | null;
 };
 
-export type CreateAgentSessionFields = UnifiedFieldSelection<{id: string, __type: "TypedMap", __primitiveFields: "id"}>[];
+export type CreateAgentSessionFields = UnifiedFieldSelection<{id: string, inputPath: string | null, __type: "TypedMap", __primitiveFields: "id" | "inputPath"}>[];
 
 export type InferCreateAgentSessionResult<
   Fields extends CreateAgentSessionFields | undefined,
-> = InferResult<{id: string, __type: "TypedMap", __primitiveFields: "id"}, Fields>;
+> = InferResult<{id: string, inputPath: string | null, __type: "TypedMap", __primitiveFields: "id" | "inputPath"}, Fields>;
 
 export type CreateAgentSessionResult<Fields extends CreateAgentSessionFields | undefined = undefined> = | { success: true; data: InferCreateAgentSessionResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

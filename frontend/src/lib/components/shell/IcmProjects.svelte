@@ -77,7 +77,7 @@
   async function startSession(mountKey: string): Promise<void> {
     startError = { ...startError, [mountKey]: '' };
     starting = { ...starting, [mountKey]: true };
-    const result = await api.createAgentSession('chat', mountKey, workspaceStore.generation ?? 0);
+    const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0);
     starting = { ...starting, [mountKey]: false };
 
     if (result.ok) {

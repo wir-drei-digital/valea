@@ -21,6 +21,8 @@ defmodule Valea.Agents.SessionReadRootsTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
+  alias Valea.Agents.SessionScope
+  alias Valea.Workspace.Manager
 
   setup do
     ws = AgentCase.open_workspace!("Primary")
@@ -93,17 +95,39 @@ defmodule Valea.Agents.SessionReadRootsTest do
              AgentCase.start_session(workspace, "happy", %{mount_key: icm.mount_key})
   end
 
-  test "a granted session's read_paths join read_roots on top of the primary's",
+  # Re-points the workflow-era "a granted session's read_paths join
+  # read_roots on top of the primary's" case (Spec D §B, Task 9): a `chat`
+  # session's `read_paths` grant — the session-with-context primitive's
+  # `input` locator, resolved to ONE exact path before scope resolution —
+  # still lands as an exact `Read(<path>)` managedSettings allow AND an ACP
+  # `additional_roots` entry, on top of `read_roots` (`policy_ctx`)
+  # continuing to carry it. `SessionScope.resolve/1` is called directly here
+  # (rather than through `AgentCase.start_session/3`) so the test can
+  # inspect the scope's own `managed_settings`/`additional_roots` fields —
+  # `SessionServer.init/1` folds them into the live ACP launch but does not
+  # re-expose them on `policy_ctx`.
+  test "a chat session's read_paths grant lands as an exact Read() allow and an additional_root, on top of read_roots",
        %{workspace: workspace, icm: icm} do
     extra_read = Path.join([workspace, "queue", "staging", "r1"])
     File.mkdir_p!(extra_read)
 
-    {:ok, %{id: id}} =
-      AgentCase.start_session(workspace, "happy", %{kind: "workflow", read_paths: [extra_read]})
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: icm.mount_key,
+               generation: Manager.generation(),
+               session_id: "test-" <> Ecto.UUID.generate(),
+               read_paths: [extra_read]
+             })
 
+    assert extra_read in scope.additional_roots
+    assert %{"permissions" => %{"allow" => allow}} = Jason.decode!(scope.managed_settings)
+    assert "Read(#{extra_read})" in allow
+
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy", %{read_paths: [extra_read]})
     on_exit(fn -> AgentCase.kill_session(id) end)
 
-    assert %{read_roots: read_roots, session_kind: "workflow"} = policy_ctx_for(id)
+    assert %{read_roots: read_roots, session_kind: "chat"} = policy_ctx_for(id)
     assert Enum.sort(read_roots) == Enum.sort([icm.root, extra_read])
   end
 

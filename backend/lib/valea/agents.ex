@@ -30,7 +30,10 @@ defmodule Valea.Agents do
   caller that already resolved `scope` with a specific `session_id` MUST
   pass the SAME id here, so the running session and its `scope`'s
   `managed_context` stay keyed to one identity; generated here when
-  absent) and `:handshake_timeout_ms` (test override).
+  absent), `:handshake_timeout_ms` (test override), and `:context_doc`/
+  `:input` (Spec D §B — the session-with-context primitive's own two
+  locators, opaque here: passed straight through to `SessionServer.init/1`'s
+  transcript meta, never inspected or resolved in this module).
   """
   @spec start_session(map()) :: {:ok, %{id: String.t()}} | {:error, term()}
   def start_session(opts) when is_map(opts) do

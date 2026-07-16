@@ -95,6 +95,7 @@ import type {
   IcmSearchFields,
   IcmPathsExistFields,
   CreateAgentSessionFields,
+  CreateAgentSessionInput,
   ListAgentSessionsFields,
   ListRecentSessionsByIcmFields,
   ListSessionsFields,
@@ -308,7 +309,7 @@ const icmSearchFields = [
 ] as unknown as IcmSearchFields;
 const icmPathsExistFields = [{ results: ['path', 'exists'] }] as unknown as IcmPathsExistFields;
 
-const createAgentSessionFields: CreateAgentSessionFields = ['id'];
+const createAgentSessionFields: CreateAgentSessionFields = ['id', 'inputPath'];
 const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
 
 // Same anonymous-embedded-map-array codegen gap as `icmEntryReferencesFields`
@@ -428,7 +429,7 @@ const mailInboxFields = [{ entries: ['uid', 'fromText', 'subject', 'date'] }] as
 
 function callCreateAgentSessionChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { kind: string; mountKey: string; generation: number }
+  input: CreateAgentSessionInput
 ) {
   return wrapChannelCall((handlers) =>
     createAgentSessionChannel({ channel, input, fields: createAgentSessionFields, ...handlers })
@@ -1029,12 +1030,39 @@ export const api = {
   // `+` will supply a real choice). An unknown/disabled/degraded mount key
   // surfaces as `icm_unavailable` from the backend, same shape as any other
   // RPC error this wrapper propagates.
-  createAgentSession: (kind: string, mountKey: string, generation: number) =>
+  //
+  // Task 9 (Spec D §B): the `kind` argument is gone — the server always
+  // creates a `chat` session now. `opts.contextDoc`/`opts.input` are raw
+  // string-keyed ICM/workspace locators, sent verbatim (same convention the
+  // deleted run_workflow used for `input_locator`) — `contextDoc` names a
+  // document already covered by the session's own read roots (no extra
+  // grant); `input` is resolved server-side to ONE exact read path, granted,
+  // and returned as `inputPath` so the caller can reference exactly the
+  // file it unlocked in its opening prompt.
+  createAgentSession: (
+    mountKey: string,
+    generation: number,
+    opts?: {
+      /** Raw string-keyed ICM locator — sent verbatim ({kind:'icm', icm_id, path}). */
+      contextDoc?: { kind: 'icm'; icm_id: string; path: string };
+      /** Raw string-keyed ICM/workspace locator granted as one exact read path. */
+      input?: { kind: 'workspace'; path: string } | { kind: 'icm'; icm_id: string; path: string };
+    }
+  ) =>
     runRpc(
-      (channel) => callCreateAgentSessionChannel(channel, { kind, mountKey, generation }),
+      (channel) =>
+        callCreateAgentSessionChannel(channel, {
+          mountKey,
+          generation,
+          contextDoc: opts?.contextDoc ?? null,
+          input: opts?.input ?? null
+        }),
       () =>
         httpCreateAgentSession(
-          withAuth({ input: { kind, mountKey, generation }, fields: createAgentSessionFields })
+          withAuth({
+            input: { mountKey, generation, contextDoc: opts?.contextDoc ?? null, input: opts?.input ?? null },
+            fields: createAgentSessionFields
+          })
         )
     ),
 

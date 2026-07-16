@@ -120,7 +120,7 @@
       startError = 'No ICM is mounted yet. Add one in Knowledge first.';
       return;
     }
-    const result = await api.createAgentSession('chat', mountKey, workspaceStore.generation ?? 0);
+    const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0);
     if (result.ok) {
       const data = result.data as { id: string };
       doctorOverride = false;

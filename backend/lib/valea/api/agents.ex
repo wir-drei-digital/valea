@@ -26,6 +26,7 @@ defmodule Valea.Api.Agents do
 
   alias Valea.Agents.SessionScope
   alias Valea.Api.Error
+  alias Valea.Workspace.Manager
 
   # Shared `constraints fields:` shape for a session summary (Task 6.2's
   # `list_recent_sessions_by_icm`/`list_sessions_for`, both trimmed to
@@ -46,47 +47,83 @@ defmodule Valea.Api.Agents do
 
   actions do
     action :create_session, :map do
-      constraints fields: [id: [type: :string, allow_nil?: false]]
+      constraints fields: [
+                    id: [type: :string, allow_nil?: false],
+                    input_path: [type: :string, allow_nil?: true]
+                  ]
 
-      argument :kind, :string, allow_nil?: false
       argument :mount_key, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
+      # Spec D §B: both optional, both raw string-keyed locator maps
+      # (unconstrained :map — same convention the deleted run_workflow used
+      # for input_locator; the FE sends "kind"/"icm_id"/"path" verbatim).
+      argument :context_doc, :map, allow_nil?: true
+      argument :input, :map, allow_nil?: true
 
-      # Task 5.5: `create_session` gains `mount_key` — the session's
-      # PRIMARY ICM, chosen by the caller (for now, the frontend defaults to
-      # the first enabled ICM until Phase 9's sidebar `+` supplies a real
-      # choice). The id is generated HERE (not inside `start_session/1`) so
+      # Task 5.5 / Task 9 (Spec D §B): `create_session` resolves `mount_key`
+      # — the session's PRIMARY ICM, chosen by the caller (for now, the
+      # frontend defaults to the first enabled ICM until Phase 9's sidebar
+      # `+` supplies a real choice). The `kind` ARGUMENT is gone — the
+      # server always creates a `chat` session now (the field stays on the
+      # session schema/summaries; `Valea.Agents.create_follow_up/2` still
+      # threads a session's own recorded `kind` through for a follow-up).
+      # The id is generated HERE (not inside `start_session/1`) so
       # `SessionScope.resolve/1` — which needs a `session_id` up front to
-      # derive `managed_context`'s path — can run BEFORE the session starts;
-      # `start_session/1` is then handed the same id plus the resolved
-      # `scope`, never a raw `policy_ctx`/`workspace` pair. `resolve/1`'s own
-      # errors (`:workspace_changed` from a stale generation, checked FIRST;
-      # `:icm_unavailable` for an unknown/disabled/degraded mount_key) flow
-      # through `error_for/1` exactly like any other action's error atom —
-      # no separate `Manager.check_generation/1` call is needed here
-      # anymore, `resolve/1` already does it as its first gate.
+      # derive `managed_context`'s path — can run BEFORE the session
+      # starts; `start_session/1` is then handed the same id plus the
+      # resolved `scope`, never a raw `policy_ctx`/`workspace` pair.
+      #
+      # `context_doc`/`input` resolve FIRST, against the open workspace —
+      # fail-closed: a locator that doesn't resolve to a real file aborts
+      # creation entirely (`:context_doc_unavailable`/`:input_unavailable`)
+      # rather than starting a session that silently lacks its context.
+      # `context_doc` gets NO extra grant — it lives inside the primary (or
+      # a related) ICM, already covered by `SessionScope.resolve/1`'s own
+      # read roots. `input` is granted as ONE exact read path via
+      # `read_paths` — `SessionScope.resolve/1` folds it into both the
+      # managedSettings `Read(<path>)` allow and the ACP `additional_roots`.
+      # `Manager.check_generation/1` runs FIRST, before either locator is
+      # touched, so a stale generation surfaces as `workspace_changed`
+      # exactly like before (`SessionScope.resolve/1`'s own later check is
+      # a harmless double-check on the same guard).
       run fn input, _ctx ->
-        %{kind: kind, mount_key: mount_key, generation: generation} = input.arguments
+        %{mount_key: mount_key, generation: generation} = input.arguments
+        context_doc = Map.get(input.arguments, :context_doc)
+        input_locator = Map.get(input.arguments, :input)
         id = Valea.Agents.generate_session_id()
 
-        with {:ok, scope} <-
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: workspace}} <- Manager.current(),
+             {:ok, context_doc} <- resolve_context_doc(context_doc, workspace),
+             {:ok, input_abs} <- resolve_session_input(input_locator, workspace),
+             {:ok, scope} <-
                SessionScope.resolve(%{
-                 kind: kind,
+                 kind: "chat",
                  mount_key: mount_key,
                  generation: generation,
-                 session_id: id
+                 session_id: id,
+                 read_paths: if(input_abs, do: [input_abs], else: [])
                }),
              {:ok, %{id: id}} <-
                Valea.Agents.start_session(%{
                  id: id,
-                 kind: kind,
+                 kind: "chat",
                  title: "New session",
                  scope: scope,
                  run: nil,
                  initial_prompt: nil,
-                 on_turn_end: nil
+                 on_turn_end: nil,
+                 context_doc: context_doc,
+                 input: input_locator
                }) do
-          {:ok, %{id: id}}
+          Valea.Audit.append("session_started", %{
+            "session_id" => id,
+            "mount_key" => mount_key,
+            "context_doc" => context_doc,
+            "input" => input_locator
+          })
+
+          {:ok, %{id: id, input_path: input_abs}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -252,6 +289,30 @@ defmodule Valea.Api.Agents do
   def error_for(:no_workspace), do: Error.new("workspace_not_open")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
   def error_for(reason), do: Error.new(inspect(reason))
+
+  # Spec D §B fail-closed resolution: a named context that cannot be
+  # resolved to a real file aborts session creation with a stable atom the
+  # FE renders inline — never a session that silently lacks its context.
+  defp resolve_session_input(nil, _workspace), do: {:ok, nil}
+
+  defp resolve_session_input(locator, workspace) do
+    case Valea.Icm.Locator.resolve(workspace, locator) do
+      {:ok, abs} -> if File.regular?(abs), do: {:ok, abs}, else: {:error, :input_unavailable}
+      {:error, _reason} -> {:error, :input_unavailable}
+    end
+  end
+
+  defp resolve_context_doc(nil, _workspace), do: {:ok, nil}
+
+  defp resolve_context_doc(locator, workspace) do
+    case Valea.Icm.Locator.resolve(workspace, locator) do
+      {:ok, abs} ->
+        if File.regular?(abs), do: {:ok, locator}, else: {:error, :context_doc_unavailable}
+
+      {:error, _reason} ->
+        {:error, :context_doc_unavailable}
+    end
+  end
 
   # `Valea.Agents.list_sessions/0` returns string-keyed maps (built for JSON
   # transcript metadata); typed action returns need atom keys matching the

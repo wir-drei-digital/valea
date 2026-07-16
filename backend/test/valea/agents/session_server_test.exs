@@ -67,6 +67,8 @@ defmodule Valea.Agents.SessionServerTest do
              "kind" => "chat",
              "workflow" => nil,
              "run_id" => nil,
+             "context_doc" => nil,
+             "input" => nil,
              "title" => "Test",
              "harness" => "claude_code",
              "generation" => meta["generation"],
