@@ -361,8 +361,14 @@ defmodule Valea.Agents do
     end
   end
 
+  # `session/v1` (C8) is the only transcript schema this reader understands
+  # — a transcript whose line 1 isn't stamped with it (a pre-redesign
+  # transcript, or anything else that doesn't parse to this shape) is
+  # silently skipped rather than surfaced half-formed (spec §"Session
+  # persistence": no reader for old transcripts).
   defp session_summary(path) do
-    with {:ok, meta} <- read_meta(path) do
+    with {:ok, meta} <- read_meta(path),
+         %{"schema" => "session/v1"} <- meta do
       id = meta["id"]
       {live?, status} = live_status(id)
 

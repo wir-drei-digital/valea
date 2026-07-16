@@ -26,10 +26,13 @@ defmodule Valea.Workspace.Manager do
   def create(name), do: GenServer.call(__MODULE__, {:create, name}, 30_000)
 
   @doc """
-  LEGACY (v4, path-based) scaffold at an explicit `parent_dir` — still used
-  by `Valea.Workspace.Adopt` and any caller that hasn't moved to the
-  app-owned, id-based `create/1` yet. Kept working byte-for-byte; not
-  rewritten by this task.
+  LEGACY (v4, path-based) scaffold at an explicit `parent_dir`. No
+  production RPC action calls this anymore (Phase 11 deleted the last one,
+  `create_workspace_at_path`, and `Valea.Workspace.Adopt`, its other
+  caller) — it survives ONLY because a large share of the backend test
+  suite still scaffolds its fixture workspaces through it (`Scaffold.create/2`'s
+  starter-mount shape, not the bare v5 `icms: {}` one `create/1` produces).
+  Deleting it is Task 11.3's job, once that suite moves off it.
   """
   def create(parent_dir, name),
     do: GenServer.call(__MODULE__, {:create, parent_dir, name}, 30_000)
@@ -38,9 +41,10 @@ defmodule Valea.Workspace.Manager do
   def open(id), do: GenServer.call(__MODULE__, {:open, id}, 30_000)
 
   @doc """
-  LEGACY (path-based) open — still used by `Valea.Workspace.Adopt` (which
-  scaffolds directly via `Scaffold.create/2` and has no registered id yet)
-  and any caller that hasn't moved to the id-based `open/1` yet.
+  LEGACY (path-based) open — see `create/2`'s doc: no production RPC action
+  calls this anymore, it survives only for the test suite's legacy-scaffold
+  fixtures (a workspace `create/2` just scaffolded has no registered id yet
+  to `open/1` by).
   """
   def open_path(path), do: GenServer.call(__MODULE__, {:open_path, path}, 30_000)
 
@@ -240,56 +244,59 @@ defmodule Valea.Workspace.Manager do
 
   # The generation for this open is tentative until the whole pipeline
   # succeeds — it is only committed into `state.generation` in
-  # `open_workspace_migrate/4`. A failure after this step still rolls the
-  # Runtime (and whatever it wrote under this generation) back; the
-  # Manager's own counter never advances for an open that didn't finish.
+  # `finish_open/4`. A failure after this step still rolls the Runtime (and
+  # whatever it wrote under this generation) back; the Manager's own
+  # counter never advances for an open that didn't finish.
   defp open_workspace_runtime(path, state, started) do
     next_generation = state.generation + 1
 
     case start_runtime(path, next_generation) do
       {:ok, runtime_pid} ->
         started = started ++ [runtime_pid]
-        open_workspace_migrate(path, state, started, next_generation)
+        finish_open(path, state, started, next_generation)
 
       {:error, reason} ->
         rollback_with(started, reason, state)
     end
   end
 
-  # Brings an existing workspace up to the current on-disk shape (new
-  # marker dirs, converted workflow pages, managed Claude settings) before
-  # it is presented as open. Runs after the repo/runtime are up (so it acts
-  # on a fully mounted workspace) and before the open broadcast, so a
+  # Finishes the open pipeline once the repo and Runtime are up: reads the
+  # workspace's persistent identity off `config/workspace.yaml`, registers
+  # it, and broadcasts the open. Runs after the repo/runtime are up (so it
+  # acts on a fully mounted workspace) and before the open broadcast, so a
   # failure here rolls back exactly like a failed repo or runtime start —
   # never leaving a half-open workspace behind.
-  defp open_workspace_migrate(path, state, started, next_generation) do
-    case Valea.Workspace.Migration.migrate(path) do
-      {:ok, _version} ->
-        %{id: id, name: name} = read_workspace_meta(path)
-        info = %{path: path, name: name, id: id}
+  #
+  # Phase 11: this used to run `Valea.Workspace.Migration.migrate/1`
+  # (versioned on-disk upgrades — new marker dirs, converted workflow
+  # pages, managed Claude settings) before reading identity. That module is
+  # deleted — every workspace this Manager can open is born at its final
+  # on-disk shape by `Valea.Workspace.Scaffold` (v5 via `create/3`, or the
+  # legacy v4 test fixture shape via `create/1,2`), so there is nothing left
+  # to migrate. `read_workspace_meta/1` below reads `id`/`name` straight off
+  # the config a scaffold already wrote, never regenerated on open.
+  defp finish_open(path, state, started, next_generation) do
+    %{id: id, name: name} = read_workspace_meta(path)
+    info = %{path: path, name: name, id: id}
 
-        # Reads the SAME persistent id back off `config/workspace.yaml` every
-        # time this workspace is opened (see `read_workspace_meta/1`), so
-        # `record_opened/1`'s id-keyed upsert reuses the one entry rather
-        # than minting a fresh registration per open.
-        Config.record_opened(%{
-          id: id,
-          name: name,
-          slug: Scaffold.slugify(name),
-          path: path
-        })
+    # Reads the SAME persistent id back off `config/workspace.yaml` every
+    # time this workspace is opened (see `read_workspace_meta/1`), so
+    # `record_opened/1`'s id-keyed upsert reuses the one entry rather
+    # than minting a fresh registration per open.
+    Config.record_opened(%{
+      id: id,
+      name: name,
+      slug: Scaffold.slugify(name),
+      path: path
+    })
 
-        Phoenix.PubSub.broadcast(
-          Valea.PubSub,
-          "workspace",
-          {:workspace_opened, info, next_generation}
-        )
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "workspace",
+      {:workspace_opened, info, next_generation}
+    )
 
-        {:ok, %{state | workspace: info, children: started, generation: next_generation}}
-
-      {:error, reason} ->
-        rollback_with(started, reason, state)
-    end
+    {:ok, %{state | workspace: info, children: started, generation: next_generation}}
   end
 
   # The persistent workspace id and (v5+) display name, read straight off

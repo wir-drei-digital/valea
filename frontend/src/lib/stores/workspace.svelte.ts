@@ -19,12 +19,7 @@ export type { LiveSession };
  */
 type WorkspaceApi = Pick<
   Api,
-  | 'getWorkspace'
-  | 'recentWorkspaces'
-  | 'createWorkspace'
-  | 'openWorkspace'
-  | 'adoptWorkspace'
-  | 'workspaceSwitchPreflight'
+  'getWorkspace' | 'recentWorkspaces' | 'createWorkspace' | 'openWorkspace' | 'workspaceSwitchPreflight'
 >;
 
 export class WorkspaceStore {
@@ -96,32 +91,6 @@ export class WorkspaceStore {
   // now passes a workspace id string, not a filesystem path.
   async open(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const result = await this.#api.openWorkspace(id);
-    if (!result.ok) return { ok: false, error: result.error };
-
-    await this.refresh();
-    return { ok: true };
-  }
-
-  /**
-   * ICM-aware onboarding (A-T16): adopts an existing, non-workspace
-   * knowledge folder into a brand-new workspace BY MOVE — see
-   * `Valea.Workspace.Adopt` on the backend. Mirrors `create`/`open` above:
-   * only refreshes on success, so a rejected adopt (source already a
-   * workspace, nested in one, a cycle, cross-device, ...) leaves the
-   * store's current state untouched.
-   *
-   * UNUSED as of Task 10.3: `OpenWorkspaceFlow.svelte`'s move-adopt branch
-   * (the one caller) was replaced by `useExistingIcm`'s mount-by-reference
-   * flow — see `onboarding-path.ts`. Kept, not deleted: `Valea.Workspace.Adopt`
-   * itself stays registered on the backend until Phase 11 deletes it, and
-   * this wrapper is cheap to keep compiling alongside it.
-   */
-  async adopt(
-    parentDir: string,
-    name: string,
-    icmSourcePath: string
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const result = await this.#api.adoptWorkspace(parentDir, name, icmSourcePath);
     if (!result.ok) return { ok: false, error: result.error };
 
     await this.refresh();

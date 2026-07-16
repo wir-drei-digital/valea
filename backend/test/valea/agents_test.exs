@@ -62,6 +62,31 @@ defmodule Valea.AgentsTest do
     ~U[2026-01-01 00:00:00Z] |> DateTime.add(seconds_offset, :second) |> DateTime.to_iso8601()
   end
 
+  # Writes a raw transcript line-1 metadata map as-is (unlike
+  # `write_transcript!/4`, which always stamps `"schema" => "session/v1"`) —
+  # lets a test build a transcript that does NOT carry the current schema,
+  # to assert it's excluded.
+  defp write_raw_transcript!(workspace, id, meta) do
+    dir = Path.join([workspace, "logs", "sessions"])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, id <> ".jsonl"), Jason.encode!(meta) <> "\n")
+  end
+
+  describe "list_sessions/0" do
+    test "skips a transcript whose line 1 isn't schema session/v1 (spec: no reader for old transcripts)",
+         %{ws: ws} do
+      write_raw_transcript!(ws, "legacy-1", %{
+        "id" => "legacy-1",
+        "started_at" => iso(0),
+        "title" => "Pre-redesign session"
+      })
+
+      write_transcript!(ws, "current-1", "some-mount", iso(1))
+
+      assert {:ok, [%{"id" => "current-1"}]} = Agents.list_sessions()
+    end
+  end
+
   describe "list_recent_sessions_by_icm/1" do
     test "one group per ICM in config order, live before ended (newest first), capped at limit",
          %{ws: ws, zebra: zebra, alpha: alpha} do

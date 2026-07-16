@@ -13,17 +13,20 @@ defmodule Valea.Api.Workspace do
   payload carries `id`, never `path` — no caller supplies or receives a
   filesystem path (`opened_payload/1`, `recent_payload/1`).
 
-  `create_workspace_at_path`/`open_workspace_at_path` are the OLD,
-  path-based actions (formerly `create_workspace`/`open_workspace`) —
-  renamed here so the id-based actions above could take over their wire
-  names. Kept defined (compiling) but deliberately NOT listed in
-  `Valea.Api`'s `typescript_rpc` block, so they're unreachable from the
-  frontend: nothing calls them anymore (`Valea.Workspace.Adopt` scaffolds
-  and opens legacy workspaces directly through `Manager`/`Scaffold`, never
-  through this resource). Retained rather than deleted so Phase 10/11's
-  removal (alongside `Adopt` itself and the onboarding rework) is a clean,
-  isolated diff. `inspect_workspace`/`inspect_path`/`adopt_workspace` stay
-  untouched and RPC-exposed — onboarding still needs them until Phase 10.
+  Phase 11 deleted the OLD, path-based surface this moduledoc used to
+  describe: `create_workspace_at_path`/`open_workspace_at_path` (formerly
+  `create_workspace`/`open_workspace`, unreachable from the frontend since
+  Task 10.3's onboarding rework) and `inspect_workspace`/`inspect_path`/
+  `adopt_workspace` (the open/create dialog's classify-and-adopt-by-move
+  flow, superseded by the by-reference mount onboarding — see
+  `Valea.Mounts`/`Valea.Api.Icms`). `Valea.Workspace.Adopt`, the module
+  those three backed, is deleted alongside them.
+
+  `Valea.Workspace.Manager.create/2`/`open_path/1` (the legacy, path-based
+  Manager entry points those actions used to call into) are NOT deleted
+  yet — a large share of the backend test suite still scaffolds its
+  fixture workspaces through them pending Task 11.3's v5 flip. See that
+  task's punch list.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -33,9 +36,7 @@ defmodule Valea.Api.Workspace do
 
   alias Valea.Api.Error
   alias Valea.App.Config
-  alias Valea.Workspace.Adopt
   alias Valea.Workspace.Manager
-  alias Valea.Workspace.Scaffold
 
   actions do
     action :current, :map do
@@ -129,86 +130,6 @@ defmodule Valea.Api.Workspace do
       end
     end
 
-    # -- LEGACY path-based surface — see moduledoc --------------------------
-
-    action :create_workspace_at_path, :map do
-      argument :parent_dir, :string, allow_nil?: false
-      argument :name, :string, allow_nil?: false
-
-      run fn input, _ctx ->
-        case Manager.create(input.arguments.parent_dir, input.arguments.name) do
-          {:ok, info} -> {:ok, opened_payload(info)}
-          {:error, reason} -> {:error, error_message(reason)}
-        end
-      end
-    end
-
-    action :open_workspace_at_path, :map do
-      argument :path, :string, allow_nil?: false
-
-      run fn input, _ctx ->
-        case Manager.open_path(input.arguments.path) do
-          {:ok, info} -> {:ok, opened_payload(info)}
-          {:error, reason} -> {:error, error_message(reason)}
-        end
-      end
-    end
-
-    action :inspect_workspace, :map do
-      argument :path, :string, allow_nil?: false
-
-      run fn input, _ctx ->
-        summary = Scaffold.inspect_summary(input.arguments.path)
-        {:ok, Map.new(summary, fn {k, v} -> {to_string(k), v} end)}
-      end
-    end
-
-    # Classifies `path` for the open/create dialog's branch decision — see
-    # `Valea.Workspace.Adopt.classify_path/1` moduledoc for the full
-    # kind/rationale writeup, notably why a knowledge-shaped folder with no
-    # (or an unparseable) `icm.yaml` classifies as "other", not "icm".
-    # `name`/`description` come from the loaded manifest for kind "icm" and
-    # are `nil` otherwise — deliberately unconstrained (no `constraints
-    # fields:`) like `inspect_workspace` above, so no frontend call site
-    # needs an explicit field-selection list for this action.
-    action :inspect_path, :map do
-      argument :path, :string, allow_nil?: false
-
-      run fn input, _ctx ->
-        case Adopt.classify_path(input.arguments.path) do
-          {:workspace, nil} ->
-            {:ok, %{"kind" => "workspace", "name" => nil, "description" => nil}}
-
-          {:icm, manifest} ->
-            {:ok,
-             %{"kind" => "icm", "name" => manifest.name, "description" => manifest.description}}
-
-          {:other, nil} ->
-            {:ok, %{"kind" => "other", "name" => nil, "description" => nil}}
-        end
-      end
-    end
-
-    # Adopts an existing, non-workspace knowledge folder into a brand-new
-    # workspace BY MOVE — see `Valea.Workspace.Adopt` moduledoc for the full
-    # rejection list and the never-copy invariant. Returns the same
-    # opened-workspace payload shape as `create_workspace`/`open_workspace`
-    # above on success.
-    action :adopt_workspace, :map do
-      argument :parent_dir, :string, allow_nil?: false
-      argument :name, :string, allow_nil?: false
-      argument :icm_source_path, :string, allow_nil?: false
-
-      run fn input, _ctx ->
-        %{parent_dir: parent_dir, name: name, icm_source_path: icm_source_path} = input.arguments
-
-        case Adopt.create_with_icm(parent_dir, name, icm_source_path) do
-          {:ok, info} -> {:ok, opened_payload(info)}
-          {:error, reason} -> {:error, error_message(reason)}
-        end
-      end
-    end
-
     action :runtime_check, :map do
       constraints fields: [
                     ok: [type: :boolean, allow_nil?: false],
@@ -279,27 +200,5 @@ defmodule Valea.Api.Workspace do
   defp error_message(:target_not_empty), do: Error.new("target_not_empty")
   defp error_message(:workspace_changed), do: Error.new("workspace_changed")
   defp error_message(:unknown_workspace), do: Error.new("unknown_workspace")
-  # `Valea.Workspace.Adopt.create_with_icm/3`'s rejection atoms (see its
-  # moduledoc) — each already stringifies to the exact code the frontend
-  # matches on, but listed explicitly (rather than falling through to the
-  # generic `inspect/1` clause below) so a typo in either place is a
-  # compile-time-visible pattern-match, not a silently wrong wire string.
-  defp error_message(:source_not_found), do: Error.new("source_not_found")
-  defp error_message(:source_is_workspace), do: Error.new("source_is_workspace")
-  defp error_message(:source_in_workspace), do: Error.new("source_in_workspace")
-  defp error_message(:source_is_open_workspace), do: Error.new("source_is_open_workspace")
-  defp error_message(:cycle), do: Error.new("cycle")
-  defp error_message(:target_is_source), do: Error.new("target_is_source")
-  defp error_message(:cross_device), do: Error.new("cross_device")
-
-  # A non-EXDEV rename failure (`Adopt.map_move_error/1`'s catch-all). The
-  # underlying posix reason (:eacces, ...) is collapsed to the bare code
-  # the frontend matches on — its message tells the user the source folder
-  # is intact at its original location (Adopt removed the scaffolded
-  # target and never touched the source). Without this clause the
-  # fallthrough below would emit `inspect({:move_failed, reason})`, a wire
-  # string no frontend case matches.
-  defp error_message({:move_failed, _reason}), do: Error.new("move_failed")
-
   defp error_message(other), do: Error.new(inspect(other))
 end
