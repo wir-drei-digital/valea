@@ -39,7 +39,10 @@ defmodule Valea.Agents.SessionSettings do
     # Spec D §D5 mirror of PermissionPolicy.secret_relative?/1. Globs cannot
     # express the `.env.example` exception, so this layer denies `.env.*`
     # wholesale — strictly more restrictive than the authoritative policy
-    # layer, accepted by design.
+    # layer, accepted by design. This glob mirror is also case-SENSITIVE
+    # (unlike `secret_relative?/1`): the authoritative, case-insensitive
+    # enforcement is PermissionPolicy's deny tier, and this mirror is
+    # defense-in-depth on top of it, not the security boundary itself.
     secret_denies =
       Enum.flat_map(icm_roots, fn root ->
         patterns = [

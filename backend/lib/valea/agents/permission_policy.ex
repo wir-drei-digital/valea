@@ -212,19 +212,26 @@ defmodule Valea.Agents.PermissionPolicy do
   @doc false
   # Public only so the managedSettings mirror's tests can assert the same
   # pattern set; not part of the module's decision API.
+  #
+  # Case-INSENSITIVE, mirroring `protected_relative?/2` below: on this
+  # project's own platform (macOS/APFS, case-insensitive by default),
+  # `SECRETS/api_key.txt`, `.ENV`, `SERVER.PEM`, `ID.KEY` etc. name the same
+  # file the lowercase form would, so every comparison here runs against
+  # downcased segments/basename rather than downcasing only the
+  # `credentials` check.
   def secret_relative?(rel) do
     segments = Path.split(rel)
-    basename = List.last(segments) || ""
+    basename = String.downcase(List.last(segments) || "")
     dir_segments = Enum.drop(segments, -1)
 
     cond do
-      "secrets" in dir_segments -> true
+      Enum.any?(dir_segments, &(String.downcase(&1) == "secrets")) -> true
       basename == "secrets" -> true
       basename == ".env" -> true
       String.starts_with?(basename, ".env.") and basename != ".env.example" -> true
       String.ends_with?(basename, ".pem") -> true
       String.ends_with?(basename, ".key") -> true
-      String.contains?(String.downcase(basename), "credentials") -> true
+      String.contains?(basename, "credentials") -> true
       true -> false
     end
   end

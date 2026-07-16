@@ -211,6 +211,35 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
                P.decide(item_for("write", Path.join(icm, "secrets/new_key.txt")), ctx)
     end
 
+    # Case-insensitive: on this project's own platform (macOS/APFS,
+    # case-insensitive filesystem), `SECRETS/api_key.txt`, `.ENV`,
+    # `SERVER.PEM`, `ID.KEY` name the same files the lowercase forms would —
+    # the deny must catch them, mirroring `protected_relative?/2`'s
+    # case-insensitive dir/basename comparison.
+    test "case-variant segments and basenames are denied the same as lowercase", %{
+      ctx: ctx,
+      icm: icm
+    } do
+      for path <- [
+            Path.join(icm, "SECRETS/api_key.txt"),
+            Path.join(icm, "clients/kita/SECRETS/token"),
+            Path.join(icm, ".ENV"),
+            Path.join(icm, "deploy/.ENV.PRODUCTION"),
+            Path.join(icm, "certs/SERVER.PEM"),
+            Path.join(icm, "ID.KEY"),
+            Path.join(icm, "CREDENTIALS.md")
+          ] do
+        assert {:deny, "reject_once"} = P.decide(item_for("read", path), ctx)
+      end
+    end
+
+    test "case-variant .ENV.EXAMPLE is not denied", %{ctx: ctx, icm: icm} do
+      refute match?(
+               {:deny, _},
+               P.decide(item_for("read", Path.join(icm, ".ENV.EXAMPLE")), ctx)
+             )
+    end
+
     # `rel` is a granted read_root (present in `read_roots`) but is NOT part
     # of `icm_roots` in this ctx (only the primary `icm` root is) -- the new
     # secrets clause is scoped to `icm_roots`, not to every read_root, so a
