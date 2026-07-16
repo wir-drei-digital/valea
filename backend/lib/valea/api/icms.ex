@@ -53,6 +53,41 @@ defmodule Valea.Api.Icms do
   requested `mount_key`. `:mount_not_found` (no `icms:` entry at all for
   that key) maps to the same error vocabulary every other mutating action
   here uses.
+
+  ## `inspect_icm` (Task 10.1) — the onboarding preview primitive
+
+  `inspect_icm(path)` is the odd one out in this resource: it takes NO
+  `generation` and needs NO open workspace at all (unbound, same precedent
+  as `Valea.Api.Workspace`'s `recent`/`get_workspace`/
+  `workspace_switch_preflight`) — it exists so onboarding can ask "is this
+  folder a healthy ICM?" BEFORE any workspace has been created or opened.
+  It never mounts, never writes, and never raises an RPC-level error;
+  every outcome — success or failure — comes back as `{:ok, %{...}}` with
+  an `ok: boolean` discriminant, mirroring `icm_doctor`'s own
+  boolean-result-not-RPC-error shape.
+
+  Validation mirrors `Valea.Mounts`'s own `mount/2` pre-write gate
+  (`validate_mountable/2`) and `Valea.Mounts.External.validate_ref/2`, but
+  reimplements their workspace-INDEPENDENT sub-checks locally rather than
+  calling them: both live functions take a `workspace` argument to run
+  their `:inside_workspace`/`:ancestor_of_workspace` boundary checks
+  against, and there is no workspace here to pass — mirrors how
+  `Valea.Mounts` itself already duplicates `Valea.Mounts.External`'s
+  private `check_absolute?/1`/glob-safety checks rather than exposing them
+  (see that module's own comments) for the identical
+  can't-call-a-private-function-from-another-module reason. Checked, in
+  order: absolute-or-`~`-based (`:not_absolute` reason), resolves to
+  `$HOME` or `/` (`:home_or_root` — the one boundary guardrail that IS
+  workspace-independent and so DOES apply here), a Claude-Code
+  permission-glob metacharacter in the resolved path (`:unsafe_path`), the
+  resolved path is an existing directory, and finally
+  `Valea.Mounts.Manifest.load/1` (format-2, UUID `id` via `Ecto.UUID.cast`)
+  — PLUS one check `Manifest.load/1` itself does NOT make: `format` must
+  be exactly `2` (`Manifest.load/1`'s own moduledoc: a legacy `format: 1`
+  manifest loads and is preserved as-is, it is not rejected — but this
+  preview's job is specifically to bless a *healthy format-2* ICM, so a
+  loadable-but-format-1 manifest still fails here with a human-readable
+  reason).
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -63,9 +98,30 @@ defmodule Valea.Api.Icms do
   alias Valea.Api.Error
   alias Valea.Mounts
   alias Valea.Mounts.Doctor
+  alias Valea.Mounts.Manifest
+  alias Valea.Paths
   alias Valea.Workspace.Manager
 
   actions do
+    # Onboarding's mount-preview primitive — see moduledoc. Deliberately
+    # FIRST among the actions (no `generation` argument, unlike everything
+    # below it) so its unbound nature reads immediately, not buried after
+    # five generation-guarded ones.
+    action :inspect_icm, :map do
+      constraints fields: [
+                    ok: [type: :boolean, allow_nil?: false],
+                    name: [type: :string, allow_nil?: true],
+                    description: [type: :string, allow_nil?: true],
+                    reason: [type: :string, allow_nil?: true]
+                  ]
+
+      argument :path, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        {:ok, do_inspect_icm(input.arguments.path)}
+      end
+    end
+
     action :list_icms, :map do
       constraints fields: [
                     icms: [
@@ -236,6 +292,91 @@ defmodule Valea.Api.Icms do
       enabled: mount.enabled,
       degraded: mount.degraded
     }
+  end
+
+  # -- inspect_icm (Task 10.1) — see moduledoc -----------------------------
+
+  defp do_inspect_icm(path) do
+    if absolute_or_tilde?(path) do
+      resolved = resolve_best_effort(Path.expand(path))
+      check_inspect_boundaries(resolved)
+    else
+      inspect_failure("path must be an absolute path (or start with ~)")
+    end
+  end
+
+  defp check_inspect_boundaries(resolved) do
+    cond do
+      home_or_root?(resolved) ->
+        inspect_failure(
+          "path points at the home directory or filesystem root — not a valid ICM location"
+        )
+
+      icm_glob_unsafe?(resolved) ->
+        inspect_failure(
+          "path contains characters unsafe for permission globs: *, ?, [, ], {, }, (, )"
+        )
+
+      not File.dir?(resolved) ->
+        inspect_failure("no folder found at that path")
+
+      true ->
+        load_and_validate_manifest(resolved)
+    end
+  end
+
+  defp load_and_validate_manifest(resolved) do
+    case Manifest.load(resolved) do
+      {:ok, %Manifest{format: 2} = manifest} ->
+        %{
+          "ok" => true,
+          "name" => manifest.name,
+          "description" => manifest.description,
+          "reason" => nil
+        }
+
+      {:ok, %Manifest{format: other}} ->
+        inspect_failure("manifest format #{other} is not supported (expected format 2)")
+
+      {:error, :missing} ->
+        inspect_failure("no icm.yaml found in that folder")
+
+      {:error, {:invalid, reason}} ->
+        inspect_failure(reason)
+    end
+  end
+
+  defp inspect_failure(reason) do
+    %{"ok" => false, "name" => nil, "description" => nil, "reason" => reason}
+  end
+
+  # Duplicated (rather than exposed as new public API) from
+  # `Valea.Mounts`/`Valea.Mounts.External` — see moduledoc's "inspect_icm"
+  # section for why: both live checks need a `workspace` to compare
+  # against, and there is none here.
+  defp absolute_or_tilde?("/" <> _rest), do: true
+  defp absolute_or_tilde?("~"), do: true
+  defp absolute_or_tilde?("~/" <> _rest), do: true
+  defp absolute_or_tilde?(_relative), do: false
+
+  defp home_or_root?(resolved),
+    do: resolved == "/" or resolved == resolve_best_effort(System.user_home!())
+
+  @glob_metacharacters ["*", "?", "[", "]", "{", "}", "(", ")"]
+
+  defp icm_glob_unsafe?(resolved), do: String.contains?(resolved, @glob_metacharacters)
+
+  # Self-base realpath resolution (`Paths.resolve_real(path, path)`) — an
+  # inspected path is not naturally contained in any existing base, so
+  # resolving it against itself makes containment trivially satisfied and
+  # yields the fully symlink-walked physical path. Mirrors
+  # `Valea.Mounts`/`Valea.Mounts.External`'s identically-named private
+  # helpers exactly.
+  defp resolve_best_effort(path) do
+    case Paths.resolve_real(path, path) do
+      {:ok, resolved} -> resolved
+      {:error, _reason} -> path
+    end
   end
 
   defp id_for(%{manifest: %{id: id}}), do: id

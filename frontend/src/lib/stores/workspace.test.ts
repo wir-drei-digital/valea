@@ -77,16 +77,23 @@ describe('WorkspaceStore.switchTo', () => {
   function fakeApiWithOpen(generation = 3) {
     const api = fakeApi(true, generation) as any;
     api.openWorkspace = vi.fn(async () => ({ ok: true as const, data: {} }));
+    // Default: no live sessions — every existing (pre-Task-10.1) test below
+    // exercises the plain "clean preflight" path.
+    api.workspaceSwitchPreflight = vi.fn(async () => ({
+      ok: true as const,
+      data: { targetId: '/other', liveSessions: [] }
+    }));
     return api;
   }
 
-  it('switches with no flush hook (clean editor) — opens straight away', async () => {
+  it('runs preflight before opening, then switches with no flush hook (clean editor)', async () => {
     const api = fakeApiWithOpen();
     const store = new WorkspaceStore(api as never);
 
     const result = await store.switchTo('/other');
 
     expect(result).toEqual({ ok: true });
+    expect(api.workspaceSwitchPreflight).toHaveBeenCalledWith('/other');
     expect(api.openWorkspace).toHaveBeenCalledWith('/other');
     expect(store.state).toBe('open');
   });
@@ -133,5 +140,80 @@ describe('WorkspaceStore.switchTo', () => {
     const result = await store.switchTo('/other', async () => {});
 
     expect(result).toEqual({ ok: false, error: 'not_a_workspace' });
+  });
+
+  it('a preflight RPC failure is non-fatal — the switch still proceeds to open', async () => {
+    const api = fakeApiWithOpen();
+    api.workspaceSwitchPreflight = vi.fn(async () => ({ ok: false as const, error: 'unknown_workspace' }));
+    const store = new WorkspaceStore(api as never);
+
+    const result = await store.switchTo('/other');
+
+    expect(result).toEqual({ ok: true });
+    expect(api.openWorkspace).toHaveBeenCalledWith('/other');
+  });
+});
+
+describe('WorkspaceStore.switchTo — live-session confirmation', () => {
+  const liveSessions = [{ id: 's1', title: 'Draft proposal', icmMount: 'coaching' }];
+
+  function fakeApiWithLiveSessions() {
+    const api = fakeApi(true, 3) as any;
+    api.openWorkspace = vi.fn(async () => ({ ok: true as const, data: {} }));
+    api.workspaceSwitchPreflight = vi.fn(async () => ({
+      ok: true as const,
+      data: { targetId: '/other', liveSessions }
+    }));
+    return api;
+  }
+
+  it('with no confirm callback, aborts as cancelled and never opens', async () => {
+    const api = fakeApiWithLiveSessions();
+    const store = new WorkspaceStore(api as never);
+
+    const result = await store.switchTo('/other');
+
+    expect(result).toEqual({ ok: false, error: 'cancelled' });
+    expect(api.openWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('when the confirm callback resolves false (user cancels), aborts and never opens', async () => {
+    const api = fakeApiWithLiveSessions();
+    const store = new WorkspaceStore(api as never);
+    const confirmLiveSessions = vi.fn(async () => false);
+
+    const result = await store.switchTo('/other', undefined, confirmLiveSessions);
+
+    expect(result).toEqual({ ok: false, error: 'cancelled' });
+    expect(confirmLiveSessions).toHaveBeenCalledWith(liveSessions);
+    expect(api.openWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('when the confirm callback resolves true (user confirms), proceeds to open', async () => {
+    const api = fakeApiWithLiveSessions();
+    const store = new WorkspaceStore(api as never);
+    const confirmLiveSessions = vi.fn(async () => true);
+
+    const result = await store.switchTo('/other', undefined, confirmLiveSessions);
+
+    expect(result).toEqual({ ok: true });
+    expect(confirmLiveSessions).toHaveBeenCalledWith(liveSessions);
+    expect(api.openWorkspace).toHaveBeenCalledWith('/other');
+  });
+
+  it('an empty live_sessions list never calls the confirm callback', async () => {
+    const api = fakeApi(true, 3) as any;
+    api.openWorkspace = vi.fn(async () => ({ ok: true as const, data: {} }));
+    api.workspaceSwitchPreflight = vi.fn(async () => ({
+      ok: true as const,
+      data: { targetId: '/other', liveSessions: [] }
+    }));
+    const store = new WorkspaceStore(api as never);
+    const confirmLiveSessions = vi.fn(async () => false);
+
+    const result = await store.switchTo('/other', undefined, confirmLiveSessions);
+
+    expect(result).toEqual({ ok: true });
+    expect(confirmLiveSessions).not.toHaveBeenCalled();
   });
 });

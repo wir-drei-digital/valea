@@ -10,6 +10,7 @@ defmodule Valea.Api.IcmsTest do
 
   alias Valea.AgentCase
   alias Valea.Api.Icms
+  alias Valea.Mounts.Manifest
   alias Valea.Workspace.Manager
 
   setup do
@@ -97,6 +98,105 @@ defmodule Valea.Api.IcmsTest do
     assert checks != []
     assert Enum.all?(checks, &String.ends_with?(&1["id"], ":#{icm.mount_key}"))
     assert ok == Enum.all?(checks, &(&1["status"] == "ok"))
+  end
+
+  describe "inspect_icm/1" do
+    test "a healthy format-2 ICM folder returns ok: true with its manifest name/description" do
+      dir = icm_dir!(System.tmp_dir!(), "healthy")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      File.write!(
+        Path.join(dir, "icm.yaml"),
+        Manifest.render(%{id: Ecto.UUID.generate(), name: "Coaching", description: "Notes"})
+      )
+
+      assert {:ok,
+              %{"ok" => true, "name" => "Coaching", "description" => "Notes", "reason" => nil}} =
+               run(:inspect_icm, %{path: dir})
+    end
+
+    test "a non-ICM folder (no icm.yaml) returns ok: false with a human-readable reason" do
+      dir = icm_dir!(System.tmp_dir!(), "plain")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      assert {:ok, %{"ok" => false, "name" => nil, "description" => nil, "reason" => reason}} =
+               run(:inspect_icm, %{path: dir})
+
+      assert is_binary(reason)
+    end
+
+    test "a nonexistent path returns ok: false" do
+      missing =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-icms-test-missing-#{System.unique_integer([:positive])}"
+        )
+
+      assert {:ok, %{"ok" => false, "reason" => reason}} = run(:inspect_icm, %{path: missing})
+      assert is_binary(reason)
+    end
+
+    test "a legacy format-1 manifest is rejected — not format 2" do
+      dir = icm_dir!(System.tmp_dir!(), "legacy")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      File.write!(
+        Path.join(dir, "icm.yaml"),
+        "format: 1\nid: #{Ecto.UUID.generate()}\nname: Legacy\n"
+      )
+
+      assert {:ok, %{"ok" => false, "reason" => reason}} = run(:inspect_icm, %{path: dir})
+      assert reason =~ "format"
+    end
+
+    test "an invalid (non-uuid) id is rejected" do
+      dir = icm_dir!(System.tmp_dir!(), "badid")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      File.write!(Path.join(dir, "icm.yaml"), "id: not-a-uuid\nname: X\n")
+
+      assert {:ok, %{"ok" => false, "reason" => reason}} = run(:inspect_icm, %{path: dir})
+      assert is_binary(reason)
+    end
+
+    test "a relative path is rejected" do
+      assert {:ok, %{"ok" => false, "reason" => reason}} =
+               run(:inspect_icm, %{path: "relative/path"})
+
+      assert is_binary(reason)
+    end
+
+    test "the home directory is rejected as a boundary violation" do
+      assert {:ok, %{"ok" => false, "reason" => reason}} =
+               run(:inspect_icm, %{path: System.user_home!()})
+
+      assert reason =~ "home"
+    end
+
+    test "the filesystem root is rejected as a boundary violation" do
+      assert {:ok, %{"ok" => false, "reason" => reason}} = run(:inspect_icm, %{path: "/"})
+      assert reason =~ "root"
+    end
+
+    test "requires no generation argument and works with no workspace open at all" do
+      Manager.close()
+      assert {:error, :no_workspace} = Manager.current()
+
+      dir = icm_dir!(System.tmp_dir!(), "noworkspace")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      File.write!(
+        Path.join(dir, "icm.yaml"),
+        Manifest.render(%{id: Ecto.UUID.generate(), name: "Solo", description: ""})
+      )
+
+      assert {:ok, %{"ok" => true, "name" => "Solo"}} = run(:inspect_icm, %{path: dir})
+    end
   end
 
   test "every action rejects a stale generation with workspace_changed", %{generation: generation} do

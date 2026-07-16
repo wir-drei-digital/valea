@@ -91,6 +91,8 @@ import {
   retryMailboxOpsChannel,
   listDecidedQueueItems as httpListDecidedQueueItems,
   listDecidedQueueItemsChannel,
+  inspectIcm as httpInspectIcm,
+  inspectIcmChannel,
   listIcms as httpListIcms,
   listIcmsChannel,
   mountIcm as httpMountIcm,
@@ -142,6 +144,7 @@ import type {
   RetryMailboxOpsFields,
   ListDecidedQueueItemsFields,
   IcmTreeFields,
+  InspectIcmFields,
   ListIcmsFields,
   MountIcmFields,
   CreateIcmFields,
@@ -500,6 +503,11 @@ const setIcmEnabledFields: SetIcmEnabledFields = ['saved'];
 const unmountIcmFields: UnmountIcmFields = ['unmounted'];
 const icmDoctorFields: IcmDoctorFields = ['ok', 'checks'];
 
+// `inspect_icm` (Task 10.1) — onboarding's mount-preview primitive, no
+// `generation`/open-workspace requirement (see `Valea.Api.Icms`'s
+// moduledoc). Plain top-level fields, same as `mountIcmFields` above.
+const inspectIcmFields: InspectIcmFields = ['ok', 'name', 'description', 'reason'];
+
 // `icm_tree` (task 4.2 re-key) — a single ICM's `{mountKey, title, tree}`,
 // no more all-mounts grouped envelope (`mounts: [...]`). `mountKey`/`title`
 // are plain typed top-level fields with no codegen gap; `tree` stays an
@@ -718,6 +726,15 @@ function callListDecidedQueueItemsChannel(channel: NonNullable<ReturnType<typeof
   );
 }
 
+function callInspectIcmChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { path: string }
+) {
+  return wrapChannelCall((handlers) =>
+    inspectIcmChannel({ channel, input, fields: inspectIcmFields, ...handlers })
+  );
+}
+
 function callListIcmsChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { generation: number }
@@ -857,6 +874,43 @@ function callIcmPathsExistChannel(
   return wrapChannelCall((handlers) =>
     icmPathsExistChannel({ channel, input, fields: icmPathsExistFields, ...handlers })
   );
+}
+
+/**
+ * One live agent session a workspace switch would stop — mirrors
+ * `Valea.Api.Workspace.session_payload/1`'s `%{"id", "title", "icm_mount"}`.
+ */
+export type LiveSession = {
+  id: string;
+  title: string;
+  icmMount: string | null;
+};
+
+/**
+ * Typed shape of a `workspace_switch_preflight` RPC result (Task 2.4's
+ * `Valea.Workspace.Manager.switch_preflight/1`, wired into `WorkspaceStore.
+ * switchTo` at Task 10.1). The backend action returns an unconstrained
+ * `:map` (`InferWorkspaceSwitchPreflightResult = Record<string, any>`,
+ * STRING-keyed — `target_id`/`live_sessions`), so this is asserted by
+ * `normalizeWorkspaceSwitchPreflight` below rather than inferred by
+ * ash_typescript, mirroring `PathInspection`/`normalizePathInspection`
+ * just below.
+ */
+export type WorkspaceSwitchPreflight = {
+  targetId: string;
+  liveSessions: LiveSession[];
+};
+
+export function normalizeWorkspaceSwitchPreflight(raw: Record<string, any>): WorkspaceSwitchPreflight {
+  const rawSessions = Array.isArray(raw.live_sessions) ? raw.live_sessions : [];
+  return {
+    targetId: raw.target_id,
+    liveSessions: rawSessions.map((session: Record<string, any>) => ({
+      id: session.id,
+      title: session.title,
+      icmMount: session.icm_mount ?? null
+    }))
+  };
 }
 
 /**
@@ -1044,12 +1098,17 @@ export const api = {
 
   // Read-only preflight for a workspace switch (Task 2.4) — reports the
   // currently open workspace's live agent sessions a switch to `id` would
-  // stop. Unwired into any store/UI yet — the id-consuming switcher UI
-  // lands in Phase 10.
+  // stop. Wired into `WorkspaceStore.switchTo` at Task 10.1 — a switch to
+  // a target with live sessions confirms with the caller before opening.
   workspaceSwitchPreflight: (id: string) =>
     runRpc(
       (channel) => callWorkspaceSwitchPreflightChannel(channel, { id }),
       () => httpWorkspaceSwitchPreflight(withAuth({ input: { id } }))
+    ).then(
+      (result): ApiResult<WorkspaceSwitchPreflight> =>
+        result.ok
+          ? { ok: true, data: normalizeWorkspaceSwitchPreflight(result.data as Record<string, any>) }
+          : result
     ),
 
   inspectWorkspace: (path: string) =>
@@ -1442,6 +1501,16 @@ export const api = {
   // raw-delivery split `QueueStore`/`AuditStore` use for their list RPCs.
   // Unlike the retired `list_mounts`, `list_icms` takes a `generation` —
   // see `Valea.Api.Icms`'s moduledoc for why every action here guards one.
+
+  // Onboarding's mount-preview primitive (Task 10.1) — no `generation`, no
+  // open-workspace requirement (see `Valea.Api.Icms`'s moduledoc,
+  // "inspect_icm"). Never rejects with an RPC error; every outcome comes
+  // back as `ok: true`, with a `data` payload.
+  inspectIcm: (path: string) =>
+    runRpc(
+      (channel) => callInspectIcmChannel(channel, { path }),
+      () => httpInspectIcm(withAuth({ input: { path }, fields: inspectIcmFields }))
+    ),
 
   listIcms: (generation: number) =>
     runRpc(

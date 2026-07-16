@@ -1882,6 +1882,79 @@ export async function icmDoctorChannel<Fields extends IcmDoctorFields | undefine
 }
 
 
+export type InspectIcmInput = {
+  path: string;
+};
+
+export type InspectIcmFields = UnifiedFieldSelection<{ok: boolean, name: string | null, description: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "ok" | "name" | "description" | "reason"}>[];
+
+export type InferInspectIcmResult<
+  Fields extends InspectIcmFields | undefined,
+> = InferResult<{ok: boolean, name: string | null, description: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "ok" | "name" | "description" | "reason"}, Fields>;
+
+export type InspectIcmResult<Fields extends InspectIcmFields | undefined = undefined> = | { success: true; data: InferInspectIcmResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function inspectIcm<Fields extends InspectIcmFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: InspectIcmInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<InspectIcmResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "inspect_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<InspectIcmResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function inspectIcmChannel<Fields extends InspectIcmFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: InspectIcmInput;
+  fields: Fields;
+  resultHandler: (result: InspectIcmResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<InspectIcmResult<Fields>>(
+    config.channel,
+    {
+    action: "inspect_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type ListIcmsInput = {
   generation: number;
 };

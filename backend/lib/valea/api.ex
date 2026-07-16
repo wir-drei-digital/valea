@@ -82,6 +82,7 @@ defmodule Valea.Api do
     end
 
     resource Valea.Api.Icms do
+      rpc_action(:inspect_icm, :inspect_icm)
       rpc_action(:list_icms, :list_icms)
       rpc_action(:mount_icm, :mount_icm)
       rpc_action(:create_icm, :create_icm)
