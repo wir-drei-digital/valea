@@ -64,6 +64,7 @@ defmodule Valea.Api do
       rpc_action(:inspect_icm, :inspect_icm)
       rpc_action(:list_icms, :list_icms)
       rpc_action(:mount_icm, :mount_icm)
+      rpc_action(:adopt_icm, :adopt_icm)
       rpc_action(:create_icm, :create_icm)
       rpc_action(:set_icm_enabled, :set_icm_enabled)
       rpc_action(:unmount_icm, :unmount_icm)

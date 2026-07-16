@@ -79,13 +79,22 @@ defmodule Valea.Api.Icms do
   workspace-independent and so DOES apply here), a Claude-Code
   permission-glob metacharacter in the resolved path (`:unsafe_path`), the
   resolved path is an existing directory, and finally
-  `Valea.Mounts.Manifest.load/1` (format-2, UUID `id` via `Ecto.UUID.cast`)
-  — PLUS one check `Manifest.load/1` itself does NOT make: `format` must
-  be exactly `2` (`Manifest.load/1`'s own moduledoc: a legacy `format: 1`
-  manifest loads and is preserved as-is, it is not rejected — but this
-  preview's job is specifically to bless a *healthy format-2* ICM, so a
-  loadable-but-format-1 manifest still fails here with a human-readable
-  reason).
+  `Valea.Mounts.Manifest.load/1`. Any loadable manifest (format 1 or 2,
+  `Manifest.load/1` only ever rejects a missing/blank/non-UUID `id` or a
+  missing/blank `name`) inspects `ok: true` — aligned with `mount/2`, which
+  has always accepted format 1 (`Manifest.load/1` never gated on `format`;
+  only this preview's OLD stricter check did, before Task 12/Spec D §D4).
+
+  Every result also carries `"adoptable"` (Task 12, Spec D §D4): `true` iff
+  the folder exists, passes the same boundary/glob checks above, and has NO
+  `icm.yaml` at all (`Manifest.load/1` returns `{:error, :missing}`) —
+  `false` for a healthy, an invalid, or a boundary-rejected folder alike. A
+  folder reporting `adoptable: true` here is exactly the set `adopt_icm`
+  below will accept (same `check_adoptable/2` gate in `Valea.Mounts`, only
+  workspace-independent boundary checks re-run twice for two different
+  reasons — this action has no workspace to compare against; `adopt_icm`
+  re-validates against the LIVE workspace at mutation time rather than
+  trusting a possibly-stale earlier `inspect_icm` read).
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -110,7 +119,8 @@ defmodule Valea.Api.Icms do
                     ok: [type: :boolean, allow_nil?: false],
                     name: [type: :string, allow_nil?: true],
                     description: [type: :string, allow_nil?: true],
-                    reason: [type: :string, allow_nil?: true]
+                    reason: [type: :string, allow_nil?: true],
+                    adoptable: [type: :boolean, allow_nil?: false]
                   ]
 
       argument :path, :string, allow_nil?: false
@@ -168,6 +178,35 @@ defmodule Valea.Api.Icms do
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              {:ok, %{mount_key: mount_key, id: id}} <- Mounts.mount(root, path) do
+          broadcast_mounts_changed()
+          {:ok, %{mount_key: mount_key, id: id}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    # Adopt-a-folder (Task 12, Spec D §D4) — the consent-gated write that
+    # follows an `inspect_icm` reporting `adoptable: true`. Mirrors
+    # `:mount_icm`'s structure exactly; the only difference is the
+    # `Valea.Mounts` function called and the extra `name` argument the mint
+    # needs.
+    action :adopt_icm, :map do
+      constraints fields: [
+                    mount_key: [type: :string, allow_nil?: false],
+                    id: [type: :string, allow_nil?: false]
+                  ]
+
+      argument :path, :string, allow_nil?: false
+      argument :name, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{path: path, name: name, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: workspace}} <- Manager.current(),
+             {:ok, %{mount_key: mount_key, id: id}} <- Mounts.adopt(workspace, path, name) do
           broadcast_mounts_changed()
           {:ok, %{mount_key: mount_key, id: id}}
         else
@@ -274,9 +313,14 @@ defmodule Valea.Api.Icms do
   # own atoms, and the eight boundary/glob-safety reason atoms
   # `Valea.Mounts.mount/2`'s validation gate surfaces (formerly
   # `Valea.Mounts.External.validate_ref/2`'s vocabulary, inlined at Phase
-  # 11).
+  # 11). `{:mint_failed, reason}` is `adopt_icm`'s own (Task 12, Spec D
+  # §D4) — the OS reason `Valea.Mounts.Manifest.write!/2` raised when
+  # minting the adopted folder's `icm.yaml` (e.g. `:eacces`) is carried
+  # through explicitly rather than falling to the generic `inspect/1`
+  # catch-all, so the frontend gets a stable, greppable code.
   def error_for(:no_workspace), do: Error.new("workspace_not_open")
   def error_for({:invalid_manifest, _reason}), do: Error.new("invalid_manifest")
+  def error_for({:mint_failed, reason}), do: Error.new("mint_failed: #{inspect(reason)}")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
   def error_for(reason), do: Error.new(inspect(reason))
 
@@ -325,19 +369,23 @@ defmodule Valea.Api.Icms do
 
   defp load_and_validate_manifest(resolved) do
     case Manifest.load(resolved) do
-      {:ok, %Manifest{format: 2} = manifest} ->
+      {:ok, manifest} ->
         %{
           "ok" => true,
           "name" => manifest.name,
           "description" => manifest.description,
-          "reason" => nil
+          "reason" => nil,
+          "adoptable" => false
         }
 
-      {:ok, %Manifest{format: other}} ->
-        inspect_failure("manifest format #{other} is not supported (expected format 2)")
-
       {:error, :missing} ->
-        inspect_failure("no icm.yaml found in that folder")
+        %{
+          "ok" => false,
+          "name" => nil,
+          "description" => nil,
+          "reason" => "no icm.yaml found in that folder",
+          "adoptable" => true
+        }
 
       {:error, {:invalid, reason}} ->
         inspect_failure(reason)
@@ -345,7 +393,13 @@ defmodule Valea.Api.Icms do
   end
 
   defp inspect_failure(reason) do
-    %{"ok" => false, "name" => nil, "description" => nil, "reason" => reason}
+    %{
+      "ok" => false,
+      "name" => nil,
+      "description" => nil,
+      "reason" => reason,
+      "adoptable" => false
+    }
   end
 
   # Duplicated (rather than exposed as new public API) from `Valea.Mounts`

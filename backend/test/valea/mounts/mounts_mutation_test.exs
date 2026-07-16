@@ -236,6 +236,53 @@ defmodule Valea.Mounts.MutationTest do
     end
   end
 
+  # -- adopt/3 (Task 12, Spec D §D4 — adopt-a-folder) -----------------------
+
+  describe "adopt/3" do
+    test "mints a format-2 manifest and mounts", %{ws: ws, home: home} do
+      folder = Path.join(home, "Life")
+      File.mkdir_p!(folder)
+
+      assert {:ok, %{mount_key: key, id: id}} = Mounts.adopt(ws, folder, "Life")
+
+      assert {:ok, manifest} = YamlElixir.read_from_file(Path.join(folder, "icm.yaml"))
+      assert manifest["format"] == 2
+      assert manifest["id"] == id
+      assert manifest["name"] == "Life"
+
+      assert %{enabled: true} = Mounts.mount_by_key(ws, key)
+    end
+
+    test "refuses a folder that already has a manifest", %{ws: ws, home: home} do
+      folder = icm!(home, "X", Ecto.UUID.generate())
+      assert {:error, :already_icm} = Mounts.adopt(ws, folder, "X")
+    end
+
+    test "refuses a folder with an INVALID existing manifest too", %{ws: ws, home: home} do
+      folder = Path.join(home, "Garbage")
+      File.mkdir_p!(folder)
+      File.write!(Path.join(folder, "icm.yaml"), "id: not-a-uuid\nname: X\n")
+
+      assert {:error, :already_icm} = Mounts.adopt(ws, folder, "X")
+    end
+
+    test "boundary violations reject before any write", %{ws: ws} do
+      assert {:error, _} = Mounts.adopt(ws, ws, "X")
+      refute File.exists?(Path.join(ws, "icm.yaml"))
+    end
+
+    test "mint failure aborts with the OS reason and mounts nothing", %{ws: ws, home: home} do
+      folder = Path.join(home, "NoWrite")
+      File.mkdir_p!(folder)
+      File.chmod!(folder, 0o555)
+
+      assert {:error, {:mint_failed, :eacces}} = Mounts.adopt(ws, folder, "X")
+
+      File.chmod!(folder, 0o755)
+      assert Mounts.mount_by_key(ws, "x") == nil
+    end
+  end
+
   # -- preserves unrelated top-level config keys ----------------------------
 
   describe "config preservation" do

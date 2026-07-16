@@ -138,7 +138,7 @@ defmodule Valea.Api.IcmsTest do
       assert is_binary(reason)
     end
 
-    test "a legacy format-1 manifest is rejected — not format 2" do
+    test "a legacy format-1 manifest is accepted — aligned with mounting (Task 12)" do
       dir = icm_dir!(System.tmp_dir!(), "legacy")
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
@@ -148,8 +148,8 @@ defmodule Valea.Api.IcmsTest do
         "format: 1\nid: #{Ecto.UUID.generate()}\nname: Legacy\n"
       )
 
-      assert {:ok, %{"ok" => false, "reason" => reason}} = run(:inspect_icm, %{path: dir})
-      assert reason =~ "format"
+      assert {:ok, %{"ok" => true, "name" => "Legacy", "adoptable" => false}} =
+               run(:inspect_icm, %{path: dir})
     end
 
     test "an invalid (non-uuid) id is rejected" do
@@ -196,6 +196,48 @@ defmodule Valea.Api.IcmsTest do
       )
 
       assert {:ok, %{"ok" => true, "name" => "Solo"}} = run(:inspect_icm, %{path: dir})
+    end
+  end
+
+  describe "inspect_icm adoptable (Task 12, Spec D §D4)" do
+    test "manifest-less folder inside boundaries → ok false, adoptable true" do
+      dir = icm_dir!(System.tmp_dir!(), "adoptable")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      assert {:ok, %{"ok" => false, "adoptable" => true, "reason" => reason}} =
+               run(:inspect_icm, %{path: dir})
+
+      assert reason =~ "no icm.yaml"
+    end
+
+    test "boundary-rejected folder is NOT adoptable" do
+      assert {:ok, %{"ok" => false, "adoptable" => false}} =
+               run(:inspect_icm, %{path: System.user_home!()})
+    end
+
+    test "format-1 manifest now inspects ok (aligned with mounting)" do
+      dir = icm_dir!(System.tmp_dir!(), "legacy-adoptable")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      File.write!(
+        Path.join(dir, "icm.yaml"),
+        "format: 1\nid: #{Ecto.UUID.generate()}\nname: Legacy\n"
+      )
+
+      assert {:ok, %{"ok" => true, "adoptable" => false, "name" => _}} =
+               run(:inspect_icm, %{path: dir})
+    end
+
+    test "invalid manifest is neither ok nor adoptable" do
+      dir = icm_dir!(System.tmp_dir!(), "invalid-adoptable")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      File.write!(Path.join(dir, "icm.yaml"), "id: not-a-uuid\nname: X\n")
+
+      assert {:ok, %{"ok" => false, "adoptable" => false}} = run(:inspect_icm, %{path: dir})
     end
   end
 

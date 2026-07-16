@@ -40,15 +40,19 @@ defmodule Valea.Mounts do
 
   `mount/2` registers an already-existing, already-healthy external ICM
   folder; `create/3` mints a brand-new one (seeding the portable
-  `priv/icm_template/` tree) and then mounts it — the only mutation that
-  writes into an ICM's own folder. `set_enabled/3` flips a mount's
-  `enabled` flag; `unmount/2` removes its config entry (the folder is
-  never touched). All four operate purely on `config/workspace.yaml`'s
-  `icms:` map, preserving every other top-level key (`version`, `id`,
-  `name`, and any unknown key — including a legacy `mounts:` section, if
-  one is still present) byte-for-byte via a generic recursive YAML
-  encoder (`render_icms_doc/2`). A mount's `path` is stored EXACTLY as
-  given to `mount/2`/`create/3` (the user's own `~`-form survives) — the
+  `priv/icm_template/` tree) and then mounts it. `adopt/3` (Spec D §D4)
+  mints a minimal `{format: 2, id, name}` manifest into an existing,
+  manifest-less folder and then mounts it — same boundary gates as `mount/2`,
+  but refuses any folder that already carries an `icm.yaml` (valid or not).
+  `create/3` and `adopt/3` are the only mutations that write into an ICM's
+  own folder. `set_enabled/3` flips a mount's `enabled` flag; `unmount/2`
+  removes its config entry (the folder is never touched). All of these
+  operate purely on `config/workspace.yaml`'s `icms:` map, preserving every
+  other top-level key (`version`, `id`, `name`, and any unknown key —
+  including a legacy `mounts:` section, if one is still present)
+  byte-for-byte via a generic recursive YAML encoder (`render_icms_doc/2`).
+  A mount's `path` is stored EXACTLY as given to
+  `mount/2`/`create/3`/`adopt/3` (the user's own `~`-form survives) — the
   resolved absolute path this module computes is never persisted, only
   audited.
 
@@ -335,6 +339,51 @@ defmodule Valea.Mounts do
       Manifest.write!(resolved, %{id: Ecto.UUID.generate(), name: name, description: ""})
       mount(workspace, path)
     end
+  end
+
+  @doc """
+  Spec D §D4 — adopt a manifest-less folder as an ICM: after the SAME
+  boundary gates mounting applies, mint a minimal `{format: 2, id, name}`
+  identity file (the ONLY write this flow ever performs inside the user's
+  folder — user-consented in the FE) and mount by reference. A folder that
+  already carries any `icm.yaml` (valid or not) is refused — adopting never
+  overwrites identity. A mint failure aborts before any mount config is
+  touched (no partial mount).
+  """
+  @spec adopt(workspace :: String.t(), path :: String.t(), name :: String.t()) ::
+          {:ok, %{mount_key: String.t(), id: String.t()}} | {:error, term()}
+  def adopt(workspace, path, name)
+      when is_binary(workspace) and is_binary(path) and is_binary(name) do
+    with :ok <- validate_display_name(name),
+         {:ok, resolved} <- check_adoptable(workspace, path),
+         :ok <- mint_manifest(resolved, name) do
+      mount(workspace, path)
+    end
+  end
+
+  defp check_adoptable(workspace, path) do
+    if absolute_or_tilde?(path) do
+      resolved = resolve_best_effort(Path.expand(path))
+      ws_resolved = resolve_best_effort(workspace)
+
+      with :ok <- check_boundaries(resolved, ws_resolved),
+           :ok <- check_icm_glob_safety(resolved),
+           :ok <- check_folder_exists(resolved) do
+        case Manifest.load(resolved) do
+          {:error, :missing} -> {:ok, resolved}
+          _present_or_invalid -> {:error, :already_icm}
+        end
+      end
+    else
+      {:error, :not_absolute}
+    end
+  end
+
+  defp mint_manifest(resolved, name) do
+    Manifest.write!(resolved, %{id: Ecto.UUID.generate(), name: name, description: ""})
+    :ok
+  rescue
+    e in File.Error -> {:error, {:mint_failed, e.reason}}
   end
 
   @doc """

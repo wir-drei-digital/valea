@@ -1593,6 +1593,81 @@ export async function saveIcmPageChannel<Fields extends SaveIcmPageFields | unde
 }
 
 
+export type AdoptIcmInput = {
+  path: string;
+  name: string;
+  generation: number;
+};
+
+export type AdoptIcmFields = UnifiedFieldSelection<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}>[];
+
+export type InferAdoptIcmResult<
+  Fields extends AdoptIcmFields | undefined,
+> = InferResult<{mountKey: string, id: string, __type: "TypedMap", __primitiveFields: "mountKey" | "id"}, Fields>;
+
+export type AdoptIcmResult<Fields extends AdoptIcmFields | undefined = undefined> = | { success: true; data: InferAdoptIcmResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function adoptIcm<Fields extends AdoptIcmFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: AdoptIcmInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<AdoptIcmResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "adopt_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<AdoptIcmResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function adoptIcmChannel<Fields extends AdoptIcmFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: AdoptIcmInput;
+  fields: Fields;
+  resultHandler: (result: AdoptIcmResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<AdoptIcmResult<Fields>>(
+    config.channel,
+    {
+    action: "adopt_icm",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type CreateIcmInput = {
   name: string;
   path: string;
@@ -1746,11 +1821,11 @@ export type InspectIcmInput = {
   path: string;
 };
 
-export type InspectIcmFields = UnifiedFieldSelection<{ok: boolean, name: string | null, description: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "ok" | "name" | "description" | "reason"}>[];
+export type InspectIcmFields = UnifiedFieldSelection<{ok: boolean, name: string | null, description: string | null, reason: string | null, adoptable: boolean, __type: "TypedMap", __primitiveFields: "ok" | "name" | "description" | "reason" | "adoptable"}>[];
 
 export type InferInspectIcmResult<
   Fields extends InspectIcmFields | undefined,
-> = InferResult<{ok: boolean, name: string | null, description: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "ok" | "name" | "description" | "reason"}, Fields>;
+> = InferResult<{ok: boolean, name: string | null, description: string | null, reason: string | null, adoptable: boolean, __type: "TypedMap", __primitiveFields: "ok" | "name" | "description" | "reason" | "adoptable"}, Fields>;
 
 export type InspectIcmResult<Fields extends InspectIcmFields | undefined = undefined> = | { success: true; data: InferInspectIcmResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
