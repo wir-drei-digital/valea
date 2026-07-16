@@ -4,12 +4,13 @@
   // the editor on success; folders just close — the watcher (icm_changed)
   // refreshes the tree, so there's nothing to navigate to yet.
   //
-  // Page mode also offers a "Start from" template select (Task C10) —
-  // options come from `templateOptions`, which only ever offers templates
-  // from the mount that owns `parentPath` (`createIcmPageFromTemplate`
-  // requires template and new page to share a mount). Leaving it on the
-  // default "Empty page" (`templatePath === ''`) keeps the pre-C10
-  // `createIcmPage` call path exactly as it was.
+  // Page mode also offers a "Start from" template select (Task C10,
+  // extended to recursive discovery in Task 15) — options come from
+  // `templateGroups`, one group per `templates/` folder (any depth, case-
+  // insensitive) found in the mount that owns `parentPath`
+  // (`createIcmPageFromTemplate` requires template and new page to share a
+  // mount). Leaving it on the default "Empty page" (`templatePath === ''`)
+  // keeps the pre-C10 `createIcmPage` call path exactly as it was.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -18,7 +19,7 @@
   import { encodePath } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { icmStore } from '$lib/stores/icm.svelte';
-  import { templateOptions } from './template-options';
+  import { templateGroups } from './template-options';
 
   let {
     mode,
@@ -36,7 +37,7 @@
   // never reads this.
   let templatePath = $state('');
 
-  const options = $derived(mode === 'page' ? templateOptions(icmStore.groups, mountKey) : []);
+  const groups = $derived(mode === 'page' ? templateGroups(icmStore.groups, mountKey) : []);
 
   // Reset to a clean slate every time the dialog opens — it's a shared
   // instance reused across many create actions, not remounted per open.
@@ -138,9 +139,19 @@
             class="border-input focus-visible:border-ring h-8 rounded-lg border bg-transparent px-2.5 py-1 text-[13.5px] text-ink-body outline-none disabled:pointer-events-none disabled:opacity-50"
           >
             <option value="">Empty page</option>
-            {#each options as option (option.path)}
-              <option value={option.path}>{option.label}</option>
-            {/each}
+            {#if groups.length === 1}
+              {#each groups[0].options as option (option.path)}
+                <option value={option.path}>{option.label}</option>
+              {/each}
+            {:else}
+              {#each groups as group (group.label)}
+                <optgroup label={group.label}>
+                  {#each group.options as option (option.path)}
+                    <option value={option.path}>{option.label}</option>
+                  {/each}
+                </optgroup>
+              {/each}
+            {/if}
           </select>
         </div>
       {/if}
