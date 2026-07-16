@@ -83,7 +83,6 @@ defmodule Valea.Workspace.Adopt do
   """
 
   alias Valea.Mounts.Manifest
-  alias Valea.Mounts.MountsMd
   alias Valea.Workspace.Manager
   alias Valea.Workspace.Scaffold
 
@@ -245,7 +244,10 @@ defmodule Valea.Workspace.Adopt do
     case File.rename(icm_source_path, mount_dir) do
       :ok ->
         ensure_manifest!(mount_dir, icm_source_path)
-        MountsMd.regenerate(target)
+        # Phase 11: this used to call `Valea.Mounts.MountsMd.regenerate/1`
+        # here (rebuilding root `MOUNTS.md` from the newly-adopted mount) —
+        # that module is deleted; the adopted workspace's `MOUNTS.md` stays
+        # whatever the legacy template's static copy left it as.
         Manager.open_path(target)
 
       {:error, reason} ->

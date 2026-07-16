@@ -3,32 +3,30 @@ defmodule Valea.Api.Icms do
   Data-layer-less Ash resource exposing `Valea.Mounts` (the `icms:`-based,
   by-reference-only mount API — mount/create/set_enabled/unmount/list) and
   `Valea.Mounts.Doctor` over RPC. This is the C9 (id/mount-key based)
-  ICM-mount surface task 3.4 owns, replacing `Valea.Api.Mounts` piece by
-  piece from the frontend's perspective — `Valea.Api.Mounts` itself stays
-  registered/compiling until Phase 11 deletes it, this resource does not
-  remove or touch it.
+  ICM-mount surface task 3.4 owns; it replaced `Valea.Api.Mounts` piece by
+  piece from the frontend's perspective across Task 10.x — Phase 11 deleted
+  `Valea.Api.Mounts` itself once nothing called it anymore.
 
   Every action here guards `Valea.Workspace.Manager.check_generation/1`
   FIRST (a stale `generation` short-circuits to `workspace_changed` before
-  anything else runs, including `list_icms` — it is "mutating-adjacent" the
-  same way `Valea.Api.Mounts`'s `mounts_doctor` is: it reads LIVE
-  filesystem/manifest state, not a cached value), then resolves
-  `Valea.Workspace.Manager.current/0` for the open workspace's root, then
-  calls the corresponding `Valea.Mounts` function against that root.
+  anything else runs, including `list_icms` — it is "mutating-adjacent":
+  it reads LIVE filesystem/manifest state, not a cached value), then
+  resolves `Valea.Workspace.Manager.current/0` for the open workspace's
+  root, then calls the corresponding `Valea.Mounts` function against that
+  root.
 
   `mount_icm`, `create_icm`, `set_icm_enabled`, and `unmount_icm` broadcast
   `{:mounts_changed}` on the `"mounts"` PubSub topic after their mutation
   succeeds — the exact same message `Valea.ICM.Watcher` broadcasts on
-  filesystem discovery changes (mirrors `Valea.Api.Mounts`'s own broadcast;
-  see that module's moduledoc for why this is deliberate, not vestigial).
-  `list_icms` and `icm_doctor` never broadcast — neither writes
-  `config/workspace.yaml`.
+  filesystem discovery changes. `list_icms` and `icm_doctor` never
+  broadcast — neither writes `config/workspace.yaml`.
 
-  Unlike `Valea.Api.Mounts`, this resource does NOT call
-  `Valea.Mounts.MountsMd.regenerate/1` / `Valea.Agents.ClaudeSettings.write!/1`
-  after a mutation — that legacy workspace-metadata regeneration is being
-  superseded by Phase 10's harness/session-settings work (see the Phase 10
-  plan's "managed-settings mechanism" decision), not carried forward here.
+  This resource does NOT regenerate `MOUNTS.md`/managed Claude settings
+  after a mutation — that legacy workspace-metadata regeneration (the old
+  `Valea.Api.Mounts`'s job) is superseded by Phase 10's harness/session-settings
+  work (see the Phase 10 plan's "managed-settings mechanism" decision;
+  `Valea.Agents.SessionSettings` is the live replacement) and was never
+  carried forward here.
 
   `list_icms` returns one entry per `Valea.Mounts.mount()` — `mount_key`
   (the `icms:` config key, `mount.name` on the underlying struct), `id`
@@ -67,16 +65,16 @@ defmodule Valea.Api.Icms do
   boolean-result-not-RPC-error shape.
 
   Validation mirrors `Valea.Mounts`'s own `mount/2` pre-write gate
-  (`validate_mountable/2`) and `Valea.Mounts.External.validate_ref/2`, but
-  reimplements their workspace-INDEPENDENT sub-checks locally rather than
-  calling them: both live functions take a `workspace` argument to run
-  their `:inside_workspace`/`:ancestor_of_workspace` boundary checks
-  against, and there is no workspace here to pass — mirrors how
-  `Valea.Mounts` itself already duplicates `Valea.Mounts.External`'s
-  private `check_absolute?/1`/glob-safety checks rather than exposing them
-  (see that module's own comments) for the identical
-  can't-call-a-private-function-from-another-module reason. Checked, in
-  order: absolute-or-`~`-based (`:not_absolute` reason), resolves to
+  (`validate_mountable/2`, which itself inlines the old
+  `Valea.Mounts.External.check_boundaries/2`), but reimplements the
+  workspace-INDEPENDENT sub-checks locally rather than calling it: that
+  function takes a `workspace` argument to run its
+  `:inside_workspace`/`:ancestor_of_workspace` boundary checks against, and
+  there is no workspace here to pass — the same
+  can't-call-a-private-function-from-another-module reason `Valea.Mounts`
+  itself duplicates its `check_absolute?/1`/glob-safety checks rather than
+  exposing them (see that module's own comments). Checked, in order:
+  absolute-or-`~`-based (`:not_absolute` reason), resolves to
   `$HOME` or `/` (`:home_or_root` — the one boundary guardrail that IS
   workspace-independent and so DOES apply here), a Claude-Code
   permission-glob metacharacter in the resolved path (`:unsafe_path`), the
@@ -271,12 +269,12 @@ defmodule Valea.Api.Icms do
   end
 
   @doc false
-  # Central error mapping for every action in this resource — mirrors
-  # `Valea.Api.Mounts.error_for/1` exactly (same dependency, same reason
-  # vocabulary: `Valea.Workspace.Manager`'s two generation-guard atoms,
-  # `Valea.Mounts`'s own atoms, and `Valea.Mounts.External.validate_ref/2`'s
-  # eight reason atoms surfaced through `Valea.Mounts.mount/2`'s validation
-  # gate).
+  # Central error mapping for every action in this resource:
+  # `Valea.Workspace.Manager`'s two generation-guard atoms, `Valea.Mounts`'s
+  # own atoms, and the eight boundary/glob-safety reason atoms
+  # `Valea.Mounts.mount/2`'s validation gate surfaces (formerly
+  # `Valea.Mounts.External.validate_ref/2`'s vocabulary, inlined at Phase
+  # 11).
   def error_for(:no_workspace), do: Error.new("workspace_not_open")
   def error_for({:invalid_manifest, _reason}), do: Error.new("invalid_manifest")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
@@ -350,10 +348,9 @@ defmodule Valea.Api.Icms do
     %{"ok" => false, "name" => nil, "description" => nil, "reason" => reason}
   end
 
-  # Duplicated (rather than exposed as new public API) from
-  # `Valea.Mounts`/`Valea.Mounts.External` — see moduledoc's "inspect_icm"
-  # section for why: both live checks need a `workspace` to compare
-  # against, and there is none here.
+  # Duplicated (rather than exposed as new public API) from `Valea.Mounts`
+  # — see moduledoc's "inspect_icm" section for why: the live check needs a
+  # `workspace` to compare against, and there is none here.
   defp absolute_or_tilde?("/" <> _rest), do: true
   defp absolute_or_tilde?("~"), do: true
   defp absolute_or_tilde?("~/" <> _rest), do: true
@@ -369,9 +366,8 @@ defmodule Valea.Api.Icms do
   # Self-base realpath resolution (`Paths.resolve_real(path, path)`) — an
   # inspected path is not naturally contained in any existing base, so
   # resolving it against itself makes containment trivially satisfied and
-  # yields the fully symlink-walked physical path. Mirrors
-  # `Valea.Mounts`/`Valea.Mounts.External`'s identically-named private
-  # helpers exactly.
+  # yields the fully symlink-walked physical path. Mirrors `Valea.Mounts`'s
+  # identically-named private helper exactly.
   defp resolve_best_effort(path) do
     case Paths.resolve_real(path, path) do
       {:ok, resolved} -> resolved

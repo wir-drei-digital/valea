@@ -12,17 +12,22 @@ defmodule Valea.Workspace.Scaffold do
   tasks), not seeded as a mount on disk.
 
   `create/1` and `create/2` are the LEGACY (v4, all-are-mounts) scaffold,
-  sourced from `priv/legacy_workspace_template` — kept working, byte-for-byte
-  as before (starter mount, managed Claude settings, generated `MOUNTS.md`),
-  because `Valea.Workspace.Manager` and `Valea.Workspace.Adopt` still open
-  and adopt workspaces through this path pending their own id-based rework
-  (a later task group). The legacy scaffold also creates the (empty) v5
-  marker dir `runtime/`, so a legacy-scaffolded workspace still satisfies
-  `valid?/1` immediately after creation, the same as it always has.
+  sourced from `priv/legacy_workspace_template` — kept working (starter
+  mount, root `AGENTS.md`/`CLAUDE.md`/`MOUNTS.md` copied statically from the
+  template) because a large share of the test suite still scaffolds its
+  fixture workspaces through this path pending Task 11.3's v5 flip. Phase 11
+  retired the LIVE regeneration this scaffold used to run at mint time
+  (`Valea.Agents.ClaudeSettings.write!/1`, `Valea.Mounts.MountsMd.regenerate/1`
+  — both modules are deleted; nothing reads their output anymore, session
+  permissioning has moved to `Valea.Agents.SessionSettings`), so the legacy
+  scaffold's `MOUNTS.md`/`AGENTS.md`/`CLAUDE.md` are now exactly the static
+  template bytes, never regenerated with the real starter mount's minted
+  id/name. The legacy scaffold also creates the (empty) v5 marker dir
+  `runtime/`, so a legacy-scaffolded workspace still satisfies `valid?/1`
+  immediately after creation, the same as it always has.
   """
 
   alias Valea.Mounts.Manifest
-  alias Valea.Mounts.MountsMd
 
   @marker_dirs ~w(config sources queue logs queue/staging queue/processing runtime)
 
@@ -104,24 +109,15 @@ defmodule Valea.Workspace.Scaffold do
       # config/workspace.yaml ships with `id: TEMPLATE`; a real workspace
       # gets version 4 + a fresh, persistent UUID here (keychain entries key
       # on it, so it must survive the folder being moved or renamed — see the
-      # mail design spec, §Credentials). The Migration keeps it stable on
-      # every subsequent open (never regenerates an existing id).
+      # mail design spec, §Credentials). Nothing rewrites this file again
+      # after scaffold time (the Manager's open pipeline no longer runs a
+      # version migration — Phase 11), so the id is stable by construction.
       File.write!(
         Path.join(target, "config/workspace.yaml"),
         "version: 4\nid: #{Ecto.UUID.generate()}\n"
       )
 
       mint_starter_mount!(target, name)
-
-      # Managed Claude settings exist from the moment a workspace is
-      # scaffolded; Migration keeps them in sync on every subsequent open.
-      Valea.Agents.ClaudeSettings.write!(target)
-
-      # The template ships a static MOUNTS.md placeholder (so the copied
-      # tree is never momentarily without one); regenerate it now from the
-      # REAL mount this scaffold just minted, same as every later
-      # enable/disable/discovery-change caller (T7).
-      MountsMd.regenerate(target)
       :ok
     else
       {:error, reason} -> {:error, reason}
@@ -157,9 +153,9 @@ defmodule Valea.Workspace.Scaffold do
   no alphanumeric characters at all (e.g. "!!!") falls back to "mount"
   rather than minting an empty/degenerate directory name.
 
-  Public so `Valea.Workspace.Migration`'s v3→v4 step can name a migrated
-  mount directory the same way a fresh scaffold names its starter one,
-  without duplicating this logic.
+  Public so `Valea.Mounts.unique_mount_key/2` and `Valea.Workspace.Manager`
+  can derive a directory/mount-key slug the same way a fresh scaffold names
+  its starter mount, without duplicating this logic.
   """
   @spec slugify(String.t()) :: String.t()
   def slugify(name) do

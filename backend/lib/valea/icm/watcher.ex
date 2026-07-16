@@ -35,12 +35,13 @@ defmodule Valea.ICM.Watcher do
   Earlier phases had this watcher close a "hand-edit gap" by calling
   `Valea.Mounts.MountsMd.regenerate/1` and
   `Valea.Agents.ClaudeSettings.write!/1` on its own discovery flush, so a
-  config change that bypassed the RPC layer (`Valea.Api.Mounts`/
-  `Valea.Api.Icms`, which still regenerate both on every mutation) didn't
-  leave those derived files stale. This watcher no longer does either — it
-  only broadcasts and recomputes its own watched set. `MountsMd`/
-  `ClaudeSettings` are unaffected (still called by the RPC layer) and are
-  removed entirely in a later phase.
+  config change that bypassed the RPC layer (`Valea.Api.Mounts`, which
+  regenerated both on every mutation) didn't leave those derived files
+  stale. This watcher no longer does either — it only broadcasts and
+  recomputes its own watched set. `MountsMd`/`ClaudeSettings`/
+  `Valea.Api.Mounts` are all deleted (Phase 11) — `MOUNTS.md`/managed
+  `.claude/settings.json` are retired entirely; session permissioning is
+  `Valea.Agents.SessionSettings` now.
 
   ## ICM roots are dynamic — two listeners, not one
 
@@ -68,9 +69,9 @@ defmodule Valea.ICM.Watcher do
   PubSub subscription here to also recompute on an externally-broadcast
   `{:mounts_changed}` (a prior phase had one, tied to the regeneration this
   watcher no longer performs). Nothing is lost by dropping it: every
-  mutation that broadcasts `{:mounts_changed}` (`Valea.Api.Mounts`/
-  `Valea.Api.Icms`) always writes `config/workspace.yaml` first, which this
-  watcher's own fixed listener already observes — at most, an RPC-driven
+  mutation that broadcasts `{:mounts_changed}` (`Valea.Api.Icms`) always
+  writes `config/workspace.yaml` first, which this watcher's own fixed
+  listener already observes — at most, an RPC-driven
   change now takes one debounce window longer to be reflected in this
   process's OWN watched set than the (separately, immediately broadcast)
   `{:mounts_changed}` message subscribers hear.

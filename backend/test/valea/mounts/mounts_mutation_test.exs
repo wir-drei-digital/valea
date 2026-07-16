@@ -120,6 +120,35 @@ defmodule Valea.Mounts.MutationTest do
     end
   end
 
+  # -- boundary guardrails (formerly `Valea.Mounts.External.check_boundaries/2`
+  # + `validate_ref/2`'s pre-write checks, inlined into `Mounts` at Phase 11) --
+
+  describe "mount/2 boundary guardrails" do
+    test "rejects a relative path with :not_absolute", %{ws: ws} do
+      assert {:error, :not_absolute} = Mounts.mount(ws, "relative/path")
+    end
+
+    test "rejects the home directory with :home_or_root", %{ws: ws} do
+      assert {:error, :home_or_root} = Mounts.mount(ws, System.user_home!())
+    end
+
+    test "rejects the filesystem root with :home_or_root", %{ws: ws} do
+      assert {:error, :home_or_root} = Mounts.mount(ws, "/")
+    end
+
+    test "rejects an ancestor of the workspace with :ancestor_of_workspace", %{ws: ws, home: home} do
+      assert {:error, :ancestor_of_workspace} = Mounts.mount(ws, home)
+    end
+
+    test "rejects a path with a permission-glob metacharacter with :unsafe_path", %{
+      ws: ws,
+      home: home
+    } do
+      unsafe = Path.join(home, "weird*name")
+      assert {:error, :unsafe_path} = Mounts.mount(ws, unsafe)
+    end
+  end
+
   # -- create/3 (icms: + portable template seed) ---------------------------
 
   describe "create/3" do

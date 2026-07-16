@@ -83,10 +83,11 @@ defmodule Valea.Workspace.ScaffoldTest do
   end
 
   # Scaffold.create/1 and create/2 are the LEGACY (v4, all-are-mounts)
-  # scaffold — still LIVE production code (Valea.Workspace.Manager.create/2,
-  # Valea.Workspace.Adopt.create_with_icm/3) until Phase 11 deletes them, so
-  # they keep their own regression coverage here, separate from the v5
-  # create/3 tests above.
+  # scaffold. `Valea.Workspace.Adopt` (its other caller) is deleted; only
+  # `Valea.Workspace.Manager.create/2` still calls it, and only for the
+  # backend test suite's own fixture setup (Task 11.3 flips the suite to
+  # v5 and deletes this scaffold path too) — so it keeps its own regression
+  # coverage here, separate from the v5 create/3 tests above.
   describe "create/2 (legacy v4 workspace)" do
     test "writes config/workspace.yaml as version 4 with a fresh, valid, non-TEMPLATE uuid id",
          %{target: t} do

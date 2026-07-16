@@ -14,16 +14,15 @@ defmodule Valea.Mounts do
   `nil` — every mount is external. `name` is the workspace-local **mount
   key** (the `icms:` mapping key); `manifest.name` is the ICM's own
   display name. Every existing consumer that already branches on
-  `rel_root` (`Valea.ICM`, `References`, `Search`, `ClaudeSettings`,
-  `Workflows`, ...) transparently takes its external branch — the dead
-  embedded branches are removed in a later phase, not here.
+  `rel_root` (`Valea.ICM`, `References`, `Search`, `Workflows`, ...)
+  transparently takes its external branch — the dead embedded branches
+  are removed in a later phase, not here.
 
   ## Resolution and degradation
 
   For each `icms:` entry, `list/1` expands `~`, resolves symlinks
-  (`Valea.Paths.resolve_real/2`, self-base trick — mirrors
-  `Valea.Mounts.External`), boundary-validates the resolved path
-  (`Valea.Mounts.External.check_boundaries/2`: not inside the workspace,
+  (`Valea.Paths.resolve_real/2`, self-base trick), boundary-validates the
+  resolved path (`check_boundaries/2`, below: not inside the workspace,
   not the home directory or filesystem root, not an ancestor of the
   workspace), checks it is free of Claude Code permission-glob
   metacharacters (`* ? [ ] { } ( )` — the resolved root is spliced into a
@@ -74,7 +73,6 @@ defmodule Valea.Mounts do
   """
 
   alias Valea.Mounts.Context
-  alias Valea.Mounts.External
   alias Valea.Mounts.Manifest
   alias Valea.Paths
   alias Valea.Workspace.Manager
@@ -83,11 +81,10 @@ defmodule Valea.Mounts do
 
   # A resolved mount. `root` is the ABSOLUTE path; `rel_root` is
   # workspace-relative ("mounts/<name>") for embedded mounts and `nil` for
-  # external (by-reference) mounts produced by `Valea.Mounts.External` — an
-  # ICM outside the workspace has no workspace-relative path. `enabled` from
-  # config. `degraded` carries a reason string when the manifest is
-  # missing/broken (still listed for the UI, excluded from the effective
-  # set).
+  # external (by-reference) mounts — an ICM outside the workspace has no
+  # workspace-relative path. `enabled` from config. `degraded` carries a
+  # reason string when the manifest is missing/broken (still listed for
+  # the UI, excluded from the effective set).
   @type mount :: %{
           name: String.t(),
           rel_root: String.t() | nil,
@@ -441,7 +438,7 @@ defmodule Valea.Mounts do
       resolved = resolve_best_effort(Path.expand(path))
       ws_resolved = resolve_best_effort(workspace)
 
-      with :ok <- External.check_boundaries(resolved, ws_resolved),
+      with :ok <- check_boundaries(resolved, ws_resolved),
            :ok <- check_icm_glob_safety(resolved),
            :ok <- check_folder_exists(resolved) do
         case Manifest.load(resolved) do
@@ -485,7 +482,7 @@ defmodule Valea.Mounts do
       resolved = resolve_best_effort(Path.expand(path))
       ws_resolved = resolve_best_effort(workspace)
 
-      with :ok <- External.check_boundaries(resolved, ws_resolved),
+      with :ok <- check_boundaries(resolved, ws_resolved),
            :ok <- check_icm_glob_safety(resolved),
            :ok <- check_not_a_file(resolved),
            :ok <- check_not_already_an_icm(resolved) do
@@ -615,7 +612,7 @@ defmodule Valea.Mounts do
     if absolute_or_tilde?(path) do
       resolved = resolve_best_effort(Path.expand(path))
 
-      case External.check_boundaries(resolved, ws_resolved) do
+      case check_boundaries(resolved, ws_resolved) do
         :ok ->
           build_resolved_icm_mount(name, path, resolved, enabled)
 
@@ -632,17 +629,47 @@ defmodule Valea.Mounts do
   defp absolute_or_tilde?("~/" <> _rest), do: true
   defp absolute_or_tilde?(_relative), do: false
 
-  # Claude Code's permission globs (`Read(<root>/**)`, spliced in by
-  # `Valea.Agents.ClaudeSettings`) are matched by ITS OWN glob engine, not
-  # the filesystem — a resolved root containing a glob metacharacter would
-  # change that allow entry's match semantics. Checked on the RESOLVED path
-  # (post `~`-expansion, post symlink-walk), same guard
-  # `Valea.Mounts.External` runs, duplicated here for the same
-  # can't-call-a-private-function reason as `absolute_or_tilde?/1` above.
+  # Claude Code's permission globs (`Read(<root>/**)`) are matched by ITS
+  # OWN glob engine, not the filesystem — a resolved root containing a
+  # glob metacharacter would change that allow entry's match semantics.
+  # Checked on the RESOLVED path (post `~`-expansion, post symlink-walk).
   @glob_metacharacters ["*", "?", "[", "]", "{", "}", "(", ")"]
 
   defp check_icm_glob_safety(resolved) do
     if String.contains?(resolved, @glob_metacharacters), do: {:error, :unsafe_path}, else: :ok
+  end
+
+  # -- boundary guardrails (formerly `Valea.Mounts.External.check_boundaries/2`,
+  # inlined here — Phase 11 deletes `External`; this is its only caller) ---
+
+  # BOTH arguments must already be REALPATH-resolved absolute paths (`~`
+  # expanded, symlinks walked) — this function only compares. Checked in
+  # order: `:home_or_root` (ref == resolved `$HOME` or `/`),
+  # `:inside_workspace` (ref under-or-equal the workspace root),
+  # `:ancestor_of_workspace` (workspace root under the ref). `:home_or_root`
+  # is checked first: `$HOME` is very often itself an ancestor of the
+  # workspace, so checking `:ancestor_of_workspace` first would mask the
+  # more specific, more useful `:home_or_root` reason. Comparisons use
+  # segment-boundary prefix logic, never a lexical string prefix.
+  defp check_boundaries("/" <> _ = resolved_ref, "/" <> _ = resolved_workspace) do
+    cond do
+      home_or_root?(resolved_ref) -> {:error, :home_or_root}
+      under_boundary?(resolved_ref, resolved_workspace) -> {:error, :inside_workspace}
+      under_boundary?(resolved_workspace, resolved_ref) -> {:error, :ancestor_of_workspace}
+      true -> :ok
+    end
+  end
+
+  defp home_or_root?(resolved),
+    do: resolved == "/" or resolved == resolve_best_effort(System.user_home!())
+
+  # Segment-boundary "is `descendant` under (or equal to) `ancestor`?" — a
+  # trailing-slash join, not a lexical string prefix, so `/a/b` never
+  # matches an `/a/bc` ancestor. `/` is always an ancestor of everything.
+  defp under_boundary?(_descendant, "/"), do: true
+
+  defp under_boundary?(descendant, ancestor) do
+    descendant == ancestor or String.starts_with?(descendant <> "/", ancestor <> "/")
   end
 
   defp build_resolved_icm_mount(name, path, resolved, enabled) do
@@ -756,11 +783,6 @@ defmodule Valea.Mounts do
     degraded_healthy ++ other
   end
 
-  # `icms:` is a workspace-local map; `read_config_mounts/1` reads the
-  # LEGACY `mounts:` section (still used by `Valea.Mounts.External`'s own
-  # `mounts:`-based read path, `External.declared/1`, and its test suite)
-  # — kept as a SEPARATE reader rather than repointing that shared
-  # function, so this rewrite does not disturb it.
   defp read_icms_config(workspace) do
     case read_workspace_config(workspace) do
       {:ok, doc} -> normalize_mounts(Map.get(doc, "icms"))
@@ -800,18 +822,6 @@ defmodule Valea.Mounts do
       {:error, %YamlElixir.FileNotFoundError{}} -> {:ok, %{}}
       {:ok, not_a_map} -> {:error, {:config_unreadable, {:not_a_map, not_a_map}}}
       {:error, reason} -> {:error, {:config_unreadable, reason}}
-    end
-  end
-
-  @doc false
-  # Internal-public for `Valea.Mounts.External` (BY-REFERENCE mounts): reads
-  # the LEGACY `mounts:` section, keyed by config name, string keys/values
-  # as parsed by YamlElixir. Not part of the public contract — do not call
-  # from outside the `Valea.Mounts` namespace.
-  @spec read_config_mounts(workspace :: String.t()) :: map()
-  def read_config_mounts(workspace) do
-    case read_workspace_config(workspace) do
-      {:ok, doc} -> normalize_mounts(Map.get(doc, "mounts"))
     end
   end
 

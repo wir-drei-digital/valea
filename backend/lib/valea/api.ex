@@ -72,15 +72,6 @@ defmodule Valea.Api do
       rpc_action(:retry_mailbox_ops, :retry_mailbox_ops)
     end
 
-    resource Valea.Api.Mounts do
-      rpc_action(:list_mounts, :list_mounts)
-      rpc_action(:set_mount_enabled, :set_mount_enabled)
-      rpc_action(:create_mount, :create_mount)
-      rpc_action(:declare_mount, :declare_mount)
-      rpc_action(:undeclare_mount, :undeclare_mount)
-      rpc_action(:mounts_doctor, :mounts_doctor)
-    end
-
     resource Valea.Api.Icms do
       rpc_action(:inspect_icm, :inspect_icm)
       rpc_action(:list_icms, :list_icms)
@@ -99,7 +90,6 @@ defmodule Valea.Api do
     resource Valea.Api.Agents
     resource Valea.Api.Queue
     resource Valea.Api.Mail
-    resource Valea.Api.Mounts
     resource Valea.Api.Icms
   end
 end

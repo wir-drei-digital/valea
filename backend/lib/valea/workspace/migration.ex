@@ -14,7 +14,6 @@ defmodule Valea.Workspace.Migration do
   alias Valea.Markdown.ProseMirror
   alias Valea.Mail.Settings
   alias Valea.Mounts.Manifest
-  alias Valea.Mounts.MountsMd
   alias Valea.Workspace.Scaffold
 
   @current_version 4
@@ -62,20 +61,20 @@ defmodule Valea.Workspace.Migration do
     # `Valea.Workspace.Scaffold`'s moduledoc) is NOT this migration's
     # business: `ensure_v2..v4` only short-circuit at `v >= their own
     # version`, so without this ceiling a v5 workspace would fall through
-    # to the unconditional `ClaudeSettings.write!/1` below, silently
-    # writing a stray `.claude/settings.json` into a workspace whose whole
-    # point is carrying NO agent-routing files, and would misreport its
-    # version as the legacy `@current_version` (4). A v5+ workspace is
-    # already fully-formed by `Scaffold.create/3`; there is nothing here
-    # for it to migrate to.
+    # to `ensure_v4` and misreport its version as the legacy
+    # `@current_version` (4). A v5+ workspace is already fully-formed by
+    # `Scaffold.create/3`; there is nothing here for it to migrate to.
+    #
+    # Phase 11: this used to unconditionally call
+    # `Valea.Agents.ClaudeSettings.write!/1` here (managed settings
+    # regenerated on every open) — that module is deleted (superseded by
+    # `Valea.Agents.SessionSettings`); this step is dropped, not replaced.
     if version >= 5 do
       {:ok, version}
     else
       with {:ok, v} <- ensure_v2(root, version),
            {:ok, v} <- ensure_v3(root, v),
            {:ok, _} <- ensure_v4(root, v) do
-        # Managed settings are regenerated on every open (and per session start).
-        Valea.Agents.ClaudeSettings.write!(root)
         {:ok, @current_version}
       end
     end
@@ -154,7 +153,10 @@ defmodule Valea.Workspace.Migration do
     mint_migrated_mount_files!(root, mount_dir)
     migrate_root_agents!(root)
 
-    MountsMd.regenerate(root)
+    # Phase 11: this used to call `Valea.Mounts.MountsMd.regenerate/1` here
+    # (rebuilding root `MOUNTS.md` from the newly-migrated mount) — that
+    # module is deleted; a migrated workspace's `MOUNTS.md` stays whatever
+    # `ensure_v2`'s template copy left it as.
 
     File.mkdir_p!(Path.join(root, "mounts"))
     atomic_write!(Path.join(root, "config/workspace.yaml"), "version: 4\nid: #{id}\n")
