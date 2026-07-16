@@ -120,21 +120,6 @@ export function degradedChipLabel(mount: Pick<MountSummary, 'degraded'>): string
   return `Degraded — ${mount.degraded ?? 'unknown reason'}`;
 }
 
-/**
- * Task 3.4: post-A2, `Valea.Mounts.list/1`'s `rel_root` is ALWAYS `nil` —
- * EVERY `list_icms` row is by-reference (external); there is no more
- * embedded mount kind for this to disambiguate from, and the new C9
- * `list_icms` payload doesn't even carry a `relRoot` field any more (see
- * `MountSummary`'s doc comment in `stores/mounts.svelte.ts`). Kept
- * (unconditionally `true`) rather than deleted, along with every
- * `{#if isExternalMount(mount)}` gate in `+page.svelte`, purely to keep
- * this task's diff to a rename — collapsing those gates away is deeper
- * Knowledge-UI work for a later task.
- */
-export function isExternalMount(_mount: MountSummary): boolean {
-  return true;
-}
-
 // -- mounts doctor: check-row shaping (backend: `Valea.Mounts.Doctor.run/1`,
 // `mounts_doctor`'s `checks` field — UNCONSTRAINED `:map`, same as
 // `mail_doctor`, see `Valea.Api.Mounts`'s moduledoc — so it arrives as

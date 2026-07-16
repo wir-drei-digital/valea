@@ -12,8 +12,8 @@
 // open-or-adopt-by-move-or-adopt-by-reference branch, superseded by
 // `inspect_icm`-based onboarding across BOTH paths — see `Valea.Api.Icms`'s
 // moduledoc for why `inspect_icm` needs no open workspace either) —
-// `Valea.Workspace.Adopt`/`inspect_path`/`adopt_workspace` stay registered
-// on the backend (Phase 11 deletes them), just no longer called from here.
+// `Valea.Workspace.Adopt`/`inspect_path`/`adopt_workspace` are deleted from
+// the backend entirely (Phase 11).
 import { createIcmErrorMessage, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
 
 /** Last path segment, ignoring a trailing slash. POSIX paths only (macOS/Linux). */

@@ -9,9 +9,8 @@
   // Supersedes this component's earlier `inspect_path`-based three-way
   // branch (open-an-existing-workspace / adopt-by-move / adopt-by-reference,
   // A-T16/A2-T9) — that whole `decideOnboardingMode` flow is gone from
-  // onboarding-path.ts as of this task. `Valea.Workspace.Adopt`/
-  // `inspect_path`/`adopt_workspace` stay registered on the backend (Phase
-  // 11 deletes them); this component just no longer calls them.
+  // onboarding-path.ts. `Valea.Workspace.Adopt`/`inspect_path`/
+  // `adopt_workspace` are deleted from the backend entirely (Phase 11).
   import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -89,12 +88,11 @@
     return { ok: true, data: result.data as unknown as IcmInspection };
   }
 
-  // Bypasses `mountsStore.declare` (which discards the RPC's `mountKey` —
-  // it was designed for Knowledge's "Mount a folder from elsewhere…"
-  // dialog, which has no post-mount navigation target to build) and calls
-  // `mountIcm` directly so this flow can navigate straight to the new
-  // mount's own Knowledge view. Refreshes the catalog on success, same
-  // reasoning as every other mutating `MountsStore` method.
+  // Calls `mountIcm` directly (rather than a `MountsStore` wrapper) so
+  // this flow can navigate straight to the new mount's own Knowledge
+  // view, since the RPC's returned `mountKey` is what the navigation
+  // target needs. Refreshes the catalog on success, same reasoning as
+  // every other mutating `MountsStore` method.
   async function mountIcmDep(p: string, generation: number): ReturnType<UseExistingIcmDeps['mountIcm']> {
     const result = await api.mountIcm(p, generation);
     if (!result.ok) return result;

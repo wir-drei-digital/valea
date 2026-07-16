@@ -12,7 +12,7 @@ import type { Channel } from 'phoenix';
  * `Valea.Api.Mounts` until Phase 11 deletes it) are no longer called from
  * this store.
  */
-type MountsApi = Pick<Api, 'listIcms' | 'setIcmEnabled' | 'createIcm' | 'mountIcm' | 'unmountIcm' | 'icmDoctor'>;
+type MountsApi = Pick<Api, 'listIcms' | 'setIcmEnabled' | 'createIcm' | 'unmountIcm' | 'icmDoctor'>;
 
 /**
  * One row of `list_icms` — mirrors `listIcmsFields` in `api/client.ts`.
@@ -104,8 +104,8 @@ export class MountsStore {
    * reads it off `workspaceStore` directly — the one deliberate exception
    * to this module's usual "store-free api, caller supplies generation"
    * convention (see `api/client.ts`'s header comment and `setEnabled`/
-   * `create`/`declare`/`undeclare` below, which keep taking it explicitly
-   * since they already had a caller-supplied value to thread).
+   * `create`/`undeclare` below, which keep taking it explicitly since they
+   * already had a caller-supplied value to thread).
    */
   async refresh(): Promise<void> {
     const result = await this.#api.listIcms(workspaceStore.generation ?? 0);
@@ -159,46 +159,12 @@ export class MountsStore {
   }
 
   /**
-   * Mounts an already-existing, already-healthy external ICM folder at
-   * `ref` (`Valea.Mounts.mount/2`, exposed as `mount_icm`). `name` is kept
-   * as a parameter for call-site compatibility with the onboarding
-   * "Use it where it is" flow and Knowledge's "Mount a folder from
-   * elsewhere…" dialog (both still collect a name from the user) but is no
-   * longer sent to the backend — the mount key is now DERIVED from the
-   * target ICM's own manifest name (`Valea.Mounts.unique_mount_key/2`), the
-   * same minimal-compiling-stopgap posture `Valea.Api.Mounts.declare_mount`
-   * already documents for its own retired `name` argument. A real "pick a
-   * name" UI (or dropping the field) is deeper UI work, not this task's
-   * scope. Rejections (the 8 `Valea.Mounts.External.validate_ref/2`
-   * reasons plus `invalid_mount_name`/`workspace_not_open`/
-   * `workspace_changed`) map to readable copy via `declareMountErrorMessage`
-   * below. Refetches the catalog on success, same reasoning as
-   * `setEnabled`/`create`.
-   */
-  async declare(
-    name: string,
-    ref: string,
-    generation: number
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const result = await this.#api.mountIcm(ref, generation);
-    if (!result.ok) return { ok: false, error: result.error };
-
-    // Fix wave 2: a successful mount IS the retry the adoption-failure
-    // banner points at ("Mount a folder from elsewhere…") — a user who just
-    // mounted something shouldn't keep seeing "Couldn't mount…". A FAILED
-    // mount deliberately leaves it: the persisted failure is still true.
-    this.clearPendingAdoptError();
-    await this.refresh();
-    return { ok: true };
-  }
-
-  /**
    * Unmounts (`unmount_icm`) the mount named `mountKey` — config-only,
    * NEVER touches the folder itself (see `Valea.Mounts.unmount/2`'s
    * moduledoc: "never-delete promise" applies here as much as anywhere
    * else in this codebase). Rejects with `mount_not_found` when `mountKey`
    * isn't a currently-mounted `icms:` entry. Refetches the catalog on
-   * success, same reasoning as `declare` above.
+   * success, same reasoning as `setEnabled`/`create` above.
    */
   async undeclare(
     mountKey: string,
@@ -218,8 +184,8 @@ export class MountsStore {
    * whole-workspace `mounts_doctor` returned, so `MountsDoctorPanel.svelte`
    * needs no changes — it lists every mount via `list_icms`, then fans
    * `icm_doctor` out across every `mountKey` in parallel. Unlike
-   * `declare`/`undeclare`/`setEnabled`/`create`, this NEVER calls
-   * `refresh()` on success — it is a read-only probe of live state (the
+   * `undeclare`/`setEnabled`/`create`, this NEVER calls `refresh()` on
+   * success — it is a read-only probe of live state (the
    * watcher's current root set, the filesystem under each mount's resolved
    * root), not a config mutation, so there is nothing in `mounts`/`loaded`
    * for it to have made stale.
@@ -288,10 +254,11 @@ export class MountsStore {
  * `"invalid_manifest"`, same as every other atom code, so this switch never
  * needs the nested reason string). Shared by Task 10.3's "Use existing
  * ICM" flow (`onboarding-path.ts`'s `useExistingIcm`) and Knowledge's
- * "Mount a folder from elsewhere…" dialog (which calls `declare` above) —
- * both mount an EXISTING folder and need the SAME mapping, so it lives here
- * rather than being duplicated per caller (mirrors `mail-shapes.ts`
- * colocating `mailSetupErrorMessage` next to `submitMailSetup`).
+ * "Mount an existing ICM…" dialog (`MountFromElsewhereDialog.svelte`,
+ * which calls `mount_icm` directly) — both mount an EXISTING folder and
+ * need the SAME mapping, so it lives here rather than being duplicated
+ * per caller (mirrors `mail-shapes.ts` colocating `mailSetupErrorMessage`
+ * next to `submitMailSetup`).
  * `create_icm` failures map through `createIcmErrorMessage` below instead —
  * "could not mount" copy is wrong for a create that never wrote anything.
  */
@@ -331,13 +298,18 @@ export function declareMountErrorMessage(code: string): string {
  * an existing FILE) plus the boundary/glob/name checks it shares with
  * `mount_icm` (`check_create_target/2` runs the same
  * `External.check_boundaries`/glob-safety gate, `validate_display_name/1`
- * rejects with the same `invalid_mount_name` atom), which delegate to
- * `declareMountErrorMessage` above so the shared codes keep one copy of
- * their wording. The DEFAULT differs deliberately: a `create_icm` failure
- * means nothing was mounted — often nothing was even written — so
- * `declareMountErrorMessage`'s "Could not mount that folder" would
- * misdescribe what failed. Used by `startFresh` (onboarding-path.ts), the
- * one create-ICM caller that maps codes to copy at persist time.
+ * rejects with the same `invalid_mount_name` atom). Most shared codes
+ * delegate to `declareMountErrorMessage` above so they keep one copy of
+ * their wording — but `inside_workspace`/`ancestor_of_workspace` get their
+ * own create-appropriate copy here (Task 11.3): `declareMountErrorMessage`'s
+ * versions read as "this folder doesn't need mounting" / "mounting it
+ * would...", which is a non-sequitur for a CREATE failure — nothing is
+ * being mounted, the folder can't be WRITTEN to because it's inside the
+ * app's own hidden workspace storage. The DEFAULT differs deliberately: a
+ * `create_icm` failure means nothing was mounted — often nothing was even
+ * written — so `declareMountErrorMessage`'s "Could not mount that folder"
+ * would misdescribe what failed. Used by `startFresh` (onboarding-path.ts),
+ * the one create-ICM caller that maps codes to copy at persist time.
  */
 export function createIcmErrorMessage(code: string): string {
   switch (code) {
@@ -345,12 +317,14 @@ export function createIcmErrorMessage(code: string): string {
       return 'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.';
     case 'not_a_directory':
       return 'That path points at an existing file, not a folder. Choose a folder location.';
+    case 'inside_workspace':
+      return "That folder is inside the app's own storage — choose a folder in your own files.";
+    case 'ancestor_of_workspace':
+      return "That folder contains the app's own workspace storage — choose a more specific location in your own files.";
     case 'workspace_not_open':
     case 'workspace_changed':
     case 'invalid_mount_name':
     case 'not_absolute':
-    case 'inside_workspace':
-    case 'ancestor_of_workspace':
     case 'home_or_root':
     case 'unsafe_path':
       return declareMountErrorMessage(code);

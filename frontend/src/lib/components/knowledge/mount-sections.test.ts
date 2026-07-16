@@ -4,7 +4,6 @@ import {
   buildMountsDisplay,
   classifyMounts,
   degradedChipLabel,
-  isExternalMount,
   normalizeMountsDoctorChecks
 } from './mount-sections';
 import type { MountGroup } from '$lib/stores/icm.svelte';
@@ -172,16 +171,6 @@ describe('degradedChipLabel', () => {
 
   it('falls back to a generic reason when degraded is null (defensive — callers only invoke this for a degraded mount)', () => {
     expect(degradedChipLabel({ degraded: null })).toBe('Degraded — unknown reason');
-  });
-});
-
-// Task 3.4: post-A2, EVERY `list_icms` row is by-reference — this predicate
-// is unconditionally `true` now (see its doc comment in `mount-sections.ts`
-// for why it's kept rather than deleted).
-describe('isExternalMount', () => {
-  it('is always true (every mount is by-reference post-A2)', () => {
-    expect(isExternalMount(primarySummary)).toBe(true);
-    expect(isExternalMount(clientsSummary)).toBe(true);
   });
 });
 

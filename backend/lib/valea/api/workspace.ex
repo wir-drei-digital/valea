@@ -23,10 +23,9 @@ defmodule Valea.Api.Workspace do
   those three backed, is deleted alongside them.
 
   `Valea.Workspace.Manager.create/2`/`open_path/1` (the legacy, path-based
-  Manager entry points those actions used to call into) are NOT deleted
-  yet — a large share of the backend test suite still scaffolds its
-  fixture workspaces through them pending Task 11.3's v5 flip. See that
-  task's punch list.
+  Manager entry points those actions used to call into) are also deleted
+  (Task 11.3) — every workspace, test fixtures included, is now scaffolded
+  through the v5 `create/1`/`open/1` id-based pair.
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 

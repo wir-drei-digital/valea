@@ -16,10 +16,9 @@
   //
   // Task 10.4 drops the dialog's old "Name" field entirely:
   // `Valea.Api.Icms.mount_icm` derives the mount key from the target's OWN
-  // manifest name and never reads a caller-supplied one (see
-  // `mountsStore.declare`'s doc comment) — the field was already inert, and
-  // the preview now shows the REAL name instead of asking the user to
-  // redundantly retype it.
+  // manifest name and never reads a caller-supplied one — the field was
+  // already inert, and the preview now shows the REAL name instead of
+  // asking the user to redundantly retype it.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -111,10 +110,9 @@
     return { ok: true, data: result.data as unknown as IcmInspection };
   }
 
-  // Calls `mount_icm` directly (rather than `mountsStore.declare`, which
-  // discards the RPC's `mountKey`) so a successful mount can report back
-  // WHICH mount was created — `MountIcmAction.svelte`'s `onMounted` needs it
-  // to navigate. Refreshes the catalog and clears any pending adoption-error
+  // Calls `mount_icm` directly so a successful mount can report back WHICH
+  // mount was created — `MountIcmAction.svelte`'s `onMounted` needs it to
+  // navigate. Refreshes the catalog and clears any pending adoption-error
   // banner on success, same as `OpenWorkspaceFlow.svelte`'s `mountIcmDep`.
   async function mountIcmDep(p: string, generation: number): ReturnType<MountExistingDeps['mountIcm']> {
     const result = await api.mountIcm(p, generation);

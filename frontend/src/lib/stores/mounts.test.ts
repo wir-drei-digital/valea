@@ -15,7 +15,6 @@ import type { Channel } from 'phoenix';
 type ListResult = ApiResult<{ icms: any[] }>;
 type SetEnabledResult = ApiResult<{ saved: boolean }>;
 type CreateResult = ApiResult<{ mountKey: string; id: string }>;
-type MountResult = ApiResult<{ mountKey: string; id: string }>;
 type UnmountResult = ApiResult<{ unmounted: boolean }>;
 type DoctorResult = ApiResult<{ ok: boolean; checks: unknown[] }>;
 
@@ -23,7 +22,6 @@ function fakeApi(overrides: {
   listIcms?: (generation: number) => Promise<ListResult>;
   setIcmEnabled?: (mountKey: string, enabled: boolean, generation: number) => Promise<SetEnabledResult>;
   createIcm?: (name: string, path: string, generation: number) => Promise<CreateResult>;
-  mountIcm?: (path: string, generation: number) => Promise<MountResult>;
   unmountIcm?: (mountKey: string, generation: number) => Promise<UnmountResult>;
   icmDoctor?: (mountKey: string, generation: number) => Promise<DoctorResult>;
 }) {
@@ -34,8 +32,6 @@ function fakeApi(overrides: {
     createIcm:
       overrides.createIcm ??
       (async () => ({ ok: true, data: { mountKey: 'x', id: 'id-x' } }) as CreateResult),
-    mountIcm:
-      overrides.mountIcm ?? (async () => ({ ok: true, data: { mountKey: 'x', id: 'id-x' } }) as MountResult),
     unmountIcm:
       overrides.unmountIcm ?? (async () => ({ ok: true, data: { unmounted: true } }) as UnmountResult),
     icmDoctor:
@@ -140,31 +136,6 @@ describe('MountsStore.create', () => {
     const result = await store.create('clients', '', 2);
 
     expect(result).toEqual({ ok: false, error: 'already_exists' });
-    expect(listIcms).not.toHaveBeenCalled();
-  });
-});
-
-describe('MountsStore.declare', () => {
-  it('threads ref/generation to mountIcm (name is accepted but not sent) and refreshes on success', async () => {
-    const mountIcm = vi.fn(async () => ({ ok: true, data: { mountKey: 'client-notes', id: 'id-2' } }) as MountResult);
-    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ mountIcm, listIcms }) as never);
-
-    const result = await store.declare('client-notes', '/Users/mara/Documents/Client Notes', 3);
-
-    expect(mountIcm).toHaveBeenCalledWith('/Users/mara/Documents/Client Notes', 3);
-    expect(listIcms).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ ok: true });
-  });
-
-  it('surfaces the error code and does not refresh on failure', async () => {
-    const mountIcm = vi.fn(async () => ({ ok: false, error: 'inside_workspace' }) as MountResult);
-    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ListResult);
-    const store = new MountsStore(fakeApi({ mountIcm, listIcms }) as never);
-
-    const result = await store.declare('client-notes', '/workspace/mounts/primary', 3);
-
-    expect(result).toEqual({ ok: false, error: 'inside_workspace' });
     expect(listIcms).not.toHaveBeenCalled();
   });
 });
@@ -283,37 +254,46 @@ describe('declareMountErrorMessage', () => {
 });
 
 // Task 10.2 fix wave: `create_icm`'s error copy — its own two pre-write
-// rejections get create-specific sentences, the boundary/name codes shared
+// rejections get create-specific sentences, most boundary/name codes shared
 // with `mount_icm` delegate to `declareMountErrorMessage`'s wording, and
 // the DEFAULT says "create", not "mount" (nothing was mounted when a
-// create fails).
+// create fails). Task 11.3: `inside_workspace`/`ancestor_of_workspace` get
+// their OWN create-specific wording instead of delegating — the mount
+// copy's "doesn't need mounting"/"mounting it would..." phrasing is a
+// non-sequitur when nothing was ever mounted.
 describe('createIcmErrorMessage', () => {
   const createSpecificCases: Array<[string, string]> = [
     [
       'already_exists',
       'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.'
     ],
-    ['not_a_directory', 'That path points at an existing file, not a folder. Choose a folder location.']
+    ['not_a_directory', 'That path points at an existing file, not a folder. Choose a folder location.'],
+    [
+      'inside_workspace',
+      "That folder is inside the app's own storage — choose a folder in your own files."
+    ],
+    [
+      'ancestor_of_workspace',
+      "That folder contains the app's own workspace storage — choose a more specific location in your own files."
+    ]
   ];
 
   it.each(createSpecificCases)('maps %s to its create-specific readable message', (code, expected) => {
     expect(createIcmErrorMessage(code)).toBe(expected);
   });
 
-  const sharedCodes = [
-    'workspace_not_open',
-    'workspace_changed',
-    'invalid_mount_name',
-    'not_absolute',
-    'inside_workspace',
-    'ancestor_of_workspace',
-    'home_or_root',
-    'unsafe_path'
-  ];
+  const sharedCodes = ['workspace_not_open', 'workspace_changed', 'invalid_mount_name', 'not_absolute', 'home_or_root', 'unsafe_path'];
 
   it.each(sharedCodes)('delegates %s to declareMountErrorMessage (one copy of the shared wording)', (code) => {
     expect(createIcmErrorMessage(code)).toBe(declareMountErrorMessage(code));
   });
+
+  it.each(['inside_workspace', 'ancestor_of_workspace'])(
+    '%s does NOT delegate to declareMountErrorMessage (create-specific wording, not mount copy)',
+    (code) => {
+      expect(createIcmErrorMessage(code)).not.toBe(declareMountErrorMessage(code));
+    }
+  );
 
   it('falls back to a CREATE-specific generic message for an unrecognized code — never the mount copy', () => {
     expect(createIcmErrorMessage('mystery_code')).toBe(
@@ -344,6 +324,11 @@ describe('undeclareMountErrorMessage', () => {
 // the onboarding card is unmounted by then, so its local `referenceError`
 // write is a no-op. `pendingAdoptError` persists the failure across that
 // transition; the Knowledge page renders it as a dismissible banner.
+//
+// The "successful mount clears the banner" behavior (fix wave 2) is now
+// caller-owned — `MountFromElsewhereDialog.svelte`/`OpenWorkspaceFlow.svelte`
+// call `clearPendingAdoptError()` themselves after a successful `mount_icm`
+// — rather than living inside a store method, so it is not re-tested here.
 describe('MountsStore.pendingAdoptError', () => {
   it('starts null', () => {
     const store = new MountsStore(fakeApi({}) as never);
@@ -362,23 +347,6 @@ describe('MountsStore.pendingAdoptError', () => {
 
     store.clearPendingAdoptError();
     expect(store.pendingAdoptError).toBeNull();
-  });
-
-  // Fix wave 2: a user who retries via "Mount a folder from elsewhere…" and
-  // succeeds shouldn't keep seeing "Couldn't mount…" — a successful mount
-  // IS the retry the banner points at, so it clears the banner itself.
-  it('a successful declare clears pendingAdoptError; a failed one leaves it (the failure is still true)', async () => {
-    const okStore = new MountsStore(fakeApi({}) as never);
-    okStore.setPendingAdoptError('client-notes', '/src', 'mapped message');
-    await okStore.declare('client-notes', '/src', 2);
-    expect(okStore.pendingAdoptError).toBeNull();
-
-    const failStore = new MountsStore(
-      fakeApi({ mountIcm: async () => ({ ok: false, error: 'not_found' }) }) as never
-    );
-    failStore.setPendingAdoptError('client-notes', '/src', 'mapped message');
-    await failStore.declare('client-notes', '/src', 2);
-    expect(failStore.pendingAdoptError).not.toBeNull();
   });
 });
 

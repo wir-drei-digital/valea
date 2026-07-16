@@ -22,8 +22,7 @@
   import {
     adoptFailureBannerText,
     classifyMounts,
-    degradedChipLabel,
-    isExternalMount
+    degradedChipLabel
   } from '$lib/components/knowledge/mount-sections';
   import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
@@ -219,18 +218,16 @@
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-semibold">{mount.name}</span>
                     <span class="block text-[11px] opacity-90">{degradedChipLabel(mount)}</span>
-                    {#if isExternalMount(mount)}
-                      <span class="mt-0.5 block truncate font-mono text-[10.5px] opacity-80" title={mount.root}>
-                        {mount.root}
-                      </span>
-                      <button
-                        type="button"
-                        onclick={() => openUnmount(mount.mountKey)}
-                        class="mt-0.5 text-[11px] underline-offset-2 hover:underline"
-                      >
-                        Unmount
-                      </button>
-                    {/if}
+                    <span class="mt-0.5 block truncate font-mono text-[10.5px] opacity-80" title={mount.root}>
+                      {mount.root}
+                    </span>
+                    <button
+                      type="button"
+                      onclick={() => openUnmount(mount.mountKey)}
+                      class="mt-0.5 text-[11px] underline-offset-2 hover:underline"
+                    >
+                      Unmount
+                    </button>
                   </span>
                 </li>
               {/each}
@@ -261,18 +258,14 @@
                     <div class="flex items-center justify-between gap-2">
                       <span class="min-w-0 flex-1">
                         <span class="text-ink-secondary block truncate text-[13px]">{mount.name}</span>
-                        {#if isExternalMount(mount)}
-                          <span class="text-ink-meta block truncate font-mono text-[10.5px]" title={mount.root}>
-                            {mount.root}
-                          </span>
-                        {/if}
+                        <span class="text-ink-meta block truncate font-mono text-[10.5px]" title={mount.root}>
+                          {mount.root}
+                        </span>
                       </span>
                       <div class="flex shrink-0 items-center gap-1.5">
-                        {#if isExternalMount(mount)}
-                          <Button type="button" variant="outline" size="sm" onclick={() => openUnmount(mount.mountKey)}>
-                            Unmount
-                          </Button>
-                        {/if}
+                        <Button type="button" variant="outline" size="sm" onclick={() => openUnmount(mount.mountKey)}>
+                          Unmount
+                        </Button>
                         <Button
                           type="button"
                           variant="outline"
