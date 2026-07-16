@@ -397,7 +397,7 @@ onboarding flow it fed) has been deleted along with the model it served
 (Phase 11 clean-cut, per the spec's "Clean-cut implementation policy" — no
 production users existed, so replacement rather than migration was the
 chosen path); a pre-redesign workspace is recreated from the current
-onboarding flow rather than upgraded in place, and `Valea.Agents.list_sessions/1`
+onboarding flow rather than upgraded in place, and `Valea.Agents.list_sessions/0`
 silently skips any transcript whose line 1 is not the current `session/v1`
 metadata record rather than attempting to read it.
 
@@ -750,7 +750,7 @@ snapshot a locator for something persisted later (an audit entry, a
 workflow registry entry). `Valea.Workflows.list/0,1` is keyed the same way:
 a workflow's identity is `{icm_id, relative_path}`, with `mount_key` and the
 current `resolved_path` carried alongside for display/direct access but
-never part of identity. `Valea.Agents.RiskTier.classify/2` (unchanged
+never part of identity. `Valea.Agents.RiskTier.classify/1` (unchanged
 "high" for `AGENTS.md`/`CLAUDE.md`/`icm.yaml`/`Workflows/*`, "medium" for
 everything else in an ICM, `nil` for a workspace locator) now classifies
 directly off a locator's own `path` rather than re-attributing a physical
@@ -913,12 +913,12 @@ transcript) carries a full identity snapshot: `workspace_id`,
 session's workspace and primary ICM; if that ICM is no longer mounted or
 healthy, the transcript stays viewable but follow-up creation is disabled
 with a repair action. There is no reader for a pre-redesign transcript —
-`Valea.Agents.list_sessions/1` silently skips any file whose line 1 is not
+`Valea.Agents.list_sessions/0` silently skips any file whose line 1 is not
 this exact schema.
 
 A workflow's owning ICM is always its session's primary ICM — no model or
 user choice is needed once the workflow itself has been selected.
-`Valea.Workflows.Runner.start_run/5` resolves the session scope the same
+`Valea.Workflows.Runner.start_run/6` resolves the session scope the same
 way a chat session does and grants the run's exact, validated inputs and
 staging paths through it; the server continues to own run id, hashes,
 sidecars, queue envelopes, validation, and finalization exactly as before —
@@ -964,7 +964,7 @@ The existing permission-ask surface, unchanged in its allow/deny/ask
 semantics, gained a real review. `Valea.Agents.SessionServer`'s
 `enrich_item/2` (`backend/lib/valea/agents/session_server.ex`) stamps
 `risk_tier` onto a `"permission"`-type ACP item whenever its `rawInput`
-carries a file path and `RiskTier.classify/2` returns `"high"`/`"medium"` —
+carries a file path and `RiskTier.classify/1` returns `"high"`/`"medium"` —
 folded into the item the client already renders, never consulted by the
 policy decision itself. Frontend: `derivePermissionView`
 (`frontend/src/lib/components/agent/permission-view.ts`) reads `risk_tier`
@@ -1006,7 +1006,7 @@ across every mount, and the result is a `Valea.Icm.Locator` rather than a
 physical path, so the queue payload stores the LOCATOR and survives the ICM
 being moved or re-mounted later. Either way the manifest's own claims are
 never trusted — containment is re-derived server-side. `Valea.Workflows.
-Runner`'s `start_run/5` (`backend/lib/valea/workflows/runner.ex`) grants the
+Runner`'s `start_run/6` (`backend/lib/valea/workflows/runner.ex`) grants the
 write through `Valea.Agents.PermissionPolicy`'s directory-scoped
 `write_roots` (`policy_ctx.write_roots: [Path.join(staging_dir,
 "proposals")]`) — deliberately NOT the staging dir itself, so the trusted
