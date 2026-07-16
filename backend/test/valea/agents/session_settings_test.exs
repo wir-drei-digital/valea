@@ -60,6 +60,34 @@ defmodule Valea.Agents.SessionSettingsTest do
     assert "WebSearch" in perms["deny"]
   end
 
+  # Spec D §D5: the managedSettings mirror of PermissionPolicy's ICM-internal
+  # secrets deny (Task 8). Globs can't express the `.env.example` exception,
+  # so `.env.*` is denied wholesale here — strictly more restrictive than
+  # the policy layer, by design (see the comment in `content/1`).
+  test "denies ICM-internal secret patterns for both primary and related roots" do
+    perms = SessionSettings.content(scope(%{}))["permissions"]
+
+    for root <- ["/icms/coaching", "/icms/legal"] do
+      for glob <- [
+            "#{root}/secrets/**",
+            "#{root}/**/secrets/**",
+            "#{root}/.env",
+            "#{root}/.env.*",
+            "#{root}/**/.env",
+            "#{root}/**/.env.*",
+            "#{root}/**/*.pem",
+            "#{root}/**/*.key",
+            "#{root}/**/*credentials*",
+            "#{root}/*credentials*"
+          ] do
+        for op <- ["Read", "Edit", "Write"] do
+          entry = "#{op}(#{glob})"
+          assert entry in perms["deny"], "expected deny to include #{entry}"
+        end
+      end
+    end
+  end
+
   test "grants exact task input reads and exact workflow write paths/roots" do
     perms =
       SessionSettings.content(

@@ -90,18 +90,24 @@ defmodule Valea.Agents.SessionServer do
     # ONE absolute read surface (the primary ICM + every direct related ICM
     # + any exact grant a caller resolved the scope with — already folded
     # together by `SessionScope.resolve/1` into `scope.additional_roots`),
-    # `write_paths`/`write_roots` are the workflow-only exact grants. This
-    # is built FRESH from `scope` at every session start — never cached —
-    # so `SessionScope` (the ONE place mount-key lookup, related-ICM
-    # resolution, and read/write-root assembly live) is the single source
-    # of truth; `SessionServer` never re-derives any of it.
+    # `write_paths`/`write_roots` are the workflow-only exact grants.
+    # `icm_roots` (Task 8, Spec D §D5) is narrower than `read_roots` — just
+    # the primary ICM root plus each DIRECT related ICM's own root, never
+    # `scope.additional_roots`'s exact task-input grants — since the
+    # ICM-internal secrets deny is scoped to ICM content, not to every
+    # granted read surface. This is built FRESH from `scope` at every
+    # session start — never cached — so `SessionScope` (the ONE place
+    # mount-key lookup, related-ICM resolution, and read/write-root assembly
+    # live) is the single source of truth; `SessionServer` never re-derives
+    # any of it.
     policy_ctx = %{
       workspace_root: scope.workspace.root,
       cwd: scope.cwd,
       read_roots: [scope.primary_icm.root | scope.additional_roots],
       session_kind: scope.kind,
       write_paths: scope.write_paths,
-      write_roots: scope.write_roots
+      write_roots: scope.write_roots,
+      icm_roots: [scope.primary_icm.root | Enum.map(scope.related_icms, & &1.root)]
     }
 
     case ProcessRuntime.start(

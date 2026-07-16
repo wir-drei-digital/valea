@@ -34,9 +34,33 @@ defmodule Valea.Agents.SessionSettings do
         Enum.map(@db_files, &"Read(#{ws}/#{&1})") ++
         ["WebFetch", "WebSearch"]
 
+    icm_roots = [scope.primary_icm.root | Enum.map(scope.related_icms, & &1.root)]
+
+    # Spec D §D5 mirror of PermissionPolicy.secret_relative?/1. Globs cannot
+    # express the `.env.example` exception, so this layer denies `.env.*`
+    # wholesale — strictly more restrictive than the authoritative policy
+    # layer, accepted by design.
+    secret_denies =
+      Enum.flat_map(icm_roots, fn root ->
+        patterns = [
+          "#{root}/secrets/**",
+          "#{root}/**/secrets/**",
+          "#{root}/.env",
+          "#{root}/.env.*",
+          "#{root}/**/.env",
+          "#{root}/**/.env.*",
+          "#{root}/**/*.pem",
+          "#{root}/**/*.key",
+          "#{root}/**/*credentials*",
+          "#{root}/*credentials*"
+        ]
+
+        for pattern <- patterns, op <- ["Read", "Edit", "Write"], do: "#{op}(#{pattern})"
+      end)
+
     %{
       "permissions" => %{
-        "deny" => deny,
+        "deny" => deny ++ secret_denies,
         "ask" => ["Write", "Edit", "Bash"],
         "allow" => read_root_allows ++ input_allows ++ write_path_allows ++ write_root_allows
       }

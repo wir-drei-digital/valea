@@ -103,6 +103,7 @@ defmodule Valea.Agents.PermissionPolicy do
     read_roots = Enum.map(ctx[:read_roots] || [], &split_real/1)
     write_paths = Enum.map(ctx[:write_paths] || [], &split_real/1)
     write_roots = Enum.map(ctx[:write_roots] || [], &split_real/1)
+    icm_roots = Enum.map(ctx[:icm_roots] || [], &split_real/1)
 
     paths = extract_paths(item)
     resolved = Enum.map(paths, &split_resolve_candidate(&1, cwd))
@@ -112,6 +113,9 @@ defmodule Valea.Agents.PermissionPolicy do
         {:deny, "reject_once"}
 
       Enum.any?(resolved, &split_protected?(&1, workspace_root)) ->
+        {:deny, "reject_once"}
+
+      Enum.any?(resolved, &split_icm_secret?(&1, icm_roots)) ->
         {:deny, "reject_once"}
 
       Enum.any?(
@@ -186,6 +190,43 @@ defmodule Valea.Agents.PermissionPolicy do
   defp split_protected?({:ok, resolved}, workspace_root) do
     split_under_root?(resolved, workspace_root) and
       protected_relative?(resolved, workspace_root, @protected_dirs, @db_prefix)
+  end
+
+  # Spec D §D5: ICM-internal secret material is deny-by-default — mirrors
+  # the workspace-protected tier. Checked against each ICM root by the
+  # candidate's ICM-relative segments, so `mysecrets/` and `secretsfoo/`
+  # never match a `secrets` SEGMENT.
+  defp split_icm_secret?({:ok, abs}, icm_roots) do
+    Enum.any?(icm_roots, fn root ->
+      if split_under_root?(abs, root) do
+        rel = String.trim_leading(abs, root <> "/")
+        secret_relative?(rel)
+      else
+        false
+      end
+    end)
+  end
+
+  defp split_icm_secret?(_resolved, _icm_roots), do: false
+
+  @doc false
+  # Public only so the managedSettings mirror's tests can assert the same
+  # pattern set; not part of the module's decision API.
+  def secret_relative?(rel) do
+    segments = Path.split(rel)
+    basename = List.last(segments) || ""
+    dir_segments = Enum.drop(segments, -1)
+
+    cond do
+      "secrets" in dir_segments -> true
+      basename == "secrets" -> true
+      basename == ".env" -> true
+      String.starts_with?(basename, ".env.") and basename != ".env.example" -> true
+      String.ends_with?(basename, ".pem") -> true
+      String.ends_with?(basename, ".key") -> true
+      String.contains?(String.downcase(basename), "credentials") -> true
+      true -> false
+    end
   end
 
   # A relative candidate that lexically escapes `cwd` (the only base relative

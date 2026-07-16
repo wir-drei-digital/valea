@@ -45,6 +45,9 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
   defp write(path),
     do: %{"rawInput" => %{"file_path" => path}, "toolName" => "Write", "kind" => "write"}
 
+  defp item_for("read", path), do: read(path)
+  defp item_for("write", path), do: write(path)
+
   test "relative read resolves against the primary ICM cwd, not the workspace", %{ctx: ctx} do
     # resolves under cwd == icm
     assert {:allow, _} = P.decide(read("AGENTS.md"), ctx)
@@ -146,5 +149,78 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
   } do
     # @root_files, now cwd == ICM-relative
     assert {:allow, _} = P.decide(read("CLAUDE.md"), ctx)
+  end
+
+  # Spec D §D5: ICM-internal secret material is deny-by-default, checked
+  # against `ctx.icm_roots` (primary + related ICM roots) independently of
+  # `read_roots`/`write_roots` membership -- deny wins before either
+  # allow tier is reached, and before the write-grant/kind checks too.
+  describe "ICM-internal secrets deny" do
+    setup %{ctx: ctx, icm: icm} do
+      %{ctx: Map.put(ctx, :icm_roots, [icm])}
+    end
+
+    test "reads and writes under a secrets/ dir are denied at any depth", %{ctx: ctx, icm: icm} do
+      for path <- [
+            Path.join(icm, "secrets/api_key.txt"),
+            Path.join(icm, "clients/kita/secrets/token")
+          ] do
+        for kind <- ["read", "write"] do
+          assert {:deny, "reject_once"} = P.decide(item_for(kind, path), ctx)
+        end
+      end
+    end
+
+    test ".env variants are denied; .env.example is not", %{ctx: ctx, icm: icm} do
+      for path <- [Path.join(icm, ".env"), Path.join(icm, "deploy/.env.production")] do
+        assert {:deny, "reject_once"} = P.decide(item_for("read", path), ctx)
+      end
+
+      refute match?(
+               {:deny, _},
+               P.decide(item_for("read", Path.join(icm, ".env.example")), ctx)
+             )
+    end
+
+    test "key material and credentials basenames are denied", %{ctx: ctx, icm: icm} do
+      for path <- [
+            Path.join(icm, "certs/server.pem"),
+            Path.join(icm, "id.key"),
+            Path.join(icm, "ops/aws-credentials.json"),
+            Path.join(icm, "CREDENTIALS.md")
+          ] do
+        assert {:deny, "reject_once"} = P.decide(item_for("write", path), ctx)
+      end
+    end
+
+    test "segment boundaries: lookalike names are not denied", %{ctx: ctx, icm: icm} do
+      for path <- [
+            Path.join(icm, "mysecrets/notes.md"),
+            Path.join(icm, "secretsfoo/x.md"),
+            Path.join(icm, "env/.envrc.sample.md")
+          ] do
+        refute match?({:deny, _}, P.decide(item_for("read", path), ctx))
+      end
+    end
+
+    test "creating a NEW file under secrets/ is denied (target does not exist yet)", %{
+      ctx: ctx,
+      icm: icm
+    } do
+      assert {:deny, "reject_once"} =
+               P.decide(item_for("write", Path.join(icm, "secrets/new_key.txt")), ctx)
+    end
+
+    # `rel` is a granted read_root (present in `read_roots`) but is NOT part
+    # of `icm_roots` in this ctx (only the primary `icm` root is) -- the new
+    # secrets clause is scoped to `icm_roots`, not to every read_root, so a
+    # `.env` basename there keeps its pre-Task-8 behavior: an ordinary
+    # allowed read.
+    test "the same basenames outside any icm_root keep their old behavior", %{
+      ctx: ctx,
+      rel: rel
+    } do
+      assert {:allow, _} = P.decide(item_for("read", Path.join(rel, ".env")), ctx)
+    end
   end
 end
