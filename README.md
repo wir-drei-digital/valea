@@ -39,7 +39,7 @@ just codegen        # regenerate the typed RPC client (frontend/src/lib/api/ash_
 just test           # mix test + svelte-check + frontend tests (fails on a stale RPC client)
 ```
 
-The backend boots **workspace-less**: there is no database until a workspace is created or opened. Each workspace owns its own SQLite database (`app.sqlite`) and everything canonical — ICM pages, workflows, queue, audit log — lives as readable files inside that workspace folder, which the user owns and can back up, export, or hand off at any time.
+The backend boots **workspace-less**: there is no database until a workspace is created or opened. A workspace is a hidden, app-owned operational profile (connected accounts, sources, queue, audit log, session transcripts, its own SQLite database `app.sqlite`) — the user never chooses or sees its folder. Everything a user actually authors — ICM pages, workflows, routing — lives in one or more portable ICM folders the workspace mounts **by reference**; those are the folders the user owns and can back up, export, or hand off at any time. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#icm-project-workspaces) for the full model.
 
 ## Builds
 

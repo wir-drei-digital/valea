@@ -8,9 +8,9 @@ import type { Channel } from 'phoenix';
  * convention as the other T16+ stores, so tests can inject a fake without
  * implementing every wrapped call. Task 3.4: renamed to the `Valea.Api.Icms`
  * (C9) wrappers — `listMounts`/`setMountEnabled`/`createMount`/
- * `declareMount`/`undeclareMount`/`mountsDoctor` (still live on
- * `Valea.Api.Mounts` until Phase 11 deletes it) are no longer called from
- * this store.
+ * `declareMount`/`undeclareMount`/`mountsDoctor` (the legacy
+ * `Valea.Api.Mounts` RPC resource they used to live on was deleted in
+ * Phase 11) are no longer called from this store.
  */
 type MountsApi = Pick<Api, 'listIcms' | 'setIcmEnabled' | 'createIcm' | 'unmountIcm' | 'icmDoctor'>;
 

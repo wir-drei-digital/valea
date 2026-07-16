@@ -185,17 +185,20 @@ clearly marked in their design specs until implemented.
 6. **Workflows & agents, full depth** — registry UI, context bundles,
    additional harnesses beyond Claude Code, everything the prototype slice
    deferred.
-7. **ICM projects & workspace profiles** — replace the interim embedded/global
+7. **ICM projects & workspace profiles** — replaced the interim embedded/global
    mount composition with the final boundary: private Valea workspace profiles
    mount user-owned ICM folders by reference; every session selects one
    primary ICM and runs with that ICM as cwd; related ICMs are explicit rather
    than globally routed; the main sidebar groups each mounted ICM with its five
    recent sessions; onboarding starts fresh or from an existing ICM without
    asking for a workspace path. Workspaces remain switchable account and
-   operational boundaries. *(Approved redesign, implementation pending;
-   spec: [Workspace Profiles, Mounted ICM Projects & ICM-Scoped Sessions](superpowers/specs/2026-07-13-icm-project-workspaces-design.md).
-   Supersedes Plan A/A2 as the target architecture; their implementation
-   remains the current starting point.)*
+   operational boundaries. *(Shipped; spec: [Workspace Profiles, Mounted ICM
+   Projects & ICM-Scoped Sessions](superpowers/specs/2026-07-13-icm-project-workspaces-design.md).
+   Supersedes and replaces Plan A/A2 outright — Phase 11's clean-cut removed
+   every embedded-mount, `MOUNTS.md`, and workspace-migration code path those
+   designs shipped; nothing from them survives at runtime. See
+   [ARCHITECTURE.md](ARCHITECTURE.md#icm-project-workspaces) for the as-built
+   record.)*
 8. **Methodology depth** — closes the teaching loop (principle 2/4, daily-loop
    step 5): a server-derived risk tier makes a proposed edit's stakes
    explicit (a mount's `Workflows/*.md`/`AGENTS.md`/`CLAUDE.md`/`icm.yaml`

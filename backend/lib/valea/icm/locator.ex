@@ -5,11 +5,11 @@ defmodule Valea.Icm.Locator do
   own tree.
 
   Every OTHER path vocabulary in this codebase (`Valea.ICM`'s
-  workspace-relative `mounts/<name>/…` for embedded mounts, absolute
-  physical paths for external ones) is anchored to a mount's CURRENT
-  location — rename the mount key, move the ICM folder on disk, or
-  re-mount the same ICM under a different key, and a persisted path goes
-  stale. A locator instead pairs the ICM's own stable `icm.yaml` `id:`
+  `(mount_key, rel_path)` addressing, or a raw resolved absolute path) is
+  anchored to a mount's CURRENT location — rename the mount key, move the
+  ICM folder on disk, or re-mount the same ICM under a different key, and a
+  persisted path goes stale. A locator instead pairs the ICM's own stable
+  `icm.yaml` `id:`
   with a path RELATIVE TO THAT ICM's root; `resolve/2` re-derives the
   current physical root from the workspace's live mount table
   (`Valea.Mounts.mount_by_id/2`) every time, so a persisted locator keeps
