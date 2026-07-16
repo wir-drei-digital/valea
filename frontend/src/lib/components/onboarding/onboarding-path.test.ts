@@ -63,15 +63,43 @@ describe('startFresh', () => {
     const result = await startFresh(
       'Coaching Practice',
       '~/Documents/Valea/Coaching Practice',
+      null,
       fakeDeps({ createWorkspace, createIcm, currentGeneration, goToFirstSession })
     );
 
+    // no explicit workspaceName -> the workspace name defaults to the ICM name.
     expect(createWorkspace).toHaveBeenCalledWith('Coaching Practice');
     expect(createIcm).toHaveBeenCalledWith('Coaching Practice', '~/Documents/Valea/Coaching Practice', 3);
     // generation is read AFTER createWorkspace resolves, never before.
     expect(currentGeneration).toHaveBeenCalledTimes(1);
     expect(goToFirstSession).toHaveBeenCalledWith('coaching-practice');
     expect(result).toEqual({ ok: true, mountKey: 'coaching-practice' });
+  });
+
+  // Brief: "Workspace name defaults from the ICM name, adjustable in a
+  // secondary field" — the adjusted case: the two names diverge, the
+  // workspace gets the override, the ICM keeps its own name.
+  it('uses the explicit workspaceName for createWorkspace while createIcm keeps the ICM name', async () => {
+    const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
+    const createIcm = vi.fn(async () => ({ ok: true, mountKey: 'coaching-practice' }) as const);
+
+    await startFresh(
+      'Coaching Practice',
+      '~/Documents/Valea/Coaching Practice',
+      'Mara Coaching Co',
+      fakeDeps({ createWorkspace, createIcm })
+    );
+
+    expect(createWorkspace).toHaveBeenCalledWith('Mara Coaching Co');
+    expect(createIcm).toHaveBeenCalledWith('Coaching Practice', '~/Documents/Valea/Coaching Practice', 1);
+  });
+
+  it('falls back to the ICM name when workspaceName is blank/whitespace', async () => {
+    const createWorkspace = vi.fn(async () => ({ ok: true }) as const);
+
+    await startFresh('Coaching Practice', '~/Documents/Valea/Coaching Practice', '   ', fakeDeps({ createWorkspace }));
+
+    expect(createWorkspace).toHaveBeenCalledWith('Coaching Practice');
   });
 
   it('short-circuits on a create-workspace failure — never calls createIcm, never persists an error, never navigates', async () => {
@@ -83,6 +111,7 @@ describe('startFresh', () => {
     const result = await startFresh(
       'Name',
       '~/Documents/Valea/Name',
+      null,
       fakeDeps({
         createWorkspace: async () => ({ ok: false, error: 'some_error' }),
         createIcm,
@@ -99,7 +128,11 @@ describe('startFresh', () => {
     expect(goToFirstSession).not.toHaveBeenCalled();
   });
 
-  it('surfaces a create-ICM failure at the "create-icm" stage, persists it with the MAPPED message, and navigates to Knowledge', async () => {
+  // Fix wave: the persisted message maps through `createIcmErrorMessage`,
+  // not `declareMountErrorMessage` — nothing was mounted here, so "could not
+  // mount that folder" would misdescribe an `already_exists` (the target
+  // folder already holds an icm.yaml).
+  it('surfaces a create-ICM failure at the "create-icm" stage, persists it with the CREATE-specific mapped message, and navigates to Knowledge', async () => {
     const setPendingIcmError = vi.fn();
     const goToKnowledge = vi.fn();
     const goToFirstSession = vi.fn();
@@ -107,6 +140,7 @@ describe('startFresh', () => {
     const result = await startFresh(
       'Name',
       '~/Documents/Valea/Name',
+      null,
       fakeDeps({
         createIcm: async () => ({ ok: false, error: 'already_exists' }),
         setPendingIcmError,
@@ -119,10 +153,27 @@ describe('startFresh', () => {
     expect(setPendingIcmError).toHaveBeenCalledWith(
       'Name',
       '~/Documents/Valea/Name',
-      'Could not mount that folder. Check the path and try again.'
+      'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.'
     );
     expect(goToKnowledge).toHaveBeenCalledTimes(1);
     expect(goToFirstSession).not.toHaveBeenCalled();
+  });
+
+  it('maps an unrecognized create-ICM failure to the create-specific generic copy, not the mount copy', async () => {
+    const setPendingIcmError = vi.fn();
+
+    await startFresh(
+      'Name',
+      '~/Documents/Valea/Name',
+      null,
+      fakeDeps({ createIcm: async () => ({ ok: false, error: 'mystery_code' }), setPendingIcmError })
+    );
+
+    expect(setPendingIcmError).toHaveBeenCalledWith(
+      'Name',
+      '~/Documents/Valea/Name',
+      'Could not create the ICM folder. Check the location and try again.'
+    );
   });
 
   it('surfaces workspace_not_open at the create-icm stage when the post-create generation is unavailable, without calling createIcm — persists AND navigates too (the transition already happened)', async () => {
@@ -133,6 +184,7 @@ describe('startFresh', () => {
     const result = await startFresh(
       'Name',
       '~/Documents/Valea/Name',
+      null,
       fakeDeps({ currentGeneration: () => null, createIcm, setPendingIcmError, goToKnowledge })
     );
 

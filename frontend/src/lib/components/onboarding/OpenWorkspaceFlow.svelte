@@ -18,7 +18,7 @@
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { mountsStore, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
+  import { mountsStore } from '$lib/stores/mounts.svelte';
   import { basename, useExistingIcm, type IcmInspection, type UseExistingIcmDeps } from './onboarding-path';
 
   let path = $state('');
@@ -116,6 +116,21 @@
     goToMountedIcm: (mountKey) => void goto(`/knowledge?icm=${mountKey}`)
   };
 
+  // `Valea.Workspace.Manager.create/1`'s (id-based) failure surface — small
+  // and component-local, same map `CreateWorkspaceDialog.svelte` keeps for
+  // its own create-workspace stage (per this codebase's per-call-site
+  // error-copy convention). Deliberately NOT `declareMountErrorMessage`:
+  // nothing was mounted (or even attempted) when the WORKSPACE create
+  // fails, so "could not mount that folder" would misdescribe it.
+  function createWorkspaceErrorMessage(code: string): string {
+    switch (code) {
+      case 'workspace_changed':
+        return 'Your workspace changed. Reopen it and try again.';
+      default:
+        return 'Something went wrong while creating the workspace. Try again.';
+    }
+  }
+
   async function confirmMount() {
     if (!inspection || !inspection.ok) return;
     mountError = null;
@@ -131,7 +146,7 @@
     // card on screen to render into ("inspect" can't fail here — the
     // Confirm button only shows once `inspection.ok` is already true).
     if (!outcome.ok && outcome.stage === 'create-workspace') {
-      mountError = declareMountErrorMessage(outcome.error);
+      mountError = createWorkspaceErrorMessage(outcome.error);
     }
   }
 

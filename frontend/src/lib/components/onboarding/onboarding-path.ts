@@ -14,7 +14,7 @@
 // moduledoc for why `inspect_icm` needs no open workspace either) —
 // `Valea.Workspace.Adopt`/`inspect_path`/`adopt_workspace` stay registered
 // on the backend (Phase 11 deletes them), just no longer called from here.
-import { declareMountErrorMessage } from '$lib/stores/mounts.svelte';
+import { createIcmErrorMessage, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
 
 /** Last path segment, ignoring a trailing slash. POSIX paths only (macOS/Linux). */
 export function basename(path: string): string {
@@ -88,34 +88,50 @@ export type StartFreshOutcome =
  * id-based workspace (`createWorkspace`), then mints a brand-new ICM at
  * `folder` inside it (`createIcm`) — Valea never creates ICM content under
  * the hidden workspace itself; the ICM always lives at the user-chosen
- * `folder`. `name` is shared by both calls: the ICM's display name doubles
- * as the workspace's own internal display name (the workspace's id/path are
- * never shown to the user, so there is nothing for a second name to
- * disambiguate).
+ * `folder`.
+ *
+ * `workspaceName` is the dialog's secondary, editable field — the workspace
+ * name IS user-visible after onboarding (`WorkspaceSwitcher`'s current-name
+ * row and recent list, `Onboarding.svelte`'s own Recent list), so it gets
+ * its own field per the brief: "Workspace name defaults from the ICM name,
+ * adjustable in a secondary field." `null`/blank falls back to `name` (the
+ * ICM name) — the same fallback contract `useExistingIcm`'s `workspaceName`
+ * has below. Only the workspace path stays hidden, never the name.
  *
  * Short-circuits on the create-workspace step's failure — nothing to clean
  * up, no workspace was ever created.
  *
  * A create-ICM-stage failure (including the generation-unavailable guard) —
  * both happen AFTER the workspace already exists and the onboarding UI is
- * gone — is persisted via `deps.setPendingIcmError` and takes the user to
- * Knowledge. The workspace itself staying open with no ICM mounted yet is
- * non-destructive; the persisted error is what keeps that from being SILENT.
+ * gone — is persisted via `deps.setPendingIcmError` (mapped through
+ * `createIcmErrorMessage`, the create-specific copy table — nothing was
+ * mounted, so `declareMountErrorMessage`'s "could not mount" wording would
+ * misdescribe the failure) and takes the user to Knowledge. The workspace
+ * itself staying open with no ICM mounted yet is non-destructive; the
+ * persisted error is what keeps that from being SILENT.
  */
-export async function startFresh(name: string, folder: string, deps: StartFreshDeps): Promise<StartFreshOutcome> {
-  const createResult = await deps.createWorkspace(name);
+export async function startFresh(
+  name: string,
+  folder: string,
+  workspaceName: string | null,
+  deps: StartFreshDeps
+): Promise<StartFreshOutcome> {
+  const trimmedWorkspaceName = workspaceName?.trim();
+  const finalWorkspaceName = trimmedWorkspaceName ? trimmedWorkspaceName : name;
+
+  const createResult = await deps.createWorkspace(finalWorkspaceName);
   if (!createResult.ok) return { ok: false, stage: 'create-workspace', error: createResult.error };
 
   const generation = deps.currentGeneration();
   if (generation == null) {
-    deps.setPendingIcmError(name, folder, declareMountErrorMessage('workspace_not_open'));
+    deps.setPendingIcmError(name, folder, createIcmErrorMessage('workspace_not_open'));
     deps.goToKnowledge();
     return { ok: false, stage: 'create-icm', error: 'workspace_not_open' };
   }
 
   const icmResult = await deps.createIcm(name, folder, generation);
   if (!icmResult.ok) {
-    deps.setPendingIcmError(name, folder, declareMountErrorMessage(icmResult.error));
+    deps.setPendingIcmError(name, folder, createIcmErrorMessage(icmResult.error));
     deps.goToKnowledge();
     return { ok: false, stage: 'create-icm', error: icmResult.error };
   }

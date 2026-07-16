@@ -3,6 +3,7 @@ import {
   MountsStore,
   mountsStore,
   wireMountsEvents,
+  createIcmErrorMessage,
   declareMountErrorMessage,
   undeclareMountErrorMessage
 } from './mounts.svelte';
@@ -278,6 +279,47 @@ describe('declareMountErrorMessage', () => {
 
   it('falls back to a generic message for an unrecognized code', () => {
     expect(declareMountErrorMessage('mystery_code')).toBe('Could not mount that folder. Check the path and try again.');
+  });
+});
+
+// Task 10.2 fix wave: `create_icm`'s error copy — its own two pre-write
+// rejections get create-specific sentences, the boundary/name codes shared
+// with `mount_icm` delegate to `declareMountErrorMessage`'s wording, and
+// the DEFAULT says "create", not "mount" (nothing was mounted when a
+// create fails).
+describe('createIcmErrorMessage', () => {
+  const createSpecificCases: Array<[string, string]> = [
+    [
+      'already_exists',
+      'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.'
+    ],
+    ['not_a_directory', 'That path points at an existing file, not a folder. Choose a folder location.']
+  ];
+
+  it.each(createSpecificCases)('maps %s to its create-specific readable message', (code, expected) => {
+    expect(createIcmErrorMessage(code)).toBe(expected);
+  });
+
+  const sharedCodes = [
+    'workspace_not_open',
+    'workspace_changed',
+    'invalid_mount_name',
+    'not_absolute',
+    'inside_workspace',
+    'ancestor_of_workspace',
+    'home_or_root',
+    'unsafe_path'
+  ];
+
+  it.each(sharedCodes)('delegates %s to declareMountErrorMessage (one copy of the shared wording)', (code) => {
+    expect(createIcmErrorMessage(code)).toBe(declareMountErrorMessage(code));
+  });
+
+  it('falls back to a CREATE-specific generic message for an unrecognized code — never the mount copy', () => {
+    expect(createIcmErrorMessage('mystery_code')).toBe(
+      'Could not create the ICM folder. Check the location and try again.'
+    );
+    expect(createIcmErrorMessage('mystery_code')).not.toBe(declareMountErrorMessage('mystery_code'));
   });
 });
 

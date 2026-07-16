@@ -286,16 +286,14 @@ export class MountsStore {
  * `no_manifest`, `unsafe_path`, and the 2-tuple `{:invalid_manifest,
  * reason}` — which `error_for/1` stringifies to the bare code
  * `"invalid_manifest"`, same as every other atom code, so this switch never
- * needs the nested reason string). `create_icm`'s validation gate overlaps
- * this same vocabulary (see `Valea.Mounts.create/3`'s moduledoc), so this is
- * ALSO reused for Task 10.2's `startFresh` create-ICM-stage failures, not
- * just `mount_icm`. Shared by Task 10.3's "Use existing ICM" flow
- * (`onboarding-path.ts`'s `useExistingIcm`), Task 10.2's "Start fresh" flow
- * (`useExistingIcm`'s sibling `startFresh`), and Knowledge's "Mount a folder
- * from elsewhere…" dialog (which calls `declare` above) — all three need the
- * SAME mapping, so it lives here rather than being duplicated per caller
- * (mirrors `mail-shapes.ts` colocating `mailSetupErrorMessage` next to
- * `submitMailSetup`).
+ * needs the nested reason string). Shared by Task 10.3's "Use existing
+ * ICM" flow (`onboarding-path.ts`'s `useExistingIcm`) and Knowledge's
+ * "Mount a folder from elsewhere…" dialog (which calls `declare` above) —
+ * both mount an EXISTING folder and need the SAME mapping, so it lives here
+ * rather than being duplicated per caller (mirrors `mail-shapes.ts`
+ * colocating `mailSetupErrorMessage` next to `submitMailSetup`).
+ * `create_icm` failures map through `createIcmErrorMessage` below instead —
+ * "could not mount" copy is wrong for a create that never wrote anything.
  */
 export function declareMountErrorMessage(code: string): string {
   switch (code) {
@@ -323,6 +321,41 @@ export function declareMountErrorMessage(code: string): string {
       return 'That folder has an icm.yaml, but it could not be read. Check its contents and try again.';
     default:
       return 'Could not mount that folder. Check the path and try again.';
+  }
+}
+
+/**
+ * Readable copy for `create_icm`'s error vocabulary (Task 10.2 fix wave) —
+ * `Valea.Mounts.create/3`'s own two pre-write rejections (`already_exists`:
+ * the target already holds an `icm.yaml`; `not_a_directory`: the target is
+ * an existing FILE) plus the boundary/glob/name checks it shares with
+ * `mount_icm` (`check_create_target/2` runs the same
+ * `External.check_boundaries`/glob-safety gate, `validate_display_name/1`
+ * rejects with the same `invalid_mount_name` atom), which delegate to
+ * `declareMountErrorMessage` above so the shared codes keep one copy of
+ * their wording. The DEFAULT differs deliberately: a `create_icm` failure
+ * means nothing was mounted — often nothing was even written — so
+ * `declareMountErrorMessage`'s "Could not mount that folder" would
+ * misdescribe what failed. Used by `startFresh` (onboarding-path.ts), the
+ * one create-ICM caller that maps codes to copy at persist time.
+ */
+export function createIcmErrorMessage(code: string): string {
+  switch (code) {
+    case 'already_exists':
+      return 'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.';
+    case 'not_a_directory':
+      return 'That path points at an existing file, not a folder. Choose a folder location.';
+    case 'workspace_not_open':
+    case 'workspace_changed':
+    case 'invalid_mount_name':
+    case 'not_absolute':
+    case 'inside_workspace':
+    case 'ancestor_of_workspace':
+    case 'home_or_root':
+    case 'unsafe_path':
+      return declareMountErrorMessage(code);
+    default:
+      return 'Could not create the ICM folder. Check the location and try again.';
   }
 }
 

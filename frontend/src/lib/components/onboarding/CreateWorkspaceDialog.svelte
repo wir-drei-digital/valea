@@ -1,18 +1,21 @@
 <script lang="ts">
   // "Start fresh" (Task 10.2): name your first ICM, confirm (or override) the
-  // folder it lives in, and go — `startFresh` (onboarding-path.ts) scaffolds
-  // the hidden workspace and THEN mints the ICM at that folder; nothing else
-  // is asked of the user here. Supersedes this component's earlier "guided
-  // fallback for the chat-based setup assistant" incarnation — that
-  // assistant never landed, and Tasks 10.2/10.3 rebuild onboarding around
-  // two direct paths instead of a wizard.
+  // folder it lives in — and, in a secondary field, the workspace's own name
+  // (visible later in the sidebar's workspace switcher and the welcome
+  // screen's Recent list; only the workspace PATH is hidden) — and go.
+  // `startFresh` (onboarding-path.ts) scaffolds the hidden workspace and
+  // THEN mints the ICM at that folder; nothing else is asked of the user
+  // here. Supersedes this component's earlier "guided fallback for the
+  // chat-based setup assistant" incarnation — that assistant never landed,
+  // and Tasks 10.2/10.3 rebuild onboarding around two direct paths instead
+  // of a wizard.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { goto } from '$app/navigation';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { mountsStore, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
+  import { mountsStore } from '$lib/stores/mounts.svelte';
   import { startFresh, defaultIcmFolder, type StartFreshDeps } from './onboarding-path';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
@@ -26,6 +29,13 @@
   // folder/name pair instead (the direction reverses: there, the picked path
   // suggests a name; here, the typed name suggests a folder).
   let folderEdited = $state(false);
+  // Secondary "Workspace name" field (brief: "Workspace name defaults from
+  // the ICM name, adjustable in a secondary field") — `null` (untouched)
+  // renders the live ICM-name default and lets `startFresh` apply the same
+  // fallback itself; once the user types, this holds their literal
+  // override. Same `null`-until-edited pattern `OpenWorkspaceFlow.svelte`
+  // uses for its own workspace-name field.
+  let workspaceName = $state<string | null>(null);
   let submitting = $state(false);
   let error = $state<string | null>(null);
 
@@ -36,6 +46,7 @@
       name = '';
       folder = defaultIcmFolder('');
       folderEdited = false;
+      workspaceName = null;
       submitting = false;
       error = null;
     }
@@ -70,6 +81,20 @@
     goToFirstSession: (mountKey) => void goto(`/chat?icm=${mountKey}`)
   };
 
+  // `Valea.Workspace.Manager.create/1`'s (id-based) failure surface — small
+  // and component-local, per this codebase's per-call-site error-copy
+  // convention. Deliberately NOT `declareMountErrorMessage`: nothing was
+  // mounted (or even attempted) when the WORKSPACE create fails, so "could
+  // not mount that folder" would misdescribe it.
+  function createWorkspaceErrorMessage(code: string): string {
+    switch (code) {
+      case 'workspace_changed':
+        return 'Your workspace changed. Reopen it and try again.';
+      default:
+        return 'Something went wrong while creating the workspace. Try again.';
+    }
+  }
+
   async function submit() {
     error = null;
 
@@ -83,7 +108,7 @@
     }
 
     submitting = true;
-    const outcome = await startFresh(name.trim(), folder.trim(), deps);
+    const outcome = await startFresh(name.trim(), folder.trim(), workspaceName, deps);
     submitting = false;
 
     // A create-ICM-stage failure already flipped the workspace open and
@@ -92,7 +117,7 @@
     // resolves, so there is nothing left here to render into. Only a
     // create-workspace-stage failure still has this dialog on screen.
     if (!outcome.ok && outcome.stage === 'create-workspace') {
-      error = declareMountErrorMessage(outcome.error);
+      error = createWorkspaceErrorMessage(outcome.error);
       return;
     }
 
@@ -137,6 +162,18 @@
           <Input id="fresh-icm-folder" bind:value={folder} oninput={onFolderInput} disabled={submitting} />
           <p class="text-ink-meta text-[11px]">Dev only — the desktop app suggests this automatically.</p>
         {/if}
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <Label for="fresh-workspace-name">Workspace name</Label>
+        <Input
+          id="fresh-workspace-name"
+          value={workspaceName ?? name.trim()}
+          oninput={(e) => (workspaceName = e.currentTarget.value)}
+          disabled={submitting}
+          placeholder="Coaching Practice"
+        />
+        <p class="text-ink-meta text-[11px]">How this shows up in the workspace switcher — usually the same name.</p>
       </div>
 
       {#if error}
