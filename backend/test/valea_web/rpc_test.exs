@@ -133,4 +133,56 @@ defmodule ValeaWeb.RpcTest do
     # summary has something to show before any real mail ever syncs.
     assert mail == %{"reviewCount" => 1, "inboxCount" => 0, "configured" => false}
   end
+
+  # Mirrors `write_session_meta!/3` in `test/valea/cockpit_test.exs` (added in
+  # c0cb967) — a bare transcript line-1 metadata file, no live `SessionServer`
+  # behind it, so `Valea.Agents.list_sessions/0`'s `live_status/1` resolves it
+  # to `{false, "ended"}`.
+  defp write_session_meta!(workspace, id, started_at) do
+    dir = Path.join([workspace, "logs", "sessions"])
+    File.mkdir_p!(dir)
+
+    meta = %{
+      "schema" => "session/v1",
+      "id" => id,
+      "title" => "Test session #{id}",
+      "started_at" => started_at
+    }
+
+    File.write!(Path.join(dir, id <> ".jsonl"), Jason.encode!(meta) <> "\n")
+  end
+
+  # Review finding (Task 3): `sections[].ok == false` and
+  # `recent_sessions[].live == false` were only ever exercised by calling
+  # `Valea.Cockpit.today/0` directly — never through the full RPC path, which
+  # is the one layer where `Ash.Type.Map`'s `check_fields/2`/`fetch_field/2`
+  # constraint casting could null a legitimate `false` if the source map
+  # weren't string-keyed (the ash_typescript 0.17.3 falsy-bool issue
+  # documented in `Valea.Api.Cockpit`'s moduledoc and
+  # `Valea.Api.Queue.reject_item`/`Valea.Api.Mail`'s). This drives BOTH
+  # falsy-bool leaves through `POST /rpc/run` in one round trip: a malformed
+  # `today.json` (→ `sections[0]["ok"]`) and an ended (non-live) session
+  # transcript (→ `recentSessions[0]["live"]`) — proving `false` survives
+  # extraction as `false`, not `nil`/missing.
+  test "cockpit_today RPC: malformed today.json and an ended session both keep their `false`" do
+    {:ok, ws} = Manager.create("Falsy")
+    icm = AgentCase.mount_test_icm!(ws.path, name: "Broken")
+    File.write!(Path.join(icm.root, "today.json"), "{not json")
+    write_session_meta!(ws.path, "session-ended-1", "2026-01-01T00:00:01Z")
+
+    assert %{
+             "success" => true,
+             "data" => %{"sections" => [section], "recentSessions" => [session]}
+           } = rpc("cockpit_today", %{}, ["sections", "recentSessions"])
+
+    # The `false` itself, not merely "falsy" — this is what the reviewer
+    # feared could get nulled by `check_fields/2` on a non-string-keyed
+    # source map.
+    assert section["ok"] == false
+    assert is_boolean(section["ok"])
+
+    assert session["live"] == false
+    assert is_boolean(session["live"])
+    assert session["status"] == "ended"
+  end
 end
