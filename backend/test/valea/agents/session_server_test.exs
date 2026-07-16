@@ -140,7 +140,7 @@ defmodule Valea.Agents.SessionServerTest do
     :ok = Valea.Agents.SessionServer.prompt(id, "write")
 
     assert_receive {:session_event, _,
-                    %{"type" => "permission", "title" => "Write Workflows page"} = high_perm},
+                    %{"type" => "permission", "title" => "Write client CONTEXT.md"} = high_perm},
                    10_000
 
     assert high_perm["risk_tier"] == "high"

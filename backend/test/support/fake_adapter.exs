@@ -98,8 +98,12 @@ defmodule FakeAdapter do
 
       "permission_risk_tier" ->
         # Three asks in one turn: one behavior-bearing path inside the
-        # mounted external ICM (high), one ordinary knowledge page inside
-        # it (medium), one under the session's own workspace — outside any
+        # mounted external ICM (high — a NESTED `CONTEXT.md`, since
+        # `RiskTier.classify/1` tiers "high" by basename
+        # (AGENTS.md/CLAUDE.md/CONTEXT.md) at ANY depth, or the exact
+        # `icm.yaml` path; there is no more path-prefix rule like the old
+        # `Workflows/` convention), one ordinary knowledge page inside it
+        # (medium), one under the session's own workspace — outside any
         # mount (no tier at all). Since Task 5.4 the subprocess `cwd` IS the
         # primary ICM's own root, so `icm_root` needs no separate arg any
         # more; `ctx.workspace_root` (see `main/1`'s two-arg clause) is only
@@ -110,8 +114,7 @@ defmodule FakeAdapter do
         workspace_root = Map.get(ctx, :workspace_root, icm_root)
 
         targets = [
-          {"pr1", "Write Workflows page",
-           Path.join([icm_root, "Workflows/New Inquiry Triage.md"])},
+          {"pr1", "Write client CONTEXT.md", Path.join([icm_root, "clients/CONTEXT.md"])},
           {"pr2", "Write knowledge page", Path.join([icm_root, "Pricing/Current Pricing.md"])},
           {"pr3", "Write source file", Path.join([workspace_root, "sources/mail/inbox.md"])}
         ]
