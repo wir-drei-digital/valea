@@ -61,11 +61,9 @@ defmodule Valea.Mail.Engine do
 
   alias Valea.Mail.Doctor
   alias Valea.Mail.Index
-  alias Valea.Mail.MailboxOps
   alias Valea.Mail.Redact
   alias Valea.Mail.Settings
   alias Valea.Mail.SyncPass
-  alias Valea.Queue
 
   @default_interval_minutes 5
 
@@ -123,18 +121,6 @@ defmodule Valea.Mail.Engine do
   def reload_settings, do: GenServer.call(__MODULE__, :reload_settings)
 
   @doc """
-  Re-runs the post-approval mailbox ops for `run_id` — the UI's retry button.
-  Unlike the activation recovery scan (which re-attempts only `"pending"`
-  ops), this re-attempts BOTH `"pending"` and `"failed"` ops, since it is an
-  explicit, user-driven request. Refuses with the same gate as `sync_now/0`
-  (inactive/not-configured/no-credential); the actual work runs in an
-  linked task and never blocks this call.
-  """
-  @spec retry_ops(String.t()) :: :ok | {:error, :inactive | :no_credential | :not_configured}
-  def retry_ops(run_id) when is_binary(run_id),
-    do: GenServer.call(__MODULE__, {:retry_ops, run_id})
-
-  @doc """
   Runs the mail connection doctor (mail design spec, §Account setup +
   doctor) — `Valea.Mail.Doctor.run/1` against a snapshot of the Engine's
   settings/credential/transport. Never errors: an inactive/unconfigured/
@@ -168,8 +154,8 @@ defmodule Valea.Mail.Engine do
 
   @impl true
   def init(%{root: root, generation: generation}) do
-    # Trap exits so the sync/ops tasks can be LINKED (not just monitored):
-    # linking makes them die with this Engine when Runtime tears it down on a
+    # Trap exits so the sync task can be LINKED (not just monitored):
+    # linking makes it die with this Engine when Runtime tears it down on a
     # workspace switch — a monitored-only task blocked in :ssl.recv would
     # otherwise outlive the Engine and write the old workspace's rows into the
     # new one. Trapping turns a linked task's crash into a handled `{:EXIT, _,
@@ -177,7 +163,6 @@ defmodule Valea.Mail.Engine do
     # drives result/cleanup (see `handle_info` below).
     Process.flag(:trap_exit, true)
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
 
     {:ok,
      %{
@@ -192,8 +177,7 @@ defmodule Valea.Mail.Engine do
        last_error: nil,
        workspace_id: nil,
        poll_timer: nil,
-       sync_task: nil,
-       ops_tasks: %{}
+       sync_task: nil
      }}
   end
 
@@ -217,13 +201,6 @@ defmodule Valea.Mail.Engine do
     end
   end
 
-  def handle_call({:retry_ops, run_id}, _from, state) do
-    case validate_sync(state) do
-      :ok -> {:reply, :ok, execute_ops(state, run_id)}
-      {:error, _reason} = error -> {:reply, error, state}
-    end
-  end
-
   def handle_call(:reload_settings, _from, state) do
     {settings, error} = load_settings(state.root)
     new_state = %{state | settings: settings, last_error: error}
@@ -235,8 +212,8 @@ defmodule Valea.Mail.Engine do
   # unconfigured/uncredentialed Engine can't connect, not refuse to run.
   def handle_call(:doctor_ctx, _from, state), do: {:reply, doctor_ctx(state), state}
 
-  # create_folders DOES gate, same as sync_now/retry_ops — it needs a real
-  # connection to create anything.
+  # create_folders DOES gate, same as sync_now — it needs a real connection
+  # to create anything.
   def handle_call(:doctor_ctx_gated, _from, state) do
     case validate_sync(state) do
       :ok -> {:reply, {:ok, doctor_ctx(state)}, state}
@@ -250,16 +227,6 @@ defmodule Valea.Mail.Engine do
   end
 
   def handle_info({:workspace_opened, _info, _other_generation}, state), do: {:noreply, state}
-
-  # A decided item's mailbox ops became pending (an approve/reject just
-  # landed). Execute them if we can reach the mailbox; otherwise leave them
-  # pending for the activation recovery scan or a later retry.
-  def handle_info({:mailbox_ops_pending, run_id}, state) do
-    {:noreply, maybe_execute_ops(state, run_id)}
-  end
-
-  # Our own update broadcast (and any other mail_ops chatter): ignore.
-  def handle_info({:mailbox_ops_updated, _run_id}, state), do: {:noreply, state}
 
   # `auth_failed` pauses polling: no re-arm until `set_credential/1` clears
   # it (see moduledoc §Errors).
@@ -283,15 +250,7 @@ defmodule Valea.Mail.Engine do
   # Stale task chatter (already handled/superseded): ignore.
   def handle_info({:sync_result, _pid, _result}, state), do: {:noreply, state}
 
-  # An ops task finished (normal exit or crash): clear its single-flight slot
-  # so a later retry/broadcast for that run_id can run again. Any monitor
-  # that is neither the sync task (matched above) nor an ops task is stale
-  # chatter and leaves the state untouched.
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
-    {:noreply, clear_ops_task(state, {pid, ref})}
-  end
-
-  # A LINKED sync/ops task exited (normal completion or crash). Because the
+  # A LINKED sync task exited (normal completion or crash). Because the
   # Engine traps exits, the exit signal arrives here as a message; the paired
   # monitor's `:DOWN` (matched above) is what actually drives result handling
   # and single-flight cleanup, so the `{:EXIT, _, _}` is intentionally a no-op.
@@ -316,82 +275,7 @@ defmodule Valea.Mail.Engine do
       |> schedule_poll()
 
     broadcast_status(new_state)
-    recover_mailbox_ops(new_state)
-  end
-
-  # Activation recovery scan: any decided item whose mailbox ops are still
-  # "pending" (an approve/reject whose broadcast we missed, e.g. a crash or a
-  # switch-away before it ran) is re-executed. "failed" ops are deliberately
-  # NOT swept here — they wait for the user's explicit retry (`retry_ops/1`),
-  # since a failure is a signal worth showing, not silently re-attempting on
-  # every open. Gated by the same active/configured/credentialed check as a
-  # sync: with no credential the ops simply wait.
-  defp recover_mailbox_ops(state) do
-    case validate_sync(state) do
-      :ok -> Enum.reduce(pending_op_run_ids(), state, &execute_ops(&2, &1))
-      {:error, _reason} -> state
-    end
-  end
-
-  defp pending_op_run_ids do
-    case Queue.list_decided() do
-      {:ok, entries} ->
-        for %{run_id: run_id, mailbox_ops: ops} <- entries, any_pending?(ops), do: run_id
-
-      {:error, _reason} ->
-        []
-    end
-  end
-
-  defp any_pending?(ops) when is_map(ops) do
-    Enum.any?(ops, fn {_name, op} -> is_map(op) and Map.get(op, "status") == "pending" end)
-  end
-
-  defp any_pending?(_ops), do: false
-
-  # Runs the mailbox ops for `run_id` in a linked + monitored task (dies with
-  # the Engine on teardown) so a slow or crashing pass can never block or take
-  # down the Engine. Callers gate on `validate_sync/1`.
-  defp maybe_execute_ops(state, run_id) do
-    case validate_sync(state) do
-      :ok -> execute_ops(state, run_id)
-      {:error, _reason} -> state
-    end
-  end
-
-  # Single-flight PER RUN ID, mirroring the sync pass's pattern: the
-  # executor's UID-SEARCH-before-APPEND idempotence guard is check-then-act —
-  # safe against sequential replays, but two CONCURRENT executions for the
-  # same item (retry racing the approve broadcast, a double-fired retry RPC,
-  # a workspace_opened re-fire during a running batch) would both see an
-  # empty search and both APPEND, landing duplicate drafts under one
-  # Message-ID. So an in-flight task per run_id is tracked in
-  # `state.ops_tasks`; a duplicate trigger while one is live is a no-op, and
-  # the task's `:DOWN` (normal exit or crash — `MailboxOps.execute/1` returns
-  # `:ok` on every handled path, so the monitor is the one completion signal)
-  # clears the slot so a later retry runs.
-  defp execute_ops(state, run_id) do
-    if Map.has_key?(state.ops_tasks, run_id) do
-      state
-    else
-      args = %{
-        root: state.root,
-        run_id: run_id,
-        transport: state.transport,
-        settings: state.settings,
-        credential: state.credential
-      }
-
-      task = spawn_linked_task(fn -> MailboxOps.execute(args) end)
-      %{state | ops_tasks: Map.put(state.ops_tasks, run_id, task)}
-    end
-  end
-
-  defp clear_ops_task(state, task) do
-    case Enum.find(state.ops_tasks, fn {_run_id, tracked} -> tracked == task end) do
-      {run_id, _tracked} -> %{state | ops_tasks: Map.delete(state.ops_tasks, run_id)}
-      nil -> state
-    end
+    new_state
   end
 
   # Snapshot of exactly the fields `Valea.Mail.Doctor` needs — the same

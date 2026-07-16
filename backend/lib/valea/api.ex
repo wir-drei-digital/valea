@@ -47,13 +47,8 @@ defmodule Valea.Api do
       rpc_action(:list_workflows, :list_workflows)
     end
 
-    resource Valea.Api.Queue do
-      rpc_action(:list_queue_items, :list_items)
-      rpc_action(:get_queue_item, :get_item)
-      rpc_action(:approve_queue_item, :approve_item)
-      rpc_action(:reject_queue_item, :reject_item)
+    resource Valea.Api.Audit do
       rpc_action(:list_audit_entries, :list_audit_entries)
-      rpc_action(:list_decided_queue_items, :list_decided_items)
     end
 
     resource Valea.Api.Mail do
@@ -66,7 +61,6 @@ defmodule Valea.Api do
       rpc_action(:list_mail_messages, :list_mail_messages)
       rpc_action(:get_mail_message, :get_mail_message)
       rpc_action(:mail_inbox, :mail_inbox)
-      rpc_action(:retry_mailbox_ops, :retry_mailbox_ops)
     end
 
     resource Valea.Api.Icms do
@@ -85,7 +79,7 @@ defmodule Valea.Api do
     resource Valea.Api.ICM
     resource Valea.Api.Cockpit
     resource Valea.Api.Agents
-    resource Valea.Api.Queue
+    resource Valea.Api.Audit
     resource Valea.Api.Mail
     resource Valea.Api.Icms
   end

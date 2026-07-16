@@ -30,10 +30,12 @@ defmodule Valea.ICM.WatcherTest do
 
   # The watched set is every enabled, non-degraded ICM root (config truth,
   # `Valea.Mounts.enabled/1` — there is no embedded `mounts/<name>/`
-  # directory concept in a v5 workspace) plus the workspace's own `queue/`
-  # and `sources/` trees; a v5 workspace has no `mounts/` path at all, so
-  # the negative half of this assertion holds trivially.
-  test "watched_roots/0 contains every enabled ICM root plus queue/sources, and no mounts/ path",
+  # directory concept in a v5 workspace) plus the workspace's own
+  # `sources/` tree; `queue/` is no longer watched (Spec D §A — its
+  # queue-changed broadcast had no remaining consumer) and a v5 workspace
+  # has no `mounts/` path at all, so both negative halves of this
+  # assertion hold.
+  test "watched_roots/0 contains every enabled ICM root plus sources/, and no queue/mounts/ path",
        %{ws: ws} do
     ext_a = external_icm!("A")
     ext_b = external_icm!("B")
@@ -55,8 +57,8 @@ defmodule Valea.ICM.WatcherTest do
     roots = Watcher.watched_roots()
 
     assert MapSet.subset?(resolved_icm_roots, roots)
-    assert resolve_real!(Path.join(ws.path, "queue")) in roots
     assert resolve_real!(Path.join(ws.path, "sources")) in roots
+    refute resolve_real!(Path.join(ws.path, "queue")) in roots
     refute resolve_real!(Path.join(ws.path, "mounts")) in roots
   end
 
@@ -108,7 +110,6 @@ defmodule Valea.ICM.WatcherTest do
 
     Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
 
     poll_until_both(fn _i -> declare_external!(ws.path, "ext", ext) end)
     drain_any()
@@ -128,11 +129,11 @@ defmodule Valea.ICM.WatcherTest do
     File.write!(Path.join(ext, "post-disable.md"), "nope")
 
     # No positive event to wait on for the (correctly) suppressed write
-    # above — use an unrelated queue/ broadcast, which itself takes a full
-    # debounce+retry cycle, as the time buffer, then assert absence.
-    poll_until_queue_broadcast(fn i ->
-      File.write!(Path.join(ws.path, "queue/pending/probe-#{i}.json"), "{}")
-    end)
+    # above — a bounded sleep comfortably past the debounce window is the
+    # only way to assert the negative, mirroring the same fixed-timeout
+    # idiom used elsewhere in this file (e.g. the mounts_changed-restarts-
+    # neither-listener test below).
+    Process.sleep(300)
 
     refute_received {:icm_changed}
   end
@@ -213,48 +214,6 @@ defmodule Valea.ICM.WatcherTest do
     assert state.icm_watcher == nil
   end
 
-  # -- queue/ ----------------------------------------------------------------
-
-  test "a new file under queue/pending broadcasts queue_changed", %{ws: ws} do
-    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
-
-    poll_until_queue_broadcast(fn i ->
-      File.write!(Path.join(ws.path, "queue/pending/probe-#{i}.json"), "{}")
-    end)
-  end
-
-  test "an ICM-root content burst never broadcasts queue_changed (separate debounce timers)",
-       %{ws: ws} do
-    ext = external_icm!("Ext")
-
-    Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
-
-    poll_until_both(fn _i -> declare_external!(ws.path, "ext", ext) end)
-    drain_any()
-
-    poll_until_broadcast(fn i ->
-      File.write!(Path.join(ext, "burst-#{i}.md"), "# burst")
-    end)
-
-    refute_received {:queue_changed}
-  end
-
-  test "a queue/ burst never broadcasts icm_changed or mounts_changed (separate debounce timers)",
-       %{ws: ws} do
-    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
-
-    poll_until_queue_broadcast(fn i ->
-      File.write!(Path.join(ws.path, "queue/pending/iso-#{i}.json"), "{}")
-    end)
-
-    refute_received {:icm_changed}
-    refute_received {:mounts_changed}
-  end
-
   test "watcher dies with the workspace", %{ws: _ws} do
     Manager.close()
     refute Process.whereis(Valea.ICM.Watcher)
@@ -324,25 +283,8 @@ defmodule Valea.ICM.WatcherTest do
     receive do
       {:icm_changed} -> drain_any()
       {:mounts_changed} -> drain_any()
-      {:queue_changed} -> drain_any()
     after
       500 -> :ok
-    end
-  end
-
-  defp poll_until_queue_broadcast(trigger, attempts_left \\ 10)
-
-  defp poll_until_queue_broadcast(_trigger, 0) do
-    flunk("queue_changed was never broadcast after repeated fs writes")
-  end
-
-  defp poll_until_queue_broadcast(trigger, attempts_left) do
-    trigger.(attempts_left)
-
-    receive do
-      {:queue_changed} -> :ok
-    after
-      300 -> poll_until_queue_broadcast(trigger, attempts_left - 1)
     end
   end
 

@@ -1,11 +1,11 @@
 defmodule Valea.ICM.Watcher do
   @moduledoc """
-  Watches `{workspace}/queue`, `{workspace}/sources`, `{workspace}/config`,
-  and every ENABLED, non-degraded ICM's real root (`Valea.Mounts.enabled/1`
-  — since Task 3.2 every mounted ICM is by-reference; there is no more
-  embedded `mounts/<name>/` directory concept, so the historical FIXED
-  `mounts/` watch is gone as of Task 8.1), broadcasting debounced events on
-  their own PubSub topics:
+  Watches `{workspace}/sources`, `{workspace}/config`, and every ENABLED,
+  non-degraded ICM's real root (`Valea.Mounts.enabled/1` — since Task 3.2
+  every mounted ICM is by-reference; there is no more embedded
+  `mounts/<name>/` directory concept, so the historical FIXED `mounts/`
+  watch is gone as of Task 8.1), broadcasting debounced events on their own
+  PubSub topics:
 
     * any change under an enabled ICM root -> `{:icm_changed}` on `"icm"`
       (consumers refetch the ICM tree, which spans every enabled root)
@@ -14,7 +14,6 @@ defmodule Valea.ICM.Watcher do
       touched (the source of truth for enabled/disabled state AND for
       every ICM's `path:` declaration) — ALSO broadcasts `{:mounts_changed}`
       on `"mounts"` and triggers a root-set recompute (see below)
-    * a change under `queue/` -> `{:queue_changed}` on `"queue"`
     * a change under `sources/` produces no event at all — this tree is
       watched (see "why the fixed trees are created up front" below) but
       has no consumer that needs a live-refresh hint yet
@@ -49,8 +48,8 @@ defmodule Valea.ICM.Watcher do
   hand-edited `config/workspace.yaml` this watcher itself just noticed), so
   the underlying `FileSystem` subscription is SPLIT in two:
 
-    * a FIXED listener over `queue/`, `sources/`, `config/` — started once
-      in `init/1` and never restarted, so events under the workspace's own
+    * a FIXED listener over `sources/`, `config/` — started once in
+      `init/1` and never restarted, so events under the workspace's own
       trees have ZERO loss window across ICM-root recomputes;
     * a DYNAMIC listener over the enabled ICM roots — restarted (or
       started/stopped) whenever the recomputed root set actually differs.
@@ -93,18 +92,18 @@ defmodule Valea.ICM.Watcher do
   dir set — and it is BOUNDED (the swap is a synchronous stop+start, no
   debounce in between) and LOW-STAKES: every event this module emits is a
   payload-less refetch hint, so a consumer that missed one sees correct
-  data again on the very next change. The fixed trees — where the
-  workspace's own state machine (`queue/`) and source of truth (`config/`)
-  live — are deliberately kept out of this window entirely.
+  data again on the very next change. The fixed tree — where the
+  workspace's source of truth (`config/`) lives — is deliberately kept
+  out of this window entirely.
 
   ## Why the fixed trees are created up front
 
   FSEvents (the macOS backend — and watcher backends generally) only
   reports changes under a path that already existed when the watch stream
   was created; a directory created afterward is invisible to it even once
-  populated. `queue/`, `sources/`, and `config/` are not guaranteed to
+  populated. `sources/` and `config/` are not guaranteed to
   exist yet at workspace-open time (a hand-rolled or partially-scaffolded
-  workspace), so `init/1` creates all three up front rather than assuming
+  workspace), so `init/1` creates both up front rather than assuming
   the caller already has, even though every current template ships them.
   ICM roots are never created by this module — they live outside the
   workspace and are the user's own folders.
@@ -127,9 +126,9 @@ defmodule Valea.ICM.Watcher do
   currently cover: every enabled, non-degraded ICM root (the DYNAMIC
   listener's dir set, keyed the same way `Valea.Mounts.enabled/1` resolves
   them — canonical, realpath-resolved absolute paths) plus the workspace's
-  own `queue/` and `sources/` trees (the two non-`config/` dirs the FIXED
-  listener covers; `config/` itself names no mount and nothing checks
-  membership against it, so it is omitted). Public so
+  own `sources/` tree (the one non-`config/` dir the FIXED listener covers;
+  `config/` itself names no mount and nothing checks membership against it,
+  so it is omitted). Public so
   `Valea.Mounts.Doctor`'s `watcher_live` check can ask "is THIS mount's
   root currently watched" without reaching into `:sys.get_state` outside
   tests — cleaner than exposing internal state for a single-field read.
@@ -151,11 +150,9 @@ defmodule Valea.ICM.Watcher do
 
   @impl true
   def init(root) do
-    queue_path = Path.join(root, "queue")
     sources_path = Path.join(root, "sources")
     config_path = Path.join(root, "config")
 
-    File.mkdir_p!(queue_path)
     File.mkdir_p!(sources_path)
     File.mkdir_p!(config_path)
 
@@ -182,26 +179,22 @@ defmodule Valea.ICM.Watcher do
        fixed_watcher: fixed_watcher,
        icm_watcher: icm_watcher,
        root: root,
-       queue_path: canonical(queue_path),
        sources_path: canonical(sources_path),
        config_path: canonical(config_path),
        icm_roots: icm_roots,
        discovery_timer: nil,
-       discovery_pending: false,
-       queue_timer: nil
+       discovery_pending: false
      }}
   end
 
   @impl true
   def handle_call(:watched_roots, _from, state) do
-    {:reply, MapSet.new([state.queue_path, state.sources_path | Map.keys(state.icm_roots)]),
-     state}
+    {:reply, MapSet.new([state.sources_path | Map.keys(state.icm_roots)]), state}
   end
 
   @impl true
   def handle_info({:file_event, _pid, {path, _events}}, state) do
     case classify_path(path, state) do
-      :queue -> {:noreply, arm(:queue_timer, :flush_queue, state)}
       :config -> {:noreply, note_config_event(path, state)}
       {:icm, root} -> {:noreply, note_icm_event(path, root, state)}
       :ignore -> {:noreply, state}
@@ -224,16 +217,10 @@ defmodule Valea.ICM.Watcher do
     {:noreply, %{state | discovery_timer: nil, discovery_pending: false}}
   end
 
-  def handle_info(:flush_queue, state) do
-    Phoenix.PubSub.broadcast(Valea.PubSub, "queue", {:queue_changed})
-    {:noreply, %{state | queue_timer: nil}}
-  end
-
   # -- classification --------------------------------------------------
 
   defp classify_path(path, state) do
     cond do
-      under?(path, state.queue_path) -> :queue
       # sources/ is watched (see moduledoc) but has no discovery- or
       # content-relevant consumer yet — an explicit :ignore, rather than
       # falling through to ICM-root classification (which would
@@ -326,8 +313,7 @@ defmodule Valea.ICM.Watcher do
     |> Map.new(fn mount -> {canonical(mount.root), mount.name} end)
   end
 
-  defp fixed_dirs(root),
-    do: [Path.join(root, "queue"), Path.join(root, "sources"), Path.join(root, "config")]
+  defp fixed_dirs(root), do: [Path.join(root, "sources"), Path.join(root, "config")]
 
   # Recomputes the enabled-ICM root set and swaps the DYNAMIC `FileSystem`
   # listener ONLY when that set actually changed — the fixed listener is

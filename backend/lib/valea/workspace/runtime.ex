@@ -17,12 +17,8 @@ defmodule Valea.Workspace.Runtime do
       {Valea.Audit, %{root: root, generation: gen}},
       {Valea.Mail.Engine, %{root: root, generation: gen}},
       Supervisor.child_spec(
-        {Task,
-         fn ->
-           Valea.Queue.recover(root)
-           Valea.Workflows.Runner.recover_staging(root)
-         end},
-        id: Valea.Queue.Recovery
+        {Task, fn -> Valea.Workflows.Runner.recover_staging(root) end},
+        id: Valea.Workflows.Runner.Recovery
       ),
       {DynamicSupervisor, name: Valea.Agents.SessionSupervisor, strategy: :one_for_one}
     ]

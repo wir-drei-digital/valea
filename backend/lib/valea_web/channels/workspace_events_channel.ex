@@ -5,9 +5,7 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
   def join("workspace:events", _payload, socket) do
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
     Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "queue")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
-    Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
     {:ok, socket}
   end
@@ -39,11 +37,6 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
     {:noreply, socket}
   end
 
-  def handle_info({:queue_changed}, socket) do
-    push(socket, "queue_changed", %{})
-    {:noreply, socket}
-  end
-
   def handle_info({:mail_status_changed, status}, socket) do
     push(socket, "mail_status", stringify(status))
     {:noreply, socket}
@@ -63,17 +56,6 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
     push(socket, "mail_message", %{"path" => path})
     {:noreply, socket}
   end
-
-  def handle_info({:mailbox_ops_updated, run_id}, socket) do
-    push(socket, "mailbox_ops", %{"runId" => run_id})
-    {:noreply, socket}
-  end
-
-  # `:mailbox_ops_pending` is the Engine's own internal trigger (an
-  # approve/reject just landed, or the activation recovery scan re-firing
-  # it) — nothing here for the UI to react to yet; `:mailbox_ops_updated`
-  # (above) is the terminal, UI-relevant signal once the op actually runs.
-  def handle_info({:mailbox_ops_pending, _run_id}, socket), do: {:noreply, socket}
 
   # `Valea.Mail.Engine.status/0`'s map is atom-keyed; the channel payload
   # must be string keys (mirrors `Valea.Api.Mail.mail_status`'s identical

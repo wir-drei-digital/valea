@@ -22,7 +22,7 @@ defmodule ValeaWeb.MailRpcTest do
     Manager.close()
 
     # The Runtime's Mail.Engine reads this at init, so it must be set before
-    # the workspace opens — see `Valea.Mail.EngineMailboxOpsTest`'s setup.
+    # the workspace opens.
     Application.put_env(:valea, :mail_transport, FakeMailTransport)
     {:ok, _} = FakeMailTransport.start_link()
 
@@ -107,35 +107,6 @@ defmodule ValeaWeb.MailRpcTest do
     File.write!(abs, bytes)
     {:ok, _count} = Index.rebuild(root)
     %{msg_id: msg_id, rel: rel, abs: abs}
-  end
-
-  defp plant_decided_envelope(root, run_id, dir, ops, source_rel) do
-    envelope = %{
-      "schema" => "queue_item/v2",
-      "run_id" => run_id,
-      "workflow" => "icm/Workflows/New Inquiry Triage.md",
-      "risk_level" => "medium",
-      "created_at" => "2026-07-10T00:00:00Z",
-      "source_message" => source_rel,
-      "payload" => %{
-        "schema" => "proposal/v1",
-        "kind" => "email_draft",
-        "title" => "Reply",
-        "summary" => "Reply to Priya",
-        "sources" => ["icm/Clients/Priya Nair.md"],
-        "proposed_action" => %{
-          "type" => "create_email_draft",
-          "to" => "priya@example.com",
-          "subject" => "Re: Inquiry",
-          "body_markdown" => "Hi\n"
-        }
-      },
-      "mailbox_ops" => ops
-    }
-
-    path = Path.join([root, "queue", dir, "#{run_id}.json"])
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, Jason.encode!(envelope))
   end
 
   # -- mail_status --------------------------------------------------------------
@@ -431,68 +402,6 @@ defmodule ValeaWeb.MailRpcTest do
     test "returns an empty list when nothing has synced yet" do
       assert %{"success" => true, "data" => %{"entries" => []}} =
                rpc("mail_inbox", %{}, @entries_fields)
-    end
-  end
-
-  # -- retry_mailbox_ops --------------------------------------------------------
-
-  describe "retry_mailbox_ops" do
-    test "happy path re-runs a failed op to done", %{workspace: workspace, generation: generation} do
-      setup_account!(generation)
-      set_credential!(generation)
-
-      plant = plant_message(workspace, "retry1", 74)
-      run_id = "20260710T000000Z-retry1"
-
-      plant_decided_envelope(
-        workspace,
-        run_id,
-        "rejected",
-        %{"archive_source" => %{"status" => "failed", "error" => "prior timeout"}},
-        plant.rel
-      )
-
-      FakeMailTransport.script([
-        {:connect, :_, {:ok, FakeMailTransport}},
-        {:select, [:_, "AI/Review"], {:ok, %{uidvalidity: 1, uidnext: 50}}},
-        {:uid_move, :_, :ok},
-        {:logout, :_, :ok}
-      ])
-
-      Phoenix.PubSub.subscribe(Valea.PubSub, "mail_ops")
-
-      assert %{"success" => true, "data" => %{"accepted" => true}} =
-               rpc(
-                 "retry_mailbox_ops",
-                 %{"runId" => run_id, "generation" => generation},
-                 ["accepted"]
-               )
-
-      assert_receive {:mailbox_ops_updated, ^run_id}, 2000
-    end
-
-    test "no credential surfaces no_credential", %{generation: generation} do
-      setup_account!(generation)
-
-      assert %{"success" => false, "errors" => errors} =
-               rpc(
-                 "retry_mailbox_ops",
-                 %{"runId" => "whatever", "generation" => generation},
-                 ["accepted"]
-               )
-
-      assert inspect(errors) =~ "no_credential"
-    end
-
-    test "a stale generation surfaces workspace_changed", %{generation: generation} do
-      assert %{"success" => false, "errors" => errors} =
-               rpc(
-                 "retry_mailbox_ops",
-                 %{"runId" => "whatever", "generation" => generation - 1},
-                 ["accepted"]
-               )
-
-      assert inspect(errors) =~ "workspace_changed"
     end
   end
 

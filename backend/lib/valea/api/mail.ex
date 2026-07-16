@@ -8,7 +8,7 @@ defmodule Valea.Api.Mail do
   `Valea.Mail.Store` + `Valea.Mail.MessageFile.parse/1` (the read side —
   files under `sources/mail/messages/` are canonical, `Store` is only ever
   a cache of them, so `get_mail_message` reads the file, not the cache row).
-  Follows `Valea.Api.Queue`'s conventions throughout:
+  Follows `Valea.Api.ICM`'s conventions throughout:
 
     * `constraints fields: [...]` typed actions for structured returns
       (`list_mail_messages`, `mail_inbox`), UNCONSTRAINED `:map` for raw
@@ -18,15 +18,14 @@ defmodule Valea.Api.Mail do
       translation, same typed-vs-unconstrained split as `Valea.Api.ICM`'s
       moduledoc.
     * The SAME top-level generic-action boolean/falsy-map-field bug
-      documented in `Valea.Api.Queue`'s moduledoc (ash_typescript 0.17.3
-      nulls a top-level atom-keyed field whose value is `false`): every
-      action here that can genuinely return `false` at the top level
-      (`setup_mail_account`'s `saved`, `set_mail_credential`'s `accepted`,
-      `mail_sync_now`'s `started`, `mail_doctor`'s `ok`,
-      `retry_mailbox_ops`'s `accepted`, `get_mail_message`'s `inbox`) uses a
-      STRING key for that field.
+      previously documented in the deleted `Valea.Api.Queue`'s moduledoc
+      (ash_typescript 0.17.3 nulls a top-level atom-keyed field whose value
+      is `false`): every action here that can genuinely return `false` at
+      the top level (`setup_mail_account`'s `saved`, `set_mail_credential`'s
+      `accepted`, `mail_sync_now`'s `started`, `mail_doctor`'s `ok`,
+      `get_mail_message`'s `inbox`) uses a STRING key for that field.
     * Mutating actions (`setup_mail_account`, `set_mail_credential`,
-      `mail_sync_now`, `create_mail_folders`, `retry_mailbox_ops`) take a
+      `mail_sync_now`, `create_mail_folders`) take a
       `generation` argument and guard with
       `Valea.Workspace.Manager.check_generation/1` before touching anything.
       `mail_doctor` ALSO takes `generation` and guards, even though it never
@@ -275,24 +274,6 @@ defmodule Valea.Api.Mail do
       run fn _input, _ctx ->
         with {:ok, _ws} <- Manager.current() do
           {:ok, %{entries: Store.inbox_headers()}}
-        else
-          {:error, reason} -> {:error, error_for(reason)}
-        end
-      end
-    end
-
-    action :retry_mailbox_ops, :map do
-      constraints fields: [accepted: [type: :boolean, allow_nil?: false]]
-
-      argument :run_id, :string, allow_nil?: false
-      argument :generation, :integer, allow_nil?: false
-
-      run fn input, _ctx ->
-        %{run_id: run_id, generation: generation} = input.arguments
-
-        with :ok <- Manager.check_generation(generation),
-             :ok <- Engine.retry_ops(run_id) do
-          {:ok, %{"accepted" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end

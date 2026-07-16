@@ -5,13 +5,13 @@ defmodule Valea.Workflows.Distill do
   server-owned document and the read boundary never widens to queue/.
 
   Reads `queue/approved/*.json` + `queue/rejected/*.json` directly — the
-  decided source of truth — rather than round-tripping through
-  `Valea.Queue.list_decided/0`, which needs a running `Valea.Workspace.
-  Manager` (this module is a pure function of `workspace`, callable outside
-  that context, mirroring every other `Runner`-adjacent module).
+  decided source of truth — rather than round-tripping through a
+  `Valea.Workspace.Manager`-dependent read (this module is a pure function
+  of `workspace`, callable outside that context, mirroring every other
+  `Runner`-adjacent module).
 
   Window: fixed 30 days by `decided_at` (both decision verbs stamp this
-  ISO-8601 field since the v2 upgrade — see `Valea.Queue`). An envelope
+  ISO-8601 field since the v2 upgrade). An envelope
   without the stamp is EXCLUDED, not treated as always-in-window — an old
   pre-stamp envelope carries no reliable decision time to sort or window by.
   """

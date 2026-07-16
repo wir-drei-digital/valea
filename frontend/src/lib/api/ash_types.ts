@@ -19,6 +19,20 @@ export type AgentsAttributesOnlySchema = {
 };
 
 
+// Audit Schema
+export type AuditResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type AuditAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Cockpit Schema
 export type CockpitResourceSchema = {
   __type: "Resource";
@@ -75,20 +89,6 @@ export type MailAttributesOnlySchema = {
 };
 
 
-// Queue Schema
-export type QueueResourceSchema = {
-  __type: "Resource";
-  __primitiveFields: never;
-};
-
-
-
-export type QueueAttributesOnlySchema = {
-  __type: "Resource";
-  __primitiveFields: never;
-};
-
-
 // Workspace Schema
 export type WorkspaceResourceSchema = {
   __type: "Resource";
@@ -107,6 +107,15 @@ export type AgentsFilterInput = {
   and?: Array<AgentsFilterInput>;
   or?: Array<AgentsFilterInput>;
   not?: Array<AgentsFilterInput>;
+
+
+
+
+};
+export type AuditFilterInput = {
+  and?: Array<AuditFilterInput>;
+  or?: Array<AuditFilterInput>;
+  not?: Array<AuditFilterInput>;
 
 
 
@@ -143,15 +152,6 @@ export type MailFilterInput = {
   and?: Array<MailFilterInput>;
   or?: Array<MailFilterInput>;
   not?: Array<MailFilterInput>;
-
-
-
-
-};
-export type QueueFilterInput = {
-  and?: Array<QueueFilterInput>;
-  or?: Array<QueueFilterInput>;
-  not?: Array<QueueFilterInput>;
 
 
 

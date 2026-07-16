@@ -195,8 +195,8 @@ defmodule Valea.Cockpit do
   # triage workflow's owning mount (same `Valea.Workflows.triage_workflow/0`
   # discovery `triage_workflow_field/1` uses above), resolved to that
   # mount's OWN manifest display name via `Valea.Mounts.mount_by_key/2` —
-  # mirrors `Valea.Queue.memory_display_fields/2`'s identical
-  # locator-to-display-name pattern. `nil` (never an invented name)
+  # mirrors the locator-to-display-name pattern used elsewhere for
+  # memory-update display fields. `nil` (never an invented name)
   # whenever no enabled mount carries the seeded workflow, the mount
   # lookup can't find a healthy manifest, or (defensively) no workspace is
   # open at all.

@@ -14,7 +14,7 @@ defmodule Valea.Workspace.ScaffoldTest do
 
     assert Scaffold.valid?(t)
 
-    for d <- ~w(config sources queue logs queue/staging queue/processing runtime),
+    for d <- ~w(config sources logs runtime),
         do: assert(File.dir?(Path.join(t, d)), "missing #{d}")
 
     refute File.exists?(Path.join(t, "AGENTS.md"))

@@ -50,8 +50,7 @@ defmodule Valea.Mail.Doctor do
   exception message, never an exception that reaches the caller. The
   credential is a zero-arity closure (or a raw secret in a hand-built test
   ctx) dereferenced ONLY at the `connect/3` boundary, exactly like
-  `SyncPass`/`MailboxOps` — no check's `detail`/`remedy` string ever
-  interpolates it.
+  `SyncPass` — no check's `detail`/`remedy` string ever interpolates it.
   """
 
   alias Valea.Mail.Redact

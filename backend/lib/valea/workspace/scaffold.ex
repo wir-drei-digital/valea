@@ -4,14 +4,14 @@ defmodule Valea.Workspace.Scaffold do
 
   `create/3` scaffolds the v5 hidden-workspace shape from
   `priv/workspace_template`: a bare marker tree (`config/`, `sources/`,
-  `queue/`, `logs/`, `runtime/`) plus a rendered `config/workspace.yaml`
+  `logs/`, `runtime/`) plus a rendered `config/workspace.yaml`
   (`version: 5`, the given `id`/`name`, `icms: {}`). No starter mount, no
   root `AGENTS.md`/`CLAUDE.md`/`MOUNTS.md`, no `.claude/` — ICMs are
   declared into `icms:` (`Valea.Workspace.Manager`'s own task), not seeded
   as a mount on disk.
   """
 
-  @marker_dirs ~w(config sources queue logs queue/staging queue/processing runtime)
+  @marker_dirs ~w(config sources logs runtime)
 
   def template_dir, do: Path.join(:code.priv_dir(:valea), "workspace_template")
 

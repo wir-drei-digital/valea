@@ -65,10 +65,10 @@ defmodule Valea.Workflows.Runner do
 
   @staging_dir ["queue", "staging"]
   @pending_dir ["queue", "pending"]
-  # The other three terminal/in-flight queue dirs (mirrors Valea.Queue's own
-  # paths) — item_exists?/2 (B5 part 2) checks all four so a re-finalize can
-  # tell "already created" apart from "genuinely new", regardless of which
-  # of pending/processing/approved/rejected the item has since moved to.
+  # The other three terminal/in-flight queue dirs — item_exists?/2 (B5 part
+  # 2) checks all four so a re-finalize can tell "already created" apart
+  # from "genuinely new", regardless of which of
+  # pending/processing/approved/rejected the item has since moved to.
   @processing_dir ["queue", "processing"]
   @approved_dir ["queue", "approved"]
   @rejected_dir ["queue", "rejected"]
@@ -364,10 +364,11 @@ defmodule Valea.Workflows.Runner do
   # Task 7.3: `proposed_action.target` replaces the old flat `target_path`
   # sibling fields with the stable ICM `locator` (built by
   # `MemoryProposal.check_icm_target/2`, never derived here) plus
-  # `base_sha256`/`content_markdown` nested alongside it — `Valea.Queue`'s
-  # `apply_page_content/2` re-resolves `locator` against the CURRENT mount
-  # table at approval time, instead of trusting a physical path snapshotted
-  # here that could go stale if the ICM moves before a human decides.
+  # `base_sha256`/`content_markdown` nested alongside it — the approval
+  # path's `apply_page_content/2` re-resolves `locator` against the CURRENT
+  # mount table at approval time, instead of trusting a physical path
+  # snapshotted here that could go stale if the ICM moves before a human
+  # decides.
   defp memory_envelope(run, item_id, manifest, locator, content, tier) do
     base = Path.basename(manifest["target_path"])
     title = if manifest["base_sha256"] == nil, do: "New page: " <> base, else: "Update " <> base
@@ -480,9 +481,9 @@ defmodule Valea.Workflows.Runner do
   # whichever the locator's `kind` was) as `input_display` — the SAME
   # opaque string `run/2` used to store in the sidecar/queue-envelope/audit
   # trail before locators existed, preserving `finalize/2`'s downstream
-  # `source_message` mailbox-op lookup (`Valea.Mail.MailboxOps.read_source/1`
-  # resolves it against the WORKSPACE root, which only holds for a workspace
-  # locator — every current mail-triage input is exactly that) and the
+  # `source_message` lookup (resolved against the WORKSPACE root, which
+  # only holds for a workspace locator — every current mail-triage input
+  # is exactly that) and the
   # frontend's own pending-item reconciliation (`triage-card.ts`'s
   # `envelopeInputPath/1`, matched against the same workspace-relative path
   # the caller passed in). `input_abs` (the resolved, symlink-hardened
@@ -796,8 +797,8 @@ defmodule Valea.Workflows.Runner do
 
   defp valid_action?(_action), do: false
 
-  # `to`/`subject` are interpolated straight into the draft's YAML frontmatter
-  # (`Valea.Queue.draft_markdown/2`). A control char — newline, CR, or any
+  # `to`/`subject` are interpolated straight into the approved draft's YAML
+  # frontmatter. A control char — newline, CR, or any
   # other C0/DEL — would let an agent inject arbitrary frontmatter keys (e.g. a
   # second `to:`) so the executed draft diverges from what the human approved.
   # Reject at the proposal boundary so a malformed item never reaches the

@@ -137,30 +137,6 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     assert_push "mounts_changed", %{}
   end
 
-  test "queue change pushes queue_changed" do
-    {:ok, ws} = Manager.create("W")
-
-    poll_until_queue_pushed(fn i ->
-      File.write!(Path.join(ws.path, "queue/pending/probe-#{i}.json"), "{}")
-    end)
-  end
-
-  defp poll_until_queue_pushed(trigger, attempts_left \\ 10)
-
-  defp poll_until_queue_pushed(_trigger, 0) do
-    flunk("queue_changed was never pushed after repeated fs writes")
-  end
-
-  defp poll_until_queue_pushed(trigger, attempts_left) do
-    trigger.(attempts_left)
-
-    try do
-      assert_push "queue_changed", %{}, 300
-    rescue
-      ExUnit.AssertionError -> poll_until_queue_pushed(trigger, attempts_left - 1)
-    end
-  end
-
   test "mail status change pushes mail_status with string keys" do
     Phoenix.PubSub.broadcast(
       Valea.PubSub,
@@ -209,16 +185,5 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     )
 
     assert_push "mail_message", %{"path" => "sources/mail/messages/x.md"}
-  end
-
-  test "a mailbox op finishing pushes mailbox_ops with the run id" do
-    Phoenix.PubSub.broadcast(Valea.PubSub, "mail_ops", {:mailbox_ops_updated, "run-1"})
-    assert_push "mailbox_ops", %{"runId" => "run-1"}
-  end
-
-  test "a mailbox op becoming pending is NOT pushed (internal Engine trigger only)" do
-    Phoenix.PubSub.broadcast(Valea.PubSub, "mail_ops", {:mailbox_ops_pending, "run-1"})
-    refute_push "mailbox_ops", %{}
-    refute_push _, _
   end
 end
