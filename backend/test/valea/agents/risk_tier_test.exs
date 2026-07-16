@@ -4,33 +4,37 @@ defmodule Valea.Agents.RiskTierTest do
   alias Valea.Agents.RiskTier
   alias Valea.Icm.Locator
 
-  # Task 7.5: `classify/1` takes a `Valea.Icm.Locator` directly and tiers
-  # its `path` — no workspace, no `Valea.Mounts.mount_for/2` attribution.
-  # A bare, unmounted icm_id is fine here: classification never resolves
-  # the locator against a live mount table (that's `Locator.resolve/2`'s
-  # job), it only reads the `path` the locator already carries.
-  @icm_id "11111111-1111-1111-1111-111111111111"
+  @icm_id "11111111-1111-4111-8111-111111111111"
 
-  test "behavior-bearing files in an ICM are high" do
-    assert RiskTier.classify(Locator.icm(@icm_id, "AGENTS.md")) == "high"
-    assert RiskTier.classify(Locator.icm(@icm_id, "CLAUDE.md")) == "high"
+  test "instruction-spine basenames are high at any depth" do
+    for path <- [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "CONTEXT.md",
+          "clients/CONTEXT.md",
+          "a/b/c/AGENTS.md",
+          "deep/CLAUDE.md"
+        ] do
+      assert RiskTier.classify(Locator.icm(@icm_id, path)) == "high", path
+    end
+  end
+
+  test "root icm.yaml is high; a nested icm.yaml is not special" do
     assert RiskTier.classify(Locator.icm(@icm_id, "icm.yaml")) == "high"
+    assert RiskTier.classify(Locator.icm(@icm_id, "vendor/icm.yaml")) == "medium"
   end
 
-  test "workflow contracts in an ICM are high" do
-    assert RiskTier.classify(Locator.icm(@icm_id, "Workflows/contract.md")) == "high"
+  test "the deleted Workflows/ prefix rule no longer applies" do
+    assert RiskTier.classify(Locator.icm(@icm_id, "Workflows/anything.md")) == "medium"
+    assert RiskTier.classify(Locator.icm(@icm_id, "notWorkflows/x.md")) == "medium"
   end
 
-  test "an ordinary knowledge page in an ICM is medium" do
-    assert RiskTier.classify(Locator.icm(@icm_id, "Pricing/x.md")) == "medium"
+  test "ordinary pages are medium" do
+    assert RiskTier.classify(Locator.icm(@icm_id, "clients/kita/prep.md")) == "medium"
   end
 
-  test "a workspace locator is nil, even for a behavior-file-shaped path" do
-    assert RiskTier.classify(Locator.workspace("sources/mail/1.md")) == nil
-    assert RiskTier.classify(Locator.workspace("AGENTS.md")) == nil
-  end
-
-  test "malformed input is nil" do
+  test "workspace locators and malformed input are nil" do
+    assert RiskTier.classify(Locator.workspace("sources/mail/messages/x.md")) == nil
     assert RiskTier.classify(%{}) == nil
     assert RiskTier.classify(nil) == nil
   end

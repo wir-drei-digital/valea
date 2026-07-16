@@ -1,11 +1,10 @@
 defmodule Valea.Agents.RiskTier do
   @moduledoc """
   Server-derived risk tier for a `Valea.Icm.Locator`: "high" for
-  behavior-bearing files (the ICM's instruction spine and its workflow
-  contracts — an approved edit changes future agent behavior), "medium"
-  for everything else inside the same ICM, nil for a workspace locator
-  (content that does not belong to any ICM at all). The tier is display +
-  envelope metadata, never an access decision.
+  the ICM's instruction spine — `AGENTS.md`/`CLAUDE.md`/
+  `CONTEXT.md` by basename at ANY depth (real ICMs route with nested
+  CONTEXT.md files), plus the root `icm.yaml` identity file. Everything
+  else in an ICM is "medium"; non-ICM locators carry no tier.
 
   Classification works DIRECTLY off the locator's own `path` — which is
   already relative to the ICM's root, by construction (`Locator.icm/2`,
@@ -23,17 +22,17 @@ defmodule Valea.Agents.RiskTier do
   just tiers the `path` it carries.
   """
 
-  @behavior_files ["AGENTS.md", "CLAUDE.md", "icm.yaml"]
+  @behavior_basenames ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"]
 
   @doc """
-  Classifies an ICM locator's `path` against the behavior-file allowlist
-  and the `Workflows/` prefix. A workspace locator (or anything else that
-  isn't a well-formed ICM locator) is nil — it never attributes to any
-  ICM, so it carries no risk tier at all.
+  "high" for the ICM's instruction spine — `AGENTS.md`/`CLAUDE.md`/
+  `CONTEXT.md` by basename at ANY depth (real ICMs route with nested
+  CONTEXT.md files), plus the root `icm.yaml` identity file. Everything
+  else in an ICM is "medium"; non-ICM locators carry no tier.
   """
   @spec classify(map()) :: String.t() | nil
   def classify(%{"kind" => "icm", "path" => path}) when is_binary(path) do
-    if path in @behavior_files or String.starts_with?(path, "Workflows/") do
+    if Path.basename(path) in @behavior_basenames or path == "icm.yaml" do
       "high"
     else
       "medium"
