@@ -1,6 +1,6 @@
 defmodule Valea.Api.Cockpit do
   @moduledoc """
-  Data-layer-less Ash resource exposing the seeded Cockpit narrative over RPC.
+  Data-layer-less Ash resource exposing the Today cockpit payload over RPC.
 
   Wraps `Valea.Cockpit`; the underlying module returns a string-keyed,
   JSON-ready map, and `check_fields/2` (`Ash.Type.Map`'s constraint
@@ -9,45 +9,27 @@ defmodule Valea.Api.Cockpit do
   extra stringify/atomize step is needed on either side of this boundary.
 
   `:today`'s return is FULLY `constraints fields: [...]`-typed (every field
-  the seeded narrative carries, not just a subset) — same convention as
+  `Valea.Cockpit.today/0` carries) — same convention as
   `Valea.Api.ICM`/`Valea.Api.Queue`/`Valea.Api.Mail`: a fixed, known shape
   gets typed (and ash_typescript-camelCased); only genuinely
   heterogeneous/arbitrary content stays an unconstrained `:map` (none of
   which exists on this action). Ash's `Ash.Type.Map` `fields:` constraint
   is all-or-nothing per its own doc ("If constraints are specified, only
   those fields will be in the casted map") — so every top-level key
-  `Valea.Cockpit.today/0` returns must be declared here, not only the new
-  `mail` one Task 18 adds.
+  `Valea.Cockpit.today/0` returns must be declared here.
 
-  `mail.configured` is a NESTED typed boolean (inside the `mail` sub-map's
-  own `constraints fields: [...]`), so it's declared with a plain atom key
-  like every other field here. The top-level generic-action boolean/falsy
-  workaround documented in `Valea.Api.Queue.reject_item`/`Valea.Api.Mail`'s
-  moduledoc (ash_typescript 0.17.3 nulls a top-level atom-keyed `false`) only
-  applies to a field sitting directly on the ACTION's own returned map —
-  `mail` itself is such a field (a map, never falsy), but `configured`
-  nested inside it is not, so it needs no string-key trick.
-
-  `triage_workflow_path` (Task A-T13) is a top-level, NILABLE `:string` —
-  the falsy-map-field bug documented above is specific to `:boolean`'s
-  `false` (ash_typescript's own generic-action result handling), not to a
-  `nil` string, so this needs no string-key workaround either; it
-  camelCases to `triageWorkflowPath` like every other field here.
-
-  `distill_workflow_path` (Task B8) is the same shape, mirroring
-  `triage_workflow_path` exactly — camelCases to `distillWorkflowPath`.
-
-  `triage_workflow_mount_key`/`triage_workflow_relative_path` (Task 7.2)
-  are two more NILABLE `:string` siblings of `triage_workflow_path` — the
-  `{mount_key, relative_path}` identity the new `run_workflow` RPC
-  addresses a workflow by; camelCase to `triageWorkflowMountKey`/
-  `triageWorkflowRelativePath`.
-
-  `prepared_items[].icm_name` (Task 9.5) is a NILABLE `:string` nested
-  inside each prepared item — the seeded narrative's owning ICM, so a
-  workspace-wide Today aggregating prepared work across ICMs can still
-  show every item's provenance (spec §"Workspace-wide views"). See
-  `Valea.Cockpit.today/0`'s moduledoc for how it's derived.
+  `sections[].ok` and `recent_sessions[].live` are NESTED typed booleans
+  (inside their own item's `constraints fields: [...]`), declared with a
+  plain atom key like every other field here — the top-level generic-action
+  boolean/falsy workaround documented in
+  `Valea.Api.Queue.reject_item`/`Valea.Api.Mail`'s moduledoc (ash_typescript
+  0.17.3 nulls a top-level atom-keyed `false`) only applies to a field
+  sitting directly on the ACTION's own returned map, not to a boolean
+  nested inside an array item's map — so neither needs a string-key trick
+  at THIS layer. The string-keyed source maps `Valea.Cockpit.today/0`
+  builds are still what makes a legitimate `false` survive the underlying
+  `check_fields/2` extraction in the first place (see that module's own
+  moduledoc for why the source stays string-keyed throughout).
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -58,58 +40,46 @@ defmodule Valea.Api.Cockpit do
   actions do
     action :today, :map do
       constraints fields: [
-                    workspace: [type: :string, allow_nil?: false],
-                    date_label: [type: :string, allow_nil?: false],
-                    greeting: [type: :string, allow_nil?: false],
-                    summary: [type: :string, allow_nil?: false],
-                    schedule: [
+                    sections: [
                       type: {:array, :map},
                       allow_nil?: false,
                       constraints: [
                         items: [
                           fields: [
-                            time: [type: :string, allow_nil?: false],
-                            title: [type: :string, allow_nil?: false],
-                            subtitle: [type: :string, allow_nil?: false],
-                            status: [type: :string, allow_nil?: true]
+                            mount_key: [type: :string, allow_nil?: false],
+                            icm_name: [type: :string, allow_nil?: false],
+                            ok: [type: :boolean, allow_nil?: false],
+                            updated_at: [type: :string, allow_nil?: true],
+                            notes: [type: :string, allow_nil?: true],
+                            prepared: [
+                              type: {:array, :map},
+                              allow_nil?: false,
+                              constraints: [
+                                items: [
+                                  fields: [
+                                    title: [type: :string, allow_nil?: true],
+                                    summary: [type: :string, allow_nil?: true],
+                                    page: [type: :string, allow_nil?: true]
+                                  ]
+                                ]
+                              ]
+                            ],
+                            open_loops: [
+                              type: {:array, :map},
+                              allow_nil?: false,
+                              constraints: [
+                                items: [
+                                  fields: [
+                                    title: [type: :string, allow_nil?: true],
+                                    source: [type: :string, allow_nil?: true]
+                                  ]
+                                ]
+                              ]
+                            ]
                           ]
                         ]
                       ]
                     ],
-                    prepared_items: [
-                      type: {:array, :map},
-                      allow_nil?: false,
-                      constraints: [
-                        items: [
-                          fields: [
-                            type: [type: :string, allow_nil?: false],
-                            title: [type: :string, allow_nil?: false],
-                            summary: [type: :string, allow_nil?: false],
-                            used_sources: [type: {:array, :string}, allow_nil?: false],
-                            primary_action: [type: :string, allow_nil?: false],
-                            secondary_action: [type: :string, allow_nil?: true],
-                            icm_name: [type: :string, allow_nil?: true]
-                          ]
-                        ]
-                      ]
-                    ],
-                    open_loops: [
-                      type: {:array, :map},
-                      allow_nil?: false,
-                      constraints: [
-                        items: [
-                          fields: [
-                            title: [type: :string, allow_nil?: false],
-                            source: [type: :string, allow_nil?: false]
-                          ]
-                        ]
-                      ]
-                    ],
-                    while_you_were_away: [type: {:array, :string}, allow_nil?: false],
-                    triage_workflow_path: [type: :string, allow_nil?: true],
-                    triage_workflow_mount_key: [type: :string, allow_nil?: true],
-                    triage_workflow_relative_path: [type: :string, allow_nil?: true],
-                    distill_workflow_path: [type: :string, allow_nil?: true],
                     mail: [
                       type: :map,
                       allow_nil?: false,
@@ -118,6 +88,21 @@ defmodule Valea.Api.Cockpit do
                           review_count: [type: :integer, allow_nil?: false],
                           inbox_count: [type: :integer, allow_nil?: false],
                           configured: [type: :boolean, allow_nil?: false]
+                        ]
+                      ]
+                    ],
+                    recent_sessions: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            id: [type: :string, allow_nil?: false],
+                            title: [type: :string, allow_nil?: false],
+                            started_at: [type: :string, allow_nil?: false],
+                            status: [type: :string, allow_nil?: false],
+                            live: [type: :boolean, allow_nil?: false]
+                          ]
                         ]
                       ]
                     ]

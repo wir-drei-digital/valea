@@ -102,14 +102,27 @@ export class IcmStore {
 
   #api: IcmApi;
 
+  /**
+   * `icm_changed` push subscribers beyond this store's own `refetch()`
+   * reaction (see `handleIcmChanged` below) — same rationale as
+   * `MailStore#onMailStatus`'s doc comment (`mail.svelte.ts`): a route that
+   * needs to react to the SAME push (the Today page, Spec D §C — a
+   * `today.json` file changed on disk) without opening a second, racing
+   * `channel.on('icm_changed', ...)` binding on the shared `workspace:events`
+   * channel (`wireIcmEvents`'s own doc comment: only ONE join per topic
+   * reliably receives pushes, and this store's `handleIcmChanged` is already
+   * the sole handler wired to that one join).
+   */
+  #icmChangedListeners = new Set<() => void>();
+
   constructor(api: IcmApi) {
     this.#api = api;
   }
 
   /**
    * `generation` is optional — every cold-load/route-level caller (`AppFrame`,
-   * `+page.svelte`, `handleMountsChanged`, `onIcmChanged` below) still calls
-   * this bare and gets `workspaceStore.generation` as before. The one caller
+   * `+page.svelte`, `handleMountsChanged`, `handleIcmChanged` below) still
+   * calls this bare and gets `workspaceStore.generation` as before. The one caller
    * that MUST supply it explicitly is `handleWorkspaceEvent` below (the LIVE
    * SWITCH path): see its doc comment for why reading `workspaceStore.generation`
    * at that call site is a guaranteed-stale read, not just a possible race.
@@ -150,6 +163,35 @@ export class IcmStore {
   reset(): void {
     this.groups = [];
     this.loaded = false;
+  }
+
+  /**
+   * `icm_changed` push handler — refetches the tree unconditionally, same
+   * "just refetch on any related push" simplicity `mailStore`/`auditStore`
+   * already use for their own change pushes, then notifies any additional
+   * subscribers (see `#icmChangedListeners`'s doc comment above).
+   */
+  handleIcmChanged(): void {
+    void this.refetch();
+    this.#icmChangedListeners.forEach((listener) => listener());
+  }
+
+  /**
+   * Subscribes to `icm_changed` pushes, IN ADDITION to this store's own
+   * `refetch()` reaction above — same shape and rationale as
+   * `MailStore#onMailStatus`. The Today page (`routes/+page.svelte`) hooks
+   * this to refetch `cockpit_today`: `today.json` files live inside each
+   * ICM's own folder, and the ONLY way Valea learns one changed is this same
+   * watcher push (Spec D §C: "Valea never writes the file; changes ride the
+   * existing `icm_changed` watcher events") — without the refetch, Today
+   * would freeze whatever `today.json` snapshot its single mount-time load
+   * happened to catch. Returns an unsubscribe function — call it from the
+   * caller's cleanup (e.g. `onMount`'s returned callback) so a route that
+   * unmounts doesn't leak a listener that outlives it.
+   */
+  onIcmChanged(listener: () => void): () => void {
+    this.#icmChangedListeners.add(listener);
+    return () => this.#icmChangedListeners.delete(listener);
   }
 }
 
@@ -337,9 +379,7 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
       handleWorkspaceEvent(payload);
       onWorkspace?.(payload);
     },
-    onIcmChanged: () => {
-      void icmStore.refetch();
-    }
+    onIcmChanged: () => icmStore.handleIcmChanged()
   });
 
   wireAuditEvents(channel);

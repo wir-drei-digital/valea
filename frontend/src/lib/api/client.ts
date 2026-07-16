@@ -343,36 +343,27 @@ const harnessDoctorFields = [
   { checks: ['id', 'status', 'detail', 'remedy'] }
 ] as unknown as HarnessDoctorFields;
 
-// Cockpit (Task 18 typed the whole `today` action — see `Valea.Api.Cockpit`'s
-// moduledoc). Same anonymous-embedded-map-array codegen gap as
-// `icmEntryReferencesFields` above (`schedule`/
-// `preparedItems`/`openLoops` are `Array<TypedMap>`, and `mail` on top of
-// that is a nested `TypedMap` field), so the generated `CockpitTodayFields`
-// type can't express this literal either — cast, not inferred. Selects
-// every field: `normalizeCockpitToday` (`lib/today/cockpit.ts`) reads the
-// whole payload.
+// Cockpit (Spec D §C rewrite — see `Valea.Api.Cockpit`'s moduledoc). Same
+// anonymous-embedded-map-array codegen gap as `icmEntryReferencesFields`
+// above (`sections`/`recentSessions` are `Array<TypedMap>`, each carrying
+// its own nested `Array<TypedMap>`/`TypedMap` fields, and `mail` is a
+// nested `TypedMap` too), so the generated `CockpitTodayFields` type can't
+// express this literal either — cast, not inferred. Selects every field:
+// `normalizeCockpitToday` (`lib/today/cockpit.ts`) reads the whole payload.
 const cockpitTodayFields = [
-  'workspace',
-  'dateLabel',
-  'greeting',
-  'summary',
-  { schedule: ['time', 'title', 'subtitle', 'status'] },
   {
-    preparedItems: [
-      'type',
-      'title',
-      'summary',
-      'usedSources',
-      'primaryAction',
-      'secondaryAction',
-      'icmName'
+    sections: [
+      'mountKey',
+      'icmName',
+      'ok',
+      'updatedAt',
+      'notes',
+      { prepared: ['title', 'summary', 'page'] },
+      { openLoops: ['title', 'source'] }
     ]
   },
-  { openLoops: ['title', 'source'] },
-  'whileYouWereAway',
-  'triageWorkflowPath',
-  'distillWorkflowPath',
-  { mail: ['reviewCount', 'inboxCount', 'configured'] }
+  { mail: ['reviewCount', 'inboxCount', 'configured'] },
+  { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] }
 ] as unknown as CockpitTodayFields;
 
 // Mail (T13/T14). Every top-level boolean-valued field here (`saved`,

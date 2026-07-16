@@ -1,125 +1,148 @@
 import { describe, expect, it } from 'vitest';
-import { mailSummaryLine, normalizeCockpitToday, splitTrustClause } from './cockpit';
+import { mailSummaryLine, normalizeCockpitToday } from './cockpit';
 
-// Mirrors the seeded payload shape from backend/lib/valea/cockpit.ex —
-// an unconstrained :map, so keys arrive snake_case over RPC.
+// Mirrors the Spec-D cockpit payload shape from `backend/lib/valea/cockpit.ex`
+// — an unconstrained-looking but fully typed :map, so keys arrive snake_case
+// (see `Valea.Api.Cockpit`'s moduledoc for why the nested arrays still
+// camelCase like every other typed action).
 const rawSnake = {
-  workspace: 'Mara Lindt Coaching',
-  date_label: 'Wednesday, 9 July · 8:31',
-  greeting: 'Good morning, Mara.',
-  summary:
-    'Two sessions today, one new inquiry, one overdue invoice. I prepared three things overnight — nothing has been sent or changed without your approval.',
-  schedule: [
-    { time: '09:30', title: 'Admin hour', subtitle: "you're in it now", status: 'current' },
-    { time: '15:00', title: 'Deep work', subtitle: 'no meetings — protected', status: null }
-  ],
-  prepared_items: [
+  sections: [
     {
-      type: 'reply_drafted',
-      title: 'Priya Nair · new inquiry',
-      summary: 'Good-fit inquiry.',
-      used_sources: ['her email', 'Tone guide'],
-      primary_action: 'Review draft',
-      secondary_action: 'Snooze',
-      icm_name: 'Mara Lindt Coaching'
+      mount_key: 'primary',
+      icm_name: 'Mara Lindt Coaching',
+      ok: true,
+      updated_at: '2026-07-16T08:00:00Z',
+      notes: 'Quiet day.',
+      prepared: [{ title: 'Prep Lea', summary: 'One page', page: 'clients/lea.md' }],
+      open_loops: [{ title: 'Send proposal', source: 'mail' }]
     }
   ],
-  open_loops: [{ title: 'Send proposal to Priya', source: 'from her email · yesterday' }],
-  while_you_were_away: ['Synced 9 emails from AI / Review · 7:00'],
-  triage_workflow_path: 'mounts/primary/Workflows/New Inquiry Triage.md',
-  triage_workflow_mount_key: 'primary',
-  triage_workflow_relative_path: 'Workflows/New Inquiry Triage.md',
-  distill_workflow_path: 'mounts/primary/Workflows/Distill Decisions.md',
-  mail: { review_count: 3, inbox_count: 12, configured: true }
+  mail: { review_count: 3, inbox_count: 12, configured: true },
+  recent_sessions: [
+    { id: 'sess-1', title: 'Chat with Lea', started_at: '2026-07-16T08:00:00Z', status: 'ended', live: false }
+  ]
 };
 
 describe('normalizeCockpitToday', () => {
   it('maps snake_case payload keys into the typed camelCase shape', () => {
     const today = normalizeCockpitToday(rawSnake);
 
-    expect(today.dateLabel).toBe('Wednesday, 9 July · 8:31');
-    expect(today.greeting).toBe('Good morning, Mara.');
-    expect(today.schedule).toHaveLength(2);
-    expect(today.schedule[1].status).toBeNull();
-    expect(today.preparedItems[0].usedSources).toEqual(['her email', 'Tone guide']);
-    expect(today.preparedItems[0].primaryAction).toBe('Review draft');
-    expect(today.preparedItems[0].secondaryAction).toBe('Snooze');
-    expect(today.preparedItems[0].icmName).toBe('Mara Lindt Coaching');
-    expect(today.openLoops[0].source).toBe('from her email · yesterday');
-    expect(today.whileYouWereAway).toHaveLength(1);
-    expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
-    expect(today.triageWorkflowMountKey).toBe('primary');
-    expect(today.triageWorkflowRelativePath).toBe('Workflows/New Inquiry Triage.md');
-    expect(today.distillWorkflowPath).toBe('mounts/primary/Workflows/Distill Decisions.md');
+    expect(today.sections).toHaveLength(1);
+    const [section] = today.sections;
+    expect(section.mountKey).toBe('primary');
+    expect(section.icmName).toBe('Mara Lindt Coaching');
+    expect(section.ok).toBe(true);
+    expect(section.updatedAt).toBe('2026-07-16T08:00:00Z');
+    expect(section.notes).toBe('Quiet day.');
+    expect(section.prepared).toEqual([{ title: 'Prep Lea', summary: 'One page', page: 'clients/lea.md' }]);
+    expect(section.openLoops).toEqual([{ title: 'Send proposal', source: 'mail' }]);
+
     expect(today.mail).toEqual({ reviewCount: 3, inboxCount: 12, configured: true });
+
+    expect(today.recentSessions).toHaveLength(1);
+    expect(today.recentSessions[0]).toEqual({
+      id: 'sess-1',
+      title: 'Chat with Lea',
+      startedAt: '2026-07-16T08:00:00Z',
+      status: 'ended',
+      live: false
+    });
   });
 
-  it('accepts camelCase keys as a fallback (Task 18: cockpit_today is now a fully typed/camelCased action)', () => {
+  it('accepts camelCase keys as a fallback', () => {
     const today = normalizeCockpitToday({
-      workspace: 'W',
-      dateLabel: 'D',
-      greeting: 'G',
-      summary: 'S',
-      schedule: [],
-      preparedItems: [
-        { type: 't', title: 'x', summary: 's', usedSources: ['a'], primaryAction: 'p', icmName: 'Studio' }
+      sections: [
+        {
+          mountKey: 'primary',
+          icmName: 'Studio',
+          ok: true,
+          updatedAt: '2026-07-16T08:00:00Z',
+          notes: null,
+          prepared: [],
+          openLoops: []
+        }
       ],
-      openLoops: [],
-      whileYouWereAway: [],
-      triageWorkflowPath: 'mounts/primary/Workflows/New Inquiry Triage.md',
-      triageWorkflowMountKey: 'primary',
-      triageWorkflowRelativePath: 'Workflows/New Inquiry Triage.md',
-      distillWorkflowPath: 'mounts/primary/Workflows/Distill Decisions.md',
-      mail: { reviewCount: 1, inboxCount: 0, configured: false }
+      mail: { reviewCount: 1, inboxCount: 0, configured: false },
+      recentSessions: [
+        { id: 'sess-2', title: 'Follow-up', startedAt: '2026-07-16T09:00:00Z', status: 'live', live: true }
+      ]
     });
 
-    expect(today.dateLabel).toBe('D');
-    expect(today.preparedItems[0].usedSources).toEqual(['a']);
-    expect(today.preparedItems[0].secondaryAction).toBeUndefined();
-    expect(today.preparedItems[0].icmName).toBe('Studio');
-    expect(today.triageWorkflowPath).toBe('mounts/primary/Workflows/New Inquiry Triage.md');
-    expect(today.triageWorkflowMountKey).toBe('primary');
-    expect(today.triageWorkflowRelativePath).toBe('Workflows/New Inquiry Triage.md');
-    expect(today.distillWorkflowPath).toBe('mounts/primary/Workflows/Distill Decisions.md');
+    expect(today.sections[0].mountKey).toBe('primary');
+    expect(today.sections[0].icmName).toBe('Studio');
     expect(today.mail).toEqual({ reviewCount: 1, inboxCount: 0, configured: false });
+    expect(today.recentSessions[0].live).toBe(true);
   });
 
-  it('tolerates missing collections, defaulting mail to zero/unconfigured and triageWorkflowPath/distillWorkflowPath to null', () => {
-    const today = normalizeCockpitToday({ greeting: 'Hello.' });
-    expect(today.schedule).toEqual([]);
-    expect(today.preparedItems).toEqual([]);
-    expect(today.openLoops).toEqual([]);
-    expect(today.whileYouWereAway).toEqual([]);
-    expect(today.triageWorkflowPath).toBeNull();
-    expect(today.triageWorkflowMountKey).toBeNull();
-    expect(today.triageWorkflowRelativePath).toBeNull();
-    expect(today.distillWorkflowPath).toBeNull();
+  it('tolerates missing collections, defaulting to empty sections/sessions and zero/unconfigured mail', () => {
+    const today = normalizeCockpitToday({});
+    expect(today.sections).toEqual([]);
+    expect(today.recentSessions).toEqual([]);
     expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
   });
 
-  it('normalizes a prepared item with no icm_name (underivable — Task 9.5) to null, not undefined', () => {
+  it('drops wrong-typed fields to nil/[] rather than throwing', () => {
     const today = normalizeCockpitToday({
-      ...rawSnake,
-      prepared_items: [{ ...rawSnake.prepared_items[0], icm_name: null }]
+      sections: [
+        {
+          mount_key: 'primary',
+          icm_name: 'Studio',
+          ok: true,
+          updated_at: 42,
+          notes: ['not a string'],
+          prepared: [{ title: 'ok', summary: 7 }, 'not-a-map'],
+          open_loops: 'nope'
+        }
+      ],
+      mail: { review_count: null, inbox_count: undefined, configured: 'yes' },
+      recent_sessions: 'nope'
     });
-    expect(today.preparedItems[0].icmName).toBeNull();
+
+    const [section] = today.sections;
+    expect(section.updatedAt).toBeNull();
+    expect(section.notes).toBeNull();
+    expect(section.prepared).toEqual([{ title: 'ok', summary: null, page: null }]);
+    expect(section.openLoops).toEqual([]);
+
+    expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
+    expect(today.recentSessions).toEqual([]);
   });
 
-  it('normalizes an explicit null triageWorkflowPath (no enabled mount has a seeded triage workflow) to null, not the string "null"', () => {
+  it('renders a section with ok:false and no prepared/open-loop content, without dropping provenance', () => {
     const today = normalizeCockpitToday({
-      ...rawSnake,
-      triage_workflow_path: null,
-      triage_workflow_mount_key: null,
-      triage_workflow_relative_path: null
+      sections: [
+        {
+          mount_key: 'primary',
+          icm_name: 'Studio',
+          ok: false,
+          updated_at: null,
+          notes: null,
+          prepared: [],
+          open_loops: []
+        }
+      ],
+      mail: { review_count: 0, inbox_count: 0, configured: false },
+      recent_sessions: []
     });
-    expect(today.triageWorkflowPath).toBeNull();
-    expect(today.triageWorkflowMountKey).toBeNull();
-    expect(today.triageWorkflowRelativePath).toBeNull();
+
+    const [section] = today.sections;
+    expect(section.ok).toBe(false);
+    expect(section.mountKey).toBe('primary');
+    expect(section.icmName).toBe('Studio');
+    expect(section.prepared).toEqual([]);
+    expect(section.openLoops).toEqual([]);
   });
 
-  it('normalizes an explicit null distillWorkflowPath (no enabled mount has a seeded distill workflow yet — Task B9) to null, not the string "null"', () => {
-    const today = normalizeCockpitToday({ ...rawSnake, distill_workflow_path: null });
-    expect(today.distillWorkflowPath).toBeNull();
+  it('normalizes a recent session with live:false to false, not falling back to true', () => {
+    const today = normalizeCockpitToday({
+      sections: [],
+      mail: { review_count: 0, inbox_count: 0, configured: false },
+      recent_sessions: [
+        { id: 'sess-3', title: 'Ended session', started_at: '2026-07-16T07:00:00Z', status: 'ended', live: false }
+      ]
+    });
+
+    expect(today.recentSessions[0].live).toBe(false);
   });
 });
 
@@ -130,19 +153,5 @@ describe('mailSummaryLine', () => {
 
   it('formats zero counts plainly', () => {
     expect(mailSummaryLine({ reviewCount: 0, inboxCount: 0, configured: true })).toBe('0 to review · 0 in inbox');
-  });
-});
-
-describe('splitTrustClause', () => {
-  it('splits the summary at the trust clause', () => {
-    const { lead, trust } = splitTrustClause(rawSnake.summary);
-    expect(lead.endsWith('overnight — ')).toBe(true);
-    expect(trust).toBe('nothing has been sent or changed without your approval.');
-  });
-
-  it('returns everything as lead when the clause is absent', () => {
-    const { lead, trust } = splitTrustClause('A quiet day.');
-    expect(lead).toBe('A quiet day.');
-    expect(trust).toBe('');
   });
 });

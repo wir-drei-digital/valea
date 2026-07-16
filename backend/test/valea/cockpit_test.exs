@@ -1,8 +1,8 @@
 defmodule Valea.CockpitTest do
-  # async: false — the new "mail" describe block below opens a real
-  # workspace (`Valea.AgentCase.open_workspace!/1`), which drives the
-  # process-global `Valea.Workspace.Manager` and a fixed `VALEA_APP_DIR` env
-  # var; that can't safely interleave with another async test doing the same.
+  # async: false — the "mail" describe block below opens a real workspace
+  # (`Valea.AgentCase.open_workspace!/1`), which drives the process-global
+  # `Valea.Workspace.Manager` and a fixed `VALEA_APP_DIR` env var; that can't
+  # safely interleave with another async test doing the same.
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
@@ -14,110 +14,146 @@ defmodule Valea.CockpitTest do
   alias Valea.Mail.Engine
   alias Valea.Mounts
 
-  test "today returns the seeded narrative" do
-    {:ok, today} = Valea.Cockpit.today()
+  describe "today/0 sections" do
+    test "no workspace open → empty sections, zero mail, empty recent_sessions" do
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["sections"] == []
+      assert today["recent_sessions"] == []
+      assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+    end
 
-    # Basic structure
-    assert today["greeting"] == "Good morning, Mara."
-    assert today["workspace"] == "Mara Lindt Coaching"
-    assert String.starts_with?(today["date_label"], "Wednesday, 9 July")
-    assert String.contains?(today["summary"], "Two sessions today")
+    test "enabled ICM without today.json contributes no section" do
+      ws = AgentCase.open_workspace!()
+      AgentCase.mount_test_icm!(ws.path, name: "Primary")
 
-    # Schedule
-    assert length(today["schedule"]) == 4
-    schedule = today["schedule"]
-    assert Enum.at(schedule, 0)["time"] == "09:30"
-    assert Enum.at(schedule, 0)["status"] == "current"
-    assert Enum.at(schedule, 1)["time"] == "11:00"
-    assert Enum.at(schedule, 1)["status"] == "prep_ready"
-    assert Enum.at(schedule, 2)["time"] == "15:00"
-    assert Enum.at(schedule, 2)["status"] == nil
-    assert Enum.at(schedule, 3)["time"] == "16:30"
-    assert Enum.at(schedule, 3)["status"] == "prep_at_14"
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["sections"] == []
+    end
 
-    # Prepared items
-    assert length(today["prepared_items"]) == 3
-    [priya, lea, julia] = today["prepared_items"]
+    test "valid today.json becomes a section with provenance" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Mara Lindt Coaching")
 
-    # icm_name (Task 9.5) — no workspace is open in this test, so
-    # `seed_icm_name/0` has no triage workflow to derive an owning ICM
-    # from (same no-workspace-open reasoning as triage_workflow_path).
-    assert priya["icm_name"] == nil
-    assert lea["icm_name"] == nil
-    assert julia["icm_name"] == nil
+      File.write!(Path.join(icm.root, "today.json"), ~s({
+        "updated_at": "2026-07-16T08:00:00Z",
+        "prepared": [{"title": "Prep Lea", "summary": "One page", "page": "clients/lea.md"}],
+        "open_loops": [{"title": "Send proposal", "source": "mail"}],
+        "notes": "Quiet day.",
+        "unknown_field": {"ignored": true}
+      }))
 
-    # Priya Nair - reply_drafted
-    assert priya["type"] == "reply_drafted"
-    assert priya["title"] == "Priya Nair · new inquiry"
+      {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
+      assert section["mount_key"] == icm.mount_key
+      assert section["icm_name"] == "Mara Lindt Coaching"
+      assert section["ok"] == true
+      assert section["updated_at"] == "2026-07-16T08:00:00Z"
+      assert section["notes"] == "Quiet day."
 
-    assert priya["summary"] ==
-             "Good-fit inquiry — she asked about leadership coaching, which matches your core offer. Draft leads with the discovery call, not the price."
+      assert section["prepared"] == [
+               %{"title" => "Prep Lea", "summary" => "One page", "page" => "clients/lea.md"}
+             ]
 
-    assert priya["used_sources"] == [
-             "her email",
-             "Offers › Founder Coaching",
-             "Tone guide",
-             "Policies › No medical advice"
-           ]
+      assert section["open_loops"] == [%{"title" => "Send proposal", "source" => "mail"}]
+      refute Map.has_key?(section, "unknown_field")
+    end
 
-    assert priya["primary_action"] == "Review draft"
-    assert priya["secondary_action"] == "Snooze"
+    test "malformed JSON → ok false section, never an error" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+      File.write!(Path.join(icm.root, "today.json"), "{not json")
 
-    # Lea Brunner - prep_brief
-    assert lea["type"] == "prep_brief"
-    assert lea["title"] == "Lea Brunner · 11:00 session"
+      {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
+      assert section["ok"] == false
+      assert section["prepared"] == []
+      assert section["open_loops"] == []
+    end
 
-    assert lea["summary"] ==
-             "One page from your approved notes: her homework was the pricing conversation with her first client; two open commitments from session 2."
+    test "lenient field handling: wrong types dropped to nil/[]" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
 
-    assert lea["used_sources"] == ["Clients › Lea", "session notes", "open commitments"]
-    assert lea["primary_action"] == "Open brief"
-    assert lea["secondary_action"] == "Snooze to 10:45"
+      File.write!(Path.join(icm.root, "today.json"), ~s({
+        "updated_at": 42,
+        "prepared": [{"title": "ok", "summary": 7}, "not-a-map"],
+        "open_loops": "nope",
+        "notes": ["x"]
+      }))
 
-    # Julia Steiner - follow_up_drafted
-    assert julia["type"] == "follow_up_drafted"
-    assert julia["title"] == "Julia Steiner · after Monday's session"
+      {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
+      assert section["ok"] == true
+      assert section["updated_at"] == nil
+      assert section["notes"] == nil
+      assert section["prepared"] == [%{"title" => "ok", "summary" => nil, "page" => nil}]
+      assert section["open_loops"] == []
+    end
 
-    assert julia["summary"] ==
-             "Monday's session still has no follow-up. Drafted from your session notes: the two agreed next steps and the article you promised her."
+    test "disabled mount contributes no section; order follows Mounts.enabled/0" do
+      ws = AgentCase.open_workspace!()
+      # Mounted in reverse-alphabetical order so a passing "config order"
+      # assertion can't be an accident of insertion order — see the identical
+      # reasoning in `test/valea/agents_test.exs`'s `setup` block.
+      bbb = AgentCase.mount_test_icm!(ws.path, name: "bbb")
+      aaa = AgentCase.mount_test_icm!(ws.path, name: "aaa")
 
-    assert julia["used_sources"] == ["Clients › Julia", "session notes", "Tone guide"]
-    assert julia["primary_action"] == "Review draft"
-    assert julia["secondary_action"] == "Skip this one"
+      File.write!(Path.join(aaa.root, "today.json"), ~s({"notes": "A"}))
+      File.write!(Path.join(bbb.root, "today.json"), ~s({"notes": "B"}))
 
-    # Open loops
-    assert length(today["open_loops"]) == 4
-    open_loops = today["open_loops"]
+      :ok = Mounts.set_enabled(ws.path, bbb.mount_key, false)
 
-    assert Enum.at(open_loops, 0)["title"] == "Send proposal to Priya after the discovery call"
-    assert Enum.at(open_loops, 0)["source"] == "from her email · yesterday"
+      {:ok, %{"sections" => [only]}} = Valea.Cockpit.today()
+      assert only["mount_key"] == aaa.mount_key
 
-    assert Enum.at(open_loops, 1)["title"] == "Give Feldmann a September workshop date"
-    assert Enum.at(open_loops, 1)["source"] == "from Clients › Feldmann · open 3 weeks"
+      :ok = Mounts.set_enabled(ws.path, bbb.mount_key, true)
 
-    assert Enum.at(open_loops, 2)["title"] == "Update the workshop page with the 2027 price"
-    assert Enum.at(open_loops, 2)["source"] == "from Chat · yesterday"
+      {:ok, %{"sections" => sections}} = Valea.Cockpit.today()
+      {:ok, enabled_mounts} = Mounts.enabled()
+      assert Enum.map(sections, & &1["mount_key"]) == Enum.map(enabled_mounts, & &1.name)
+    end
+  end
 
-    assert Enum.at(open_loops, 3)["title"] == "Reactivate 2 cold leads from May"
-    assert Enum.at(open_loops, 3)["source"] == "from Weekly admin review workflow"
+  describe "today/0 recent_sessions" do
+    # Mirrors `write_transcript!/4` in `test/valea/agents_test.exs`, trimmed
+    # to only the fields `Valea.Agents.session_summary/1` actually reads for
+    # this cap/order/trim contract — a real session-launch fixture (the
+    # `AgentCase.start_session/3` harness path) is unnecessary weight here.
+    defp write_session_meta!(workspace, id, started_at) do
+      dir = Path.join([workspace, "logs", "sessions"])
+      File.mkdir_p!(dir)
 
-    # While you were away
-    assert length(today["while_you_were_away"]) == 3
-    away = today["while_you_were_away"]
-    assert Enum.at(away, 0) == "Synced 9 emails from AI / Review · 7:00"
-    assert Enum.at(away, 1) == "3 workflows ran: inquiry triage, session prep, receipt capture"
-    assert Enum.at(away, 2) == "Moved 4 newsletters to Reading · Undo"
+      meta = %{
+        "schema" => "session/v1",
+        "id" => id,
+        "title" => "Test session #{id}",
+        "started_at" => started_at
+      }
 
-    # Mail — zero/unconfigured defaults: no workspace is open in this test,
-    # so `Valea.Mail.Engine` isn't registered (Task 18).
-    assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+      File.write!(Path.join(dir, id <> ".jsonl"), Jason.encode!(meta) <> "\n")
+    end
 
-    # Triage workflow path — no workspace is open in this test, so
-    # `Valea.Workflows.list/0` finds nothing to discover (Task A-T13).
-    assert today["triage_workflow_path"] == nil
+    defp iso(seconds_offset) do
+      ~U[2026-01-01 00:00:00Z] |> DateTime.add(seconds_offset, :second) |> DateTime.to_iso8601()
+    end
 
-    # Distill workflow path — same no-workspace-open reasoning (Task B8).
-    assert today["distill_workflow_path"] == nil
+    test "no sessions → []" do
+      AgentCase.open_workspace!()
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["recent_sessions"] == []
+    end
+
+    test "newest-first, capped at 5, trimmed fields" do
+      ws = AgentCase.open_workspace!()
+
+      for i <- 1..6 do
+        write_session_meta!(ws.path, "session-#{i}", iso(i))
+      end
+
+      {:ok, %{"recent_sessions" => recent}} = Valea.Cockpit.today()
+      assert length(recent) == 5
+      assert List.first(recent)["started_at"] > List.last(recent)["started_at"]
+
+      assert Map.keys(List.first(recent)) |> Enum.sort() ==
+               ["id", "live", "started_at", "status", "title"]
+    end
   end
 
   describe "today/0 mail summary" do
@@ -240,183 +276,6 @@ defmodule Valea.CockpitTest do
       {:ok, today} = Valea.Cockpit.today()
 
       assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
-    end
-  end
-
-  describe "today/0 triage_workflow_path (Task A-T13: seeded-workflow discovery)" do
-    defp write_triage_workflow!(mount_dir) do
-      File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-
-      content = """
-      ---
-      enabled: true
-      risk_level: medium
-      ---
-      # New Inquiry Triage
-
-      Body.
-      """
-
-      File.write!(Path.join([mount_dir, "Workflows", "New Inquiry Triage.md"]), content)
-    end
-
-    # `Valea.Mounts.list/1` is config truth over `icms:` ONLY — a freshly
-    # scaffolded (v5) workspace carries no seeded mount at all, so every
-    # mount in this describe block is a REAL EXTERNAL ICM, mounted via
-    # `AgentCase.mount_test_icm!/2`, and every expected workflow path is
-    # that ICM's ABSOLUTE resolved path — never a `mounts/<name>/...`
-    # workspace-relative literal.
-    test "carries the real absolute Workflows/... path from a mounted external ICM" do
-      ws = AgentCase.open_workspace!()
-
-      icm =
-        AgentCase.mount_test_icm!(ws.path,
-          name: "Primary",
-          pages: %{
-            "Workflows/New Inquiry Triage.md" => """
-            ---
-            enabled: true
-            risk_level: medium
-            ---
-            # New Inquiry Triage
-
-            Body.
-            """
-          }
-        )
-
-      {:ok, today} = Valea.Cockpit.today()
-
-      assert today["triage_workflow_path"] ==
-               Path.join(icm.root, "Workflows/New Inquiry Triage.md")
-    end
-
-    test "is nil when no enabled mount has a triage workflow" do
-      ws = AgentCase.open_workspace!()
-      AgentCase.mount_test_icm!(ws.path, name: "Empty")
-
-      {:ok, today} = Valea.Cockpit.today()
-      assert today["triage_workflow_path"] == nil
-    end
-
-    test "is found in a second mount when the first (alphabetically) enabled mount lacks one" do
-      ws = AgentCase.open_workspace!()
-      # "aaa" sorts before "bbb" (mount keys are the slugified display
-      # name) and has no Workflows/ at all.
-      AgentCase.mount_test_icm!(ws.path, name: "aaa")
-      bbb = AgentCase.mount_test_icm!(ws.path, name: "bbb")
-      write_triage_workflow!(bbb.root)
-
-      {:ok, today} = Valea.Cockpit.today()
-
-      assert today["triage_workflow_path"] ==
-               Path.join(bbb.root, "Workflows/New Inquiry Triage.md")
-    end
-  end
-
-  describe "today/0 distill_workflow_path (Task B8: mirrors triage_workflow_path)" do
-    defp write_distill_workflow!(mount_dir) do
-      File.mkdir_p!(Path.join(mount_dir, "Workflows"))
-
-      content = """
-      ---
-      enabled: true
-      risk_level: medium
-      ---
-      # Distill Decisions
-
-      Body.
-      """
-
-      File.write!(Path.join([mount_dir, "Workflows", "Distill Decisions.md"]), content)
-    end
-
-    # Task B9's promise ("a freshly scaffolded workspace already has the
-    # Distill workflow available, no explicit action needed") depended on
-    # the legacy v4 scaffold auto-seeding ONE starter mount. Post-3.2 a
-    # fresh v5 workspace has NO default `icms:` entry at all (config
-    # truth, nothing implicit) — the equivalent promise now lives one
-    # layer up, at `Valea.Mounts.create/3` (task 3.5): every ICM created
-    # through the app's normal create flow is seeded from
-    # `priv/icm_template/`, which carries `Workflows/Distill Decisions.md`
-    # out of the box. This test asserts THAT promise instead.
-    test "carries the seeded path once an ICM is created via Mounts.create/3 (Task B9 promise, relocated to create/3 + icm_template)" do
-      ws = AgentCase.open_workspace!()
-
-      target =
-        Path.join(
-          System.tmp_dir!(),
-          "valea-cockpit-distill-#{System.unique_integer([:positive])}"
-        )
-
-      on_exit(fn -> File.rm_rf!(target) end)
-
-      {:ok, %{mount_key: mount_key}} = Mounts.create(ws.path, "W", target)
-      created = Mounts.mount_by_key(ws.path, mount_key)
-
-      {:ok, today} = Valea.Cockpit.today()
-
-      assert today["distill_workflow_path"] ==
-               Path.join(created.root, "Workflows/Distill Decisions.md")
-    end
-
-    test "carries the real absolute Workflows/... path once an enabled mount has one" do
-      ws = AgentCase.open_workspace!()
-      AgentCase.mount_test_icm!(ws.path, name: "aaa")
-      bbb = AgentCase.mount_test_icm!(ws.path, name: "bbb")
-      write_distill_workflow!(bbb.root)
-
-      {:ok, today} = Valea.Cockpit.today()
-
-      assert today["distill_workflow_path"] ==
-               Path.join(bbb.root, "Workflows/Distill Decisions.md")
-    end
-  end
-
-  describe "today/0 prepared_items icm_name (Task 9.5: seeded-item ICM provenance)" do
-    test "is nil on every prepared item when no enabled mount has a triage workflow" do
-      ws = AgentCase.open_workspace!()
-      AgentCase.mount_test_icm!(ws.path, name: "Empty")
-
-      {:ok, today} = Valea.Cockpit.today()
-
-      assert Enum.map(today["prepared_items"], & &1["icm_name"]) == [nil, nil, nil]
-    end
-
-    # Post-3.2, a mount's config-truth `mount_key` need not equal its
-    # manifest display `name` — `mount_test_icm!/2`'s `name:` opt controls
-    # ONLY the manifest (icm.yaml `name:`), never the derived mount_key, so
-    # asserting `icm_name` (the manifest's own display name) rather than
-    # `mount_key` here is the one honest way to distinguish this field
-    # from `triage_workflow_mount_key`'s own assertions above.
-    test "carries the triage workflow's owning mount's manifest display name on every prepared item" do
-      ws = AgentCase.open_workspace!()
-
-      icm =
-        AgentCase.mount_test_icm!(ws.path,
-          name: "Mara Lindt Coaching",
-          pages: %{
-            "Workflows/New Inquiry Triage.md" => """
-            ---
-            enabled: true
-            risk_level: medium
-            ---
-            # New Inquiry Triage
-
-            Body.
-            """
-          }
-        )
-
-      {:ok, today} = Valea.Cockpit.today()
-
-      assert today["triage_workflow_mount_key"] == icm.mount_key
-
-      assert Enum.map(today["prepared_items"], & &1["icm_name"]) == [
-               "Mara Lindt Coaching",
-               "Mara Lindt Coaching",
-               "Mara Lindt Coaching"
-             ]
     end
   end
 end

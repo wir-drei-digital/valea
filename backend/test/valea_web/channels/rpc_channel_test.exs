@@ -9,11 +9,11 @@ defmodule ValeaWeb.RpcChannelTest do
       socket(ValeaWeb.UserSocket, nil, %{})
       |> subscribe_and_join(ValeaWeb.RpcChannel, "ash_typescript_rpc:client")
 
-    # `cockpit_today` is a fully `constraints fields: [...]`-typed action
-    # (Task 18) — an empty `fields` array is now a request error ("Fields
-    # array cannot be empty"), so at least one field must be selected.
+    # `cockpit_today` is a fully `constraints fields: [...]`-typed action —
+    # an empty `fields` array is now a request error ("Fields array cannot
+    # be empty"), so at least one field must be selected.
     ref =
-      push(socket, "run", %{"action" => "cockpit_today", "input" => %{}, "fields" => ["greeting"]})
+      push(socket, "run", %{"action" => "cockpit_today", "input" => %{}, "fields" => ["mail"]})
 
     assert_reply ref, :ok, reply
     assert reply[:success] || reply["success"]

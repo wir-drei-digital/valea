@@ -111,8 +111,15 @@ defmodule ValeaWeb.RpcTest do
 
     assert %{
              "success" => true,
-             "data" => %{"greeting" => "Good morning, Mara.", "mail" => mail}
-           } = rpc("cockpit_today", %{}, ["greeting", "mail"])
+             "data" => %{"sections" => sections, "mail" => mail}
+           } = rpc("cockpit_today", %{}, ["sections", "mail"])
+
+    # No `today.json` was ever written into the mounted ICM above, so it
+    # contributes no section (Spec D §C leniency contract: absent file →
+    # no section) — this RPC round trip just confirms the typed `:today`
+    # action shape holds together end-to-end, not the section-assembly
+    # logic itself (that's `test/valea/cockpit_test.exs`'s job).
+    assert sections == []
 
     # A freshly created workspace has no mail account configured yet, but
     # its `Valea.Mail.Engine` IS running (`Valea.Workspace.Runtime` starts
@@ -122,9 +129,8 @@ defmodule ValeaWeb.RpcTest do
     # workspace` above already exercises with no workspace at all.
     # `reviewCount` is 1 — the workspace template seeds ONE `status: review`
     # message (`sources/mail/messages/2026-07-09-priya-nair-seed0001.md`,
-    # indexed into `Valea.Mail.Store` on workspace open) so Task 18's
-    # generalized Today card has something to show before any real mail
-    # ever syncs.
+    # indexed into `Valea.Mail.Store` on workspace open) so Today's mail
+    # summary has something to show before any real mail ever syncs.
     assert mail == %{"reviewCount" => 1, "inboxCount" => 0, "configured" => false}
   end
 end

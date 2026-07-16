@@ -1,9 +1,15 @@
 <script lang="ts">
-  import type { OpenLoop } from '$lib/today/cockpit';
-
   // Checklist rows (§8 task rows). The checkbox is purely visual this phase —
   // completing a loop is a later capability, so no interactive control yet.
-  let { loops }: { loops: OpenLoop[] } = $props();
+  //
+  // Declared locally rather than importing a type from `$lib/today/cockpit`
+  // — `TodayOpenLoop` there has nullable `title`/`source` (Spec D §C:
+  // `today.json` is agent-authored and lenient), while this component
+  // renders plain rows, so its caller (`routes/+page.svelte`) drops
+  // null-title items and defaults a null source to `''` before handing
+  // loops here.
+  type Loop = { title: string; source: string };
+  let { loops }: { loops: Loop[] } = $props();
 </script>
 
 <ul class="divide-paper-hairline flex flex-col divide-y">
