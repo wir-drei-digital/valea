@@ -41,10 +41,7 @@ defmodule Valea.Api do
       rpc_action(:list_recent_sessions_by_icm, :list_recent_sessions_by_icm)
       rpc_action(:list_sessions, :list_sessions_for)
       rpc_action(:create_follow_up, :create_follow_up)
-      rpc_action(:run_workflow, :run_workflow)
-      rpc_action(:distill_decisions, :distill_decisions)
       rpc_action(:harness_doctor, :harness_doctor)
-      rpc_action(:list_workflows, :list_workflows)
     end
 
     resource Valea.Api.Audit do

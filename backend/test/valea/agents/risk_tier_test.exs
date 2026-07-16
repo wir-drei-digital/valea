@@ -18,7 +18,7 @@ defmodule Valea.Agents.RiskTierTest do
   end
 
   test "workflow contracts in an ICM are high" do
-    assert RiskTier.classify(Locator.icm(@icm_id, "Workflows/Distill Decisions.md")) == "high"
+    assert RiskTier.classify(Locator.icm(@icm_id, "Workflows/contract.md")) == "high"
   end
 
   test "an ordinary knowledge page in an ICM is medium" do

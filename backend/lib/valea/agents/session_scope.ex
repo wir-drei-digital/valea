@@ -3,9 +3,8 @@ defmodule Valea.Agents.SessionScope do
   Builds the C6 launch object every agent session is created from (spec
   §"Session scope and launch" / §"Introduce session-scope resolution") — the
   ONLY place mount-key lookup, direct related-ICM resolution, and
-  read/write-root assembly live. Neither `Valea.Api.Agents` nor
-  `Valea.Workflows.Runner` re-derives any of these rules; both call
-  `resolve/1` and use the scope it returns.
+  read/write-root assembly live. `Valea.Api.Agents` never re-derives any of
+  these rules; it calls `resolve/1` and uses the scope it returns.
 
   `resolve/1` is a strict pipeline, each step gating the next:
 

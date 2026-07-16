@@ -23,11 +23,11 @@ defmodule Valea.Agents.PermissionPolicy do
       (absolute), `write_roots` (absolute).
     * a ctx WITHOUT `:workspace_root` (only `:workspace`) uses the LEGACY
       contract (`decide_legacy/2`, below) — unchanged from before Task 5.3.
-      `SessionServer.init/1` and `Valea.Workflows.Runner` still build this
-      shape (`ctx.workspace`, ws-relative `ctx.read_roots`,
-      `ctx.extra_roots`) as of this task; they migrate to the split contract
-      in Tasks 5.4/5.5. Once every caller passes `workspace_root`/`cwd`, the
-      legacy branch and its helpers can be deleted outright.
+      `SessionServer.init/1` still builds this shape (`ctx.workspace`,
+      ws-relative `ctx.read_roots`, `ctx.extra_roots`) as of this task; it
+      migrates to the split contract in Tasks 5.4/5.5. Once every caller
+      passes `workspace_root`/`cwd`, the legacy branch and its helpers can
+      be deleted outright.
 
   Both branches share the same non-negotiable invariants: every path decision
   goes through `Valea.Paths.resolve_real/2`, membership is segment-boundary
@@ -240,10 +240,9 @@ defmodule Valea.Agents.PermissionPolicy do
 
   ## ===========================================================================
   ## Legacy contract (pre-Task-5.3): ctx.workspace, ws-relative read_roots,
-  ## extra_roots. Kept verbatim for `SessionServer`/`Valea.Workflows.Runner`
-  ## until they migrate to the split contract (Tasks 5.4/5.5) — DELETE this
-  ## whole section (and its dedicated test module) once every caller passes
-  ## `workspace_root`/`cwd`.
+  ## extra_roots. Kept verbatim for `SessionServer` until it migrates to the
+  ## split contract (Tasks 5.4/5.5) — DELETE this whole section (and its
+  ## dedicated test module) once every caller passes `workspace_root`/`cwd`.
   ## ===========================================================================
 
   @legacy_protected_dirs ["secrets", "logs", ".claude", ".git"]

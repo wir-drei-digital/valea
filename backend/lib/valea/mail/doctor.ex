@@ -31,19 +31,6 @@ defmodule Valea.Mail.Doctor do
          (`ctx.transport.capabilities/1`) are siblings computed off the
          same live `conn` once `login_ok` is `"ok"` — one's result never
          gates the other.
-    5. `workflow_contract` — discovers the seeded New Inquiry Triage
-       workflow via `Valea.Workflows.triage_path/1` (the first enabled
-       mount, by the registry's own sort order, with a `Workflows/New
-       Inquiry Triage.md` — Task A-T13; no more hardcoded
-       `icm/Workflows/New Inquiry Triage.md`), reads it under `ctx.root`,
-       and warns if it still names the legacy JSON input. This is a
-       **local file check with no mailbox dependency**, so it is gated on
-       config_present alone (step 1), not on credential/network/login
-       state — a broken workflow contract is worth surfacing even before an
-       account is fully connected. (It is still `"unknown"` when
-       `config_present` itself failed, matching every other check, and
-       `"unknown"` — not `"failed"` — when no mount has the Triage page at
-       all: an absent probe target, not a probed-and-broken one.)
 
   `run/1` never raises: every transport call is caught, and an unexpected
   crash anywhere in the pipeline becomes a `"failed"` check with the
@@ -78,8 +65,6 @@ defmodule Valea.Mail.Doctor do
   @folders_transport_remedy "Check server connectivity and try again."
   @move_remedy "Your server supports neither MOVE nor UIDPLUS — " <>
                  "Valea will leave messages in AI/Review and you move them manually."
-  @workflow_remedy "This workflow page still references the legacy JSON input — " <>
-                     "update its Inputs to sources/mail/messages/*.md"
 
   @doc """
   Runs the full check pipeline against `ctx`. Always succeeds — the
@@ -93,9 +78,8 @@ defmodule Valea.Mail.Doctor do
     {credential, credential_ok?} = credential_present(ctx, config_ok?)
     {tcp, tcp_ok?} = tcp_reachable(ctx, config_ok? and credential_ok?)
     {tls, login, folders, move} = transport_group(ctx, tcp_ok?)
-    workflow = workflow_contract(ctx, config_ok?)
 
-    checks = [config, credential, tcp, tls, login, folders, move, workflow]
+    checks = [config, credential, tcp, tls, login, folders, move]
     {:ok, %{checks: checks, ok: Enum.all?(checks, &(&1["status"] == "ok"))}}
   end
 
@@ -351,60 +335,6 @@ defmodule Valea.Mail.Doctor do
           @move_remedy
         )
     end
-  end
-
-  # -- 5. workflow_contract ----------------------------------------------------
-
-  defp workflow_contract(_ctx, false) do
-    unknown("workflow_contract", "Workflow contract", @gate_detail)
-  end
-
-  defp workflow_contract(ctx, true) do
-    case Valea.Workflows.triage_path(ctx.root) do
-      nil -> workflow_contract_absent()
-      rel_path -> workflow_contract_read(ctx.root, rel_path)
-    end
-  end
-
-  # `Valea.Workflows.triage_path/1` returns a workspace-relative path for an
-  # EMBEDDED mount but the ABSOLUTE physical path for an EXTERNAL
-  # (by-reference) mount (see its moduledoc) — every mount is external now,
-  # so `rel_path` here is normally already absolute. `Path.join/2` does NOT
-  # special-case an absolute second argument (it lexically appends,
-  # producing a bogus nested path), so an absolute `rel_path` must be read
-  # directly, never joined onto `root`.
-  defp workflow_contract_read(root, rel_path) do
-    abs = if Path.type(rel_path) == :absolute, do: rel_path, else: Path.join(root, rel_path)
-
-    case File.read(abs) do
-      {:ok, content} -> workflow_contract_result(content, rel_path)
-      {:error, _reason} -> workflow_contract_absent()
-    end
-  end
-
-  defp workflow_contract_result(content, rel_path) do
-    if String.contains?(content, "normalized/") or String.contains?(content, ".json") do
-      failed(
-        "workflow_contract",
-        "Workflow contract",
-        "#{rel_path} still references the legacy JSON input.",
-        @workflow_remedy
-      )
-    else
-      ok(
-        "workflow_contract",
-        "Workflow contract",
-        "#{rel_path} matches the current mail message contract."
-      )
-    end
-  end
-
-  defp workflow_contract_absent do
-    unknown(
-      "workflow_contract",
-      "Workflow contract",
-      "No New Inquiry Triage workflow was found in any enabled mount."
-    )
   end
 
   # -- create_folders helpers ---------------------------------------------------

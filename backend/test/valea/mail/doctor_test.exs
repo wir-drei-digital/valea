@@ -50,16 +50,13 @@ defmodule Valea.Mail.DoctorTest do
   end
 
   # Mounts a REAL EXTERNAL ICM (via `AgentCase.mount_test_icm!/2`) carrying
-  # `Workflows/New Inquiry Triage.md`, and returns that page's ABSOLUTE
-  # resolved path. Post-task-3.2, `Valea.Mounts.list/1` is config truth
-  # over `icms:` ONLY (no more filesystem-glob discovery of an embedded
-  # `mounts/<name>`), so `workflow_contract` can only discover this page
-  # through a properly REGISTERED mount — a bare `mounts/starter/...`
-  # folder on disk is invisible to it now (Task A-T13: `workflow_contract`
-  # discovers the page via `Valea.Workflows.triage_path/1`, which requires
-  # a valid `icm.yaml` manifest AND a parseable frontmatter block — hence
-  # the minimal `---\nenabled: true\n---\n` prepended here, on top of
-  # whatever body `write_triage!/2`'s caller passes).
+  # a `Workflows/New Inquiry Triage.md` page, and returns that page's
+  # ABSOLUTE resolved path. `Doctor.run/1` no longer reads any mounted ICM
+  # content itself — this helper is kept as a realistic mount fixture for
+  # tests that want a workspace with a registered ICM present, on top of
+  # whatever body the caller passes (a valid `icm.yaml` manifest still
+  # requires a parseable frontmatter block — hence the minimal
+  # `---\nenabled: true\n---\n` prepended here).
   defp write_triage!(root, body) do
     content = "---\nenabled: true\n---\n" <> body
 
@@ -73,19 +70,6 @@ defmodule Valea.Mail.DoctorTest do
     Path.join(icm.root, "Workflows/New Inquiry Triage.md")
   end
 
-  # A registered mount with a Workflows/ page, but not the triage one — for
-  # the "registry non-empty, no triage match" case, distinct from "no
-  # mounts at all" (see the `workspace_root/0`-only tests below).
-  defp write_unrelated_workflow!(root) do
-    AgentCase.mount_test_icm!(root,
-      name: "Other",
-      id: "b713d4f5-1dec-4b75-836b-02b26316b013",
-      pages: %{
-        "Workflows/Weekly Review.md" => "---\nenabled: true\n---\n# Weekly Review\n\nBody.\n"
-      }
-    )
-  end
-
   @good_triage """
   # New Inquiry Triage
 
@@ -94,16 +78,6 @@ defmodule Valea.Mail.DoctorTest do
   | Input | Where |
   | --- | --- |
   | The inquiry email | a `sources/mail/messages/*.md` file |
-  """
-
-  @legacy_triage """
-  # New Inquiry Triage
-
-  ## Inputs
-
-  | Input | Where |
-  | --- | --- |
-  | The inquiry email | `sources/mail/normalized/priya-nair-inquiry.json` |
   """
 
   # -- real TCP listener helpers -----------------------------------------------
@@ -176,8 +150,7 @@ defmodule Valea.Mail.DoctorTest do
                "tls_ok",
                "login_ok",
                "folders",
-               "move_capability",
-               "workflow_contract"
+               "move_capability"
              ]
 
       assert Enum.all?(checks, &Map.has_key?(&1, "label"))
@@ -206,7 +179,7 @@ defmodule Valea.Mail.DoctorTest do
 
   # -- missing credential --------------------------------------------------------
 
-  test "missing credential: credential_present fails, the network/transport checks are unknown, but workflow_contract (config-only gated) still runs" do
+  test "missing credential: credential_present fails, the network/transport checks are unknown" do
     root = workspace_root()
     write_triage!(root, @good_triage)
 
@@ -221,13 +194,11 @@ defmodule Valea.Mail.DoctorTest do
     for id <- ["tcp_reachable", "tls_ok", "login_ok", "folders", "move_capability"] do
       assert by_id[id]["status"] == "unknown"
     end
-
-    assert by_id["workflow_contract"]["status"] == "ok"
   end
 
   # -- tcp unreachable ------------------------------------------------------------
 
-  test "tcp unreachable: tcp_reachable fails, the transport group is unknown, but workflow_contract still runs" do
+  test "tcp unreachable: tcp_reachable fails, the transport group is unknown" do
     root = workspace_root()
     write_triage!(root, @good_triage)
     port = closed_port()
@@ -241,9 +212,6 @@ defmodule Valea.Mail.DoctorTest do
     assert by_id["login_ok"]["status"] == "unknown"
     assert by_id["folders"]["status"] == "unknown"
     assert by_id["move_capability"]["status"] == "unknown"
-    # workflow_contract only depends on config being present, not on network
-    # reachability -- it still runs and reports.
-    assert by_id["workflow_contract"]["status"] == "ok"
     # no transport call was ever attempted
     assert FakeMailTransport.calls() == []
   end
@@ -440,67 +408,6 @@ defmodule Valea.Mail.DoctorTest do
       assert move["status"] == "ok"
       assert move["detail"] == "UIDPLUS fallback"
     end)
-  end
-
-  # -- workflow_contract ------------------------------------------------------------
-
-  test "workflow_contract: legacy JSON reference fails with the update remedy" do
-    root = workspace_root()
-    triage_path = write_triage!(root, @legacy_triage)
-
-    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
-    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
-    assert contract["status"] == "failed"
-    assert contract["remedy"] =~ "sources/mail/messages/*.md"
-    assert contract["detail"] =~ triage_path
-  end
-
-  test "workflow_contract: absent file is unknown, not failed" do
-    root = workspace_root()
-
-    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
-    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
-    assert contract["status"] == "unknown"
-  end
-
-  test "workflow_contract: an empty registry (no mounts at all) is unknown, not failed" do
-    root = workspace_root()
-    # No mounts/ directory whatsoever — Workflows.list/1 returns [].
-
-    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
-    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
-    assert contract["status"] == "unknown"
-  end
-
-  test "workflow_contract: a non-empty registry with no triage-shaped entry is unknown, not failed" do
-    root = workspace_root()
-    write_unrelated_workflow!(root)
-
-    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
-    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
-    assert contract["status"] == "unknown"
-  end
-
-  test "workflow_contract: finds the triage workflow in a second mount when the first (alphabetically) enabled mount lacks one" do
-    root = workspace_root()
-    write_unrelated_workflow!(root)
-    # Every mount is now an independently-rooted EXTERNAL ICM (config
-    # truth, `icms:`-only) rather than a `mounts/<name>` subdirectory
-    # sharing the workspace's own alphabetical ordering, so a mount's KEY
-    # name no longer controls `Valea.Workflows.list/1`'s sort (that's now
-    # by each workflow's absolute physical path). What this test actually
-    # exercises still holds regardless of order: a mount with no
-    # `Workflows/` at all coexists with the one that does, and
-    # `Valea.Workflows.triage_path/1`'s basename-match `Enum.find/2` must
-    # skip past the former to find the latter.
-    AgentCase.mount_test_icm!(root, name: "AAA", id: "e514363a-f535-4643-b6fb-101baafbe70c")
-
-    triage_path = write_triage!(root, @good_triage)
-
-    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, credential: nil}))
-    contract = Enum.find(checks, &(&1["id"] == "workflow_contract"))
-    assert contract["status"] == "ok"
-    assert contract["detail"] =~ triage_path
   end
 
   # -- credential redaction ------------------------------------------------------------

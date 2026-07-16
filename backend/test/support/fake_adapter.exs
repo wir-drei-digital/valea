@@ -1,6 +1,6 @@
 # Scripted ACP adapter for SessionServer integration tests.
 # Scenarios: happy | permission | permission_risk_tier | permission_read_policy |
-# crash_mid_turn | stderr_noise | hang | workflow_happy
+# crash_mid_turn | stderr_noise | hang
 #
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
@@ -52,31 +52,16 @@ defmodule FakeAdapter do
   # SessionServer E2E test can assert what actually crossed the ACP pipe —
   # not just what Connection intended to send. Persisted to a JSON file in
   # the subprocess's own cwd (ProcessRuntime sets that to the session's
-  # workspace/ICM root), the same externally-observable-artifact pattern
-  # `workflow_happy` already uses for its staged proposal.json. No test in
-  # this task reads it back — every launch today omits both fields, so the
-  # file always reflects today's unchanged baseline shape
-  # (`%{"cwd" => ..., "mcpServers" => []}`).
+  # workspace/ICM root). No test in this task reads it back — every launch
+  # today omits both fields, so the file always reflects today's unchanged
+  # baseline shape (`%{"cwd" => ..., "mcpServers" => []}`).
   defp handle(%{"method" => "session/new", "id" => id, "params" => params}, ctx) do
     File.write!(Path.join(File.cwd!(), @session_new_echo_file), Jason.encode!(params))
     reply(id, %{"sessionId" => ctx.session})
   end
 
-  defp handle(%{"method" => "session/prompt", "id" => id, "params" => params}, ctx) do
+  defp handle(%{"method" => "session/prompt", "id" => id}, ctx) do
     case ctx.scenario do
-      "workflow_happy" ->
-        params
-        |> prompt_text()
-        |> staging_path!()
-        |> File.write!(Jason.encode!(workflow_proposal()))
-
-        update(ctx, %{
-          "sessionUpdate" => "agent_message_chunk",
-          "content" => %{"type" => "text", "text" => "Drafted a reply for review."}
-        })
-
-        reply(id, %{"stopReason" => "end_turn"})
-
       "crash_mid_turn" ->
         update(ctx, %{
           "sessionUpdate" => "agent_message_chunk",
@@ -228,48 +213,6 @@ defmodule FakeAdapter do
 
   defp handle(%{"method" => "session/cancel"}, _ctx), do: :ok
   defp handle(_other, _ctx), do: :ok
-
-  # `workflow_happy` never receives its output path as an argument — it reads
-  # the prompt Valea.Workflows.Runner composed and greps out the exact
-  # staging path the run named, matching how a real ACP agent would.
-  defp prompt_text(%{"prompt" => blocks}) when is_list(blocks) do
-    blocks
-    |> Enum.filter(&(is_map(&1) and &1["type"] == "text"))
-    |> Enum.map_join("", &(&1["text"] || ""))
-  end
-
-  defp prompt_text(_params), do: ""
-
-  # Task 5.5: `Valea.Workflows.Runner.prompt/3` now embeds the ABSOLUTE
-  # `write_paths` grant (never a workspace-relative path) — cwd is the
-  # owning ICM's own root, not the workspace, so only an absolute
-  # destination is unambiguous. Capture whatever's inside the surrounding
-  # quotes, not just a "queue/staging/..." suffix, so this scenario writes
-  # to the SAME location the real ACP write-permission check would resolve
-  # against.
-  defp staging_path!(text) do
-    case Regex.run(~r{"([^"]*/proposal\.json)"}, text) do
-      [_, path] -> path
-      nil -> raise "workflow_happy: no .../proposal.json path in prompt"
-    end
-  end
-
-  defp workflow_proposal do
-    %{
-      "schema" => "proposal/v1",
-      "kind" => "email_draft",
-      "title" => "Reply to Priya Nair — coaching inquiry",
-      "summary" => "Good-fit inquiry. Drafted a warm reply proposing a discovery call.",
-      "sources" => ["sources/mail/messages/2026-07-09-priya-nair-seed0001.md"],
-      "proposed_action" => %{
-        "type" => "create_email_draft",
-        "to" => "priya@example.com",
-        "subject" => "Re: Question about leadership coaching",
-        "body_markdown" => "Hi Priya, thanks for reaching out — here's a bit more detail."
-      },
-      "reasoning" => "Classified good-fit because the inquiry matches the founder coaching offer."
-    }
-  end
 
   defp reply(id, result), do: emit(%{"jsonrpc" => "2.0", "id" => id, "result" => result})
 

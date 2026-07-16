@@ -82,14 +82,6 @@ defmodule Valea.Agents.SessionSettingsTest do
     assert md =~ "CONTEXT.md"
   end
 
-  test "context.md injects the proposal/memory-update contract for workflow sessions only" do
-    workflow_md = SessionSettings.context(scope(%{kind: "workflow"}))
-    chat_md = SessionSettings.context(scope(%{kind: "chat"}))
-
-    assert workflow_md =~ "memory_update/v1"
-    refute chat_md =~ "memory_update/v1"
-  end
-
   test "materialize! writes only context.md (posture is in-memory), never inside an ICM root" do
     tmp = Path.join(System.tmp_dir!(), "vss-#{System.unique_integer([:positive])}")
     icm = Path.join(tmp, "icm")

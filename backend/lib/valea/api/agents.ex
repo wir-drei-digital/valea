@@ -1,29 +1,22 @@
 defmodule Valea.Api.Agents do
   @moduledoc """
-  Data-layer-less Ash resource exposing agent sessions, workflow runs, the
-  harness doctor, and the workflow catalog over RPC.
+  Data-layer-less Ash resource exposing agent sessions and the harness
+  doctor over RPC: `create_session`, `list_sessions` (internal),
+  `list_recent_sessions_by_icm`, `list_sessions_for`, `create_follow_up`,
+  and `harness_doctor`.
 
-  Wraps `Valea.Agents`, `Valea.Workflows`, `Valea.Workflows.Runner`, and
-  `Valea.Agents.Doctor`. Every action here follows `Valea.Api.ICM`'s
-  `constraints fields: [...]` pattern so ash_typescript emits typed TS
-  interfaces (see that module's moduledoc for the full rationale and the
-  typed-vs-unconstrained-map casing caveat).
+  Wraps `Valea.Agents` and `Valea.Agents.Doctor`. Every action here follows
+  `Valea.Api.ICM`'s `constraints fields: [...]` pattern so ash_typescript
+  emits typed TS interfaces (see that module's moduledoc for the full
+  rationale and the typed-vs-unconstrained-map casing caveat).
 
-  Mutating actions (`create_session`, `run_workflow`, `distill_decisions`)
-  take a `generation` argument and guard with
-  `Valea.Workspace.Manager.check_generation/1` BEFORE touching anything — a
-  stale generation (workspace closed/reopened/switched under the caller)
-  surfaces as `workspace_changed` rather than silently acting against the
-  wrong workspace.
-
-  `distill_decisions` (Task B8) is `run_workflow`'s generated-input sibling:
-  no `input` argument — it compiles the reflection workflow's own input
-  (`Valea.Workflows.Distill.digest/1`, the last 30 days of decided queue
-  items) server-side and hands it to
-  `Valea.Workflows.Runner.run_generated/3`. `workflow_not_found` when no
-  enabled mount carries a Distill Decisions contract yet (the starter-mount
-  seed for it is Task B9's job); `no_recent_decisions` when the digest
-  window is empty.
+  The mutating actions (`create_session`, `create_follow_up`) take a
+  `generation` argument and guard against a stale generation (workspace
+  closed/reopened/switched under the caller) BEFORE touching anything — a
+  stale generation surfaces as `workspace_changed` rather than silently
+  acting against the wrong workspace (`create_session` via
+  `SessionScope.resolve/1`'s own first gate; `create_follow_up` via
+  `Valea.Agents.create_follow_up/2`).
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -33,7 +26,6 @@ defmodule Valea.Api.Agents do
 
   alias Valea.Agents.SessionScope
   alias Valea.Api.Error
-  alias Valea.Workspace.Manager
 
   # Shared `constraints fields:` shape for a session summary (Task 6.2's
   # `list_recent_sessions_by_icm`/`list_sessions_for`, both trimmed to
@@ -133,10 +125,9 @@ defmodule Valea.Api.Agents do
     # project groups. `groups` wraps the bare list `Valea.Agents.
     # list_recent_sessions_by_icm/1` returns (this domain's generic `:map`
     # actions always need a named top-level field for ash_typescript's
-    # `constraints fields:` selection — mirrors `list_workflows`'s
-    # `workflows`/`list_agent_sessions`'s `sessions`). No `generation`
-    # argument: a read, not a mutation (mirrors `list_sessions`/
-    # `list_workflows`).
+    # `constraints fields:` selection — mirrors `list_agent_sessions`'s
+    # `sessions`). No `generation` argument: a read, not a mutation
+    # (mirrors `list_sessions`).
     action :list_recent_sessions_by_icm, :map do
       constraints fields: [
                     groups: [
@@ -214,76 +205,6 @@ defmodule Valea.Api.Agents do
       end
     end
 
-    # Task 7.2: `path`/`input` (a bare opaque absolute path + a
-    # workspace-relative string) become `mount_key`/`relative_path` (the
-    # workflow's Task 7.1 `{mount_key, relative_path}` identity —
-    # `Valea.Workflows.get/2`) and `input_locator` (a `Valea.Icm.Locator`
-    # map: `%{"kind" => "workspace", "path" => "sources/..."}` for a
-    # workspace source, or `%{"kind" => "icm", "icm_id" => ..., "path" =>
-    # ...}` for a page in a mounted ICM). `input_locator` is an
-    # UNCONSTRAINED `:map` argument (mirrors `Valea.Api.ICM`'s
-    # `prosemirror`) — arbitrary caller-shaped JSON, decoded with STRING
-    # keys, passed straight through to `Valea.Icm.Locator.resolve/2` (which
-    # pattern-matches on those same string keys) with no
-    # atomize/camelize step needed on either side of this boundary.
-    action :run_workflow, :map do
-      constraints fields: [
-                    run_id: [type: :string, allow_nil?: false],
-                    session_id: [type: :string, allow_nil?: false]
-                  ]
-
-      argument :mount_key, :string, allow_nil?: false
-      argument :relative_path, :string, allow_nil?: false
-      argument :input_locator, :map, allow_nil?: false
-      argument :generation, :integer, allow_nil?: false
-
-      run fn action_input, _ctx ->
-        %{
-          mount_key: mount_key,
-          relative_path: relative_path,
-          input_locator: input_locator,
-          generation: generation
-        } = action_input.arguments
-
-        with :ok <- Manager.check_generation(generation),
-             {:ok, %{run_id: run_id, session_id: session_id}} <-
-               Valea.Workflows.Runner.run(mount_key, relative_path, input_locator, generation) do
-          {:ok, %{run_id: run_id, session_id: session_id}}
-        else
-          {:error, reason} -> {:error, error_for(reason)}
-        end
-      end
-    end
-
-    action :distill_decisions, :map do
-      constraints fields: [
-                    run_id: [type: :string, allow_nil?: false],
-                    session_id: [type: :string, allow_nil?: false]
-                  ]
-
-      argument :generation, :integer, allow_nil?: false
-
-      run fn action_input, _ctx ->
-        %{generation: generation} = action_input.arguments
-
-        with :ok <- Manager.check_generation(generation),
-             {:ok, wf} <- distill_workflow(),
-             {:ok, %{path: workspace}} <- Manager.current(),
-             {:ok, md} <- recent_decisions_digest(workspace),
-             {:ok, result} <-
-               Valea.Workflows.Runner.run_generated(
-                 wf.mount_key,
-                 wf.relative_path,
-                 "input-decisions.md",
-                 md
-               ) do
-          {:ok, result}
-        else
-          {:error, reason} -> {:error, error_for(reason)}
-        end
-      end
-    end
-
     action :harness_doctor, :map do
       constraints fields: [
                     ok: [type: :boolean, allow_nil?: false],
@@ -318,58 +239,6 @@ defmodule Valea.Api.Agents do
         {:ok, %{"ok" => ok, "checks" => Enum.map(checks, &atomize_check/1)}}
       end
     end
-
-    action :list_workflows, :map do
-      constraints fields: [
-                    workflows: [
-                      type: {:array, :map},
-                      allow_nil?: false,
-                      constraints: [
-                        items: [
-                          fields: [
-                            icm_id: [type: :string, allow_nil?: false],
-                            mount_key: [type: :string, allow_nil?: false],
-                            icm_name: [type: :string, allow_nil?: false],
-                            relative_path: [type: :string, allow_nil?: false],
-                            resolved_path: [type: :string, allow_nil?: false],
-                            name: [type: :string, allow_nil?: false],
-                            description: [type: :string, allow_nil?: true],
-                            enabled: [type: :boolean, allow_nil?: false],
-                            trigger_source: [type: :string, allow_nil?: true],
-                            risk_level: [type: :string, allow_nil?: true],
-                            source_count: [type: :integer, allow_nil?: false],
-                            steps: [type: {:array, :string}, allow_nil?: false]
-                          ]
-                        ]
-                      ]
-                    ]
-                  ]
-
-      run fn _input, _ctx ->
-        {:ok, workflows} = Valea.Workflows.list()
-        icm_names = icm_names_by_mount_key()
-        {:ok, %{workflows: Enum.map(workflows, &flatten_workflow(&1, icm_names))}}
-      end
-    end
-  end
-
-  # `distill_decisions`'s two workflow-specific preconditions, each mapped
-  # to the error string the brief names: no enabled mount carries a Distill
-  # Decisions contract (the starter-mount seed for it is Task B9's job), or
-  # the digest window is genuinely empty (nothing decided in the last 30
-  # days — see `Valea.Workflows.Distill.digest/1`).
-  defp distill_workflow do
-    case Valea.Workflows.distill_workflow() do
-      nil -> {:error, :workflow_not_found}
-      wf -> {:ok, wf}
-    end
-  end
-
-  defp recent_decisions_digest(workspace) do
-    case Valea.Workflows.Distill.digest(workspace) do
-      {0, _md} -> {:error, :no_recent_decisions}
-      {_count, md} -> {:ok, md}
-    end
   end
 
   @doc false
@@ -403,50 +272,5 @@ defmodule Valea.Api.Agents do
 
   defp atomize_check(%{"id" => id, "status" => status, "detail" => detail, "remedy" => remedy}) do
     %{id: id, status: status, detail: detail, remedy: remedy}
-  end
-
-  # Flattens `Valea.Workflows.list/0`'s per-workflow map (nested `trigger`/
-  # `sources` maps) into the typed shape the card list needs — the full
-  # nested contract (trigger conditions, approval policy, ...) is one click
-  # away via `Valea.Workflows.get/2` in Knowledge, not duplicated here.
-  #
-  # Task 7.1 re-keys the registry: `icm_id`/`mount_key`/`relative_path`/
-  # `resolved_path` pass straight through from `Valea.Workflows.list/0`'s
-  # new per-workflow map (its own moduledoc has the full identity
-  # rationale). `icm_name` is NOT one of `Valea.Workflows.list/0`'s own
-  # fields (that module deliberately stays mount-display-name-agnostic,
-  # see its moduledoc) — this RPC layer resolves it itself from
-  # `icm_names` (built once per call by `icm_names_by_mount_key/0`, mirrors
-  # `list_recent_sessions_by_icm`'s own `mount_key`+`icm_name` pairing
-  # above) so `WorkflowCard.svelte`'s "· <mount>" provenance chip keeps
-  # working off a friendly display name, not a raw UUID or config key.
-  defp flatten_workflow(wf, icm_names) do
-    %{
-      icm_id: wf.icm_id,
-      mount_key: wf.mount_key,
-      icm_name: Map.get(icm_names, wf.mount_key, wf.mount_key),
-      relative_path: wf.relative_path,
-      resolved_path: wf.resolved_path,
-      name: wf.name,
-      description: wf.description,
-      enabled: wf.enabled,
-      trigger_source: Map.get(wf.trigger || %{}, "source"),
-      risk_level: wf.risk_level,
-      source_count: length(wf.sources || []),
-      steps: wf.steps_preview
-    }
-  end
-
-  # `mount_key => manifest display name` for every currently ENABLED mount —
-  # every workflow `Valea.Workflows.list/0` returns is sourced from an
-  # enabled mount (see its moduledoc), so this always has an entry for any
-  # `wf.mount_key` `flatten_workflow/2` looks up; `Map.get/3`'s fallback to
-  # the bare `mount_key` above is defense-in-depth only (e.g. a mount
-  # disabled in the narrow window between the two calls).
-  defp icm_names_by_mount_key do
-    case Valea.Mounts.enabled() do
-      {:ok, mounts} -> Map.new(mounts, &{&1.name, &1.manifest.name})
-      {:error, :no_workspace} -> %{}
-    end
   end
 end

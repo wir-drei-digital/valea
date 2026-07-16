@@ -15,66 +15,6 @@ defmodule Valea.Agents.SessionSettings do
   @protected ~w(logs config secrets runtime .git)
   @db_files ~w(app.sqlite app.sqlite-wal app.sqlite-shm)
 
-  # Valea's queue vocabulary (proposal/v1 + memory_update/v1), lifted verbatim
-  # from backend/priv/workspace_template/AGENTS.md ("The proposal contract"
-  # through "The memory-update contract"). That template file carries no root
-  # AGENTS.md once Phase 2 removes it, so this is now the only place a
-  # workflow session is taught these schemas. Preserve verbatim.
-  @workflow_contract """
-  ## The proposal contract
-
-  A workflow run names one output path. Write a single JSON file there:
-
-  ```json
-  {
-    "schema": "proposal/v1",
-    "kind": "email_draft",
-    "title": "Reply to <name> — <one-line summary>",
-    "summary": "One or two sentences on what this is and why.",
-    "sources": [
-      "sources/mail/messages/<the-message-file>.md",
-      "mounts/<mount>/<the-pages-you-read>.md"
-    ],
-    "proposed_action": {
-      "type": "create_email_draft",
-      "to": "<recipient>",
-      "subject": "<subject>",
-      "body_markdown": "<the complete draft>"
-    },
-    "reasoning": "One or two plain sentences the owner will read."
-  }
-  ```
-
-  - `sources` lists every file you actually read, workspace-relative.
-  - `body_markdown` is the complete draft, ready to review.
-  - `reasoning` is one or two plain sentences the owner will read.
-
-  ## The memory-update contract
-
-  You never edit mount pages directly during a workflow run. To propose a
-  change to business memory, write a PAIR of files under the run's staging
-  `proposals/` folder:
-
-  - `<name>.md` — the complete new content of the target page.
-  - `<name>.json` — a manifest:
-
-      {
-        "schema": "memory_update/v1",
-        "target_path": "Pricing/Current Pricing.md",
-        "base_sha256": "<sha256 hex of the target page exactly as you read it, or null to create a new page>",
-        "reason": "one line: why this change",
-        "sources": ["paths you read"]
-      }
-
-  The `base_sha256` must be lowercase hex, exactly 64 characters. Page content is capped at 1 MB — split anything larger.
-
-  `target_path` is relative to your own working directory (this ICM's own
-  root) — the same form you'd use to read or write any other file here,
-  never prefixed with this ICM's name or mount key. The app verifies the
-  target and shows the user a diff; nothing changes without their
-  approval.
-  """
-
   @spec content(map()) :: map()
   def content(scope) do
     read_root_allows =
@@ -112,7 +52,7 @@ defmodule Valea.Agents.SessionSettings do
 
     related = if related == "", do: "(none)", else: related
 
-    base = """
+    """
     # Session context (Valea-managed)
 
     Primary ICM: #{scope.primary_icm.mount_key} — #{scope.primary_icm.root}
@@ -122,18 +62,12 @@ defmodule Valea.Agents.SessionSettings do
     routing calls for it; they do not load automatically):
     #{related}
     """
-
-    if scope.kind == "workflow" do
-      base <> "\n" <> @workflow_contract
-    else
-      base
-    end
   end
 
   @spec materialize!(map()) :: :ok
   def materialize!(scope) do
-    # Only context.md is written to disk (session bootstrap: related-ICM map + injected
-    # contract). The permission posture is NOT written as a file — it is rendered by
+    # Only context.md is written to disk (session bootstrap: the related-ICM
+    # map). The permission posture is NOT written as a file — it is rendered by
     # content/1 and passed in-memory to the harness as managedSettings (--managed-settings
     # <json>), so nothing lands in or near the ICM. Enforcement: the posture forces sensitive
     # calls to "ask", and PermissionPolicy on the ACP request_permission callback answers them.

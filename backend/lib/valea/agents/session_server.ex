@@ -230,8 +230,8 @@ defmodule Valea.Agents.SessionServer do
   def handle_info({:runtime_exit, code}, state) do
     # The adapter died. If a turn already fired on_turn_end this is a no-op;
     # otherwise (handshake/adapter crash BEFORE any turn ended) fire it with a
-    # "died" sentinel so a workflow run still reaches its terminus (Runner
-    # .finalize → no_proposal) instead of orphaning its staging dir forever.
+    # "died" sentinel so the run still reaches its terminus instead of
+    # orphaning any in-flight state forever.
     state = fire_turn_end(state, "died")
     state = set_status(%{state | exited?: true}, :exited)
     broadcast(state, {:session_exit, code})

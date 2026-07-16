@@ -79,7 +79,6 @@ defmodule Valea.Mail.EngineTest do
 
   import ExUnit.CaptureLog
 
-  alias Valea.AgentCase
   alias Valea.Mail.Engine
 
   setup do
@@ -342,7 +341,6 @@ defmodule Valea.Mail.EngineTest do
     assert {:ok, %{ok: false, checks: checks}} = Engine.doctor()
     by_id = Map.new(checks, &{&1["id"], &1})
     assert by_id["config_present"]["status"] == "failed"
-    assert by_id["workflow_contract"]["status"] == "unknown"
   end
 
   test "create_folders/0 refuses on an inert (inactive) engine", %{root: root} do
@@ -401,25 +399,6 @@ defmodule Valea.Mail.EngineTest do
       port: #{port}
       username: mara@example.com
     """)
-
-    # The raw tmp root this test module uses (unlike AgentCase's full
-    # template) has no mounts/ tree at all; give workflow_contract a
-    # discoverable, non-legacy triage workflow to read (Task A-T13:
-    # `Valea.Workflows.triage_path/1` requires a real mount — valid
-    # icm.yaml manifest plus a parseable frontmatter block — not just a
-    # file at the old hardcoded path) so this test proves a genuine
-    # full-green run. Post-task-3.2, `Valea.Mounts.list/1` is config truth
-    # over `icms:` ONLY — no more filesystem-glob discovery of an embedded
-    # `mounts/<name>` — so this must be a REAL, REGISTERED external ICM
-    # (`AgentCase.mount_test_icm!/2`), not a bare folder on disk.
-    AgentCase.mount_test_icm!(root,
-      name: "Starter",
-      id: "73de3db8-81d1-40ae-afc2-daa2424cc5e7",
-      pages: %{
-        "Workflows/New Inquiry Triage.md" =>
-          "---\nenabled: true\n---\n# New Inquiry Triage\n\nInputs: a `sources/mail/messages/*.md` file.\n"
-      }
-    )
 
     start_engine!(root, 18)
 

@@ -2,13 +2,13 @@ defmodule Valea.Agents.PermissionPolicyTest do
   use ExUnit.Case, async: true
 
   # This suite covers the LEGACY ctx shape (`ctx.workspace` / ws-relative
-  # `read_roots` / `extra_roots`) that `SessionServer.init/1` and
-  # `Valea.Workflows.Runner` still build as of Task 5.3 — `PermissionPolicy`
-  # dispatches to `decide_legacy/2` for any ctx that lacks a `:workspace_root`
-  # key, so this whole file stays green as regression coverage for the
-  # pre-split contract until those callers migrate (5.4/5.5). The NEW
-  # `workspace_root` / `cwd` / `read_roots` (absolute) split contract has its
-  # own coverage in `PermissionPolicySplitTest` below this module.
+  # `read_roots` / `extra_roots`) that `SessionServer.init/1` still builds as
+  # of Task 5.3 — `PermissionPolicy` dispatches to `decide_legacy/2` for any
+  # ctx that lacks a `:workspace_root` key, so this whole file stays green as
+  # regression coverage for the pre-split contract until that caller
+  # migrates (5.4/5.5). The NEW `workspace_root` / `cwd` / `read_roots`
+  # (absolute) split contract has its own coverage in
+  # `PermissionPolicySplitTest` below this module.
 
   alias Valea.Agents.PermissionPolicy
 

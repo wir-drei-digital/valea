@@ -163,7 +163,7 @@ defmodule Valea.Agents.SessionScopeTest do
     assert real!(related_root) in scope.additional_roots
   end
 
-  test "workflow-kind scopes accept explicit read_paths/write_paths/write_roots grants", %{
+  test "a granted session accepts explicit read_paths/write_paths/write_roots grants", %{
     ws: ws,
     home: home,
     generation: generation

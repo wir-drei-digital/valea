@@ -56,11 +56,10 @@ defmodule Valea.Agents do
   BEFORE starting the session (`SessionScope.resolve/1` requires a
   `session_id` up front, to derive `managed_context`'s path) can generate
   the SAME id it then passes to `start_session/1` as `:id` — the recommended
-  "generate id -> resolve scope -> start_session(scope)" flow both
-  `Valea.Api.Agents.create_session` and `Valea.Workflows.Runner.start_run`
-  follow. `start_session/1` itself still falls back to calling this when no
-  `:id` is given, so an existing caller that doesn't need the scope-first
-  ordering is unaffected.
+  "generate id -> resolve scope -> start_session(scope)" flow
+  `Valea.Api.Agents.create_session` follows. `start_session/1` itself still
+  falls back to calling this when no `:id` is given, so an existing caller
+  that doesn't need the scope-first ordering is unaffected.
   """
   @spec generate_session_id() :: String.t()
   def generate_session_id do

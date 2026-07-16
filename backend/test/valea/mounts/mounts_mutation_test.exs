@@ -161,7 +161,7 @@ defmodule Valea.Mounts.MutationTest do
       assert {:ok, %{mount_key: "coaching", id: id}} = Mounts.create(ws, "Coaching", target)
       assert {:ok, _} = Ecto.UUID.cast(id)
 
-      assert File.exists?(Path.join(target, "Workflows/Distill Decisions.md"))
+      refute File.dir?(Path.join(target, "Workflows"))
       assert File.exists?(Path.join(target, "Decisions/2026.md"))
       assert File.exists?(Path.join(target, "Templates/Client.md"))
       assert File.exists?(Path.join(target, "Templates/Decision.md"))

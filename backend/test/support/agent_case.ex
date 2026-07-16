@@ -163,12 +163,11 @@ defmodule Valea.AgentCase do
   legacy v4 scaffold's seeded `mounts/<slug>` starter mount, which
   `Valea.Mounts.list/1` no longer discovers (config truth, `icms:`-only —
   see that module's moduledoc). Every mounted ICM is now BY-REFERENCE, so
-  every consumer (`Valea.Workflows`, `Valea.ICM`, `RiskTier`,
-  `MemoryProposal.check_target/2`, ...) addresses its content by the
-  RESOLVED ABSOLUTE path, never a workspace-relative `mounts/<name>/...`
-  string — build paths against the returned `root`, e.g.
-  `Path.join(icm.root, "Workflows/My Workflow.md")`, not a hand-written
-  `"mounts/<name>/..."` literal.
+  every consumer (`Valea.ICM`, `RiskTier`, `Valea.Api.ICM`'s
+  `contained_target/2`, ...) addresses its content by the RESOLVED ABSOLUTE
+  path, never a workspace-relative `mounts/<name>/...` string — build paths
+  against the returned `root`, e.g. `Path.join(icm.root, "Notes/Doc.md")`,
+  not a hand-written `"mounts/<name>/..."` literal.
 
   Returns `%{mount_key:, id:, root:}` — `root` is the REALPATH-resolved
   absolute path (mirrors what `Valea.Mounts.list/1`/`mount_for/2` report,
@@ -181,9 +180,8 @@ defmodule Valea.AgentCase do
       mount key (default `"Primary"`).
     * `:id` — a specific manifest UUID (default a fresh one).
     * `:pages` — `%{"relative/path.md" => content}`, written into the ICM
-      root BEFORE mounting — e.g. `%{"Workflows/My Workflow.md" => "..."}`
-      for a Runner test, or a target page for a Queue/memory-update test.
-      Intermediate directories are created as needed. Defaults to `%{}` —
+      root BEFORE mounting — e.g. a target page for a Queue/memory-update
+      test. Intermediate directories are created as needed. Defaults to `%{}` —
       callers needing more than the bare `icm.yaml` must pass this; this
       helper does NOT force the full `priv/icm_template/` tree onto every
       test ICM (keep fixtures minimal by default; use

@@ -11,13 +11,12 @@
 # `default_extra_roots/1` (what this file used to call out by name) are
 # GONE — `SessionScope` is the one place read/write-root assembly lives.
 #
-# `Valea.Api.Agents.create_session` (chat) and `Valea.Workflows.Runner.run`
-# (workflow) both route through `Valea.Agents.start_session/1`, same as
-# before, but Task 5.4 only lands the `SessionServer`/`AgentCase` half of
-# that migration (`Runner` itself moves to `SessionScope` in Task 5.5) — so
-# this suite exercises `SessionServer.init/1`'s read/write-root wiring
-# directly through `AgentCase.start_session/3`, including a workflow-kind
-# scope's grants, without depending on `Runner`.
+# `Valea.Api.Agents.create_session` routes through
+# `Valea.Agents.start_session/1` — this suite exercises
+# `SessionServer.init/1`'s read/write-root wiring directly through
+# `AgentCase.start_session/3`, including a granted session's read/write
+# grants (`read_paths`/`write_paths`/`write_roots` — arbitrary per-session
+# inputs, not tied to any particular session `kind`).
 defmodule Valea.Agents.SessionReadRootsTest do
   use ExUnit.Case, async: false
 
@@ -94,7 +93,7 @@ defmodule Valea.Agents.SessionReadRootsTest do
              AgentCase.start_session(workspace, "happy", %{mount_key: icm.mount_key})
   end
 
-  test "a workflow-kind scope's read_paths join read_roots on top of the primary's",
+  test "a granted session's read_paths join read_roots on top of the primary's",
        %{workspace: workspace, icm: icm} do
     extra_read = Path.join([workspace, "queue", "staging", "r1"])
     File.mkdir_p!(extra_read)
@@ -108,7 +107,7 @@ defmodule Valea.Agents.SessionReadRootsTest do
     assert Enum.sort(read_roots) == Enum.sort([icm.root, extra_read])
   end
 
-  test "a workflow-kind scope's write_paths/write_roots land verbatim in policy_ctx; a chat scope's are empty",
+  test "a granted session's write_paths/write_roots land verbatim in policy_ctx; a chat scope's are empty",
        %{workspace: workspace} do
     write_path = Path.join([workspace, "queue", "staging", "r1", "proposal.json"])
     write_root = Path.join([workspace, "queue", "staging", "r1", "proposals"])
