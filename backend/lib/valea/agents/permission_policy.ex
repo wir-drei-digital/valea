@@ -11,31 +11,38 @@ defmodule Valea.Agents.PermissionPolicy do
   `/private/var` (macOS) and any other symlinked ancestor would defeat
   containment and exact-match checks.
 
-  ## Two ctx shapes, one entry point (Task 5.3 in-flight migration)
+  ## One contract
 
-  `decide/2` dispatches on the SHAPE of `ctx`:
+  `decide/2` implements a single split contract — `ctx` always carries
+  `workspace_root` (absolute; protects operational state), `cwd` (absolute
+  primary ICM root; base for *relative* candidate paths), `read_roots`
+  (absolute list: primary root + related roots + exact task inputs),
+  `session_kind`, `write_paths` (absolute), `write_roots` (absolute).
+  `SessionServer.init/1` — the only caller — has always built this shape
+  since Task 5.3; the earlier workspace-relative legacy contract
+  (`ctx.workspace`/`ctx.extra_roots`, no `workspace_root`/`cwd` split) and
+  its dedicated dispatch branch were deleted outright in Task 6 (Spec D)
+  once every caller was confirmed migrated.
 
-    * a ctx carrying `:workspace_root` uses the NEW split contract
-      (`decide_split/2`, below) — `workspace_root` (absolute; protects
-      operational state), `cwd` (absolute primary ICM root; base for
-      *relative* candidate paths), `read_roots` (absolute list: primary root
-      + related roots + exact task inputs), `session_kind`, `write_paths`
-      (absolute), `write_roots` (absolute).
-    * a ctx WITHOUT `:workspace_root` (only `:workspace`) uses the LEGACY
-      contract (`decide_legacy/2`, below) — unchanged from before Task 5.3.
-      `SessionServer.init/1` still builds this shape (`ctx.workspace`,
-      ws-relative `ctx.read_roots`, `ctx.extra_roots`) as of this task; it
-      migrates to the split contract in Tasks 5.4/5.5. Once every caller
-      passes `workspace_root`/`cwd`, the legacy branch and its helpers can
-      be deleted outright.
+  Every path decision goes through `Valea.Paths.resolve_real/2`, membership
+  is segment-boundary (never a lexical string-prefix — `mounts/a` must not
+  match `mounts/ab/...`), and deny always wins over allow; an unclassifiable
+  candidate is `:ask`, never a silent allow.
 
-  Both branches share the same non-negotiable invariants: every path decision
-  goes through `Valea.Paths.resolve_real/2`, membership is segment-boundary
-  (never a lexical string-prefix — `mounts/a` must not match `mounts/ab/...`),
-  and deny always wins over allow; an unclassifiable candidate is `:ask`,
-  never a silent allow.
+  ## Write grants are kind-agnostic
 
-  ## Split contract decision order (deny -> allow -> ask)
+  Write access is never inferred from *what* a session is — it is granted
+  explicitly, per-run, via `write_paths` (exact absolute paths) and
+  `write_roots` (absolute directories, segment-boundary contained). Those
+  grants are minted only by Valea's own `SessionScope`/session-creation
+  callers — never by the agent, and never widened by anything the agent can
+  say or do — so honoring a populated grant regardless of `session_kind` is
+  safe: an agent can only write where its own trusted caller already decided
+  to let it write. A ctx with empty `write_paths`/`write_roots` (the default
+  for an ordinary chat session) still gets no write allowance and falls
+  through to `:ask`, same as always.
+
+  ## Decision order (deny -> allow -> ask)
 
     1. **Deny** if any resolved candidate is inside a protected workspace dir
        (`<workspace_root>/{logs,config,secrets,runtime,.git}` or
@@ -52,8 +59,9 @@ defmodule Valea.Agents.PermissionPolicy do
        symlink-escape-style deny.
     3. **Allow read** if `kind` is a read kind and EVERY candidate resolves
        inside some `read_root` (or is a root instruction file — see below).
-    4. **Allow write** if `kind` is a write kind, `session_kind == "workflow"`,
-       and every candidate is in `write_paths` or under a `write_root`.
+    4. **Allow write** if `kind` is a write kind and every candidate is in
+       `write_paths` or under a `write_root` — for ANY `session_kind`; see
+       "Write grants are kind-agnostic" above.
     5. Else **ask**.
 
   Relative candidates resolve against `cwd` (never `workspace_root`) — this
@@ -73,7 +81,7 @@ defmodule Valea.Agents.PermissionPolicy do
   @write_kinds ["edit", "write", "delete", "move"]
 
   ## ===========================================================================
-  ## Split contract (Task 5.3): workspace_root / cwd / read_roots (absolute)
+  ## Decision logic: workspace_root / cwd / read_roots (absolute)
   ## ===========================================================================
 
   @protected_dirs ~w(logs config secrets runtime .git)
@@ -83,11 +91,7 @@ defmodule Valea.Agents.PermissionPolicy do
 
   @spec decide(map(), map()) :: :ask | {:allow, String.t()} | {:deny, String.t()}
   def decide(item, ctx) do
-    if Map.has_key?(ctx, :workspace_root) do
-      decide_split(item, ctx)
-    else
-      decide_legacy(item, ctx)
-    end
+    decide_split(item, ctx)
   end
 
   defp decide_split(item, ctx) do
@@ -125,8 +129,7 @@ defmodule Valea.Agents.PermissionPolicy do
       kind in @read_kinds and split_all_read?(resolved, cwd, read_roots) ->
         {:allow, "allow_once"}
 
-      kind in @write_kinds and ctx.session_kind == "workflow" and
-          split_all_write?(resolved, write_paths, write_roots) ->
+      kind in @write_kinds and split_all_write?(resolved, write_paths, write_roots) ->
         {:allow, "allow_once"}
 
       true ->
@@ -239,163 +242,14 @@ defmodule Valea.Agents.PermissionPolicy do
     do: path == root or String.starts_with?(path <> "/", root <> "/")
 
   ## ===========================================================================
-  ## Legacy contract (pre-Task-5.3): ctx.workspace, ws-relative read_roots,
-  ## extra_roots. Kept verbatim for `SessionServer` until it migrates to the
-  ## split contract (Tasks 5.4/5.5) — DELETE this whole section (and its
-  ## dedicated test module) once every caller passes `workspace_root`/`cwd`.
-  ## ===========================================================================
-
-  @legacy_protected_dirs ["secrets", "logs", ".claude", ".git"]
-  @legacy_db_prefix "app.sqlite"
-  @legacy_default_read_roots ["sources"]
-  @legacy_root_files ["AGENTS.md", "CLAUDE.md"]
-
-  defp decide_legacy(item, ctx) do
-    kind = item["kind"]
-    read_roots = ctx[:read_roots] || @legacy_default_read_roots
-    # Fallback `[]` mirrors `read_roots`' own bare-call fallback above: a
-    # caller (or test) that starts a session/calls `decide/2` directly
-    # without computing extra_roots simply gets no external read surface,
-    # never a crash.
-    extra_roots = ctx[:extra_roots] || []
-    ws = legacy_base_real(ctx.workspace)
-    paths = extract_paths(item)
-    resolved = Enum.map(paths, &legacy_resolve_candidate(&1, ctx.workspace))
-    pairs = Enum.zip(paths, resolved)
-
-    cond do
-      Enum.any?(resolved, &legacy_denied?(&1, ws)) ->
-        {:deny, "reject_once"}
-
-      Enum.any?(pairs, fn {raw, r} ->
-        legacy_escaped_root?(raw, r, ctx.workspace, ws, read_roots, extra_roots)
-      end) ->
-        {:deny, "reject_once"}
-
-      paths == [] ->
-        :ask
-
-      Enum.any?(resolved, &(elem(&1, 0) == :error)) ->
-        :ask
-
-      kind in @read_kinds and legacy_all_in_read_roots?(resolved, ws, read_roots, extra_roots) ->
-        {:allow, "allow_once"}
-
-      kind in @write_kinds and ctx.session_kind == "workflow" and
-          (legacy_all_in_write_paths?(resolved, ctx.write_paths, ctx.workspace) or
-             legacy_all_in_write_roots?(resolved, ctx[:write_roots] || [], ctx.workspace)) ->
-        {:allow, "allow_once"}
-
-      true ->
-        :ask
-    end
-  end
-
-  defp legacy_resolve_candidate(path, workspace) do
-    if String.starts_with?(path, "/") do
-      Valea.Paths.resolve_real(path, path)
-    else
-      Valea.Paths.resolve_real(path, workspace)
-    end
-  end
-
-  defp legacy_escaped_root?(raw, {:ok, resolved}, workspace, ws, read_roots, extra_roots) do
-    legacy_root_membership?(raw, workspace, read_roots, extra_roots) and
-      not legacy_root_membership?(resolved, ws, read_roots, extra_roots)
-  end
-
-  defp legacy_escaped_root?(_raw, _resolved, _workspace, _ws, _read_roots, _extra_roots),
-    do: false
-
-  defp legacy_base_real(workspace) do
-    case Valea.Paths.resolve_real(workspace, workspace) do
-      {:ok, real} -> real
-      _ -> workspace
-    end
-  end
-
-  defp legacy_denied?({:error, :outside}, _ws), do: true
-  defp legacy_denied?({:error, _}, _ws), do: false
-
-  # Scoped to `ws` (the legacy workspace base), mirroring `split_protected?`
-  # above: this must only hard-deny `<ws>/{secrets,logs,.claude,.git}` and
-  # `<ws>/app.sqlite*`, never a same-named file living outside `ws` entirely
-  # (e.g. reached via `extra_roots`). `legacy_under_lexical?/2` is the same
-  # segment-boundary containment test `legacy_escaped_root?/6` already uses
-  # elsewhere in this module.
-  defp legacy_denied?({:ok, path}, ws) do
-    legacy_under_lexical?(path, ws) and
-      protected_relative?(path, ws, @legacy_protected_dirs, @legacy_db_prefix)
-  end
-
-  defp legacy_all_in_read_roots?(resolved, ws, read_roots, extra_roots) do
-    Enum.all?(resolved, fn {:ok, path} ->
-      legacy_root_membership?(path, ws, read_roots, extra_roots)
-    end)
-  end
-
-  defp legacy_root_membership?(path, ws_base, read_roots, extra_roots) do
-    cond do
-      not String.starts_with?(path, "/") ->
-        legacy_matches_any_root?(read_roots, path) or path in @legacy_root_files
-
-      legacy_under_lexical?(path, ws_base) ->
-        rel = Path.relative_to(path, ws_base)
-        legacy_matches_any_root?(read_roots, rel) or rel in @legacy_root_files
-
-      true ->
-        legacy_matches_any_root?(extra_roots, path)
-    end
-  end
-
-  defp legacy_matches_any_root?(roots, candidate_rel) do
-    parts = Path.split(candidate_rel)
-    Enum.any?(roots, &legacy_under_root?(Path.split(&1), parts))
-  end
-
-  defp legacy_under_root?(root_parts, parts),
-    do: Enum.take(parts, length(root_parts)) == root_parts
-
-  defp legacy_under_lexical?(path, base),
-    do: path == base or String.starts_with?(path <> "/", base <> "/")
-
-  defp legacy_all_in_write_paths?(resolved, write_paths, workspace) do
-    allowed =
-      write_paths
-      |> Enum.map(&Valea.Paths.resolve_real(&1, workspace))
-      |> Enum.flat_map(fn
-        {:ok, p} -> [p]
-        _ -> []
-      end)
-
-    Enum.all?(resolved, fn {:ok, path} -> path in allowed end)
-  end
-
-  defp legacy_all_in_write_roots?(_resolved, [], _workspace), do: false
-
-  defp legacy_all_in_write_roots?(resolved, roots, workspace) do
-    allowed =
-      for root <- roots,
-          {:ok, real} <- [Valea.Paths.resolve_real(root, workspace)],
-          do: real
-
-    allowed != [] and
-      Enum.all?(resolved, fn
-        {:ok, p} -> Enum.any?(allowed, &(p == &1 or String.starts_with?(p, &1 <> "/")))
-        _ -> false
-      end)
-  end
-
-  ## ===========================================================================
   ## Shared
   ## ===========================================================================
 
   # Protected-dir / db-prefix test against an ALREADY-CONFIRMED-contained
   # `path` (callers must check containment under `root` first — see
-  # `split_protected?/2` and `legacy_denied?/2` above). Both the split and
-  # legacy protected checks share this shape: a hard-deny if the resolved
-  # path's top segment (relative to `root`) is a protected dir name, or its
-  # basename starts with the db prefix — both compared case-insensitively.
+  # `split_protected?/2` above): a hard-deny if the resolved path's top
+  # segment (relative to `root`) is a protected dir name, or its basename
+  # starts with the db prefix — both compared case-insensitively.
   defp protected_relative?(path, root, protected_dirs, db_prefix) do
     rel = Path.relative_to(path, root)
     top = rel |> Path.split() |> List.first()

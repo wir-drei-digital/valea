@@ -278,18 +278,20 @@ only when the candidate resolves outside the whole recognized universe —
 workspace root, every read root, and every write grant together). Read-kind
 calls are allowed only when every path falls inside some `read_root` (or is
 `cwd`'s own `AGENTS.md`/`CLAUDE.md`) — never a blanket ICM-root-only or
-workspace-root allow. Write-kind calls are allowed only for workflow-kind
-sessions, and only when every path exactly matches the run's declared
-`write_paths` or falls under a granted `write_root` — **chat sessions have
-no automatic write root; every chat write asks.** Every decision (allow,
-deny, and ask alike) is audited (`permission_auto_allowed` /
+workspace-root allow. Write-kind calls are allowed whenever every path
+exactly matches the run's declared `write_paths` or falls under a granted
+`write_root` — **regardless of `session_kind`.** Those grants are minted
+only by Valea's own session-creation callers (never by the agent, and never
+widened by anything the agent can say or do), so honoring a populated grant
+for any session kind can't broaden what an agent can reach; a session with
+no write grant still gets none — every such write asks. Every decision
+(allow, deny, and ask alike) is audited (`permission_auto_allowed` /
 `permission_auto_denied` / `permission_asked` / `permission_answered`); an
-`:allow` always selects the `allow_once` option, never "always allow". (A
-legacy, workspace-relative variant of this same decision function —
-`ctx.workspace`/`ctx.extra_roots`, no `workspace_root`/`cwd` split — is kept
-verbatim inside the same module, dispatched on ctx shape, for callers not
-yet migrated to the split contract; new callers use the split contract
-above.)
+`:allow` always selects the `allow_once` option, never "always allow".
+`PermissionPolicy.decide/2` implements this one split contract only — the
+earlier workspace-relative variant (`ctx.workspace`/`ctx.extra_roots`, no
+`workspace_root`/`cwd` split) was deleted once `SessionServer`, the only
+caller, was confirmed to always build the split shape.
 
 All path reasoning goes through `Valea.Paths.resolve_real/2` — symlink-aware
 containment with real OS realpath semantics (symlinks resolved before a
