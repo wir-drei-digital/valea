@@ -1,34 +1,33 @@
-import { encodePath } from '$lib/shell/nav';
+import { knowledgeHref } from '$lib/shell/nav';
 
 /**
- * Knowledge-page href for a workflow's "Edit →" link. `workflow.resolvedPath`
- * (from `WorkflowsStore`/`list_workflows`, Task 7.1) is either WORKSPACE-
- * relative, e.g. `"mounts/primary/Workflows/New Inquiry Triage.md"` (see
- * `Valea.Workflows.parse/2`: `path: Path.join(mount.rel_root, ...)`) for an
- * EMBEDDED mount, or an ABSOLUTE physical path (e.g.
- * `"/Users/dana/Client Docs/Workflows/New Inquiry Triage.md"`) for an
- * EXTERNAL (by-reference) one, A2-T5b — every mount is external now
- * (`Valea.Mounts`'s "Compatibility shim"), so `resolvedPath` is in practice
- * always the absolute form, but this function still accepts either shape.
+ * Knowledge-page href for a workflow's "Edit →" link.
  *
- * A-T15: since the mounts refactor (A-T3), `Valea.ICM.tree/0`'s node
- * `path`s carry the SAME two shapes (`mounts/<name>/…` for embedded,
- * absolute for external — see `Valea.ICM.prefix_tree/2`), so the Knowledge
- * route's own paths are exactly this — with NO prefix to strip — and this
- * reuses `icmToNav`'s own `encodePath` (`lib/shell/nav.ts`) so the two stay
- * byte-for-byte the same encoding for the same path, rather than
- * maintaining a second copy that could drift. (Before the mounts refactor
- * this function stripped a leading `"icm/"`; that prefix no longer exists
- * on either side.)
+ * Fix-wave Finding 3 (task-9.6-report.md): this used to build
+ * `/knowledge/${encodePath(workflow.resolvedPath)}` from `resolvedPath` — an
+ * ABSOLUTE physical path in practice, since A2-T5b made every mount
+ * external. That produced a URL with NO `mountKey` path segment at all
+ * (`/knowledge//Users/dana/Client Docs/…`); the `/knowledge/[...path]`
+ * route reads the first segment as `mountKey`, so this silently landed on
+ * `mountKey === ''` — the empty Knowledge root — instead of the workflow's
+ * page (`WorkflowCard.svelte`'s "Edit →" link was live-broken).
  *
- * Falls back to `null` for a path that (defensively) is neither
- * workspace-relative (`"mounts/"`-prefixed) nor absolute (`"/"`-prefixed)
- * so a malformed or pre-mounts-shaped entry (e.g. the legacy `"icm/"`
- * prefix) never produces a broken half-built link.
+ * `list_workflows` already returns `mountKey` and `relativePath`
+ * (ICM-relative, e.g. `"Workflows/New Inquiry Triage.md"`) on every
+ * `WorkflowListItem` (`ash_rpc.ts`'s `ListWorkflowsFields`, Task 7.1's
+ * `{icmId, relativePath}` identity re-key) — those are the correct
+ * addressing pair, `resolvedPath` was never the right input. Reuses
+ * `knowledgeHref` (`$lib/shell/nav`) rather than re-encoding, so this stays
+ * byte-for-byte the same encoding as every other Knowledge-page link
+ * (`icmToNav`, `PageEditor.svelte`'s own navigation) for the same
+ * `(mountKey, path)` pair.
+ *
+ * Falls back to `null` when `mountKey` or `relativePath` is blank so a
+ * malformed/stale-cache entry never produces a broken half-built link.
  */
-export function workflowEditHref(path: string): string | null {
-  if (!path.startsWith('mounts/') && !path.startsWith('/')) return null;
-  return `/knowledge/${encodePath(path)}`;
+export function workflowEditHref(mountKey: string, relativePath: string): string | null {
+  if (!mountKey.trim() || !relativePath.trim()) return null;
+  return knowledgeHref(mountKey, relativePath);
 }
 
 /**

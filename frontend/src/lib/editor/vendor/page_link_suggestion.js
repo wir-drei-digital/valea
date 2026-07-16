@@ -11,7 +11,7 @@ import { Extension } from "@tiptap/core"
 import { PluginKey } from "@tiptap/pm/state"
 import Suggestion from "@tiptap/suggestion"
 import tippy from "tippy.js"
-import { pickerItems, linkDestination, parentOf } from "../page-link"
+import { pickerItems, linkDestination, parentOf, filterSameMount } from "../page-link"
 
 const SEARCH_DEBOUNCE_MS = 150
 
@@ -234,6 +234,26 @@ function toMenuItem(item, { pagePath, mountKey, api }) {
   }
 }
 
+// Fix-wave Finding 1 (task-9.6-report.md "Fix wave"): shapes a raw
+// `icm_search` results array + the in-flight query into the picker's menu
+// items — filtering to SAME-MOUNT results FIRST via `filterSameMount`
+// (page-link.ts), before `pickerItems` decides on a create item or
+// `toMenuItem` binds a `command`. `icm_search` scopes to `mountKey` PLUS
+// every ICM it declares related (Task 5.6), so without this filter a
+// related-ICM hit's `item.path` would reach `toMenuItem`'s command handlers
+// and get fed to `linkDestination(pagePath, item.path)` as if it lived in
+// `pagePath`'s own mount — computing a relative href that is either a false
+// dangling link or, worse, one that silently resolves to the wrong file
+// under a different ICM's tree. Exported (rather than kept as an inline
+// closure inside `addProseMirrorPlugins`) so this shaping step is directly
+// unit-testable: `@tiptap/suggestion`'s real `items` callback is buried
+// inside a live ProseMirror plugin's `view.update`, not independently
+// invokable without a full editor + document.
+export function buildPageLinkItems(results, query, { pagePath, mountKey, api }) {
+  const sameMount = filterSameMount(results, mountKey)
+  return pickerItems(sameMount, query).map((item) => toMenuItem(item, { pagePath, mountKey, api }))
+}
+
 /**
  * Builds one `[[`- or `@`-triggered page-link `Suggestion` extension.
  * `name` must be distinct per instance (see the header comment) — it seeds
@@ -244,13 +264,18 @@ function toMenuItem(item, { pagePath, mountKey, api }) {
  * before the `@` there is a letter, not an allowed prefix.
  */
 export function createPageLinkSuggestion({ char, name, mountKey, pagePath, api, allowedPrefixes = [" "] }) {
-  // Scoped to `mountKey` — the page being edited — so a picker result can
-  // never belong to a DIFFERENT mount than `pagePath`'s own (`page-link.ts`'s
-  // `linkDestination` computes a lexical relative path assuming both sides
-  // share a vocabulary; a cross-mount result would silently produce a
-  // nonsensical relative link under the new ICM-relative addressing, task
-  // 4.2's re-key). `icmSearch`'s `mount` argument already exists for
-  // exactly this (Task C2).
+  // `icmSearch`'s `mount` argument (Task C2) scopes the SCAN to `mountKey`
+  // PLUS every ICM it declares related via its own `CONTEXT.md`
+  // (`Valea.ICM.Search`, search.ex:11-14, Task 5.6 spec decision (b)) — it
+  // does NOT guarantee every result's own `mount` equals `mountKey`. A
+  // picker result can never belong to a DIFFERENT mount than `pagePath`'s
+  // own (`page-link.ts`'s `linkDestination` computes a lexical relative path
+  // assuming both sides share a mount; a cross-mount result would silently
+  // produce a corrupted link under the ICM-relative addressing, Phase 4's
+  // re-key), so `buildPageLinkItems` (below, via `items()`) filters results
+  // to `item.mount === mountKey` client-side before any menu item — and
+  // therefore any `linkDestination` call — is built (fix-wave Finding 1,
+  // task-9.6-report.md).
   const search = debounced((query) => api.icmSearch(query, mountKey), SEARCH_DEBOUNCE_MS)
 
   return Extension.create({
@@ -295,7 +320,7 @@ export function createPageLinkSuggestion({ char, name, mountKey, pagePath, api, 
           items: async ({ query }) => {
             const result = await search(query)
             const results = result.ok ? result.data.results : []
-            return pickerItems(results, query).map((item) => toMenuItem(item, { pagePath, mountKey, api }))
+            return buildPageLinkItems(results, query, { pagePath, mountKey, api })
           },
           render: renderMenu,
         }),

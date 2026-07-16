@@ -55,16 +55,44 @@ function relative(fromDir: string, toPath: string): string {
  * the target (the `relative` math above).
  *
  * `sourcePath` and `targetPath` are always ICM-relative within the SAME
- * `mountKey`: the caller (`page_link_suggestion.js`'s `createPageLinkSuggestion`)
- * scopes `icmSearch`/`createIcmPage` to `pagePath`'s own `mountKey` before
- * either ever reaches this function, so there is no cross-mount case to
- * resolve here (Task 9.6 removed the old "leading slash ⇒ external mount,
- * return verbatim" fork along with the vocabulary it was reading — Phase 4's
- * `(mount_key, ICM-relative path)` re-key means mount identity rides
- * `mountKey`, never the path string itself).
+ * `mountKey`: even though `icmSearch` scopes to `pagePath`'s own `mountKey`
+ * PLUS every ICM it declares related (`Valea.ICM.Search`, search.ex:11-14,
+ * Task 5.6) and each hit carries its OWN `mount`, a cross-mount hit is
+ * excluded upstream of this function — by `filterSameMount`, in the picker
+ * (`page_link_suggestion.js`'s `createPageLinkSuggestion`), before a result
+ * ever reaches `linkDestination` — because markdown links inside an ICM are
+ * ICM-relative and portable by design (Phase 4's `(mount_key, ICM-relative
+ * path)` re-key) and simply cannot address another mount. So by the time a
+ * `targetPath` gets here, it is guaranteed same-mount as `sourcePath`, and
+ * this function itself has no cross-mount case of its own to resolve.
  */
 export function linkDestination(sourcePath: string, targetPath: string): string {
 	return relative(dirnameOf(sourcePath), targetPath);
+}
+
+/**
+ * Fix-wave Finding 1 (task-9.6-report.md "Fix wave"): keeps only the
+ * `icm_search` results whose `mount` equals `mountKey` — the mount of the
+ * page being edited. `icm_search` scopes to `mountKey` PLUS every ICM it
+ * declares related via its own `CONTEXT.md` (`Valea.ICM.Search`,
+ * search.ex:11-14, Task 5.6 spec decision (b)), and each result row carries
+ * its OWN `mount` + mount-relative `path` — NOT necessarily `mountKey`.
+ * `linkDestination` computes a lexical relative path assuming both sides
+ * share a mount; feeding it a related-but-different-mount result would
+ * silently produce a corrupted link (a false dangling link, or one that
+ * resolves to the wrong file entirely under a different ICM's tree). The
+ * `[[`/`@` picker (`page_link_suggestion.js`) calls this BEFORE building
+ * menu items, so a cross-mount hit is excluded from the menu outright — it
+ * is never offered to link to, rather than being offered and mis-linked.
+ * Contrast with the Cmd+K palette (`SearchPalette`/`palette.ts`), which
+ * correctly keeps showing related-ICM hits for NAVIGATION (each row already
+ * carries its own `mount` and is navigated to directly, no relative-path
+ * math involved) — this filter is specific to the link picker's "the
+ * result becomes part of THIS page's markdown" use, not to search results
+ * in general.
+ */
+export function filterSameMount(results: SearchResult[], mountKey: string): SearchResult[] {
+	return results.filter((result) => result.mount === mountKey);
 }
 
 /**

@@ -2,22 +2,43 @@ import { describe, it, expect } from 'vitest';
 import { mountProvenanceLabel, workflowEditHref } from './workflowHref';
 
 describe('workflowEditHref', () => {
-  it('path-encodes each segment of a mounts/-namespaced workflow path (A-T15: paths are workspace-relative, no icm/ prefix to strip)', () => {
-    expect(workflowEditHref('mounts/primary/Workflows/New Inquiry Triage.md')).toBe(
-      '/knowledge/mounts/primary/Workflows/New%20Inquiry%20Triage.md'
+  // Fix-wave Finding 3 (task-9.6-report.md): the old signature built
+  // `/knowledge/${encodePath(resolvedPath)}` from `workflow.resolvedPath` —
+  // an ABSOLUTE physical path in practice (A2-T5b: every mount is external
+  // now) — landing on `/knowledge/<absolute-path-with-no-mountKey-segment>`,
+  // which the `/knowledge/[...path]` route parses as an empty `mountKey`
+  // and silently renders the empty Knowledge root instead of the workflow's
+  // page. `list_workflows` already returns `mountKey` and `relativePath` on
+  // every `WorkflowListItem` (`ash_rpc.ts`'s `ListWorkflowsFields`, Task
+  // 7.1's re-key) — this rebuilds the href from those two fields instead,
+  // reusing `knowledgeHref` (`$lib/shell/nav`) so the encoding stays
+  // byte-for-byte identical to every other Knowledge-page link in the app.
+  it('builds /knowledge/<mountKey>/<encoded relativePath> from the list_workflows RPC fields', () => {
+    expect(workflowEditHref('primary', 'Workflows/New Inquiry Triage.md')).toBe(
+      '/knowledge/primary/Workflows/New%20Inquiry%20Triage.md'
     );
   });
 
-  it('path-encodes each segment of an ABSOLUTE external workflow path (A2-T5b), same as icmToNav', () => {
-    expect(
-      workflowEditHref('/Users/dana/Client Docs/Workflows/New Inquiry Triage.md')
-    ).toBe('/knowledge//Users/dana/Client%20Docs/Workflows/New%20Inquiry%20Triage.md');
+  it('encodes a mount key that itself needs escaping, same as knowledgeHref', () => {
+    expect(workflowEditHref('client docs', 'Workflows/Triage.md')).toBe(
+      '/knowledge/client%20docs/Workflows/Triage.md'
+    );
   });
 
-  it('returns null for a legacy icm/ path or any other shape that is neither mounts/ nor absolute', () => {
-    expect(workflowEditHref('icm/Workflows/New Inquiry Triage.md')).toBeNull();
-    expect(workflowEditHref('workflows/New Inquiry Triage.md')).toBeNull();
-    expect(workflowEditHref('')).toBeNull();
+  it('path-encodes a nested relativePath segment by segment', () => {
+    expect(workflowEditHref('primary', 'Workflows/Inbound/New Inquiry Triage.md')).toBe(
+      '/knowledge/primary/Workflows/Inbound/New%20Inquiry%20Triage.md'
+    );
+  });
+
+  it('returns null when mountKey is missing/blank', () => {
+    expect(workflowEditHref('', 'Workflows/Triage.md')).toBeNull();
+    expect(workflowEditHref('   ', 'Workflows/Triage.md')).toBeNull();
+  });
+
+  it('returns null when relativePath is missing/blank', () => {
+    expect(workflowEditHref('primary', '')).toBeNull();
+    expect(workflowEditHref('primary', '   ')).toBeNull();
   });
 });
 

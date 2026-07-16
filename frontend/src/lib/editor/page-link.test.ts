@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { linkDestination, pickerItems, parentOf, type SearchResult } from './page-link';
+import { linkDestination, pickerItems, parentOf, filterSameMount, type SearchResult } from './page-link';
 
 function result(overrides: Partial<SearchResult> = {}): SearchResult {
 	return {
@@ -56,6 +56,35 @@ describe('linkDestination', () => {
 
 	it('preserves spaces on a same-directory link too', () => {
 		expect(linkDestination('Notes/A.md', 'Notes/My Page.md')).toBe('My Page.md');
+	});
+});
+
+describe('filterSameMount', () => {
+	// Fix-wave Finding 1 (task-9.6-report.md): `icm_search` scopes to the
+	// primary ICM PLUS every ICM it declares related (`Valea.ICM.Search`,
+	// search.ex:11-14, Task 5.6) — each hit carries its OWN `mount`. Markdown
+	// links inside an ICM are ICM-relative and cannot address another mount
+	// (the portability invariant), so the `[[`/`@` picker must only ever
+	// offer results from the page's OWN mount.
+	it('keeps only results whose mount matches the page being edited', () => {
+		const sameMount = result({ path: 'Sibling.md', mount: 'primary' });
+		const otherMount = result({ path: 'Related.md', mount: 'related-icm' });
+		expect(filterSameMount([sameMount, otherMount], 'primary')).toEqual([sameMount]);
+	});
+
+	it('returns an empty array when every result is from a different mount', () => {
+		const otherMount = result({ path: 'Related.md', mount: 'related-icm' });
+		expect(filterSameMount([otherMount], 'primary')).toEqual([]);
+	});
+
+	it('preserves result order and all fields for same-mount hits', () => {
+		const a = result({ path: 'A.md', mount: 'primary', title: 'A' });
+		const b = result({ path: 'B.md', mount: 'primary', title: 'B' });
+		expect(filterSameMount([a, b], 'primary')).toEqual([a, b]);
+	});
+
+	it('returns an empty array for an empty results list', () => {
+		expect(filterSameMount([], 'primary')).toEqual([]);
 	});
 });
 

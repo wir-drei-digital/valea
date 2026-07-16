@@ -5,10 +5,13 @@
  * route (`+page.svelte`, which feeds `collectDocLinkPaths`'s output to
  * `api.icmPathsExist` to build the dangling set).
  *
- * Mirrors `image-upload.ts`'s `joinRelative`/vocabulary conventions: a
- * workspace-relative path never starts with `/`; an absolute physical path
- * (external mount) always does — that leading slash is the only tag the FE
- * has for which vocabulary a given path/href is in.
+ * Mirrors `image-upload.ts`'s `joinRelative`/vocabulary conventions: every
+ * resolved path is ICM-relative — mount identity rides `mountKey`, a value
+ * passed alongside the path, never a leading `/` on the path string itself
+ * (Fix-wave Finding 2, task-9.6-report.md, collapsed the older "leading
+ * slash ⇒ external mount" reading here to match). A leading-slash `.md`
+ * href in hand-authored content is read as ICM-ROOT-relative rather than
+ * carrying any mount tag of its own.
  */
 
 import { joinRelative } from './image-upload';
@@ -33,10 +36,17 @@ function dirnameOf(path: string): string {
  *
  *  - `http(s):` → `external` (opened in a new tab, never intercepted as
  *    in-app navigation);
- *  - anything ending in `.md` → `page`, resolved to a concrete path: an
- *    absolute href (external-mount target) passes through verbatim; a
- *    relative href is resolved against `pagePath`'s directory via the same
- *    lexical `joinRelative` math C7's image extension uses;
+ *  - anything ending in `.md` → `page`, resolved to a concrete ICM-relative
+ *    path: a leading-slash href is read as ICM-ROOT-relative (Fix-wave
+ *    Finding 2, task-9.6-report.md — post-Phase-4, every in-ICM path is
+ *    ICM-relative; mount identity rides `mountKey`, a value passed
+ *    alongside the path, never a leading `/` on the path string itself, the
+ *    same vocabulary `image-upload.ts`'s `resolveImageSrc`/`joinRelative`
+ *    already use), so the leading slash(es) are stripped and the remainder
+ *    resolved via the same lexical `joinRelative` math as any other
+ *    relative href — just against the ICM root (`''`) instead of
+ *    `pagePath`'s directory; an ordinary relative href is resolved against
+ *    `pagePath`'s directory, same as C7's image extension;
  *  - everything else (a non-`.md` file reference, `mailto:`, a bare
  *    fragment, ...) → `file` — not something this app's editor can open,
  *    so link clicks on it are a deliberate no-op.
@@ -45,7 +55,9 @@ export function classifyHref(href: string, pagePath: string): LinkClassification
   if (HTTP_RE.test(href)) return { kind: 'external', url: href };
 
   if (MD_EXT_RE.test(href)) {
-    const path = href.startsWith('/') ? href : joinRelative(dirnameOf(pagePath), href);
+    const path = href.startsWith('/')
+      ? joinRelative('', href.replace(/^\/+/, ''))
+      : joinRelative(dirnameOf(pagePath), href);
     return { kind: 'page', path };
   }
 

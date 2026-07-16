@@ -10,10 +10,30 @@ describe('classifyHref', () => {
     expect(classifyHref('Sibling.md', 'Notes/A.md')).toEqual({ kind: 'page', path: 'Notes/Sibling.md' });
   });
 
-  it('passes an absolute .md href through verbatim (external mount)', () => {
-    expect(classifyHref('/Users/daniel/External/B.md', 'Notes/A.md')).toEqual({
+  // Fix-wave Finding 2 (task-9.6-report.md): post-Phase-4, every in-ICM path
+  // is ICM-relative — mount identity rides `mountKey`, a value passed
+  // alongside the path, never a leading `/` on the path string itself (see
+  // `image-upload.ts`'s `resolveImageSrc`/`joinRelative`, already updated
+  // for this Task 9.6 vocabulary). A leading-slash `.md` href in
+  // hand-authored content is read as ICM-ROOT-relative, not as an
+  // "absolute physical path ⇒ external mount" tag — that vocabulary no
+  // longer exists. Before this fix, the href passed through verbatim (with
+  // its leading slash intact) and `PageEditor.svelte`'s click handler built
+  // `/knowledge/<mountKey>//Offers/B.md` (an empty path segment before
+  // "Offers") — the `[...path]` route then silently landed on the empty
+  // Knowledge root instead of the linked page.
+  it('treats a leading-slash .md href as ICM-root-relative (post-Phase-4 vocabulary, not external-mount-absolute)', () => {
+    expect(classifyHref('/Offers/B.md', 'Notes/A.md')).toEqual({ kind: 'page', path: 'Offers/B.md' });
+  });
+
+  it('strips multiple leading slashes on a root-relative href the same way', () => {
+    expect(classifyHref('//Offers/B.md', 'Notes/A.md')).toEqual({ kind: 'page', path: 'Offers/B.md' });
+  });
+
+  it('resolves a root-relative href the same regardless of the linking page location', () => {
+    expect(classifyHref('/Offers/B.md', 'Deeply/Nested/Notes/A.md')).toEqual({
       kind: 'page',
-      path: '/Users/daniel/External/B.md'
+      path: 'Offers/B.md'
     });
   });
 
@@ -55,11 +75,9 @@ describe('collectDocLinkPaths', () => {
     expect(collectDocLinkPaths(d, 'Notes/A.md')).toEqual(['Notes/Sibling.md']);
   });
 
-  it('collects an absolute link mark path verbatim', () => {
-    const d = doc([
-      { type: 'paragraph', content: [textWithLink('ext', '/Users/daniel/External/B.md')] }
-    ]);
-    expect(collectDocLinkPaths(d, 'Notes/A.md')).toEqual(['/Users/daniel/External/B.md']);
+  it('collects a leading-slash link mark path as ICM-root-relative (Fix-wave Finding 2)', () => {
+    const d = doc([{ type: 'paragraph', content: [textWithLink('ext', '/Offers/B.md')] }]);
+    expect(collectDocLinkPaths(d, 'Notes/A.md')).toEqual(['Offers/B.md']);
   });
 
   it('excludes an http(s) link — not a page-kind href', () => {

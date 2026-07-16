@@ -14,7 +14,7 @@
     Array.isArray(workflow.steps) ? workflow.steps.filter((s): s is string => typeof s === 'string') : []
   );
 
-  const editHref = $derived(workflowEditHref(workflow.resolvedPath));
+  const editHref = $derived(workflowEditHref(workflow.mountKey, workflow.relativePath));
   // A-T15: "· <mount>" provenance — only rendered once multiple mounts can
   // carry a same-named Workflows/ contract; `null` (missing/blank name)
   // renders nothing rather than a bare "·".
