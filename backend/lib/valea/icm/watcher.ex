@@ -34,11 +34,11 @@ defmodule Valea.ICM.Watcher do
   Earlier phases had this watcher close a "hand-edit gap" by calling
   `Valea.Mounts.MountsMd.regenerate/1` and
   `Valea.Agents.ClaudeSettings.write!/1` on its own discovery flush, so a
-  config change that bypassed the RPC layer (`Valea.Api.Mounts`, which
-  regenerated both on every mutation) didn't leave those derived files
-  stale. This watcher no longer does either — it only broadcasts and
-  recomputes its own watched set. `MountsMd`/`ClaudeSettings`/
-  `Valea.Api.Mounts` are all deleted (Phase 11) — `MOUNTS.md`/managed
+  config change that bypassed the RPC layer (`Valea.Api.Mounts`, deleted
+  at Phase 11, which regenerated both on every mutation) didn't leave
+  those derived files stale. This watcher no longer does either —
+  it only broadcasts and recomputes its own watched set. `MountsMd`/
+  `ClaudeSettings`/`Valea.Api.Mounts` are all deleted (Phase 11) — `MOUNTS.md`/managed
   `.claude/settings.json` are retired entirely; session permissioning is
   `Valea.Agents.SessionSettings` now.
 

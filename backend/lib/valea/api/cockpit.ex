@@ -10,7 +10,7 @@ defmodule Valea.Api.Cockpit do
 
   `:today`'s return is FULLY `constraints fields: [...]`-typed (every field
   `Valea.Cockpit.today/0` carries) — same convention as
-  `Valea.Api.ICM`/`Valea.Api.Queue`/`Valea.Api.Mail`: a fixed, known shape
+  `Valea.Api.ICM`/`Valea.Api.Mail`: a fixed, known shape
   gets typed (and ash_typescript-camelCased); only genuinely
   heterogeneous/arbitrary content stays an unconstrained `:map` (none of
   which exists on this action). Ash's `Ash.Type.Map` `fields:` constraint
@@ -21,9 +21,8 @@ defmodule Valea.Api.Cockpit do
   `sections[].ok` and `recent_sessions[].live` are NESTED typed booleans
   (inside their own item's `constraints fields: [...]`), declared with a
   plain atom key like every other field here — the top-level generic-action
-  boolean/falsy workaround documented in
-  `Valea.Api.Queue.reject_item`/`Valea.Api.Mail`'s moduledoc (ash_typescript
-  0.17.3 nulls a top-level atom-keyed `false`) only applies to a field
+  boolean/falsy workaround documented in `Valea.Api.Mail`'s moduledoc
+  (ash_typescript 0.17.3 nulls a top-level atom-keyed `false`) only applies to a field
   sitting directly on the ACTION's own returned map, not to a boolean
   nested inside an array item's map — so neither needs a string-key trick
   at THIS layer. The string-keyed source maps `Valea.Cockpit.today/0`

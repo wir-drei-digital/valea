@@ -3,9 +3,9 @@ defmodule Valea.Api.Icms do
   Data-layer-less Ash resource exposing `Valea.Mounts` (the `icms:`-based,
   by-reference-only mount API — mount/create/set_enabled/unmount/list) and
   `Valea.Mounts.Doctor` over RPC. This is the C9 (id/mount-key based)
-  ICM-mount surface task 3.4 owns; it replaced `Valea.Api.Mounts` piece by
-  piece from the frontend's perspective across Task 10.x — Phase 11 deleted
-  `Valea.Api.Mounts` itself once nothing called it anymore.
+  ICM-mount surface task 3.4 owns; it replaced `Valea.Api.Mounts` (deleted
+  at Phase 11) piece by piece from the frontend's perspective across Task
+  10.x, until nothing called it anymore.
 
   Every action here guards `Valea.Workspace.Manager.check_generation/1`
   FIRST (a stale `generation` short-circuits to `workspace_changed` before
@@ -22,11 +22,11 @@ defmodule Valea.Api.Icms do
   broadcast — neither writes `config/workspace.yaml`.
 
   This resource does NOT regenerate `MOUNTS.md`/managed Claude settings
-  after a mutation — that legacy workspace-metadata regeneration (the old
-  `Valea.Api.Mounts`'s job) is superseded by Phase 10's harness/session-settings
-  work (see the Phase 10 plan's "managed-settings mechanism" decision;
-  `Valea.Agents.SessionSettings` is the live replacement) and was never
-  carried forward here.
+  after a mutation — that legacy workspace-metadata regeneration (the old,
+  now-deleted `Valea.Api.Mounts`'s job) is superseded by Phase 10's
+  harness/session-settings work (see the Phase 10 plan's "managed-settings
+  mechanism" decision; `Valea.Agents.SessionSettings` is the live
+  replacement) and was never carried forward here.
 
   `list_icms` returns one entry per `Valea.Mounts.mount()` — `mount_key`
   (the `icms:` config key, `mount.name` on the underlying struct), `id`
@@ -34,16 +34,18 @@ defmodule Valea.Api.Icms do
   manifest), `name` (the ICM's own display name — `manifest.name`, falling
   back to `mount_key` when degraded), `description` (`manifest.description`,
   `""` when degraded), `root` (the resolved absolute path, always present),
-  `enabled`, and `degraded` (a reason string, or `nil` when healthy) — same
-  degrade-tolerant fallback `Valea.Api.Mounts.to_rpc_mount/1` uses for
+  `enabled`, and `degraded` (a reason string, or `nil` when healthy) — the
+  same degrade-tolerant fallback this resource's own `to_rpc_icm/1`
+  (`name_for/1`/`description_for/1` below) implements; it continues a
+  pattern the now-deleted `Valea.Api.Mounts.to_rpc_mount/1` used for
   `title`/`description`.
 
   `mount_icm`/`create_icm` return `%{mount_key, id}` (mirrors
   `Valea.Mounts.mount/2`/`create/3`'s own success shape). `set_icm_enabled`/
   `unmount_icm` return a top-level boolean (`saved`/`unmounted`) under a
   STRING key — the same ash_typescript 0.17.3 falsy-map-field workaround
-  `Valea.Api.Mounts`/`Valea.Api.Queue`/`Valea.Api.Mail` all use for a
-  top-level boolean-returning generic action.
+  `Valea.Api.Mail` (and `Valea.Api.Workspace`) use for a top-level
+  boolean-returning generic action.
 
   `icm_doctor` wraps `Valea.Mounts.Doctor.run/2` (Phase 8's real per-mount
   entry point) — `path_resolves`, `manifest_format2`, `unique_id`,
@@ -280,7 +282,7 @@ defmodule Valea.Api.Icms do
       end
     end
 
-    # Read-only probe (like `Valea.Api.Mounts.mounts_doctor`) — takes/guards
+    # Read-only probe (like the now-deleted `Valea.Api.Mounts.mounts_doctor`) — takes/guards
     # `generation` even though it never writes config, since it inspects LIVE
     # state (the watcher's current root set, the filesystem under the
     # requested mount's resolved root).

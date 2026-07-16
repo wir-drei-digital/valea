@@ -272,7 +272,8 @@ defmodule Valea.Api.Agents do
         # atom lookup misses entirely (i.e. the map has no atom key at all)
         # and the string lookup is what actually finds the value. `ok` is the
         # one field here that can genuinely be `false` (adapter/auth checks
-        # failing) — see `Valea.Api.Queue.reject_item`'s identical note.
+        # failing) — see `Valea.Api.Mail`'s moduledoc (`mail_doctor`'s `ok`)
+        # for the identical note.
         {:ok, %{"ok" => ok, "checks" => Enum.map(checks, &atomize_check/1)}}
       end
     end
