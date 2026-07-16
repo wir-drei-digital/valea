@@ -270,8 +270,8 @@ defmodule Valea.Agents.SessionServer do
 
   def terminate(_reason, _state), do: :ok
 
-  # A permission ask is the human's decision point — stamp the same
-  # server-derived risk tier the queue uses, so the dialog can say
+  # A permission ask is the human's decision point — stamp the
+  # server-derived risk tier on it, so the dialog can say
   # plainly when an approval changes future agent behavior. Display
   # metadata only; policy decisions never read it. The touched path is
   # physical (absolute, or resolved against `cwd` upstream) — attribute it
