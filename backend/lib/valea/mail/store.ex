@@ -369,18 +369,43 @@ defmodule Valea.Mail.Store do
     |> Ash.Changeset.for_create(:create, full_attrs)
     |> Ash.create()
     |> case do
-      {:ok, op} -> {:ok, pending_op_map(op)}
-      {:error, _error} -> {:error, :duplicate_active}
+      {:ok, op} ->
+        {:ok, pending_op_map(op)}
+
+      {:error, error} ->
+        # ONLY the atomic-claim violation maps to :duplicate_active; any
+        # other create failure (a NOT NULL violation, a bad type, ...) is a
+        # programmer error and must stay loud, not masquerade as a
+        # legitimately-contended claim.
+        if duplicate_active?(error), do: {:error, :duplicate_active}, else: raise(error)
     end
   rescue
-    # Belt-and-braces: a raw constraint violation should already come back
+    # Belt-and-braces: a raw unique-index violation should already come back
     # as `{:error, _}` from `Ash.create/1` (ash_sqlite parses the SQLite
     # "UNIQUE constraint failed" message itself), but this table's
     # uniqueness rule is a hand-written partial index with no matching Ash
     # `identity` declaration — catch the underlying driver exception too, in
     # case some future ash_sqlite version stops normalizing it.
-    _ in [Ecto.ConstraintError, Exqlite.Error] -> {:error, :duplicate_active}
+    error in [Exqlite.Error] ->
+      if error.message =~ "UNIQUE constraint failed",
+        do: {:error, :duplicate_active},
+        else: reraise(error, __STACKTRACE__)
   end
+
+  # ash_sqlite turns "UNIQUE constraint failed: mail_pending_ops.account,
+  # mail_pending_ops.origin" into one `InvalidAttribute` per parsed column
+  # (`:account`, `:origin`) with the default "has already been taken"
+  # message (no identity/custom-index declaration matches the partial
+  # index, so no custom message applies) — that exact shape, wrapped in an
+  # error-class struct with an `errors` list, is the claim violation.
+  defp duplicate_active?(%{errors: errors}) when is_list(errors),
+    do: Enum.any?(errors, &duplicate_active?/1)
+
+  defp duplicate_active?(%Ash.Error.Changes.InvalidAttribute{field: field})
+       when field in [:account, :origin],
+       do: true
+
+  defp duplicate_active?(_error), do: false
 
   @doc """
   Transitions `id`'s `mail_pending_ops` row to `state`, merging any of

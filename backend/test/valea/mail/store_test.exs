@@ -399,6 +399,18 @@ defmodule Valea.Mail.StoreTest do
     test "op_by_id/1 misses cleanly for an unknown id" do
       assert {:error, :not_found} = Store.op_by_id("does-not-exist")
     end
+
+    test "a non-claim create failure raises loudly instead of returning :duplicate_active" do
+      # `state` is NOT NULL in the migration — omitting it is a programmer
+      # error, and it must not masquerade as a legitimately-contended claim.
+      assert_raise Ash.Error.Unknown, fn ->
+        Store.create_pending_op(%{
+          kind: "append",
+          account: "mara@example.com",
+          origin: "ops:no-state:0"
+        })
+      end
+    end
   end
 
   # -- TEMP v3-bridge coverage ---------------------------------------------
