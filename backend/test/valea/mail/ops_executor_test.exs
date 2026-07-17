@@ -281,6 +281,39 @@ defmodule Valea.Mail.OpsExecutorTest do
       assert [_file] = cur_files(root, dir_of("Archive"))
     end
 
+    # N1: the reconcile purge is gated by execution-time verification exactly
+    # like a fresh ladder. A source UIDVALIDITY reset recycles uids, so the
+    # recorded uid may now be an UNRELATED message — purging it would expunge
+    # the wrong mail permanently. The companion case (uidvalidity + fingerprint
+    # both match → purge proceeds) is pinned by the "destination becomes
+    # provable" test above.
+    test "a source UIDVALIDITY reset that recycled the uid parks source_reset; the unrelated message is never expunged",
+         %{root: root} do
+      name = start_model!(capabilities: [:condstore, :uidplus])
+      {c, manifest} = stuck_needs_review_move!(name, root)
+
+      # Out-of-band: the move's message lands in Archive (destination becomes
+      # provable) and leaves INBOX; a DIFFERENT message arrives; INBOX resets
+      # its UIDVALIDITY, renumbering that unrelated message onto the op's
+      # recorded uid 1.
+      ModelMailTransport.put_message(name, "Archive", @raw_a, internal_date: recent_date())
+      ModelMailTransport.delete_message(name, "INBOX", 1)
+      ModelMailTransport.put_message(name, "INBOX", @raw_b, internal_date: recent_date())
+      ModelMailTransport.reset_uidvalidity(name, "INBOX")
+      assert [%{uid: 1, raw: @raw_b}] = ModelMailTransport.messages(name, "INBOX")
+
+      OpsExecutor.recover(c)
+
+      # The unrelated message survives — no mark-deleted, no expunge.
+      assert [%{raw: @raw_b, flags: flags}] = ModelMailTransport.messages(name, "INBOX")
+      refute "\\Deleted" in flags
+
+      # The row parks needs_review with the mismatch reason; manifest intact
+      # so the next pass can retry proving.
+      assert [%{state: "needs_review", error: "source_reset"}] = Store.pending_ops("mara")
+      assert File.exists?(manifest)
+    end
+
     test "a needs_review move that stays unprovable remains needs_review; manifest intact, source untouched",
          %{root: root} do
       name = start_model!(capabilities: [:condstore, :uidplus])

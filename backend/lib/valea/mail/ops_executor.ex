@@ -606,14 +606,20 @@ defmodule Valea.Mail.OpsExecutor do
   end
 
   # Generic (non-gmail) reconciliation: confirm the destination; if proven,
-  # finish purging the source (idempotent) and finalize; otherwise
-  # needs_review. NEVER a blind re-copy/re-move.
+  # finish purging the source (idempotent, verification-gated — see
+  # `ensure_source_gone/3`) and finalize; otherwise needs_review. NEVER a
+  # blind re-copy/re-move, and never a purge the source can't re-prove.
   defp reconcile_generic(ctx, op_row, manifest) do
     case confirm_destination(ctx, op_row, manifest, nil) do
       {:ok, dest_uid, dest_uidvalidity} ->
-        ensure_source_gone(ctx, op_row, manifest)
-        finalize(ctx, op_row, manifest, dest_uid, dest_uidvalidity)
-        complete(ctx, op_row)
+        case ensure_source_gone(ctx, op_row, manifest) do
+          :ok ->
+            finalize(ctx, op_row, manifest, dest_uid, dest_uidvalidity)
+            complete(ctx, op_row)
+
+          {:needs_review, reason} ->
+            needs_review(ctx, op_row, reason)
+        end
 
       :none ->
         needs_review(ctx, op_row, "destination_unconfirmed")
@@ -624,13 +630,30 @@ defmodule Valea.Mail.OpsExecutor do
   end
 
   # Ensures the source occurrence is gone (native MOVE already removed it;
-  # a COPY ladder interrupted before EXPUNGE completes it here). Idempotent.
+  # a COPY ladder interrupted before EXPUNGE completes it here). Idempotent —
+  # and the purge is gated by execution-time verification EXACTLY like a fresh
+  # ladder (spec §Safety invariants — verification before every mutation, no
+  # skippable branch): the live UIDVALIDITY must equal the op's recorded one
+  # AND the live uid must fingerprint-match the manifest. A reset recycles
+  # uids, so without this gate a reconcile (this runs on every pass for parked
+  # `needs_review` rows) would permanently expunge whatever UNRELATED message
+  # now holds the old uid. Any mismatch → `{:needs_review, "source_reset"}`,
+  # never a purge; the destination confirmation stays re-provable next pass.
   defp ensure_source_gone(ctx, op_row, manifest) do
     case ctx.transport.select(ctx.conn, op_row.source_folder) do
-      {:ok, _info} ->
+      {:ok, %{uidvalidity: uidvalidity}} ->
         case search(ctx, "UID #{op_row.uid}") do
-          [] -> :ok
-          _present -> purge_source(ctx, op_row, manifest)
+          [] ->
+            :ok
+
+          _present ->
+            if uidvalidity == op_row.source_uidvalidity and
+                 fingerprint_confirm(ctx, [op_row.uid], manifest["fingerprint"]) == [op_row.uid] do
+              purge_source(ctx, op_row, manifest)
+              :ok
+            else
+              {:needs_review, "source_reset"}
+            end
         end
 
       {:error, _reason} ->
