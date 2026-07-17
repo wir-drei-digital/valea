@@ -1,20 +1,44 @@
 defmodule Valea.Mail.MessageFile do
   @moduledoc """
-  `Valea.Mail.Message` ⇄ the on-disk `sources/mail/messages/<msg_id>.md`
-  format (mail design spec, §Normalized message file). This module owns:
+  `Valea.Mail.Message` ⇄ the on-disk `sources/mail/<account>/views/messages/
+  <msg_id>.md` format (mail-as-maildir design spec, §Derived views &
+  indexing). This module owns:
 
+    * `fingerprint/1` — the sha256 hex digest of the raw RFC822 bytes, the
+      message identity's foundation (mail-as-maildir design spec,
+      §Two-level identity: "the hash is a fingerprint of the raw RFC822
+      bytes").
     * `msg_id/2` — the deterministic `<date>-<from-slug>-<hash8>` filename
-      stem.
+      stem, `hash8` being `fingerprint/1`'s first 8 hex characters. The
+      hash-extension collision rule (8 → 16 → 64 hex) lives in
+      `Valea.Mail.Views.land/4`, the only caller that has the stored
+      fingerprints to detect a collision against.
     * `render/2` — struct + landing metadata → file bytes (frontmatter +
       body).
-    * `parse/1` — file bytes → `%{frontmatter:, body:}` (the read side a
-      later task's message index / status-flip uses).
-    * `flip_status/2` — byte-preserving `status:` line replacement (never
-      re-serializes the rest of the file — a later task's file writes must
-      never perturb bytes a diff or a hash comparison depends on).
+    * `parse/1` — file bytes → `%{frontmatter:, body:}` (the read side
+      `Valea.Mail.Index`'s cache-only rebuild uses to recover a message's
+      metadata without re-normalizing raw mail bytes).
+    * `patch_frontmatter/2` — byte-preserving multi-key `<key>: ...` line
+      replacement inside the leading frontmatter block, never touching
+      anything else (other frontmatter fields, their exact formatting, or
+      the body) — `Valea.Mail.Views.refresh_folders/5` uses it to patch
+      `folders:`/`flags:` in place whenever occurrence membership changes,
+      without a full re-render. Supersedes the old `flip_status/2` (deleted
+      — there is no more `status:` field to flip; see the moduledoc below).
     * `sanitize_filename/1` — the basename-only, control-char-free,
-      no-traversal filename a later (attachment-landing) task uses before
-      ever touching the filesystem.
+      no-traversal filename attachment landing uses before ever touching
+      the filesystem.
+
+  ## Fingerprint identity (mail-as-maildir design spec, §Two-level identity)
+
+  A message's identity is its raw bytes, not its `Message-ID` header:
+  `Message-ID` is sender-controlled and not guaranteed unique, so two
+  distinct messages that happen to reuse one get different msg_ids (and
+  separate views), while true multi-folder occurrences of the same bytes
+  (a Gmail label + INBOX, an ordinary `COPY`) share one msg_id and one
+  view. `Message-ID` is therefore never hashed here — only a lookup hint
+  elsewhere in the pipeline (`Valea.Mail.Views.land/4`'s caller can use it
+  to short-circuit which existing msg_id to re-land under).
 
   ## Frontmatter injection hardening
 
@@ -28,7 +52,7 @@ defmodule Valea.Mail.MessageFile do
        regardless of whether the normalizer produced it,
     2. replaces every C0 control character (`< 0x20`) and DEL (`0x7F`) —
        notably `\\n` and `\\r` — with a plain space, so a header can never
-       inject a new YAML line (e.g. a second `status:` key), and
+       inject a new YAML line (e.g. a second `id:` key), and
     3. double-quotes the result, escaping `\\` and `"`.
 
   A mail header must never be able to break the frontmatter block.
@@ -37,26 +61,37 @@ defmodule Valea.Mail.MessageFile do
   alias Valea.Mail.Message
   alias Valea.Mail.Normalizer
 
-  @status_re ~r/^status:.*$/m
+  # -- fingerprint / msg_id ----------------------------------------------------
 
-  # -- msg_id ----------------------------------------------------------------
+  @doc """
+  Sha256 hex digest (lowercase, full 64 characters) of `raw` — the raw
+  RFC822 bytes of one occurrence. The message identity's foundation: two
+  occurrences with byte-identical `raw` always fingerprint identically
+  (same msg_id, one shared view); anything else, including a single
+  differing byte, fingerprints differently.
+  """
+  @spec fingerprint(binary()) :: String.t()
+  def fingerprint(raw) when is_binary(raw) do
+    :sha256 |> :crypto.hash(raw) |> Base.encode16(case: :lower)
+  end
 
   @doc """
   `<yyyy-mm-dd>-<from-slug>-<hash8>`. Deterministic: the same `message` +
-  `raw_headers` always produce the same id. `hash8` is the first 8 hex
-  characters of SHA-256 over `message.message_id` when present, else over
-  the entire raw header block (a far stronger disambiguator than
-  date/from/subject, which can legitimately collide, per the mail design
-  spec) — this is why `raw_headers` is always required, even though it's
-  only actually hashed when `message_id` is missing. `message.date` is
-  virtually always present (`Normalizer` only leaves it `nil` when the
-  `Date` header is missing or unparseable); on that rare path the epoch
-  `1970-01-01` is used as the date component so the id keeps its fixed
-  three-segment shape rather than needing a fourth, sometimes-absent field.
+  `raw` always produce the same id. `hash8` is `fingerprint/1`'s first 8
+  hex characters — a fingerprint of the raw RFC822 bytes, never of the
+  `Message-ID` header (see the moduledoc, §Fingerprint identity). Only this
+  8-hex stem is this function's job; extending it to 16 or 64 hex on a
+  collision against a DIFFERENT fingerprint is `Valea.Mail.Views.land/4`'s
+  job (it alone has the stored fingerprints to detect one).
+  `message.date` is virtually always present (`Normalizer` only leaves it
+  `nil` when the `Date` header is missing or unparseable); on that rare
+  path the epoch `1970-01-01` is used as the date component so the id keeps
+  its fixed three-segment shape rather than needing a fourth,
+  sometimes-absent field.
   """
   @spec msg_id(Message.t(), binary()) :: String.t()
-  def msg_id(%Message{} = message, raw_headers) when is_binary(raw_headers) do
-    "#{date_slug(message.date)}-#{from_slug(message.from)}-#{hash8(message.message_id, raw_headers)}"
+  def msg_id(%Message{} = message, raw) when is_binary(raw) do
+    "#{date_slug(message.date)}-#{from_slug(message.from)}-#{hash8(raw)}"
   end
 
   defp date_slug(nil), do: "1970-01-01"
@@ -91,50 +126,45 @@ defmodule Valea.Mail.MessageFile do
   defp blank?(nil), do: true
   defp blank?(s), do: String.trim(s) == ""
 
-  defp hash8(message_id, raw_headers) do
-    source = if blank?(message_id), do: raw_headers, else: message_id
-
-    :sha256
-    |> :crypto.hash(source)
-    |> Base.encode16(case: :lower)
-    |> String.slice(0, 8)
-  end
+  defp hash8(raw), do: raw |> fingerprint() |> String.slice(0, 8)
 
   # -- render ------------------------------------------------------------
 
   @doc """
   Renders `message` + landing `meta` to the exact frontmatter format from
-  the mail design spec (§Normalized message file): field order `id,
-  message_id, from, to, subject, date, uid, in_reply_to, references,
-  reply_to, status, source, source_ref, attachments`, then any present
+  the mail-as-maildir design spec (§Derived views & indexing): field order
+  `id, message_id, account, folders, flags, from, to, subject, date,
+  in_reply_to, references, reply_to, attachments`, then any present
   `notes` (`charset_note, normalizer_note, truncation_note`, in that
   order), then `---`, then `message.body_text` verbatim.
 
-  `meta` is `%{msg_id:, uid: int | nil, status: "review" | "processed",
-  source: "imap" | "seed", attachments: [%{filename:, path:, bytes:}]}`.
-  `source_ref` defaults to `"email://" <> source <> "/" <> msg_id`; pass
-  `meta[:source_ref]` to override it (seed data keeps its legacy ref).
+  `meta` is `%{msg_id:, account:, folders: [String.t()], flags: String.t(),
+  attachments: [%{filename:, path:, bytes:}]}`. `folders`/`flags`/
+  `attachments` default to `[]`/`""`/`[]` when absent (a fresh landing has
+  no folder membership yet — `Valea.Mail.Views.refresh_folders/5` fills
+  them in once occurrences are known). There is deliberately no
+  `status`/`uid`/`source`/`source_ref` field — those belonged to the
+  retired single-flat-file design; occurrence identity now lives on the
+  maildir filename (`Valea.Mail.Maildir.encode_filename/3`) and in
+  `mail_messages`/`mail_uid_map`, not in the shared view.
   """
   @spec render(Message.t(), map()) :: binary()
   def render(%Message{} = message, meta) do
-    source_ref = Map.get(meta, :source_ref) || "email://#{meta.source}/#{meta.msg_id}"
-
     lines =
       [
         "---",
         "id: #{meta.msg_id}",
         "message_id: #{yaml_string(message.message_id)}",
+        "account: #{yaml_string(meta.account)}",
+        "folders: #{render_string_list(Map.get(meta, :folders, []))}",
+        "flags: #{yaml_string(Map.get(meta, :flags, ""))}",
         "from: #{render_address(message.from)}",
         "to: #{render_address_list(message.to)}",
         "subject: #{yaml_string(message.subject)}",
         "date: #{render_date(message.date)}",
-        "uid: #{render_int(Map.get(meta, :uid))}",
         "in_reply_to: #{yaml_string(message.in_reply_to)}",
         "references: #{render_string_list(message.references)}",
         "reply_to: #{render_address(message.reply_to)}",
-        "status: #{meta.status}",
-        "source: #{meta.source}",
-        "source_ref: #{yaml_string(source_ref)}",
         "attachments: #{render_attachment_list(Map.get(meta, :attachments, []))}"
       ] ++ render_notes(message.notes) ++ ["---"]
 
@@ -150,8 +180,16 @@ defmodule Valea.Mail.MessageFile do
   defp render_address_list([]), do: "[]"
   defp render_address_list(list), do: "[" <> Enum.map_join(list, ", ", &render_address/1) <> "]"
 
-  defp render_string_list([]), do: "[]"
-  defp render_string_list(list), do: "[" <> Enum.map_join(list, ", ", &yaml_string/1) <> "]"
+  @doc """
+  Renders a YAML flow-sequence of double-quoted, injection-hardened
+  strings (`[]` when empty) — the exact encoding `render/2` uses for
+  `references:` and `folders:`. Public because
+  `Valea.Mail.Views.refresh_folders/5` reuses it verbatim to patch the
+  `folders:` line without pulling in the rest of `render/2`.
+  """
+  @spec render_string_list([String.t()]) :: String.t()
+  def render_string_list([]), do: "[]"
+  def render_string_list(list), do: "[" <> Enum.map_join(list, ", ", &yaml_string/1) <> "]"
 
   defp render_attachment_list([]), do: "[]"
 
@@ -181,9 +219,16 @@ defmodule Valea.Mail.MessageFile do
   # dropped, so offsets in error messages/tests stay stable), then `\` and
   # `"` escaped, then double-quoted. A mail header can therefore never crash
   # a render, terminate the string early, or inject a sibling YAML key.
-  defp yaml_string(nil), do: "null"
+  @doc """
+  Double-quotes and injection-hardens `value` (`"null"` for `nil`): scrubs
+  invalid UTF-8, neutralizes C0/DEL control characters to a plain space,
+  escapes `\\` and `"`. Public because `Valea.Mail.Views.refresh_folders/5`
+  reuses it verbatim to patch the `flags:` line.
+  """
+  @spec yaml_string(String.t() | nil) :: String.t()
+  def yaml_string(nil), do: "null"
 
-  defp yaml_string(value) when is_binary(value) do
+  def yaml_string(value) when is_binary(value) do
     escaped =
       value
       |> ensure_valid_utf8()
@@ -205,21 +250,34 @@ defmodule Valea.Mail.MessageFile do
     |> List.to_string()
   end
 
-  # -- flip_status ---------------------------------------------------------
+  # -- patch_frontmatter ---------------------------------------------------
 
   @doc """
-  Replaces only the `status:` line inside the leading `---\\n...\\n---\\n`
-  frontmatter block, byte-for-byte preserving everything else (other
-  frontmatter fields, their exact formatting, and the whole body).
+  Replaces one or more `<key>: ...` lines inside the leading `---\\n...\\n
+  ---\\n` frontmatter block, byte-for-byte preserving everything else
+  (other frontmatter fields, their exact formatting, and the whole body) —
+  the same discipline the deleted `flip_status/2` used for the retired
+  `status:` field, generalized to any set of keys. `replacements` is a
+  `%{String.t() => String.t()}` of bare key name → the FULL replacement
+  line value (already rendered, e.g. via `render_string_list/1`/
+  `yaml_string/1`) — only the first match per key is replaced
+  (`global: false`), and only within the extracted frontmatter block, so a
+  body line that happens to start with `"folders:"` can never be
+  clobbered. A key absent from the block is silently left untouched (not
+  an error — `refresh_folders/5` always targets keys `render/2` always
+  emits, but this function itself doesn't assume it).
   """
-  @spec flip_status(binary(), String.t()) :: {:ok, binary()} | {:error, :no_frontmatter}
-  def flip_status(file_bytes, new_status) when is_binary(file_bytes) and is_binary(new_status) do
-    with {:ok, block, body} <- split_frontmatter(file_bytes),
-         true <- Regex.match?(@status_re, block) do
-      new_block = Regex.replace(@status_re, block, "status: #{new_status}", global: false)
+  @spec patch_frontmatter(binary(), %{String.t() => String.t()}) ::
+          {:ok, binary()} | {:error, :no_frontmatter}
+  def patch_frontmatter(file_bytes, replacements)
+      when is_binary(file_bytes) and is_map(replacements) do
+    with {:ok, block, body} <- split_frontmatter(file_bytes) do
+      new_block =
+        Enum.reduce(replacements, block, fn {key, value}, acc ->
+          Regex.replace(~r/^#{Regex.escape(key)}:.*$/m, acc, "#{key}: #{value}", global: false)
+        end)
+
       {:ok, new_block <> body}
-    else
-      _ -> {:error, :no_frontmatter}
     end
   end
 
@@ -257,11 +315,11 @@ defmodule Valea.Mail.MessageFile do
   Basename-only, C0/DEL- and `/ \\\\ :`-free filename, safe to join under an
   attachment landing directory: `Path.basename/1` first (strips `/`-based
   traversal), then strips C0/DEL control characters and the `/`, `\\`, `:`
-  characters (a later task's landing path is `<dir>/<msg_id>/<filename>` —
-  none of these may reintroduce a path separator), collapsing to
-  `"attachment"` if nothing safe is left (including the bare `.`/`..`
-  tokens, which strip to themselves and would otherwise still resolve to a
-  directory, not a file).
+  characters (a landing path is `<dir>/<msg_id>/<filename>` — none of
+  these may reintroduce a path separator), collapsing to `"attachment"` if
+  nothing safe is left (including the bare `.`/`..` tokens, which strip to
+  themselves and would otherwise still resolve to a directory, not a
+  file).
   """
   @spec sanitize_filename(String.t()) :: String.t()
   def sanitize_filename(name) when is_binary(name) do

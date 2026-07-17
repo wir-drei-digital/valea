@@ -8,8 +8,21 @@ defmodule Valea.Mail.MessageFileTest do
   defp fixture(name), do: File.read!(Path.join(@fixtures_dir, name))
   defp normalize!(name), do: fixture(name) |> Normalizer.normalize() |> elem(1)
 
+  describe "fingerprint/1" do
+    test "sha256 hex digest, lowercase, deterministic" do
+      raw = fixture("plain.eml")
+
+      assert MessageFile.fingerprint(raw) == MessageFile.fingerprint(raw)
+      assert MessageFile.fingerprint(raw) =~ ~r/^[0-9a-f]{64}$/
+    end
+
+    test "any byte difference changes the fingerprint" do
+      refute MessageFile.fingerprint("hello\n") == MessageFile.fingerprint("hellp\n")
+    end
+  end
+
   describe "msg_id/2" do
-    test "is deterministic for a message with a Message-ID (hashes the Message-ID)" do
+    test "is deterministic for the same raw bytes" do
       msg = normalize!("plain.eml")
       raw = fixture("plain.eml")
 
@@ -20,24 +33,32 @@ defmodule Valea.Mail.MessageFileTest do
       assert id1 =~ ~r/^2026-07-09-priya-nair-[0-9a-f]{8}$/
     end
 
-    test "is deterministic for a message with no Message-ID (hashes raw_headers instead)" do
-      msg = normalize!("no_message_id.eml")
-      raw = fixture("no_message_id.eml")
+    test "fingerprint identity: two DIFFERENT raw messages sharing the same Message-ID differ" do
+      # Message-ID is sender-controlled and not unique (mail-as-maildir
+      # design spec, §Two-level identity) — the id must track the raw
+      # bytes' fingerprint, never the Message-ID header.
+      msg = %Message{
+        message_id: "<dup@example.com>",
+        from: %{name: "Priya Nair", email: nil},
+        date: ~U[2026-07-09 00:00:00Z]
+      }
 
-      id1 = MessageFile.msg_id(msg, raw)
-      id2 = MessageFile.msg_id(msg, raw)
+      raw1 = "Message-ID: <dup@example.com>\r\n\r\nBody one\r\n"
+      raw2 = "Message-ID: <dup@example.com>\r\n\r\nBody two\r\n"
 
-      assert id1 == id2
-      assert id1 =~ ~r/^2026-07-16-priya-nair-[0-9a-f]{8}$/
+      refute MessageFile.msg_id(msg, raw1) == MessageFile.msg_id(msg, raw2)
     end
 
-    test "without a Message-ID, the hash tracks raw_headers (not just the struct)" do
-      msg = normalize!("no_message_id.eml")
+    test "hash8 is the first 8 hex characters of fingerprint/1" do
+      msg = normalize!("plain.eml")
+      raw = fixture("plain.eml")
 
-      id_from_own_headers = MessageFile.msg_id(msg, fixture("no_message_id.eml"))
-      id_from_other_headers = MessageFile.msg_id(msg, fixture("plain.eml"))
+      [_date, _slug, hash8] =
+        Regex.run(~r/^(\d{4}-\d{2}-\d{2})-(.+)-([0-9a-f]{8})$/, MessageFile.msg_id(msg, raw),
+          capture: :all_but_first
+        )
 
-      refute id_from_own_headers == id_from_other_headers
+      assert hash8 == String.slice(MessageFile.fingerprint(raw), 0, 8)
     end
 
     test "from-slug falls back to the email local part when there is no display name" do
@@ -73,9 +94,9 @@ defmodule Valea.Mail.MessageFileTest do
       rendered =
         MessageFile.render(msg, %{
           msg_id: id,
-          uid: 4711,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
           attachments: []
         })
 
@@ -83,17 +104,16 @@ defmodule Valea.Mail.MessageFileTest do
         "---\n" <>
           "id: #{id}\n" <>
           "message_id: \"<CAJx1234@mail.example.com>\"\n" <>
+          "account: \"mara@example.com\"\n" <>
+          "folders: []\n" <>
+          "flags: \"\"\n" <>
           "from: { name: \"Priya Nair\", email: \"priya@example.com\" }\n" <>
           "to: [{ name: \"Mara Lindt\", email: \"mara@example.com\" }]\n" <>
           "subject: \"Question about leadership coaching\"\n" <>
           "date: 2026-07-09T06:58:00Z\n" <>
-          "uid: 4711\n" <>
           "in_reply_to: null\n" <>
           "references: []\n" <>
           "reply_to: null\n" <>
-          "status: review\n" <>
-          "source: imap\n" <>
-          "source_ref: \"email://imap/#{id}\"\n" <>
           "attachments: []\n" <>
           "---\n" <>
           "Hi Mara, I found your work through a colleague.\n\nBest,\nPriya\n"
@@ -101,7 +121,7 @@ defmodule Valea.Mail.MessageFileTest do
       assert rendered == expected
     end
 
-    test "meta[:source_ref] overrides the derived ref (seed keeps its legacy ref)" do
+    test "folders/flags carry real occurrence membership when supplied" do
       msg = normalize!("plain.eml")
       raw = fixture("plain.eml")
       id = MessageFile.msg_id(msg, raw)
@@ -109,16 +129,14 @@ defmodule Valea.Mail.MessageFileTest do
       rendered =
         MessageFile.render(msg, %{
           msg_id: id,
-          uid: nil,
-          status: "review",
-          source: "seed",
-          source_ref: "email://seed/priya-nair-inquiry",
+          account: "mara@example.com",
+          folders: ["Archive", "INBOX"],
+          flags: "FS",
           attachments: []
         })
 
-      assert rendered =~ "source: seed\n"
-      assert rendered =~ "source_ref: \"email://seed/priya-nair-inquiry\"\n"
-      refute rendered =~ "email://seed/#{id}"
+      assert rendered =~ "folders: [\"Archive\", \"INBOX\"]\n"
+      assert rendered =~ "flags: \"FS\"\n"
     end
 
     test "renders addresses, references, reply_to, attachments, and notes in field order" do
@@ -139,10 +157,12 @@ defmodule Valea.Mail.MessageFileTest do
       rendered =
         MessageFile.render(msg, %{
           msg_id: "2026-01-01-a-deadbeef",
-          uid: 7,
-          status: "processed",
-          source: "imap",
-          attachments: [%{filename: "f.txt", path: "sources/mail/attachments/x/f.txt", bytes: 12}]
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
+          attachments: [
+            %{filename: "f.txt", path: "sources/mail/mara/views/attachments/x/f.txt", bytes: 12}
+          ]
         })
 
       assert rendered =~
@@ -151,10 +171,9 @@ defmodule Valea.Mail.MessageFileTest do
       assert rendered =~ "references: [\"<orig@example.com>\", \"<mid@example.com>\"]\n"
       assert rendered =~ "reply_to: { name: \"D\", email: \"d@example.com\" }\n"
       assert rendered =~ "date: null\n"
-      assert rendered =~ "uid: 7\n"
 
       assert rendered =~
-               "attachments: [{ filename: \"f.txt\", path: \"sources/mail/attachments/x/f.txt\", bytes: 12 }]\n"
+               "attachments: [{ filename: \"f.txt\", path: \"sources/mail/mara/views/attachments/x/f.txt\", bytes: 12 }]\n"
 
       # notes appear, in order, after attachments and before the closing ---
       assert rendered =~
@@ -167,36 +186,55 @@ defmodule Valea.Mail.MessageFileTest do
       rendered =
         MessageFile.render(msg, %{
           msg_id: "2026-01-01-x-deadbeef",
-          uid: nil,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
           attachments: []
         })
 
       refute rendered =~ "_note"
       assert rendered =~ "attachments: []\n---\n"
     end
-  end
 
-  describe "render/2 — frontmatter injection hardening" do
-    test "a Subject with an embedded newline renders as one quoted line, not a new YAML key" do
-      msg = %Message{subject: "Evil\nstatus: hacked", from: %{name: nil, email: "x@example.com"}}
+    test "has no status, uid, source, or source_ref field" do
+      msg = %Message{from: %{name: nil, email: "x@example.com"}}
 
       rendered =
         MessageFile.render(msg, %{
           msg_id: "2026-01-01-x-deadbeef",
-          uid: nil,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
+          attachments: []
+        })
+
+      lines = String.split(rendered, "\n")
+      refute Enum.any?(lines, &String.starts_with?(&1, "status:"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "uid:"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "source:"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "source_ref:"))
+    end
+  end
+
+  describe "render/2 — frontmatter injection hardening" do
+    test "a Subject with an embedded newline renders as one quoted line, not a new YAML key" do
+      msg = %Message{subject: "Evil\naccount: hacked", from: %{name: nil, email: "x@example.com"}}
+
+      rendered =
+        MessageFile.render(msg, %{
+          msg_id: "2026-01-01-x-deadbeef",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
           attachments: []
         })
 
       lines = String.split(rendered, "\n")
 
       assert Enum.count(lines, &String.starts_with?(&1, "subject:")) == 1
-      assert "subject: \"Evil status: hacked\"" in lines
-      refute "status: hacked" in lines
-      assert "status: review" in lines
+      assert "subject: \"Evil account: hacked\"" in lines
+      refute "account: hacked" in lines
+      assert "account: \"mara@example.com\"" in lines
     end
 
     test "double quotes and backslashes in header-derived values are escaped and round-trip" do
@@ -208,9 +246,9 @@ defmodule Valea.Mail.MessageFileTest do
       rendered =
         MessageFile.render(msg, %{
           msg_id: "2026-01-01-x-deadbeef",
-          uid: nil,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
           attachments: []
         })
 
@@ -230,9 +268,9 @@ defmodule Valea.Mail.MessageFileTest do
       rendered =
         MessageFile.render(msg, %{
           msg_id: "2026-01-01-x-deadbeef",
-          uid: nil,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
           attachments: []
         })
 
@@ -250,9 +288,9 @@ defmodule Valea.Mail.MessageFileTest do
       rendered =
         MessageFile.render(msg, %{
           msg_id: "2026-01-01-x-deadbeef",
-          uid: nil,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
           attachments: []
         })
 
@@ -260,8 +298,8 @@ defmodule Valea.Mail.MessageFileTest do
     end
   end
 
-  describe "flip_status/2" do
-    test "replaces only the status line, byte-preserving everything else" do
+  describe "patch_frontmatter/2" do
+    test "replaces only the named lines, byte-preserving everything else (including the body)" do
       msg = normalize!("plain.eml")
       raw = fixture("plain.eml")
       id = MessageFile.msg_id(msg, raw)
@@ -269,35 +307,72 @@ defmodule Valea.Mail.MessageFileTest do
       file_bytes =
         MessageFile.render(msg, %{
           msg_id: id,
-          uid: 4711,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
           attachments: []
         })
 
-      {:ok, flipped} = MessageFile.flip_status(file_bytes, "processed")
+      {:ok, patched} =
+        MessageFile.patch_frontmatter(file_bytes, %{
+          "folders" => MessageFile.render_string_list(["Archive", "INBOX"]),
+          "flags" => MessageFile.yaml_string("FS")
+        })
 
-      assert flipped != file_bytes
-      assert flipped =~ "status: processed\n"
-      refute flipped =~ "status: review\n"
+      assert patched != file_bytes
+      assert patched =~ "folders: [\"Archive\", \"INBOX\"]\n"
+      assert patched =~ "flags: \"FS\"\n"
+      refute patched =~ "folders: []\n"
+      refute patched =~ "flags: \"\"\n"
 
       before_lines = String.split(file_bytes, "\n")
-      after_lines = String.split(flipped, "\n")
+      after_lines = String.split(patched, "\n")
       assert length(before_lines) == length(after_lines)
 
       Enum.zip(before_lines, after_lines)
       |> Enum.each(fn {before_line, after_line} ->
-        if String.starts_with?(before_line, "status:") do
-          assert after_line == "status: processed"
-        else
-          assert after_line == before_line
+        cond do
+          String.starts_with?(before_line, "folders:") ->
+            assert after_line == "folders: [\"Archive\", \"INBOX\"]"
+
+          String.starts_with?(before_line, "flags:") ->
+            assert after_line == "flags: \"FS\""
+
+          true ->
+            assert after_line == before_line
         end
       end)
     end
 
+    test "a body line that looks like a frontmatter key is never touched" do
+      msg = %Message{
+        from: %{name: nil, email: "x@example.com"},
+        body_text: "folders: not a real frontmatter line\n"
+      }
+
+      file_bytes =
+        MessageFile.render(msg, %{
+          msg_id: "2026-01-01-x-deadbeef",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
+          attachments: []
+        })
+
+      {:ok, patched} =
+        MessageFile.patch_frontmatter(file_bytes, %{
+          "folders" => MessageFile.render_string_list(["INBOX"])
+        })
+
+      assert patched =~ "folders: not a real frontmatter line\n"
+      assert patched =~ "folders: [\"INBOX\"]\n"
+      assert Enum.count(String.split(patched, "\n"), &(&1 == "folders: [\"INBOX\"]")) == 1
+    end
+
     test "returns {:error, :no_frontmatter} when there is no leading frontmatter block" do
-      assert MessageFile.flip_status("just a plain markdown file, no frontmatter\n", "processed") ==
-               {:error, :no_frontmatter}
+      assert MessageFile.patch_frontmatter("just a plain markdown file, no frontmatter\n", %{
+               "folders" => "[]"
+             }) == {:error, :no_frontmatter}
     end
   end
 
@@ -310,9 +385,9 @@ defmodule Valea.Mail.MessageFileTest do
       file_bytes =
         MessageFile.render(msg, %{
           msg_id: id,
-          uid: 4711,
-          status: "review",
-          source: "imap",
+          account: "mara@example.com",
+          folders: ["INBOX"],
+          flags: "S",
           attachments: []
         })
 
@@ -321,8 +396,9 @@ defmodule Valea.Mail.MessageFileTest do
       assert frontmatter["id"] == id
       assert frontmatter["message_id"] == "<CAJx1234@mail.example.com>"
       assert frontmatter["from"] == %{"name" => "Priya Nair", "email" => "priya@example.com"}
-      assert frontmatter["status"] == "review"
-      assert frontmatter["uid"] == 4711
+      assert frontmatter["account"] == "mara@example.com"
+      assert frontmatter["folders"] == ["INBOX"]
+      assert frontmatter["flags"] == "S"
       assert body == msg.body_text
     end
 

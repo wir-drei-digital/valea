@@ -5,7 +5,6 @@ defmodule ValeaWeb.MailRpcTest do
 
   @endpoint ValeaWeb.Endpoint
 
-  alias Valea.Mail.Index
   alias Valea.Mail.Message
   alias Valea.Mail.MessageFile
   alias Valea.Mail.Store
@@ -81,6 +80,17 @@ defmodule ValeaWeb.MailRpcTest do
     :ok
   end
 
+  # TEMP v3-bridge test adaptation (Task 6): `MessageFile.render/2`'s meta
+  # shape lost `uid`/`status`/`source` (fingerprint identity + derived
+  # views — see `message_file.ex`'s moduledoc) and the new
+  # `Index.rebuild/1` no longer indexes this flat legacy layout (the real,
+  # account-scoped `rebuild/2` walks `maildir/`, not
+  # `sources/mail/messages/`). `Valea.Api.Mail` itself still reads the OLD
+  # `Store.upsert_message/1`-keyed cache (`get_mail_message`/
+  # `list_mail_messages` — rewritten in Task 10), so this helper writes the
+  # file (for `get_mail_message`'s `File.read` round trip) and seeds that
+  # cache row directly instead of relying on `Index.rebuild/1` to populate
+  # it.
   defp plant_message(root, suffix, uid) do
     msg_id = "2026-07-09-priya-#{suffix}"
     rel = Path.join(["sources", "mail", "messages", "#{msg_id}.md"])
@@ -98,14 +108,27 @@ defmodule ValeaWeb.MailRpcTest do
     bytes =
       MessageFile.render(message, %{
         msg_id: msg_id,
-        uid: uid,
-        status: "review",
-        source: "imap",
+        account: "mara@example.com",
+        folders: ["INBOX"],
+        flags: "",
         attachments: []
       })
 
     File.write!(abs, bytes)
-    {:ok, _count} = Index.rebuild(root)
+
+    :ok =
+      Store.upsert_message(%{
+        msg_id: msg_id,
+        message_id: message.message_id,
+        path: rel,
+        from: message.from,
+        subject: message.subject,
+        date: message.date,
+        status: "review",
+        has_attachments: false,
+        uid: uid
+      })
+
     %{msg_id: msg_id, rel: rel, abs: abs}
   end
 

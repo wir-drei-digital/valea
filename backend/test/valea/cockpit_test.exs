@@ -6,7 +6,6 @@ defmodule Valea.CockpitTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
-  alias Valea.Mail.Index
   alias Valea.Mail.Message
   alias Valea.Mail.MessageFile
   alias Valea.Mail.Settings
@@ -157,6 +156,14 @@ defmodule Valea.CockpitTest do
   end
 
   describe "today/0 mail summary" do
+    # TEMP v3-bridge test adaptation (Task 6): see the identical comment on
+    # `mail_rpc_test.exs`'s `plant_message/3` — `MessageFile.render/2`'s meta
+    # shape lost `uid`/`status`/`source`, and `Index.rebuild/1` no longer
+    # indexes this flat legacy layout. `Valea.Cockpit.mail_summary/0` still
+    # reads the OLD `Store.upsert_message/1`-keyed cache via
+    # `Store.list_messages/0` (rewritten in Task 10), so this helper writes
+    # the file (for parity with the on-disk shape) and seeds that cache row
+    # directly instead of relying on `Index.rebuild/1`.
     defp plant_message(root, suffix, status) do
       msg_id = "2026-07-09-priya-#{suffix}"
       rel = Path.join(["sources", "mail", "messages", "#{msg_id}.md"])
@@ -174,13 +181,26 @@ defmodule Valea.CockpitTest do
       bytes =
         MessageFile.render(message, %{
           msg_id: msg_id,
-          uid: nil,
-          status: status,
-          source: "imap",
+          account: "mara@example.com",
+          folders: ["INBOX"],
+          flags: "",
           attachments: []
         })
 
       File.write!(abs, bytes)
+
+      :ok =
+        Store.upsert_message(%{
+          msg_id: msg_id,
+          message_id: message.message_id,
+          path: rel,
+          from: message.from,
+          subject: message.subject,
+          date: message.date,
+          status: status,
+          has_attachments: false,
+          uid: nil
+        })
     end
 
     # `AgentCase.open_workspace!/1` returns as soon as `Manager.create/2`
@@ -228,7 +248,6 @@ defmodule Valea.CockpitTest do
 
       plant_message(ws.path, "extra-review", "review")
       plant_message(ws.path, "extra-processed", "processed")
-      {:ok, _count} = Index.rebuild(ws.path)
 
       Store.put_inbox_header(%{uid: 1, from_text: "Someone <a@b.com>", subject: "Hi", date: nil})
       Store.put_inbox_header(%{uid: 2, from_text: "Someone <c@d.com>", subject: "Yo", date: nil})
