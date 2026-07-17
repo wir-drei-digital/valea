@@ -109,9 +109,10 @@ named IMAP op:
 - **Move** — only a *paired, unambiguous* disappearance and appearance:
   occurrence `(A, uid)` is missing from folder A, and a file carrying the
   same `<msg_id>,U=<uid>` sits in exactly one other folder B with no
-  UID-map record there → the existing safe-move ladder (`UID MOVE` →
-  `UID COPY` + `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`).
-  After success the file is renamed to B's UID. Any ambiguous pairing —
+  UID-map record there → executed through the durable op ledger (below)
+  as the existing safe-move ladder (`UID MOVE` → `UID COPY` +
+  `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`).
+  After proven success the file is renamed to B's UID. Any ambiguous pairing —
   the token missing from several folders, or appeared in several —
   pushes **nothing**; the pass reconciles by re-pulling and surfaces a
   notice. Multi-folder membership on the server is never mistaken for a
@@ -122,8 +123,25 @@ named IMAP op:
   UID-map row carries the **last-synced flags**; local ≠ last-synced means
   local intent, server ≠ last-synced means server change, both ≠ means
   conflict.
-- **Valea-composed append** — from the pending-append journal + `spool/`
-  only, never by discovering unknown files (see Drafting & send).
+- **Valea-composed append** — from the ops ledger + `spool/` only, never
+  by discovering unknown files (see Drafting & send).
+
+**Durable server-op ledger.** Moves and appends — the two non-idempotent
+server mutations — execute through `mail_pending_ops`: the op is recorded
+durably *before* any remote I/O and transitions state as each ladder step
+completes. After an uncertain result (disconnect, missing tagged
+response), the op is never blindly retried: the engine first
+**reconciles** — search the destination folder for the message's
+Message-ID and re-check the source — and continues only when the outcome
+is proven. For a move, the source copy is deleted only once **exactly
+one** matching destination occurrence is proven to exist; anything
+unprovable (zero or several matches) stops the op in `needs_review` with
+a recovery notice instead of retrying. Appends are idempotent by
+construction: every composed message carries a stable Valea-generated
+Message-ID, and every append execution — first attempt or retry —
+searches the target folder for that Message-ID first, marking the op
+complete if found. Flag `STORE`s are idempotent and execute directly,
+without the ledger.
 
 **Write-through folders.** The `folders.{archive,trash}` targets always
 exist as local directories, even when `exclude_folders` keeps them out of
@@ -199,6 +217,12 @@ the window.
 - **Credentials are RAM-only closures** resolved from the OS keychain —
   never on disk, never logged, never in the workspace. Now two per
   account (IMAP, SMTP).
+- **What the user reviewed is what gets transmitted.** Send and push are
+  hash-bound end to end: the UI passes the reviewed draft's SHA-256 with
+  the RPC and composition rejects a mismatch (the file changed after
+  review); the composed spool payload's hash lives in the ops ledger and
+  is re-verified immediately before every SMTP submit and every APPEND.
+  `spool/` is deny-all to agents.
 - **Threat note — mailbox as untrusted content.** A full mirror puts
   attacker-authored text (every received mail) inside the agent's readable
   surface in opted-in sessions. Mitigations, by construction: mail mounts
@@ -268,8 +292,11 @@ tables rebuildable from `sources/mail/` + resync.
   folder, uid, msg_id (non-unique — multi-folder membership), message_id,
   from, to, subject, date, flags, in_reply_to, references,
   has_attachments, maildir path.
-- `mail_pending_appends` — the append journal: account, target folder,
-  spool path, origin draft path, state. Crash-safe with the spool file.
+- `mail_pending_ops` — the durable server-op ledger (see Sync engine):
+  kind (`move | append`), account, source/target folder, uids,
+  Message-ID, spool path + payload SHA-256 for appends, state
+  (`pending | executing | needs_review | complete`), error. Crash-safe
+  together with the spool file.
 - `mail_send_attempts` — the write-ahead send journal: account, draft
   path, generated Message-ID, state (`submitting | submitted | complete |
   needs_review`), error, timestamps (see Drafting & send).
@@ -312,10 +339,16 @@ workspace, so containment holds trivially, and the permission boundary is
 never weakened.
 
 Writes into a mail mount are ask-gated like any non-primary mount. The
-first agent write asks once; approval issues the existing session-scoped,
-mount-wide write grant — so "clean up my inbox" is one approval, not fifty.
-The spec documents `maildir/` renames as the one meaningful agent write
-surface; everything else under the mount is derived or engine-owned.
+first agent write asks once; approval issues the existing session-scoped
+write grant — so "clean up my inbox" is one approval, not fifty. But the
+grant is **not the whole subtree**: the agent-writable surface of a mail
+mount is exactly `maildir/` (renames) and `drafts/`. `PermissionPolicy`
+denies agent writes to `views/` and `quarantine/` (both readable), and
+denies `spool/` entirely — read and write — because it holds engine-owned
+outbound payloads. The denies are mirrored in managedSettings as
+defense-in-depth, exactly like the Spec D ICM-secrets deny, and deny takes
+precedence over any grant (existing policy semantics, already
+regression-tested).
 
 ## Drafting & send
 
@@ -338,18 +371,21 @@ Agents (and the user) write drafts through the normal ask-gate. The Mail
 UI lists drafts with a review panel offering two **user-only** actions:
 
 - **Send** — a crash-safe state machine, never a bare submit:
-  1. Compose to RFC822 (resurrect `DraftMime` from git history, plain-text
+  1. Verify the RPC's `content_hash` against the draft file (reject with
+     a re-review error if the draft changed after the user read it), then
+     compose to RFC822 (resurrect `DraftMime` from git history, plain-text
      MIME only) with a **stable, Valea-generated Message-ID**; write the
-     composed message to `spool/`.
+     composed message to `spool/` and record its SHA-256.
   2. **Before any network I/O**, persist a `mail_send_attempts` row in
      state `submitting` and stamp the draft `status: sending` — the
      durable record that a submission may be in flight.
-  3. SMTP submission (STARTTLS on 587 / implicit TLS on 465, same
-     verification posture as IMAP).
+  3. Re-verify the spool payload hash, then SMTP submission (STARTTLS on
+     587 / implicit TLS on 465, same verification posture as IMAP).
   4. On acceptance: row → `submitted`, draft → `status: sent`, audit
-     entry; if `sent_copy`, journal the Sent append from the same spool
-     file; row → `complete`. On refusal: the row records the error, the
-     draft reverts to `status: draft`, and the error is surfaced.
+     entry; if `sent_copy`, ledger the Sent append from the same spool
+     file (hash-bound); row → `complete`. On refusal: the row records the
+     error, the draft reverts to `status: draft`, and the error is
+     surfaced.
 
   On restart, a row still in `submitting` is **ambiguous** — the outcome
   is unknown. The draft is locked out of Send (`needs_review`) and shown
@@ -357,18 +393,21 @@ UI lists drafts with a review panel offering two **user-only** actions:
   Message-ID (Sent folder first) — found → resolved as sent; not found →
   the user explicitly chooses resend (a fresh attempt) or revert to
   draft. **Nothing ever resends automatically.**
-- **Push to Drafts** — compose the same RFC822, spool + journal an append
-  into the Drafts folder; it syncs up and appears in the user's own mail
-  client, where they send it from there.
+- **Push to Drafts** — the same `content_hash` verification and
+  composition, then spool + ledger an append into the Drafts folder; it
+  syncs up and appears in the user's own mail client, where they send it
+  from there.
 
 `in_reply_to: <msg_id>` resolves threading headers (`In-Reply-To`,
 `References`) from the referenced message's **raw canonical file** — a
 direct win of keeping RFC822. If the referenced message isn't mirrored,
 compose without threading headers and surface a warning in the panel.
 SMTP failure leaves the draft untouched with the error surfaced; no
-automatic retry. Appends execute via the pending journal: APPEND to the
-server, delete the spool file on success, and the message lands locally on
-the next pull (deduped by Message-ID).
+automatic retry. Appends execute via the ops ledger (see Sync engine):
+verify the spool payload hash, search the target folder for the stable
+Message-ID (found → op complete, nothing sent twice), APPEND, record
+completion durably, then delete the spool file; the message lands locally
+on the next pull.
 
 ## RPC surface (`Valea.Api.Mail`)
 
@@ -389,8 +428,11 @@ Account-scoped actions take `account`.
   `create_mail_folders(account, generation)`.
 - `list_mail_messages(account, folder, limit \\ 100, before \\ nil)` —
   newest-first pagination by date; `get_mail_message(account, msg_id)`.
-- `list_mail_drafts()`, `send_draft(account, draft_path, generation)`,
-  `push_draft_to_mailbox(account, draft_path, generation)`.
+- `list_mail_drafts()`,
+  `send_draft(account, draft_path, content_hash, generation)`,
+  `push_draft_to_mailbox(account, draft_path, content_hash, generation)` —
+  `content_hash` is the SHA-256 of the draft exactly as reviewed in the
+  UI; a mismatch rejects with a re-review error.
 
 Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
 `mail_message` on the `"mail"` PubSub topic, now carrying `account`.
@@ -427,7 +469,9 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
   `UID STORE ±FLAGS`, `APPEND`, optional `CONDSTORE`; `Doctor`; RPC surface.
 - **New:** `Valea.Mail.Supervisor`, `Maildir` (filename/flag/escape
   helpers, tmp→cur delivery), `IntentScan`, `SmtpClient` (+ behaviour),
-  spool/journal executor.
+  the `mail_pending_ops` ledger executor (moves + appends, reconciling,
+  hash-verifying); mail-mount deny rules in `PermissionPolicy` +
+  managedSettings mirror.
 - **Rewritten:** `SyncPass` (push-then-pull), `Store` resources +
   hand-written migration, `Settings` (v4), mail frontend stores.
 - **Deleted:** `InboxHeader`, `UidOutcome`, `inbox.md` generation,
@@ -440,7 +484,10 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
 Per-account isolation (auth failure pauses one account). Folders fail soft
 within a pass — one folder's error is recorded, the pass continues.
 Damage → re-fetch; unknown files and local copies → quarantine; ambiguous
-move pairings → nothing pushed, reconcile on pull, notice; conflicts →
+move pairings → nothing pushed, reconcile on pull, notice; uncertain
+move/append results → reconcile via Message-ID search before any retry,
+unprovable outcomes stop in `needs_review`; hash mismatches (draft or
+spool) → op rejected with a re-review error; conflicts →
 server wins, surfaced; oversized → skipped and counted; `UIDVALIDITY`
 reset → folder re-pull with folder-scoped Message-ID re-attach; SMTP
 refusal → draft reverts, error surfaced, no auto-retry; interrupted send
@@ -461,12 +508,19 @@ boundary; every failure state has a copyable remedy or a status notice.
   flag conflict (server wins); damage re-fetch; last-occurrence-gone view
   cleanup; `UIDVALIDITY` reset with folder-scoped re-attach; window
   widening backfill; Gmail folder exclusion; two-account isolation;
-  pending-append crash recovery (journal + spool survive restart).
+  ops-ledger crash recovery (ledger + spool survive restart);
+  **ladder disconnect after each request** (`COPY` accepted but response
+  lost → reconcile proves exactly one destination copy, no duplicate, no
+  premature source delete); **append crash after server acceptance** →
+  search-first retry finds the Message-ID and completes without a
+  duplicate; spool tamper (payload hash mismatch) → op stops in
+  `needs_review`.
 - **SMTP**: behaviour + fake for compose/submit; `DraftMime` golden tests;
   send state machine: refusal reverts the draft; crash between acceptance
   and journal transition → restart lands in `needs_review`, resolved by
-  Message-ID search (found and not-found branches); no path resends
-  without an explicit user choice.
+  Message-ID search (found and not-found branches); draft changed after
+  review → `content_hash` rejection; no path resends without an explicit
+  user choice.
 - **Maildir helpers**: filename round-trip, flag mapping, escape rule
   property tests.
 - **Live acceptance** (mandatory before trusting the engine): the
