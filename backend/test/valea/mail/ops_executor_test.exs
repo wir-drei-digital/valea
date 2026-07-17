@@ -126,6 +126,9 @@ defmodule Valea.Mail.OpsExecutorTest do
 
   defp dir_of(folder), do: elem(Store.get_sync_state("mara", folder), 1).dir
 
+  defp manifest_path(root, id),
+    do: Path.join([root, "sources", "mail", "mara", "spool", "#{id}.manifest.yaml"])
+
   # ==========================================================================
   # Contract 2 — native move ladder + confirmation
   # ==========================================================================
@@ -219,6 +222,79 @@ defmodule Valea.Mail.OpsExecutorTest do
       assert ModelMailTransport.messages(name, "INBOX") == []
       assert length(ModelMailTransport.messages(name, "Archive")) == 1
       assert Store.pending_ops("mara") == []
+    end
+  end
+
+  # ==========================================================================
+  # M2 — needs_review moves are re-reconciled (manifests don't leak)
+  # ==========================================================================
+
+  describe "recover needs_review move (M2)" do
+    # A move whose COPY fails outright lands in needs_review with the source
+    # untouched and its manifest intact (no destination was ever confirmed).
+    defp stuck_needs_review_move!(name, root) do
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_folder(name, "Archive")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+      pull!(name, root)
+      msg_id = msg_id_in("INBOX")
+
+      c = ctx(name, root)
+      ModelMailTransport.inject(name, {:fail, :uid_copy, :boom})
+
+      assert [%{"result" => "needs_review"}] =
+               OpsExecutor.apply_ops(
+                 c,
+                 [%{op: :move, msg_id: msg_id, from: "INBOX", to: "Archive"}],
+                 "test"
+               )
+
+      [row] = Store.pending_ops("mara")
+      assert row.state == "needs_review"
+      manifest = manifest_path(root, row.id)
+      assert File.exists?(manifest)
+      # Non-destructive so far: the source occurrence is still on the server.
+      assert length(ModelMailTransport.messages(name, "INBOX")) == 1
+      assert ModelMailTransport.messages(name, "Archive") == []
+
+      {c, manifest}
+    end
+
+    test "a needs_review move whose destination becomes provable resolves; manifest removed", %{
+      root: root
+    } do
+      name = start_model!(capabilities: [:condstore, :uidplus])
+      {c, manifest} = stuck_needs_review_move!(name, root)
+
+      # The message lands in Archive out-of-band (a retry or another client).
+      ModelMailTransport.put_message(name, "Archive", @raw_a, internal_date: recent_date())
+
+      # Next pass's recovery: confirm-first, proves exactly one destination with
+      # the source still present → completes (purges the proven-duplicate
+      # source) and cleans up the manifest.
+      OpsExecutor.recover(c)
+
+      assert Store.pending_ops("mara") == []
+      refute File.exists?(manifest)
+      assert ModelMailTransport.messages(name, "INBOX") == []
+      assert length(ModelMailTransport.messages(name, "Archive")) == 1
+      assert [_file] = cur_files(root, dir_of("Archive"))
+    end
+
+    test "a needs_review move that stays unprovable remains needs_review; manifest intact, source untouched",
+         %{root: root} do
+      name = start_model!(capabilities: [:condstore, :uidplus])
+      {c, manifest} = stuck_needs_review_move!(name, root)
+
+      # The destination never received the message; recovery can't prove it.
+      OpsExecutor.recover(c)
+
+      assert [still] = Store.pending_ops("mara")
+      assert still.state == "needs_review"
+      assert File.exists?(manifest)
+      # No destructive step: the source occurrence is untouched.
+      assert length(ModelMailTransport.messages(name, "INBOX")) == 1
+      assert ModelMailTransport.messages(name, "Archive") == []
     end
   end
 

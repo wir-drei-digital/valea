@@ -608,6 +608,110 @@ defmodule Valea.Mail.EngineTest do
     refute status.last_error =~ secret
   end
 
+  # -- RPC ops serialization (I1/I2) -------------------------------------------
+
+  # apply_ops calls block their caller, so drive them from a throwaway process
+  # that ships the reply back to the test via a message.
+  defp apply_ops_async(slug, ops) do
+    test_pid = self()
+    spawn(fn -> send(test_pid, {:ops_reply, Engine.apply_ops(slug, ops)}) end)
+  end
+
+  @a_flag_op %{
+    "op" => "flag",
+    "msg_id" => "m",
+    "folder" => "INBOX",
+    "add" => ["S"],
+    "remove" => []
+  }
+
+  test "apply_ops does not run concurrently with an in-flight sync pass: it queues, then runs after",
+       %{root: root} do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 70, "mara")
+    open(root, 70)
+    :ok = Engine.set_credential("mara", "app-password")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    # A sync pass is running (hung in its Task at connect).
+    assert :ok = Engine.sync_now("mara")
+    assert_receive {:connect_called, pass_pid}
+    assert Engine.status("mara").state == "syncing"
+
+    # apply_ops arrives mid-pass. It MUST NOT open a second connection (i.e.
+    # start executing against the same mailbox/ledger) while the pass runs.
+    apply_ops_async("mara", [@a_flag_op])
+    refute_receive {:connect_called, _concurrent}, 200
+
+    # Release the pass; only THEN does the queued ops task connect + run.
+    send(pass_pid, {:release, {:error, :test_done}})
+    assert_receive {:mail_sync_finished, "mara", _}, 2_000
+    assert_receive {:connect_called, ops_pid}, 2_000
+
+    send(ops_pid, {:release, {:ok, ops_pid}})
+    assert_receive {:ops_reply, {:ok, results}}, 2_000
+    assert [%{"op" => 0, "result" => _}] = results
+
+    assert %{sync_task: nil, ops_current: nil} =
+             :sys.get_state(GenServer.whereis(Engine.via("mara")))
+  end
+
+  test "a poll tick / sync_now arriving while an ops task runs never starts a concurrent pass", %{
+    root: root
+  } do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 72, "mara")
+    open(root, 72)
+    :ok = Engine.set_credential("mara", "app-password")
+
+    # An ops task is in flight (hung at connect).
+    apply_ops_async("mara", [@a_flag_op])
+    assert_receive {:connect_called, ops_pid}, 2_000
+
+    pid = GenServer.whereis(Engine.via("mara"))
+
+    # sync_now + a poll tick while the ops task runs: no second connect starts.
+    assert :ok = Engine.sync_now("mara")
+    send(pid, :poll)
+    refute_receive {:connect_called, _concurrent}, 200
+
+    send(ops_pid, {:release, {:ok, ops_pid}})
+    assert_receive {:ops_reply, {:ok, _results}}, 2_000
+  end
+
+  test "status/1 answers instantly while an ops task is executing (never freezes behind it)", %{
+    root: root
+  } do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 71, "mara")
+    open(root, 71)
+    :ok = Engine.set_credential("mara", "app-password")
+
+    # An ops task is in flight (hung at connect) — the Engine's own loop must
+    # stay free to answer status.
+    apply_ops_async("mara", [@a_flag_op])
+    assert_receive {:connect_called, ops_pid}, 2_000
+
+    status = Engine.status("mara")
+    assert status != nil
+    assert status.account == "mara"
+
+    send(ops_pid, {:release, {:ok, ops_pid}})
+    assert_receive {:ops_reply, {:ok, _results}}, 2_000
+  end
+
   # -- mailbox_replaced stickiness + readopt -----------------------------------
 
   @raw_a "From: A <a@example.com>\r\nSubject: Hi\r\nDate: Wed, 15 Jul 2026 09:00:00 +0000\r\nMessage-ID: <a@example.com>\r\n\r\nBody\r\n"

@@ -68,6 +68,28 @@ defmodule Valea.Mail.Engine do
   The credential closure is handed to the task and only ever called inside
   `SyncPass` at the `transport.connect/3` boundary.
 
+  ## RPC declared ops (`apply_ops`)
+
+  `mail_apply_ops` (the Mail UI's archive/move/flag actions) runs the SAME
+  `Valea.Mail.OpsExecutor` core as the ops-file push phase, but it must never
+  execute concurrently with a sync pass (or another ops batch) — they mutate
+  the same mailbox/ledger/manifests, and a concurrent `recover()` or a
+  duplicate-copy on a non-UIDPLUS server would corrupt state. So an ops batch
+  runs in its OWN monitored+linked `Task` (exactly like a sync pass), and is
+  STRICTLY SERIALIZED against passes: `sync_task` and `ops_current` are two
+  faces of the one "background work in flight" slot — `busy?/1` gates both.
+
+  An `apply_ops` arriving while a pass (or an earlier ops batch) is in flight
+  is QUEUED (`ops_queue`) rather than run inline; its `GenServer.reply` is
+  DEFERRED until its own task finishes (so `handle_call` never blocks the
+  Engine loop — `status/1`, `sync_now/1`, `set_credential/2` and the poll tick
+  keep answering instantly). Conversely, a `sync_now`/poll tick arriving while
+  an ops task runs is a no-op (`start_pass_unless_running/1` sees `busy?`), so
+  no pass ever runs alongside an ops batch. In the normal case the queued
+  reply still lands within the caller's 60s call timeout. The per-op results
+  array is always returned (a connect/executor failure degrades to per-op
+  rejections, keeping `mail_apply_ops`'s frozen shape populated).
+
   ## `mailbox_replaced` stickiness + `readopt`
 
   A pass reporting `{:error, :mailbox_replaced}` (`Valea.Mail.Reconcile.
@@ -238,12 +260,16 @@ defmodule Valea.Mail.Engine do
 
   @doc """
   Executes RPC-originated declared ops (the Mail UI's archive/move/flag
-  actions) inline and synchronously, serialized through this account's
-  Engine (spec §RPC surface — `mail_apply_ops`). Connects, reconciles any
-  in-flight ops, runs the same `Valea.Mail.OpsExecutor` core as the ops-file
-  push phase (origin `"rpc"`), and returns the per-op results array. Gated
-  exactly like `sync_now/1`. `{:error, reason}` when the account can't run;
-  `{:error, :not_found}` when no Engine is running for `slug`.
+  actions), serialized through this account's Engine (spec §RPC surface —
+  `mail_apply_ops`). Runs in a monitored `Task`, STRICTLY serialized against
+  sync passes and other ops batches (see the moduledoc, §RPC declared ops): it
+  connects, reconciles any in-flight ops, runs the same `Valea.Mail.OpsExecutor`
+  core as the ops-file push phase (origin `"rpc"`), and returns the per-op
+  results array. From the caller's view this is synchronous — the reply is
+  deferred until the task finishes, but blocks nothing in the Engine loop
+  meanwhile. Gated exactly like `sync_now/1`. `{:error, reason}` when the
+  account can't run; `{:error, :not_found}` when no Engine is running for
+  `slug`.
   """
   @spec apply_ops(String.t(), [map()]) ::
           {:ok, [map()]}
@@ -290,6 +316,12 @@ defmodule Valea.Mail.Engine do
       workspace_id: nil,
       poll_timer: nil,
       sync_task: nil,
+      # RPC ops execution — the single in-flight ops Task (`%{task: {pid, ref},
+      # from:, ops:}`) plus a FIFO queue of deferred `apply_ops` callers waiting
+      # behind whatever background work (a pass or an earlier ops batch) is
+      # currently running. See the moduledoc, §RPC declared ops.
+      ops_current: nil,
+      ops_queue: [],
       pass_readopt_authorized: false,
       notices: []
     }
@@ -328,15 +360,23 @@ defmodule Valea.Mail.Engine do
     end
   end
 
-  # RPC declared ops — connect, reconcile, execute inline; single-flight
-  # gated like sync_now. Runs in the Engine loop (spec: serialized through the
-  # account's Engine); a per-op results array is always returned (connect
-  # failure surfaces as per-op `connect_failed` rejections, keeping the frozen
-  # RPC shape populated).
-  def handle_call({:apply_ops, ops}, _from, state) do
+  # RPC declared ops — strictly serialized against sync passes and other ops
+  # batches (moduledoc §RPC declared ops). Gated like `sync_now`; on a gate
+  # failure it replies immediately. Otherwise the reply is DEFERRED: the batch
+  # either starts its own Task now (if no background work is in flight) or is
+  # QUEUED behind the running pass/ops task — never run inline in the Engine
+  # loop, so `status`/`sync_now`/`:poll` stay responsive throughout.
+  def handle_call({:apply_ops, ops}, from, state) do
     case validate_sync(state) do
-      :ok -> {:reply, {:ok, run_rpc_ops(state, ops)}, state}
-      {:error, _reason} = error -> {:reply, error, state}
+      :ok ->
+        if busy?(state) do
+          {:noreply, %{state | ops_queue: state.ops_queue ++ [%{from: from, ops: ops}]}}
+        else
+          {:noreply, start_ops_task(state, from, ops)}
+        end
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
     end
   end
 
@@ -379,20 +419,45 @@ defmodule Valea.Mail.Engine do
 
   def handle_info(:poll, state), do: {:noreply, state |> maybe_start_pass() |> schedule_poll()}
 
-  # A pass Task reported its result: flush the pending :DOWN, then apply it.
+  # A pass Task reported its result: flush the pending :DOWN, apply it, then
+  # start any ops batch that queued behind the pass.
   def handle_info({:sync_result, pid, result}, %{sync_task: {pid, ref}} = state) do
     Process.demonitor(ref, [:flush])
-    {:noreply, finish_pass(state, result)}
+    {:noreply, state |> finish_pass(result) |> drain_ops()}
   end
 
   # The pass Task crashed before reporting (SyncPass returns tuples, so this
   # is an unexpected raise/exit) — treat it as a failed pass, not a wedge.
   def handle_info({:DOWN, ref, :process, pid, reason}, %{sync_task: {pid, ref}} = state) do
-    {:noreply, finish_pass(state, {:error, {:sync_task_down, reason}})}
+    {:noreply, state |> finish_pass({:error, {:sync_task_down, reason}}) |> drain_ops()}
+  end
+
+  # An ops Task reported its per-op results: flush the pending :DOWN, reply to
+  # the deferred caller, then start the next queued batch (if any).
+  def handle_info(
+        {:ops_result, pid, results},
+        %{ops_current: %{task: {pid, ref}, from: from}} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+    GenServer.reply(from, {:ok, results})
+    {:noreply, %{state | ops_current: nil} |> drain_ops()}
+  end
+
+  # The ops Task died before reporting (its own core rescues, so this is an
+  # unexpected raise/exit or a teardown kill) — reply with per-op rejections so
+  # the deferred caller never hangs, then drain the queue.
+  def handle_info(
+        {:DOWN, ref, :process, pid, _reason},
+        %{ops_current: %{task: {pid, ref}, from: from, ops: ops}} = state
+      ) do
+    GenServer.reply(from, {:ok, reject_all_ops(ops, "execution_error")})
+    {:noreply, %{state | ops_current: nil} |> drain_ops()}
   end
 
   # Stale task chatter (already handled/superseded): ignore.
   def handle_info({:sync_result, _pid, _result}, state), do: {:noreply, state}
+  def handle_info({:ops_result, _pid, _results}, state), do: {:noreply, state}
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
   # A LINKED sync task exited (normal completion or crash). Because the
   # Engine traps exits, the exit signal arrives here as a message; the paired
@@ -402,43 +467,101 @@ defmodule Valea.Mail.Engine do
 
   # -- RPC ops execution --------------------------------------------------
 
+  # True whenever ANY background work is in flight (a sync pass OR an ops
+  # batch) — the single mutual-exclusion gate that keeps passes and ops from
+  # ever running concurrently against the same mailbox/ledger.
+  defp busy?(state), do: state.sync_task != nil or state.ops_current != nil
+
+  # Starts one ops batch in a LINKED + monitored Task (same lifecycle as a sync
+  # pass — see `spawn_linked_task/1`), pinning `{from, ops}` so the result
+  # handler can reply to the deferred caller. The credential closure travels
+  # into the Task and is only ever called there, at `connect/3`.
+  defp start_ops_task(state, from, ops) do
+    parent = self()
+
+    args = %{
+      root: state.root,
+      account: state.account,
+      settings: state.settings,
+      transport: state.transport,
+      connect_opts: state.connect_opts,
+      credential: state.credential
+    }
+
+    task =
+      spawn_linked_task(fn -> send(parent, {:ops_result, self(), run_rpc_ops(args, ops)}) end)
+
+    %{state | ops_current: %{task: task, from: from, ops: ops}}
+  end
+
+  # After a pass or an ops batch finishes: if nothing is in flight and callers
+  # are queued, start the next one. Re-validates each queued caller at drain
+  # time (the account may have become blocked meanwhile) — a caller that no
+  # longer passes the gate is replied with the error and skipped.
+  defp drain_ops(state) do
+    cond do
+      busy?(state) ->
+        state
+
+      state.ops_queue == [] ->
+        state
+
+      true ->
+        [%{from: from, ops: ops} | rest] = state.ops_queue
+        state = %{state | ops_queue: rest}
+
+        case validate_sync(state) do
+          :ok ->
+            start_ops_task(state, from, ops)
+
+          {:error, _reason} = error ->
+            GenServer.reply(from, error)
+            drain_ops(state)
+        end
+    end
+  end
+
   # Connects, reconciles in-flight ops, then runs the executor's per-op core
   # against the RPC-supplied raw ops. Always returns a per-op results list;
   # a connect failure maps every op to a `connect_failed` rejection so the
-  # RPC's frozen results-array shape stays populated.
-  defp run_rpc_ops(state, ops) do
-    case state.transport.connect(
-           state.settings.imap,
-           current_secret(state),
-           state.connect_opts
+  # RPC's frozen results-array shape stays populated. Runs INSIDE the ops Task,
+  # never in the Engine loop.
+  defp run_rpc_ops(args, ops) do
+    case args.transport.connect(
+           args.settings.imap,
+           resolve_secret(args.credential),
+           args.connect_opts
          ) do
       {:ok, conn} ->
         try do
           ctx = %{
-            root: state.root,
-            account: state.account,
-            settings: state.settings,
-            transport: state.transport,
+            root: args.root,
+            account: args.account,
+            settings: args.settings,
+            transport: args.transport,
             conn: conn
           }
 
           OpsExecutor.recover(ctx)
           OpsExecutor.apply_raw_ops(ctx, ops, "rpc")
         after
-          safe_logout(state.transport, conn)
+          safe_logout(args.transport, conn)
         end
 
       {:error, _reason} ->
         reject_all_ops(ops, "connect_failed")
     end
   rescue
-    # An executor/transport failure must never crash this Engine (and lose the
-    # RAM-only credential nothing else holds): degrade to per-op rejections so
-    # the RPC's frozen results-array shape is always returned.
+    # An executor/transport failure must never crash the Task and hang the
+    # deferred caller: degrade to per-op rejections so the RPC's frozen
+    # results-array shape is always returned.
     _ -> reject_all_ops(ops, "execution_error")
   catch
     :exit, _ -> reject_all_ops(ops, "execution_error")
   end
+
+  defp resolve_secret(fun) when is_function(fun, 0), do: fun.()
+  defp resolve_secret(_credential), do: nil
 
   defp reject_all_ops(ops, reason) do
     ops
@@ -564,9 +687,13 @@ defmodule Valea.Mail.Engine do
     end
   end
 
-  # Single-flight: only start a pass when none is in flight.
-  defp start_pass_unless_running(%{sync_task: nil} = state), do: start_pass(state)
-  defp start_pass_unless_running(state), do: state
+  # Single-flight: only start a pass when NO background work is in flight —
+  # neither another pass NOR an ops batch (they'd contend for the same
+  # mailbox/ledger). A `sync_now`/poll landing while an ops task runs is a
+  # no-op, exactly like a second `sync_now` during a pass.
+  defp start_pass_unless_running(state) do
+    if busy?(state), do: state, else: start_pass(state)
+  end
 
   # Runs `SyncPass.run/1` in a LINKED + monitored process. The link ties the
   # task's lifetime to the Engine's: a Runtime teardown on a workspace switch

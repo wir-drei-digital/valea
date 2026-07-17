@@ -560,10 +560,10 @@ defmodule Valea.Mail.OpsExecutor do
 
   @doc """
   Reconciles every in-flight op before any new op executes: move ledger rows
-  in `pending`/`executing` are reconciled (confirm-first, idempotent) from
-  their manifests, and claimed ops files lacking a result sidecar are
-  replayed (flag ops resolve via their recorded baselines) and their results
-  written.
+  in `pending`/`executing`/`needs_review` are reconciled (confirm-first,
+  idempotent) from their manifests, and claimed ops files lacking a result
+  sidecar are replayed (flag ops resolve via their recorded baselines) and
+  their results written.
   """
   @spec recover(ctx()) :: :ok
   def recover(ctx) do
@@ -575,7 +575,7 @@ defmodule Valea.Mail.OpsExecutor do
   defp recover_moves(ctx) do
     ctx.account
     |> Store.pending_ops()
-    |> Enum.filter(&(&1.kind == "move" and &1.state in ["pending", "executing"]))
+    |> Enum.filter(&(&1.kind == "move" and &1.state in ["pending", "executing", "needs_review"]))
     |> Enum.each(fn op_row ->
       case read_manifest(ctx, op_row.id) do
         nil ->
@@ -583,9 +583,15 @@ defmodule Valea.Mail.OpsExecutor do
 
         manifest ->
           # A `pending` move never reached the ladder (no mutating I/O), so
-          # re-execute it fresh (verification + ladder). An `executing` move
-          # may have partially mutated — reconcile (confirm-first, never a
-          # blind retry).
+          # re-execute it fresh (verification + ladder). An `executing` OR a
+          # parked `needs_review` move is re-reconciled (confirm-first, never a
+          # blind retry): the same proving logic resolves it whenever the
+          # server state has since become provable (source gone + a single
+          # confirmed destination ⇒ complete; a proven-duplicate source ⇒
+          # purged then complete), cleaning up the manifest; anything still
+          # ambiguous stays `needs_review` with its manifest intact so the next
+          # pass tries again. No new destructive step runs on an unprovable
+          # outcome — `M2`.
           if op_row.state == "pending",
             do: execute(ctx, op_row),
             else: reconcile_move(ctx, op_row, manifest)
