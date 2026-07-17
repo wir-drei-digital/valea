@@ -567,7 +567,12 @@ the outbound headers are serialized **from the parsed values only**,
 never from raw strings; `subject` is RFC 2047-encoded; `in_reply_to`
 must be a syntactically valid msg_id. The review panel displays the
 parsed recipient set — exactly what will be transmitted, not the raw
-frontmatter text.
+frontmatter text. **Push state is engine-owned, never agent-claimable**:
+ingestion accepts only `status: draft` (or an absent field); the
+displayed draft state (`draft | pushing | pushed`) derives exclusively
+from the ledger and its verified snapshot hash. A frontmatter
+`status: pushed`/`pushing` with no matching ledger op renders as `draft`
+with a notice — an agent cannot fake a push.
 
 Agents (and the user) write drafts through the normal ask-gate. The Mail
 UI lists drafts with a review panel offering one **user-only** action:
@@ -581,7 +586,9 @@ UI lists drafts with a review panel offering one **user-only** action:
      op's status. Pushes are additionally serialized through the
      account's Engine process. All of this happens **before any network
      I/O**. The op is born in state `claimed` — not yet executable.
-  2. **Immutable snapshot.** Read the draft file once into a byte buffer;
+  2. **Immutable snapshot.** Open the derived, contained draft path
+     no-follow (regular single-link file — see the RPC's containment
+     rules) and read it once into a byte buffer;
      verify `content_hash` against that buffer (mismatch → the op
      terminates `rejected` with a re-review error); compose to RFC822
      (resurrect `DraftMime` from git history, plain-text MIME only)
@@ -654,7 +661,13 @@ transport (ACP only), which is the enforced boundary making these
 - `list_mail_messages(account, folder, limit \\ 100, before \\ nil)` —
   newest-first pagination by date; `get_mail_message(account, msg_id)`.
 - `list_mail_drafts()`,
-  `push_draft_to_mailbox(account, draft_path, content_hash, generation)` —
+  `push_draft_to_mailbox(account, draft_name, content_hash, generation)` —
+  `draft_name` is a validated basename (no separators, no dot-segments);
+  the server derives the path as `sources/mail/<account>/drafts/<name>`,
+  contains it via `resolve_real` under that account's `drafts/` root, and
+  opens it **no-follow, requiring a regular single-link file** — the
+  snapshot is taken from that opened descriptor (an in-tree symlink to
+  another account's draft or any other file is rejected, never composed).
   `content_hash` is the SHA-256 of the draft exactly as reviewed in the
   UI; a mismatch rejects with a re-review error.
 
@@ -811,7 +824,11 @@ boundary; every failure state has a copyable remedy or a status notice.
   double-push** → one op, one Drafts message, second caller sees the
   existing op; **draft swapped between verification and composition** →
   structurally impossible (composition consumes the verified buffer) —
-  test asserts compose-from-buffer semantics; **draft edited while a push
+  test asserts compose-from-buffer semantics; **cross-account symlink
+  push** (draft entry symlinked to another account's draft or any other
+  file → rejected at the no-follow open, never composed); **faked status**
+  (agent-written `status: pushed` with no ledger op → renders as `draft`
+  with a notice); **draft edited while a push
   is in flight** → compare-and-swap leaves the new revision untouched as
   `draft`, ledger/panel report the pushed revision; **crash between
   claim and result** → boot replays the claimed file (flags idempotent,
