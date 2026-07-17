@@ -129,6 +129,37 @@ defmodule Valea.Mail.StoreTest do
       assert :ok = Store.mark_held("mara@example.com", "INBOX", false)
       assert {:ok, %{held: false}} = Store.get_sync_state("mara@example.com", "INBOX")
     end
+
+    # Regression: `put_sync_state/3`'s `:upsert` action re-applies `default:
+    # false` for every OMITTED default-bearing column (`backfill_complete`,
+    # `held`) it doesn't just leave untouched — a genuinely PARTIAL writer
+    # (like `mark_held/3`, which only ever passes `held`) was clobbering the
+    # OTHER default-bearing column back to `false`.
+    test "mark_held/3 (a partial writer) does not clobber backfill_complete" do
+      Store.put_sync_state("mara@example.com", "INBOX", %{
+        uidvalidity: 1,
+        high_water_uid: 10,
+        backfill_complete: true
+      })
+
+      assert :ok = Store.mark_held("mara@example.com", "INBOX", true)
+
+      assert {:ok, %{held: true, backfill_complete: true, uidvalidity: 1, high_water_uid: 10}} =
+               Store.get_sync_state("mara@example.com", "INBOX")
+    end
+
+    test "a partial put_sync_state/3 (e.g. SyncPass rebinding dir) does not clobber held" do
+      Store.put_sync_state("mara@example.com", "INBOX", %{
+        uidvalidity: 1,
+        high_water_uid: 10,
+        held: true
+      })
+
+      assert :ok = Store.put_sync_state("mara@example.com", "INBOX", %{dir: "x"})
+
+      assert {:ok, %{held: true, dir: "x", uidvalidity: 1, high_water_uid: 10}} =
+               Store.get_sync_state("mara@example.com", "INBOX")
+    end
   end
 
   describe "occurrences (mail_uid_map)" do

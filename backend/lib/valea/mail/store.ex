@@ -110,13 +110,35 @@ defmodule Valea.Mail.Store do
           | {:error, :not_found}
   def get_sync_state(folder), do: get_sync_state(@legacy, folder)
 
-  @doc "Upserts (a subset of) `(account, folder)`'s sync-state columns — only the keys in `attrs` change."
+  @doc """
+  Upserts (a subset of) `(account, folder)`'s sync-state columns — only the
+  keys in `attrs` change; every other column keeps its stored value.
+
+  Ash's `:upsert` action lists every default-bearing column
+  (`backfill_complete`, `held`) in `upsert_fields`, and a `:create`
+  changeset fills in an attribute's `default:` the moment it's omitted from
+  `attrs` — so handing the changeset `attrs` alone would re-apply
+  `default: false` for whichever of those two THIS call didn't mention,
+  clobbering it back to `false` even though the row already held `true`
+  (`mark_held/3` only ever passes `held`; `Valea.Mail.Index.bind_sync_state!`
+  only ever passes `dir` + `backfill_complete: false` — either one would
+  reset the OTHER flag). Read-modify-write instead: merge `attrs` OVER the
+  existing row (defaults only apply when there's no existing row for a key
+  to fall back on, i.e. a brand-new `(account, folder)`), so an omitted key
+  always preserves what's actually stored.
+  """
   @spec put_sync_state(String.t(), String.t(), map()) :: :ok
   def put_sync_state(account, folder, attrs) when is_map(attrs) do
+    existing =
+      case Ash.get(SyncState, %{account: account, folder: folder}) do
+        {:ok, row} -> sync_state_map(row)
+        {:error, _} -> %{}
+      end
+
     SyncState
     |> Ash.Changeset.for_create(
       :upsert,
-      Map.merge(attrs, %{account: account, folder: folder})
+      existing |> Map.merge(attrs) |> Map.merge(%{account: account, folder: folder})
     )
     |> Ash.create!()
 

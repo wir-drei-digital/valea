@@ -591,6 +591,53 @@ defmodule Valea.Mail.SyncPassTest do
       assert File.dir?(quarantine_dir)
       assert length(File.ls!(quarantine_dir)) == 1
     end
+
+    # Regression: `restore_missing/4` used to call `Views.land/4` (with
+    # `msg_id_hint: occ.msg_id`) BEFORE checking whether the re-fetched bytes
+    # were still the SAME content this uid held. A content-swap under a
+    # stable uid (the hint's stored fingerprint no longer matches) makes
+    # `Views.land/4`'s own hint fallback resolve a BRAND NEW msg_id for the
+    # new content and write a view + sidecar for it — an orphan, since
+    # nothing in `Store` ever comes to reference that id (the occurrence
+    # stays under the OLD msg_id, and the mismatch is reported as an error
+    # afterwards regardless). Fingerprint-verifying FIRST means a mismatch
+    # skips `Views.land/4` entirely: no orphan view ever gets written.
+    test "content-swap under a stable UID is verified before landing: no orphan view", %{
+      root: root
+    } do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      uid = ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+
+      assert {:ok, _} = run(name, root)
+      [occ] = Store.occurrences("mara", "INBOX")
+      msg_id_a = occ.msg_id
+      file = Maildir.encode_filename(msg_id_a, uid, occ.flags)
+      assert cur_files(root, "mara", "INBOX") == [file]
+
+      views_dir = Path.join([root, "sources", "mail", "mara", "views", "messages"])
+      assert File.ls!(views_dir) == ["#{msg_id_a}.md"]
+
+      # Out-of-band deletion of the local file, THEN the server-side content
+      # under the SAME uid is swapped for genuinely different bytes.
+      # `ModelMailTransport.put_message/4` only ever assigns a FRESH uid, so
+      # pinning the same uid to different content means reaching into its
+      # Agent state directly (documented shape: `state.folders[folder]
+      # .messages[uid].raw`) rather than going through its public API.
+      File.rm!(Path.join(cur_dir(root, "mara", "INBOX"), file))
+
+      Agent.update(name, fn state ->
+        put_in(state, [:folders, "INBOX", :messages, uid, :raw], @raw_b)
+      end)
+
+      assert {:ok, %{errors: errors}} = run(name, root)
+      assert Enum.any?(errors, &(&1 =~ "content changed under a stable UID"))
+
+      # Nothing landed: no file delivered under the old name, and no orphan
+      # view for the swapped-in content either.
+      assert cur_files(root, "mara", "INBOX") == []
+      assert File.ls!(views_dir) == ["#{msg_id_a}.md"]
+    end
   end
 
   # ==========================================================================

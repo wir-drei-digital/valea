@@ -595,30 +595,65 @@ defmodule Valea.Mail.SyncPass do
     Enum.reduce(missing, acc, fn occ, acc ->
       case ctx.transport.uid_fetch_full(ctx.conn, occ.uid) do
         {:ok, raw} ->
-          {:ok, %{msg_id: landed}} =
-            Views.land(ctx.root, ctx.account, raw, %{msg_id_hint: occ.msg_id})
-
-          if landed == occ.msg_id do
-            filename = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags)
-            Maildir.deliver!(dir_abs, filename, raw)
-            write_index_row!(ctx, folder, dir_rel, occ.uid, occ.msg_id, occ.flags, filename)
-            refresh_view(ctx, occ.msg_id)
-
-            add_notice(
-              acc,
-              "folder #{folder}: restored out-of-band-deleted occurrence uid=#{occ.uid}"
-            )
-          else
-            add_error(
-              acc,
-              "folder #{folder}: uid=#{occ.uid} content changed under a stable UID; skipped"
-            )
-          end
+          restore_verified(acc, ctx, folder, dir_abs, dir_rel, occ, raw)
 
         {:error, reason} ->
           add_error(acc, "folder #{folder}: could not restore uid=#{occ.uid}: #{inspect(reason)}")
       end
     end)
+  end
+
+  # Verifies the re-fetched bytes are STILL the same content this uid held
+  # BEFORE calling `Views.land/4` at all. A content-swap under a stable uid
+  # (a provider that reuses uids across genuinely different messages) must
+  # not land+deliver the new content under the old msg_id — but landing
+  # first and comparing after (the old shape of this function) has a worse
+  # failure mode than just skipping the delivery: `Views.land/4`'s own
+  # `msg_id_hint` fallback (see its moduledoc) resolves a BRAND NEW msg_id
+  # for the mismatched content and writes a view + sidecar (+ attachments)
+  # for it, and nothing in `Store` ever comes to reference that id (the
+  # occurrence stays under the OLD msg_id, and the mismatch is reported as
+  # an error either way) — an orphan with no GC path. Comparing fingerprints
+  # first means a mismatch skips `Views.land/4` entirely: no orphan ever
+  # gets written. A `nil` stored fingerprint (lost sidecar) is treated as a
+  # match — `Views.land/4` already knows how to recover that case (see its
+  # moduledoc's "Fingerprint bookkeeping" section), and this function isn't
+  # the place to duplicate that recovery.
+  defp restore_verified(acc, ctx, folder, dir_abs, dir_rel, occ, raw) do
+    fingerprint = MessageFile.fingerprint(raw)
+    stored = Views.stored_fingerprint(ctx.root, ctx.account, occ.msg_id)
+
+    if stored != nil and stored != fingerprint do
+      add_error(
+        acc,
+        "folder #{folder}: uid=#{occ.uid} content changed under a stable UID; skipped"
+      )
+    else
+      # Verified above: `Views.land/4`'s own hint resolution can only land
+      # this under `occ.msg_id` now (see moduledoc) — `landed == occ.msg_id`
+      # always holds. Checked anyway rather than trusted blindly: a defensive
+      # belt-and-braces against `Views.land/4`'s resolution ever changing
+      # underneath this call.
+      {:ok, %{msg_id: landed}} =
+        Views.land(ctx.root, ctx.account, raw, %{msg_id_hint: occ.msg_id})
+
+      if landed == occ.msg_id do
+        filename = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags)
+        Maildir.deliver!(dir_abs, filename, raw)
+        write_index_row!(ctx, folder, dir_rel, occ.uid, occ.msg_id, occ.flags, filename)
+        refresh_view(ctx, occ.msg_id)
+
+        add_notice(
+          acc,
+          "folder #{folder}: restored out-of-band-deleted occurrence uid=#{occ.uid}"
+        )
+      else
+        add_error(
+          acc,
+          "folder #{folder}: uid=#{occ.uid} content changed under a stable UID; skipped"
+        )
+      end
+    end
   end
 
   # Any file in `cur/` that doesn't parse, or parses to a UID with no UID-map

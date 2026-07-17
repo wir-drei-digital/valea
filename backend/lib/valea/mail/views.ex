@@ -221,6 +221,25 @@ defmodule Valea.Mail.Views do
     {Path.basename(name, ext), ext}
   end
 
+  @doc """
+  The fingerprint recorded in the `.fingerprints` sidecar for
+  `(account, msg_id)`, or `nil` when no sidecar exists (unclaimed, or a
+  view that was never landed). Exposed so a caller that's about to re-land
+  bytes under a msg_id it already trusts (`SyncPass.restore_missing/4`,
+  restoring an out-of-band-deleted local file) can verify the re-fetched
+  bytes are STILL the same content BEFORE calling `land/4` — `land/4`'s own
+  `msg_id_hint` fallback (see the moduledoc) resolves a BRAND NEW msg_id
+  for mismatched content and writes a view for it, which is exactly right
+  when the caller wants that new id back, but wrong when the caller only
+  wanted to confirm identity and would otherwise leave that fresh view
+  orphaned (nothing yet references it) on a mismatch it was going to reject
+  anyway.
+  """
+  @spec stored_fingerprint(String.t(), String.t(), String.t()) :: String.t() | nil
+  def stored_fingerprint(root, account, msg_id)
+      when is_binary(root) and is_binary(account) and is_binary(msg_id),
+      do: fingerprint_of(root, account, msg_id)
+
   # -- refresh_folders ------------------------------------------------------
 
   @doc """
