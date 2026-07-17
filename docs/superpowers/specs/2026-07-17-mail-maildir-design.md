@@ -225,11 +225,15 @@ only when the outcome is proven. For a move, the source copy is deleted
 only once **exactly one** fingerprint-confirmed destination occurrence is
 proven to exist; anything unprovable (zero or several matches) stops the
 op in `needs_review` with a recovery notice instead of retrying. Appends
-are idempotent by construction: every composed message carries a stable,
-unique, **Valea-generated** Message-ID (always present, unlike inbound
-mail), and every append execution — first attempt or retry — searches the
-target folder for that Message-ID first, marking the op complete if
-found. Flag `STORE`s are idempotent and execute directly, without ledger
+are idempotent-checked: every composed message carries a stable, unique,
+**Valea-generated** Message-ID (always present, unlike inbound mail), and
+every append execution — first attempt or retry — searches the target
+folder for that Message-ID first, marking the op complete if found.
+After an **unknown outcome** (lost response), a missing target-folder
+match is *not* proof of failure — a client or server rule may already
+have filed the new draft elsewhere — so the search widens to every known
+folder of the account: exactly one fingerprint-confirmed match →
+complete; zero or several → `needs_review`, never a blind re-`APPEND`. Flag `STORE`s are idempotent and execute directly, without ledger
 rows — their crash recovery is the claimed-file replay (see Push).
 
 **Write-through folders.** The `folders.{archive,trash}` targets always
@@ -646,9 +650,13 @@ UI lists drafts with a review panel offering one **user-only** action:
      `status: pushing` stamp reverts (compare-and-swap again), and the
      error is surfaced.
 
-  There is no ambiguous terminal state: an unknown APPEND outcome is
-  always resolvable by the Message-ID search, and retrying is safe by
-  construction. Boot recovery covers both storage orderings: a manifest
+  An unknown APPEND outcome is almost always resolvable by the
+  Message-ID search (widened to all known folders — the new draft may
+  already have been filed by another client); when nothing is provable,
+  the push stops in `needs_review` for the user to resolve by checking
+  their own client. The worst case is an unsent draft — never mail
+  delivered to anyone, and never a blind duplicate `APPEND`. Boot
+  recovery covers both storage orderings: a manifest
   without a ledger row blocks until reconciled (see Store); a `claimed`
   row without its spool payload is provably un-transmitted (no network
   I/O happens before `pending`) and terminates `rejected` — the draft
@@ -837,7 +845,10 @@ boundary; every failure state has a copyable remedy or a status notice.
   **database loss with an in-flight RPC-originated move** → boot
   reconciles from the move manifest, no duplicate destination copy;
   **append crash after server acceptance** → search-first
-  retry finds the Message-ID and completes without a duplicate; spool
+  retry finds the Message-ID and completes without a duplicate;
+  **appended draft filed away before reconciliation** (another client
+  moved it out of Drafts → widened all-folder search resolves; externally
+  deleted → `needs_review`, no duplicate APPEND); spool
   tamper (payload hash mismatch) → op stops in `needs_review`;
   **recycled-UID guard** (UIDVALIDITY changed or source fingerprint
   mismatched at execution time → op rejected, no `STORE`/`EXPUNGE`
