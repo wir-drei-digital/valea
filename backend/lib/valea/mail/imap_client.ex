@@ -9,15 +9,19 @@ defmodule Valea.Mail.ImapClient do
     * **UIDs only.** Sequence numbers are never used in any command.
     * **`BODY.PEEK[...]`** for every fetch — reading a message here never
       sets `\\Seen` on the server.
-    * **Safe move, never bare `EXPUNGE`.** `uid_move/3` prefers `UID MOVE`
-      (the `MOVE` capability), falls back to `UID COPY` + `UID STORE
-      +FLAGS (\\Deleted)` + `UID EXPUNGE <uid>` (RFC 4315, `UIDPLUS`) which
-      expunges only the one message just marked, and otherwise reports
-      `{:unsupported, _}` without mutating anything. A bare `EXPUNGE` would
-      purge every `\\Deleted` message in the mailbox, including ones the
-      user's own client marked — it is never issued anywhere in this
-      module (grep for the literal string `"EXPUNGE"`: the only match is
-      the `"UID", "EXPUNGE"` pair in `move_via_uidplus/3`).
+    * **Safe move, never bare `EXPUNGE`.** `uid_move/3` is narrowed to
+      native `UID MOVE` only (the `MOVE` capability) — without it, it
+      reports `{:unsupported, _}` and mutates nothing. The `UID COPY` +
+      `UID STORE +FLAGS (\\Deleted)` + `UID EXPUNGE <uid>` fallback ladder
+      (RFC 4315, `UIDPLUS`) lives OUTSIDE this module, in the ops executor,
+      which needs per-step control to confirm before expunging; this module
+      only exposes the primitives (`uid_copy/3`, `uid_mark_deleted/2`,
+      `uid_expunge/2`). `uid_mark_deleted/2` is the ONE sanctioned place in
+      the codebase that stores `\\Deleted`, and `uid_expunge/2` always
+      issues a targeted `UID EXPUNGE <uid>`, never a bare `EXPUNGE` — a bare
+      one would purge every `\\Deleted` message in the mailbox, including
+      ones the user's own client marked (grep for the literal string
+      `"EXPUNGE"`: the only match is the `"UID", "EXPUNGE"` pair below).
     * **Connect-per-pass.** No persistent connections, no IDLE. `connect/3`
       reads the greeting, logs in, then re-queries `CAPABILITY` (some
       servers advertise a different set once authenticated) — the cached
@@ -133,6 +137,14 @@ defmodule Valea.Mail.ImapClient do
   end
 
   @impl true
+  def examine(conn, folder) do
+    case send_command(conn, ["EXAMINE", folder]) do
+      {:ok, :ok, _text, untagged} -> {:ok, parse_select(untagged)}
+      other -> command_error(other)
+    end
+  end
+
+  @impl true
   def uid_search(conn, criteria) do
     case send_command(conn, ["UID", "SEARCH" | String.split(criteria)]) do
       {:ok, :ok, _text, untagged} ->
@@ -178,16 +190,62 @@ defmodule Valea.Mail.ImapClient do
   end
 
   @impl true
+  def uid_fetch_flags(conn, uid_set) do
+    attr_spec =
+      if supports?(conn, :gmail),
+        do: "(UID FLAGS MODSEQ X-GM-MSGID)",
+        else: "(UID FLAGS MODSEQ)"
+
+    case send_command(conn, ["UID", "FETCH", uid_set, attr_spec]) do
+      {:ok, :ok, _text, untagged} -> {:ok, collect_fetch_flags(untagged)}
+      other -> command_error(other)
+    end
+  end
+
+  @impl true
+  def uid_store_flags(conn, uid, add, remove, opts \\ []) do
+    unchangedsince = Keyword.get(opts, :unchangedsince)
+    uid_str = Integer.to_string(uid)
+
+    with {:ok, add_status} <- maybe_store(conn, uid_str, "+FLAGS", add, unchangedsince),
+         {:ok, remove_status} <- maybe_store(conn, uid_str, "-FLAGS", remove, unchangedsince) do
+      {:ok, combine_store_status(add_status, remove_status)}
+    end
+  end
+
+  @impl true
   def uid_move(conn, uid, dest_folder) do
-    cond do
-      MapSet.member?(conn.capabilities, "MOVE") ->
-        move_via_move(conn, uid, dest_folder)
+    if supports?(conn, :move) do
+      case send_command(conn, ["UID", "MOVE", Integer.to_string(uid), dest_folder]) do
+        {:ok, :ok, text, _untagged} -> {:ok, %{dest_uid: parse_copyuid_dest(text)}}
+        other -> command_error(other)
+      end
+    else
+      {:unsupported, "server does not advertise the MOVE capability"}
+    end
+  end
 
-      MapSet.member?(conn.capabilities, "UIDPLUS") ->
-        move_via_uidplus(conn, uid, dest_folder)
+  @impl true
+  def uid_copy(conn, uid, dest_folder) do
+    case send_command(conn, ["UID", "COPY", Integer.to_string(uid), dest_folder]) do
+      {:ok, :ok, text, _untagged} -> {:ok, %{dest_uid: parse_copyuid_dest(text)}}
+      other -> command_error(other)
+    end
+  end
 
-      true ->
-        {:unsupported, "server has neither MOVE nor UIDPLUS"}
+  @impl true
+  def uid_mark_deleted(conn, uid) do
+    case send_command(conn, ["UID", "STORE", Integer.to_string(uid), "+FLAGS", "(\\Deleted)"]) do
+      {:ok, :ok, _text, _untagged} -> :ok
+      other -> command_error(other)
+    end
+  end
+
+  @impl true
+  def uid_expunge(conn, uid) do
+    case send_command(conn, ["UID", "EXPUNGE", Integer.to_string(uid)]) do
+      {:ok, :ok, _text, _untagged} -> :ok
+      other -> command_error(other)
     end
   end
 
@@ -196,10 +254,15 @@ defmodule Valea.Mail.ImapClient do
     flags_arg = "(" <> Enum.join(flags, " ") <> ")"
 
     case send_command(conn, ["APPEND", folder, flags_arg, {:literal, rfc822}]) do
-      {:ok, :ok, _text, _untagged} -> :ok
+      {:ok, :ok, text, _untagged} -> {:ok, %{dest_uid: parse_appenduid_dest(text)}}
       {:ok, status, text, _untagged} -> {:error, {status, text}}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @impl true
+  def supports?(conn, capability) do
+    MapSet.member?(conn.capabilities, capability_wire_name(capability))
   end
 
   @impl true
@@ -276,28 +339,70 @@ defmodule Valea.Mail.ImapClient do
     |> MapSet.new()
   end
 
-  # -- move ladder -------------------------------------------------------
+  # -- capability probing -------------------------------------------------
 
-  defp move_via_move(conn, uid, dest_folder) do
-    case send_command(conn, ["UID", "MOVE", Integer.to_string(uid), dest_folder]) do
-      {:ok, :ok, _text, _untagged} -> :ok
+  defp capability_wire_name(:condstore), do: "CONDSTORE"
+  defp capability_wire_name(:qresync), do: "QRESYNC"
+  defp capability_wire_name(:move), do: "MOVE"
+  defp capability_wire_name(:uidplus), do: "UIDPLUS"
+  defp capability_wire_name(:gmail), do: "X-GM-EXT-1"
+
+  # -- COPYUID / APPENDUID response-code parsing -------------------------
+  #
+  # Per RFC 4315 (UIDPLUS) and RFC 6851 (MOVE), the destination UID rides in
+  # the TEXT of the tagged OK response, never as a separate untagged line:
+  # `A3 OK [COPYUID <uidvalidity> <src-uid-set> <dest-uid-set>] ...` or
+  # `A3 OK [APPENDUID <uidvalidity> <dest-uid>] ...`. Absent (a server that
+  # doesn't report it) parses to `nil` rather than erroring — the caller
+  # still has a successful move/copy/append, just without a known dest UID.
+
+  defp parse_copyuid_dest(text) do
+    case Regex.run(~r/COPYUID \d+ \S+ (\d+)/, text) do
+      [_, n] -> String.to_integer(n)
+      nil -> nil
+    end
+  end
+
+  defp parse_appenduid_dest(text) do
+    case Regex.run(~r/APPENDUID \d+ (\d+)/, text) do
+      [_, n] -> String.to_integer(n)
+      nil -> nil
+    end
+  end
+
+  # -- UID STORE (flags) helpers -------------------------------------------
+
+  # A STORE command carries either `+FLAGS` or `-FLAGS`, never both — so a
+  # combined add+remove call issues up to two sequential commands. An empty
+  # flag list issues no command at all (nothing to apply) and is trivially
+  # `:applied`.
+  defp maybe_store(_conn, _uid_str, _sign, [], _unchangedsince), do: {:ok, :applied}
+
+  defp maybe_store(conn, uid_str, sign, flags, unchangedsince) do
+    flags_arg = "(" <> Enum.join(flags, " ") <> ")"
+
+    parts =
+      case unchangedsince do
+        nil -> ["UID", "STORE", uid_str, sign, flags_arg]
+        modseq -> ["UID", "STORE", uid_str, "(UNCHANGEDSINCE #{modseq})", sign, flags_arg]
+      end
+
+    case send_command(conn, parts) do
+      {:ok, :ok, text, _untagged} -> {:ok, store_result(text)}
       other -> command_error(other)
     end
   end
 
-  defp move_via_uidplus(conn, uid, dest_folder) do
-    uid_str = Integer.to_string(uid)
-
-    with {:ok, :ok, _t, _u} <- send_command(conn, ["UID", "COPY", uid_str, dest_folder]),
-         {:ok, :ok, _t, _u} <-
-           send_command(conn, ["UID", "STORE", uid_str, "+FLAGS", "(\\Deleted)"]),
-         {:ok, :ok, _t, _u} <- send_command(conn, ["UID", "EXPUNGE", uid_str]) do
-      :ok
-    else
-      {:ok, status, text, _untagged} -> {:error, {status, text}}
-      {:error, reason} -> {:error, reason}
-    end
+  # A CONDSTORE precondition failure (RFC 4551) still comes back as a tagged
+  # OK, just with a `MODIFIED` response code in its TEXT rather than a bare
+  # completion string — never a `NO`.
+  defp store_result(text) do
+    if Regex.match?(~r/\[MODIFIED[^\]]*\]/, text), do: :modified, else: :applied
   end
+
+  defp combine_store_status(:modified, _), do: :modified
+  defp combine_store_status(_, :modified), do: :modified
+  defp combine_store_status(:applied, :applied), do: :applied
 
   # -- fetch helpers -------------------------------------------------------
 
@@ -341,12 +446,29 @@ defmodule Valea.Mail.ImapClient do
     end)
   end
 
+  # uid_fetch_flags/2 issues ONE command over a whole sequence-set, so —
+  # unlike fetch_each/fetch_one above — every untagged FETCH line in the
+  # response is a distinct message and must be collected, not just the
+  # first.
+  defp collect_fetch_flags(untagged) do
+    Enum.flat_map(untagged, fn
+      {:fetch, _seq, attrs} ->
+        [%{uid: attrs.uid, flags: attrs.flags, modseq: attrs.modseq, gm_msgid: attrs.gm_msgid}]
+
+      _ ->
+        []
+    end)
+  end
+
   # -- SELECT / SEARCH / LIST response parsing -------------------------
 
   defp parse_select(untagged) do
-    Enum.reduce(untagged, %{uidvalidity: nil, uidnext: nil}, fn
+    Enum.reduce(untagged, %{uidvalidity: nil, uidnext: nil, highestmodseq: nil}, fn
       {:untagged, line}, acc ->
-        acc |> put_matched_int(:uidvalidity, line) |> put_matched_int(:uidnext, line)
+        acc
+        |> put_matched_int(:uidvalidity, line)
+        |> put_matched_int(:uidnext, line)
+        |> put_matched_int(:highestmodseq, line)
 
       _, acc ->
         acc
@@ -363,6 +485,13 @@ defmodule Valea.Mail.ImapClient do
   defp put_matched_int(acc, :uidnext, line) do
     case Regex.run(~r/UIDNEXT (\d+)/, line) do
       [_, n] -> %{acc | uidnext: String.to_integer(n)}
+      nil -> acc
+    end
+  end
+
+  defp put_matched_int(acc, :highestmodseq, line) do
+    case Regex.run(~r/HIGHESTMODSEQ (\d+)/, line) do
+      [_, n] -> %{acc | highestmodseq: String.to_integer(n)}
       nil -> acc
     end
   end

@@ -18,7 +18,9 @@ defmodule Valea.Mail.Imap.Wire do
           flags: [binary()],
           body: binary() | nil,
           header: binary() | nil,
-          internaldate: binary() | nil
+          internaldate: binary() | nil,
+          modseq: integer() | nil,
+          gm_msgid: binary() | nil
         }
 
   @type response ::
@@ -348,7 +350,16 @@ defmodule Valea.Mail.Imap.Wire do
 
   # -- token list -> fetch attrs map --------------------------------------
 
-  @empty_attrs %{uid: nil, size: nil, flags: [], body: nil, header: nil, internaldate: nil}
+  @empty_attrs %{
+    uid: nil,
+    size: nil,
+    flags: [],
+    body: nil,
+    header: nil,
+    internaldate: nil,
+    modseq: nil,
+    gm_msgid: nil
+  }
 
   defp build_attrs(tokens) do
     tokens
@@ -365,6 +376,14 @@ defmodule Valea.Mail.Imap.Wire do
 
   defp apply_attr({{:atom, "FLAGS"}, {:list, items}}, acc),
     do: %{acc | flags: Enum.map(items, &token_text/1)}
+
+  # RFC 4551 (CONDSTORE): `MODSEQ (<n>)` — a parenthesized single number.
+  defp apply_attr({{:atom, "MODSEQ"}, {:list, [tok]}}, acc), do: %{acc | modseq: token_int(tok)}
+
+  # Gmail's `X-GM-MSGID` extension (`X-GM-EXT-1` capability): a bare integer
+  # atom, kept as a string per the Transport contract (it's an opaque id, not
+  # arithmetic).
+  defp apply_attr({{:atom, "X-GM-MSGID"}, v}, acc), do: %{acc | gm_msgid: token_text(v)}
 
   defp apply_attr({{:atom, "BODY[]"}, v}, acc), do: %{acc | body: token_text(v)}
 
@@ -389,8 +408,11 @@ defmodule Valea.Mail.Imap.Wire do
   # Characters safe to leave bare (protocol syntax: commands, keywords,
   # sequence sets, section/flag punctuation) — uppercase only, so
   # arbitrary mailbox-name-shaped strings (e.g. "Drafts") are quoted by
-  # default rather than accidentally passed through unescaped.
-  @unquoted_chars MapSet.new(~c"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\\().+*:[]-")
+  # default rather than accidentally passed through unescaped. Comma is
+  # included for UID sequence-set tokens like "5,9,12" — it is not an
+  # IMAP atom-special (RFC 3501), so a bare comma-joined set is valid
+  # protocol syntax, never requiring (or tolerating) quoting.
+  @unquoted_chars MapSet.new(~c"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\\().+*:[]-,")
 
   defp encode_arg(bin) do
     if contains_unsafe_byte?(bin) do

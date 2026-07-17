@@ -80,6 +80,9 @@ defmodule FakeMailTransport do
   def select(conn, folder), do: invoke(conn, :select, [conn, folder])
 
   @impl true
+  def examine(conn, folder), do: invoke(conn, :examine, [conn, folder])
+
+  @impl true
   def uid_search(conn, criteria), do: invoke(conn, :uid_search, [conn, criteria])
 
   @impl true
@@ -92,11 +95,30 @@ defmodule FakeMailTransport do
   def uid_fetch_full(conn, uid), do: invoke(conn, :uid_fetch_full, [conn, uid])
 
   @impl true
+  def uid_fetch_flags(conn, uid_set), do: invoke(conn, :uid_fetch_flags, [conn, uid_set])
+
+  @impl true
+  def uid_store_flags(conn, uid, add, remove, opts \\ []),
+    do: invoke(conn, :uid_store_flags, [conn, uid, add, remove, opts])
+
+  @impl true
   def uid_move(conn, uid, folder), do: invoke(conn, :uid_move, [conn, uid, folder])
+
+  @impl true
+  def uid_copy(conn, uid, folder), do: invoke(conn, :uid_copy, [conn, uid, folder])
+
+  @impl true
+  def uid_mark_deleted(conn, uid), do: invoke(conn, :uid_mark_deleted, [conn, uid])
+
+  @impl true
+  def uid_expunge(conn, uid), do: invoke(conn, :uid_expunge, [conn, uid])
 
   @impl true
   def append(conn, folder, flags, rfc822),
     do: invoke(conn, :append, [conn, folder, flags, rfc822])
+
+  @impl true
+  def supports?(conn, capability), do: invoke(conn, :supports?, [conn, capability])
 
   @impl true
   def logout(conn), do: invoke(conn, :logout, [conn])

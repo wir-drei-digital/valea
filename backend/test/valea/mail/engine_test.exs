@@ -22,7 +22,9 @@ defmodule Valea.Mail.EngineTest.HangingTransport do
   @impl true
   def create_folder(_conn, _folder), do: :ok
   @impl true
-  def select(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1}}
+  def select(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}
+  @impl true
+  def examine(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}
   @impl true
   def uid_search(_conn, _criteria), do: {:ok, []}
   @impl true
@@ -32,9 +34,21 @@ defmodule Valea.Mail.EngineTest.HangingTransport do
   @impl true
   def uid_fetch_full(_conn, _uid), do: {:ok, ""}
   @impl true
-  def uid_move(_conn, _uid, _folder), do: :ok
+  def uid_fetch_flags(_conn, _uid_set), do: {:ok, []}
   @impl true
-  def append(_conn, _folder, _flags, _rfc822), do: :ok
+  def uid_store_flags(_conn, _uid, _add, _remove, _opts \\ []), do: {:ok, :applied}
+  @impl true
+  def uid_move(_conn, _uid, _folder), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def uid_copy(_conn, _uid, _folder), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def uid_mark_deleted(_conn, _uid), do: :ok
+  @impl true
+  def uid_expunge(_conn, _uid), do: :ok
+  @impl true
+  def append(_conn, _folder, _flags, _rfc822), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def supports?(_conn, _capability), do: false
   @impl true
   def logout(_conn), do: :ok
 end
@@ -57,7 +71,9 @@ defmodule Valea.Mail.EngineTest.LeakyConnectTransport do
   @impl true
   def create_folder(_conn, _folder), do: :ok
   @impl true
-  def select(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1}}
+  def select(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}
+  @impl true
+  def examine(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}
   @impl true
   def uid_search(_conn, _criteria), do: {:ok, []}
   @impl true
@@ -67,9 +83,21 @@ defmodule Valea.Mail.EngineTest.LeakyConnectTransport do
   @impl true
   def uid_fetch_full(_conn, _uid), do: {:ok, ""}
   @impl true
-  def uid_move(_conn, _uid, _folder), do: :ok
+  def uid_fetch_flags(_conn, _uid_set), do: {:ok, []}
   @impl true
-  def append(_conn, _folder, _flags, _rfc822), do: :ok
+  def uid_store_flags(_conn, _uid, _add, _remove, _opts \\ []), do: {:ok, :applied}
+  @impl true
+  def uid_move(_conn, _uid, _folder), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def uid_copy(_conn, _uid, _folder), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def uid_mark_deleted(_conn, _uid), do: :ok
+  @impl true
+  def uid_expunge(_conn, _uid), do: :ok
+  @impl true
+  def append(_conn, _folder, _flags, _rfc822), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def supports?(_conn, _capability), do: false
   @impl true
   def logout(_conn), do: :ok
 end
