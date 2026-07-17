@@ -189,14 +189,18 @@ completes. Every ledger op — move or append, file-declared or
 RPC-originated — also writes a self-contained, fsynced **manifest** under
 `spool/` before any remote I/O: for a move, the source
 folder/UIDVALIDITY/UID and msg_id fingerprint, the destination, the
-recorded pre-op destination watermark, the origin, and each ladder
-transition appended as it happens; for an append, as described in Store.
+recorded pre-op destination watermark **with the destination's
+UIDVALIDITY**, the origin, and each ladder transition appended as it
+happens; for an append, as described in Store.
 Manifests are removed only at op completion, so boot can reconcile every
 unfinished op even after database loss — moves included, not just
 appends. After an uncertain result (disconnect, missing tagged
 response), the op is never blindly retried: the engine first
 **reconciles** — destination candidates are the destination folder's
-UIDs above its watermark recorded at op creation (a bounded set), with a
+UIDs above its watermark recorded at op creation (a bounded set, recorded
+together with the destination's UIDVALIDITY; if that UIDVALIDITY has
+changed since, the bound is invalid and reconciliation falls back to a
+complete fingerprint scan of the destination folder), with a
 Message-ID search as a shortcut only when the message has one (inbound
 mail is never required to carry a Message-ID); every candidate is
 confirmed by fingerprint; the source is re-checked — and the op continues
@@ -259,7 +263,13 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   `UIDNEXT − 1` (from `SELECT`) — every UID present before Valea's first
   pass is permanently behind the watermark, so pre-existing old mail
   stays server-only exactly as configured — and bodies are backfilled
-  only for the windowed subset (`UID SEARCH SINCE <horizon>`). Every
+  only for the windowed subset (`UID SEARCH SINCE <horizon>`). Backfill
+  completion is tracked durably per folder (`backfill_complete` in
+  `mail_sync_state`): until it is set, every pass re-runs the windowed
+  `SEARCH` and lands any still-missing UIDs (idempotent by UID), so a
+  crash or per-folder failure mid-backfill never strands in-window mail
+  below the watermark — the watermark alone never implies backfill
+  completion. Every
   incremental pass thereafter fetches **all UIDs above the watermark**
   regardless of message date — so a years-old message that another
   client moves or labels into a mirrored folder still lands (its new UID
@@ -418,7 +428,7 @@ confirmation) proves the outcome — nothing retries, pushes, or mutates
 for them in the meantime.
 
 - `mail_sync_state` — per (account, folder): uidvalidity, last-seen UID,
-  highestmodseq, last pass result.
+  highestmodseq, initial-backfill completion flag, last pass result.
 - `mail_uid_map` — one row per occurrence `(account, folder, uidvalidity,
   uid)`: msg_id, **last-synced flags** (the pull-diff anchor for
   detecting server-side flag changes).
@@ -683,7 +693,12 @@ boundary; every failure state has a copyable remedy or a status notice.
   removed after the re-pull);
   **watermark initialization** (folder containing only >window-old mail →
   watermark = `UIDNEXT − 1`, second pass fetches nothing, old mail stays
-  server-only); **message without a Message-ID** (move + disconnect →
+  server-only); **crash mid-initial-backfill** (in-window UIDs not yet
+  landed → next pass re-runs the windowed search and lands them; the
+  `backfill_complete` gate, never the watermark, decides);
+  **destination UIDVALIDITY reset during an uncertain move** → watermark
+  bound invalidated, full fingerprint reconciliation of the destination,
+  no false `needs_review`, no duplicate; **message without a Message-ID** (move + disconnect →
   reconciled via the destination watermark scan + fingerprint, no
   permanent `needs_review`);
   window widening backfill; Gmail folder exclusion; **slug-reuse identity
