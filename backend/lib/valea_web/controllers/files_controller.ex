@@ -202,13 +202,17 @@ defmodule ValeaWeb.FilesController do
   # -- shared containment (mirrors `Valea.ICM`'s `resolve_mount/1` +
   # `contain/2`) ------------------------------------------------------------
 
-  # `mount_key` must name a currently ENABLED, non-degraded mount — a
+  # `mount_key` must name a currently ENABLED, non-degraded ICM mount — a
   # disabled/degraded/unknown mount key is folded into one error, same
   # posture `Valea.ICM.resolve_mount/1` takes (an editor-authority
-  # chokepoint, not a config lookup).
+  # chokepoint, not a config lookup). Synthetic `kind: :mail` mounts are
+  # rejected like its two siblings (`Valea.ICM.resolve_mount/1`,
+  # `Valea.Api.ICM.find_mount`): the `:serve` route is token-exempt, so a
+  # mail mount resolving here would serve mailbox files outside the
+  # permission-policy mail tier entirely.
   defp resolve_mount(ws, mount_key) do
     case Mounts.mount_by_key(ws, mount_key) do
-      %{enabled: true, degraded: nil} = mount -> {:ok, mount}
+      %{enabled: true, degraded: nil, kind: :icm} = mount -> {:ok, mount}
       _ -> {:error, :invalid_mount_key}
     end
   end
