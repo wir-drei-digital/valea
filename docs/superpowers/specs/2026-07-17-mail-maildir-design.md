@@ -477,6 +477,17 @@ explicit, typed purge confirmation in the setup UI, or a new slug. An
 existing subtree is never mounted or indexed before its identity is
 verified.
 
+`.account` is a login locator, not proof of mailbox identity — a
+provider or admin can reassign the same host + username to a different
+mailbox. The engine therefore also treats **wholesale-replacement
+signals** as an identity break: when reconciliation after UIDVALIDITY
+resets finds **zero fingerprint overlap** between a non-trivial
+pre-existing local occurrence set and the server, the account stops in
+`mailbox_replaced` — nothing is deleted, nothing mounts, no ops run —
+until the user explicitly re-adopts the subtree (typed confirmation) or
+purges it. Acceptance covers same-host/same-username mailbox
+replacement.
+
 Runtime: `Valea.Mail.Supervisor` under `Workspace.Runtime` starts **one
 Engine per configured account** (Registry-keyed by `{workspace, account}`),
 each with its own credential closures, poll timer, single-flight sync task,
@@ -833,6 +844,9 @@ boundary; every failure state has a copyable remedy or a status notice.
   permanent `needs_review`);
   window widening backfill; Gmail folder exclusion; **slug-reuse identity
   mismatch** → account refuses activation, typed purge path works;
+  **mailbox replacement** (same host+username, zero fingerprint overlap
+  after resets → `mailbox_replaced`, nothing deleted or mounted until
+  re-adoption or purge);
   two-account isolation; ops-ledger crash recovery (ledger + spool
   survive restart); **ladder disconnect after each request** (`COPY`
   accepted but response lost → reconcile proves exactly one
