@@ -44,8 +44,8 @@ defmodule Valea.Mail.Imap.WireTest do
   end
 
   test "encode quotes folder names with spaces" do
-    {iodata, []} = Wire.encode("A1", ["SELECT", "AI/Review Folder"])
-    assert IO.iodata_to_binary(iodata) == "A1 SELECT \"AI/Review Folder\"\r\n"
+    {iodata, []} = Wire.encode("A1", ["SELECT", "My Review Folder"])
+    assert IO.iodata_to_binary(iodata) == "A1 SELECT \"My Review Folder\"\r\n"
   end
 
   test "encode APPEND with literal defers the literal" do

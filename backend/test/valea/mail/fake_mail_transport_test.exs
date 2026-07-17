@@ -28,15 +28,15 @@ defmodule Valea.Mail.FakeMailTransportTest do
     # Bypasses connect (which always targets the default instance — see the
     # test above) by calling other callbacks directly with `conn = name`.
     FakeMailTransport.script(name, [
-      {:select, [:_, "AI/Review"], {:ok, %{uidvalidity: 7, uidnext: 42}}},
+      {:select, [:_, "Sorted"], {:ok, %{uidvalidity: 7, uidnext: 42}}},
       {:select, :_, {:error, :no_such_folder}}
     ])
 
-    assert {:ok, %{uidvalidity: 7}} = FakeMailTransport.select(name, "AI/Review")
+    assert {:ok, %{uidvalidity: 7}} = FakeMailTransport.select(name, "Sorted")
     assert {:error, :no_such_folder} = FakeMailTransport.select(name, "Nope")
 
     assert [
-             {:select, [^name, "AI/Review"]},
+             {:select, [^name, "Sorted"]},
              {:select, [^name, "Nope"]}
            ] = FakeMailTransport.calls(name)
   end

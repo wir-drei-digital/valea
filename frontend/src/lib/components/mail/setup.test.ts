@@ -16,7 +16,7 @@ import type { ApiResult } from '$lib/api/client';
 // task brief — `submitMailSetup`'s desktop-vs-browser sequencing (mocking
 // the `keychain.ts` seam's shape, not the module itself, since this is a
 // plain function taking injected deps — no vi.mock needed here), the
-// doctor-check normalizer, and the "Create AI folders" gating. Component
+// doctor-check normalizer, and the "Create folders" gating. Component
 // rendering itself has no test harness (see `mail-components.test.ts`'s
 // header comment) — `SetupPanel.svelte`/`MailDoctorPanel.svelte` just wire
 // these functions to the real `api`/`keychain`/`mailStore`.
@@ -249,7 +249,7 @@ describe('normalizeMailDoctorChecks', () => {
 describe('createFoldersAndRecheck', () => {
   function makeFolderDeps(overrides: Partial<CreateFoldersDeps> = {}): CreateFoldersDeps {
     return {
-      api: { createMailFolders: vi.fn(async () => ok({ created: ['AI/Review'] })) },
+      api: { createMailFolders: vi.fn(async () => ok({ created: ['Archive'] })) },
       rerunDoctor: vi.fn(async () => {}),
       setBusy: vi.fn(),
       ...overrides
@@ -262,7 +262,7 @@ describe('createFoldersAndRecheck', () => {
       api: {
         createMailFolders: vi.fn(async () => {
           order.push('createMailFolders');
-          return ok({ created: ['AI/Review'] });
+          return ok({ created: ['Archive'] });
         })
       },
       rerunDoctor: vi.fn(async () => {

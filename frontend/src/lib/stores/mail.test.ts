@@ -309,10 +309,10 @@ describe('MailStore folders + messages', () => {
     await store.refreshStatus();
     listMailMessages.mockClear();
 
-    await store.selectFolder('AI/Review');
+    await store.selectFolder('Archive');
 
-    expect(store.selectedFolder).toBe('AI/Review');
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'AI/Review');
+    expect(store.selectedFolder).toBe('Archive');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'Archive');
   });
 
   it('refreshMessages leaves messages untouched on failure', async () => {

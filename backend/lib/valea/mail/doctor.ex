@@ -58,15 +58,6 @@ defmodule Valea.Mail.Doctor do
         }
 
   @gen_tcp_timeout_ms 5_000
-  @ai_folder_keys [:review, :processed]
-
-  # Fixed, Valea-owned folder names — not part of `Settings.t()`'s
-  # `folders:` (that struct only carries the account's OWN drafts/sent/
-  # archive/trash names); AI/Review and AI/Processed are always these exact
-  # strings, mirrored from the old v3-bridge shape `Valea.Mail.Engine`'s
-  # `load_settings/1` used to synthesize before Task 9.
-  @review_folder "AI/Review"
-  @processed_folder "AI/Processed"
 
   @gate_detail "not checked — an earlier check failed."
 
@@ -78,7 +69,7 @@ defmodule Valea.Mail.Doctor do
   @login_remedy "Double-check the mailbox username and password."
   @folders_transport_remedy "Check server connectivity and try again."
   @move_remedy "Your server supports neither MOVE nor UIDPLUS — " <>
-                 "Valea will leave messages in AI/Review and you move them manually."
+                 "move ops will be rejected; flags and draft pushes still work."
 
   @doc """
   Runs the full check pipeline against `ctx`. Always succeeds — the
@@ -99,18 +90,19 @@ defmodule Valea.Mail.Doctor do
   end
 
   @doc """
-  Connects and creates whichever of the AI/Review and AI/Processed folders
-  (per `ctx.settings.folders`) are missing on the server — the doctor
-  panel's "Create AI folders" action. The Drafts folder is never created
-  here: it isn't a Valea-owned `AI/*` folder, so a missing/misnamed one is
-  a config problem (see the `folders` check's remedy), not something to
-  auto-create. Returns the folder names actually created; a folder whose
-  `create_folder` call itself fails is silently left out of that list (the
-  doctor's next run will still report it missing). A connect failure is
-  returned as `{:error, reason}` — nothing to create without a connection.
-  The reason passes through untouched unless it embeds the raw credential,
-  in which case it is stringified with the secret scrubbed (same redaction
-  posture as `run/1`'s tls_ok check; this error reaches RPC/UI consumers).
+  Connects and creates whichever of the account's four configured special
+  folders (`ctx.settings.folders` — drafts/sent/archive/trash) are missing
+  on the server — the doctor panel's "Create folders" action. `[Gmail]/*`
+  names are never created (see `creatable_folder?/1`: Gmail system folders
+  exist only when the account really is Gmail; a plain folder with that
+  name wouldn't be special). Returns the folder names actually created; a
+  folder whose `create_folder` call itself fails is silently left out of
+  that list (the doctor's next run will still report it missing). A
+  connect failure is returned as `{:error, reason}` — nothing to create
+  without a connection. The reason passes through untouched unless it
+  embeds the raw credential, in which case it is stringified with the
+  secret scrubbed (same redaction posture as `run/1`'s tls_ok check; this
+  error reaches RPC/UI consumers).
   """
   @spec create_folders(ctx()) :: {:ok, [String.t()]} | {:error, term()}
   def create_folders(%{settings: %{} = settings, transport: transport} = ctx) do
@@ -122,7 +114,7 @@ defmodule Valea.Mail.Doctor do
 
     case do_connect(transport, settings.imap, secret) do
       {:ok, conn} ->
-        created = create_missing_ai_folders(transport, conn)
+        created = create_missing_special_folders(transport, conn, settings.folders)
         safe_logout(transport, conn)
         {:ok, created}
 
@@ -322,18 +314,23 @@ defmodule Valea.Mail.Doctor do
       failed("folders", "Folders", inspect({kind, reason}), @folders_transport_remedy)
   end
 
+  # The account's four CONFIGURED special folders (spec E: settings v4 —
+  # provider defaults or explicit config): the executor's archive/trash
+  # moves and the push flow's Drafts APPEND all target these exact names,
+  # so a missing one means real actions will be rejected.
   defp missing_folders(existing, folders) do
     for {key, name} <- [
-          {:review, @review_folder},
-          {:processed, @processed_folder},
-          {:drafts, folders.drafts}
+          {:drafts, folders.drafts},
+          {:sent, folders.sent},
+          {:archive, folders.archive},
+          {:trash, folders.trash}
         ],
         name not in existing,
         do: {key, name}
   end
 
   defp build_folders_result([]) do
-    ok("folders", "Folders", "Review, Processed, and Drafts folders all exist.")
+    ok("folders", "Folders", "The configured drafts, sent, archive, and trash folders all exist.")
   end
 
   defp build_folders_result(missing) do
@@ -343,21 +340,19 @@ defmodule Valea.Mail.Doctor do
   end
 
   defp folders_remedy(missing) do
-    ai_missing? = Enum.any?(missing, fn {key, _} -> key in @ai_folder_keys end)
-    drafts_missing? = Enum.any?(missing, fn {key, _} -> key == :drafts end)
-
-    cond do
-      ai_missing? and drafts_missing? ->
-        "Use \"Create AI folders\" to create the missing AI/* folder(s); " <>
-          "check the drafts folder name in config/mail.yaml."
-
-      ai_missing? ->
-        "Use \"Create AI folders\" to create the missing AI/* folder(s)."
-
-      drafts_missing? ->
-        "Check the drafts folder name in config/mail.yaml."
+    if Enum.any?(missing, fn {_key, name} -> creatable_folder?(name) end) do
+      "Use \"Create folders\" to create the missing folder(s), " <>
+        "or fix the names in config/mail.yaml."
+    else
+      "Fix the folder names in config/mail.yaml — [Gmail]/* system folders " <>
+        "exist only when the account really is Gmail."
     end
   end
+
+  # "[Gmail]/..." names are Gmail-owned system folders — creating a plain
+  # folder with that name would NOT make it special (same container
+  # exclusion the ops executor applies), so Valea never tries.
+  defp creatable_folder?(name), do: not String.starts_with?(name, "[Gmail]")
 
   defp move_capability_check(ctx, conn) do
     case ctx.transport.capabilities(conn) do
@@ -399,11 +394,11 @@ defmodule Valea.Mail.Doctor do
 
   # -- create_folders helpers ---------------------------------------------------
 
-  defp create_missing_ai_folders(transport, conn) do
+  defp create_missing_special_folders(transport, conn, folders) do
     case transport.list_folders(conn) do
       {:ok, existing} ->
-        [{:review, @review_folder}, {:processed, @processed_folder}]
-        |> Enum.reject(fn {_key, name} -> name in existing end)
+        missing_folders(existing, folders)
+        |> Enum.filter(fn {_key, name} -> creatable_folder?(name) end)
         |> Enum.filter(fn {_key, name} -> create_one(transport, conn, name) end)
         |> Enum.map(fn {_key, name} -> name end)
 

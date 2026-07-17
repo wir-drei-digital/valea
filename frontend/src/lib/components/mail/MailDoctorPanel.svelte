@@ -18,10 +18,10 @@
   // rendered as a false "broken" claim). `remedy` is only ever present on a
   // "failed" check.
   //
-  // "Create AI folders" (visible once the `folders` check has actually
+  // "Create folders" (visible once the `folders` check has actually
   // failed, per `foldersCheckFailed`) runs `createFoldersAndRecheck`
-  // (`mail-shapes.ts`) — create the missing AI/* folders, then re-run the
-  // doctor on success; a failed create surfaces its mapped message in
+  // (`mail-shapes.ts`) — create the missing configured special folders,
+  // then re-run the doctor on success; a failed create surfaces its mapped message in
   // `createError` instead (no re-run — the on-screen checks are still
   // accurate). Same self-contained "mount + re-run" shape as DoctorPanel's
   // "Check again", just with an extra action button beside it.
@@ -150,7 +150,7 @@
       </Button>
       {#if showCreateFolders}
         <Button type="button" size="sm" onclick={() => void createFolders()} disabled={creatingFolders}>
-          {creatingFolders ? 'Creating…' : 'Create AI folders'}
+          {creatingFolders ? 'Creating…' : 'Create folders'}
         </Button>
       {/if}
     </div>

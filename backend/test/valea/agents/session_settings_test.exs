@@ -92,13 +92,13 @@ defmodule Valea.Agents.SessionSettingsTest do
     perms =
       SessionSettings.content(
         scope(%{
-          read_paths: ["/ws/sources/mail/messages/42.md"],
+          read_paths: ["/ws/sources/notes/messages/42.md"],
           write_paths: ["/ws/queue/staging/r1/proposal.json"],
           write_roots: ["/ws/queue/staging/r1/proposals"]
         })
       )["permissions"]
 
-    assert "Read(/ws/sources/mail/messages/42.md)" in perms["allow"]
+    assert "Read(/ws/sources/notes/messages/42.md)" in perms["allow"]
     assert "Write(/ws/queue/staging/r1/proposal.json)" in perms["allow"]
     assert "Write(/ws/queue/staging/r1/proposals/**)" in perms["allow"]
   end

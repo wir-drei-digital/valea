@@ -96,7 +96,7 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps() ++
         [
-          {:expect, ~r/^A3 SELECT "AI\/Review"$/,
+          {:expect, ~r/^A3 SELECT "Sorted"$/,
            then: [
              "* 5 EXISTS",
              "* OK [UIDVALIDITY 100] UIDs valid",
@@ -109,7 +109,7 @@ defmodule Valea.Mail.ImapClientTest do
     conn = connect!(server)
 
     assert {:ok, %{uidvalidity: 100, uidnext: 42, highestmodseq: nil}} =
-             ImapClient.select(conn, "AI/Review")
+             ImapClient.select(conn, "Sorted")
 
     assert :ok = FakeImapServer.await(server)
   end
@@ -118,7 +118,7 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps("IMAP4rev1 CONDSTORE") ++
         [
-          {:expect, ~r/^A3 SELECT "AI\/Review"$/,
+          {:expect, ~r/^A3 SELECT "Sorted"$/,
            then: [
              "* 5 EXISTS",
              "* OK [UIDVALIDITY 100] UIDs valid",
@@ -132,7 +132,7 @@ defmodule Valea.Mail.ImapClientTest do
     conn = connect!(server)
 
     assert {:ok, %{uidvalidity: 100, uidnext: 42, highestmodseq: 715_194_045_007}} =
-             ImapClient.select(conn, "AI/Review")
+             ImapClient.select(conn, "Sorted")
 
     assert :ok = FakeImapServer.await(server)
   end
@@ -141,7 +141,7 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps() ++
         [
-          {:expect, ~r/^A3 EXAMINE "AI\/Processed"$/,
+          {:expect, ~r/^A3 EXAMINE "Archive"$/,
            then: [
              "* OK [UIDVALIDITY 55] UIDs valid",
              "* OK [UIDNEXT 9] Predicted",
@@ -153,7 +153,7 @@ defmodule Valea.Mail.ImapClientTest do
     conn = connect!(server)
 
     assert {:ok, %{uidvalidity: 55, uidnext: 9, highestmodseq: nil}} =
-             ImapClient.examine(conn, "AI/Processed")
+             ImapClient.examine(conn, "Archive")
 
     assert :ok = FakeImapServer.await(server)
   end
@@ -230,14 +230,14 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps("IMAP4rev1 MOVE") ++
         [
-          {:expect, ~r/^A3 UID MOVE 7 "AI\/Processed"$/,
+          {:expect, ~r/^A3 UID MOVE 7 "Archive"$/,
            then: ["A3 OK [COPYUID 9 7 77] MOVE completed"]}
         ]
 
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert {:ok, %{dest_uid: 77}} = ImapClient.uid_move(conn, 7, "AI/Processed")
+    assert {:ok, %{dest_uid: 77}} = ImapClient.uid_move(conn, 7, "Archive")
     assert :ok = FakeImapServer.await(server)
   end
 
@@ -245,13 +245,13 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps("IMAP4rev1 MOVE") ++
         [
-          {:expect, ~r/^A3 UID MOVE 7 "AI\/Processed"$/, then: ["A3 OK MOVE completed"]}
+          {:expect, ~r/^A3 UID MOVE 7 "Archive"$/, then: ["A3 OK MOVE completed"]}
         ]
 
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_move(conn, 7, "AI/Processed")
+    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_move(conn, 7, "Archive")
     assert :ok = FakeImapServer.await(server)
   end
 
@@ -271,7 +271,7 @@ defmodule Valea.Mail.ImapClientTest do
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert {:unsupported, reason} = ImapClient.uid_move(conn, 7, "AI/Processed")
+    assert {:unsupported, reason} = ImapClient.uid_move(conn, 7, "Archive")
     assert is_binary(reason)
 
     assert {:ok, []} = ImapClient.list_folders(conn)
@@ -282,14 +282,14 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps() ++
         [
-          {:expect, ~r/^A3 UID COPY 7 "AI\/Processed"$/,
+          {:expect, ~r/^A3 UID COPY 7 "Archive"$/,
            then: ["A3 OK [COPYUID 9 7 88] COPY completed"]}
         ]
 
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert {:ok, %{dest_uid: 88}} = ImapClient.uid_copy(conn, 7, "AI/Processed")
+    assert {:ok, %{dest_uid: 88}} = ImapClient.uid_copy(conn, 7, "Archive")
     assert :ok = FakeImapServer.await(server)
   end
 
@@ -303,14 +303,14 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps() ++
         [
-          {:expect, ~r/^A3 UID COPY 7 "AI\/Processed"$/,
+          {:expect, ~r/^A3 UID COPY 7 "Archive"$/,
            then: ["A3 OK [COPYUID 9 77 90:92] COPY completed"]}
         ]
 
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_copy(conn, 7, "AI/Processed")
+    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_copy(conn, 7, "Archive")
     assert :ok = FakeImapServer.await(server)
   end
 
@@ -318,14 +318,14 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps() ++
         [
-          {:expect, ~r/^A3 UID COPY 7 "AI\/Processed"$/,
+          {:expect, ~r/^A3 UID COPY 7 "Archive"$/,
            then: ["A3 OK [COPYUID 9 77 90,92] COPY completed"]}
         ]
 
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_copy(conn, 7, "AI/Processed")
+    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_copy(conn, 7, "Archive")
     assert :ok = FakeImapServer.await(server)
   end
 
@@ -646,13 +646,13 @@ defmodule Valea.Mail.ImapClientTest do
     script =
       handshake_steps() ++
         [
-          {:expect, ~r/^A3 CREATE "AI\/Custom"$/, then: ["A3 OK CREATE completed"]}
+          {:expect, ~r/^A3 CREATE "Custom\/Sub"$/, then: ["A3 OK CREATE completed"]}
         ]
 
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert :ok = ImapClient.create_folder(conn, "AI/Custom")
+    assert :ok = ImapClient.create_folder(conn, "Custom/Sub")
     assert :ok = FakeImapServer.await(server)
   end
 
@@ -663,7 +663,7 @@ defmodule Valea.Mail.ImapClientTest do
           {:expect, ~r/^A3 LIST "" \*$/,
            then: [
              "* LIST (\\HasNoChildren) \"/\" \"INBOX\"",
-             "* LIST (\\HasNoChildren) \"/\" \"AI/Review\"",
+             "* LIST (\\HasNoChildren) \"/\" \"Sorted\"",
              "A3 OK LIST completed"
            ]}
         ]
@@ -671,7 +671,7 @@ defmodule Valea.Mail.ImapClientTest do
     server = FakeImapServer.start(script, tls: true)
     conn = connect!(server)
 
-    assert {:ok, ["INBOX", "AI/Review"]} = ImapClient.list_folders(conn)
+    assert {:ok, ["INBOX", "Sorted"]} = ImapClient.list_folders(conn)
     assert :ok = FakeImapServer.await(server)
   end
 

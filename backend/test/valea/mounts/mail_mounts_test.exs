@@ -179,7 +179,7 @@ defmodule Valea.Mounts.MailMountsTest do
     write_mail_yaml!(ws, account_block("mara"))
     views = Path.join([ws, "sources", "mail", "mara", "views"])
     File.mkdir_p!(views)
-    File.write!(Path.join(views, "inbox.md"), "xylophone-needle in mail\n")
+    File.write!(Path.join(views, "note.md"), "xylophone-needle in mail\n")
 
     {:ok, %{results: results}} = Valea.ICM.Search.search(ws, "xylophone-needle")
     assert Enum.map(results, & &1.mount) == [icm.mount_key]

@@ -559,15 +559,16 @@ defmodule ValeaWeb.MailRpcTest do
   # -- create_mail_folders --------------------------------------------------------
 
   describe "create_mail_folders" do
-    test "happy path connects and creates the missing AI folders", %{generation: generation} do
+    test "happy path connects and creates the missing folders", %{generation: generation} do
       setup_account!(generation, account: "mara")
       set_credential!("mara", generation)
 
       FakeMailTransport.script([
         {:connect, :_, {:ok, FakeMailTransport}},
         {:list_folders, :_, {:ok, ["Drafts"]}},
-        {:create_folder, [:_, "AI/Review"], :ok},
-        {:create_folder, [:_, "AI/Processed"], :ok},
+        {:create_folder, [:_, "Sent"], :ok},
+        {:create_folder, [:_, "Archive"], :ok},
+        {:create_folder, [:_, "Trash"], :ok},
         {:logout, :_, :ok}
       ])
 
@@ -576,7 +577,7 @@ defmodule ValeaWeb.MailRpcTest do
                  "created"
                ])
 
-      assert Enum.sort(created) == Enum.sort(["AI/Review", "AI/Processed"])
+      assert Enum.sort(created) == Enum.sort(["Sent", "Archive", "Trash"])
     end
 
     test "no credential surfaces no_credential", %{generation: generation} do

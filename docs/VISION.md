@@ -142,7 +142,7 @@ mechanism for step 1 below is a human- or script-triggered agent session
 started with a document + input, per "The agent interprets your prose"
 above — not a Valea-scheduled "workflow run".)*
 
-1. Overnight/morning: the admin streams (mail moved to AI/Review, upcoming
+1. Overnight/morning: the admin streams (the mirrored inboxes, upcoming
    sessions) get worked — today by a session someone starts pointed at the
    right document and input, eventually by a scheduled deterministic step —
    producing drafts, briefs, and suggestions, each with sources and
@@ -161,8 +161,8 @@ above — not a Valea-scheduled "workflow run".)*
 
 ## MVP non-goals
 
-No full email client replacement (rules engines, full search, multi-account),
-no email sending (drafts only), no CalDAV writes, no browser automation, no
+No full email client replacement (rules engines, full search), no email
+sending (drafts + user-pushed Drafts-folder handoff only), no CalDAV writes, no browser automation, no
 bookkeeping integration, no visual workflow builder, no multi-agent
 orchestration UI, no cloud sync, no mobile app, no team collaboration, no
 plugin marketplace, no external booking links.
@@ -197,10 +197,13 @@ clearly marked in their design specs until implemented.
    2026-07-10-agent-slice-design.md — its workflow-execution/approval-queue
    half is superseded by item 10 below; the agent runtime, chat UI, trust
    model, and audit log it shipped remain live.)*
-4. **Mail** — a sync-to-files engine that reads IMAP and normalizes messages
-   into `sources/mail/`, following the AI/Review folder flow (replaces the
-   mock input). No new agent tool surface — the agent still only reads
-   files. *(shipped, pending merge; spec: 2026-07-11-mail-design.md)*
+4. **Mail** — per-account maildir mirrors under `sources/mail/<slug>/` with
+   derived markdown views, two-way sync through declared, verified ops
+   (moves + flags; never expunge), and agent-proposed drafts the USER
+   pushes to the mailbox's Drafts folder — no SMTP anywhere. The agent's
+   surface stays files: views to read, `ops/pending/` + `drafts/` to
+   write. *(shipped; specs: 2026-07-11-mail-design.md, superseded by
+   2026-07-17-mail-maildir-design.md)*
 5. **Calendar** — a sync-to-files engine that reads CalDAV / imports ICS
    into `sources/calendar/`, today + week views. Same file-first posture as
    Mail.

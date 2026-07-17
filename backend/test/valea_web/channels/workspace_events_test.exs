@@ -185,11 +185,11 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     Phoenix.PubSub.broadcast(
       Valea.PubSub,
       "mail",
-      {:mail_message_upserted, "mara", %{path: "sources/mail/messages/x.md"}}
+      {:mail_message_upserted, "mara", %{path: "sources/mail/mara/views/messages/x.md"}}
     )
 
     assert_push "mail_message", %{
-      "path" => "sources/mail/messages/x.md",
+      "path" => "sources/mail/mara/views/messages/x.md",
       "account" => "mara"
     }
   end

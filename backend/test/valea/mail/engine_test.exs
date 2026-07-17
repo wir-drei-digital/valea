@@ -451,7 +451,7 @@ defmodule Valea.Mail.EngineTest do
 
     FakeMailTransport.script([
       {:connect, :_, {:ok, FakeMailTransport}},
-      {:list_folders, :_, {:ok, ["AI/Review", "AI/Processed", "Drafts"]}},
+      {:list_folders, :_, {:ok, ["Drafts", "Sent", "Archive", "Trash"]}},
       {:capabilities, :_, {:ok, ["IMAP4rev1", "MOVE"]}},
       {:logout, :_, :ok}
     ])
@@ -462,13 +462,14 @@ defmodule Valea.Mail.EngineTest do
     FakeMailTransport.script([
       {:connect, :_, {:ok, FakeMailTransport}},
       {:list_folders, :_, {:ok, ["Drafts"]}},
-      {:create_folder, [:_, "AI/Review"], :ok},
-      {:create_folder, [:_, "AI/Processed"], :ok},
+      {:create_folder, [:_, "Sent"], :ok},
+      {:create_folder, [:_, "Archive"], :ok},
+      {:create_folder, [:_, "Trash"], :ok},
       {:logout, :_, :ok}
     ])
 
     assert {:ok, created} = Engine.create_folders("mara")
-    assert Enum.sort(created) == Enum.sort(["AI/Review", "AI/Processed"])
+    assert Enum.sort(created) == Enum.sort(["Sent", "Archive", "Trash"])
   end
 
   # -- poll timer / auth_failed -------------------------------------------------

@@ -238,7 +238,7 @@ defmodule Valea.Mail.Engine do
   end
 
   @doc """
-  Connects and creates whichever of the AI/Review and AI/Processed folders
+  Connects and creates whichever of the account's configured special folders
   are currently missing on `slug`'s server — the doctor panel's "Create AI
   folders" action. Guarded exactly like `sync_now/1`. Same non-blocking
   shape as `doctor/1`.

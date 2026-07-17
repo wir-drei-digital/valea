@@ -17,7 +17,7 @@ defmodule Valea.Mail.StoreTest do
         date: "2026-01-01T00:00:00Z",
         flags: "S",
         has_attachments: false,
-        path: "sources/mail/messages/m1.md",
+        path: "sources/mail/mara/views/messages/m1.md",
         in_reply_to: nil,
         references: nil
       },
@@ -96,14 +96,14 @@ defmodule Valea.Mail.StoreTest do
 
     test "distinct (account, folder) pairs keep independent watermarks" do
       Store.put_sync_state("mara@example.com", "INBOX", %{uidvalidity: 1, high_water_uid: 10})
-      Store.put_sync_state("mara@example.com", "AI/Review", %{uidvalidity: 2, high_water_uid: 20})
+      Store.put_sync_state("mara@example.com", "Sorted", %{uidvalidity: 2, high_water_uid: 20})
       Store.put_sync_state("priya@example.com", "INBOX", %{uidvalidity: 3, high_water_uid: 30})
 
       assert {:ok, %{uidvalidity: 1, high_water_uid: 10}} =
                Store.get_sync_state("mara@example.com", "INBOX")
 
       assert {:ok, %{uidvalidity: 2, high_water_uid: 20}} =
-               Store.get_sync_state("mara@example.com", "AI/Review")
+               Store.get_sync_state("mara@example.com", "Sorted")
 
       assert {:ok, %{uidvalidity: 3, high_water_uid: 30}} =
                Store.get_sync_state("priya@example.com", "INBOX")
@@ -111,12 +111,12 @@ defmodule Valea.Mail.StoreTest do
 
     test "folders/1 returns every sync_state row for the account, not other accounts'" do
       Store.put_sync_state("mara@example.com", "INBOX", %{uidvalidity: 1})
-      Store.put_sync_state("mara@example.com", "AI/Review", %{uidvalidity: 2})
+      Store.put_sync_state("mara@example.com", "Sorted", %{uidvalidity: 2})
       Store.put_sync_state("priya@example.com", "INBOX", %{uidvalidity: 9})
 
       rows = Store.folders("mara@example.com")
       assert length(rows) == 2
-      assert Enum.map(rows, & &1.folder) |> Enum.sort() == ["AI/Review", "INBOX"]
+      assert Enum.map(rows, & &1.folder) |> Enum.sort() == ["INBOX", "Sorted"]
     end
 
     test "mark_held/3 flips held without disturbing other columns" do
@@ -229,7 +229,7 @@ defmodule Valea.Mail.StoreTest do
         flags: MapSet.new()
       })
 
-      Store.put_occurrence("mara@example.com", "AI/Review", %{
+      Store.put_occurrence("mara@example.com", "Sorted", %{
         uid: 5,
         uidvalidity: 200,
         msg_id: "shared",
@@ -245,7 +245,7 @@ defmodule Valea.Mail.StoreTest do
 
       rows = Store.occurrences_by_msg_id("mara@example.com", "shared")
       assert length(rows) == 2
-      assert Enum.map(rows, & &1.folder) |> Enum.sort() == ["AI/Review", "INBOX"]
+      assert Enum.map(rows, & &1.folder) |> Enum.sort() == ["INBOX", "Sorted"]
     end
   end
 
@@ -263,7 +263,7 @@ defmodule Valea.Mail.StoreTest do
       assert row.date == "2026-01-01T00:00:00Z"
       assert row.flags == "S"
       assert row.has_attachments == false
-      assert row.path == "sources/mail/messages/m1.md"
+      assert row.path == "sources/mail/mara/views/messages/m1.md"
     end
 
     test "the same msg_id in two different folders lands two occurrence rows, both listed" do
@@ -321,7 +321,7 @@ defmodule Valea.Mail.StoreTest do
 
       Store.upsert_index_row(base_row(%{}))
 
-      Store.put_sync_state("mara@example.com", "AI/Review", %{uidvalidity: 2, high_water_uid: 20})
+      Store.put_sync_state("mara@example.com", "Sorted", %{uidvalidity: 2, high_water_uid: 20})
       Store.put_sync_state("priya@example.com", "INBOX", %{uidvalidity: 3, high_water_uid: 30})
 
       assert :ok = Store.clear_folder("mara@example.com", "INBOX")
@@ -331,7 +331,7 @@ defmodule Valea.Mail.StoreTest do
       assert Store.list_messages("mara@example.com", "INBOX") == []
 
       assert {:ok, %{uidvalidity: 2, high_water_uid: 20}} =
-               Store.get_sync_state("mara@example.com", "AI/Review")
+               Store.get_sync_state("mara@example.com", "Sorted")
 
       assert {:ok, %{uidvalidity: 3, high_water_uid: 30}} =
                Store.get_sync_state("priya@example.com", "INBOX")

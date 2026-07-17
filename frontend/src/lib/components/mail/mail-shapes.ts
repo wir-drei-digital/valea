@@ -496,12 +496,12 @@ export function normalizeMailDoctorChecks(raw: unknown): MailDoctorCheck[] {
   });
 }
 
-/** Gates the "Create AI folders" button (`Valea.Mail.Doctor`'s `folders` check id) — visible only once it has actually failed, not while gated `"unknown"` behind an earlier check. */
+/** Gates the "Create folders" button (`Valea.Mail.Doctor`'s `folders` check id) — visible only once it has actually failed, not while gated `"unknown"` behind an earlier check. */
 export function foldersCheckFailed(checks: MailDoctorCheck[]): boolean {
   return checks.some((check) => check.id === 'folders' && check.status === 'failed');
 }
 
-// -- MailDoctorPanel: "Create AI folders" sequencing --------------------------
+// -- MailDoctorPanel: "Create folders" sequencing -----------------------------
 //
 // Same extraction rationale as `submitMailSetup`: the create-then-recheck
 // ordering (and its error/flag handling) is the testable part, so it lives
@@ -518,9 +518,9 @@ export type CreateFoldersDeps = {
 };
 
 /**
- * "Create AI folders" (backend: `Valea.Mail.Engine.create_folders/0` via
- * `api.createMailFolders`): flips busy on, creates the missing AI/*
- * folders, and — only if that RPC actually succeeded — re-runs the doctor
+ * "Create folders" (backend: `Valea.Mail.Engine.create_folders/1` via
+ * `api.createMailFolders`): flips busy on, creates the missing configured
+ * special folders, and — only if that RPC actually succeeded — re-runs the doctor
  * so the `folders` row updates. A failed create resolves the mapped
  * display message (see `createFoldersErrorMessage`) and deliberately skips
  * the re-run: nothing changed server-side, so the checks on screen are

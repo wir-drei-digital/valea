@@ -34,7 +34,7 @@ defmodule Valea.Agents.RiskTierTest do
   end
 
   test "workspace locators and malformed input are nil" do
-    assert RiskTier.classify(Locator.workspace("sources/mail/messages/x.md")) == nil
+    assert RiskTier.classify(Locator.workspace("sources/mail/mara/views/messages/x.md")) == nil
     assert RiskTier.classify(%{}) == nil
     assert RiskTier.classify(nil) == nil
   end

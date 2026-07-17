@@ -31,7 +31,7 @@ defmodule Valea.Mail.Store do
   pieces of logic, not bare CRUD.
 
   Task 7 (the `SyncPass` rewrite) retired the `mail_uid_outcomes` bridge
-  (`record_outcome/4`, `outcomes/1`, `UidOutcome`, and the old
+  (`record_outcome/4`, `outcomes/1`, the v3 outcome resource, and the old
   single-argument `clear_folder/1` that wiped it): the pull engine no longer
   tracks per-UID sync outcomes in SQLite (the maildir tree + `mail_uid_map`
   are the durable record now), and nothing else referenced them. The
@@ -41,9 +41,9 @@ defmodule Valea.Mail.Store do
   msg_id-keyed message functions (`upsert_message/1`, `get_message/1`,
   `message_by_message_id/1`, `list_messages/0`, `set_message_status/2`) and
   the `mail_inbox_headers`-backed inbox-header family (`put_inbox_header/1`,
-  `inbox_headers/0`, `prune_inbox_headers/1`, `Valea.Mail.Store.InboxHeader`)
+  `inbox_headers/0`, `prune_inbox_headers/1`, the v3 header-cache resource)
   are gone — `api/mail.ex`'s account-scoped `list_mail_messages`/
-  `get_mail_message` and the deleted `mail_inbox` action replaced their only
+  `get_mail_message` and the deleted v3 inbox action replaced their only
   callers. The underlying `mail_inbox_headers` table's migration is
   likewise left in place (orphaned but harmless), same posture as
   `mail_uid_outcomes`.

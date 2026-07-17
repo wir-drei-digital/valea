@@ -23,7 +23,7 @@ defmodule Valea.Icm.Locator do
   an audit record, Phase 7):
 
       %{"kind" => "icm", "icm_id" => "<uuid>", "path" => "Pricing/Current Pricing.md"}
-      %{"kind" => "workspace", "path" => "sources/mail/messages/42.md"}
+      %{"kind" => "workspace", "path" => "sources/mail/mara/views/messages/42.md"}
 
   `resolve/2` is the one place a locator turns back into a physical path
   to actually touch — and the one place containment matters. It never

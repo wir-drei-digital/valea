@@ -61,8 +61,8 @@ defmodule Valea.Icm.LocatorTest do
     # `physical_abs` is built from the RESOLVED workspace root (`real!/1`),
     # matching the moduledoc's contract that it is already a known-good,
     # physical path — not the raw, possibly-unresolved `ws` string itself.
-    assert %{"kind" => "workspace", "path" => "sources/mail/messages/42.md"} =
-             Locator.for_path(ws, Path.join(real!(ws), "sources/mail/messages/42.md"))
+    assert %{"kind" => "workspace", "path" => "sources/mail/mara/views/messages/42.md"} =
+             Locator.for_path(ws, Path.join(real!(ws), "sources/mail/mara/views/messages/42.md"))
   end
 
   # Regression for the bug fixed alongside this test: `for_path/2`'s

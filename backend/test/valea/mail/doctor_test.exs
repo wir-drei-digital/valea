@@ -5,23 +5,24 @@ defmodule Valea.Mail.DoctorTest do
   alias Valea.Mail.Doctor
   alias Valea.Mail.Settings
 
-  @review "AI/Review"
-  @processed "AI/Processed"
   @drafts "Drafts"
+  @sent "Sent"
+  @archive "Archive"
+  @trash "Trash"
   @account "mara"
 
   # -- fixtures ---------------------------------------------------------------
 
-  # A real v4 `%Settings{}` (Task 9): `folders` only carries drafts/sent/
-  # archive/trash — AI/Review and AI/Processed are fixed, Valea-owned names
-  # `Doctor` itself knows, not part of the account's own settings.
+  # A real v4 `%Settings{}` (Task 9): `folders` carries the account's four
+  # configured special-folder names — exactly what the `folders` check
+  # verifies and "Create folders" creates.
   defp settings(overrides \\ %{}) do
     Map.merge(
       %Settings{
         slug: @account,
         provider: :generic,
         imap: %{host: "localhost", port: 993, username: "mara@example.com"},
-        folders: %{drafts: @drafts, sent: "Sent", archive: "Archive", trash: "Trash"},
+        folders: %{drafts: @drafts, sent: @sent, archive: @archive, trash: @trash},
         sync: %{
           window_days: 90,
           interval_minutes: 15,
@@ -89,7 +90,7 @@ defmodule Valea.Mail.DoctorTest do
 
   | Input | Where |
   | --- | --- |
-  | The inquiry email | a `sources/mail/messages/*.md` file |
+  | The inquiry email | a `sources/mail/<slug>/views/messages/*.md` file |
   """
 
   # -- real TCP listener helpers -----------------------------------------------
@@ -129,7 +130,7 @@ defmodule Valea.Mail.DoctorTest do
   defp full_script do
     [
       {:connect, :_, {:ok, FakeMailTransport}},
-      {:list_folders, :_, {:ok, [@review, @processed, @drafts]}},
+      {:list_folders, :_, {:ok, [@drafts, @sent, @archive, @trash]}},
       {:capabilities, :_, {:ok, ["IMAP4rev1", "MOVE", "UIDPLUS"]}},
       {:logout, :_, :ok}
     ]
@@ -323,22 +324,25 @@ defmodule Valea.Mail.DoctorTest do
       assert {:ok, %{checks: checks}} = Doctor.run(the_ctx)
       folders = Enum.find(checks, &(&1["id"] == "folders"))
       assert folders["status"] == "failed"
-      assert folders["detail"] =~ @review
-      assert folders["detail"] =~ @processed
       assert folders["detail"] =~ @drafts
-      assert folders["remedy"] =~ "Create AI folders"
-      assert folders["remedy"] =~ "drafts"
+      assert folders["detail"] =~ @sent
+      assert folders["detail"] =~ @archive
+      assert folders["detail"] =~ @trash
+      assert folders["remedy"] =~ "Create folders"
+      assert folders["remedy"] =~ "config/mail.yaml"
 
       FakeMailTransport.script([
         {:connect, :_, {:ok, FakeMailTransport}},
         {:list_folders, :_, {:ok, ["INBOX"]}},
-        {:create_folder, [:_, @review], :ok},
-        {:create_folder, [:_, @processed], :ok},
+        {:create_folder, [:_, @drafts], :ok},
+        {:create_folder, [:_, @sent], :ok},
+        {:create_folder, [:_, @archive], :ok},
+        {:create_folder, [:_, @trash], :ok},
         {:logout, :_, :ok}
       ])
 
       assert {:ok, created} = Doctor.create_folders(the_ctx)
-      assert Enum.sort(created) == Enum.sort([@review, @processed])
+      assert Enum.sort(created) == Enum.sort([@drafts, @sent, @archive, @trash])
 
       FakeMailTransport.script(full_script())
       assert {:ok, %{checks: checks2}} = Doctor.run(the_ctx)
@@ -347,21 +351,36 @@ defmodule Valea.Mail.DoctorTest do
     end)
   end
 
-  test "create_folders never tries to create the drafts folder" do
+  test "create_folders never tries to create [Gmail]/* system folders" do
     root = workspace_root()
-    the_ctx = ctx(%{root: root})
+
+    gmail_settings =
+      settings(%{
+        folders: %{
+          drafts: @drafts,
+          sent: @sent,
+          archive: "[Gmail]/All Mail",
+          trash: "[Gmail]/Trash"
+        }
+      })
+
+    the_ctx = ctx(%{root: root, settings: gmail_settings})
 
     FakeMailTransport.script([
       {:connect, :_, {:ok, FakeMailTransport}},
       {:list_folders, :_, {:ok, ["INBOX"]}},
-      {:create_folder, [:_, @review], :ok},
-      {:create_folder, [:_, @processed], :ok},
+      {:create_folder, [:_, @drafts], :ok},
+      {:create_folder, [:_, @sent], :ok},
       {:logout, :_, :ok}
     ])
 
     assert {:ok, created} = Doctor.create_folders(the_ctx)
-    assert Enum.sort(created) == Enum.sort([@review, @processed])
-    refute Enum.any?(FakeMailTransport.calls(), &match?({:create_folder, [_, @drafts]}, &1))
+    assert Enum.sort(created) == Enum.sort([@drafts, @sent])
+
+    refute Enum.any?(
+             FakeMailTransport.calls(),
+             &match?({:create_folder, [_, "[Gmail]" <> _]}, &1)
+           )
   end
 
   test "create_folders skips a folder whose creation fails, but still creates the other" do
@@ -371,13 +390,15 @@ defmodule Valea.Mail.DoctorTest do
     FakeMailTransport.script([
       {:connect, :_, {:ok, FakeMailTransport}},
       {:list_folders, :_, {:ok, []}},
-      {:create_folder, [:_, @review], {:error, :denied}},
-      {:create_folder, [:_, @processed], :ok},
+      {:create_folder, [:_, @drafts], {:error, :denied}},
+      {:create_folder, [:_, @sent], :ok},
+      {:create_folder, [:_, @archive], :ok},
+      {:create_folder, [:_, @trash], :ok},
       {:logout, :_, :ok}
     ])
 
     assert {:ok, created} = Doctor.create_folders(the_ctx)
-    assert created == [@processed]
+    assert created == [@sent, @archive, @trash]
   end
 
   test "create_folders propagates a connect failure" do
@@ -405,7 +426,7 @@ defmodule Valea.Mail.DoctorTest do
 
     FakeMailTransport.script([
       {:connect, :_, {:ok, FakeMailTransport}},
-      {:list_folders, :_, {:ok, [@review, @processed, @drafts]}},
+      {:list_folders, :_, {:ok, [@drafts, @sent, @archive, @trash]}},
       {:logout, :_, :ok}
     ])
 
@@ -421,7 +442,7 @@ defmodule Valea.Mail.DoctorTest do
 
       FakeMailTransport.script([
         {:connect, :_, {:ok, FakeMailTransport}},
-        {:list_folders, :_, {:ok, [@review, @processed, @drafts]}},
+        {:list_folders, :_, {:ok, [@drafts, @sent, @archive, @trash]}},
         {:capabilities, :_, {:ok, ["IMAP4rev1"]}},
         {:logout, :_, :ok}
       ])
@@ -433,7 +454,7 @@ defmodule Valea.Mail.DoctorTest do
       assert move["status"] == "failed"
 
       assert move["remedy"] ==
-               "Your server supports neither MOVE nor UIDPLUS — Valea will leave messages in AI/Review and you move them manually."
+               "Your server supports neither MOVE nor UIDPLUS — move ops will be rejected; flags and draft pushes still work."
     end)
   end
 
@@ -444,7 +465,7 @@ defmodule Valea.Mail.DoctorTest do
 
       FakeMailTransport.script([
         {:connect, :_, {:ok, FakeMailTransport}},
-        {:list_folders, :_, {:ok, [@review, @processed, @drafts]}},
+        {:list_folders, :_, {:ok, [@drafts, @sent, @archive, @trash]}},
         {:capabilities, :_, {:ok, ["IMAP4rev1", "UIDPLUS"]}},
         {:logout, :_, :ok}
       ])

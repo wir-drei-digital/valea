@@ -351,7 +351,7 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
       ctx: ctx,
       mara: mara
     } do
-      for rel <- ["maildir/cur/m1.eml", "views/inbox.md", "ops/done/op1.yaml", ".account"] do
+      for rel <- ["maildir/cur/m1.eml", "views/note.md", "ops/done/op1.yaml", ".account"] do
         assert {:allow, "allow_once"} = P.decide(read(Path.join(mara, rel)), ctx),
                "expected allow for #{rel}"
       end
@@ -384,7 +384,7 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
 
       for rel <- [
             "maildir/cur/f.eml",
-            "views/inbox.md",
+            "views/note.md",
             "ops/done/op1.yaml",
             "quarantine/x",
             ".account",

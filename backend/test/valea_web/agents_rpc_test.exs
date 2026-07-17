@@ -171,11 +171,11 @@ defmodule ValeaWeb.AgentsRpcTest do
     } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
 
-      msg_dir = Path.join([workspace, "sources", "mail", "messages"])
+      msg_dir = Path.join([workspace, "sources", "notes", "messages"])
       File.mkdir_p!(msg_dir)
       File.write!(Path.join(msg_dir, "msg1.md"), "hello")
 
-      input_locator = %{"kind" => "workspace", "path" => "sources/mail/messages/msg1.md"}
+      input_locator = %{"kind" => "workspace", "path" => "sources/notes/messages/msg1.md"}
 
       assert %{"success" => true, "data" => %{"id" => id, "inputPath" => input_path}} =
                rpc(
@@ -190,7 +190,7 @@ defmodule ValeaWeb.AgentsRpcTest do
 
       on_exit(fn -> AgentCase.kill_session(id) end)
 
-      assert input_path =~ "sources/mail/messages/msg1.md"
+      assert input_path =~ "sources/notes/messages/msg1.md"
       assert %{"input" => ^input_locator} = transcript_meta(workspace, id)
     end
 
@@ -204,7 +204,7 @@ defmodule ValeaWeb.AgentsRpcTest do
       sessions_dir = Path.join([workspace, "logs", "sessions"])
       before = if File.dir?(sessions_dir), do: File.ls!(sessions_dir), else: []
 
-      input_locator = %{"kind" => "workspace", "path" => "sources/mail/messages/nope.md"}
+      input_locator = %{"kind" => "workspace", "path" => "sources/notes/messages/nope.md"}
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
@@ -273,10 +273,10 @@ defmodule ValeaWeb.AgentsRpcTest do
     } do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
 
-      msg_dir = Path.join([workspace, "sources", "mail", "messages"])
+      msg_dir = Path.join([workspace, "sources", "notes", "messages"])
       File.mkdir_p!(msg_dir)
       File.write!(Path.join(msg_dir, "msg1.md"), "hello")
-      input_locator = %{"kind" => "workspace", "path" => "sources/mail/messages/msg1.md"}
+      input_locator = %{"kind" => "workspace", "path" => "sources/notes/messages/msg1.md"}
 
       assert %{"success" => true, "data" => %{"id" => id}} =
                rpc(

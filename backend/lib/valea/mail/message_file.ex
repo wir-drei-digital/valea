@@ -23,7 +23,7 @@ defmodule Valea.Mail.MessageFile do
       anything else (other frontmatter fields, their exact formatting, or
       the body) — `Valea.Mail.Views.refresh_folders/5` uses it to patch
       `folders:`/`flags:` in place whenever occurrence membership changes,
-      without a full re-render. Supersedes the old `flip_status/2` (deleted
+      without a full re-render. Supersedes the retired v3 status-flip helper (deleted
       — there is no more `status:` field to flip; see the moduledoc below).
     * `sanitize_filename/1` — the basename-only, control-char-free,
       no-traversal filename attachment landing uses before ever touching
@@ -256,7 +256,7 @@ defmodule Valea.Mail.MessageFile do
   Replaces one or more `<key>: ...` lines inside the leading `---\\n...\\n
   ---\\n` frontmatter block, byte-for-byte preserving everything else
   (other frontmatter fields, their exact formatting, and the whole body) —
-  the same discipline the deleted `flip_status/2` used for the retired
+  the same discipline the deleted v3 status-flip helper used for the retired
   `status:` field, generalized to any set of keys. `replacements` is a
   `%{String.t() => String.t()}` of bare key name → the FULL replacement
   line value (already rendered, e.g. via `render_string_list/1`/
