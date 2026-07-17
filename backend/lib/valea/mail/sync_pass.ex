@@ -1,10 +1,13 @@
 defmodule Valea.Mail.SyncPass do
   @moduledoc """
-  The pull engine (mail-as-maildir design spec, §Pull (server → local)). One
-  `run/1` mirrors the server's mirrored folder set — its new occurrences,
-  flag changes, and server-side deletions — into the account's local maildir
-  tree + derived views + `Valea.Mail.Store` cache. Pull only: `ops_enabled:
-  false` for now (Task 13 wires push).
+  The two-phase sync engine (mail-as-maildir design spec, §Sync engine). One
+  `run/1` first PUSHES declared ops (see `push/1` below — reconcile in-flight
+  ops, then claim + execute freshly-declared ops files via
+  `Valea.Mail.OpsExecutor`), then PULLS: mirrors the server's mirrored folder
+  set — its new occurrences, flag changes, and server-side deletions — into
+  the account's local maildir tree + derived views + `Valea.Mail.Store`
+  cache. Push-before-pull is an ordering optimization, never a trust
+  statement — every mutation still re-verifies against live server state.
 
   ## Per-folder pipeline
 
@@ -75,6 +78,8 @@ defmodule Valea.Mail.SyncPass do
 
   alias Valea.Mail.Maildir
   alias Valea.Mail.MessageFile
+  alias Valea.Mail.OpsExecutor
+  alias Valea.Mail.OpsFile
   alias Valea.Mail.Reconcile
   alias Valea.Mail.Store
   alias Valea.Mail.Views
@@ -93,7 +98,6 @@ defmodule Valea.Mail.SyncPass do
           settings: Valea.Mail.Settings.t(),
           credential: (-> String.t()) | String.t(),
           transport: module(),
-          ops_enabled: boolean(),
           readopt_authorized: boolean()
         }
 
@@ -132,11 +136,54 @@ defmodule Valea.Mail.SyncPass do
       settings: args.settings,
       transport: args.transport,
       conn: conn,
-      ops_enabled: Map.get(args, :ops_enabled, false),
       readopt_authorized: Map.get(args, :readopt_authorized, false)
     }
 
+    # Push before pull (spec §Sync engine): reconcile any in-flight ops, then
+    # execute the freshly-declared ones, so the pull mirror converges on the
+    # post-push server state within the same pass. Push failures are isolated
+    # (they never abort the pull) — a mutation the executor couldn't finish
+    # is parked in its ledger/manifest for the next pass to reconcile.
+    push(ctx)
     pull(ctx)
+  end
+
+  # -- push (declared ops) ----------------------------------------------------
+
+  defp push(ctx) do
+    OpsExecutor.recover(ctx)
+    claim_loop(ctx)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp claim_loop(ctx) do
+    case OpsFile.claim_next(ctx.root, ctx.account) do
+      :none ->
+        :ok
+
+      {:quarantined, _name} ->
+        claim_loop(ctx)
+
+      {:ok, %{opid: opid, bytes: bytes, original_name: name}} ->
+        apply_claimed(ctx, opid, bytes, name)
+        claim_loop(ctx)
+    end
+  end
+
+  defp apply_claimed(ctx, opid, bytes, name) do
+    case OpsFile.parse(bytes) do
+      {:ok, ops} ->
+        results = OpsExecutor.apply_ops(Map.put(ctx, :opid, opid), ops, "ops:#{name}")
+        OpsFile.write_results!(ctx.root, ctx.account, opid, name, results)
+
+      {:error, reason} ->
+        OpsFile.write_results!(ctx.root, ctx.account, opid, name, [
+          %{op: 0, result: "rejected", reason: reason}
+        ])
+    end
   end
 
   # -- pull orchestration -----------------------------------------------------

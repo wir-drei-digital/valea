@@ -448,21 +448,21 @@ defmodule Valea.Api.Mail do
       argument :ops, {:array, :map}, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
-      # Task 13 replaces this body with the real ops executor call — declared
-      # now, with this exact shape, so codegen churns once (see moduledoc).
+      # The UI's archive/move/flag actions, executed through the SAME ops
+      # executor as ops files, serialized through the account's Engine (spec
+      # §RPC surface). Returns per-op results synchronously (frozen shape).
       run fn input, _ctx ->
         %{account: slug, ops: ops, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
              :ok <- validate_slug(slug) do
-          results =
-            ops
-            |> Enum.with_index()
-            |> Enum.map(fn {_op, i} ->
-              %{"op" => i, "result" => "rejected", "reason" => "ops_executor_not_wired"}
-            end)
-
-          {:ok, %{results: results}}
+          case Engine.apply_ops(slug, ops) do
+            {:ok, results} -> {:ok, %{results: results}}
+            # A gating failure (no engine/credential, blocked, inactive) maps
+            # to per-op rejections so the results array stays populated rather
+            # than surfacing a bare RPC error the per-op UI can't attribute.
+            {:error, reason} -> {:ok, %{results: reject_all_ops(ops, to_string(reason))}}
+          end
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -531,6 +531,16 @@ defmodule Valea.Api.Mail do
 
   defp validate_slug(slug) do
     if Settings.valid_slug?(slug), do: :ok, else: {:error, :invalid_slug}
+  end
+
+  # Maps every op to a per-op rejection with `reason` — keeps `mail_apply_ops`'s
+  # frozen results-array shape populated when the Engine can't run the batch.
+  defp reject_all_ops(ops, reason) do
+    ops
+    |> Enum.with_index()
+    |> Enum.map(fn {_op, index} ->
+      %{"op" => index, "result" => "rejected", "reason" => reason}
+    end)
   end
 
   defp require_confirmation(confirmation, expected) do

@@ -69,9 +69,13 @@ defmodule Valea.Mail.Store.PendingOp do
   end
 
   attributes do
+    # `allow_nil? false` on id/kind/account/origin/state mirrors the DB's
+    # `null: false` on these columns (see the create_mail_tables migration) —
+    # the constraint fails at the Ash changeset boundary rather than only at
+    # the SQLite layer. In-scope hygiene flagged in the PendingOp review.
     attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
-    attribute :kind, :string, public?: true
-    attribute :account, :string, public?: true
+    attribute :kind, :string, allow_nil?: false, public?: true
+    attribute :account, :string, allow_nil?: false, public?: true
     attribute :source_folder, :string, public?: true
     attribute :target_folder, :string, public?: true
     attribute :uid, :integer, public?: true
@@ -80,10 +84,10 @@ defmodule Valea.Mail.Store.PendingOp do
     attribute :dest_uidvalidity, :integer, public?: true
     attribute :message_id, :string, public?: true
     attribute :msg_id, :string, public?: true
-    attribute :origin, :string, public?: true
+    attribute :origin, :string, allow_nil?: false, public?: true
     attribute :spool_path, :string, public?: true
     attribute :payload_sha256, :string, public?: true
-    attribute :state, :string, public?: true
+    attribute :state, :string, allow_nil?: false, public?: true
     attribute :error, :string, public?: true
     attribute :inserted_at, :string, public?: true
     attribute :updated_at, :string, public?: true

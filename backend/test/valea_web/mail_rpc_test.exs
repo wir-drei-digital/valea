@@ -787,24 +787,42 @@ defmodule ValeaWeb.MailRpcTest do
 
   # -- stubs: mail_apply_ops / push_draft_to_mailbox / list_mail_drafts ----------
 
-  describe "mail_apply_ops (stub)" do
-    test "rejects every op with ops_executor_not_wired", %{generation: generation} do
+  describe "mail_apply_ops (wired to the executor)" do
+    # The executor itself is exercised end-to-end against `ModelMailTransport`
+    # in `Valea.Mail.OpsExecutorTest`; here we prove the RPC is WIRED to it
+    # (no longer the `ops_executor_not_wired` stub) and returns the frozen
+    # per-op results shape. An activated-but-uncredentialed engine can't run
+    # the batch, so every op comes back rejected `no_credential` — one result
+    # per op, in order — which the stub could never produce.
+    test "routes ops through the account's engine and returns per-op results", %{
+      generation: generation
+    } do
       setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
 
       assert %{"success" => true, "data" => %{"results" => results}} =
                rpc(
                  "mail_apply_ops",
                  %{
                    "account" => "mara",
-                   "ops" => [%{"kind" => "move"}, %{"kind" => "trash"}],
+                   "ops" => [
+                     %{"op" => "move", "msg_id" => "m", "from" => "INBOX", "to" => "Archive"},
+                     %{
+                       "op" => "flag",
+                       "msg_id" => "m",
+                       "folder" => "INBOX",
+                       "add" => ["S"],
+                       "remove" => []
+                     }
+                   ],
                    "generation" => generation
                  },
                  [%{"results" => ["op", "result", "reason"]}]
                )
 
       assert results == [
-               %{"op" => 0, "result" => "rejected", "reason" => "ops_executor_not_wired"},
-               %{"op" => 1, "result" => "rejected", "reason" => "ops_executor_not_wired"}
+               %{"op" => 0, "result" => "rejected", "reason" => "no_credential"},
+               %{"op" => 1, "result" => "rejected", "reason" => "no_credential"}
              ]
     end
   end

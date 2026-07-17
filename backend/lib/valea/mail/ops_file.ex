@@ -132,6 +132,15 @@ defmodule Valea.Mail.OpsFile do
     end
   end
 
+  @doc """
+  Parses a SINGLE already-decoded op map (string keys, e.g. an RPC-supplied
+  op) against the closed vocabulary. `{:ok, op}` or `{:error, reason}` — the
+  per-op entry point the RPC path uses so one malformed op rejects only
+  itself, not the whole batch.
+  """
+  @spec parse_one(map()) :: {:ok, op()} | {:error, String.t()}
+  def parse_one(raw) when is_map(raw), do: parse_op(raw)
+
   defp parse_op(%{"op" => "move"} = raw) do
     with :ok <- exact_keys(raw, @move_keys, "move"),
          {:ok, msg_id} <- required_string(raw, "msg_id"),
@@ -322,6 +331,10 @@ defmodule Valea.Mail.OpsFile do
         end
 
       {:error, _reason} ->
+        # The claim rename itself failed — quarantine the pending entry so a
+        # caller looping over `claim_next/2` advances past it rather than
+        # re-selecting the same oldest file forever.
+        quarantine!(root, account, path, name)
         {:quarantined, name}
     end
   end

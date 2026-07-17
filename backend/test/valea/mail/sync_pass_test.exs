@@ -803,6 +803,76 @@ defmodule Valea.Mail.SyncPassTest do
     assert row_b.msg_id == occ_b.msg_id
   end
 
+  # ==========================================================================
+  # Push phase — declared ops execute BEFORE the pull, within one pass
+  # ==========================================================================
+
+  describe "push before pull" do
+    test "a pending ops file's move executes in the push phase and lands a result", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_folder(name, "Archive")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+
+      # First pass mirrors INBOX so the occurrence + view exist.
+      assert {:ok, %{new_messages: 1}} = run(name, root)
+      msg_id = hd(Store.occurrences("mara", "INBOX")).msg_id
+
+      # An agent declares a move via an ops file.
+      pending = Path.join([root, "sources", "mail", "mara", "ops", "pending"])
+      File.mkdir_p!(pending)
+
+      File.write!(
+        Path.join(pending, "cleanup.yaml"),
+        "- op: move\n  msg_id: #{msg_id}\n  from: INBOX\n  to: Archive\n"
+      )
+
+      # Second pass: push executes the move (before pull), pull converges.
+      assert {:ok, _} = run(name, root)
+
+      # Server-side: moved INBOX → Archive.
+      assert ModelMailTransport.messages(name, "INBOX") == []
+      assert length(ModelMailTransport.messages(name, "Archive")) == 1
+
+      # The pending file was claimed; a result sidecar records success.
+      assert File.ls!(pending) == []
+      done = Path.join([root, "sources", "mail", "mara", "ops", "done"])
+      result_file = done |> File.ls!() |> Enum.find(&String.ends_with?(&1, ".result.yaml"))
+      assert {:ok, doc} = YamlElixir.read_from_file(Path.join(done, result_file))
+      assert doc["file"] == "cleanup.yaml"
+      assert [%{"result" => "ok"}] = doc["results"]
+
+      # Local mirror converged: occurrence now under Archive only.
+      assert Store.occurrences("mara", "INBOX") == []
+      assert [%{msg_id: ^msg_id}] = Store.occurrences("mara", "Archive")
+    end
+
+    test "an unresolvable ops file (unknown msg_id) is rejected per-op in done/", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_folder(name, "Archive")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+      assert {:ok, _} = run(name, root)
+
+      pending = Path.join([root, "sources", "mail", "mara", "ops", "pending"])
+      File.mkdir_p!(pending)
+
+      File.write!(
+        Path.join(pending, "bad.yaml"),
+        "- op: move\n  msg_id: 2026-01-01-nobody-deadbeef\n  from: INBOX\n  to: Archive\n"
+      )
+
+      assert {:ok, _} = run(name, root)
+
+      done = Path.join([root, "sources", "mail", "mara", "ops", "done"])
+      result_file = done |> File.ls!() |> Enum.find(&String.ends_with?(&1, ".result.yaml"))
+      assert {:ok, doc} = YamlElixir.read_from_file(Path.join(done, result_file))
+      assert [%{"result" => "rejected"}] = doc["results"]
+      # No spurious server move.
+      assert length(ModelMailTransport.messages(name, "INBOX")) == 1
+    end
+  end
+
   # -- shared path helper -----------------------------------------------------
 
   defp folder_dir(root, account, dir_rel),

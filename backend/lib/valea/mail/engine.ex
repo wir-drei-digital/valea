@@ -97,6 +97,7 @@ defmodule Valea.Mail.Engine do
   alias Valea.Mail.Account
   alias Valea.Mail.Doctor
   alias Valea.Mail.Index
+  alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Redact
   alias Valea.Mail.Store
   alias Valea.Mail.SyncPass
@@ -235,6 +236,25 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  @doc """
+  Executes RPC-originated declared ops (the Mail UI's archive/move/flag
+  actions) inline and synchronously, serialized through this account's
+  Engine (spec §RPC surface — `mail_apply_ops`). Connects, reconciles any
+  in-flight ops, runs the same `Valea.Mail.OpsExecutor` core as the ops-file
+  push phase (origin `"rpc"`), and returns the per-op results array. Gated
+  exactly like `sync_now/1`. `{:error, reason}` when the account can't run;
+  `{:error, :not_found}` when no Engine is running for `slug`.
+  """
+  @spec apply_ops(String.t(), [map()]) ::
+          {:ok, [map()]}
+          | {:error, :inactive | :not_configured | :no_credential | :blocked | :not_found}
+  def apply_ops(slug, ops) when is_binary(slug) and is_list(ops) do
+    case whereis(slug) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:apply_ops, ops}, 60_000)
+    end
+  end
+
   defp whereis(slug), do: GenServer.whereis(via(slug))
 
   defp slugs_and_pids do
@@ -308,6 +328,18 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  # RPC declared ops — connect, reconcile, execute inline; single-flight
+  # gated like sync_now. Runs in the Engine loop (spec: serialized through the
+  # account's Engine); a per-op results array is always returned (connect
+  # failure surfaces as per-op `connect_failed` rejections, keeping the frozen
+  # RPC shape populated).
+  def handle_call({:apply_ops, ops}, _from, state) do
+    case validate_sync(state) do
+      :ok -> {:reply, {:ok, run_rpc_ops(state, ops)}, state}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
   def handle_call(:readopt, _from, %{status: "mailbox_replaced"} = state) do
     :ok = Account.authorize_readopt!(state.root, state.account)
     new_state = %{state | status: "idle"} |> schedule_poll()
@@ -367,6 +399,63 @@ defmodule Valea.Mail.Engine do
   # monitor's `:DOWN` (matched above) is what actually drives result handling
   # and single-flight cleanup, so the `{:EXIT, _, _}` is intentionally a no-op.
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+
+  # -- RPC ops execution --------------------------------------------------
+
+  # Connects, reconciles in-flight ops, then runs the executor's per-op core
+  # against the RPC-supplied raw ops. Always returns a per-op results list;
+  # a connect failure maps every op to a `connect_failed` rejection so the
+  # RPC's frozen results-array shape stays populated.
+  defp run_rpc_ops(state, ops) do
+    case state.transport.connect(
+           state.settings.imap,
+           current_secret(state),
+           state.connect_opts
+         ) do
+      {:ok, conn} ->
+        try do
+          ctx = %{
+            root: state.root,
+            account: state.account,
+            settings: state.settings,
+            transport: state.transport,
+            conn: conn
+          }
+
+          OpsExecutor.recover(ctx)
+          OpsExecutor.apply_raw_ops(ctx, ops, "rpc")
+        after
+          safe_logout(state.transport, conn)
+        end
+
+      {:error, _reason} ->
+        reject_all_ops(ops, "connect_failed")
+    end
+  rescue
+    # An executor/transport failure must never crash this Engine (and lose the
+    # RAM-only credential nothing else holds): degrade to per-op rejections so
+    # the RPC's frozen results-array shape is always returned.
+    _ -> reject_all_ops(ops, "execution_error")
+  catch
+    :exit, _ -> reject_all_ops(ops, "execution_error")
+  end
+
+  defp reject_all_ops(ops, reason) do
+    ops
+    |> Enum.with_index()
+    |> Enum.map(fn {_op, index} ->
+      %{"op" => index, "result" => "rejected", "reason" => reason}
+    end)
+  end
+
+  defp safe_logout(transport, conn) do
+    transport.logout(conn)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   # -- activation ---------------------------------------------------------
 

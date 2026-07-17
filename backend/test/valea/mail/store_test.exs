@@ -432,9 +432,11 @@ defmodule Valea.Mail.StoreTest do
     end
 
     test "a non-claim create failure raises loudly instead of returning :duplicate_active" do
-      # `state` is NOT NULL in the migration — omitting it is a programmer
-      # error, and it must not masquerade as a legitimately-contended claim.
-      assert_raise Ash.Error.Unknown, fn ->
+      # `state` is NOT NULL in the migration AND `allow_nil? false` on the
+      # resource — omitting it is a programmer error caught at the changeset
+      # (Ash.Error.Invalid, "attribute state is required"), and it must not
+      # masquerade as a legitimately-contended claim.
+      assert_raise Ash.Error.Invalid, fn ->
         Store.create_pending_op(%{
           kind: "append",
           account: "mara@example.com",
