@@ -1,5 +1,6 @@
 import { api, type Api } from '../api/client';
 import { workspaceStore } from './workspace.svelte';
+import { sha256Hex } from '../components/mail/mail-shapes';
 import { inDesktop, keychainGet } from '../keychain';
 import type { MailStatusPush, MailSyncPush, MailMessagePush } from '../socket';
 import type { Channel } from 'phoenix';
@@ -15,7 +16,16 @@ import type { Channel } from 'phoenix';
  */
 type MailApi = Pick<
   Api,
-  'mailStatus' | 'listMailFolders' | 'listMailMessages' | 'getMailMessage' | 'mailSyncNow' | 'setMailCredential'
+  | 'mailStatus'
+  | 'listMailFolders'
+  | 'listMailMessages'
+  | 'getMailMessage'
+  | 'mailSyncNow'
+  | 'setMailCredential'
+  | 'applyMailOps'
+  | 'listMailDrafts'
+  | 'getMailDraft'
+  | 'pushDraftToMailbox'
 >;
 
 const INBOX_FOLDER = 'INBOX';
@@ -44,6 +54,13 @@ export type MailAccountStatus = {
   pendingOps: number;
   heldFolders: string[];
   notices: string[];
+  /**
+   * The account's configured special-folder names (`drafts`/`sent`/
+   * `archive`/`trash` — Gmail's archive is `"[Gmail]/All Mail"`, never
+   * `"Archive"`); `null` until the engine has settings. The archive action
+   * composes its move op from these, never from a hardcoded name.
+   */
+  folders: Record<string, string> | null;
 };
 
 /** One folder of `list_mail_folders` — camelCased per-item typed map (`ListMailFoldersFields` in `api/client.ts`). */
@@ -111,7 +128,71 @@ export function normalizeMailAccountStatus(raw: Record<string, unknown>): MailAc
     workspaceId: str(raw.workspace_id),
     pendingOps: typeof raw.pending_ops === 'number' ? raw.pending_ops : 0,
     heldFolders: strings(raw.held_folders),
-    notices: strings(raw.notices)
+    notices: strings(raw.notices),
+    folders: normalizeFolderNames(raw.folders)
+  };
+}
+
+function normalizeFolderNames(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const entries = Object.entries(raw as Record<string, unknown>).filter(
+    (pair): pair is [string, string] => typeof pair[1] === 'string'
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
+/**
+ * One draft of `list_mail_drafts` — normalized from the raw string-keyed
+ * entry (`Valea.Api.Mail.draft_entry/3`). `statusDisplay` is LEDGER-derived
+ * backend-side (`draft`/`pushing`/`pushed`/`needs_review`/`rejected`);
+ * `recipients` is either the parsed to/cc/bcc+subject or `{invalid}` for an
+ * unparseable/link-unsafe draft.
+ */
+export type MailDraft = {
+  account: string;
+  name: string;
+  path: string;
+  statusDisplay: string;
+  notice: string | null;
+  recipients:
+    | { invalid: string }
+    | {
+        to: { name: string | null; email: string }[];
+        cc: { name: string | null; email: string }[];
+        bcc: { name: string | null; email: string }[];
+        subject: string | null;
+      };
+};
+
+function normalizeAddresses(raw: unknown): { name: string | null; email: string }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const rec = entry as Record<string, unknown>;
+    if (typeof rec.email !== 'string') return [];
+    return [{ name: typeof rec.name === 'string' ? rec.name : null, email: rec.email }];
+  });
+}
+
+export function normalizeMailDraft(raw: Record<string, unknown>): MailDraft {
+  const parsed = (raw.parsed_recipients ?? {}) as Record<string, unknown>;
+  const recipients =
+    typeof parsed.invalid === 'string'
+      ? { invalid: parsed.invalid }
+      : {
+          to: normalizeAddresses(parsed.to),
+          cc: normalizeAddresses(parsed.cc),
+          bcc: normalizeAddresses(parsed.bcc),
+          subject: str(parsed.subject)
+        };
+
+  return {
+    account: str(raw.account) ?? '',
+    name: str(raw.name) ?? '',
+    path: str(raw.path) ?? '',
+    statusDisplay: str(raw.status_display) ?? 'draft',
+    notice: str(raw.notice),
+    recipients
   };
 }
 
@@ -136,6 +217,7 @@ export class MailStore {
   selectedFolder: string | null = $state(INBOX_FOLDER);
   messages: MailMessageSummary[] = $state([]);
   selected: MailMessageDetail | null = $state(null);
+  drafts: MailDraft[] = $state([]);
   /**
    * In-flight flag for `select()` (the one async call heavy/slow enough —
    * it reads a whole message file — to warrant a UI spinner). The list
@@ -246,6 +328,63 @@ export class MailStore {
   async syncNow(account: string, generation: number): Promise<string | null> {
     const result = await this.#api.mailSyncNow(account, generation);
     return result.ok ? null : result.error;
+  }
+
+  /**
+   * Executes declared ops (the archive/flag actions) against `account`
+   * through the serialized executor, then refetches the affected lists.
+   * Resolves the per-op results array, or a single synthesized rejection
+   * when the RPC itself failed (so callers always render per-op outcomes).
+   */
+  async applyOps(
+    account: string,
+    ops: Record<string, unknown>[],
+    generation: number
+  ): Promise<{ op: number; result: string; reason: string | null }[]> {
+    const result = await this.#api.applyMailOps(account, ops, generation);
+    if (!result.ok) {
+      return ops.map((_op, index) => ({ op: index, result: 'rejected', reason: result.error }));
+    }
+
+    void this.refreshFolders();
+    void this.refreshMessages();
+    const data = result.data as { results?: { op: number; result: string; reason: string | null }[] };
+    return data.results ?? [];
+  }
+
+  /** Refetches every account's drafts with their ledger-derived states. */
+  async refreshDrafts(): Promise<void> {
+    const result = await this.#api.listMailDrafts();
+    if (!result.ok) return;
+
+    const data = result.data as { drafts?: unknown };
+    const raw = Array.isArray(data.drafts) ? (data.drafts as Record<string, unknown>[]) : [];
+    this.drafts = raw.map(normalizeMailDraft);
+  }
+
+  /**
+   * Push-to-Drafts (the ONE outbound action — spec E: no SMTP): fetches the
+   * draft's exact bytes, hashes them (sha256 hex, the backend's
+   * `DraftFile.content_hash/1` encoding), and pushes bound to that revision.
+   * Resolves the resulting display state, or `{error}` when any step failed;
+   * always refetches the drafts list so badges reflect the ledger.
+   */
+  async pushDraft(
+    account: string,
+    draftName: string,
+    generation: number
+  ): Promise<{ state: string } | { error: string }> {
+    const fetched = await this.#api.getMailDraft(account, draftName);
+    if (!fetched.ok) return { error: fetched.error };
+
+    const content = (fetched.data as { content: string }).content;
+    const hash = await sha256Hex(content);
+    const pushed = await this.#api.pushDraftToMailbox(account, draftName, hash, generation);
+    void this.refreshDrafts();
+    if (!pushed.ok) return { error: pushed.error };
+
+    const data = pushed.data as { state?: string };
+    return { state: data.state ?? 'pushing' };
   }
 
   /**

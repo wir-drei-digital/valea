@@ -3,10 +3,12 @@ import {
   MailStore,
   mailStore,
   normalizeMailAccountStatus,
+  normalizeMailDraft,
   resupplyCredentials,
   wireMailEvents,
   type MailAccountStatus
 } from './mail.svelte';
+import { sha256Hex } from '../components/mail/mail-shapes';
 import { inDesktop, keychainGet } from '../keychain';
 import type { ApiResult } from '../api/client';
 import type { MailStatusPush } from '../socket';
@@ -34,6 +36,10 @@ type MessagesResult = ApiResult<{ messages: any[] }>;
 type DetailResult = ApiResult<{ message: Record<string, any> }>;
 type SyncResult = ApiResult<{ started: boolean }>;
 type CredentialResult = ApiResult<{ accepted: boolean }>;
+type OpsResult = ApiResult<{ results: { op: number; result: string; reason: string | null }[] }>;
+type DraftsResult = ApiResult<{ drafts: Record<string, any>[] }>;
+type DraftContentResult = ApiResult<{ content: string; path: string }>;
+type PushResult = ApiResult<{ state: string }>;
 
 // `account` (the slug) deliberately differs from `username` (the IMAP
 // login) throughout these fixtures — the keychain lookup keys on the SLUG
@@ -77,6 +83,15 @@ function fakeApi(overrides: {
   getMailMessage?: (account: string, msgId: string) => Promise<DetailResult>;
   mailSyncNow?: (account: string, generation: number) => Promise<SyncResult>;
   setMailCredential?: (account: string, secret: string, generation: number) => Promise<CredentialResult>;
+  applyMailOps?: (account: string, ops: Record<string, unknown>[], generation: number) => Promise<OpsResult>;
+  listMailDrafts?: () => Promise<DraftsResult>;
+  getMailDraft?: (account: string, draftName: string) => Promise<DraftContentResult>;
+  pushDraftToMailbox?: (
+    account: string,
+    draftName: string,
+    contentHash: string,
+    generation: number
+  ) => Promise<PushResult>;
 }) {
   return {
     mailStatus:
@@ -89,7 +104,15 @@ function fakeApi(overrides: {
       overrides.getMailMessage ?? (async () => ({ ok: true, data: { message: {} } }) as DetailResult),
     mailSyncNow: overrides.mailSyncNow ?? (async () => ({ ok: true, data: { started: true } }) as SyncResult),
     setMailCredential:
-      overrides.setMailCredential ?? (async () => ({ ok: true, data: { accepted: true } }) as CredentialResult)
+      overrides.setMailCredential ?? (async () => ({ ok: true, data: { accepted: true } }) as CredentialResult),
+    applyMailOps: overrides.applyMailOps ?? (async () => ({ ok: true, data: { results: [] } }) as OpsResult),
+    listMailDrafts:
+      overrides.listMailDrafts ?? (async () => ({ ok: true, data: { drafts: [] } }) as DraftsResult),
+    getMailDraft:
+      overrides.getMailDraft ??
+      (async () => ({ ok: true, data: { content: '', path: '' } }) as DraftContentResult),
+    pushDraftToMailbox:
+      overrides.pushDraftToMailbox ?? (async () => ({ ok: true, data: { state: 'pushing' } }) as PushResult)
   };
 }
 
@@ -120,8 +143,23 @@ describe('normalizeMailAccountStatus', () => {
       workspaceId: 'ws-1',
       pendingOps: 2,
       heldFolders: ['Old/Archive'],
-      notices: ['one notice']
+      notices: ['one notice'],
+      folders: null
     } satisfies MailAccountStatus);
+  });
+
+  it('normalizes the configured folder-name map when present', () => {
+    const normalized = normalizeMailAccountStatus({
+      ...rawMara,
+      folders: { drafts: 'Drafts', sent: 'Sent', archive: '[Gmail]/All Mail', trash: '[Gmail]/Trash' }
+    });
+
+    expect(normalized.folders).toEqual({
+      drafts: 'Drafts',
+      sent: 'Sent',
+      archive: '[Gmail]/All Mail',
+      trash: '[Gmail]/Trash'
+    });
   });
 
   it('degrades an invalid-config entry (only account/state/reason present) to empty defaults', () => {
@@ -482,6 +520,136 @@ describe('resupplyCredentials', () => {
 
     expect(count).toBe(0);
     expect(keychainGet).not.toHaveBeenCalled();
+  });
+});
+
+describe('MailStore.applyOps', () => {
+  it('passes the op maps through verbatim (snake keys) and refetches lists on success', async () => {
+    const applyMailOps = vi.fn(
+      async () => ({ ok: true, data: { results: [{ op: 0, result: 'accepted', reason: null }] } }) as OpsResult
+    );
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ applyMailOps, listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    const op = { op: 'move', msg_id: 'm1', from: 'INBOX', to: 'Archive' };
+    const results = await store.applyOps('mara', [op], 7);
+    await flush();
+
+    expect(applyMailOps).toHaveBeenCalledWith('mara', [op], 7);
+    expect(results).toEqual([{ op: 0, result: 'accepted', reason: null }]);
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+  });
+
+  it('synthesizes per-op rejections when the RPC itself fails', async () => {
+    const store = new MailStore(
+      fakeApi({ applyMailOps: async () => ({ ok: false, error: 'workspace_changed' }) }) as never
+    );
+
+    const results = await store.applyOps('mara', [{ op: 'move' }, { op: 'flag' }], 7);
+
+    expect(results).toEqual([
+      { op: 0, result: 'rejected', reason: 'workspace_changed' },
+      { op: 1, result: 'rejected', reason: 'workspace_changed' }
+    ]);
+  });
+});
+
+describe('normalizeMailDraft + MailStore.refreshDrafts', () => {
+  const rawDraft = {
+    account: 'mara',
+    name: 'reply.md',
+    path: 'sources/mail/mara/drafts/reply.md',
+    status_display: 'draft',
+    notice: null,
+    parsed_recipients: {
+      to: [{ name: null, email: 'alex@example.com' }],
+      cc: [],
+      bcc: [],
+      subject: 'Re: Kickoff'
+    }
+  };
+
+  it('normalizes a parsed draft entry', () => {
+    expect(normalizeMailDraft(rawDraft)).toEqual({
+      account: 'mara',
+      name: 'reply.md',
+      path: 'sources/mail/mara/drafts/reply.md',
+      statusDisplay: 'draft',
+      notice: null,
+      recipients: {
+        to: [{ name: null, email: 'alex@example.com' }],
+        cc: [],
+        bcc: [],
+        subject: 'Re: Kickoff'
+      }
+    });
+  });
+
+  it('normalizes an invalid draft entry to {invalid}', () => {
+    const invalid = normalizeMailDraft({ ...rawDraft, parsed_recipients: { invalid: 'link_unsafe' } });
+    expect(invalid.recipients).toEqual({ invalid: 'link_unsafe' });
+  });
+
+  it('refreshDrafts populates the normalized list', async () => {
+    const store = new MailStore(
+      fakeApi({ listMailDrafts: async () => ({ ok: true, data: { drafts: [rawDraft] } }) }) as never
+    );
+
+    await store.refreshDrafts();
+
+    expect(store.drafts).toHaveLength(1);
+    expect(store.drafts[0].name).toBe('reply.md');
+  });
+});
+
+describe('MailStore.pushDraft', () => {
+  it('hashes the exact fetched bytes (backend content_hash encoding) and pushes bound to them', async () => {
+    const content = '---\nto: [a@b.c]\nsubject: "S"\n---\nBody.\n';
+    const getMailDraft = vi.fn(
+      async () => ({ ok: true, data: { content, path: 'sources/mail/mara/drafts/reply.md' } }) as DraftContentResult
+    );
+    const pushDraftToMailbox = vi.fn(async () => ({ ok: true, data: { state: 'pushed' } }) as PushResult);
+    const store = new MailStore(fakeApi({ getMailDraft, pushDraftToMailbox }) as never);
+
+    const outcome = await store.pushDraft('mara', 'reply.md', 7);
+
+    const expectedHash = await sha256Hex(content);
+    // Pin the encoding itself, not just "some string": lowercase hex sha256.
+    expect(expectedHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(getMailDraft).toHaveBeenCalledWith('mara', 'reply.md');
+    expect(pushDraftToMailbox).toHaveBeenCalledWith('mara', 'reply.md', expectedHash, 7);
+    expect(outcome).toEqual({ state: 'pushed' });
+  });
+
+  it('surfaces a fetch failure without pushing', async () => {
+    const pushDraftToMailbox = vi.fn(async () => ({ ok: true, data: { state: 'pushed' } }) as PushResult);
+    const store = new MailStore(
+      fakeApi({ getMailDraft: async () => ({ ok: false, error: 'link_unsafe' }), pushDraftToMailbox }) as never
+    );
+
+    const outcome = await store.pushDraft('mara', 'reply.md', 7);
+
+    expect(outcome).toEqual({ error: 'link_unsafe' });
+    expect(pushDraftToMailbox).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a push failure and still refetches the drafts list', async () => {
+    const listMailDrafts = vi.fn(async () => ({ ok: true, data: { drafts: [] } }) as DraftsResult);
+    const store = new MailStore(
+      fakeApi({
+        getMailDraft: async () => ({ ok: true, data: { content: 'x', path: 'p' } }),
+        pushDraftToMailbox: async () => ({ ok: false, error: 'hash_mismatch' }),
+        listMailDrafts
+      }) as never
+    );
+
+    const outcome = await store.pushDraft('mara', 'reply.md', 7);
+    await flush();
+
+    expect(outcome).toEqual({ error: 'hash_mismatch' });
+    expect(listMailDrafts).toHaveBeenCalled();
   });
 });
 

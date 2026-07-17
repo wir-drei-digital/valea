@@ -21,7 +21,7 @@
  *    comment in `socket.ts`), plus the RPC-only `"invalid_config"`.
  */
 
-import type { MailAccountStatus, MailFolder } from '$lib/stores/mail.svelte';
+import type { MailAccountStatus, MailDraft, MailFolder } from '$lib/stores/mail.svelte';
 import type { Api } from '$lib/api/client';
 
 // -- account/folder chrome (AccountSwitcher / FolderList) -------------------
@@ -43,9 +43,116 @@ export function accountLabel(status: Pick<MailAccountStatus, 'account' | 'valid'
   return status.valid ? status.account : `${status.account} (invalid)`;
 }
 
+/**
+ * Lowercase-hex sha256 of a UTF-8 string — byte-for-byte the encoding of
+ * the backend's `Valea.Mail.DraftFile.content_hash/1`, so the push CAS
+ * (`push_draft_to_mailbox`'s `contentHash`) binds to exactly the revision
+ * `getMailDraft` returned. Web Crypto; async by nature.
+ */
+export async function sha256Hex(content: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 /** Badge text for a folder row (`FolderList`): `"held"` for a held folder (spec E §folder lifecycle), nothing otherwise. */
 export function folderBadge(folder: Pick<MailFolder, 'held'>): string | null {
   return folder.held ? 'held' : null;
+}
+
+// -- ops actions (MessageView) ----------------------------------------------
+
+/**
+ * User copy for one `mail_apply_ops` per-op outcome. `accepted`/`complete`
+ * count as success (`null` — nothing to show); everything else maps the
+ * executor's rejection reasons to calm sentences.
+ */
+export function opResultMessage(result: string, reason: string | null): string | null {
+  if (result === 'accepted' || result === 'complete') return null;
+
+  switch (reason) {
+    case 'server_changed':
+      return 'The message changed on the server — sync and try again.';
+    case 'no_credential':
+      return 'Enter your mailbox password first.';
+    case 'blocked':
+    case 'mailbox_replaced':
+      return 'This account is blocked pending re-adopt.';
+    case 'inactive':
+    case 'not_configured':
+      return 'Connect your mailbox first.';
+    default:
+      return reason ? `The action was rejected (${reason}).` : 'The action was rejected.';
+  }
+}
+
+/**
+ * Opening prompt for the "Clean up inbox" session (mail design spec E §UI,
+ * exact text pinned by the plan's Task-16 contract).
+ */
+export function cleanupPrompt(slug: string): string {
+  return (
+    `You have the mail account '${slug}' mounted read-only at its mail mount. ` +
+    `Review INBOX via the views/ folder, then declare cleanup as a YAML ops file in ops/pending/ ` +
+    `(vocabulary: move, flag) — the engine validates and executes them. Never modify maildir/ directly. ` +
+    `Propose, don't over-file: when unsure, leave a message where it is.`
+  );
+}
+
+// -- drafts (DraftsPanel) ----------------------------------------------------
+
+/** Badge label + tone for a draft's ledger-derived display state. */
+export function draftStatusBadge(statusDisplay: string): { label: string; tone: 'neutral' | 'busy' | 'ok' | 'warn' } {
+  switch (statusDisplay) {
+    case 'pushing':
+      return { label: 'Pushing…', tone: 'busy' };
+    case 'pushed':
+      return { label: 'Pushed', tone: 'ok' };
+    case 'needs_review':
+      return { label: 'Needs review', tone: 'warn' };
+    case 'rejected':
+      return { label: 'Rejected', tone: 'warn' };
+    default:
+      return { label: 'Draft', tone: 'neutral' };
+  }
+}
+
+/** One-line recipient summary: `"To alex@example.com, Bo <bo@x> · Subject"`, or the invalid reason. */
+export function draftRecipientsLine(recipients: MailDraft['recipients']): string {
+  if ('invalid' in recipients) return `Invalid draft (${recipients.invalid})`;
+
+  const to = recipients.to.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ');
+  const parts = [];
+  if (to) parts.push(`To ${to}`);
+  if (recipients.subject) parts.push(recipients.subject);
+  return parts.join(' · ') || '(no recipients)';
+}
+
+/** Error copy for a failed push (`push_draft_to_mailbox` / `get_mail_draft` error codes). */
+export function pushErrorMessage(code: string): string {
+  switch (code) {
+    case 'hash_mismatch':
+      return 'The draft changed since you opened it — review it again, then push.';
+    case 'duplicate_active':
+      return 'This draft is already being pushed.';
+    case 'invalid_draft':
+      return "The draft couldn't be validated. Check its recipients and subject.";
+    case 'link_unsafe':
+      return 'This draft file is not a regular file and cannot be pushed.';
+    case 'no_credential':
+      return 'Enter your mailbox password first.';
+    case 'push_failed':
+      return "The push failed before anything was sent. It's safe to try again.";
+    case 'workspace_not_open':
+      return 'No workspace is open.';
+    case 'workspace_changed':
+      return 'Your workspace changed. Reopen it and try again.';
+    case 'not_found':
+      return 'This draft no longer exists.';
+    default:
+      return 'Could not push the draft. Check the account state and try again.';
+  }
 }
 
 // -- relative time — mirrors `routes/chat/+page.svelte`'s `relativeTime` ---
@@ -472,11 +579,18 @@ export function createFoldersErrorMessage(code: string): string {
 // path the session was granted" convention as `initial-prompt.ts`'s
 // `pageSessionPrompt` (Knowledge's "Start a session with this page").
 
-/** Opening prompt for a mail-message session — `inputPath` is the resolved absolute path `createAgentSession` echoed back (falls back to the pre-resolve `message.path` if that's ever null). */
-export function messageSessionPrompt(inputPath: string): string {
+/**
+ * Opening prompt for a mail-message session — `inputPath` is the resolved
+ * absolute path `createAgentSession` echoed back (falls back to the
+ * pre-resolve `message.path` if that's ever null); `mailMountKey` is the
+ * account's `mail-<slug>` mount the session was opted into via
+ * `includeMounts`.
+ */
+export function messageSessionPrompt(inputPath: string, mailMountKey: string): string {
   return [
-    `Read the mail message at \`${inputPath}\` — you have read access to exactly that file.`,
+    `Read the mail message at \`${inputPath}\` — the whole account is also mounted read-only as \`${mailMountKey}\`.`,
     `Summarize who it's from and what they need, then help me decide how to handle it.`,
-    `If a reply is warranted, draft it as a new file in this ICM through the normal approval flow — do not send anything.`
+    `To act on the mailbox (archive, move, flag), write a YAML ops file into the mount's ops/pending/ (vocabulary: move, flag) — the engine validates and executes it; never modify maildir/ directly.`,
+    `If a reply is warranted, write a draft file under the mount's drafts/ — you cannot send anything; only I can push a draft to the mailbox.`
   ].join(' ');
 }

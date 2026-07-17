@@ -223,6 +223,15 @@ defmodule Valea.Mail.EngineTest do
     assert status.configured == true
     assert status.account == "mara"
     assert status.username == "mara@example.com"
+
+    # The configured special-folder names ride the status map (string keys —
+    # the UI's archive action composes its move op from these).
+    assert status.folders == %{
+             "drafts" => "Drafts",
+             "sent" => "Sent",
+             "archive" => "Archive",
+             "trash" => "Trash"
+           }
   end
 
   test "reads the workspace id from config/workspace.yaml at activation", %{root: root} do

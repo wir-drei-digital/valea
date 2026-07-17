@@ -17,7 +17,13 @@ import {
   mailMaintenanceErrorMessage,
   syncErrorText,
   syncNowErrorMessage,
-  messageSessionPrompt
+  messageSessionPrompt,
+  opResultMessage,
+  cleanupPrompt,
+  draftStatusBadge,
+  draftRecipientsLine,
+  pushErrorMessage,
+  sha256Hex
 } from './mail-shapes';
 import { normalizeMailAccountStatus, type MailAccountStatus } from '$lib/stores/mail.svelte';
 
@@ -286,9 +292,94 @@ describe('syncNowErrorMessage', () => {
 });
 
 describe('messageSessionPrompt', () => {
-  it('references the granted absolute path', () => {
-    const prompt = messageSessionPrompt('/ws/sources/mail/messages/m1.md');
-    expect(prompt).toContain('`/ws/sources/mail/messages/m1.md`');
-    expect(prompt).toContain('do not send anything');
+  it('references the granted path, the mail mount, and the no-send rule', () => {
+    const prompt = messageSessionPrompt('/ws/sources/mail/mara/views/messages/m1.md', 'mail-mara');
+    expect(prompt).toContain('`/ws/sources/mail/mara/views/messages/m1.md`');
+    expect(prompt).toContain('`mail-mara`');
+    expect(prompt).toContain('ops/pending/');
+    expect(prompt).toContain('you cannot send anything');
+  });
+});
+
+describe('opResultMessage', () => {
+  it('is null for success outcomes', () => {
+    expect(opResultMessage('accepted', null)).toBeNull();
+    expect(opResultMessage('complete', null)).toBeNull();
+  });
+
+  it('maps known rejection reasons to calm sentences and falls back with the raw reason', () => {
+    expect(opResultMessage('rejected', 'server_changed')).toBe(
+      'The message changed on the server — sync and try again.'
+    );
+    expect(opResultMessage('rejected', 'no_credential')).toBe('Enter your mailbox password first.');
+    expect(opResultMessage('rejected', 'weird_reason')).toBe('The action was rejected (weird_reason).');
+    expect(opResultMessage('rejected', null)).toBe('The action was rejected.');
+  });
+});
+
+describe('cleanupPrompt', () => {
+  it('pins the plan-mandated text', () => {
+    const prompt = cleanupPrompt('mara');
+    expect(prompt).toContain("You have the mail account 'mara' mounted read-only at its mail mount.");
+    expect(prompt).toContain('YAML ops file in ops/pending/');
+    expect(prompt).toContain('(vocabulary: move, flag)');
+    expect(prompt).toContain('Never modify maildir/ directly.');
+    expect(prompt).toContain("Propose, don't over-file: when unsure, leave a message where it is.");
+  });
+});
+
+describe('draftStatusBadge', () => {
+  it.each([
+    ['draft', 'Draft', 'neutral'],
+    ['pushing', 'Pushing…', 'busy'],
+    ['pushed', 'Pushed', 'ok'],
+    ['needs_review', 'Needs review', 'warn'],
+    ['rejected', 'Rejected', 'warn'],
+    ['unknown_future', 'Draft', 'neutral']
+  ])('maps %s to %s/%s', (state, label, tone) => {
+    expect(draftStatusBadge(state)).toEqual({ label, tone });
+  });
+});
+
+describe('draftRecipientsLine', () => {
+  it('joins recipients and subject', () => {
+    expect(
+      draftRecipientsLine({
+        to: [
+          { name: 'Alex', email: 'alex@example.com' },
+          { name: null, email: 'bo@example.com' }
+        ],
+        cc: [],
+        bcc: [],
+        subject: 'Kickoff'
+      })
+    ).toBe('To Alex <alex@example.com>, bo@example.com · Kickoff');
+  });
+
+  it('renders the invalid reason for an unparseable draft', () => {
+    expect(draftRecipientsLine({ invalid: 'link_unsafe' })).toBe('Invalid draft (link_unsafe)');
+  });
+
+  it('falls back when there is nothing to show', () => {
+    expect(draftRecipientsLine({ to: [], cc: [], bcc: [], subject: null })).toBe('(no recipients)');
+  });
+});
+
+describe('pushErrorMessage', () => {
+  it.each([
+    ['hash_mismatch', 'The draft changed since you opened it — review it again, then push.'],
+    ['duplicate_active', 'This draft is already being pushed.'],
+    ['push_failed', "The push failed before anything was sent. It's safe to try again."],
+    ['anything_else', 'Could not push the draft. Check the account state and try again.']
+  ])('maps error code=%s to a calm sentence', (code, expected) => {
+    expect(pushErrorMessage(code)).toBe(expected);
+  });
+});
+
+describe('sha256Hex', () => {
+  it('matches the backend content_hash encoding (lowercase hex, known vector)', async () => {
+    // :crypto.hash(:sha256, "") |> Base.encode16(case: :lower)
+    expect(await sha256Hex('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(await sha256Hex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   });
 });

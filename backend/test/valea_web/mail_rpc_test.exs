@@ -1020,6 +1020,85 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
+  describe "get_mail_draft" do
+    test "returns the raw draft bytes the push hash must cover", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+
+      content = """
+      ---
+      to: [alex@example.com]
+      subject: "Re: Kickoff"
+      status: draft
+      ---
+      Hello Alex.
+      """
+
+      File.write!(Path.join(drafts_dir, "reply.md"), content)
+
+      assert %{"success" => true, "data" => %{"content" => ^content, "path" => path}} =
+               rpc("get_mail_draft", %{"account" => "mara", "draftName" => "reply.md"}, [
+                 "content",
+                 "path"
+               ])
+
+      assert path == "sources/mail/mara/drafts/reply.md"
+    end
+
+    test "rejects traversal/separator draft names before any path construction", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      for bad <- ["../secrets.md", "a/b.md", "..\\x.md", ".md", "no-extension"] do
+        assert %{"success" => false, "errors" => [%{"type" => "invalid_draft_name"}]} =
+                 rpc("get_mail_draft", %{"account" => "mara", "draftName" => bad}, [
+                   "content",
+                   "path"
+                 ])
+      end
+    end
+
+    test "a symlinked draft is refused, target content never served", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+
+      outside = Path.join(workspace, "planted.md")
+      File.write!(outside, "sensitive target content")
+      File.ln_s!(outside, Path.join(drafts_dir, "link.md"))
+
+      assert %{"success" => false, "errors" => [%{"type" => "link_unsafe"}]} =
+               rpc("get_mail_draft", %{"account" => "mara", "draftName" => "link.md"}, [
+                 "content",
+                 "path"
+               ])
+    end
+
+    test "a missing draft is not_found", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => [%{"type" => "not_found"}]} =
+               rpc("get_mail_draft", %{"account" => "mara", "draftName" => "ghost.md"}, [
+                 "content",
+                 "path"
+               ])
+    end
+  end
+
   # -- mail_inbox: removed ------------------------------------------------------
 
   describe "mail_inbox (removed)" do

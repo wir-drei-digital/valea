@@ -75,6 +75,14 @@ import {
   readoptMailAccountChannel,
   discardHeldFolder as httpDiscardHeldFolder,
   discardHeldFolderChannel,
+  mailApplyOps as httpMailApplyOps,
+  mailApplyOpsChannel,
+  pushDraftToMailbox as httpPushDraftToMailbox,
+  pushDraftToMailboxChannel,
+  listMailDrafts as httpListMailDrafts,
+  listMailDraftsChannel,
+  getMailDraft as httpGetMailDraft,
+  getMailDraftChannel,
   inspectIcm as httpInspectIcm,
   inspectIcmChannel,
   listIcms as httpListIcms,
@@ -125,6 +133,10 @@ import type {
   PurgeMailAccountFilesFields,
   ReadoptMailAccountFields,
   DiscardHeldFolderFields,
+  MailApplyOpsFields,
+  PushDraftToMailboxFields,
+  ListMailDraftsFields,
+  GetMailDraftFields,
   IcmTreeFields,
   InspectIcmFields,
   ListIcmsFields,
@@ -401,6 +413,14 @@ const removeMailAccountFields: RemoveMailAccountFields = ['removed'];
 const purgeMailAccountFilesFields: PurgeMailAccountFilesFields = ['purged'];
 const readoptMailAccountFields: ReadoptMailAccountFields = ['readopted'];
 const discardHeldFolderFields: DiscardHeldFolderFields = ['discarded'];
+const pushDraftToMailboxFields: PushDraftToMailboxFields = ['state'];
+// `drafts` is an unconstrained `Array<Record<string, any>>` passthrough
+// (string keys as `Valea.Api.Mail.draft_entry/3` writes them) — the store
+// owns normalizing entries, same raw-delivery split as `mailStatusFields`.
+const listMailDraftsFields: ListMailDraftsFields = ['drafts'];
+const getMailDraftFields: GetMailDraftFields = ['content', 'path'];
+// Same `Array<TypedMap>` codegen gap as `listMailMessagesFields` above.
+const mailApplyOpsFields = [{ results: ['op', 'result', 'reason'] }] as unknown as MailApplyOpsFields;
 const setupMailAccountFields: SetupMailAccountFields = ['saved'];
 const setMailCredentialFields: SetMailCredentialFields = ['accepted'];
 const mailSyncNowFields: MailSyncNowFields = ['started'];
@@ -632,6 +652,39 @@ function callDiscardHeldFolderChannel(
 ) {
   return wrapChannelCall((handlers) =>
     discardHeldFolderChannel({ channel, input, fields: discardHeldFolderFields, ...handlers })
+  );
+}
+
+function callMailApplyOpsChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; ops: Record<string, unknown>[]; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    mailApplyOpsChannel({ channel, input, fields: mailApplyOpsFields, ...handlers })
+  );
+}
+
+function callPushDraftToMailboxChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; draftName: string; contentHash: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    pushDraftToMailboxChannel({ channel, input, fields: pushDraftToMailboxFields, ...handlers })
+  );
+}
+
+function callListMailDraftsChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    listMailDraftsChannel({ channel, fields: listMailDraftsFields, ...handlers })
+  );
+}
+
+function callGetMailDraftChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; draftName: string }
+) {
+  return wrapChannelCall((handlers) =>
+    getMailDraftChannel({ channel, input, fields: getMailDraftFields, ...handlers })
   );
 }
 
@@ -1332,6 +1385,40 @@ export const api = {
         httpDiscardHeldFolder(
           withAuth({ input: { account, folder, confirmation, generation }, fields: discardHeldFolderFields })
         )
+    ),
+
+  // The UI's archive/flag actions — the SAME declared-op vocabulary agents
+  // write as ops files, executed through the same serialized executor. Each
+  // op map is an unconstrained :map passed VERBATIM (no camelization):
+  // {op:'move', msg_id, from, to} / {op:'flag', msg_id, folder, add,
+  // remove} — snake keys, exactly as `Valea.Mail.OpsFile.parse_one/1`
+  // validates. Per-op results come back positionally ({op: index, result,
+  // reason}).
+  applyMailOps: (account: string, ops: Record<string, unknown>[], generation: number) =>
+    runRpc(
+      (channel) => callMailApplyOpsChannel(channel, { account, ops, generation }),
+      () => httpMailApplyOps(withAuth({ input: { account, ops, generation }, fields: mailApplyOpsFields }))
+    ),
+
+  // The ONE user-initiated outbound action (spec E: THERE IS NO SMTP) —
+  // `contentHash` is the sha256 hex of the exact bytes `getMailDraft`
+  // returned, binding the push to the revision the user reviewed.
+  pushDraftToMailbox: (account: string, draftName: string, contentHash: string, generation: number) =>
+    runRpc(
+      (channel) => callPushDraftToMailboxChannel(channel, { account, draftName, contentHash, generation }),
+      () =>
+        httpPushDraftToMailbox(
+          withAuth({ input: { account, draftName, contentHash, generation }, fields: pushDraftToMailboxFields })
+        )
+    ),
+
+  listMailDrafts: () =>
+    runRpc(callListMailDraftsChannel, () => httpListMailDrafts(withAuth({ fields: listMailDraftsFields }))),
+
+  getMailDraft: (account: string, draftName: string) =>
+    runRpc(
+      (channel) => callGetMailDraftChannel(channel, { account, draftName }),
+      () => httpGetMailDraft(withAuth({ input: { account, draftName }, fields: getMailDraftFields }))
     ),
 
   // Icms (task 3.4, `Valea.Api.Icms`). `listIcms` delivers its `icms` array

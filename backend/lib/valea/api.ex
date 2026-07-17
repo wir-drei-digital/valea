@@ -65,6 +65,7 @@ defmodule Valea.Api do
       rpc_action(:mail_apply_ops, :mail_apply_ops)
       rpc_action(:push_draft_to_mailbox, :push_draft_to_mailbox)
       rpc_action(:list_mail_drafts, :list_mail_drafts)
+      rpc_action(:get_mail_draft, :get_mail_draft)
     end
 
     resource Valea.Api.Icms do

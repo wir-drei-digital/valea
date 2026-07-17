@@ -22,6 +22,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
+  import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { setInitialPrompt } from '$lib/stores/initial-prompt';
   import {
@@ -33,6 +34,7 @@
     formatBytes,
     formatDateTime,
     messageSessionPrompt,
+    opResultMessage,
     subjectLabel,
     type RawAddress
   } from './mail-shapes';
@@ -62,15 +64,63 @@
   let copiedPath: string | null = $state(null);
   let starting = $state(false);
   let sessionError = $state<string | null>(null);
+  let opBusy = $state(false);
+  let opError = $state<string | null>(null);
 
   // A different message was opened — drop this session's local "just
-  // copied a path" affordance and any stale session-start error so neither
+  // copied a path" affordance and any stale session-start/op error so none
   // bleeds into the newly-selected message's view.
   $effect(() => {
     void message.path;
     copiedPath = null;
     sessionError = null;
+    opError = null;
   });
+
+  // Ops context: the message's indexed id is its frontmatter `id`; the
+  // source folder is the list the user opened it from; the archive
+  // destination is the ACCOUNT'S configured name (Gmail: "[Gmail]/All
+  // Mail"), never a hardcoded "Archive".
+  const msgId = $derived(typeof frontmatter.id === 'string' ? frontmatter.id : null);
+  const currentFolder = $derived(mailStore.selectedFolder);
+  const archiveFolder = $derived(mailStore.selectedStatus?.folders?.archive ?? null);
+  const flagged = $derived(
+    typeof frontmatter.flags === 'string' && frontmatter.flags.includes('F')
+  );
+  const canArchive = $derived(
+    msgId !== null && currentFolder !== null && archiveFolder !== null && currentFolder !== archiveFolder
+  );
+
+  async function runOp(op: Record<string, unknown>, afterArchive: boolean): Promise<void> {
+    const account = mailStore.selectedAccount;
+    if (!account) return;
+
+    opBusy = true;
+    opError = null;
+    const results = await mailStore.applyOps(account, [op], workspaceStore.generation ?? 0);
+    opBusy = false;
+
+    const first = results[0];
+    const failure = first ? opResultMessage(first.result, first.reason) : null;
+    if (failure) {
+      opError = failure;
+      return;
+    }
+    if (afterArchive) void goto('/mail');
+  }
+
+  function archive(): void {
+    if (!msgId || !currentFolder || !archiveFolder) return;
+    void runOp({ op: 'move', msg_id: msgId, from: currentFolder, to: archiveFolder }, true);
+  }
+
+  function toggleFlag(): void {
+    if (!msgId || !currentFolder) return;
+    const op = flagged
+      ? { op: 'flag', msg_id: msgId, folder: currentFolder, add: [], remove: ['F'] }
+      : { op: 'flag', msg_id: msgId, folder: currentFolder, add: ['F'], remove: [] };
+    void runOp(op, false);
+  }
 
   async function copyAttachmentPath(path: string): Promise<void> {
     try {
@@ -96,7 +146,8 @@
    * already filtered to exactly that set — see `icm.svelte.ts`).
    */
   async function startSession(): Promise<void> {
-    if (!message.path) return;
+    const account = mailStore.selectedAccount;
+    if (!message.path || !account) return;
     starting = true;
     sessionError = null;
     try {
@@ -105,8 +156,13 @@
         sessionError = 'No enabled ICM to host the session — enable one in the sidebar.';
         return;
       }
+      // The session is opted into the whole account's mail mount (T14
+      // `includeMounts`) on top of the exact-file input grant — the agent
+      // can read the mailbox views and write ops/drafts, never send.
+      const mailMountKey = `mail-${account}`;
       const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {
-        input: { kind: 'workspace', path: message.path }
+        input: { kind: 'workspace', path: message.path },
+        includeMounts: [mailMountKey]
       });
       if (!result.ok) {
         sessionError =
@@ -116,7 +172,7 @@
         return;
       }
       const data = result.data as { id: string; inputPath: string | null };
-      setInitialPrompt(data.id, messageSessionPrompt(data.inputPath ?? message.path));
+      setInitialPrompt(data.id, messageSessionPrompt(data.inputPath ?? message.path, mailMountKey));
       void goto(`/chat?session=${data.id}`);
     } finally {
       starting = false;
@@ -171,10 +227,21 @@
     </div>
   {/if}
 
-  <div class="border-paper-hairline flex flex-wrap items-center gap-2.5 border-t pt-4">
-    <Button type="button" disabled={starting || !message.path} onclick={() => void startSession()}>
-      Start a session about this message
-    </Button>
+  <div class="border-paper-hairline flex flex-col gap-2 border-t pt-4">
+    <div class="flex flex-wrap items-center gap-2.5">
+      <Button type="button" disabled={starting || !message.path} onclick={() => void startSession()}>
+        Start a session about this message
+      </Button>
+      {#if canArchive}
+        <Button type="button" variant="outline" disabled={opBusy} onclick={() => archive()}>Archive</Button>
+      {/if}
+      {#if msgId && currentFolder}
+        <Button type="button" variant="ghost" disabled={opBusy} onclick={() => toggleFlag()}>
+          {flagged ? 'Unflag' : 'Flag'}
+        </Button>
+      {/if}
+    </div>
     {#if sessionError}<p class="text-warn-ink text-[12.5px]" role="alert">{sessionError}</p>{/if}
+    {#if opError}<p class="text-warn-ink text-[12.5px]" role="alert">{opError}</p>{/if}
   </div>
 </article>

@@ -518,6 +518,36 @@ defmodule Valea.Api.Mail do
         end
       end
     end
+
+    action :get_mail_draft, :map do
+      constraints fields: [
+                    content: [type: :string, allow_nil?: false],
+                    path: [type: :string, allow_nil?: false]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+      argument :draft_name, :string, allow_nil?: false
+
+      # Reads one draft's raw bytes for the push flow: the UI hashes EXACTLY
+      # what it fetched (sha256 hex, `DraftFile.content_hash/1`'s encoding)
+      # and binds `push_draft_to_mailbox` to that revision — the CAS contract
+      # only means something if the hash covers the bytes the USER reviewed.
+      # `draft_name` is a bare basename (separator/traversal rejected before
+      # any path construction); the read is no-follow, same posture as the
+      # listing and push paths.
+      run fn input, _ctx ->
+        %{account: slug, draft_name: name} = input.arguments
+
+        with {:ok, %{path: root}} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- validate_draft_name(name),
+             {:ok, content} <- read_draft_raw(root, slug, name) do
+          {:ok, %{content: content, path: draft_rel_path(slug, name)}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
   end
 
   @doc false
@@ -758,4 +788,40 @@ defmodule Valea.Api.Mail do
 
   defp draft_rel_path(account, name),
     do: Path.join(["sources", "mail", account, "drafts", name])
+
+  # A bare `.md` basename only — any separator or traversal is rejected
+  # BEFORE a path is ever constructed from it (get_mail_draft).
+  defp validate_draft_name(name) do
+    if is_binary(name) and String.ends_with?(name, ".md") and name != ".md" and
+         not String.contains?(name, ["/", "\\", ".."]) do
+      :ok
+    else
+      {:error, :invalid_draft_name}
+    end
+  end
+
+  # Raw no-follow read for get_mail_draft — same lstat posture as
+  # `read_and_parse_draft/3` above, but returning the exact bytes (the push
+  # hash must cover what the user fetched, unparsed). Non-UTF8 content is
+  # rejected rather than crashing the JSON encoder.
+  defp read_draft_raw(root, account, name) do
+    path = Path.join([root, "sources", "mail", account, "drafts", name])
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, links: 1}} ->
+        case File.read(path) do
+          {:ok, bytes} ->
+            if String.valid?(bytes), do: {:ok, bytes}, else: {:error, :invalid_encoding}
+
+          {:error, _reason} ->
+            {:error, :not_found}
+        end
+
+      {:ok, _link_or_special} ->
+        {:error, :link_unsafe}
+
+      {:error, _reason} ->
+        {:error, :not_found}
+    end
+  end
 end

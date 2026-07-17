@@ -2337,6 +2337,80 @@ export async function discardHeldFolderChannel<Fields extends DiscardHeldFolderF
 }
 
 
+export type GetMailDraftInput = {
+  account: string;
+  draftName: string;
+};
+
+export type GetMailDraftFields = UnifiedFieldSelection<{content: string, path: string, __type: "TypedMap", __primitiveFields: "content" | "path"}>[];
+
+export type InferGetMailDraftResult<
+  Fields extends GetMailDraftFields | undefined,
+> = InferResult<{content: string, path: string, __type: "TypedMap", __primitiveFields: "content" | "path"}, Fields>;
+
+export type GetMailDraftResult<Fields extends GetMailDraftFields | undefined = undefined> = | { success: true; data: InferGetMailDraftResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailDraft<Fields extends GetMailDraftFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GetMailDraftInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GetMailDraftResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "get_mail_draft",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GetMailDraftResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailDraftChannel<Fields extends GetMailDraftFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GetMailDraftInput;
+  fields: Fields;
+  resultHandler: (result: GetMailDraftResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GetMailDraftResult<Fields>>(
+    config.channel,
+    {
+    action: "get_mail_draft",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type GetMailMessageInput = {
   account: string;
   msgId: string;

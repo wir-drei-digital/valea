@@ -11,10 +11,14 @@
   import { AppFrame, ListPane, EmptyState } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import MailIcon from '@lucide/svelte/icons/mail';
-  import { syncNowErrorMessage } from '$lib/components/mail/mail-shapes';
+  import { api } from '$lib/api/client';
+  import { icmStore } from '$lib/stores/icm.svelte';
+  import { setInitialPrompt } from '$lib/stores/initial-prompt';
+  import { cleanupPrompt, syncNowErrorMessage } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import AccountSwitcher from '$lib/components/mail/AccountSwitcher.svelte';
+  import DraftsPanel from '$lib/components/mail/DraftsPanel.svelte';
   import FolderList from '$lib/components/mail/FolderList.svelte';
   import MessageList from '$lib/components/mail/MessageList.svelte';
   import SyncStatusLine from '$lib/components/mail/SyncStatusLine.svelte';
@@ -31,10 +35,12 @@
   // desktop-only keychain credential resupply as a side effect.
   onMount(() => {
     void mailStore.refreshStatus();
+    void mailStore.refreshDrafts();
   });
 
   const selectedId = $derived(page.url.searchParams.get('message'));
   const setupRequested = $derived(page.url.searchParams.get('setup') === '1');
+  const draftsRequested = $derived(page.url.searchParams.get('drafts') === '1');
 
   // Race-safe selection load: `MailStore.select` writes into the shared
   // `mailStore.selected` singleton with no per-call id tag, so two
@@ -115,6 +121,40 @@
     syncRequesting = false;
     if (code) syncRequestError = syncNowErrorMessage(code);
   }
+
+  // "Clean up inbox" (mail design spec E §UI): a session on the primary ICM,
+  // opted into the selected account's mail mount, opened with the pinned
+  // cleanup prompt — the agent reviews views/ and declares ops files; it
+  // cannot touch the mailbox directly and cannot send anything.
+  let cleanupStarting = $state(false);
+  let cleanupError = $state<string | null>(null);
+
+  async function handleCleanup(): Promise<void> {
+    const account = mailStore.selectedAccount;
+    if (!account) return;
+
+    cleanupStarting = true;
+    cleanupError = null;
+    try {
+      const mountKey = icmStore.groups[0]?.mount;
+      if (!mountKey) {
+        cleanupError = 'No enabled ICM to host the session — enable one in the sidebar.';
+        return;
+      }
+      const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {
+        includeMounts: [`mail-${account}`]
+      });
+      if (!result.ok) {
+        cleanupError = `Couldn't start the session (${result.error}).`;
+        return;
+      }
+      const data = result.data as { id: string };
+      setInitialPrompt(data.id, cleanupPrompt(account));
+      void goto(`/chat?session=${data.id}`);
+    } finally {
+      cleanupStarting = false;
+    }
+  }
 </script>
 
 <AppFrame>
@@ -129,6 +169,25 @@
         <div class="flex flex-col gap-2 pb-2">
           <AccountSwitcher />
           <FolderList />
+          {#if mailStore.selectedAccount}
+            <div class="flex items-center gap-1.5">
+              <Button type="button" variant="ghost" size="sm" onclick={() => void goto('/mail?drafts=1')}>
+                Drafts{mailStore.drafts.length > 0 ? ` (${mailStore.drafts.length})` : ''}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={cleanupStarting}
+                onclick={() => void handleCleanup()}
+              >
+                Clean up inbox
+              </Button>
+            </div>
+            {#if cleanupError}
+              <p class="text-warn-ink text-[12px]" role="alert">{cleanupError}</p>
+            {/if}
+          {/if}
         </div>
         <MessageList messages={mailStore.messages} {selectedId} />
       {/snippet}
@@ -145,6 +204,8 @@
   {#snippet main()}
     {#if setupRequested}
       <SetupPanel />
+    {:else if draftsRequested}
+      <DraftsPanel />
     {:else if !selectedId}
       {#if mailStore.accounts.length === 0}
         <SetupPanel />

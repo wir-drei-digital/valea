@@ -145,7 +145,8 @@ defmodule Valea.Mail.Engine do
           pending_ops: non_neg_integer(),
           held_folders: [String.t()],
           backfill: %{String.t() => boolean()} | nil,
-          notices: [String.t()]
+          notices: [String.t()],
+          folders: %{String.t() => String.t()} | nil
         }
 
   @doc "The `{:via, Registry, ...}` name a slug's Engine is registered under."
@@ -1050,7 +1051,8 @@ defmodule Valea.Mail.Engine do
       pending_ops: 0,
       held_folders: [],
       backfill: nil,
-      notices: state.notices
+      notices: state.notices,
+      folders: nil
     }
   end
 
@@ -1074,7 +1076,18 @@ defmodule Valea.Mail.Engine do
       pending_ops: pending_ops,
       held_folders: held_folders,
       backfill: backfill,
-      notices: state.notices
+      notices: state.notices,
+      # The account's configured special-folder names (settings v4 defaults
+      # or the provider profile) — the UI's archive/flag actions need the
+      # real archive name (Gmail: "[Gmail]/All Mail", never "Archive") to
+      # compose a valid move op. String keys: this map rides JSON both via
+      # the RPC accounts array and the channel push.
+      folders: %{
+        "drafts" => state.settings.folders.drafts,
+        "sent" => state.settings.folders.sent,
+        "archive" => state.settings.folders.archive,
+        "trash" => state.settings.folders.trash
+      }
     }
   end
 
