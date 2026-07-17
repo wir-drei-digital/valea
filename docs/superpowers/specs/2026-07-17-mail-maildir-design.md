@@ -69,12 +69,22 @@ sources/mail/<account>/
   `tmp`, or starting with `.`, is percent-escaped deterministically
   (e.g. `cur` → `%63ur`), and a literal `%` is always escaped as `%25` so
   the mapping stays reversible. `\Noselect` folders are skipped.
-- **Maildir filenames use the msg_id as the unique token**:
-  `<msg_id>:2,<flags>`, where msg_id is the existing deterministic
-  `<date>-<from-slug>-<hash8>` (hash-extension collision rule kept). One
-  identity ties the canonical file, the view file, and the index row, and
-  makes local move detection unambiguous (renames preserve the token).
-  Colons in filenames are fine on the only supported platform (macOS).
+- **Two-level identity.** A local maildir file represents an
+  *occurrence* — one message in one folder, identified by
+  `(account, folder, uidvalidity, uid)`. The *message* identity is the
+  existing deterministic msg_id (`<date>-<from-slug>-<hash8>`,
+  hash-extension collision rule kept), shared by every occurrence of the
+  same message. Multi-folder membership is normal IMAP state (a Gmail
+  label + INBOX, an ordinary `COPY`) and is represented faithfully:
+  separate files and index rows per occurrence, one shared view per
+  message.
+- **Maildir filenames encode both identities**:
+  `<msg_id>,U=<uid>:2,<flags>`. `U=` is the occurrence's UID in its
+  folder, assigned at landing; a locally moved file keeps its stale `U=`
+  until the engine executes the move and renames it to the destination
+  folder's UID (from the `COPYUID`/`MOVE` response, or on the next pull).
+  UIDVALIDITY lives in `mail_sync_state`, not the filename. Colons in
+  filenames are fine on the only supported platform (macOS).
 - Flags live in the filename per maildir convention (`S` seen, `R` replied,
   `F` flagged, `T` trashed, `D` draft), mapped to the IMAP system flags
   (`\Seen`, `\Answered`, `\Flagged`, `\Deleted`, `\Draft`). **Only
@@ -91,16 +101,27 @@ rewritten around two phases per pass, **push before pull**:
 
 ### Push (local intents)
 
-Scan `maildir/`, diff against the index's last-synced state, keyed by the
-msg_id filename token. Recognized intents, each executed as a named IMAP op:
+Scan `maildir/` and build the current local occurrence set from the
+filenames' `msg_id` + `U=` tokens, then diff it against the last-synced
+occurrence set in the UID map. Recognized intents, each executed as a
+named IMAP op:
 
-- **Move** — same token, different folder → the existing safe-move ladder
-  (`UID MOVE` → `UID COPY` + `STORE +FLAGS (\Deleted)` + targeted
-  `UID EXPUNGE <uid>`).
-- **Flag change** — same token, different flag suffix → `UID STORE ±FLAGS`.
-  Who-changed-it is decided by a three-way diff: each UID-map row carries
-  the **last-synced flags**; local ≠ last-synced means local intent,
-  server ≠ last-synced means server change, both ≠ means conflict.
+- **Move** — only a *paired, unambiguous* disappearance and appearance:
+  occurrence `(A, uid)` is missing from folder A, and a file carrying the
+  same `<msg_id>,U=<uid>` sits in exactly one other folder B with no
+  UID-map record there → the existing safe-move ladder (`UID MOVE` →
+  `UID COPY` + `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`).
+  After success the file is renamed to B's UID. Any ambiguous pairing —
+  the token missing from several folders, or appeared in several —
+  pushes **nothing**; the pass reconciles by re-pulling and surfaces a
+  notice. Multi-folder membership on the server is never mistaken for a
+  move: each occurrence has its own UID-map row, and an intact occurrence
+  is not a disappearance.
+- **Flag change** — same folder, same `U=`, different flag suffix →
+  `UID STORE ±FLAGS`. Who-changed-it is decided by a three-way diff: each
+  UID-map row carries the **last-synced flags**; local ≠ last-synced means
+  local intent, server ≠ last-synced means server change, both ≠ means
+  conflict.
 - **Valea-composed append** — from the pending-append journal + `spool/`
   only, never by discovering unknown files (see Drafting & send).
 
@@ -115,8 +136,13 @@ stays on the server). Moves into mirrored folders are just moves.
 
 Everything else is *not* an intent:
 
-- A message vanished locally with no destination → **damage**: re-fetch by
-  UID (Message-ID search fallback). Never propagated.
+- A message vanished locally with no unambiguous destination → **damage**:
+  re-fetch by UID (Message-ID search fallback). Never propagated.
+- A duplicated file — its `<msg_id>,U=` occurrence is still intact in its
+  recorded folder AND a copy appears elsewhere — is a local copy, which is
+  not in the op vocabulary: the extra file is quarantined with a notice
+  ("copy in your mail client instead"). Never APPENDed, never treated as
+  a move.
 - An unknown new file under `maildir/` → moved to `quarantine/` + status
   notice. Never APPENDed.
 - Conflict (local and server both changed a message since last pass, or a
@@ -129,16 +155,21 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
 
 - New mail: `UID SEARCH SINCE <horizon>` bounds backfill to the window;
   new UIDs land raw via `BODY.PEEK` into `cur/` (through `tmp/`, standard
-  maildir delivery), dedup by Message-ID (re-attach instead of re-land).
+  maildir delivery) — one file per occurrence. A message already mirrored
+  in another folder lands again as its own occurrence in the new folder;
+  the shared msg_id (derived from headers) is what makes both point at one
+  view. Message content is fetched only once per msg_id.
 - Flags: `CONDSTORE`/`HIGHESTMODSEQ` when advertised, else a plain
   `UID FETCH FLAGS` of the mirrored UID set; server changes rewrite the
   filename flag suffix and the UID-map's last-synced flags.
 - Server-side deletions propagate locally (the user's own client stays
-  authoritative for deletion): local file, view file, and attachments are
-  removed; index row dropped.
+  authoritative for deletion): the occurrence's file and index row are
+  removed; the shared view and attachments are removed only when the last
+  occurrence of that msg_id is gone.
 - `UIDVALIDITY` reset → wipe that folder's UID map and watermark, drop its
-  pending local intents (surfaced), clean re-pull; already-landed local
-  messages re-attach by Message-ID.
+  pending local intents (surfaced), clean re-pull; already-landed files in
+  that folder re-attach by Message-ID, folder-scoped — re-binding the
+  occurrence to its new `(uidvalidity, uid)` and renaming the `U=` token.
 - Once landed, a message stays local even after it ages past the window —
   the horizon bounds backfill only. Widening the window triggers deeper
   backfill on the next pass.
@@ -231,13 +262,17 @@ tables rebuildable from `sources/mail/` + resync.
 
 - `mail_sync_state` — per (account, folder): uidvalidity, last-seen UID,
   highestmodseq, last pass result.
-- `mail_uid_map` — per (account, folder, uid): msg_id, **last-synced
-  flags** (the three-way diff anchor).
-- `mail_messages` — the UI/agent index: account, folder, msg_id,
-  message_id, from, to, subject, date, flags, in_reply_to, references,
+- `mail_uid_map` — one row per occurrence `(account, folder, uidvalidity,
+  uid)`: msg_id, **last-synced flags** (the three-way diff anchor).
+- `mail_messages` — the UI/agent index, one row per occurrence: account,
+  folder, uid, msg_id (non-unique — multi-folder membership), message_id,
+  from, to, subject, date, flags, in_reply_to, references,
   has_attachments, maildir path.
 - `mail_pending_appends` — the append journal: account, target folder,
   spool path, origin draft path, state. Crash-safe with the spool file.
+- `mail_send_attempts` — the write-ahead send journal: account, draft
+  path, generated Message-ID, state (`submitting | submitted | complete |
+  needs_review`), error, timestamps (see Drafting & send).
 
 Deleted: `mail_inbox_headers` (`InboxHeader`) and `mail_uid_outcomes`
 (`UidOutcome`) — the full mirror makes the awareness index redundant, and
@@ -248,9 +283,12 @@ if you like; the engine doesn't care).
 ## Derived views & indexing
 
 - Per-message markdown views reuse the existing `Normalizer` +
-  `MessageFile` rendering (msg_id naming kept). Frontmatter now carries
-  `account`, `folder`, and `flags` instead of the retired
-  `status: review|processed` field; `MessageFile.flip_status/2` is deleted.
+  `MessageFile` rendering (msg_id naming kept) — one view per message,
+  shared by all its occurrences. Frontmatter now carries `account`,
+  `folders` (sorted list of the occurrences' folders), and `flags`
+  (informational union — canonical flags live on the maildir filenames)
+  instead of the retired `status: review|processed` field;
+  `MessageFile.flip_status/2` is deleted.
 - Views regenerate whenever a message lands, moves, or changes flags;
   view + attachments are removed when the canonical message is removed
   server-side. The `views/` tree is documented as derived: agent edits
@@ -299,11 +337,26 @@ Body in markdown; composed as text/plain.
 Agents (and the user) write drafts through the normal ask-gate. The Mail
 UI lists drafts with a review panel offering two **user-only** actions:
 
-- **Send** — server-side composition to RFC822 (resurrect `DraftMime` from
-  git history, plain-text MIME only), SMTP submission (STARTTLS on 587 /
-  implicit TLS on 465, same verification posture as IMAP), then: if
-  `sent_copy`, write the composed message to `spool/` + journal an append
-  into the Sent folder; stamp the draft `status: sent`; audit entry.
+- **Send** — a crash-safe state machine, never a bare submit:
+  1. Compose to RFC822 (resurrect `DraftMime` from git history, plain-text
+     MIME only) with a **stable, Valea-generated Message-ID**; write the
+     composed message to `spool/`.
+  2. **Before any network I/O**, persist a `mail_send_attempts` row in
+     state `submitting` and stamp the draft `status: sending` — the
+     durable record that a submission may be in flight.
+  3. SMTP submission (STARTTLS on 587 / implicit TLS on 465, same
+     verification posture as IMAP).
+  4. On acceptance: row → `submitted`, draft → `status: sent`, audit
+     entry; if `sent_copy`, journal the Sent append from the same spool
+     file; row → `complete`. On refusal: the row records the error, the
+     draft reverts to `status: draft`, and the error is surfaced.
+
+  On restart, a row still in `submitting` is **ambiguous** — the outcome
+  is unknown. The draft is locked out of Send (`needs_review`) and shown
+  in a reconciliation state: Valea searches the account for the stable
+  Message-ID (Sent folder first) — found → resolved as sent; not found →
+  the user explicitly chooses resend (a fresh attempt) or revert to
+  draft. **Nothing ever resends automatically.**
 - **Push to Drafts** — compose the same RFC822, spool + journal an append
   into the Drafts folder; it syncs up and appears in the user's own mail
   client, where they send it from there.
@@ -346,7 +399,8 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
 
 - **Mail page**: account switcher, folder list (from the index), message
   list/view (existing components, store rework), drafts review panel with
-  Send / Push to Drafts. Status line per account: last pass,
+  Send / Push to Drafts and a reconciliation banner for interrupted sends
+  (resolve as sent / resend / revert). Status line per account: last pass,
   initial-sync/backfill progress, pending intents, dropped-conflict and
   quarantine notices.
 - **Setup panel**: add/edit N accounts; SMTP section optional; per-account
@@ -385,22 +439,34 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
 
 Per-account isolation (auth failure pauses one account). Folders fail soft
 within a pass — one folder's error is recorded, the pass continues.
-Damage → re-fetch; unknown files → quarantine; conflicts → server wins,
-surfaced; oversized → skipped and counted; `UIDVALIDITY` reset → folder
-re-pull with Message-ID re-attach; SMTP failure → draft untouched, error
-surfaced, no auto-retry. Nothing in the mail stack raises across the RPC
+Damage → re-fetch; unknown files and local copies → quarantine; ambiguous
+move pairings → nothing pushed, reconcile on pull, notice; conflicts →
+server wins, surfaced; oversized → skipped and counted; `UIDVALIDITY`
+reset → folder re-pull with folder-scoped Message-ID re-attach; SMTP
+refusal → draft reverts, error surfaced, no auto-retry; interrupted send
+(crash while `submitting`) → draft locked in the reconciliation state,
+resolved by Message-ID search or an explicit user choice, never an
+automatic resend. Nothing in the mail stack raises across the RPC
 boundary; every failure state has a copyable remedy or a status notice.
 
 ## Testing & acceptance
 
 - **Fake transport** grows folders/`LIST`, `SEARCH SINCE`, `STORE`,
   `APPEND`, `CONDSTORE`. Scenario suite: initial windowed sync;
-  incremental pass; local move → server move; flags both directions;
-  three-way flag conflict (server wins); damage re-fetch; quarantine;
-  `UIDVALIDITY` reset; window widening backfill; Gmail folder exclusion;
-  two-account isolation; pending-append crash recovery (journal + spool
-  survive restart).
-- **SMTP**: behaviour + fake for compose/submit; `DraftMime` golden tests.
+  incremental pass; local move → server move (incl. `U=` rename after
+  success); **multi-folder membership** (same message in INBOX + a label
+  folder: two occurrences, one view, no false move); local copy →
+  quarantine, occurrence intact; ambiguous pairing (token missing from two
+  folders) → nothing pushed, reconciled; flags both directions; three-way
+  flag conflict (server wins); damage re-fetch; last-occurrence-gone view
+  cleanup; `UIDVALIDITY` reset with folder-scoped re-attach; window
+  widening backfill; Gmail folder exclusion; two-account isolation;
+  pending-append crash recovery (journal + spool survive restart).
+- **SMTP**: behaviour + fake for compose/submit; `DraftMime` golden tests;
+  send state machine: refusal reverts the draft; crash between acceptance
+  and journal transition → restart lands in `needs_review`, resolved by
+  Message-ID search (found and not-found branches); no path resends
+  without an explicit user choice.
 - **Maildir helpers**: filename round-trip, flag mapping, escape rule
   property tests.
 - **Live acceptance** (mandatory before trusting the engine): the
