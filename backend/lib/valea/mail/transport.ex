@@ -8,6 +8,12 @@ defmodule Valea.Mail.Transport do
   later task types against this exact callback list and these exact
   signatures. Do not change a callback's shape here without updating every
   consumer.
+
+  One deliberate deviation from that original copy: `list_folders/1`'s
+  return type is widened to admit `{:error, term()}` — `ImapClient.list_folders/1`
+  already surfaces a failed `LIST` command that way (via `command_error/1`),
+  so the callback type now matches what the real implementation actually
+  does rather than promising unconditional success.
   """
 
   @type conn :: term()
@@ -31,7 +37,7 @@ defmodule Valea.Mail.Transport do
   @callback connect(config, credential :: String.t(), opts :: keyword()) ::
               {:ok, conn} | {:error, term()}
   @callback capabilities(conn) :: {:ok, [String.t()]}
-  @callback list_folders(conn) :: {:ok, [String.t()]}
+  @callback list_folders(conn) :: {:ok, [String.t()]} | {:error, term()}
   @callback create_folder(conn, String.t()) :: :ok | {:error, term()}
   @callback select(conn, String.t()) :: {:ok, select_info()} | {:error, term()}
   @callback uid_search(conn, String.t()) :: {:ok, [pos_integer()]} | {:error, term()}

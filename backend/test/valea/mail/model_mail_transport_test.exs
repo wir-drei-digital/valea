@@ -63,6 +63,17 @@ defmodule Valea.Mail.ModelMailTransportTest do
       assert {:error, _} = M.create_folder(conn, "Work")
     end
 
+    test "list_folders is fault-eligible (T8: routed through the perform/3 chokepoint)" do
+      name = start!()
+      conn = connect!(name)
+
+      M.inject(name, {:fail, :list_folders, :closed})
+      assert {:error, :closed} = M.list_folders(conn)
+
+      # One-shot: the next call succeeds normally.
+      assert {:ok, []} = M.list_folders(conn)
+    end
+
     test "capabilities and supports? reflect the default capability set" do
       name = start!()
       conn = connect!(name)
@@ -205,6 +216,21 @@ defmodule Valea.Mail.ModelMailTransportTest do
       assert {:error, :second} = M.uid_search(conn, "ALL")
       assert {:ok, []} = M.uid_search(conn, "ALL")
     end
+
+    test "a fault-injected select failure deselects — a stale prior selection isn't left behind" do
+      name = start!()
+      M.put_folder(name, "A")
+      M.put_folder(name, "B")
+      conn = connect!(name)
+
+      assert {:ok, _} = M.select(conn, "A")
+
+      M.inject(name, {:fail, :select, :timeout})
+      assert {:error, :timeout} = M.select(conn, "B")
+
+      # select B failed, so NO mailbox is selected now — not still "A".
+      assert {:error, :no_mailbox_selected} = M.uid_search(conn, "ALL")
+    end
   end
 
   # -- gmail label mode -----------------------------------------------------
@@ -288,6 +314,25 @@ defmodule Valea.Mail.ModelMailTransportTest do
       assert {:ok, wire_caps} = M.capabilities(conn)
       assert "X-GM-EXT-1" in wire_caps
     end
+
+    test "uid_copy INTO All Mail reuses the existing All Mail uid, mints no new one" do
+      name = start!(model: M.initial_model(gmail: true))
+      M.put_folder(name, "INBOX")
+      uid = M.put_message(name, "INBOX", "hello")
+
+      [%{uid: all_mail_uid_before}] = M.messages(name, "[Gmail]/All Mail")
+
+      conn = connect!(name)
+      {:ok, _} = M.select(conn, "INBOX")
+
+      assert {:ok, %{dest_uid: dest_uid}} = M.uid_copy(conn, uid, "[Gmail]/All Mail")
+      assert dest_uid == all_mail_uid_before
+
+      # Copy (not move): source occurrence survives, AND All Mail still has
+      # exactly the one, reused uid — no second occurrence was minted.
+      assert [%{raw: "hello"}] = M.messages(name, "INBOX")
+      assert [%{uid: ^all_mail_uid_before}] = M.messages(name, "[Gmail]/All Mail")
+    end
   end
 
   # -- uid_search criteria --------------------------------------------------
@@ -316,6 +361,25 @@ defmodule Valea.Mail.ModelMailTransportTest do
 
     test "UID n:* returns uids from n upward", %{conn: conn, uid_new: uid_new} do
       assert {:ok, [^uid_new]} = M.uid_search(conn, "UID #{uid_new}:*")
+    end
+
+    test "UID n:* where n exceeds every existing uid resolves to the max existing uid (RFC 3501)" do
+      name = start!()
+      M.put_folder(name, "INBOX")
+      uid = M.put_message(name, "INBOX", "hello")
+      conn = connect!(name)
+      assert {:ok, %{uidnext: 2}} = M.select(conn, "INBOX")
+
+      assert {:ok, [^uid]} = M.uid_search(conn, "UID 5:*")
+    end
+
+    test "UID n:* on an empty folder resolves to []" do
+      name = start!()
+      M.put_folder(name, "INBOX")
+      conn = connect!(name)
+      {:ok, _} = M.select(conn, "INBOX")
+
+      assert {:ok, []} = M.uid_search(conn, "UID 5:*")
     end
 
     test "SINCE <rfc3501-date> and SINCE <iso-date> both filter by internal_date",
@@ -405,6 +469,27 @@ defmodule Valea.Mail.ModelMailTransportTest do
 
       assert [%{flags: flags}] = M.messages(name, "INBOX")
       assert Enum.sort(flags) == Enum.sort(["\\Seen", "\\Answered"])
+    end
+
+    test "atomic replace rejects ALL occurrences of a removed flag, even duplicated across base_flags/add",
+         %{conn: conn, uid: uid, name: name} do
+      # \\Seen appears in BOTH base_flags and add (e.g. a caller re-asserting
+      # a flag it's also asking to have removed) — `remove` must still win
+      # completely. Kernel `--` only deletes the FIRST matching occurrence
+      # per removed element, so it would leave one stray "\\Seen" behind;
+      # reject-all-occurrences semantics (mirroring `ImapClient.replace_flags/3`)
+      # strips every occurrence.
+      assert {:ok, [%{modseq: modseq}]} = M.uid_fetch_flags(conn, "1:*")
+
+      assert {:ok, :applied} =
+               M.uid_store_flags(conn, uid, ["\\Seen"], ["\\Seen"],
+                 unchangedsince: modseq,
+                 base_flags: ["\\Seen", "\\Answered"]
+               )
+
+      assert [%{flags: flags}] = M.messages(name, "INBOX")
+      refute "\\Seen" in flags
+      assert flags == ["\\Answered"]
     end
   end
 

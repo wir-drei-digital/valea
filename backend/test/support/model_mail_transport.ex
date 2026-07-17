@@ -34,19 +34,32 @@ defmodule ModelMailTransport do
   `{:error, :no_mailbox_selected}`, exactly like a real server would refuse
   an unselected-state command.
 
+  A FAILING `select/2`/`examine/2` always deselects — `state.selected`
+  becomes `nil` — whether the failure is a nonexistent mailbox OR an
+  injected `:drop_connection`/`{:fail, ...}` fault, mirroring RFC 3501
+  §6.3.1/§6.3.2: a failed SELECT/EXAMINE deselects any previously-selected
+  mailbox rather than leaving the old selection in place. The one exception
+  is `{:lost_response, :select}`/`{:lost_response, :examine}`: that fault
+  models a command that genuinely completed server-side before its response
+  was lost, so the selection really did change — `state.selected` is left
+  exactly as that successful run computed it, and only the client-visible
+  result is overridden to an error.
+
   ## Fault injection
 
   `inject(name, fault)` queues a one-shot fault (FIFO among faults with the
   same target). On each `Transport` call whose return type actually admits
-  an error (i.e. NOT `capabilities/1`, `list_folders/1`, `supports?/2`, or
-  `logout/1` — their callback types are unconditionally successful, so no
-  fault ever applies to them), the queue is scanned front-to-back for the
-  first entry that targets this call:
+  an error (i.e. NOT `capabilities/1`, `supports?/2`, or `logout/1` — their
+  callback types are unconditionally successful, so no fault ever applies to
+  them), the queue is scanned front-to-back for the first entry that targets
+  this call:
 
     * `:drop_connection` — targets ANY call; consumed, returns
-      `{:error, :closed}`, no mutation.
+      `{:error, :closed}`, no mutation (EXCEPT for `select/2`/`examine/2`,
+      which also deselect — see "Connection state" above).
     * `{:fail, fun_name, reason}` — targets `fun_name` only; consumed,
-      returns `{:error, reason}`, no mutation.
+      returns `{:error, reason}`, no mutation (same `select/2`/`examine/2`
+      exception).
     * `{:lost_response, fun_name}` — targets `fun_name` only; the underlying
       operation runs to completion (its state mutation fully applies), then
       the result actually returned to the caller is overridden to
@@ -234,9 +247,9 @@ defmodule ModelMailTransport do
   end
 
   # -- Transport callbacks: unconditionally-successful (no fault injection) --
-  # capabilities/1, list_folders/1, supports?/2, logout/1 have callback
-  # types with no error variant at all (bare `{:ok, _}`/`boolean()`/`:ok`),
-  # so no fault ever applies to them — see moduledoc.
+  # capabilities/1, supports?/2, logout/1 have callback types with no error
+  # variant at all (bare `{:ok, _}`/`boolean()`/`:ok`), so no fault ever
+  # applies to them — see moduledoc.
 
   @impl true
   def connect(_config, _credential, opts \\ []) do
@@ -253,11 +266,6 @@ defmodule ModelMailTransport do
   end
 
   @impl true
-  def list_folders(conn) do
-    Agent.get(conn, fn state -> {:ok, state.folders |> Map.keys() |> Enum.sort()} end)
-  end
-
-  @impl true
   def supports?(conn, capability) do
     Agent.get(conn, fn state -> MapSet.member?(state.capability_set, capability) end)
   end
@@ -266,6 +274,13 @@ defmodule ModelMailTransport do
   def logout(_conn), do: :ok
 
   # -- Transport callbacks: fault-eligible ------------------------------------
+
+  @impl true
+  def list_folders(conn) do
+    perform(conn, :list_folders, fn state ->
+      {{:ok, state.folders |> Map.keys() |> Enum.sort()}, state}
+    end)
+  end
 
   @impl true
   def create_folder(conn, name) do
@@ -284,8 +299,12 @@ defmodule ModelMailTransport do
   @impl true
   def examine(conn, folder), do: do_select(conn, :examine, folder)
 
+  # Uses `perform_select/3`, NOT the plain `perform/3` every other callback
+  # uses — see moduledoc "Connection state: the selected mailbox" for why a
+  # failing select/examine needs its own fault-handling wrapper (deselecting
+  # on a fault that skipped mutation, not just on a genuine no-such-mailbox).
   defp do_select(conn, fun_name, folder) do
-    perform(conn, fun_name, fn state ->
+    perform_select(conn, fun_name, fn state ->
       case Map.fetch(state.folders, folder) do
         {:ok, f} ->
           info = %{uidvalidity: f.uidvalidity, uidnext: f.uidnext, highestmodseq: f.modseq}
@@ -479,6 +498,35 @@ defmodule ModelMailTransport do
     end)
   end
 
+  # Like `perform/3`, but ONLY for `select/2`/`examine/2`: a fault path that
+  # skips running `fun` entirely (`:drop_connection`, `{:fail, ...}`) also
+  # deselects the connection's mailbox, mirroring real IMAP — a failed
+  # SELECT/EXAMINE deselects any previously-selected mailbox (RFC 3501
+  # §6.3.1/§6.3.2), rather than leaving a stale prior selection in place for
+  # every later unselected-state check to wrongly treat as still current.
+  # `{:lost_response, ...}` still runs `fun` to completion first (the
+  # command genuinely succeeded server-side), so its resulting `selected` is
+  # left exactly as `fun` computed it — only the client-visible result is
+  # overridden to an error, same as `perform/3`.
+  defp perform_select(target, fun_name, fun) do
+    Agent.get_and_update(target, fn state ->
+      case pop_fault(state.faults, fun_name) do
+        {:drop, rest} ->
+          {{:error, :closed}, %{state | faults: rest, selected: nil}}
+
+        {{:fail, reason}, rest} ->
+          {{:error, reason}, %{state | faults: rest, selected: nil}}
+
+        {:lost_response, rest} ->
+          {_discarded_result, new_state} = fun.(%{state | faults: rest})
+          {{:error, :closed}, new_state}
+
+        :none ->
+          fun.(state)
+      end
+    end)
+  end
+
   defp pop_fault(faults, fun_name), do: pop_fault(faults, fun_name, [])
   defp pop_fault([], _fun_name, _acc), do: :none
 
@@ -636,11 +684,28 @@ defmodule ModelMailTransport do
         if msg.modseq > unchangedsince do
           {{:ok, :modified}, folder_state}
         else
-          final = ((base_flags ++ add) -- remove) |> Enum.uniq() |> Enum.sort()
+          final = replace_flags(base_flags, add, remove)
           new_folder_state = put_updated_message(folder_state, uid, %{msg | flags: final})
           {{:ok, :applied}, new_folder_state}
         end
     end
+  end
+
+  # `final = (base_flags ++ add) -- remove`, deduped and sorted — mirrors
+  # `ImapClient.replace_flags/3` exactly, INCLUDING its choice of
+  # `Enum.reject/2` over Kernel `--`: `--` only deletes the FIRST occurrence
+  # of each removed element, so a flag duplicated across `base_flags`/`add`
+  # (e.g. a caller re-asserting a flag it's also asking to have removed)
+  # would leave one stray occurrence behind. Rejecting every occurrence of
+  # anything in `remove` is the correct set-based semantics: `remove` always
+  # wins, regardless of how many times a flag is duplicated on the way in.
+  defp replace_flags(base_flags, add, remove) do
+    remove_set = MapSet.new(remove)
+
+    (base_flags ++ add)
+    |> Enum.reject(&MapSet.member?(remove_set, &1))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   # -- uid_search -------------------------------------------------------------
@@ -651,7 +716,19 @@ defmodule ModelMailTransport do
     case String.split(rest, ":") do
       [n, "*"] ->
         n = String.to_integer(n)
-        folder_state.messages |> Map.keys() |> Enum.filter(&(&1 >= n)) |> Enum.sort()
+        uids = folder_state.messages |> Map.keys() |> Enum.sort()
+
+        case Enum.filter(uids, &(&1 >= n)) do
+          # RFC 3501: `*` in a sequence-set always resolves to the largest
+          # uid in the mailbox. When `n` exceeds every existing uid, the
+          # range is reversed (`n:*` becomes e.g. `5:1`) and a real server
+          # normalizes a reversed range by swapping the endpoints — so it
+          # still matches that one largest uid, never `[]`. An empty
+          # mailbox has no largest uid to resolve `*` to, so it's the one
+          # case that's genuinely `[]`.
+          [] -> uids |> List.last() |> List.wrap()
+          matched -> matched
+        end
 
       [n] ->
         n = String.to_integer(n)
@@ -884,8 +961,14 @@ defmodule ModelMailTransport do
   # Assigns a stable decimal-string gm_msgid keyed by a content hash of
   # `raw` — the SAME raw bytes always resolve to the SAME gm_msgid, however
   # many folders/occurrences they end up copied into. Returns `{gm_msgid, new_state}`.
+  #
+  # Keyed by a SHA-256 digest of `raw`, not `:erlang.phash2/2` — phash2 is a
+  # 32-bit (or narrower, per the range arg) hash explicitly NOT designed for
+  # content-identity use and collides far too easily for that; SHA-256 gives
+  # genuine content identity with a collision window this model need not
+  # worry about.
   defp gm_msgid_for(state, raw) do
-    hash = :erlang.phash2(raw, 4_294_967_296)
+    hash = :crypto.hash(:sha256, raw)
 
     case Map.fetch(state.content_hashes, hash) do
       {:ok, gm_msgid} ->
