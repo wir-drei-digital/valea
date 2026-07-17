@@ -113,7 +113,8 @@ sources/mail/<account>/
   issues `STORE +FLAGS (\Deleted)` outside the move ladder, because a
   pushed `\Deleted` plus any client's expunge would delete real mail.
 - Sync bookkeeping (UID maps, watermarks) lives in SQLite — cache only,
-  rebuildable from `maildir/` plus a Message-ID resync against the server.
+  rebuildable from `maildir/` plus a fingerprint resync against the
+  server (Message-ID as a shortcut where present).
 
 ## Sync engine — declared-ops two-way
 
@@ -143,9 +144,10 @@ Nothing infers intent from filesystem diffs. Mailbox mutations are
   `UID COPY` + `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`).
   The **destination UID is confirmed for every move** — from the
   `COPYUID`/`MOVE` response where the server supports UIDPLUS, otherwise
-  by a **horizon-independent** Message-ID + fingerprint lookup in the
-  destination folder — and persisted in the ledger **before** the source
-  file is relocated. The local file is never removed without a confirmed
+  by a **horizon-independent** candidate scan of the destination folder
+  (UIDs above its pre-op watermark, Message-ID shortcut when present,
+  fingerprint always decides) — and persisted in the ledger **before**
+  the source file is relocated. The local file is never removed without a confirmed
   destination occurrence, so a landed message can never vanish from the
   mirror — the "once landed, stays local" invariant survives moving
   messages older than the sync window.
@@ -176,17 +178,21 @@ server mutations — execute through `mail_pending_ops`: the op is recorded
 durably *before* any remote I/O and transitions state as each ladder step
 completes. After an uncertain result (disconnect, missing tagged
 response), the op is never blindly retried: the engine first
-**reconciles** — search the destination folder by Message-ID, confirm
-candidates by fingerprint, re-check the source — and continues only when
-the outcome is proven. For a move, the source copy is deleted only once
-**exactly one** fingerprint-confirmed destination occurrence is proven to
-exist; anything unprovable (zero or several matches) stops the op in
-`needs_review` with a recovery notice instead of retrying. Appends are
-idempotent by construction: every composed message carries a stable,
-unique, Valea-generated Message-ID, and every append execution — first
-attempt or retry — searches the target folder for that Message-ID first,
-marking the op complete if found. Flag `STORE`s are idempotent and
-execute directly, without the ledger.
+**reconciles** — destination candidates are the destination folder's
+UIDs above its watermark recorded at op creation (a bounded set), with a
+Message-ID search as a shortcut only when the message has one (inbound
+mail is never required to carry a Message-ID); every candidate is
+confirmed by fingerprint; the source is re-checked — and the op continues
+only when the outcome is proven. For a move, the source copy is deleted
+only once **exactly one** fingerprint-confirmed destination occurrence is
+proven to exist; anything unprovable (zero or several matches) stops the
+op in `needs_review` with a recovery notice instead of retrying. Appends
+are idempotent by construction: every composed message carries a stable,
+unique, **Valea-generated** Message-ID (always present, unlike inbound
+mail), and every append execution — first attempt or retry — searches the
+target folder for that Message-ID first, marking the op complete if
+found. Flag `STORE`s are idempotent and execute directly, without the
+ledger.
 
 **Write-through folders.** The `folders.{archive,trash}` targets always
 exist as local directories, even when `exclude_folders` keeps them out of
@@ -213,13 +219,17 @@ Local maildir mutations are *not* a channel:
 
 Per folder (from `LIST`, minus `sync.exclude_folders`):
 
-- New occurrences: discovery is **UID-based, not date-based**. Only the
-  *initial backfill* of a folder is bounded by the window
-  (`UID SEARCH SINCE <horizon>`); every incremental pass thereafter
-  fetches **all UIDs above the folder's high-water mark** regardless of
-  message date — so a years-old message that another client moves or
-  labels into a mirrored folder still lands (its new UID is above the
-  watermark even though its date is outside the window). New UIDs land
+- New occurrences: discovery is **UID-based, not date-based**. At a
+  folder's first sync, its high-water mark is initialized to
+  `UIDNEXT − 1` (from `SELECT`) — every UID present before Valea's first
+  pass is permanently behind the watermark, so pre-existing old mail
+  stays server-only exactly as configured — and bodies are backfilled
+  only for the windowed subset (`UID SEARCH SINCE <horizon>`). Every
+  incremental pass thereafter fetches **all UIDs above the watermark**
+  regardless of message date — so a years-old message that another
+  client moves or labels into a mirrored folder still lands (its new UID
+  is above the watermark even though its date is outside the window).
+  New UIDs land
   raw via `BODY.PEEK` into `cur/` (through `tmp/`, standard
   maildir delivery) — one file per occurrence. Every occurrence is
   fetched and fingerprinted; storage of views/attachments is deduplicated
@@ -235,9 +245,10 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   occurrence of that msg_id is gone.
 - `UIDVALIDITY` reset → wipe that folder's UID map and watermark, reject
   that folder's pending ops (surfaced), clean re-pull; already-landed
-  files in that folder re-attach folder-scoped — candidates by
-  Message-ID, confirmed by fingerprint — re-binding the occurrence to its
-  new `(uidvalidity, uid)` and renaming the `U=` token.
+  files in that folder re-attach folder-scoped — candidates by Message-ID
+  where present, otherwise the folder's UIDs; fingerprint always
+  decides — re-binding the occurrence to its new `(uidvalidity, uid)`
+  and renaming the `U=` token.
 - Once landed, a message stays local even after it ages past the window —
   the horizon bounds backfill only. Widening the window triggers deeper
   backfill on the next pass.
@@ -618,6 +629,11 @@ boundary; every failure state has a copyable remedy or a status notice.
   pushed; server flag changes pulled onto filenames; op vs. server-move
   conflict → op rejected, server wins; last-occurrence-gone view cleanup;
   `UIDVALIDITY` reset with fingerprint-confirmed folder-scoped re-attach;
+  **watermark initialization** (folder containing only >window-old mail →
+  watermark = `UIDNEXT − 1`, second pass fetches nothing, old mail stays
+  server-only); **message without a Message-ID** (move + disconnect →
+  reconciled via the destination watermark scan + fingerprint, no
+  permanent `needs_review`);
   window widening backfill; Gmail folder exclusion; **slug-reuse identity
   mismatch** → account refuses activation, typed purge path works;
   two-account isolation; ops-ledger crash recovery (ledger + spool
