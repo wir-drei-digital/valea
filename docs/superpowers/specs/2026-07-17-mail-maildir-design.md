@@ -323,12 +323,28 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   files in that folder re-attach folder-scoped — candidates by Message-ID
   where present, otherwise the folder's UIDs; fingerprint always
   decides — re-binding the occurrence to its new `(uidvalidity, uid)`
-  and renaming the `U=` token. Reset recovery is a **complete
-  reconciliation**: the pre-reset local occurrence set is snapshotted
-  before the map is wiped; after the re-pull, every local file with no
-  fingerprint-proven server match is removed together with its index row
-  (server-authoritative deletion holds across resets), and shared
-  views/attachments go when the last occurrence goes.
+  and renaming the `U=` token. Reset recovery is a **complete,
+  horizon-independent reconciliation** — explicitly NOT the windowed
+  first-sync algorithm: the pre-reset local occurrence set is snapshotted
+  before the map is wiped; candidates come from a full enumeration of the
+  folder (`UID SEARCH ALL`), with bodies fetched as needed to fingerprint
+  candidates against the pre-reset set (Message-ID shortcut where
+  present) — so a >window-old, Message-ID-less, still-present message
+  re-binds instead of being mistaken for a deletion. **Nothing is removed
+  until that complete reconciliation succeeds**; only then are unmatched
+  local files removed with their index rows (server-authoritative
+  deletion holds across resets), and shared views/attachments go when the
+  last occurrence goes. The watermark then re-initializes as at first
+  sync.
+- **Folder lifecycle.** The known-folder set is persisted. After a
+  *successful, complete* `LIST`, a previously mirrored folder absent from
+  the current mirrored set — deleted, renamed, or newly excluded by
+  configuration — is reconciled: its pending ops are rejected (surfaced),
+  its occurrences, index rows, and local mailbox directory are removed,
+  and shared views/attachments are garbage-collected when unreferenced.
+  A failed or partial `LIST` triggers no folder cleanup. A server-side
+  rename appears as delete + create; the messages re-land under the new
+  name on the next pass, and fingerprint dedup keeps one view throughout.
 - Once landed, a message stays local even after it ages past the window —
   the horizon bounds backfill only, never pruning. The one thing that
   removes landed mail locally is server-side deletion (above): the mirror
@@ -772,7 +788,12 @@ boundary; every failure state has a copyable remedy or a status notice.
   `UIDVALIDITY` reset with fingerprint-confirmed folder-scoped re-attach
   **including stale-occurrence cleanup** (message deleted server-side
   before the reset → local file, index row, and last-occurrence view
-  removed after the re-pull);
+  removed after the complete reconciliation) and **old-mail retention**
+  (a >window-old, Message-ID-less, still-present message re-binds across
+  the reset instead of being deleted); **folder lifecycle** (server-side
+  folder delete, rename, and newly-excluded folder → local data
+  reconciled away after a successful complete `LIST`; partial or failed
+  `LIST` → no cleanup);
   **watermark initialization** (folder containing only >window-old mail →
   watermark = `UIDNEXT − 1`, second pass fetches nothing, old mail stays
   server-only); **crash mid-initial-backfill** (in-window UIDs not yet
