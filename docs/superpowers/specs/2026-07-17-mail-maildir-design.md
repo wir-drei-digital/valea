@@ -176,7 +176,15 @@ optimization, never a trust statement.
 **Durable server-op ledger.** Moves and appends — the two non-idempotent
 server mutations — execute through `mail_pending_ops`: the op is recorded
 durably *before* any remote I/O and transitions state as each ladder step
-completes. After an uncertain result (disconnect, missing tagged
+completes. Every ledger op — move or append, file-declared or
+RPC-originated — also writes a self-contained, fsynced **manifest** under
+`spool/` before any remote I/O: for a move, the source
+folder/UIDVALIDITY/UID and msg_id fingerprint, the destination, the
+recorded pre-op destination watermark, the origin, and each ladder
+transition appended as it happens; for an append, as described in Store.
+Manifests are removed only at op completion, so boot can reconcile every
+unfinished op even after database loss — moves included, not just
+appends. After an uncertain result (disconnect, missing tagged
 response), the op is never blindly retried: the engine first
 **reconciles** — destination candidates are the destination folder's
 UIDs above its watermark recorded at op creation (a bounded set), with a
@@ -196,12 +204,30 @@ ledger.
 
 **Write-through folders.** The `folders.{archive,trash}` targets always
 exist as local directories, even when `exclude_folders` keeps them out of
-the pull (the Gmail case: archive = `[Gmail]/All Mail`, which is excluded).
-An op moving a message into a write-through-but-excluded folder is pushed
-as a normal server-side move; the local copy is then removed by the engine
-on confirmation, because the message now lives outside the mirrored set —
-exactly matching what the user sees (archived mail leaves the mirror,
-stays on the server). Moves into mirrored folders are just moves.
+the pull. An op moving a message into a write-through-but-excluded folder
+is pushed as a normal server-side move whose confirmation uses a
+**transient destination check**: the executor `SELECT`s the excluded
+folder read-only, records its `UIDNEXT − 1` on the op *before* the ladder
+starts, and confirms the new destination occurrence exactly like any
+other move — the folder still never enters the mirror. On confirmation
+the local copy is removed, because the message now lives outside the
+mirrored set — exactly matching what the user sees (archived mail leaves
+the mirror, stays on the server). Moves into mirrored folders are just
+moves.
+
+**Gmail profile.** Accounts detected as Gmail at setup carry
+`provider: gmail` (everything else: `generic`). Gmail's label model
+breaks the generic confirmation for archive: every message already
+exists in `[Gmail]/All Mail`, so the documented archive gesture
+(`UID MOVE` to All Mail) removes the Inbox label without creating any
+new UID — there is nothing above a watermark to find. The gmail profile
+therefore uses an **explicit, different postcondition**: after the
+`UID MOVE` (Gmail advertises native MOVE; the gmail profile refuses the
+`COPY`-fallback ladder), success is proven by **source UID absent from
+the source folder AND All Mail membership confirmed via an `X-GM-MSGID`
+search** in a transient, read-only `SELECT` of All Mail. The local copy
+is not removed before that proof. Live Gmail acceptance must cover
+archive, retries, and lost responses.
 
 Local maildir mutations are *not* a channel:
 
@@ -324,6 +350,7 @@ accounts:
       max_message_bytes: 26214400
       exclude_folders: []
   personal:
+    provider: gmail        # detected from the IMAP host at setup
     imap: { host: imap.gmail.com, port: 993, username: flipbug360@gmail.com }
     folders: { drafts: "[Gmail]/Drafts", sent: "[Gmail]/Sent Mail", archive: "[Gmail]/All Mail", trash: "[Gmail]/Trash" }
     sync:
@@ -336,8 +363,10 @@ safety:            # fixed block, as today
   outbound: push_drafts_only
 ```
 
-- Setup seeds `exclude_folders` with the Gmail virtual folders when the
-  IMAP host is Gmail; otherwise empty.
+- `provider: generic | gmail`, detected from the IMAP host at setup;
+  `gmail` unlocks the `X-GM-MSGID` extension and the Gmail archive
+  postcondition (see Push) and seeds `exclude_folders` with the Gmail
+  virtual folders. Otherwise `generic`, empty exclusions.
 - No credential ever in the file. Keychain entries are account-qualified:
   service `digital.wirdrei.valea`, account `<workspace_id>:<account>:imap`
   (username lives in the yaml; the slug is the stable key). Resupply flow unchanged otherwise. Browser-mode dev
@@ -367,13 +396,15 @@ sync tables are pure cache, rebuildable from `sources/mail/` + resync —
 **except `mail_pending_ops`, which is durable operational state** (atomic
 claims, generated Message-IDs, payload hashes, outcome records) that no
 resync can reconstruct. It is made recoverable instead of rebuildable:
-every spool payload is written together with a self-contained manifest
-(`spool/<id>.manifest.yaml` — kind, target folder, Message-ID, payload
-hash, origin draft/ops file, state) in the same step as its ledger row.
-After database loss, boot treats any manifest without a completed ledger
-row as unresolved: the affected drafts and ops are **blocked** until
-reconciliation (Message-ID search, fingerprint confirmation) proves the
-outcome — nothing retries, sends, or mutates for them in the meantime.
+every op — move or append, file-declared or RPC-originated — writes a
+self-contained manifest (`spool/<id>.manifest.yaml` — kind, folders,
+identifiers and fingerprints, payload hash + spool file for appends,
+origin, state transitions) in the same step as its ledger row. After
+database loss, boot treats any manifest without a completed ledger row
+as unresolved: the affected drafts and ops are **blocked** until
+reconciliation (watermark scans, Message-ID shortcut, fingerprint
+confirmation) proves the outcome — nothing retries, pushes, or mutates
+for them in the meantime.
 
 - `mail_sync_state` — per (account, folder): uidvalidity, last-seen UID,
   highestmodseq, last pass result.
@@ -584,7 +615,8 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
   credential closure model, `Redact`, keychain Tauri commands (key format
   extended).
 - **Extended:** `ImapClient` — `LIST`, `UID SEARCH SINCE`,
-  `UID STORE ±FLAGS`, `APPEND`, optional `CONDSTORE`; `Doctor`;
+  `UID STORE ±FLAGS`, `APPEND`, optional `CONDSTORE`, and the Gmail
+  extensions (`X-GM-MSGID`) on the gmail profile; `Doctor`;
   `MessageFile.msg_id` hash input becomes the raw-RFC822 fingerprint;
   RPC surface (incl. `mail_apply_ops`, `purge_mail_account_files`).
 - **New:** `Valea.Mail.Supervisor`, `Maildir` (filename/flag/escape
@@ -622,7 +654,8 @@ boundary; every failure state has a copyable remedy or a status notice.
 ## Testing & acceptance
 
 - **Fake transport** grows folders/`LIST`, `SEARCH SINCE`, `STORE`,
-  `APPEND`, `CONDSTORE`. Scenario suite: initial windowed sync;
+  `APPEND`, `CONDSTORE`, and a Gmail label-model mode (`X-GM-MSGID`,
+  All-Mail-membership semantics). Scenario suite: initial windowed sync;
   incremental pass; ops move → server move (incl. `U=` rename and local
   relocation after proven success); **multi-folder membership** (same
   message in INBOX + a label folder: two occurrences, one view);
@@ -648,7 +681,14 @@ boundary; every failure state has a copyable remedy or a status notice.
   survive restart); **ladder disconnect after each request** (`COPY`
   accepted but response lost → reconcile proves exactly one
   fingerprint-confirmed destination copy, no duplicate, no premature
-  source delete); **append crash after server acceptance** → search-first
+  source delete); **Gmail archive** (label-model fake: message pre-exists
+  in All Mail, archive proves source-absence + `X-GM-MSGID` membership
+  before local removal; lost response → retry converges, no stuck op);
+  **write-through transient confirmation** (excluded destination
+  `SELECT`ed read-only, new UID confirmed, folder stays unmirrored);
+  **database loss with an in-flight RPC-originated move** → boot
+  reconciles from the move manifest, no duplicate destination copy;
+  **append crash after server acceptance** → search-first
   retry finds the Message-ID and completes without a duplicate; spool
   tamper (payload hash mismatch) → op stops in `needs_review`;
   **recycled-UID guard** (UIDVALIDITY changed or source fingerprint
