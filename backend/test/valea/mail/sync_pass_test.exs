@@ -732,6 +732,77 @@ defmodule Valea.Mail.SyncPassTest do
     end
   end
 
+  # ==========================================================================
+  # reselect_diverged?/2 unit cases (pure).
+  #
+  # Integration-test gap, noted honestly: a UIDVALIDITY reset landing on the
+  # SERVER strictly between `scan_folders/2`'s Phase-A SELECT and
+  # `process_folder/3`'s Phase-B re-SELECT of the SAME folder cannot be
+  # exercised end-to-end against `ModelMailTransport` with current tooling.
+  # `SyncPass.run/1` runs synchronously to completion inside the test's own
+  # process — there is no point where the test can reach in and call
+  # `ModelMailTransport.reset_uidvalidity/2` between those two SELECTs of one
+  # pass; `ModelMailTransport`'s fault-injection queue is also keyed by
+  # `fun_name` only, not by which SELECT call within a pass, so it can't make
+  # just the second `select/2` of a folder return a different UIDVALIDITY
+  # either. Covering the guard itself (below) plus the SyncPass wiring that
+  # calls it (`process_folder/3`) is the strongest coverage available without
+  # extending `ModelMailTransport`, which is out of this fix's scope.
+  # ==========================================================================
+
+  describe "Reconcile.reselect_diverged?/2" do
+    test "identical uidvalidity across scan and re-select is not diverged" do
+      refute Reconcile.reselect_diverged?(%{uidvalidity: 1}, %{uidvalidity: 1})
+    end
+
+    test "a UIDVALIDITY that changed between scan and re-select is diverged" do
+      assert Reconcile.reselect_diverged?(%{uidvalidity: 1}, %{uidvalidity: 2})
+    end
+
+    test "extra keys on either select map are ignored" do
+      scan = %{uidvalidity: 5, uidnext: 10, highestmodseq: nil}
+      reselect = %{uidvalidity: 5, uidnext: 12, highestmodseq: 3}
+      refute Reconcile.reselect_diverged?(scan, reselect)
+    end
+  end
+
+  # ==========================================================================
+  # Regression: each folder's own occurrence must land in THAT folder's
+  # maildir dir + index rows — proving the per-folder re-SELECT before
+  # discovery/flags/deletions actually re-targets the connection. Without it,
+  # IMAP's stateful SELECT leaves every folder's UID operations hitting
+  # whichever folder Phase A's scan last selected, misattributing content.
+  # ==========================================================================
+
+  test "each folder's own occurrence lands in its OWN maildir dir and index rows (re-select regression)",
+       %{root: root} do
+    name = start_model!()
+    ModelMailTransport.put_folder(name, "FolderA")
+    ModelMailTransport.put_folder(name, "FolderB")
+    ModelMailTransport.put_message(name, "FolderA", @raw_a, internal_date: recent_date())
+    ModelMailTransport.put_message(name, "FolderB", @raw_b, internal_date: recent_date())
+
+    assert {:ok, %{new_messages: 2}} = run(name, root)
+
+    assert [occ_a] = Store.occurrences("mara", "FolderA")
+    assert [occ_b] = Store.occurrences("mara", "FolderB")
+    refute occ_a.msg_id == occ_b.msg_id
+
+    file_a = Maildir.encode_filename(occ_a.msg_id, occ_a.uid, occ_a.flags)
+    file_b = Maildir.encode_filename(occ_b.msg_id, occ_b.uid, occ_b.flags)
+
+    assert cur_files(root, "mara", "FolderA") == [file_a]
+    assert cur_files(root, "mara", "FolderB") == [file_b]
+
+    assert [row_a] = Store.list_messages("mara", "FolderA")
+    assert row_a.subject == "Alpha"
+    assert row_a.msg_id == occ_a.msg_id
+
+    assert [row_b] = Store.list_messages("mara", "FolderB")
+    assert row_b.subject == "Beta"
+    assert row_b.msg_id == occ_b.msg_id
+  end
+
   # -- shared path helper -----------------------------------------------------
 
   defp folder_dir(root, account, dir_rel),

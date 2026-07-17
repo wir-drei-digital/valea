@@ -198,10 +198,38 @@ defmodule Valea.Mail.Reconcile do
   defp message_id_candidates(_ctx, %{message_id: ""}, _state), do: {:ok, []}
 
   defp message_id_candidates(ctx, %{message_id: mid}, state) do
-    case ctx.transport.uid_search(ctx.conn, "HEADER Message-ID #{mid}") do
-      {:ok, uids} -> {:ok, Enum.filter(uids, &MapSet.member?(state.available, &1))}
-      {:error, reason} -> {:error, reason}
+    if safe_message_id_for_search?(mid) do
+      case ctx.transport.uid_search(ctx.conn, "HEADER Message-ID #{mid}") do
+        {:ok, uids} -> {:ok, Enum.filter(uids, &MapSet.member?(state.available, &1))}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      # `mid` is interpolated VERBATIM into the search criteria string above.
+      # A malformed/adversarial Message-ID carrying an IMAP-significant
+      # character would corrupt that string on a real server (space breaks
+      # the atom into two search terms; quote/backslash escape out of a
+      # quoted string; parens/braces are list/literal syntax; `%`/`*` are
+      # LIST wildcards) and come back BAD — aborting `build_reset_plan/3`'s
+      # `reduce_while` short-circuit and wedging reset reconciliation forever
+      # (the whole point of this shortcut is to be an optimization, never a
+      # correctness dependency). Skip it: an empty candidate list here just
+      # means `find_fingerprint_match/4` falls through to the full available
+      # set — `fingerprint always decides`, so this occurrence still
+      # resolves correctly, just without the fast path.
+      {:ok, []}
     end
+  end
+
+  # Conservative allowlist for the Message-ID shortcut: printable,
+  # non-whitespace US-ASCII (`0x21`–`0x7E`) MINUS the characters IMAP search
+  # syntax gives special meaning to: `"` `(` `)` `\` `{` `}` `%` `*`. Anything
+  # outside this — including a bare space, which `0x21..0x7E` already
+  # excludes — skips the shortcut rather than risking a malformed search
+  # string reaching the transport.
+  @unsafe_message_id_chars ~r/["()\\{}%*]/
+
+  defp safe_message_id_for_search?(mid) do
+    String.match?(mid, ~r/^[\x21-\x7E]+$/) and not String.match?(mid, @unsafe_message_id_chars)
   end
 
   defp find_fingerprint_match(_ctx, _cand, [], state), do: {:ok, {:removal, state}}
@@ -256,7 +284,7 @@ defmodule Valea.Mail.Reconcile do
 
     remaining = Store.occurrences_by_msg_id(ctx.account, cand.msg_id)
     Views.remove_occurrence(ctx.root, ctx.account, cand.msg_id, length(remaining))
-    if remaining != [], do: refresh_view(ctx, cand.msg_id)
+    if remaining != [], do: refresh_view(ctx.root, ctx.account, cand.msg_id)
   end
 
   defp apply_rebind(ctx, folder, dir_abs, new_uidvalidity, cand, new_uid) do
@@ -345,8 +373,8 @@ defmodule Valea.Mail.Reconcile do
     })
   end
 
-  defp refresh_view(ctx, msg_id) do
-    occs = Store.occurrences_by_msg_id(ctx.account, msg_id)
+  defp refresh_view(root, account, msg_id) do
+    occs = Store.occurrences_by_msg_id(account, msg_id)
     folders = occs |> Enum.map(& &1.folder) |> Enum.uniq()
 
     flags_union =
@@ -356,7 +384,7 @@ defmodule Valea.Mail.Reconcile do
       |> Enum.sort()
       |> Enum.join()
 
-    Views.refresh_folders(ctx.root, ctx.account, msg_id, folders, flags_union)
+    Views.refresh_folders(root, account, msg_id, folders, flags_union)
   end
 
   # -- detect_replacement -----------------------------------------------------
@@ -378,6 +406,29 @@ defmodule Valea.Mail.Reconcile do
     else
       :ok
     end
+  end
+
+  # -- reselect_diverged? ------------------------------------------------------
+
+  @doc """
+  Pure decision: has this folder's `UIDVALIDITY` diverged between `SyncPass`
+  Phase A's scan-time `SELECT` (`scan_select`, the value `reset?/2` already
+  used to decide this folder is NOT resetting) and the Phase-B re-`SELECT`
+  (`reselect`) taken immediately before discovery/flags/deletions run?
+
+  A reset landing in that narrow window makes Phase A's `reset?: false`
+  decision stale: proceeding with the OLD `select`/watermark would run
+  ordinary reconciliation against renumbered UIDs, and the deletion pass's
+  "known UID absent from a successful ALL enumeration" comparison would
+  mass-remove every renumbered-but-still-present occurrence. `SyncPass` must
+  defer the folder instead (no `put_sync_state`) so next pass's `reset?/2`
+  sees the still-stored (pre-reset) `uidvalidity`, correctly detects the
+  reset, and runs the proper `folder_reset/2` reconciliation.
+  """
+  @spec reselect_diverged?(%{uidvalidity: integer()}, %{uidvalidity: integer()}) :: boolean()
+  def reselect_diverged?(%{uidvalidity: scan_uidvalidity}, %{uidvalidity: reselect_uidvalidity})
+      when is_integer(scan_uidvalidity) and is_integer(reselect_uidvalidity) do
+    scan_uidvalidity != reselect_uidvalidity
   end
 
   # -- folder_lifecycle -------------------------------------------------------
@@ -403,7 +454,7 @@ defmodule Valea.Mail.Reconcile do
             Store.mark_held(ctx.account, state.folder, true)
 
             [
-              "folder #{state.folder}: disappeared from the mirrored LIST; held (local data kept, pending ops rejected)"
+              "folder #{state.folder}: disappeared from the mirrored LIST; held — resolve from the Mail page"
               | acc
             ]
 
@@ -437,21 +488,33 @@ defmodule Valea.Mail.Reconcile do
       when is_binary(root) and is_binary(account) and is_binary(folder) do
     case Store.get_sync_state(account, folder) do
       {:ok, %{held: true} = state} ->
-        account
-        |> Store.occurrences(folder)
-        |> Enum.each(fn occ ->
-          Store.delete_occurrence(account, folder, occ.uid)
-          Store.delete_index_row(account, folder, occ.uid)
+        surviving_msg_ids =
+          account
+          |> Store.occurrences(folder)
+          |> Enum.reduce(MapSet.new(), fn occ, acc ->
+            Store.delete_occurrence(account, folder, occ.uid)
+            Store.delete_index_row(account, folder, occ.uid)
 
-          if occ.msg_id != @oversize_msg_id do
-            remaining = Store.occurrences_by_msg_id(account, occ.msg_id)
-            Views.remove_occurrence(root, account, occ.msg_id, length(remaining))
-          end
-        end)
+            if occ.msg_id != @oversize_msg_id do
+              remaining = Store.occurrences_by_msg_id(account, occ.msg_id)
+              Views.remove_occurrence(root, account, occ.msg_id, length(remaining))
+              if remaining != [], do: MapSet.put(acc, occ.msg_id), else: acc
+            else
+              acc
+            end
+          end)
 
         # Drops the sync_state row (and any residual uid_map/index rows).
         Store.clear_folder(account, folder)
         if is_binary(state.dir), do: File.rm_rf(folder_dir_abs(root, account, state.dir))
+
+        # Every surviving shared view must drop the just-discarded folder from
+        # its `folders:`/`flags:` frontmatter — recomputed from each msg_id's
+        # FULL remaining occurrence set now that this folder's rows are truly
+        # gone (after `clear_folder/2`, in case it cleaned up anything the
+        # loop above missed), the same refresh shape `apply_removal/4` uses.
+        Enum.each(surviving_msg_ids, &refresh_view(root, account, &1))
+
         :ok
 
       _ ->

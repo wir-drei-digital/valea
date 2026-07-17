@@ -4,6 +4,7 @@ defmodule Valea.Mail.ReconcileTest do
   use ExUnit.Case, async: false
 
   alias Valea.Mail.Maildir
+  alias Valea.Mail.MessageFile
   alias Valea.Mail.Reconcile
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
@@ -61,6 +62,19 @@ defmodule Valea.Mail.ReconcileTest do
   Message-ID: <s@example.com>\r
   \r
   Body of S (shared across folders).\r
+  """
+
+  # A Message-ID carrying an IMAP-unsafe character (a bare space) — the
+  # reset-reconciliation shortcut (`HEADER Message-ID <mid>`) must skip this
+  # one rather than interpolate it verbatim into the search criteria string.
+  @raw_r """
+  From: Rin Cole <rin@example.com>\r
+  To: Mara <mara@example.com>\r
+  Subject: RSubject\r
+  Date: Wed, 15 Jul 2026 13:00:00 +0000\r
+  Message-ID: <r id@example.com>\r
+  \r
+  Body of R (unsafe message-id).\r
   """
 
   # -- setup ------------------------------------------------------------------
@@ -154,6 +168,12 @@ defmodule Valea.Mail.ReconcileTest do
   defp view_path(root, account, msg_id),
     do: Path.join([root, "sources", "mail", account, "views", "messages", "#{msg_id}.md"])
 
+  defp view_frontmatter(root, account, msg_id) do
+    {:ok, bytes} = File.read(view_path(root, account, msg_id))
+    {:ok, %{frontmatter: fm}} = MessageFile.parse(bytes)
+    fm
+  end
+
   defp msg_id_of(account, folder, subject) do
     account
     |> Store.list_messages(folder)
@@ -245,6 +265,50 @@ defmodule Valea.Mail.ReconcileTest do
     assert q.uidvalidity == 2
     assert cur_files(root, "mara", "Work") == [Maildir.encode_filename(q_msg_id, 1, MapSet.new())]
     assert File.exists?(view_path(root, "mara", q_msg_id))
+  end
+
+  # ==========================================================================
+  # (h) a Message-ID carrying an IMAP-unsafe character (a bare space) must
+  #     never reach the "HEADER Message-ID <mid>" shortcut verbatim — a real
+  #     server would return BAD for a malformed search and abort the whole
+  #     reconciliation plan. The shortcut is only ever an optimization: with
+  #     it skipped, the existing full fingerprint scan still resolves the
+  #     occurrence correctly.
+  # ==========================================================================
+
+  test "(h) a Message-ID with an unsafe character still reconciles via fingerprint scan", %{
+    root: root
+  } do
+    name = start_model!()
+    ModelMailTransport.put_folder(name, "INBOX")
+    ModelMailTransport.put_folder(name, "Work")
+    ModelMailTransport.put_message(name, "Work", @raw_x, internal_date: recent_date())
+    ModelMailTransport.put_message(name, "Work", @raw_r, internal_date: recent_date())
+
+    assert {:ok, %{new_messages: 2}} = run(name, root)
+    {r_msg_id, r_old_uid} = msg_id_of("mara", "Work", "RSubject")
+    assert r_old_uid == 2
+
+    # Delete X, then reset — R renumbers from uid 2 to uid 1. No server-side
+    # change to R's own content. This fake transport won't itself reject a
+    # malformed HEADER search (it does a plain substring match, not real IMAP
+    # parsing), so it can't prove the shortcut was skipped by making a bad
+    # call fail — what it CAN prove is that reconciliation still completes
+    # correctly end to end via the fingerprint fallback, which is what
+    # actually matters.
+    {_x_msg_id, x_uid} = msg_id_of("mara", "Work", "XSubject")
+    ModelMailTransport.delete_message(name, "Work", x_uid)
+    ModelMailTransport.reset_uidvalidity(name, "Work")
+
+    assert {:ok, %{notices: notices}} = run(name, root)
+    assert Enum.any?(notices, &(&1 =~ "Work" and &1 =~ "reconciled"))
+
+    assert [r] = Store.occurrences("mara", "Work")
+    assert r.msg_id == r_msg_id
+    assert r.uid == 1
+    assert r.uidvalidity == 2
+    assert cur_files(root, "mara", "Work") == [Maildir.encode_filename(r_msg_id, 1, MapSet.new())]
+    assert File.exists?(view_path(root, "mara", r_msg_id))
   end
 
   # ==========================================================================
@@ -447,6 +511,11 @@ defmodule Valea.Mail.ReconcileTest do
     # M's view GC'd (last occurrence gone); S's view kept (still in INBOX).
     refute File.exists?(view_path(root, "mara", m_msg_id))
     assert File.exists?(view_path(root, "mara", s_msg_id))
+
+    # S's surviving shared view no longer lists the discarded "Work" folder
+    # in its `folders:` frontmatter — refreshed from its FULL remaining
+    # occurrence set (just INBOX now), not left stale from before the discard.
+    assert view_frontmatter(root, "mara", s_msg_id)["folders"] == ["INBOX"]
 
     # INBOX is untouched.
     assert length(Store.occurrences("mara", "INBOX")) == 1

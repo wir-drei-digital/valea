@@ -248,8 +248,26 @@ defmodule Valea.Mail.SyncPass do
     # SELECT this folder so its UID operations hit it (a failed re-select skips
     # the folder with an error rather than silently pulling the wrong one).
     case ctx.transport.select(ctx.conn, folder) do
-      {:ok, _reselect} -> process_selected_folder(ctx, scan, select, acc)
-      {:error, reason} -> add_error(acc, "re-select failed for #{folder}: #{inspect(reason)}")
+      {:ok, reselect} ->
+        if Reconcile.reselect_diverged?(select, reselect) do
+          # A UIDVALIDITY reset landed on the SERVER between Phase A's
+          # scan-time SELECT (which decided `reset?: false` for this folder)
+          # and this re-SELECT. Phase A's `select`/watermark are now stale —
+          # see `Reconcile.reselect_diverged?/2` for why proceeding would
+          # mass-remove renumbered-but-present occurrences. Defer: no
+          # `put_sync_state`, so next pass's `reset?/2` detects the reset from
+          # the still-stored (pre-reset) uidvalidity and runs the proper
+          # `Reconcile.folder_reset/2` reconciliation.
+          add_notice(
+            acc,
+            "folder #{folder}: UIDVALIDITY changed between scan and re-select; reconciliation deferred"
+          )
+        else
+          process_selected_folder(ctx, scan, select, acc)
+        end
+
+      {:error, reason} ->
+        add_error(acc, "re-select failed for #{folder}: #{inspect(reason)}")
     end
   end
 
@@ -265,9 +283,8 @@ defmodule Valea.Mail.SyncPass do
 
     # `scan.stored` is the pre-pass snapshot (Phase A is read-only). All of
     # this pass's sync_state fields are computed in memory and persisted in
-    # ONE final write — a partial `put_sync_state` re-applies the Ash
-    # `default:` of every default-bearing column it omits (`backfill_complete`,
-    # `held`), so a single full write is the only clobber-safe shape.
+    # ONE final write below (`Store.put_sync_state/3` itself documents the
+    # read-modify-write that makes a partial write clobber-safe).
     stored = scan.stored
     first_sync? = stored == nil or not is_integer(stored.high_water_uid)
 
