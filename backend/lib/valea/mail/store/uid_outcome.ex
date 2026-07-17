@@ -3,6 +3,16 @@ defmodule Valea.Mail.Store.UidOutcome do
   Per-folder, per-UID sync outcome (`synced` / `skipped` / `failed`) with a
   retry-attempt counter. Pure cache: rebuildable by resyncing the folder —
   `Valea.Mail.Store.clear_folder/1` wipes it on a `UIDVALIDITY` mismatch.
+
+  TEMP v3-bridge (mail-as-maildir rebuild, Task 3): the durable
+  `mail_pending_ops` ledger (`Valea.Mail.Store.PendingOp`) supersedes
+  per-UID outcome tracking conceptually, but `sync_pass.ex`/`sync_pass_test.exs`
+  still read/write this table directly (`record_outcome/4`, `outcomes/1`,
+  and a raw `Ash.Query` against this resource asserting real persistence) —
+  a trivial in-memory or new-table emulation would not satisfy those
+  assertions, so this resource + its table are kept alive verbatim,
+  recreated by the Task 3 migration alongside the four new tables. Removed
+  in Task 7 (`SyncPass` rewrite), when the ops ledger takes over.
   """
   use Ash.Resource,
     domain: Valea.Mail.Store,

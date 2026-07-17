@@ -1,21 +1,69 @@
 defmodule Valea.Mail.Store do
   @moduledoc """
   The mail sync engine's SQLite cache — `Valea.Repo` (per-workspace,
-  `AshSqlite.DataLayer`) backed by `mail_sync_state`, `mail_uid_outcomes`,
-  `mail_messages`, and `mail_inbox_headers`. Every one of these tables is
-  pure cache: rebuildable from `sources/mail/` (+ an IMAP resync) —
-  losing `app.sqlite` must never lose data, so this module owns no
-  business logic beyond that reconstruction contract.
+  `AshSqlite.DataLayer`) backed by occurrence-based tables plus a durable
+  ops ledger:
+
+    * `mail_sync_state` (`SyncState`) — per-`(account, folder)` watermark
+      and lifecycle bits (`UIDVALIDITY`, high-water `UID`,
+      `HIGHESTMODSEQ`, `backfill_complete`, `held`).
+    * `mail_uid_map` (`UidMap`) — per-`(account, folder, uid)` identity map
+      (which `msg_id` a `UID` resolves to, and the flags last synced).
+    * `mail_messages` (`MessageIndex`) — per-`(account, folder, uid)`
+      OCCURRENCE row (the same `msg_id` can legitimately appear in more
+      than one folder; see that resource's moduledoc).
+    * `mail_pending_ops` (`PendingOp`) — the durable ops ledger. NOT pure
+      cache like the other three: it is the record of in-flight/at-most-once
+      side effects against the remote mailbox (see its moduledoc).
+
+  `mail_sync_state`, `mail_uid_map`, and `mail_messages` are pure cache:
+  rebuildable from `sources/mail/` (+ an IMAP resync) — losing `app.sqlite`
+  must never lose data. `mail_pending_ops` is the one exception, by design.
 
   No `AshTypescript` extension — this domain is internal-only, never
-  exposed over RPC. The four resources under `Valea.Mail.Store.*` stay
-  deliberately minimal (one `:upsert` create action apiece, no
-  timestamps/soft-deletes/relationships); the friendly, task-brief-shaped
-  API below (`get_sync_state/1`, `record_outcome/4`, `outcomes/1`, ...) is
-  hand-written on top of them rather than generated `code_interface`
-  `define`s, because several of these operations (the failed-attempts
-  counter, the synced/skipped/retryable partition, newest-first sort,
-  keep-newest-N pruning) are small pieces of logic, not bare CRUD.
+  exposed over RPC. The resources under `Valea.Mail.Store.*` stay
+  deliberately minimal (one `:upsert`/`:create` action apiece plus one
+  narrow `:update` where needed, no timestamps/soft-deletes/relationships
+  beyond what's hand-declared); the friendly, task-brief-shaped API below
+  is hand-written on top of them rather than generated `code_interface`
+  `define`s, because several of these operations (occurrence flag
+  conversion, pagination, the ops-ledger claim/transition dance) are small
+  pieces of logic, not bare CRUD.
+
+  ## TEMP v3-bridge (mail-as-maildir rebuild, Task 3)
+
+  `sync_pass.ex`, `index.ex`, `engine.ex`, `api/mail.ex`, and `cockpit.ex`
+  (rewritten in Tasks 6-10) still call the OLD, pre-occurrence Store API:
+  `get_sync_state/1`, `put_sync_state/3` (3-arg, no `attrs` map),
+  `clear_folder/1`, `upsert_message/1`, `get_message/1`,
+  `message_by_message_id/1`, `list_messages/0`, `set_message_status/2`,
+  `record_outcome/4`, `outcomes/1`, `put_inbox_header/1`, `inbox_headers/0`,
+  `prune_inbox_headers/1`. Every function below marked `# TEMP v3-bridge`
+  keeps that old surface alive on top of the NEW tables (or, for
+  `record_outcome`/`outcomes`/the inbox-header family, on top of the OLD
+  `mail_uid_outcomes`/`mail_inbox_headers` tables — see
+  `Valea.Mail.Store.UidOutcome`/`InboxHeader`'s moduledocs for why those two
+  tables/resources are kept alive verbatim rather than emulated).
+
+  The message/sync-state bridge functions operate in a synthetic
+  `account: "__legacy__", folder: "__legacy__"` scope on the new
+  `mail_messages`/`mail_sync_state` tables (folder is real for sync-state —
+  only `account` is synthetic there) and emulate the old msg_id-keyed
+  upsert semantics (one row per `msg_id`, no per-folder occurrences) by
+  using `msg_id` as a dedupe key within that scope: an `upsert_message/1`
+  whose `msg_id` already has a row under a *different* `uid` deletes the
+  stale occurrence row before inserting the new one (the new schema's
+  primary key is `(account, folder, uid)`, so merely changing `uid` would
+  otherwise leave two rows for the same logical message). The old API's
+  `status` field has no column in the new occurrence schema (occurrence
+  rows don't carry a review workflow status) — it rides along in `flags`,
+  a plain string column with no other purpose at this synthetic scope,
+  round-tripped transparently by `legacy_message_map/1`.
+
+  `put_sync_state/3` collides in arity with the new
+  `put_sync_state/3` (`account, folder, attrs`) — the old call shape is
+  `(folder, uidvalidity, high_water_uid)`, so the two are told apart by an
+  `is_map/1` guard on the third argument.
   """
   use Ash.Domain
 
@@ -23,55 +71,527 @@ defmodule Valea.Mail.Store do
 
   alias Valea.Mail.Store.InboxHeader
   alias Valea.Mail.Store.MessageIndex
+  alias Valea.Mail.Store.PendingOp
   alias Valea.Mail.Store.SyncState
+  alias Valea.Mail.Store.UidMap
   alias Valea.Mail.Store.UidOutcome
 
   resources do
     resource SyncState
-    resource UidOutcome
+    resource UidMap
     resource MessageIndex
+    resource PendingOp
+    # TEMP v3-bridge — see moduledoc.
+    resource UidOutcome
     resource InboxHeader
   end
 
+  # The synthetic scope every old-API bridge function operates in.
+  @legacy "__legacy__"
+
   # -- sync_state ------------------------------------------------------------
 
-  @doc "The last-seen `UIDVALIDITY` + high-water `UID` for `folder`."
-  @spec get_sync_state(String.t()) ::
-          {:ok, %{uidvalidity: integer() | nil, high_water_uid: integer() | nil}}
-          | {:error, :not_found}
-  def get_sync_state(folder) do
-    case Ash.get(SyncState, folder) do
-      {:ok, state} ->
-        {:ok, %{uidvalidity: state.uidvalidity, high_water_uid: state.high_water_uid}}
-
-      {:error, _} ->
-        {:error, :not_found}
+  @doc "The full `mail_sync_state` row for `(account, folder)`."
+  @spec get_sync_state(String.t(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_sync_state(account, folder) do
+    case Ash.get(SyncState, %{account: account, folder: folder}) do
+      {:ok, state} -> {:ok, sync_state_map(state)}
+      {:error, _} -> {:error, :not_found}
     end
   end
 
-  @doc "Upserts the `folder`'s sync watermark."
+  # TEMP v3-bridge: removed in Task 7/9. Old 1-arg call, synthetic account.
+  @spec get_sync_state(String.t()) ::
+          {:ok, %{uidvalidity: integer() | nil, high_water_uid: integer() | nil}}
+          | {:error, :not_found}
+  def get_sync_state(folder), do: get_sync_state(@legacy, folder)
+
+  @doc "Upserts (a subset of) `(account, folder)`'s sync-state columns — only the keys in `attrs` change."
+  @spec put_sync_state(String.t(), String.t(), map()) :: :ok
+  def put_sync_state(account, folder, attrs) when is_map(attrs) do
+    SyncState
+    |> Ash.Changeset.for_create(
+      :upsert,
+      Map.merge(attrs, %{account: account, folder: folder})
+    )
+    |> Ash.create!()
+
+    :ok
+  end
+
+  # TEMP v3-bridge: removed in Task 7/9. Old 3-arg call
+  # `(folder, uidvalidity, high_water_uid)` — told apart from the new
+  # `(account, folder, attrs)` shape by the `is_map/1` guard above (the old
+  # third argument is always an integer or `nil`, never a map).
   @spec put_sync_state(String.t(), integer() | nil, integer() | nil) :: :ok
   def put_sync_state(folder, uidvalidity, high_water_uid) do
+    put_sync_state(@legacy, folder, %{uidvalidity: uidvalidity, high_water_uid: high_water_uid})
+  end
+
+  @doc "Every `mail_sync_state` row for `account`."
+  @spec folders(String.t()) :: [map()]
+  def folders(account) do
     SyncState
+    |> Ash.Query.filter(account == ^account)
+    |> Ash.read!()
+    |> Enum.map(&sync_state_map/1)
+  end
+
+  @doc "Flips `(account, folder)`'s `held` bit, leaving every other column untouched."
+  @spec mark_held(String.t(), String.t(), boolean()) :: :ok
+  def mark_held(account, folder, held) do
+    put_sync_state(account, folder, %{held: held})
+  end
+
+  defp sync_state_map(row) do
+    %{
+      account: row.account,
+      folder: row.folder,
+      dir: row.dir,
+      uidvalidity: row.uidvalidity,
+      high_water_uid: row.high_water_uid,
+      highestmodseq: row.highestmodseq,
+      backfill_complete: row.backfill_complete,
+      held: row.held,
+      last_pass_at: row.last_pass_at,
+      last_error: row.last_error
+    }
+  end
+
+  # -- occurrences (UID identity map) -----------------------------------------
+
+  @doc "Upserts `(account, folder, uid)`'s identity-map row. `flags` is a `MapSet` of maildir flag letters."
+  @spec put_occurrence(String.t(), String.t(), map()) :: :ok
+  def put_occurrence(
+        account,
+        folder,
+        %{uid: uid, uidvalidity: uidvalidity, msg_id: msg_id} = attrs
+      ) do
+    UidMap
     |> Ash.Changeset.for_create(:upsert, %{
+      account: account,
       folder: folder,
+      uid: uid,
       uidvalidity: uidvalidity,
-      high_water_uid: high_water_uid
+      msg_id: msg_id,
+      last_synced_flags: flags_to_string(attrs[:flags])
     })
     |> Ash.create!()
 
     :ok
   end
 
-  # -- uid outcomes ------------------------------------------------------------
+  defp flags_to_string(nil), do: nil
+  defp flags_to_string(%MapSet{} = flags), do: flags |> Enum.sort() |> Enum.join()
+
+  defp flags_from_string(nil), do: MapSet.new()
+  defp flags_from_string(""), do: MapSet.new()
+  defp flags_from_string(str), do: str |> String.graphemes() |> MapSet.new()
+
+  @doc "Destroys `(account, folder, uid)`'s identity-map row, if any."
+  @spec delete_occurrence(String.t(), String.t(), integer()) :: :ok
+  def delete_occurrence(account, folder, uid) do
+    case Ash.get(UidMap, %{account: account, folder: folder, uid: uid}) do
+      {:ok, row} -> Ash.destroy!(row)
+      {:error, _} -> :ok
+    end
+
+    :ok
+  end
+
+  @doc "Every `mail_uid_map` row for `(account, folder)`."
+  @spec occurrences(String.t(), String.t()) :: [map()]
+  def occurrences(account, folder) do
+    UidMap
+    |> Ash.Query.filter(account == ^account and folder == ^folder)
+    |> Ash.read!()
+    |> Enum.map(&occurrence_map/1)
+  end
+
+  @doc "Every `mail_uid_map` row for `account` with the given `msg_id`, across every folder."
+  @spec occurrences_by_msg_id(String.t(), String.t()) :: [map()]
+  def occurrences_by_msg_id(account, msg_id) do
+    UidMap
+    |> Ash.Query.filter(account == ^account and msg_id == ^msg_id)
+    |> Ash.read!()
+    |> Enum.map(&occurrence_map/1)
+  end
+
+  defp occurrence_map(row) do
+    %{
+      account: row.account,
+      folder: row.folder,
+      uid: row.uid,
+      uidvalidity: row.uidvalidity,
+      msg_id: row.msg_id,
+      flags: flags_from_string(row.last_synced_flags)
+    }
+  end
+
+  # -- index rows (mail_messages occurrences) ---------------------------------
+
+  @doc "Upserts a `mail_messages` occurrence row from `attrs` (must include `account`, `folder`, `uid`)."
+  @spec upsert_index_row(map()) :: :ok
+  def upsert_index_row(attrs) do
+    MessageIndex
+    |> Ash.Changeset.for_create(:upsert, attrs)
+    |> Ash.create!()
+
+    :ok
+  end
+
+  @doc "Destroys every `mail_messages` row for `(account, folder)`."
+  @spec delete_index_rows(String.t(), String.t()) :: :ok
+  def delete_index_rows(account, folder) do
+    MessageIndex
+    |> Ash.Query.filter(account == ^account and folder == ^folder)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    :ok
+  end
+
+  @doc "Destroys the single `mail_messages` row for `(account, folder, uid)`, if any."
+  @spec delete_index_row(String.t(), String.t(), integer()) :: :ok
+  def delete_index_row(account, folder, uid) do
+    case Ash.get(MessageIndex, %{account: account, folder: folder, uid: uid}) do
+      {:ok, row} -> Ash.destroy!(row)
+      {:error, _} -> :ok
+    end
+
+    :ok
+  end
 
   @doc """
-  Upserts the outcome of syncing `uid` in `folder`. `attempts` increments
-  every time `outcome` is `:failed` (or `"failed"`); any other outcome
-  leaves the counter where it was — a later `:synced`/`:skipped` outcome
-  simply stops the UID from ever being read as retryable again (see
-  `outcomes/1`), there is nothing left to count.
+  Up to `limit` `mail_messages` rows for `(account, folder)`, newest `date`
+  first. `before`, when given, restricts to rows with `date` strictly
+  earlier than it (the pagination cursor: pass the last page's oldest
+  `date` to fetch the next page).
   """
+  @spec list_messages(String.t(), String.t(), pos_integer(), String.t() | nil) :: [map()]
+  def list_messages(account, folder, limit \\ 100, before \\ nil) do
+    MessageIndex
+    |> Ash.Query.filter(account == ^account and folder == ^folder)
+    |> then(fn query -> if before, do: Ash.Query.filter(query, date < ^before), else: query end)
+    |> Ash.Query.sort(date: :desc)
+    |> Ash.Query.limit(limit)
+    |> Ash.read!()
+    |> Enum.map(&index_row_map/1)
+  end
+
+  @doc "Every `mail_messages` row for `account` with the given `msg_id`, across every folder."
+  @spec message_rows_by_msg_id(String.t(), String.t()) :: [map()]
+  def message_rows_by_msg_id(account, msg_id) do
+    MessageIndex
+    |> Ash.Query.filter(account == ^account and msg_id == ^msg_id)
+    |> Ash.read!()
+    |> Enum.map(&index_row_map/1)
+  end
+
+  defp index_row_map(row) do
+    %{
+      account: row.account,
+      folder: row.folder,
+      uid: row.uid,
+      msg_id: row.msg_id,
+      message_id: row.message_id,
+      from_name: row.from_name,
+      from_email: row.from_email,
+      subject: row.subject,
+      date: row.date,
+      flags: row.flags,
+      has_attachments: row.has_attachments,
+      path: row.path,
+      in_reply_to: row.in_reply_to,
+      references: row.references
+    }
+  end
+
+  # -- folder reset ------------------------------------------------------------
+
+  @doc """
+  Wipes `(account, folder)`'s sync watermark, identity map, and message
+  occurrence rows — the reset a `UIDVALIDITY` mismatch (or a folder
+  replacement) demands. Other folders/accounts are untouched.
+  """
+  @spec clear_folder(String.t(), String.t()) :: :ok
+  def clear_folder(account, folder) do
+    SyncState
+    |> Ash.Query.filter(account == ^account and folder == ^folder)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    UidMap
+    |> Ash.Query.filter(account == ^account and folder == ^folder)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    MessageIndex
+    |> Ash.Query.filter(account == ^account and folder == ^folder)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    :ok
+  end
+
+  # TEMP v3-bridge: removed in Task 7/9. Old 1-arg call: wipes sync_state +
+  # outcomes for `folder` (synthetic legacy account), keeps `mail_messages`
+  # rows — the old contract, since the old table had no per-folder
+  # occurrence concept to reset.
+  @spec clear_folder(String.t()) :: :ok
+  def clear_folder(folder) do
+    SyncState
+    |> Ash.Query.filter(account == ^@legacy and folder == ^folder)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    UidOutcome
+    |> Ash.Query.filter(folder == ^folder)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    :ok
+  end
+
+  # -- pending ops ledger ------------------------------------------------------
+
+  @doc """
+  Creates a `mail_pending_ops` row. `id` is generated (`Ash.UUID`) unless
+  already present in `attrs`. Returns `{:error, :duplicate_active}` when
+  `attrs` would violate the one-non-terminal-append-per-`(account, origin)`
+  partial unique index (`mail_pending_ops_active_append`).
+  """
+  @spec create_pending_op(map()) :: {:ok, map()} | {:error, :duplicate_active}
+  def create_pending_op(attrs) do
+    now = now_iso8601()
+
+    full_attrs =
+      attrs
+      |> Map.put_new_lazy(:id, &Ash.UUID.generate/0)
+      |> Map.put_new(:inserted_at, now)
+      |> Map.put_new(:updated_at, now)
+
+    PendingOp
+    |> Ash.Changeset.for_create(:create, full_attrs)
+    |> Ash.create()
+    |> case do
+      {:ok, op} -> {:ok, pending_op_map(op)}
+      {:error, _error} -> {:error, :duplicate_active}
+    end
+  rescue
+    # Belt-and-braces: a raw constraint violation should already come back
+    # as `{:error, _}` from `Ash.create/1` (ash_sqlite parses the SQLite
+    # "UNIQUE constraint failed" message itself), but this table's
+    # uniqueness rule is a hand-written partial index with no matching Ash
+    # `identity` declaration — catch the underlying driver exception too, in
+    # case some future ash_sqlite version stops normalizing it.
+    _ in [Ecto.ConstraintError, Exqlite.Error] -> {:error, :duplicate_active}
+  end
+
+  @doc """
+  Transitions `id`'s `mail_pending_ops` row to `state`, merging any of
+  `error`/`uid`/`dest_watermark`/`dest_uidvalidity`/`updated_at` present in
+  `extra`. `updated_at` defaults to now unless `extra` overrides it. A
+  silent no-op (not an error) when `id` isn't found.
+  """
+  @spec transition_op(String.t(), String.t(), map()) :: :ok
+  def transition_op(id, state, extra \\ %{}) do
+    case Ash.get(PendingOp, id) do
+      {:ok, op} ->
+        attrs =
+          extra
+          |> Map.take([:error, :uid, :dest_watermark, :dest_uidvalidity, :updated_at])
+          |> Map.put_new(:updated_at, now_iso8601())
+          |> Map.put(:state, state)
+
+        op
+        |> Ash.Changeset.for_update(:transition, attrs)
+        |> Ash.update!()
+
+        :ok
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  @doc "Every `mail_pending_ops` row for `account` still in flight (`claimed`/`pending`/`executing`/`needs_review`)."
+  @spec pending_ops(String.t()) :: [map()]
+  def pending_ops(account) do
+    PendingOp
+    |> Ash.Query.filter(
+      account == ^account and state in ["claimed", "pending", "executing", "needs_review"]
+    )
+    |> Ash.read!()
+    |> Enum.map(&pending_op_map/1)
+  end
+
+  @doc "The `mail_pending_ops` row for `id`."
+  @spec op_by_id(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def op_by_id(id) do
+    case Ash.get(PendingOp, id) do
+      {:ok, op} -> {:ok, pending_op_map(op)}
+      {:error, _} -> {:error, :not_found}
+    end
+  end
+
+  defp pending_op_map(row) do
+    %{
+      id: row.id,
+      kind: row.kind,
+      account: row.account,
+      source_folder: row.source_folder,
+      target_folder: row.target_folder,
+      uid: row.uid,
+      source_uidvalidity: row.source_uidvalidity,
+      dest_watermark: row.dest_watermark,
+      dest_uidvalidity: row.dest_uidvalidity,
+      message_id: row.message_id,
+      msg_id: row.msg_id,
+      origin: row.origin,
+      spool_path: row.spool_path,
+      payload_sha256: row.payload_sha256,
+      state: row.state,
+      error: row.error,
+      inserted_at: row.inserted_at,
+      updated_at: row.updated_at
+    }
+  end
+
+  defp now_iso8601, do: DateTime.utc_now() |> DateTime.to_iso8601()
+
+  # -- TEMP v3-bridge: legacy msg_id-keyed messages -----------------------------
+  # Removed in Task 6 (Index rewrite)/Task 7 (SyncPass rewrite). See the
+  # moduledoc for the synthetic-scope + status/flags rationale.
+
+  @doc false
+  @spec upsert_message(map()) :: :ok
+  def upsert_message(attrs) do
+    from = attrs[:from] || %{}
+    msg_id = attrs[:msg_id]
+    uid = attrs[:uid] || fallback_uid(msg_id)
+
+    case legacy_row_by_msg_id(msg_id) do
+      {:ok, %{uid: existing_uid}} when existing_uid != uid ->
+        delete_index_row(@legacy, @legacy, existing_uid)
+
+      _ ->
+        :ok
+    end
+
+    upsert_index_row(%{
+      account: @legacy,
+      folder: @legacy,
+      uid: uid,
+      msg_id: msg_id,
+      message_id: attrs[:message_id],
+      path: attrs[:path],
+      from_name: address_field(from, :name),
+      from_email: address_field(from, :email),
+      subject: attrs[:subject],
+      date: normalize_date(attrs[:date]),
+      flags: attrs[:status],
+      has_attachments: !!attrs[:has_attachments]
+    })
+  end
+
+  # A real occurrence's `uid` is never `nil` (it comes straight off the IMAP
+  # server), but the old msg_id-keyed API allowed it (a frontmatter file with
+  # no `uid:` key, or a message that was never assigned one) — and the new
+  # occurrence primary key is `(account, folder, uid)`, so two DIFFERENT
+  # `nil`-uid messages naively falling back to the same literal (e.g. `0`)
+  # would collide and one would silently clobber the other. Derive a
+  # deterministic, msg_id-keyed synthetic uid instead — negative, so it can
+  # never collide with a real (always positive) IMAP `UID` — collision
+  # between two different msg_ids is astronomically unlikely at this
+  # bridge's scale (a single dev workspace) and this whole path is removed
+  # in Task 6/7 regardless.
+  defp fallback_uid(msg_id), do: -(:erlang.phash2(msg_id, 1_000_000_000) + 1)
+
+  defp address_field(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
+
+  defp normalize_date(nil), do: nil
+  defp normalize_date(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp normalize_date(str) when is_binary(str), do: str
+
+  @doc false
+  @spec message_by_message_id(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def message_by_message_id(message_id) do
+    MessageIndex
+    |> Ash.Query.filter(account == ^@legacy and message_id == ^message_id)
+    |> Ash.Query.limit(1)
+    |> Ash.read!()
+    |> case do
+      [row] -> {:ok, legacy_message_map(row)}
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc false
+  @spec list_messages() :: [map()]
+  def list_messages do
+    MessageIndex
+    |> Ash.Query.filter(account == ^@legacy and folder == ^@legacy)
+    |> Ash.Query.sort(date: :desc)
+    |> Ash.read!()
+    |> Enum.map(&legacy_message_map/1)
+  end
+
+  @doc false
+  @spec get_message(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_message(msg_id) do
+    case legacy_row_by_msg_id(msg_id) do
+      {:ok, row} -> {:ok, legacy_message_map(row)}
+      {:error, _} -> {:error, :not_found}
+    end
+  end
+
+  @doc false
+  @spec set_message_status(String.t(), String.t()) :: :ok
+  def set_message_status(msg_id, status) do
+    case legacy_row_by_msg_id(msg_id) do
+      {:ok, row} ->
+        row
+        |> Ash.Changeset.for_update(:set_flags, %{flags: status})
+        |> Ash.update!()
+
+        :ok
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  defp legacy_row_by_msg_id(msg_id) do
+    MessageIndex
+    |> Ash.Query.filter(account == ^@legacy and folder == ^@legacy and msg_id == ^msg_id)
+    |> Ash.Query.limit(1)
+    |> Ash.read!()
+    |> case do
+      [row] -> {:ok, row}
+      [] -> {:error, :not_found}
+    end
+  end
+
+  defp legacy_message_map(row) do
+    %{
+      msg_id: row.msg_id,
+      message_id: row.message_id,
+      path: row.path,
+      from_name: row.from_name,
+      from_email: row.from_email,
+      subject: row.subject,
+      date: row.date,
+      status: row.flags,
+      has_attachments: row.has_attachments,
+      uid: row.uid
+    }
+  end
+
+  # -- TEMP v3-bridge: uid outcomes ---------------------------------------------
+  # Removed in Task 7 (SyncPass rewrite) — see `UidOutcome`'s moduledoc.
+  # Unchanged from the v1 Store: kept verbatim rather than emulated.
+
+  # Upserts the outcome of syncing `uid` in `folder`. `attempts` increments
+  # every time `outcome` is `:failed` (or `"failed"`); any other outcome
+  # leaves the counter where it was — a later `:synced`/`:skipped` outcome
+  # simply stops the UID from ever being read as retryable again (see
+  # `outcomes/1`), there is nothing left to count.
+  @doc false
   @spec record_outcome(String.t(), integer(), atom() | String.t(), String.t() | nil) :: :ok
   def record_outcome(folder, uid, outcome, msg_id \\ nil) do
     outcome_str = to_string(outcome)
@@ -97,14 +617,13 @@ defmodule Valea.Mail.Store do
     :ok
   end
 
-  @doc """
-  Partitions every recorded outcome for `folder`. `skipped` covers
-  `skipped_oversize` — the string the sync pass actually records, so an
-  oversized message is never re-fetched — as well as plain `skipped`.
-  `retryable` is every UID last recorded `failed` with fewer than 3
-  attempts — at 3 it drops out (permanently skipped rather than retried
-  forever).
-  """
+  # Partitions every recorded outcome for `folder`. `skipped` covers
+  # `skipped_oversize` — the string the sync pass actually records, so an
+  # oversized message is never re-fetched — as well as plain `skipped`.
+  # `retryable` is every UID last recorded `failed` with fewer than 3
+  # attempts — at 3 it drops out (permanently skipped rather than retried
+  # forever).
+  @doc false
   @spec outcomes(String.t()) :: %{synced: MapSet.t(), skipped: MapSet.t(), retryable: [integer()]}
   def outcomes(folder) do
     UidOutcome
@@ -125,124 +644,11 @@ defmodule Valea.Mail.Store do
 
   defp add_outcome(_row, acc), do: acc
 
-  # -- messages ------------------------------------------------------------
+  # -- TEMP v3-bridge: inbox headers --------------------------------------------
+  # Removed in Task 6/7 — see `InboxHeader`'s moduledoc. Unchanged from the
+  # v1 Store: kept verbatim rather than emulated.
 
-  @doc """
-  Upserts a `mail_messages` row from `attrs` (as produced by
-  `Valea.Mail.Index.rebuild/1` from a parsed message file's frontmatter, or
-  by the sync engine from a `Valea.Mail.Message`). `from` may be an
-  atom-keyed `%{name:, email:}` map (the `Message` shape) or a
-  string-keyed `%{"name" => , "email" => }` map (frontmatter parsed as
-  YAML) — either is accepted. `date` may be a `DateTime`, an already-ISO8601
-  string, or `nil`.
-  """
-  @spec upsert_message(map()) :: :ok
-  def upsert_message(attrs) do
-    from = attrs[:from] || %{}
-
-    MessageIndex
-    |> Ash.Changeset.for_create(:upsert, %{
-      msg_id: attrs[:msg_id],
-      message_id: attrs[:message_id],
-      path: attrs[:path],
-      from_name: address_field(from, :name),
-      from_email: address_field(from, :email),
-      subject: attrs[:subject],
-      date: normalize_date(attrs[:date]),
-      status: attrs[:status],
-      has_attachments: !!attrs[:has_attachments],
-      uid: attrs[:uid]
-    })
-    |> Ash.create!()
-
-    :ok
-  end
-
-  defp address_field(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
-
-  defp normalize_date(nil), do: nil
-  defp normalize_date(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp normalize_date(str) when is_binary(str), do: str
-
-  @doc "First `mail_messages` row (there is no uniqueness constraint on `message_id`) matching it."
-  @spec message_by_message_id(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def message_by_message_id(message_id) do
-    MessageIndex
-    |> Ash.Query.filter(message_id == ^message_id)
-    |> Ash.Query.limit(1)
-    |> Ash.read!()
-    |> case do
-      [row] -> {:ok, message_map(row)}
-      [] -> {:error, :not_found}
-    end
-  end
-
-  @doc "Every `mail_messages` row, newest `date` first."
-  @spec list_messages() :: [map()]
-  def list_messages do
-    MessageIndex
-    |> Ash.Query.sort(date: :desc)
-    |> Ash.read!()
-    |> Enum.map(&message_map/1)
-  end
-
-  @spec get_message(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get_message(msg_id) do
-    case Ash.get(MessageIndex, msg_id) do
-      {:ok, row} -> {:ok, message_map(row)}
-      {:error, _} -> {:error, :not_found}
-    end
-  end
-
-  @doc "No-op (not an error) when `msg_id` isn't cached — the file on disk stays the source of truth."
-  @spec set_message_status(String.t(), String.t()) :: :ok
-  def set_message_status(msg_id, status) do
-    case Ash.get(MessageIndex, msg_id) do
-      {:ok, row} ->
-        row
-        |> Ash.Changeset.for_update(:set_status, %{status: status})
-        |> Ash.update!()
-
-        :ok
-
-      {:error, _} ->
-        :ok
-    end
-  end
-
-  defp message_map(row) do
-    %{
-      msg_id: row.msg_id,
-      message_id: row.message_id,
-      path: row.path,
-      from_name: row.from_name,
-      from_email: row.from_email,
-      subject: row.subject,
-      date: row.date,
-      status: row.status,
-      has_attachments: row.has_attachments,
-      uid: row.uid
-    }
-  end
-
-  # -- folder reset ------------------------------------------------------------
-
-  @doc """
-  Wipes `folder`'s sync watermark and every recorded outcome — the reset a
-  `UIDVALIDITY` mismatch demands (everything must be treated as unseen and
-  re-fetched). `mail_messages` rows are untouched: the landed files on disk
-  are still valid, dedupe-by-`message_id` will find them again on resync.
-  """
-  @spec clear_folder(String.t()) :: :ok
-  def clear_folder(folder) do
-    SyncState |> Ash.Query.filter(folder == ^folder) |> Ash.bulk_destroy!(:destroy, %{})
-    UidOutcome |> Ash.Query.filter(folder == ^folder) |> Ash.bulk_destroy!(:destroy, %{})
-
-    :ok
-  end
-
-  # -- inbox headers ------------------------------------------------------------
-
+  @doc false
   @spec put_inbox_header(map()) :: :ok
   def put_inbox_header(attrs) do
     InboxHeader
@@ -257,7 +663,8 @@ defmodule Valea.Mail.Store do
     :ok
   end
 
-  @doc "Every `mail_inbox_headers` row, newest `date` first."
+  # Every `mail_inbox_headers` row, newest `date` first.
+  @doc false
   @spec inbox_headers() :: [map()]
   def inbox_headers do
     InboxHeader
@@ -268,7 +675,8 @@ defmodule Valea.Mail.Store do
     end)
   end
 
-  @doc "Drops every `mail_inbox_headers` row past the newest `limit` (by `date`)."
+  # Drops every `mail_inbox_headers` row past the newest `limit` (by `date`).
+  @doc false
   @spec prune_inbox_headers(non_neg_integer()) :: :ok
   def prune_inbox_headers(limit) do
     InboxHeader

@@ -4,6 +4,14 @@ defmodule Valea.Mail.Store.InboxHeader do
   feeds `sources/mail/inbox.md` regeneration. Pure cache: pruned to the
   newest N via `Valea.Mail.Store.prune_inbox_headers/1`, rebuildable by
   resyncing INBOX.
+
+  TEMP v3-bridge (mail-as-maildir rebuild, Task 3): `sync_pass.ex` still
+  writes real rows here on every INBOX pass and `sync_pass.ex`/`api/mail.ex`
+  render `sources/mail/inbox.md`/`mail_inbox` straight off this table, with
+  `cockpit_test.exs`/`mail_rpc_test.exs` asserting real round-trips — kept
+  alive verbatim, recreated by the Task 3 migration alongside the four new
+  tables. Removed once INBOX awareness is rebuilt on the new occurrence
+  tables (Task 6/7).
   """
   use Ash.Resource,
     domain: Valea.Mail.Store,

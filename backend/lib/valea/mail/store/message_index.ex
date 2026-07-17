@@ -1,9 +1,14 @@
 defmodule Valea.Mail.Store.MessageIndex do
   @moduledoc """
-  Index over `sources/mail/messages/*.md` — the metadata a list view needs
-  without re-parsing every file. Pure cache: rebuildable in full by
-  `Valea.Mail.Index.rebuild/1`; `path` is the source of truth for content,
-  this row is only ever derived from it.
+  Index over landed maildir occurrences — ONE ROW PER `(account, folder,
+  uid)` OCCURRENCE, not one row per message: the same `msg_id` can appear
+  in more than one folder (e.g. a draft pushed to `Drafts` and later found
+  in `INBOX`/`Sent` after append), and each occurrence gets its own row so
+  a folder listing never has to guess which occurrence it's looking at.
+  `msg_id` is deliberately NOT unique here (see `occurrences_by_msg_id/2`,
+  `message_rows_by_msg_id/2`). Pure cache: rebuildable in full from a
+  maildir scan; `path` is the source of truth for content, this row is only
+  ever derived from it.
   """
   use Ash.Resource,
     domain: Valea.Mail.Store,
@@ -18,54 +23,64 @@ defmodule Valea.Mail.Store.MessageIndex do
   end
 
   actions do
-    defaults [:read]
+    defaults [:read, :destroy]
 
     create :upsert do
       primary? true
 
       accept [
+        :account,
+        :folder,
+        :uid,
         :msg_id,
         :message_id,
-        :path,
         :from_name,
         :from_email,
         :subject,
         :date,
-        :status,
+        :flags,
         :has_attachments,
-        :uid
+        :path,
+        :in_reply_to,
+        :references
       ]
 
       upsert? true
 
       upsert_fields [
+        :msg_id,
         :message_id,
-        :path,
         :from_name,
         :from_email,
         :subject,
         :date,
-        :status,
+        :flags,
         :has_attachments,
-        :uid
+        :path,
+        :in_reply_to,
+        :references
       ]
     end
 
-    update :set_status do
-      accept [:status]
+    update :set_flags do
+      accept [:flags, :path]
     end
   end
 
   attributes do
-    attribute :msg_id, :string, primary_key?: true, allow_nil?: false, public?: true
+    attribute :account, :string, primary_key?: true, allow_nil?: false, public?: true
+    attribute :folder, :string, primary_key?: true, allow_nil?: false, public?: true
+    attribute :uid, :integer, primary_key?: true, allow_nil?: false, public?: true
+    attribute :msg_id, :string, public?: true
     attribute :message_id, :string, public?: true
-    attribute :path, :string, public?: true
     attribute :from_name, :string, public?: true
     attribute :from_email, :string, public?: true
     attribute :subject, :string, public?: true
     attribute :date, :string, public?: true
-    attribute :status, :string, public?: true
+    attribute :flags, :string, public?: true
     attribute :has_attachments, :boolean, default: false, public?: true
-    attribute :uid, :integer, public?: true
+    attribute :path, :string, public?: true
+    attribute :in_reply_to, :string, public?: true
+    attribute :references, :string, public?: true
   end
 end

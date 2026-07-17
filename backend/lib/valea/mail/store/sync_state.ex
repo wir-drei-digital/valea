@@ -1,6 +1,10 @@
 defmodule Valea.Mail.Store.SyncState do
   @moduledoc """
-  Per-folder IMAP sync watermark (`UIDVALIDITY` + high-water `UID`). Pure
+  Per-account, per-folder IMAP sync watermark and folder-lifecycle bits:
+  `UIDVALIDITY`, high-water `UID`, `HIGHESTMODSEQ` (CONDSTORE, when the
+  server offers it), whether the folder has completed its initial backfill,
+  and whether it is currently held (paused) — plus the local maildir `dir`
+  it lands under and light diagnostics (`last_pass_at`, `last_error`). Pure
   cache: rebuildable from a fresh resync — never the source of truth for
   message content.
   """
@@ -28,15 +32,45 @@ defmodule Valea.Mail.Store.SyncState do
 
     create :upsert do
       primary? true
-      accept [:folder, :uidvalidity, :high_water_uid]
+
+      accept [
+        :account,
+        :folder,
+        :dir,
+        :uidvalidity,
+        :high_water_uid,
+        :highestmodseq,
+        :backfill_complete,
+        :held,
+        :last_pass_at,
+        :last_error
+      ]
+
       upsert? true
-      upsert_fields [:uidvalidity, :high_water_uid]
+
+      upsert_fields [
+        :dir,
+        :uidvalidity,
+        :high_water_uid,
+        :highestmodseq,
+        :backfill_complete,
+        :held,
+        :last_pass_at,
+        :last_error
+      ]
     end
   end
 
   attributes do
+    attribute :account, :string, primary_key?: true, allow_nil?: false, public?: true
     attribute :folder, :string, primary_key?: true, allow_nil?: false, public?: true
+    attribute :dir, :string, public?: true
     attribute :uidvalidity, :integer, public?: true
     attribute :high_water_uid, :integer, public?: true
+    attribute :highestmodseq, :integer, public?: true
+    attribute :backfill_complete, :boolean, default: false, public?: true
+    attribute :held, :boolean, default: false, public?: true
+    attribute :last_pass_at, :string, public?: true
+    attribute :last_error, :string, public?: true
   end
 end
