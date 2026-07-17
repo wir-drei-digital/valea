@@ -163,17 +163,21 @@ Nothing infers intent from filesystem diffs. Mailbox mutations are
   mirror — the "once landed, stays local" invariant survives moving
   messages older than the sync window.
 - The executor **claims a pending file by atomically renaming it into the
-  engine-owned `ops/done/`** before parsing anything. Claiming is
-  link-safe: a pending entry must be a **regular file with a single
-  link** — checked with `lstat`/no-follow semantics; symlinks and
+  engine-owned `ops/done/` under an engine-generated opaque op-id**
+  (`<opid>.yaml`, no-replace semantics — the rename fails rather than
+  overwrites; the agent's submitted filename is recorded as metadata
+  only, so no agent-chosen name can ever collide with or clobber an
+  existing claimed file, its result, or a crash-recovery record).
+  Claiming is link-safe: a pending entry must be a **regular file with a
+  single link** — checked with `lstat`/no-follow semantics; symlinks and
   hard-linked files are rejected to `quarantine/`, never parsed. After
   the rename the executor re-validates type and link count on the opened
   descriptor and parses **from that descriptor**, so nothing can change
   or redirect underneath it. Per-op results go to a **separate,
-  engine-created result file** (`<name>.result.yaml` —
-  `ok | rejected: <reason> | needs_review` per op) beside the claimed
-  file — a file-first audit trail the agent can read but not edit
-  (`ops/done/` is write-denied). A claimed file **without** its result
+  engine-created result file bound to the same op-id**
+  (`<opid>.result.yaml` — `ok | rejected: <reason> | needs_review` per
+  op, original filename inside) — a file-first audit trail the agent can
+  read but not edit (`ops/done/` is write-denied). A claimed file **without** its result
   file is unresolved: boot re-parses the engine-owned copy and replays
   it — flag ops re-execute idempotently, move ops resolve through their
   manifests (recorded before any remote I/O, so nothing duplicates) —
@@ -786,7 +790,9 @@ boundary; every failure state has a copyable remedy or a status notice.
   case-insensitive volume → distinct directories, no mixed UID maps,
   ops target the exact IMAP names; **claim-by-rename** (pending ops file
   mutated after claim → executor parses only the claimed engine-owned
-  copy); **link-safety** (symlink or hard-linked pending ops file →
+  copy); **opaque-id claiming** (pending file named after an existing
+  done/result file → claimed under a fresh op-id, nothing overwritten,
+  crash-recovery records intact); **link-safety** (symlink or hard-linked pending ops file →
   rejected to quarantine, never parsed, nothing written through the
   link); **old message moved by another client** (>window-old message
   moved between mirrored folders → lands via the UID watermark, source
