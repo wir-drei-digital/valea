@@ -426,8 +426,14 @@ view_rel_path(account, msg_id) :: String.t()                 # "sources/mail/<ac
 
 # Valea.Mail.Index (rewrite):
 rebuild(root, account) :: {:ok, non_neg_integer}
-  # walks maildir/ dirs (via Maildir.list_occurrences + .folder identities), re-parses each raw file,
-  # repopulates uid_map + message index rows; cache-only reconstruction, never touches the server
+  # walks maildir/ dirs; for EACH directory with a .folder identity file, reconstructs the
+  # sync_state folder→dir binding FIRST (`Store.put_sync_state(account, imap_name, %{dir: ...})` with
+  # backfill_complete: false, watermark nil — the next pass re-establishes them from the server),
+  # then re-parses each raw file and repopulates uid_map + message index rows. The on-disk .folder
+  # identities are AUTHORITATIVE for folder→dir after database loss — SyncPass consults these
+  # bindings before allocating any directory, so a wiped SQLite DB with case-colliding folders and
+  # a reversed LIST order reuses the existing dirs instead of minting duplicates (test exactly that).
+  # Cache-only reconstruction, never touches the server.
 ```
 
 - [ ] **Step 1: Write failing tests.** `message_file_test.exs`: msg_id of two DIFFERENT raw messages sharing the same `Message-ID` header differ (fingerprint identity); same bytes → same msg_id; render contains `account:`/`folders:`/`flags:` and no `status:`; `flip_status` gone (delete its tests). `views_test.exs`: land writes view + attachments; second land same bytes → no duplicate, same msg_id; two accounts isolated; `remove_occurrence` with remaining 0 deletes view+attachments, remaining 1 keeps them; `refresh_folders` updates the folders list. `index_test.exs`: seed a maildir tree (two folders, one shared-fingerprint message in both) → rebuild produces per-occurrence index rows + uid_map rows and one view.
@@ -455,7 +461,7 @@ rebuild(root, account) :: {:ok, non_neg_integer}
 - Produces: `run(args) :: {:ok, %{new_messages: n, errors: [String.t()], notices: [String.t()]}} | {:error, :auth_failed} | {:error, :mailbox_replaced} | {:error, term}` where `args :: %{root:, account: String.t(), settings: Settings.t(), credential:, transport:, ops_enabled: boolean}` (`ops_enabled: false` until Task 13 wires push — pull-only pass). Internal per-folder pipeline as private functions; `notices` carries held-folder/conflict/quarantine strings for status.
 
 **Behavior contract (each item = at least one test):**
-1. **Folder set**: `list_folders` minus `settings.sync.exclude_folders` minus `\Noselect`; each mapped via `Maildir.folder_to_dir` (taken-set from existing sync_state `dir`s), `.folder` identity written on first sight; sync_state row created.
+1. **Folder set**: `list_folders` minus `settings.sync.exclude_folders` minus `\Noselect`; existing folders resolve to their directories via sync_state bindings AND the on-disk `.folder` identities (identities win — a dir whose `.folder` matches the IMAP name is reused even when sync_state is empty, i.e. after DB loss); only genuinely new folders allocate via `Maildir.folder_to_dir` (taken-set = union of sync_state `dir`s and every existing maildir directory name), `.folder` identity written before first delivery; sync_state row created.
 2. **First sync of a folder**: watermark := `uidnext - 1` from SELECT (when uidnext nil: `max(uids)` from a full `uid_search("ALL")`); backfill = `uid_search("SINCE <date horizon>")` → land bodies (below); `backfill_complete` set ONLY after every windowed UID landed; a folder failing mid-backfill keeps `backfill_complete: false` and the next pass re-runs the windowed search, landing only missing UIDs.
 3. **Incremental**: `uid_search("UID <hw+1>:*")` (guard the `n:*` quirk exactly like the old `above?/2`); every returned UID > watermark lands regardless of date; watermark advances to max seen.
 4. **Landing an occurrence**: `uid_fetch_full` → `Views.land` (fingerprint dedupe) → `Maildir.deliver!` raw into the folder dir as `encode_filename(msg_id, uid, flags_from_imap(fetched flags))` → `Store.put_occurrence` + `upsert_index_row` + `Views.refresh_folders`. Oversized (`size > max_message_bytes` via `uid_fetch_meta`) → skipped + counted in `errors`, never retried hot (record in uid_map with msg_id `"__oversize__"` so it is not re-fetched; excluded from index).
@@ -524,7 +530,13 @@ status(slug) :: status_map | nil                                # nil when engin
 statuses() :: %{slug => status_map}                             # Registry enumeration
 set_credential(slug, secret) :: :ok | {:error, :not_found}
 sync_now(slug) :: :ok | {:error, :not_configured | :no_credential | :inactive | :not_found | :blocked}
-readopt(slug) :: :ok | {:error, :not_found | :not_blocked}      # clears mailbox_replaced; next pass = reset reconciliation
+readopt(slug) :: :ok | {:error, :not_found | :not_blocked}
+  # persists a ONE-SHOT authorization marker (engine-owned file sources/mail/<slug>/.readopt, fsynced —
+  # survives DB loss) and clears the sticky state. SyncPass args gain `readopt_authorized: boolean`;
+  # when true, Reconcile.detect_replacement is SKIPPED for that pass and every reset folder runs the
+  # full reset reconciliation; the engine deletes .readopt only after the pass completes successfully.
+  # A later, new replacement re-blocks normally. End-to-end test: INBOX reset → mailbox_replaced →
+  # readopt → next pass reconciles + clears marker → forced second replacement blocks again.
 reload_settings_all(root) :: :ok                                # Supervisor rehash: start/stop engines to match config
 # status_map adds: account: slug, state ∈ "inactive|idle|syncing|auth_failed|identity_mismatch|mailbox_replaced",
 #   pending_ops: n, held_folders: [String.t()], backfill: %{folder => boolean} | nil, notices: [String.t()]
@@ -631,6 +643,13 @@ claim_next(root, account) :: {:ok, %{opid: String.t(), bytes: binary(), original
   # acceptable because opid is random and ops/done is engine-owned/agent-write-denied)
 write_results!(root, account, opid, original_name, results :: [map]) :: :ok
   # ops/done/<opid>.result.yaml — %{"file" => original_name, "results" => [%{"op" => i, "result" => "ok"|"rejected"|"needs_review", "reason" => _}]}
+write_op_state!(root, account, opid, index :: non_neg_integer, state :: map) :: :ok
+read_op_states(root, account, opid) :: %{non_neg_integer => map}
+  # engine-owned, FSYNCED per-op recovery sidecar ops/done/<opid>.state.yaml, appended BEFORE each
+  # flag op's remote I/O: %{folder:, uid:, uidvalidity:, baseline_flags:, modseq: int | nil,
+  # postcondition: %{add:, remove:}}. This is the durable flag baseline the spec requires — recovery
+  # after a lost STORE consumes it (postcondition already present → ok; baseline moved → needs_review,
+  # never an overwriting STORE; untouched → one UNCHANGEDSINCE-guarded retry).
 unresolved(root, account) :: [%{opid:, path:}]     # done/*.yaml lacking sibling *.result.yaml → boot replay set
 ```
 
@@ -662,7 +681,7 @@ apply_ops(root, account, ops :: [map], origin) :: [result_map]   # shared by ops
 2. **Move ladder + confirmation — the executor OWNS the ladder** (each step a durable manifest transition): when `supports?(:move)` → `uid_move` (native), COPYUID as dest_uid when present, else destination confirmation below. Without MOVE: `uid_copy` → **destination confirmation** → only then `uid_mark_deleted` → `uid_expunge`, each step recorded in the manifest before it runs; a crash or lost response between any two steps recovers by reconciliation, and the source is NEVER expunged before a confirmed destination exists. Destination confirmation = COPYUID when supplied; else `uid_search` in dest for `HEADER Message-ID` (when the message has one), else candidate scan `UID <dest_watermark+1>:*` + fingerprint-confirm each candidate (dest UIDVALIDITY changed vs manifest → full-folder fingerprint scan). Exactly one confirmed match → persist dest_uid → THEN relocate the local file (`Maildir` rename into dest dir, new `U=`), update uid_map/index/views. Zero or several → `needs_review`, local file untouched, no destructive step taken. The per-step fault matrix (lost response after COPY / after STORE / after EXPUNGE) is testable because each step is a separate transport call.
 3. **Write-through destination** (`to` ∈ folders.{archive,trash} ∧ excluded): transient `examine/2` (read-only) for watermark + uidvalidity at enqueue; after confirmation the local occurrence is REMOVED (file + rows + view GC) — message left the mirrored set.
 4. **Gmail profile**: move executes only when `supports?(:move)`; postcondition for EVERY gmail move = source `uid_search("UID <uid>")` empty AND dest (or All Mail for archive, via `examine/2` — read-only) `uid_search("X-GM-MSGID <gm_msgid>")` non-empty (gm_msgid captured at landing into uid_map — add column? NO: fetch at enqueue via `uid_fetch_flags(conn, "<uid>")`). Pre-existing membership counts. Local relocation only after proof; archive-to-All-Mail removes the local occurrence (excluded dest).
-5. **Flags**: baseline = uid_map `last_synced_flags` (+ modseq via `uid_fetch_flags` at enqueue when condstore); execute `uid_store_flags(..., unchangedsince: modseq)`; `{:ok, :modified}` → `needs_review` (baseline moved); recovery path: refetch flags — postcondition already present → ok; baseline moved → `needs_review`; untouched → one guarded retry. Flag ops do NOT create ledger rows; their durable record is the claimed ops file (replayed via `recover` reading unresolved claimed files).
+5. **Flags**: baseline = uid_map `last_synced_flags` (+ modseq via `uid_fetch_flags` at enqueue when condstore); `OpsFile.write_op_state!` persists the baseline + postcondition (fsync) BEFORE the STORE; execute `uid_store_flags(..., unchangedsince: modseq)`; `{:ok, :modified}` → `needs_review` (baseline moved); recovery path (boot, via `read_op_states`): refetch flags — postcondition already present → ok; flags differ from the recorded baseline in any other way → `needs_review`, never an overwriting STORE; exactly the recorded baseline → one guarded retry. Test: reboot after a `{:lost_response, :uid_store_flags}` fault + concurrent model `set_flags` change → `needs_review`, server flags untouched. Flag ops do NOT create ledger rows; their durable record is the claimed ops file + its `.state.yaml` sidecar.
 6. **Uncertain results** (`{:lost_response, _}` faults): op stays `executing`; `recover/1` reconciles per contract 2 before any retry; append recovery searches target folder for the Valea Message-ID, and after an unknown outcome widens to ALL known folders — exactly one fingerprint-confirmed match → complete; zero/several → `needs_review`. Never a second APPEND after an unproven unknown outcome.
 7. **Conflict**: op targets a uid the server moved/removed since last pull → verification fails → rejected `"server_changed"` (server wins), notice.
 8. **mail_apply_ops RPC** shares `apply_ops/4` (origin `"rpc"`), returns per-op results synchronously (executor runs inline in the engine call for RPC ops; ops-file ops run in the pass).
