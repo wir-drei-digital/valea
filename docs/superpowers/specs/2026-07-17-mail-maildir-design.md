@@ -479,14 +479,17 @@ verified.
 
 `.account` is a login locator, not proof of mailbox identity — a
 provider or admin can reassign the same host + username to a different
-mailbox. The engine therefore also treats **wholesale-replacement
-signals** as an identity break: when reconciliation after UIDVALIDITY
-resets finds **zero fingerprint overlap** between a non-trivial
-pre-existing local occurrence set and the server, the account stops in
-`mailbox_replaced` — nothing is deleted, nothing mounts, no ops run —
-until the user explicitly re-adopts the subtree (typed confirmation) or
-purges it. Acceptance covers same-host/same-username mailbox
-replacement.
+mailbox. The engine therefore enforces a **fail-closed continuity
+policy**: when INBOX or a majority of mirrored folders reset UIDVALIDITY
+in the same pass, the account must *prove* continuity before anything is
+deleted, re-bound, or mounted — at least half of the pre-existing local
+occurrences, and no fewer than three, must fingerprint-match the server.
+Anything below that — partial overlap, a single shared message, or a set
+too small to prove anything — stops in `mailbox_replaced` until the user
+explicitly re-adopts the subtree (typed confirmation) or purges it.
+Single-folder resets on an otherwise stable account reconcile normally.
+Acceptance covers same-host/same-username replacement, partial-overlap,
+and one-occurrence stores.
 
 Runtime: `Valea.Mail.Supervisor` under `Workspace.Runtime` starts **one
 Engine per configured account** (Registry-keyed by `{workspace, account}`),
@@ -844,9 +847,10 @@ boundary; every failure state has a copyable remedy or a status notice.
   permanent `needs_review`);
   window widening backfill; Gmail folder exclusion; **slug-reuse identity
   mismatch** → account refuses activation, typed purge path works;
-  **mailbox replacement** (same host+username, zero fingerprint overlap
-  after resets → `mailbox_replaced`, nothing deleted or mounted until
-  re-adoption or purge);
+  **mailbox replacement** (account-wide resets failing the continuity
+  threshold — zero, partial, or too-small fingerprint overlap →
+  `mailbox_replaced`, nothing deleted or mounted until re-adoption or
+  purge; single-folder reset unaffected);
   two-account isolation; ops-ledger crash recovery (ledger + spool
   survive restart); **ladder disconnect after each request** (`COPY`
   accepted but response lost → reconcile proves exactly one
