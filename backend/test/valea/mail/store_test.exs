@@ -454,6 +454,27 @@ defmodule Valea.Mail.StoreTest do
       assert msg.status == "review"
       assert msg.has_attachments == false
       assert msg.uid == 4711
+      assert msg.path == "sources/mail/messages/2026-07-09-priya-nair-3f2a91c4.md"
+      assert msg.subject == "Question about leadership coaching"
+      assert msg.date == "2026-07-09T06:58:00Z"
+    end
+
+    test "upsert_message accepts a DateTime for date and stores it as ISO8601" do
+      :ok =
+        Store.upsert_message(%{
+          msg_id: "datetime-test",
+          message_id: nil,
+          path: "p",
+          from: %{name: "Test", email: "test@example.com"},
+          subject: "DateTime test",
+          date: ~U[2026-07-01 10:00:00Z],
+          status: "review",
+          has_attachments: false,
+          uid: nil
+        })
+
+      assert {:ok, msg} = Store.get_message("datetime-test")
+      assert msg.date == "2026-07-01T10:00:00Z"
     end
 
     test "upsert_message/1 dedupes by msg_id even when uid changes (occurrence pk otherwise splits it)" do
