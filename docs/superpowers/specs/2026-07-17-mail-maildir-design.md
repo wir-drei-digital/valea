@@ -301,13 +301,23 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   by msg_id. A cheaper precheck (Message-ID + size match) is never a
   substitute for the fingerprint — attacker-crafted lookalikes must not
   merge.
-- Flags: `CONDSTORE`/`HIGHESTMODSEQ` when advertised, else a plain
-  `UID FETCH FLAGS` of the mirrored UID set; server changes rewrite the
-  filename flag suffix and the UID-map's last-synced flags.
+- Flags: `CONDSTORE`/`HIGHESTMODSEQ` narrows the *flag* diff when
+  advertised, else a plain `UID FETCH FLAGS` of the mirrored UID set;
+  server changes rewrite the filename flag suffix and the UID-map's
+  last-synced flags.
 - Server-side deletions propagate locally (the user's own client stays
-  authoritative for deletion): the occurrence's file and index row are
-  removed; the shared view and attachments are removed only when the last
-  occurrence of that msg_id is gone.
+  authoritative for deletion), with an **explicit protocol per capability
+  path** — a changed-since flag fetch never reports expunges, so
+  CONDSTORE alone is not a deletion signal. With **QRESYNC** negotiated,
+  `VANISHED` responses name the expunged UIDs. Otherwise — including
+  CONDSTORE-without-QRESYNC and the plain path — every pass performs a
+  **complete enumeration of the mirrored UID set** (`UID SEARCH ALL`),
+  and a known UID is removed locally only when absent from a
+  *successful, complete* enumeration (a failed or truncated enumeration
+  removes nothing). The sync token (`HIGHESTMODSEQ`) is persisted only
+  after deletion reconciliation completes. Removal semantics: the
+  occurrence's file and index row; the shared view and attachments only
+  when the last occurrence of that msg_id is gone.
 - `UIDVALIDITY` reset → wipe that folder's UID map and watermark, reject
   that folder's pending ops (surfaced), clean re-pull; already-landed
   files in that folder re-attach folder-scoped — candidates by Message-ID
@@ -703,7 +713,8 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
   credential closure model, `Redact`, keychain Tauri commands (key format
   extended).
 - **Extended:** `ImapClient` — `LIST`, `UID SEARCH SINCE`,
-  `UID STORE ±FLAGS`, `APPEND`, optional `CONDSTORE`, and the Gmail
+  `UID STORE ±FLAGS`, `APPEND`, optional `CONDSTORE`/`QRESYNC`
+  (`VANISHED`), and the Gmail
   extensions (`X-GM-MSGID`) on the gmail profile; `Doctor`;
   `MessageFile.msg_id` hash input becomes the raw-RFC822 fingerprint;
   RPC surface (incl. `mail_apply_ops`, `purge_mail_account_files`).
@@ -742,8 +753,12 @@ boundary; every failure state has a copyable remedy or a status notice.
 ## Testing & acceptance
 
 - **Fake transport** grows folders/`LIST`, `SEARCH SINCE`, `STORE`,
-  `APPEND`, `CONDSTORE`, and a Gmail label-model mode (`X-GM-MSGID`,
-  All-Mail-membership semantics). Scenario suite: initial windowed sync;
+  `APPEND`, `CONDSTORE`/`QRESYNC`, and a Gmail label-model mode
+  (`X-GM-MSGID`, All-Mail-membership semantics). Scenario suite:
+  **deletion on every capability path** (QRESYNC `VANISHED`;
+  CONDSTORE-without-QRESYNC via full UID enumeration — expunged message
+  removed locally, failed/truncated enumeration removes nothing);
+  initial windowed sync;
   incremental pass; ops move → server move (incl. `U=` rename and local
   relocation after proven success); **multi-folder membership** (same
   message in INBOX + a label folder: two occurrences, one view);
