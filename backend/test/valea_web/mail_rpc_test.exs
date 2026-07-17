@@ -827,30 +827,163 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
-  describe "push_draft_to_mailbox (stub)" do
-    test "returns not_implemented", %{generation: generation} do
+  describe "push_draft_to_mailbox (wired to the engine)" do
+    # The end-to-end claim→spool→APPEND→pushed path is exercised against
+    # `ModelMailTransport` in `Valea.Mail.OpsExecutorTest`/`EngineTest`; here we
+    # prove the RPC is WIRED to `Engine.push_draft/3` (no longer the
+    # `not_implemented` stub) and threads its gate/validation failures back as
+    # the frozen `state` action's errors.
+    test "an activated-but-uncredentialed account surfaces no_credential", %{
+      generation: generation
+    } do
       setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "push_draft_to_mailbox",
                  %{
                    "account" => "mara",
-                   "draftName" => "reply-to-priya",
+                   "draftName" => "reply.md",
                    "contentHash" => "deadbeef",
                    "generation" => generation
                  },
                  ["state"]
                )
 
-      assert inspect(errors) =~ "not_implemented"
+      assert inspect(errors) =~ "no_credential"
+    end
+
+    test "a missing draft (credentialed, local-only prepare) surfaces not_found", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      set_credential!("mara", generation)
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "push_draft_to_mailbox",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "nope.md",
+                   "contentHash" => "deadbeef",
+                   "generation" => generation
+                 },
+                 ["state"]
+               )
+
+      assert inspect(errors) =~ "not_found"
+    end
+
+    test "a draft_name with a path separator is rejected before any I/O", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      set_credential!("mara", generation)
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "push_draft_to_mailbox",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "../evil.md",
+                   "contentHash" => "deadbeef",
+                   "generation" => generation
+                 },
+                 ["state"]
+               )
+
+      assert inspect(errors) =~ "invalid_draft_name"
+    end
+
+    test "a stale generation surfaces workspace_changed", %{generation: generation} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "push_draft_to_mailbox",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "reply.md",
+                   "contentHash" => "deadbeef",
+                   "generation" => generation - 1
+                 },
+                 ["state"]
+               )
+
+      assert inspect(errors) =~ "workspace_changed"
     end
   end
 
-  describe "list_mail_drafts (stub)" do
-    test "returns an empty list" do
+  describe "list_mail_drafts" do
+    test "returns an empty list when no drafts exist" do
       assert %{"success" => true, "data" => %{"drafts" => []}} =
                rpc("list_mail_drafts", %{}, ["drafts"])
+    end
+
+    test "lists an account's drafts with parsed recipients and a ledger-derived state", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+
+      File.write!(Path.join(drafts_dir, "reply.md"), """
+      ---
+      to: [alex@example.com]
+      subject: "Re: Kickoff"
+      status: draft
+      ---
+      Hello Alex.
+      """)
+
+      # An agent-forged pushed status with NO ledger op must render as draft.
+      File.write!(Path.join(drafts_dir, "forged.md"), """
+      ---
+      to: [b@example.com]
+      subject: "Faked"
+      status: pushed
+      ---
+      Body.
+      """)
+
+      # `drafts` is an unconstrained `{:array, :map}` — the raw string-keyed
+      # maps pass through verbatim (same as `mail_status`'s `accounts`).
+      assert %{"success" => true, "data" => %{"drafts" => drafts}} =
+               rpc("list_mail_drafts", %{}, ["drafts"])
+
+      by_name = Map.new(drafts, &{&1["name"], &1})
+
+      assert by_name["reply.md"]["account"] == "mara"
+      assert by_name["reply.md"]["status_display"] == "draft"
+
+      assert by_name["reply.md"]["parsed_recipients"]["to"] == [
+               %{"name" => nil, "email" => "alex@example.com"}
+             ]
+
+      assert by_name["forged.md"]["status_display"] == "draft"
+      assert by_name["forged.md"]["notice"] == "status_forged"
+    end
+
+    test "surfaces a parse error as invalid", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+      File.write!(Path.join(drafts_dir, "bad.md"), "no frontmatter here\n")
+
+      assert %{"success" => true, "data" => %{"drafts" => drafts}} =
+               rpc("list_mail_drafts", %{}, ["drafts"])
+
+      assert [%{"name" => "bad.md", "parsed_recipients" => %{"invalid" => reason}}] = drafts
+      assert is_binary(reason)
     end
   end
 

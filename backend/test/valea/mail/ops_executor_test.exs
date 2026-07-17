@@ -698,4 +698,288 @@ defmodule Valea.Mail.OpsExecutorTest do
       assert ModelMailTransport.messages(name, "INBOX") == []
     end
   end
+
+  # ==========================================================================
+  # Task 15 — Push-to-Drafts (append)
+  # ==========================================================================
+
+  alias Valea.Mail.DraftFile
+  alias Valea.Mail.OpsExecutor
+
+  defp local_ctx(c), do: Map.take(c, [:root, :account, :settings])
+
+  defp drafts_dir(root), do: Path.join([root, "sources", "mail", "mara", "drafts"])
+
+  defp write_draft!(root, name, content) do
+    dir = drafts_dir(root)
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, name), content)
+    content
+  end
+
+  defp draft_body(opts \\ []) do
+    to = Keyword.get(opts, :to, "[alex@example.com]")
+    status = Keyword.get(opts, :status, "draft")
+    extra = Keyword.get(opts, :extra, "")
+
+    """
+    ---
+    to: #{to}
+    subject: "Re: Kickoff"
+    status: #{status}
+    #{extra}
+    ---
+    Hello Alex.
+    """
+  end
+
+  defp spool_eml(root, id),
+    do: Path.join([root, "sources", "mail", "mara", "spool", "#{id}.eml"])
+
+  defp read_draft_status(root, name) do
+    {:ok, %{status: status}} =
+      DraftFile.parse_and_validate(File.read!(Path.join(drafts_dir(root), name)))
+
+    status
+  end
+
+  describe "prepare_push (local claim + snapshot + compose + spool)" do
+    test "claims, spools, transitions pending, and CAS-stamps the draft pushing", %{root: root} do
+      name = start_model!()
+      content = write_draft!(root, "reply.md", draft_body())
+      hash = DraftFile.content_hash(content)
+      c = ctx(name, root)
+
+      assert {:ok, op} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+      assert op.state == "pending"
+      assert File.exists?(spool_eml(root, op.id))
+      assert DraftFile.content_hash(File.read!(spool_eml(root, op.id))) == op.payload_sha256
+
+      # The spool payload is a real MIME with our deterministic push Message-ID.
+      payload = File.read!(spool_eml(root, op.id))
+      assert payload =~ "Message-ID: <valea.push."
+      assert payload =~ "To: alex@example.com"
+
+      # CAS stamped the on-disk draft to pushing (ledger is still authoritative).
+      assert read_draft_status(root, "reply.md") == "pushing"
+    end
+
+    test "a concurrent double-push creates ONE op; the second sees the existing state", %{
+      root: root
+    } do
+      name = start_model!()
+      content = write_draft!(root, "reply.md", draft_body())
+      hash = DraftFile.content_hash(content)
+      lc = local_ctx(ctx(name, root))
+
+      assert {:ok, _op} = OpsExecutor.prepare_push(lc, "reply.md", hash)
+      assert {:duplicate, "pushing"} = OpsExecutor.prepare_push(lc, "reply.md", hash)
+
+      assert [%{kind: "append"}] = Store.pending_ops("mara")
+    end
+
+    test "a content_hash mismatch (draft edited since review) rejects, never composes", %{
+      root: root
+    } do
+      name = start_model!()
+      write_draft!(root, "reply.md", draft_body())
+      stale_hash = DraftFile.content_hash("something the reviewer saw earlier")
+      c = ctx(name, root)
+
+      assert {:error, "content_changed"} =
+               OpsExecutor.prepare_push(local_ctx(c), "reply.md", stale_hash)
+
+      assert [%{state: "rejected"}] = ops_all("drafts/reply.md")
+    end
+
+    test "an agent-forged `status: pushed` with no ledger op rejects status_forged", %{root: root} do
+      name = start_model!()
+      content = write_draft!(root, "reply.md", draft_body(status: "pushed"))
+      hash = DraftFile.content_hash(content)
+      c = ctx(name, root)
+
+      assert {:error, "status_forged"} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+    end
+
+    test "a symlinked draft entry is rejected at the no-follow open, never composed", %{
+      root: root
+    } do
+      name = start_model!()
+      File.mkdir_p!(drafts_dir(root))
+      outside = Path.join(root, "secret.md")
+      File.write!(outside, draft_body())
+      File.ln_s!(outside, Path.join(drafts_dir(root), "reply.md"))
+      hash = DraftFile.content_hash(draft_body())
+      c = ctx(name, root)
+
+      assert {:error, "not_found"} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+      # No op created — the reject happened before the claim.
+      assert ops_all("drafts/reply.md") == []
+    end
+
+    test "an IN-TREE symlink to another draft is rejected at the no-follow open", %{root: root} do
+      name = start_model!()
+      dir = drafts_dir(root)
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "real.md"), draft_body())
+      # A symlink whose target is contained (another draft) must STILL be
+      # refused — the no-follow open runs on the literal `drafts/link.md`.
+      File.ln_s!(Path.join(dir, "real.md"), Path.join(dir, "link.md"))
+      hash = DraftFile.content_hash(draft_body())
+      c = ctx(name, root)
+
+      assert {:error, "not_found"} = OpsExecutor.prepare_push(local_ctx(c), "link.md", hash)
+      assert ops_all("drafts/link.md") == []
+    end
+
+    test "in_reply_to resolves threading headers from the referenced canonical file", %{
+      root: root
+    } do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+      pull!(name, root)
+      referenced = msg_id_in("INBOX")
+
+      content = write_draft!(root, "reply.md", draft_body(extra: "in_reply_to: #{referenced}"))
+      hash = DraftFile.content_hash(content)
+      c = ctx(name, root)
+
+      assert {:ok, op} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+      payload = File.read!(spool_eml(root, op.id))
+      # @raw_a's Message-ID is <alpha@example.com>.
+      assert payload =~ "In-Reply-To: <alpha@example.com>"
+    end
+  end
+
+  describe "execute_append (idempotent APPEND)" do
+    defp prepared!(root, name, opts) do
+      model = Keyword.get(opts, :model)
+      ModelMailTransport.put_folder(model, "Drafts")
+      content = write_draft!(root, name, draft_body())
+      hash = DraftFile.content_hash(content)
+      c = ctx(model, root)
+      {:ok, op} = OpsExecutor.prepare_push(local_ctx(c), name, hash)
+      {c, op}
+    end
+
+    test "appends once, completes, cleans the spool, and stamps the draft pushed", %{root: root} do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      assert :ok = OpsExecutor.execute_append(c, op.id)
+
+      assert [msg] = ModelMailTransport.messages(name, "Drafts")
+      assert msg.raw =~ "Message-ID: <valea.push."
+      assert "\\Draft" in msg.flags
+
+      assert {:ok, %{state: "complete"}} = Store.op_by_id(op.id)
+      refute File.exists?(spool_eml(root, op.id))
+      assert read_draft_status(root, "reply.md") == "pushed"
+    end
+
+    test "search-first: a lost APPEND response completes without a duplicate", %{root: root} do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      # The APPEND reaches the server (message lands) but the response is lost.
+      ModelMailTransport.inject(name, {:lost_response, :append})
+
+      assert :ok = OpsExecutor.execute_append(c, op.id)
+      # Exactly one message in Drafts — reconciliation found it, never re-APPENDed.
+      assert length(ModelMailTransport.messages(name, "Drafts")) == 1
+      assert {:ok, %{state: "complete"}} = Store.op_by_id(op.id)
+    end
+
+    test "a definite refusal reverts the draft to draft and rejects the op", %{root: root} do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      ModelMailTransport.inject(name, {:fail, :append, :mailbox_full})
+
+      assert {:rejected, "append_refused"} = OpsExecutor.execute_append(c, op.id)
+      assert ModelMailTransport.messages(name, "Drafts") == []
+      assert {:ok, %{state: "rejected"}} = Store.op_by_id(op.id)
+      # CAS reverted the pushing stamp back to draft.
+      assert read_draft_status(root, "reply.md") == "draft"
+    end
+
+    test "a spool payload tamper parks the op in needs_review, never appends", %{root: root} do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      File.write!(spool_eml(root, op.id), "tampered bytes that don't match the recorded hash")
+
+      assert {:needs_review, "payload_hash_mismatch"} = OpsExecutor.execute_append(c, op.id)
+      assert ModelMailTransport.messages(name, "Drafts") == []
+      assert {:ok, %{state: "needs_review"}} = Store.op_by_id(op.id)
+    end
+
+    test "an appended draft filed out of Drafts before reconciliation is found by the widened search",
+         %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_folder(name, "Archive")
+      ModelMailTransport.put_folder(name, "Drafts")
+      # Pull so Archive is a KNOWN folder the widened search will examine.
+      pull!(name, root)
+
+      content = write_draft!(root, "reply.md", draft_body())
+      hash = DraftFile.content_hash(content)
+      c = ctx(name, root)
+      {:ok, op} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+
+      # Simulate: the APPEND landed, but a client moved it out of Drafts into
+      # Archive before we reconciled, and the op is left `executing`.
+      payload = File.read!(spool_eml(root, op.id))
+      ModelMailTransport.put_message(name, "Archive", payload)
+      Store.transition_op(op.id, "executing")
+
+      assert :ok = OpsExecutor.execute_append(c, op.id)
+      assert {:ok, %{state: "complete"}} = Store.op_by_id(op.id)
+      # No duplicate landed in Drafts.
+      assert ModelMailTransport.messages(name, "Drafts") == []
+    end
+  end
+
+  describe "recover appends" do
+    test "a claimed append with no spool is provably un-transmitted → rejected", %{root: root} do
+      name = start_model!()
+      content = write_draft!(root, "reply.md", draft_body())
+      hash = DraftFile.content_hash(content)
+
+      {:ok, op} =
+        Store.create_pending_op(%{
+          kind: "append",
+          account: "mara",
+          origin: "drafts/reply.md",
+          target_folder: "Drafts",
+          message_id: Valea.Mail.DraftMime.push_message_id("mara", "reply.md", hash),
+          msg_id: "reply.md",
+          state: "claimed"
+        })
+
+      c = ctx(name, root)
+      OpsExecutor.recover(c)
+
+      assert {:ok, %{state: "rejected"}} = Store.op_by_id(op.id)
+      assert Store.pending_ops("mara") == []
+    end
+
+    test "a pending append is executed fresh on recover", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "Drafts")
+      content = write_draft!(root, "reply.md", draft_body())
+      hash = DraftFile.content_hash(content)
+      c = ctx(name, root)
+      {:ok, _op} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+
+      OpsExecutor.recover(c)
+
+      assert length(ModelMailTransport.messages(name, "Drafts")) == 1
+      assert Store.pending_ops("mara") == []
+    end
+  end
+
+  defp ops_all(origin), do: Store.ops_by_origin("mara", origin)
 end

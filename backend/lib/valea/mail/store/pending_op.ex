@@ -64,7 +64,16 @@ defmodule Valea.Mail.Store.PendingOp do
     end
 
     update :transition do
-      accept [:state, :error, :uid, :dest_watermark, :dest_uidvalidity, :updated_at]
+      accept [
+        :state,
+        :error,
+        :uid,
+        :dest_watermark,
+        :dest_uidvalidity,
+        :spool_path,
+        :payload_sha256,
+        :updated_at
+      ]
     end
   end
 

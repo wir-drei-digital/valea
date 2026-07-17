@@ -281,6 +281,37 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  @doc """
+  Pushes a reviewed draft to the account's Drafts folder — the ONE
+  user-initiated outbound action (spec §Drafting & push; THERE IS NO SMTP).
+  The atomic claim + hash-verified snapshot + compose + fsynced spool run
+  synchronously in the Engine loop (all local, no network) — so a concurrent
+  double-push sees the first op instead of creating a second — and only the
+  idempotent APPEND rides the Engine's single serialized work slot, exactly
+  like a sync pass or an ops batch (never a second concurrent connection).
+  Returns `{:ok, display_state}` (`"pushing"` | `"pushed"` | `"needs_review"`
+  | `"rejected"`); `{:error, reason}` on a gate failure or a pre-append
+  rejection (`content_changed`, `status_forged`, `invalid_draft`,
+  `not_found`, `invalid_draft_name`). `{:error, :not_found}` when no Engine
+  is running for `slug`.
+  """
+  @spec push_draft(String.t(), String.t(), String.t()) ::
+          {:ok, String.t()}
+          | {:error,
+             :inactive
+             | :not_configured
+             | :no_credential
+             | :blocked
+             | :not_found
+             | String.t()}
+  def push_draft(slug, draft_name, content_hash)
+      when is_binary(slug) and is_binary(draft_name) and is_binary(content_hash) do
+    case whereis(slug) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:push_draft, draft_name, content_hash}, 60_000)
+    end
+  end
+
   defp whereis(slug), do: GenServer.whereis(via(slug))
 
   defp slugs_and_pids do
@@ -380,6 +411,38 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  # Push-to-Drafts (spec §Drafting & push). The LOCAL claim+snapshot+compose+
+  # spool runs synchronously here (handle_call is serial, so a concurrent
+  # second push sees the first's claim → `:duplicate`); only the network
+  # APPEND is deferred to the serialized work slot (own Task, or QUEUED behind
+  # in-flight work), its reply deferred until the append resolves. Gated like
+  # `sync_now`.
+  def handle_call({:push_draft, draft_name, content_hash}, from, state) do
+    case validate_sync(state) do
+      :ok ->
+        local_ctx = %{root: state.root, account: state.account, settings: state.settings}
+
+        case OpsExecutor.prepare_push(local_ctx, draft_name, content_hash) do
+          {:ok, op_row} ->
+            if busy?(state) do
+              entry = %{from: from, push: {op_row.id, draft_name}}
+              {:noreply, %{state | ops_queue: state.ops_queue ++ [entry]}}
+            else
+              {:noreply, start_push_task(state, from, op_row.id, draft_name)}
+            end
+
+          {:duplicate, display} ->
+            {:reply, {:ok, display}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
   def handle_call(:readopt, _from, %{status: "mailbox_replaced"} = state) do
     :ok = Account.authorize_readopt!(state.root, state.account)
     new_state = %{state | status: "idle"} |> schedule_poll()
@@ -454,9 +517,33 @@ defmodule Valea.Mail.Engine do
     {:noreply, %{state | ops_current: nil} |> drain_ops()}
   end
 
+  # A push Task reported its final display state: flush the pending :DOWN,
+  # reply to the deferred caller, then start the next queued work (if any).
+  def handle_info(
+        {:push_result, pid, display},
+        %{ops_current: %{task: {pid, ref}, from: from, push: _push}} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+    GenServer.reply(from, {:ok, display})
+    {:noreply, %{state | ops_current: nil} |> drain_ops()}
+  end
+
+  # The push Task died before reporting (its own core rescues, so this is an
+  # unexpected raise/exit or a teardown kill). The op is durable — a `pending`
+  # spool survives, reconciled by the next pass — so reply `"pushing"` rather
+  # than hang the caller, then drain.
+  def handle_info(
+        {:DOWN, ref, :process, pid, _reason},
+        %{ops_current: %{task: {pid, ref}, from: from, push: _push}} = state
+      ) do
+    GenServer.reply(from, {:ok, "pushing"})
+    {:noreply, %{state | ops_current: nil} |> drain_ops()}
+  end
+
   # Stale task chatter (already handled/superseded): ignore.
   def handle_info({:sync_result, _pid, _result}, state), do: {:noreply, state}
   def handle_info({:ops_result, _pid, _results}, state), do: {:noreply, state}
+  def handle_info({:push_result, _pid, _display}, state), do: {:noreply, state}
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
   # A LINKED sync task exited (normal completion or crash). Because the
@@ -494,10 +581,33 @@ defmodule Valea.Mail.Engine do
     %{state | ops_current: %{task: task, from: from, ops: ops}}
   end
 
-  # After a pass or an ops batch finishes: if nothing is in flight and callers
-  # are queued, start the next one. Re-validates each queued caller at drain
-  # time (the account may have become blocked meanwhile) — a caller that no
-  # longer passes the gate is replied with the error and skipped.
+  # Starts the NETWORK half of a push (the idempotent APPEND) in the same
+  # LINKED + monitored Task lifecycle as an ops batch — the local claim/spool
+  # already ran in the Engine loop, so this only connects and runs
+  # `OpsExecutor.execute_append/2` for the already-`pending` op.
+  defp start_push_task(state, from, op_id, draft_name) do
+    parent = self()
+
+    args = %{
+      root: state.root,
+      account: state.account,
+      settings: state.settings,
+      transport: state.transport,
+      connect_opts: state.connect_opts,
+      credential: state.credential
+    }
+
+    task =
+      spawn_linked_task(fn -> send(parent, {:push_result, self(), run_push(args, op_id)}) end)
+
+    %{state | ops_current: %{task: task, from: from, push: {op_id, draft_name}}}
+  end
+
+  # After a pass / ops batch / push finishes: if nothing is in flight and
+  # callers are queued, start the next one. Re-validates each queued caller at
+  # drain time (the account may have become blocked meanwhile) — an ops caller
+  # that no longer passes the gate is replied the error; a push caller (its op
+  # already durable as `pending`) is replied `"pushing"` and reconciled later.
   defp drain_ops(state) do
     cond do
       busy?(state) ->
@@ -507,19 +617,70 @@ defmodule Valea.Mail.Engine do
         state
 
       true ->
-        [%{from: from, ops: ops} | rest] = state.ops_queue
-        state = %{state | ops_queue: rest}
-
-        case validate_sync(state) do
-          :ok ->
-            start_ops_task(state, from, ops)
-
-          {:error, _reason} = error ->
-            GenServer.reply(from, error)
-            drain_ops(state)
-        end
+        [entry | rest] = state.ops_queue
+        drain_entry(%{state | ops_queue: rest}, entry)
     end
   end
+
+  defp drain_entry(state, %{from: from, ops: ops}) do
+    case validate_sync(state) do
+      :ok ->
+        start_ops_task(state, from, ops)
+
+      {:error, _reason} = error ->
+        GenServer.reply(from, error)
+        drain_ops(state)
+    end
+  end
+
+  defp drain_entry(state, %{from: from, push: {op_id, draft_name}}) do
+    case validate_sync(state) do
+      :ok ->
+        start_push_task(state, from, op_id, draft_name)
+
+      {:error, _reason} ->
+        GenServer.reply(from, {:ok, "pushing"})
+        drain_ops(state)
+    end
+  end
+
+  # Connects and runs the idempotent APPEND for the already-`pending` push op,
+  # returning its final display state. A connect failure leaves the durable
+  # `pending` op for the next pass — reply `"pushing"`. Runs INSIDE the push
+  # Task, never in the Engine loop.
+  defp run_push(args, op_id) do
+    case args.transport.connect(
+           args.settings.imap,
+           resolve_secret(args.credential),
+           args.connect_opts
+         ) do
+      {:ok, conn} ->
+        try do
+          ctx = %{
+            root: args.root,
+            account: args.account,
+            settings: args.settings,
+            transport: args.transport,
+            conn: conn
+          }
+
+          push_display(OpsExecutor.execute_append(ctx, op_id))
+        after
+          safe_logout(args.transport, conn)
+        end
+
+      {:error, _reason} ->
+        "pushing"
+    end
+  rescue
+    _ -> "pushing"
+  catch
+    :exit, _ -> "pushing"
+  end
+
+  defp push_display(:ok), do: "pushed"
+  defp push_display({:needs_review, _reason}), do: "needs_review"
+  defp push_display({:rejected, _reason}), do: "rejected"
 
   # Connects, reconciles in-flight ops, then runs the executor's per-op core
   # against the RPC-supplied raw ops. Always returns a per-op results list;

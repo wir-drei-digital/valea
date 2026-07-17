@@ -384,7 +384,15 @@ defmodule Valea.Mail.Store do
       {:ok, op} ->
         attrs =
           extra
-          |> Map.take([:error, :uid, :dest_watermark, :dest_uidvalidity, :updated_at])
+          |> Map.take([
+            :error,
+            :uid,
+            :dest_watermark,
+            :dest_uidvalidity,
+            :spool_path,
+            :payload_sha256,
+            :updated_at
+          ])
           |> Map.put_new(:updated_at, now_iso8601())
           |> Map.put(:state, state)
 
@@ -406,6 +414,22 @@ defmodule Valea.Mail.Store do
     |> Ash.Query.filter(
       account == ^account and state in ["claimed", "pending", "executing", "needs_review"]
     )
+    |> Ash.read!()
+    |> Enum.map(&pending_op_map/1)
+  end
+
+  @doc """
+  Every `mail_pending_ops` row for `(account, origin)`, ANY state — the
+  push flow's corroboration lookup (a non-`draft` frontmatter status is
+  allowed only when a prior engine-written op for this draft exists) and
+  `list_mail_drafts`'s ledger-derived status, both of which must see
+  terminal (`complete`/`rejected`) rows the active-only `pending_ops/1`
+  filters out.
+  """
+  @spec ops_by_origin(String.t(), String.t()) :: [map()]
+  def ops_by_origin(account, origin) do
+    PendingOp
+    |> Ash.Query.filter(account == ^account and origin == ^origin)
     |> Ash.read!()
     |> Enum.map(&pending_op_map/1)
   end

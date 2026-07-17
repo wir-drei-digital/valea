@@ -78,8 +78,10 @@ defmodule Valea.Api.Mail do
 
   alias Valea.Api.Error
   alias Valea.Mail.Account
+  alias Valea.Mail.DraftFile
   alias Valea.Mail.Engine
   alias Valea.Mail.MessageFile
+  alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Reconcile
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
@@ -477,14 +479,24 @@ defmodule Valea.Api.Mail do
       argument :content_hash, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
-      # Task 15 fills this in — declared now, fixed shape, so codegen
-      # churns once.
+      # The ONE user-initiated outbound action (spec §Drafting & push; THERE
+      # IS NO SMTP). Serialized through the account's Engine
+      # (`Engine.push_draft/3`): atomic claim + hash-bound snapshot + compose +
+      # fsynced spool, then the idempotent APPEND. Returns the resulting draft
+      # display state (`pushing`/`pushed`/`needs_review`/`rejected`).
       run fn input, _ctx ->
-        %{account: slug, generation: generation} = input.arguments
+        %{
+          account: slug,
+          draft_name: draft_name,
+          content_hash: content_hash,
+          generation: generation
+        } = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             :ok <- validate_slug(slug) do
-          {:error, error_for(:not_implemented)}
+             {:ok, _ws} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             {:ok, state} <- Engine.push_draft(slug, draft_name, content_hash) do
+          {:ok, %{"state" => state}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -494,10 +506,13 @@ defmodule Valea.Api.Mail do
     action :list_mail_drafts, :map do
       constraints fields: [drafts: [type: {:array, :map}, allow_nil?: false]]
 
-      # Task 15 fills this in.
+      # Every account's drafts with their LEDGER-derived display state (never
+      # the frontmatter's — an agent-forged `status: pushed` with no ledger op
+      # renders `draft` with a `status_forged` notice) and their parsed
+      # recipients (parse errors surface as `invalid`).
       run fn _input, _ctx ->
-        with {:ok, _ws} <- Manager.current() do
-          {:ok, %{drafts: []}}
+        with {:ok, %{path: root}} <- Manager.current() do
+          {:ok, %{drafts: list_all_drafts(root)}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -525,6 +540,11 @@ defmodule Valea.Api.Mail do
   def error_for(:outside), do: Error.new("not_found")
   def error_for(:invalid), do: Error.new("not_found")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
+  # `push_draft_to_mailbox` (via `Engine.push_draft/3`) surfaces its
+  # per-draft rejection reasons as ready-made string codes
+  # (`"content_changed"`, `"status_forged"`, `"invalid_draft_name"`,
+  # `"not_found"`, ...) — pass them through verbatim, never `inspect`-quoted.
+  def error_for(reason) when is_binary(reason), do: Error.new(reason)
   def error_for(reason), do: Error.new(inspect(reason))
 
   # -- slug / confirmation guards ----------------------------------------------
@@ -633,4 +653,96 @@ defmodule Valea.Api.Mail do
     |> Store.occurrences(folder)
     |> Enum.count(&(&1.msg_id != "__oversize__"))
   end
+
+  # -- list_mail_drafts ---------------------------------------------------------
+
+  # Every configured account's `drafts/*.md`, sorted by (account, name). A
+  # scan/read failure on any single account or file never aborts the list.
+  defp list_all_drafts(root) do
+    root
+    |> valid_account_slugs()
+    |> Enum.flat_map(&account_drafts(root, &1))
+    |> Enum.sort_by(&{&1["account"], &1["name"]})
+  end
+
+  defp valid_account_slugs(root) do
+    case Settings.load(root) do
+      {:ok, %{accounts: accounts}} -> accounts |> Map.keys() |> Enum.sort()
+      _other -> []
+    end
+  end
+
+  defp account_drafts(root, account) do
+    dir = Path.join([root, "sources", "mail", account, "drafts"])
+
+    case File.ls(dir) do
+      {:ok, names} ->
+        names
+        |> Enum.filter(&String.ends_with?(&1, ".md"))
+        |> Enum.map(&draft_entry(root, account, &1))
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp draft_entry(root, account, name) do
+    parsed = read_and_parse_draft(root, account, name)
+    {display, notice} = draft_display(account, name, parsed)
+
+    %{
+      "account" => account,
+      "name" => name,
+      "path" => draft_rel_path(account, name),
+      "status_display" => display,
+      "notice" => notice,
+      "parsed_recipients" => parsed_recipients(parsed)
+    }
+  end
+
+  defp read_and_parse_draft(root, account, name) do
+    path = Path.join([root, "sources", "mail", account, "drafts", name])
+
+    case File.read(path) do
+      {:ok, bytes} -> DraftFile.parse_and_validate(bytes)
+      {:error, _reason} -> {:error, "unreadable"}
+    end
+  end
+
+  # Displayed state derives from the LEDGER, not the frontmatter (spec
+  # §Drafting & push): an active op's state wins; else a completed op reads
+  # `pushed`; else a frontmatter `pushing`/`pushed` with NO ledger op is an
+  # agent forgery → `draft` + a `status_forged` notice.
+  defp draft_display(account, name, parsed) do
+    ops = Store.ops_by_origin(account, "drafts/" <> name)
+    active = Enum.find(ops, &(&1.state in ["claimed", "pending", "executing", "needs_review"]))
+    completed = Enum.find(ops, &(&1.state == "complete"))
+    fm_status = frontmatter_status(parsed)
+
+    cond do
+      active != nil -> {OpsExecutor.op_display(active.state), active.error}
+      completed != nil -> {"pushed", nil}
+      fm_status in ["pushing", "pushed"] -> {"draft", "status_forged"}
+      true -> {fm_status || "draft", nil}
+    end
+  end
+
+  defp frontmatter_status({:ok, %{status: status}}), do: status
+  defp frontmatter_status(_other), do: nil
+
+  defp parsed_recipients({:ok, %{to: to, cc: cc, bcc: bcc, subject: subject}}) do
+    %{
+      "to" => Enum.map(to, &addr_map/1),
+      "cc" => Enum.map(cc, &addr_map/1),
+      "bcc" => Enum.map(bcc, &addr_map/1),
+      "subject" => subject
+    }
+  end
+
+  defp parsed_recipients({:error, reason}), do: %{"invalid" => reason}
+
+  defp addr_map(%{name: name, email: email}), do: %{"name" => name, "email" => email}
+
+  defp draft_rel_path(account, name),
+    do: Path.join(["sources", "mail", account, "drafts", name])
 end

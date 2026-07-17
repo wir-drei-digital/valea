@@ -52,13 +52,21 @@ defmodule Valea.Mail.OpsExecutor do
   binding flag-recovery state sidecars; absent for RPC).
   """
 
+  alias Valea.Mail.DraftFile
+  alias Valea.Mail.DraftMime
   alias Valea.Mail.Maildir
   alias Valea.Mail.MessageFile
+  alias Valea.Mail.Normalizer
   alias Valea.Mail.OpsFile
   alias Valea.Mail.Store
   alias Valea.Mail.Views
+  alias Valea.Paths
 
   @oversize_msg_id "__oversize__"
+
+  # IMAP `\Draft` flag on the appended message (maildir `D`), pull-only —
+  # never STOREd by the executor's flag path, only set at APPEND time.
+  @draft_flags ["\\Draft"]
 
   @type ctx :: %{
           required(:root) => String.t(),
@@ -443,6 +451,525 @@ defmodule Valea.Mail.OpsExecutor do
   end
 
   # ==========================================================================
+  # append (Push-to-Drafts) — prepare (local) + execute (network) + reconcile
+  # ==========================================================================
+  #
+  # THERE IS NO SMTP. The only outbound path is the USER clicking
+  # Push-to-Drafts, which APPENDs the rendered MIME to the account's Drafts
+  # folder. `prepare_push/3` is fully LOCAL (atomic claim + hash-verified
+  # snapshot + compose + fsynced spool) and runs synchronously in the Engine
+  # loop; `execute_append/2` is the network half and rides the Engine's
+  # single serialized work slot exactly like a sync pass. The push is
+  # idempotent by a stable Valea-generated Message-ID: every attempt searches
+  # the Drafts folder for it first, so a lost response never lands a duplicate.
+
+  @doc """
+  LOCAL phase of a push (no connection): validates the draft basename,
+  contains + no-follow-reads the reviewed draft into an immutable buffer,
+  atomically CLAIMS the append op (the partial unique index serializes
+  concurrent pushes — a duplicate returns the existing op's display state),
+  verifies `content_hash` against the buffer, validates the frontmatter,
+  enforces the status anti-forgery rule, composes the RFC822 **from the same
+  buffer's parsed values**, writes the fsynced `spool/<id>.eml` + manifest,
+  and transitions the op `claimed → pending`. `ctx` here is the LOCAL ctx
+  `%{root, account, settings}` (no transport/conn).
+
+    * `{:ok, op_row}` — claimed, spooled, `pending`; ready for
+      `execute_append/2`.
+    * `{:duplicate, display}` — a non-terminal push already exists for this
+      draft; its display state is returned, no second op created.
+    * `{:error, reason}` — a pre-claim failure (bad name, symlink/missing
+      file) or a post-claim rejection (`content_changed`, `status_forged`,
+      `invalid_draft`); a post-claim rejection also terminates the op
+      `rejected`.
+  """
+  @spec prepare_push(map(), String.t(), String.t()) ::
+          {:ok, map()} | {:duplicate, String.t()} | {:error, String.t()}
+  def prepare_push(ctx, draft_name, content_hash)
+      when is_binary(draft_name) and is_binary(content_hash) do
+    origin = draft_origin(draft_name)
+
+    with :ok <- validate_draft_name(draft_name),
+         {:ok, path} <- resolve_draft_path(ctx, draft_name),
+         {:ok, buffer} <- read_draft_nofollow(path) do
+      message_id = DraftMime.push_message_id(ctx.account, draft_name, content_hash)
+
+      case Store.create_pending_op(%{
+             kind: "append",
+             account: ctx.account,
+             origin: origin,
+             target_folder: ctx.settings.folders.drafts,
+             message_id: message_id,
+             msg_id: draft_name,
+             state: "claimed"
+           }) do
+        {:ok, op_row} ->
+          snapshot_and_spool(ctx, op_row, draft_name, content_hash, buffer, path)
+
+        {:error, :duplicate_active} ->
+          {:duplicate, existing_display(ctx.account, origin)}
+      end
+    end
+  end
+
+  # Snapshot-verify → validate → status-corroborate → compose+spool. Every
+  # rejection here terminates the already-claimed op `rejected` (so a fixed
+  # re-push can re-claim) and NEVER stamps the draft (the on-disk file may be
+  # the newer, edited content).
+  defp snapshot_and_spool(ctx, op_row, draft_name, content_hash, buffer, path) do
+    cond do
+      DraftFile.content_hash(buffer) != content_hash ->
+        reject_push(op_row, "content_changed")
+
+      true ->
+        case DraftFile.parse_and_validate(buffer) do
+          {:error, reason} ->
+            reject_push(op_row, "invalid_draft: #{reason}")
+
+          {:ok, parsed} ->
+            case corroborate_status(ctx, op_row, parsed) do
+              :ok ->
+                compose_and_spool(ctx, op_row, draft_name, content_hash, parsed, path)
+
+              {:error, reason} ->
+                reject_push(op_row, reason)
+            end
+        end
+    end
+  end
+
+  # Anti-forgery (spec §Drafting & push): a non-`draft` frontmatter status is
+  # accepted ONLY when a PRIOR ledger op for this draft corroborates it (the
+  # engine wrote it — a re-push of an edited, previously-pushed draft). With
+  # no prior op it is agent-forged → rejected.
+  defp corroborate_status(_ctx, _op_row, %{status: "draft"}), do: :ok
+
+  defp corroborate_status(ctx, op_row, _parsed) do
+    others =
+      ctx.account
+      |> Store.ops_by_origin(op_row.origin)
+      |> Enum.reject(&(&1.id == op_row.id))
+
+    if others == [], do: {:error, "status_forged"}, else: :ok
+  end
+
+  defp compose_and_spool(ctx, op_row, draft_name, content_hash, parsed, path) do
+    {threading, notice} = resolve_threading(ctx, parsed.in_reply_to)
+    from = draft_from(ctx)
+    {:ok, rfc822} = DraftMime.compose(parsed, threading, op_row.message_id, from)
+    payload_sha = sha256_hex(rfc822)
+
+    write_spool_payload!(ctx, op_row.id, rfc822)
+
+    manifest = %{
+      "kind" => "append",
+      "account" => ctx.account,
+      "origin" => op_row.origin,
+      "target_folder" => op_row.target_folder,
+      "message_id" => op_row.message_id,
+      "msg_id" => draft_name,
+      "content_hash" => content_hash,
+      "payload_sha256" => payload_sha,
+      "fingerprint" => MessageFile.fingerprint(rfc822),
+      "spool_path" => spool_payload_rel(op_row.id),
+      "notice" => notice,
+      "transitions" => ["spooled"]
+    }
+
+    write_manifest!(ctx, op_row.id, manifest)
+
+    Store.transition_op(op_row.id, "pending", %{
+      payload_sha256: payload_sha,
+      spool_path: spool_payload_rel(op_row.id)
+    })
+
+    # CAS-stamp `status: pushing` (best-effort courtesy — the LEDGER is
+    # authoritative for the displayed state). Only rewrites when the on-disk
+    # file still hashes to the reviewed snapshot; record the stamped hash so
+    # the terminal `pushed`/`draft` stamp can chain off it.
+    case cas_stamp_draft(path, content_hash, "pushing") do
+      {:ok, pushing_hash} ->
+        write_manifest!(ctx, op_row.id, Map.put(manifest, "pushing_hash", pushing_hash))
+
+      :unchanged ->
+        :ok
+    end
+
+    {:ok, Map.merge(op_row, %{state: "pending", payload_sha256: payload_sha})}
+  end
+
+  @doc """
+  NETWORK phase of a push (needs `ctx.conn`): re-verifies the spool payload
+  hash, issues the idempotent APPEND (search-first by Message-ID), and drives
+  the op to a terminal/parked state, CAS-stamping the draft to match.
+
+    * `:ok` — proven appended (op `complete`, draft `pushed`).
+    * `{:rejected, reason}` — a definite refusal or an un-transmitted claim
+      (op `rejected`, draft reverted to `draft`).
+    * `{:needs_review, reason}` — an unprovable outcome or a spool tamper (op
+      `needs_review`, spool/manifest kept for the next reconcile).
+  """
+  @spec execute_append(ctx(), String.t()) ::
+          :ok | {:needs_review, String.t()} | {:rejected, String.t()}
+  def execute_append(ctx, op_id) when is_binary(op_id) do
+    case Store.op_by_id(op_id) do
+      {:ok, %{state: "complete"}} -> :ok
+      {:ok, %{state: "rejected", error: reason}} -> {:rejected, reason || "rejected"}
+      {:ok, op_row} -> dispatch_append(ctx, op_row)
+      {:error, _} -> {:rejected, "op_gone"}
+    end
+  end
+
+  defp dispatch_append(ctx, op_row) do
+    case op_row.state do
+      "claimed" -> recover_claimed_append(ctx, op_row)
+      "pending" -> fresh_append(ctx, op_row)
+      "executing" -> reconcile_append(ctx, op_row)
+      "needs_review" -> reconcile_append(ctx, op_row)
+      _other -> {:rejected, "unexpected_state"}
+    end
+  end
+
+  # A `pending` append: verify the spool, search Drafts (idempotent), APPEND.
+  defp fresh_append(ctx, op_row) do
+    drafts = drafts_folder(ctx, op_row)
+
+    case load_verified_payload(ctx, op_row) do
+      {:ok, payload} ->
+        if append_present?(ctx, drafts, op_row.message_id) do
+          complete_append(ctx, op_row)
+        else
+          Store.transition_op(op_row.id, "executing")
+          issue_append(ctx, op_row, drafts, payload)
+        end
+
+      {:error, :missing_spool} ->
+        reject_append(ctx, op_row, "spool_missing")
+
+      {:error, :payload_mismatch} ->
+        needs_review_append(op_row, "payload_hash_mismatch")
+    end
+  end
+
+  defp issue_append(ctx, op_row, drafts, payload) do
+    case ctx.transport.append(ctx.conn, drafts, @draft_flags, payload) do
+      {:ok, _result} ->
+        complete_append(ctx, op_row)
+
+      {:error, reason} when reason in [:closed, :timeout] ->
+        # UNKNOWN outcome (lost response): the append MAY have landed and
+        # another client may already have filed it — reconcile (widened),
+        # never a blind re-APPEND.
+        reconcile_append(ctx, op_row)
+
+      {:error, _reason} ->
+        # A definite refusal — nothing landed. Double-check Drafts (a racing
+        # deliver), else reject and revert the draft to `draft`.
+        if append_present?(ctx, drafts, op_row.message_id) do
+          complete_append(ctx, op_row)
+        else
+          reject_append(ctx, op_row, "append_refused")
+        end
+    end
+  end
+
+  # UNKNOWN-outcome reconciliation (also the boot/pass recovery for
+  # `executing`/`needs_review` rows): Drafts search-first, then a widened
+  # all-folder search — exactly one fingerprint-confirmed match completes;
+  # zero/several park in `needs_review`. NEVER a blind re-APPEND.
+  defp reconcile_append(ctx, op_row) do
+    drafts = drafts_folder(ctx, op_row)
+
+    if append_present?(ctx, drafts, op_row.message_id) do
+      complete_append(ctx, op_row)
+    else
+      case widened_confirm(ctx, op_row) do
+        {:ok, _folder, _uid} -> complete_append(ctx, op_row)
+        :none -> needs_review_append(op_row, "append_unproven")
+        :several -> needs_review_append(op_row, "append_ambiguous")
+      end
+    end
+  end
+
+  # A `claimed` append at recovery is provably un-transmitted (no network I/O
+  # happens before `pending` — the spool is written first): terminate
+  # `rejected` and revert the draft for re-review (spec §Drafting & push,
+  # crash orderings).
+  defp recover_claimed_append(ctx, op_row), do: reject_append(ctx, op_row, "spool_missing")
+
+  defp recover_appends(ctx) do
+    ctx.account
+    |> Store.pending_ops()
+    |> Enum.filter(&(&1.kind == "append"))
+    |> Enum.each(&dispatch_append(ctx, &1))
+  end
+
+  # -- append confirmation / search -------------------------------------------
+
+  # Read-only presence check of the target folder for our Valea-generated
+  # Message-ID — the primary idempotency guard (a match, in OUR unique id, is
+  # definitively our draft; no re-APPEND).
+  defp append_present?(ctx, folder, message_id) do
+    case ctx.transport.examine(ctx.conn, folder) do
+      {:ok, _info} -> search_message_id(ctx, message_id) != []
+      {:error, _reason} -> false
+    end
+  end
+
+  # Widened all-folder search for an unknown outcome: a client/server rule may
+  # have filed the new draft outside Drafts. Each Message-ID candidate is
+  # fingerprint-confirmed (so a hostile message reusing the id can't count).
+  defp widened_confirm(ctx, op_row) do
+    fingerprint = (read_manifest(ctx, op_row.id) || %{})["fingerprint"]
+
+    hits =
+      ctx
+      |> all_known_folders(op_row)
+      |> Enum.flat_map(fn folder ->
+        case ctx.transport.examine(ctx.conn, folder) do
+          {:ok, _info} ->
+            uids = search_message_id(ctx, op_row.message_id)
+
+            confirmed =
+              if fingerprint, do: fingerprint_confirm(ctx, uids, fingerprint), else: uids
+
+            Enum.map(confirmed, &{folder, &1})
+
+          {:error, _reason} ->
+            []
+        end
+      end)
+
+    case hits do
+      [{folder, uid}] -> {:ok, folder, uid}
+      [] -> :none
+      _many -> :several
+    end
+  end
+
+  defp all_known_folders(ctx, op_row) do
+    ctx
+    |> known_folders()
+    |> MapSet.put(drafts_folder(ctx, op_row))
+    |> MapSet.to_list()
+  end
+
+  defp search_message_id(ctx, message_id) do
+    if safe_message_id?(message_id),
+      do: search(ctx, "HEADER Message-ID #{message_id}"),
+      else: []
+  end
+
+  # -- append terminal transitions --------------------------------------------
+
+  defp complete_append(ctx, op_row) do
+    Store.transition_op(op_row.id, "complete")
+    cas_stamp_op(ctx, op_row, "pushed")
+    cleanup_append_spool(ctx, op_row.id)
+    :ok
+  end
+
+  defp reject_append(ctx, op_row, reason) do
+    Store.transition_op(op_row.id, "rejected", %{error: reason})
+    cas_stamp_op(ctx, op_row, "draft")
+    cleanup_append_spool(ctx, op_row.id)
+    {:rejected, reason}
+  end
+
+  # Left parked: spool + manifest survive for the next pass to re-prove.
+  defp needs_review_append(op_row, reason) do
+    Store.transition_op(op_row.id, "needs_review", %{error: reason})
+    {:needs_review, reason}
+  end
+
+  defp reject_push(op_row, reason) do
+    Store.transition_op(op_row.id, "rejected", %{error: reason})
+    {:error, reason}
+  end
+
+  # -- append spool / payload -------------------------------------------------
+
+  defp load_verified_payload(ctx, op_row) do
+    case File.read(spool_payload_path(ctx, op_row.id)) do
+      {:ok, payload} ->
+        if is_binary(op_row.payload_sha256) and sha256_hex(payload) == op_row.payload_sha256,
+          do: {:ok, payload},
+          else: {:error, :payload_mismatch}
+
+      {:error, _reason} ->
+        {:error, :missing_spool}
+    end
+  end
+
+  defp write_spool_payload!(ctx, id, bytes) do
+    path = spool_payload_path(ctx, id)
+    File.mkdir_p!(Path.dirname(path))
+    tmp = path <> ".tmp-#{System.unique_integer([:positive])}"
+    File.write!(tmp, bytes)
+    File.open!(tmp, [:read, :binary], fn f -> :file.datasync(f) end)
+    File.rename!(tmp, path)
+  end
+
+  defp cleanup_append_spool(ctx, id) do
+    File.rm(spool_payload_path(ctx, id))
+    cleanup(ctx, id)
+  end
+
+  defp spool_payload_path(ctx, id),
+    do: Path.join([ctx.root, "sources", "mail", ctx.account, "spool", "#{id}.eml"])
+
+  defp spool_payload_rel(id), do: "#{id}.eml"
+
+  # -- draft path / threading / stamp -----------------------------------------
+
+  defp draft_origin(name), do: "drafts/" <> name
+
+  # Validated basename: no separators, no dot-segments, must end `.md` (spec
+  # §RPC surface / Push flow step 1).
+  defp validate_draft_name(name) do
+    cond do
+      not is_binary(name) -> {:error, "invalid_draft_name"}
+      name != Path.basename(name) -> {:error, "invalid_draft_name"}
+      String.contains?(name, ["/", "\\", "\0"]) -> {:error, "invalid_draft_name"}
+      name in [".", ".."] -> {:error, "invalid_draft_name"}
+      String.contains?(name, "..") -> {:error, "invalid_draft_name"}
+      not String.ends_with?(name, ".md") -> {:error, "invalid_draft_name"}
+      true -> :ok
+    end
+  end
+
+  # Containment via `resolve_real` (rejects a symlink escaping the drafts dir),
+  # but the returned path is the LITERAL `drafts/<name>` — NOT `resolve_real`'s
+  # symlink-followed result — so the caller's no-follow `lstat` sees (and
+  # rejects) an IN-TREE symlink too, never the file it points at.
+  defp resolve_draft_path(ctx, name) do
+    drafts_dir = Path.join([ctx.root, "sources", "mail", ctx.account, "drafts"])
+
+    case Paths.resolve_real(name, drafts_dir) do
+      {:ok, _resolved} -> {:ok, Path.join(drafts_dir, name)}
+      {:error, _reason} -> {:error, "not_found"}
+    end
+  end
+
+  # No-follow open (spec §RPC surface): a REGULAR file with a SINGLE link,
+  # read ONCE into an immutable buffer. A symlinked or hard-linked draft entry
+  # (cross-account or arbitrary target) is refused, never composed.
+  defp read_draft_nofollow(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, links: 1, size: size}} -> read_all_bytes(path, size)
+      {:ok, _other} -> {:error, "not_found"}
+      {:error, _reason} -> {:error, "not_found"}
+    end
+  end
+
+  defp read_all_bytes(path, size) do
+    case :file.open(path, [:read, :binary, :raw]) do
+      {:ok, fd} ->
+        result = :file.read(fd, size)
+        :file.close(fd)
+
+        case result do
+          {:ok, bytes} -> {:ok, bytes}
+          :eof -> {:ok, ""}
+          {:error, _reason} -> {:error, "not_found"}
+        end
+
+      {:error, _reason} ->
+        {:error, "not_found"}
+    end
+  end
+
+  # `in_reply_to` msg_id → threading headers from the referenced message's raw
+  # canonical file (a direct win of keeping RFC822). Absent/unmirrored/no
+  # Message-ID → compose without threading, with a panel notice.
+  defp resolve_threading(_ctx, nil), do: {%{in_reply_to: nil, references: []}, nil}
+
+  defp resolve_threading(ctx, msg_id) do
+    ctx.account
+    |> Store.occurrences_by_msg_id(msg_id)
+    |> Enum.reject(&(&1.msg_id == @oversize_msg_id))
+    |> case do
+      [occ | _] -> threading_from_occurrence(ctx, occ)
+      [] -> {%{in_reply_to: nil, references: []}, "referenced message not mirrored"}
+    end
+  end
+
+  defp threading_from_occurrence(ctx, occ) do
+    with {:ok, raw} <- source_raw(ctx, occ.folder, occ),
+         {:ok, %{message_id: mid} = msg} when is_binary(mid) and mid != "" <-
+           Normalizer.normalize(raw) do
+      refs = (msg.references || []) ++ [mid]
+      {%{in_reply_to: mid, references: refs}, nil}
+    else
+      _ -> {%{in_reply_to: nil, references: []}, "referenced message has no usable Message-ID"}
+    end
+  end
+
+  # Atomic compare-and-swap of the on-disk draft's `status:` frontmatter: only
+  # rewrite when the file still hashes to `expected` (unedited since the last
+  # snapshot/stamp) — an edited newer revision is left untouched. Returns the
+  # stamped file's hash for chaining the next stamp.
+  defp cas_stamp_draft(path, expected, status) do
+    with {:ok, current} <- read_draft_nofollow(path),
+         true <- DraftFile.content_hash(current) == expected,
+         {:ok, stamped} <- DraftFile.stamp_status(current, status) do
+      atomic_overwrite!(path, stamped)
+      {:ok, DraftFile.content_hash(stamped)}
+    else
+      _ -> :unchanged
+    end
+  end
+
+  # Stamp using the manifest's recorded snapshot: the `pushing`-stamped hash
+  # when present (so a happy-path terminal stamp chains cleanly), else the
+  # original snapshot hash.
+  defp cas_stamp_op(ctx, op_row, status) do
+    manifest = read_manifest(ctx, op_row.id) || %{}
+    name = manifest["msg_id"] || op_row.msg_id
+    expected = manifest["pushing_hash"] || manifest["content_hash"]
+
+    if is_binary(name) and is_binary(expected) do
+      case resolve_draft_path(ctx, name) do
+        {:ok, path} -> cas_stamp_draft(path, expected, status)
+        {:error, _reason} -> :unchanged
+      end
+    end
+
+    :ok
+  end
+
+  defp atomic_overwrite!(path, bytes) do
+    tmp = path <> ".tmp-#{System.unique_integer([:positive])}"
+    File.write!(tmp, bytes)
+    File.rename!(tmp, path)
+  end
+
+  # -- append helpers ---------------------------------------------------------
+
+  defp drafts_folder(ctx, op_row), do: op_row.target_folder || ctx.settings.folders.drafts
+
+  defp draft_from(ctx), do: ctx.settings.imap.username
+
+  defp existing_display(account, origin) do
+    account
+    |> Store.ops_by_origin(origin)
+    |> Enum.find(&(&1.state in ["claimed", "pending", "executing", "needs_review"]))
+    |> case do
+      %{state: state} -> op_display(state)
+      nil -> "pushing"
+    end
+  end
+
+  @doc "Maps a `mail_pending_ops` state to the user-facing draft display state."
+  @spec op_display(String.t()) :: String.t()
+  def op_display("complete"), do: "pushed"
+  def op_display("needs_review"), do: "needs_review"
+  def op_display("rejected"), do: "rejected"
+  def op_display(_active), do: "pushing"
+
+  defp sha256_hex(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  # ==========================================================================
   # flag STORE (contract 5)
   # ==========================================================================
 
@@ -568,6 +1095,7 @@ defmodule Valea.Mail.OpsExecutor do
   @spec recover(ctx()) :: :ok
   def recover(ctx) do
     recover_moves(ctx)
+    recover_appends(ctx)
     recover_ops_files(ctx)
     :ok
   end

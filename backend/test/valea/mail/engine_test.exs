@@ -881,4 +881,76 @@ defmodule Valea.Mail.EngineTest do
     assert status.credential == "missing"
     assert status.state == "idle"
   end
+
+  # -- Push-to-Drafts serialization (Task 15) ----------------------------------
+
+  defp write_draft!(root, slug, name, body) do
+    dir = Path.join([root, "sources", "mail", slug, "drafts"])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, name), body)
+    body
+  end
+
+  @draft_md """
+  ---
+  to: [alex@example.com]
+  subject: "Re: Kickoff"
+  status: draft
+  ---
+  Hello Alex.
+  """
+
+  test "push_draft claims+spools+APPENDs end-to-end and returns pushed", %{root: root} do
+    slug = "mara"
+    name = :"model_#{System.unique_integer([:positive])}"
+    {:ok, _pid} = ModelMailTransport.start_link(name: name)
+    ModelMailTransport.put_folder(name, "Drafts")
+
+    Application.put_env(:valea, :mail_transport, ModelMailTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+
+    start_engine!(root, 80, slug, connect_opts: [name: name])
+    open(root, 80)
+    :ok = Engine.set_credential(slug, "app-password")
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    hash = Valea.Mail.DraftFile.content_hash(@draft_md)
+
+    assert {:ok, "pushed"} = Engine.push_draft(slug, "reply.md", hash)
+    assert [msg] = ModelMailTransport.messages(name, "Drafts")
+    assert msg.raw =~ "Message-ID: <valea.push."
+  end
+
+  test "push_draft rides the serialized work slot: no second connection while a pass runs", %{
+    root: root
+  } do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    slug = "mara"
+    start_engine!(root, 81, slug)
+    open(root, 81)
+    :ok = Engine.set_credential(slug, "app-password")
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    hash = Valea.Mail.DraftFile.content_hash(@draft_md)
+
+    # A sync pass is hung at connect.
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, pass_pid}
+
+    # push_draft arrives mid-pass: the LOCAL claim/spool runs, but the APPEND
+    # must NOT open a second connection while the pass holds the slot.
+    test_pid = self()
+    spawn(fn -> send(test_pid, {:push_reply, Engine.push_draft(slug, "reply.md", hash)}) end)
+    refute_receive {:connect_called, _concurrent}, 200
+
+    # Release the pass; only THEN does the queued push connect + APPEND.
+    send(pass_pid, {:release, {:error, :done}})
+    assert_receive {:connect_called, push_pid}, 2_000
+    send(push_pid, {:release, {:ok, push_pid}})
+    assert_receive {:push_reply, {:ok, "pushed"}}, 2_000
+  end
 end
