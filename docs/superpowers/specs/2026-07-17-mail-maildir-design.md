@@ -361,7 +361,8 @@ the window.
 - **Threat note — mailbox as untrusted content.** A full mirror puts
   attacker-authored text (every received mail) inside the agent's readable
   surface in opted-in sessions. Mitigations, by construction: mail mounts
-  are opt-in per account and per ICM; writes are ask-gated; the write
+  are opt-in per account and per ICM, and unmounted accounts are
+  **deny-not-ask** (see Mount & containment); writes are ask-gated; the write
   surface cannot delete server mail or send mail; secrets never live under
   `sources/mail`. Prompt-injected cleanup worst case: messages moved to
   wrong folders or flags flipped — visible in status/audit and reversible
@@ -495,6 +496,19 @@ All path decisions go through `Valea.Paths.resolve_real/2` with
 segment-boundary membership, as everywhere — the mail root lives inside the
 workspace, so containment holds trivially, and the permission boundary is
 never weakened.
+
+**Sessions never reach unmounted mail — deny, not ask.** Session reads
+are already confined to declared roots, but a read outside them falls to
+the ask-gate — and one generic-looking approval must not be able to
+expose a whole mailbox. `PermissionPolicy` therefore computes, per
+session, a precedence-taking **read+write deny covering all of
+`sources/mail/`, excepting exactly the accounts whose mounts are in the
+session's scope** (primary, related, or entry-point-included) — the same
+auto-reject pattern as the Spec D ICM-secrets deny, mirrored in
+managedSettings. A session without a given account's mail mount gets
+`reject_once` on its paths, never a prompt. Regression test: a session
+with no mail mount reading `sources/mail/<account>/maildir/...` is
+auto-denied.
 
 Writes into a mail mount are ask-gated like any non-primary mount. The
 first agent write asks once; approval issues the existing session-scoped
@@ -737,6 +751,9 @@ boundary; every failure state has a copyable remedy or a status notice.
   the label postcondition still proves success, no false `needs_review`);
   **agent RPC isolation** (the agent tool surface exposes no RPC
   transport — push/credential/adopt actions unreachable from a session);
+  **unmounted-mail deny** (session without the account's mail mount reads
+  `sources/mail/<account>/...` → auto-denied `reject_once`, no ask; with
+  the mount in scope → normal read);
   **write-through transient confirmation** (excluded destination
   `SELECT`ed read-only, new UID confirmed, folder stays unmirrored);
   **database loss with an in-flight RPC-originated move** → boot
