@@ -239,13 +239,16 @@ breaks the generic confirmation for archive: every message already
 exists in `[Gmail]/All Mail`, so the documented archive gesture
 (`UID MOVE` to All Mail) removes the Inbox label without creating any
 new UID — there is nothing above a watermark to find. The gmail profile
-therefore uses an **explicit, different postcondition**: after the
+therefore uses an **explicit, different postcondition — for every
+gmail-profile move, not only archive** (a destination label can predate
+the op, so the generic new-UID rule can never be relied on): after the
 `UID MOVE` (Gmail advertises native MOVE; the gmail profile refuses the
-`COPY`-fallback ladder), success is proven by **source UID absent from
-the source folder AND All Mail membership confirmed via an `X-GM-MSGID`
-search** in a transient, read-only `SELECT` of All Mail. The local copy
-is not removed before that proof. Live Gmail acceptance must cover
-archive, retries, and lost responses.
+`COPY`-fallback ladder), success is proven by **the source folder no
+longer listing the message's `X-GM-MSGID` AND the destination folder
+listing it** — membership that predates the operation counts — each via
+a transient, read-only `SELECT`. The local copy is not moved or removed
+before that proof. Live Gmail acceptance must cover archive, a move to
+an already-applied label, retries, and lost responses.
 
 Local maildir mutations are *not* a channel:
 
@@ -336,9 +339,13 @@ the window.
 - **Valea cannot send mail.** There is no SMTP anywhere — the Phase 4
   invariant stands. Outbound is exactly one user-initiated action:
   pushing a reviewed draft into the account's own Drafts folder, from
-  which the user sends with their own client. No agent-facing tool, RPC
-  access, or file convention can trigger it; agent-initiated outbound is
-  permanently off the table.
+  which the user sends with their own client. The enforcement is the
+  **RPC trust boundary, stated explicitly**: agent sessions speak ACP
+  only — they have no transport to the RPC channel at all (the same
+  boundary that already protects `set_mail_credential` and `adopt_icm`),
+  and no agent-facing tool or file convention maps to push. A test
+  asserts the agent tool surface contains no RPC access. Agent-initiated
+  outbound is permanently off the table.
 - **Credentials are RAM-only closures** resolved from the OS keychain —
   never on disk, never logged, never in the workspace. One per account
   (IMAP).
@@ -592,7 +599,10 @@ on the next pull.
 
 All mutating actions take `generation` (checked via
 `Manager.check_generation/1`); reads resolve `Manager.current/0` first.
-Account-scoped actions take `account`.
+Account-scoped actions take `account`. The RPC channel is reachable only
+from the Valea UI's authenticated socket — agent sessions have no RPC
+transport (ACP only), which is the enforced boundary making these
+"user-only" actions (see Safety invariants).
 
 - `mail_status()` — all accounts: per-account settings summary, credential
   presence, last pass, backfill progress, pending ops,
@@ -723,6 +733,10 @@ boundary; every failure state has a copyable remedy or a status notice.
   source delete); **Gmail archive** (label-model fake: message pre-exists
   in All Mail, archive proves source-absence + `X-GM-MSGID` membership
   before local removal; lost response → retry converges, no stuck op);
+  **Gmail move to an already-applied label** (no new destination UID →
+  the label postcondition still proves success, no false `needs_review`);
+  **agent RPC isolation** (the agent tool surface exposes no RPC
+  transport — push/credential/adopt actions unreachable from a session);
   **write-through transient confirmation** (excluded destination
   `SELECT`ed read-only, new UID confirmed, folder stays unmirrored);
   **database loss with an in-flight RPC-originated move** → boot
