@@ -79,6 +79,14 @@ sources/mail/<account>/
 
 - `<account>` is a short slug chosen at setup (`personal`, `wirdrei`, …);
   it is the stable key for config, keychain, store rows, and the mount.
+  The slug is **validated everywhere it is used**: it must match
+  `^[a-z0-9][a-z0-9-]{0,31}$` (no separators, dots, escapes, or reserved
+  names), duplicates under casefold/Unicode-normalization equivalence are
+  rejected, and the check runs at `setup_mail_account`, at config load
+  (an invalid slug in hand-edited YAML marks that account
+  `{:invalid, reason}` — nothing activates), before mount creation, and
+  before `purge_mail_account_files`. A slug is never interpolated into a
+  path without having passed this validation.
 - IMAP folders map to **nested plain directories** (agent-browsable), not
   Maildir++ dotted names. A folder-name segment equal to `cur`, `new`, or
   `tmp`, or starting with `.`, is percent-escaped deterministically
@@ -505,10 +513,15 @@ session, a precedence-taking **read+write deny covering all of
 `sources/mail/`, excepting exactly the accounts whose mounts are in the
 session's scope** (primary, related, or entry-point-included) — the same
 auto-reject pattern as the Spec D ICM-secrets deny, mirrored in
-managedSettings. A session without a given account's mail mount gets
-`reject_once` on its paths, never a prompt. Regression test: a session
-with no mail mount reading `sources/mail/<account>/maildir/...` is
-auto-denied.
+managedSettings. Deny matching is **case- and Unicode-normalization-
+insensitive** (the same casefold rule the Spec D review forced on the
+secrets deny — APFS is case-insensitive, so `sources/MAIL/…` is the same
+mailbox and must hit the same deny); so is every mail mount-root and
+engine-owned-subtree comparison in this spec. A session without a given
+account's mail mount gets `reject_once` on its paths, never a prompt.
+Regression tests: a session with no mail mount reading
+`sources/mail/<account>/maildir/...` is auto-denied, including case- and
+normalization-variant spellings.
 
 Writes into a mail mount are ask-gated like any non-primary mount. The
 first agent write asks once; approval issues the existing session-scoped
@@ -752,8 +765,12 @@ boundary; every failure state has a copyable remedy or a status notice.
   **agent RPC isolation** (the agent tool surface exposes no RPC
   transport — push/credential/adopt actions unreachable from a session);
   **unmounted-mail deny** (session without the account's mail mount reads
-  `sources/mail/<account>/...` → auto-denied `reject_once`, no ask; with
+  `sources/mail/<account>/...` → auto-denied `reject_once`, no ask —
+  including `sources/MAIL/...` case/normalization variants; with
   the mount in scope → normal read);
+  **slug validation** (malicious account slugs — `../secrets`, `a/b`,
+  `%2e%2e`, an uppercase duplicate of an existing slug — rejected at the
+  RPC and at config load, nothing activates or purges);
   **write-through transient confirmation** (excluded destination
   `SELECT`ed read-only, new UID confirmed, folder stays unmirrored);
   **database loss with an in-flight RPC-originated move** → boot
