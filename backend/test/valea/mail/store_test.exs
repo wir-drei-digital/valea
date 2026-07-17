@@ -579,69 +579,6 @@ defmodule Valea.Mail.StoreTest do
     end
   end
 
-  describe "legacy bridge: clear_folder/1" do
-    test "wipes sync_state + outcomes but keeps mail_messages intact" do
-      Store.put_sync_state("INBOX", 1, 10)
-      Store.record_outcome("INBOX", 1, :synced)
-
-      Store.upsert_message(%{
-        msg_id: "keep-me",
-        message_id: nil,
-        path: "p",
-        from: %{},
-        subject: "s",
-        date: nil,
-        status: "review",
-        has_attachments: false,
-        uid: 1
-      })
-
-      assert :ok = Store.clear_folder("INBOX")
-
-      assert {:error, :not_found} = Store.get_sync_state("INBOX")
-
-      assert Store.outcomes("INBOX") == %{
-               synced: MapSet.new(),
-               skipped: MapSet.new(),
-               retryable: []
-             }
-
-      assert {:ok, _} = Store.get_message("keep-me")
-    end
-
-    test "does not touch a different folder's sync_state" do
-      Store.put_sync_state("INBOX", 1, 10)
-      Store.put_sync_state("AI/Review", 2, 20)
-
-      Store.clear_folder("INBOX")
-
-      assert {:error, :not_found} = Store.get_sync_state("INBOX")
-      assert {:ok, %{uidvalidity: 2, high_water_uid: 20}} = Store.get_sync_state("AI/Review")
-    end
-  end
-
-  describe "legacy bridge: record_outcome/4 + outcomes/1" do
-    test "synced and skipped land in their own sets, never in retryable" do
-      Store.record_outcome("INBOX", 1, :synced, "msg-1")
-      Store.record_outcome("INBOX", 2, :skipped_oversize, "msg-2")
-      Store.record_outcome("INBOX", 4, :skipped)
-
-      result = Store.outcomes("INBOX")
-      assert result.synced == MapSet.new([1])
-      assert result.skipped == MapSet.new([2, 4])
-      assert result.retryable == []
-    end
-
-    test "retryable drops the uid once attempts reaches 3" do
-      Store.record_outcome("INBOX", 3, :failed)
-      Store.record_outcome("INBOX", 3, :failed)
-      assert Store.outcomes("INBOX").retryable == [3]
-
-      Store.record_outcome("INBOX", 3, :failed)
-      assert Store.outcomes("INBOX").retryable == []
-    end
-  end
-
   describe "legacy bridge: inbox headers" do
     test "put_inbox_header/1 upserts by uid; inbox_headers/0 sorts newest first; prune keeps newest N" do
       for i <- 1..3 do

@@ -32,18 +32,24 @@ defmodule Valea.Mail.Store do
 
   ## TEMP v3-bridge (mail-as-maildir rebuild, Task 3)
 
-  `sync_pass.ex`, `index.ex`, `engine.ex`, `api/mail.ex`, and `cockpit.ex`
-  (rewritten in Tasks 6-10) still call the OLD, pre-occurrence Store API:
+  `index.ex`, `engine.ex`, `api/mail.ex`, and `cockpit.ex` (rewritten in
+  Tasks 9-10) still call the OLD, pre-occurrence Store API:
   `get_sync_state/1`, `put_sync_state/3` (3-arg, no `attrs` map),
-  `clear_folder/1`, `upsert_message/1`, `get_message/1`,
-  `message_by_message_id/1`, `list_messages/0`, `set_message_status/2`,
-  `record_outcome/4`, `outcomes/1`, `put_inbox_header/1`, `inbox_headers/0`,
-  `prune_inbox_headers/1`. Every function below marked `# TEMP v3-bridge`
-  keeps that old surface alive on top of the NEW tables (or, for
-  `record_outcome`/`outcomes`/the inbox-header family, on top of the OLD
-  `mail_uid_outcomes`/`mail_inbox_headers` tables — see
-  `Valea.Mail.Store.UidOutcome`/`InboxHeader`'s moduledocs for why those two
-  tables/resources are kept alive verbatim rather than emulated).
+  `upsert_message/1`, `get_message/1`, `message_by_message_id/1`,
+  `list_messages/0`, `set_message_status/2`, `put_inbox_header/1`,
+  `inbox_headers/0`, `prune_inbox_headers/1`. Every function below marked
+  `# TEMP v3-bridge` keeps that old surface alive on top of the NEW tables
+  (or, for the inbox-header family, on top of the OLD `mail_inbox_headers`
+  table — see `Valea.Mail.Store.InboxHeader`'s moduledoc for why that
+  table/resource is kept alive verbatim rather than emulated).
+
+  Task 7 (the `SyncPass` rewrite) retired the `mail_uid_outcomes` bridge
+  (`record_outcome/4`, `outcomes/1`, `UidOutcome`, and the old
+  single-argument `clear_folder/1` that wiped it): the pull engine no longer
+  tracks per-UID sync outcomes in SQLite (the maildir tree + `mail_uid_map`
+  are the durable record now), and nothing else referenced them. The
+  underlying `mail_uid_outcomes` table's hand-written migration is left in
+  place (orphaned but harmless) — it is not this task's to drop.
 
   The message/sync-state bridge functions operate in a synthetic
   `account: "__legacy__", folder: "__legacy__"` scope on the new
@@ -74,7 +80,6 @@ defmodule Valea.Mail.Store do
   alias Valea.Mail.Store.PendingOp
   alias Valea.Mail.Store.SyncState
   alias Valea.Mail.Store.UidMap
-  alias Valea.Mail.Store.UidOutcome
 
   resources do
     resource SyncState
@@ -82,7 +87,6 @@ defmodule Valea.Mail.Store do
     resource MessageIndex
     resource PendingOp
     # TEMP v3-bridge — see moduledoc.
-    resource UidOutcome
     resource InboxHeader
   end
 
@@ -325,23 +329,6 @@ defmodule Valea.Mail.Store do
 
     MessageIndex
     |> Ash.Query.filter(account == ^account and folder == ^folder)
-    |> Ash.bulk_destroy!(:destroy, %{})
-
-    :ok
-  end
-
-  # TEMP v3-bridge: removed in Task 7/9. Old 1-arg call: wipes sync_state +
-  # outcomes for `folder` (synthetic legacy account), keeps `mail_messages`
-  # rows — the old contract, since the old table had no per-folder
-  # occurrence concept to reset.
-  @spec clear_folder(String.t()) :: :ok
-  def clear_folder(folder) do
-    SyncState
-    |> Ash.Query.filter(account == ^@legacy and folder == ^folder)
-    |> Ash.bulk_destroy!(:destroy, %{})
-
-    UidOutcome
-    |> Ash.Query.filter(folder == ^folder)
     |> Ash.bulk_destroy!(:destroy, %{})
 
     :ok
@@ -607,70 +594,9 @@ defmodule Valea.Mail.Store do
     }
   end
 
-  # -- TEMP v3-bridge: uid outcomes ---------------------------------------------
-  # Removed in Task 7 (SyncPass rewrite) — see `UidOutcome`'s moduledoc.
-  # Unchanged from the v1 Store: kept verbatim rather than emulated.
-
-  # Upserts the outcome of syncing `uid` in `folder`. `attempts` increments
-  # every time `outcome` is `:failed` (or `"failed"`); any other outcome
-  # leaves the counter where it was — a later `:synced`/`:skipped` outcome
-  # simply stops the UID from ever being read as retryable again (see
-  # `outcomes/1`), there is nothing left to count.
-  @doc false
-  @spec record_outcome(String.t(), integer(), atom() | String.t(), String.t() | nil) :: :ok
-  def record_outcome(folder, uid, outcome, msg_id \\ nil) do
-    outcome_str = to_string(outcome)
-
-    existing_attempts =
-      case Ash.get(UidOutcome, %{folder: folder, uid: uid}) do
-        {:ok, %{attempts: attempts}} -> attempts
-        {:error, _} -> 0
-      end
-
-    attempts = if outcome_str == "failed", do: existing_attempts + 1, else: existing_attempts
-
-    UidOutcome
-    |> Ash.Changeset.for_create(:upsert, %{
-      folder: folder,
-      uid: uid,
-      outcome: outcome_str,
-      attempts: attempts,
-      msg_id: msg_id
-    })
-    |> Ash.create!()
-
-    :ok
-  end
-
-  # Partitions every recorded outcome for `folder`. `skipped` covers
-  # `skipped_oversize` — the string the sync pass actually records, so an
-  # oversized message is never re-fetched — as well as plain `skipped`.
-  # `retryable` is every UID last recorded `failed` with fewer than 3
-  # attempts — at 3 it drops out (permanently skipped rather than retried
-  # forever).
-  @doc false
-  @spec outcomes(String.t()) :: %{synced: MapSet.t(), skipped: MapSet.t(), retryable: [integer()]}
-  def outcomes(folder) do
-    UidOutcome
-    |> Ash.Query.filter(folder == ^folder)
-    |> Ash.read!()
-    |> Enum.reduce(%{synced: MapSet.new(), skipped: MapSet.new(), retryable: []}, &add_outcome/2)
-  end
-
-  defp add_outcome(%{outcome: "synced", uid: uid}, acc),
-    do: %{acc | synced: MapSet.put(acc.synced, uid)}
-
-  defp add_outcome(%{outcome: outcome, uid: uid}, acc)
-       when outcome in ["skipped", "skipped_oversize"],
-       do: %{acc | skipped: MapSet.put(acc.skipped, uid)}
-
-  defp add_outcome(%{outcome: "failed", attempts: attempts, uid: uid}, acc) when attempts < 3,
-    do: %{acc | retryable: [uid | acc.retryable]}
-
-  defp add_outcome(_row, acc), do: acc
-
   # -- TEMP v3-bridge: inbox headers --------------------------------------------
-  # Removed in Task 6/7 — see `InboxHeader`'s moduledoc. Unchanged from the
+  # Removed in Task 10 (mail_rpc `mail_inbox` + api/mail.ex + cockpit.ex still
+  # read `inbox_headers/0`) — see `InboxHeader`'s moduledoc. Unchanged from the
   # v1 Store: kept verbatim rather than emulated.
 
   @doc false
