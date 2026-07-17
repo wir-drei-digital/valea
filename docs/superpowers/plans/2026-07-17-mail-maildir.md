@@ -323,6 +323,10 @@ uid_move(conn, uid, dest) :: {:ok, %{dest_uid: pos_integer | nil}} | {:error, te
   # CHANGED return: parse COPYUID (RFC 4315) from the tagged OK of MOVE/COPY; dest_uid nil when absent
 append(conn, folder, flags, rfc822) :: {:ok, %{dest_uid: pos_integer | nil}} | {:error, term}
   # CHANGED return: APPENDUID when UIDPLUS, else nil
+examine(conn, folder) :: {:ok, %{uidvalidity: integer, uidnext: integer | nil, highestmodseq: integer | nil}} | {:error, term}
+  # READ-ONLY selection (IMAP EXAMINE) — required by Task 13 for write-through destination watermarks
+  # and Gmail membership proofs; never alters \Recent or any server state. Implemented in ImapClient,
+  # FakeMailTransport (scripted), and ModelMailTransport (Task 5).
 supports?(conn, cap :: :condstore | :qresync | :move | :uidplus | :gmail) :: boolean()
 ```
 No QRESYNC `SELECT ... (QRESYNC ...)` parameter support in this task — deletion detection uses `VANISHED` only if trivially available; the pull engine's portable path is full enumeration (`uid_search(conn, "ALL")`). QRESYNC fast-resync is an optimization the executor/pull may add later; `supports?/2` already reports it. (Spec compliance: the deletion protocol's authoritative path — complete enumeration with remove-only-on-success — is fully implemented in Task 7; `VANISHED` is the optional fast path.)
@@ -418,7 +422,15 @@ rebuild(root, account) :: {:ok, non_neg_integer}
 
 **Files:**
 - Rewrite: `backend/lib/valea/mail/sync_pass.ex`
-- Test: `backend/test/valea/mail/sync_pass_test.exs` (rewrite, uses `ModelMailTransport`)
+- Create: `backend/lib/valea/mail/reconcile.ex` — **safe stub only** (Task 8 fills it):
+  `folder_reset(_ctx, _folder), do: {:error, :not_implemented}` (SyncPass treats it as "remove nothing,
+  emit a notice, retry next pass"); `detect_replacement/2` implemented FOR REAL here (pure:
+  `:mailbox_replaced` when `"INBOX" in reset_folders or length(reset_folders) * 2 > length(mirrored)`,
+  else `:ok`); `folder_lifecycle(_ctx, _listed), do: {:ok, []}` (no holds yet);
+  `discard_held!(_root, _acct, _folder), do: {:error, :not_held}`
+- Test: `backend/test/valea/mail/sync_pass_test.exs` (rewrite, uses `ModelMailTransport`; reset/lifecycle
+  scenario tests live in Task 8 — this task tests only that a reset folder produces a notice and removes
+  nothing while the stub is in place, plus `detect_replacement` unit cases)
 
 **Interfaces:**
 - Consumes: Tasks 1–6 APIs verbatim.
@@ -444,7 +456,7 @@ rebuild(root, account) :: {:ok, non_neg_integer}
 ### Task 8: `Valea.Mail.Reconcile` — resets, replacement, folder lifecycle
 
 **Files:**
-- Create: `backend/lib/valea/mail/reconcile.ex`
+- Fill: `backend/lib/valea/mail/reconcile.ex` (created as a safe stub in Task 7)
 - Modify: `backend/lib/valea/mail/sync_pass.ex` (wire the real calls)
 - Test: `backend/test/valea/mail/reconcile_test.exs`
 
@@ -588,19 +600,23 @@ validate(op, ctx) :: :ok | {:rejected, String.t()}
   # ctx: %{account:, occurrences_by_msg_id: (msg_id -> [occ]), known_folders: MapSet, write_through: MapSet}
   # move: msg_id resolves to EXACTLY ONE occurrence in `from`; `to` ∈ known_folders ∪ write_through; to != from
   # flag: exactly one occurrence in `folder`; add/remove ⊆ pushable
-claim_next(root, account) :: {:ok, %{opid: String.t(), path: String.t(), original_name: String.t()}} | :none | {:quarantined, String.t()}
+claim_next(root, account) :: {:ok, %{opid: String.t(), bytes: binary(), original_name: String.t()}} | :none | {:quarantined, String.t()}
+  # RETURNS THE BYTES, NOT A PATH: after the rename + re-verify, the file is OPENED no-follow
+  # (`:file.open(path, [:read, :binary, :raw])`), `read_link_info` re-verified (regular, links: 1),
+  # ALL bytes read from that descriptor, then closed. Parsing consumes these bytes — a hardlink
+  # minted into an agent-writable dir after the check cannot swap what the executor sees.
+  # `unresolved/2` replay uses the same open-verify-read helper (`read_claimed!/1`) on done-files.
   # scans ops/pending/ (oldest mtime first); LINK-SAFETY: :file.read_link_info(path) must be
   # {:ok, #file_info{type: :regular, links: 1}} — anything else → move to quarantine/, return {:quarantined, name};
   # claim = File.rename to ops/done/<opid>.yaml where opid = 26-char lowercase base32 of :crypto.strong_rand_bytes(16);
   # destination existence re-checked before rename (File.exists? → regenerate opid; rename overwrite window
-  # acceptable because opid is random and ops/done is engine-owned/agent-write-denied);
-  # after rename, re-verify read_link_info on the CLAIMED path (regular, links: 1) before returning
+  # acceptable because opid is random and ops/done is engine-owned/agent-write-denied)
 write_results!(root, account, opid, original_name, results :: [map]) :: :ok
   # ops/done/<opid>.result.yaml — %{"file" => original_name, "results" => [%{"op" => i, "result" => "ok"|"rejected"|"needs_review", "reason" => _}]}
 unresolved(root, account) :: [%{opid:, path:}]     # done/*.yaml lacking sibling *.result.yaml → boot replay set
 ```
 
-- [ ] **Step 1: Write failing tests**: parse happy/closed-vocabulary rejections (unknown op, `delete` op, flag `T`, extra keys); validate each rule incl. multi-occurrence ambiguity → rejected; claim: regular file claimed under fresh opid + original name preserved; symlink in pending → quarantined, never parsed (create with `File.ln_s`); hard-linked file (`File.ln`) → quarantined; pending file named identically to an existing done file → fresh opid, nothing overwritten; results file round-trip; `unresolved/2` finds claimed-without-result only.
+- [ ] **Step 1: Write failing tests**: parse happy/closed-vocabulary rejections (unknown op, `delete` op, flag `T`, extra keys); validate each rule incl. multi-occurrence ambiguity → rejected; claim: regular file claimed under fresh opid + original name preserved + bytes returned; symlink in pending → quarantined, never parsed (create with `File.ln_s`); hard-linked file (`File.ln`) → quarantined; **post-claim hardlink swap** (claim, then hardlink the done-file into a writable dir and overwrite through the link AFTER claim returns → the returned bytes are the pre-swap content, and `read_claimed!/1` on replay detects links > 1 and refuses with a notice); pending file named identically to an existing done file → fresh opid, nothing overwritten; results file round-trip; `unresolved/2` finds claimed-without-result only.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Green.** **Step 5: Commit** `feat(mail): declared-ops files — closed vocabulary, link-safe opaque claiming`.
 
 ---
@@ -626,8 +642,8 @@ apply_ops(root, account, ops :: [map], origin) :: [result_map]   # shared by ops
 **Execution contract (each = test):**
 1. **Execution-time verification** (every move): `SELECT` source → `uidvalidity == op.source_uidvalidity` else reject-for-revalidation; `uid_fetch_full(uid)` → fingerprint must equal the occurrence's msg_id fingerprint else reject. Only then the ladder.
 2. **Move ladder + confirmation**: `uid_move` → `{:ok, %{dest_uid: n}}` when server supplies COPYUID; else destination confirmation = `uid_search` in dest for `HEADER Message-ID` (when the message has one) else candidate scan `UID <dest_watermark+1>:*` + fingerprint-confirm each candidate (dest UIDVALIDITY changed vs manifest → full-folder fingerprint scan). Exactly one confirmed match → persist dest_uid → THEN relocate the local file (`Maildir` rename into dest dir, new `U=`), update uid_map/index/views. Zero or several → `needs_review`, local file untouched.
-3. **Write-through destination** (`to` ∈ folders.{archive,trash} ∧ excluded): transient SELECT for watermark at enqueue; after confirmation the local occurrence is REMOVED (file + rows + view GC) — message left the mirrored set.
-4. **Gmail profile**: move executes only when `supports?(:move)`; postcondition for EVERY gmail move = source `uid_search("UID <uid>")` empty AND dest (or All Mail for archive) `uid_search("X-GM-MSGID <gm_msgid>")` non-empty (gm_msgid captured at landing into uid_map — add column? NO: fetch at enqueue via `uid_fetch_flags(conn, "<uid>")`). Pre-existing membership counts. Local relocation only after proof; archive-to-All-Mail removes the local occurrence (excluded dest).
+3. **Write-through destination** (`to` ∈ folders.{archive,trash} ∧ excluded): transient `examine/2` (read-only) for watermark + uidvalidity at enqueue; after confirmation the local occurrence is REMOVED (file + rows + view GC) — message left the mirrored set.
+4. **Gmail profile**: move executes only when `supports?(:move)`; postcondition for EVERY gmail move = source `uid_search("UID <uid>")` empty AND dest (or All Mail for archive, via `examine/2` — read-only) `uid_search("X-GM-MSGID <gm_msgid>")` non-empty (gm_msgid captured at landing into uid_map — add column? NO: fetch at enqueue via `uid_fetch_flags(conn, "<uid>")`). Pre-existing membership counts. Local relocation only after proof; archive-to-All-Mail removes the local occurrence (excluded dest).
 5. **Flags**: baseline = uid_map `last_synced_flags` (+ modseq via `uid_fetch_flags` at enqueue when condstore); execute `uid_store_flags(..., unchangedsince: modseq)`; `{:ok, :modified}` → `needs_review` (baseline moved); recovery path: refetch flags — postcondition already present → ok; baseline moved → `needs_review`; untouched → one guarded retry. Flag ops do NOT create ledger rows; their durable record is the claimed ops file (replayed via `recover` reading unresolved claimed files).
 6. **Uncertain results** (`{:lost_response, _}` faults): op stays `executing`; `recover/1` reconciles per contract 2 before any retry; append recovery searches target folder for the Valea Message-ID, and after an unknown outcome widens to ALL known folders — exactly one fingerprint-confirmed match → complete; zero/several → `needs_review`. Never a second APPEND after an unproven unknown outcome.
 7. **Conflict**: op targets a uid the server moved/removed since last pull → verification fails → rejected `"server_changed"` (server wins), notice.
@@ -674,11 +690,17 @@ apply_ops(root, account, ops :: [map], origin) :: [result_map]   # shared by ops
 ```elixir
 # Valea.Mail.DraftFile
 parse_and_validate(bytes :: binary) ::
-  {:ok, %{to: [addr], cc: [addr], bcc: [addr], subject: String.t(), in_reply_to: String.t() | nil, body: String.t()}}
+  {:ok, %{to: [addr], cc: [addr], bcc: [addr], subject: String.t(), in_reply_to: String.t() | nil,
+          status: String.t(), body: String.t()}}
   | {:error, String.t()}
   # addr :: %{name: String.t() | nil, email: String.t()}
   # RULES (each a test): unknown frontmatter fields reject (allowed: to/cc/bcc/subject/in_reply_to/status);
-  # status must be "draft" or absent; ANY CR/LF/NUL inside any field value rejects;
+  # status ∈ "draft" | "pushing" | "pushed" | absent (defaults "draft") — any OTHER value rejects.
+  # The anti-forgery rule is NOT here: the PUSH flow rejects status != "draft" unless a ledger op for
+  # this draft corroborates the stamp (engine wrote it); LISTING parses all three values and derives
+  # the displayed state from the ledger (frontmatter never authoritative). This keeps engine-stamped
+  # drafts parseable and re-pushable after edits.
+  # ANY CR/LF/NUL inside any field value rejects;
   # to/cc/bcc parsed with an RFC 5322 mailbox parser — implement `parse_mailbox/1` (name-addr + addr-spec,
   # quoted display names; reject anything else — no groups, no route addrs); at least one `to`;
   # in_reply_to must match msg_id shape ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+-[0-9a-f]{8,64}$
@@ -694,7 +716,7 @@ push_message_id(account, draft_name, content_hash) :: String.t()
 **Push flow (in `Api.Mail` + engine; each numbered item = test):**
 1. `draft_name` validated basename (no `/`, no `..`, must end `.md`); path derived `sources/mail/<account>/drafts/<name>`; `Paths.resolve_real` under the account's drafts dir; open via `:file.read_link_info` no-follow check (regular, links: 1) then read ONCE into a buffer.
 2. Atomic claim FIRST: `Store.create_pending_op(kind: "append", origin: "drafts/" <> name, state: "claimed", message_id: push_message_id(...))` — `{:error, :duplicate_active}` → return the existing op's state (no second attempt). Serialized through the account Engine (`GenServer.call`).
-3. Snapshot verify: `content_hash` vs buffer → mismatch: op → `rejected`, error `"content_changed"`. Then `DraftFile.parse_and_validate(buffer)` → reject on failure. Threading: `in_reply_to` msg_id → find any occurrence via `Store.occurrences_by_msg_id` → read raw canonical file → extract Message-ID/References for compose; absent → compose without + notice in result.
+3. Snapshot verify: `content_hash` vs buffer → mismatch: op → `rejected`, error `"content_changed"`. Then `DraftFile.parse_and_validate(buffer)` → reject on failure; parsed `status != "draft"` with NO corroborating ledger op for this draft (any state) → reject `"status_forged"`; with a corroborating completed op → allowed (re-push of an edited, previously-pushed draft). Threading: `in_reply_to` msg_id → find any occurrence via `Store.occurrences_by_msg_id` → read raw canonical file → extract Message-ID/References for compose; absent → compose without + notice in result.
 4. Compose from the SAME buffer's validated fields; write `spool/<opid>.eml` + manifest (fsync); record `payload_sha256`; op → `pending`. Draft stamp `status: pushing` via CAS (re-hash file; only rewrite when hash == snapshot; stamped copy derived from the snapshot buffer).
 5. Executor (next engine cycle or inline for the RPC): re-verify spool hash, idempotent APPEND to `folders.drafts` (search-first by push Message-ID), on proven success op → `complete`, draft CAS-stamped `status: pushed`, spool cleaned, audit entry. Refusal → op `rejected`, CAS revert to `status: draft`.
 6. Crash orderings: `claimed` row without spool file at boot → `rejected` + CAS revert (provably un-transmitted); manifest without ledger row → blocked origin until reconciled. Draft edited mid-push → CAS leaves the file, ledger/`list_mail_drafts` reports `pushed_revision_stale: true`.
