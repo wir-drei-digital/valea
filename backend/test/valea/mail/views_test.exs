@@ -101,6 +101,27 @@ defmodule Valea.Mail.ViewsTest do
       assert File.exists?(view_path(root, "account-b", id_b))
     end
 
+    test "a lost fingerprint sidecar with the view still present is NOT treated as unclaimed: land does not overwrite folders/flags, and the sidecar is regenerated",
+         %{root: root} do
+      raw = fixture("plain.eml")
+      {:ok, %{msg_id: msg_id}} = Views.land(root, "mara", raw)
+      :ok = Views.refresh_folders(root, "mara", msg_id, ["INBOX"], "S")
+
+      File.rm!(fingerprint_sidecar(root, "mara", msg_id))
+      refute File.exists?(fingerprint_sidecar(root, "mara", msg_id))
+
+      assert {:ok, %{msg_id: ^msg_id}} = Views.land(root, "mara", raw)
+
+      {:ok, %{frontmatter: fm}} = MessageFile.parse(File.read!(view_path(root, "mara", msg_id)))
+      assert fm["folders"] == ["INBOX"]
+      assert fm["flags"] == "S"
+
+      assert File.exists?(fingerprint_sidecar(root, "mara", msg_id))
+
+      assert File.read!(fingerprint_sidecar(root, "mara", msg_id)) |> String.trim() ==
+               MessageFile.fingerprint(raw)
+    end
+
     test "hash8 collision against a DIFFERENT fingerprint extends the id to 16 hex", %{root: root} do
       raw = fixture("plain.eml")
       {:ok, message} = Normalizer.normalize(raw)

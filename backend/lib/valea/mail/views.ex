@@ -29,6 +29,17 @@ defmodule Valea.Mail.Views do
   `remaining: 0`) — a msg_id can be freely reused for new content once
   every trace of the old content is gone.
 
+  A sidecar can go missing while its view file survives (hand-deleted,
+  interrupted write, a concurrent rebuild's self-heal). `land/4` treats
+  that combination as ALREADY CLAIMED, not unclaimed: it regenerates the
+  sidecar from the incoming bytes' own fingerprint rather than overwriting
+  the view (which would silently wipe out `folders:`/`flags:` set by
+  `refresh_folders/5` since the view was landed). This can't distinguish
+  "lost sidecar for THIS content" from "a genuine different-content
+  collision at this exact msg_id" -- the residual risk is accepted because
+  regenerating the sidecar re-establishes the invariant going forward, and
+  the former case is overwhelmingly the common one.
+
   ## `msg_id_hint`
 
   A caller that already knows which msg_id a raw copy logically belongs to
@@ -65,8 +76,31 @@ defmodule Valea.Mail.Views do
     fingerprint = MessageFile.fingerprint(raw)
     msg_id = resolve_id(root, account, message, raw, fingerprint, Map.get(opts, :msg_id_hint))
 
-    if fingerprint_of(root, account, msg_id) != fingerprint do
-      write_view!(root, account, msg_id, message, fingerprint)
+    case {fingerprint_of(root, account, msg_id), view_ok?(root, account, msg_id)} do
+      {^fingerprint, true} ->
+        # Already landed under this id with this exact content, and the
+        # view file is actually intact (readable + parseable) — no-op.
+        :ok
+
+      {nil, true} ->
+        # The sidecar is gone but the view file survives intact (hand-deleted,
+        # crash mid-write, or `Valea.Mail.Index.rebuild/2`'s raw-fallback
+        # self-heal racing a live land). A missing sidecar alone must NOT
+        # be read as "unclaimed": the view is the source of truth for
+        # occurrence membership (`folders:`/`flags:` set by
+        # `refresh_folders/5` since it was landed) — overwriting it here
+        # would silently wipe that back to `folders: []`. We cannot verify
+        # without the sidecar that this view holds the SAME content as
+        # `raw` (a genuine different-content collision at this exact
+        # msg_id is therefore undetectable on this path, and can't trigger
+        # the 8->16->64 collision-extension) — but regenerating the
+        # sidecar from `raw`'s own fingerprint re-establishes the
+        # invariant going forward, and the common case (a lost sidecar for
+        # THIS content) self-heals correctly.
+        write_fingerprint_sidecar!(root, account, msg_id, fingerprint)
+
+      _no_view_or_different_fingerprint ->
+        write_view!(root, account, msg_id, message, fingerprint)
     end
 
     {:ok, %{msg_id: msg_id, fingerprint: fingerprint, has_attachments: message.attachments != []}}
@@ -124,11 +158,26 @@ defmodule Valea.Mail.Views do
     File.mkdir_p!(Path.dirname(view_path))
     atomic_write!(view_path, bytes)
 
+    write_fingerprint_sidecar!(root, account, msg_id, fingerprint)
+  end
+
+  defp write_fingerprint_sidecar!(root, account, msg_id, fingerprint) do
     fp_path = fingerprint_sidecar_path(root, account, msg_id)
     File.mkdir_p!(Path.dirname(fp_path))
     atomic_write!(fp_path, fingerprint)
-
     :ok
+  end
+
+  # A view is "ok" when it's both present AND actually parseable — a view
+  # file can go missing (see `land/4`'s sidecar-loss handling) or become
+  # corrupt independently of the sidecar (partial write, manual edit gone
+  # wrong); either way `land/4` must not treat it as already-landed, or a
+  # corrupt file would sit there forever with a sidecar vouching for it.
+  defp view_ok?(root, account, msg_id) do
+    case File.read(view_abs_path(root, account, msg_id)) do
+      {:ok, bytes} -> match?({:ok, _}, MessageFile.parse(bytes))
+      {:error, _reason} -> false
+    end
   end
 
   defp write_attachments!(_root, _account, _msg_id, []), do: []

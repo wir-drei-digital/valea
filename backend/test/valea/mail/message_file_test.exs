@@ -374,6 +374,63 @@ defmodule Valea.Mail.MessageFileTest do
                "folders" => "[]"
              }) == {:error, :no_frontmatter}
     end
+
+    test "a folder name ending in a backslash is preserved byte-for-byte, not collapsed" do
+      # Regression: Regex.replace/4 with a STRING replacement reinterprets
+      # `\\` pairs in the replacement text (Perl-style replacement
+      # escaping), so a naive implementation collapses the DOUBLE backslash
+      # yaml_string/1 emits for one trailing `\` down to a SINGLE backslash
+      # — which then escapes the closing quote instead of terminating the
+      # string, corrupting the YAML.
+      msg = %Message{from: %{name: nil, email: "x@example.com"}}
+
+      file_bytes =
+        MessageFile.render(msg, %{
+          msg_id: "2026-01-01-x-deadbeef",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
+          attachments: []
+        })
+
+      folder_with_trailing_backslash = "Weird\\"
+      expected_folders_value = MessageFile.render_string_list([folder_with_trailing_backslash])
+
+      {:ok, patched} =
+        MessageFile.patch_frontmatter(file_bytes, %{"folders" => expected_folders_value})
+
+      assert "folders: #{expected_folders_value}" in String.split(patched, "\n")
+
+      {:ok, %{frontmatter: fm}} = MessageFile.parse(patched)
+      assert fm["folders"] == [folder_with_trailing_backslash]
+    end
+
+    test "a folder name containing a literal \\1 backreference token is preserved byte-for-byte" do
+      # Regression: a STRING replacement also reinterprets `\1` as a regex
+      # capture-group backreference — but `patch_frontmatter/2`'s pattern
+      # has no capture groups, so this either substitutes garbage or raises.
+      msg = %Message{from: %{name: nil, email: "x@example.com"}}
+
+      file_bytes =
+        MessageFile.render(msg, %{
+          msg_id: "2026-01-01-x-deadbeef",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
+          attachments: []
+        })
+
+      folder_with_backref_token = "Path\\1Something"
+      expected_folders_value = MessageFile.render_string_list([folder_with_backref_token])
+
+      {:ok, patched} =
+        MessageFile.patch_frontmatter(file_bytes, %{"folders" => expected_folders_value})
+
+      assert "folders: #{expected_folders_value}" in String.split(patched, "\n")
+
+      {:ok, %{frontmatter: fm}} = MessageFile.parse(patched)
+      assert fm["folders"] == [folder_with_backref_token]
+    end
   end
 
   describe "parse/1" do

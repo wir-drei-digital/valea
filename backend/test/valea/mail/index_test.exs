@@ -145,7 +145,7 @@ defmodule Valea.Mail.IndexTest do
       assert {:ok, %{dir: ^dir2}} = Store.get_sync_state(account, "work")
     end
 
-    test "a missing view still indexes the occurrence with blank metadata; doesn't abort the rest",
+    test "an occurrence whose view was never landed self-heals via raw fallback; doesn't abort the rest",
          %{root: root} do
       account = "mara"
       mroot = maildir_root(root, account)
@@ -159,7 +159,10 @@ defmodule Valea.Mail.IndexTest do
       # A second occurrence whose msg_id has no corresponding
       # views/messages/*.md (never landed, or since GC'd) — the occurrence
       # itself is still real (it undeniably exists on disk) and must still
-      # be indexed, just with blank metadata.
+      # be indexed. The raw-fallback path (Task 6 fix wave, item 3)
+      # recovers its real metadata by re-normalizing these raw bytes
+      # directly (instead of writing a @blank_meta row), and self-heals by
+      # re-landing the view from those same bytes.
       raw2 = fixture("no_message_id.eml")
       {:ok, message2} = Normalizer.normalize(raw2)
       msg_id2 = MessageFile.msg_id(message2, raw2)
@@ -175,9 +178,68 @@ defmodule Valea.Mail.IndexTest do
       assert row1.subject == "Question about leadership coaching"
 
       assert row2.msg_id == msg_id2
-      assert row2.subject == nil
+      assert row2.subject == "Quick question, no ID"
+      assert row2.from_name == "Priya Nair"
+      assert row2.from_email == "priya@example.com"
+      # no_message_id.eml genuinely has no Message-ID header — that stays nil.
       assert row2.message_id == nil
       assert row2.has_attachments == false
+
+      # self-healing: a view now exists for msg_id2 too.
+      assert File.exists?(Path.join(root, Views.view_rel_path(account, msg_id2)))
+    end
+
+    test "the view file for a landed message is deleted: rebuild recovers real metadata AND recreates the view file",
+         %{root: root} do
+      account = "mara"
+      mroot = maildir_root(root, account)
+      inbox_abs = setup_folder!(mroot, "INBOX", "INBOX")
+
+      raw = fixture("plain.eml")
+      {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
+      filename = Maildir.encode_filename(msg_id, 1, MapSet.new(["S"]))
+      Maildir.deliver!(inbox_abs, filename, raw)
+
+      view_file = Path.join(root, Views.view_rel_path(account, msg_id))
+      assert File.exists?(view_file)
+      File.rm!(view_file)
+      refute File.exists?(view_file)
+
+      assert {:ok, 1} = Index.rebuild(root, account)
+
+      assert [row] = Store.list_messages(account, "INBOX")
+      assert row.msg_id == msg_id
+      assert row.subject == "Question about leadership coaching"
+      assert row.from_name == "Priya Nair"
+      assert row.from_email == "priya@example.com"
+      assert row.message_id == "<CAJx1234@mail.example.com>"
+
+      assert File.exists?(view_file)
+      {:ok, %{frontmatter: fm}} = MessageFile.parse(File.read!(view_file))
+      assert fm["folders"] == ["INBOX"]
+    end
+
+    test "an unparseable (corrupt) view file also falls back to raw metadata and self-heals",
+         %{root: root} do
+      account = "mara"
+      mroot = maildir_root(root, account)
+      inbox_abs = setup_folder!(mroot, "INBOX", "INBOX")
+
+      raw = fixture("plain.eml")
+      {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
+      filename = Maildir.encode_filename(msg_id, 1, MapSet.new())
+      Maildir.deliver!(inbox_abs, filename, raw)
+
+      view_file = Path.join(root, Views.view_rel_path(account, msg_id))
+      File.write!(view_file, "not frontmatter at all, no leading ---\n")
+
+      assert {:ok, 1} = Index.rebuild(root, account)
+
+      assert [row] = Store.list_messages(account, "INBOX")
+      assert row.subject == "Question about leadership coaching"
+
+      {:ok, %{frontmatter: fm}} = MessageFile.parse(File.read!(view_file))
+      assert fm["id"] == msg_id
     end
 
     test "an occurrence with no confirmed UID is skipped, logged, and doesn't abort the rest",

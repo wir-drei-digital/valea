@@ -31,22 +31,29 @@ defmodule Valea.Mail.Index do
 
   ## Per-occurrence resilience
 
-  A single bad occurrence (an unparseable/missing view, a malformed
-  maildir filename, any other raise) is skipped and logged, never fatal —
-  the same "one bad message never aborts the mailbox" posture the old
-  flat-file `Index` held. An occurrence's message metadata (message_id,
-  from, subject, date, in_reply_to, references, has_attachments) comes
-  from its shared view (`sources/mail/<account>/views/messages/<msg_id>.md`
-  — already landed by `Valea.Mail.Views.land/4`, never re-derived by
-  re-normalizing raw mail bytes here); a missing/corrupt view still
-  indexes the occurrence (it undeniably exists on disk — dropping it from
-  the index because cosmetic metadata is unavailable would be worse than
-  a row with a few blank fields), just with that metadata blank.
+  A single bad occurrence (a malformed maildir filename, any other raise)
+  is skipped and logged, never fatal — the same "one bad message never
+  aborts the mailbox" posture the old flat-file `Index` held. An
+  occurrence's message metadata (message_id, from, subject, date,
+  in_reply_to, references, has_attachments) comes from its shared view
+  (`sources/mail/<account>/views/messages/<msg_id>.md` — already landed by
+  `Valea.Mail.Views.land/4`) as the fast path, since that view is normally
+  already-parsed and cheaper than re-normalizing raw mail bytes. When the
+  view is missing or unparseable, the raw maildir file this very
+  occurrence was listed from is re-normalized instead (recovering real
+  metadata rather than settling for a blank row) and re-landed through
+  `Views.land/4` + `Views.refresh_folders/5` to self-heal the missing
+  view — so the next read hits the fast path again. A occurrence still
+  indexes even in the (now vanishingly rare) case where the raw bytes
+  themselves are also unreadable, just with blank metadata: it undeniably
+  exists on disk, and dropping it from the index because cosmetic metadata
+  is unavailable would be worse than a row with a few blank fields.
   """
   require Logger
 
   alias Valea.Mail.Maildir
   alias Valea.Mail.MessageFile
+  alias Valea.Mail.Normalizer
   alias Valea.Mail.Store
   alias Valea.Mail.Views
 
@@ -155,7 +162,7 @@ defmodule Valea.Mail.Index do
        }) do
     flags_str = flags |> Enum.sort() |> Enum.join()
     path = Path.join(["sources", "mail", account, "maildir", dir_rel, "cur", filename])
-    meta = view_meta(root, account, msg_id)
+    meta = view_meta(root, account, msg_id, Path.join(root, path), imap_name, flags_str)
 
     Store.put_occurrence(account, imap_name, %{
       uid: uid,
@@ -198,7 +205,7 @@ defmodule Valea.Mail.Index do
       false
   end
 
-  # -- view metadata (never re-normalizes raw mail bytes) ----------------------
+  # -- view metadata (fast path: the shared view; fallback: raw re-normalize) --
 
   @blank_meta %{
     message_id: nil,
@@ -211,7 +218,12 @@ defmodule Valea.Mail.Index do
     references: nil
   }
 
-  defp view_meta(root, account, msg_id) do
+  # The view is the fast path — it's already landed, already parsed once by
+  # `Valea.Mail.Views.land/4`, and normally cheaper than re-normalizing raw
+  # mail bytes. When it's missing or unparseable, `meta_from_raw_fallback/5`
+  # below recovers real metadata (and self-heals the view) rather than
+  # settling for a blank row.
+  defp view_meta(root, account, msg_id, maildir_abs_path, imap_name, flags_str) do
     path = Path.join(root, Views.view_rel_path(account, msg_id))
 
     with {:ok, bytes} <- File.read(path),
@@ -225,6 +237,41 @@ defmodule Valea.Mail.Index do
         has_attachments: (fm["attachments"] || []) != [],
         in_reply_to: fm["in_reply_to"],
         references: references_string(fm["references"])
+      }
+    else
+      _ -> meta_from_raw_fallback(root, account, msg_id, maildir_abs_path, imap_name, flags_str)
+    end
+  end
+
+  # Self-healing raw fallback: a missing/unparseable view means the CACHE
+  # lost the derived metadata, not that the message itself is gone — the
+  # raw maildir file this very occurrence was listed from is still real,
+  # right here on disk. Re-normalizing it recovers real subject/from/etc.
+  # for THIS rebuild (instead of a @blank_meta row), and re-landing through
+  # `Views.land/4` (with `msg_id_hint` pinned to this occurrence's own
+  # msg_id — it was already deterministically derived from these exact
+  # bytes) plus `Views.refresh_folders/5` regenerates the missing view file
+  # so the next read (rebuild or otherwise) hits the fast path again. Falls
+  # back to `@blank_meta` only when the raw bytes themselves can't be read
+  # either (the maildir file is gone too — nothing left to recover from);
+  # any raise here (e.g. a filesystem error landing the view) is caught by
+  # `index_occurrence/5`'s own rescue/catch, same as any other per-occurrence
+  # failure.
+  defp meta_from_raw_fallback(root, account, msg_id, maildir_abs_path, imap_name, flags_str) do
+    with {:ok, raw} <- File.read(maildir_abs_path),
+         {:ok, message} <- Normalizer.normalize(raw) do
+      {:ok, _landed} = Views.land(root, account, raw, %{msg_id_hint: msg_id})
+      :ok = Views.refresh_folders(root, account, msg_id, [imap_name], flags_str)
+
+      %{
+        message_id: message.message_id,
+        from_name: message.from.name,
+        from_email: message.from.email,
+        subject: message.subject,
+        date: normalize_date(message.date),
+        has_attachments: message.attachments != [],
+        in_reply_to: message.in_reply_to,
+        references: references_string(message.references)
       }
     else
       _ -> @blank_meta

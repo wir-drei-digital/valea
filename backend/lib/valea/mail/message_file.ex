@@ -274,7 +274,18 @@ defmodule Valea.Mail.MessageFile do
     with {:ok, block, body} <- split_frontmatter(file_bytes) do
       new_block =
         Enum.reduce(replacements, block, fn {key, value}, acc ->
-          Regex.replace(~r/^#{Regex.escape(key)}:.*$/m, acc, "#{key}: #{value}", global: false)
+          # FUNCTION replacement, never a string one: `Regex.replace/4` with a
+          # STRING replacement reinterprets `\N` as a capture-group
+          # backreference and collapses `\\` pairs to a single `\`
+          # (Perl-style replacement escaping) — silently corrupting any
+          # `yaml_string/1`-escaped value that contains a backslash (e.g. an
+          # IMAP folder name ending in `\` renders its closing `\\"` as a
+          # collapsed `\"`, un-terminating the YAML string). The function
+          # form returns its result verbatim, byte-for-byte, with no
+          # reinterpretation.
+          Regex.replace(~r/^#{Regex.escape(key)}:.*$/m, acc, fn _ -> "#{key}: #{value}" end,
+            global: false
+          )
         end)
 
       {:ok, new_block <> body}
