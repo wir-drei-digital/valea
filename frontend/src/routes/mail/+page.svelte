@@ -29,10 +29,17 @@
   // keychain credential resupply as a side effect (see
   // `MailStore#applyStatus` → `resupplyCredential` in `mail.svelte.ts`) —
   // no separate call needed here.
+  //
+  // `refreshMessages`/`refreshInbox` are account-scoped (Task 10) and default
+  // to `mailStore.status?.account` — AWAITED after `refreshStatus()` here
+  // (not fired in parallel) so that account is actually known by the time
+  // they run, rather than racing the still-unresolved status fetch on a
+  // fresh mount.
   onMount(() => {
-    void mailStore.refreshStatus();
-    void mailStore.refreshMessages();
-    void mailStore.refreshInbox();
+    void mailStore.refreshStatus().then(() => {
+      void mailStore.refreshMessages();
+      void mailStore.refreshInbox();
+    });
   });
 
   const selectedId = $derived(page.url.searchParams.get('message'));
@@ -79,9 +86,18 @@
     loadError = false;
     if (!id) return;
 
+    // `select()` is account-scoped (Task 10) — no account known yet (mail
+    // not configured, or `status` hasn't loaded) means there is nothing to
+    // select against.
+    const account = untrack(() => mailStore.status?.account);
+    if (!account) {
+      loadError = true;
+      return;
+    }
+
     let cancelled = false;
     const before = untrack(() => mailStore.selected);
-    void mailStore.select(id).then(() => {
+    void mailStore.select(account, id).then(() => {
       if (cancelled) return;
       const selected = untrack(() => mailStore.selected);
       if (selected !== before) {
@@ -111,9 +127,12 @@
   const syncBusy = $derived(syncRequesting || mailStore.status?.state === 'syncing');
 
   async function handleSyncNow(): Promise<void> {
+    const account = mailStore.status?.account;
+    if (!account) return;
+
     syncRequesting = true;
     syncRequestError = null;
-    const code = await mailStore.syncNow(workspaceStore.generation ?? 0);
+    const code = await mailStore.syncNow(account, workspaceStore.generation ?? 0);
     syncRequesting = false;
     if (code) syncRequestError = syncNowErrorMessage(code);
   }

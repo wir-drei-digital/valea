@@ -23,16 +23,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// Task 10: the old flat `status` field ("review"/"processed") these two were
+// keyed on is gone (the account-scoped, per-folder occurrence backend has
+// no review-workflow marker of its own yet — see `mail-shapes.ts`'s doc
+// comments on both functions). Every input renders neutral/unprocessed for
+// now; a later task reintroduces a real signal.
 describe('messageDot', () => {
-  it('maps status "review" to act (the accent dot)', () => {
-    expect(messageDot('review')).toBe('act');
-  });
-
-  it('maps status "processed" to neutral', () => {
-    expect(messageDot('processed')).toBe('neutral');
-  });
-
-  it('falls back to neutral for null/undefined/unrecognized status', () => {
+  it('always renders neutral (no review-workflow signal exists yet)', () => {
+    expect(messageDot('S')).toBe('neutral');
     expect(messageDot(null)).toBe('neutral');
     expect(messageDot(undefined)).toBe('neutral');
     expect(messageDot('something_else')).toBe('neutral');
@@ -45,9 +43,8 @@ describe('messageDot', () => {
 });
 
 describe('isProcessed', () => {
-  it('is true only for status "processed"', () => {
-    expect(isProcessed('processed')).toBe(true);
-    expect(isProcessed('review')).toBe(false);
+  it('is always false (no review-workflow signal exists yet)', () => {
+    expect(isProcessed('S')).toBe(false);
     expect(isProcessed(null)).toBe(false);
     expect(isProcessed(undefined)).toBe(false);
   });

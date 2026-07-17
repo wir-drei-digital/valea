@@ -30,48 +30,28 @@ defmodule Valea.Mail.Store do
   conversion, pagination, the ops-ledger claim/transition dance) are small
   pieces of logic, not bare CRUD.
 
-  ## TEMP v3-bridge (mail-as-maildir rebuild, Task 3)
-
-  `api/mail.ex` and `cockpit.ex` (rewritten in Task 10) still call the OLD,
-  pre-occurrence Store API: `get_sync_state/1`, `upsert_message/1`,
-  `get_message/1`, `message_by_message_id/1`, `list_messages/0`,
-  `set_message_status/2`, `put_inbox_header/1`, `inbox_headers/0`,
-  `prune_inbox_headers/1`. Every function below marked `# TEMP v3-bridge`
-  keeps that old surface alive on top of the NEW tables (or, for the
-  inbox-header family, on top of the OLD `mail_inbox_headers` table — see
-  `Valea.Mail.Store.InboxHeader`'s moduledoc for why that table/resource is
-  kept alive verbatim rather than emulated). The 3-arg
-  `put_sync_state(folder, uidvalidity, high_water_uid)` bridge (`index.ex`/
-  `engine.ex`'s old callers) was retired in Task 9 alongside their rewrite.
-
   Task 7 (the `SyncPass` rewrite) retired the `mail_uid_outcomes` bridge
   (`record_outcome/4`, `outcomes/1`, `UidOutcome`, and the old
   single-argument `clear_folder/1` that wiped it): the pull engine no longer
   tracks per-UID sync outcomes in SQLite (the maildir tree + `mail_uid_map`
   are the durable record now), and nothing else referenced them. The
   underlying `mail_uid_outcomes` table's hand-written migration is left in
-  place (orphaned but harmless) — it is not this task's to drop.
-
-  The message/sync-state bridge functions operate in a synthetic
-  `account: "__legacy__", folder: "__legacy__"` scope on the new
-  `mail_messages`/`mail_sync_state` tables (folder is real for sync-state —
-  only `account` is synthetic there) and emulate the old msg_id-keyed
-  upsert semantics (one row per `msg_id`, no per-folder occurrences) by
-  using `msg_id` as a dedupe key within that scope: an `upsert_message/1`
-  whose `msg_id` already has a row under a *different* `uid` deletes the
-  stale occurrence row before inserting the new one (the new schema's
-  primary key is `(account, folder, uid)`, so merely changing `uid` would
-  otherwise leave two rows for the same logical message). The old API's
-  `status` field has no column in the new occurrence schema (occurrence
-  rows don't carry a review workflow status) — it rides along in `flags`,
-  a plain string column with no other purpose at this synthetic scope,
-  round-tripped transparently by `legacy_message_map/1`.
+  place (orphaned but harmless) — it is not this task's to drop. Task 10
+  retired the last of the pre-occurrence bridge surface the same way: the
+  msg_id-keyed message functions (`upsert_message/1`, `get_message/1`,
+  `message_by_message_id/1`, `list_messages/0`, `set_message_status/2`) and
+  the `mail_inbox_headers`-backed inbox-header family (`put_inbox_header/1`,
+  `inbox_headers/0`, `prune_inbox_headers/1`, `Valea.Mail.Store.InboxHeader`)
+  are gone — `api/mail.ex`'s account-scoped `list_mail_messages`/
+  `get_mail_message` and the deleted `mail_inbox` action replaced their only
+  callers. The underlying `mail_inbox_headers` table's migration is
+  likewise left in place (orphaned but harmless), same posture as
+  `mail_uid_outcomes`.
   """
   use Ash.Domain
 
   require Ash.Query
 
-  alias Valea.Mail.Store.InboxHeader
   alias Valea.Mail.Store.MessageIndex
   alias Valea.Mail.Store.PendingOp
   alias Valea.Mail.Store.SyncState
@@ -82,12 +62,7 @@ defmodule Valea.Mail.Store do
     resource UidMap
     resource MessageIndex
     resource PendingOp
-    # TEMP v3-bridge — see moduledoc.
-    resource InboxHeader
   end
-
-  # The synthetic scope every old-API bridge function operates in.
-  @legacy "__legacy__"
 
   # -- sync_state ------------------------------------------------------------
 
@@ -99,12 +74,6 @@ defmodule Valea.Mail.Store do
       {:error, _} -> {:error, :not_found}
     end
   end
-
-  # TEMP v3-bridge: removed in Task 7/9. Old 1-arg call, synthetic account.
-  @spec get_sync_state(String.t()) ::
-          {:ok, %{uidvalidity: integer() | nil, high_water_uid: integer() | nil}}
-          | {:error, :not_found}
-  def get_sync_state(folder), do: get_sync_state(@legacy, folder)
 
   @doc """
   Upserts (a subset of) `(account, folder)`'s sync-state columns — only the
@@ -474,177 +443,4 @@ defmodule Valea.Mail.Store do
   end
 
   defp now_iso8601, do: DateTime.utc_now() |> DateTime.to_iso8601()
-
-  # -- TEMP v3-bridge: legacy msg_id-keyed messages -----------------------------
-  # Removed in Task 6 (Index rewrite)/Task 7 (SyncPass rewrite). See the
-  # moduledoc for the synthetic-scope + status/flags rationale.
-
-  @doc false
-  @spec upsert_message(map()) :: :ok
-  def upsert_message(attrs) do
-    from = attrs[:from] || %{}
-    msg_id = attrs[:msg_id]
-    uid = attrs[:uid] || fallback_uid(msg_id)
-
-    case legacy_row_by_msg_id(msg_id) do
-      {:ok, %{uid: existing_uid}} when existing_uid != uid ->
-        delete_index_row(@legacy, @legacy, existing_uid)
-
-      _ ->
-        :ok
-    end
-
-    upsert_index_row(%{
-      account: @legacy,
-      folder: @legacy,
-      uid: uid,
-      msg_id: msg_id,
-      message_id: attrs[:message_id],
-      path: attrs[:path],
-      from_name: address_field(from, :name),
-      from_email: address_field(from, :email),
-      subject: attrs[:subject],
-      date: normalize_date(attrs[:date]),
-      flags: attrs[:status],
-      has_attachments: !!attrs[:has_attachments]
-    })
-  end
-
-  # A real occurrence's `uid` is never `nil` (it comes straight off the IMAP
-  # server), but the old msg_id-keyed API allowed it (a frontmatter file with
-  # no `uid:` key, or a message that was never assigned one) — and the new
-  # occurrence primary key is `(account, folder, uid)`, so two DIFFERENT
-  # `nil`-uid messages naively falling back to the same literal (e.g. `0`)
-  # would collide and one would silently clobber the other. Derive a
-  # deterministic, msg_id-keyed synthetic uid instead — negative, so it can
-  # never collide with a real (always positive) IMAP `UID` — collision
-  # between two different msg_ids is astronomically unlikely at this
-  # bridge's scale (a single dev workspace) and this whole path is removed
-  # in Task 6/7 regardless.
-  defp fallback_uid(msg_id), do: -(:erlang.phash2(msg_id, 1_000_000_000) + 1)
-
-  defp address_field(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
-
-  defp normalize_date(nil), do: nil
-  defp normalize_date(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp normalize_date(str) when is_binary(str), do: str
-
-  @doc false
-  @spec message_by_message_id(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def message_by_message_id(message_id) do
-    MessageIndex
-    |> Ash.Query.filter(account == ^@legacy and message_id == ^message_id)
-    |> Ash.Query.limit(1)
-    |> Ash.read!()
-    |> case do
-      [row] -> {:ok, legacy_message_map(row)}
-      [] -> {:error, :not_found}
-    end
-  end
-
-  @doc false
-  @spec list_messages() :: [map()]
-  def list_messages do
-    MessageIndex
-    |> Ash.Query.filter(account == ^@legacy and folder == ^@legacy)
-    |> Ash.Query.sort(date: :desc)
-    |> Ash.read!()
-    |> Enum.map(&legacy_message_map/1)
-  end
-
-  @doc false
-  @spec get_message(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get_message(msg_id) do
-    case legacy_row_by_msg_id(msg_id) do
-      {:ok, row} -> {:ok, legacy_message_map(row)}
-      {:error, _} -> {:error, :not_found}
-    end
-  end
-
-  @doc false
-  @spec set_message_status(String.t(), String.t()) :: :ok
-  def set_message_status(msg_id, status) do
-    case legacy_row_by_msg_id(msg_id) do
-      {:ok, row} ->
-        row
-        |> Ash.Changeset.for_update(:set_flags, %{flags: status})
-        |> Ash.update!()
-
-        :ok
-
-      {:error, _} ->
-        :ok
-    end
-  end
-
-  defp legacy_row_by_msg_id(msg_id) do
-    MessageIndex
-    |> Ash.Query.filter(account == ^@legacy and folder == ^@legacy and msg_id == ^msg_id)
-    |> Ash.Query.limit(1)
-    |> Ash.read!()
-    |> case do
-      [row] -> {:ok, row}
-      [] -> {:error, :not_found}
-    end
-  end
-
-  defp legacy_message_map(row) do
-    %{
-      msg_id: row.msg_id,
-      message_id: row.message_id,
-      path: row.path,
-      from_name: row.from_name,
-      from_email: row.from_email,
-      subject: row.subject,
-      date: row.date,
-      status: row.flags,
-      has_attachments: row.has_attachments,
-      uid: row.uid
-    }
-  end
-
-  # -- TEMP v3-bridge: inbox headers --------------------------------------------
-  # Removed in Task 10 (mail_rpc `mail_inbox` + api/mail.ex + cockpit.ex still
-  # read `inbox_headers/0`) — see `InboxHeader`'s moduledoc. Unchanged from the
-  # v1 Store: kept verbatim rather than emulated.
-
-  @doc false
-  @spec put_inbox_header(map()) :: :ok
-  def put_inbox_header(attrs) do
-    InboxHeader
-    |> Ash.Changeset.for_create(:upsert, %{
-      uid: attrs[:uid],
-      from_text: attrs[:from_text],
-      subject: attrs[:subject],
-      date: normalize_date(attrs[:date])
-    })
-    |> Ash.create!()
-
-    :ok
-  end
-
-  # Every `mail_inbox_headers` row, newest `date` first.
-  @doc false
-  @spec inbox_headers() :: [map()]
-  def inbox_headers do
-    InboxHeader
-    |> Ash.Query.sort(date: :desc)
-    |> Ash.read!()
-    |> Enum.map(fn row ->
-      %{uid: row.uid, from_text: row.from_text, subject: row.subject, date: row.date}
-    end)
-  end
-
-  # Drops every `mail_inbox_headers` row past the newest `limit` (by `date`).
-  @doc false
-  @spec prune_inbox_headers(non_neg_integer()) :: :ok
-  def prune_inbox_headers(limit) do
-    InboxHeader
-    |> Ash.Query.sort(date: :desc)
-    |> Ash.read!()
-    |> Enum.drop(limit)
-    |> Enum.each(&Ash.destroy!/1)
-
-    :ok
-  end
 end

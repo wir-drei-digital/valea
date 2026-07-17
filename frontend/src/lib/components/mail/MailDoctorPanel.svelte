@@ -39,7 +39,7 @@
     type MailDoctorCheck
   } from './mail-shapes';
 
-  let { generation }: { generation: number } = $props();
+  let { account, generation }: { account: string; generation: number } = $props();
 
   let checks: MailDoctorCheck[] = $state([]);
   let loading = $state(true);
@@ -53,7 +53,7 @@
   async function run(): Promise<void> {
     loading = true;
     loadFailed = false;
-    const result = await api.mailDoctor(generation);
+    const result = await api.mailDoctor(account, generation);
     if (result.ok) {
       const data = result.data as { ok: boolean; checks: unknown };
       checks = normalizeMailDoctorChecks(data.checks);
@@ -83,6 +83,7 @@
         rerunDoctor: run,
         setBusy: (busy) => (creatingFolders = busy)
       },
+      account,
       generation
     );
   }

@@ -14,10 +14,11 @@ import type { Channel } from 'phoenix';
  * singleton, so a store built with a fake api never has a side effect leak
  * out through the real one.
  */
-type MailApi = Pick<
-  Api,
-  'mailStatus' | 'listMailMessages' | 'mailInbox' | 'getMailMessage' | 'mailSyncNow' | 'setMailCredential'
->;
+type MailApi = Pick<Api, 'mailStatus' | 'listMailMessages' | 'getMailMessage' | 'mailSyncNow' | 'setMailCredential'>;
+
+/** The "AI/Review" folder the review list reads — a fixed, Valea-owned name (mail-as-maildir design spec E). */
+const REVIEW_FOLDER = 'AI/Review';
+const INBOX_FOLDER = 'INBOX';
 
 /** App-facing mail status — camelCased/typed from the raw `MailStatusPush` wire shape. */
 export type MailStatus = {
@@ -46,33 +47,33 @@ export type MailStatus = {
   workspaceId: string | null;
 };
 
-/** One row of `list_mail_messages` — mirrors `listMailMessagesFields` in `api/client.ts`. */
+/**
+ * One row of `list_mail_messages` — mirrors `listMailMessagesFields` in
+ * `api/client.ts`. `status` (the old flat review/processed marker) is gone
+ * — replaced by `flags` (real IMAP flag letters, e.g. `"S"` for Seen) and
+ * `viewPath` (the derived view's workspace-relative path). Reused for BOTH
+ * the "Review" list (`AI/Review` folder) and the "Inbox" list (`INBOX`
+ * folder) — `mail_inbox` (a separate, raw IMAP-header-cache action) is
+ * gone; `MailStore.inbox` below is just another `list_mail_messages` read.
+ */
 export type MailMessageSummary = {
   msgId: string;
   fromName: string | null;
   fromEmail: string | null;
   subject: string | null;
   date: string | null;
-  status: string | null;
+  flags: string | null;
   hasAttachments: boolean;
   uid: number | null;
   path: string | null;
+  viewPath: string;
 };
 
-/** One row of `mail_inbox` — mirrors `mailInboxFields` in `api/client.ts`. */
-export type InboxEntry = {
-  uid: number;
-  fromText: string | null;
-  subject: string | null;
-  date: string | null;
-};
-
-/** `get_mail_message`'s result — the parsed message file plus whether it's inbox-only. */
+/** `get_mail_message`'s result — the parsed message file. `inbox` (whether it was legacy-inbox-only) is gone. */
 export type MailMessageDetail = {
   frontmatter: Record<string, unknown> | null;
   body: string;
   path: string;
-  inbox: boolean;
 };
 
 /**
@@ -114,7 +115,7 @@ export function normalizeMailStatus(raw: MailStatusPush): MailStatus {
 export class MailStore {
   status: MailStatus | null = $state(null);
   messages: MailMessageSummary[] = $state([]);
-  inbox: InboxEntry[] = $state([]);
+  inbox: MailMessageSummary[] = $state([]);
   selected: MailMessageDetail | null = $state(null);
   /**
    * In-flight flag for `select()` (the one async call heavy/slow enough —
@@ -150,42 +151,64 @@ export class MailStore {
     this.#applyStatus(data.status);
   }
 
-  async refreshMessages(): Promise<void> {
-    const result = await this.#api.listMailMessages();
+  /**
+   * Lists the `AI/Review` folder for `account` (defaults to the current
+   * `status.account`, mirroring `resupplyCredential`'s same fallback) — a
+   * no-op that clears `messages` when no account is known yet.
+   */
+  async refreshMessages(account?: string): Promise<void> {
+    const acc = account ?? this.status?.account;
+    if (!acc) {
+      this.messages = [];
+      return;
+    }
+
+    const result = await this.#api.listMailMessages(acc, REVIEW_FOLDER);
     if (!result.ok) return;
 
     const data = result.data as { messages?: MailMessageSummary[] };
     this.messages = data.messages ?? [];
   }
 
-  async refreshInbox(): Promise<void> {
-    const result = await this.#api.mailInbox();
+  /**
+   * Lists the `INBOX` folder for `account` — the replacement for the
+   * deleted `mail_inbox` action (a raw IMAP-header cache read); same
+   * `list_mail_messages` shape as `refreshMessages`, just a different
+   * folder.
+   */
+  async refreshInbox(account?: string): Promise<void> {
+    const acc = account ?? this.status?.account;
+    if (!acc) {
+      this.inbox = [];
+      return;
+    }
+
+    const result = await this.#api.listMailMessages(acc, INBOX_FOLDER);
     if (!result.ok) return;
 
-    const data = result.data as { entries?: InboxEntry[] };
-    this.inbox = data.entries ?? [];
+    const data = result.data as { messages?: MailMessageSummary[] };
+    this.inbox = data.messages ?? [];
   }
 
-  /** Loads one message's full detail (frontmatter + body) by its indexed `msgId`. */
-  async select(msgId: string): Promise<void> {
+  /** Loads one message's full detail (frontmatter + body) for `account` by its indexed `msgId`. */
+  async select(account: string, msgId: string): Promise<void> {
     this.loading = true;
-    const result = await this.#api.getMailMessage(msgId);
+    const result = await this.#api.getMailMessage(account, msgId);
     this.loading = false;
     if (!result.ok) return;
 
-    const data = result.data as { message?: Record<string, any>; inbox: boolean };
+    const data = result.data as { message?: Record<string, any> };
     const message = data.message ?? {};
     this.selected = {
       frontmatter: (message.frontmatter as Record<string, unknown> | undefined) ?? null,
       body: message.body as string,
-      path: message.path as string,
-      inbox: data.inbox
+      path: message.path as string
     };
   }
 
-  /** Kicks off a sync pass. Resolves the error code on failure, `null` on success. */
-  async syncNow(generation: number): Promise<string | null> {
-    const result = await this.#api.mailSyncNow(generation);
+  /** Kicks off a sync pass for `account`. Resolves the error code on failure, `null` on success. */
+  async syncNow(account: string, generation: number): Promise<string | null> {
+    const result = await this.#api.mailSyncNow(account, generation);
     return result.ok ? null : result.error;
   }
 
@@ -323,12 +346,12 @@ export async function resupplyCredential(
 ): Promise<boolean> {
   if (!inDesktop()) return false;
   if (!status.configured || status.credential !== 'missing') return false;
-  if (!status.workspaceId || !status.username) return false;
+  if (!status.workspaceId || !status.username || !status.account) return false;
 
   const secret = await keychainGet(status.workspaceId, status.username);
   if (secret === null) return false;
 
   const generation = workspaceStore.generation ?? 0;
-  const result = await apiOverride.setMailCredential(secret, generation);
+  const result = await apiOverride.setMailCredential(status.account, secret, generation);
   return result.ok;
 }

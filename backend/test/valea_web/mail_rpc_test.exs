@@ -5,9 +5,10 @@ defmodule ValeaWeb.MailRpcTest do
 
   @endpoint ValeaWeb.Endpoint
 
-  alias Valea.Mail.Message
-  alias Valea.Mail.MessageFile
-  alias Valea.Mail.Store
+  alias Valea.Mail.Account
+  alias Valea.Mail.Index
+  alias Valea.Mail.Maildir
+  alias Valea.Mail.Views
   alias Valea.Workspace.Manager
 
   setup do
@@ -20,8 +21,8 @@ defmodule ValeaWeb.MailRpcTest do
     System.put_env("VALEA_APP_DIR", dir)
     Manager.close()
 
-    # The Runtime's Mail.Engine reads this at init, so it must be set before
-    # the workspace opens.
+    # The Runtime's per-account Engines read this at init, so it must be set
+    # before the workspace opens.
     Application.put_env(:valea, :mail_transport, FakeMailTransport)
     {:ok, _} = FakeMailTransport.start_link()
 
@@ -32,10 +33,6 @@ defmodule ValeaWeb.MailRpcTest do
       Application.delete_env(:valea, :mail_transport)
     end)
 
-    # v5, id-based `Manager.create/1` — same fixtures
-    # (`config/mail.yaml`, `sources/mail/messages/...`) ship in
-    # `priv/workspace_template`, so this suite reads the actual returned
-    # `ws.path` rather than pre-computing a deterministic one.
     {:ok, ws} = Manager.create("W")
     %{"data" => %{"generation" => generation}} = rpc("get_workspace", %{})
 
@@ -52,99 +49,133 @@ defmodule ValeaWeb.MailRpcTest do
 
   # -- fixtures ---------------------------------------------------------------
 
-  defp setup_account!(generation, opts \\ []) do
+  defp setup_account!(generation, opts) do
+    account = Keyword.get(opts, :account, "mara")
+    host = Keyword.get(opts, :host, "imap.fastmail.com")
+    port = Keyword.get(opts, :port, 993)
+    username = Keyword.get(opts, :username, "#{account}@example.com")
+
     assert %{"success" => true} =
              rpc(
                "setup_mail_account",
                %{
-                 "account" => "mara@example.com",
-                 "host" => Keyword.get(opts, :host, "imap.fastmail.com"),
-                 "port" => Keyword.get(opts, :port, 993),
-                 "username" => "mara@example.com",
+                 "account" => account,
+                 "host" => host,
+                 "port" => port,
+                 "username" => username,
                  "generation" => generation
                },
                ["saved"]
              )
 
-    :ok
+    account
   end
 
-  defp set_credential!(generation, secret \\ "app-password") do
+  defp set_credential!(account, generation, secret \\ "app-password") do
     assert %{"success" => true} =
              rpc(
                "set_mail_credential",
-               %{"secret" => secret, "generation" => generation},
+               %{"account" => account, "secret" => secret, "generation" => generation},
                ["accepted"]
              )
 
     :ok
   end
 
-  # TEMP v3-bridge test adaptation (Task 6): `MessageFile.render/2`'s meta
-  # shape lost `uid`/`status`/`source` (fingerprint identity + derived
-  # views — see `message_file.ex`'s moduledoc) and the new
-  # `Index.rebuild/1` no longer indexes this flat legacy layout (the real,
-  # account-scoped `rebuild/2` walks `maildir/`, not
-  # `sources/mail/messages/`). `Valea.Api.Mail` itself still reads the OLD
-  # `Store.upsert_message/1`-keyed cache (`get_mail_message`/
-  # `list_mail_messages` — rewritten in Task 10), so this helper writes the
-  # file (for `get_mail_message`'s `File.read` round trip) and seeds that
-  # cache row directly instead of relying on `Index.rebuild/1` to populate
-  # it.
-  defp plant_message(root, suffix, uid) do
-    msg_id = "2026-07-09-priya-#{suffix}"
-    rel = Path.join(["sources", "mail", "messages", "#{msg_id}.md"])
-    abs = Path.join(root, rel)
-    File.mkdir_p!(Path.dirname(abs))
+  # Waits for an account's Engine to leave "inactive" — a fresh
+  # `setup_mail_account` self-activates its Engine asynchronously
+  # (`Valea.Mail.Supervisor`'s "Rehashing" — no `:workspace_opened` broadcast
+  # is coming for a mid-session account), so a request landing immediately
+  # after can otherwise race it.
+  defp await_engine_active!(account) do
+    Enum.reduce_while(1..200, nil, fn _, _ ->
+      case rpc("mail_status", %{}, ["accounts"]) do
+        %{"success" => true, "data" => %{"accounts" => accounts}} ->
+          case Enum.find(accounts, &(&1["account"] == account)) do
+            %{"state" => "inactive"} ->
+              Process.sleep(5)
+              {:cont, nil}
 
-    message = %Message{
-      message_id: "<orig-#{suffix}@mail.example.com>",
-      from: %{name: "Priya Nair", email: "priya@example.com"},
-      subject: "Inquiry",
-      date: ~U[2026-07-09 10:00:00Z],
-      body_text: "Original inquiry body.\n"
-    }
+            %{} = found ->
+              {:halt, found}
 
-    bytes =
-      MessageFile.render(message, %{
-        msg_id: msg_id,
-        account: "mara@example.com",
-        folders: ["INBOX"],
-        flags: "",
-        attachments: []
-      })
+            nil ->
+              Process.sleep(5)
+              {:cont, nil}
+          end
+      end
+    end)
+  end
 
-    File.write!(abs, bytes)
+  defp setup_folder!(maildir_root, dir_name, imap_name) do
+    abs = Path.join(maildir_root, dir_name)
+    Maildir.mailbox_dirs(abs)
+    Maildir.write_folder_identity!(abs, imap_name)
+    abs
+  end
 
-    :ok =
-      Store.upsert_message(%{
-        msg_id: msg_id,
-        message_id: message.message_id,
-        path: rel,
-        from: message.from,
-        subject: message.subject,
-        date: message.date,
-        status: "review",
-        has_attachments: false,
-        uid: uid
-      })
+  defp plant_message!(root, account, folder_abs, uid, date, subject) do
+    raw = """
+    From: Priya Nair <priya@example.com>\r
+    Subject: #{subject}\r
+    Date: #{date}\r
+    Message-ID: <#{System.unique_integer([:positive])}@example.com>\r
+    \r
+    Body of #{subject}.\r
+    """
 
-    %{msg_id: msg_id, rel: rel, abs: abs}
+    {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
+    filename = Maildir.encode_filename(msg_id, uid, MapSet.new())
+    Maildir.deliver!(folder_abs, filename, raw)
+    msg_id
   end
 
   # -- mail_status --------------------------------------------------------------
 
   describe "mail_status" do
-    test "raw status map reflects a freshly opened, not-yet-configured workspace" do
-      assert %{"success" => true, "data" => %{"status" => status}} =
-               rpc("mail_status", %{}, ["status"])
+    test "no accounts configured -> empty accounts list" do
+      assert %{"success" => true, "data" => %{"accounts" => []}} =
+               rpc("mail_status", %{}, ["accounts"])
+    end
 
-      assert status["state"] == "idle"
-      assert status["configured"] == false
-      assert status["credential"] == "missing"
-      assert status["account"] == nil
-      assert status["username"] == nil
-      assert is_binary(status["workspace_id"])
+    test "lists a valid, running account plus an invalid-config entry, sorted by slug", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "zeta")
+      await_engine_active!("zeta")
+
+      # Hand-append a structurally-invalid entry (imap.host missing) straight
+      # into the file — `Settings.upsert_account!/3` always re-renders the
+      # WHOLE file from its valid-only accounts map, so this must happen
+      # AFTER the last `setup_mail_account` call in this test, or it would be
+      # dropped on the next rewrite.
+      path = Path.join(workspace, "config/mail.yaml")
+      doc = File.read!(path)
+
+      broken =
+        String.replace(
+          doc,
+          "safety:",
+          "  alpha:\n    provider: generic\n    imap:\n      username: \"nohost@example.com\"\nsafety:"
+        )
+
+      File.write!(path, broken)
+
+      assert %{"success" => true, "data" => %{"accounts" => accounts}} =
+               rpc("mail_status", %{}, ["accounts"])
+
+      by_account = Map.new(accounts, &{&1["account"], &1})
+
+      assert by_account["zeta"]["valid"] == true
+      assert by_account["zeta"]["state"] in ["inactive", "idle"]
+      assert by_account["zeta"]["credential"] == "missing"
+
+      assert by_account["alpha"]["valid"] == false
+      assert is_binary(by_account["alpha"]["reason"])
+      refute Map.has_key?(by_account["alpha"], "credential")
+
+      assert Enum.map(accounts, & &1["account"]) == Enum.sort(Enum.map(accounts, & &1["account"]))
     end
   end
 
@@ -155,20 +186,26 @@ defmodule ValeaWeb.MailRpcTest do
       workspace: workspace,
       generation: generation
     } do
-      # `account` (display label) deliberately differs from `username` (the
-      # IMAP login) — status must surface BOTH, since the frontend's
-      # keychain lookup keys on the username (spec §Credentials).
-      #
-      # TEMP v3-bridge: reworked in Task 10 — `setup_mail_account` still
-      # takes `account` as a free-form display label (not yet a real slug
-      # argument), so `Valea.Api.Mail` derives a v4 slug from it via
-      # `Valea.Workspace.Scaffold.slugify/1`; `status["account"]` below is
-      # that derived slug ("mara-s-mail"), not the literal label.
-      assert %{"success" => true, "data" => %{"saved" => true}} =
+      setup_account!(generation, account: "mara")
+      assert File.exists?(Path.join(workspace, "config/mail.yaml"))
+
+      status = await_engine_active!("mara")
+      assert status["account"] == "mara"
+      assert status["username"] == "mara@example.com"
+      assert status["configured"] == true
+    end
+
+    test "an invalid slug (path traversal) is rejected before any write", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      before_bytes = File.read!(Path.join(workspace, "config/mail.yaml"))
+
+      assert %{"success" => false, "errors" => errors} =
                rpc(
                  "setup_mail_account",
                  %{
-                   "account" => "Mara's mail",
+                   "account" => "../x",
                    "host" => "imap.fastmail.com",
                    "port" => 993,
                    "username" => "mara@example.com",
@@ -177,29 +214,21 @@ defmodule ValeaWeb.MailRpcTest do
                  ["saved"]
                )
 
-      assert File.exists?(Path.join(workspace, "config/mail.yaml"))
-
-      assert %{"success" => true, "data" => %{"status" => status}} =
-               rpc("mail_status", %{}, ["status"])
-
-      assert status["configured"] == true
-      assert status["account"] == "mara-s-mail"
-      assert status["username"] == "mara@example.com"
+      assert inspect(errors) =~ "invalid_slug"
+      assert File.read!(Path.join(workspace, "config/mail.yaml")) == before_bytes
     end
 
     test "a stale generation surfaces workspace_changed and does not write", %{
       workspace: workspace,
       generation: generation
     } do
-      # Every scaffolded workspace ships config/mail.yaml with a placeholder
-      # host already — a rejected setup must leave those bytes untouched.
       before = File.read!(Path.join(workspace, "config/mail.yaml"))
 
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "setup_mail_account",
                  %{
-                   "account" => "mara@example.com",
+                   "account" => "mara",
                    "host" => "imap.fastmail.com",
                    "port" => 993,
                    "username" => "mara@example.com",
@@ -211,43 +240,237 @@ defmodule ValeaWeb.MailRpcTest do
       assert inspect(errors) =~ "workspace_changed"
       assert File.read!(Path.join(workspace, "config/mail.yaml")) == before
     end
+
+    test "identity mismatch on an existing local subtree refuses without touching config", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      :ok =
+        Account.write_if_absent!(workspace, "mara", %{
+          host: "imap.other.com",
+          username: "someone-else@example.com"
+        })
+
+      before = File.read!(Path.join(workspace, "config/mail.yaml"))
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "mara",
+                   "host" => "imap.fastmail.com",
+                   "port" => 993,
+                   "username" => "mara@example.com",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert inspect(errors) =~ "identity_mismatch"
+      assert File.read!(Path.join(workspace, "config/mail.yaml")) == before
+    end
+  end
+
+  # -- remove_mail_account / purge_mail_account_files ---------------------------
+
+  describe "remove_mail_account" do
+    test "happy path removes the config entry and stops the engine; files stay", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      setup_folder!(maildir_root, "INBOX", "INBOX")
+
+      assert %{"success" => true, "data" => %{"removed" => true}} =
+               rpc("remove_mail_account", %{"account" => "mara", "generation" => generation}, [
+                 "removed"
+               ])
+
+      assert %{"success" => true, "data" => %{"accounts" => accounts}} =
+               rpc("mail_status", %{}, ["accounts"])
+
+      refute Enum.any?(accounts, &(&1["account"] == "mara"))
+      assert File.dir?(maildir_root)
+    end
+
+    test "a stale generation surfaces workspace_changed", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "remove_mail_account",
+                 %{"account" => "mara", "generation" => generation - 1},
+                 ["removed"]
+               )
+
+      assert inspect(errors) =~ "workspace_changed"
+    end
+  end
+
+  describe "purge_mail_account_files" do
+    test "requires the confirmation to exactly match the account slug", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "purge_mail_account_files",
+                 %{"account" => "mara", "confirmation" => "not-mara", "generation" => generation},
+                 ["purged"]
+               )
+
+      assert inspect(errors) =~ "confirmation_mismatch"
+    end
+
+    test "refuses while a healthy engine is actively running", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "purge_mail_account_files",
+                 %{"account" => "mara", "confirmation" => "mara", "generation" => generation},
+                 ["purged"]
+               )
+
+      assert inspect(errors) =~ "account_active"
+    end
+
+    test "succeeds once the account has been removed from config first", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      setup_folder!(maildir_root, "INBOX", "INBOX")
+
+      assert %{"success" => true} =
+               rpc("remove_mail_account", %{"account" => "mara", "generation" => generation}, [
+                 "removed"
+               ])
+
+      assert %{"success" => true, "data" => %{"purged" => true}} =
+               rpc(
+                 "purge_mail_account_files",
+                 %{"account" => "mara", "confirmation" => "mara", "generation" => generation},
+                 ["purged"]
+               )
+
+      refute File.exists?(Path.join([workspace, "sources", "mail", "mara"]))
+    end
+  end
+
+  # -- readopt_mail_account / discard_held_folder --------------------------------
+
+  describe "readopt_mail_account" do
+    test "not_blocked when the account isn't stuck on mailbox_replaced", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "readopt_mail_account",
+                 %{"account" => "mara", "confirmation" => "mara", "generation" => generation},
+                 ["readopted"]
+               )
+
+      assert inspect(errors) =~ "not_blocked"
+    end
+
+    test "requires the confirmation to exactly match the account slug", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "readopt_mail_account",
+                 %{"account" => "mara", "confirmation" => "nope", "generation" => generation},
+                 ["readopted"]
+               )
+
+      assert inspect(errors) =~ "confirmation_mismatch"
+    end
+  end
+
+  describe "discard_held_folder" do
+    test "not_held when the folder isn't currently held", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "discard_held_folder",
+                 %{
+                   "account" => "mara",
+                   "folder" => "Work",
+                   "confirmation" => "Work",
+                   "generation" => generation
+                 },
+                 ["discarded"]
+               )
+
+      assert inspect(errors) =~ "not_held"
+    end
+
+    test "requires the confirmation to exactly match the folder name", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "discard_held_folder",
+                 %{
+                   "account" => "mara",
+                   "folder" => "Work",
+                   "confirmation" => "wrong",
+                   "generation" => generation
+                 },
+                 ["discarded"]
+               )
+
+      assert inspect(errors) =~ "confirmation_mismatch"
+    end
   end
 
   # -- set_mail_credential --------------------------------------------------------
 
   describe "set_mail_credential" do
-    test "happy path accepts the credential and never echoes it back in the response", %{
+    test "happy path accepts the credential for the given account and never echoes it back", %{
       generation: generation
     } do
-      # TEMP T9->T10 bridge test adaptation: `Valea.Api.Mail`'s per-account
-      # `Valea.Mail.Engine` needs a configured account to target — an account
-      # must exist before a credential can land anywhere (Task 10's real,
-      # account-scoped `set_mail_credential` makes this explicit via an
-      # `account` argument; this bridge resolves the first/only configured
-      # account instead, so one must already exist).
-      setup_account!(generation)
-
+      setup_account!(generation, account: "mara")
       secret = "hunter2-super-secret-password"
 
       response =
-        rpc("set_mail_credential", %{"secret" => secret, "generation" => generation}, [
-          "accepted"
-        ])
+        rpc(
+          "set_mail_credential",
+          %{"account" => "mara", "secret" => secret, "generation" => generation},
+          ["accepted"]
+        )
 
       assert %{"success" => true, "data" => %{"accepted" => true}} = response
       refute inspect(response) =~ secret
 
-      assert %{"success" => true, "data" => %{"status" => status}} =
-               rpc("mail_status", %{}, ["status"])
-
+      status = await_engine_active!("mara")
       assert status["credential"] == "present"
+    end
+
+    test "an unknown account surfaces not_found", %{generation: generation} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "set_mail_credential",
+                 %{"account" => "ghost", "secret" => "x", "generation" => generation},
+                 ["accepted"]
+               )
+
+      assert inspect(errors) =~ "not_found"
     end
 
     test "a stale generation surfaces workspace_changed", %{generation: generation} do
       assert %{"success" => false, "errors" => errors} =
                rpc(
                  "set_mail_credential",
-                 %{"secret" => "x", "generation" => generation - 1},
+                 %{"account" => "mara", "secret" => "x", "generation" => generation - 1},
                  ["accepted"]
                )
 
@@ -259,25 +482,33 @@ defmodule ValeaWeb.MailRpcTest do
 
   describe "mail_sync_now" do
     test "happy path returns started: true", %{generation: generation} do
-      setup_account!(generation)
-      set_credential!(generation)
+      setup_account!(generation, account: "mara")
+      set_credential!("mara", generation)
 
       FakeMailTransport.script([{:connect, :_, {:error, :test_stop}}])
 
       assert %{"success" => true, "data" => %{"started" => true}} =
-               rpc("mail_sync_now", %{"generation" => generation}, ["started"])
+               rpc("mail_sync_now", %{"account" => "mara", "generation" => generation}, [
+                 "started"
+               ])
     end
 
-    test "not yet configured surfaces not_configured", %{generation: generation} do
+    test "an unknown account surfaces not_found", %{generation: generation} do
       assert %{"success" => false, "errors" => errors} =
-               rpc("mail_sync_now", %{"generation" => generation}, ["started"])
+               rpc("mail_sync_now", %{"account" => "ghost", "generation" => generation}, [
+                 "started"
+               ])
 
-      assert inspect(errors) =~ "not_configured"
+      assert inspect(errors) =~ "not_found"
     end
 
     test "a stale generation surfaces workspace_changed", %{generation: generation} do
       assert %{"success" => false, "errors" => errors} =
-               rpc("mail_sync_now", %{"generation" => generation - 1}, ["started"])
+               rpc(
+                 "mail_sync_now",
+                 %{"account" => "mara", "generation" => generation - 1},
+                 ["started"]
+               )
 
       assert inspect(errors) =~ "workspace_changed"
     end
@@ -286,19 +517,40 @@ defmodule ValeaWeb.MailRpcTest do
   # -- mail_doctor --------------------------------------------------------------
 
   describe "mail_doctor" do
-    test "happy path returns checks and an overall ok flag", %{generation: generation} do
+    test "happy path returns checks and an overall ok flag for the given account", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+
       assert %{"success" => true, "data" => %{"ok" => ok, "checks" => checks}} =
-               rpc("mail_doctor", %{"generation" => generation}, ["ok", "checks"])
+               rpc("mail_doctor", %{"account" => "mara", "generation" => generation}, [
+                 "ok",
+                 "checks"
+               ])
 
       assert is_boolean(ok)
       assert is_list(checks)
       assert Enum.any?(checks, &(&1["id"] == "config_present"))
-      assert ok == false
+      assert Enum.any?(checks, &(&1["id"] == "maildir_writable"))
+    end
+
+    test "an unknown account surfaces not_found", %{generation: generation} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("mail_doctor", %{"account" => "ghost", "generation" => generation}, [
+                 "ok",
+                 "checks"
+               ])
+
+      assert inspect(errors) =~ "not_found"
     end
 
     test "a stale generation surfaces workspace_changed", %{generation: generation} do
       assert %{"success" => false, "errors" => errors} =
-               rpc("mail_doctor", %{"generation" => generation - 1}, ["ok", "checks"])
+               rpc(
+                 "mail_doctor",
+                 %{"account" => "mara", "generation" => generation - 1},
+                 ["ok", "checks"]
+               )
 
       assert inspect(errors) =~ "workspace_changed"
     end
@@ -308,8 +560,8 @@ defmodule ValeaWeb.MailRpcTest do
 
   describe "create_mail_folders" do
     test "happy path connects and creates the missing AI folders", %{generation: generation} do
-      setup_account!(generation)
-      set_credential!(generation)
+      setup_account!(generation, account: "mara")
+      set_credential!("mara", generation)
 
       FakeMailTransport.script([
         {:connect, :_, {:ok, FakeMailTransport}},
@@ -320,29 +572,37 @@ defmodule ValeaWeb.MailRpcTest do
       ])
 
       assert %{"success" => true, "data" => %{"created" => created}} =
-               rpc("create_mail_folders", %{"generation" => generation}, ["created"])
+               rpc("create_mail_folders", %{"account" => "mara", "generation" => generation}, [
+                 "created"
+               ])
 
       assert Enum.sort(created) == Enum.sort(["AI/Review", "AI/Processed"])
     end
 
     test "no credential surfaces no_credential", %{generation: generation} do
-      setup_account!(generation)
+      setup_account!(generation, account: "mara")
 
       assert %{"success" => false, "errors" => errors} =
-               rpc("create_mail_folders", %{"generation" => generation}, ["created"])
+               rpc("create_mail_folders", %{"account" => "mara", "generation" => generation}, [
+                 "created"
+               ])
 
       assert inspect(errors) =~ "no_credential"
     end
 
     test "a stale generation surfaces workspace_changed", %{generation: generation} do
       assert %{"success" => false, "errors" => errors} =
-               rpc("create_mail_folders", %{"generation" => generation - 1}, ["created"])
+               rpc(
+                 "create_mail_folders",
+                 %{"account" => "mara", "generation" => generation - 1},
+                 ["created"]
+               )
 
       assert inspect(errors) =~ "workspace_changed"
     end
   end
 
-  # -- list_mail_messages --------------------------------------------------------
+  # -- list_mail_messages / list_mail_folders ------------------------------------
 
   @messages_fields [
     %{
@@ -352,94 +612,236 @@ defmodule ValeaWeb.MailRpcTest do
         "fromEmail",
         "subject",
         "date",
-        "status",
+        "flags",
         "hasAttachments",
         "uid",
-        "path"
+        "path",
+        "viewPath"
       ]
     }
   ]
 
   describe "list_mail_messages" do
-    test "happy path lists an indexed message", %{workspace: workspace} do
-      plant = plant_message(workspace, "seed1", 42)
+    test "paginates via limit + before, newest date first", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
 
-      assert %{"success" => true, "data" => %{"messages" => messages}} =
-               rpc("list_mail_messages", %{}, @messages_fields)
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
 
-      assert msg = Enum.find(messages, &(&1["msgId"] == plant.msg_id))
-      assert msg["fromEmail"] == "priya@example.com"
-      assert msg["fromName"] == "Priya Nair"
-      assert msg["hasAttachments"] == false
-      assert msg["uid"] == 42
-      assert msg["path"] == plant.rel
+      plant_message!(workspace, "mara", inbox_abs, 1, "Wed, 01 Jul 2026 09:00:00 +0000", "One")
+      plant_message!(workspace, "mara", inbox_abs, 2, "Thu, 02 Jul 2026 09:00:00 +0000", "Two")
+      plant_message!(workspace, "mara", inbox_abs, 3, "Fri, 03 Jul 2026 09:00:00 +0000", "Three")
+
+      {:ok, 3} = Index.rebuild(workspace, "mara")
+
+      assert %{"success" => true, "data" => %{"messages" => page1}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX", "limit" => 2},
+                 @messages_fields
+               )
+
+      assert length(page1) == 2
+      assert Enum.map(page1, & &1["subject"]) == ["Three", "Two"]
+      assert Enum.all?(page1, &(&1["viewPath"] =~ "views/messages/"))
+
+      oldest_date = List.last(page1)["date"]
+
+      assert %{"success" => true, "data" => %{"messages" => page2}} =
+               rpc(
+                 "list_mail_messages",
+                 %{
+                   "account" => "mara",
+                   "folder" => "INBOX",
+                   "limit" => 2,
+                   "before" => oldest_date
+                 },
+                 @messages_fields
+               )
+
+      assert Enum.map(page2, & &1["subject"]) == ["One"]
     end
 
-    test "a freshly opened workspace has no messages (the v4 template ships no seed message)" do
-      # A synchronous round-trip through the Engine (any RPC action that
-      # calls it) guarantees its earlier `workspace_opened` activation —
-      # which indexes every `sources/mail/messages/*.md` file — has already
-      # been processed: Engine's mailbox is FIFO, so this call cannot be
-      # handled before that earlier broadcast is. The v4 workspace template
-      # ships `accounts: {}` and no seed message (mail design spec E), so
-      # there's nothing to index yet.
-      assert %{"success" => true} = rpc("mail_status", %{}, ["status"])
+    test "an invalid slug is rejected", %{generation: _generation} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "../x", "folder" => "INBOX"},
+                 @messages_fields
+               )
 
-      assert %{"success" => true, "data" => %{"messages" => messages}} =
-               rpc("list_mail_messages", %{}, @messages_fields)
+      assert inspect(errors) =~ "invalid_slug"
+    end
+  end
 
-      assert messages == []
+  describe "list_mail_folders" do
+    test "reports each folder's dir/held/backfill_complete/message_count", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
+      plant_message!(workspace, "mara", inbox_abs, 1, "Wed, 01 Jul 2026 09:00:00 +0000", "One")
+      {:ok, 1} = Index.rebuild(workspace, "mara")
+
+      assert %{"success" => true, "data" => %{"folders" => folders}} =
+               rpc("list_mail_folders", %{"account" => "mara"}, [
+                 %{"folders" => ["name", "dir", "held", "messageCount", "backfillComplete"]}
+               ])
+
+      assert [folder] = folders
+      assert folder["name"] == "INBOX"
+      assert folder["dir"] == "INBOX"
+      assert folder["held"] == false
+      assert folder["messageCount"] == 1
+      assert folder["backfillComplete"] == false
     end
   end
 
   # -- get_mail_message --------------------------------------------------------
 
   describe "get_mail_message" do
-    test "happy path reads the file: frontmatter + body + path, and inbox:false", %{
-      workspace: workspace
+    test "happy path reads the view: frontmatter + body + path", %{
+      workspace: workspace,
+      generation: generation
     } do
-      plant = plant_message(workspace, "seed2", 43)
+      setup_account!(generation, account: "mara")
 
-      assert %{"success" => true, "data" => %{"message" => message, "inbox" => false}} =
-               rpc("get_mail_message", %{"msgId" => plant.msg_id}, ["message", "inbox"])
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
 
-      assert message["path"] == plant.rel
-      assert message["frontmatter"]["id"] == plant.msg_id
-      assert message["body"] =~ "Original inquiry body."
+      msg_id =
+        plant_message!(
+          workspace,
+          "mara",
+          inbox_abs,
+          1,
+          "Wed, 01 Jul 2026 09:00:00 +0000",
+          "Hello"
+        )
+
+      {:ok, 1} = Index.rebuild(workspace, "mara")
+
+      assert %{"success" => true, "data" => %{"message" => message}} =
+               rpc("get_mail_message", %{"account" => "mara", "msgId" => msg_id}, ["message"])
+
+      assert message["path"] == Views.view_rel_path("mara", msg_id)
+      assert message["frontmatter"]["id"] == msg_id
+      assert message["body"] =~ "Body of Hello."
     end
 
-    test "an unknown msg_id surfaces not_found" do
+    test "a msg_id containing a path traversal segment is rejected before any file I/O" do
       assert %{"success" => false, "errors" => errors} =
-               rpc("get_mail_message", %{"msgId" => "does-not-exist"}, ["message", "inbox"])
+               rpc("get_mail_message", %{"account" => "mara", "msgId" => "../../../etc/passwd"}, [
+                 "message"
+               ])
+
+      assert inspect(errors) =~ "invalid_msg_id"
+    end
+
+    test "an absolute-path msg_id is rejected before any file I/O" do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("get_mail_message", %{"account" => "mara", "msgId" => "/etc/passwd"}, [
+                 "message"
+               ])
+
+      assert inspect(errors) =~ "invalid_msg_id"
+    end
+
+    test "a symlinked view file is rejected — never followed, even though the msg_id is well-formed",
+         %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+      msg_id = "2026-07-09-attacker-deadbeef12345678"
+
+      views_dir = Path.join([workspace, "sources", "mail", "mara", "views", "messages"])
+      File.mkdir_p!(views_dir)
+
+      outside = Path.join(workspace, "secret.md")
+      File.write!(outside, "---\nid: leaked\n---\nShould never be read.\n")
+      File.ln_s!(outside, Path.join(views_dir, "#{msg_id}.md"))
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("get_mail_message", %{"account" => "mara", "msgId" => msg_id}, ["message"])
+
+      assert inspect(errors) =~ "not_found"
+    end
+
+    test "an unknown (but well-formed) msg_id surfaces not_found", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "get_mail_message",
+                 %{"account" => "mara", "msgId" => "2026-07-09-nobody-deadbeef12345678"},
+                 ["message"]
+               )
 
       assert inspect(errors) =~ "not_found"
     end
   end
 
-  # -- mail_inbox --------------------------------------------------------------
+  # -- stubs: mail_apply_ops / push_draft_to_mailbox / list_mail_drafts ----------
 
-  @entries_fields [%{"entries" => ["uid", "fromText", "subject", "date"]}]
+  describe "mail_apply_ops (stub)" do
+    test "rejects every op with ops_executor_not_wired", %{generation: generation} do
+      setup_account!(generation, account: "mara")
 
-  describe "mail_inbox" do
-    test "happy path lists inbox header entries" do
-      Store.put_inbox_header(%{
-        uid: 99,
-        from_text: "Priya <priya@example.com>",
-        subject: "Hi",
-        date: "2026-07-09T10:00:00Z"
-      })
+      assert %{"success" => true, "data" => %{"results" => results}} =
+               rpc(
+                 "mail_apply_ops",
+                 %{
+                   "account" => "mara",
+                   "ops" => [%{"kind" => "move"}, %{"kind" => "trash"}],
+                   "generation" => generation
+                 },
+                 [%{"results" => ["op", "result", "reason"]}]
+               )
 
-      assert %{"success" => true, "data" => %{"entries" => entries}} =
-               rpc("mail_inbox", %{}, @entries_fields)
-
-      assert entry = Enum.find(entries, &(&1["uid"] == 99))
-      assert entry["fromText"] == "Priya <priya@example.com>"
-      assert entry["subject"] == "Hi"
+      assert results == [
+               %{"op" => 0, "result" => "rejected", "reason" => "ops_executor_not_wired"},
+               %{"op" => 1, "result" => "rejected", "reason" => "ops_executor_not_wired"}
+             ]
     end
+  end
 
-    test "returns an empty list when nothing has synced yet" do
-      assert %{"success" => true, "data" => %{"entries" => []}} =
-               rpc("mail_inbox", %{}, @entries_fields)
+  describe "push_draft_to_mailbox (stub)" do
+    test "returns not_implemented", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "push_draft_to_mailbox",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "reply-to-priya",
+                   "contentHash" => "deadbeef",
+                   "generation" => generation
+                 },
+                 ["state"]
+               )
+
+      assert inspect(errors) =~ "not_implemented"
+    end
+  end
+
+  describe "list_mail_drafts (stub)" do
+    test "returns an empty list" do
+      assert %{"success" => true, "data" => %{"drafts" => []}} =
+               rpc("list_mail_drafts", %{}, ["drafts"])
+    end
+  end
+
+  # -- mail_inbox: removed ------------------------------------------------------
+
+  describe "mail_inbox (removed)" do
+    test "the removed action no longer resolves" do
+      assert %{"success" => false, "errors" => errors} = rpc("mail_inbox", %{}, [])
+      assert inspect(errors) =~ "action_not_found"
     end
   end
 
@@ -452,26 +854,34 @@ defmodule ValeaWeb.MailRpcTest do
     end
 
     test "mail_status surfaces workspace_not_open" do
-      assert %{"success" => false, "errors" => errors} = rpc("mail_status", %{}, ["status"])
+      assert %{"success" => false, "errors" => errors} = rpc("mail_status", %{}, ["accounts"])
       assert inspect(errors) =~ "workspace_not_open"
     end
 
     test "list_mail_messages surfaces workspace_not_open" do
       assert %{"success" => false, "errors" => errors} =
-               rpc("list_mail_messages", %{}, @messages_fields)
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX"},
+                 @messages_fields
+               )
 
       assert inspect(errors) =~ "workspace_not_open"
     end
 
     test "get_mail_message surfaces workspace_not_open" do
       assert %{"success" => false, "errors" => errors} =
-               rpc("get_mail_message", %{"msgId" => "whatever"}, ["message", "inbox"])
+               rpc(
+                 "get_mail_message",
+                 %{"account" => "mara", "msgId" => "2026-07-09-x-deadbeef12345678"},
+                 ["message"]
+               )
 
       assert inspect(errors) =~ "workspace_not_open"
     end
 
-    test "mail_inbox surfaces workspace_not_open" do
-      assert %{"success" => false, "errors" => errors} = rpc("mail_inbox", %{}, @entries_fields)
+    test "list_mail_drafts surfaces workspace_not_open" do
+      assert %{"success" => false, "errors" => errors} = rpc("list_mail_drafts", %{}, ["drafts"])
       assert inspect(errors) =~ "workspace_not_open"
     end
   end

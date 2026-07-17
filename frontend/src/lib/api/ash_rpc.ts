@@ -714,11 +714,11 @@ export async function listAuditEntriesChannel<Fields extends ListAuditEntriesFie
 }
 
 
-export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferCockpitTodayResult<
   Fields extends CockpitTodayFields | undefined,
-> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: {reviewCount: number, inboxCount: number, configured: boolean, __type: "TypedMap", __primitiveFields: "reviewCount" | "inboxCount" | "configured"}, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type CockpitTodayResult<Fields extends CockpitTodayFields | undefined = undefined> = | { success: true; data: InferCockpitTodayResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -2187,6 +2187,7 @@ export async function unmountIcmChannel<Fields extends UnmountIcmFields | undefi
 
 
 export type CreateMailFoldersInput = {
+  account: string;
   generation: number;
 };
 
@@ -2259,15 +2260,92 @@ export async function createMailFoldersChannel<Fields extends CreateMailFoldersF
 }
 
 
+export type DiscardHeldFolderInput = {
+  account: string;
+  folder: string;
+  confirmation: string;
+  generation: number;
+};
+
+export type DiscardHeldFolderFields = UnifiedFieldSelection<{discarded: boolean, __type: "TypedMap", __primitiveFields: "discarded"}>[];
+
+export type InferDiscardHeldFolderResult<
+  Fields extends DiscardHeldFolderFields | undefined,
+> = InferResult<{discarded: boolean, __type: "TypedMap", __primitiveFields: "discarded"}, Fields>;
+
+export type DiscardHeldFolderResult<Fields extends DiscardHeldFolderFields | undefined = undefined> = | { success: true; data: InferDiscardHeldFolderResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function discardHeldFolder<Fields extends DiscardHeldFolderFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DiscardHeldFolderInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DiscardHeldFolderResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "discard_held_folder",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DiscardHeldFolderResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function discardHeldFolderChannel<Fields extends DiscardHeldFolderFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DiscardHeldFolderInput;
+  fields: Fields;
+  resultHandler: (result: DiscardHeldFolderResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DiscardHeldFolderResult<Fields>>(
+    config.channel,
+    {
+    action: "discard_held_folder",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type GetMailMessageInput = {
+  account: string;
   msgId: string;
 };
 
-export type GetMailMessageFields = UnifiedFieldSelection<{message: Record<string, any>, inbox: boolean, __type: "TypedMap", __primitiveFields: "message" | "inbox"}>[];
+export type GetMailMessageFields = UnifiedFieldSelection<{message: Record<string, any>, __type: "TypedMap", __primitiveFields: "message"}>[];
 
 export type InferGetMailMessageResult<
   Fields extends GetMailMessageFields | undefined,
-> = InferResult<{message: Record<string, any>, inbox: boolean, __type: "TypedMap", __primitiveFields: "message" | "inbox"}, Fields>;
+> = InferResult<{message: Record<string, any>, __type: "TypedMap", __primitiveFields: "message"}, Fields>;
 
 export type GetMailMessageResult<Fields extends GetMailMessageFields | undefined = undefined> = | { success: true; data: InferGetMailMessageResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -2332,11 +2410,156 @@ export async function getMailMessageChannel<Fields extends GetMailMessageFields 
 }
 
 
-export type ListMailMessagesFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, status: string | null, hasAttachments: boolean, uid: number | null, path: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "status" | "hasAttachments" | "uid" | "path"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListMailDraftsFields = UnifiedFieldSelection<{drafts: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "drafts"}>[];
+
+export type InferListMailDraftsResult<
+  Fields extends ListMailDraftsFields | undefined,
+> = InferResult<{drafts: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "drafts"}, Fields>;
+
+export type ListMailDraftsResult<Fields extends ListMailDraftsFields | undefined = undefined> = | { success: true; data: InferListMailDraftsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listMailDrafts<Fields extends ListMailDraftsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListMailDraftsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_mail_drafts",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListMailDraftsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listMailDraftsChannel<Fields extends ListMailDraftsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListMailDraftsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListMailDraftsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_mail_drafts",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListMailFoldersInput = {
+  account: string;
+};
+
+export type ListMailFoldersFields = UnifiedFieldSelection<{folders: Array<{name: string, dir: string | null, held: boolean, messageCount: number, backfillComplete: boolean, __type: "TypedMap", __primitiveFields: "name" | "dir" | "held" | "messageCount" | "backfillComplete"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListMailFoldersResult<
+  Fields extends ListMailFoldersFields | undefined,
+> = InferResult<{folders: Array<{name: string, dir: string | null, held: boolean, messageCount: number, backfillComplete: boolean, __type: "TypedMap", __primitiveFields: "name" | "dir" | "held" | "messageCount" | "backfillComplete"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListMailFoldersResult<Fields extends ListMailFoldersFields | undefined = undefined> = | { success: true; data: InferListMailFoldersResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listMailFolders<Fields extends ListMailFoldersFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListMailFoldersInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListMailFoldersResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_mail_folders",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListMailFoldersResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listMailFoldersChannel<Fields extends ListMailFoldersFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListMailFoldersInput;
+  fields: Fields;
+  resultHandler: (result: ListMailFoldersResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListMailFoldersResult<Fields>>(
+    config.channel,
+    {
+    action: "list_mail_folders",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListMailMessagesInput = {
+  account: string;
+  folder: string;
+  limit?: number | null;
+  before?: string | null;
+};
+
+export type ListMailMessagesFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListMailMessagesResult<
   Fields extends ListMailMessagesFields | undefined,
-> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, status: string | null, hasAttachments: boolean, uid: number | null, path: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "status" | "hasAttachments" | "uid" | "path"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListMailMessagesResult<Fields extends ListMailMessagesFields | undefined = undefined> = | { success: true; data: InferListMailMessagesResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -2351,6 +2574,7 @@ export type ListMailMessagesResult<Fields extends ListMailMessagesFields | undef
 export async function listMailMessages<Fields extends ListMailMessagesFields | undefined = undefined>(
   config: {
   tenant?: string;
+  input: ListMailMessagesInput;
   fields: Fields;
   headers?: Record<string, string>;
   fetchOptions?: RequestInit;
@@ -2360,6 +2584,7 @@ export async function listMailMessages<Fields extends ListMailMessagesFields | u
   const payload = {
     action: "list_mail_messages",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
   };
 
@@ -2378,6 +2603,7 @@ export async function listMailMessages<Fields extends ListMailMessagesFields | u
 export async function listMailMessagesChannel<Fields extends ListMailMessagesFields | undefined = undefined>(config: {
   channel: Channel;
   tenant?: string;
+  input: ListMailMessagesInput;
   fields: Fields;
   resultHandler: (result: ListMailMessagesResult<Fields>) => void;
   errorHandler?: (error: any) => void;
@@ -2389,6 +2615,82 @@ export async function listMailMessagesChannel<Fields extends ListMailMessagesFie
     {
     action: "list_mail_messages",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MailApplyOpsInput = {
+  account: string;
+  ops: Array<Record<string, any>>;
+  generation: number;
+};
+
+export type MailApplyOpsFields = UnifiedFieldSelection<{results: Array<{op: number, result: string, reason: string | null, __type: "TypedMap", __primitiveFields: "op" | "result" | "reason"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferMailApplyOpsResult<
+  Fields extends MailApplyOpsFields | undefined,
+> = InferResult<{results: Array<{op: number, result: string, reason: string | null, __type: "TypedMap", __primitiveFields: "op" | "result" | "reason"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type MailApplyOpsResult<Fields extends MailApplyOpsFields | undefined = undefined> = | { success: true; data: InferMailApplyOpsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailApplyOps<Fields extends MailApplyOpsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MailApplyOpsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MailApplyOpsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mail_apply_ops",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MailApplyOpsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailApplyOpsChannel<Fields extends MailApplyOpsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: MailApplyOpsInput;
+  fields: Fields;
+  resultHandler: (result: MailApplyOpsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MailApplyOpsResult<Fields>>(
+    config.channel,
+    {
+    action: "mail_apply_ops",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
   },
     config.timeout,
@@ -2398,6 +2700,7 @@ export async function listMailMessagesChannel<Fields extends ListMailMessagesFie
 
 
 export type MailDoctorInput = {
+  account: string;
   generation: number;
 };
 
@@ -2470,76 +2773,11 @@ export async function mailDoctorChannel<Fields extends MailDoctorFields | undefi
 }
 
 
-export type MailInboxFields = UnifiedFieldSelection<{entries: Array<{uid: number, fromText: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "uid" | "fromText" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: never}>[];
-
-export type InferMailInboxResult<
-  Fields extends MailInboxFields | undefined,
-> = InferResult<{entries: Array<{uid: number, fromText: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "uid" | "fromText" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
-
-export type MailInboxResult<Fields extends MailInboxFields | undefined = undefined> = | { success: true; data: InferMailInboxResult<Fields>; }
-| { success: false; errors: AshRpcError[]; }
-
-;
-
-/**
- * Execute generic action on Mail
- *
- * @ashActionType :action
- */
-export async function mailInbox<Fields extends MailInboxFields | undefined = undefined>(
-  config: {
-  tenant?: string;
-  fields: Fields;
-  headers?: Record<string, string>;
-  fetchOptions?: RequestInit;
-  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-}
-): Promise<MailInboxResult<Fields extends undefined ? [] : Fields>> {
-  const payload = {
-    action: "mail_inbox",
-    ...(config.tenant !== undefined && { tenant: config.tenant }),
-    ...(config.fields !== undefined && { fields: config.fields })
-  };
-
-  return executeActionRpcRequest<MailInboxResult<Fields extends undefined ? [] : Fields>>(
-    payload,
-    config
-  );
-}
-
-
-/**
- * Execute generic action on Mail
- *
- * @ashActionType :action
- */
-export async function mailInboxChannel<Fields extends MailInboxFields | undefined = undefined>(config: {
-  channel: Channel;
-  tenant?: string;
-  fields: Fields;
-  resultHandler: (result: MailInboxResult<Fields>) => void;
-  errorHandler?: (error: any) => void;
-  timeoutHandler?: () => void;
-  timeout?: number;
-}) {
-  executeActionChannelPush<MailInboxResult<Fields>>(
-    config.channel,
-    {
-    action: "mail_inbox",
-    ...(config.tenant !== undefined && { tenant: config.tenant }),
-    ...(config.fields !== undefined && { fields: config.fields })
-  },
-    config.timeout,
-    config
-  );
-}
-
-
-export type MailStatusFields = UnifiedFieldSelection<{status: Record<string, any>, __type: "TypedMap", __primitiveFields: "status"}>[];
+export type MailStatusFields = UnifiedFieldSelection<{accounts: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "accounts"}>[];
 
 export type InferMailStatusResult<
   Fields extends MailStatusFields | undefined,
-> = InferResult<{status: Record<string, any>, __type: "TypedMap", __primitiveFields: "status"}, Fields>;
+> = InferResult<{accounts: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "accounts"}, Fields>;
 
 export type MailStatusResult<Fields extends MailStatusFields | undefined = undefined> = | { success: true; data: InferMailStatusResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -2601,6 +2839,7 @@ export async function mailStatusChannel<Fields extends MailStatusFields | undefi
 
 
 export type MailSyncNowInput = {
+  account: string;
   generation: number;
 };
 
@@ -2673,7 +2912,308 @@ export async function mailSyncNowChannel<Fields extends MailSyncNowFields | unde
 }
 
 
+export type PurgeMailAccountFilesInput = {
+  account: string;
+  confirmation: string;
+  generation: number;
+};
+
+export type PurgeMailAccountFilesFields = UnifiedFieldSelection<{purged: boolean, __type: "TypedMap", __primitiveFields: "purged"}>[];
+
+export type InferPurgeMailAccountFilesResult<
+  Fields extends PurgeMailAccountFilesFields | undefined,
+> = InferResult<{purged: boolean, __type: "TypedMap", __primitiveFields: "purged"}, Fields>;
+
+export type PurgeMailAccountFilesResult<Fields extends PurgeMailAccountFilesFields | undefined = undefined> = | { success: true; data: InferPurgeMailAccountFilesResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function purgeMailAccountFiles<Fields extends PurgeMailAccountFilesFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: PurgeMailAccountFilesInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<PurgeMailAccountFilesResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "purge_mail_account_files",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<PurgeMailAccountFilesResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function purgeMailAccountFilesChannel<Fields extends PurgeMailAccountFilesFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: PurgeMailAccountFilesInput;
+  fields: Fields;
+  resultHandler: (result: PurgeMailAccountFilesResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<PurgeMailAccountFilesResult<Fields>>(
+    config.channel,
+    {
+    action: "purge_mail_account_files",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type PushDraftToMailboxInput = {
+  account: string;
+  draftName: string;
+  contentHash: string;
+  generation: number;
+};
+
+export type PushDraftToMailboxFields = UnifiedFieldSelection<{state: string, __type: "TypedMap", __primitiveFields: "state"}>[];
+
+export type InferPushDraftToMailboxResult<
+  Fields extends PushDraftToMailboxFields | undefined,
+> = InferResult<{state: string, __type: "TypedMap", __primitiveFields: "state"}, Fields>;
+
+export type PushDraftToMailboxResult<Fields extends PushDraftToMailboxFields | undefined = undefined> = | { success: true; data: InferPushDraftToMailboxResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function pushDraftToMailbox<Fields extends PushDraftToMailboxFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: PushDraftToMailboxInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<PushDraftToMailboxResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "push_draft_to_mailbox",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<PushDraftToMailboxResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function pushDraftToMailboxChannel<Fields extends PushDraftToMailboxFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: PushDraftToMailboxInput;
+  fields: Fields;
+  resultHandler: (result: PushDraftToMailboxResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<PushDraftToMailboxResult<Fields>>(
+    config.channel,
+    {
+    action: "push_draft_to_mailbox",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ReadoptMailAccountInput = {
+  account: string;
+  confirmation: string;
+  generation: number;
+};
+
+export type ReadoptMailAccountFields = UnifiedFieldSelection<{readopted: boolean, __type: "TypedMap", __primitiveFields: "readopted"}>[];
+
+export type InferReadoptMailAccountResult<
+  Fields extends ReadoptMailAccountFields | undefined,
+> = InferResult<{readopted: boolean, __type: "TypedMap", __primitiveFields: "readopted"}, Fields>;
+
+export type ReadoptMailAccountResult<Fields extends ReadoptMailAccountFields | undefined = undefined> = | { success: true; data: InferReadoptMailAccountResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function readoptMailAccount<Fields extends ReadoptMailAccountFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ReadoptMailAccountInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ReadoptMailAccountResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "readopt_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ReadoptMailAccountResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function readoptMailAccountChannel<Fields extends ReadoptMailAccountFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ReadoptMailAccountInput;
+  fields: Fields;
+  resultHandler: (result: ReadoptMailAccountResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ReadoptMailAccountResult<Fields>>(
+    config.channel,
+    {
+    action: "readopt_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RemoveMailAccountInput = {
+  account: string;
+  generation: number;
+};
+
+export type RemoveMailAccountFields = UnifiedFieldSelection<{removed: boolean, __type: "TypedMap", __primitiveFields: "removed"}>[];
+
+export type InferRemoveMailAccountResult<
+  Fields extends RemoveMailAccountFields | undefined,
+> = InferResult<{removed: boolean, __type: "TypedMap", __primitiveFields: "removed"}, Fields>;
+
+export type RemoveMailAccountResult<Fields extends RemoveMailAccountFields | undefined = undefined> = | { success: true; data: InferRemoveMailAccountResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function removeMailAccount<Fields extends RemoveMailAccountFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RemoveMailAccountInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RemoveMailAccountResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "remove_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RemoveMailAccountResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function removeMailAccountChannel<Fields extends RemoveMailAccountFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RemoveMailAccountInput;
+  fields: Fields;
+  resultHandler: (result: RemoveMailAccountResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RemoveMailAccountResult<Fields>>(
+    config.channel,
+    {
+    action: "remove_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type SetMailCredentialInput = {
+  account: string;
   secret: string;
   generation: number;
 };

@@ -24,8 +24,7 @@ beforeEach(() => {
 
 type StatusResult = ApiResult<{ status: Record<string, any> }>;
 type MessagesResult = ApiResult<{ messages: any[] }>;
-type InboxResult = ApiResult<{ entries: any[] }>;
-type DetailResult = ApiResult<{ message: Record<string, any>; inbox: boolean }>;
+type DetailResult = ApiResult<{ message: Record<string, any> }>;
 type SyncResult = ApiResult<{ started: boolean }>;
 type CredentialResult = ApiResult<{ accepted: boolean }>;
 
@@ -33,33 +32,34 @@ type CredentialResult = ApiResult<{ accepted: boolean }>;
 // login) throughout these fixtures — the keychain lookup keys on the
 // USERNAME (spec §Credentials: account = workspace_id:username), and a
 // fixture where the two coincide couldn't catch a mixup between them.
+// `account` here is the real v4 slug (Task 10) — the RPC layer's
+// `mailStatus` wrapper (`api/client.ts`) already picked the primary account
+// out of the backend's `accounts: [...]` list before this shape reaches the
+// store, so `MailStore` itself still only ever sees one.
 const rawStatus: MailStatusPush = {
   configured: true,
   credential: 'present',
   state: 'idle',
   last_sync_at: '2026-07-10T12:00:00Z',
   last_error: null,
-  account: "Mara's mail",
+  account: 'maras-mail',
   username: 'mara@example.com',
   workspace_id: 'ws-1'
 };
 
 function fakeApi(overrides: {
   mailStatus?: () => Promise<StatusResult>;
-  listMailMessages?: () => Promise<MessagesResult>;
-  mailInbox?: () => Promise<InboxResult>;
-  getMailMessage?: (msgId: string) => Promise<DetailResult>;
-  mailSyncNow?: (generation: number) => Promise<SyncResult>;
-  setMailCredential?: (secret: string, generation: number) => Promise<CredentialResult>;
+  listMailMessages?: (account: string, folder: string) => Promise<MessagesResult>;
+  getMailMessage?: (account: string, msgId: string) => Promise<DetailResult>;
+  mailSyncNow?: (account: string, generation: number) => Promise<SyncResult>;
+  setMailCredential?: (account: string, secret: string, generation: number) => Promise<CredentialResult>;
 }) {
   return {
     mailStatus: overrides.mailStatus ?? (async () => ({ ok: true, data: { status: rawStatus } }) as StatusResult),
     listMailMessages:
       overrides.listMailMessages ?? (async () => ({ ok: true, data: { messages: [] } }) as MessagesResult),
-    mailInbox: overrides.mailInbox ?? (async () => ({ ok: true, data: { entries: [] } }) as InboxResult),
     getMailMessage:
-      overrides.getMailMessage ??
-      (async () => ({ ok: true, data: { message: {}, inbox: false } }) as DetailResult),
+      overrides.getMailMessage ?? (async () => ({ ok: true, data: { message: {} } }) as DetailResult),
     mailSyncNow: overrides.mailSyncNow ?? (async () => ({ ok: true, data: { started: true } }) as SyncResult),
     setMailCredential:
       overrides.setMailCredential ?? (async () => ({ ok: true, data: { accepted: true } }) as CredentialResult)
@@ -78,7 +78,7 @@ describe('MailStore.refreshStatus', () => {
       state: 'idle',
       lastSyncAt: '2026-07-10T12:00:00Z',
       lastError: null,
-      account: "Mara's mail",
+      account: 'maras-mail',
       username: 'mara@example.com',
       workspaceId: 'ws-1'
     });
@@ -96,15 +96,15 @@ describe('MailStore.refreshStatus', () => {
 });
 
 describe('MailStore.refreshMessages', () => {
-  it('populates messages from mocked api', async () => {
+  it('populates messages from mocked api, reading the AI/Review folder', async () => {
     const messages = [{ msgId: 'm1', fromName: 'Priya', subject: 'Hi', hasAttachments: false }];
-    const store = new MailStore(
-      fakeApi({ listMailMessages: async () => ({ ok: true, data: { messages } }) }) as never
-    );
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
 
-    await store.refreshMessages();
+    await store.refreshMessages('maras-mail');
 
     expect(store.messages).toEqual(messages);
+    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
   });
 
   it('leaves messages untouched on failure', async () => {
@@ -112,28 +112,50 @@ describe('MailStore.refreshMessages', () => {
       fakeApi({ listMailMessages: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
     );
 
+    await store.refreshMessages('maras-mail');
+
+    expect(store.messages).toEqual([]);
+  });
+
+  it('clears messages (a no-op fetch) when no account is known yet', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+
     await store.refreshMessages();
 
     expect(store.messages).toEqual([]);
+    expect(listMailMessages).not.toHaveBeenCalled();
+  });
+
+  it('defaults to the current status.account when none is passed', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+
+    await store.refreshStatus();
+    await store.refreshMessages();
+
+    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
   });
 });
 
 describe('MailStore.refreshInbox', () => {
-  it('populates inbox from mocked api', async () => {
-    const entries = [{ uid: 1, fromText: 'Priya <p@x.com>', subject: 'Hi', date: '2026-07-10' }];
-    const store = new MailStore(fakeApi({ mailInbox: async () => ({ ok: true, data: { entries } }) }) as never);
+  it('populates inbox from mocked api, reading the INBOX folder', async () => {
+    const messages = [{ msgId: 'm2', fromName: 'Priya', subject: 'Hi', date: '2026-07-10' }];
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
 
-    await store.refreshInbox();
+    await store.refreshInbox('maras-mail');
 
-    expect(store.inbox).toEqual(entries);
+    expect(store.inbox).toEqual(messages);
+    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'INBOX');
   });
 
   it('leaves inbox untouched on failure', async () => {
     const store = new MailStore(
-      fakeApi({ mailInbox: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
+      fakeApi({ listMailMessages: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
     );
 
-    await store.refreshInbox();
+    await store.refreshInbox('maras-mail');
 
     expect(store.inbox).toEqual([]);
   });
@@ -143,16 +165,15 @@ describe('MailStore.select', () => {
   it('loads detail on success', async () => {
     const message = { frontmatter: { subject: 'Hi' }, body: 'Body text', path: 'sources/mail/messages/m1.md' };
     const store = new MailStore(
-      fakeApi({ getMailMessage: async () => ({ ok: true, data: { message, inbox: false } }) }) as never
+      fakeApi({ getMailMessage: async () => ({ ok: true, data: { message } }) }) as never
     );
 
-    await store.select('m1');
+    await store.select('maras-mail', 'm1');
 
     expect(store.selected).toEqual({
       frontmatter: { subject: 'Hi' },
       body: 'Body text',
-      path: 'sources/mail/messages/m1.md',
-      inbox: false
+      path: 'sources/mail/messages/m1.md'
     });
     expect(store.loading).toBe(false);
   });
@@ -162,7 +183,7 @@ describe('MailStore.select', () => {
       fakeApi({ getMailMessage: async () => ({ ok: false, error: 'not_found' }) }) as never
     );
 
-    await store.select('missing');
+    await store.select('maras-mail', 'missing');
 
     expect(store.selected).toBeNull();
     expect(store.loading).toBe(false);
@@ -175,10 +196,10 @@ describe('MailStore.select', () => {
     });
     const store = new MailStore(fakeApi({ getMailMessage: () => pending }) as never);
 
-    const selectPromise = store.select('m1');
+    const selectPromise = store.select('maras-mail', 'm1');
     expect(store.loading).toBe(true);
 
-    resolveFetch!({ ok: true, data: { message: { body: 'x', path: 'p', frontmatter: null }, inbox: false } });
+    resolveFetch!({ ok: true, data: { message: { body: 'x', path: 'p', frontmatter: null } } });
     await selectPromise;
 
     expect(store.loading).toBe(false);
@@ -189,7 +210,7 @@ describe('MailStore.syncNow', () => {
   it('returns null on success', async () => {
     const store = new MailStore(fakeApi({}) as never);
 
-    const result = await store.syncNow(3);
+    const result = await store.syncNow('maras-mail', 3);
 
     expect(result).toBeNull();
   });
@@ -199,18 +220,18 @@ describe('MailStore.syncNow', () => {
       fakeApi({ mailSyncNow: async () => ({ ok: false, error: 'not_configured' }) }) as never
     );
 
-    const result = await store.syncNow(3);
+    const result = await store.syncNow('maras-mail', 3);
 
     expect(result).toBe('not_configured');
   });
 
-  it('passes the given generation through to the api', async () => {
+  it('passes the given account + generation through to the api', async () => {
     const mailSyncNow = vi.fn(async () => ({ ok: true, data: { started: true } }) as SyncResult);
     const store = new MailStore(fakeApi({ mailSyncNow }) as never);
 
-    await store.syncNow(7);
+    await store.syncNow('maras-mail', 7);
 
-    expect(mailSyncNow).toHaveBeenCalledWith(7);
+    expect(mailSyncNow).toHaveBeenCalledWith('maras-mail', 7);
   });
 });
 
@@ -218,48 +239,49 @@ describe('MailStore.handleMailMessage', () => {
   it('triggers refreshMessages', async () => {
     const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
     const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
 
     store.handleMailMessage({ path: 'sources/mail/messages/m2.md' });
     await Promise.resolve();
 
-    expect(listMailMessages).toHaveBeenCalledTimes(1);
+    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
   });
 });
 
 describe('MailStore.handleMailSync', () => {
   it('refreshes the inbox when the sync pass finishes', async () => {
-    const mailInbox = vi.fn(async () => ({ ok: true, data: { entries: [] } }) as InboxResult);
-    const store = new MailStore(fakeApi({ mailInbox }) as never);
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
 
     store.handleMailSync({ phase: 'finished', newMessages: 2 });
     await Promise.resolve();
 
-    expect(mailInbox).toHaveBeenCalledTimes(1);
+    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'INBOX');
   });
 
   it('does nothing on the started phase', async () => {
-    const mailInbox = vi.fn(async () => ({ ok: true, data: { entries: [] } }) as InboxResult);
-    const store = new MailStore(fakeApi({ mailInbox }) as never);
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
 
     store.handleMailSync({ phase: 'started', newMessages: 0 });
     await Promise.resolve();
 
-    expect(mailInbox).not.toHaveBeenCalled();
+    expect(listMailMessages).not.toHaveBeenCalled();
   });
 });
 
 describe('MailStore.handleMailStatus', () => {
   it('normalizes and stores status, and refetches messages + inbox (T13 activation race)', async () => {
     const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const mailInbox = vi.fn(async () => ({ ok: true, data: { entries: [] } }) as InboxResult);
-    const store = new MailStore(fakeApi({ listMailMessages, mailInbox }) as never);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
 
     store.handleMailStatus(rawStatus);
     await Promise.resolve();
 
     expect(store.status?.state).toBe('idle');
-    expect(listMailMessages).toHaveBeenCalledTimes(1);
-    expect(mailInbox).toHaveBeenCalledTimes(1);
+    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
+    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'INBOX');
   });
 });
 
@@ -293,7 +315,7 @@ describe('resupplyCredential', () => {
     state: 'idle',
     lastSyncAt: null,
     lastError: null,
-    account: "Mara's mail",
+    account: 'maras-mail',
     username: 'mara@example.com',
     workspaceId: 'ws-1'
   };
@@ -344,6 +366,18 @@ describe('resupplyCredential', () => {
     expect(setMailCredential).not.toHaveBeenCalled();
   });
 
+  it('no-ops when the status carries no account to target the credential at', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+    const noAccount: MailStatus = { ...configuredMissing, account: null };
+
+    const result = await resupplyCredential(noAccount, { setMailCredential });
+
+    expect(result).toBe(false);
+    expect(keychainGet).not.toHaveBeenCalled();
+    expect(setMailCredential).not.toHaveBeenCalled();
+  });
+
   it('desktop happy path: looks the secret up under the USERNAME (not the account label) and re-supplies it', async () => {
     vi.mocked(inDesktop).mockReturnValue(true);
     vi.mocked(keychainGet).mockResolvedValue('hunter2');
@@ -354,10 +388,10 @@ describe('resupplyCredential', () => {
 
     // The lookup key is the IMAP login, NOT the display label — the setup
     // flow stores the secret under workspace_id:username (spec §Credentials),
-    // so keying on `account` ("Mara's mail") would silently find nothing
+    // so keying on `account` ("maras-mail") would silently find nothing
     // whenever label and login differ.
     expect(keychainGet).toHaveBeenCalledWith('ws-1', 'mara@example.com');
-    expect(setMailCredential).toHaveBeenCalledWith('hunter2', 5);
+    expect(setMailCredential).toHaveBeenCalledWith('maras-mail', 'hunter2', 5);
     expect(result).toBe(true);
   });
 

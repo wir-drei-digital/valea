@@ -51,13 +51,20 @@ defmodule Valea.Api do
     resource Valea.Api.Mail do
       rpc_action(:mail_status, :mail_status)
       rpc_action(:setup_mail_account, :setup_mail_account)
+      rpc_action(:remove_mail_account, :remove_mail_account)
+      rpc_action(:purge_mail_account_files, :purge_mail_account_files)
+      rpc_action(:readopt_mail_account, :readopt_mail_account)
+      rpc_action(:discard_held_folder, :discard_held_folder)
       rpc_action(:set_mail_credential, :set_mail_credential)
       rpc_action(:mail_sync_now, :mail_sync_now)
       rpc_action(:mail_doctor, :mail_doctor)
       rpc_action(:create_mail_folders, :create_mail_folders)
       rpc_action(:list_mail_messages, :list_mail_messages)
+      rpc_action(:list_mail_folders, :list_mail_folders)
       rpc_action(:get_mail_message, :get_mail_message)
-      rpc_action(:mail_inbox, :mail_inbox)
+      rpc_action(:mail_apply_ops, :mail_apply_ops)
+      rpc_action(:push_draft_to_mailbox, :push_draft_to_mailbox)
+      rpc_action(:list_mail_drafts, :list_mail_drafts)
     end
 
     resource Valea.Api.Icms do

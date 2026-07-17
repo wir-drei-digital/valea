@@ -33,13 +33,25 @@ export const MESSAGE_DOT_CLASS: Record<MessageDotColor, string> = {
   neutral: 'bg-ink-meta'
 };
 
-/** Green accent dot for a message still awaiting review; neutral (muted ink) for everything else, including "processed". */
-export function messageDot(status: string | null | undefined): MessageDotColor {
-  return status === 'review' ? 'act' : 'neutral';
+/**
+ * Green accent dot for a message still awaiting review; neutral (muted ink)
+ * for everything else, including "processed".
+ *
+ * The old flat `status` field ("review"/"processed") this was keyed on is
+ * gone — the account-scoped, per-folder occurrence backend (Task 10) has no
+ * review-workflow marker of its own yet (the "Review" list is now just the
+ * `AI/Review` folder's contents; every row in it is equally "review" by
+ * definition). Kept accepting a `string | null` parameter (now the real
+ * `flags` field, unused below) rather than deleted outright, so a later
+ * task can reintroduce a real signal (e.g. `\Seen`) without another
+ * call-site rewrite; for now every row renders neutral/unprocessed.
+ */
+export function messageDot(_flags: string | null | undefined): MessageDotColor {
+  return 'neutral';
 }
 
-export function isProcessed(status: string | null | undefined): boolean {
-  return status === 'processed';
+export function isProcessed(_flags: string | null | undefined): boolean {
+  return false;
 }
 
 // -- relative time — mirrors `routes/chat/+page.svelte`'s `relativeTime` ---
@@ -240,6 +252,29 @@ export type MailSetupDeps = {
 export type MailSetupOutcome = { ok: true; devMode: boolean } | { ok: false; error: string };
 
 /**
+ * Lowercase, ASCII-fold, non-alphanumeric-runs-collapse-to-`-` slug, mirrors
+ * the backend's `Valea.Workspace.Scaffold.slugify/1` (and matches its
+ * grammar: `^[a-z0-9][a-z0-9-]{0,31}$`). Account setup (Task 10) rework: the
+ * `account` RPC argument is now a REAL slug the backend validates directly
+ * (no more server-side free-text-label-to-slug derivation) — this form's
+ * "Account label" field is still free text (no UI rework this task), so
+ * `submitMailSetup` derives the slug client-side before calling the RPC,
+ * preserving the exact same "type a label, it just works" UX.
+ */
+export function slugifyAccountLabel(label: string): string {
+  const slug = label
+    .normalize('NFD')
+    .replace(/\p{Mn}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+    .replace(/-+$/, '');
+
+  return slug === '' ? 'account' : slug;
+}
+
+/**
  * Orchestrates the account-setup submit flow: `setupMailAccount` first
  * (writes `config/mail.yaml`), then hands the password off over whichever
  * channel the platform allows.
@@ -265,13 +300,9 @@ export type MailSetupOutcome = { ok: true; devMode: boolean } | { ok: false; err
  * code from the RPC (map it with `mailSetupErrorMessage` for display).
  */
 export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetupDeps): Promise<MailSetupOutcome> {
-  const setupResult = await deps.api.setupMailAccount(
-    input.account,
-    input.host,
-    input.port,
-    input.username,
-    input.generation
-  );
+  const slug = slugifyAccountLabel(input.account);
+
+  const setupResult = await deps.api.setupMailAccount(slug, input.host, input.port, input.username, input.generation);
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
 
   if (deps.inDesktop()) {
@@ -280,12 +311,12 @@ export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetup
       await deps.keychainSet(workspaceId, input.username, input.secret);
     }
 
-    const credResult = await deps.api.setMailCredential(input.secret, input.generation);
+    const credResult = await deps.api.setMailCredential(slug, input.secret, input.generation);
     if (!credResult.ok) return { ok: false, error: credResult.error };
     return { ok: true, devMode: false };
   }
 
-  const credResult = await deps.api.setMailCredential(input.secret, input.generation);
+  const credResult = await deps.api.setMailCredential(slug, input.secret, input.generation);
   if (!credResult.ok) return { ok: false, error: credResult.error };
   return { ok: true, devMode: true };
 }
@@ -366,10 +397,14 @@ export type CreateFoldersDeps = {
  * that throws (none should — `ApiResult` calls never throw by contract)
  * can't strand the button in its disabled "Creating…" state.
  */
-export async function createFoldersAndRecheck(deps: CreateFoldersDeps, generation: number): Promise<string | null> {
+export async function createFoldersAndRecheck(
+  deps: CreateFoldersDeps,
+  account: string,
+  generation: number
+): Promise<string | null> {
   deps.setBusy(true);
   try {
-    const result = await deps.api.createMailFolders(generation);
+    const result = await deps.api.createMailFolders(account, generation);
     if (!result.ok) return createFoldersErrorMessage(result.error);
 
     await deps.rerunDoctor();

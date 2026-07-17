@@ -57,8 +57,11 @@ describe('submitMailSetup — browser (dev) path', () => {
 
     const outcome = await submitMailSetup(input, deps);
 
+    // `account` is derived to a real v4-grammar slug (`slugifyAccountLabel`)
+    // client-side before the RPC call — Task 10's `setup_mail_account`
+    // validates it directly, no more server-side free-text-label derivation.
     expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
-      'Work inbox',
+      'work-inbox',
       'imap.example.com',
       993,
       'mara@example.com',
@@ -66,7 +69,7 @@ describe('submitMailSetup — browser (dev) path', () => {
     );
     expect(deps.refreshWorkspaceId).not.toHaveBeenCalled();
     expect(deps.keychainSet).not.toHaveBeenCalled();
-    expect(deps.api.setMailCredential).toHaveBeenCalledWith('hunter2', 3);
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3);
     expect(outcome).toEqual({ ok: true, devMode: true });
   });
 });
@@ -120,7 +123,7 @@ describe('submitMailSetup — desktop path', () => {
     const outcome = await submitMailSetup(input, deps);
 
     expect(deps.keychainSet).not.toHaveBeenCalled();
-    expect(deps.api.setMailCredential).toHaveBeenCalledWith('hunter2', 3);
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3);
     expect(outcome).toEqual({ ok: true, devMode: false });
   });
 
@@ -132,7 +135,7 @@ describe('submitMailSetup — desktop path', () => {
 
     const outcome = await submitMailSetup(input, deps);
 
-    expect(deps.api.setMailCredential).toHaveBeenCalledWith('hunter2', 3);
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3);
     expect(outcome).toEqual({ ok: true, devMode: false });
   });
 });
@@ -259,10 +262,10 @@ describe('createFoldersAndRecheck', () => {
       })
     });
 
-    const message = await createFoldersAndRecheck(deps, 3);
+    const message = await createFoldersAndRecheck(deps, 'work-inbox', 3);
 
     expect(order).toEqual(['setBusy(true)', 'createMailFolders', 'rerunDoctor', 'setBusy(false)']);
-    expect(deps.api.createMailFolders).toHaveBeenCalledWith(3);
+    expect(deps.api.createMailFolders).toHaveBeenCalledWith('work-inbox', 3);
     expect(message).toBeNull();
   });
 
@@ -271,7 +274,7 @@ describe('createFoldersAndRecheck', () => {
       api: { createMailFolders: vi.fn(async () => fail('workspace_changed')) }
     });
 
-    const message = await createFoldersAndRecheck(deps, 3);
+    const message = await createFoldersAndRecheck(deps, 'work-inbox', 3);
 
     expect(message).toBe('Your workspace changed. Reopen it and try again.');
     expect(deps.rerunDoctor).not.toHaveBeenCalled();
@@ -285,7 +288,7 @@ describe('createFoldersAndRecheck', () => {
       })
     });
 
-    await expect(createFoldersAndRecheck(deps, 3)).rejects.toThrow('boom');
+    await expect(createFoldersAndRecheck(deps, 'work-inbox', 3)).rejects.toThrow('boom');
     expect(deps.setBusy).toHaveBeenLastCalledWith(false);
   });
 });

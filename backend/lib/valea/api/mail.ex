@@ -1,19 +1,20 @@
 defmodule Valea.Api.Mail do
   @moduledoc """
-  Data-layer-less Ash resource exposing the mail account, its sync engine,
-  and its indexed messages over RPC (mail design spec, §RPC surface).
+  Data-layer-less Ash resource exposing the per-account mail engines and
+  their indexed messages over RPC (mail-as-maildir design spec E, §RPC
+  surface). Every action takes an explicit `account` slug argument — there
+  is no more implicit "the one configured account": `Valea.Mail.Engine` is
+  per-slug (`Valea.Mail.Registry`-keyed) since Task 9, and this resource is
+  the RPC-facing wrapper matching that one-for-one.
 
-  Wraps `Valea.Mail.Engine` (status/setup/credential/sync/doctor/folders),
-  `Valea.Mail.Settings.upsert_account!/3` (account setup), and
-  `Valea.Mail.Store` + `Valea.Mail.MessageFile.parse/1` (the read side —
-  files under `sources/mail/messages/` are canonical, `Store` is only ever
-  a cache of them, so `get_mail_message` reads the file, not the cache row).
   Follows `Valea.Api.ICM`'s conventions throughout:
 
     * `constraints fields: [...]` typed actions for structured returns
-      (`list_mail_messages`, `mail_inbox`), UNCONSTRAINED `:map` for raw
-      passthrough where the shape is heterogeneous or arbitrary
-      (`mail_status`'s `status`, `mail_doctor`'s `checks`,
+      (`list_mail_messages`, `list_mail_folders`, `mail_apply_ops`),
+      UNCONSTRAINED `:map`/`{:array, :map}` for raw or heterogeneous
+      passthrough (`mail_status`'s `accounts` — valid entries carry the full
+      `Valea.Mail.Engine.status/1` shape, invalid-config entries carry only
+      `account`/`valid`/`state`/`reason`; `mail_doctor`'s `checks`;
       `get_mail_message`'s `message`) — string keys, no camelCase
       translation, same typed-vs-unconstrained split as `Valea.Api.ICM`'s
       moduledoc.
@@ -21,25 +22,33 @@ defmodule Valea.Api.Mail do
       previously documented in the deleted `Valea.Api.Queue`'s moduledoc
       (ash_typescript 0.17.3 nulls a top-level atom-keyed field whose value
       is `false`): every action here that can genuinely return `false` at
-      the top level (`setup_mail_account`'s `saved`, `set_mail_credential`'s
-      `accepted`, `mail_sync_now`'s `started`, `mail_doctor`'s `ok`,
-      `get_mail_message`'s `inbox`) uses a STRING key for that field.
-    * Mutating actions (`setup_mail_account`, `set_mail_credential`,
-      `mail_sync_now`, `create_mail_folders`) take a
-      `generation` argument and guard with
-      `Valea.Workspace.Manager.check_generation/1` before touching anything.
-      `mail_doctor` ALSO takes `generation` and guards, even though it never
-      itself errors (`Valea.Mail.Doctor.run/1` always succeeds) — it probes
-      the live network with the workspace's credential, so it is treated as
-      mutating-adjacent rather than a plain read.
-    * Read-only actions (`mail_status`, `list_mail_messages`,
-      `get_mail_message`, `mail_inbox`) take no `generation`, but still
-      resolve `Valea.Workspace.Manager.current/0` before touching the
-      Engine/Store — those only exist while a workspace's
-      `Valea.Workspace.Runtime` is up, and calling them with none open would
-      otherwise crash (`:noproc` / no `Valea.Repo` connection) instead of
-      surfacing the ordinary `"workspace_not_open"` error every other
-      no-workspace path uses.
+      the top level uses a STRING key for that field (`saved`, `removed`,
+      `purged`, `readopted`, `discarded`, `accepted`, `started`, `ok`).
+    * Every MUTATING action takes a `generation` argument and guards with
+      `Valea.Workspace.Manager.check_generation/1` before touching
+      anything. Read-only actions (`mail_status`, `list_mail_messages`,
+      `list_mail_folders`, `get_mail_message`) take no `generation`, but
+      still resolve `Manager.current/0` before touching the Engine/Store.
+    * Every action that takes an `account` argument validates its grammar
+      FIRST (`Valea.Mail.Settings.valid_slug?/1`, via `validate_slug/1`
+      below) — before it is ever interpolated into a filesystem path
+      (`Valea.Mail.Account`'s `.account`/`.readopt` paths,
+      `get_mail_message`'s view path). A malformed slug (`"../x"`, an
+      absolute path, anything outside `^[a-z0-9][a-z0-9-]{0,31}$`) is
+      rejected as `"invalid_slug"` before any I/O, never left to whatever a
+      downstream path-join happens to do with it.
+
+  ## `get_mail_message`'s `msg_id` containment
+
+  `msg_id` must match `^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+-[0-9a-f]{8,64}$`
+  (rejected otherwise, before any file I/O — this alone already rules out a
+  `../`-laden or absolute-path value, since neither can match the pattern).
+  The view file is then resolved via `Valea.Paths.resolve_real/2` — NEVER
+  weakened, called exactly as every other containment chokepoint in this
+  codebase calls it — rooted at `sources/mail/<account>/views/messages/`,
+  so a symlinked view file whose target escapes that directory is rejected
+  (`{:error, :outside}`) exactly like a real traversal attempt, never
+  followed and read.
 
   ## `set_mail_credential`'s secret
 
@@ -47,18 +56,19 @@ defmodule Valea.Api.Mail do
   option — see `Ash.Resource.Actions.Argument`). Concretely, this app's
   `config :ash, redact_sensitive_values_in_errors?: true` (config.exs) makes
   `Ash.Resource.Validation.maybe_redact/3` scrub any `sensitive?: true`
-  field's value out of an error a *validation* builds against it (e.g.
-  `argument_in`/`argument_equals`) — this action declares no such
-  validation on `secret`, so that path is dormant here, but the flag keeps
-  the action correct/forward-compatible if one is ever added, and documents
-  the field's status for the next reader either way. Beyond that mechanism,
-  nothing on the request path logs action inputs at all — there is no
-  `Plug.Logger` (or similar) on `ValeaWeb.Endpoint`, and Ash does not log
-  action arguments by default — so the secret never reaches a log line or
-  telemetry event regardless. The `run` callback itself never echoes it
-  back (`set_credential/1`'s return here is the fixed `%{"accepted" =>
-  true}`, never the input), and `Valea.Mail.Engine` holds it only as a
-  zero-arity closure in process state (see that module's moduledoc).
+  field's value out of an error a *validation* builds against it — this
+  action declares no such validation on `secret`, so that path is dormant
+  here, but the flag keeps the action correct/forward-compatible and
+  documents the field's status either way. The `run` callback itself never
+  echoes it back, and `Valea.Mail.Engine` holds it only as a zero-arity
+  closure in process state (see that module's moduledoc).
+
+  ## Stubs
+
+  `mail_apply_ops` (Task 13 wires the real ops executor), `push_draft_to_mailbox`
+  and `list_mail_drafts` (Task 15) are declared now so their exact shapes are
+  fixed and ash_typescript codegen only churns once — each `run` callback
+  is a fixed, honest stub (never silently "succeeds").
   """
   use Ash.Resource, domain: Valea.Api, extensions: [AshTypescript.Resource]
 
@@ -67,47 +77,35 @@ defmodule Valea.Api.Mail do
   end
 
   alias Valea.Api.Error
-  alias Valea.Mail.Doctor
+  alias Valea.Mail.Account
   alias Valea.Mail.Engine
   alias Valea.Mail.MessageFile
+  alias Valea.Mail.Reconcile
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.Supervisor, as: MailSupervisor
+  alias Valea.Mail.Views
+  alias Valea.Paths
   alias Valea.Workspace.Manager
-  alias Valea.Workspace.Scaffold
 
-  # TEMP T9->T10 bridge: this whole resource is rewritten in Task 10 onto
-  # the real account-scoped RPC surface (an explicit `account` argument on
-  # every action, per the mail-as-maildir design spec E's RPC table). Task 9
-  # made `Valea.Mail.Engine`/`Valea.Mail.Doctor` per-account (Registry-keyed
-  # by slug), which this NOT-yet-rewritten, still-single-implicit-account
-  # resource must keep working against in the meantime — `default_slug/1`
-  # is the bridge: "the first (only, in practice) valid account by slug",
-  # mirroring the exact precedent `Valea.Mail.Engine`'s old `load_settings/1`
-  # v3-bridge used. Deleted whole-cloth, alongside this resource's rewrite,
-  # in Task 10.
-  defp default_slug(root) do
-    case Settings.load(root) do
-      {:ok, %{accounts: accounts}} when map_size(accounts) > 0 ->
-        accounts |> Map.keys() |> Enum.sort() |> List.first()
-
-      _ ->
-        nil
-    end
-  end
+  @msg_id_re ~r/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+-[0-9a-f]{8,64}$/
 
   actions do
+    # -- status -----------------------------------------------------------
+
     action :mail_status, :map do
-      constraints fields: [status: [type: :map, allow_nil?: false]]
+      constraints fields: [accounts: [type: {:array, :map}, allow_nil?: false]]
 
       run fn _input, _ctx ->
         with {:ok, %{path: root}} <- Manager.current() do
-          {:ok, %{status: stringify(status_for(root))}}
+          {:ok, %{accounts: mail_status_accounts(root)}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
       end
     end
+
+    # -- account lifecycle --------------------------------------------------
 
     action :setup_mail_account, :map do
       constraints fields: [saved: [type: :boolean, allow_nil?: false]]
@@ -120,21 +118,17 @@ defmodule Valea.Api.Mail do
 
       run fn input, _ctx ->
         %{
-          account: account,
+          account: slug,
           host: host,
           port: port,
           username: username,
           generation: generation
         } = input.arguments
 
-        # TEMP v3-bridge: reworked in Task 10 — `account` is still the RPC's
-        # display-label argument (frontend hasn't moved to slugs yet), so it's
-        # derived into a v4-grammar slug here rather than threading a real
-        # slug argument through the whole call chain.
-        slug = account |> Scaffold.slugify() |> String.slice(0, 32)
-
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- check_identity_for_setup(root, slug, host, username),
              :ok <-
                Settings.upsert_account!(root, slug, %{host: host, port: port, username: username}) do
           :ok = MailSupervisor.reload_settings_all(root)
@@ -145,22 +139,113 @@ defmodule Valea.Api.Mail do
       end
     end
 
+    action :remove_mail_account, :map do
+      constraints fields: [removed: [type: :boolean, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- Settings.remove_account!(root, slug) do
+          :ok = MailSupervisor.reload_settings_all(root)
+          {:ok, %{"removed" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :purge_mail_account_files, :map do
+      constraints fields: [purged: [type: :boolean, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :confirmation, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug, confirmation: confirmation, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- require_confirmation(confirmation, slug),
+             :ok <- ensure_purge_allowed(slug),
+             {:ok, target} <- Paths.resolve_real(slug, Path.join([root, "sources", "mail"])) do
+          File.rm_rf!(target)
+          {:ok, %{"purged" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :readopt_mail_account, :map do
+      constraints fields: [readopted: [type: :boolean, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :confirmation, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug, confirmation: confirmation, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- validate_slug(slug),
+             :ok <- require_confirmation(confirmation, slug),
+             :ok <- Engine.readopt(slug) do
+          {:ok, %{"readopted" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :discard_held_folder, :map do
+      constraints fields: [discarded: [type: :boolean, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :folder, :string, allow_nil?: false
+      argument :confirmation, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{
+          account: slug,
+          folder: folder,
+          confirmation: confirmation,
+          generation: generation
+        } = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- require_confirmation(confirmation, folder),
+             :ok <- Reconcile.discard_held!(root, slug, folder) do
+          {:ok, %{"discarded" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :set_mail_credential, :map do
       constraints fields: [accepted: [type: :boolean, allow_nil?: false]]
 
+      argument :account, :string, allow_nil?: false
       argument :secret, :string, allow_nil?: false, sensitive?: true
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
-        %{secret: secret, generation: generation} = input.arguments
+        %{account: slug, secret: secret, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current() do
-          case default_slug(root) do
-            nil -> :ok
-            slug -> Engine.set_credential(slug, secret)
-          end
-
+             :ok <- validate_slug(slug),
+             :ok <- Engine.set_credential(slug, secret) do
           {:ok, %{"accepted" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -168,15 +253,20 @@ defmodule Valea.Api.Mail do
       end
     end
 
+    # -- sync / doctor --------------------------------------------------------
+
     action :mail_sync_now, :map do
       constraints fields: [started: [type: :boolean, allow_nil?: false]]
 
+      argument :account, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
-        with :ok <- Manager.check_generation(input.arguments.generation),
-             {:ok, %{path: root}} <- Manager.current(),
-             :ok <- sync_now_for(root) do
+        %{account: slug, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- validate_slug(slug),
+             :ok <- Engine.sync_now(slug) do
           {:ok, %{"started" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -190,12 +280,15 @@ defmodule Valea.Api.Mail do
                     checks: [type: {:array, :map}, allow_nil?: false]
                   ]
 
+      argument :account, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
-        with :ok <- Manager.check_generation(input.arguments.generation),
-             {:ok, %{path: root}} <- Manager.current() do
-          {:ok, %{checks: checks, ok: ok}} = doctor_for(root)
+        %{account: slug, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- validate_slug(slug),
+             {:ok, %{checks: checks, ok: ok}} <- Engine.doctor(slug) do
           {:ok, %{"ok" => ok, "checks" => checks}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -206,18 +299,23 @@ defmodule Valea.Api.Mail do
     action :create_mail_folders, :map do
       constraints fields: [created: [type: {:array, :string}, allow_nil?: false]]
 
+      argument :account, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
-        with :ok <- Manager.check_generation(input.arguments.generation),
-             {:ok, %{path: root}} <- Manager.current(),
-             {:ok, created} <- create_folders_for(root) do
+        %{account: slug, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- validate_slug(slug),
+             {:ok, created} <- Engine.create_folders(slug) do
           {:ok, %{created: created}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
       end
     end
+
+    # -- messages / folders (read-only) -------------------------------------
 
     action :list_mail_messages, :map do
       constraints fields: [
@@ -232,33 +330,33 @@ defmodule Valea.Api.Mail do
                             from_email: [type: :string, allow_nil?: true],
                             subject: [type: :string, allow_nil?: true],
                             date: [type: :string, allow_nil?: true],
-                            status: [type: :string, allow_nil?: true],
+                            flags: [type: :string, allow_nil?: true],
                             has_attachments: [type: :boolean, allow_nil?: false],
                             uid: [type: :integer, allow_nil?: true],
-                            path: [type: :string, allow_nil?: true]
+                            path: [type: :string, allow_nil?: true],
+                            view_path: [type: :string, allow_nil?: false]
                           ]
                         ]
                       ]
                     ]
                   ]
 
-      run fn _input, _ctx ->
-        with {:ok, _ws} <- Manager.current() do
+      argument :account, :string, allow_nil?: false
+      argument :folder, :string, allow_nil?: false
+      argument :limit, :integer, allow_nil?: true, constraints: [min: 1]
+      argument :before, :string, allow_nil?: true
+
+      run fn input, _ctx ->
+        %{account: slug, folder: folder} = input.arguments
+        limit = input.arguments[:limit] || 100
+        before = input.arguments[:before]
+
+        with :ok <- validate_slug(slug),
+             {:ok, _ws} <- Manager.current() do
           messages =
-            Store.list_messages()
-            |> Enum.map(
-              &Map.take(&1, [
-                :msg_id,
-                :from_name,
-                :from_email,
-                :subject,
-                :date,
-                :status,
-                :has_attachments,
-                :uid,
-                :path
-              ])
-            )
+            slug
+            |> Store.list_messages(folder, limit, before)
+            |> Enum.map(&message_summary(slug, &1))
 
           {:ok, %{messages: messages}}
         else
@@ -267,51 +365,139 @@ defmodule Valea.Api.Mail do
       end
     end
 
-    action :get_mail_message, :map do
+    action :list_mail_folders, :map do
       constraints fields: [
-                    message: [type: :map, allow_nil?: false],
-                    inbox: [type: :boolean, allow_nil?: false]
-                  ]
-
-      argument :msg_id, :string, allow_nil?: false
-
-      run fn input, _ctx ->
-        with {:ok, %{path: root}} <- Manager.current(),
-             {:ok, %{path: path}} <- Store.get_message(input.arguments.msg_id),
-             {:ok, bytes} <- File.read(Path.join(root, path)),
-             {:ok, %{frontmatter: frontmatter, body: body}} <- MessageFile.parse(bytes) do
-          {:ok,
-           %{
-             "message" => %{"frontmatter" => frontmatter, "body" => body, "path" => path},
-             "inbox" => false
-           }}
-        else
-          {:error, reason} -> {:error, error_for(reason)}
-        end
-      end
-    end
-
-    action :mail_inbox, :map do
-      constraints fields: [
-                    entries: [
+                    folders: [
                       type: {:array, :map},
                       allow_nil?: false,
                       constraints: [
                         items: [
                           fields: [
-                            uid: [type: :integer, allow_nil?: false],
-                            from_text: [type: :string, allow_nil?: true],
-                            subject: [type: :string, allow_nil?: true],
-                            date: [type: :string, allow_nil?: true]
+                            name: [type: :string, allow_nil?: false],
+                            dir: [type: :string, allow_nil?: true],
+                            held: [type: :boolean, allow_nil?: false],
+                            message_count: [type: :integer, allow_nil?: false],
+                            backfill_complete: [type: :boolean, allow_nil?: false]
                           ]
                         ]
                       ]
                     ]
                   ]
 
+      argument :account, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug} = input.arguments
+
+        with :ok <- validate_slug(slug),
+             {:ok, _ws} <- Manager.current() do
+          folders = slug |> Store.folders() |> Enum.map(&folder_summary(slug, &1))
+          {:ok, %{folders: folders}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :get_mail_message, :map do
+      constraints fields: [message: [type: :map, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :msg_id, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug, msg_id: msg_id} = input.arguments
+
+        with :ok <- validate_slug(slug),
+             :ok <- validate_msg_id(msg_id),
+             {:ok, %{path: root}} <- Manager.current(),
+             views_dir = Path.join([root, "sources", "mail", slug, "views", "messages"]),
+             {:ok, resolved} <- Paths.resolve_real("#{msg_id}.md", views_dir),
+             {:ok, bytes} <- File.read(resolved),
+             {:ok, %{frontmatter: frontmatter, body: body}} <- MessageFile.parse(bytes) do
+          rel_path = Views.view_rel_path(slug, msg_id)
+
+          {:ok,
+           %{"message" => %{"frontmatter" => frontmatter, "body" => body, "path" => rel_path}}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    # -- stubs (fixed shape now, real bodies land in later tasks) -----------
+
+    action :mail_apply_ops, :map do
+      constraints fields: [
+                    results: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            op: [type: :integer, allow_nil?: false],
+                            result: [type: :string, allow_nil?: false],
+                            reason: [type: :string, allow_nil?: true]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+      argument :ops, {:array, :map}, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # Task 13 replaces this body with the real ops executor call — declared
+      # now, with this exact shape, so codegen churns once (see moduledoc).
+      run fn input, _ctx ->
+        %{account: slug, ops: ops, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- validate_slug(slug) do
+          results =
+            ops
+            |> Enum.with_index()
+            |> Enum.map(fn {_op, i} ->
+              %{"op" => i, "result" => "rejected", "reason" => "ops_executor_not_wired"}
+            end)
+
+          {:ok, %{results: results}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :push_draft_to_mailbox, :map do
+      constraints fields: [state: [type: :string, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :draft_name, :string, allow_nil?: false
+      argument :content_hash, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # Task 15 fills this in — declared now, fixed shape, so codegen
+      # churns once.
+      run fn input, _ctx ->
+        %{account: slug, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- validate_slug(slug) do
+          {:error, error_for(:not_implemented)}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :list_mail_drafts, :map do
+      constraints fields: [drafts: [type: {:array, :map}, allow_nil?: false]]
+
+      # Task 15 fills this in.
       run fn _input, _ctx ->
         with {:ok, _ws} <- Manager.current() do
-          {:ok, %{entries: Store.inbox_headers()}}
+          {:ok, %{drafts: []}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -321,80 +507,120 @@ defmodule Valea.Api.Mail do
 
   @doc false
   # Central error mapping for every action in this resource — mirrors
-  # `Valea.Api.ICM.error_for/1`. `:no_workspace` becomes the frontend's
-  # `"workspace_not_open"`; every other atom this resource's dependencies
-  # return (`:workspace_changed`, `:not_configured`, `:no_credential`,
-  # `:inactive`, `:not_found`, ...) already stringifies to the exact code
-  # the frontend expects.
+  # `Valea.Api.ICM.error_for/1`. Most of this resource's dependencies
+  # already return an atom that stringifies to the exact code the frontend
+  # expects (`to_string/1` — the generic clause below); the handful that
+  # don't get an explicit clause:
+  #   * `:blocked` (Engine.sync_now/1's mailbox_replaced-sticky refusal) ->
+  #     `"mailbox_replaced"` — the client-facing name for the SAME
+  #     condition `mail_status`'s `state` field already uses.
+  #   * `:enoent`/`:outside`/`:invalid` (a missing file, or
+  #     `Paths.resolve_real/2` rejecting containment) -> `"not_found"` —
+  #     never distinguishes "doesn't exist" from "resolves outside the
+  #     allowed area" to the client (see `get_mail_message`'s moduledoc
+  #     section).
   def error_for(:no_workspace), do: Error.new("workspace_not_open")
+  def error_for(:blocked), do: Error.new("mailbox_replaced")
+  def error_for(:enoent), do: Error.new("not_found")
+  def error_for(:outside), do: Error.new("not_found")
+  def error_for(:invalid), do: Error.new("not_found")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
   def error_for(reason), do: Error.new(inspect(reason))
 
-  # `Valea.Mail.Engine.status/1`'s map is atom-keyed; stringify the top
-  # level so this unconstrained field is delivered RAW (see the moduledoc),
-  # matching `Valea.Api.ICM.page/1`'s identical top-level stringify.
-  defp stringify(status), do: Map.new(status, fn {k, v} -> {to_string(k), v} end)
+  # -- slug / confirmation guards ----------------------------------------------
 
-  # -- TEMP T9->T10 bridge helpers — see `default_slug/1`'s comment above --
+  defp validate_slug(slug) do
+    if Settings.valid_slug?(slug), do: :ok, else: {:error, :invalid_slug}
+  end
 
-  defp status_for(root) do
-    case default_slug(root) do
-      nil -> default_status(root)
-      slug -> Engine.status(slug) || default_status(root)
+  defp require_confirmation(confirmation, expected) do
+    if confirmation == expected, do: :ok, else: {:error, :confirmation_mismatch}
+  end
+
+  defp check_identity_for_setup(root, slug, host, username) do
+    case Account.verify(root, slug, %{host: host, username: username}) do
+      :ok -> :ok
+      :absent -> :ok
+      {:error, :identity_mismatch} = error -> error
     end
   end
 
-  defp default_status(root) do
+  # A purge may proceed against a slug with NO running engine (already
+  # removed from config) or one stuck in `identity_mismatch`/
+  # `mailbox_replaced` (exactly the states purging is meant to resolve) —
+  # never against a healthy, actively-running engine, so files can't be
+  # yanked out from under an in-flight sync.
+  defp ensure_purge_allowed(slug) do
+    case Engine.status(slug) do
+      nil -> :ok
+      %{state: state} when state in ["identity_mismatch", "mailbox_replaced"] -> :ok
+      %{} -> {:error, :account_active}
+    end
+  end
+
+  defp validate_msg_id(msg_id) do
+    if Regex.match?(@msg_id_re, msg_id), do: :ok, else: {:error, :invalid_msg_id}
+  end
+
+  # -- mail_status --------------------------------------------------------------
+
+  defp mail_status_accounts(root) do
+    invalid =
+      case Settings.load(root) do
+        {:ok, %{invalid: invalid}} -> invalid
+        _ -> %{}
+      end
+
+    valid_entries =
+      Enum.map(Engine.statuses(), fn {_slug, status} ->
+        status |> stringify() |> Map.put("valid", true)
+      end)
+
+    invalid_entries =
+      Enum.map(invalid, fn {slug, reason} ->
+        %{"account" => slug, "valid" => false, "state" => "invalid_config", "reason" => reason}
+      end)
+
+    (valid_entries ++ invalid_entries) |> Enum.sort_by(& &1["account"])
+  end
+
+  defp stringify(status), do: Map.new(status, fn {k, v} -> {to_string(k), v} end)
+
+  # -- list_mail_messages / list_mail_folders -----------------------------------
+
+  defp message_summary(account, row) do
+    row
+    |> Map.take([
+      :msg_id,
+      :from_name,
+      :from_email,
+      :subject,
+      :date,
+      :flags,
+      :has_attachments,
+      :uid,
+      :path
+    ])
+    |> Map.put(:view_path, Views.view_rel_path(account, row.msg_id))
+  end
+
+  defp folder_summary(account, sync_state) do
     %{
-      account: nil,
-      configured: false,
-      credential: "missing",
-      state: "idle",
-      last_sync_at: nil,
-      last_error: nil,
-      username: nil,
-      workspace_id: workspace_id(root),
-      pending_ops: 0,
-      held_folders: [],
-      backfill: nil,
-      notices: []
+      name: sync_state.folder,
+      dir: sync_state.dir,
+      held: sync_state.held,
+      message_count: folder_message_count(account, sync_state.folder),
+      backfill_complete: sync_state.backfill_complete
     }
   end
 
-  defp workspace_id(root) do
-    case YamlElixir.read_from_file(Path.join(root, "config/workspace.yaml")) do
-      {:ok, %{"id" => id}} when is_binary(id) -> id
-      _ -> nil
-    end
-  end
-
-  defp sync_now_for(root) do
-    case default_slug(root) do
-      nil -> {:error, :not_configured}
-      slug -> Engine.sync_now(slug)
-    end
-  end
-
-  defp doctor_for(root) do
-    case default_slug(root) do
-      nil ->
-        Doctor.run(%{
-          root: root,
-          account: "",
-          settings: nil,
-          credential: nil,
-          transport: Application.get_env(:valea, :mail_transport, Valea.Mail.ImapClient)
-        })
-
-      slug ->
-        Engine.doctor(slug)
-    end
-  end
-
-  defp create_folders_for(root) do
-    case default_slug(root) do
-      nil -> {:error, :not_configured}
-      slug -> Engine.create_folders(slug)
-    end
+  # Every real (non-oversize-sentinel) occurrence currently bound to this
+  # folder in `mail_uid_map` — the identity-map table, not `mail_messages`,
+  # so this count is accurate even for a folder whose index rows haven't
+  # been (re)built yet.
+  defp folder_message_count(account, folder) do
+    account
+    |> Store.occurrences(folder)
+    |> Enum.count(&(&1.msg_id != "__oversize__"))
   end
 end

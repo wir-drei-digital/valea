@@ -14,9 +14,12 @@ defmodule Valea.Repo.Migrations.CreateMailTables do
   worthless under the new occurrence-based layout and must not block boot).
 
   `mail_uid_outcomes` and `mail_inbox_headers` are dropped and immediately
-  recreated in their v1 shape: `Valea.Mail.Store.UidOutcome` and
-  `Valea.Mail.Store.InboxHeader` are kept alive as TEMP v3-bridges (removed
-  in Task 7) — see their moduledocs.
+  recreated in their v1 shape: `Valea.Mail.Store.UidOutcome` (bridge retired
+  Task 7) and `Valea.Mail.Store.InboxHeader` (bridge retired Task 10, the
+  resource itself deleted) both used them as a pre-occurrence bridge table
+  in their day. Both tables' schema is left in place here regardless —
+  hand-written migrations aren't retroactively edited; an orphaned table is
+  harmless — see `Valea.Mail.Store`'s moduledoc.
   """
 
   use Ecto.Migration
@@ -67,8 +70,8 @@ defmodule Valea.Repo.Migrations.CreateMailTables do
       add :references, :string
     end
 
-    # TEMP v3-bridge tables (v1 shape, unchanged) — see
-    # `Valea.Mail.Store.UidOutcome`/`Valea.Mail.Store.InboxHeader` moduledocs.
+    # Historical bridge tables (v1 shape, unchanged) — see the moduledoc
+    # above: both bridges are since retired, the tables left in place.
     create table(:mail_uid_outcomes, primary_key: false) do
       add :folder, :string, primary_key: true, null: false
       add :uid, :integer, primary_key: true, null: false

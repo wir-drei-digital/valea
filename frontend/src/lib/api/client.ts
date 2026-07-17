@@ -65,8 +65,6 @@ import {
   listMailMessagesChannel,
   getMailMessage as httpGetMailMessage,
   getMailMessageChannel,
-  mailInbox as httpMailInbox,
-  mailInboxChannel,
   inspectIcm as httpInspectIcm,
   inspectIcmChannel,
   listIcms as httpListIcms,
@@ -112,7 +110,6 @@ import type {
   CreateMailFoldersFields,
   ListMailMessagesFields,
   GetMailMessageFields,
-  MailInboxFields,
   IcmTreeFields,
   InspectIcmFields,
   ListIcmsFields,
@@ -369,19 +366,31 @@ const cockpitTodayFields = [
   { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] }
 ] as unknown as CockpitTodayFields;
 
-// Mail (T13/T14). Every top-level boolean-valued field here (`saved`,
-// `accepted`, `started`, `ok`) is delivered under a STRING key by the
-// backend (`Valea.Api.Mail`'s moduledoc documents the same falsy-map-field
+// Mail (Task 10 rework — account-scoped RPC surface, mail-as-maildir design
+// spec E). Every top-level boolean-valued field here (`saved`, `accepted`,
+// `started`, `ok`) is delivered under a STRING key by the backend
+// (`Valea.Api.Mail`'s moduledoc documents the same falsy-map-field
 // ash_typescript 0.17.3 workaround `Valea.Api.Queue` uses) — that's a
 // runtime detail only, invisible at this field-selection layer since a JS
 // object key is a string either way; no cast needed for these.
-const mailStatusFields: MailStatusFields = ['status'];
+//
+// `mailStatusFields` selects the RAW (unconstrained) `accounts` array —
+// each entry keeps the exact snake_case shape `Valea.Mail.Engine.status/1`
+// builds (`account`/`configured`/`credential`/`state`/`last_sync_at`/
+// `last_error`/`username`/`workspace_id`/`pending_ops`/`held_folders`/
+// `backfill`/`notices`, plus `valid`/`reason` for an invalid-config entry).
+// `stores/mail.svelte.ts`'s `mailStatus` wrapper below still surfaces a
+// SINGLE `status` object (the first valid account) to keep the store/UI
+// single-account-shaped for now — full multi-account UI is a later task.
+const mailStatusFields: MailStatusFields = ['accounts'];
 const setupMailAccountFields: SetupMailAccountFields = ['saved'];
 const setMailCredentialFields: SetMailCredentialFields = ['accepted'];
 const mailSyncNowFields: MailSyncNowFields = ['started'];
 const mailDoctorFields: MailDoctorFields = ['ok', 'checks'];
 const createMailFoldersFields: CreateMailFoldersFields = ['created'];
-const getMailMessageFields: GetMailMessageFields = ['message', 'inbox'];
+// `inbox` (whether the message was legacy-inbox-only) is gone — the
+// account-scoped `get_mail_message` only ever reads a real indexed view now.
+const getMailMessageFields: GetMailMessageFields = ['message'];
 
 // Icms (task 3.4, `Valea.Api.Icms` — the C9 id/mount-key based replacement
 // for `Valea.Api.Mounts`, kept registered until Phase 11). Same anonymous-
@@ -425,16 +434,16 @@ const inspectIcmFields: InspectIcmFields = ['ok', 'name', 'description', 'reason
 const icmTreeFields: IcmTreeFields = ['mountKey', 'title', 'tree'];
 
 // Same anonymous-embedded-map-array codegen gap as `listAgentSessionsFields`
-// above (see the comment on
-// `icmEntryReferencesFields`) — `messages`/`entries` are `Array<TypedMap>`
-// action-return fields, which `ComplexFieldSelection` can't express, so the
-// generated `Fields` type collapses to `never` for the literal. The backend
-// actions accept these exact nested literals (verified by the passing
-// `mail_rpc_test.exs` suite).
+// above (see the comment on `icmEntryReferencesFields`) — `messages` is an
+// `Array<TypedMap>` action-return field, which `ComplexFieldSelection`
+// can't express, so the generated `Fields` type collapses to `never` for the
+// literal. The backend action accepts this exact nested literal (verified
+// by the passing `mail_rpc_test.exs` suite). `status` (the old flat
+// review/processed marker) is gone — replaced by `flags` (real IMAP flag
+// letters) and `viewPath` (the derived view's workspace-relative path).
 const listMailMessagesFields = [
-  { messages: ['msgId', 'fromName', 'fromEmail', 'subject', 'date', 'status', 'hasAttachments', 'uid', 'path'] }
+  { messages: ['msgId', 'fromName', 'fromEmail', 'subject', 'date', 'flags', 'hasAttachments', 'uid', 'path', 'viewPath'] }
 ] as unknown as ListMailMessagesFields;
-const mailInboxFields = [{ entries: ['uid', 'fromText', 'subject', 'date'] }] as unknown as MailInboxFields;
 
 function callCreateAgentSessionChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
@@ -508,7 +517,7 @@ function callSetupMailAccountChannel(
 
 function callSetMailCredentialChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { secret: string; generation: number }
+  input: { account: string; secret: string; generation: number }
 ) {
   return wrapChannelCall((handlers) =>
     setMailCredentialChannel({ channel, input, fields: setMailCredentialFields, ...handlers })
@@ -517,44 +526,43 @@ function callSetMailCredentialChannel(
 
 function callMailSyncNowChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { generation: number }
+  input: { account: string; generation: number }
 ) {
   return wrapChannelCall((handlers) => mailSyncNowChannel({ channel, input, fields: mailSyncNowFields, ...handlers }));
 }
 
 function callMailDoctorChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { generation: number }
+  input: { account: string; generation: number }
 ) {
   return wrapChannelCall((handlers) => mailDoctorChannel({ channel, input, fields: mailDoctorFields, ...handlers }));
 }
 
 function callCreateMailFoldersChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { generation: number }
+  input: { account: string; generation: number }
 ) {
   return wrapChannelCall((handlers) =>
     createMailFoldersChannel({ channel, input, fields: createMailFoldersFields, ...handlers })
   );
 }
 
-function callListMailMessagesChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+function callListMailMessagesChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; folder: string; limit?: number; before?: string }
+) {
   return wrapChannelCall((handlers) =>
-    listMailMessagesChannel({ channel, fields: listMailMessagesFields, ...handlers })
+    listMailMessagesChannel({ channel, input, fields: listMailMessagesFields, ...handlers })
   );
 }
 
 function callGetMailMessageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { msgId: string }
+  input: { account: string; msgId: string }
 ) {
   return wrapChannelCall((handlers) =>
     getMailMessageChannel({ channel, input, fields: getMailMessageFields, ...handlers })
   );
-}
-
-function callMailInboxChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
-  return wrapChannelCall((handlers) => mailInboxChannel({ channel, fields: mailInboxFields, ...handlers }));
 }
 
 function callInspectIcmChannel(
@@ -864,6 +872,43 @@ async function uploadImage(
   return { ok: true, data: { path: data.path, relFromPage: data.rel_from_page } };
 }
 
+/**
+ * `mail_status` now returns `accounts: [...]` (mail-as-maildir design spec
+ * E, §RPC surface — one entry per account, since `Valea.Mail.Engine` is
+ * per-account since Task 9). `stores/mail.svelte.ts` and every component
+ * downstream of it are still single-account-shaped (full multi-account UI
+ * is a later task) — this picks the first VALID account (already sorted by
+ * slug backend-side; an invalid-config entry carries no engine fields at
+ * all, so it's never a usable "primary") and returns it verbatim (same
+ * snake_case shape `Valea.Mail.Engine.status/1` always built, unchanged by
+ * this rework). Synthesizes the old "nothing configured yet" default when
+ * there's no valid account at all — the exact shape the backend itself used
+ * to return before Task 10 (see `Valea.Api.Mail`'s git history), so
+ * `MailStatusPush`-typed consumers (`normalizeMailStatus`, the mail_status
+ * channel push) don't need to learn a new "no status" case.
+ */
+function primaryMailStatus(data: { accounts?: unknown }): Record<string, unknown> {
+  const accounts = Array.isArray(data.accounts) ? (data.accounts as Record<string, unknown>[]) : [];
+  const primary = accounts.find((a) => a.valid !== false);
+
+  return (
+    primary ?? {
+      account: null,
+      configured: false,
+      credential: 'missing',
+      state: 'idle',
+      last_sync_at: null,
+      last_error: null,
+      username: null,
+      workspace_id: null,
+      pending_ops: 0,
+      held_folders: [],
+      backfill: null,
+      notices: []
+    }
+  );
+}
+
 export const api = {
   // id-based (C9, Phase 2) — `getWorkspace`'s payload now carries `id`
   // instead of `path` (see `Valea.Api.Workspace`'s moduledoc); no caller
@@ -1139,13 +1184,26 @@ export const api = {
       }
     ),
 
-  // Mail (T13/T14). `mailStatus`/`listMailMessages`/`mailInbox`/`getMailMessage`
-  // deliver their `status`/`message` payloads RAW (unconstrained `:map`,
-  // see `MailStatusFields`/`GetMailMessageFields` above) — `stores/mail.svelte.ts`
-  // owns normalizing those into camelCase app-facing shapes, same
-  // raw-delivery split `IcmPageData.frontmatter` uses.
+  // Mail (Task 10 rework — account-scoped RPC surface). `mailStatus`/
+  // `listMailMessages`/`getMailMessage` deliver their `status`/`messages`/
+  // `message` payloads RAW (unconstrained or per-item passthrough) —
+  // `stores/mail.svelte.ts` owns normalizing those into camelCase
+  // app-facing shapes, same raw-delivery split `IcmPageData.frontmatter`
+  // uses. Every wrapper below now takes an explicit `account` slug — there
+  // is no more implicit "the one configured account" (mail-as-maildir
+  // design spec E, §RPC surface). `mailStatus` itself takes none (the
+  // action lists every account); see its own comment for how this layer
+  // still surfaces a single `status` object to keep the store single-
+  // account-shaped for now.
 
-  mailStatus: () => runRpc(callMailStatusChannel, () => httpMailStatus(withAuth({ fields: mailStatusFields }))),
+  mailStatus: () =>
+    runRpc(callMailStatusChannel, () => httpMailStatus(withAuth({ fields: mailStatusFields }))).then(
+      (result): ApiResult<{ status: Record<string, unknown> }> => {
+        if (!result.ok) return result;
+        const data = result.data as { accounts?: unknown };
+        return { ok: true, data: { status: primaryMailStatus(data) } };
+      }
+    ),
 
   setupMailAccount: (account: string, host: string, port: number, username: string, generation: number) =>
     runRpc(
@@ -1156,40 +1214,45 @@ export const api = {
         )
     ),
 
-  setMailCredential: (secret: string, generation: number) =>
+  setMailCredential: (account: string, secret: string, generation: number) =>
     runRpc(
-      (channel) => callSetMailCredentialChannel(channel, { secret, generation }),
-      () => httpSetMailCredential(withAuth({ input: { secret, generation }, fields: setMailCredentialFields }))
+      (channel) => callSetMailCredentialChannel(channel, { account, secret, generation }),
+      () =>
+        httpSetMailCredential(withAuth({ input: { account, secret, generation }, fields: setMailCredentialFields }))
     ),
 
-  mailSyncNow: (generation: number) =>
+  mailSyncNow: (account: string, generation: number) =>
     runRpc(
-      (channel) => callMailSyncNowChannel(channel, { generation }),
-      () => httpMailSyncNow(withAuth({ input: { generation }, fields: mailSyncNowFields }))
+      (channel) => callMailSyncNowChannel(channel, { account, generation }),
+      () => httpMailSyncNow(withAuth({ input: { account, generation }, fields: mailSyncNowFields }))
     ),
 
-  mailDoctor: (generation: number) =>
+  mailDoctor: (account: string, generation: number) =>
     runRpc(
-      (channel) => callMailDoctorChannel(channel, { generation }),
-      () => httpMailDoctor(withAuth({ input: { generation }, fields: mailDoctorFields }))
+      (channel) => callMailDoctorChannel(channel, { account, generation }),
+      () => httpMailDoctor(withAuth({ input: { account, generation }, fields: mailDoctorFields }))
     ),
 
-  createMailFolders: (generation: number) =>
+  createMailFolders: (account: string, generation: number) =>
     runRpc(
-      (channel) => callCreateMailFoldersChannel(channel, { generation }),
-      () => httpCreateMailFolders(withAuth({ input: { generation }, fields: createMailFoldersFields }))
+      (channel) => callCreateMailFoldersChannel(channel, { account, generation }),
+      () => httpCreateMailFolders(withAuth({ input: { account, generation }, fields: createMailFoldersFields }))
     ),
 
-  listMailMessages: () =>
-    runRpc(callListMailMessagesChannel, () => httpListMailMessages(withAuth({ fields: listMailMessagesFields }))),
-
-  getMailMessage: (msgId: string) =>
+  listMailMessages: (account: string, folder: string, opts: { limit?: number; before?: string } = {}) =>
     runRpc(
-      (channel) => callGetMailMessageChannel(channel, { msgId }),
-      () => httpGetMailMessage(withAuth({ input: { msgId }, fields: getMailMessageFields }))
+      (channel) => callListMailMessagesChannel(channel, { account, folder, ...opts }),
+      () =>
+        httpListMailMessages(
+          withAuth({ input: { account, folder, ...opts }, fields: listMailMessagesFields })
+        )
     ),
 
-  mailInbox: () => runRpc(callMailInboxChannel, () => httpMailInbox(withAuth({ fields: mailInboxFields }))),
+  getMailMessage: (account: string, msgId: string) =>
+    runRpc(
+      (channel) => callGetMailMessageChannel(channel, { account, msgId }),
+      () => httpGetMailMessage(withAuth({ input: { account, msgId }, fields: getMailMessageFields }))
+    ),
 
   // Icms (task 3.4, `Valea.Api.Icms`). `listIcms` delivers its `icms` array
   // RAW (unconstrained per-item shape at this layer, though already

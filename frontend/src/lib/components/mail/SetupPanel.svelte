@@ -23,7 +23,7 @@
   import { inDesktop, keychainSet } from '$lib/keychain';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { submitMailSetup, mailSetupErrorMessage } from './mail-shapes';
+  import { submitMailSetup, mailSetupErrorMessage, slugifyAccountLabel } from './mail-shapes';
   import MailDoctorPanel from './MailDoctorPanel.svelte';
 
   let account = $state('');
@@ -89,6 +89,12 @@
     submitted = true;
     void mailStore.refreshStatus();
   }
+
+  // `submitMailSetup` derives the same slug internally (see its doc comment)
+  // — recomputed here, off the SAME exported helper, so `MailDoctorPanel`
+  // below knows which account to run its checks against without threading
+  // an extra return value through `submitMailSetup`'s outcome type.
+  const accountSlug = $derived(slugifyAccountLabel(account.trim()));
 </script>
 
 {#if submitted}
@@ -102,7 +108,7 @@
         Dev mode — the password is held in memory only and not persisted.
       </p>
     {/if}
-    <MailDoctorPanel generation={workspaceStore.generation ?? 0} />
+    <MailDoctorPanel account={accountSlug} generation={workspaceStore.generation ?? 0} />
   </div>
 {:else}
   <div class="flex flex-col items-start gap-3 py-10">
