@@ -190,4 +190,213 @@ defmodule Valea.Agents.SessionScopeTest do
     assert scope.write_paths == [write_path]
     assert scope.write_roots == [write_root]
   end
+
+  # -- Task 14: mail mounts in scope (spec §"Mount & containment") ----------
+
+  defp write_mail_yaml!(ws) do
+    path = Path.join(ws, "config/mail.yaml")
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, """
+    version: 4
+    accounts:
+      mara:
+        imap:
+          host: imap.fastmail.com
+          port: 993
+          username: mara@example.com
+    """)
+  end
+
+  defp mounted_primary!(ws, home) do
+    root = icm!(home, "Coaching", "6f9f0c9e-3ccd-4fa5-a219-113a70618b55")
+    write_icms(ws, "  coaching:\n    path: #{root}\n")
+    root
+  end
+
+  test "a related_icms bare-string mail entry resolves into scope.related_icms and mail_roots_in_scope",
+       %{ws: ws, home: home, generation: generation} do
+    primary_root = mounted_primary!(ws, home)
+    write_mail_yaml!(ws)
+
+    File.write!(Path.join(primary_root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - mail-mara
+    ---
+    """)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sm1"
+             })
+
+    mail_root = real!(Path.join([ws, "sources", "mail", "mara"]))
+
+    assert [%{mount_key: "mail-mara", id: nil, root: ^mail_root, kind: :mail}] =
+             scope.related_icms
+
+    assert scope.mail_roots_in_scope == [mail_root]
+    assert scope.mail_roots_all == [mail_root]
+    assert mail_root in scope.additional_roots
+  end
+
+  test "include_mounts appends the mail mount to related_icms without a CONTEXT.md declaration",
+       %{ws: ws, home: home, generation: generation} do
+    mounted_primary!(ws, home)
+    write_mail_yaml!(ws)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sm2",
+               include_mounts: ["mail-mara"]
+             })
+
+    mail_root = real!(Path.join([ws, "sources", "mail", "mara"]))
+    assert [%{mount_key: "mail-mara", kind: :mail}] = scope.related_icms
+    assert scope.mail_roots_in_scope == [mail_root]
+    assert mail_root in scope.additional_roots
+  end
+
+  test "include_mounts naming a declared mail account dedupes against the grammar entry",
+       %{ws: ws, home: home, generation: generation} do
+    primary_root = mounted_primary!(ws, home)
+    write_mail_yaml!(ws)
+
+    File.write!(Path.join(primary_root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - mail-mara
+    ---
+    """)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sm3",
+               include_mounts: ["mail-mara"]
+             })
+
+    assert Enum.count(scope.related_icms, &(&1.mount_key == "mail-mara")) == 1
+  end
+
+  test "an ICM key in include_mounts is rejected include_not_mail", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+    write_mail_yaml!(ws)
+
+    assert SessionScope.resolve(%{
+             kind: "chat",
+             mount_key: "coaching",
+             generation: generation,
+             session_id: "sm4",
+             include_mounts: ["coaching"]
+           }) == {:error, :include_not_mail}
+  end
+
+  test "an unknown account in include_mounts is rejected mail_unavailable", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+    write_mail_yaml!(ws)
+
+    assert SessionScope.resolve(%{
+             kind: "chat",
+             mount_key: "coaching",
+             generation: generation,
+             session_id: "sm5",
+             include_mounts: ["mail-nope"]
+           }) == {:error, :mail_unavailable}
+  end
+
+  test "a mail mount can never be the session primary", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+    write_mail_yaml!(ws)
+
+    assert SessionScope.resolve(%{
+             kind: "chat",
+             mount_key: "mail-mara",
+             generation: generation,
+             session_id: "sm6"
+           }) == {:error, :icm_unavailable}
+  end
+
+  test "an unconfigured mail declaration surfaces as a :mail_unavailable context issue, and mail_roots stay empty",
+       %{ws: ws, home: home, generation: generation} do
+    primary_root = mounted_primary!(ws, home)
+
+    File.write!(Path.join(primary_root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - mail-nope
+    ---
+    """)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sm7"
+             })
+
+    assert scope.related_icms == []
+    assert [%{name: "mail-nope", reason: :mail_unavailable}] = scope.context_issues
+    assert scope.mail_roots_all == []
+    assert scope.mail_roots_in_scope == []
+  end
+
+  # Spec §"Safety invariants" — the RPC trust boundary: agent sessions speak
+  # ACP only. Nothing in the launch directives (env, managedSettings JSON,
+  # extra argv) may carry the loopback RPC endpoint or the control token
+  # that authenticates it.
+  test "launch directives expose no RPC endpoint or control token to the agent process", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+
+    previous = Application.get_env(:valea, :control_token)
+    Application.put_env(:valea, :control_token, "task14-secret-token")
+    on_exit(fn -> Application.put_env(:valea, :control_token, previous) end)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sm8"
+             })
+
+    refute scope.managed_settings =~ "task14-secret-token"
+    refute scope.managed_settings =~ "/rpc/"
+    refute Enum.any?(scope.argv_extra, &(&1 =~ "task14-secret-token" or &1 =~ "/rpc/"))
+
+    for {key, value} <- scope.env do
+      assert key in Valea.Agents.Env.allowlist()
+      refute value =~ "task14-secret-token"
+      refute String.contains?(value, "/rpc/")
+    end
+  end
 end

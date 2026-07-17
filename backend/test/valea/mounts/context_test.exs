@@ -337,4 +337,136 @@ defmodule Valea.Mounts.ContextTest do
     assert result.issues == []
     assert [%{mount_key: "legal"}] = result.related
   end
+
+  # -- bare-string mail entries (Task 14, spec §"Mount & containment") ------
+  #
+  # `related_icms: [mail-<slug>]` — a bare STRING list entry — is the mail
+  # opt-in grammar. It resolves via `Mounts.mount_by_key/2` and requires an
+  # enabled, non-degraded `kind: :mail` mount; anything else surfaces as a
+  # `:mail_unavailable` issue. Map entries keep the ICM id semantics
+  # untouched (covered above).
+
+  describe "bare-string mail-<slug> entries" do
+    defp write_mail_yaml!(ws) do
+      path = Path.join(ws, "config/mail.yaml")
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(path, """
+      version: 4
+      accounts:
+        mara:
+          imap:
+            host: imap.fastmail.com
+            port: 993
+            username: mara@example.com
+      """)
+    end
+
+    setup %{ws: ws, home: home} do
+      primary_root = icm!(home, "Coaching", "6f9f0c9e-3ccd-4fa5-a219-113a70618b55")
+      write_icms(ws, "  coaching:\n    path: #{primary_root}\n")
+      %{primary_root: primary_root}
+    end
+
+    test "a configured, healthy account resolves to a kind: :mail related entry", %{
+      ws: ws,
+      primary_root: primary_root
+    } do
+      write_mail_yaml!(ws)
+
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - mail-mara
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+      mail_root = Path.join([real!(ws), "sources", "mail", "mara"])
+
+      assert result.issues == []
+
+      assert [
+               %{
+                 mount_key: "mail-mara",
+                 id: nil,
+                 root: ^mail_root,
+                 entrypoint: nil,
+                 manifest: nil,
+                 kind: :mail
+               }
+             ] = result.related
+    end
+
+    test "an unconfigured account surfaces :mail_unavailable, never a grant", %{
+      ws: ws,
+      primary_root: primary_root
+    } do
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - mail-nope
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+
+      assert result.related == []
+      assert [%{id: nil, name: "mail-nope", reason: :mail_unavailable}] = result.issues
+    end
+
+    test "a bare string naming an ICM mount (not kind: :mail) is :mail_unavailable", %{
+      ws: ws,
+      home: home,
+      primary_root: primary_root
+    } do
+      # A legacy/hand-edited `icms:` key inside the mail-* namespace: the
+      # grammar requires `kind: :mail`, so it must NOT resolve — fail closed.
+      shadow_root = icm!(home, "Shadow", "31201697-cff8-4d99-9dc5-b140e4178716")
+
+      write_icms(ws, """
+        coaching:
+          path: #{primary_root}
+        mail-shadow:
+          path: #{shadow_root}
+      """)
+
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - mail-shadow
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+
+      assert result.related == []
+      assert [%{name: "mail-shadow", reason: :mail_unavailable}] = result.issues
+    end
+
+    test "a bare string outside the mail-* namespace is dropped silently (not an issue)", %{
+      ws: ws,
+      primary_root: primary_root
+    } do
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - coaching
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+
+      assert result.related == []
+      assert result.issues == []
+    end
+  end
 end

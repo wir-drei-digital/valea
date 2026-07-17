@@ -158,7 +158,15 @@ defmodule Valea.Api.Icms do
       run fn input, _ctx ->
         with :ok <- Manager.check_generation(input.arguments.generation),
              {:ok, %{path: root}} <- Manager.current() do
-          {:ok, %{icms: root |> Mounts.list() |> Enum.map(&to_rpc_icm/1)}}
+          # Task 14: synthetic `kind: :mail` mounts are session-scope
+          # material only — the Knowledge tree grouping lists ICMs.
+          icms =
+            root
+            |> Mounts.list()
+            |> Enum.filter(&(&1.kind == :icm))
+            |> Enum.map(&to_rpc_icm/1)
+
+          {:ok, %{icms: icms}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end

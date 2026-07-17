@@ -87,8 +87,12 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
     assert {:allow, _} = P.decide(read(Path.join(rel, "app.sqlite")), ctx)
   end
 
+  # Task 14: this case used to point at `sources/mail/...` — that whole area
+  # is now covered by the mail deny tier (deny-not-ask, see the "mail mount
+  # rules" describe below), so the non-mail sources path carries the
+  # original "not auto-allowed, falls to ask" intent.
   test "reading the workspace sources is not auto-allowed for a chat", %{ctx: ctx, ws: ws} do
-    assert :ask = P.decide(read(Path.join(ws, "sources/mail/messages/1.md")), ctx)
+    assert :ask = P.decide(read(Path.join(ws, "sources/notes/1.md")), ctx)
   end
 
   test "chat writes ask without a grant; a populated grant allows the contained write", %{
@@ -250,6 +254,167 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
       rel: rel
     } do
       assert {:allow, _} = P.decide(item_for("read", Path.join(rel, ".env")), ctx)
+    end
+  end
+
+  # Task 14 (mail-maildir spec §"Mount & containment" / §"Safety
+  # invariants"): the mail deny tier. `ctx.mail_roots_all` is every
+  # `sources/mail/<slug>` root; `ctx.mail_roots_in_scope` is the subset this
+  # session's scope actually includes. Precedence: denied tool -> protected
+  # -> icm_secret -> MAIL RULES -> escaped -> ask/allow.
+  #
+  #   1. Unmounted deny: any candidate under mail territory (a
+  #      `mail_roots_all` root, or anything else under
+  #      `<workspace_root>/sources/mail` — spec: "covering all of
+  #      sources/mail/") that is NOT under an in-scope root is
+  #      `{:deny, "reject_once"}` — never a prompt. Matching is casefolded
+  #      (downcase + NFC) on BOTH sides: APFS is case- and
+  #      normalization-insensitive, so `sources/MAIL/...` and NFD-variant
+  #      spellings name the same mailbox.
+  #   2. Write surface: within an in-scope mail root, writes are allowed
+  #      (grant/ask flow) ONLY under `ops/pending/` and `drafts/`; anywhere
+  #      else in the mail root they are denied. Reads: `spool/` is denied;
+  #      everything else in scope stays readable.
+  describe "mail mount rules" do
+    setup %{ctx: ctx, ws: ws} do
+      mara = Path.join(ws, "sources/mail/mara")
+      work = Path.join(ws, "sources/mail/work")
+
+      for d <- [
+            Path.join(mara, "maildir/cur"),
+            Path.join(mara, "ops/pending"),
+            Path.join(mara, "drafts"),
+            Path.join(mara, "spool"),
+            Path.join(work, "maildir/cur")
+          ],
+          do: File.mkdir_p!(d)
+
+      ctx =
+        ctx
+        |> Map.put(:mail_roots_all, [mara, work])
+        |> Map.put(:mail_roots_in_scope, [mara])
+        |> Map.update!(:read_roots, &(&1 ++ [mara]))
+
+      %{ctx: ctx, mara: mara, work: work}
+    end
+
+    test "reading an unmounted account is denied, not asked", %{ctx: ctx, work: work} do
+      assert {:deny, "reject_once"} =
+               P.decide(read(Path.join(work, "maildir/cur/m1.eml")), ctx)
+
+      assert {:deny, "reject_once"} = P.decide(write(Path.join(work, "drafts/x.md")), ctx)
+    end
+
+    test "case-variant spellings of an unmounted account hit the same deny", %{
+      ctx: ctx,
+      ws: ws
+    } do
+      assert {:deny, "reject_once"} =
+               P.decide(read(Path.join(ws, "sources/MAIL/work/maildir/cur/m1.eml")), ctx)
+
+      assert {:deny, "reject_once"} =
+               P.decide(read(Path.join(ws, "sources/mail/WORK/maildir/cur/m1.eml")), ctx)
+    end
+
+    # APFS is normalization-insensitive: an NFD spelling of the same
+    # workspace path names the same mailbox and must hit the same deny.
+    test "NFD-variant spellings resolved to the same root are denied", %{ws: ws} do
+      accented = Path.join(ws, "café")
+      mail_root = Path.join(accented, "sources/mail/work")
+      File.mkdir_p!(mail_root)
+
+      ctx = %{
+        workspace_root: accented,
+        cwd: accented,
+        read_roots: [],
+        session_kind: "chat",
+        write_paths: [],
+        write_roots: [],
+        mail_roots_all: [mail_root],
+        mail_roots_in_scope: []
+      }
+
+      nfd = :unicode.characters_to_nfd_binary("café")
+      candidate = Path.join([ws, nfd, "sources/mail/work/maildir/cur/m1.eml"])
+      assert {:deny, "reject_once"} = P.decide(read(candidate), ctx)
+    end
+
+    test "anything else under sources/mail (no configured account) is denied too", %{
+      ctx: ctx,
+      ws: ws
+    } do
+      assert {:deny, "reject_once"} =
+               P.decide(read(Path.join(ws, "sources/mail/stale-account/maildir/x")), ctx)
+    end
+
+    test "in-scope reads of maildir/views/ops/done/.account are allowed", %{
+      ctx: ctx,
+      mara: mara
+    } do
+      for rel <- ["maildir/cur/m1.eml", "views/inbox.md", "ops/done/op1.yaml", ".account"] do
+        assert {:allow, "allow_once"} = P.decide(read(Path.join(mara, rel)), ctx),
+               "expected allow for #{rel}"
+      end
+    end
+
+    test "in-scope spool/ reads are denied", %{ctx: ctx, mara: mara} do
+      assert {:deny, "reject_once"} = P.decide(read(Path.join(mara, "spool/m.eml")), ctx)
+    end
+
+    test "in-scope writes to ops/pending and drafts ask without a grant, allow with one", %{
+      ctx: ctx,
+      mara: mara
+    } do
+      assert :ask = P.decide(write(Path.join(mara, "ops/pending/cleanup.yaml")), ctx)
+      assert :ask = P.decide(write(Path.join(mara, "drafts/reply.md")), ctx)
+
+      granted = %{ctx | write_roots: [Path.join(mara, "ops/pending"), Path.join(mara, "drafts")]}
+
+      assert {:allow, "allow_once"} =
+               P.decide(write(Path.join(mara, "ops/pending/cleanup.yaml")), granted)
+
+      assert {:allow, "allow_once"} = P.decide(write(Path.join(mara, "drafts/reply.md")), granted)
+    end
+
+    test "in-scope writes anywhere else in the mail root are denied — even with a broad grant", %{
+      ctx: ctx,
+      mara: mara
+    } do
+      granted = %{ctx | write_roots: [mara]}
+
+      for rel <- [
+            "maildir/cur/f.eml",
+            "views/inbox.md",
+            "ops/done/op1.yaml",
+            "quarantine/x",
+            ".account",
+            "spool/m.eml"
+          ] do
+        assert {:deny, "reject_once"} = P.decide(write(Path.join(mara, rel)), ctx),
+               "expected deny for ungranted write to #{rel}"
+
+        assert {:deny, "reject_once"} = P.decide(write(Path.join(mara, rel)), granted),
+               "expected deny for granted write to #{rel}"
+      end
+    end
+
+    test "the ICM-secrets deny still wins inside a mail root", %{ctx: ctx, mara: mara} do
+      ctx = Map.put(ctx, :icm_roots, [mara])
+      assert {:deny, "reject_once"} = P.decide(read(Path.join(mara, "drafts/.env")), ctx)
+      assert {:deny, "reject_once"} = P.decide(write(Path.join(mara, "drafts/.env")), ctx)
+    end
+
+    test "a ctx without mail keys keeps non-mail decisions unchanged", %{icm: icm} do
+      ctx = %{
+        workspace_root: "/nonexistent-ws",
+        cwd: icm,
+        read_roots: [icm],
+        session_kind: "chat",
+        write_paths: [],
+        write_roots: []
+      }
+
+      assert {:allow, _} = P.decide(read(Path.join(icm, "AGENTS.md")), ctx)
     end
   end
 end

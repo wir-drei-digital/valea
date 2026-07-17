@@ -63,18 +63,57 @@ defmodule Valea.Agents.SessionSettings do
 
     %{
       "permissions" => %{
-        "deny" => deny ++ secret_denies,
+        "deny" => deny ++ secret_denies ++ mail_denies(scope),
         "ask" => ["Write", "Edit", "Bash"],
         "allow" => read_root_allows ++ input_allows ++ write_path_allows ++ write_root_allows
       }
     }
   end
 
+  # Task 14 (mail spec §"Mount & containment") — the managedSettings mirror
+  # of PermissionPolicy's mail tier. For each IN-SCOPE mail root: `spool/**`
+  # is denied outright (Read+Edit+Write — engine-owned outbound payloads),
+  # and the engine-owned/audit subtrees (`maildir/**`, `views/**`,
+  # `quarantine/**`, `.account`, `ops/done/**`) are write-denied but stay
+  # readable — the agent-writable surface is exactly `ops/pending/` and
+  # `drafts/`. Each NOT-in-scope account's whole root is denied over
+  # Read+Edit+Write.
+  #
+  # Like the secrets mirror above, these globs are case-SENSITIVE
+  # defense-in-depth: the authoritative, casefolded (case- AND
+  # normalization-insensitive) enforcement is PermissionPolicy's mail deny
+  # tier, not this layer.
+  @mail_write_denied ~w(maildir/** views/** quarantine/** .account ops/done/**)
+
+  defp mail_denies(scope) do
+    in_scope = Map.get(scope, :mail_roots_in_scope, [])
+    out_of_scope = Map.get(scope, :mail_roots_all, []) -- in_scope
+
+    in_scope_denies =
+      Enum.flat_map(in_scope, fn root ->
+        spool = for op <- ["Read", "Edit", "Write"], do: "#{op}(#{root}/spool/**)"
+
+        engine_owned =
+          for pattern <- @mail_write_denied, op <- ["Edit", "Write"] do
+            "#{op}(#{root}/#{pattern})"
+          end
+
+        spool ++ engine_owned
+      end)
+
+    out_of_scope_denies =
+      Enum.flat_map(out_of_scope, fn root ->
+        for op <- ["Read", "Edit", "Write"], do: "#{op}(#{root}/**)"
+      end)
+
+    in_scope_denies ++ out_of_scope_denies
+  end
+
   @spec context(map()) :: String.t()
   def context(scope) do
     related =
       scope.related_icms
-      |> Enum.map(fn r -> "- #{r.mount_key} (#{r.root}) — entrypoint #{r.entrypoint}" end)
+      |> Enum.map(&related_line/1)
       |> Enum.join("\n")
 
     related = if related == "", do: "(none)", else: related
@@ -90,6 +129,14 @@ defmodule Valea.Agents.SessionSettings do
     #{related}
     """
   end
+
+  # A mail mount (Task 14) has no entrypoint/manifest — its line names the
+  # account and the narrowed write surface instead of an entrypoint.
+  defp related_line(%{kind: :mail} = r) do
+    "- #{r.mount_key} (#{r.root}) — mail account mount; writable only under ops/pending/ and drafts/"
+  end
+
+  defp related_line(r), do: "- #{r.mount_key} (#{r.root}) — entrypoint #{r.entrypoint}"
 
   @spec materialize!(map()) :: :ok
   def materialize!(scope) do

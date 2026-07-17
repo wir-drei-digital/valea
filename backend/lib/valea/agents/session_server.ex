@@ -100,6 +100,12 @@ defmodule Valea.Agents.SessionServer do
     # mount-key lookup, related-ICM resolution, and read/write-root assembly
     # live) is the single source of truth; `SessionServer` never re-derives
     # any of it.
+    # `mail_roots_all`/`mail_roots_in_scope` (Task 14) thread straight from
+    # the scope, like everything else here: PermissionPolicy's mail tier
+    # denies any candidate under `sources/mail` that is not in an in-scope
+    # account's root — deny, not ask. `icm_roots` deliberately KEEPS the
+    # in-scope mail roots (they're in `related_icms`): the ICM-secrets deny
+    # applies inside a mail mount too (e.g. `drafts/.env`).
     policy_ctx = %{
       workspace_root: scope.workspace.root,
       cwd: scope.cwd,
@@ -107,7 +113,9 @@ defmodule Valea.Agents.SessionServer do
       session_kind: scope.kind,
       write_paths: scope.write_paths,
       write_roots: scope.write_roots,
-      icm_roots: [scope.primary_icm.root | Enum.map(scope.related_icms, & &1.root)]
+      icm_roots: [scope.primary_icm.root | Enum.map(scope.related_icms, & &1.root)],
+      mail_roots_all: Map.get(scope, :mail_roots_all, []),
+      mail_roots_in_scope: Map.get(scope, :mail_roots_in_scope, [])
     }
 
     case ProcessRuntime.start(
@@ -470,6 +478,10 @@ defmodule Valea.Agents.SessionServer do
       # sees exactly what the caller named.
       "context_doc" => Map.get(opts, :context_doc),
       "input" => Map.get(opts, :input),
+      # Task 14: the mail mounts the caller explicitly included (mount
+      # keys, verbatim) — recorded like `context_doc`/`input`, so a later
+      # reader sees exactly what the session was opted into.
+      "include_mounts" => Map.get(opts, :include_mounts, []),
       "title" => Map.get(opts, :title),
       "harness" => "claude_code",
       "generation" => scope.workspace.generation,

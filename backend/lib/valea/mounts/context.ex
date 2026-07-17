@@ -29,6 +29,25 @@ defmodule Valea.Mounts.Context do
   declares the primary (or anything else) back is simply never visited, so a
   cyclic declaration is inert rather than an infinite loop or an unbounded
   read-surface expansion.
+
+  ## Mail opt-in grammar (Task 14, mail spec §"Mount & containment")
+
+  A `related_icms:` LIST ENTRY that is a bare STRING `mail-<slug>` opts the
+  session into that account's synthetic mail mount:
+
+  ```yaml
+  related_icms:
+    - mail-wirdrei
+  ```
+
+  It resolves via `Valea.Mounts.mount_by_key/2` and requires an ENABLED,
+  non-degraded `kind: :mail` mount — anything else (unconfigured account,
+  degraded identity, or an `icms:` entry shadowing the key) surfaces as a
+  `:mail_unavailable` issue, never a grant. The resolved entry has `id:
+  nil`, `entrypoint: nil`, `manifest: nil`, `kind: :mail`. Bare strings
+  OUTSIDE the `mail-*` namespace are dropped exactly like any other
+  malformed entry always was; map entries keep the ICM id semantics
+  untouched (`kind: :icm`).
   """
 
   alias Valea.ICM
@@ -39,16 +58,23 @@ defmodule Valea.Mounts.Context do
 
   @type resolved :: %{
           mount_key: String.t(),
-          id: String.t(),
+          id: String.t() | nil,
           root: String.t(),
-          entrypoint: String.t(),
-          manifest: Valea.Mounts.Manifest.t()
+          entrypoint: String.t() | nil,
+          manifest: Valea.Mounts.Manifest.t() | nil,
+          kind: :icm | :mail
         }
 
   @type issue :: %{
           id: String.t() | nil,
           name: String.t() | nil,
-          reason: :not_mounted | :disabled | :degraded | :duplicate_id | :entrypoint_escapes
+          reason:
+            :not_mounted
+            | :disabled
+            | :degraded
+            | :duplicate_id
+            | :entrypoint_escapes
+            | :mail_unavailable
         }
 
   @doc """
@@ -92,13 +118,40 @@ defmodule Valea.Mounts.Context do
          {:ok, doc} when is_map(doc) <- YamlElixir.read_from_string(yaml),
          1 <- Map.get(doc, "format", 1),
          list when is_list(list) <- Map.get(doc, "related_icms") do
-      Enum.filter(list, &is_map/1)
+      # Maps are ICM id entries; a bare string is only meaningful in the
+      # `mail-*` namespace (the mail opt-in grammar) — anything else stays
+      # dropped, as every non-map entry always was.
+      Enum.filter(list, &(is_map(&1) or (is_binary(&1) and String.starts_with?(&1, "mail-"))))
     else
       _ -> []
     end
   end
 
   # -- per-entry resolution ---------------------------------------------------
+
+  # Bare-string mail entry (Task 14): must resolve to an ENABLED,
+  # non-degraded `kind: :mail` mount — the `kind` requirement is
+  # load-bearing (a legacy `icms:` key inside the `mail-*` namespace
+  # shadows the synthetic mount in `mount_by_key/2`; it must NOT grant
+  # anything through the mail grammar). Everything else is
+  # `:mail_unavailable` — configured-but-degraded and absent alike.
+  defp resolve_entry(workspace, "mail-" <> _slug = mount_key) when is_binary(mount_key) do
+    case Mounts.mount_by_key(workspace, mount_key) do
+      %{kind: :mail, enabled: true, degraded: nil, root: root} ->
+        {:ok,
+         %{
+           mount_key: mount_key,
+           id: nil,
+           root: root,
+           entrypoint: nil,
+           manifest: nil,
+           kind: :mail
+         }}
+
+      _unavailable ->
+        {:error, %{id: nil, name: mount_key, reason: :mail_unavailable}}
+    end
+  end
 
   defp resolve_entry(workspace, %{"id" => id} = entry) when is_binary(id) do
     name = Map.get(entry, "name")
@@ -160,7 +213,8 @@ defmodule Valea.Mounts.Context do
            id: id,
            root: mount.root,
            entrypoint: resolved_entrypoint,
-           manifest: mount.manifest
+           manifest: mount.manifest,
+           kind: :icm
          }}
 
       {:error, _reason} ->

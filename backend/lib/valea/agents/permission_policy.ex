@@ -44,25 +44,59 @@ defmodule Valea.Agents.PermissionPolicy do
 
   ## Decision order (deny -> allow -> ask)
 
-    1. **Deny** if any resolved candidate is inside a protected workspace dir
+    1. **Deny** if the tool is `WebFetch`/`WebSearch`.
+    2. **Deny** if any resolved candidate is inside a protected workspace dir
        (`<workspace_root>/{logs,config,secrets,runtime,.git}` or
-       `<workspace_root>/app.sqlite*`), or the tool is `WebFetch`/`WebSearch`.
-    2. **Deny** (symlink escape) if any candidate resolves OUTSIDE every
+       `<workspace_root>/app.sqlite*`).
+    3. **Deny** (ICM secrets, Spec D §D5) if any candidate names secret
+       material inside an `icm_root`.
+    4. **Deny** (mail rules, Task 14 — see "Mail rules" below) if any
+       candidate violates the mail tier: unmounted mail territory, an
+       in-scope `spool/` read, or an in-scope write outside
+       `ops/pending/`+`drafts/`.
+    5. **Deny** (symlink escape) if any candidate resolves OUTSIDE every
        recognized area — `workspace_root` itself, every `read_root`, and
        every write grant (`write_paths`/`write_roots`). A relative candidate
        that lexically escapes `cwd` (`resolve_real`'s own `{:error,
        :outside}`) counts as escaping too, since relative candidates only
        ever resolve against `cwd`. Landing INSIDE `workspace_root` without
        being in a granted root is NOT an escape — it just isn't granted yet,
-       so it falls through to `:ask` (step 5) rather than being denied; only
+       so it falls through to `:ask` (step 8) rather than being denied; only
        territory outside the whole recognized universe is treated as a
        symlink-escape-style deny.
-    3. **Allow read** if `kind` is a read kind and EVERY candidate resolves
+    6. **Allow read** if `kind` is a read kind and EVERY candidate resolves
        inside some `read_root` (or is a root instruction file — see below).
-    4. **Allow write** if `kind` is a write kind and every candidate is in
+    7. **Allow write** if `kind` is a write kind and every candidate is in
        `write_paths` or under a `write_root` — for ANY `session_kind`; see
        "Write grants are kind-agnostic" above.
-    5. Else **ask**.
+    8. Else **ask**.
+
+  ## Mail rules (Task 14, mail spec §"Mount & containment")
+
+  `ctx` carries `mail_roots_all` (every configured account's
+  `sources/mail/<slug>` root) and `mail_roots_in_scope` (the accounts this
+  session's scope includes) — both threaded from `SessionScope` like
+  `icm_roots`, both defaulting to `[]`.
+
+    * **Unmounted deny (deny, not ask).** Any candidate under mail
+      territory — a `mail_roots_all` root, or ANYTHING under
+      `<workspace_root>/sources/mail` (the spec's "deny covering all of
+      `sources/mail/`": leftover files from a removed account, or an
+      invalid account's subtree, must never be one generic ask-approval
+      away) — that is NOT under an in-scope root is `{:deny,
+      "reject_once"}`, for every kind.
+    * **Write surface.** Within an in-scope mail root, write kinds are
+      denied everywhere EXCEPT `ops/pending/` and `drafts/` (which fall
+      through to the ordinary grant/ask flow — deny still precedes the
+      write-allow tier, so a broad grant can never buy `maildir/` back).
+      Read kinds: `spool/` is denied; everything else stays readable via
+      the ordinary read-root allow.
+
+  Mail matching — and ONLY mail matching — is casefolded on BOTH sides
+  (`casefold/1`: NFC-normalize, then `String.downcase/1`): APFS is case-
+  and normalization-insensitive, so `sources/MAIL/…` or an NFD-variant
+  spelling names the same mailbox and must hit the same deny. The global
+  `split_under_root?/2` used by every other tier is untouched.
 
   Relative candidates resolve against `cwd` (never `workspace_root`) — this
   is the behavioral heart of the split. `read_roots`/`write_paths`/
@@ -105,6 +139,16 @@ defmodule Valea.Agents.PermissionPolicy do
     write_roots = Enum.map(ctx[:write_roots] || [], &split_real/1)
     icm_roots = Enum.map(ctx[:icm_roots] || [], &split_real/1)
 
+    # Mail rules (Task 14) compare CASEFOLDED, symlink-resolved roots —
+    # see the moduledoc's "Mail rules". The blanket `sources/mail` root is
+    # derived from `workspace_root`, so the deny covers territory no
+    # configured account claims (removed/invalid accounts' leftovers).
+    mail_in_scope = Enum.map(ctx[:mail_roots_in_scope] || [], &casefold(split_real(&1)))
+
+    mail_territory =
+      [casefold(Path.join([workspace_root, "sources", "mail"]))] ++
+        Enum.map(ctx[:mail_roots_all] || [], &casefold(split_real(&1)))
+
     paths = extract_paths(item)
     resolved = Enum.map(paths, &split_resolve_candidate(&1, cwd))
 
@@ -116,6 +160,9 @@ defmodule Valea.Agents.PermissionPolicy do
         {:deny, "reject_once"}
 
       Enum.any?(resolved, &split_icm_secret?(&1, icm_roots)) ->
+        {:deny, "reject_once"}
+
+      Enum.any?(resolved, &mail_denied?(&1, kind, mail_territory, mail_in_scope)) ->
         {:deny, "reject_once"}
 
       Enum.any?(
@@ -235,6 +282,58 @@ defmodule Valea.Agents.PermissionPolicy do
       true -> false
     end
   end
+
+  # -- mail rules (Task 14) — see the moduledoc's "Mail rules" section ------
+
+  # `mail_territory` and `in_scope_roots` arrive ALREADY symlink-resolved
+  # (`split_real/1`) and casefolded; the candidate is casefolded here.
+  # Resolve failures are never a mail deny — `{:error, :outside}` still
+  # hits the escape deny right after this tier, and other errors keep
+  # falling to `:ask`.
+  defp mail_denied?({:error, _}, _kind, _mail_territory, _in_scope_roots), do: false
+
+  defp mail_denied?({:ok, path}, kind, mail_territory, in_scope_roots) do
+    cf = casefold(path)
+
+    case Enum.find(in_scope_roots, &casefold_under_root?(cf, &1)) do
+      nil ->
+        # Not in any in-scope account: ANY touch of mail territory is a
+        # deny — never a prompt (one generic-looking approval must not be
+        # able to expose a whole mailbox).
+        Enum.any?(mail_territory, &casefold_under_root?(cf, &1))
+
+      scope_root ->
+        cond do
+          kind in @read_kinds ->
+            casefold_under_root?(cf, scope_root <> "/spool")
+
+          kind in @write_kinds ->
+            not (casefold_under_root?(cf, scope_root <> "/ops/pending") or
+                   casefold_under_root?(cf, scope_root <> "/drafts"))
+
+          true ->
+            false
+        end
+    end
+  end
+
+  # Casefold for mail comparisons ONLY: NFC-normalize (APFS is
+  # normalization-insensitive — NFD and NFC spellings name the same file),
+  # then downcase (APFS is case-insensitive). Applied to BOTH sides of
+  # every mail membership check. Invalid UTF-8 falls back to the raw
+  # binary — downcase alone still applies.
+  defp casefold(path) do
+    case :unicode.characters_to_nfc_binary(path) do
+      nfc when is_binary(nfc) -> String.downcase(nfc)
+      _invalid -> String.downcase(path)
+    end
+  end
+
+  # Same segment-boundary membership as `split_under_root?/2`, over
+  # already-casefolded strings — a separate helper so the global,
+  # case-sensitive one stays untouched (moduledoc pin).
+  defp casefold_under_root?(cf_path, cf_root),
+    do: cf_path == cf_root or String.starts_with?(cf_path <> "/", cf_root <> "/")
 
   # A relative candidate that lexically escapes `cwd` (the only base relative
   # candidates ever resolve against) can't be checked against any OTHER root

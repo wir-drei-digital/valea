@@ -191,7 +191,10 @@ defmodule Valea.ICM do
   defp resolve_mount(mount_key) do
     with {:ok, ws} <- workspace_root() do
       case Mounts.mount_by_key(ws, mount_key) do
-        %{enabled: true, degraded: nil} = mount -> {:ok, mount}
+        # `kind: :icm` only (Task 14): a synthetic mail mount has no
+        # manifest and is never editor-addressable — same fold into
+        # `:outside_workspace` as any other unavailable key.
+        %{enabled: true, degraded: nil, kind: :icm} = mount -> {:ok, mount}
         _ -> {:error, :outside_workspace}
       end
     end

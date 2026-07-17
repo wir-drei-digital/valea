@@ -60,8 +60,13 @@ defmodule Valea.ICM.Search do
   # See moduledoc "Scope" — `nil` means "every enabled mount" (pre-5.6
   # default, still used by the not-yet-ICM-scoped global palette); a
   # concrete `mount_key` narrows to `Mounts.scoped_roots/2`'s primary +
-  # declared-related set.
-  defp scan_scope(workspace, nil), do: Mounts.enabled(workspace)
+  # declared-related set. ICM mounts only either way (Task 14): the editor
+  # search surface never sweeps a synthetic `kind: :mail` mount's mailbox —
+  # `scoped_roots/2` already excludes mail from its related set, and the
+  # global scope filters it here for the same reason.
+  defp scan_scope(workspace, nil),
+    do: workspace |> Mounts.enabled() |> Enum.filter(&(&1.kind == :icm))
+
   defp scan_scope(workspace, mount_key), do: Mounts.scoped_roots(workspace, mount_key)
 
   # A single shared deadline for the whole scan: `Task.yield_many/2` blocks

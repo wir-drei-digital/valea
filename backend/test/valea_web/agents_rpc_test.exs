@@ -301,6 +301,104 @@ defmodule ValeaWeb.AgentsRpcTest do
     end
   end
 
+  # Task 14 (mail-maildir spec §"Mount & containment"): `create_agent_session`
+  # gains `include_mounts` (default `[]`) — each entry must name an existing,
+  # enabled, non-degraded `kind: :mail` mount; the resolved roots join the
+  # session scope and the transcript meta records the keys verbatim.
+  describe "create_agent_session with include_mounts" do
+    defp write_mail_yaml!(workspace) do
+      path = Path.join(workspace, "config/mail.yaml")
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(path, """
+      version: 4
+      accounts:
+        mara:
+          imap:
+            host: imap.fastmail.com
+            port: 993
+            username: mara@example.com
+      """)
+    end
+
+    test "include_mounts is resolved into the session scope and recorded in the transcript meta",
+         %{generation: generation, icm: icm, workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+      write_mail_yaml!(workspace)
+
+      assert %{"success" => true, "data" => %{"id" => id}} =
+               rpc(
+                 "create_agent_session",
+                 %{
+                   "mountKey" => icm.mount_key,
+                   "generation" => generation,
+                   "includeMounts" => ["mail-mara"]
+                 },
+                 ["id"]
+               )
+
+      on_exit(fn -> AgentCase.kill_session(id) end)
+
+      assert %{"include_mounts" => ["mail-mara"]} = transcript_meta(workspace, id)
+
+      pid = GenServer.whereis({:via, Registry, {Valea.Agents.SessionRegistry, id}})
+      ctx = :sys.get_state(pid).policy_ctx
+      assert [mail_root] = ctx.mail_roots_in_scope
+      assert String.ends_with?(mail_root, "sources/mail/mara")
+      assert mail_root in ctx.read_roots
+    end
+
+    test "omitting include_mounts records an empty list", %{
+      generation: generation,
+      icm: icm,
+      workspace: workspace
+    } do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      assert %{"success" => true, "data" => %{"id" => id}} =
+               rpc(
+                 "create_agent_session",
+                 %{"mountKey" => icm.mount_key, "generation" => generation},
+                 ["id"]
+               )
+
+      on_exit(fn -> AgentCase.kill_session(id) end)
+      assert %{"include_mounts" => []} = transcript_meta(workspace, id)
+    end
+
+    test "an ICM key in include_mounts fails include_not_mail; an unknown one mail_unavailable — no session either way",
+         %{generation: generation, icm: icm, workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+      write_mail_yaml!(workspace)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "create_agent_session",
+                 %{
+                   "mountKey" => icm.mount_key,
+                   "generation" => generation,
+                   "includeMounts" => [icm.mount_key]
+                 },
+                 ["id"]
+               )
+
+      assert inspect(errors) =~ "include_not_mail"
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "create_agent_session",
+                 %{
+                   "mountKey" => icm.mount_key,
+                   "generation" => generation,
+                   "includeMounts" => ["mail-nope"]
+                 },
+                 ["id"]
+               )
+
+      assert inspect(errors) =~ "mail_unavailable"
+    end
+  end
+
   describe "list_agent_sessions" do
     test "returns an empty list when no sessions exist" do
       assert %{"success" => true, "data" => %{"sessions" => []}} =

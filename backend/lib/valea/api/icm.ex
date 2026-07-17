@@ -431,7 +431,13 @@ defmodule Valea.Api.ICM do
   defp find_mount(workspace, target_path) do
     workspace
     |> Mounts.list()
-    |> Enum.filter(&(&1.degraded == nil and mount_prefix?(target_path, &1.root)))
+    # `kind: :icm` only (Task 14): a synthetic mail mount must never be a
+    # writable editor target — mail's agent-writable surface is governed
+    # by `Valea.Agents.PermissionPolicy`'s mail tier, and the editor's
+    # mutation RPCs address ICM content exclusively.
+    |> Enum.filter(
+      &(&1.kind == :icm and &1.degraded == nil and mount_prefix?(target_path, &1.root))
+    )
     |> most_specific_root()
   end
 

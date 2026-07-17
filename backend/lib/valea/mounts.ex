@@ -67,6 +67,21 @@ defmodule Valea.Mounts do
   was never absolute/`~`-based at all) alongside the `mount_key`, so the
   audit trail names the real location being granted or revoked, not just
   the config key.
+
+  ## Synthetic mail mounts (Task 14, mail spec §"Mount & containment")
+
+  `list/1` APPENDS one `kind: :mail` mount per VALID configured account in
+  `config/mail.yaml` — key `mail-<slug>`, rooted at
+  `<ws>/sources/mail/<slug>`, `manifest: nil`, degraded when the account's
+  Engine reports a blocked identity (`identity_mismatch`/
+  `mailbox_replaced`). They exist ONLY as session-scope material (the
+  related-ICM mail grammar and `include_mounts`): they are never `icms:`
+  config entries, never mutation targets (`mount/2`/`create/3`/`adopt/3`
+  reject `sources/mail` roots via the inside-workspace boundary;
+  `unmount/2`/`set_enabled/3` report `:mount_not_found` for `mail-*` keys;
+  `unique_mount_key/2` never mints into the namespace), never
+  editor-addressable (`mount_for/2` and `Valea.ICM` exclude them), and
+  never part of the Knowledge tree grouping.
   """
 
   alias Valea.Mounts.Context
@@ -76,17 +91,22 @@ defmodule Valea.Mounts do
   alias Valea.Workspace.Scaffold
   alias Valea.Yaml
 
-  # A resolved mount. `root` is the ABSOLUTE path — every mount is
+  # A resolved mount. `root` is the ABSOLUTE path — an ICM mount is
   # external (by-reference), so there is no workspace-relative path to
-  # carry. `enabled` from config. `degraded` carries a reason string when
-  # the manifest is missing/broken (still listed for the UI, excluded from
-  # the effective set).
+  # carry; a synthetic mail mount's root lives INSIDE the workspace at
+  # `sources/mail/<slug>`. `enabled` from config. `degraded` carries a
+  # reason string when the manifest is missing/broken — or, for a mail
+  # mount, when its Engine reports a blocked identity (still listed for
+  # the UI, excluded from the effective set). `kind` separates the two
+  # families: `:icm` (config `icms:` entries) vs `:mail` (Task 14's
+  # synthetic per-account mounts, `manifest` always `nil`).
   @type mount :: %{
           name: String.t(),
           root: String.t(),
           manifest: %Valea.Mounts.Manifest{} | nil,
           enabled: boolean(),
-          degraded: String.t() | nil
+          degraded: String.t() | nil,
+          kind: :icm | :mail
         }
 
   @doc """
@@ -110,12 +130,72 @@ defmodule Valea.Mounts do
   def list(workspace) when is_binary(workspace) do
     ws_resolved = resolve_best_effort(workspace)
 
-    workspace
-    |> read_icms_config()
-    |> Enum.map(fn {name, entry} -> build_icm_mount(name, entry, ws_resolved) end)
-    |> degrade_duplicate_roots()
-    |> degrade_duplicate_ids()
-    |> Enum.sort_by(& &1.name)
+    icm_mounts =
+      workspace
+      |> read_icms_config()
+      |> Enum.map(fn {name, entry} -> build_icm_mount(name, entry, ws_resolved) end)
+      |> degrade_duplicate_roots()
+      |> degrade_duplicate_ids()
+      |> Enum.sort_by(& &1.name)
+
+    icm_mounts ++ mail_mounts(workspace, ws_resolved)
+  end
+
+  # -- synthetic mail mounts (Task 14, mail spec §"Mount & containment") ----
+  #
+  # One `kind: :mail` mount per VALID configured account in
+  # `config/mail.yaml` (v4) — key `mail-<slug>`, rooted at
+  # `<ws>/sources/mail/<slug>`, `manifest: nil`. APPENDED after the sorted
+  # ICM mounts (sorted among themselves by slug), so a legacy/hand-edited
+  # `icms:` key that happens to live in the `mail-*` namespace shadows the
+  # mail mount in `mount_by_key/2` deterministically — fail-closed for the
+  # mail grammar, which additionally requires `kind: :mail`, while the
+  # shadowing ICM entry stays reachable for repair (unmount).
+  #
+  # `enabled` is `true` for every valid configured account (there is no
+  # per-account enable flag in v4 config); `degraded` mirrors the account's
+  # Engine state when it reports a blocked identity
+  # (`"identity_mismatch"`/`"mailbox_replaced"` — spec §identity binding).
+  # No Engine running, or any other state, leaves the mount healthy: the
+  # mount describes ACCESS to the local subtree, not sync liveness.
+  #
+  # Invalid accounts (dropped by `Valea.Mail.Settings.load/1`) get no mount
+  # at all — but their subtrees (and any leftover files from a removed
+  # account) are still covered by `Valea.Agents.PermissionPolicy`'s blanket
+  # `sources/mail` deny, which is keyed off the workspace root, not this
+  # listing.
+  defp mail_mounts(workspace, ws_resolved) do
+    case Valea.Mail.Settings.load(workspace) do
+      {:ok, %{accounts: accounts}} ->
+        accounts
+        |> Map.keys()
+        |> Enum.sort()
+        |> Enum.map(fn slug ->
+          %{
+            name: "mail-" <> slug,
+            root: Path.join([ws_resolved, "sources", "mail", slug]),
+            manifest: nil,
+            enabled: true,
+            degraded: mail_degraded(slug),
+            kind: :mail
+          }
+        end)
+
+      _not_configured_or_invalid ->
+        []
+    end
+  end
+
+  # `Engine.status/1` is a GenServer call into a process that may be mid-
+  # shutdown — a `list/1` (called from every mount lookup) must never crash
+  # on that race, so any exit degrades to "no engine" (healthy mount).
+  defp mail_degraded(slug) do
+    case Valea.Mail.Engine.status(slug) do
+      %{state: state} when state in ["identity_mismatch", "mailbox_replaced"] -> state
+      _no_engine_or_other_state -> nil
+    end
+  catch
+    :exit, _reason -> nil
   end
 
   @doc "Only enabled, non-degraded mounts in the current workspace — the effective composition set."
@@ -179,7 +259,12 @@ defmodule Valea.Mounts do
   def mount_for(workspace, path) when is_binary(workspace) and is_binary(path) do
     workspace
     |> list()
-    |> Enum.filter(&(effective?(&1) and path_under_root?(path, &1.root)))
+    # ICM mounts only: attribution feeds the EDITOR's `(mount_key,
+    # rel_path)` addressing (`Valea.Icm.Locator.for_path/2` expects a
+    # manifest id). A synthetic mail mount (Task 14) has no manifest and
+    # is never editor-addressable, so a path under `sources/mail` falls
+    # through to workspace attribution instead.
+    |> Enum.filter(&(&1.kind == :icm and effective?(&1) and path_under_root?(path, &1.root)))
     |> most_specific_root()
   end
 
@@ -238,11 +323,17 @@ defmodule Valea.Mounts do
   def scoped_roots(workspace, mount_key)
       when is_binary(workspace) and is_binary(mount_key) do
     case mount_by_key(workspace, mount_key) do
-      %{enabled: true, degraded: nil} = primary ->
+      %{enabled: true, degraded: nil, kind: :icm} = primary ->
         related =
           workspace
           |> Context.resolve(primary)
           |> Map.fetch!(:related)
+          # Mail entries (`kind: :mail`, Task 14) are session-scope
+          # material only — the editor scan scope must NEVER include a
+          # mailbox: search/backlinks over attacker-authored mail is noise,
+          # and rename link-rewrite WRITES into every scoped root, which
+          # would violate "only the engine mutates maildir/".
+          |> Enum.reject(&(Map.get(&1, :kind) == :mail))
           |> Enum.reject(&(&1.mount_key == primary.name))
           |> Enum.uniq_by(& &1.mount_key)
           |> Enum.map(&related_to_mount/1)
@@ -260,7 +351,7 @@ defmodule Valea.Mounts do
   # (`degraded == nil`, via `mount_by_id/2`) before this entry ever reached
   # `related`.
   defp related_to_mount(%{mount_key: key, root: root, manifest: manifest}) do
-    %{name: key, root: root, manifest: manifest, enabled: true, degraded: nil}
+    %{name: key, root: root, manifest: manifest, enabled: true, degraded: nil, kind: :icm}
   end
 
   # With NESTED mount roots (one mount's folder inside another's), a path
@@ -455,11 +546,17 @@ defmodule Valea.Mounts do
   `Valea.Workspace.Scaffold.slugify/1` of `name`, then a `-2`, `-3`, ...
   numeric suffix if the slug already names an existing `icms:` entry in
   `workspace`'s current config.
+
+  The `mail-*` namespace is RESERVED for Task 14's synthetic per-account
+  mail mounts: a display name slugifying into it (e.g. "Mail Personal" ->
+  `mail-personal`) is re-prefixed to `icm-mail-...` so a newly-registered
+  ICM can never shadow (or be shadowed by) a mail account's mount key.
   """
   @spec unique_mount_key(workspace :: String.t(), name :: String.t()) :: String.t()
   def unique_mount_key(workspace, name) when is_binary(workspace) and is_binary(name) do
     existing = workspace |> read_icms_config() |> Map.keys() |> MapSet.new()
     base = Scaffold.slugify(name)
+    base = if String.starts_with?(base, "mail-"), do: "icm-" <> base, else: base
     unique_key(base, existing, 1)
   end
 
@@ -747,7 +844,8 @@ defmodule Valea.Mounts do
                 root: resolved,
                 manifest: manifest,
                 enabled: enabled,
-                degraded: nil
+                degraded: nil,
+                kind: :icm
               }
 
             {:error, :missing} ->
@@ -780,7 +878,7 @@ defmodule Valea.Mounts do
     do: "path points at an ancestor of the workspace — not mountable"
 
   defp degraded_icm_mount(name, root, enabled, reason) do
-    %{name: name, root: root, manifest: nil, enabled: enabled, degraded: reason}
+    %{name: name, root: root, manifest: nil, enabled: enabled, degraded: reason, kind: :icm}
   end
 
   # Fully resolve `path` (`~`-expanded — the caller already `Path.expand/1`s

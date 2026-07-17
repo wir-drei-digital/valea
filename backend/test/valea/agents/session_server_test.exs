@@ -69,6 +69,7 @@ defmodule Valea.Agents.SessionServerTest do
              "run_id" => nil,
              "context_doc" => nil,
              "input" => nil,
+             "include_mounts" => [],
              "title" => "Test",
              "harness" => "claude_code",
              "generation" => meta["generation"],

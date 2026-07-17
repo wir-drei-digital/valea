@@ -59,6 +59,13 @@ defmodule Valea.Api.Agents do
       # used for input_locator; the FE sends "kind"/"icm_id"/"path" verbatim).
       argument :context_doc, :map, allow_nil?: true
       argument :input, :map, allow_nil?: true
+      # Task 14 (mail spec §"Mount & containment"): mail mount keys
+      # (`mail-<slug>`) to include in the session's scope, default `[]`.
+      # Each must name an existing, enabled, non-degraded `kind: :mail`
+      # mount — `SessionScope.resolve/1` rejects an ICM key as
+      # `include_not_mail` and anything unavailable as `mail_unavailable`,
+      # fail-closed, before any session starts.
+      argument :include_mounts, {:array, :string}, allow_nil?: true
 
       # Task 5.5 / Task 9 (Spec D §B): `create_session` resolves `mount_key`
       # — the session's PRIMARY ICM, chosen by the caller (for now, the
@@ -90,6 +97,7 @@ defmodule Valea.Api.Agents do
         %{mount_key: mount_key, generation: generation} = input.arguments
         context_doc = Map.get(input.arguments, :context_doc)
         input_locator = Map.get(input.arguments, :input)
+        include_mounts = Map.get(input.arguments, :include_mounts) || []
         id = Valea.Agents.generate_session_id()
 
         with :ok <- Manager.check_generation(generation),
@@ -102,7 +110,8 @@ defmodule Valea.Api.Agents do
                  mount_key: mount_key,
                  generation: generation,
                  session_id: id,
-                 read_paths: if(input_abs, do: [input_abs], else: [])
+                 read_paths: if(input_abs, do: [input_abs], else: []),
+                 include_mounts: include_mounts
                }),
              {:ok, %{id: id}} <-
                Valea.Agents.start_session(%{
@@ -114,13 +123,15 @@ defmodule Valea.Api.Agents do
                  initial_prompt: nil,
                  on_turn_end: nil,
                  context_doc: context_doc,
-                 input: input_locator
+                 input: input_locator,
+                 include_mounts: include_mounts
                }) do
           Valea.Audit.append("session_started", %{
             "session_id" => id,
             "mount_key" => mount_key,
             "context_doc" => context_doc,
-            "input" => input_locator
+            "input" => input_locator,
+            "include_mounts" => include_mounts
           })
 
           {:ok, %{id: id, input_path: input_abs}}

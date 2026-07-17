@@ -151,4 +151,65 @@ defmodule Valea.Agents.SessionReadRootsTest do
 
     assert %{write_paths: [^write_path], write_roots: [^write_root]} = policy_ctx_for(id)
   end
+
+  # -- Task 14: include_mounts threads the mail root into the policy ctx ----
+
+  defp write_mail_yaml!(ws) do
+    path = Path.join(ws, "config/mail.yaml")
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, """
+    version: 4
+    accounts:
+      mara:
+        imap:
+          host: imap.fastmail.com
+          port: 993
+          username: mara@example.com
+    """)
+  end
+
+  defp real!(path) do
+    expanded = Path.expand(path)
+    {:ok, resolved} = Valea.Paths.resolve_real(expanded, expanded)
+    resolved
+  end
+
+  test "include_mounts threads the mail root into read_roots AND mail_roots_in_scope",
+       %{workspace: workspace, icm: icm} do
+    write_mail_yaml!(workspace)
+
+    {:ok, %{id: id}} =
+      AgentCase.start_session(workspace, "happy", %{include_mounts: ["mail-mara"]})
+
+    on_exit(fn -> AgentCase.kill_session(id) end)
+
+    mail_root = real!(Path.join([workspace, "sources", "mail", "mara"]))
+
+    assert %{
+             read_roots: read_roots,
+             mail_roots_all: [^mail_root],
+             mail_roots_in_scope: [^mail_root]
+           } = policy_ctx_for(id)
+
+    assert Enum.sort(read_roots) == Enum.sort([icm.root, mail_root])
+  end
+
+  test "without include_mounts the configured account lands in mail_roots_all only — never in scope, never readable",
+       %{workspace: workspace, icm: icm} do
+    write_mail_yaml!(workspace)
+
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
+    on_exit(fn -> AgentCase.kill_session(id) end)
+
+    mail_root = real!(Path.join([workspace, "sources", "mail", "mara"]))
+
+    assert %{
+             read_roots: read_roots,
+             mail_roots_all: [^mail_root],
+             mail_roots_in_scope: []
+           } = policy_ctx_for(id)
+
+    assert read_roots == [icm.root]
+  end
 end

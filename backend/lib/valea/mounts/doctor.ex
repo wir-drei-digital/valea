@@ -138,7 +138,11 @@ defmodule Valea.Mounts.Doctor do
   """
   @spec run(workspace :: String.t()) :: {:ok, %{checks: [check], ok: boolean}}
   def run(workspace) when is_binary(workspace) do
-    all_mounts = Mounts.list(workspace)
+    # ICM mounts only (Task 14): a synthetic `kind: :mail` mount has no
+    # manifest by design — running the manifest/id checks against it would
+    # report a healthy mail account as a broken ICM. Mail has its own
+    # doctor (`Valea.Mail.Doctor`).
+    all_mounts = workspace |> Mounts.list() |> Enum.filter(&(&1.kind == :icm))
     checks = Enum.flat_map(all_mounts, &mount_checks(workspace, &1, all_mounts))
     {:ok, %{checks: checks, ok: Enum.all?(checks, &(&1["status"] == "ok"))}}
   end
@@ -155,7 +159,9 @@ defmodule Valea.Mounts.Doctor do
           {:ok, %{mount_key: String.t(), checks: [check], ok: boolean}}
           | {:error, :mount_not_found}
   def run(workspace, mount_key) when is_binary(workspace) and is_binary(mount_key) do
-    all_mounts = Mounts.list(workspace)
+    # ICM mounts only — same reasoning as `run/1` above: a `kind: :mail`
+    # mount key is not an ICM, so probing it here is a lookup miss.
+    all_mounts = workspace |> Mounts.list() |> Enum.filter(&(&1.kind == :icm))
 
     case Enum.find(all_mounts, &(&1.name == mount_key)) do
       nil ->

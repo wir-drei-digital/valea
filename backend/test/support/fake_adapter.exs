@@ -116,7 +116,7 @@ defmodule FakeAdapter do
         targets = [
           {"pr1", "Write client CONTEXT.md", Path.join([icm_root, "clients/CONTEXT.md"])},
           {"pr2", "Write knowledge page", Path.join([icm_root, "Pricing/Current Pricing.md"])},
-          {"pr3", "Write source file", Path.join([workspace_root, "sources/mail/inbox.md"])}
+          {"pr3", "Write source file", Path.join([workspace_root, "sources/notes/inbox.md"])}
         ]
 
         Enum.each(targets, fn {rpc_id, title, path} ->
@@ -182,7 +182,7 @@ defmodule FakeAdapter do
             "title" => "Read workspace source",
             "kind" => "read",
             "rawInput" => %{
-              "file_path" => Path.join([workspace_root, "sources/mail/inbox.md"])
+              "file_path" => Path.join([workspace_root, "sources/notes/inbox.md"])
             }
           },
           "options" => [

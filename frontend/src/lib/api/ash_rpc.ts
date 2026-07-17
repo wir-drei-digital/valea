@@ -219,6 +219,7 @@ export type CreateAgentSessionInput = {
   generation: number;
   contextDoc?: Record<string, any> | null;
   input?: Record<string, any> | null;
+  includeMounts?: Array<string> | null;
 };
 
 export type CreateAgentSessionFields = UnifiedFieldSelection<{id: string, inputPath: string | null, __type: "TypedMap", __primitiveFields: "id" | "inputPath"}>[];

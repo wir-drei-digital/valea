@@ -309,7 +309,11 @@ defmodule Valea.ICM.Watcher do
   defp compute_icm_roots(root) do
     root
     |> Mounts.enabled()
-    |> Enum.filter(&File.dir?(&1.root))
+    # Task 14: synthetic `kind: :mail` mounts live INSIDE the workspace
+    # under `sources/mail/<slug>` — already covered by the FIXED
+    # `<root>/sources` listener above; adding them here would double-fire
+    # every engine sync write through the dynamic listener.
+    |> Enum.filter(&(&1.kind == :icm and File.dir?(&1.root)))
     |> Map.new(fn mount -> {canonical(mount.root), mount.name} end)
   end
 

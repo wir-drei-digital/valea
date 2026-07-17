@@ -49,6 +49,9 @@ defmodule Valea.AgentCase do
     * `:read_paths` / `:write_paths` / `:write_roots` — the exact grants
       `SessionScope.resolve/1` folds into the scope verbatim (a workflow-kind
       scope's per-run grants; empty by default).
+    * `:include_mounts` — mail mount keys (`mail-<slug>`) to include in
+      the scope (Task 14); threaded both into `SessionScope.resolve/1`
+      and into the session-start opts (transcript meta records them).
 
   Propagates `{:error, :icm_unavailable}` / `{:error, :workspace_changed}`
   from `SessionScope.resolve/1` the same way `Valea.Agents.start_session/1`
@@ -62,6 +65,7 @@ defmodule Valea.AgentCase do
     {read_paths, extra} = Map.pop(extra, :read_paths, [])
     {write_paths, extra} = Map.pop(extra, :write_paths, [])
     {write_roots, extra} = Map.pop(extra, :write_roots, [])
+    {include_mounts, extra} = Map.pop(extra, :include_mounts, [])
 
     Valea.App.Config.set_harness_command(fake_cmd(scenario, harness_args))
 
@@ -76,7 +80,8 @@ defmodule Valea.AgentCase do
              session_id: id,
              read_paths: read_paths,
              write_paths: write_paths,
-             write_roots: write_roots
+             write_roots: write_roots,
+             include_mounts: include_mounts
            }) do
       Valea.Agents.start_session(
         Map.merge(
@@ -87,7 +92,8 @@ defmodule Valea.AgentCase do
             scope: scope,
             run: nil,
             initial_prompt: nil,
-            on_turn_end: nil
+            on_turn_end: nil,
+            include_mounts: include_mounts
           },
           extra
         )
@@ -101,7 +107,7 @@ defmodule Valea.AgentCase do
   # `mount_test_icm!/2` never needs to name it. A test with more than one
   # mount, or that needs a SPECIFIC one, passes `mount_key:` explicitly.
   defp primary_mount_key!(workspace) do
-    case Mounts.enabled(workspace) do
+    case workspace |> Mounts.enabled() |> Enum.filter(&(&1.kind == :icm)) do
       [%{name: name} | _] ->
         name
 

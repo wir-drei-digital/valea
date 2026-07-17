@@ -1133,6 +1133,11 @@ export const api = {
   // grant); `input` is resolved server-side to ONE exact read path, granted,
   // and returned as `inputPath` so the caller can reference exactly the
   // file it unlocked in its opening prompt.
+  // Task 14 (mail spec §"Mount & containment"): `opts.includeMounts` opts the
+  // session into mail account mounts by key (`mail-<slug>`, default `[]`) —
+  // each must name an existing, enabled, non-degraded mail mount; the backend
+  // rejects an ICM key as `include_not_mail` and anything unavailable as
+  // `mail_unavailable`, fail-closed, before any session starts.
   createAgentSession: (
     mountKey: string,
     generation: number,
@@ -1141,6 +1146,8 @@ export const api = {
       contextDoc?: { kind: 'icm'; icm_id: string; path: string };
       /** Raw string-keyed ICM/workspace locator granted as one exact read path. */
       input?: { kind: 'workspace'; path: string } | { kind: 'icm'; icm_id: string; path: string };
+      /** Mail mount keys (mail-<slug>) to include in the session scope. */
+      includeMounts?: string[];
     }
   ) =>
     runRpc(
@@ -1149,12 +1156,19 @@ export const api = {
           mountKey,
           generation,
           contextDoc: opts?.contextDoc ?? null,
-          input: opts?.input ?? null
+          input: opts?.input ?? null,
+          includeMounts: opts?.includeMounts ?? []
         }),
       () =>
         httpCreateAgentSession(
           withAuth({
-            input: { mountKey, generation, contextDoc: opts?.contextDoc ?? null, input: opts?.input ?? null },
+            input: {
+              mountKey,
+              generation,
+              contextDoc: opts?.contextDoc ?? null,
+              input: opts?.input ?? null,
+              includeMounts: opts?.includeMounts ?? []
+            },
             fields: createAgentSessionFields
           })
         )

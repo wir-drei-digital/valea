@@ -343,4 +343,48 @@ defmodule Valea.Mounts.MutationTest do
       assert updated =~ "ref: \"/tmp/legacy\""
     end
   end
+
+  # -- mail mounts are never mutation targets (Task 14, spec §"Mount &
+  # containment") — synthetic `mail-<slug>` mounts exist only in `list/1`,
+  # never in the `icms:` config, and `sources/mail` roots live INSIDE the
+  # workspace, so every registering mutation's boundary gate already
+  # rejects them. These tests lock that posture explicitly.
+
+  describe "mail mount guards" do
+    defp write_mail_yaml!(ws) do
+      path = Path.join(ws, "config/mail.yaml")
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(path, """
+      version: 4
+      accounts:
+        mara:
+          imap:
+            host: imap.fastmail.com
+            port: 993
+            username: mara@example.com
+      """)
+    end
+
+    test "mount/create/adopt reject roots under sources/mail (inside the workspace)", %{ws: ws} do
+      write_mail_yaml!(ws)
+      target = Path.join([ws, "sources", "mail", "mara"])
+      File.mkdir_p!(target)
+
+      assert {:error, :inside_workspace} = Mounts.mount(ws, target)
+      assert {:error, :inside_workspace} = Mounts.create(ws, "Sneaky", target)
+      assert {:error, :inside_workspace} = Mounts.adopt(ws, target, "Sneaky")
+    end
+
+    test "unmount/set_enabled reject a mail mount key (config truth is icms:-only)", %{ws: ws} do
+      write_mail_yaml!(ws)
+      assert %{kind: :mail} = Mounts.mount_by_key(ws, "mail-mara")
+
+      assert {:error, :mount_not_found} = Mounts.unmount(ws, "mail-mara")
+      assert {:error, :mount_not_found} = Mounts.set_enabled(ws, "mail-mara", false)
+
+      # Still listed after both rejected mutations.
+      assert %{kind: :mail} = Mounts.mount_by_key(ws, "mail-mara")
+    end
+  end
 end

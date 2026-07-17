@@ -42,8 +42,16 @@ defmodule Valea.Cockpit do
 
   defp icm_sections do
     case Valea.Mounts.enabled() do
-      {:ok, mounts} -> mounts |> Enum.map(&icm_section/1) |> Enum.reject(&is_nil/1)
-      {:error, :no_workspace} -> []
+      {:ok, mounts} ->
+        # Task 14: synthetic `kind: :mail` mounts have no manifest and no
+        # `today.json` — the cockpit sections are ICM content only.
+        mounts
+        |> Enum.filter(&(&1.kind == :icm))
+        |> Enum.map(&icm_section/1)
+        |> Enum.reject(&is_nil/1)
+
+      {:error, :no_workspace} ->
+        []
     end
   end
 
