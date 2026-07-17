@@ -64,7 +64,7 @@ sources/mail/<account>/
   ops/                      # AGENT-WRITABLE — declared mailbox ops (YAML)
     done/                   #   executed ops files with per-op results
   drafts/                   # AGENT-WRITABLE — outbound drafts (markdown)
-  spool/                    # engine-owned composed RFC822 awaiting APPEND
+  spool/                    # engine-owned composed RFC822 + op manifests
   quarantine/               # unrecognized files found under maildir/
 ```
 
@@ -135,6 +135,17 @@ Nothing infers intent from filesystem diffs. Mailbox mutations are
   never from ops files and never by discovering unknown files (see
   Drafting & send); the ops vocabulary cannot express append, delete, or
   anything else.
+
+**Execution-time verification.** Cached state is never sufficient for a
+mutation. Immediately before any `UID MOVE`/`UID COPY`/`UID STORE`/
+`UID EXPUNGE`, the executor `SELECT`s the source folder and requires its
+live UIDVALIDITY to equal the op's recorded value, then fetches the
+source message and requires a **fingerprint match** with the op's msg_id
+(`CONDSTORE`/`UNCHANGEDSINCE` guards used additionally where advertised).
+Any mismatch — a reset, a recycled UID, altered content — rejects the op
+for re-validation after the next pull; destructive steps are never issued
+from cached UID state alone. Push-before-pull is an ordering
+optimization, never a trust statement.
 
 **Durable server-op ledger.** Moves and appends — the two non-idempotent
 server mutations — execute through `mail_pending_ops`: the op is recorded
@@ -309,8 +320,19 @@ and status. `auth_failed` pauses only that account.
 ## Store (SQLite, all cache, hand-migrated)
 
 The `migrate? false` hand-migration pattern stays (see ARCHITECTURE.md for
-why). The Phase 4 migration is replaced wholesale — no prod users. All
-tables rebuildable from `sources/mail/` + resync.
+why). The Phase 4 migration is replaced wholesale — no prod users. The
+sync tables are pure cache, rebuildable from `sources/mail/` + resync —
+**except `mail_pending_ops` and `mail_send_attempts`, which are durable
+operational state** (atomic claims, generated Message-IDs, payload
+hashes, outcome records) that no resync can reconstruct. They are made
+recoverable instead of rebuildable: every spool payload is written
+together with a self-contained manifest
+(`spool/<id>.manifest.yaml` — kind, target folder, Message-ID, payload
+hash, origin draft/ops file, state) in the same step as its ledger row.
+After database loss, boot treats any manifest without a completed ledger
+row as unresolved: the affected drafts and ops are **blocked** until
+reconciliation (Message-ID search, fingerprint confirmation) proves the
+outcome — nothing retries, sends, or mutates for them in the meantime.
 
 - `mail_sync_state` — per (account, folder): uidvalidity, last-seen UID,
   highestmodseq, last pass result.
@@ -401,6 +423,15 @@ status: draft                            # draft | sent
 ---
 Body in markdown; composed as text/plain.
 ```
+
+**Frontmatter is untrusted input.** Composition validates before use:
+unknown fields reject; any CR, LF, or NUL anywhere in any field value
+rejects; `to`/`cc`/`bcc` are parsed with an RFC 5322 mailbox parser and
+the outbound headers are serialized **from the parsed values only**,
+never from raw strings; `subject` is RFC 2047-encoded; `in_reply_to`
+must be a syntactically valid msg_id. The review panel displays the
+parsed recipient set — exactly what will be transmitted, not the raw
+frontmatter text.
 
 Agents (and the user) write drafts through the normal ask-gate. The Mail
 UI lists drafts with a review panel offering two **user-only** actions:
@@ -543,7 +574,9 @@ fingerprint confirmation before any retry, unprovable outcomes stop in
 `needs_review`; hash mismatches (draft or spool) → op rejected with a
 re-review error; op-vs-server conflicts → op rejected, server wins,
 surfaced; oversized → skipped and counted; `UIDVALIDITY`
-reset → folder re-pull with fingerprint-confirmed re-attach; SMTP
+reset → folder re-pull with fingerprint-confirmed re-attach; database
+loss → spool manifests drive reconciliation, affected drafts/ops blocked
+until outcomes are proven; SMTP
 refusal → draft reverts, error surfaced, no auto-retry; interrupted send
 (crash while `submitting`) → draft locked in the reconciliation state,
 resolved by Message-ID search or an explicit user choice, never an
@@ -573,7 +606,14 @@ boundary; every failure state has a copyable remedy or a status notice.
   fingerprint-confirmed destination copy, no duplicate, no premature
   source delete); **append crash after server acceptance** → search-first
   retry finds the Message-ID and completes without a duplicate; spool
-  tamper (payload hash mismatch) → op stops in `needs_review`.
+  tamper (payload hash mismatch) → op stops in `needs_review`;
+  **recycled-UID guard** (UIDVALIDITY changed or source fingerprint
+  mismatched at execution time → op rejected, no `STORE`/`EXPUNGE`
+  issued); **header injection** (CR/LF in subject or recipients →
+  composition rejects) and malformed mailbox syntax → rejected with the
+  parsed-recipient review intact; **database-loss recovery** (ledger rows
+  gone, manifests present → drafts/ops blocked, reconciliation resolves
+  without duplicate delivery).
 - **SMTP**: behaviour + fake for compose/submit; `DraftMime` golden tests;
   send state machine: refusal reverts the draft; crash between acceptance
   and journal transition → restart lands in `needs_review`, resolved by
