@@ -23,10 +23,17 @@ export type RecentSession = {
   status: string;
   live: boolean;
 };
-export type MailSummary = { reviewCount: number; inboxCount: number; configured: boolean };
+/** One configured account's cockpit line (`Valea.Cockpit.mail_summary/0` — per-account since the mail-as-maildir rework). */
+export type MailAccountSummary = {
+  account: string;
+  configured: boolean;
+  state: string;
+  pendingOps: number;
+  notices: string[];
+};
 export type CockpitToday = {
   sections: TodaySection[];
-  mail: MailSummary;
+  mail: MailAccountSummary[];
   recentSessions: RecentSession[];
 };
 
@@ -64,17 +71,21 @@ function normalizeSection(raw: Record<string, unknown>): TodaySection {
 
 export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToday {
   const sections = pick(raw, 'sections', 'sections');
-  const mail = (pick(raw, 'mail', 'mail') ?? {}) as Record<string, unknown>;
+  const mail = pick(raw, 'mail', 'mail');
   const recent = pick(raw, 'recent_sessions', 'recentSessions');
   return {
     sections: (Array.isArray(sections) ? sections : [])
       .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
       .map(normalizeSection),
-    mail: {
-      reviewCount: num(pick(mail, 'review_count', 'reviewCount')),
-      inboxCount: num(pick(mail, 'inbox_count', 'inboxCount')),
-      configured: pick(mail, 'configured', 'configured') === true
-    },
+    mail: (Array.isArray(mail) ? mail : [])
+      .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+      .map((m) => ({
+        account: str(m.account) ?? '',
+        configured: m.configured === true,
+        state: str(m.state) ?? '',
+        pendingOps: num(pick(m, 'pending_ops', 'pendingOps')),
+        notices: (Array.isArray(m.notices) ? m.notices : []).filter((n): n is string => typeof n === 'string')
+      })),
     recentSessions: (Array.isArray(recent) ? recent : [])
       .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
       .map((s) => ({
@@ -88,11 +99,9 @@ export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToda
 }
 
 /**
- * "N to review · M in inbox" — the mail summary clause `routes/+page.svelte`
- * appends when `mail.configured`. Carried over from the pre-Spec-D revision
- * of this module (still has a consumer there); ported onto the new
- * `MailSummary` shape above, which is structurally identical.
+ * "work: idle · 2 pending" — one configured account's summary line for the
+ * Today header (`routes/+page.svelte` renders one per configured account).
  */
-export function mailSummaryLine(mail: MailSummary): string {
-  return `${mail.reviewCount} to review · ${mail.inboxCount} in inbox`;
+export function mailSummaryLine(mail: MailAccountSummary): string {
+  return `${mail.account}: ${mail.state} · ${mail.pendingOps} pending`;
 }

@@ -1,14 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MailStore, mailStore, resupplyCredential, wireMailEvents, type MailStatus } from './mail.svelte';
+import {
+  MailStore,
+  mailStore,
+  normalizeMailAccountStatus,
+  resupplyCredentials,
+  wireMailEvents,
+  type MailAccountStatus
+} from './mail.svelte';
 import { inDesktop, keychainGet } from '../keychain';
-import { workspaceStore } from './workspace.svelte';
 import type { ApiResult } from '../api/client';
 import type { MailStatusPush } from '../socket';
 import type { Channel } from 'phoenix';
 
 // The keychain seam is mocked at the module boundary (mirrors
-// keychain.test.ts mocking `@tauri-apps/api/core`) so `resupplyCredential`'s
-// desktop path — including WHICH key the secret is looked up under — is
+// keychain.test.ts mocking `@tauri-apps/api/core`) so `resupplyCredentials`'
+// desktop path — including WHICH key each secret is looked up under — is
 // drivable from vitest, where no real Tauri bridge exists. Defaults mimic
 // the browser environment (not desktop, nothing stored); desktop-path tests
 // override per-test.
@@ -22,40 +28,61 @@ beforeEach(() => {
   vi.mocked(keychainGet).mockReset().mockResolvedValue(null);
 });
 
-type StatusResult = ApiResult<{ status: Record<string, any> }>;
+type StatusResult = ApiResult<{ accounts: Record<string, any>[] }>;
+type FoldersResult = ApiResult<{ folders: any[] }>;
 type MessagesResult = ApiResult<{ messages: any[] }>;
 type DetailResult = ApiResult<{ message: Record<string, any> }>;
 type SyncResult = ApiResult<{ started: boolean }>;
 type CredentialResult = ApiResult<{ accepted: boolean }>;
 
-// account (display label) deliberately differs from username (the IMAP
-// login) throughout these fixtures — the keychain lookup keys on the
-// USERNAME (spec §Credentials: account = workspace_id:username), and a
-// fixture where the two coincide couldn't catch a mixup between them.
-// `account` here is the real v4 slug (Task 10) — the RPC layer's
-// `mailStatus` wrapper (`api/client.ts`) already picked the primary account
-// out of the backend's `accounts: [...]` list before this shape reaches the
-// store, so `MailStore` itself still only ever sees one.
-const rawStatus: MailStatusPush = {
+// `account` (the slug) deliberately differs from `username` (the IMAP
+// login) throughout these fixtures — the keychain lookup keys on the SLUG
+// (`<slug>:imap`), and a fixture where the two coincide couldn't catch a
+// mixup between them. Two accounts throughout: the multi-account paths
+// (switching, push filtering, resupply) are this store's whole point.
+const rawMara: Record<string, any> = {
+  account: 'mara',
+  valid: true,
   configured: true,
   credential: 'present',
   state: 'idle',
   last_sync_at: '2026-07-10T12:00:00Z',
   last_error: null,
-  account: 'maras-mail',
   username: 'mara@example.com',
-  workspace_id: 'ws-1'
+  workspace_id: 'ws-1',
+  pending_ops: 2,
+  held_folders: ['Old/Archive'],
+  notices: ['one notice']
+};
+
+const rawZoe: Record<string, any> = {
+  account: 'zoe',
+  valid: true,
+  configured: true,
+  credential: 'present',
+  state: 'idle',
+  last_sync_at: null,
+  last_error: null,
+  username: 'zoe@example.com',
+  workspace_id: 'ws-1',
+  pending_ops: 0,
+  held_folders: [],
+  notices: []
 };
 
 function fakeApi(overrides: {
   mailStatus?: () => Promise<StatusResult>;
-  listMailMessages?: (account: string, folder: string) => Promise<MessagesResult>;
+  listMailFolders?: (account: string) => Promise<FoldersResult>;
+  listMailMessages?: (account: string, folder: string, opts?: object) => Promise<MessagesResult>;
   getMailMessage?: (account: string, msgId: string) => Promise<DetailResult>;
   mailSyncNow?: (account: string, generation: number) => Promise<SyncResult>;
   setMailCredential?: (account: string, secret: string, generation: number) => Promise<CredentialResult>;
 }) {
   return {
-    mailStatus: overrides.mailStatus ?? (async () => ({ ok: true, data: { status: rawStatus } }) as StatusResult),
+    mailStatus:
+      overrides.mailStatus ?? (async () => ({ ok: true, data: { accounts: [rawMara, rawZoe] } }) as StatusResult),
+    listMailFolders:
+      overrides.listMailFolders ?? (async () => ({ ok: true, data: { folders: [] } }) as FoldersResult),
     listMailMessages:
       overrides.listMailMessages ?? (async () => ({ ok: true, data: { messages: [] } }) as MessagesResult),
     getMailMessage:
@@ -66,382 +93,411 @@ function fakeApi(overrides: {
   };
 }
 
-describe('MailStore.refreshStatus', () => {
-  it('normalizes the raw wire payload (snake_case) into MailStatus (camelCase)', async () => {
-    const store = new MailStore(fakeApi({}) as never);
+/** Drains the microtask queue so the store's fire-and-forget (`void`) refetches settle before asserting. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
-    await store.refreshStatus();
+function pushFor(raw: Record<string, any>): MailStatusPush {
+  // Channel pushes are the engine status WITHOUT `valid`/`reason` (an
+  // engine only exists for valid config) — strip them from the RPC fixture.
+  const { valid: _valid, reason: _reason, ...rest } = raw;
+  return rest as MailStatusPush;
+}
 
-    expect(store.status).toEqual({
+describe('normalizeMailAccountStatus', () => {
+  it('camelCases a full valid entry and narrows credential', () => {
+    expect(normalizeMailAccountStatus(rawMara)).toEqual({
+      account: 'mara',
+      valid: true,
+      reason: null,
       configured: true,
       credential: 'present',
       state: 'idle',
       lastSyncAt: '2026-07-10T12:00:00Z',
       lastError: null,
-      account: 'maras-mail',
       username: 'mara@example.com',
-      workspaceId: 'ws-1'
+      workspaceId: 'ws-1',
+      pendingOps: 2,
+      heldFolders: ['Old/Archive'],
+      notices: ['one notice']
+    } satisfies MailAccountStatus);
+  });
+
+  it('degrades an invalid-config entry (only account/state/reason present) to empty defaults', () => {
+    const normalized = normalizeMailAccountStatus({
+      account: 'broken',
+      valid: false,
+      state: 'invalid_config',
+      reason: 'bad slug'
+    });
+
+    expect(normalized).toMatchObject({
+      account: 'broken',
+      valid: false,
+      reason: 'bad slug',
+      configured: false,
+      credential: 'missing',
+      state: 'invalid_config',
+      pendingOps: 0,
+      heldFolders: [],
+      notices: []
     });
   });
 
-  it('leaves status untouched on failure', async () => {
+  it('defaults valid to true when the field is absent (channel pushes)', () => {
+    expect(normalizeMailAccountStatus(pushFor(rawMara) as never).valid).toBe(true);
+  });
+});
+
+describe('MailStore.refreshStatus', () => {
+  it('populates accounts and defaults selection to the first valid configured account', async () => {
+    const listMailFolders = vi.fn(async () => ({ ok: true, data: { folders: [] } }) as FoldersResult);
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailFolders, listMailMessages }) as never);
+
+    await store.refreshStatus();
+
+    expect(store.accounts.map((a) => a.account)).toEqual(['mara', 'zoe']);
+    expect(store.selectedAccount).toBe('mara');
+    expect(store.selectedFolder).toBe('INBOX');
+    expect(listMailFolders).toHaveBeenCalledWith('mara');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+  });
+
+  it('skips invalid and unconfigured entries when defaulting the selection', async () => {
+    const invalid = { account: 'aaa-broken', valid: false, state: 'invalid_config', reason: 'x' };
+    const store = new MailStore(
+      fakeApi({ mailStatus: async () => ({ ok: true, data: { accounts: [invalid, rawZoe] } }) }) as never
+    );
+
+    await store.refreshStatus();
+
+    expect(store.selectedAccount).toBe('zoe');
+  });
+
+  it('clears the selection (and lists) when every account vanished', async () => {
+    const store = new MailStore(fakeApi({}) as never);
+    await store.refreshStatus();
+
+    const empty = new MailStore(fakeApi({ mailStatus: async () => ({ ok: true, data: { accounts: [] } }) }) as never);
+    await empty.refreshStatus();
+
+    expect(empty.selectedAccount).toBeNull();
+    expect(empty.folders).toEqual([]);
+    expect(empty.messages).toEqual([]);
+  });
+
+  it('keeps an existing still-present selection instead of snapping back to the first account', async () => {
+    const store = new MailStore(fakeApi({}) as never);
+    await store.refreshStatus();
+    await store.selectAccount('zoe');
+
+    await store.refreshStatus();
+
+    expect(store.selectedAccount).toBe('zoe');
+  });
+
+  it('leaves state untouched on failure', async () => {
     const store = new MailStore(
       fakeApi({ mailStatus: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
     );
 
     await store.refreshStatus();
 
-    expect(store.status).toBeNull();
+    expect(store.accounts).toEqual([]);
+    expect(store.selectedAccount).toBeNull();
   });
 });
 
-describe('MailStore.refreshMessages', () => {
-  it('populates messages from mocked api, reading the AI/Review folder', async () => {
-    const messages = [{ msgId: 'm1', fromName: 'Priya', subject: 'Hi', hasAttachments: false }];
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+describe('MailStore.selectAccount', () => {
+  it('switches account, resets the folder to INBOX, clears the open detail, and refetches both lists', async () => {
+    const listMailFolders = vi.fn(async () => ({ ok: true, data: { folders: [] } }) as FoldersResult);
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailFolders, listMailMessages }) as never);
+    await store.refreshStatus();
+    await store.selectFolder('Archive');
+    store.selected = { frontmatter: null, body: 'x', path: 'p' };
+    listMailFolders.mockClear();
+    listMailMessages.mockClear();
 
-    await store.refreshMessages('maras-mail');
+    await store.selectAccount('zoe');
+
+    expect(store.selectedAccount).toBe('zoe');
+    expect(store.selectedFolder).toBe('INBOX');
+    expect(store.selected).toBeNull();
+    expect(listMailFolders).toHaveBeenCalledWith('zoe');
+    expect(listMailMessages).toHaveBeenCalledWith('zoe', 'INBOX');
+  });
+
+  it('is a no-op when re-selecting the current account', async () => {
+    const listMailFolders = vi.fn(async () => ({ ok: true, data: { folders: [] } }) as FoldersResult);
+    const store = new MailStore(fakeApi({ listMailFolders }) as never);
+    await store.refreshStatus();
+    await store.selectFolder('Archive');
+    listMailFolders.mockClear();
+
+    await store.selectAccount('mara');
+
+    expect(store.selectedFolder).toBe('Archive');
+    expect(listMailFolders).not.toHaveBeenCalled();
+  });
+});
+
+describe('MailStore folders + messages', () => {
+  it('refreshFolders populates the folder list for the selected account', async () => {
+    const folders = [{ name: 'INBOX', dir: 'INBOX', held: false, messageCount: 4, backfillComplete: true }];
+    const store = new MailStore(
+      fakeApi({ listMailFolders: async () => ({ ok: true, data: { folders } }) }) as never
+    );
+    await store.refreshStatus();
+
+    expect(store.folders).toEqual(folders);
+  });
+
+  it('refreshFolders clears (without a call) when no account is selected', async () => {
+    const listMailFolders = vi.fn(async () => ({ ok: true, data: { folders: [] } }) as FoldersResult);
+    const store = new MailStore(fakeApi({ listMailFolders }) as never);
+
+    await store.refreshFolders();
+
+    expect(store.folders).toEqual([]);
+    expect(listMailFolders).not.toHaveBeenCalled();
+  });
+
+  it('selectFolder refetches messages from the newly selected folder', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    await store.selectFolder('AI/Review');
+
+    expect(store.selectedFolder).toBe('AI/Review');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'AI/Review');
+  });
+
+  it('refreshMessages leaves messages untouched on failure', async () => {
+    const messages = [{ msgId: 'm1' }];
+    let fail = false;
+    const store = new MailStore(
+      fakeApi({
+        listMailMessages: async () =>
+          fail ? ({ ok: false, error: 'not_found' } as MessagesResult) : ({ ok: true, data: { messages } } as MessagesResult)
+      }) as never
+    );
+    await store.refreshStatus();
+    expect(store.messages).toEqual(messages);
+
+    fail = true;
+    await store.refreshMessages();
 
     expect(store.messages).toEqual(messages);
-    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
-  });
-
-  it('leaves messages untouched on failure', async () => {
-    const store = new MailStore(
-      fakeApi({ listMailMessages: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
-    );
-
-    await store.refreshMessages('maras-mail');
-
-    expect(store.messages).toEqual([]);
-  });
-
-  it('clears messages (a no-op fetch) when no account is known yet', async () => {
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-
-    await store.refreshMessages();
-
-    expect(store.messages).toEqual([]);
-    expect(listMailMessages).not.toHaveBeenCalled();
-  });
-
-  it('defaults to the current status.account when none is passed', async () => {
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-
-    await store.refreshStatus();
-    await store.refreshMessages();
-
-    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
-  });
-});
-
-describe('MailStore.refreshInbox', () => {
-  it('populates inbox from mocked api, reading the INBOX folder', async () => {
-    const messages = [{ msgId: 'm2', fromName: 'Priya', subject: 'Hi', date: '2026-07-10' }];
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-
-    await store.refreshInbox('maras-mail');
-
-    expect(store.inbox).toEqual(messages);
-    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'INBOX');
-  });
-
-  it('leaves inbox untouched on failure', async () => {
-    const store = new MailStore(
-      fakeApi({ listMailMessages: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
-    );
-
-    await store.refreshInbox('maras-mail');
-
-    expect(store.inbox).toEqual([]);
   });
 });
 
 describe('MailStore.select', () => {
-  it('loads detail on success', async () => {
-    const message = { frontmatter: { subject: 'Hi' }, body: 'Body text', path: 'sources/mail/messages/m1.md' };
-    const store = new MailStore(
-      fakeApi({ getMailMessage: async () => ({ ok: true, data: { message } }) }) as never
-    );
+  it('loads detail from the selected account on success', async () => {
+    const message = { frontmatter: { subject: 'Hi' }, body: 'Body text', path: 'sources/mail/mara/views/messages/m1.md' };
+    const getMailMessage = vi.fn(async () => ({ ok: true, data: { message } }) as DetailResult);
+    const store = new MailStore(fakeApi({ getMailMessage }) as never);
+    await store.refreshStatus();
 
-    await store.select('maras-mail', 'm1');
+    await store.select('m1');
 
+    expect(getMailMessage).toHaveBeenCalledWith('mara', 'm1');
     expect(store.selected).toEqual({
       frontmatter: { subject: 'Hi' },
       body: 'Body text',
-      path: 'sources/mail/messages/m1.md'
+      path: 'sources/mail/mara/views/messages/m1.md'
     });
     expect(store.loading).toBe(false);
   });
 
-  it('leaves selected untouched on failure', async () => {
+  it('no-ops without a selected account', async () => {
+    const getMailMessage = vi.fn(async () => ({ ok: true, data: { message: {} } }) as DetailResult);
+    const store = new MailStore(fakeApi({ getMailMessage }) as never);
+
+    await store.select('m1');
+
+    expect(getMailMessage).not.toHaveBeenCalled();
+  });
+
+  it('leaves selected untouched (loading reset) on failure', async () => {
     const store = new MailStore(
       fakeApi({ getMailMessage: async () => ({ ok: false, error: 'not_found' }) }) as never
     );
+    await store.refreshStatus();
 
-    await store.select('maras-mail', 'missing');
+    await store.select('missing');
 
     expect(store.selected).toBeNull();
-    expect(store.loading).toBe(false);
-  });
-
-  it('flips loading true while the fetch is in flight', async () => {
-    let resolveFetch: (v: DetailResult) => void;
-    const pending = new Promise<DetailResult>((resolve) => {
-      resolveFetch = resolve;
-    });
-    const store = new MailStore(fakeApi({ getMailMessage: () => pending }) as never);
-
-    const selectPromise = store.select('maras-mail', 'm1');
-    expect(store.loading).toBe(true);
-
-    resolveFetch!({ ok: true, data: { message: { body: 'x', path: 'p', frontmatter: null } } });
-    await selectPromise;
-
     expect(store.loading).toBe(false);
   });
 });
 
 describe('MailStore.syncNow', () => {
-  it('returns null on success', async () => {
+  it('returns null on success and the error code on failure', async () => {
+    const ok = new MailStore(fakeApi({}) as never);
+    expect(await ok.syncNow('mara', 3)).toBeNull();
+
+    const failing = new MailStore(
+      fakeApi({ mailSyncNow: async () => ({ ok: false, error: 'mailbox_replaced' }) }) as never
+    );
+    expect(await failing.syncNow('mara', 3)).toBe('mailbox_replaced');
+  });
+});
+
+describe('MailStore push handlers (account filtering)', () => {
+  it('handleMailStatus upserts the pushed account by slug', async () => {
     const store = new MailStore(fakeApi({}) as never);
+    await store.refreshStatus();
 
-    const result = await store.syncNow('maras-mail', 3);
+    store.handleMailStatus(pushFor({ ...rawZoe, state: 'syncing' }));
 
-    expect(result).toBeNull();
+    expect(store.accounts.find((a) => a.account === 'zoe')?.state).toBe('syncing');
+    expect(store.accounts).toHaveLength(2);
   });
 
-  it('surfaces the error code on failure', async () => {
-    const store = new MailStore(
-      fakeApi({ mailSyncNow: async () => ({ ok: false, error: 'not_configured' }) }) as never
+  it('handleMailStatus appends a previously unknown account in slug order', async () => {
+    const store = new MailStore(fakeApi({}) as never);
+    await store.refreshStatus();
+
+    store.handleMailStatus(pushFor({ ...rawZoe, account: 'aaa-new' }));
+
+    expect(store.accounts.map((a) => a.account)).toEqual(['aaa-new', 'mara', 'zoe']);
+  });
+
+  it('handleMailStatus refetches lists only for the SELECTED account', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    store.handleMailStatus(pushFor(rawZoe));
+    await flush();
+    expect(listMailMessages).not.toHaveBeenCalled();
+
+    store.handleMailStatus(pushFor(rawMara));
+    await flush();
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+  });
+
+  it('handleMailStatus notifies onMailStatus listeners for every account', async () => {
+    const store = new MailStore(fakeApi({}) as never);
+    await store.refreshStatus();
+    const seen: string[] = [];
+    store.onMailStatus((payload) => seen.push(payload.account));
+
+    store.handleMailStatus(pushFor(rawZoe));
+    store.handleMailStatus(pushFor(rawMara));
+
+    expect(seen).toEqual(['zoe', 'mara']);
+  });
+
+  it('handleMailSync refetches only a finished pass of the selected account', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    store.handleMailSync({ account: 'zoe', phase: 'finished', newMessages: 1 });
+    store.handleMailSync({ account: 'mara', phase: 'started', newMessages: 0 });
+    await flush();
+    expect(listMailMessages).not.toHaveBeenCalled();
+
+    store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1 });
+    await flush();
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+  });
+
+  it('handleMailMessage refetches only for the selected account', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    store.handleMailMessage({ account: 'zoe', path: 'sources/mail/zoe/views/messages/m.md' });
+    await flush();
+    expect(listMailMessages).not.toHaveBeenCalled();
+
+    store.handleMailMessage({ account: 'mara', path: 'sources/mail/mara/views/messages/m.md' });
+    await flush();
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+  });
+});
+
+describe('resupplyCredentials', () => {
+  const missing = (raw: Record<string, any>) => normalizeMailAccountStatus({ ...raw, credential: 'missing' });
+
+  it('resolves 0 outside the desktop app without touching the keychain', async () => {
+    const count = await resupplyCredentials([missing(rawMara)], fakeApi({}) as never);
+
+    expect(count).toBe(0);
+    expect(keychainGet).not.toHaveBeenCalled();
+  });
+
+  it('looks each account up under <slug>:imap and resupplies every one with a stored secret', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockImplementation(async (_ws, key) =>
+      key === 'mara:imap' ? 's3cret-mara' : key === 'zoe:imap' ? 's3cret-zoe' : null
+    );
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const count = await resupplyCredentials([missing(rawMara), missing(rawZoe)], { setMailCredential } as never);
+
+    expect(count).toBe(2);
+    expect(keychainGet).toHaveBeenCalledWith('ws-1', 'mara:imap');
+    expect(keychainGet).toHaveBeenCalledWith('ws-1', 'zoe:imap');
+    expect(setMailCredential).toHaveBeenCalledWith('mara', 's3cret-mara', expect.any(Number));
+    expect(setMailCredential).toHaveBeenCalledWith('zoe', 's3cret-zoe', expect.any(Number));
+  });
+
+  it('skips accounts whose credential is already present (self-terminating) and those without a stored secret', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockImplementation(async (_ws, key) => (key === 'zoe:imap' ? 's3cret-zoe' : null));
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const count = await resupplyCredentials(
+      [normalizeMailAccountStatus(rawMara), missing(rawZoe), missing({ ...rawZoe, account: 'unstored' })],
+      { setMailCredential } as never
     );
 
-    const result = await store.syncNow('maras-mail', 3);
-
-    expect(result).toBe('not_configured');
+    expect(count).toBe(1);
+    expect(setMailCredential).toHaveBeenCalledTimes(1);
+    expect(setMailCredential).toHaveBeenCalledWith('zoe', 's3cret-zoe', expect.any(Number));
   });
 
-  it('passes the given account + generation through to the api', async () => {
-    const mailSyncNow = vi.fn(async () => ({ ok: true, data: { started: true } }) as SyncResult);
-    const store = new MailStore(fakeApi({ mailSyncNow }) as never);
-
-    await store.syncNow('maras-mail', 7);
-
-    expect(mailSyncNow).toHaveBeenCalledWith('maras-mail', 7);
-  });
-});
-
-describe('MailStore.handleMailMessage', () => {
-  it('triggers refreshMessages', async () => {
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-    await store.refreshStatus();
-
-    store.handleMailMessage({ path: 'sources/mail/messages/m2.md' });
-    await Promise.resolve();
-
-    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
-  });
-});
-
-describe('MailStore.handleMailSync', () => {
-  it('refreshes the inbox when the sync pass finishes', async () => {
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-    await store.refreshStatus();
-
-    store.handleMailSync({ phase: 'finished', newMessages: 2 });
-    await Promise.resolve();
-
-    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'INBOX');
-  });
-
-  it('does nothing on the started phase', async () => {
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-
-    store.handleMailSync({ phase: 'started', newMessages: 0 });
-    await Promise.resolve();
-
-    expect(listMailMessages).not.toHaveBeenCalled();
-  });
-});
-
-describe('MailStore.handleMailStatus', () => {
-  it('normalizes and stores status, and refetches messages + inbox (T13 activation race)', async () => {
-    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: [] } }) as MessagesResult);
-    const store = new MailStore(fakeApi({ listMailMessages }) as never);
-
-    store.handleMailStatus(rawStatus);
-    await Promise.resolve();
-
-    expect(store.status?.state).toBe('idle');
-    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'AI/Review');
-    expect(listMailMessages).toHaveBeenCalledWith('maras-mail', 'INBOX');
-  });
-});
-
-describe('MailStore.onMailStatus', () => {
-  it('notifies subscribers of every mail_status push, alongside the store refetches (Today unfreezes its cockpit snapshot on this)', () => {
-    const store = new MailStore(fakeApi({}) as never);
-    const listener = vi.fn();
-
-    store.onMailStatus(listener);
-    store.handleMailStatus(rawStatus);
-
-    expect(listener).toHaveBeenCalledWith(rawStatus);
-  });
-
-  it('stops notifying once unsubscribed', () => {
-    const store = new MailStore(fakeApi({}) as never);
-    const listener = vi.fn();
-
-    const unsubscribe = store.onMailStatus(listener);
-    unsubscribe();
-    store.handleMailStatus(rawStatus);
-
-    expect(listener).not.toHaveBeenCalled();
-  });
-});
-
-describe('resupplyCredential', () => {
-  const configuredMissing: MailStatus = {
-    configured: true,
-    credential: 'missing',
-    state: 'idle',
-    lastSyncAt: null,
-    lastError: null,
-    account: 'maras-mail',
-    username: 'mara@example.com',
-    workspaceId: 'ws-1'
-  };
-
-  it('no-ops outside the desktop app', async () => {
+  it('skips invalid and unconfigured entries outright', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
     const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
 
-    const result = await resupplyCredential(configuredMissing, { setMailCredential });
+    const count = await resupplyCredentials(
+      [
+        normalizeMailAccountStatus({ account: 'broken', valid: false, state: 'invalid_config', reason: 'x' }),
+        normalizeMailAccountStatus({ ...rawMara, configured: false, credential: 'missing' })
+      ],
+      { setMailCredential } as never
+    );
 
-    expect(result).toBe(false);
+    expect(count).toBe(0);
     expect(keychainGet).not.toHaveBeenCalled();
-    expect(setMailCredential).not.toHaveBeenCalled();
-  });
-
-  it('no-ops when the credential is already present', async () => {
-    vi.mocked(inDesktop).mockReturnValue(true);
-    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
-    const present: MailStatus = { ...configuredMissing, credential: 'present' };
-
-    const result = await resupplyCredential(present, { setMailCredential });
-
-    expect(result).toBe(false);
-    expect(keychainGet).not.toHaveBeenCalled();
-    expect(setMailCredential).not.toHaveBeenCalled();
-  });
-
-  it('no-ops when not configured', async () => {
-    vi.mocked(inDesktop).mockReturnValue(true);
-    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
-    const notConfigured: MailStatus = { ...configuredMissing, configured: false };
-
-    const result = await resupplyCredential(notConfigured, { setMailCredential });
-
-    expect(result).toBe(false);
-    expect(keychainGet).not.toHaveBeenCalled();
-    expect(setMailCredential).not.toHaveBeenCalled();
-  });
-
-  it('no-ops when the status carries no username to key the lookup on', async () => {
-    vi.mocked(inDesktop).mockReturnValue(true);
-    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
-    const noUsername: MailStatus = { ...configuredMissing, username: null };
-
-    const result = await resupplyCredential(noUsername, { setMailCredential });
-
-    expect(result).toBe(false);
-    expect(keychainGet).not.toHaveBeenCalled();
-    expect(setMailCredential).not.toHaveBeenCalled();
-  });
-
-  it('no-ops when the status carries no account to target the credential at', async () => {
-    vi.mocked(inDesktop).mockReturnValue(true);
-    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
-    const noAccount: MailStatus = { ...configuredMissing, account: null };
-
-    const result = await resupplyCredential(noAccount, { setMailCredential });
-
-    expect(result).toBe(false);
-    expect(keychainGet).not.toHaveBeenCalled();
-    expect(setMailCredential).not.toHaveBeenCalled();
-  });
-
-  it('desktop happy path: looks the secret up under the USERNAME (not the account label) and re-supplies it', async () => {
-    vi.mocked(inDesktop).mockReturnValue(true);
-    vi.mocked(keychainGet).mockResolvedValue('hunter2');
-    workspaceStore.generation = 5;
-    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
-
-    const result = await resupplyCredential(configuredMissing, { setMailCredential });
-
-    // The lookup key is the IMAP login, NOT the display label — the setup
-    // flow stores the secret under workspace_id:username (spec §Credentials),
-    // so keying on `account` ("maras-mail") would silently find nothing
-    // whenever label and login differ.
-    expect(keychainGet).toHaveBeenCalledWith('ws-1', 'mara@example.com');
-    expect(setMailCredential).toHaveBeenCalledWith('maras-mail', 'hunter2', 5);
-    expect(result).toBe(true);
-  });
-
-  it('no-ops (without calling the RPC) when the keychain has nothing stored', async () => {
-    vi.mocked(inDesktop).mockReturnValue(true);
-    vi.mocked(keychainGet).mockResolvedValue(null);
-    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
-
-    const result = await resupplyCredential(configuredMissing, { setMailCredential });
-
-    expect(result).toBe(false);
-    expect(setMailCredential).not.toHaveBeenCalled();
   });
 });
 
-// `mailEventsWired` is a module-level latch (see `wireMailEvents` in
-// `mail.svelte.ts`), so — same caveat every other `wire*Events` latch test
-// in this codebase has — it can only be meaningfully exercised ONCE per test
-// file. This is the single test in the file that calls `wireMailEvents`,
-// keeping the "first call wins" assertion deterministic instead of
-// depending on test execution order.
 describe('wireMailEvents', () => {
-  it('attaches all three mail handlers to the first channel only, each driving the singleton mailStore', () => {
-    const handleMailStatus = vi.spyOn(mailStore, 'handleMailStatus').mockImplementation(() => {});
-    const handleMailSync = vi.spyOn(mailStore, 'handleMailSync').mockImplementation(() => {});
-    const handleMailMessage = vi.spyOn(mailStore, 'handleMailMessage').mockImplementation(() => {});
+  it('attaches the three handlers once and stays idempotent on repeat calls', () => {
+    const on = vi.fn();
+    const channel = { on } as unknown as Channel;
 
-    const handlersA: Record<string, (payload: unknown) => void> = {};
-    const channelA = { on: (event: string, cb: (payload: unknown) => void) => (handlersA[event] = cb) } as unknown as Channel;
-    const handlersB: Record<string, (payload: unknown) => void> = {};
-    const channelB = { on: (event: string, cb: (payload: unknown) => void) => (handlersB[event] = cb) } as unknown as Channel;
+    wireMailEvents(channel);
+    wireMailEvents(channel);
 
-    wireMailEvents(channelA);
-    wireMailEvents(channelB); // idempotent no-op: never attaches to a second channel
+    expect(on).toHaveBeenCalledTimes(3);
+    expect(on.mock.calls.map((c) => c[0])).toEqual(['mail_status', 'mail_sync', 'mail_message']);
+  });
 
-    expect(handlersA['mail_status']).toBeTypeOf('function');
-    expect(handlersA['mail_sync']).toBeTypeOf('function');
-    expect(handlersA['mail_message']).toBeTypeOf('function');
-    expect(handlersB['mail_status']).toBeUndefined();
-
-    handlersA['mail_status']({ configured: true });
-    handlersA['mail_sync']({ phase: 'finished' });
-    handlersA['mail_message']({ path: 'x' });
-
-    expect(handleMailStatus).toHaveBeenCalledWith({ configured: true });
-    expect(handleMailSync).toHaveBeenCalledWith({ phase: 'finished' });
-    expect(handleMailMessage).toHaveBeenCalledWith({ path: 'x' });
-
-    handleMailStatus.mockRestore();
-    handleMailSync.mockRestore();
-    handleMailMessage.mockRestore();
+  it('exports the singleton store', () => {
+    expect(mailStore).toBeInstanceOf(MailStore);
   });
 });

@@ -1,57 +1,51 @@
 /**
- * Pure, unit-testable helpers for the `/mail` route's four components
- * (`MessageList`, `MessageView`, `SyncStatusLine`, `InboxSection`) — same
- * "no component render harness; extract the logic instead" convention as
+ * Pure, unit-testable helpers for the `/mail` route's components
+ * (`AccountSwitcher`, `FolderList`, `MessageList`, `MessageView`,
+ * `SyncStatusLine`, `SetupPanel`, `MailDoctorPanel`) — same "no component
+ * render harness; extract the logic instead" convention as
  * `components/audit/sentence.ts` and `components/agent/item-shapes.ts`.
  *
  * Field shapes are sourced from the emitting Elixir code, not guessed:
- *  - message summary (`MailMessageSummary`): `Valea.Mail.Store.list_messages/0`
- *    (via `list_mail_messages`'s `listMailMessagesFields`).
+ *  - account status (`MailAccountStatus`): `Valea.Mail.Engine.status/1` via
+ *    `mail_status`'s `accounts` list, normalized in `stores/mail.svelte.ts`.
+ *  - folder rows (`MailFolder`): `list_mail_folders`.
+ *  - message summary (`MailMessageSummary`): `list_mail_messages`.
  *  - message detail frontmatter: `Valea.Mail.MessageFile.render/2`'s field
- *    order (id, message_id, from, to, subject, date, uid, in_reply_to,
- *    references, reply_to, status, source, source_ref, attachments), parsed
- *    back by `MessageFile.parse/1` via `YamlElixir.read_from_string/1` —
- *    string keys, `from`/`reply_to` are `{name, email} | null`, `to` is
+ *    order (id, message_id, account, folders, flags, from, to, subject,
+ *    date, in_reply_to, references, reply_to, attachments), parsed back by
+ *    `MessageFile.parse/1` via `YamlElixir.read_from_string/1` — string
+ *    keys, `from`/`reply_to` are `{name, email} | null`, `to` is
  *    `[{name, email}]`, `attachments` is `[{filename, path, bytes}]`.
- *  - status values: `"review" | "processed"` (`MessageFile.parse/1`'s doc
- *    comment; flipped by `Valea.Mail.MessageFile.flip_status/2`).
- *  - engine state: `"idle" | "inactive" | "syncing" | "auth_failed"`
- *    (`MailStatusPush`'s doc comment in `socket.ts`).
+ *  - engine state: `"idle" | "inactive" | "syncing" | "auth_failed" |
+ *    "identity_mismatch" | "mailbox_replaced"` (`MailStatusPush`'s doc
+ *    comment in `socket.ts`), plus the RPC-only `"invalid_config"`.
  */
 
-import type { MailStatus } from '$lib/stores/mail.svelte';
+import type { MailAccountStatus, MailFolder } from '$lib/stores/mail.svelte';
 import type { Api } from '$lib/api/client';
 
-// -- status → dot (DESIGN_SYSTEM §8: "status badges show the assistant's
-// work at a glance") -------------------------------------------------------
-
-export type MessageDotColor = 'act' | 'neutral';
-
-/** Tailwind utility class for the dot's background, keyed by color — same shape as `AUDIT_DOT_CLASS`/`SOURCE_DOT_CLASS`. */
-export const MESSAGE_DOT_CLASS: Record<MessageDotColor, string> = {
-  act: 'bg-act-dot',
-  neutral: 'bg-ink-meta'
-};
+// -- account/folder chrome (AccountSwitcher / FolderList) -------------------
 
 /**
- * Green accent dot for a message still awaiting review; neutral (muted ink)
- * for everything else, including "processed".
- *
- * The old flat `status` field ("review"/"processed") this was keyed on is
- * gone — the account-scoped, per-folder occurrence backend (Task 10) has no
- * review-workflow marker of its own yet (the "Review" list is now just the
- * `AI/Review` folder's contents; every row in it is equally "review" by
- * definition). Kept accepting a `string | null` parameter (now the real
- * `flags` field, unused below) rather than deleted outright, so a later
- * task can reintroduce a real signal (e.g. `\Seen`) without another
- * call-site rewrite; for now every row renders neutral/unprocessed.
+ * The account slug grammar, mirrored client-side from
+ * `Valea.Mail.Settings.valid_slug?/1` so the setup form can reject before
+ * the RPC round-trip. The backend remains the authority — `setup_mail_account`
+ * re-validates and answers `"invalid_slug"`.
  */
-export function messageDot(_flags: string | null | undefined): MessageDotColor {
-  return 'neutral';
+export const MAIL_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+export function mailSlugValid(slug: string): boolean {
+  return MAIL_SLUG_RE.test(slug);
 }
 
-export function isProcessed(_flags: string | null | undefined): boolean {
-  return false;
+/** Switcher option text: the slug, with a broken account marked inline rather than hidden. */
+export function accountLabel(status: Pick<MailAccountStatus, 'account' | 'valid'>): string {
+  return status.valid ? status.account : `${status.account} (invalid)`;
+}
+
+/** Badge text for a folder row (`FolderList`): `"held"` for a held folder (spec E §folder lifecycle), nothing otherwise. */
+export function folderBadge(folder: Pick<MailFolder, 'held'>): string | null {
+  return folder.held ? 'held' : null;
 }
 
 // -- relative time — mirrors `routes/chat/+page.svelte`'s `relativeTime` ---
@@ -94,10 +88,24 @@ export function subjectLabel(subject: string | null | undefined): string {
   return s ? s : '(no subject)';
 }
 
-/** Generic trimmed-or-fallback — `InboxSection`'s raw IMAP headers (`fromText`/`subject`) are single strings, not split name/email. */
-export function nonEmpty(value: string | null | undefined, fallback: string): string {
-  const v = value?.trim();
-  return v ? v : fallback;
+/**
+ * The read pane's meta detail for a message's placement: comma-joined
+ * `folders` frontmatter plus the maildir flag letters when present —
+ * `"INBOX, Archive · flags: S"`. Replaces the deleted review/processed
+ * `status` marker in `MessageView`'s meta line. Empty string when the
+ * frontmatter carries neither (the meta line simply omits it).
+ */
+export function folderFlagsLine(frontmatter: Record<string, unknown> | null | undefined): string {
+  if (!frontmatter) return '';
+  const folders = Array.isArray(frontmatter.folders)
+    ? frontmatter.folders.filter((f): f is string => typeof f === 'string' && f.length > 0)
+    : [];
+  const flags = typeof frontmatter.flags === 'string' ? frontmatter.flags.trim() : '';
+
+  const parts = [];
+  if (folders.length > 0) parts.push(folders.join(', '));
+  if (flags) parts.push(`flags: ${flags}`);
+  return parts.join(' · ');
 }
 
 // -- address formatting for MessageView's header block ----------------------
@@ -185,6 +193,12 @@ export function mailStateLabel(state: string | null | undefined): string {
       return 'Sign-in failed';
     case 'inactive':
       return 'Not connected';
+    case 'identity_mismatch':
+      return 'Folder belongs to a different account';
+    case 'mailbox_replaced':
+      return 'Mailbox replaced — needs re-adopt';
+    case 'invalid_config':
+      return 'Invalid configuration';
     default:
       // A future engine state this UI hasn't been taught about yet still
       // renders SOMETHING sane (its raw name) rather than a blank line —
@@ -196,7 +210,7 @@ export function mailStateLabel(state: string | null | undefined): string {
 }
 
 /** Local request error (the `syncNow` RPC call itself failing) wins over the engine's own `lastError`; `null` when neither is present. */
-export function syncErrorText(status: MailStatus | null, requestError: string | null): string | null {
+export function syncErrorText(status: MailAccountStatus | null, requestError: string | null): string | null {
   return requestError ?? status?.lastError ?? null;
 }
 
@@ -225,6 +239,7 @@ export function syncNowErrorMessage(code: string): string {
 export type MailSetupApi = Pick<Api, 'setupMailAccount' | 'setMailCredential'>;
 
 export type MailSetupFormInput = {
+  /** The account SLUG — a real form field now (validated against `MAIL_SLUG_RE` before any RPC), not derived from a label. */
   account: string;
   host: string;
   port: number;
@@ -252,41 +267,18 @@ export type MailSetupDeps = {
 export type MailSetupOutcome = { ok: true; devMode: boolean } | { ok: false; error: string };
 
 /**
- * Lowercase, ASCII-fold, non-alphanumeric-runs-collapse-to-`-` slug, mirrors
- * the backend's `Valea.Workspace.Scaffold.slugify/1` (and matches its
- * grammar: `^[a-z0-9][a-z0-9-]{0,31}$`). Account setup (Task 10) rework: the
- * `account` RPC argument is now a REAL slug the backend validates directly
- * (no more server-side free-text-label-to-slug derivation) — this form's
- * "Account label" field is still free text (no UI rework this task), so
- * `submitMailSetup` derives the slug client-side before calling the RPC,
- * preserving the exact same "type a label, it just works" UX.
- */
-export function slugifyAccountLabel(label: string): string {
-  const slug = label
-    .normalize('NFD')
-    .replace(/\p{Mn}/gu, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32)
-    .replace(/-+$/, '');
-
-  return slug === '' ? 'account' : slug;
-}
-
-/**
- * Orchestrates the account-setup submit flow: `setupMailAccount` first
- * (writes `config/mail.yaml`), then hands the password off over whichever
- * channel the platform allows.
+ * Orchestrates the account-setup submit flow: client-side slug validation
+ * first (no RPC on a slug the backend would reject anyway), then
+ * `setupMailAccount` (writes `config/mail.yaml`), then hands the password
+ * off over whichever channel the platform allows.
  *
  * Desktop: `refreshWorkspaceId()` is called (and awaited) AFTER
  * `setupMailAccount` succeeds and BEFORE `keychainSet` — never a
  * caller-cached status value, since this may be the first mail config the
- * workspace has ever had. The keychain entry's `username`, by contrast,
- * comes from `input.username` (the FORM value, i.e. exactly what was just
- * typed and just saved) rather than from any refreshed status field — that
- * value is trustworthy the instant `setupMailAccount` resolves, with no
- * refetch needed. `keychainSet` is best-effort (mirrors `keychain.ts`'s own
+ * workspace has ever had. The keychain entry is keyed `<slug>:imap` (the
+ * account slug, not the IMAP login — matches `resupplyCredentials`'s read
+ * key in `stores/mail.svelte.ts`; slugs are unique per workspace, logins
+ * need not be). `keychainSet` is best-effort (mirrors `keychain.ts`'s own
  * contract: it never throws, and a `false`/skipped result never blocks the
  * RPC handoff below — a failed local keychain write just means recovery
  * won't silently resupply after the next restart).
@@ -300,7 +292,8 @@ export function slugifyAccountLabel(label: string): string {
  * code from the RPC (map it with `mailSetupErrorMessage` for display).
  */
 export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetupDeps): Promise<MailSetupOutcome> {
-  const slug = slugifyAccountLabel(input.account);
+  const slug = input.account;
+  if (!mailSlugValid(slug)) return { ok: false, error: 'invalid_slug' };
 
   const setupResult = await deps.api.setupMailAccount(slug, input.host, input.port, input.username, input.generation);
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
@@ -308,7 +301,7 @@ export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetup
   if (deps.inDesktop()) {
     const workspaceId = await deps.refreshWorkspaceId();
     if (workspaceId) {
-      await deps.keychainSet(workspaceId, input.username, input.secret);
+      await deps.keychainSet(workspaceId, `${slug}:imap`, input.secret);
     }
 
     const credResult = await deps.api.setMailCredential(slug, input.secret, input.generation);
@@ -328,8 +321,39 @@ export function mailSetupErrorMessage(code: string): string {
       return 'No workspace is open.';
     case 'workspace_changed':
       return 'Your workspace changed. Reopen it and try again.';
+    case 'invalid_slug':
+      return 'Account id must be lowercase letters, digits, and dashes (up to 32 characters).';
+    case 'identity_mismatch':
+      return 'A different account already owns this folder on disk. Purge it first from the account list.';
     default:
       return 'Could not save your mail account. Check the details and try again.';
+  }
+}
+
+/**
+ * Error copy for the account-maintenance actions (`remove_mail_account`,
+ * `purge_mail_account_files`, `readopt_mail_account`,
+ * `discard_held_folder`) — `Valea.Api.Mail.error_for/1`'s vocabulary for
+ * those actions, over the same generation-guard codes as everything else.
+ */
+export function mailMaintenanceErrorMessage(code: string): string {
+  switch (code) {
+    case 'workspace_not_open':
+      return 'No workspace is open.';
+    case 'workspace_changed':
+      return 'Your workspace changed. Reopen it and try again.';
+    case 'confirmation_mismatch':
+      return "The confirmation text doesn't match.";
+    case 'account_active':
+      return 'This account is still running. Remove it from the config first, or wait for it to stop.';
+    case 'not_held':
+      return 'That folder is not held anymore.';
+    case 'mailbox_replaced':
+      return 'This account is blocked pending re-adopt.';
+    case 'not_found':
+      return 'No such account.';
+    default:
+      return 'The action failed. Check the account state and try again.';
   }
 }
 

@@ -30,7 +30,7 @@ function fail<T>(error: string): ApiResult<T> {
 }
 
 const input: MailSetupFormInput = {
-  account: 'Work inbox',
+  account: 'work-inbox',
   host: 'imap.example.com',
   port: 993,
   username: 'mara@example.com',
@@ -57,9 +57,8 @@ describe('submitMailSetup — browser (dev) path', () => {
 
     const outcome = await submitMailSetup(input, deps);
 
-    // `account` is derived to a real v4-grammar slug (`slugifyAccountLabel`)
-    // client-side before the RPC call — Task 10's `setup_mail_account`
-    // validates it directly, no more server-side free-text-label derivation.
+    // `account` IS the slug — a real form field validated client-side
+    // against `MAIL_SLUG_RE`; the backend re-validates on its side.
     expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
       'work-inbox',
       'imap.example.com',
@@ -71,6 +70,16 @@ describe('submitMailSetup — browser (dev) path', () => {
     expect(deps.keychainSet).not.toHaveBeenCalled();
     expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3);
     expect(outcome).toEqual({ ok: true, devMode: true });
+  });
+
+  it('rejects an invalid slug before any RPC call', async () => {
+    const deps = makeDeps();
+
+    const outcome = await submitMailSetup({ ...input, account: 'Not A Slug' }, deps);
+
+    expect(outcome).toEqual({ ok: false, error: 'invalid_slug' });
+    expect(deps.api.setupMailAccount).not.toHaveBeenCalled();
+    expect(deps.api.setMailCredential).not.toHaveBeenCalled();
   });
 });
 
@@ -102,16 +111,16 @@ describe('submitMailSetup — desktop path', () => {
     const outcome = await submitMailSetup(input, deps);
 
     expect(order).toEqual(['setupMailAccount', 'refreshWorkspaceId', 'keychainSet', 'setMailCredential']);
-    expect(deps.keychainSet).toHaveBeenCalledWith('ws-fresh', 'mara@example.com', 'hunter2');
+    expect(deps.keychainSet).toHaveBeenCalledWith('ws-fresh', 'work-inbox:imap', 'hunter2');
     expect(outcome).toEqual({ ok: true, devMode: false });
   });
 
-  it('keys the keychain entry on the FORM username, not any stale status value', async () => {
+  it('keys the keychain entry on <slug>:imap, never on the IMAP username', async () => {
     const deps = makeDeps({ inDesktop: vi.fn(() => true) });
 
     await submitMailSetup({ ...input, username: 'form-typed@example.com' }, deps);
 
-    expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'form-typed@example.com', 'hunter2');
+    expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:imap', 'hunter2');
   });
 
   it('still hands the secret to setMailCredential even when refreshWorkspaceId comes back empty (best-effort keychain)', async () => {
@@ -175,7 +184,9 @@ describe('submitMailSetup — failure short-circuiting', () => {
 describe('mailSetupErrorMessage', () => {
   it.each([
     ['workspace_not_open', 'No workspace is open.'],
-    ['workspace_changed', 'Your workspace changed. Reopen it and try again.']
+    ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
+    ['invalid_slug', 'Account id must be lowercase letters, digits, and dashes (up to 32 characters).'],
+    ['identity_mismatch', 'A different account already owns this folder on disk. Purge it first from the account list.']
   ])('maps error code=%s to a calm sentence', (code, expected) => {
     expect(mailSetupErrorMessage(code)).toBe(expected);
   });

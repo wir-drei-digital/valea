@@ -63,8 +63,18 @@ import {
   createMailFoldersChannel,
   listMailMessages as httpListMailMessages,
   listMailMessagesChannel,
+  listMailFolders as httpListMailFolders,
+  listMailFoldersChannel,
   getMailMessage as httpGetMailMessage,
   getMailMessageChannel,
+  removeMailAccount as httpRemoveMailAccount,
+  removeMailAccountChannel,
+  purgeMailAccountFiles as httpPurgeMailAccountFiles,
+  purgeMailAccountFilesChannel,
+  readoptMailAccount as httpReadoptMailAccount,
+  readoptMailAccountChannel,
+  discardHeldFolder as httpDiscardHeldFolder,
+  discardHeldFolderChannel,
   inspectIcm as httpInspectIcm,
   inspectIcmChannel,
   listIcms as httpListIcms,
@@ -109,7 +119,12 @@ import type {
   MailDoctorFields,
   CreateMailFoldersFields,
   ListMailMessagesFields,
+  ListMailFoldersFields,
   GetMailMessageFields,
+  RemoveMailAccountFields,
+  PurgeMailAccountFilesFields,
+  ReadoptMailAccountFields,
+  DiscardHeldFolderFields,
   IcmTreeFields,
   InspectIcmFields,
   ListIcmsFields,
@@ -362,7 +377,7 @@ const cockpitTodayFields = [
       { openLoops: ['title', 'source'] }
     ]
   },
-  { mail: ['reviewCount', 'inboxCount', 'configured'] },
+  { mail: ['account', 'configured', 'state', 'pendingOps', 'notices'] },
   { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] }
 ] as unknown as CockpitTodayFields;
 
@@ -379,10 +394,13 @@ const cockpitTodayFields = [
 // builds (`account`/`configured`/`credential`/`state`/`last_sync_at`/
 // `last_error`/`username`/`workspace_id`/`pending_ops`/`held_folders`/
 // `backfill`/`notices`, plus `valid`/`reason` for an invalid-config entry).
-// `stores/mail.svelte.ts`'s `mailStatus` wrapper below still surfaces a
-// SINGLE `status` object (the first valid account) to keep the store/UI
-// single-account-shaped for now — full multi-account UI is a later task.
+// Delivered verbatim to `stores/mail.svelte.ts`, whose
+// `normalizeMailAccountStatus` owns the camelCase narrowing per entry.
 const mailStatusFields: MailStatusFields = ['accounts'];
+const removeMailAccountFields: RemoveMailAccountFields = ['removed'];
+const purgeMailAccountFilesFields: PurgeMailAccountFilesFields = ['purged'];
+const readoptMailAccountFields: ReadoptMailAccountFields = ['readopted'];
+const discardHeldFolderFields: DiscardHeldFolderFields = ['discarded'];
 const setupMailAccountFields: SetupMailAccountFields = ['saved'];
 const setMailCredentialFields: SetMailCredentialFields = ['accepted'];
 const mailSyncNowFields: MailSyncNowFields = ['started'];
@@ -444,6 +462,13 @@ const icmTreeFields: IcmTreeFields = ['mountKey', 'title', 'tree'];
 const listMailMessagesFields = [
   { messages: ['msgId', 'fromName', 'fromEmail', 'subject', 'date', 'flags', 'hasAttachments', 'uid', 'path', 'viewPath'] }
 ] as unknown as ListMailMessagesFields;
+
+// Same `Array<TypedMap>` codegen gap as `listMailMessagesFields` above —
+// `folders` items arrive camelCased (`messageCount`/`backfillComplete`),
+// matching `MailFolder` in `stores/mail.svelte.ts`.
+const listMailFoldersFields = [
+  { folders: ['name', 'dir', 'held', 'messageCount', 'backfillComplete'] }
+] as unknown as ListMailFoldersFields;
 
 function callCreateAgentSessionChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
@@ -562,6 +587,51 @@ function callGetMailMessageChannel(
 ) {
   return wrapChannelCall((handlers) =>
     getMailMessageChannel({ channel, input, fields: getMailMessageFields, ...handlers })
+  );
+}
+
+function callListMailFoldersChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string }
+) {
+  return wrapChannelCall((handlers) =>
+    listMailFoldersChannel({ channel, input, fields: listMailFoldersFields, ...handlers })
+  );
+}
+
+function callRemoveMailAccountChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    removeMailAccountChannel({ channel, input, fields: removeMailAccountFields, ...handlers })
+  );
+}
+
+function callPurgeMailAccountFilesChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; confirmation: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    purgeMailAccountFilesChannel({ channel, input, fields: purgeMailAccountFilesFields, ...handlers })
+  );
+}
+
+function callReadoptMailAccountChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; confirmation: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    readoptMailAccountChannel({ channel, input, fields: readoptMailAccountFields, ...handlers })
+  );
+}
+
+function callDiscardHeldFolderChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; folder: string; confirmation: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    discardHeldFolderChannel({ channel, input, fields: discardHeldFolderFields, ...handlers })
   );
 }
 
@@ -872,43 +942,6 @@ async function uploadImage(
   return { ok: true, data: { path: data.path, relFromPage: data.rel_from_page } };
 }
 
-/**
- * `mail_status` now returns `accounts: [...]` (mail-as-maildir design spec
- * E, §RPC surface — one entry per account, since `Valea.Mail.Engine` is
- * per-account since Task 9). `stores/mail.svelte.ts` and every component
- * downstream of it are still single-account-shaped (full multi-account UI
- * is a later task) — this picks the first VALID account (already sorted by
- * slug backend-side; an invalid-config entry carries no engine fields at
- * all, so it's never a usable "primary") and returns it verbatim (same
- * snake_case shape `Valea.Mail.Engine.status/1` always built, unchanged by
- * this rework). Synthesizes the old "nothing configured yet" default when
- * there's no valid account at all — the exact shape the backend itself used
- * to return before Task 10 (see `Valea.Api.Mail`'s git history), so
- * `MailStatusPush`-typed consumers (`normalizeMailStatus`, the mail_status
- * channel push) don't need to learn a new "no status" case.
- */
-function primaryMailStatus(data: { accounts?: unknown }): Record<string, unknown> {
-  const accounts = Array.isArray(data.accounts) ? (data.accounts as Record<string, unknown>[]) : [];
-  const primary = accounts.find((a) => a.valid !== false);
-
-  return (
-    primary ?? {
-      account: null,
-      configured: false,
-      credential: 'missing',
-      state: 'idle',
-      last_sync_at: null,
-      last_error: null,
-      username: null,
-      workspace_id: null,
-      pending_ops: 0,
-      held_folders: [],
-      backfill: null,
-      notices: []
-    }
-  );
-}
-
 export const api = {
   // id-based (C9, Phase 2) — `getWorkspace`'s payload now carries `id`
   // instead of `path` (see `Valea.Api.Workspace`'s moduledoc); no caller
@@ -1184,26 +1217,16 @@ export const api = {
       }
     ),
 
-  // Mail (Task 10 rework — account-scoped RPC surface). `mailStatus`/
-  // `listMailMessages`/`getMailMessage` deliver their `status`/`messages`/
-  // `message` payloads RAW (unconstrained or per-item passthrough) —
-  // `stores/mail.svelte.ts` owns normalizing those into camelCase
-  // app-facing shapes, same raw-delivery split `IcmPageData.frontmatter`
-  // uses. Every wrapper below now takes an explicit `account` slug — there
-  // is no more implicit "the one configured account" (mail-as-maildir
-  // design spec E, §RPC surface). `mailStatus` itself takes none (the
-  // action lists every account); see its own comment for how this layer
-  // still surfaces a single `status` object to keep the store single-
-  // account-shaped for now.
+  // Mail (account-scoped RPC surface, mail-as-maildir design spec E §RPC
+  // surface). `mailStatus`/`listMailMessages`/`getMailMessage` deliver
+  // their `accounts`/`messages`/`message` payloads RAW (unconstrained or
+  // per-item passthrough) — `stores/mail.svelte.ts` owns normalizing those
+  // into camelCase app-facing shapes, same raw-delivery split
+  // `IcmPageData.frontmatter` uses. Every wrapper below takes an explicit
+  // `account` slug — there is no implicit "the one configured account".
+  // `mailStatus` itself takes none (the action lists every account).
 
-  mailStatus: () =>
-    runRpc(callMailStatusChannel, () => httpMailStatus(withAuth({ fields: mailStatusFields }))).then(
-      (result): ApiResult<{ status: Record<string, unknown> }> => {
-        if (!result.ok) return result;
-        const data = result.data as { accounts?: unknown };
-        return { ok: true, data: { status: primaryMailStatus(data) } };
-      }
-    ),
+  mailStatus: () => runRpc(callMailStatusChannel, () => httpMailStatus(withAuth({ fields: mailStatusFields }))),
 
   setupMailAccount: (account: string, host: string, port: number, username: string, generation: number) =>
     runRpc(
@@ -1252,6 +1275,49 @@ export const api = {
     runRpc(
       (channel) => callGetMailMessageChannel(channel, { account, msgId }),
       () => httpGetMailMessage(withAuth({ input: { account, msgId }, fields: getMailMessageFields }))
+    ),
+
+  listMailFolders: (account: string) =>
+    runRpc(
+      (channel) => callListMailFoldersChannel(channel, { account }),
+      () => httpListMailFolders(withAuth({ input: { account }, fields: listMailFoldersFields }))
+    ),
+
+  removeMailAccount: (account: string, generation: number) =>
+    runRpc(
+      (channel) => callRemoveMailAccountChannel(channel, { account, generation }),
+      () => httpRemoveMailAccount(withAuth({ input: { account, generation }, fields: removeMailAccountFields }))
+    ),
+
+  // The two destructive/recovery actions and the held-folder discard all
+  // require a typed `confirmation` (the exact slug, or the exact folder
+  // name) — passed through verbatim; the backend compares, never the UI
+  // alone (mail design spec E §UI/doctor).
+  purgeMailAccountFiles: (account: string, confirmation: string, generation: number) =>
+    runRpc(
+      (channel) => callPurgeMailAccountFilesChannel(channel, { account, confirmation, generation }),
+      () =>
+        httpPurgeMailAccountFiles(
+          withAuth({ input: { account, confirmation, generation }, fields: purgeMailAccountFilesFields })
+        )
+    ),
+
+  readoptMailAccount: (account: string, confirmation: string, generation: number) =>
+    runRpc(
+      (channel) => callReadoptMailAccountChannel(channel, { account, confirmation, generation }),
+      () =>
+        httpReadoptMailAccount(
+          withAuth({ input: { account, confirmation, generation }, fields: readoptMailAccountFields })
+        )
+    ),
+
+  discardHeldFolder: (account: string, folder: string, confirmation: string, generation: number) =>
+    runRpc(
+      (channel) => callDiscardHeldFolderChannel(channel, { account, folder, confirmation, generation }),
+      () =>
+        httpDiscardHeldFolder(
+          withAuth({ input: { account, folder, confirmation, generation }, fields: discardHeldFolderFields })
+        )
     ),
 
   // Icms (task 3.4, `Valea.Api.Icms`). `listIcms` delivers its `icms` array

@@ -674,10 +674,10 @@ defmodule Valea.Mail.Engine do
       state: state.status,
       last_sync_at: state.last_sync_at,
       last_error: state.last_error,
-      # The IMAP login, distinct from `account` (the slug) — the frontend
-      # keys its OS-keychain lookup on `workspace_id:username` (spec
-      # §Credentials), so the login must be surfaced explicitly rather than
-      # approximated from the slug.
+      # The IMAP login, distinct from `account` (the slug) — surfaced for
+      # display and the setup form; the frontend's OS-keychain entries are
+      # keyed `workspace_id` / `<slug>:imap` (spec §Credentials), not on
+      # this value.
       username: state.settings.imap.username,
       workspace_id: state.workspace_id,
       pending_ops: pending_ops,

@@ -90,38 +90,45 @@ export type WorkspaceEventPayload = { open: boolean; name?: string; path?: strin
 
 /**
  * `mail_status` push payload (`ValeaWeb.WorkspaceEventsChannel`'s
- * `{:mail_status_changed, status}` clause, T13) — `Valea.Mail.Engine.status/0`'s
- * atom-keyed map, string-keyed via the channel's own `stringify/1`. Unlike
- * every other push handled here, this one is NOT camelCased by
- * ash_typescript — the channel builds this payload itself rather than
- * relaying a generated RPC result, so the field names stay exactly as
- * `Valea.Mail.Engine.build_status/1` writes them: snake_case (mirrors
- * `mail_status`'s RPC return — see `MailStatusFields` in `api/ash_rpc.ts`
- * and the `status: Record<string, any>` comment in `api/client.ts`).
- * `credential` is `'present' | 'missing'`; `state` is `'idle' | 'inactive'
- * | 'syncing' | 'auth_failed'` — both left as plain `string` here, same as
- * the Elixir `@type status` moduledoc note (no singleton-string literal
- * type in Dialyzer, so the backend doesn't promise a closed set at the
- * type level either). `stores/mail.svelte.ts`'s `normalizeMailStatus`
- * narrows/camelCases this into the app-facing `MailStatus` shape.
+ * `{:mail_status_changed, slug, status}` clause) — ONE account's
+ * `Valea.Mail.Engine.status/1` map, string-keyed via the channel's own
+ * `stringify/1` with the account slug added under `account`. Unlike every
+ * other push handled here, this one is NOT camelCased by ash_typescript —
+ * the channel builds this payload itself rather than relaying a generated
+ * RPC result, so the field names stay exactly as
+ * `Valea.Mail.Engine.build_status/1` writes them: snake_case (mirrors the
+ * per-account entries of `mail_status`'s RPC `accounts` return — see
+ * `MailStatusFields` in `api/ash_rpc.ts`). `credential` is `'present' |
+ * 'missing'`; `state` is `'idle' | 'inactive' | 'syncing' | 'auth_failed' |
+ * 'identity_mismatch' | 'mailbox_replaced'` — both left as plain `string`
+ * here, same as the Elixir `@type status` moduledoc note (no
+ * singleton-string literal type in Dialyzer, so the backend doesn't promise
+ * a closed set at the type level either). `stores/mail.svelte.ts`'s
+ * `normalizeMailAccountStatus` narrows/camelCases this into the app-facing
+ * `MailAccountStatus` shape. Engines exist only for VALID config entries,
+ * so pushes never carry the RPC's `valid: false`/`reason` variant.
  */
 export type MailStatusPush = {
+  account: string;
   configured: boolean;
   credential: string;
   state: string;
   last_sync_at: string | null;
   last_error: string | null;
-  account: string | null;
-  /** IMAP login (`imap.username`), distinct from `account` (the display label) — the keychain lookup key. */
+  /** IMAP login (`imap.username`), distinct from `account` (the slug) — display only; the keychain key is slug-based. */
   username: string | null;
   workspace_id: string | null;
+  pending_ops: number;
+  held_folders: string[];
+  backfill: Record<string, boolean> | null;
+  notices: string[];
 };
 
-/** `mail_sync` push payload — `{:mail_sync_started}` / `{:mail_sync_finished, ...}`. */
-export type MailSyncPush = { phase: 'started' | 'finished'; newMessages: number };
+/** `mail_sync` push payload — `{:mail_sync_started, slug}` / `{:mail_sync_finished, slug, ...}`. */
+export type MailSyncPush = { account: string; phase: 'started' | 'finished'; newMessages: number };
 
-/** `mail_message` push payload — one mail message file was created/updated on disk (`SyncPass`). */
-export type MailMessagePush = { path: string };
+/** `mail_message` push payload — one account's message file was created/updated on disk (`SyncPass`). */
+export type MailMessagePush = { account: string; path: string };
 
 export function joinWorkspaceEvents(handlers: {
   onWorkspace?: (payload: WorkspaceEventPayload) => void;

@@ -132,9 +132,9 @@
     {:else}
       <header class="flex flex-col gap-2">
         <h1 class="font-display text-ink-heading text-[22px] leading-tight font-medium">Today</h1>
-        {#if today.mail.configured}
-          <p class="text-ink-meta text-[13px]">{mailSummaryLine(today.mail)}</p>
-        {/if}
+        {#each today.mail.filter((m) => m.configured) as mail (mail.account)}
+          <p class="text-ink-meta text-[13px]">{mailSummaryLine(mail)}</p>
+        {/each}
       </header>
 
       {#if today.sections.length === 0}

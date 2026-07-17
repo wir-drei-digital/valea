@@ -10,7 +10,7 @@
   // the pane header next to the title (the route owns that state and passes
   // the resulting `requestError` down).
   import { Button } from '$lib/components/ui/button/index.js';
-  import type { MailStatus } from '$lib/stores/mail.svelte';
+  import type { MailAccountStatus } from '$lib/stores/mail.svelte';
   import { mailStateLabel, relativeTime, syncErrorText } from './mail-shapes';
 
   let {
@@ -18,7 +18,7 @@
     requestError = null,
     onSettings
   }: {
-    status: MailStatus | null;
+    status: MailAccountStatus | null;
     /** The route's last local `syncNow` failure, already user-worded — `null` when the last request succeeded. */
     requestError?: string | null;
     onSettings?: () => void;

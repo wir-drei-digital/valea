@@ -1,52 +1,80 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
-  messageDot,
-  MESSAGE_DOT_CLASS,
-  isProcessed,
+  MAIL_SLUG_RE,
+  mailSlugValid,
+  accountLabel,
+  folderBadge,
+  folderFlagsLine,
   relativeTime,
   fromLabel,
   subjectLabel,
-  nonEmpty,
   addressLabel,
   addressListLabel,
   formatDateTime,
   attachmentsFromFrontmatter,
   formatBytes,
   mailStateLabel,
+  mailMaintenanceErrorMessage,
   syncErrorText,
   syncNowErrorMessage,
   messageSessionPrompt
 } from './mail-shapes';
-import type { MailStatus } from '$lib/stores/mail.svelte';
+import { normalizeMailAccountStatus, type MailAccountStatus } from '$lib/stores/mail.svelte';
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-// Task 10: the old flat `status` field ("review"/"processed") these two were
-// keyed on is gone (the account-scoped, per-folder occurrence backend has
-// no review-workflow marker of its own yet — see `mail-shapes.ts`'s doc
-// comments on both functions). Every input renders neutral/unprocessed for
-// now; a later task reintroduces a real signal.
-describe('messageDot', () => {
-  it('always renders neutral (no review-workflow signal exists yet)', () => {
-    expect(messageDot('S')).toBe('neutral');
-    expect(messageDot(null)).toBe('neutral');
-    expect(messageDot(undefined)).toBe('neutral');
-    expect(messageDot('something_else')).toBe('neutral');
+describe('mailSlugValid', () => {
+  it('accepts the backend grammar (^[a-z0-9][a-z0-9-]{0,31}$)', () => {
+    expect(mailSlugValid('work')).toBe(true);
+    expect(mailSlugValid('a')).toBe(true);
+    expect(mailSlugValid('mara-2')).toBe(true);
+    expect(mailSlugValid('0start')).toBe(true);
+    expect(mailSlugValid('a'.repeat(32))).toBe(true);
   });
 
-  it('MESSAGE_DOT_CLASS carries a Tailwind class for every color', () => {
-    expect(MESSAGE_DOT_CLASS.act).toBe('bg-act-dot');
-    expect(MESSAGE_DOT_CLASS.neutral).toBe('bg-ink-meta');
+  it('rejects uppercase, leading dash, separators, traversal, and over-length ids', () => {
+    expect(mailSlugValid('')).toBe(false);
+    expect(mailSlugValid('Work')).toBe(false);
+    expect(mailSlugValid('-lead')).toBe(false);
+    expect(mailSlugValid('has space')).toBe(false);
+    expect(mailSlugValid('has_underscore')).toBe(false);
+    expect(mailSlugValid('../x')).toBe(false);
+    expect(mailSlugValid('a'.repeat(33))).toBe(false);
+    // the regex itself is anchored — a valid slug embedded in junk fails
+    expect(MAIL_SLUG_RE.test('x\nwork')).toBe(false);
   });
 });
 
-describe('isProcessed', () => {
-  it('is always false (no review-workflow signal exists yet)', () => {
-    expect(isProcessed('S')).toBe(false);
-    expect(isProcessed(null)).toBe(false);
-    expect(isProcessed(undefined)).toBe(false);
+describe('accountLabel', () => {
+  it('is the bare slug for a valid account, marked inline for an invalid one', () => {
+    expect(accountLabel({ account: 'work', valid: true })).toBe('work');
+    expect(accountLabel({ account: 'broken', valid: false })).toBe('broken (invalid)');
+  });
+});
+
+describe('folderBadge', () => {
+  it('badges held folders and nothing else', () => {
+    expect(folderBadge({ held: true })).toBe('held');
+    expect(folderBadge({ held: false })).toBeNull();
+  });
+});
+
+describe('folderFlagsLine', () => {
+  it('joins folders and flags when both are present', () => {
+    expect(folderFlagsLine({ folders: ['INBOX', 'Archive'], flags: 'S' })).toBe('INBOX, Archive · flags: S');
+  });
+
+  it('renders each part alone when the other is absent/blank', () => {
+    expect(folderFlagsLine({ folders: ['INBOX'], flags: '' })).toBe('INBOX');
+    expect(folderFlagsLine({ folders: [], flags: 'RS' })).toBe('flags: RS');
+  });
+
+  it('returns "" for null frontmatter, missing fields, or malformed values', () => {
+    expect(folderFlagsLine(null)).toBe('');
+    expect(folderFlagsLine({})).toBe('');
+    expect(folderFlagsLine({ folders: 'nope', flags: 7 } as never)).toBe('');
   });
 });
 
@@ -74,18 +102,6 @@ describe('subjectLabel', () => {
     expect(subjectLabel(null)).toBe('(no subject)');
     expect(subjectLabel(undefined)).toBe('(no subject)');
     expect(subjectLabel('   ')).toBe('(no subject)');
-  });
-});
-
-describe('nonEmpty', () => {
-  it('returns the trimmed value when present', () => {
-    expect(nonEmpty('  hi  ', 'fallback')).toBe('hi');
-  });
-
-  it('returns the fallback for null/undefined/blank', () => {
-    expect(nonEmpty(null, 'fallback')).toBe('fallback');
-    expect(nonEmpty(undefined, 'fallback')).toBe('fallback');
-    expect(nonEmpty('   ', 'fallback')).toBe('fallback');
   });
 });
 
@@ -202,7 +218,10 @@ describe('mailStateLabel', () => {
     ['idle', 'Up to date'],
     ['syncing', 'Syncing…'],
     ['auth_failed', 'Sign-in failed'],
-    ['inactive', 'Not connected']
+    ['inactive', 'Not connected'],
+    ['identity_mismatch', 'Folder belongs to a different account'],
+    ['mailbox_replaced', 'Mailbox replaced — needs re-adopt'],
+    ['invalid_config', 'Invalid configuration']
   ])('labels state=%s as %s', (state, expected) => {
     expect(mailStateLabel(state)).toBe(expected);
   });
@@ -214,17 +233,30 @@ describe('mailStateLabel', () => {
   });
 });
 
+describe('mailMaintenanceErrorMessage', () => {
+  it.each([
+    ['confirmation_mismatch', "The confirmation text doesn't match."],
+    ['account_active', 'This account is still running. Remove it from the config first, or wait for it to stop.'],
+    ['not_held', 'That folder is not held anymore.'],
+    ['mailbox_replaced', 'This account is blocked pending re-adopt.'],
+    ['not_found', 'No such account.'],
+    ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
+    ['anything_else', 'The action failed. Check the account state and try again.']
+  ])('maps error code=%s to a calm sentence', (code, expected) => {
+    expect(mailMaintenanceErrorMessage(code)).toBe(expected);
+  });
+});
+
 describe('syncErrorText', () => {
-  const baseStatus: MailStatus = {
+  const baseStatus: MailAccountStatus = normalizeMailAccountStatus({
+    account: 'mara',
     configured: true,
     credential: 'present',
     state: 'auth_failed',
-    lastSyncAt: null,
-    lastError: 'authentication failed',
-    account: 'Mara',
+    last_error: 'authentication failed',
     username: 'mara@example.com',
-    workspaceId: 'ws-1'
-  };
+    workspace_id: 'ws-1'
+  });
 
   it('shows the engine-reported lastError when there is no local request error', () => {
     expect(syncErrorText(baseStatus, null)).toBe('authentication failed');

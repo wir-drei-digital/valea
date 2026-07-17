@@ -17,7 +17,7 @@ const rawSnake = {
       open_loops: [{ title: 'Send proposal', source: 'mail' }]
     }
   ],
-  mail: { review_count: 3, inbox_count: 12, configured: true },
+  mail: [{ account: 'work', configured: true, state: 'idle', pendingOps: 2, notices: ['held folder'] }],
   recent_sessions: [
     { id: 'sess-1', title: 'Chat with Lea', started_at: '2026-07-16T08:00:00Z', status: 'ended', live: false }
   ]
@@ -37,7 +37,9 @@ describe('normalizeCockpitToday', () => {
     expect(section.prepared).toEqual([{ title: 'Prep Lea', summary: 'One page', page: 'clients/lea.md' }]);
     expect(section.openLoops).toEqual([{ title: 'Send proposal', source: 'mail' }]);
 
-    expect(today.mail).toEqual({ reviewCount: 3, inboxCount: 12, configured: true });
+    expect(today.mail).toEqual([
+      { account: 'work', configured: true, state: 'idle', pendingOps: 2, notices: ['held folder'] }
+    ]);
 
     expect(today.recentSessions).toHaveLength(1);
     expect(today.recentSessions[0]).toEqual({
@@ -62,7 +64,7 @@ describe('normalizeCockpitToday', () => {
           openLoops: []
         }
       ],
-      mail: { reviewCount: 1, inboxCount: 0, configured: false },
+      mail: [{ account: 'zoe', configured: false, state: 'inactive', pending_ops: 1, notices: [] }],
       recentSessions: [
         { id: 'sess-2', title: 'Follow-up', startedAt: '2026-07-16T09:00:00Z', status: 'live', live: true }
       ]
@@ -70,7 +72,9 @@ describe('normalizeCockpitToday', () => {
 
     expect(today.sections[0].mountKey).toBe('primary');
     expect(today.sections[0].icmName).toBe('Studio');
-    expect(today.mail).toEqual({ reviewCount: 1, inboxCount: 0, configured: false });
+    expect(today.mail).toEqual([
+      { account: 'zoe', configured: false, state: 'inactive', pendingOps: 1, notices: [] }
+    ]);
     expect(today.recentSessions[0].live).toBe(true);
   });
 
@@ -78,7 +82,7 @@ describe('normalizeCockpitToday', () => {
     const today = normalizeCockpitToday({});
     expect(today.sections).toEqual([]);
     expect(today.recentSessions).toEqual([]);
-    expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
+    expect(today.mail).toEqual([]);
   });
 
   it('drops wrong-typed fields to nil/[] rather than throwing', () => {
@@ -94,7 +98,7 @@ describe('normalizeCockpitToday', () => {
           open_loops: 'nope'
         }
       ],
-      mail: { review_count: null, inbox_count: 'not-a-number', configured: 'yes' },
+      mail: [{ account: 42, configured: 'yes', state: null, pending_ops: 'not-a-number', notices: ['ok', 7] }, 'not-a-map'],
       recent_sessions: 'nope'
     });
 
@@ -104,10 +108,12 @@ describe('normalizeCockpitToday', () => {
     expect(section.prepared).toEqual([{ title: 'ok', summary: null, page: null }]);
     expect(section.openLoops).toEqual([]);
 
-    // `inbox_count: 'not-a-number'` would `Number(...)` to `NaN` without the
+    // `pending_ops: 'not-a-number'` would `Number(...)` to `NaN` without the
     // `Number.isFinite` guard — degrades to 0 like every other wrong-typed
     // field in this normalizer, rather than propagating NaN into the UI.
-    expect(today.mail).toEqual({ reviewCount: 0, inboxCount: 0, configured: false });
+    expect(today.mail).toEqual([
+      { account: '', configured: false, state: '', pendingOps: 0, notices: ['ok'] }
+    ]);
     expect(today.recentSessions).toEqual([]);
   });
 
@@ -124,7 +130,7 @@ describe('normalizeCockpitToday', () => {
           open_loops: []
         }
       ],
-      mail: { review_count: 0, inbox_count: 0, configured: false },
+      mail: [],
       recent_sessions: []
     });
 
@@ -139,7 +145,7 @@ describe('normalizeCockpitToday', () => {
   it('normalizes a recent session with live:false to false, not falling back to true', () => {
     const today = normalizeCockpitToday({
       sections: [],
-      mail: { review_count: 0, inbox_count: 0, configured: false },
+      mail: [],
       recent_sessions: [
         { id: 'sess-3', title: 'Ended session', started_at: '2026-07-16T07:00:00Z', status: 'ended', live: false }
       ]
@@ -150,11 +156,15 @@ describe('normalizeCockpitToday', () => {
 });
 
 describe('mailSummaryLine', () => {
-  it('formats the review/inbox counts', () => {
-    expect(mailSummaryLine({ reviewCount: 3, inboxCount: 12, configured: true })).toBe('3 to review · 12 in inbox');
+  it('formats one account as "slug: state · N pending"', () => {
+    expect(mailSummaryLine({ account: 'work', configured: true, state: 'idle', pendingOps: 2, notices: [] })).toBe(
+      'work: idle · 2 pending'
+    );
   });
 
-  it('formats zero counts plainly', () => {
-    expect(mailSummaryLine({ reviewCount: 0, inboxCount: 0, configured: true })).toBe('0 to review · 0 in inbox');
+  it('formats zero pending plainly', () => {
+    expect(mailSummaryLine({ account: 'zoe', configured: true, state: 'syncing', pendingOps: 0, notices: [] })).toBe(
+      'zoe: syncing · 0 pending'
+    );
   });
 });

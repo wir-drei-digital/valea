@@ -29,6 +29,7 @@
     addressListLabel,
     addressName,
     attachmentsFromFrontmatter,
+    folderFlagsLine,
     formatBytes,
     formatDateTime,
     messageSessionPrompt,
@@ -40,7 +41,6 @@
   let { message }: { message: MailMessageDetail } = $props();
 
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
-  const status = $derived(typeof frontmatter.status === 'string' ? frontmatter.status : null);
   const subject = $derived(subjectLabel(typeof frontmatter.subject === 'string' ? frontmatter.subject : null));
   const fromName = $derived(addressName(frontmatter.from as RawAddress));
   const fromEmail = $derived(addressEmail(frontmatter.from as RawAddress));
@@ -53,6 +53,10 @@
       .filter(Boolean)
       .join(' · ')
   );
+  // Where this message lives + its IMAP flags — the maildir replacement for
+  // the deleted review/processed status marker (spec E: occurrences carry
+  // `folders`/`flags` frontmatter; Valea adds no workflow state of its own).
+  const placement = $derived(folderFlagsLine(frontmatter));
   const attachments = $derived(attachmentsFromFrontmatter(message.frontmatter));
 
   let copiedPath: string | null = $state(null);
@@ -138,6 +142,9 @@
     {#if to}
       <p class="text-ink-meta text-[12px]">To {to}</p>
     {/if}
+    {#if placement}
+      <p class="text-ink-meta text-[11.5px]">{placement}</p>
+    {/if}
   </header>
 
   <p class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap">{message.body}</p>
@@ -165,13 +172,9 @@
   {/if}
 
   <div class="border-paper-hairline flex flex-wrap items-center gap-2.5 border-t pt-4">
-    {#if status === 'processed'}
-      <span class="text-ink-meta text-[11px] tracking-[0.08em] uppercase">Processed</span>
-    {:else}
-      <Button type="button" disabled={starting || !message.path} onclick={() => void startSession()}>
-        Start a session about this message
-      </Button>
-      {#if sessionError}<p class="text-warn-ink text-[12.5px]" role="alert">{sessionError}</p>{/if}
-    {/if}
+    <Button type="button" disabled={starting || !message.path} onclick={() => void startSession()}>
+      Start a session about this message
+    </Button>
+    {#if sessionError}<p class="text-warn-ink text-[12.5px]" role="alert">{sessionError}</p>{/if}
   </div>
 </article>
