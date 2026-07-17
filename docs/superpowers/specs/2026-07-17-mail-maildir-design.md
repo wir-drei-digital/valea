@@ -19,8 +19,9 @@ Spec E rebuilds mail around a canonical local Maildir:
 
 - **Full-account mirror** of every configured account (all folders, minus
   exclusions), windowed by a configurable horizon.
-- **Two-way, intent-based sync** so the agent can clean up the inbox by
-  moving files — with *moves only, never expunge* as a structural property.
+- **Two-way, declared-ops sync** so the agent can clean up the inbox —
+  mutations are declared in validated ops files and executed by the
+  engine, with *moves only, never expunge* as a structural property.
 - **Mail as mounts** (one per account) that ICMs opt into via the existing
   related grammar.
 - **Markdown views and SQLite index as derived, rebuildable layers** over
@@ -34,7 +35,9 @@ resync.
 ## Decisions (user-confirmed)
 
 1. Maildir scope: **full-account mirror**, all folders (minus exclusions).
-2. Sync model: **two-way** — the agent cleans up the inbox via local moves.
+2. Sync model: **two-way** — the agent cleans up the inbox. (Mechanism
+   refined after adversarial review: declared ops files executed by the
+   engine, not raw file moves — see Push.)
 3. Deletions: **moves only, never expunge.** No local change ever
    propagates as a server-side deletion.
 4. Agent access: **mail = mount, opt-in** via the related-ICMs grammar,
@@ -49,15 +52,18 @@ resync.
 
 ```
 sources/mail/<account>/
-  maildir/                  # CANONICAL — raw RFC822, standard maildir
-    INBOX/{cur,new,tmp}
+  .account                  # immutable mailbox identity (host + username)
+  maildir/                  # CANONICAL — raw RFC822, engine-owned,
+    INBOX/{cur,new,tmp}     #   read-only to agents
     Archive/{cur,new,tmp}
     Work/Clients/{cur,new,tmp}   # IMAP hierarchy → nested plain dirs
     Drafts/  Sent/  Trash/ ...
   views/                    # DERIVED — regenerated, never hand-edited
     messages/<msg_id>.md    # normalized markdown per mirrored message
     attachments/<msg_id>/   # extracted on landing
-  drafts/                   # agent/user-authored outbound drafts (markdown)
+  ops/                      # AGENT-WRITABLE — declared mailbox ops (YAML)
+    done/                   #   executed ops files with per-op results
+  drafts/                   # AGENT-WRITABLE — outbound drafts (markdown)
   spool/                    # engine-owned composed RFC822 awaiting APPEND
   quarantine/               # unrecognized files found under maildir/
 ```
@@ -72,19 +78,21 @@ sources/mail/<account>/
 - **Two-level identity.** A local maildir file represents an
   *occurrence* — one message in one folder, identified by
   `(account, folder, uidvalidity, uid)`. The *message* identity is the
-  existing deterministic msg_id (`<date>-<from-slug>-<hash8>`,
-  hash-extension collision rule kept), shared by every occurrence of the
-  same message. Multi-folder membership is normal IMAP state (a Gmail
-  label + INBOX, an ordinary `COPY`) and is represented faithfully:
-  separate files and index rows per occurrence, one shared view per
-  message.
+  deterministic msg_id `<date>-<from-slug>-<hash8>`, whose hash is a
+  **fingerprint of the raw RFC822 bytes** (hash-extension collision rule
+  kept). Message-ID is sender-controlled and not unique, so it is only a
+  lookup hint, never an identity: two distinct messages that reuse a
+  Message-ID get different msg_ids and separate views, while true
+  multi-folder occurrences of one message (same bytes — a Gmail label +
+  INBOX, an ordinary `COPY`) share one msg_id and one view, with separate
+  files and index rows per occurrence.
 - **Maildir filenames encode both identities**:
   `<msg_id>,U=<uid>:2,<flags>`. `U=` is the occurrence's UID in its
-  folder, assigned at landing; a locally moved file keeps its stale `U=`
-  until the engine executes the move and renames it to the destination
-  folder's UID (from the `COPYUID`/`MOVE` response, or on the next pull).
-  UIDVALIDITY lives in `mail_sync_state`, not the filename. Colons in
-  filenames are fine on the only supported platform (macOS).
+  folder, assigned at landing; when the engine executes a move it
+  relocates the file and renames it to the destination folder's UID (from
+  the `COPYUID`/`MOVE` response, or on the next pull). UIDVALIDITY lives
+  in `mail_sync_state`, not the filename. Colons in filenames are fine on
+  the only supported platform (macOS).
 - Flags live in the filename per maildir convention (`S` seen, `R` replied,
   `F` flagged, `T` trashed, `D` draft), mapped to the IMAP system flags
   (`\Seen`, `\Answered`, `\Flagged`, `\Deleted`, `\Draft`). **Only
@@ -94,78 +102,77 @@ sources/mail/<account>/
 - Sync bookkeeping (UID maps, watermarks) lives in SQLite — cache only,
   rebuildable from `maildir/` plus a Message-ID resync against the server.
 
-## Sync engine — intent-based two-way
+## Sync engine — declared-ops two-way
 
 `Valea.Mail.Engine` survives per account (see Accounts). `SyncPass` is
 rewritten around two phases per pass, **push before pull**:
 
-### Push (local intents)
+### Push (declared ops)
 
-Scan `maildir/` and build the current local occurrence set from the
-filenames' `msg_id` + `U=` tokens, then diff it against the last-synced
-occurrence set in the UID map. Recognized intents, each executed as a
-named IMAP op:
+Nothing infers intent from filesystem diffs. Mailbox mutations are
+**declared** and executed by the engine:
 
-- **Move** — only a *paired, unambiguous* disappearance and appearance:
-  occurrence `(A, uid)` is missing from folder A, and a file carrying the
-  same `<msg_id>,U=<uid>` sits in exactly one other folder B with no
-  UID-map record there → executed through the durable op ledger (below)
-  as the existing safe-move ladder (`UID MOVE` → `UID COPY` +
-  `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`).
-  After proven success the file is renamed to B's UID. Any ambiguous pairing —
-  the token missing from several folders, or appeared in several —
-  pushes **nothing**; the pass reconciles by re-pulling and surfaces a
-  notice. Multi-folder membership on the server is never mistaken for a
-  move: each occurrence has its own UID-map row, and an intact occurrence
-  is not a disappearance.
-- **Flag change** — same folder, same `U=`, different flag suffix →
-  `UID STORE ±FLAGS`. Who-changed-it is decided by a three-way diff: each
-  UID-map row carries the **last-synced flags**; local ≠ last-synced means
-  local intent, server ≠ last-synced means server change, both ≠ means
-  conflict.
-- **Valea-composed append** — from the ops ledger + `spool/` only, never
-  by discovering unknown files (see Drafting & send).
+- An ops file is YAML at `ops/<name>.yaml`: a list of operations from the
+  closed vocabulary
+  `{op: move, msg_id, from, to}` ·
+  `{op: flag, msg_id, folder, add: [...], remove: [...]}` (S/R/F only).
+  Agents write ops files through the normal ask-gate (`ops/` is one of
+  the two agent-writable dirs); the Valea UI's own actions (archive
+  button, flag toggle) go through the same executor via RPC.
+- Each op is **validated against current occurrence state** before
+  execution: the msg_id must resolve to exactly one occurrence in `from`
+  (for flags: in `folder`), the destination must be a known folder, and
+  the pushable-flag rule applies. Valid ops enter the durable op ledger;
+  invalid or ambiguous ops are rejected per-op, never guessed at.
+- Moves execute as the existing safe-move ladder (`UID MOVE` →
+  `UID COPY` + `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`);
+  after proven success the engine relocates the local file itself and
+  renames it to the destination folder's UID.
+- Executed ops files move to `ops/done/<name>.yaml` with a per-op result
+  appended (`ok | rejected: <reason> | needs_review`) — a file-first
+  audit trail beside the audit-log entries.
+- **Valea-composed appends** come from the ops ledger + `spool/` only,
+  never from ops files and never by discovering unknown files (see
+  Drafting & send); the ops vocabulary cannot express append, delete, or
+  anything else.
 
 **Durable server-op ledger.** Moves and appends — the two non-idempotent
 server mutations — execute through `mail_pending_ops`: the op is recorded
 durably *before* any remote I/O and transitions state as each ladder step
 completes. After an uncertain result (disconnect, missing tagged
 response), the op is never blindly retried: the engine first
-**reconciles** — search the destination folder for the message's
-Message-ID and re-check the source — and continues only when the outcome
-is proven. For a move, the source copy is deleted only once **exactly
-one** matching destination occurrence is proven to exist; anything
-unprovable (zero or several matches) stops the op in `needs_review` with
-a recovery notice instead of retrying. Appends are idempotent by
-construction: every composed message carries a stable Valea-generated
-Message-ID, and every append execution — first attempt or retry —
-searches the target folder for that Message-ID first, marking the op
-complete if found. Flag `STORE`s are idempotent and execute directly,
-without the ledger.
+**reconciles** — search the destination folder by Message-ID, confirm
+candidates by fingerprint, re-check the source — and continues only when
+the outcome is proven. For a move, the source copy is deleted only once
+**exactly one** fingerprint-confirmed destination occurrence is proven to
+exist; anything unprovable (zero or several matches) stops the op in
+`needs_review` with a recovery notice instead of retrying. Appends are
+idempotent by construction: every composed message carries a stable,
+unique, Valea-generated Message-ID, and every append execution — first
+attempt or retry — searches the target folder for that Message-ID first,
+marking the op complete if found. Flag `STORE`s are idempotent and
+execute directly, without the ledger.
 
 **Write-through folders.** The `folders.{archive,trash}` targets always
 exist as local directories, even when `exclude_folders` keeps them out of
 the pull (the Gmail case: archive = `[Gmail]/All Mail`, which is excluded).
-A local move into a write-through-but-excluded folder is pushed as a normal
-server-side move; the local copy is then removed by the engine on
-confirmation, because the message now lives outside the mirrored set —
+An op moving a message into a write-through-but-excluded folder is pushed
+as a normal server-side move; the local copy is then removed by the engine
+on confirmation, because the message now lives outside the mirrored set —
 exactly matching what the user sees (archived mail leaves the mirror,
 stays on the server). Moves into mirrored folders are just moves.
 
-Everything else is *not* an intent:
+Local maildir mutations are *not* a channel:
 
-- A message vanished locally with no unambiguous destination → **damage**:
-  re-fetch by UID (Message-ID search fallback). Never propagated.
-- A duplicated file — its `<msg_id>,U=` occurrence is still intact in its
-  recorded folder AND a copy appears elsewhere — is a local copy, which is
-  not in the op vocabulary: the extra file is quarantined with a notice
-  ("copy in your mail client instead"). Never APPENDed, never treated as
-  a move.
-- An unknown new file under `maildir/` → moved to `quarantine/` + status
-  notice. Never APPENDed.
-- Conflict (local and server both changed a message since last pass, or a
-  local intent targets a message the server moved/removed) → **server
-  wins**; the dropped local intent is surfaced in status.
+- `maildir/` is engine-owned and read-only to agents (policy-enforced;
+  documented to the user as engine-owned). Anything that mutates it
+  anyway is **damage**, repaired on the next pass: a vanished or altered
+  file is restored from the server (re-fetch by UID,
+  fingerprint-verified); an unknown file is moved to `quarantine/` with a
+  notice. Nothing is ever inferred from such changes, and nothing local
+  ever propagates to the server except declared ops.
+- Conflict (an op targets a message the server moved or removed since the
+  last pull) → the op is rejected with a notice; **server wins**.
 
 ### Pull (server → local)
 
@@ -173,10 +180,11 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
 
 - New mail: `UID SEARCH SINCE <horizon>` bounds backfill to the window;
   new UIDs land raw via `BODY.PEEK` into `cur/` (through `tmp/`, standard
-  maildir delivery) — one file per occurrence. A message already mirrored
-  in another folder lands again as its own occurrence in the new folder;
-  the shared msg_id (derived from headers) is what makes both point at one
-  view. Message content is fetched only once per msg_id.
+  maildir delivery) — one file per occurrence. Every occurrence is
+  fetched and fingerprinted; storage of views/attachments is deduplicated
+  by msg_id. A cheaper precheck (Message-ID + size match) is never a
+  substitute for the fingerprint — attacker-crafted lookalikes must not
+  merge.
 - Flags: `CONDSTORE`/`HIGHESTMODSEQ` when advertised, else a plain
   `UID FETCH FLAGS` of the mirrored UID set; server changes rewrite the
   filename flag suffix and the UID-map's last-synced flags.
@@ -184,10 +192,11 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   authoritative for deletion): the occurrence's file and index row are
   removed; the shared view and attachments are removed only when the last
   occurrence of that msg_id is gone.
-- `UIDVALIDITY` reset → wipe that folder's UID map and watermark, drop its
-  pending local intents (surfaced), clean re-pull; already-landed files in
-  that folder re-attach by Message-ID, folder-scoped — re-binding the
-  occurrence to its new `(uidvalidity, uid)` and renaming the `U=` token.
+- `UIDVALIDITY` reset → wipe that folder's UID map and watermark, reject
+  that folder's pending ops (surfaced), clean re-pull; already-landed
+  files in that folder re-attach folder-scoped — candidates by
+  Message-ID, confirmed by fingerprint — re-binding the occurrence to its
+  new `(uidvalidity, uid)` and renaming the `U=` token.
 - Once landed, a message stays local even after it ages past the window —
   the horizon bounds backfill only. Widening the window triggers deeper
   backfill on the next pass.
@@ -204,9 +213,14 @@ the window.
   move / flag / append. There is no delete op to misconfigure. A bare
   `EXPUNGE` appears nowhere; `UID EXPUNGE <uid>` only inside the move
   ladder.
-- **Only the sync engine creates maildir files.** Agent cleanup is renames
-  of existing messages. Agent-created files under `maildir/` are
-  quarantined, not APPENDed.
+- **Only the engine mutates `maildir/`.** Agents cannot write there at
+  all (policy deny); cleanup is declared in validated ops files and
+  executed by the engine. Any out-of-band mutation is damage: restored
+  from the server or quarantined, never interpreted, never APPENDed.
+- **Accounts are identity-bound.** A `sources/mail/<account>` subtree
+  activates only for the mailbox recorded in its `.account` file;
+  reusing a slug for a different mailbox requires an explicit typed
+  purge. No cross-account exposure through key reuse.
 - **TLS mandatory and verified, always** — IMAP and SMTP both:
   `verify_peer`, hostname verification, SNI; the only overridable piece is
   the trust root (tests only). No insecure escape hatch.
@@ -273,6 +287,17 @@ safety:            # fixed block, as today
   is the stable key). Resupply flow unchanged otherwise. Browser-mode dev
   fallback: `VALEA_MAIL_PASSWORD_<ACCOUNT_SLUG_UPCASED>` (IMAP only).
 
+**Mailbox identity binding.** At first activation the engine writes
+`sources/mail/<account>/.account` — an immutable identity file recording
+`imap.host` + `imap.username`. Every activation compares it against
+config: on mismatch the account **refuses to activate**
+(`identity_mismatch` status with a remedy) — nothing is synced or
+indexed, and the account's mount is not offered to sessions. Re-adding a
+slug over a subtree that belonged to a different mailbox requires an
+explicit, typed purge confirmation in the setup UI, or a new slug. An
+existing subtree is never mounted or indexed before its identity is
+verified.
+
 Runtime: `Valea.Mail.Supervisor` under `Workspace.Runtime` starts **one
 Engine per configured account** (Registry-keyed by `{workspace, account}`),
 each with its own credential closures, poll timer, single-flight sync task,
@@ -287,7 +312,8 @@ tables rebuildable from `sources/mail/` + resync.
 - `mail_sync_state` — per (account, folder): uidvalidity, last-seen UID,
   highestmodseq, last pass result.
 - `mail_uid_map` — one row per occurrence `(account, folder, uidvalidity,
-  uid)`: msg_id, **last-synced flags** (the three-way diff anchor).
+  uid)`: msg_id, **last-synced flags** (the pull-diff anchor for
+  detecting server-side flag changes).
 - `mail_messages` — the UI/agent index, one row per occurrence: account,
   folder, uid, msg_id (non-unique — multi-folder membership), message_id,
   from, to, subject, date, flags, in_reply_to, references,
@@ -342,13 +368,16 @@ Writes into a mail mount are ask-gated like any non-primary mount. The
 first agent write asks once; approval issues the existing session-scoped
 write grant — so "clean up my inbox" is one approval, not fifty. But the
 grant is **not the whole subtree**: the agent-writable surface of a mail
-mount is exactly `maildir/` (renames) and `drafts/`. `PermissionPolicy`
-denies agent writes to `views/` and `quarantine/` (both readable), and
-denies `spool/` entirely — read and write — because it holds engine-owned
-outbound payloads. The denies are mirrored in managedSettings as
-defense-in-depth, exactly like the Spec D ICM-secrets deny, and deny takes
-precedence over any grant (existing policy semantics, already
-regression-tested).
+mount is exactly `ops/` and `drafts/`. `PermissionPolicy` denies agent
+writes everywhere else in the mount — `maildir/` (canonical mail is
+engine-owned; cleanup is declared in ops files, never performed by the
+agent's own file operations), `views/`, `quarantine/`, and `.account`
+(all readable) — and denies `spool/` entirely, read and write, because it
+holds engine-owned outbound payloads. The denies are mirrored in
+managedSettings as defense-in-depth, exactly like the Spec D ICM-secrets
+deny, and deny takes precedence over any grant (existing policy
+semantics, already regression-tested). No rename-only permission mode is
+needed anywhere: generic write grants simply never cover canonical mail.
 
 ## Drafting & send
 
@@ -416,7 +445,7 @@ All mutating actions take `generation` (checked via
 Account-scoped actions take `account`.
 
 - `mail_status()` — all accounts: per-account settings summary, credential
-  presence (imap/smtp), last pass, backfill progress, pending intents,
+  presence (imap/smtp), last pass, backfill progress, pending ops,
   conflict/quarantine notices.
 - `setup_mail_account(account, imap…, smtp…, folders…, sync…, generation)` /
   `remove_mail_account(account, generation)` (removes config + engine;
@@ -426,6 +455,11 @@ Account-scoped actions take `account`.
   `imap|smtp`, secret `sensitive? true`.
 - `mail_sync_now(account, generation)`, `mail_doctor(account, generation)`,
   `create_mail_folders(account, generation)`.
+- `mail_apply_ops(account, ops, generation)` — the UI's archive/move/flag
+  actions, validated and executed by the same ops executor as ops files;
+  returns per-op results.
+- `purge_mail_account_files(account, confirmation, generation)` — the
+  typed-confirmation purge behind slug reuse (see identity binding).
 - `list_mail_messages(account, folder, limit \\ 100, before \\ nil)` —
   newest-first pagination by date; `get_mail_message(account, msg_id)`.
 - `list_mail_drafts()`,
@@ -443,7 +477,7 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
   list/view (existing components, store rework), drafts review panel with
   Send / Push to Drafts and a reconciliation banner for interrupted sends
   (resolve as sent / resend / revert). Status line per account: last pass,
-  initial-sync/backfill progress, pending intents, dropped-conflict and
+  initial-sync/backfill progress, pending ops, dropped-conflict and
   quarantine notices.
 - **Setup panel**: add/edit N accounts; SMTP section optional; per-account
   keychain writes (Tauri `mail_secret_set` with the account-qualified key).
@@ -466,12 +500,15 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
   credential closure model, `Redact`, keychain Tauri commands (key format
   extended).
 - **Extended:** `ImapClient` — `LIST`, `UID SEARCH SINCE`,
-  `UID STORE ±FLAGS`, `APPEND`, optional `CONDSTORE`; `Doctor`; RPC surface.
+  `UID STORE ±FLAGS`, `APPEND`, optional `CONDSTORE`; `Doctor`;
+  `MessageFile.msg_id` hash input becomes the raw-RFC822 fingerprint;
+  RPC surface (incl. `mail_apply_ops`, `purge_mail_account_files`).
 - **New:** `Valea.Mail.Supervisor`, `Maildir` (filename/flag/escape
-  helpers, tmp→cur delivery), `IntentScan`, `SmtpClient` (+ behaviour),
-  the `mail_pending_ops` ledger executor (moves + appends, reconciling,
-  hash-verifying); mail-mount deny rules in `PermissionPolicy` +
-  managedSettings mirror.
+  helpers, tmp→cur delivery), `OpsFile` (parse + occurrence-validate the
+  declared-ops vocabulary), `SmtpClient` (+ behaviour), the
+  `mail_pending_ops` ledger executor (moves + appends, reconciling,
+  hash-verifying), mailbox identity binding (`.account`); mail-mount deny
+  rules in `PermissionPolicy` + managedSettings mirror.
 - **Rewritten:** `SyncPass` (push-then-pull), `Store` resources +
   hand-written migration, `Settings` (v4), mail frontend stores.
 - **Deleted:** `InboxHeader`, `UidOutcome`, `inbox.md` generation,
@@ -483,13 +520,15 @@ Deleted: `mail_inbox`. Channel events stay `mail_status`, `mail_sync`,
 
 Per-account isolation (auth failure pauses one account). Folders fail soft
 within a pass — one folder's error is recorded, the pass continues.
-Damage → re-fetch; unknown files and local copies → quarantine; ambiguous
-move pairings → nothing pushed, reconcile on pull, notice; uncertain
-move/append results → reconcile via Message-ID search before any retry,
-unprovable outcomes stop in `needs_review`; hash mismatches (draft or
-spool) → op rejected with a re-review error; conflicts →
-server wins, surfaced; oversized → skipped and counted; `UIDVALIDITY`
-reset → folder re-pull with folder-scoped Message-ID re-attach; SMTP
+Out-of-band maildir changes → restored from the server or quarantined,
+nothing inferred; invalid/ambiguous ops → rejected per-op with reasons in
+`ops/done/`; identity mismatch → account refuses activation with a
+remedy; uncertain move/append results → reconcile via Message-ID search +
+fingerprint confirmation before any retry, unprovable outcomes stop in
+`needs_review`; hash mismatches (draft or spool) → op rejected with a
+re-review error; op-vs-server conflicts → op rejected, server wins,
+surfaced; oversized → skipped and counted; `UIDVALIDITY`
+reset → folder re-pull with fingerprint-confirmed re-attach; SMTP
 refusal → draft reverts, error surfaced, no auto-retry; interrupted send
 (crash while `submitting`) → draft locked in the reconciliation state,
 resolved by Message-ID search or an explicit user choice, never an
@@ -500,21 +539,26 @@ boundary; every failure state has a copyable remedy or a status notice.
 
 - **Fake transport** grows folders/`LIST`, `SEARCH SINCE`, `STORE`,
   `APPEND`, `CONDSTORE`. Scenario suite: initial windowed sync;
-  incremental pass; local move → server move (incl. `U=` rename after
-  success); **multi-folder membership** (same message in INBOX + a label
-  folder: two occurrences, one view, no false move); local copy →
-  quarantine, occurrence intact; ambiguous pairing (token missing from two
-  folders) → nothing pushed, reconciled; flags both directions; three-way
-  flag conflict (server wins); damage re-fetch; last-occurrence-gone view
-  cleanup; `UIDVALIDITY` reset with folder-scoped re-attach; window
-  widening backfill; Gmail folder exclusion; two-account isolation;
-  ops-ledger crash recovery (ledger + spool survive restart);
-  **ladder disconnect after each request** (`COPY` accepted but response
-  lost → reconcile proves exactly one destination copy, no duplicate, no
-  premature source delete); **append crash after server acceptance** →
-  search-first retry finds the Message-ID and completes without a
-  duplicate; spool tamper (payload hash mismatch) → op stops in
-  `needs_review`.
+  incremental pass; ops move → server move (incl. `U=` rename and local
+  relocation after proven success); **multi-folder membership** (same
+  message in INBOX + a label folder: two occurrences, one view);
+  **duplicate Message-ID, distinct messages** → distinct fingerprints,
+  distinct msg_ids, two views, no merge; invalid/ambiguous ops (unknown
+  msg_id, wrong `from`, unknown folder, non-pushable flag) → rejected
+  per-op with results in `done/`; out-of-band maildir tamper (vanished,
+  altered, unknown file) → restored from server or quarantined, nothing
+  pushed; server flag changes pulled onto filenames; op vs. server-move
+  conflict → op rejected, server wins; last-occurrence-gone view cleanup;
+  `UIDVALIDITY` reset with fingerprint-confirmed folder-scoped re-attach;
+  window widening backfill; Gmail folder exclusion; **slug-reuse identity
+  mismatch** → account refuses activation, typed purge path works;
+  two-account isolation; ops-ledger crash recovery (ledger + spool
+  survive restart); **ladder disconnect after each request** (`COPY`
+  accepted but response lost → reconcile proves exactly one
+  fingerprint-confirmed destination copy, no duplicate, no premature
+  source delete); **append crash after server acceptance** → search-first
+  retry finds the Message-ID and completes without a duplicate; spool
+  tamper (payload hash mismatch) → op stops in `needs_review`.
 - **SMTP**: behaviour + fake for compose/submit; `DraftMime` golden tests;
   send state machine: refusal reverts the draft; crash between acceptance
   and journal transition → restart lands in `needs_review`, resolved by
@@ -548,7 +592,7 @@ boundary; every failure state has a copyable remedy or a status notice.
 
 Sequence so each stage lands green and independently useful:
 maildir core + one-way pull mirror → derived views/index + UI read path →
-intent scan + push ops (cleanup complete) → mounts + entry points →
+ops files + ledger executor (cleanup complete) → mounts + entry points →
 drafts + spool/journal + SMTP send (outbound complete) → doctor/status/
 cockpit polish + acceptance docs. Multi-account is structural from the
 first task (slugged paths, keyed engines), not retrofitted. Every SDD
