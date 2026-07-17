@@ -66,8 +66,9 @@ sources/mail/<account>/
   views/                    # DERIVED — regenerated, never hand-edited
     messages/<msg_id>.md    # normalized markdown per mirrored message
     attachments/<msg_id>/   # extracted on landing
-  ops/                      # AGENT-WRITABLE — declared mailbox ops (YAML)
-    done/                   #   executed ops files with per-op results
+  ops/
+    pending/                # AGENT-WRITABLE — declared mailbox ops (YAML)
+    done/                   # engine-owned — claimed ops + per-op results
   drafts/                   # AGENT-WRITABLE — outbound drafts (markdown)
   spool/                    # engine-owned composed RFC822 + op manifests
   quarantine/               # unrecognized files found under maildir/
@@ -79,7 +80,14 @@ sources/mail/<account>/
   Maildir++ dotted names. A folder-name segment equal to `cur`, `new`, or
   `tmp`, or starting with `.`, is percent-escaped deterministically
   (e.g. `cur` → `%63ur`), and a literal `%` is always escaped as `%25` so
-  the mapping stays reversible. `\Noselect` folders are skipped.
+  the mapping stays reversible. `\Noselect` folders are skipped. The
+  mapping is additionally **injective on a case- and
+  normalization-insensitive filesystem (APFS)**: at `LIST` time, segments
+  that collide under casefold + Unicode normalization receive a
+  deterministic hash suffix, and every mailbox directory carries an
+  engine-owned `.folder` file recording the exact IMAP mailbox name —
+  authoritative for ops targets, ledger entries, and rebuilds, never
+  inferred back from the directory spelling.
 - **Two-level identity.** A local maildir file represents an
   *occurrence* — one message in one folder, identified by
   `(account, folder, uidvalidity, uid)`. The *message* identity is the
@@ -94,8 +102,8 @@ sources/mail/<account>/
 - **Maildir filenames encode both identities**:
   `<msg_id>,U=<uid>:2,<flags>`. `U=` is the occurrence's UID in its
   folder, assigned at landing; when the engine executes a move it
-  relocates the file and renames it to the destination folder's UID (from
-  the `COPYUID`/`MOVE` response, or on the next pull). UIDVALIDITY lives
+  relocates the file and renames it to the destination folder's UID,
+  which is always confirmed before relocation (see Push). UIDVALIDITY lives
   in `mail_sync_state`, not the filename. Colons in filenames are fine on
   the only supported platform (macOS).
 - Flags live in the filename per maildir convention (`S` seen, `R` replied,
@@ -117,25 +125,36 @@ rewritten around two phases per pass, **push before pull**:
 Nothing infers intent from filesystem diffs. Mailbox mutations are
 **declared** and executed by the engine:
 
-- An ops file is YAML at `ops/<name>.yaml`: a list of operations from the
-  closed vocabulary
+- An ops file is YAML at `ops/pending/<name>.yaml`: a list of operations
+  from the closed vocabulary
   `{op: move, msg_id, from, to}` ·
   `{op: flag, msg_id, folder, add: [...], remove: [...]}` (S/R/F only).
-  Agents write ops files through the normal ask-gate (`ops/` is one of
-  the two agent-writable dirs); the Valea UI's own actions (archive
-  button, flag toggle) go through the same executor via RPC.
+  Agents write ops files through the normal ask-gate (`ops/pending/` is
+  one of the two agent-writable dirs); the Valea UI's own actions
+  (archive button, flag toggle) go through the same executor via RPC.
+  Folder references use exact IMAP mailbox names (as recorded in
+  `.folder` files), not directory spellings.
 - Each op is **validated against current occurrence state** before
   execution: the msg_id must resolve to exactly one occurrence in `from`
   (for flags: in `folder`), the destination must be a known folder, and
   the pushable-flag rule applies. Valid ops enter the durable op ledger;
   invalid or ambiguous ops are rejected per-op, never guessed at.
 - Moves execute as the existing safe-move ladder (`UID MOVE` →
-  `UID COPY` + `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`);
-  after proven success the engine relocates the local file itself and
-  renames it to the destination folder's UID.
-- Executed ops files move to `ops/done/<name>.yaml` with a per-op result
-  appended (`ok | rejected: <reason> | needs_review`) — a file-first
-  audit trail beside the audit-log entries.
+  `UID COPY` + `STORE +FLAGS (\Deleted)` + targeted `UID EXPUNGE <uid>`).
+  The **destination UID is confirmed for every move** — from the
+  `COPYUID`/`MOVE` response where the server supports UIDPLUS, otherwise
+  by a **horizon-independent** Message-ID + fingerprint lookup in the
+  destination folder — and persisted in the ledger **before** the source
+  file is relocated. The local file is never removed without a confirmed
+  destination occurrence, so a landed message can never vanish from the
+  mirror — the "once landed, stays local" invariant survives moving
+  messages older than the sync window.
+- The executor **claims a pending file by atomically renaming it into the
+  engine-owned `ops/done/`** before parsing anything — the agent-writable
+  copy ceases to exist before interpretation, so a file cannot change
+  under the executor. Per-op results are appended to the claimed file
+  (`ok | rejected: <reason> | needs_review`) — a file-first audit trail
+  the agent can read but not edit (`ops/done/` is write-denied).
 - **Valea-composed appends** come from the ops ledger + `spool/` only,
   never from ops files and never by discovering unknown files (see
   Drafting & push); the ops vocabulary cannot express append, delete, or
@@ -394,11 +413,12 @@ Writes into a mail mount are ask-gated like any non-primary mount. The
 first agent write asks once; approval issues the existing session-scoped
 write grant — so "clean up my inbox" is one approval, not fifty. But the
 grant is **not the whole subtree**: the agent-writable surface of a mail
-mount is exactly `ops/` and `drafts/`. `PermissionPolicy` denies agent
-writes everywhere else in the mount — `maildir/` (canonical mail is
+mount is exactly `ops/pending/` and `drafts/`. `PermissionPolicy` denies
+agent writes everywhere else in the mount — `maildir/` (canonical mail is
 engine-owned; cleanup is declared in ops files, never performed by the
-agent's own file operations), `views/`, `quarantine/`, and `.account`
-(all readable) — and denies `spool/` entirely, read and write, because it
+agent's own file operations), `views/`, `ops/done/` (the audit trail the
+agent must not edit), `quarantine/`, and `.account` (all readable) — and
+denies `spool/` entirely, read and write, because it
 holds engine-owned outbound payloads. The denies are mirrored in
 managedSettings as defense-in-depth, exactly like the Spec D ICM-secrets
 deny, and deny takes precedence over any grant (existing policy
@@ -596,7 +616,13 @@ boundary; every failure state has a copyable remedy or a status notice.
   tamper (payload hash mismatch) → op stops in `needs_review`;
   **recycled-UID guard** (UIDVALIDITY changed or source fingerprint
   mismatched at execution time → op rejected, no `STORE`/`EXPUNGE`
-  issued); **header injection** (CR/LF in subject or recipients →
+  issued); **move of a message older than the window** → destination
+  confirmed horizon-independently, source relocated, nothing vanishes;
+  **case-colliding folder names** (`Clients` vs `clients`) on a
+  case-insensitive volume → distinct directories, no mixed UID maps,
+  ops target the exact IMAP names; **claim-by-rename** (pending ops file
+  mutated after claim → executor parses only the claimed engine-owned
+  copy); **header injection** (CR/LF in subject or recipients →
   composition rejects) and malformed mailbox syntax → rejected with the
   parsed-recipient review intact; **database-loss recovery** (ledger rows
   gone, manifests present → drafts/ops blocked, reconciliation resolves
