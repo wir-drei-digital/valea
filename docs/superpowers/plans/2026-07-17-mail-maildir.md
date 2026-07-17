@@ -14,7 +14,7 @@
 
 - **Never weaken containment**: every path decision through `Valea.Paths.resolve_real/2` (segment-boundary membership). No new path logic outside it.
 - **No credentials on disk, ever**: keychain (FE) + RAM closures (BE). Keychain account key format: `<workspace_id>:<account>:imap` (passed as the existing `username` arg of `mail_secret_set/get/delete` — no Rust changes).
-- **Moves only, never expunge**: no `STORE +FLAGS (\Deleted)` outside the move ladder; bare `EXPUNGE` appears nowhere; `T`/`D` flags are pull-only; pushable flags are exactly `S`/`R`/`F`.
+- **Moves only, never expunge**: `\Deleted` is stored ONLY via `Transport.uid_mark_deleted/2`, called ONLY from the executor's confirmed ladder; bare `EXPUNGE` appears nowhere (`uid_expunge/2` is always targeted); `T`/`D` flags are pull-only; pushable flags are exactly `S`/`R`/`F`.
 - **Valea cannot send mail**: no SMTP anywhere. Outbound = user-only `push_draft_to_mailbox`.
 - **Agent-writable mail surface is exactly** `ops/pending/` **and** `drafts/`; `spool/` is deny-all (read+write); everything else in a mail mount is read-only to agents. Deny matching casefolds (APFS).
 - **Account slug grammar**: `^[a-z0-9][a-z0-9-]{0,31}$`, casefold-unique, validated at RPC, config load, mount creation, purge. Never path-interpolated unvalidated.
@@ -91,8 +91,11 @@ pushable_flags() :: MapSet.t()                  # MapSet.new(["S","R","F"])
 encode_segment(String.t()) :: String.t()        # %-escape: %, leading ".", exact "cur"/"new"/"tmp"
 decode_segment(String.t()) :: String.t()
 folder_to_dir(imap_name :: String.t(), taken :: MapSet.t(String.t())) :: String.t()
-  # split on "/", encode each segment, join; if casefold+NFC of result ∈ taken →
-  # append "-" <> first 6 hex of sha256(imap_name) to the last segment (deterministic)
+  # split on "/", encode each segment, join. Candidate loop until unused: base, then
+  # base-<first 6 hex of sha256(imap_name)>, then -<12 hex>, -<18 hex>, … up to the full digest —
+  # EVERY candidate (including suffixed ones) is checked against `taken` under casefold+NFC, so a
+  # pre-existing literal dir that happens to equal a suffixed candidate cannot be reused. The caller
+  # (SyncPass folder-set step) adds each assigned dir to `taken` as it walks the LIST result.
 mailbox_dirs(folder_dir_abs :: String.t()) :: :ok       # mkdir -p cur/new/tmp
 write_folder_identity!(folder_dir_abs, imap_name) :: :ok  # <dir>/.folder, atomic
 read_folder_identity(folder_dir_abs) :: {:ok, String.t()} | :error
@@ -159,6 +162,15 @@ defmodule Valea.Mail.MaildirTest do
       b = Maildir.folder_to_dir("clients", taken)
       refute String.downcase(a) == String.downcase(b)
       assert b =~ ~r/-[0-9a-f]{6}$/
+    end
+
+    test "suffixed candidate colliding with a pre-existing literal dir extends the digest" do
+      norm = fn s -> s |> String.downcase() |> :unicode.characters_to_nfc_binary() end
+      first_suffix = Maildir.folder_to_dir("clients", MapSet.new([norm.("clients")]))
+      taken = MapSet.new([norm.("clients"), norm.(first_suffix)])
+      c = Maildir.folder_to_dir("clients", taken)
+      refute norm.(c) in taken
+      assert c =~ ~r/-[0-9a-f]{12}$/
     end
 
     test ".folder identity file is authoritative and atomic" do
@@ -320,7 +332,13 @@ uid_store_flags(conn, uid, add :: [String.t()], remove :: [String.t()], opts :: 
   # opts[:unchangedsince] :: integer | nil → issues "UID STORE <uid> (UNCHANGEDSINCE <m>) ±FLAGS (...)";
   # a MODIFIED untagged response → {:ok, :modified} (caller treats as moved baseline)
 uid_move(conn, uid, dest) :: {:ok, %{dest_uid: pos_integer | nil}} | {:error, term} | {:unsupported, String.t()}
-  # CHANGED return: parse COPYUID (RFC 4315) from the tagged OK of MOVE/COPY; dest_uid nil when absent
+  # NARROWED: native "UID MOVE" ONLY (COPYUID parsed from the tagged OK); servers without MOVE →
+  # {:unsupported, _}. The COPY+STORE+EXPUNGE fallback ladder MOVES OUT of the client and into the
+  # ops executor (Task 13), which needs per-step control to confirm-before-expunge. New primitives:
+uid_copy(conn, uid, dest) :: {:ok, %{dest_uid: pos_integer | nil}} | {:error, term}
+uid_mark_deleted(conn, uid) :: :ok | {:error, term}
+  # the ONE sanctioned "\Deleted" STORE in the codebase — callable only by the executor's ladder
+uid_expunge(conn, uid) :: :ok | {:error, term}   # targeted "UID EXPUNGE <uid>" (UIDPLUS), never bare EXPUNGE
 append(conn, folder, flags, rfc822) :: {:ok, %{dest_uid: pos_integer | nil}} | {:error, term}
   # CHANGED return: APPENDUID when UIDPLUS, else nil
 examine(conn, folder) :: {:ok, %{uidvalidity: integer, uidnext: integer | nil, highestmodseq: integer | nil}} | {:error, term}
@@ -331,7 +349,7 @@ supports?(conn, cap :: :condstore | :qresync | :move | :uidplus | :gmail) :: boo
 ```
 No QRESYNC `SELECT ... (QRESYNC ...)` parameter support in this task — deletion detection uses `VANISHED` only if trivially available; the pull engine's portable path is full enumeration (`uid_search(conn, "ALL")`). QRESYNC fast-resync is an optimization the executor/pull may add later; `supports?/2` already reports it. (Spec compliance: the deletion protocol's authoritative path — complete enumeration with remove-only-on-success — is fully implemented in Task 7; `VANISHED` is the optional fast path.)
 
-- [ ] **Step 1: Write failing wire-level tests** in `imap_client_test.exs` using `FakeImapServer` scripts: SELECT response carrying `HIGHESTMODSEQ`; `UID FETCH 1:* (UID FLAGS MODSEQ)` parsed; `UID FETCH` with `X-GM-MSGID`; `UID STORE 5 (UNCHANGEDSINCE 99) +FLAGS (\Seen)` → tagged OK vs `[MODIFIED 5]`; `UID MOVE` tagged `OK [COPYUID 9 5 77]` → `{:ok, %{dest_uid: 77}}`; `APPEND` `OK [APPENDUID 9 101]` → `{:ok, %{dest_uid: 101}}`; capability probing.
+- [ ] **Step 1: Write failing wire-level tests** in `imap_client_test.exs` using `FakeImapServer` scripts: SELECT response carrying `HIGHESTMODSEQ`; `EXAMINE` issued (not SELECT) by `examine/2`; `UID FETCH 1:* (UID FLAGS MODSEQ)` parsed; `UID FETCH` with `X-GM-MSGID`; `UID STORE 5 (UNCHANGEDSINCE 99) +FLAGS (\Seen)` → tagged OK vs `[MODIFIED 5]`; `UID MOVE` tagged `OK [COPYUID 9 5 77]` → `{:ok, %{dest_uid: 77}}` and `{:unsupported, _}` without MOVE capability (no COPY fallback inside the client — assert the fake server saw no `UID COPY`); `uid_copy` → `OK [COPYUID ...]` parsed; `uid_mark_deleted` issues exactly `UID STORE <uid> +FLAGS (\Deleted)`; `uid_expunge` issues `UID EXPUNGE <uid>`; `APPEND` `OK [APPENDUID 9 101]` → `{:ok, %{dest_uid: 101}}`; capability probing.
 - [ ] **Step 2: Run** `mix test test/valea/mail/imap_client_test.exs` → FAIL.
 - [ ] **Step 3: Implement** client + wire parsing (extend `Wire`'s fetch-attr parser for `FLAGS`, `MODSEQ`, `X-GM-MSGID`; COPYUID/APPENDUID regex on tagged OK text). Update the two existing `uid_move` call sites' pattern matches. Update `FakeMailTransport` with pass-through scripted callbacks for every new function.
 - [ ] **Step 4: Run to green** — `mix test test/valea/mail/imap_client_test.exs test/valea/mail/fake_mail_transport_test.exs`. Fix any `sync_pass_test`/`doctor_test` compile fallout from the changed returns (they still script old-shape `uid_move`/`append` — update scripts).
@@ -641,7 +659,7 @@ apply_ops(root, account, ops :: [map], origin) :: [result_map]   # shared by ops
 ```
 **Execution contract (each = test):**
 1. **Execution-time verification** (every move): `SELECT` source → `uidvalidity == op.source_uidvalidity` else reject-for-revalidation; `uid_fetch_full(uid)` → fingerprint must equal the occurrence's msg_id fingerprint else reject. Only then the ladder.
-2. **Move ladder + confirmation**: `uid_move` → `{:ok, %{dest_uid: n}}` when server supplies COPYUID; else destination confirmation = `uid_search` in dest for `HEADER Message-ID` (when the message has one) else candidate scan `UID <dest_watermark+1>:*` + fingerprint-confirm each candidate (dest UIDVALIDITY changed vs manifest → full-folder fingerprint scan). Exactly one confirmed match → persist dest_uid → THEN relocate the local file (`Maildir` rename into dest dir, new `U=`), update uid_map/index/views. Zero or several → `needs_review`, local file untouched.
+2. **Move ladder + confirmation — the executor OWNS the ladder** (each step a durable manifest transition): when `supports?(:move)` → `uid_move` (native), COPYUID as dest_uid when present, else destination confirmation below. Without MOVE: `uid_copy` → **destination confirmation** → only then `uid_mark_deleted` → `uid_expunge`, each step recorded in the manifest before it runs; a crash or lost response between any two steps recovers by reconciliation, and the source is NEVER expunged before a confirmed destination exists. Destination confirmation = COPYUID when supplied; else `uid_search` in dest for `HEADER Message-ID` (when the message has one), else candidate scan `UID <dest_watermark+1>:*` + fingerprint-confirm each candidate (dest UIDVALIDITY changed vs manifest → full-folder fingerprint scan). Exactly one confirmed match → persist dest_uid → THEN relocate the local file (`Maildir` rename into dest dir, new `U=`), update uid_map/index/views. Zero or several → `needs_review`, local file untouched, no destructive step taken. The per-step fault matrix (lost response after COPY / after STORE / after EXPUNGE) is testable because each step is a separate transport call.
 3. **Write-through destination** (`to` ∈ folders.{archive,trash} ∧ excluded): transient `examine/2` (read-only) for watermark + uidvalidity at enqueue; after confirmation the local occurrence is REMOVED (file + rows + view GC) — message left the mirrored set.
 4. **Gmail profile**: move executes only when `supports?(:move)`; postcondition for EVERY gmail move = source `uid_search("UID <uid>")` empty AND dest (or All Mail for archive, via `examine/2` — read-only) `uid_search("X-GM-MSGID <gm_msgid>")` non-empty (gm_msgid captured at landing into uid_map — add column? NO: fetch at enqueue via `uid_fetch_flags(conn, "<uid>")`). Pre-existing membership counts. Local relocation only after proof; archive-to-All-Mail removes the local occurrence (excluded dest).
 5. **Flags**: baseline = uid_map `last_synced_flags` (+ modseq via `uid_fetch_flags` at enqueue when condstore); execute `uid_store_flags(..., unchangedsince: modseq)`; `{:ok, :modified}` → `needs_review` (baseline moved); recovery path: refetch flags — postcondition already present → ok; baseline moved → `needs_review`; untouched → one guarded retry. Flag ops do NOT create ledger rows; their durable record is the claimed ops file (replayed via `recover` reading unresolved claimed files).
