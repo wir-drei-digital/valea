@@ -151,9 +151,6 @@ Use an app password; sync window default 90d.
 
 - `pushed_revision_stale` advisory in the drafts list (needs an op-row
   snapshot hash retained past completion).
-- DB-loss orphan-manifest boot scan (ledger rows gone, spool manifests
-  present → drafts/ops blocked until reconciled) — currently recovery is
-  ledger-driven only, worst case an unsent draft.
 - Persistent push search failure parks silently (`pending` retried each
   pass) rather than escalating to a visible `needs_review`.
 - `mailbox_replaced` mount degradation shares the tested
