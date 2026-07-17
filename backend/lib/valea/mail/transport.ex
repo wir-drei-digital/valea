@@ -42,9 +42,13 @@ defmodule Valea.Mail.Transport do
   @callback uid_fetch_full(conn, pos_integer()) :: {:ok, binary()} | {:error, term()}
 
   @doc """
-  Fetches `UID FLAGS MODSEQ` (plus `X-GM-MSGID` when the server is
-  `:gmail`-capable) for `uid_set`, an IMAP sequence-set string ("1:*" or
-  "5,9,12") sent verbatim as a single command.
+  Fetches `UID FLAGS` for `uid_set`, an IMAP sequence-set string ("1:*" or
+  "5,9,12") sent verbatim as a single command. `MODSEQ` is additionally
+  requested — and `modseq` populated in the result — only when the
+  connection is `:condstore`-capable (a non-CONDSTORE server may `BAD` the
+  whole FETCH over an attribute it doesn't understand); otherwise every
+  result's `modseq` is `nil`. `X-GM-MSGID` is likewise requested (and
+  populated) only when the server is `:gmail`-capable.
   """
   @callback uid_fetch_flags(conn, uid_set :: String.t()) ::
               {:ok, [fetch_flags_result()]} | {:error, term()}
@@ -55,6 +59,23 @@ defmodule Valea.Mail.Transport do
   server response reporting the message as `MODIFIED` (precondition failed)
   is `{:ok, :modified}` rather than an error — the caller treats it as a
   changed baseline, not a failure.
+
+  When BOTH `add` and `remove` are non-empty AND `opts[:unchangedsince]` is
+  set, this cannot be issued as two sequential guarded STOREs: the first
+  one's own successful apply would bump the message's modseq, making the
+  second deterministically fail its own precondition against a baseline it
+  just invalidated. In that case the callback instead REQUIRES
+  `opts[:base_flags]` (the message's current IMAP flags, as known by the
+  caller from its own execution-time verification) and issues ONE atomic
+  replace — `UID STORE <uid> (UNCHANGEDSINCE <n>) FLAGS (<final>)` where
+  `final = (base_flags ++ add) -- remove`, deduped — reporting `:modified`
+  or `:applied` from that single command exactly as above. If
+  `opts[:base_flags]` is absent in that combined+guarded case, the callback
+  raises `ArgumentError` rather than guessing at a wire form that could
+  silently corrupt the flag set. Single-direction calls (only `add` or only
+  `remove` non-empty) and combined calls WITHOUT `unchangedsince` are
+  unaffected by this and behave as a plain `+FLAGS`/`-FLAGS` store (or two
+  sequential unguarded ones).
   """
   @callback uid_store_flags(
               conn,
@@ -69,14 +90,21 @@ defmodule Valea.Mail.Transport do
   `{:unsupported, _}` — no `UID COPY` + `STORE` + `EXPUNGE` fallback ladder
   inside this callback; that ladder lives in the ops executor (Task 13),
   which needs per-step control to confirm before expunging. `dest_uid` comes
-  from the `COPYUID` response code on the tagged OK, when present.
+  from the `COPYUID` response code on the tagged OK, when present — and is
+  `nil` (unknown, not a guess) when that response code's destination
+  uid-set is a range/list shape (e.g. `90:92`) rather than a single uid.
   """
   @callback uid_move(conn, pos_integer(), String.t()) ::
               {:ok, %{dest_uid: pos_integer() | nil}}
               | {:error, term()}
               | {:unsupported, String.t()}
 
-  @doc "`UID COPY <uid> <dest>`; `dest_uid` from the `COPYUID` response code."
+  @doc """
+  `UID COPY <uid> <dest>`; `dest_uid` from the `COPYUID` response code, or
+  `nil` when absent or when the destination uid-set is a range/list shape
+  rather than a single uid (the caller falls back to search-based
+  confirmation in that case).
+  """
   @callback uid_copy(conn, pos_integer(), String.t()) ::
               {:ok, %{dest_uid: pos_integer() | nil}} | {:error, term()}
 
@@ -92,7 +120,9 @@ defmodule Valea.Mail.Transport do
 
   @doc """
   CHANGED return: `dest_uid` from the `APPENDUID` response code when the
-  server is UIDPLUS-capable, else `nil`.
+  server is UIDPLUS-capable, else `nil` — also `nil` when that response
+  code's destination uid-set is a range/list shape rather than a single
+  uid.
   """
   @callback append(conn, folder :: String.t(), flags :: [String.t()], rfc822 :: binary()) ::
               {:ok, %{dest_uid: pos_integer() | nil}} | {:error, term()}

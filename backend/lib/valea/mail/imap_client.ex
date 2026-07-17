@@ -191,10 +191,18 @@ defmodule Valea.Mail.ImapClient do
 
   @impl true
   def uid_fetch_flags(conn, uid_set) do
+    # MODSEQ is only requested when the server is CONDSTORE-capable — a
+    # non-CONDSTORE server may BAD the whole FETCH over an attribute it
+    # doesn't understand. Without it, `collect_fetch_flags/1` naturally
+    # reports `modseq: nil` for every item (the server never sends the
+    # MODSEQ attr, so `Wire`'s per-item attrs map keeps its default `nil`).
     attr_spec =
-      if supports?(conn, :gmail),
-        do: "(UID FLAGS MODSEQ X-GM-MSGID)",
-        else: "(UID FLAGS MODSEQ)"
+      case {supports?(conn, :condstore), supports?(conn, :gmail)} do
+        {true, true} -> "(UID FLAGS MODSEQ X-GM-MSGID)"
+        {true, false} -> "(UID FLAGS MODSEQ)"
+        {false, true} -> "(UID FLAGS X-GM-MSGID)"
+        {false, false} -> "(UID FLAGS)"
+      end
 
     case send_command(conn, ["UID", "FETCH", uid_set, attr_spec]) do
       {:ok, :ok, _text, untagged} -> {:ok, collect_fetch_flags(untagged)}
@@ -207,9 +215,13 @@ defmodule Valea.Mail.ImapClient do
     unchangedsince = Keyword.get(opts, :unchangedsince)
     uid_str = Integer.to_string(uid)
 
-    with {:ok, add_status} <- maybe_store(conn, uid_str, "+FLAGS", add, unchangedsince),
-         {:ok, remove_status} <- maybe_store(conn, uid_str, "-FLAGS", remove, unchangedsince) do
-      {:ok, combine_store_status(add_status, remove_status)}
+    if add != [] and remove != [] and unchangedsince != nil do
+      atomic_replace_flags(conn, uid_str, add, remove, unchangedsince, opts)
+    else
+      with {:ok, add_status} <- maybe_store(conn, uid_str, "+FLAGS", add, unchangedsince),
+           {:ok, remove_status} <- maybe_store(conn, uid_str, "-FLAGS", remove, unchangedsince) do
+        {:ok, combine_store_status(add_status, remove_status)}
+      end
     end
   end
 
@@ -355,27 +367,52 @@ defmodule Valea.Mail.ImapClient do
   # `A3 OK [APPENDUID <uidvalidity> <dest-uid>] ...`. Absent (a server that
   # doesn't report it) parses to `nil` rather than erroring — the caller
   # still has a successful move/copy/append, just without a known dest UID.
+  #
+  # The dest token itself can be a uid-set (RFC 4315 allows COPYUID/APPENDUID
+  # to report a range like `90:92` or a list like `90,92` — not just a bare
+  # uid) when the underlying command actually affected multiple messages.
+  # This single-uid client only ever issues single-uid COPY/MOVE/APPEND, but
+  # some servers still echo a range/list shape back. Truncating to the
+  # leading number in that case (the old behavior) hands back a
+  # wrong-but-plausible dest_uid; parsing to `nil` instead is the honest
+  # "unknown" the caller's search-based confirmation fallback already
+  # handles.
 
   defp parse_copyuid_dest(text) do
-    case Regex.run(~r/COPYUID \d+ \S+ (\d+)/, text) do
-      [_, n] -> String.to_integer(n)
+    case Regex.run(~r/COPYUID \d+ \S+ ([^\]\s]+)/, text) do
+      [_, token] -> parse_dest_uid_token(token)
       nil -> nil
     end
   end
 
   defp parse_appenduid_dest(text) do
-    case Regex.run(~r/APPENDUID \d+ (\d+)/, text) do
-      [_, n] -> String.to_integer(n)
+    case Regex.run(~r/APPENDUID \d+ ([^\]\s]+)/, text) do
+      [_, token] -> parse_dest_uid_token(token)
       nil -> nil
+    end
+  end
+
+  defp parse_dest_uid_token(token) do
+    if String.contains?(token, ":") or String.contains?(token, ",") do
+      nil
+    else
+      case Integer.parse(token) do
+        {n, ""} -> n
+        _ -> nil
+      end
     end
   end
 
   # -- UID STORE (flags) helpers -------------------------------------------
 
   # A STORE command carries either `+FLAGS` or `-FLAGS`, never both — so a
-  # combined add+remove call issues up to two sequential commands. An empty
-  # flag list issues no command at all (nothing to apply) and is trivially
-  # `:applied`.
+  # combined add+remove call issues up to two sequential commands, UNLESS
+  # `unchangedsince` is also set (see `atomic_replace_flags/6` below): two
+  # sequential *guarded* STOREs would have the first one's own successful
+  # apply bump the message's modseq, making the second deterministically
+  # fail its own precondition against a baseline it just invalidated. An
+  # empty flag list issues no command at all (nothing to apply) and is
+  # trivially `:applied`.
   defp maybe_store(_conn, _uid_str, _sign, [], _unchangedsince), do: {:ok, :applied}
 
   defp maybe_store(conn, uid_str, sign, flags, unchangedsince) do
@@ -391,6 +428,57 @@ defmodule Valea.Mail.ImapClient do
       {:ok, :ok, text, _untagged} -> {:ok, store_result(text)}
       other -> command_error(other)
     end
+  end
+
+  # A combined add+remove call under `unchangedsince` cannot be split into
+  # two sequential guarded STOREs (see `maybe_store/5` above) — the only
+  # correct wire form is ONE atomic `FLAGS` replace. That requires knowing
+  # the message's full current flag set going in, which the future ops
+  # executor has from its own execution-time verification (`opts[:base_flags]`);
+  # without it there is no safe way to compute the replacement set, so this
+  # raises rather than silently picking a wrong wire form.
+  defp atomic_replace_flags(conn, uid_str, add, remove, unchangedsince, opts) do
+    case Keyword.get(opts, :base_flags) do
+      nil ->
+        raise ArgumentError, """
+        uid_store_flags/5: combining a non-empty add list AND a non-empty \
+        remove list under opts[:unchangedsince] requires opts[:base_flags] \
+        (the message's current IMAP flags, from execution-time verification) \
+        so a single atomic FLAGS replace can be computed. Without it, issuing \
+        two sequential guarded STOREs would have the first one's own \
+        successful apply bump the message's modseq, making the second \
+        deterministically fail its own UNCHANGEDSINCE precondition.\
+        """
+
+      base_flags ->
+        flags_arg = "(" <> Enum.join(replace_flags(base_flags, add, remove), " ") <> ")"
+
+        parts = [
+          "UID",
+          "STORE",
+          uid_str,
+          "(UNCHANGEDSINCE #{unchangedsince})",
+          "FLAGS",
+          flags_arg
+        ]
+
+        case send_command(conn, parts) do
+          {:ok, :ok, text, _untagged} -> {:ok, store_result(text)}
+          other -> command_error(other)
+        end
+    end
+  end
+
+  # `final = (base_flags ++ add) -- remove`, deduped and sorted so the
+  # resulting `FLAGS (...)` argument is deterministic regardless of
+  # `base_flags`/`add` ordering or duplicates.
+  defp replace_flags(base_flags, add, remove) do
+    remove_set = MapSet.new(remove)
+
+    (base_flags ++ add)
+    |> Enum.reject(&MapSet.member?(remove_set, &1))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   # A CONDSTORE precondition failure (RFC 4551) still comes back as a tagged

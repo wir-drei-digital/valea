@@ -293,6 +293,61 @@ defmodule Valea.Mail.ImapClientTest do
     assert :ok = FakeImapServer.await(server)
   end
 
+  test "uid_copy: a COPYUID dest uid-set that is a range -> dest_uid nil, never truncated" do
+    # `COPYUID 9 77 90:92` means the copy landed on destination UIDs 90-92
+    # (a multi-message COPYUID can report a range/list, not just this
+    # single-uid call's own uid). Truncating to the leading number (90)
+    # would silently hand back a wrong-but-plausible-looking dest_uid, so an
+    # unparseable (range/list) dest token must degrade to nil — the known-
+    # unknown the caller (search-based confirmation) already handles.
+    script =
+      handshake_steps() ++
+        [
+          {:expect, ~r/^A3 UID COPY 7 "AI\/Processed"$/,
+           then: ["A3 OK [COPYUID 9 77 90:92] COPY completed"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_copy(conn, 7, "AI/Processed")
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "uid_copy: a COPYUID dest uid-set that is a list (comma) -> dest_uid nil" do
+    script =
+      handshake_steps() ++
+        [
+          {:expect, ~r/^A3 UID COPY 7 "AI\/Processed"$/,
+           then: ["A3 OK [COPYUID 9 77 90,92] COPY completed"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, %{dest_uid: nil}} = ImapClient.uid_copy(conn, 7, "AI/Processed")
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "append: an APPENDUID dest uid-set that is a range -> dest_uid nil, never truncated" do
+    literal = "hello"
+
+    script =
+      handshake_steps("IMAP4rev1 UIDPLUS") ++
+        [
+          {:expect, ~r/^A3 APPEND "Drafts" \(\\Seen\) \{#{byte_size(literal)}\}$/,
+           then: ["+ Ready"]},
+          {:expect_literal, byte_size(literal),
+           then: ["A3 OK [APPENDUID 9 101:103] APPEND completed"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, %{dest_uid: nil}} = ImapClient.append(conn, "Drafts", ["\\Seen"], literal)
+    assert :ok = FakeImapServer.await(server)
+  end
+
   test "uid_mark_deleted issues exactly UID STORE <uid> +FLAGS (\\Deleted)" do
     script =
       handshake_steps() ++
@@ -347,7 +402,7 @@ defmodule Valea.Mail.ImapClientTest do
 
   test "uid_fetch_flags requests X-GM-MSGID too and parses it when the server is X-GM-EXT-1 capable" do
     script =
-      handshake_steps("IMAP4rev1 X-GM-EXT-1") ++
+      handshake_steps("IMAP4rev1 X-GM-EXT-1 CONDSTORE") ++
         [
           {:expect, "A3 UID FETCH 5,9,12 (UID FLAGS MODSEQ X-GM-MSGID)",
            then: [
@@ -361,6 +416,45 @@ defmodule Valea.Mail.ImapClientTest do
 
     assert {:ok, [%{uid: 5, flags: ["\\Seen"], modseq: 100, gm_msgid: "1278455344230334865"}]} =
              ImapClient.uid_fetch_flags(conn, "5,9,12")
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "uid_fetch_flags omits MODSEQ (and reports modseq: nil) when the server lacks CONDSTORE" do
+    # Some servers BAD the MODSEQ FETCH attribute outright when CONDSTORE
+    # isn't advertised, so it must never be requested unconditionally.
+    script =
+      handshake_steps("IMAP4rev1") ++
+        [
+          {:expect, "A3 UID FETCH 1:* (UID FLAGS)",
+           then: ["* 1 FETCH (UID 4 FLAGS (\\Seen))", "A3 OK FETCH completed"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, [%{uid: 4, flags: ["\\Seen"], modseq: nil, gm_msgid: nil}]} =
+             ImapClient.uid_fetch_flags(conn, "1:*")
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "uid_fetch_flags requests X-GM-MSGID without MODSEQ when gmail-capable but not CONDSTORE-capable" do
+    script =
+      handshake_steps("IMAP4rev1 X-GM-EXT-1") ++
+        [
+          {:expect, "A3 UID FETCH 5 (UID FLAGS X-GM-MSGID)",
+           then: [
+             "* 1 FETCH (UID 5 FLAGS (\\Seen) X-GM-MSGID 1278455344230334865)",
+             "A3 OK FETCH completed"
+           ]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, [%{uid: 5, flags: ["\\Seen"], modseq: nil, gm_msgid: "1278455344230334865"}]} =
+             ImapClient.uid_fetch_flags(conn, "5")
 
     assert :ok = FakeImapServer.await(server)
   end
@@ -424,6 +518,75 @@ defmodule Valea.Mail.ImapClientTest do
     conn = connect!(server)
 
     assert {:ok, :applied} = ImapClient.uid_store_flags(conn, 5, [], ["\\Seen"], [])
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "uid_store_flags: combined add+remove under unchangedsince + base_flags issues ONE atomic FLAGS replace" do
+    # Splitting this into two guarded STOREs (+FLAGS then -FLAGS, both
+    # UNCHANGEDSINCE-guarded) would have the first STORE's own successful
+    # apply bump the message's modseq, making the second STORE deterministically
+    # fail its own precondition against a baseline it just invalidated. The
+    # only correct wire form is one atomic replace computed from the
+    # caller-supplied current flag set (base_flags: \Seen \Answered), minus
+    # \Seen (removed), plus \Flagged (added) -> \Answered \Flagged (sorted).
+    script =
+      handshake_steps("IMAP4rev1 CONDSTORE") ++
+        [
+          {:expect, ~r/^A3 UID STORE 5 \(UNCHANGEDSINCE 99\) FLAGS \(\\Answered \\Flagged\)$/,
+           then: ["A3 OK STORE completed"]},
+          # Proves exactly ONE STORE was issued: if uid_store_flags had
+          # wrongly sent a second guarded STORE, its bytes would be sitting
+          # in front of this LIST line and this regex would not match,
+          # making `await/1` raise.
+          {:expect, ~r/^A4 LIST "" \*$/, then: ["A4 OK LIST completed"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, :applied} =
+             ImapClient.uid_store_flags(conn, 5, ["\\Flagged"], ["\\Seen"],
+               unchangedsince: 99,
+               base_flags: ["\\Seen", "\\Answered"]
+             )
+
+    assert {:ok, []} = ImapClient.list_folders(conn)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "uid_store_flags: combined add+remove atomic replace, MODIFIED -> {:ok, :modified}" do
+    script =
+      handshake_steps("IMAP4rev1 CONDSTORE") ++
+        [
+          {:expect, ~r/^A3 UID STORE 5 \(UNCHANGEDSINCE 99\) FLAGS \(\\Answered \\Flagged\)$/,
+           then: ["A3 OK [MODIFIED 5] Conditional STORE failed"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, :modified} =
+             ImapClient.uid_store_flags(conn, 5, ["\\Flagged"], ["\\Seen"],
+               unchangedsince: 99,
+               base_flags: ["\\Seen", "\\Answered"]
+             )
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "uid_store_flags: combined add+remove under unchangedsince WITHOUT base_flags raises, no connection use" do
+    # No script steps beyond the handshake: if uid_store_flags used the
+    # connection at all here, there is nothing left in the script to answer
+    # it, and this test would hang/fail instead of cleanly raising.
+    script = handshake_steps("IMAP4rev1 CONDSTORE")
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert_raise ArgumentError, ~r/base_flags/, fn ->
+      ImapClient.uid_store_flags(conn, 5, ["\\Flagged"], ["\\Seen"], unchangedsince: 99)
+    end
+
     assert :ok = FakeImapServer.await(server)
   end
 
