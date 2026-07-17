@@ -213,8 +213,14 @@ Local maildir mutations are *not* a channel:
 
 Per folder (from `LIST`, minus `sync.exclude_folders`):
 
-- New mail: `UID SEARCH SINCE <horizon>` bounds backfill to the window;
-  new UIDs land raw via `BODY.PEEK` into `cur/` (through `tmp/`, standard
+- New occurrences: discovery is **UID-based, not date-based**. Only the
+  *initial backfill* of a folder is bounded by the window
+  (`UID SEARCH SINCE <horizon>`); every incremental pass thereafter
+  fetches **all UIDs above the folder's high-water mark** regardless of
+  message date — so a years-old message that another client moves or
+  labels into a mirrored folder still lands (its new UID is above the
+  watermark even though its date is outside the window). New UIDs land
+  raw via `BODY.PEEK` into `cur/` (through `tmp/`, standard
   maildir delivery) — one file per occurrence. Every occurrence is
   fetched and fingerprinted; storage of views/attachments is deduplicated
   by msg_id. A cheaper precheck (Message-ID + size match) is never a
@@ -366,7 +372,8 @@ outcome — nothing retries, sends, or mutates for them in the meantime.
   kind (`move | append`), account, source/target folder, uids, generated
   Message-ID, origin (draft path or ops file), spool path + payload
   SHA-256 for appends, state
-  (`pending | executing | rejected | needs_review | complete`), error,
+  (`claimed | pending | executing | rejected | needs_review | complete`),
+  error,
   timestamps; **unique non-terminal append per (account, origin draft)**
   — the atomic claim that serializes concurrent pushes (see Drafting &
   push). Crash-safe together with the spool file + manifest; durable
@@ -462,15 +469,16 @@ UI lists drafts with a review panel offering one **user-only** action:
      second tab) never creates a second op — it returns the existing
      op's status. Pushes are additionally serialized through the
      account's Engine process. All of this happens **before any network
-     I/O**.
+     I/O**. The op is born in state `claimed` — not yet executable.
   2. **Immutable snapshot.** Read the draft file once into a byte buffer;
      verify `content_hash` against that buffer (mismatch → the op
      terminates `rejected` with a re-review error); compose to RFC822
      (resurrect `DraftMime` from git history, plain-text MIME only)
      **from that same buffer** — the draft file is never re-read, so
      there is no verify-then-read window for an agent to swap content.
-     Write the composed message + manifest to `spool/`, record the
-     payload SHA-256 on the op, stamp the draft `status: pushing`.
+     Write the composed message + manifest to `spool/` (fsynced), record
+     the payload SHA-256 on the op, stamp the draft `status: pushing`;
+     only then does the op transition `claimed → pending` (executable).
   3. The ops executor performs the idempotent APPEND: re-verify the spool
      payload hash, search the Drafts folder for the Message-ID (found →
      already pushed, complete), APPEND. On proven success: draft →
@@ -481,8 +489,13 @@ UI lists drafts with a review panel offering one **user-only** action:
 
   There is no ambiguous terminal state: an unknown APPEND outcome is
   always resolvable by the Message-ID search, and retrying is safe by
-  construction. **Valea itself never transmits mail** — SMTP does not
-  exist in this design (see Non-goals).
+  construction. Boot recovery covers both storage orderings: a manifest
+  without a ledger row blocks until reconciled (see Store); a `claimed`
+  row without its spool payload is provably un-transmitted (no network
+  I/O happens before `pending`) and terminates `rejected` — the draft
+  reverts to `status: draft` for re-review. The mutable draft file is
+  never re-read to "repair" an attempt. **Valea itself never transmits
+  mail** — SMTP does not exist in this design (see Non-goals).
 
 `in_reply_to: <msg_id>` resolves threading headers (`In-Reply-To`,
 `References`) from the referenced message's **raw canonical file** — a
@@ -622,7 +635,9 @@ boundary; every failure state has a copyable remedy or a status notice.
   case-insensitive volume → distinct directories, no mixed UID maps,
   ops target the exact IMAP names; **claim-by-rename** (pending ops file
   mutated after claim → executor parses only the claimed engine-owned
-  copy); **header injection** (CR/LF in subject or recipients →
+  copy); **old message moved by another client** (>window-old message
+  moved between mirrored folders → lands via the UID watermark, source
+  removal never orphans it); **header injection** (CR/LF in subject or recipients →
   composition rejects) and malformed mailbox syntax → rejected with the
   parsed-recipient review intact; **database-loss recovery** (ledger rows
   gone, manifests present → drafts/ops blocked, reconciliation resolves
@@ -631,7 +646,9 @@ boundary; every failure state has a copyable remedy or a status notice.
   malformed mailbox syntax, unknown fields); push refusal reverts the
   draft; crash between APPEND acceptance and completion → search-first
   retry completes without a duplicate; draft changed after review →
-  `content_hash` rejection against the snapshot buffer; **concurrent
+  `content_hash` rejection against the snapshot buffer; **crash after
+  the SQL claim, before the spool/manifest write** → boot terminates the
+  op `rejected`, draft reverts, nothing transmitted; **concurrent
   double-push** → one op, one Drafts message, second caller sees the
   existing op; **draft swapped between verification and composition** →
   structurally impossible (composition consumes the verified buffer) —
