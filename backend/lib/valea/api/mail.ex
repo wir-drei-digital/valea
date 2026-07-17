@@ -4,7 +4,7 @@ defmodule Valea.Api.Mail do
   and its indexed messages over RPC (mail design spec, §RPC surface).
 
   Wraps `Valea.Mail.Engine` (status/setup/credential/sync/doctor/folders),
-  `Valea.Mail.Settings.write!/2` (account setup), and
+  `Valea.Mail.Settings.upsert_account!/3` (account setup), and
   `Valea.Mail.Store` + `Valea.Mail.MessageFile.parse/1` (the read side —
   files under `sources/mail/messages/` are canonical, `Store` is only ever
   a cache of them, so `get_mail_message` reads the file, not the cache row).
@@ -72,6 +72,7 @@ defmodule Valea.Api.Mail do
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Workspace.Manager
+  alias Valea.Workspace.Scaffold
 
   actions do
     action :mail_status, :map do
@@ -104,9 +105,16 @@ defmodule Valea.Api.Mail do
           generation: generation
         } = input.arguments
 
+        # TEMP v3-bridge: reworked in Task 10 — `account` is still the RPC's
+        # display-label argument (frontend hasn't moved to slugs yet), so it's
+        # derived into a v4-grammar slug here rather than threading a real
+        # slug argument through the whole call chain.
+        slug = account |> Scaffold.slugify() |> String.slice(0, 32)
+
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current() do
-          Settings.write!(root, %{account: account, host: host, port: port, username: username})
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <-
+               Settings.upsert_account!(root, slug, %{host: host, port: port, username: username}) do
           :ok = Engine.reload_settings()
           {:ok, %{"saved" => true}}
         else

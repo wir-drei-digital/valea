@@ -80,6 +80,7 @@ defmodule Valea.Mail.EngineTest do
   import ExUnit.CaptureLog
 
   alias Valea.Mail.Engine
+  alias Valea.Mail.Settings
 
   setup do
     root =
@@ -93,14 +94,13 @@ defmodule Valea.Mail.EngineTest do
     %{root: root}
   end
 
+  # TEMP v3-bridge: removed in Task 9 — writes a real v4 `config/mail.yaml`
+  # (via `Settings.upsert_account!/3`, under a fixed "mara" slug) and relies
+  # on `Engine.load_settings/1`'s bridge to adapt it onto the v3 shape the
+  # rest of this suite still asserts against (`status.account` below is
+  # therefore the slug "mara", not `username`).
   defp write_settings!(root, host, username) do
-    File.write!(Path.join(root, "config/mail.yaml"), """
-    account: #{username}
-    imap:
-      host: #{host}
-      port: 993
-      username: #{username}
-    """)
+    :ok = Settings.upsert_account!(root, "mara", %{host: host, port: 993, username: username})
   end
 
   defp start_engine!(root, generation) do
@@ -150,21 +150,20 @@ defmodule Valea.Mail.EngineTest do
     status = Engine.status()
     assert status.state == "idle"
     assert status.configured == true
-    assert status.account == "mara@example.com"
+    assert status.account == "mara"
   end
 
   test "status exposes the IMAP username distinct from the account label", %{root: root} do
-    # account (display label) deliberately differs from imap.username (the
+    # account (the v4 slug) deliberately differs from imap.username (the
     # login) — the frontend's keychain lookup is keyed on the USERNAME
     # (spec §Credentials: account = workspace_id:username), so status must
     # surface it separately rather than making callers guess from `account`.
-    File.write!(Path.join(root, "config/mail.yaml"), """
-    account: Mara's mail
-    imap:
-      host: imap.fastmail.com
-      port: 993
-      username: mara@example.com
-    """)
+    :ok =
+      Settings.upsert_account!(root, "marasmail", %{
+        host: "imap.fastmail.com",
+        port: 993,
+        username: "mara@example.com"
+      })
 
     start_engine!(root, 29)
 
@@ -175,7 +174,7 @@ defmodule Valea.Mail.EngineTest do
     )
 
     status = Engine.status()
-    assert status.account == "Mara's mail"
+    assert status.account == "marasmail"
     assert status.username == "mara@example.com"
   end
 
@@ -226,15 +225,22 @@ defmodule Valea.Mail.EngineTest do
 
     assert_receive {:mail_status_changed, status}
     assert status.configured == true
-    assert status.account == "mara@example.com"
+    assert status.account == "mara"
     assert Engine.status().configured == true
   end
 
-  test "placeholder settings (not-yet-configured) -> configured false, sync_now not_configured",
+  test "an `accounts: {}` file (no account registered yet) -> configured false, sync_now not_configured",
        %{
          root: root
        } do
-    write_settings!(root, "imap.example.com", "mara@example.com")
+    File.write!(Path.join(root, "config/mail.yaml"), """
+    version: 4
+    accounts: {}
+    safety:
+      never_expunge: true
+      outbound: push_drafts_only
+    """)
+
     start_engine!(root, 5)
 
     Phoenix.PubSub.broadcast(
@@ -390,15 +396,14 @@ defmodule Valea.Mail.EngineTest do
     on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
     {:ok, _} = FakeMailTransport.start_link()
 
-    write_settings!(root, "localhost", "mara@example.com")
-    # write_settings!/3 doesn't set a port, so patch it in directly.
-    File.write!(Path.join(root, "config/mail.yaml"), """
-    account: mara@example.com
-    imap:
-      host: localhost
-      port: #{port}
-      username: mara@example.com
-    """)
+    # write_settings!/3 always uses port 993; this test needs the dynamic
+    # listener port instead, so it calls upsert_account! directly.
+    :ok =
+      Settings.upsert_account!(root, "mara", %{
+        host: "localhost",
+        port: port,
+        username: "mara@example.com"
+      })
 
     start_engine!(root, 18)
 

@@ -111,7 +111,7 @@ defmodule Valea.Mail.Engine do
   @doc """
   Re-reads `config/mail.yaml` from `root` and broadcasts the refreshed
   status. The `setup_mail_account` RPC calls this right after
-  `Settings.write!/2` lands a fresh file — the Engine otherwise only reloads
+  `Settings.upsert_account!/3` lands a fresh file — the Engine otherwise only reloads
   `Settings` on its own `workspace_opened` activation, so account setup would
   otherwise need a full workspace re-open to take effect. A cheap,
   synchronous `GenServer.call` (no filesystem work happens off this
@@ -291,11 +291,41 @@ defmodule Valea.Mail.Engine do
     }
   end
 
+  # TEMP v3-bridge: removed in Task 9. `Settings.load/1` is now v4
+  # (`{:ok, %{accounts: %{slug => acct}, invalid: %{...}}}`), but the rest of
+  # the Engine (and `Doctor`/`SyncPass`) still consume the v3 single-account
+  # shape (`settings.account`, `settings.imap`, `settings.folders.review`,
+  # `settings.sync.inbox_index_limit`). Until those are rewritten, take the
+  # FIRST account (by slug, for determinism) and adapt it onto that shape —
+  # `AI/Review`/`AI/Processed` are the fixed v3 folder names (no longer part
+  # of the v4 struct, which only knows drafts/sent/archive/trash), and
+  # `inbox_index_limit` has no v4 equivalent yet, so it's a fixed default.
   defp load_settings(root) do
     case Settings.load(root) do
-      {:ok, settings} -> {settings, nil}
-      {:error, :not_configured} -> {nil, nil}
-      {:error, {:invalid, reason}} -> {nil, reason}
+      {:ok, %{accounts: accounts}} when map_size(accounts) > 0 ->
+        {slug, acct} = accounts |> Enum.sort() |> List.first()
+
+        settings = %{
+          account: slug,
+          imap: acct.imap,
+          folders: %{review: "AI/Review", processed: "AI/Processed", drafts: acct.folders.drafts},
+          sync: %{
+            interval_minutes: acct.sync.interval_minutes,
+            max_message_bytes: acct.sync.max_message_bytes,
+            inbox_index_limit: 200
+          }
+        }
+
+        {settings, nil}
+
+      {:ok, %{accounts: _no_accounts}} ->
+        {nil, nil}
+
+      {:error, :not_configured} ->
+        {nil, nil}
+
+      {:error, {:invalid, reason}} ->
+        {nil, reason}
     end
   end
 
@@ -435,7 +465,9 @@ defmodule Valea.Mail.Engine do
     %{state | poll_timer: timer}
   end
 
-  defp interval_minutes(%{settings: %Settings{sync: %{interval_minutes: minutes}}}), do: minutes
+  # TEMP v3-bridge: removed in Task 9 — `state.settings` is the plain
+  # v3-shaped bridge map built by `load_settings/1`, not a `%Settings{}`.
+  defp interval_minutes(%{settings: %{sync: %{interval_minutes: minutes}}}), do: minutes
   defp interval_minutes(_state), do: @default_interval_minutes
 
   defp cancel_timer(nil), do: :ok

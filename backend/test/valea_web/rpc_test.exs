@@ -127,11 +127,10 @@ defmodule ValeaWeb.RpcTest do
     # here, not from the `Process.whereis/1` guard (see
     # `Valea.Cockpit.today/0`'s moduledoc), which `icm_tree requires a
     # workspace` above already exercises with no workspace at all.
-    # `reviewCount` is 1 — the workspace template seeds ONE `status: review`
-    # message (`sources/mail/messages/2026-07-09-priya-nair-seed0001.md`,
-    # indexed into `Valea.Mail.Store` on workspace open) so Today's mail
-    # summary has something to show before any real mail ever syncs.
-    assert mail == %{"reviewCount" => 1, "inboxCount" => 0, "configured" => false}
+    # The v4 workspace template ships `accounts: {}` and no seed message
+    # (mail design spec E) — zero review/inbox counts until a real account
+    # syncs.
+    assert mail == %{"reviewCount" => 0, "inboxCount" => 0, "configured" => false}
   end
 
   # Mirrors `write_session_meta!/3` in `test/valea/cockpit_test.exs` (added in

@@ -3,7 +3,6 @@ defmodule Valea.Mail.DoctorTest do
 
   alias Valea.AgentCase
   alias Valea.Mail.Doctor
-  alias Valea.Mail.Settings
 
   @review "AI/Review"
   @processed "AI/Processed"
@@ -11,9 +10,13 @@ defmodule Valea.Mail.DoctorTest do
 
   # -- fixtures ---------------------------------------------------------------
 
+  # TEMP v3-bridge: removed in Task 9 — `Valea.Mail.Settings` is now a v4
+  # per-account struct (`slug`/`provider`/...) with no `account`/`folders.review`
+  # fields, so `Doctor`'s ctx.settings is (for now) this plain v3-shaped map,
+  # not a real `%Settings{}`. See `Valea.Mail.Engine`'s `load_settings/1`.
   defp settings(overrides \\ %{}) do
-    struct(
-      %Settings{
+    Map.merge(
+      %{
         account: "mara@example.com",
         imap: %{host: "localhost", port: 993, username: "mara@example.com"},
         folders: %{review: @review, processed: @processed, drafts: @drafts}

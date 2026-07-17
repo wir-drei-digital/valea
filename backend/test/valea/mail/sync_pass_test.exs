@@ -1,7 +1,6 @@
 defmodule Valea.Mail.SyncPassTest do
   use ExUnit.Case, async: false
 
-  alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.SyncPass
   alias Valea.Mail.Store.UidOutcome
@@ -50,6 +49,11 @@ defmodule Valea.Mail.SyncPassTest do
     %{root: root, dir: dir}
   end
 
+  # TEMP v3-bridge: removed in Task 9 — `Valea.Mail.Settings` is now a v4
+  # per-account struct with no `account`/`folders.review`/
+  # `sync.inbox_index_limit` fields, so `SyncPass`'s ctx.settings is (for now)
+  # this plain v3-shaped map, not a real `%Settings{}`. See
+  # `Valea.Mail.Engine`'s `load_settings/1`.
   defp settings(overrides \\ %{}) do
     sync =
       Map.merge(
@@ -57,7 +61,7 @@ defmodule Valea.Mail.SyncPassTest do
         Map.get(overrides, :sync, %{})
       )
 
-    %Settings{
+    %{
       account: "mara@example.com",
       imap: %{host: "imap.example.test", port: 993, username: "mara@example.com"},
       folders: %{review: "AI/Review", processed: "AI/Processed", drafts: "Drafts"},

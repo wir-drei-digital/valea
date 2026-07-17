@@ -132,9 +132,15 @@ defmodule ValeaWeb.MailRpcTest do
       workspace: workspace,
       generation: generation
     } do
-      # account (display label) deliberately differs from username (the IMAP
-      # login) — status must surface BOTH, since the frontend's keychain
-      # lookup keys on the username (spec §Credentials).
+      # `account` (display label) deliberately differs from `username` (the
+      # IMAP login) — status must surface BOTH, since the frontend's
+      # keychain lookup keys on the username (spec §Credentials).
+      #
+      # TEMP v3-bridge: reworked in Task 10 — `setup_mail_account` still
+      # takes `account` as a free-form display label (not yet a real slug
+      # argument), so `Valea.Api.Mail` derives a v4 slug from it via
+      # `Valea.Workspace.Scaffold.slugify/1`; `status["account"]` below is
+      # that derived slug ("mara-s-mail"), not the literal label.
       assert %{"success" => true, "data" => %{"saved" => true}} =
                rpc(
                  "setup_mail_account",
@@ -154,7 +160,7 @@ defmodule ValeaWeb.MailRpcTest do
                rpc("mail_status", %{}, ["status"])
 
       assert status["configured"] == true
-      assert status["account"] == "Mara's mail"
+      assert status["account"] == "mara-s-mail"
       assert status["username"] == "mara@example.com"
     end
 
@@ -338,19 +344,20 @@ defmodule ValeaWeb.MailRpcTest do
       assert msg["path"] == plant.rel
     end
 
-    test "includes the workspace template's seed message by default" do
+    test "a freshly opened workspace has no messages (the v4 template ships no seed message)" do
       # A synchronous round-trip through the Engine (any RPC action that
       # calls it) guarantees its earlier `workspace_opened` activation —
-      # which indexes every `sources/mail/messages/*.md` file, including the
-      # template's seed message — has already been processed: Engine's
-      # mailbox is FIFO, so this call cannot be handled before that earlier
-      # broadcast is.
+      # which indexes every `sources/mail/messages/*.md` file — has already
+      # been processed: Engine's mailbox is FIFO, so this call cannot be
+      # handled before that earlier broadcast is. The v4 workspace template
+      # ships `accounts: {}` and no seed message (mail design spec E), so
+      # there's nothing to index yet.
       assert %{"success" => true} = rpc("mail_status", %{}, ["status"])
 
       assert %{"success" => true, "data" => %{"messages" => messages}} =
                rpc("list_mail_messages", %{}, @messages_fields)
 
-      assert Enum.any?(messages, &(&1["msgId"] == "2026-07-09-priya-nair-seed0001"))
+      assert messages == []
     end
   end
 

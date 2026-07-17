@@ -212,11 +212,10 @@ defmodule Valea.CockpitTest do
 
       {:ok, today} = Valea.Cockpit.today()
 
-      # The workspace template seeds ONE `status: review` message
-      # (`sources/mail/messages/2026-07-09-priya-nair-seed0001.md`), indexed
-      # on workspace open regardless of mail configuration — see
-      # `test/valea_web/rpc_test.exs`'s identical assertion.
-      assert today["mail"] == %{"review_count" => 1, "inbox_count" => 0, "configured" => false}
+      # The v4 workspace template ships `accounts: {}` and no seed message
+      # (mail design spec E) — zero review/inbox counts until a real account
+      # syncs. See `test/valea_web/rpc_test.exs`'s identical assertion.
+      assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
     end
 
     test "reports live review/inbox counts once the account is configured" do
@@ -234,24 +233,21 @@ defmodule Valea.CockpitTest do
       Store.put_inbox_header(%{uid: 1, from_text: "Someone <a@b.com>", subject: "Hi", date: nil})
       Store.put_inbox_header(%{uid: 2, from_text: "Someone <c@d.com>", subject: "Yo", date: nil})
 
-      Settings.write!(ws.path, %{
-        account: "mara@example.com",
-        # NOT `imap.example.com` — `Settings.load/1` treats that exact
-        # string as the still-unset seed placeholder (`{:error,
-        # :not_configured}`), same trap `mail_rpc_test.exs`'s own fixture
-        # avoids.
-        host: "imap.fastmail.com",
-        port: 993,
-        username: "mara@example.com"
-      })
+      :ok =
+        Settings.upsert_account!(ws.path, "mara", %{
+          host: "imap.fastmail.com",
+          port: 993,
+          username: "mara@example.com"
+        })
 
       :ok = Engine.reload_settings()
 
       {:ok, today} = Valea.Cockpit.today()
 
-      # 2 = the seeded Priya message + the extra "review" message planted
-      # above; the "processed" one doesn't count.
-      assert today["mail"] == %{"review_count" => 2, "inbox_count" => 2, "configured" => true}
+      # 1 = only the extra "review" message planted above (the v4 workspace
+      # template ships no seed message, mail design spec E); the
+      # "processed" one doesn't count.
+      assert today["mail"] == %{"review_count" => 1, "inbox_count" => 2, "configured" => true}
     end
 
     test "degrades to the zero summary when the Repo is down but the Engine is still registered" do

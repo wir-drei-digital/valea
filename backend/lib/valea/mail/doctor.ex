@@ -41,13 +41,16 @@ defmodule Valea.Mail.Doctor do
   """
 
   alias Valea.Mail.Redact
-  alias Valea.Mail.Settings
 
   @type check :: %{String.t() => String.t() | nil}
 
+  # TEMP v3-bridge: removed in Task 9 — `settings` is `nil` or the plain
+  # v3-shaped map `Valea.Mail.Engine`'s `load_settings/1` builds from the v4
+  # `Valea.Mail.Settings`, not a `Settings.t()` itself (the v4 struct has no
+  # `account`/`folders.review`/`folders.processed` fields).
   @type ctx :: %{
           root: String.t(),
-          settings: Settings.t() | nil,
+          settings: map() | nil,
           credential: (-> String.t()) | String.t() | nil,
           transport: module()
         }
@@ -98,7 +101,7 @@ defmodule Valea.Mail.Doctor do
   posture as `run/1`'s tls_ok check; this error reaches RPC/UI consumers).
   """
   @spec create_folders(ctx()) :: {:ok, [String.t()]} | {:error, term()}
-  def create_folders(%{settings: %Settings{} = settings, transport: transport} = ctx) do
+  def create_folders(%{settings: %{} = settings, transport: transport} = ctx) do
     # Same once-at-the-connect-boundary resolution as `transport_group/2`,
     # for the same reason: the connect error's reason term is the one value
     # here that could conceivably embed the secret, and it flows out of
@@ -127,7 +130,7 @@ defmodule Valea.Mail.Doctor do
      ), false}
   end
 
-  defp config_present(%{settings: %Settings{imap: imap}}) do
+  defp config_present(%{settings: %{imap: imap}}) do
     {ok(
        "config_present",
        "Mail account configured",
@@ -160,7 +163,7 @@ defmodule Valea.Mail.Doctor do
     {unknown("tcp_reachable", "Server reachable", @gate_detail), false}
   end
 
-  defp tcp_reachable(%{settings: %Settings{imap: %{host: host, port: port}}}, true) do
+  defp tcp_reachable(%{settings: %{imap: %{host: host, port: port}}}, true) do
     case :gen_tcp.connect(String.to_charlist(host), port, [], @gen_tcp_timeout_ms) do
       {:ok, socket} ->
         :gen_tcp.close(socket)
@@ -195,7 +198,7 @@ defmodule Valea.Mail.Doctor do
      unknown("move_capability", "Move capability", @gate_detail)}
   end
 
-  defp transport_group(%{settings: %Settings{imap: imap}} = ctx, true) do
+  defp transport_group(%{settings: %{imap: imap}} = ctx, true) do
     # Resolved exactly once, right at this connect boundary (never earlier,
     # never logged) — and reused below to scrub the raw secret out of a
     # connect error's `inspect/1`'d reason before it ever reaches a check's

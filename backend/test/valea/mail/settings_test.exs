@@ -14,413 +14,243 @@ defmodule Valea.Mail.SettingsTest do
     File.write!(Path.join(root, "config/mail.yaml"), contents)
   end
 
-  describe "load/1 — not configured" do
-    test "file missing", %{root: root} do
-      assert Settings.load(root) == {:error, :not_configured}
-    end
+  test "load/1 on the template file (accounts: {}) returns empty accounts and invalid maps", %{
+    root: root
+  } do
+    write_yaml!(root, """
+    version: 4
+    accounts: {}
+    safety:
+      never_expunge: true
+      outbound: push_drafts_only
+    """)
 
-    test "placeholder host (imap.example.com)", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.example.com
-        port: 993
-        username: mara@example.com
-      """)
-
-      assert Settings.load(root) == {:error, :not_configured}
-    end
-
-    test "blank host", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: ""
-        port: 993
-        username: mara@example.com
-      """)
-
-      assert Settings.load(root) == {:error, :not_configured}
-    end
-
-    test "blank username", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: 993
-        username: ""
-      """)
-
-      assert Settings.load(root) == {:error, :not_configured}
-    end
+    assert Settings.load(root) == {:ok, %{accounts: %{}, invalid: %{}}}
   end
 
-  describe "load/1 — invalid" do
-    test "missing host key", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        port: 993
-        username: mara@example.com
-      """)
-
-      assert {:error, {:invalid, reason}} = Settings.load(root)
-      assert reason =~ "host"
-    end
-
-    test "non-string host", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: 12345
-        port: 993
-        username: mara@example.com
-      """)
-
-      assert {:error, {:invalid, reason}} = Settings.load(root)
-      assert reason =~ "host"
-    end
-
-    test "missing username key", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: 993
-      """)
-
-      assert {:error, {:invalid, reason}} = Settings.load(root)
-      assert reason =~ "username"
-    end
-
-    test "non-string username", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: 993
-        username: true
-      """)
-
-      assert {:error, {:invalid, reason}} = Settings.load(root)
-      assert reason =~ "username"
-    end
-
-    test "non-integer port", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: "993"
-        username: mara@example.com
-      """)
-
-      assert {:error, {:invalid, reason}} = Settings.load(root)
-      assert reason =~ "port"
-    end
-
-    test "zero port", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: 0
-        username: mara@example.com
-      """)
-
-      assert {:error, {:invalid, reason}} = Settings.load(root)
-      assert reason =~ "port"
-    end
-
-    test "negative port", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: -1
-        username: mara@example.com
-      """)
-
-      assert {:error, {:invalid, reason}} = Settings.load(root)
-      assert reason =~ "port"
-    end
-  end
-
-  describe "load/1 — success" do
-    test "defaults applied for folders/sync and default port when omitted", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        username: mara@example.com
-      """)
-
-      assert {:ok, settings} = Settings.load(root)
-
-      assert settings == %Settings{
-               account: "mara@example.com",
-               imap: %{host: "imap.fastmail.com", port: 993, username: "mara@example.com"},
-               folders: %{review: "AI/Review", processed: "AI/Processed", drafts: "Drafts"},
-               sync: %{
-                 interval_minutes: 5,
-                 max_message_bytes: 10_485_760,
-                 inbox_index_limit: 200
-               }
-             }
-    end
-
-    test "explicit values (including a non-default port) are honored", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: 143
-        username: mara@example.com
-      folders:
-        review: "Inbox/Review"
-        processed: "Inbox/Processed"
-        drafts: "Inbox/Drafts"
-      sync:
-        interval_minutes: 10
-        max_message_bytes: 5000000
-        inbox_index_limit: 50
-      """)
-
-      assert {:ok, settings} = Settings.load(root)
-      assert settings.imap.port == 143
-
-      assert settings.folders == %{
-               review: "Inbox/Review",
-               processed: "Inbox/Processed",
-               drafts: "Inbox/Drafts"
-             }
-
-      assert settings.sync == %{
-               interval_minutes: 10,
-               max_message_bytes: 5_000_000,
-               inbox_index_limit: 50
-             }
-    end
-
-    test "hand-edited v2 leftovers (ssl:/smtp: keys) do not brick loading", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: 993
-        ssl: true
-        username: mara@example.com
-        username_env: MAIL_USERNAME
-        password_env: MAIL_APP_PASSWORD
-      smtp:
-        host: smtp.fastmail.com
-        port: 587
-        starttls: true
-        username_env: MAIL_USERNAME
-        password_env: MAIL_APP_PASSWORD
-      folders:
-        review: "AI/Review"
-        processed: "AI/Processed"
-        drafted: "AI/Drafted"
-      safety:
-        send_directly: false
-        create_drafts_only: true
-      """)
-
-      assert {:ok, settings} = Settings.load(root)
-      assert settings.account == "mara@example.com"
-
-      assert settings.imap == %{
-               host: "imap.fastmail.com",
+  test "round-trip: upsert_account! then load returns one account with generic defaults", %{
+    root: root
+  } do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
                port: 993,
-               username: "mara@example.com"
-             }
+               username: "d@w.d"
+             })
 
-      # v2's "drafted" key is not v3's "drafts" key, so it's ignored — default wins
-      assert settings.folders.drafts == "Drafts"
+    assert {:ok, %{accounts: accounts, invalid: %{}}} = Settings.load(root)
+    assert map_size(accounts) == 1
+
+    assert %Settings{
+             slug: "wirdrei",
+             provider: :generic,
+             imap: %{host: "mail.example.com", port: 993, username: "d@w.d"},
+             folders: %{drafts: "Drafts", sent: "Sent", archive: "Archive", trash: "Trash"},
+             sync: %{
+               window_days: 90,
+               interval_minutes: 15,
+               max_message_bytes: 26_214_400,
+               exclude_folders: []
+             }
+           } = accounts["wirdrei"]
+  end
+
+  test "gmail detection: imap.gmail.com sets provider gmail with gmail folders/excludes", %{
+    root: root
+  } do
+    assert :ok =
+             Settings.upsert_account!(root, "personal", %{
+               host: "imap.gmail.com",
+               port: 993,
+               username: "mara@gmail.com"
+             })
+
+    assert {:ok, %{accounts: accounts}} = Settings.load(root)
+    account = accounts["personal"]
+
+    assert account.provider == :gmail
+    assert account.sync.exclude_folders == Settings.gmail_excludes()
+    assert account.folders == Settings.gmail_folders()
+    assert account.folders.archive == "[Gmail]/All Mail"
+    refute account.folders.archive == "Archive"
+  end
+
+  test "slug grammar: invalid slugs are rejected by upsert_account!/valid_slug?, valid ones accepted",
+       %{root: root} do
+    invalid_slugs = ["../secrets", "a/b", "%2e%2e", "A", "", String.duplicate("a", 33)]
+
+    for slug <- invalid_slugs do
+      refute Settings.valid_slug?(slug)
+
+      assert Settings.upsert_account!(root, slug, %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             }) == {:error, :invalid_slug}
     end
 
-    test "non-positive sync overrides fall back to defaults (same as wrong type)", %{root: root} do
-      write_yaml!(root, """
-      account: mara@example.com
-      imap:
-        host: imap.fastmail.com
-        port: 993
-        username: mara@example.com
-      sync:
-        interval_minutes: -5
-        max_message_bytes: -999999
-        inbox_index_limit: 0
-      """)
-
-      assert {:ok, settings} = Settings.load(root)
-
-      assert settings.sync == %{
-               interval_minutes: 5,
-               max_message_bytes: 10_485_760,
-               inbox_index_limit: 200
-             }
+    for slug <- ["personal", "a", "a-1"] do
+      assert Settings.valid_slug?(slug)
     end
   end
 
-  describe "write!/2" do
-    test "round-trips through load/1", %{root: root} do
-      assert :ok =
-               Settings.write!(root, %{
-                 account: "mara@example.com",
-                 host: "imap.fastmail.com",
-                 port: 993,
-                 username: "mara@example.com"
-               })
+  test "casefold-uniqueness: an uppercase variant is rejected by grammar; a hand-edited casefold collision is marked invalid on load",
+       %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "personal", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             })
 
-      assert {:ok, settings} = Settings.load(root)
+    # "Personal" already fails slug grammar (uppercase) before uniqueness is
+    # ever considered.
+    assert Settings.upsert_account!(root, "Personal", %{
+             host: "mail.example.com",
+             port: 993,
+             username: "d2@w.d"
+           }) == {:error, :invalid_slug}
 
-      assert settings == %Settings{
-               account: "mara@example.com",
-               imap: %{host: "imap.fastmail.com", port: 993, username: "mara@example.com"},
-               folders: %{review: "AI/Review", processed: "AI/Processed", drafts: "Drafts"},
-               sync: %{
-                 interval_minutes: 5,
-                 max_message_bytes: 10_485_760,
-                 inbox_index_limit: 200
-               }
-             }
-    end
+    # A hand-edited file can still land two keys that collide case-foldedly
+    # (one of which — "personaL" — is itself grammatically invalid). `load/1`
+    # must isolate it under `invalid`, not raise, and still load the sibling.
+    write_yaml!(root, """
+    version: 4
+    accounts:
+      personal:
+        provider: generic
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+        folders:
+          drafts: "Drafts"
+          sent: "Sent"
+          archive: "Archive"
+          trash: "Trash"
+        sync:
+          window_days: 90
+          interval_minutes: 15
+          max_message_bytes: 26214400
+          exclude_folders: []
+      personaL:
+        provider: generic
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d2@w.d"
+        folders:
+          drafts: "Drafts"
+          sent: "Sent"
+          archive: "Archive"
+          trash: "Trash"
+        sync:
+          window_days: 90
+          interval_minutes: 15
+          max_message_bytes: 26214400
+          exclude_folders: []
+    """)
 
-    test "written file contains no ssl: and no smtp: keys", %{root: root} do
-      :ok =
-        Settings.write!(root, %{
-          account: "mara@example.com",
-          host: "imap.fastmail.com",
-          port: 993,
-          username: "mara@example.com"
-        })
+    assert {:ok, %{accounts: accounts, invalid: invalid}} = Settings.load(root)
+    assert Map.has_key?(accounts, "personal")
+    assert Map.has_key?(invalid, "personaL")
+  end
 
-      bytes = File.read!(Path.join(root, "config/mail.yaml"))
-      refute bytes =~ "ssl:"
-      refute bytes =~ "smtp:"
-      refute bytes =~ "_env:"
-    end
+  test "hand-edited YAML with an invalid slug (\"../x\") isolates that account under invalid; nothing raises",
+       %{root: root} do
+    write_yaml!(root, """
+    version: 4
+    accounts:
+      "../x":
+        provider: generic
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+      wirdrei:
+        provider: generic
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+    """)
 
-    test "written file never contains a credential-looking key", %{root: root} do
-      :ok =
-        Settings.write!(root, %{
-          account: "mara@example.com",
-          host: "imap.fastmail.com",
-          port: 993,
-          username: "mara@example.com"
-        })
+    assert {:ok, %{accounts: accounts, invalid: invalid}} = Settings.load(root)
+    assert Map.has_key?(invalid, "../x")
+    assert Map.has_key?(accounts, "wirdrei")
+  end
 
-      bytes = File.read!(Path.join(root, "config/mail.yaml"))
-      refute bytes =~ "password"
-      refute bytes =~ "secret"
-    end
+  test "a v3-shaped file (top-level account:/imap: keys) is rejected — no compatibility", %{
+    root: root
+  } do
+    write_yaml!(root, """
+    account: mara@example.com
+    imap:
+      host: imap.fastmail.com
+      port: 993
+      username: mara@example.com
+    folders:
+      review: "AI/Review"
+      processed: "AI/Processed"
+      drafts: "Drafts"
+    sync:
+      interval_minutes: 5
+      max_message_bytes: 10485760
+      inbox_index_limit: 200
+    safety:
+      send_directly: false
+      create_drafts_only: true
+    """)
 
-    test "creates config/ if it doesn't exist yet", %{root: root} do
-      nested_root = Path.join(root, "fresh-workspace")
-      File.mkdir_p!(nested_root)
+    assert {:error, {:invalid, _reason}} = Settings.load(root)
+  end
 
-      assert :ok =
-               Settings.write!(nested_root, %{
-                 account: "mara@example.com",
-                 host: "imap.fastmail.com",
-                 port: 993,
-                 username: "mara@example.com"
-               })
+  test "env_credential/1 reads VALEA_MAIL_PASSWORD_<SLUG upcased, dashes to underscores>" do
+    System.put_env("VALEA_MAIL_PASSWORD_MY_ACCT", "hunter2")
+    on_exit(fn -> System.delete_env("VALEA_MAIL_PASSWORD_MY_ACCT") end)
 
-      assert File.exists?(Path.join(nested_root, "config/mail.yaml"))
-    end
+    assert Settings.env_credential("my-acct") == "hunter2"
+  end
 
-    test "is atomic: no stray .tmp file left behind", %{root: root} do
-      :ok =
-        Settings.write!(root, %{
-          account: "mara@example.com",
-          host: "imap.fastmail.com",
-          port: 993,
-          username: "mara@example.com"
-        })
+  test "env_credential/1 returns nil when the env var is unset" do
+    System.delete_env("VALEA_MAIL_PASSWORD_GHOST_ACCT")
+    assert Settings.env_credential("ghost-acct") == nil
+  end
 
-      refute File.exists?(Path.join(root, "config/mail.yaml.tmp"))
-    end
+  test "render/1 emits the fixed safety block and applies port defaults", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             })
 
-    test "overwrites a previous v2 file, dropping ssl:/smtp: on rewrite", %{root: root} do
-      write_yaml!(root, """
-      account: old@example.com
-      imap:
-        host: imap.example.com
-        port: 993
-        ssl: true
-        username_env: MAIL_USERNAME
-        password_env: MAIL_APP_PASSWORD
-      smtp:
-        host: smtp.example.com
-        port: 587
-        starttls: true
-      folders:
-        review: "AI/Review"
-        processed: "AI/Processed"
-        drafted: "AI/Drafted"
-      safety:
-        send_directly: false
-        create_drafts_only: true
-      """)
+    assert {:ok, %{accounts: accounts}} = Settings.load(root)
+    bytes = Settings.render(accounts)
 
-      :ok =
-        Settings.write!(root, %{
-          account: "mara@example.com",
-          host: "imap.fastmail.com",
-          port: 993,
-          username: "mara@example.com"
-        })
+    assert bytes =~ "never_expunge: true"
+    assert bytes =~ "outbound: push_drafts_only"
+    assert bytes =~ "port: 993"
+  end
 
-      bytes = File.read!(Path.join(root, "config/mail.yaml"))
-      refute bytes =~ "ssl:"
-      refute bytes =~ "smtp:"
-      assert {:ok, settings} = Settings.load(root)
-      assert settings.account == "mara@example.com"
-    end
+  test "remove_account!/2 drops the account; the sibling survives", %{root: root} do
+    :ok =
+      Settings.upsert_account!(root, "one", %{
+        host: "mail.example.com",
+        port: 993,
+        username: "one@w.d"
+      })
 
-    test "escapes a value that would otherwise break the YAML structure", %{root: root} do
-      :ok =
-        Settings.write!(root, %{
-          account: "mara@example.com",
-          host: "imap.fastmail.com",
-          port: 993,
-          username: ~s(evil"user\nssl: false)
-        })
+    :ok =
+      Settings.upsert_account!(root, "two", %{
+        host: "mail.example.com",
+        port: 993,
+        username: "two@w.d"
+      })
 
-      assert {:ok, settings} = Settings.load(root)
-      assert settings.imap.username == ~s(evil"user ssl: false)
-    end
+    assert :ok = Settings.remove_account!(root, "one")
 
-    test "does not crash on invalid UTF-8 input; scrubs to U+FFFD and round-trips", %{root: root} do
-      :ok =
-        Settings.write!(root, %{
-          account: "mara@example.com",
-          host: "imap.fastmail.com",
-          port: 993,
-          username: "abc" <> <<0xFF, 0xFE>> <> "def"
-        })
-
-      assert {:ok, settings} = Settings.load(root)
-      assert String.valid?(settings.imap.username)
-      assert settings.imap.username == "abc��def"
-    end
-
-    test "rejects a non-positive port with a FunctionClauseError", %{root: root} do
-      for bad_port <- [0, -1] do
-        assert_raise FunctionClauseError, fn ->
-          Settings.write!(root, %{
-            account: "mara@example.com",
-            host: "imap.fastmail.com",
-            port: bad_port,
-            username: "mara@example.com"
-          })
-        end
-      end
-
-      refute File.exists?(Path.join(root, "config/mail.yaml"))
-    end
+    assert {:ok, %{accounts: accounts}} = Settings.load(root)
+    assert Map.keys(accounts) == ["two"]
   end
 end
