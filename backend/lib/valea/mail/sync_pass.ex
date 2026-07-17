@@ -20,8 +20,14 @@ defmodule Valea.Mail.SyncPass do
        reset. Across the whole pass, if the reset set is a whole-mailbox
        *replacement* (`Valea.Mail.Reconcile.detect_replacement/2`), abort with
        `{:error, :mailbox_replaced}` BEFORE mutating anything. An ordinary
-       single-folder reset defers to `Reconcile.folder_reset/2` — a Task-8
-       stub today, so the folder is left untouched with a notice.
+       single-folder reset runs `Reconcile.folder_reset/2` — the complete,
+       horizon-independent re-bind/removal reconciliation; a failure there
+       removes nothing and the folder is deferred to next pass with a notice.
+    2a. **Folder lifecycle.** After the successful complete `LIST` (and only
+       once a whole-mailbox replacement is ruled out),
+       `Reconcile.folder_lifecycle/2` holds folders that vanished from the
+       mirrored set and unholds any that reappeared — never touching a folder
+       that IS in the mirrored set, so it can't race this pass's writes.
     3. **Discovery.** First sync: watermark := `UIDNEXT − 1` (or `max(UID)`
        from `UID SEARCH ALL` when `UIDNEXT` is unknown). Every pass:
        `UID SEARCH UID <hw+1>:*` (client-side `above?/2` guards the `n:*`
@@ -146,7 +152,16 @@ defmodule Valea.Mail.SyncPass do
             {:error, :mailbox_replaced}
 
           :ok ->
-            {:ok, Enum.reduce(scans, empty_result(), &process_folder(ctx, &1, &2))}
+            # After a SUCCESSFUL, complete LIST (and only once a whole-mailbox
+            # replacement is ruled out — mailbox_replaced executes nothing):
+            # hold folders that disappeared from the mirrored set, unhold any
+            # that reappeared. Holds only ever touch folders NOT in `mirrored`,
+            # so they can't be clobbered by this pass's per-folder writes; a
+            # reappeared folder IS re-processed below and `process_selected_folder/4`
+            # writes `held: false` for it regardless.
+            {:ok, lifecycle_notices} = Reconcile.folder_lifecycle(ctx, mirrored)
+            result = Enum.reduce(scans, empty_result(), &process_folder(ctx, &1, &2))
+            {:ok, %{result | notices: lifecycle_notices ++ result.notices}}
         end
 
       {:error, reason} ->
@@ -203,18 +218,42 @@ defmodule Valea.Mail.SyncPass do
 
   defp process_folder(ctx, %{reset?: true, folder: folder} = scan, acc) do
     # Single-folder reset (a whole-mailbox replacement already aborted in
-    # `pull/1`). `Reconcile.folder_reset/2` is a Task-8 stub that always
-    # returns `{:error, :not_implemented}` today — SyncPass treats a deferred
-    # reset as: call the reconciler, then remove nothing, emit a notice, and
-    # retry next pass. Task 8 both fills the stub AND takes over this branch's
-    # real recovery wiring (re-bind matched occurrences, remove the vanished,
-    # re-init the watermark).
-    _ = Reconcile.folder_reset(reconcile_ctx(ctx, scan), folder)
-    add_notice(acc, "folder #{folder}: UIDVALIDITY reset detected; reconciliation deferred")
+    # `pull/1`). `Reconcile.folder_reset/2` runs the complete, horizon-
+    # independent reconciliation (snapshot → enumerate → fingerprint re-bind →
+    # remove only the genuinely-vanished → re-init the watermark) and persists
+    # the folder's new sync_state itself. On success the folder is fully
+    # reconciled this pass; on ANY failure it removed nothing, so we defer and
+    # retry next pass (server-authoritative deletion never fires off a guess).
+    case Reconcile.folder_reset(reconcile_ctx(ctx, scan), folder) do
+      {:ok, %{rebound: rebound, removed: removed}} ->
+        add_notice(
+          acc,
+          "folder #{folder}: UIDVALIDITY reset reconciled (rebound #{rebound}, removed #{removed})"
+        )
+
+      {:error, _reason} ->
+        add_notice(acc, "folder #{folder}: UIDVALIDITY reset detected; reconciliation deferred")
+    end
   end
 
   defp process_folder(ctx, scan, acc) do
     {:ok, select} = scan.select
+    folder = scan.folder
+
+    # Real IMAP is stateful: every `UID` command operates on the connection's
+    # currently-SELECTed mailbox. `scan_folders/2` selected each folder only to
+    # read its `UIDVALIDITY` for reset detection, leaving the LAST-scanned
+    # folder selected — so without re-SELECTing here, EVERY folder's
+    # discovery/fetch/flag/deletion would run against that one mailbox. Re-
+    # SELECT this folder so its UID operations hit it (a failed re-select skips
+    # the folder with an error rather than silently pulling the wrong one).
+    case ctx.transport.select(ctx.conn, folder) do
+      {:ok, _reselect} -> process_selected_folder(ctx, scan, select, acc)
+      {:error, reason} -> add_error(acc, "re-select failed for #{folder}: #{inspect(reason)}")
+    end
+  end
+
+  defp process_selected_folder(ctx, scan, select, acc) do
     folder = scan.folder
     dir_rel = scan.dir_rel
     dir_abs = folder_dir_abs(ctx.root, ctx.account, dir_rel)
@@ -236,7 +275,6 @@ defmodule Valea.Mail.SyncPass do
       if first_sync?, do: first_sync_watermark(ctx, select), else: stored.high_water_uid
 
     backfill_complete0 = not first_sync? and stored != nil and stored.backfill_complete
-    held0 = (stored && stored.held) || false
 
     {acc, watermark} =
       discover_incremental(acc, ctx, folder, dir_abs, dir_rel, select, watermark0)
@@ -260,7 +298,12 @@ defmodule Valea.Mail.SyncPass do
       high_water_uid: watermark,
       highestmodseq: highestmodseq,
       backfill_complete: backfill_complete,
-      held: held0,
+      # A folder reached here is present in the current mirrored LIST set —
+      # i.e. live — so it is never held. `Reconcile.folder_lifecycle/2` only
+      # ever holds folders ABSENT from that set (never processed this pass), so
+      # writing `held: false` here can't clobber a hold and correctly clears a
+      # previously-held folder that has reappeared.
+      held: false,
       last_pass_at: now_iso8601(),
       last_error: nil
     })
@@ -826,6 +869,7 @@ defmodule Valea.Mail.SyncPass do
     %{
       root: ctx.root,
       account: ctx.account,
+      settings: ctx.settings,
       transport: ctx.transport,
       conn: ctx.conn,
       dir_rel: scan.dir_rel,

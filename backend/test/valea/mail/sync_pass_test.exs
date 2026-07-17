@@ -491,10 +491,14 @@ defmodule Valea.Mail.SyncPassTest do
   end
 
   # ==========================================================================
-  # 7. UIDVALIDITY reset (single folder): notice + removes nothing (stub)
+  # 7. UIDVALIDITY reset (single folder): reconciles via Reconcile.folder_reset
+  #    (a whole-mailbox replacement already aborted in pull/1). Full reset-
+  #    reconciliation behavior — re-bind, removal, interruption — is covered in
+  #    reconcile_test.exs; this asserts the SyncPass wiring re-binds and does not
+  #    mailbox_replace.
   # ==========================================================================
 
-  test "a single-folder UIDVALIDITY reset emits a notice and removes nothing while stubbed", %{
+  test "a single-folder UIDVALIDITY reset reconciles the still-present message in place", %{
     root: root
   } do
     name = start_model!()
@@ -505,21 +509,27 @@ defmodule Valea.Mail.SyncPassTest do
 
     assert {:ok, _} = run(name, root)
     assert [occ] = Store.occurrences("mara", "Work")
-    work_file_before = cur_files(root, "mara", "Work")
-    {:ok, state_before} = Store.get_sync_state("mara", "Work")
 
     # bump Work's UIDVALIDITY (INBOX + Archive stay put, so detect_replacement
-    # returns :ok — this is an ordinary per-folder reset)
+    # returns :ok — this is an ordinary per-folder reset, not a replacement)
     ModelMailTransport.reset_uidvalidity(name, "Work")
 
     assert {:ok, %{notices: notices}} = run(name, root)
-    assert Enum.any?(notices, &(&1 =~ "Work" and &1 =~ "reset"))
+    assert Enum.any?(notices, &(&1 =~ "Work" and &1 =~ "reset" and &1 =~ "reconciled"))
 
-    # nothing removed: occurrence, file, and watermark all intact
-    assert [^occ] = Store.occurrences("mara", "Work")
-    assert cur_files(root, "mara", "Work") == work_file_before
+    # The still-present message is re-bound, not deleted: same msg_id, new
+    # uidvalidity, and its maildir file renamed to the new U= token.
+    assert [rebound] = Store.occurrences("mara", "Work")
+    assert rebound.msg_id == occ.msg_id
+    assert rebound.uidvalidity == 2
+
+    assert cur_files(root, "mara", "Work") ==
+             [Maildir.encode_filename(rebound.msg_id, rebound.uid, rebound.flags)]
+
+    # Watermark re-initialized as at first sync (UIDNEXT − 1).
     {:ok, state_after} = Store.get_sync_state("mara", "Work")
-    assert state_after.high_water_uid == state_before.high_water_uid
+    assert state_after.uidvalidity == 2
+    assert state_after.high_water_uid == rebound.uid
   end
 
   # ==========================================================================
