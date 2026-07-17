@@ -165,7 +165,12 @@ Nothing infers intent from filesystem diffs. Mailbox mutations are
   engine-created result file** (`<name>.result.yaml` —
   `ok | rejected: <reason> | needs_review` per op) beside the claimed
   file — a file-first audit trail the agent can read but not edit
-  (`ops/done/` is write-denied).
+  (`ops/done/` is write-denied). A claimed file **without** its result
+  file is unresolved: boot re-parses the engine-owned copy and replays
+  it — flag ops re-execute idempotently, move ops resolve through their
+  manifests (recorded before any remote I/O, so nothing duplicates) —
+  and only then writes the result. A crash between claim and result
+  never silently drops an operation.
 - **Valea-composed appends** come from the ops ledger + `spool/` only,
   never from ops files and never by discovering unknown files (see
   Drafting & push); the ops vocabulary cannot express append, delete, or
@@ -212,8 +217,8 @@ are idempotent by construction: every composed message carries a stable,
 unique, **Valea-generated** Message-ID (always present, unlike inbound
 mail), and every append execution — first attempt or retry — searches the
 target folder for that Message-ID first, marking the op complete if
-found. Flag `STORE`s are idempotent and execute directly, without the
-ledger.
+found. Flag `STORE`s are idempotent and execute directly, without ledger
+rows — their crash recovery is the claimed-file replay (see Push).
 
 **Write-through folders.** The `folders.{archive,trash}` targets always
 exist as local directories, even when `exclude_folders` keeps them out of
@@ -545,15 +550,23 @@ UI lists drafts with a review panel offering one **user-only** action:
      **from that same buffer** — the draft file is never re-read, so
      there is no verify-then-read window for an agent to swap content.
      Write the composed message + manifest to `spool/` (fsynced), record
-     the payload SHA-256 on the op, stamp the draft `status: pushing`;
-     only then does the op transition `claimed → pending` (executable).
+     the payload SHA-256 on the op; only then does the op transition
+     `claimed → pending` (executable). Draft status stamps are **atomic
+     compare-and-swap**: the stamped copy is derived from the snapshot
+     and rename-swapped in only if the on-disk file still hashes to the
+     snapshot. If the draft was edited meanwhile, the newer revision is
+     left untouched (still `status: draft`) — push state lives in the
+     ledger, and the panel reports "an earlier revision was pushed"
+     instead of mislabeling or overwriting the new content.
   3. The ops executor performs the idempotent APPEND: re-verify the spool
      payload hash, search the Drafts folder for the Message-ID (found →
      already pushed, complete), APPEND. On proven success: draft →
-     `status: pushed`, audit entry, spool cleaned; the draft appears in
-     the user's own mail client, where they send it from there. On
-     refusal: the op records the error, the draft reverts to
-     `status: draft`, and the error is surfaced.
+     `status: pushed` (same compare-and-swap rule — a newer revision is
+     never overwritten or mislabeled), audit entry, spool cleaned; the
+     pushed draft appears in the user's own mail client, where they send
+     it from there. On refusal: the op records the error, the
+     `status: pushing` stamp reverts (compare-and-swap again), and the
+     error is surfaced.
 
   There is no ambiguous terminal state: an unknown APPEND outcome is
   always resolvable by the Message-ID search, and retrying is safe by
@@ -744,7 +757,11 @@ boundary; every failure state has a copyable remedy or a status notice.
   double-push** → one op, one Drafts message, second caller sees the
   existing op; **draft swapped between verification and composition** →
   structurally impossible (composition consumes the verified buffer) —
-  test asserts compose-from-buffer semantics.
+  test asserts compose-from-buffer semantics; **draft edited while a push
+  is in flight** → compare-and-swap leaves the new revision untouched as
+  `draft`, ledger/panel report the pushed revision; **crash between
+  claim and result** → boot replays the claimed file (flags idempotent,
+  ledger'd moves not duplicated) and writes the result.
 - **Maildir helpers**: filename round-trip, flag mapping, escape rule
   property tests.
 - **Live acceptance** (mandatory before trusting the engine): the
