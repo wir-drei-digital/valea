@@ -339,12 +339,19 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
 - **Folder lifecycle.** The known-folder set is persisted. After a
   *successful, complete* `LIST`, a previously mirrored folder absent from
   the current mirrored set — deleted, renamed, or newly excluded by
-  configuration — is reconciled: its pending ops are rejected (surfaced),
-  its occurrences, index rows, and local mailbox directory are removed,
-  and shared views/attachments are garbage-collected when unreferenced.
-  A failed or partial `LIST` triggers no folder cleanup. A server-side
-  rename appears as delete + create; the messages re-land under the new
-  name on the next pass, and fingerprint dedup keeps one view throughout.
+  configuration — enters reconciliation; a failed or partial `LIST`
+  triggers nothing. A disappeared folder is **never cleaned up
+  immediately**: its pending ops are rejected (surfaced) and its
+  occurrence set is held pending-reconcile. Folders newly appearing in
+  the same `LIST` are rename candidates and are reconciled
+  **horizon-independently** (full enumeration + fingerprint re-attach —
+  the UIDVALIDITY-reset machinery): matched occurrences **migrate**
+  locally to the new folder directory with files, index rows, and views
+  intact — including >window-old and Message-ID-less mail, so a routine
+  server rename never loses mirrored data. Only occurrences still
+  unmatched after that complete reconciliation — and folders with no
+  candidate at all — are removed, with shared views/attachments
+  garbage-collected when unreferenced.
 - Once landed, a message stays local even after it ages past the window —
   the horizon bounds backfill only, never pruning. The one thing that
   removes landed mail locally is server-side deletion (above): the mirror
@@ -791,9 +798,10 @@ boundary; every failure state has a copyable remedy or a status notice.
   removed after the complete reconciliation) and **old-mail retention**
   (a >window-old, Message-ID-less, still-present message re-binds across
   the reset instead of being deleted); **folder lifecycle** (server-side
-  folder delete, rename, and newly-excluded folder → local data
-  reconciled away after a successful complete `LIST`; partial or failed
-  `LIST` → no cleanup);
+  folder delete and newly-excluded folder → local data reconciled away
+  after a successful complete `LIST`; partial or failed `LIST` → no
+  cleanup; **rename with >window-old, Message-ID-less mail** →
+  occurrences migrate to the new folder directory, nothing lost);
   **watermark initialization** (folder containing only >window-old mail →
   watermark = `UIDNEXT − 1`, second pass fetches nothing, old mail stays
   server-only); **crash mid-initial-backfill** (in-window UIDs not yet
