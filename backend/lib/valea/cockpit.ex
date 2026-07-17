@@ -148,11 +148,7 @@ defmodule Valea.Cockpit do
       "account" => slug,
       "configured" => true,
       "state" => status.state,
-      # The `mail_pending_ops` ledger genuinely exists (`Valea.Mail.Store`),
-      # but nothing writes real rows to it yet — the ops executor that would
-      # is Task 13. Hardcoded 0 rather than reading a ledger that's
-      # perpetually empty today.
-      "pending_ops" => 0,
+      "pending_ops" => status.pending_ops,
       "notices" => status.notices
     }
   end
