@@ -24,6 +24,10 @@ defmodule Valea.Mail.MaildirTest do
       assert :error = Maildir.parse_filename("no-flags-part")
       assert :error = Maildir.parse_filename("id,U=notanum:2,S")
     end
+
+    test "rejects uid 0 (IMAP UIDs must be >= 1)" do
+      assert :error = Maildir.parse_filename("id,U=0:2,S")
+    end
   end
 
   describe "flag mapping" do
@@ -68,12 +72,39 @@ defmodule Valea.Mail.MaildirTest do
       assert c =~ ~r/-[0-9a-f]{12}$/
     end
 
+    test "folder_to_dir raises RuntimeError when all 64-hex suffixes are exhausted" do
+      norm = fn s -> s |> String.downcase() |> :unicode.characters_to_nfc_binary() end
+      base_path = "conflict"
+      base_norm = norm.(base_path)
+
+      # Build a taken set with all possible suffix lengths exhausted
+      # We need to simulate all 11 suffix lengths: 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 64
+      sha_hex = :crypto.hash(:sha256, "conflict") |> Base.encode16(case: :lower)
+
+      taken_set =
+        [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 64]
+        |> Enum.map(fn hex_len ->
+          suffix = "-" <> String.slice(sha_hex, 0, hex_len)
+          norm.("#{base_path}#{suffix}")
+        end)
+        |> MapSet.new()
+        |> MapSet.put(base_norm)
+
+      assert_raise RuntimeError, fn -> Maildir.folder_to_dir("conflict", taken_set) end
+    end
+
     test ".folder identity file is authoritative and atomic" do
       dir = Path.join(System.tmp_dir!(), "maildir-#{System.unique_integer([:positive])}")
       :ok = Maildir.mailbox_dirs(dir)
       :ok = Maildir.write_folder_identity!(dir, "Work/Clients")
       assert {:ok, "Work/Clients"} = Maildir.read_folder_identity(dir)
       assert File.dir?(Path.join(dir, "cur")) and File.dir?(Path.join(dir, "tmp"))
+    end
+
+    test "read_folder_identity returns :error when .folder file doesn't exist" do
+      dir = Path.join(System.tmp_dir!(), "maildir-#{System.unique_integer([:positive])}")
+      :ok = Maildir.mailbox_dirs(dir)
+      assert :error = Maildir.read_folder_identity(dir)
     end
   end
 

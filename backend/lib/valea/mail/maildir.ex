@@ -69,13 +69,18 @@ defmodule Valea.Mail.Maildir do
         # Only accept known flag letters
         flag_list = String.graphemes(flags_str)
 
-        if Enum.all?(flag_list, &Map.has_key?(@flag_map, &1)) do
+        if Enum.all?(flag_list, &Map.has_key?(@flag_map, &1)) and is_valid_uid(uid) do
           {:ok, %{msg_id: msg_id, uid: uid, flags: MapSet.new(flag_list)}}
         else
           :error
         end
     end
   end
+
+  # IMAP UIDs must be >= 1; uid can be nil (pre-confirmation) or a positive integer
+  defp is_valid_uid(nil), do: true
+  defp is_valid_uid(uid) when is_integer(uid) and uid >= 1, do: true
+  defp is_valid_uid(_), do: false
 
   @doc """
   Convert maildir flag letters to IMAP system flag strings.
@@ -181,17 +186,27 @@ defmodule Valea.Mail.Maildir do
       sha_hex = :crypto.hash(:sha256, imap_name) |> Base.encode16(case: :lower)
 
       # Try suffixes of increasing length
-      Enum.reduce_while([6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 64], nil, fn
-        hex_len, _acc ->
-          suffix = "-" <> String.slice(sha_hex, 0, hex_len)
-          candidate = "#{encoded_path}#{suffix}"
+      result =
+        Enum.reduce_while([6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 64], nil, fn
+          hex_len, _acc ->
+            suffix = "-" <> String.slice(sha_hex, 0, hex_len)
+            candidate = "#{encoded_path}#{suffix}"
 
-          if candidate_available?(candidate, taken) do
-            {:halt, candidate}
-          else
-            {:cont, nil}
-          end
-      end)
+            if candidate_available?(candidate, taken) do
+              {:halt, candidate}
+            else
+              {:cont, nil}
+            end
+        end)
+
+      case result do
+        nil ->
+          raise RuntimeError,
+                "Cannot find available directory for folder '#{imap_name}': all 64-hex suffix candidates are taken"
+
+        candidate ->
+          candidate
+      end
     end
   end
 
@@ -244,7 +259,7 @@ defmodule Valea.Mail.Maildir do
 
     case File.read(folder_file) do
       {:ok, content} -> {:ok, String.trim(content)}
-      :error -> :error
+      {:error, _} -> :error
     end
   end
 
