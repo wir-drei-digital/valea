@@ -248,7 +248,12 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   files in that folder re-attach folder-scoped — candidates by Message-ID
   where present, otherwise the folder's UIDs; fingerprint always
   decides — re-binding the occurrence to its new `(uidvalidity, uid)`
-  and renaming the `U=` token.
+  and renaming the `U=` token. Reset recovery is a **complete
+  reconciliation**: the pre-reset local occurrence set is snapshotted
+  before the map is wiped; after the re-pull, every local file with no
+  fingerprint-proven server match is removed together with its index row
+  (server-authoritative deletion holds across resets), and shared
+  views/attachments go when the last occurrence goes.
 - Once landed, a message stays local even after it ages past the window —
   the horizon bounds backfill only. Widening the window triggers deeper
   backfill on the next pass.
@@ -628,7 +633,10 @@ boundary; every failure state has a copyable remedy or a status notice.
   altered, unknown file) → restored from server or quarantined, nothing
   pushed; server flag changes pulled onto filenames; op vs. server-move
   conflict → op rejected, server wins; last-occurrence-gone view cleanup;
-  `UIDVALIDITY` reset with fingerprint-confirmed folder-scoped re-attach;
+  `UIDVALIDITY` reset with fingerprint-confirmed folder-scoped re-attach
+  **including stale-occurrence cleanup** (message deleted server-side
+  before the reset → local file, index row, and last-occurrence view
+  removed after the re-pull);
   **watermark initialization** (folder containing only >window-old mail →
   watermark = `UIDNEXT − 1`, second pass fetches nothing, old mail stays
   server-only); **message without a Message-ID** (move + disconnect →
