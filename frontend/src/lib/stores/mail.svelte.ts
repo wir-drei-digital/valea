@@ -217,8 +217,8 @@ export class MailStore {
    * on every call — deliberately not trying to detect "this is specifically
    * the activation-triggered push" (the payload carries no such marker):
    * workspace-open activation runs `Index.rebuild` asynchronously
-   * (`Valea.Mail.Engine.activate/1`), so a `list_mail_messages`/`mail_inbox`
-   * call issued right after open can race a still-empty index (T13 report,
+   * (`Valea.Mail.Engine.activate/1`), so a `list_mail_messages` call issued
+   * right after open can race a still-empty index (T13 report,
    * "Concerns for T14"). `mail_status` broadcasts once activation
    * completes, so refetching here closes that race. Every other reason a
    * `mail_status` push fires (credential set, settings reload, sync
