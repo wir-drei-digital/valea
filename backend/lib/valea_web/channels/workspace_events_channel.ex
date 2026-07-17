@@ -37,23 +37,28 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
     {:noreply, socket}
   end
 
-  def handle_info({:mail_status_changed, status}, socket) do
-    push(socket, "mail_status", stringify(status))
+  def handle_info({:mail_status_changed, slug, status}, socket) do
+    push(socket, "mail_status", stringify(status) |> Map.put("account", slug))
     {:noreply, socket}
   end
 
-  def handle_info({:mail_sync_started}, socket) do
-    push(socket, "mail_sync", %{"phase" => "started", "newMessages" => 0})
+  def handle_info({:mail_sync_started, slug}, socket) do
+    push(socket, "mail_sync", %{"phase" => "started", "newMessages" => 0, "account" => slug})
     {:noreply, socket}
   end
 
-  def handle_info({:mail_sync_finished, %{new_messages: new_messages}}, socket) do
-    push(socket, "mail_sync", %{"phase" => "finished", "newMessages" => new_messages})
+  def handle_info({:mail_sync_finished, slug, %{new_messages: new_messages}}, socket) do
+    push(socket, "mail_sync", %{
+      "phase" => "finished",
+      "newMessages" => new_messages,
+      "account" => slug
+    })
+
     {:noreply, socket}
   end
 
-  def handle_info({:mail_message_upserted, %{path: path}}, socket) do
-    push(socket, "mail_message", %{"path" => path})
+  def handle_info({:mail_message_upserted, slug, %{path: path}}, socket) do
+    push(socket, "mail_message", %{"path" => path, "account" => slug})
     {:noreply, socket}
   end
 

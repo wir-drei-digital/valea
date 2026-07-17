@@ -60,14 +60,17 @@ defmodule Valea.Mail.SyncPass do
   abort the pass (oversized, a fetch that failed); `notices` carries reset-
   deferral, restore, and quarantine strings for status.
 
-  ## Engine bridge (TEMP, removed in Task 13)
+  ## `readopt_authorized`
 
-  `Valea.Mail.Engine` still calls `run/1` with the v3-bridge arg shape (no
-  `account`, a v3-shaped settings map) and only ever exercises the connect /
-  `auth_failed` / logout contract in its tests (its transports hang or fail at
-  connect). So `run/1` still connects and passes those outcomes through
-  verbatim, and when `args` carries no `:account` it logs out and reports an
-  empty pass rather than attempting a pull it has no v4 settings for.
+  `args[:readopt_authorized]` (default `false`) is set by `Valea.Mail.Engine`
+  when its own `.readopt` one-shot marker is standing (see that module's
+  moduledoc, §mailbox_replaced stickiness). When `true`, `detect_replacement/2`
+  is SKIPPED entirely for this pass — every reset folder instead reconciles
+  individually via `Reconcile.folder_reset/2`, exactly like an ordinary
+  single-folder `UIDVALIDITY` reset. This is what lets a user-authorized
+  "yes, I know the mailbox was replaced, reconcile it" override actually run:
+  without it, `detect_replacement/2` would keep aborting with `{:error,
+  :mailbox_replaced}` on every subsequent pass forever.
   """
 
   alias Valea.Mail.Maildir
@@ -90,7 +93,8 @@ defmodule Valea.Mail.SyncPass do
           settings: Valea.Mail.Settings.t(),
           credential: (-> String.t()) | String.t(),
           transport: module(),
-          ops_enabled: boolean()
+          ops_enabled: boolean(),
+          readopt_authorized: boolean()
         }
 
   @doc """
@@ -121,8 +125,6 @@ defmodule Valea.Mail.SyncPass do
     end
   end
 
-  # The engine's TEMP v3-bridge path: no `:account` -> nothing to pull, keep
-  # the connect/logout/no-op contract the engine's tests depend on.
   defp do_run(%{account: account} = args, conn) when is_binary(account) do
     ctx = %{
       root: args.root,
@@ -130,13 +132,12 @@ defmodule Valea.Mail.SyncPass do
       settings: args.settings,
       transport: args.transport,
       conn: conn,
-      ops_enabled: Map.get(args, :ops_enabled, false)
+      ops_enabled: Map.get(args, :ops_enabled, false),
+      readopt_authorized: Map.get(args, :readopt_authorized, false)
     }
 
     pull(ctx)
   end
-
-  defp do_run(_args, _conn), do: {:ok, empty_result()}
 
   # -- pull orchestration -----------------------------------------------------
 
@@ -147,7 +148,7 @@ defmodule Valea.Mail.SyncPass do
         scans = scan_folders(ctx, mirrored)
         reset_folders = for s <- scans, s.reset?, do: s.folder
 
-        case Reconcile.detect_replacement(reset_folders, mirrored) do
+        case replacement_check(ctx, reset_folders, mirrored) do
           :mailbox_replaced ->
             {:error, :mailbox_replaced}
 
@@ -177,6 +178,15 @@ defmodule Valea.Mail.SyncPass do
     excluded = MapSet.new(settings.sync.exclude_folders)
     Enum.reject(listed, &MapSet.member?(excluded, &1))
   end
+
+  # Skips the whole-mailbox-replacement decision when this pass carries a
+  # standing `.readopt` authorization (see moduledoc, `readopt_authorized`) —
+  # every reset folder falls through to the ordinary `Reconcile.folder_reset/2`
+  # path instead, exactly like an unauthorized single-folder reset would.
+  defp replacement_check(%{readopt_authorized: true}, _reset_folders, _mirrored), do: :ok
+
+  defp replacement_check(_ctx, reset_folders, mirrored),
+    do: Reconcile.detect_replacement(reset_folders, mirrored)
 
   # -- Phase A: bind + select + detect resets (read-only, no persistence) -----
 

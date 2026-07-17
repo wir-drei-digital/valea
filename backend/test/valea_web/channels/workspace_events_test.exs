@@ -137,20 +137,24 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     assert_push "mounts_changed", %{}
   end
 
-  test "mail status change pushes mail_status with string keys" do
+  test "mail status change pushes mail_status with string keys + account" do
     Phoenix.PubSub.broadcast(
       Valea.PubSub,
       "mail",
-      {:mail_status_changed,
+      {:mail_status_changed, "mara",
        %{
+         account: "mara",
          configured: true,
          credential: "present",
          state: "idle",
          last_sync_at: nil,
          last_error: nil,
-         account: "Mara's mail",
          username: "mara@example.com",
-         workspace_id: "ws-1"
+         workspace_id: "ws-1",
+         pending_ops: 0,
+         held_folders: [],
+         backfill: %{},
+         notices: []
        }}
     )
 
@@ -158,32 +162,35 @@ defmodule ValeaWeb.WorkspaceEventsTest do
       "configured" => true,
       "credential" => "present",
       "state" => "idle",
-      "account" => "Mara's mail",
+      "account" => "mara",
       "username" => "mara@example.com",
       "workspace_id" => "ws-1"
     }
   end
 
-  test "a sync pass start/finish pushes mail_sync with phase + newMessages" do
-    Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_sync_started})
-    assert_push "mail_sync", %{"phase" => "started", "newMessages" => 0}
+  test "a sync pass start/finish pushes mail_sync with phase + newMessages + account" do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_sync_started, "mara"})
+    assert_push "mail_sync", %{"phase" => "started", "newMessages" => 0, "account" => "mara"}
 
     Phoenix.PubSub.broadcast(
       Valea.PubSub,
       "mail",
-      {:mail_sync_finished, %{new_messages: 3, errors: []}}
+      {:mail_sync_finished, "mara", %{new_messages: 3, errors: []}}
     )
 
-    assert_push "mail_sync", %{"phase" => "finished", "newMessages" => 3}
+    assert_push "mail_sync", %{"phase" => "finished", "newMessages" => 3, "account" => "mara"}
   end
 
-  test "a newly indexed message pushes mail_message with its path" do
+  test "a newly indexed message pushes mail_message with its path + account" do
     Phoenix.PubSub.broadcast(
       Valea.PubSub,
       "mail",
-      {:mail_message_upserted, %{path: "sources/mail/messages/x.md"}}
+      {:mail_message_upserted, "mara", %{path: "sources/mail/messages/x.md"}}
     )
 
-    assert_push "mail_message", %{"path" => "sources/mail/messages/x.md"}
+    assert_push "mail_message", %{
+      "path" => "sources/mail/messages/x.md",
+      "account" => "mara"
+    }
   end
 end

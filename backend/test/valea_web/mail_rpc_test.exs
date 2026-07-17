@@ -219,6 +219,14 @@ defmodule ValeaWeb.MailRpcTest do
     test "happy path accepts the credential and never echoes it back in the response", %{
       generation: generation
     } do
+      # TEMP T9->T10 bridge test adaptation: `Valea.Api.Mail`'s per-account
+      # `Valea.Mail.Engine` needs a configured account to target — an account
+      # must exist before a credential can land anywhere (Task 10's real,
+      # account-scoped `set_mail_credential` makes this explicit via an
+      # `account` argument; this bridge resolves the first/only configured
+      # account instead, so one must already exist).
+      setup_account!(generation)
+
       secret = "hunter2-super-secret-password"
 
       response =

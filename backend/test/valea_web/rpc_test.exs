@@ -6,7 +6,6 @@ defmodule ValeaWeb.RpcTest do
   @endpoint ValeaWeb.Endpoint
 
   alias Valea.AgentCase
-  alias Valea.Mail.Engine
   alias Valea.Workspace.Manager
 
   setup do
@@ -67,32 +66,12 @@ defmodule ValeaWeb.RpcTest do
     assert inspect(errors) =~ "workspace_changed"
   end
 
-  # `create_workspace` returns as soon as `Manager.create/2` does — it does
-  # NOT wait for `Valea.Mail.Engine` to finish reacting to the
-  # `:workspace_opened` broadcast (its own mailbox, a separate process from
-  # this request). Activation is where `Index.rebuild/1` actually runs, so
-  # the very next request can race an engine that's still "inactive"; see
-  # the identical helper/comment in `test/valea/cockpit_test.exs`.
-  defp await_engine_active! do
-    Enum.reduce_while(1..200, nil, fn _, _ ->
-      case Engine.status() do
-        %{state: "inactive"} ->
-          Process.sleep(5)
-          {:cont, nil}
-
-        status ->
-          {:halt, status}
-      end
-    end)
-  end
-
   test "icm_tree and cockpit_today succeed with a workspace open" do
     # `Valea.Mounts.list/1` is config truth over `icms:` only — a fresh v5
     # workspace seeds no mount at all — so the ICM content this test
     # exercises comes from a REAL EXTERNAL ICM mounted via
     # `AgentCase.mount_test_icm!/2`.
     {:ok, ws} = Manager.create("Primary")
-    await_engine_active!()
 
     icm = AgentCase.mount_test_icm!(ws.path, name: "Primary", pages: %{"Offers/X.md" => "# X\n"})
 
@@ -121,16 +100,10 @@ defmodule ValeaWeb.RpcTest do
     # logic itself (that's `test/valea/cockpit_test.exs`'s job).
     assert sections == []
 
-    # A freshly created workspace has no mail account configured yet, but
-    # its `Valea.Mail.Engine` IS running (`Valea.Workspace.Runtime` starts
-    # it inert) — the unconfigured default comes from the Engine itself
-    # here, not from the `Process.whereis/1` guard (see
-    # `Valea.Cockpit.today/0`'s moduledoc), which `icm_tree requires a
-    # workspace` above already exercises with no workspace at all.
-    # The v4 workspace template ships `accounts: {}` and no seed message
-    # (mail design spec E) — zero review/inbox counts until a real account
-    # syncs.
-    assert mail == %{"reviewCount" => 0, "inboxCount" => 0, "configured" => false}
+    # A freshly created workspace has no mail account configured yet — the
+    # v4 workspace template ships `accounts: {}` (mail design spec E), so
+    # `Valea.Mail.Supervisor` starts no engine at all and the list is empty.
+    assert mail == []
   end
 
   # Mirrors `write_session_meta!/3` in `test/valea/cockpit_test.exs` (added in

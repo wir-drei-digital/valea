@@ -67,20 +67,42 @@ defmodule Valea.Api.Mail do
   end
 
   alias Valea.Api.Error
+  alias Valea.Mail.Doctor
   alias Valea.Mail.Engine
   alias Valea.Mail.MessageFile
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
+  alias Valea.Mail.Supervisor, as: MailSupervisor
   alias Valea.Workspace.Manager
   alias Valea.Workspace.Scaffold
+
+  # TEMP T9->T10 bridge: this whole resource is rewritten in Task 10 onto
+  # the real account-scoped RPC surface (an explicit `account` argument on
+  # every action, per the mail-as-maildir design spec E's RPC table). Task 9
+  # made `Valea.Mail.Engine`/`Valea.Mail.Doctor` per-account (Registry-keyed
+  # by slug), which this NOT-yet-rewritten, still-single-implicit-account
+  # resource must keep working against in the meantime — `default_slug/1`
+  # is the bridge: "the first (only, in practice) valid account by slug",
+  # mirroring the exact precedent `Valea.Mail.Engine`'s old `load_settings/1`
+  # v3-bridge used. Deleted whole-cloth, alongside this resource's rewrite,
+  # in Task 10.
+  defp default_slug(root) do
+    case Settings.load(root) do
+      {:ok, %{accounts: accounts}} when map_size(accounts) > 0 ->
+        accounts |> Map.keys() |> Enum.sort() |> List.first()
+
+      _ ->
+        nil
+    end
+  end
 
   actions do
     action :mail_status, :map do
       constraints fields: [status: [type: :map, allow_nil?: false]]
 
       run fn _input, _ctx ->
-        with {:ok, _ws} <- Manager.current() do
-          {:ok, %{status: stringify(Engine.status())}}
+        with {:ok, %{path: root}} <- Manager.current() do
+          {:ok, %{status: stringify(status_for(root))}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -115,7 +137,7 @@ defmodule Valea.Api.Mail do
              {:ok, %{path: root}} <- Manager.current(),
              :ok <-
                Settings.upsert_account!(root, slug, %{host: host, port: port, username: username}) do
-          :ok = Engine.reload_settings()
+          :ok = MailSupervisor.reload_settings_all(root)
           {:ok, %{"saved" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -132,8 +154,13 @@ defmodule Valea.Api.Mail do
       run fn input, _ctx ->
         %{secret: secret, generation: generation} = input.arguments
 
-        with :ok <- Manager.check_generation(generation) do
-          :ok = Engine.set_credential(secret)
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current() do
+          case default_slug(root) do
+            nil -> :ok
+            slug -> Engine.set_credential(slug, secret)
+          end
+
           {:ok, %{"accepted" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -148,7 +175,8 @@ defmodule Valea.Api.Mail do
 
       run fn input, _ctx ->
         with :ok <- Manager.check_generation(input.arguments.generation),
-             :ok <- Engine.sync_now() do
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <- sync_now_for(root) do
           {:ok, %{"started" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -165,8 +193,9 @@ defmodule Valea.Api.Mail do
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
-        with :ok <- Manager.check_generation(input.arguments.generation) do
-          {:ok, %{checks: checks, ok: ok}} = Engine.doctor()
+        with :ok <- Manager.check_generation(input.arguments.generation),
+             {:ok, %{path: root}} <- Manager.current() do
+          {:ok, %{checks: checks, ok: ok}} = doctor_for(root)
           {:ok, %{"ok" => ok, "checks" => checks}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -181,7 +210,8 @@ defmodule Valea.Api.Mail do
 
       run fn input, _ctx ->
         with :ok <- Manager.check_generation(input.arguments.generation),
-             {:ok, created} <- Engine.create_folders() do
+             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, created} <- create_folders_for(root) do
           {:ok, %{created: created}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -300,8 +330,71 @@ defmodule Valea.Api.Mail do
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
   def error_for(reason), do: Error.new(inspect(reason))
 
-  # `Valea.Mail.Engine.status/0` is atom-keyed; stringify the top level so
-  # this unconstrained field is delivered RAW (see the moduledoc), matching
-  # `Valea.Api.ICM.page/1`'s identical top-level stringify.
+  # `Valea.Mail.Engine.status/1`'s map is atom-keyed; stringify the top
+  # level so this unconstrained field is delivered RAW (see the moduledoc),
+  # matching `Valea.Api.ICM.page/1`'s identical top-level stringify.
   defp stringify(status), do: Map.new(status, fn {k, v} -> {to_string(k), v} end)
+
+  # -- TEMP T9->T10 bridge helpers — see `default_slug/1`'s comment above --
+
+  defp status_for(root) do
+    case default_slug(root) do
+      nil -> default_status(root)
+      slug -> Engine.status(slug) || default_status(root)
+    end
+  end
+
+  defp default_status(root) do
+    %{
+      account: nil,
+      configured: false,
+      credential: "missing",
+      state: "idle",
+      last_sync_at: nil,
+      last_error: nil,
+      username: nil,
+      workspace_id: workspace_id(root),
+      pending_ops: 0,
+      held_folders: [],
+      backfill: nil,
+      notices: []
+    }
+  end
+
+  defp workspace_id(root) do
+    case YamlElixir.read_from_file(Path.join(root, "config/workspace.yaml")) do
+      {:ok, %{"id" => id}} when is_binary(id) -> id
+      _ -> nil
+    end
+  end
+
+  defp sync_now_for(root) do
+    case default_slug(root) do
+      nil -> {:error, :not_configured}
+      slug -> Engine.sync_now(slug)
+    end
+  end
+
+  defp doctor_for(root) do
+    case default_slug(root) do
+      nil ->
+        Doctor.run(%{
+          root: root,
+          account: "",
+          settings: nil,
+          credential: nil,
+          transport: Application.get_env(:valea, :mail_transport, Valea.Mail.ImapClient)
+        })
+
+      slug ->
+        Engine.doctor(slug)
+    end
+  end
+
+  defp create_folders_for(root) do
+    case default_slug(root) do
+      nil -> {:error, :not_configured}
+      slug -> Engine.create_folders(slug)
+    end
+  end
 end

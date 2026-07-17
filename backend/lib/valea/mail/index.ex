@@ -78,18 +78,6 @@ defmodule Valea.Mail.Index do
     {:ok, count}
   end
 
-  # TEMP v3-bridge: removed in Task 9. `engine.ex`'s `activate/1` still calls
-  # the old single-argument `rebuild/1` from its pre-multi-account (v3) days.
-  # A pure no-op is the SMALLER of the two bridges the task brief allows
-  # (the alternative — iterating every account in `Settings.load/1` and
-  # calling `rebuild/2` per account — would tie this module to `Settings`
-  # for no real benefit this early: `engine.ex` itself is still single-
-  # account-shaped and doesn't yet call the real per-account rebuild at
-  # activation). Callers needing an actual rebuild call `rebuild/2` directly
-  # (as this module's own tests, and `Task 7`'s `SyncPass`, do).
-  @spec rebuild(String.t()) :: {:ok, non_neg_integer()}
-  def rebuild(root) when is_binary(root), do: {:ok, 0}
-
   # -- .folder-first directory discovery --------------------------------------
 
   # Every directory under maildir_root carrying a `.folder` identity file,

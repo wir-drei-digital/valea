@@ -449,19 +449,9 @@ defmodule Valea.Mail.StoreTest do
   # `sync_pass_test.exs`, `cockpit_test.exs`, and `mail_rpc_test.exs` already
   # give the bridge) for the parts of it those suites don't happen to
   # exercise — dedupe-on-uid-change in particular. Removed alongside the
-  # bridge functions themselves (Task 6/7/9).
-
-  describe "legacy bridge: sync_state" do
-    test "get_sync_state/1 + put_sync_state/3 (old 3-arg shape) round-trip" do
-      assert {:error, :not_found} = Store.get_sync_state("INBOX")
-
-      assert :ok = Store.put_sync_state("INBOX", 100, 4711)
-      assert {:ok, %{uidvalidity: 100, high_water_uid: 4711}} = Store.get_sync_state("INBOX")
-
-      assert :ok = Store.put_sync_state("INBOX", 100, 4800)
-      assert {:ok, %{uidvalidity: 100, high_water_uid: 4800}} = Store.get_sync_state("INBOX")
-    end
-  end
+  # bridge functions themselves (Task 6/7/9). The old 3-arg
+  # `put_sync_state(folder, uidvalidity, high_water_uid)` bridge itself was
+  # retired in Task 9 — see `Valea.Mail.Store`'s moduledoc.
 
   describe "legacy bridge: messages" do
     test "upsert_message/1 + get_message/1 round-trip, status riding along in flags" do

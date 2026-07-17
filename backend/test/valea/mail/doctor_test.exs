@@ -3,23 +3,31 @@ defmodule Valea.Mail.DoctorTest do
 
   alias Valea.AgentCase
   alias Valea.Mail.Doctor
+  alias Valea.Mail.Settings
 
   @review "AI/Review"
   @processed "AI/Processed"
   @drafts "Drafts"
+  @account "mara"
 
   # -- fixtures ---------------------------------------------------------------
 
-  # TEMP v3-bridge: removed in Task 9 — `Valea.Mail.Settings` is now a v4
-  # per-account struct (`slug`/`provider`/...) with no `account`/`folders.review`
-  # fields, so `Doctor`'s ctx.settings is (for now) this plain v3-shaped map,
-  # not a real `%Settings{}`. See `Valea.Mail.Engine`'s `load_settings/1`.
+  # A real v4 `%Settings{}` (Task 9): `folders` only carries drafts/sent/
+  # archive/trash — AI/Review and AI/Processed are fixed, Valea-owned names
+  # `Doctor` itself knows, not part of the account's own settings.
   defp settings(overrides \\ %{}) do
     Map.merge(
-      %{
-        account: "mara@example.com",
+      %Settings{
+        slug: @account,
+        provider: :generic,
         imap: %{host: "localhost", port: 993, username: "mara@example.com"},
-        folders: %{review: @review, processed: @processed, drafts: @drafts}
+        folders: %{drafts: @drafts, sent: "Sent", archive: "Archive", trash: "Trash"},
+        sync: %{
+          window_days: 90,
+          interval_minutes: 15,
+          max_message_bytes: 26_214_400,
+          exclude_folders: []
+        }
       },
       overrides
     )
@@ -29,6 +37,7 @@ defmodule Valea.Mail.DoctorTest do
     Map.merge(
       %{
         root: workspace_root(),
+        account: @account,
         settings: settings(),
         credential: fn -> "app-password" end,
         transport: FakeMailTransport
@@ -149,6 +158,7 @@ defmodule Valea.Mail.DoctorTest do
       assert ids == [
                "config_present",
                "credential_present",
+               "maildir_writable",
                "tcp_reachable",
                "tls_ok",
                "login_ok",
@@ -194,9 +204,44 @@ defmodule Valea.Mail.DoctorTest do
     assert by_id["credential_present"]["status"] == "failed"
     assert by_id["credential_present"]["remedy"] =~ "password"
 
+    # maildir_writable is gated on config_present ALONE (a pure local
+    # filesystem check, independent of the credential) — it still runs.
+    assert by_id["maildir_writable"]["status"] == "ok"
+
     for id <- ["tcp_reachable", "tls_ok", "login_ok", "folders", "move_capability"] do
       assert by_id[id]["status"] == "unknown"
     end
+  end
+
+  # -- maildir_writable -----------------------------------------------------
+
+  test "maildir_writable: ok when sources/mail/<account>/maildir/ can be created and written to" do
+    root = workspace_root()
+
+    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root}))
+    check = Enum.find(checks, &(&1["id"] == "maildir_writable"))
+    assert check["status"] == "ok"
+    assert File.dir?(Path.join([root, "sources", "mail", @account, "maildir"]))
+  end
+
+  test "maildir_writable: failed when the maildir path is blocked by a file in the way" do
+    root = workspace_root()
+    blocker = Path.join([root, "sources", "mail", @account])
+    File.mkdir_p!(Path.dirname(blocker))
+    File.write!(blocker, "not a directory")
+
+    assert {:ok, %{checks: checks, ok: false}} = Doctor.run(ctx(%{root: root}))
+    check = Enum.find(checks, &(&1["id"] == "maildir_writable"))
+    assert check["status"] == "failed"
+    assert check["remedy"] =~ "permissions"
+  end
+
+  test "maildir_writable is unknown (not attempted) when config isn't present" do
+    root = workspace_root()
+
+    assert {:ok, %{checks: checks}} = Doctor.run(ctx(%{root: root, settings: nil}))
+    check = Enum.find(checks, &(&1["id"] == "maildir_writable"))
+    assert check["status"] == "unknown"
   end
 
   # -- tcp unreachable ------------------------------------------------------------

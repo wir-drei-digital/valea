@@ -285,21 +285,4 @@ defmodule Valea.Mail.IndexTest do
       assert {:ok, 0} = Index.rebuild(root, "never-synced")
     end
   end
-
-  # TEMP v3-bridge: removed in Task 9 — see the moduledoc.
-  describe "rebuild/1 (TEMP v3-bridge)" do
-    test "is a pure no-op, always {:ok, 0}", %{root: root} do
-      account = "mara"
-      mroot = maildir_root(root, account)
-      inbox_abs = setup_folder!(mroot, "INBOX", "INBOX")
-
-      raw = fixture("plain.eml")
-      {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
-      filename = Maildir.encode_filename(msg_id, 1, MapSet.new())
-      Maildir.deliver!(inbox_abs, filename, raw)
-
-      assert {:ok, 0} = Index.rebuild(root)
-      assert Store.list_messages(account, "INBOX") == []
-    end
-  end
 end

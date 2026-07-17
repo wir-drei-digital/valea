@@ -32,16 +32,17 @@ defmodule Valea.Mail.Store do
 
   ## TEMP v3-bridge (mail-as-maildir rebuild, Task 3)
 
-  `index.ex`, `engine.ex`, `api/mail.ex`, and `cockpit.ex` (rewritten in
-  Tasks 9-10) still call the OLD, pre-occurrence Store API:
-  `get_sync_state/1`, `put_sync_state/3` (3-arg, no `attrs` map),
-  `upsert_message/1`, `get_message/1`, `message_by_message_id/1`,
-  `list_messages/0`, `set_message_status/2`, `put_inbox_header/1`,
-  `inbox_headers/0`, `prune_inbox_headers/1`. Every function below marked
-  `# TEMP v3-bridge` keeps that old surface alive on top of the NEW tables
-  (or, for the inbox-header family, on top of the OLD `mail_inbox_headers`
-  table — see `Valea.Mail.Store.InboxHeader`'s moduledoc for why that
-  table/resource is kept alive verbatim rather than emulated).
+  `api/mail.ex` and `cockpit.ex` (rewritten in Task 10) still call the OLD,
+  pre-occurrence Store API: `get_sync_state/1`, `upsert_message/1`,
+  `get_message/1`, `message_by_message_id/1`, `list_messages/0`,
+  `set_message_status/2`, `put_inbox_header/1`, `inbox_headers/0`,
+  `prune_inbox_headers/1`. Every function below marked `# TEMP v3-bridge`
+  keeps that old surface alive on top of the NEW tables (or, for the
+  inbox-header family, on top of the OLD `mail_inbox_headers` table — see
+  `Valea.Mail.Store.InboxHeader`'s moduledoc for why that table/resource is
+  kept alive verbatim rather than emulated). The 3-arg
+  `put_sync_state(folder, uidvalidity, high_water_uid)` bridge (`index.ex`/
+  `engine.ex`'s old callers) was retired in Task 9 alongside their rewrite.
 
   Task 7 (the `SyncPass` rewrite) retired the `mail_uid_outcomes` bridge
   (`record_outcome/4`, `outcomes/1`, `UidOutcome`, and the old
@@ -65,11 +66,6 @@ defmodule Valea.Mail.Store do
   rows don't carry a review workflow status) — it rides along in `flags`,
   a plain string column with no other purpose at this synthetic scope,
   round-tripped transparently by `legacy_message_map/1`.
-
-  `put_sync_state/3` collides in arity with the new
-  `put_sync_state/3` (`account, folder, attrs`) — the old call shape is
-  `(folder, uidvalidity, high_water_uid)`, so the two are told apart by an
-  `is_map/1` guard on the third argument.
   """
   use Ash.Domain
 
@@ -143,15 +139,6 @@ defmodule Valea.Mail.Store do
     |> Ash.create!()
 
     :ok
-  end
-
-  # TEMP v3-bridge: removed in Task 7/9. Old 3-arg call
-  # `(folder, uidvalidity, high_water_uid)` — told apart from the new
-  # `(account, folder, attrs)` shape by the `is_map/1` guard above (the old
-  # third argument is always an integer or `nil`, never a map).
-  @spec put_sync_state(String.t(), integer() | nil, integer() | nil) :: :ok
-  def put_sync_state(folder, uidvalidity, high_water_uid) do
-    put_sync_state(@legacy, folder, %{uidvalidity: uidvalidity, high_water_uid: high_water_uid})
   end
 
   @doc "Every `mail_sync_state` row for `account`."

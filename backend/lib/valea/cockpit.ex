@@ -23,8 +23,11 @@ defmodule Valea.Cockpit do
       `Valea.Mounts.enabled/0` order — `%{"mount_key", "icm_name", "ok",
       "updated_at", "notes", "prepared", "open_loops"}` (see moduledoc for
       the leniency contract)
-    - "mail": `%{"review_count", "inbox_count", "configured"}` — live, read
-      from `Valea.Mail.Store`/`Valea.Mail.Engine`
+    - "mail": a LIST, one entry per running `Valea.Mail.Engine` (i.e. one
+      per valid account) — `%{"account", "configured" => true, "state",
+      "pending_ops", "notices"}`, live off `Valea.Mail.Engine.statuses/0`
+      (Registry enumeration; empty list when no workspace is open or no
+      account is configured yet)
     - "recent_sessions": up to 5 most recent sessions, newest first —
       `%{"id", "title", "started_at", "status", "live"}`
   """
@@ -111,66 +114,46 @@ defmodule Valea.Cockpit do
     |> Enum.map(&Map.take(&1, ["id", "title", "started_at", "status", "live"]))
   end
 
-  # See the moduledoc: `Process.whereis/1` is the SAME guard
-  # `Valea.Audit.entries/1` uses, for the same reason — no workspace open (or
-  # one mid-switch) means `Valea.Mail.Engine` isn't registered, and calling
-  # its `GenServer.call/2` anyway would exit `:noproc` and take this whole
-  # RPC/channel call down instead of degrading gracefully.
+  # `Valea.Mail.Engine.statuses/0` enumerates the `Valea.Mail.Registry` —
+  # the SAME kind of "no workspace open (or one mid-switch/mid-close) means
+  # nothing's registered" degradation `Process.whereis/1` gave the old
+  # singleton Engine, but for free: an empty Registry just yields `%{}`, no
+  # `:noproc` exit to guard against.
   #
-  # The whereis check does NOT cover `Valea.Mail.Store` (i.e. `Valea.Repo`),
-  # though: the Repo is NOT a `Valea.Workspace.Runtime` child — the Manager
-  # starts it directly under `Valea.Workspace.DynamicSupervisor` BEFORE the
-  # Runtime (`manager.ex`: `start_repo` → `migrate` → `start_runtime`), and
-  # `do_close/1` terminates `state.children` in that same list order, so on
-  # every close/switch the Repo goes down FIRST while the Engine's name is
-  # still registered. A `today/0` call landing in that window (or racing an
-  # Engine crash) passes the whereis guard and then hits a dead Repo — which
-  # is what `live_mail_summary/0`'s rescue/catch is for.
+  # `Valea.Mail.Store` (i.e. `Valea.Repo`) reads inside `Engine.status/1`'s
+  # own `build_status/1` are a separate race, though: the Repo is NOT a
+  # `Valea.Workspace.Runtime` child — the Manager starts it directly under
+  # `Valea.Workspace.DynamicSupervisor` BEFORE the Runtime (`manager.ex`:
+  # `start_repo` → `migrate` → `start_runtime`), and `do_close/1` terminates
+  # `state.children` in that same list order, so on every close/switch the
+  # Repo goes down FIRST while an account Engine's Registry entry can still
+  # be briefly live. A `today/0` call landing in that window (or racing an
+  # Engine crash) would otherwise raise/exit instead of degrading gracefully
+  # — the rescue/catch below is deliberately broad, since the failure modes
+  # here are "some dependency of the read is down" (`DBConnection.
+  # ConnectionError`, `Exqlite.Error`, Ash wrappers, or a `:noproc` exit if
+  # an Engine dies mid-call), not one specific exception type.
   defp mail_summary do
-    if Process.whereis(Valea.Mail.Engine) do
-      live_mail_summary()
-    else
-      zero_mail_summary()
-    end
-  end
-
-  # `state: "inactive"` — the Engine is registered but hasn't processed its
-  # `:workspace_opened` activation yet (activation is async in the Engine's
-  # own mailbox; `Index.rebuild/1` only runs there). Counts read this early
-  # would be whatever the previous session left in the cache, so report the
-  # deterministic zero/unconfigured shape instead; activation ends with a
-  # `mail_status` broadcast, and the Today page refetches this payload on
-  # that push (see `+page.svelte`), so the real counts follow immediately.
-  #
-  # rescue/catch: degrade to the zero summary the whereis guard already
-  # promises — deliberately broad, because the failure modes here are "some
-  # dependency of the read is down", not a specific exception type:
-  # `Store.*` raises assorted DB errors (`DBConnection.ConnectionError`,
-  # `Exqlite.Error`, Ash wrappers) when the Repo is down (see the close
-  # ordering note above), and `Engine.status/0` exits `:noproc` if the
-  # Engine dies between the whereis check and the call.
-  defp live_mail_summary do
-    case Valea.Mail.Engine.status() do
-      %{state: "inactive"} ->
-        zero_mail_summary()
-
-      status ->
-        review_count =
-          Valea.Mail.Store.list_messages() |> Enum.count(&(&1.status == "review"))
-
-        %{
-          "review_count" => review_count,
-          "inbox_count" => length(Valea.Mail.Store.inbox_headers()),
-          "configured" => status.configured
-        }
-    end
+    Valea.Mail.Engine.statuses()
+    |> Enum.map(fn {slug, status} -> mail_summary_entry(slug, status) end)
+    |> Enum.sort_by(& &1["account"])
   rescue
-    _ -> zero_mail_summary()
+    _ -> []
   catch
-    :exit, _ -> zero_mail_summary()
+    :exit, _ -> []
   end
 
-  defp zero_mail_summary do
-    %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+  defp mail_summary_entry(slug, status) do
+    %{
+      "account" => slug,
+      "configured" => true,
+      "state" => status.state,
+      # The `mail_pending_ops` ledger genuinely exists (`Valea.Mail.Store`),
+      # but nothing writes real rows to it yet — the ops executor that would
+      # is Task 13. Hardcoded 0 rather than reading a ledger that's
+      # perpetually empty today.
+      "pending_ops" => 0,
+      "notices" => status.notices
+    }
   end
 end

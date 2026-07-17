@@ -11,6 +11,10 @@ defmodule Valea.Application do
       # live under the workspace-scoped Valea.Agents.SessionSupervisor, but the
       # registry outlives workspace switches so lookups never race a restart.
       {Registry, keys: :unique, name: Valea.Agents.SessionRegistry},
+      # App-level: one Valea.Mail.Engine per account slug registers here (see
+      # Valea.Mail.Engine.via/1) — outlives workspace switches for the same
+      # reason as the registry above.
+      {Registry, keys: :unique, name: Valea.Mail.Registry},
       # Repo starts under here when a workspace opens — the app boots
       # workspace-less by design; there is no database until then.
       Valea.Workspace.Supervisor,

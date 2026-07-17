@@ -15,10 +15,15 @@ defmodule Valea.Mail.Doctor do
        `Settings`, handed in via `ctx.settings`)?
     2. `credential_present` — is a credential held in RAM (`ctx.credential`)?
        Gated on 1.
-    3. `tcp_reachable` — a raw `:gen_tcp.connect/4` probe (no TLS, no
+    3. `maildir_writable` — can this account's local maildir tree
+       (`sources/mail/<account>/maildir/`) actually be written to? `mkdir -p`
+       it, then write + remove a small probe file. Gated on 1 (needs
+       `ctx.account` to build the path; independent of the credential — this
+       is a LOCAL filesystem check, no network/server involved at all).
+    4. `tcp_reachable` — a raw `:gen_tcp.connect/4` probe (no TLS, no
        login), 5s timeout. Gated on 1 + 2.
-    4. `tls_ok` + `login_ok` + `folders` + `move_capability` — derived from
-       ONE `ctx.transport.connect/3` call, gated on 3:
+    5. `tls_ok` + `login_ok` + `folders` + `move_capability` — derived from
+       ONE `ctx.transport.connect/3` call, gated on 4:
        * `tls_ok` is `"ok"` whenever the connect got far enough to attempt
          LOGIN (i.e. it returned `{:ok, _}` or specifically
          `{:error, :auth_failed}`); any other connect error means the
@@ -44,13 +49,10 @@ defmodule Valea.Mail.Doctor do
 
   @type check :: %{String.t() => String.t() | nil}
 
-  # TEMP v3-bridge: removed in Task 9 — `settings` is `nil` or the plain
-  # v3-shaped map `Valea.Mail.Engine`'s `load_settings/1` builds from the v4
-  # `Valea.Mail.Settings`, not a `Settings.t()` itself (the v4 struct has no
-  # `account`/`folders.review`/`folders.processed` fields).
   @type ctx :: %{
           root: String.t(),
-          settings: map() | nil,
+          account: String.t(),
+          settings: Valea.Mail.Settings.t() | nil,
           credential: (-> String.t()) | String.t() | nil,
           transport: module()
         }
@@ -58,10 +60,19 @@ defmodule Valea.Mail.Doctor do
   @gen_tcp_timeout_ms 5_000
   @ai_folder_keys [:review, :processed]
 
+  # Fixed, Valea-owned folder names — not part of `Settings.t()`'s
+  # `folders:` (that struct only carries the account's OWN drafts/sent/
+  # archive/trash names); AI/Review and AI/Processed are always these exact
+  # strings, mirrored from the old v3-bridge shape `Valea.Mail.Engine`'s
+  # `load_settings/1` used to synthesize before Task 9.
+  @review_folder "AI/Review"
+  @processed_folder "AI/Processed"
+
   @gate_detail "not checked — an earlier check failed."
 
   @config_remedy "Set up your mail account (host, port, username) in Mail settings."
   @credential_remedy "Enter your mailbox password to connect."
+  @maildir_remedy "Check filesystem permissions for this workspace's sources/mail/ directory."
   @tcp_remedy "Check the host and port, and your network connection."
   @tls_remedy "Confirm the host/port support implicit TLS (IMAPS, usually port 993)."
   @login_remedy "Double-check the mailbox username and password."
@@ -79,10 +90,11 @@ defmodule Valea.Mail.Doctor do
   def run(ctx) do
     {config, config_ok?} = config_present(ctx)
     {credential, credential_ok?} = credential_present(ctx, config_ok?)
+    {maildir, _maildir_ok?} = maildir_writable(ctx, config_ok?)
     {tcp, tcp_ok?} = tcp_reachable(ctx, config_ok? and credential_ok?)
     {tls, login, folders, move} = transport_group(ctx, tcp_ok?)
 
-    checks = [config, credential, tcp, tls, login, folders, move]
+    checks = [config, credential, maildir, tcp, tls, login, folders, move]
     {:ok, %{checks: checks, ok: Enum.all?(checks, &(&1["status"] == "ok"))}}
   end
 
@@ -110,7 +122,7 @@ defmodule Valea.Mail.Doctor do
 
     case do_connect(transport, settings.imap, secret) do
       {:ok, conn} ->
-        created = create_missing_ai_folders(transport, conn, settings.folders)
+        created = create_missing_ai_folders(transport, conn)
         safe_logout(transport, conn)
         {:ok, created}
 
@@ -157,7 +169,52 @@ defmodule Valea.Mail.Doctor do
     {ok("credential_present", "Password available", "A mailbox password is available."), true}
   end
 
-  # -- 3. tcp_reachable ----------------------------------------------------------
+  # -- 3. maildir_writable --------------------------------------------------
+
+  # Gated on config_present alone (needs `ctx.account`/`ctx.root` to build the
+  # path) — deliberately independent of the credential: this is a pure LOCAL
+  # filesystem probe, no network/server involved, so there's no reason to
+  # withhold it just because a password hasn't been entered yet.
+  defp maildir_writable(_ctx, false) do
+    {unknown("maildir_writable", "Local maildir writable", @gate_detail), false}
+  end
+
+  defp maildir_writable(%{root: root, account: account}, true) do
+    dir = Path.join([root, "sources", "mail", account, "maildir"])
+    probe = Path.join(dir, ".doctor-probe-#{System.unique_integer([:positive])}")
+
+    with :ok <- File.mkdir_p(dir),
+         :ok <- File.write(probe, "ok") do
+      File.rm(probe)
+      {ok("maildir_writable", "Local maildir writable", "#{dir} is writable."), true}
+    else
+      {:error, reason} ->
+        {failed(
+           "maildir_writable",
+           "Local maildir writable",
+           "Could not write to #{dir}: #{inspect(reason)}",
+           @maildir_remedy
+         ), false}
+    end
+  rescue
+    e ->
+      {failed(
+         "maildir_writable",
+         "Local maildir writable",
+         Exception.message(e),
+         @maildir_remedy
+       ), false}
+  catch
+    kind, reason ->
+      {failed(
+         "maildir_writable",
+         "Local maildir writable",
+         inspect({kind, reason}),
+         @maildir_remedy
+       ), false}
+  end
+
+  # -- 4. tcp_reachable ----------------------------------------------------------
 
   defp tcp_reachable(_ctx, false) do
     {unknown("tcp_reachable", "Server reachable", @gate_detail), false}
@@ -190,7 +247,7 @@ defmodule Valea.Mail.Doctor do
       {failed("tcp_reachable", "Server reachable", inspect({kind, reason}), @tcp_remedy), false}
   end
 
-  # -- 4. tls_ok / login_ok / folders / move_capability (one connect) -----------
+  # -- 5. tls_ok / login_ok / folders / move_capability (one connect) -----------
 
   defp transport_group(_ctx, false) do
     {unknown("tls_ok", "TLS", @gate_detail), unknown("login_ok", "Login", @gate_detail),
@@ -267,8 +324,8 @@ defmodule Valea.Mail.Doctor do
 
   defp missing_folders(existing, folders) do
     for {key, name} <- [
-          {:review, folders.review},
-          {:processed, folders.processed},
+          {:review, @review_folder},
+          {:processed, @processed_folder},
           {:drafts, folders.drafts}
         ],
         name not in existing,
@@ -342,10 +399,10 @@ defmodule Valea.Mail.Doctor do
 
   # -- create_folders helpers ---------------------------------------------------
 
-  defp create_missing_ai_folders(transport, conn, folders) do
+  defp create_missing_ai_folders(transport, conn) do
     case transport.list_folders(conn) do
       {:ok, existing} ->
-        [{:review, folders.review}, {:processed, folders.processed}]
+        [{:review, @review_folder}, {:processed, @processed_folder}]
         |> Enum.reject(fn {_key, name} -> name in existing end)
         |> Enum.filter(fn {_key, name} -> create_one(transport, conn, name) end)
         |> Enum.map(fn {_key, name} -> name end)

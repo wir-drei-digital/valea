@@ -80,13 +80,20 @@ defmodule Valea.Api.Cockpit do
                       ]
                     ],
                     mail: [
-                      type: :map,
+                      type: {:array, :map},
                       allow_nil?: false,
                       constraints: [
-                        fields: [
-                          review_count: [type: :integer, allow_nil?: false],
-                          inbox_count: [type: :integer, allow_nil?: false],
-                          configured: [type: :boolean, allow_nil?: false]
+                        items: [
+                          fields: [
+                            account: [type: :string, allow_nil?: false],
+                            configured: [type: :boolean, allow_nil?: false],
+                            state: [type: :string, allow_nil?: false],
+                            pending_ops: [type: :integer, allow_nil?: false],
+                            notices: [
+                              type: {:array, :string},
+                              allow_nil?: false
+                            ]
+                          ]
                         ]
                       ]
                     ],

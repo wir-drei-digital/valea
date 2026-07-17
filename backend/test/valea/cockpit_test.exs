@@ -6,19 +6,17 @@ defmodule Valea.CockpitTest do
   use ExUnit.Case, async: false
 
   alias Valea.AgentCase
-  alias Valea.Mail.Message
-  alias Valea.Mail.MessageFile
-  alias Valea.Mail.Settings
-  alias Valea.Mail.Store
   alias Valea.Mail.Engine
+  alias Valea.Mail.Settings
+  alias Valea.Mail.Supervisor, as: MailSupervisor
   alias Valea.Mounts
 
   describe "today/0 sections" do
-    test "no workspace open → empty sections, zero mail, empty recent_sessions" do
+    test "no workspace open → empty sections, empty mail, empty recent_sessions" do
       {:ok, today} = Valea.Cockpit.today()
       assert today["sections"] == []
       assert today["recent_sessions"] == []
-      assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+      assert today["mail"] == []
     end
 
     test "enabled ICM without today.json contributes no section" do
@@ -156,66 +154,30 @@ defmodule Valea.CockpitTest do
   end
 
   describe "today/0 mail summary" do
-    # TEMP v3-bridge test adaptation (Task 6): see the identical comment on
-    # `mail_rpc_test.exs`'s `plant_message/3` — `MessageFile.render/2`'s meta
-    # shape lost `uid`/`status`/`source`, and `Index.rebuild/1` no longer
-    # indexes this flat legacy layout. `Valea.Cockpit.mail_summary/0` still
-    # reads the OLD `Store.upsert_message/1`-keyed cache via
-    # `Store.list_messages/0` (rewritten in Task 10), so this helper writes
-    # the file (for parity with the on-disk shape) and seeds that cache row
-    # directly instead of relying on `Index.rebuild/1`.
-    defp plant_message(root, suffix, status) do
-      msg_id = "2026-07-09-priya-#{suffix}"
-      rel = Path.join(["sources", "mail", "messages", "#{msg_id}.md"])
-      abs = Path.join(root, rel)
-      File.mkdir_p!(Path.dirname(abs))
-
-      message = %Message{
-        message_id: "<orig-#{suffix}@mail.example.com>",
-        from: %{name: "Priya Nair", email: "priya@example.com"},
-        subject: "Inquiry",
-        date: ~U[2026-07-09 10:00:00Z],
-        body_text: "Body.\n"
-      }
-
-      bytes =
-        MessageFile.render(message, %{
-          msg_id: msg_id,
-          account: "mara@example.com",
-          folders: ["INBOX"],
-          flags: "",
-          attachments: []
-        })
-
-      File.write!(abs, bytes)
-
+    defp setup_account!(root, slug, host \\ "imap.fastmail.com") do
       :ok =
-        Store.upsert_message(%{
-          msg_id: msg_id,
-          message_id: message.message_id,
-          path: rel,
-          from: message.from,
-          subject: message.subject,
-          date: message.date,
-          status: status,
-          has_attachments: false,
-          uid: nil
+        Settings.upsert_account!(root, slug, %{
+          host: host,
+          port: 993,
+          username: "#{slug}@example.com"
         })
+
+      :ok = MailSupervisor.reload_settings_all(root)
     end
 
-    # `AgentCase.open_workspace!/1` returns as soon as `Manager.create/2`
-    # does — it does NOT wait for `Valea.Mail.Engine` to finish processing
-    # the `:workspace_opened` broadcast it reacts to asynchronously (its own
-    # mailbox, a separate process). Activation is where `Index.rebuild/1`
-    # actually runs (see `engine.ex`'s `activate/1`), so a test that reads
-    # `Store.list_messages/0` immediately after opening can race an engine
-    # that's still "inactive". Polling `status().state` past `"inactive"`
-    # is a synchronization point: `state.status` only flips off
-    # `"inactive"` at the END of `activate/1`, strictly after its
-    # `Index.rebuild/1` call, so by the time this returns, indexing is done.
-    defp await_engine_active! do
+    # A fresh account's Engine self-activates immediately when started via
+    # `reload_settings_all/1` mid-session (see `Valea.Mail.Supervisor`'s
+    # moduledoc, "Rehashing") — but that activation is still async in the
+    # Engine's own mailbox. Poll `status/1` past `"inactive"` (`nil` too,
+    # for the instant right after `reload_settings_all/1` returns but before
+    # the child is registered) as the synchronization point.
+    defp await_engine_active!(slug) do
       Enum.reduce_while(1..200, nil, fn _, _ ->
-        case Engine.status() do
+        case Engine.status(slug) do
+          nil ->
+            Process.sleep(5)
+            {:cont, nil}
+
           %{state: "inactive"} ->
             Process.sleep(5)
             {:cont, nil}
@@ -226,71 +188,71 @@ defmodule Valea.CockpitTest do
       end)
     end
 
-    test "reports zero/unconfigured defaults when the engine is active but not yet configured" do
+    test "reports [] when the workspace is open but no account is configured yet" do
       AgentCase.open_workspace!()
-      await_engine_active!()
-
       {:ok, today} = Valea.Cockpit.today()
 
-      # The v4 workspace template ships `accounts: {}` and no seed message
-      # (mail design spec E) — zero review/inbox counts until a real account
-      # syncs. See `test/valea_web/rpc_test.exs`'s identical assertion.
-      assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+      # The v4 workspace template ships `accounts: {}` (mail design spec E)
+      # — no engine exists for anything, so the list is simply empty.
+      assert today["mail"] == []
     end
 
-    test "reports live review/inbox counts once the account is configured" do
+    test "reports one list entry per configured account, live off Engine.statuses/0" do
       ws = AgentCase.open_workspace!()
-      # Required, not just belt-and-braces: `mail_summary/0` now reports the
-      # deterministic zero shape while the Engine is still `"inactive"`, so
-      # reading `today/0` before activation would fail this test's live-count
-      # assertion regardless of what the Store already contains.
-      await_engine_active!()
 
-      plant_message(ws.path, "extra-review", "review")
-      plant_message(ws.path, "extra-processed", "processed")
-
-      Store.put_inbox_header(%{uid: 1, from_text: "Someone <a@b.com>", subject: "Hi", date: nil})
-      Store.put_inbox_header(%{uid: 2, from_text: "Someone <c@d.com>", subject: "Yo", date: nil})
-
-      :ok =
-        Settings.upsert_account!(ws.path, "mara", %{
-          host: "imap.fastmail.com",
-          port: 993,
-          username: "mara@example.com"
-        })
-
-      :ok = Engine.reload_settings()
+      setup_account!(ws.path, "mara")
+      await_engine_active!("mara")
 
       {:ok, today} = Valea.Cockpit.today()
 
-      # 1 = only the extra "review" message planted above (the v4 workspace
-      # template ships no seed message, mail design spec E); the
-      # "processed" one doesn't count.
-      assert today["mail"] == %{"review_count" => 1, "inbox_count" => 2, "configured" => true}
+      assert today["mail"] == [
+               %{
+                 "account" => "mara",
+                 "configured" => true,
+                 "state" => "idle",
+                 "pending_ops" => 0,
+                 "notices" => []
+               }
+             ]
     end
 
-    test "degrades to the zero summary when the Repo is down but the Engine is still registered" do
-      AgentCase.open_workspace!()
-      await_engine_active!()
+    test "multiple accounts sort by slug" do
+      ws = AgentCase.open_workspace!()
+
+      setup_account!(ws.path, "priya", "imap.other.com")
+      await_engine_active!("priya")
+      setup_account!(ws.path, "mara")
+      await_engine_active!("mara")
+
+      {:ok, today} = Valea.Cockpit.today()
+      assert Enum.map(today["mail"], & &1["account"]) == ["mara", "priya"]
+    end
+
+    test "never raises/exits when the Repo is down but an account's Engine is still registered" do
+      ws = AgentCase.open_workspace!()
+      setup_account!(ws.path, "mara")
+      await_engine_active!("mara")
 
       # The exact window `Valea.Workspace.Manager.do_close/1` opens on every
       # close/switch: `state.children` is `[repo_pid, runtime_pid]`,
-      # terminated in list order, so the Repo dies FIRST while the Engine (a
-      # Runtime child) is still registered. Reproduce it directly by
-      # terminating the Repo child; `Valea.Workspace.DynamicSupervisor` never
-      # restarts a child it was asked to terminate, so the window stays open
-      # for the assertion below.
+      # terminated in list order, so the Repo dies FIRST while an account's
+      # Engine (a Runtime->Supervisor grandchild) is still registered.
+      # Reproduce it directly by terminating the Repo child;
+      # `Valea.Workspace.DynamicSupervisor` never restarts a child it was
+      # asked to terminate, so the window stays open for the assertion below.
       repo_pid = Process.whereis(Valea.Repo)
       assert is_pid(repo_pid)
       :ok = DynamicSupervisor.terminate_child(Valea.Workspace.DynamicSupervisor, repo_pid)
 
-      assert Process.whereis(Valea.Mail.Engine)
-
-      # Must not raise/exit despite `Store.list_messages/0` hitting a dead
-      # Repo — `live_mail_summary/0`'s rescue degrades to the zero shape.
-      {:ok, today} = Valea.Cockpit.today()
-
-      assert today["mail"] == %{"review_count" => 0, "inbox_count" => 0, "configured" => false}
+      # `Engine.status/1`'s own `store_snapshot/1` rescue means a dead Repo
+      # degrades `pending_ops`/`held_folders`/`backfill` to empty rather than
+      # crashing the Engine (and losing its in-RAM credential with it) — so,
+      # unlike the old flat `review_count`/`inbox_count` shape (which had
+      # nothing sane to report without the DB), the account still shows up
+      # with its last-known (DB-independent) `state`. The one hard guarantee
+      # this test proves is `mail_summary/0` never raises/exits either way.
+      assert Engine.status("mara") != nil
+      assert {:ok, %{"mail" => [%{"account" => "mara"}]}} = Valea.Cockpit.today()
     end
   end
 end
