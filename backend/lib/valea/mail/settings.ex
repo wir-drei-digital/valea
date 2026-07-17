@@ -329,13 +329,21 @@ defmodule Valea.Mail.Settings do
       with {:ok, host} <- fetch_required_string(imap, "host"),
            {:ok, username} <- fetch_required_string(imap, "username"),
            {:ok, port} <- fetch_port(imap) do
+        # Resolve provider: explicit YAML value takes precedence, fallback to host detection
+        provider =
+          case provider_from_string(Map.get(attrs, "provider")) do
+            :generic -> detect_provider(host)
+            explicit -> explicit
+          end
+
         {:ok,
          %Settings{
            slug: slug,
-           provider: provider_from_string(Map.get(attrs, "provider")),
+           provider: provider,
            imap: %{host: host, port: port, username: username},
-           folders: merge_yaml(@default_folders, Map.get(attrs, "folders"), &is_binary/1),
-           sync: merge_yaml_sync(@default_sync, Map.get(attrs, "sync"))
+           folders:
+             merge_yaml(default_folders_for(provider), Map.get(attrs, "folders"), &is_binary/1),
+           sync: merge_yaml_sync(default_sync_for(provider), Map.get(attrs, "sync"))
          }}
       end
     else

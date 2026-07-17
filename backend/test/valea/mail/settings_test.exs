@@ -75,6 +75,51 @@ defmodule Valea.Mail.SettingsTest do
     refute account.folders.archive == "Archive"
   end
 
+  test "load/1 with explicit provider: gmail in YAML uses gmail defaults (no folders:/sync: override)",
+       %{
+         root: root
+       } do
+    write_yaml!(root, """
+    version: 4
+    accounts:
+      personal:
+        provider: gmail
+        imap:
+          host: imap.gmail.com
+          port: 993
+          username: mara@gmail.com
+    """)
+
+    assert {:ok, %{accounts: accounts, invalid: %{}}} = Settings.load(root)
+    account = accounts["personal"]
+
+    assert account.provider == :gmail
+    assert account.folders.archive == "[Gmail]/All Mail"
+    assert account.sync.exclude_folders == Settings.gmail_excludes()
+  end
+
+  test "load/1 with provider absent but imap host detectable as gmail uses gmail defaults (detection fallback)",
+       %{
+         root: root
+       } do
+    write_yaml!(root, """
+    version: 4
+    accounts:
+      personal:
+        imap:
+          host: imap.gmail.com
+          port: 993
+          username: mara@gmail.com
+    """)
+
+    assert {:ok, %{accounts: accounts, invalid: %{}}} = Settings.load(root)
+    account = accounts["personal"]
+
+    assert account.provider == :gmail
+    assert account.folders.archive == "[Gmail]/All Mail"
+    assert account.sync.exclude_folders == Settings.gmail_excludes()
+  end
+
   test "slug grammar: invalid slugs are rejected by upsert_account!/valid_slug?, valid ones accepted",
        %{root: root} do
     invalid_slugs = ["../secrets", "a/b", "%2e%2e", "A", "", String.duplicate("a", 33)]
