@@ -233,10 +233,13 @@ the window.
   account (IMAP, SMTP).
 - **What the user reviewed is what gets transmitted.** Send and push are
   hash-bound end to end: the UI passes the reviewed draft's SHA-256 with
-  the RPC and composition rejects a mismatch (the file changed after
-  review); the composed spool payload's hash lives in the ops ledger and
-  is re-verified immediately before every SMTP submit and every APPEND.
-  `spool/` is deny-all to agents.
+  the RPC; the server reads the draft **once** into an immutable buffer,
+  verifies the hash against that buffer, and composes from the same
+  buffer (never re-reading the mutable file); the composed spool
+  payload's hash is persisted on the attempt and re-verified immediately
+  before every SMTP submit and every APPEND. One non-terminal attempt per
+  draft, serialized through the Engine — concurrent clicks cannot produce
+  two deliveries. `spool/` is deny-all to agents.
 - **Threat note — mailbox as untrusted content.** A full mirror puts
   attacker-authored text (every received mail) inside the agent's readable
   surface in opted-in sessions. Mitigations, by construction: mail mounts
@@ -324,8 +327,11 @@ tables rebuildable from `sources/mail/` + resync.
   (`pending | executing | needs_review | complete`), error. Crash-safe
   together with the spool file.
 - `mail_send_attempts` — the write-ahead send journal: account, draft
-  path, generated Message-ID, state (`submitting | submitted | complete |
-  needs_review`), error, timestamps (see Drafting & send).
+  path, kind (`send | push`), generated Message-ID, spool payload hash,
+  state (`submitting | submitted | complete | rejected | needs_review`),
+  error, timestamps; **unique non-terminal attempt per
+  (account, draft_path)** — the atomic claim that serializes concurrent
+  sends (see Drafting & send).
 
 Deleted: `mail_inbox_headers` (`InboxHeader`) and `mail_uid_outcomes`
 (`UidOutcome`) — the full mirror makes the awareness index redundant, and
@@ -399,15 +405,23 @@ Body in markdown; composed as text/plain.
 Agents (and the user) write drafts through the normal ask-gate. The Mail
 UI lists drafts with a review panel offering two **user-only** actions:
 
-- **Send** — a crash-safe state machine, never a bare submit:
-  1. Verify the RPC's `content_hash` against the draft file (reject with
-     a re-review error if the draft changed after the user read it), then
-     compose to RFC822 (resurrect `DraftMime` from git history, plain-text
-     MIME only) with a **stable, Valea-generated Message-ID**; write the
-     composed message to `spool/` and record its SHA-256.
-  2. **Before any network I/O**, persist a `mail_send_attempts` row in
-     state `submitting` and stamp the draft `status: sending` — the
-     durable record that a submission may be in flight.
+- **Send** — a crash-safe, serialized state machine, never a bare submit:
+  1. **Atomic claim.** In one SQLite transaction: insert the
+     `mail_send_attempts` row (state `submitting`) together with its
+     **stable, Valea-generated Message-ID**, under a uniqueness
+     constraint of one non-terminal attempt per `(account, draft_path)`.
+     A concurrent Send (double click, second tab) never creates a second
+     attempt — it returns the existing attempt's status. Sends are
+     additionally serialized through the account's Engine process. All of
+     this happens **before any network I/O**.
+  2. **Immutable snapshot.** Read the draft file once into a byte buffer;
+     verify `content_hash` against that buffer (mismatch → the attempt
+     terminates `rejected` with a re-review error); compose to RFC822
+     (resurrect `DraftMime` from git history, plain-text MIME only)
+     **from that same buffer** — the draft file is never re-read, so
+     there is no verify-then-read window for an agent to swap content.
+     Write the composed message to `spool/`, record its SHA-256 on the
+     attempt, stamp the draft `status: sending`.
   3. Re-verify the spool payload hash, then SMTP submission (STARTTLS on
      587 / implicit TLS on 465, same verification posture as IMAP).
   4. On acceptance: row → `submitted`, draft → `status: sent`, audit
@@ -422,10 +436,11 @@ UI lists drafts with a review panel offering two **user-only** actions:
   Message-ID (Sent folder first) — found → resolved as sent; not found →
   the user explicitly chooses resend (a fresh attempt) or revert to
   draft. **Nothing ever resends automatically.**
-- **Push to Drafts** — the same `content_hash` verification and
-  composition, then spool + ledger an append into the Drafts folder; it
-  syncs up and appears in the user's own mail client, where they send it
-  from there.
+- **Push to Drafts** — the same atomic claim + immutable-snapshot
+  composition (steps 1–2, `kind: push` in the same attempts table, same
+  one-non-terminal-attempt rule), then spool + ledger an append into the
+  Drafts folder; it syncs up and appears in the user's own mail client,
+  where they send it from there.
 
 `in_reply_to: <msg_id>` resolves threading headers (`In-Reply-To`,
 `References`) from the referenced message's **raw canonical file** — a
@@ -563,8 +578,12 @@ boundary; every failure state has a copyable remedy or a status notice.
   send state machine: refusal reverts the draft; crash between acceptance
   and journal transition → restart lands in `needs_review`, resolved by
   Message-ID search (found and not-found branches); draft changed after
-  review → `content_hash` rejection; no path resends without an explicit
-  user choice.
+  review → `content_hash` rejection against the snapshot buffer;
+  **concurrent double-send** → one attempt, one delivery, second caller
+  sees the existing attempt; **draft swapped between verification and
+  composition** → structurally impossible (composition consumes the
+  verified buffer) — test asserts compose-from-buffer semantics; no path
+  resends without an explicit user choice.
 - **Maildir helpers**: filename round-trip, flag mapping, escape rule
   property tests.
 - **Live acceptance** (mandatory before trusting the engine): the
