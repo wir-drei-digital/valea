@@ -50,7 +50,10 @@ resync.
    from this spec — its ambiguous-acceptance failure mode is irreducible;
    the user sends pushed drafts from their own mail client.)
 6. History: **configurable sync window** (default 90 days) bounding
-   backfill; landed messages stay local forever.
+   backfill; the window never prunes landed messages. (Clarified after
+   adversarial review: the mirror is a mirror, not an archive —
+   server-side deletion is the one thing that removes landed mail
+   locally; see Pull.)
 7. **Multiple accounts**, each an isolated engine, store subtree, and mount.
 
 ## Storage layout
@@ -152,11 +155,17 @@ Nothing infers intent from filesystem diffs. Mailbox mutations are
   mirror — the "once landed, stays local" invariant survives moving
   messages older than the sync window.
 - The executor **claims a pending file by atomically renaming it into the
-  engine-owned `ops/done/`** before parsing anything — the agent-writable
-  copy ceases to exist before interpretation, so a file cannot change
-  under the executor. Per-op results are appended to the claimed file
-  (`ok | rejected: <reason> | needs_review`) — a file-first audit trail
-  the agent can read but not edit (`ops/done/` is write-denied).
+  engine-owned `ops/done/`** before parsing anything. Claiming is
+  link-safe: a pending entry must be a **regular file with a single
+  link** — checked with `lstat`/no-follow semantics; symlinks and
+  hard-linked files are rejected to `quarantine/`, never parsed. After
+  the rename the executor re-validates type and link count on the opened
+  descriptor and parses **from that descriptor**, so nothing can change
+  or redirect underneath it. Per-op results go to a **separate,
+  engine-created result file** (`<name>.result.yaml` —
+  `ok | rejected: <reason> | needs_review` per op) beside the claimed
+  file — a file-first audit trail the agent can read but not edit
+  (`ops/done/` is write-denied).
 - **Valea-composed appends** come from the ops ledger + `spool/` only,
   never from ops files and never by discovering unknown files (see
   Drafting & push); the ops vocabulary cannot express append, delete, or
@@ -281,8 +290,10 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   (server-authoritative deletion holds across resets), and shared
   views/attachments go when the last occurrence goes.
 - Once landed, a message stays local even after it ages past the window —
-  the horizon bounds backfill only. Widening the window triggers deeper
-  backfill on the next pass.
+  the horizon bounds backfill only, never pruning. The one thing that
+  removes landed mail locally is server-side deletion (above): the mirror
+  mirrors; it is not an archive or a backup. Widening the window triggers
+  deeper backfill on the next pass.
 - Oversized messages (`sync.max_message_bytes`) are skipped and counted,
   never re-fetched hot (as today).
 
@@ -699,7 +710,9 @@ boundary; every failure state has a copyable remedy or a status notice.
   case-insensitive volume → distinct directories, no mixed UID maps,
   ops target the exact IMAP names; **claim-by-rename** (pending ops file
   mutated after claim → executor parses only the claimed engine-owned
-  copy); **old message moved by another client** (>window-old message
+  copy); **link-safety** (symlink or hard-linked pending ops file →
+  rejected to quarantine, never parsed, nothing written through the
+  link); **old message moved by another client** (>window-old message
   moved between mirrored folders → lands via the UID watermark, source
   removal never orphans it); **header injection** (CR/LF in subject or recipients →
   composition rejects) and malformed mailbox syntax → rejected with the
@@ -741,6 +754,9 @@ boundary; every failure state has a copyable remedy or a status notice.
 - Server-side search (SEARCH is used only for windowing).
 - Trash retention / expunge of any kind — the server and the user's client
   own eventual deletion.
+- Local tombstones/archive of server-deleted mail — the mirror is not a
+  backup; retention beyond the server's is the job of real backups
+  (e.g. Time Machine over the workspace).
 - Sharing one account across workspaces; per-folder agent ACLs (the mount
   is account-granular).
 
