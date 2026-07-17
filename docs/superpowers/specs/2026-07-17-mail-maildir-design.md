@@ -351,22 +351,20 @@ Per folder (from `LIST`, minus `sync.exclude_folders`):
   deletion holds across resets), and shared views/attachments go when the
   last occurrence goes. The watermark then re-initializes as at first
   sync.
-- **Folder lifecycle.** The known-folder set is persisted. After a
-  *successful, complete* `LIST`, a previously mirrored folder absent from
-  the current mirrored set — deleted, renamed, or newly excluded by
-  configuration — enters reconciliation; a failed or partial `LIST`
-  triggers nothing. A disappeared folder is **never cleaned up
-  immediately**: its pending ops are rejected (surfaced) and its
-  occurrence set is held pending-reconcile. Folders newly appearing in
-  the same `LIST` are rename candidates and are reconciled
-  **horizon-independently** (full enumeration + fingerprint re-attach —
-  the UIDVALIDITY-reset machinery): matched occurrences **migrate**
-  locally to the new folder directory with files, index rows, and views
-  intact — including >window-old and Message-ID-less mail, so a routine
-  server rename never loses mirrored data. Only occurrences still
-  unmatched after that complete reconciliation — and folders with no
-  candidate at all — are removed, with shared views/attachments
-  garbage-collected when unreferenced.
+- **Folder lifecycle — hold, don't guess.** The known-folder set is
+  persisted. After a *successful, complete* `LIST`, a previously
+  mirrored folder absent from the current mirrored set — deleted,
+  renamed, or newly excluded — becomes **held**: its pending ops are
+  rejected (surfaced), its local files, index rows, and views stay
+  intact and readable but are marked held in status, and nothing is
+  inferred about where it went. New folders pull independently as
+  ordinary first syncs. The user resolves a held folder from the Mail
+  page: **discard** (typed confirmation removes its local data, shared
+  views/attachments garbage-collected when unreferenced) or leave it
+  held. There is no rename detection or cross-folder matching anywhere —
+  a one-to-one folder mapping is unprovable when identical messages
+  legitimately live in several folders, so the engine never attempts
+  one. A failed or partial `LIST` changes nothing.
 - Once landed, a message stays local even after it ages past the window —
   the horizon bounds backfill only, never pruning. The one thing that
   removes landed mail locally is server-side deletion (above): the mirror
@@ -479,17 +477,17 @@ verified.
 
 `.account` is a login locator, not proof of mailbox identity — a
 provider or admin can reassign the same host + username to a different
-mailbox. The engine therefore enforces a **fail-closed continuity
-policy**: when INBOX or a majority of mirrored folders reset UIDVALIDITY
-in the same pass, the account must *prove* continuity before anything is
-deleted, re-bound, or mounted — at least half of the pre-existing local
-occurrences, and no fewer than three, must fingerprint-match the server.
-Anything below that — partial overlap, a single shared message, or a set
-too small to prove anything — stops in `mailbox_replaced` until the user
-explicitly re-adopts the subtree (typed confirmation) or purges it.
-Single-folder resets on an otherwise stable account reconcile normally.
-Acceptance covers same-host/same-username replacement, partial-overlap,
-and one-occurrence stores.
+mailbox, and IMAP offers no identifier that could prove otherwise. The
+engine therefore **fails closed without scoring**: when INBOX or a
+majority of mirrored folders reset UIDVALIDITY in the same pass, the
+account stops in `mailbox_replaced` — nothing is deleted, re-bound,
+mounted, or executed — until the user chooses **re-adopt** (typed
+confirmation; the account then reconciles against the current mailbox as
+an ordinary UIDVALIDITY-reset recovery) or **purge**. There is no
+overlap threshold to game; the cost is one confirmation after a rare
+provider-side rebuild. Single-folder resets on an otherwise stable
+account reconcile normally. Acceptance covers same-host/same-username
+replacement.
 
 Runtime: `Valea.Mail.Supervisor` under `Workspace.Runtime` starts **one
 Engine per configured account** (Registry-keyed by `{workspace, account}`),
@@ -515,7 +513,8 @@ confirmation) proves the outcome — nothing retries, pushes, or mutates
 for them in the meantime.
 
 - `mail_sync_state` — per (account, folder): uidvalidity, last-seen UID,
-  highestmodseq, initial-backfill completion flag, last pass result.
+  highestmodseq, initial-backfill completion flag, held marker (folder
+  lifecycle), last pass result.
 - `mail_uid_map` — one row per occurrence `(account, folder, uidvalidity,
   uid)`: msg_id, **last-synced flags** (the pull-diff anchor for
   detecting server-side flag changes).
@@ -724,6 +723,10 @@ transport (ACP only), which is the enforced boundary making these
   returns per-op results.
 - `purge_mail_account_files(account, confirmation, generation)` — the
   typed-confirmation purge behind slug reuse (see identity binding).
+- `discard_held_folder(account, folder, confirmation, generation)` — the
+  typed-confirmation removal of a held folder's local data (see folder
+  lifecycle); `readopt_mail_account(account, confirmation, generation)`
+  resolves `mailbox_replaced`.
 - `list_mail_messages(account, folder, limit \\ 100, before \\ nil)` —
   newest-first pagination by date; `get_mail_message(account, msg_id)`.
 - `list_mail_drafts()`,
@@ -830,11 +833,11 @@ boundary; every failure state has a copyable remedy or a status notice.
   before the reset → local file, index row, and last-occurrence view
   removed after the complete reconciliation) and **old-mail retention**
   (a >window-old, Message-ID-less, still-present message re-binds across
-  the reset instead of being deleted); **folder lifecycle** (server-side
-  folder delete and newly-excluded folder → local data reconciled away
-  after a successful complete `LIST`; partial or failed `LIST` → no
-  cleanup; **rename with >window-old, Message-ID-less mail** →
-  occurrences migrate to the new folder directory, nothing lost);
+  the reset instead of being deleted); **folder lifecycle** (disappeared
+  folder → held intact, ops rejected, nothing inferred; discard requires
+  typed confirmation; rename → old folder held + new folder pulls
+  independently, nothing lost or guessed; partial or failed `LIST` →
+  nothing changes);
   **watermark initialization** (folder containing only >window-old mail →
   watermark = `UIDNEXT − 1`, second pass fetches nothing, old mail stays
   server-only); **crash mid-initial-backfill** (in-window UIDs not yet
@@ -847,10 +850,9 @@ boundary; every failure state has a copyable remedy or a status notice.
   permanent `needs_review`);
   window widening backfill; Gmail folder exclusion; **slug-reuse identity
   mismatch** → account refuses activation, typed purge path works;
-  **mailbox replacement** (account-wide resets failing the continuity
-  threshold — zero, partial, or too-small fingerprint overlap →
-  `mailbox_replaced`, nothing deleted or mounted until re-adoption or
-  purge; single-folder reset unaffected);
+  **mailbox replacement** (account-wide UIDVALIDITY reset →
+  `mailbox_replaced` unconditionally, nothing deleted or mounted until
+  typed re-adopt or purge; single-folder reset reconciles normally);
   two-account isolation; ops-ledger crash recovery (ledger + spool
   survive restart); **ladder disconnect after each request** (`COPY`
   accepted but response lost → reconcile proves exactly one
@@ -928,6 +930,32 @@ boundary; every failure state has a copyable remedy or a status notice.
   (docs/superpowers/acceptance/).
 - **Frontend**: vitest for reworked stores + draft panel; svelte-check
   and codegen freshness as always (`just test`).
+
+## Residual risks & accepted trade-offs
+
+Adversarial review (27 rounds) drove the design above. These residual
+facts are **accepted decisions**, not gaps:
+
+- **IMAP has no mailbox identity.** Continuity can only be disproven,
+  never proven — hence the unconditional fail-closed stop on
+  account-wide UIDVALIDITY resets. One typed confirmation after a rare
+  provider rebuild is the accepted cost.
+- **Folder renames are not tracked.** A one-to-one folder mapping is
+  unprovable under multi-folder message membership, so disappeared
+  folders are held for the user instead of auto-migrated. Held data is
+  never deleted without a typed confirmation.
+- **APPEND ambiguity worst-cases to an unsent draft.** A lost push
+  response that reconciliation cannot prove stops in `needs_review`; the
+  user checks their own Drafts. No failure mode transmits anything to a
+  third party — there is no SMTP.
+- **The mirror is not a backup.** Server-side deletion is authoritative;
+  retention beyond the server is the job of real backups over the
+  workspace.
+- **Ops-file approval is write-approval.** Approving an agent's ops-file
+  write is what authorizes those mailbox mutations; per-op review is
+  post-hoc via `ops/done` results and the audit log. The closed
+  vocabulary and occurrence validation bound the blast radius — moves
+  and S/R/F flags only, all reversible from any client.
 
 ## Non-goals
 
