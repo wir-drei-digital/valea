@@ -968,6 +968,39 @@ defmodule ValeaWeb.MailRpcTest do
       assert by_name["forged.md"]["notice"] == "status_forged"
     end
 
+    # Minor #3 (fix wave): listing must take the same no-follow posture as the
+    # push path — a symlinked drafts entry is listed as invalid and its target
+    # content is NEVER read (the target here is a perfectly VALID draft; had it
+    # been read, parsing would have succeeded).
+    test "a symlinked draft lists as invalid, target content unread", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+
+      outside = Path.join(workspace, "planted.md")
+
+      File.write!(outside, """
+      ---
+      to: [victim@example.com]
+      subject: "Valid if followed"
+      ---
+      Body.
+      """)
+
+      File.ln_s!(outside, Path.join(drafts_dir, "link.md"))
+
+      assert %{"success" => true, "data" => %{"drafts" => drafts}} =
+               rpc("list_mail_drafts", %{}, ["drafts"])
+
+      assert [%{"name" => "link.md", "parsed_recipients" => %{"invalid" => "link_unsafe"}}] =
+               drafts
+    end
+
     test "surfaces a parse error as invalid", %{
       workspace: workspace,
       generation: generation

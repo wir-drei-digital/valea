@@ -700,12 +700,25 @@ defmodule Valea.Api.Mail do
     }
   end
 
+  # Same no-follow posture as the push path's snapshot open: only a REGULAR
+  # file with a SINGLE link is ever read — an agent-planted symlink (or
+  # hard-linked file) under `drafts/` lists as invalid (`link_unsafe`) with
+  # its target content NEVER read.
   defp read_and_parse_draft(root, account, name) do
     path = Path.join([root, "sources", "mail", account, "drafts", name])
 
-    case File.read(path) do
-      {:ok, bytes} -> DraftFile.parse_and_validate(bytes)
-      {:error, _reason} -> {:error, "unreadable"}
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, links: 1}} ->
+        case File.read(path) do
+          {:ok, bytes} -> DraftFile.parse_and_validate(bytes)
+          {:error, _reason} -> {:error, "unreadable"}
+        end
+
+      {:ok, _link_or_special} ->
+        {:error, "link_unsafe"}
+
+      {:error, _reason} ->
+        {:error, "unreadable"}
     end
   end
 

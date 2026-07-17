@@ -504,12 +504,50 @@ defmodule Valea.Mail.OpsExecutor do
              state: "claimed"
            }) do
         {:ok, op_row} ->
-          snapshot_and_spool(ctx, op_row, draft_name, content_hash, buffer, path)
+          snapshot_and_spool_guarded(ctx, op_row, draft_name, content_hash, buffer, path)
 
         {:error, :duplicate_active} ->
           {:duplicate, existing_display(ctx.account, origin)}
       end
     end
+  rescue
+    # This local phase does bang file I/O (spool/manifest writes) and Ash DB
+    # writes that raise on a transient failure (disk full, `database is
+    # locked`). It is called from the Engine's own handle_call (serial by
+    # design), so a raise here MUST degrade to a clean rejection — a crashed
+    # Engine would be supervisor-restarted and lose its RAM-only credential
+    # closure, silently stopping the account.
+    _error -> {:error, "push_failed"}
+  catch
+    :exit, _reason -> {:error, "push_failed"}
+  end
+
+  # Post-claim guard: any raise past the claim terminates the claimed op
+  # `rejected` (best-effort — the claimed-without-spool boot recovery is the
+  # backstop when even that write fails) so the partial-unique claim never
+  # wedges, then degrades to the same clean error.
+  defp snapshot_and_spool_guarded(ctx, op_row, draft_name, content_hash, buffer, path) do
+    snapshot_and_spool(ctx, op_row, draft_name, content_hash, buffer, path)
+  rescue
+    _error ->
+      best_effort_reject(op_row.id, "push_failed")
+      {:error, "push_failed"}
+  catch
+    :exit, _reason ->
+      best_effort_reject(op_row.id, "push_failed")
+      {:error, "push_failed"}
+  end
+
+  # The failing subsystem may be the Store itself — never let the cleanup
+  # transition raise through the guard. An op left `claimed` (transition also
+  # failed) is provably un-transmitted and terminates `rejected` at the next
+  # recover pass (`recover_claimed_append/2`).
+  defp best_effort_reject(op_id, reason) do
+    Store.transition_op(op_id, "rejected", %{error: reason})
+  rescue
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   # Snapshot-verify → validate → status-corroborate → compose+spool. Every
@@ -631,16 +669,27 @@ defmodule Valea.Mail.OpsExecutor do
   end
 
   # A `pending` append: verify the spool, search Drafts (idempotent), APPEND.
+  # The search-first rule is FAIL-CLOSED (spec: "every append execution —
+  # first attempt or retry — searches first"): a search that ERRORS is never
+  # "not present" — with the same deterministic Message-ID a re-push after a
+  # completed one would otherwise blind-APPEND a duplicate. On an
+  # unanswerable search nothing is appended; the op stays `pending` so the
+  # next attempt retries the search properly.
   defp fresh_append(ctx, op_row) do
     drafts = drafts_folder(ctx, op_row)
 
     case load_verified_payload(ctx, op_row) do
       {:ok, payload} ->
-        if append_present?(ctx, drafts, op_row.message_id) do
-          complete_append(ctx, op_row)
-        else
-          Store.transition_op(op_row.id, "executing")
-          issue_append(ctx, op_row, drafts, payload)
+        case check_append_present(ctx, drafts, op_row.message_id) do
+          {:ok, true} ->
+            complete_append(ctx, op_row)
+
+          {:ok, false} ->
+            Store.transition_op(op_row.id, "executing")
+            issue_append(ctx, op_row, drafts, payload)
+
+          {:error, _reason} ->
+            {:needs_review, "search_failed"}
         end
 
       {:error, :missing_spool} ->
@@ -708,13 +757,34 @@ defmodule Valea.Mail.OpsExecutor do
 
   # Read-only presence check of the target folder for our Valea-generated
   # Message-ID — the primary idempotency guard (a match, in OUR unique id, is
-  # definitively our draft; no re-APPEND).
-  defp append_present?(ctx, folder, message_id) do
-    case ctx.transport.examine(ctx.conn, folder) do
-      {:ok, _info} -> search_message_id(ctx, message_id) != []
-      {:error, _reason} -> false
+  # definitively our draft; no re-APPEND). Three-way: a failed EXAMINE or
+  # SEARCH is `{:error, reason}`, DISTINCT from a successful empty search —
+  # the caller that decides to APPEND must never conflate the two.
+  defp check_append_present(ctx, folder, message_id) do
+    with {:ok, _info} <- ctx.transport.examine(ctx.conn, folder),
+         {:ok, uids} <- checked_search_message_id(ctx, message_id) do
+      {:ok, uids != []}
+    else
+      {:error, _reason} = error -> error
     end
   end
+
+  # Unlike `search/2` (which swallows errors to `[]` for candidate scans),
+  # this surfaces the search failure. Our push Message-IDs are always
+  # generated-safe; the unsafe branch is unreachable belt-and-braces.
+  defp checked_search_message_id(ctx, message_id) do
+    if safe_message_id?(message_id) do
+      ctx.transport.uid_search(ctx.conn, "HEADER Message-ID #{message_id}")
+    else
+      {:ok, []}
+    end
+  end
+
+  # Boolean view for the CONFIRM-ONLY paths (reconciliation, the post-refusal
+  # double-check) where an unanswerable search safely degrades to "not
+  # proven" — those paths never APPEND on a negative.
+  defp append_present?(ctx, folder, message_id),
+    do: check_append_present(ctx, folder, message_id) == {:ok, true}
 
   # Widened all-folder search for an unknown outcome: a client/server rule may
   # have filed the new draft outside Drafts. Each Message-ID candidate is
@@ -918,6 +988,10 @@ defmodule Valea.Mail.OpsExecutor do
     else
       _ -> :unchanged
     end
+  rescue
+    # The stamp is a best-effort courtesy (the LEDGER is authoritative for the
+    # displayed state) — a failed rewrite must never fail the push around it.
+    _error -> :unchanged
   end
 
   # Stamp using the manifest's recorded snapshot: the `pushing`-stamped hash

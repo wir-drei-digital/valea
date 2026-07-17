@@ -832,6 +832,27 @@ defmodule Valea.Mail.OpsExecutorTest do
       assert ops_all("drafts/link.md") == []
     end
 
+    # Important #1 (fix wave): the local phase does bang I/O + DB writes that
+    # can raise (disk full, `database is locked`); a raise must terminate the
+    # claimed op `rejected` and surface a clean error — never propagate.
+    test "a spool-write crash terminates the claimed op rejected and returns push_failed", %{
+      root: root
+    } do
+      name = start_model!()
+      content = write_draft!(root, "reply.md", draft_body())
+      hash = DraftFile.content_hash(content)
+
+      # Sabotage: `spool` exists as a regular FILE, so the fsynced payload
+      # write's mkdir_p! raises.
+      File.write!(Path.join([root, "sources", "mail", "mara", "spool"]), "not a directory")
+
+      c = ctx(name, root)
+
+      assert {:error, "push_failed"} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+      # The claimed row was terminated — nothing blocks a retry.
+      assert [%{state: "rejected", error: "push_failed"}] = ops_all("drafts/reply.md")
+    end
+
     test "in_reply_to resolves threading headers from the referenced canonical file", %{
       root: root
     } do
@@ -876,6 +897,28 @@ defmodule Valea.Mail.OpsExecutorTest do
       assert {:ok, %{state: "complete"}} = Store.op_by_id(op.id)
       refute File.exists?(spool_eml(root, op.id))
       assert read_draft_status(root, "reply.md") == "pushed"
+    end
+
+    # Minor #2 (fix wave): a FAILED search is never "not present" — the spec's
+    # search-FIRST rule is fail-closed. On an unanswerable search nothing is
+    # appended; the op stays `pending` and the next attempt retries the search.
+    test "a failed Drafts search never issues a blind APPEND; the op stays pending and retries",
+         %{root: root} do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      ModelMailTransport.inject(name, {:fail, :uid_search, :boom})
+
+      assert {:needs_review, "search_failed"} = OpsExecutor.execute_append(c, op.id)
+      # NO APPEND was issued (the transport call would have landed a message).
+      assert ModelMailTransport.messages(name, "Drafts") == []
+      # Parked as still-pending: the next pass retries search-first properly.
+      assert {:ok, %{state: "pending"}} = Store.op_by_id(op.id)
+
+      # Fault consumed — the retry searches, finds nothing, appends exactly once.
+      assert :ok = OpsExecutor.execute_append(c, op.id)
+      assert length(ModelMailTransport.messages(name, "Drafts")) == 1
+      assert {:ok, %{state: "complete"}} = Store.op_by_id(op.id)
     end
 
     test "search-first: a lost APPEND response completes without a duplicate", %{root: root} do

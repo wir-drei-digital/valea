@@ -422,7 +422,7 @@ defmodule Valea.Mail.Engine do
       :ok ->
         local_ctx = %{root: state.root, account: state.account, settings: state.settings}
 
-        case OpsExecutor.prepare_push(local_ctx, draft_name, content_hash) do
+        case safe_prepare_push(local_ctx, draft_name, content_hash) do
           {:ok, op_row} ->
             if busy?(state) do
               entry = %{from: from, push: {op_row.id, draft_name}}
@@ -579,6 +579,20 @@ defmodule Valea.Mail.Engine do
       spawn_linked_task(fn -> send(parent, {:ops_result, self(), run_rpc_ops(args, ops)}) end)
 
     %{state | ops_current: %{task: task, from: from, ops: ops}}
+  end
+
+  # `prepare_push` runs INLINE in handle_call (the claim must be serial with
+  # the loop) but does bang I/O + DB writes that can raise on a transient
+  # failure (disk full, `database is locked`). `prepare_push` guards itself;
+  # this wrapper is defense-in-depth at the one call site inside the Engine
+  # loop — a raise here would fell the Engine, and a supervisor restart erases
+  # the RAM-only credential closure, silently stopping the account.
+  defp safe_prepare_push(local_ctx, draft_name, content_hash) do
+    OpsExecutor.prepare_push(local_ctx, draft_name, content_hash)
+  rescue
+    _error -> {:error, "push_failed"}
+  catch
+    :exit, _reason -> {:error, "push_failed"}
   end
 
   # Starts the NETWORK half of a push (the idempotent APPEND) in the same

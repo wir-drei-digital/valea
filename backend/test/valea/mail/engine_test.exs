@@ -921,6 +921,50 @@ defmodule Valea.Mail.EngineTest do
     assert msg.raw =~ "Message-ID: <valea.push."
   end
 
+  # Important #1 (fix wave): a raise in the local prepare phase (disk full,
+  # `database is locked`) must NEVER fell the Engine — a supervisor restart
+  # would erase the RAM-only credential closure and silently stop syncing.
+  test "a prepare_push crash (unwritable spool) rejects cleanly; Engine survives with its credential",
+       %{root: root} do
+    slug = "mara"
+    name = :"model_#{System.unique_integer([:positive])}"
+    {:ok, _pid} = ModelMailTransport.start_link(name: name)
+    ModelMailTransport.put_folder(name, "Drafts")
+
+    Application.put_env(:valea, :mail_transport, ModelMailTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+
+    start_engine!(root, 82, slug, connect_opts: [name: name])
+    open(root, 82)
+    :ok = Engine.set_credential(slug, "app-password")
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    hash = Valea.Mail.DraftFile.content_hash(@draft_md)
+
+    # Sabotage: `spool` exists as a regular FILE, so the fsynced spool write
+    # raises inside the local prepare phase.
+    spool = Path.join([root, "sources", "mail", slug, "spool"])
+    File.write!(spool, "not a directory")
+
+    pid_before = GenServer.whereis(Engine.via(slug))
+    assert {:error, "push_failed"} = Engine.push_draft(slug, "reply.md", hash)
+
+    # Engine alive (same pid — no supervisor restart), credential intact,
+    # status still answering.
+    assert GenServer.whereis(Engine.via(slug)) == pid_before
+    status = Engine.status(slug)
+    assert status.state == "idle"
+    assert status.credential == "present"
+
+    # The claimed op was terminated rejected — nothing blocks a retry.
+    assert [%{state: "rejected"}] = Store.ops_by_origin(slug, "drafts/reply.md")
+
+    # Retry after fixing the spool: the full push succeeds.
+    File.rm!(spool)
+    assert {:ok, "pushed"} = Engine.push_draft(slug, "reply.md", hash)
+    assert [_msg] = ModelMailTransport.messages(name, "Drafts")
+  end
+
   test "push_draft rides the serialized work slot: no second connection while a pass runs", %{
     root: root
   } do
