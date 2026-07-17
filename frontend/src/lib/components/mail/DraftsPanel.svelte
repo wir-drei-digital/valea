@@ -22,9 +22,14 @@
     warn: 'bg-paper-pill text-warn-ink'
   };
 
-  let pushingName: string | null = $state(null);
+  // Keyed by `account + '/' + name`, never name alone: two accounts can each
+  // hold a same-named draft (`reply.md`), and keying by name would cross-talk —
+  // the "Pushing…" label and the error would appear on BOTH rows.
+  let pushingKey: string | null = $state(null);
   let pushError: string | null = $state(null);
-  let pushErrorFor: string | null = $state(null);
+  let pushErrorKey: string | null = $state(null);
+
+  const draftKey = (account: string, name: string): string => `${account}/${name}`;
 
   onMount(() => {
     void mailStore.refreshDrafts();
@@ -33,14 +38,15 @@
   const showAccount = $derived(new Set(mailStore.drafts.map((d) => d.account)).size > 1);
 
   async function push(account: string, name: string): Promise<void> {
-    pushingName = name;
+    const key = draftKey(account, name);
+    pushingKey = key;
     pushError = null;
-    pushErrorFor = null;
+    pushErrorKey = null;
     const outcome = await mailStore.pushDraft(account, name, workspaceStore.generation ?? 0);
-    pushingName = null;
+    pushingKey = null;
     if ('error' in outcome) {
       pushError = pushErrorMessage(outcome.error);
-      pushErrorFor = name;
+      pushErrorKey = key;
     }
   }
 </script>
@@ -80,10 +86,10 @@
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={pushingName !== null || 'invalid' in draft.recipients}
+                disabled={pushingKey !== null || 'invalid' in draft.recipients}
                 onclick={() => void push(draft.account, draft.name)}
               >
-                {pushingName === draft.name ? 'Pushing…' : 'Push to Drafts'}
+                {pushingKey === draftKey(draft.account, draft.name) ? 'Pushing…' : 'Push to Drafts'}
               </Button>
             {/if}
           </div>
@@ -92,7 +98,7 @@
           {#if draft.notice}
             <p class="text-suggest-ink mt-1 text-[12px]">{draft.notice}</p>
           {/if}
-          {#if pushError && pushErrorFor === draft.name}
+          {#if pushError && pushErrorKey === draftKey(draft.account, draft.name)}
             <p class="text-warn-ink mt-1 text-[12.5px]" role="alert">{pushError}</p>
           {/if}
         </li>

@@ -132,7 +132,7 @@ export function draftRecipientsLine(recipients: MailDraft['recipients']): string
 /** Error copy for a failed push (`push_draft_to_mailbox` / `get_mail_draft` error codes). */
 export function pushErrorMessage(code: string): string {
   switch (code) {
-    case 'hash_mismatch':
+    case 'content_changed':
       return 'The draft changed since you opened it — review it again, then push.';
     case 'duplicate_active':
       return 'This draft is already being pushed.';

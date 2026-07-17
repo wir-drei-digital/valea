@@ -76,7 +76,7 @@ Create two test users per `scripts/dovecot/dovecot.conf`.
   to/subject + body). Open Drafts panel, Push to Drafts.
 - Expected: state walks pushing→pushed; the MIME lands ONCE in Dovecot's
   Drafts (verify Message-ID `<valea.push.*@valea.invalid>`); editing the
-  file mid-push → `hash_mismatch`; pushing again after success is refused
+  file mid-push → `content_changed`; pushing again after success is refused
   as a duplicate claim; killing the backend mid-push then restarting
   reconciles without a second copy.
 - Observed:

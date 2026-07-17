@@ -1160,17 +1160,159 @@ defmodule Valea.Mail.OpsExecutor do
   # ==========================================================================
 
   @doc """
-  Reconciles every in-flight op before any new op executes: move ledger rows
-  in `pending`/`executing`/`needs_review` are reconciled (confirm-first,
-  idempotent) from their manifests, and claimed ops files lacking a result
-  sidecar are replayed (flag ops resolve via their recorded baselines) and
-  their results written.
+  Reconciles every in-flight op before any new op executes. Runs at the top
+  of every pass and every RPC ops batch:
+
+    1. **Orphan-manifest sweep** (spec §Store + §Testing "database-loss
+       recovery"). SQLite is pure cache for everything except `mail_pending_ops`,
+       which is made *recoverable* by a self-contained `spool/*.manifest.yaml`
+       fsynced before any remote I/O. After database loss the ledger rows are
+       gone but the manifests survive; `sweep_orphan_manifests/1` enumerates
+       `spool/` independently of the ledger and, for each manifest whose op-id
+       has NO row, recreates a ledger row from the manifest in a NON-TERMINAL
+       reconcile state (`executing`) so the confirm-first paths below resolve
+       it — a move through `reconcile_move` (never a fresh blind execute, never
+       an unverified purge), an append through `reconcile_append` (search-first,
+       widened, never a duplicate APPEND). A malformed/unreadable manifest is
+       quarantined with a recorded reason rather than crashing the pass; a
+       manifest that still has a ledger row is left to the normal paths (cleaned
+       at op completion as today).
+    2. Move ledger rows in `pending`/`executing`/`needs_review` are reconciled
+       (confirm-first, idempotent) from their manifests.
+    3. Append ledger rows are driven to a terminal/parked state.
+    4. Claimed ops files lacking a result sidecar are replayed (flag ops resolve
+       via their recorded baselines) and their results written.
   """
   @spec recover(ctx()) :: :ok
   def recover(ctx) do
+    sweep_orphan_manifests(ctx)
     recover_moves(ctx)
     recover_appends(ctx)
     recover_ops_files(ctx)
+    :ok
+  end
+
+  # -- orphan-manifest sweep (database-loss recovery) -------------------------
+
+  # Enumerate `spool/` for `*.manifest.yaml` whose op-id has no ledger row and
+  # recreate a blocked (non-terminal) row so the confirm-first reconcile below
+  # resolves each without duplicate delivery. Manifests WITH a row are left to
+  # the normal recover paths.
+  defp sweep_orphan_manifests(ctx) do
+    case File.ls(spool_dir(ctx)) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&String.ends_with?(&1, ".manifest.yaml"))
+        |> Enum.each(fn name ->
+          id = String.replace_suffix(name, ".manifest.yaml", "")
+          if orphan_manifest?(id), do: recreate_orphan_row(ctx, id)
+        end)
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp orphan_manifest?(id) do
+    match?({:error, _}, Store.op_by_id(id))
+  end
+
+  # Recreate a ledger row from an orphan manifest. A malformed/unreadable
+  # manifest (unparseable, missing `kind`, or an unknown kind) is quarantined
+  # with a recorded reason rather than crashing the pass.
+  defp recreate_orphan_row(ctx, id) do
+    case read_manifest(ctx, id) do
+      %{"kind" => "move"} = manifest -> recreate_move_row(ctx, id, manifest)
+      %{"kind" => "append"} = manifest -> recreate_append_row(ctx, id, manifest)
+      _malformed -> quarantine_manifest(ctx, id, "malformed_or_unknown_manifest")
+    end
+  end
+
+  # A move is recreated in `executing` so `recover_moves/1` routes it to
+  # `reconcile_move` (confirm-first) — never `execute/2`'s fresh blind ladder.
+  defp recreate_move_row(ctx, id, manifest) do
+    required = [
+      manifest["account"],
+      manifest["source_folder"],
+      manifest["target_folder"],
+      manifest["uid"],
+      manifest["source_uidvalidity"],
+      manifest["msg_id"],
+      manifest["origin"]
+    ]
+
+    if Enum.any?(required, &is_nil/1) do
+      quarantine_manifest(ctx, id, "incomplete_move_manifest")
+    else
+      {:ok, _row} =
+        Store.create_pending_op(%{
+          id: id,
+          kind: "move",
+          account: manifest["account"],
+          source_folder: manifest["source_folder"],
+          target_folder: manifest["target_folder"],
+          uid: manifest["uid"],
+          source_uidvalidity: manifest["source_uidvalidity"],
+          dest_watermark: manifest["dest_watermark"],
+          dest_uidvalidity: manifest["dest_uidvalidity"],
+          msg_id: manifest["msg_id"],
+          message_id: manifest["message_id"],
+          origin: manifest["origin"],
+          state: "executing"
+        })
+
+      :ok
+    end
+  rescue
+    _error -> quarantine_manifest(ctx, id, "move_manifest_recreate_failed")
+  end
+
+  # An append is recreated in `executing` so `recover_appends/1` routes it to
+  # `reconcile_append` (search-first, widened) — never `fresh_append/2`, which
+  # could blind-APPEND a duplicate of a message the lost original already landed.
+  defp recreate_append_row(ctx, id, manifest) do
+    required = [
+      manifest["account"],
+      manifest["target_folder"],
+      manifest["message_id"],
+      manifest["origin"]
+    ]
+
+    if Enum.any?(required, &is_nil/1) do
+      quarantine_manifest(ctx, id, "incomplete_append_manifest")
+    else
+      case Store.create_pending_op(%{
+             id: id,
+             kind: "append",
+             account: manifest["account"],
+             target_folder: manifest["target_folder"],
+             message_id: manifest["message_id"],
+             msg_id: manifest["msg_id"],
+             origin: manifest["origin"],
+             spool_path: manifest["spool_path"],
+             payload_sha256: manifest["payload_sha256"],
+             state: "executing"
+           }) do
+        {:ok, _row} ->
+          :ok
+
+        {:error, :duplicate_active} ->
+          quarantine_manifest(ctx, id, "duplicate_active_append_manifest")
+      end
+    end
+  rescue
+    _error -> quarantine_manifest(ctx, id, "append_manifest_recreate_failed")
+  end
+
+  # Move the unresolvable manifest to `quarantine/` (with a `.reason` sidecar)
+  # so the pass continues and the operator can inspect it — the same posture as
+  # OpsFile's link-unsafe quarantine.
+  defp quarantine_manifest(ctx, id, reason) do
+    dir = Path.join([ctx.root, "sources", "mail", ctx.account, "quarantine"])
+    File.mkdir_p!(dir)
+    dest = Path.join(dir, "#{id}.manifest.yaml-#{System.unique_integer([:positive])}")
+    File.rename(manifest_path(ctx, id), dest)
+    File.write(dest <> ".reason", reason)
     :ok
   end
 
@@ -1365,14 +1507,22 @@ defmodule Valea.Mail.OpsExecutor do
   end
 
   defp move_replay_status(ctx, msg_id, from) do
-    # The move's ledger row already carries its resolved state.
+    # The move's ledger row already carries its resolved state (the orphan
+    # sweep + `recover_moves/1` ran first, so a DB-loss move has a row again).
+    # Query ANY state — `pending_ops/1` hides terminal rows, so it could not
+    # tell a resolved `complete` move from one whose row never existed. A
+    # genuinely MISSING row (no manifest, no ledger — nothing to reconcile
+    # from) is NOT silently reported `ok`: fail closed to `needs_review`.
     ctx.account
-    |> Store.pending_ops()
-    |> Enum.find(&(&1.kind == "move" and &1.msg_id == msg_id and &1.source_folder == from))
+    |> Store.move_ops(msg_id, from)
     |> case do
-      %{state: "needs_review"} -> :needs_review
-      %{state: state} when state in ["pending", "executing"] -> :needs_review
-      _resolved_or_absent -> :ok
+      [] ->
+        :needs_review
+
+      rows ->
+        if Enum.any?(rows, &(&1.state in ["pending", "executing", "needs_review"])),
+          do: :needs_review,
+          else: :ok
     end
   end
 
@@ -1490,8 +1640,11 @@ defmodule Valea.Mail.OpsExecutor do
 
   defp cleanup(ctx, id), do: File.rm(manifest_path(ctx, id))
 
+  defp spool_dir(ctx),
+    do: Path.join([ctx.root, "sources", "mail", ctx.account, "spool"])
+
   defp manifest_path(ctx, id),
-    do: Path.join([ctx.root, "sources", "mail", ctx.account, "spool", "#{id}.manifest.yaml"])
+    do: Path.join([spool_dir(ctx), "#{id}.manifest.yaml"])
 
   # ==========================================================================
   # small helpers

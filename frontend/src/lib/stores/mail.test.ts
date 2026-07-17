@@ -640,7 +640,7 @@ describe('MailStore.pushDraft', () => {
     const store = new MailStore(
       fakeApi({
         getMailDraft: async () => ({ ok: true, data: { content: 'x', path: 'p' } }),
-        pushDraftToMailbox: async () => ({ ok: false, error: 'hash_mismatch' }),
+        pushDraftToMailbox: async () => ({ ok: false, error: 'content_changed' }),
         listMailDrafts
       }) as never
     );
@@ -648,7 +648,7 @@ describe('MailStore.pushDraft', () => {
     const outcome = await store.pushDraft('mara', 'reply.md', 7);
     await flush();
 
-    expect(outcome).toEqual({ error: 'hash_mismatch' });
+    expect(outcome).toEqual({ error: 'content_changed' });
     expect(listMailDrafts).toHaveBeenCalled();
   });
 });

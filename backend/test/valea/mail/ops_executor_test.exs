@@ -129,6 +129,16 @@ defmodule Valea.Mail.OpsExecutorTest do
   defp manifest_path(root, id),
     do: Path.join([root, "sources", "mail", "mara", "spool", "#{id}.manifest.yaml"])
 
+  # Simulate database loss: destroy every `mail_pending_ops` row while leaving
+  # the `spool/*.manifest.yaml` files (and any spool payloads) on disk — the
+  # exact state boot faces after losing `app.sqlite` mid-flight.
+  defp wipe_ledger! do
+    Enum.each(Store.pending_ops("mara"), fn %{id: id} ->
+      {:ok, row} = Ash.get(Valea.Mail.Store.PendingOp, id)
+      Ash.destroy!(row)
+    end)
+  end
+
   # ==========================================================================
   # Contract 2 — native move ladder + confirmation
   # ==========================================================================
@@ -1021,6 +1031,152 @@ defmodule Valea.Mail.OpsExecutorTest do
 
       assert length(ModelMailTransport.messages(name, "Drafts")) == 1
       assert Store.pending_ops("mara") == []
+    end
+  end
+
+  # ==========================================================================
+  # Important #1 (fix wave) — database-loss orphan-manifest recovery
+  # (spec §Store + §Testing "database-loss recovery"). After the ledger rows
+  # are gone but the spool manifests survive, boot must re-derive blocked rows
+  # from the manifests and let the EXISTING confirm-first reconciliation resolve
+  # them — never a fresh blind execute, never a duplicate APPEND, never an
+  # unverified purge.
+  # ==========================================================================
+
+  describe "database-loss recovery (orphan manifests)" do
+    test "a copy-confirmed move whose ledger row was lost reconciles to complete, no duplicate delivery",
+         %{root: root} do
+      name = start_model!(capabilities: [:condstore, :uidplus])
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_folder(name, "Archive")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+      pull!(name, root)
+      msg_id = msg_id_in("INBOX")
+      c = ctx(name, root)
+
+      # Enqueue the move — manifest + ledger row written BEFORE any ladder step.
+      {:ok, op_row} =
+        OpsExecutor.enqueue_move(
+          c,
+          %{op: :move, msg_id: msg_id, from: "INBOX", to: "Archive"},
+          "test"
+        )
+
+      manifest = manifest_path(root, op_row.id)
+      assert File.exists?(manifest)
+
+      # The COPY landed a destination copy (proof exists); source still present.
+      ModelMailTransport.put_message(name, "Archive", @raw_a, internal_date: recent_date())
+
+      # DATABASE LOSS: ledger rows gone, manifests present.
+      wipe_ledger!()
+      assert Store.pending_ops("mara") == []
+
+      # Boot/pass recovery: sweep recreates a blocked row; confirm-first
+      # reconciliation proves exactly one destination and completes it.
+      OpsExecutor.recover(c)
+
+      # No duplicate delivery: exactly one Archive copy, source purged, done.
+      assert length(ModelMailTransport.messages(name, "Archive")) == 1
+      assert ModelMailTransport.messages(name, "INBOX") == []
+      assert Store.pending_ops("mara") == []
+      refute File.exists?(manifest)
+    end
+
+    test "an append whose MIME already landed completes via search-first, never a second APPEND",
+         %{
+           root: root
+         } do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+      manifest = manifest_path(root, op.id)
+      assert File.exists?(manifest)
+
+      # The APPEND already landed on the server (its MIME is in Drafts).
+      payload = File.read!(spool_eml(root, op.id))
+      ModelMailTransport.put_message(name, "Drafts", payload)
+
+      # DATABASE LOSS.
+      wipe_ledger!()
+      assert Store.pending_ops("mara") == []
+
+      OpsExecutor.recover(c)
+
+      # Search-first reconcile found it → complete; still exactly one in Drafts.
+      assert length(ModelMailTransport.messages(name, "Drafts")) == 1
+      assert {:ok, %{state: "complete"}} = Store.op_by_id(op.id)
+      refute File.exists?(manifest)
+    end
+
+    test "an append whose payload never landed parks needs_review (provably unsent), never APPENDs",
+         %{
+           root: root
+         } do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      # DATABASE LOSS — and the MIME never reached the server anywhere.
+      wipe_ledger!()
+
+      OpsExecutor.recover(c)
+
+      # Nothing sent; the op parks needs_review, no blind APPEND.
+      assert ModelMailTransport.messages(name, "Drafts") == []
+      assert {:ok, %{state: "needs_review"}} = Store.op_by_id(op.id)
+    end
+
+    test "a malformed orphan manifest is quarantined with a reason; the pass still resolves a healthy op",
+         %{root: root} do
+      name = start_model!()
+
+      # A malformed orphan manifest (a scalar, not a mapping) with no ledger row.
+      bad_id = "malformed-manifest-0001"
+      File.mkdir_p!(Path.join([root, "sources", "mail", "mara", "spool"]))
+      File.write!(manifest_path(root, bad_id), "not a mapping, just a scalar\n")
+
+      # A healthy pending append alongside it (real row + spool + manifest).
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      OpsExecutor.recover(c)
+
+      # The malformed manifest was quarantined (with a recorded reason), not crashed.
+      refute File.exists?(manifest_path(root, bad_id))
+      q = Path.join([root, "sources", "mail", "mara", "quarantine"])
+      quarantined = File.ls!(q)
+      assert Enum.any?(quarantined, &String.starts_with?(&1, "#{bad_id}.manifest.yaml"))
+      assert Enum.any?(quarantined, &String.ends_with?(&1, ".reason"))
+
+      # The healthy op still processed to completion.
+      assert {:ok, %{state: "complete"}} = Store.op_by_id(op.id)
+      assert length(ModelMailTransport.messages(name, "Drafts")) == 1
+    end
+
+    test "replaying a claimed move ops file with no ledger row (nothing to reconcile) reports needs_review, not ok",
+         %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_folder(name, "Archive")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+      pull!(name, root)
+      msg_id = msg_id_in("INBOX")
+
+      # A claimed ops file with a move op, but NO ledger row and NO manifest —
+      # the enqueue's durable records were lost and there is nothing to
+      # reconcile from. Fail closed: the replay must NOT silently report `ok`.
+      opid = "dddddddddddddddddddddddddd"
+      done_dir = Path.join([root, "sources", "mail", "mara", "ops", "done"])
+      File.mkdir_p!(done_dir)
+
+      File.write!(
+        Path.join(done_dir, "#{opid}.yaml"),
+        "- op: move\n  msg_id: #{msg_id}\n  from: INBOX\n  to: Archive\n"
+      )
+
+      c = ctx(name, root)
+      OpsExecutor.recover(c)
+
+      {:ok, doc} = YamlElixir.read_from_file(Path.join(done_dir, "#{opid}.result.yaml"))
+      assert [%{"result" => "needs_review"}] = doc["results"]
     end
   end
 

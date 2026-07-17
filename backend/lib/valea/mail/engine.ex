@@ -239,9 +239,9 @@ defmodule Valea.Mail.Engine do
 
   @doc """
   Connects and creates whichever of the account's configured special folders
-  are currently missing on `slug`'s server — the doctor panel's "Create AI
-  folders" action. Guarded exactly like `sync_now/1`. Same non-blocking
-  shape as `doctor/1`.
+  are currently missing on `slug`'s server — the doctor panel's "Create
+  special folders" action. Guarded exactly like `sync_now/1`. Same
+  non-blocking shape as `doctor/1`.
   """
   @spec create_folders(String.t()) ::
           {:ok, [String.t()]}

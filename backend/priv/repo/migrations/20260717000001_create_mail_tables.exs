@@ -13,13 +13,13 @@ defmodule Valea.Repo.Migrations.CreateMailTables do
   (`drop_if_exists` no-ops) and an already-migrated v1 one (whose cache is
   worthless under the new occurrence-based layout and must not block boot).
 
-  `mail_uid_outcomes` and `mail_inbox_headers` are dropped and immediately
-  recreated in their v1 shape: `Valea.Mail.Store.UidOutcome` (bridge retired
-  Task 7) and `Valea.Mail.Store.InboxHeader` (bridge retired Task 10, the
-  resource itself deleted) both used them as a pre-occurrence bridge table
-  in their day. Both tables' schema is left in place here regardless —
-  hand-written migrations aren't retroactively edited; an orphaned table is
-  harmless — see `Valea.Mail.Store`'s moduledoc.
+  `mail_uid_outcomes` (`Valea.Mail.Store.UidOutcome`, bridge retired Task 7)
+  and `mail_inbox_headers` (`Valea.Mail.Store.InboxHeader`, bridge retired
+  Task 10, the resource itself deleted) were pre-occurrence bridge tables in
+  their day. `up/0` still `drop_if_exists`es both — so an existing dev DB that
+  ran v1 has them cleaned up — but no longer RECREATES either (the final-review
+  fix wave dropped the orphaned `create table` statements; no resource and no
+  caller referenced them). See `Valea.Mail.Store`'s moduledoc.
   """
 
   use Ecto.Migration
@@ -70,23 +70,6 @@ defmodule Valea.Repo.Migrations.CreateMailTables do
       add :references, :string
     end
 
-    # Historical bridge tables (v1 shape, unchanged) — see the moduledoc
-    # above: both bridges are since retired, the tables left in place.
-    create table(:mail_uid_outcomes, primary_key: false) do
-      add :folder, :string, primary_key: true, null: false
-      add :uid, :integer, primary_key: true, null: false
-      add :outcome, :string
-      add :attempts, :integer, default: 0
-      add :msg_id, :string
-    end
-
-    create table(:mail_inbox_headers, primary_key: false) do
-      add :uid, :integer, primary_key: true, null: false
-      add :from_text, :string
-      add :subject, :string
-      add :date, :string
-    end
-
     create table(:mail_pending_ops, primary_key: false) do
       add :id, :string, primary_key: true, null: false
       add :kind, :string, null: false
@@ -126,8 +109,6 @@ defmodule Valea.Repo.Migrations.CreateMailTables do
     drop index(:mail_uid_map, [:account, :msg_id])
     drop index(:mail_messages, [:account, :msg_id])
     drop table(:mail_pending_ops)
-    drop table(:mail_inbox_headers)
-    drop table(:mail_uid_outcomes)
     drop table(:mail_messages)
     drop table(:mail_uid_map)
     drop table(:mail_sync_state)

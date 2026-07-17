@@ -25,8 +25,8 @@ defmodule Valea.Mail.DraftMime do
   with quoted-printable transfer-encoding via `:mimemail.encode/1`
   (gen_smtp). `To`/`Cc`/`Bcc` are serialized from the parsed addr structs;
   `mimemail` re-parses those address headers and RFC 2047-encodes any
-  non-ASCII display name, and `rfc2047_utf8_encode/1` likewise encodes a
-  non-ASCII `Subject` — so the bytes on the wire stay 7-bit clean.
+  non-ASCII display name, and `:mimemail.encode/1` likewise RFC 2047-encodes
+  a non-ASCII `Subject` — so the bytes on the wire stay 7-bit clean.
   `In-Reply-To`/`References` come from the `threading` map the push flow
   resolved off the referenced message's raw canonical file. `mimemail`
   hard-requires a `From`; a draft in the user's own Drafts folder is

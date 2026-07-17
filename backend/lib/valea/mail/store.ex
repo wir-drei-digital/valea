@@ -34,9 +34,7 @@ defmodule Valea.Mail.Store do
   (`record_outcome/4`, `outcomes/1`, the v3 outcome resource, and the old
   single-argument `clear_folder/1` that wiped it): the pull engine no longer
   tracks per-UID sync outcomes in SQLite (the maildir tree + `mail_uid_map`
-  are the durable record now), and nothing else referenced them. The
-  underlying `mail_uid_outcomes` table's hand-written migration is left in
-  place (orphaned but harmless) — it is not this task's to drop. Task 10
+  are the durable record now), and nothing else referenced them. Task 10
   retired the last of the pre-occurrence bridge surface the same way: the
   msg_id-keyed message functions (`upsert_message/1`, `get_message/1`,
   `message_by_message_id/1`, `list_messages/0`, `set_message_status/2`) and
@@ -44,9 +42,9 @@ defmodule Valea.Mail.Store do
   `inbox_headers/0`, `prune_inbox_headers/1`, the v3 header-cache resource)
   are gone — `api/mail.ex`'s account-scoped `list_mail_messages`/
   `get_mail_message` and the deleted v3 inbox action replaced their only
-  callers. The underlying `mail_inbox_headers` table's migration is
-  likewise left in place (orphaned but harmless), same posture as
-  `mail_uid_outcomes`.
+  callers. The final-review fix wave dropped both orphaned tables'
+  `create table` statements from the v2 migration (no resource, no caller);
+  `up/0` still `drop_if_exists`es them so an existing dev DB is cleaned up.
   """
   use Ash.Domain
 
@@ -430,6 +428,25 @@ defmodule Valea.Mail.Store do
   def ops_by_origin(account, origin) do
     PendingOp
     |> Ash.Query.filter(account == ^account and origin == ^origin)
+    |> Ash.read!()
+    |> Enum.map(&pending_op_map/1)
+  end
+
+  @doc """
+  Every `mail_pending_ops` move row for `(account, msg_id, source_folder)`, in
+  ANY state — the ops-file move-replay status lookup, which must distinguish a
+  resolved terminal (`complete`/`rejected`) move from one whose row is genuinely
+  MISSING (the active-only `pending_ops/1` hides terminal rows, conflating the
+  two). After database loss the orphan-manifest sweep recreates the row before
+  this runs, so a `[]` here means there was never a durable record to reconcile.
+  """
+  @spec move_ops(String.t(), String.t(), String.t()) :: [map()]
+  def move_ops(account, msg_id, source_folder) do
+    PendingOp
+    |> Ash.Query.filter(
+      account == ^account and kind == "move" and msg_id == ^msg_id and
+        source_folder == ^source_folder
+    )
     |> Ash.read!()
     |> Enum.map(&pending_op_map/1)
   end

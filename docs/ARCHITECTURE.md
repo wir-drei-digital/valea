@@ -553,7 +553,7 @@ always decides.
   self-heals from raw maildir files on every activation).
 - **`Valea.Mail.Store`** — Ash domain over hand-migrated
   (`migrate? false`) cache/ledger tables: `mail_sync_state`,
-  `mail_uid_map`, `mail_message_index`, `mail_pending_ops`. Everything but
+  `mail_uid_map`, `mail_messages`, `mail_pending_ops`. Everything but
   the ledger is rebuildable from files; the ledger is the durable ops
   record.
 - **`Valea.Mail.Settings`** / **`Valea.Mail.Account`** /

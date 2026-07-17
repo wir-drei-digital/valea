@@ -367,7 +367,7 @@ describe('draftRecipientsLine', () => {
 
 describe('pushErrorMessage', () => {
   it.each([
-    ['hash_mismatch', 'The draft changed since you opened it — review it again, then push.'],
+    ['content_changed', 'The draft changed since you opened it — review it again, then push.'],
     ['duplicate_active', 'This draft is already being pushed.'],
     ['push_failed', "The push failed before anything was sent. It's safe to try again."],
     ['anything_else', 'Could not push the draft. Check the account state and try again.']
