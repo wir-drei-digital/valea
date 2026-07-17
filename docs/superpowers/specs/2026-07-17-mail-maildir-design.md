@@ -179,7 +179,9 @@ Nothing infers intent from filesystem diffs. Mailbox mutations are
   op, original filename inside) — a file-first audit trail the agent can
   read but not edit (`ops/done/` is write-denied). A claimed file **without** its result
   file is unresolved: boot re-parses the engine-owned copy and replays
-  it — flag ops re-execute idempotently, move ops resolve through their
+  it — flag ops resolve via their recorded baselines (complete if the
+  postcondition already holds, `needs_review` if the baseline moved, one
+  guarded retry only when untouched), move ops resolve through their
   manifests (recorded before any remote I/O, so nothing duplicates) —
   and only then writes the result. A crash between claim and result
   never silently drops an operation.
@@ -233,8 +235,17 @@ After an **unknown outcome** (lost response), a missing target-folder
 match is *not* proof of failure — a client or server rule may already
 have filed the new draft elsewhere — so the search widens to every known
 folder of the account: exactly one fingerprint-confirmed match →
-complete; zero or several → `needs_review`, never a blind re-`APPEND`. Flag `STORE`s are idempotent and execute directly, without ledger
-rows — their crash recovery is the claimed-file replay (see Push).
+complete; zero or several → `needs_review`, never a blind re-`APPEND`.
+
+Flag `STORE`s execute directly, without full ledger rows, but never
+blindly: each flag op records its expected baseline (the UID map's
+last-synced flags, plus `MODSEQ` where CONDSTORE is available) in the
+claimed file **before** remote I/O, and the `STORE` itself is
+`UNCHANGEDSINCE`-guarded where advertised. Recovery after an unknown
+outcome refetches the current flags: postcondition already present →
+complete; baseline moved (an external client touched the flags
+meanwhile) → `needs_review` — never a second `STORE` that could
+overwrite a newer change; untouched baseline → one guarded retry.
 
 **Write-through folders.** The `folders.{archive,trash}` targets always
 exist as local directories, even when `exclude_folders` keeps them out of
@@ -886,8 +897,11 @@ boundary; every failure state has a copyable remedy or a status notice.
   with a notice); **draft edited while a push
   is in flight** → compare-and-swap leaves the new revision untouched as
   `draft`, ledger/panel report the pushed revision; **crash between
-  claim and result** → boot replays the claimed file (flags idempotent,
-  ledger'd moves not duplicated) and writes the result.
+  claim and result** → boot replays the claimed file (flags
+  baseline-checked, ledger'd moves not duplicated) and writes the
+  result; **lost STORE response + concurrent client re-flag** → recovery
+  sees the moved baseline, stops in `needs_review`, never issues an
+  overwriting STORE.
 - **Maildir helpers**: filename round-trip, flag mapping, escape rule
   property tests.
 - **Live acceptance** (mandatory before trusting the engine): the
