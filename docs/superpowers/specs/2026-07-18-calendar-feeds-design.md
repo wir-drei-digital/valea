@@ -60,7 +60,17 @@ sources/calendar/
 
 ## Config and credentials
 
-`config/calendar.yaml` (v1 — no earlier format exists, no migration):
+`config/calendar.yaml` (v1). A LEGACY placeholder file predates this
+spec: the workspace template ships an old `account`/`caldav`/
+`ics_fallback`-shaped `config/calendar.yaml`, so existing workspaces
+carry one. Handling is explicit and destructive-by-design (no
+backwards compatibility, nothing in the legacy file is real data): the
+template file is REPLACED with the v1 shape (empty `sources:`) in this
+change; `Settings.load/1` treats any non-v1 file as
+`{:invalid, reason}` surfaced in `calendar_status` (never blocking the
+local Valea calendar, which needs no config to work); the first
+`setup_calendar_source` or `enable_calendar_feed` rewrites the file
+wholesale to v1. Format:
 
 ```yaml
 version: 1
@@ -190,7 +200,14 @@ that source's own mirror. The URL never appears in logs or error strings
 `Valea.Calendar.Supervisor` (under `Valea.Workspace.Runtime`, beside
 `Valea.Mail.Supervisor`) + one `Valea.Calendar.Engine` per valid source,
 registered via `{:via, Registry, {Valea.Calendar.Registry, slug}}` — the
-mail supervisor/engine pattern minus everything two-way:
+mail supervisor/engine pattern minus everything two-way. The Supervisor
+is ALSO the per-slug lifecycle serializer: `setup_calendar_source`,
+`set_calendar_source_url`, `remove_calendar_source`,
+`purge_calendar_source_files`, and config rehash all execute through its
+single process, so no two lifecycle mutations for a slug can interleave
+— purge re-checks the slug is unconfigured while holding that
+serialization, and a concurrent setup for the same slug queues behind
+the purge rather than racing the deletion.
 
 - Activation: verify `.source` (absent → claim; mismatch → inert
   `identity_mismatch`), read the keychain-supplied URL (RAM only), rebuild
@@ -320,12 +337,19 @@ Hand-migrated (`migrate? false`) AshSqlite resources, all rebuildable
 from files (`feed.ics` + valea events) — pure cache, no ledger:
 
 - `calendar_occurrences` (EXTERNAL sources only — valea events are read
-  live from their files at query time): source, uid, occ_start (utc),
-  occ_end (utc), all_day, summary, location, status, view_path. One row
-  per expanded occurrence within the window. Indexed on
-  (occ_start, occ_end).
+  live from their files at query time): source, uid, all_day, occ_start,
+  occ_end, summary, location, status, view_path. The endpoints are
+  TAGGED by `all_day`: timed rows store UTC ISO instants; all-day rows
+  store plain ISO dates with `occ_end` EXCLUSIVE — an all-day date is
+  never encoded as a UTC midnight (a negative-offset host would shift
+  it a day). One row per expanded occurrence within the window. Indexed
+  on (occ_start, occ_end).
 - `calendar_sync_state`: source, etag, last_modified, last_sync_at,
-  last_error.
+  last_error, derived_rev (the derive marker: sha256(snapshot bytes) +
+  host zone name; written ATOMICALLY in the same transaction as the
+  rebuilt occurrence rows — a failed or incomplete derive leaves it
+  mismatched, which is exactly what re-triggers the derive on the next
+  pass, 304s included).
 
 `list_events(from, to)` merges the external index rows with the
 live-read valea events, ordered by occ_start — the one query the UI
@@ -342,10 +366,10 @@ falsy-field string-key rule as elsewhere. External snake_case names:
 | `setup_calendar_source` | `source, name, generation` | `"saved" => true` (slug-validated; config write + supervisor rehash) |
 | `set_calendar_source_url` | `source, url (sensitive), generation` | `"accepted" => true` (HTTPS-only validation; RAM + used for `.source` claim) |
 | `remove_calendar_source` | `source, generation` | `"removed" => true` (config removal + engine stop; files stay) |
-| `purge_calendar_source_files` | `source, confirmation, generation` | `"purged" => true` (typed confirm = slug; SERIALIZED with sync: refuses while the source is still configured (`remove_calendar_source` first — the rehash stops its engine), awaits any in-flight pass task via the Supervisor, then deletes `sources/calendar/<slug>` (slug-validated + `Paths.resolve_real` containment) and clears its index + sync-state rows in the same operation — a degraded-but-polling engine can never resurrect a purged mirror) |
+| `purge_calendar_source_files` | `source, confirmation, generation` | `"purged" => true` (typed confirm = slug; runs THROUGH the Supervisor's per-slug lifecycle serialization: refuses while the source is still configured (`remove_calendar_source` first — the rehash stops its engine), awaits any in-flight pass task, re-checks the slug is still unconfigured, then deletes `sources/calendar/<slug>` (slug-validated + `Paths.resolve_real` containment) and clears its index + sync-state rows in the same operation — a degraded-but-polling engine can never resurrect a purged mirror) |
 | `calendar_sync_now` | `source, generation` | `"started" => true` |
 | `calendar_doctor` | `source, generation` | `"ok" =>, checks:` |
-| `list_calendar_events` | `from, to (ISO dates)` | `events: {:array, :map}` (occurrence rows; each carries source, and for valea events the file path) |
+| `list_calendar_events` | `from, to (ISO dates)` | `events: {:array, :map}` (occurrence rows in the tagged shape: `all_day: false` → UTC instants, `all_day: true` → plain dates with exclusive end; each carries source, and for valea events the file path) |
 | `create_valea_event` | `name, title, start, end, all_day, location, status, description, generation` | `"created" =>, path:` (refuses existing name; `name` is a bare basename without extension — separator/traversal rejected before path construction, the get_mail_draft posture) |
 | `update_valea_event` | `name, title, start, end, all_day, location, status, description, generation` | `"updated" => true` (full-replace write of the named file) |
 | `delete_valea_event` | `name, confirmation, generation` | `"deleted" => true` (typed confirm = name) |
@@ -364,10 +388,12 @@ query — live-read, no watcher).
   (sources/window/events shape, push-wired like mail) holds the RPC
   occurrence rows. The existing grid contract is NOT the RPC shape —
   `calendar-shapes.ts` gains an explicit adapter,
-  `occurrenceToGridEvents(row, hostZone)`: converts UTC instants to
-  host-local wall time, splits multi-day occurrences into one grid
-  segment per local day (`day`/`startMin`/`endMin`), routes all-day
-  events to the grids' all-day lane (new — `WeekGrid`/`MonthGrid` gain
+  `occurrenceToGridEvents(row, hostZone)`: for TIMED rows converts UTC
+  instants to host-local wall time and splits multi-day occurrences
+  into one grid segment per local day (`day`/`startMin`/`endMin`); for
+  ALL-DAY rows uses the plain dates DIRECTLY (no zone conversion,
+  `[start, end)` exclusive split) and routes them to the grids' all-day
+  lane (new — `WeekGrid`/`MonthGrid` gain
   an all-day row), and maps kind: external+confirmed → `booked`,
   external+tentative → `hold`, valea → `block` (CANCELLED occurrences
   are already removed at expansion). `EventCard`/`WeekGrid`/`MonthGrid`
@@ -479,7 +505,8 @@ documented). No per-feed mounts (one calendar mount).
   `frontend/src/lib/components/calendar/{calendar-shapes.ts,WeekGrid,MonthGrid,EventCard}`
   (adapter, all-day lane, selection callbacks), keychain docs (`<slug>:ics`),
   `docs/ARCHITECTURE.md` (+ Calendar section), workspace template
-  (`sources/calendar/valea/events/.gitkeep`).
+  (`config/calendar.yaml` replaced with the v1 shape;
+  `sources/calendar/valea/events/.gitkeep`).
 - **Deleted:** `frontend/src/lib/components/calendar/placeholder-week.ts`.
 
 ## Execution notes
