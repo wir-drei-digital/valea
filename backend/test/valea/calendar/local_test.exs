@@ -1,8 +1,11 @@
 defmodule Valea.Calendar.LocalTest do
-  use ExUnit.Case, async: true
+  # async: false — the concurrent-write regression tests start the
+  # globally-named Valea.Calendar.Supervisor (the settings_test posture).
+  use ExUnit.Case, async: false
 
   alias Valea.Calendar.Local
   alias Valea.Calendar.Local.Event
+  alias Valea.Calendar.Supervisor, as: CalSupervisor
 
   setup do
     root =
@@ -602,6 +605,160 @@ defmodule Valea.Calendar.LocalTest do
     end
   end
 
+  describe "write/4 — concurrent writes (lifecycle-serialized)" do
+    # The Codex-review race: write/4 is invoked directly by concurrent
+    # create/update RPCs; before the fix, both racing creates of one name
+    # passed the mode check and shared ONE fixed temp path — one request
+    # could rename bytes it did not write and both could report success
+    # past the exists guard. Deterministic, no sleeps: the serializer is
+    # held open by the test, the racing writer provably parks behind it
+    # (its call is visible in the serializer's mailbox, which implies its
+    # pre-validation completed while the file did NOT yet exist), the
+    # first write lands INSIDE the held section, then the serializer is
+    # released and the parked writer's mode check re-evaluates.
+    test "a :create parked behind a create of the same name re-checks and gets :exists",
+         %{root: root} do
+      start_supervised!({CalSupervisor, %{root: root, generation: 1}})
+      sup = Process.whereis(CalSupervisor)
+      test_pid = self()
+
+      holder =
+        Task.async(fn ->
+          CalSupervisor.lifecycle(fn ->
+            send(test_pid, :held)
+
+            receive do
+              :release -> :ok
+            end
+
+            # The first create lands inside the held serialized section —
+            # a re-entrant Local.write (this fun runs IN the supervisor
+            # process) that calls straight through without deadlocking.
+            Local.write(
+              root,
+              "standup",
+              %{title: "First", start: "2026-07-21T09:30:00+02:00"},
+              :create
+            )
+          end)
+        end)
+
+      assert_receive :held
+
+      # The racing creator: same name, passes validation (no file exists
+      # yet), then parks on the held serializer BEFORE any disk check.
+      late =
+        Task.async(fn ->
+          Local.write(
+            root,
+            "standup",
+            %{title: "Late", start: "2026-07-21T11:00:00+02:00"},
+            :create
+          )
+        end)
+
+      await_lifecycle_queued(sup)
+      send(sup, :release)
+
+      assert {:ok, _path} = Task.await(holder)
+      # The mode check re-evaluated inside the serialized section: the
+      # parked create sees the first writer's file and refuses.
+      assert {:error, :exists} = Task.await(late)
+
+      # The file content is the FIRST writer's, intact.
+      assert %{valid: [%Event{title: "First"}], invalid: []} = Local.list(root)
+    end
+
+    test "a concurrent create-then-update keeps the update's content", %{root: root} do
+      start_supervised!({CalSupervisor, %{root: root, generation: 1}})
+      sup = Process.whereis(CalSupervisor)
+      test_pid = self()
+
+      holder =
+        Task.async(fn ->
+          CalSupervisor.lifecycle(fn ->
+            send(test_pid, :held)
+
+            receive do
+              :release -> :ok
+            end
+
+            Local.write(
+              root,
+              "standup",
+              %{title: "Created", start: "2026-07-21T09:30:00+02:00"},
+              :create
+            )
+          end)
+        end)
+
+      assert_receive :held
+
+      # The update parks while the file does NOT yet exist — an
+      # early-evaluated mode check would have refused it :not_found; the
+      # serialized re-check sees the create that landed first.
+      updater =
+        Task.async(fn ->
+          Local.write(
+            root,
+            "standup",
+            %{title: "Updated", start: "2026-07-21T12:00:00+02:00"},
+            :update
+          )
+        end)
+
+      await_lifecycle_queued(sup)
+      send(sup, :release)
+
+      assert {:ok, _path} = Task.await(holder)
+      assert {:ok, _path} = Task.await(updater)
+
+      # Serialized create-then-update ordering: the final content is the
+      # update's.
+      assert %{valid: [%Event{title: "Updated"}], invalid: []} = Local.list(root)
+    end
+
+    test "without a supervisor, concurrent writes to different names all land intact",
+         %{root: root} do
+      # Fallback path: no serializer process — every write installs
+      # through its own UNIQUE temp name, so no writer can rename another
+      # writer's bytes or crash on a vanished temp.
+      assert Process.whereis(CalSupervisor) == nil
+
+      names = for i <- 1..8, do: "event-#{i}"
+
+      tasks =
+        for name <- names do
+          Task.async(fn ->
+            Local.write(
+              root,
+              name,
+              %{
+                title: "Title #{name}",
+                start: "2026-07-21T09:30:00+02:00",
+                description: "body for #{name}"
+              },
+              :create
+            )
+          end)
+        end
+
+      for task <- tasks, do: assert({:ok, _path} = Task.await(task))
+
+      assert %{valid: valid, invalid: []} = Local.list(root)
+      assert Enum.map(valid, & &1.name) == Enum.sort(names)
+
+      # No cross-rename: every file carries exactly its own writer's bytes.
+      for event <- valid do
+        assert event.title == "Title #{event.name}"
+        assert event.description == "body for #{event.name}"
+      end
+
+      # No temp debris — every unique tmp was renamed into place.
+      assert Path.wildcard(Path.join(events_dir(root), ".*.tmp-*"), match_dot: true) == []
+    end
+  end
+
   describe "delete/2" do
     test "deletes an existing event", %{root: root} do
       assert {:ok, _} =
@@ -620,6 +777,35 @@ defmodule Valea.Calendar.LocalTest do
     test "invalid names are not found, never path-constructed", %{root: root} do
       assert {:error, :not_found} = Local.delete(root, "../x")
       assert {:error, :not_found} = Local.delete(root, ".hidden")
+    end
+  end
+
+  # Spin (a pure state check — never proceeds early, no sleeps) until a
+  # lifecycle call is parked in the serializer's mailbox. GenServer.call
+  # enqueues its request message before blocking, so once the call is
+  # visible the racing writer has necessarily finished its validation
+  # and reached the serializer (the settings_test helper).
+  defp await_lifecycle_queued(sup, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 5_000
+
+    {:messages, messages} = Process.info(sup, :messages)
+
+    queued? =
+      Enum.any?(messages, fn
+        {:"$gen_call", _from, {:lifecycle, _fun}} -> true
+        _other -> false
+      end)
+
+    cond do
+      queued? ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("Local.write never queued behind the held lifecycle serializer")
+
+      true ->
+        :erlang.yield()
+        await_lifecycle_queued(sup, deadline)
     end
   end
 end

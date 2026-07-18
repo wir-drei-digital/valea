@@ -45,6 +45,23 @@ defmodule Valea.Calendar.Local do
   containment under the workspace root, and `valid_name?/1` rejects a
   bad name BEFORE any path is constructed from it (the `get_mail_draft`
   posture).
+
+  ## Write serialization
+
+  `write/4` and `delete/2` are invoked directly by concurrent RPCs, so
+  their disk sections (mode check through rename/rm) run inside
+  `Valea.Calendar.Supervisor.lifecycle/1` whenever that serializer is up
+  (directly otherwise — unit tests, pre-runtime), the
+  `Valea.Calendar.Settings` legacy-convergence posture: the
+  `:create`-refuses-existing / `:update`-requires-existing check is
+  RE-EVALUATED inside the serialized section, so two racing creates of
+  one name resolve to exactly one `{:ok, _}` and one `{:error, :exists}`
+  instead of both "succeeding". `lifecycle/1` is re-entrant, so a write
+  issued from within a lifecycle'd operation calls straight through
+  without deadlocking. Each write installs through a UNIQUE hidden temp
+  name (removed on failure), so even the unserialized fallback can never
+  rename another writer's bytes or leave debris. `list/1` stays
+  lock-free — live reads, agent-written files are the API there.
   """
 
   alias Valea.Paths
@@ -162,7 +179,9 @@ defmodule Valea.Calendar.Local do
   BEFORE anything is composed or written — a control character or a bad
   date is `{:error, {:invalid, reason}}` with nothing on disk, never
   laundered. `:create` refuses an existing name (`{:error, :exists}`);
-  `:update` requires one (`{:error, :not_found}`).
+  `:update` requires one (`{:error, :not_found}`) — both re-checked
+  inside the lifecycle-serialized disk section (moduledoc §Write
+  serialization), so concurrent writes of one name cannot both pass.
   """
   @spec write(String.t(), String.t(), map(), :create | :update) ::
           {:ok, String.t()} | {:error, :exists | :not_found | {:invalid, String.t()}}
@@ -170,36 +189,23 @@ defmodule Valea.Calendar.Local do
       when is_binary(root) and is_map(attrs) and mode in [:create, :update] do
     with :ok <- require_valid_name(name),
          {:ok, raw, body} <- attrs_to_raw(attrs),
-         {:ok, _fields} <- wrap_invalid(validate(raw, body)),
-         :ok <- ensure_events_dir(root),
-         {:ok, abs} <- contain(root, name),
-         :ok <- check_mode(abs, mode) do
-      File.mkdir_p!(Path.dirname(abs))
-      # Dotted tmp name: a crashed write leaves only a hidden entry the
-      # listing skips (the name grammar forbids a leading dot, so it can
-      # never collide with or masquerade as an event).
-      tmp = Path.join(Path.dirname(abs), "." <> Path.basename(abs) <> ".tmp")
-      File.write!(tmp, compose(raw, body))
-      File.rename!(tmp, abs)
-      {:ok, Path.join(@events_rel, name <> ".md")}
+         {:ok, _fields} <- wrap_invalid(validate(raw, body)) do
+      serialized(fn -> checked_write(root, name, raw, body, mode) end)
     end
   end
 
   @doc """
   Deletes `<name>.md`. `{:error, :not_found}` for an invalid name (never
   path-constructed), a missing file, or an entry that fails containment
-  (a planted symlink is refused, not followed — remove it by hand).
+  (a planted symlink is refused, not followed — remove it by hand). The
+  disk section is lifecycle-serialized like `write/4`'s.
   """
   @spec delete(String.t(), String.t()) :: :ok | {:error, :not_found}
   def delete(root, name) when is_binary(root) do
-    with true <- valid_name?(name),
-         {:ok, %File.Stat{type: :directory}} <- File.lstat(Path.join(root, @events_rel)),
-         {:ok, abs} <- contain(root, name),
-         {:ok, %File.Stat{type: :regular}} <- File.lstat(abs),
-         :ok <- File.rm(abs) do
-      :ok
+    if valid_name?(name) do
+      serialized(fn -> checked_delete(root, name) end)
     else
-      _invalid_missing_or_outside -> {:error, :not_found}
+      {:error, :not_found}
     end
   end
 
@@ -546,6 +552,95 @@ defmodule Valea.Calendar.Local do
   end
 
   # -- the write path -----------------------------------------------------------
+
+  # The disk section of write/4 — everything that must not interleave
+  # with another writer of the same name: the events-dir check, the
+  # containment re-check, the mode check, and the temp-write + rename.
+  # Runs inside serialized/1, so the mode check is authoritative at
+  # install time, not at request time.
+  defp checked_write(root, name, raw, body, mode) do
+    with :ok <- ensure_events_dir(root),
+         {:ok, abs} <- contain(root, name),
+         :ok <- check_mode(abs, mode) do
+      File.mkdir_p!(Path.dirname(abs))
+      atomic_install!(abs, compose(raw, body))
+      {:ok, Path.join(@events_rel, name <> ".md")}
+    end
+  end
+
+  # The disk section of delete/2 (the name is grammar-validated by the
+  # caller, so no path was ever constructed from a bad one).
+  defp checked_delete(root, name) do
+    with {:ok, %File.Stat{type: :directory}} <- File.lstat(Path.join(root, @events_rel)),
+         {:ok, abs} <- contain(root, name),
+         {:ok, %File.Stat{type: :regular}} <- File.lstat(abs),
+         :ok <- File.rm(abs) do
+      :ok
+    else
+      _missing_or_outside -> {:error, :not_found}
+    end
+  end
+
+  # Unique per-write hidden temp name (the `Valea.Calendar.Settings`
+  # posture): a shared fixed `.tmp` would let one writer rename another
+  # writer's bytes into place and then crash on its own vanished temp;
+  # with a unique name every rename installs exactly the bytes its writer
+  # composed. Dotted, so a crashed write leaves only a hidden entry the
+  # listing skips (the name grammar forbids a leading dot, so it can
+  # never collide with or masquerade as an event) — and the temp is
+  # removed on ANY write/rename failure, so no debris survives an error.
+  defp atomic_install!(abs, bytes) do
+    tmp =
+      Path.join(
+        Path.dirname(abs),
+        "." <> Path.basename(abs) <> ".tmp-#{:erlang.unique_integer([:positive])}"
+      )
+
+    try do
+      File.write!(tmp, bytes)
+      File.rename!(tmp, abs)
+    rescue
+      error ->
+        File.rm(tmp)
+        reraise error, __STACKTRACE__
+    end
+  end
+
+  # Serializes a disk section through `Valea.Calendar.Supervisor.lifecycle/1`
+  # whenever that process is up (directly otherwise). `lifecycle/1`
+  # degrades a raising fun to `{:error, {:lifecycle_failed, message}}`;
+  # a disk failure here is re-raised, preserving write/4's and delete/2's
+  # raise-on-disk-error contract (the direct path raises in place). The
+  # funs' own returns never carry that shape, so the match is unambiguous.
+  defp serialized(fun) do
+    case serialize_through_lifecycle(fun) do
+      {:error, {:lifecycle_failed, message}} ->
+        raise "valea calendar event mutation failed: #{message}"
+
+      result ->
+        result
+    end
+  end
+
+  # The `Valea.Calendar.Settings.serialize_through_lifecycle/1` shape:
+  # `lifecycle/1` is re-entrant (a fun already running inside the
+  # supervisor process calls straight through), and a supervisor that
+  # exits between the whereis check and the call (workspace closing)
+  # degrades to the direct path — nothing else is mutating during
+  # teardown.
+  defp serialize_through_lifecycle(fun) do
+    if is_pid(Process.whereis(Valea.Calendar.Supervisor)) do
+      try do
+        Valea.Calendar.Supervisor.lifecycle(fun)
+      catch
+        :exit, {:noproc, {GenServer, :call, _args}} -> fun.()
+        :exit, {:shutdown, {GenServer, :call, _args}} -> fun.()
+        :exit, {{:shutdown, _reason}, {GenServer, :call, _args}} -> fun.()
+      end
+    else
+      fun.()
+    end
+  end
 
   defp require_valid_name(name) do
     if valid_name?(name), do: :ok, else: {:error, {:invalid, "invalid event name"}}
