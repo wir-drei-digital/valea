@@ -179,11 +179,17 @@ this repo already owns its IMAP protocol core for the same reason). Scope:
   (all-day events stored as dates; floating times are resolved against
   the host zone at derive time; the derive marker re-derives them when
   the host zone changes).
-- Fail-soft per component: one malformed VEVENT is skipped with a notice;
-  it never fails the feed. A feed that yields ZERO parseable events where
-  the previous snapshot had events is treated as a failed fetch
-  (degraded, mirror untouched) — an empty-feed guard against a provider
-  serving an error page with `200 text/html`.
+- Fail-soft per component, with a FEED-LEVEL acceptance guard: a
+  malformed VEVENT is skipped with a notice, but the whole fetch FAILS
+  (degraded, mirror untouched) when the response looks damaged rather
+  than merely imperfect — concretely, when it yields ZERO parseable
+  events where the previous snapshot had events (error-page-as-200
+  guard), or when malformed VEVENTs exceed 20% of the response's VEVENT
+  components with at least 2 malformed (truncation/corruption guard: one
+  valid event riding a shredded response must never replace a healthy
+  mirror). A legitimately SHRUNKEN feed — fewer events, all parseable —
+  replaces the mirror normally; the guard keys on parse failures, never
+  on event-count reduction.
 
 ## Fetching (`Valea.Calendar.Fetch`)
 
@@ -307,9 +313,13 @@ endpoint:
 ## Mounts and policy
 
 - ONE synthetic mount `calendar` (kind `:calendar`) covering
-  `sources/calendar/` — appended by `Mounts.list/1` whenever
-  `config/calendar.yaml` exists with ≥1 source OR any `valea/events/`
-  file exists; enabled unless every source is invalid. Follows every
+  `sources/calendar/` — appended by `Mounts.list/1` whenever a v1
+  `config/calendar.yaml` exists, INCLUDING with zero sources (the
+  template ships exactly that, so every new workspace can grant a
+  session calendar access and an agent can create the FIRST
+  `valea/events/` file through the normal file API — no UI bootstrap
+  required); enabled always (per-source health is status, not mount
+  availability). Follows every
   `kind: :mail` exclusion (never a Knowledge/editor/ICM-mutation target,
   excluded from cockpit sections, watcher ICM events, doctor, global
   search; `unique_mount_key` reserves `calendar`).
@@ -468,7 +478,10 @@ disabled) are 404 without detail.
   -page cases.
 - Engine: activation/identity binding, replace-mirror semantics (a
   shrunken feed removes rows/views), degraded-keeps-mirror, empty-feed
-  guard, single-flight, per-source isolation, crash self-heal (kill
+  guard, the partial-damage guard (a populated mirror SURVIVES a
+  response with one valid event + several malformed ones; a shrunken
+  all-parseable feed still replaces), single-flight, per-source
+  isolation, crash self-heal (kill
   between the feed.ics swap and the derive → next activation converges
   to the committed snapshot), stale-derive repair THROUGH a 304 (failed
   derive + subsequent 304 pass → re-derive via the marker), the
@@ -489,7 +502,8 @@ disabled) are 404 without detail.
 - Policy: the mail deny-suite shape for the calendar tier (unmounted
   deny-not-ask incl. case/NFD variants, in-scope write surface =
   `valea/events/` only, engine-owned write denies, managedSettings
-  mirror).
+  mirror, and the EMPTY-WORKSPACE bootstrap: a fresh template workspace
+  + an opted-in session can write its first `valea/events/` file).
 - FE: vitest for CalendarStore + shapes (merging, coloring, editor
   round-trip, feed block).
 - RPC: the mail_rpc_test shape for every action incl. typed confirms and
