@@ -440,10 +440,17 @@ query — live-read, no watcher).
   `create_valea_event`. The stale route comment about the deleted
   approval queue is replaced.
 - Setup panel: source list with per-source status/doctor/typed-confirm
-  purge, add-source form (slug, name, URL → keychain via
-  `keychainSet(workspaceId, "<slug>:ics", url)` then
-  `set_calendar_source_url`), and the served-feed block (enable, URL +
-  copy, rotate, the honest reachability note).
+  purge, add-source form (slug, name, URL — admitted in this order:
+  `setup_calendar_source` (config + rehash; the engine starts URL-less),
+  then `set_calendar_source_url` (the HTTPS admission gate and `.source`
+  claim), then `keychainSet(workspaceId, "<slug>:ics", url)` ONLY on
+  acceptance — the URL is a credential and HTTPS-only admission happens
+  before anything persists it, so a rejected URL never reaches the
+  keychain. A failed keychain write is non-fatal and retryable: the
+  engine keeps its RAM closure for the session, and after a restart the
+  standard resupply prompt asks again — re-entering the same URL
+  re-matches the `.source` identity), and the served-feed block (enable,
+  URL + copy, rotate, the honest reachability note).
 - Today page: a calendar line per the cockpit's lenient pattern —
   `N events today · next: <time> <title>` — computed backend-side in
   `Valea.Cockpit` from the index.

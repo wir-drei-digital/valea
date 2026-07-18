@@ -358,9 +358,12 @@ rev = Base.encode16(:crypto.hash(:sha256, snapshot_bytes), case: :lower)
 ```elixir
 defmodule Valea.Calendar.Local do
   defmodule Event do
-    defstruct [:name, :path, :title, :start, :end, :all_day, :location, :status, :description]
+    defstruct [:name, :path, :title, :start, :end, :all_day, :location, :status,
+               :description, :mtime]
     # timed: start/end are %DateTime{} (offset preserved from file, UTC-normalized for index use)
     # all-day: start/end are %Date{}, end EXCLUSIVE
+    # mtime: the file's modification time as a UTC %DateTime{} truncated to seconds —
+    #   populated by list/1's lstat; Render consumes it for DTSTAMP + LAST-MODIFIED.
   end
   @spec list(root) :: %{valid: [%Event{}], invalid: [%{name: _, reason: String.t()}]}
   # Live read of sources/calendar/valea/events/*.md — lstat no-follow, fail-closed per file.
@@ -377,7 +380,8 @@ end
 defmodule Valea.Calendar.Render do
   @spec feed([%Local.Event{}]) :: binary()
   # One VCALENDAR (VERSION:2.0, PRODID:-//Valea//Calendar//EN, CALSCALE:GREGORIAN);
-  # per event: UID, DTSTAMP+LAST-MODIFIED (file mtime, UTC), SUMMARY, DTSTART/DTEND
+  # per event: UID, DTSTAMP + LAST-MODIFIED (both = the event's `mtime` field, rendered
+  # as UTC "YYYYMMDDTHHMMSSZ"), SUMMARY, DTSTART/DTEND
   # (timed: UTC "...Z" form; all-day: ;VALUE=DATE, end exclusive), LOCATION?, STATUS
   # (upcased), DESCRIPTION (body). TEXT values RFC 5545-escaped (\\ \; \, \n),
   # lines folded at 75 octets (CRLF + single space), UTF-8 boundary-safe.
@@ -392,7 +396,7 @@ end
 
 **Steps:**
 
-- [ ] **Step 1: tests first.** `local_test.exs`: the full validation table above + UID stability across edits (rename = new UID) + create-refuses-existing + name grammar rejects (`../x`, `a/b`, `.hidden`, 81 chars, uppercase OK? — NO: grammar is lowercase-only per the regex; assert). `render_test.exs`: escaping (agent text `X;Y,Z\nBEGIN:VEVENT` stays inert TEXT), folding at 75 octets incl. multi-byte boundary, all-day VALUE=DATE exclusive end, cancelled status renders. Controller test: valid token 200 + content-type, wrong/missing/extra-param/disabled → 404, constant-time compare used, rotate invalidates old.
+- [ ] **Step 1: tests first.** `local_test.exs`: the full validation table above + UID stability across edits (rename = new UID) + create-refuses-existing + name grammar rejects (`../x`, `a/b`, `.hidden`, 81 chars, uppercase OK? — NO: grammar is lowercase-only per the regex; assert). `render_test.exs`: escaping (agent text `X;Y,Z\nBEGIN:VEVENT` stays inert TEXT), folding at 75 octets incl. multi-byte boundary, all-day VALUE=DATE exclusive end, cancelled status renders, DTSTAMP + LAST-MODIFIED both equal a controlled file mtime rendered `YYYYMMDDTHHMMSSZ` (set the fixture file's mtime with `File.touch!/2`). Controller test: valid token 200 + content-type, wrong/missing/extra-param/disabled → 404, constant-time compare used, rotate invalidates old.
 - [ ] **Step 2: implement + green; full backend suite.**
 - [ ] **Step 3: commit** `feat(backend): valea local calendar, ICS render, tokened served feed (Spec F Task 4)`.
 
@@ -475,7 +479,7 @@ RPC serialization tests assert this exact shape for one external timed, one exte
 
 **Cockpit:** `today()` gains `"calendar" => %{"events_today" => n, "next" => %{"time" => "09:30", "title" => t} | nil}` — computed via the same query path as `list_calendar_events` for host-zone today, lenient like `mail_summary/0` (any failure → `nil` entry, never crashes today()).
 
-**Channel:** `{:calendar_status_changed, slug, status}` → push `"calendar_status"` (stringified, + `"source" => slug`); `{:calendar_synced, slug, %{event_count: n}}` → push `"calendar_synced"` `%{"source" => slug, "eventCount" => n}`; `{:calendar_local_changed}` → push `"calendar_local_changed"` `%{}`.
+**Channel:** `{:calendar_status_changed, slug, status}` → push `"calendar_status"` (stringified, + `"source" => slug`); `{:calendar_synced, slug, %{event_count: n}}` → push `"calendar_synced"` `%{"source" => slug, "event_count" => n}` (SNAKE_CASE `event_count` — the spec's channel table is the wire contract; do NOT follow mail's camelCase push style here, and the channel test asserts the snake key); `{:calendar_local_changed}` → push `"calendar_local_changed"` `%{}`.
 
 **Steps:**
 
@@ -525,9 +529,8 @@ export function occurrenceToGridEvents(row: CalendarOccurrence, hostZone: string
 // asks again — re-entering the SAME URL re-matches the .source identity (verify_or_claim
 // → :ok), so no rollback of the claim is needed or wanted; a DIFFERENT URL is the normal
 // identity_mismatch → purge path.
-// [Deliberate resolution of a spec-internal conflict: the spec's UI parenthetical says
-// keychain-then-RPC, but its own admission pin — "an http:// URL is rejected at setup",
-// URL-is-credential — requires the gate to run before persistence; Codex rounds 5-6.]
+// [This order is the AMENDED spec §UI Setup panel text (spec fix committed alongside
+// plan wave 8) — the spec itself now pins setup → set-url → keychain-on-acceptance.]
 // removeCalendarSource, purgeCalendarSourceFiles,
 // calendarSyncNow, calendarDoctor, enable/rotateCalendarFeedToken),
 // resupplyCredentials analog on workspace open (per-slug `:ics` keychain reads).
