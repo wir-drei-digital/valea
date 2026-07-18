@@ -1223,6 +1223,23 @@ defmodule Valea.Api.CalendarRpcTest do
 
       assert File.read!(config_path(workspace)) == before
     end
+
+    test "sync-now: a parked-then-stale RPC starts no pass (no fetch, no snapshot, no rows)",
+         %{workspace: workspace, generation: generation} do
+      setup_source!(generation, "work")
+      await_source!("work")
+      set_url!("work", generation)
+
+      assert_stale_in_lock!(
+        "calendar_sync_now",
+        %{"source" => "work", "generation" => generation},
+        ["started"]
+      )
+
+      refute File.exists?(Path.join([workspace, "sources", "calendar", "work", "feed.ics"]))
+      assert Store.occurrence_count("work") == 0
+      refute status_entry("work")["state"] == "syncing"
+    end
   end
 
   # Holds the lifecycle serializer open (the local_test shape): the

@@ -229,10 +229,14 @@ defmodule Valea.Api.Calendar do
       run fn input, _ctx ->
         %{source: slug, generation: generation} = input.arguments
 
+        # Same in-lock re-verification as every other mutating action: a
+        # sync pass fetches and rewrites the mirror/index, so a stale
+        # generation parked behind a workspace switch must never start one
+        # against the NEW workspace's same-slug engine (Codex round 5).
         with :ok <- Manager.check_generation(generation),
              {:ok, _ws} <- Manager.current(),
              :ok <- validate_slug(slug),
-             :ok <- Engine.sync_now(slug) do
+             :ok <- verified_lifecycle(generation, fn _root -> Engine.sync_now(slug) end) do
           {:ok, %{"started" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
