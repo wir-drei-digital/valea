@@ -6,6 +6,7 @@
   // popover); Valea events add edit/delete and the "New event" editor —
   // agents write the same files through the normal permission gate, so
   // everything on this grid is a plain file under `sources/calendar/`.
+  import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
   import { AppFrame, Rail, RailCard, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -68,11 +69,16 @@
     return { from: dayKey(first), to: dayKey(addDays(last, 1)) };
   });
 
+  // Track ONLY the route's visible range: `loadEvents` itself reads and
+  // writes `calendarStore.range` ($state) synchronously, so calling it
+  // tracked would make this effect self-retriggering — an infinite RPC
+  // loop that starves the page (found in the 2026-07-19 browser test run).
   $effect(() => {
-    void calendarStore.loadEvents(range.from, range.to, zone);
+    const { from, to } = range;
+    untrack(() => void calendarStore.loadEvents(from, to, zone));
   });
 
-  $effect(() => {
+  onMount(() => {
     void calendarStore.refreshStatus();
   });
 

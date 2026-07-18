@@ -213,15 +213,26 @@
           {/if}
 
           {#if doctorFor === source.source && doctorChecks.length > 0}
+            <!-- Wire shape per `Valea.Calendar.Doctor`: {id, label, detail,
+                 remedy, status: "ok" | "failed" | "unknown"} — "unknown" =
+                 gated behind an earlier failure, rendered muted, not failed. -->
             <ul class="border-paper-hairline mt-2 flex flex-col gap-1 border-t pt-2">
-              {#each doctorChecks as check, i (i)}
+              {#each doctorChecks as check (String(check.id))}
                 <li class="text-[11.5px]">
-                  <span class={check.ok === true ? 'text-act' : 'text-warn-ink'}>{check.ok === true ? '✓' : '✕'}</span>
-                  <span class="text-ink-body">{String(check.name ?? '')}</span>
+                  <span
+                    class={check.status === 'ok'
+                      ? 'text-act'
+                      : check.status === 'failed'
+                        ? 'text-warn-ink'
+                        : 'text-ink-meta'}
+                  >
+                    {check.status === 'ok' ? '✓' : check.status === 'failed' ? '✕' : '○'}
+                  </span>
+                  <span class="text-ink-body">{String(check.label ?? check.id ?? '')}</span>
                   {#if check.detail}
                     <span class="text-ink-meta"> — {String(check.detail)}</span>
                   {/if}
-                  {#if check.ok !== true && check.remedy}
+                  {#if check.status === 'failed' && check.remedy}
                     <p class="text-ink-meta mt-0.5 pl-4 font-mono text-[10.5px]">{String(check.remedy)}</p>
                   {/if}
                 </li>

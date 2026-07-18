@@ -145,20 +145,38 @@ export class CalendarStore {
     void resupplyCalendarUrls(this.sources, this.#api);
   }
 
+  /**
+   * Monotonically identifies the newest load/refresh request. A PLAIN
+   * private field on purpose, twice over: (1) `loadEvents` must not
+   * synchronously READ any `$state` it also writes, or a tracked caller
+   * (a route `$effect`) self-retriggers forever; (2) comparing `$state`
+   * objects by identity is a trap — reads yield proxies, so `saved !==
+   * this.range` is true even for the same object
+   * (state_proxy_equality_mismatch). Both bit this store during the
+   * 2026-07-19 browser test run.
+   */
+  #fetchToken: object = {};
+
   /** Loads the occurrence rows for `[from, to)` interpreted in `zone` and remembers the range for push refreshes. */
   async loadEvents(from: string, to: string, zone: string): Promise<void> {
     this.range = { from, to, zone };
-    await this.refreshEvents();
+    await this.#fetchEvents({ from, to, zone });
   }
 
   async refreshEvents(): Promise<void> {
     const range = this.range;
     if (!range) return;
+    await this.#fetchEvents({ from: range.from, to: range.to, zone: range.zone });
+  }
+
+  async #fetchEvents(range: { from: string; to: string; zone: string }): Promise<void> {
+    const token = {};
+    this.#fetchToken = token;
 
     const result = await this.#api.listCalendarEvents(range.from, range.to, range.zone);
     if (!result.ok) return;
-    // A slow earlier response must not clobber a newer range's rows.
-    if (this.range !== range) return;
+    // A slow earlier response must not clobber a newer request's rows.
+    if (this.#fetchToken !== token) return;
 
     const data = result.data as { events?: unknown };
     const raw = Array.isArray(data.events) ? (data.events as Record<string, unknown>[]) : [];

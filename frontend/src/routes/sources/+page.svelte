@@ -4,6 +4,7 @@
   // calendar feeds (Spec F) each have their real management surface on
   // their own route; this page links out and shows a one-line live status
   // per connection so the nav item stays honest instead of a stale stub.
+  import { onMount } from 'svelte';
   import { AppFrame } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import Inbox from '@lucide/svelte/icons/inbox';
@@ -12,7 +13,7 @@
   import { mailStore } from '$lib/stores/mail.svelte';
   import { calendarStore } from '$lib/stores/calendar.svelte';
 
-  $effect(() => {
+  onMount(() => {
     void mailStore.refreshStatus();
     void calendarStore.refreshStatus();
   });
