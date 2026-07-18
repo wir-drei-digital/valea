@@ -6,6 +6,7 @@
   // popover); Valea events add edit/delete and the "New event" editor —
   // agents write the same files through the normal permission gate, so
   // everything on this grid is a plain file under `sources/calendar/`.
+  import { page } from '$app/state';
   import { AppFrame, Rail, RailCard, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
@@ -38,7 +39,9 @@
   let anchor = $state(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()));
   let view = $state<'day' | 'week' | 'month'>('week');
   let now = $state(new Date());
-  let showSetup = $state(false);
+  // `/calendar?setup=1` deep-links straight into the Sources panel (the
+  // mail route's `?setup=1` convention) — used by the /sources hub.
+  let showSetup = $state(page.url.searchParams.get('setup') === '1');
   let selectedId: string | null = $state(null);
   let editor: { mode: 'create' } | { mode: 'edit'; occurrence: CalendarOccurrence } | null = $state(null);
 
