@@ -476,7 +476,7 @@ RPC serialization tests assert this exact shape for one external timed, one exte
 
 **Steps:**
 
-- [ ] **Step 1: tests first** — the mail_rpc_test shape for every action: happy path, generation guard, slug grammar rejects incl. `valea` on setup/set-url/purge, purge refusals (still-configured; unconfigured-but-never-existed), typed confirms, `calendar_status` invalid-config synthesis (per-entry invalid_config entries; whole-file invalid → `"sources" => []` + `"config_invalid"` reason while the action still succeeds), `list_calendar_events` range tests (timed event straddling range start INCLUDED; UTC-date-vs-local-date boundary event lands on the correct local day for a negative-offset zone; all-day exclusive-end overlap; mixed ordering all-day-first), invalid `zone` rejected, doctor check gating + no-URL-in-output, cockpit line presence + leniency, channel push shapes.
+- [ ] **Step 1: tests first** — the mail_rpc_test shape for every action: happy path, generation guard, slug grammar rejects incl. `valea` on setup/set-url/purge, purge refusals (still-configured; unconfigured-but-never-existed), typed confirms, the END-TO-END new-source sequence (`setup_calendar_source` → engine running with `url_present: false` → `set_calendar_source_url` → `url_present: true` + `.source` claimed; and the reject leg: an `http://` URL after setup → typed error, no `.source`, `url_present` stays false), `calendar_status` invalid-config synthesis (per-entry invalid_config entries; whole-file invalid → `"sources" => []` + `"config_invalid"` reason while the action still succeeds), `list_calendar_events` range tests (timed event straddling range start INCLUDED; UTC-date-vs-local-date boundary event lands on the correct local day for a negative-offset zone; all-day exclusive-end overlap; mixed ordering all-day-first), invalid `zone` rejected, doctor check gating + no-URL-in-output, cockpit line presence + leniency, channel push shapes.
 - [ ] **Step 2: implement; run codegen; commit BEFORE `just test` (codegen-freshness gate diffs `../frontend/src/lib/api/`).**
 - [ ] **Step 3: full `just test` (all four gates); commit** `feat(backend): calendar RPC surface, doctor, cockpit line (Spec F Task 6)`.
 
@@ -509,12 +509,22 @@ export function occurrenceToGridEvents(row: CalendarOccurrence, hostZone: string
 // CalendarStore (mail.svelte.ts pattern): sources status, visible-range events,
 // load(from, to, zone), push wiring (calendar_status / calendar_synced /
 // calendar_local_changed → targeted refresh), create/update/deleteValeaEvent,
-// setup actions (setupCalendarSource; URL admission ORDER: setCalendarSourceUrl FIRST —
-// the backend's Fetch.validate_url gate accepts/claims — THEN keychainSet(workspaceId,
-// `${slug}:ics`, url) for durability, so a rejected URL never reaches the keychain.
+// setup actions — the ONE add-source sequence, in this exact order:
+//   1. setupCalendarSource(slug, name)   → config write + supervisor rehash; the engine
+//      starts URL-less (status url_present: false — a valid engine state, not an error)
+//   2. setCalendarSourceUrl(slug, url)   → the engine EXISTS now; Fetch.validate_url
+//      gates admission, then RAM closure + .source claim
+//   3. keychainSet(workspaceId, `${slug}:ics`, url) ONLY on step-2 success — a rejected
+//      URL never reaches the keychain.
+// Keychain-write FAILURE at step 3 is non-fatal and retryable: the engine keeps its RAM
+// closure (source works for this session); the panel shows a "URL not durably stored —
+// retry" warning; after a restart url_present is false and the standard resupply prompt
+// asks again — re-entering the SAME URL re-matches the .source identity (verify_or_claim
+// → :ok), so no rollback of the claim is needed or wanted; a DIFFERENT URL is the normal
+// identity_mismatch → purge path.
 // [Deliberate resolution of a spec-internal conflict: the spec's UI parenthetical says
 // keychain-then-RPC, but its own admission pin — "an http:// URL is rejected at setup",
-// URL-is-credential — requires the gate to run before persistence; Codex round 5.]
+// URL-is-credential — requires the gate to run before persistence; Codex rounds 5-6.]
 // removeCalendarSource, purgeCalendarSourceFiles,
 // calendarSyncNow, calendarDoctor, enable/rotateCalendarFeedToken),
 // resupplyCredentials analog on workspace open (per-slug `:ics` keychain reads).
@@ -526,7 +536,7 @@ export function occurrenceToGridEvents(row: CalendarOccurrence, hostZone: string
 
 **Steps:**
 
-- [ ] **Step 1: vitest first** for the adapter (UTC→local split across a day boundary in a non-UTC zone, multi-day timed split, all-day exclusive split, kind mapping, DST-day segment lengths) and the store (merge/refresh on pushes, editor inclusive↔exclusive round-trip, feed block state, invalid-config rendering: `invalid_config` source entries and a `config_invalid` reason surface in the setup panel while the route stays usable).
+- [ ] **Step 1: vitest first** for the adapter (UTC→local split across a day boundary in a non-UTC zone, multi-day timed split, all-day exclusive split, kind mapping, DST-day segment lengths) and the store (merge/refresh on pushes, editor inclusive↔exclusive round-trip, feed block state, invalid-config rendering: `invalid_config` source entries and a `config_invalid` reason surface in the setup panel while the route stays usable; the add-source sequence: setup → set-url → keychain in order, an RPC-rejected URL never triggers keychainSet, and a mocked keychainSet failure produces the retryable warning state without losing the accepted source).
 - [ ] **Step 2: implement store + adapter + components + route; delete `placeholder-week.ts`.**
 - [ ] **Step 3: `bun run check` (0/0) + `bun run test`; full `just test`; commit** `feat(frontend): calendar route on real data with setup panel and event editor (Spec F Task 7)`.
 
