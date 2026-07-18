@@ -182,6 +182,10 @@ end
 
 ```elixir
 defmodule Valea.Calendar.Fetch do
+  @spec validate_url(String.t()) :: :ok | {:error, :not_https | :invalid_url}
+  # THE one URL admission gate: parseable URI, scheme "https", non-empty host.
+  # Consumed by Task 3's Engine.set_url and Task 6's set_calendar_source_url —
+  # BEFORE any keychain write, engine state, or .source identity claim.
   @spec get(url :: String.t(), etag :: String.t() | nil, last_modified :: String.t() | nil) ::
           {:ok, %{body: binary(), etag: String.t() | nil, last_modified: String.t() | nil}}
           | :unchanged
@@ -280,12 +284,25 @@ defmodule Valea.Calendar.Engine do
   # {:via, Registry, {Valea.Calendar.Registry, slug}}; activation on the "workspace" topic
   # {:workspace_opened, info, generation} like Valea.Mail.Engine.
   @spec status(slug) :: map()   # state inactive|idle|syncing|degraded|identity_mismatch,
-                                # last_sync_at, last_error, event_count, notices, url_present.
+                                # last_sync_at, last_error, event_count, notices, url_present,
+                                # unsupported_series (integer — Views.rebuild!'s count, updated on
+                                # EVERY derive incl. activation/304 self-heal re-derives, so the
+                                # spec's "N series unsupported" survives restarts and 304 runs).
                                 # NOTE: `invalid_config` is NOT an engine state — engines exist
                                 # only for VALID sources; invalid entries are synthesized at the
                                 # API layer (Task 6) from Settings.load's `invalid` map.
   @spec sync_now(slug) :: :ok | {:error, :busy | :no_url | :not_running}
-  @spec set_url(slug, url) :: :ok | {:error, term()}   # RAM closure + Source.verify claim
+  @spec set_url(slug, url) :: :ok | {:error, term()}
+  # Calls Fetch.validate_url/1 FIRST — a non-HTTPS/invalid URL is rejected with its typed
+  # error BEFORE the RAM closure is stored and BEFORE Source.verify_or_claim runs, so a
+  # bad URL can never bind the slug's .source identity.
+  @spec with_credentials(slug, (ctx :: map() -> result)) ::
+          {:ok, result} | {:error, :busy | :no_url | :not_running} when result: any()
+  # The credential-safe execution seam (Task 6's Doctor is the consumer): runs `fun`
+  # INSIDE the engine process (GenServer.call, generous timeout), occupying the single
+  # work slot (:busy while a pass runs, and vice versa). ctx = %{url_fun:, etag:,
+  # last_modified:, interval_minutes:, last_sync_at:} — the URL closure never crosses
+  # a process boundary and never appears in the returned result (tested).
 end
 
 defmodule Valea.Calendar.Supervisor do
@@ -319,7 +336,7 @@ rev = Base.encode16(:crypto.hash(:sha256, snapshot_bytes), case: :lower)
 
 **Steps:**
 
-- [ ] **Step 1: `views_test.exs` + `source` tests first** — view frontmatter CONDITIONAL schema: common exact keys `uid, source, summary, start, end, all_day, location, status, recurring, rrule, recurrence_id` (`recurrence_id` = the raw RECURRENCE-ID string, empty for masters, per spec §Storage layout "the real UID and raw RECURRENCE-ID live in the view's frontmatter"; same yaml escaping as `Valea.Mail.Views`); an UNSUPPORTED-series view carries ADDITIONALLY — and only then — `recurrence_unsupported: true` (supported views OMIT the key entirely; write separate exact-frontmatter assertions for a supported and an unsupported view). DESCRIPTION as body, one file per master incl. per-override files at distinct `Ics.view_id` paths (tests assert the master's empty `recurrence_id` and each override's RAW value), unsupported-series view keeps the raw rule and produces NO index rows, `.rev` written inside the swapped dir, double-rename replace, hostile UID never in a filename. Then `engine_test.exs` covering EVERY spec §Testing engine case: activation/identity (claim, mismatch → inert), replace-mirror (shrunken feed removes rows+views), degraded-keeps-mirror, zero-parseable guard, partial-damage guard (populated mirror SURVIVES 1-valid+3-malformed; shrunken all-parseable replaces), single-flight, per-source isolation, crash self-heal (kill between feed.ics swap and derive → next activation converges), stale-derive repair THROUGH a 304, two-store checks (kill between views swap and SQLite commit → mismatch → re-derive; and the inverse), host-zone change re-derive, ROLLING-WINDOW re-derive (advance the clock past the future boundary under continuing 304s → day-quantized rev mismatch → rows roll in/out), window-config change re-derive, purge-vs-degraded serialization (remove → in-flight pass awaited → purge → no resurrection). Inject clock + zone via engine opts (e.g. `now_fun`, `zone_fun`) so tests don't sleep.
+- [ ] **Step 1: `views_test.exs` + `source` tests first** — view frontmatter CONDITIONAL schema: common exact keys `uid, source, summary, start, end, all_day, location, status, recurring, rrule, recurrence_id` (`recurrence_id` = the raw RECURRENCE-ID string, empty for masters, per spec §Storage layout "the real UID and raw RECURRENCE-ID live in the view's frontmatter"; same yaml escaping as `Valea.Mail.Views`); an UNSUPPORTED-series view carries ADDITIONALLY — and only then — `recurrence_unsupported: true` (supported views OMIT the key entirely; write separate exact-frontmatter assertions for a supported and an unsupported view). DESCRIPTION as body, one file per master incl. per-override files at distinct `Ics.view_id` paths (tests assert the master's empty `recurrence_id` and each override's RAW value), unsupported-series view keeps the raw rule and produces NO index rows, `.rev` written inside the swapped dir, double-rename replace, hostile UID never in a filename. Then `engine_test.exs` covering EVERY spec §Testing engine case: activation/identity (claim, mismatch → inert), replace-mirror (shrunken feed removes rows+views), degraded-keeps-mirror, zero-parseable guard, partial-damage guard (populated mirror SURVIVES 1-valid+3-malformed; shrunken all-parseable replaces), single-flight, per-source isolation, crash self-heal (kill between feed.ics swap and derive → next activation converges), stale-derive repair THROUGH a 304, two-store checks (kill between views swap and SQLite commit → mismatch → re-derive; and the inverse), host-zone change re-derive, ROLLING-WINDOW re-derive (advance the clock past the future boundary under continuing 304s → day-quantized rev mismatch → rows roll in/out), window-config change re-derive, purge-vs-degraded serialization (remove → in-flight pass awaited → purge → no resurrection), `set_url` HTTPS admission (http URL → typed error, NO `.source` file created, no closure stored), `with_credentials` (mutual exclusion with a pass; result carries no URL), and a supported→unsupported transition (feed update swaps a supported RRULE for BYWEEKNO → `unsupported_series` increments in status, occurrences drop). Inject clock + zone via engine opts (e.g. `now_fun`, `zone_fun`) so tests don't sleep.
 - [ ] **Step 2: implement** `source.ex`, `views.ex`, `engine.ex`, `supervisor.ex`, runtime/application wiring, until green.
 - [ ] **Step 3: full backend suite; commit** `feat(backend): calendar sync engine with two-store derive marker (Spec F Task 3)`.
 
@@ -448,7 +465,9 @@ CalendarOccurrence = {
 
 RPC serialization tests assert this exact shape for one external timed, one external all-day, and one valea row.
 
-**Doctor:** per source, sequential, gated: `config_present` → `url_present` (keychain closure or env) → `reachable` (conditional GET through `Fetch`, reports status class + TLS) → `parse_ok` (parseable count + per-component notices) → `freshness` (last successful sync age vs 2× interval). Plus `feed_endpoint` (token configured + route answering — loopback self-request). Every check carries a copyable remedy; NO URL ever appears in any detail/remedy string.
+**Doctor:** per source, sequential, gated: `config_present` → `url_present` (keychain closure or env) → `reachable` (conditional GET, reports status class + TLS) → `parse_ok` (parseable count + per-component notices) → `freshness` (last successful sync age vs 2× interval). The network-touching checks run through `Engine.with_credentials/2` (Task 3's credential-safe seam) — Doctor NEVER reads the keychain/env itself and holds the URL only inside the engine-executed closure; a source with no running engine reports `url_present` failed with the resupply remedy (checks after the failed gate don't run). Plus `feed_endpoint` (token configured + route answering — loopback self-request). Every check carries a copyable remedy; NO URL ever appears in any check detail/remedy/error string — a dedicated test greps the full doctor output for the fixture URL's host and token.
+
+**`set_calendar_source_url` admission:** calls `Fetch.validate_url/1` FIRST — `:not_https`/`:invalid_url` are returned as typed errors before any keychain interaction, engine call, or `.source` claim (RPC test proves an `http://` URL leaves no `.source` file and no engine state behind).
 
 **Cockpit:** `today()` gains `"calendar" => %{"events_today" => n, "next" => %{"time" => "09:30", "title" => t} | nil}` — computed via the same query path as `list_calendar_events` for host-zone today, lenient like `mail_summary/0` (any failure → `nil` entry, never crashes today()).
 
@@ -497,7 +516,7 @@ export function occurrenceToGridEvents(row: CalendarOccurrence, hostZone: string
 
 - `WeekGrid`/`MonthGrid`: new all-day lane row; all three components gain `onSelect(event)` prop (today they have none).
 - Route: real data via CalendarStore; rail = source legend (deterministic color per slug — hash slug → hue) + upcoming-events list; external event select → read-only `EventPopover` (title, local time, location, source, description); valea select → popover + Edit/Delete; "New event" → `EventEditorPanel` (title, start/end or all-day toggle speaking INCLUSIVE dates and converting to/from exclusive at the RPC boundary, location, description) → `create_valea_event`. Replace the stale route comment referencing the deleted approval queue.
-- `CalendarSetupPanel`: source list with per-source status/doctor/typed-confirm purge, add-source form (slug, name, URL → keychain then `set_calendar_source_url`), served-feed block (enable, URL + copy, rotate, and the honest reachability copy: local calendar apps can subscribe; server-side fetchers — iCloud/Google/Outlook.com — cannot reach loopback, so no phone propagation in this phase).
+- `CalendarSetupPanel`: source list with per-source status/doctor/typed-confirm purge — the status line renders the spec-mandated "N series unsupported" whenever `unsupported_series > 0` (the field rides Engine.status through `calendar_status`) — add-source form (slug, name, URL → keychain then `set_calendar_source_url`), served-feed block (enable, URL + copy, rotate, and the honest reachability copy: local calendar apps can subscribe; server-side fetchers — iCloud/Google/Outlook.com — cannot reach loopback, so no phone propagation in this phase). Store test: a source status with `unsupported_series: 2` renders the notice.
 
 **Steps:**
 
