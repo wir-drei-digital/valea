@@ -28,6 +28,12 @@ defmodule Valea.Cockpit do
       "pending_ops", "notices"}`, live off `Valea.Mail.Engine.statuses/0`
       (Registry enumeration; empty list when no workspace is open or no
       account is configured yet)
+    - "calendar": the Today calendar line (calendar spec F, §UI) —
+      `%{"events_today" => n, "next" => %{"time" => "09:30", "title" => t}
+      | nil}`, computed through the SAME query path as
+      `list_calendar_events` (`Valea.Api.Calendar.events_in_range/4`) for
+      host-zone today; lenient like "mail" — ANY failure (no workspace,
+      Repo down, zone trouble) degrades to a `nil` entry, never a crash
     - "recent_sessions": up to 5 most recent sessions, newest first —
       `%{"id", "title", "started_at", "status", "live"}`
   """
@@ -36,6 +42,7 @@ defmodule Valea.Cockpit do
      %{
        "sections" => icm_sections(),
        "mail" => mail_summary(),
+       "calendar" => calendar_summary(),
        "recent_sessions" => recent_sessions()
      }}
   end
@@ -159,5 +166,58 @@ defmodule Valea.Cockpit do
       "pending_ops" => status.pending_ops,
       "notices" => status.notices
     }
+  end
+
+  # The Today calendar line, through the SAME query path as
+  # `list_calendar_events` (`Valea.Api.Calendar.events_in_range/4`) for
+  # host-zone today. Lenient exactly like `mail_summary/0`, and for the
+  # same reasons plus one more: the query touches `Valea.Repo` (external
+  # occurrence rows) AND live-reads valea event files — a close/switch
+  # window, a dead Repo, or any surprise degrades to a `nil` entry, never
+  # a crashed `today/0`.
+  defp calendar_summary do
+    with {:ok, %{path: root}} <- Valea.Workspace.Manager.current(),
+         zone = Valea.Calendar.Engine.host_zone(),
+         {:ok, local_now} <- DateTime.now(zone),
+         today = DateTime.to_date(local_now),
+         {:ok, events} <-
+           Valea.Api.Calendar.events_in_range(
+             root,
+             Date.to_iso8601(today),
+             Date.to_iso8601(Date.add(today, 1)),
+             zone
+           ) do
+      %{
+        "events_today" => length(events),
+        "next" => next_event(events, local_now, zone)
+      }
+    else
+      _any_failure -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
+
+  # The next TIMED event at or after now, as local wall-clock "HH:MM" +
+  # title. All-day rows carry no clock time and never become "next".
+  defp next_event(events, local_now, zone) do
+    events
+    |> Enum.filter(&(&1["all_day"] == false))
+    |> Enum.flat_map(fn row ->
+      with {:ok, instant, _offset} <- DateTime.from_iso8601(row["start"]),
+           {:ok, local} <- DateTime.shift_zone(instant, zone),
+           false <- DateTime.compare(local, local_now) == :lt do
+        [{DateTime.to_unix(local), Calendar.strftime(local, "%H:%M"), row["summary"]}]
+      else
+        _past_or_unparseable -> []
+      end
+    end)
+    |> Enum.sort()
+    |> case do
+      [] -> nil
+      [{_unix, time, title} | _later] -> %{"time" => time, "title" => title}
+    end
   end
 end

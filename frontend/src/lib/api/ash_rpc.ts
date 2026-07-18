@@ -715,11 +715,981 @@ export async function listAuditEntriesChannel<Fields extends ListAuditEntriesFie
 }
 
 
-export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type CalendarDoctorInput = {
+  source: string;
+  generation: number;
+};
+
+export type CalendarDoctorFields = UnifiedFieldSelection<{ok: boolean, checks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "ok" | "checks"}>[];
+
+export type InferCalendarDoctorResult<
+  Fields extends CalendarDoctorFields | undefined,
+> = InferResult<{ok: boolean, checks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "ok" | "checks"}, Fields>;
+
+export type CalendarDoctorResult<Fields extends CalendarDoctorFields | undefined = undefined> = | { success: true; data: InferCalendarDoctorResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function calendarDoctor<Fields extends CalendarDoctorFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CalendarDoctorInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CalendarDoctorResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "calendar_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CalendarDoctorResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function calendarDoctorChannel<Fields extends CalendarDoctorFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CalendarDoctorInput;
+  fields: Fields;
+  resultHandler: (result: CalendarDoctorResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CalendarDoctorResult<Fields>>(
+    config.channel,
+    {
+    action: "calendar_doctor",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type CalendarStatusFields = UnifiedFieldSelection<{sources: Array<Record<string, any>>, feedEnabled: boolean, valeaEventCount: number, configInvalid: string | null, __type: "TypedMap", __primitiveFields: "sources" | "feedEnabled" | "valeaEventCount" | "configInvalid"}>[];
+
+export type InferCalendarStatusResult<
+  Fields extends CalendarStatusFields | undefined,
+> = InferResult<{sources: Array<Record<string, any>>, feedEnabled: boolean, valeaEventCount: number, configInvalid: string | null, __type: "TypedMap", __primitiveFields: "sources" | "feedEnabled" | "valeaEventCount" | "configInvalid"}, Fields>;
+
+export type CalendarStatusResult<Fields extends CalendarStatusFields | undefined = undefined> = | { success: true; data: InferCalendarStatusResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function calendarStatus<Fields extends CalendarStatusFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CalendarStatusResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "calendar_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CalendarStatusResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function calendarStatusChannel<Fields extends CalendarStatusFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: CalendarStatusResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CalendarStatusResult<Fields>>(
+    config.channel,
+    {
+    action: "calendar_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type CalendarSyncNowInput = {
+  source: string;
+  generation: number;
+};
+
+export type CalendarSyncNowFields = UnifiedFieldSelection<{started: boolean, __type: "TypedMap", __primitiveFields: "started"}>[];
+
+export type InferCalendarSyncNowResult<
+  Fields extends CalendarSyncNowFields | undefined,
+> = InferResult<{started: boolean, __type: "TypedMap", __primitiveFields: "started"}, Fields>;
+
+export type CalendarSyncNowResult<Fields extends CalendarSyncNowFields | undefined = undefined> = | { success: true; data: InferCalendarSyncNowResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function calendarSyncNow<Fields extends CalendarSyncNowFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CalendarSyncNowInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CalendarSyncNowResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "calendar_sync_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CalendarSyncNowResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function calendarSyncNowChannel<Fields extends CalendarSyncNowFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CalendarSyncNowInput;
+  fields: Fields;
+  resultHandler: (result: CalendarSyncNowResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CalendarSyncNowResult<Fields>>(
+    config.channel,
+    {
+    action: "calendar_sync_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type CreateValeaEventInput = {
+  name: string;
+  title: string;
+  start: string;
+  end?: string | null;
+  allDay?: boolean | null;
+  location?: string | null;
+  status?: string | null;
+  description?: string | null;
+  generation: number;
+};
+
+export type CreateValeaEventFields = UnifiedFieldSelection<{created: boolean, path: string, __type: "TypedMap", __primitiveFields: "created" | "path"}>[];
+
+export type InferCreateValeaEventResult<
+  Fields extends CreateValeaEventFields | undefined,
+> = InferResult<{created: boolean, path: string, __type: "TypedMap", __primitiveFields: "created" | "path"}, Fields>;
+
+export type CreateValeaEventResult<Fields extends CreateValeaEventFields | undefined = undefined> = | { success: true; data: InferCreateValeaEventResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function createValeaEvent<Fields extends CreateValeaEventFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateValeaEventInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateValeaEventResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_valea_event",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateValeaEventResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function createValeaEventChannel<Fields extends CreateValeaEventFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateValeaEventInput;
+  fields: Fields;
+  resultHandler: (result: CreateValeaEventResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateValeaEventResult<Fields>>(
+    config.channel,
+    {
+    action: "create_valea_event",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type DeleteValeaEventInput = {
+  name: string;
+  confirmation: string;
+  generation: number;
+};
+
+export type DeleteValeaEventFields = UnifiedFieldSelection<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}>[];
+
+export type InferDeleteValeaEventResult<
+  Fields extends DeleteValeaEventFields | undefined,
+> = InferResult<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}, Fields>;
+
+export type DeleteValeaEventResult<Fields extends DeleteValeaEventFields | undefined = undefined> = | { success: true; data: InferDeleteValeaEventResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function deleteValeaEvent<Fields extends DeleteValeaEventFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DeleteValeaEventInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DeleteValeaEventResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "delete_valea_event",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DeleteValeaEventResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function deleteValeaEventChannel<Fields extends DeleteValeaEventFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DeleteValeaEventInput;
+  fields: Fields;
+  resultHandler: (result: DeleteValeaEventResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DeleteValeaEventResult<Fields>>(
+    config.channel,
+    {
+    action: "delete_valea_event",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type EnableCalendarFeedInput = {
+  generation: number;
+};
+
+export type EnableCalendarFeedFields = UnifiedFieldSelection<{token: string, __type: "TypedMap", __primitiveFields: "token"}>[];
+
+export type InferEnableCalendarFeedResult<
+  Fields extends EnableCalendarFeedFields | undefined,
+> = InferResult<{token: string, __type: "TypedMap", __primitiveFields: "token"}, Fields>;
+
+export type EnableCalendarFeedResult<Fields extends EnableCalendarFeedFields | undefined = undefined> = | { success: true; data: InferEnableCalendarFeedResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function enableCalendarFeed<Fields extends EnableCalendarFeedFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: EnableCalendarFeedInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<EnableCalendarFeedResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "enable_calendar_feed",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<EnableCalendarFeedResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function enableCalendarFeedChannel<Fields extends EnableCalendarFeedFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: EnableCalendarFeedInput;
+  fields: Fields;
+  resultHandler: (result: EnableCalendarFeedResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<EnableCalendarFeedResult<Fields>>(
+    config.channel,
+    {
+    action: "enable_calendar_feed",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListCalendarEventsInput = {
+  from: string;
+  to: string;
+  zone: string;
+};
+
+export type ListCalendarEventsFields = UnifiedFieldSelection<{events: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "events"}>[];
+
+export type InferListCalendarEventsResult<
+  Fields extends ListCalendarEventsFields | undefined,
+> = InferResult<{events: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "events"}, Fields>;
+
+export type ListCalendarEventsResult<Fields extends ListCalendarEventsFields | undefined = undefined> = | { success: true; data: InferListCalendarEventsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function listCalendarEvents<Fields extends ListCalendarEventsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListCalendarEventsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListCalendarEventsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_calendar_events",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListCalendarEventsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function listCalendarEventsChannel<Fields extends ListCalendarEventsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListCalendarEventsInput;
+  fields: Fields;
+  resultHandler: (result: ListCalendarEventsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListCalendarEventsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_calendar_events",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type PurgeCalendarSourceFilesInput = {
+  source: string;
+  confirmation: string;
+  generation: number;
+};
+
+export type PurgeCalendarSourceFilesFields = UnifiedFieldSelection<{purged: boolean, __type: "TypedMap", __primitiveFields: "purged"}>[];
+
+export type InferPurgeCalendarSourceFilesResult<
+  Fields extends PurgeCalendarSourceFilesFields | undefined,
+> = InferResult<{purged: boolean, __type: "TypedMap", __primitiveFields: "purged"}, Fields>;
+
+export type PurgeCalendarSourceFilesResult<Fields extends PurgeCalendarSourceFilesFields | undefined = undefined> = | { success: true; data: InferPurgeCalendarSourceFilesResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function purgeCalendarSourceFiles<Fields extends PurgeCalendarSourceFilesFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: PurgeCalendarSourceFilesInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<PurgeCalendarSourceFilesResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "purge_calendar_source_files",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<PurgeCalendarSourceFilesResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function purgeCalendarSourceFilesChannel<Fields extends PurgeCalendarSourceFilesFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: PurgeCalendarSourceFilesInput;
+  fields: Fields;
+  resultHandler: (result: PurgeCalendarSourceFilesResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<PurgeCalendarSourceFilesResult<Fields>>(
+    config.channel,
+    {
+    action: "purge_calendar_source_files",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RemoveCalendarSourceInput = {
+  source: string;
+  generation: number;
+};
+
+export type RemoveCalendarSourceFields = UnifiedFieldSelection<{removed: boolean, __type: "TypedMap", __primitiveFields: "removed"}>[];
+
+export type InferRemoveCalendarSourceResult<
+  Fields extends RemoveCalendarSourceFields | undefined,
+> = InferResult<{removed: boolean, __type: "TypedMap", __primitiveFields: "removed"}, Fields>;
+
+export type RemoveCalendarSourceResult<Fields extends RemoveCalendarSourceFields | undefined = undefined> = | { success: true; data: InferRemoveCalendarSourceResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function removeCalendarSource<Fields extends RemoveCalendarSourceFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RemoveCalendarSourceInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RemoveCalendarSourceResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "remove_calendar_source",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RemoveCalendarSourceResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function removeCalendarSourceChannel<Fields extends RemoveCalendarSourceFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RemoveCalendarSourceInput;
+  fields: Fields;
+  resultHandler: (result: RemoveCalendarSourceResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RemoveCalendarSourceResult<Fields>>(
+    config.channel,
+    {
+    action: "remove_calendar_source",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RotateCalendarFeedTokenInput = {
+  generation: number;
+};
+
+export type RotateCalendarFeedTokenFields = UnifiedFieldSelection<{token: string, __type: "TypedMap", __primitiveFields: "token"}>[];
+
+export type InferRotateCalendarFeedTokenResult<
+  Fields extends RotateCalendarFeedTokenFields | undefined,
+> = InferResult<{token: string, __type: "TypedMap", __primitiveFields: "token"}, Fields>;
+
+export type RotateCalendarFeedTokenResult<Fields extends RotateCalendarFeedTokenFields | undefined = undefined> = | { success: true; data: InferRotateCalendarFeedTokenResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function rotateCalendarFeedToken<Fields extends RotateCalendarFeedTokenFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RotateCalendarFeedTokenInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RotateCalendarFeedTokenResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "rotate_calendar_feed_token",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RotateCalendarFeedTokenResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function rotateCalendarFeedTokenChannel<Fields extends RotateCalendarFeedTokenFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RotateCalendarFeedTokenInput;
+  fields: Fields;
+  resultHandler: (result: RotateCalendarFeedTokenResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RotateCalendarFeedTokenResult<Fields>>(
+    config.channel,
+    {
+    action: "rotate_calendar_feed_token",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetCalendarSourceUrlInput = {
+  source: string;
+  url: string;
+  generation: number;
+};
+
+export type SetCalendarSourceUrlFields = UnifiedFieldSelection<{accepted: boolean, __type: "TypedMap", __primitiveFields: "accepted"}>[];
+
+export type InferSetCalendarSourceUrlResult<
+  Fields extends SetCalendarSourceUrlFields | undefined,
+> = InferResult<{accepted: boolean, __type: "TypedMap", __primitiveFields: "accepted"}, Fields>;
+
+export type SetCalendarSourceUrlResult<Fields extends SetCalendarSourceUrlFields | undefined = undefined> = | { success: true; data: InferSetCalendarSourceUrlResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function setCalendarSourceUrl<Fields extends SetCalendarSourceUrlFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetCalendarSourceUrlInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetCalendarSourceUrlResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_calendar_source_url",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetCalendarSourceUrlResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function setCalendarSourceUrlChannel<Fields extends SetCalendarSourceUrlFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetCalendarSourceUrlInput;
+  fields: Fields;
+  resultHandler: (result: SetCalendarSourceUrlResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetCalendarSourceUrlResult<Fields>>(
+    config.channel,
+    {
+    action: "set_calendar_source_url",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetupCalendarSourceInput = {
+  source: string;
+  name: string;
+  generation: number;
+};
+
+export type SetupCalendarSourceFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];
+
+export type InferSetupCalendarSourceResult<
+  Fields extends SetupCalendarSourceFields | undefined,
+> = InferResult<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}, Fields>;
+
+export type SetupCalendarSourceResult<Fields extends SetupCalendarSourceFields | undefined = undefined> = | { success: true; data: InferSetupCalendarSourceResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function setupCalendarSource<Fields extends SetupCalendarSourceFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetupCalendarSourceInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetupCalendarSourceResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "setup_calendar_source",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetupCalendarSourceResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function setupCalendarSourceChannel<Fields extends SetupCalendarSourceFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetupCalendarSourceInput;
+  fields: Fields;
+  resultHandler: (result: SetupCalendarSourceResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetupCalendarSourceResult<Fields>>(
+    config.channel,
+    {
+    action: "setup_calendar_source",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type UpdateValeaEventInput = {
+  name: string;
+  title: string;
+  start: string;
+  end?: string | null;
+  allDay?: boolean | null;
+  location?: string | null;
+  status?: string | null;
+  description?: string | null;
+  generation: number;
+};
+
+export type UpdateValeaEventFields = UnifiedFieldSelection<{updated: boolean, __type: "TypedMap", __primitiveFields: "updated"}>[];
+
+export type InferUpdateValeaEventResult<
+  Fields extends UpdateValeaEventFields | undefined,
+> = InferResult<{updated: boolean, __type: "TypedMap", __primitiveFields: "updated"}, Fields>;
+
+export type UpdateValeaEventResult<Fields extends UpdateValeaEventFields | undefined = undefined> = | { success: true; data: InferUpdateValeaEventResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function updateValeaEvent<Fields extends UpdateValeaEventFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: UpdateValeaEventInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<UpdateValeaEventResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "update_valea_event",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<UpdateValeaEventResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Calendar
+ *
+ * @ashActionType :action
+ */
+export async function updateValeaEventChannel<Fields extends UpdateValeaEventFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: UpdateValeaEventInput;
+  fields: Fields;
+  resultHandler: (result: UpdateValeaEventResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<UpdateValeaEventResult<Fields>>(
+    config.channel,
+    {
+    action: "update_valea_event",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferCockpitTodayResult<
   Fields extends CockpitTodayFields | undefined,
-> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type CockpitTodayResult<Fields extends CockpitTodayFields | undefined = undefined> = | { success: true; data: InferCockpitTodayResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

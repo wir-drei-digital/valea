@@ -97,6 +97,30 @@ defmodule Valea.Api.Cockpit do
                         ]
                       ]
                     ],
+                    # Spec F Task 6 (§UI, Today page): the calendar line.
+                    # Nullable BY DESIGN — `Valea.Cockpit.calendar_summary/0`
+                    # is lenient like "mail" and degrades to nil on any
+                    # failure; `next` is nil when nothing timed is still
+                    # ahead of now.
+                    calendar: [
+                      type: :map,
+                      allow_nil?: true,
+                      constraints: [
+                        fields: [
+                          events_today: [type: :integer, allow_nil?: false],
+                          next: [
+                            type: :map,
+                            allow_nil?: true,
+                            constraints: [
+                              fields: [
+                                time: [type: :string, allow_nil?: false],
+                                title: [type: :string, allow_nil?: false]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ],
                     recent_sessions: [
                       type: {:array, :map},
                       allow_nil?: false,

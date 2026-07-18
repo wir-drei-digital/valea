@@ -59,12 +59,14 @@ defmodule Valea.Api.Agents do
       # used for input_locator; the FE sends "kind"/"icm_id"/"path" verbatim).
       argument :context_doc, :map, allow_nil?: true
       argument :input, :map, allow_nil?: true
-      # Task 14 (mail spec §"Mount & containment"): mail mount keys
-      # (`mail-<slug>`) to include in the session's scope, default `[]`.
-      # Each must name an existing, enabled, non-degraded `kind: :mail`
-      # mount — `SessionScope.resolve/1` rejects an ICM key as
-      # `include_not_mail` and anything unavailable as `mail_unavailable`,
-      # fail-closed, before any session starts.
+      # Task 14 (mail spec §"Mount & containment") + Spec F Task 5
+      # (calendar spec §"Mounts and policy"): synthetic non-ICM mount keys
+      # (`mail-<slug>`, `calendar`) to include in the session's scope,
+      # default `[]`. Each must name an existing, enabled, non-degraded
+      # mount of a synthetic, non-ICM kind — `SessionScope.resolve/1`
+      # rejects an ICM key as `include_not_mail` and anything unavailable
+      # as `mail_unavailable` (the atoms predate the calendar kind and
+      # stay wire-stable), fail-closed, before any session starts.
       argument :include_mounts, {:array, :string}, allow_nil?: true
 
       # Task 5.5 / Task 9 (Spec D §B): `create_session` resolves `mount_key`

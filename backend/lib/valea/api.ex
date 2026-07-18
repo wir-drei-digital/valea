@@ -68,6 +68,22 @@ defmodule Valea.Api do
       rpc_action(:get_mail_draft, :get_mail_draft)
     end
 
+    resource Valea.Api.Calendar do
+      rpc_action(:calendar_status, :calendar_status)
+      rpc_action(:setup_calendar_source, :setup_calendar_source)
+      rpc_action(:set_calendar_source_url, :set_calendar_source_url)
+      rpc_action(:remove_calendar_source, :remove_calendar_source)
+      rpc_action(:purge_calendar_source_files, :purge_calendar_source_files)
+      rpc_action(:calendar_sync_now, :calendar_sync_now)
+      rpc_action(:calendar_doctor, :calendar_doctor)
+      rpc_action(:list_calendar_events, :list_calendar_events)
+      rpc_action(:create_valea_event, :create_valea_event)
+      rpc_action(:update_valea_event, :update_valea_event)
+      rpc_action(:delete_valea_event, :delete_valea_event)
+      rpc_action(:enable_calendar_feed, :enable_calendar_feed)
+      rpc_action(:rotate_calendar_feed_token, :rotate_calendar_feed_token)
+    end
+
     resource Valea.Api.Icms do
       rpc_action(:inspect_icm, :inspect_icm)
       rpc_action(:list_icms, :list_icms)
@@ -87,6 +103,7 @@ defmodule Valea.Api do
     resource Valea.Api.Agents
     resource Valea.Api.Audit
     resource Valea.Api.Mail
+    resource Valea.Api.Calendar
     resource Valea.Api.Icms
   end
 end

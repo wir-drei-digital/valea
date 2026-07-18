@@ -193,4 +193,50 @@ defmodule ValeaWeb.WorkspaceEventsTest do
       "account" => "mara"
     }
   end
+
+  test "a calendar status change pushes calendar_status with string keys + source" do
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "calendar",
+      {:calendar_status_changed, "work",
+       %{
+         source: "work",
+         state: "idle",
+         last_sync_at: nil,
+         last_error: nil,
+         event_count: 3,
+         notices: [],
+         url_present: true,
+         unsupported_series: 0
+       }}
+    )
+
+    assert_push "calendar_status", %{
+      "source" => "work",
+      "state" => "idle",
+      "event_count" => 3,
+      "url_present" => true,
+      "unsupported_series" => 0
+    }
+  end
+
+  test "a finished calendar pass pushes calendar_synced with the SNAKE_CASE event_count key" do
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "calendar",
+      {:calendar_synced, "work", %{event_count: 12}}
+    )
+
+    assert_push "calendar_synced", payload
+    # The spec's channel table is the wire contract: snake_case event_count,
+    # never mail's camelCase push style.
+    assert payload == %{"source" => "work", "event_count" => 12}
+  end
+
+  test "a valea-event write pushes calendar_local_changed with an empty payload" do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "calendar", {:calendar_local_changed})
+
+    assert_push "calendar_local_changed", payload
+    assert payload == %{}
+  end
 end

@@ -7,6 +7,7 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
     Phoenix.PubSub.subscribe(Valea.PubSub, "icm")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "calendar")
     {:ok, socket}
   end
 
@@ -59,6 +60,24 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
 
   def handle_info({:mail_message_upserted, slug, %{path: path}}, socket) do
     push(socket, "mail_message", %{"path" => path, "account" => slug})
+    {:noreply, socket}
+  end
+
+  # Calendar pushes (calendar spec F, §RPC surface "Channel pushes"): the
+  # spec's channel table is the wire contract — string keys, SNAKE_CASE
+  # `event_count` (deliberately NOT mail's camelCase push style).
+  def handle_info({:calendar_status_changed, slug, status}, socket) do
+    push(socket, "calendar_status", stringify(status) |> Map.put("source", slug))
+    {:noreply, socket}
+  end
+
+  def handle_info({:calendar_synced, slug, %{event_count: event_count}}, socket) do
+    push(socket, "calendar_synced", %{"source" => slug, "event_count" => event_count})
+    {:noreply, socket}
+  end
+
+  def handle_info({:calendar_local_changed}, socket) do
+    push(socket, "calendar_local_changed", %{})
     {:noreply, socket}
   end
 

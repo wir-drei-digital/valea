@@ -33,6 +33,20 @@ export type AuditAttributesOnlySchema = {
 };
 
 
+// Calendar Schema
+export type CalendarResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type CalendarAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Cockpit Schema
 export type CockpitResourceSchema = {
   __type: "Resource";
@@ -121,6 +135,15 @@ export type AuditFilterInput = {
 
 
 };
+export type CalendarFilterInput = {
+  and?: Array<CalendarFilterInput>;
+  or?: Array<CalendarFilterInput>;
+  not?: Array<CalendarFilterInput>;
+
+
+
+
+};
 export type CockpitFilterInput = {
   and?: Array<CockpitFilterInput>;
   or?: Array<CockpitFilterInput>;
@@ -166,6 +189,8 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
 
 
 
