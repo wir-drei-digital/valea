@@ -30,7 +30,9 @@ defmodule Valea.MixProject do
   def application do
     [
       mod: {Valea.Application, []},
-      extra_applications: [:logger, :runtime_tools, :erlexec]
+      # :inets — the OTP `:httpc` client `Valea.Calendar.Fetch` is built on;
+      # listed here so releases carry it.
+      extra_applications: [:logger, :runtime_tools, :erlexec, :inets]
     ]
   end
 

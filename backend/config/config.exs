@@ -49,7 +49,7 @@ config :spark,
     ]
   ]
 
-config :valea, ash_domains: [Valea.Api, Valea.Mail.Store]
+config :valea, ash_domains: [Valea.Api, Valea.Mail.Store, Valea.Calendar.Store]
 
 config :ash_typescript,
   output_file: "../frontend/src/lib/api/ash_rpc.ts",
