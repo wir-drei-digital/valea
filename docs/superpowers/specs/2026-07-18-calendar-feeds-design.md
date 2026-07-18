@@ -17,7 +17,8 @@ needed to render standard VEVENTs, so that seam stays open.
 
 ```
 sources/calendar/
-  <slug>/                    # one per subscribed feed; slug grammar ^[a-z0-9][a-z0-9-]{0,31}$
+  <slug>/                    # one per subscribed feed; slug grammar ^[a-z0-9][a-z0-9-]{0,31}$,
+                             #   with `valea` RESERVED (see below)
     .source                  # identity file: url host + sha256(url) prefix — engine-owned
     feed.ics                 # last SUCCESSFUL raw feed snapshot — engine-owned
     views/events/<id>.md     # derived per-VEVENT markdown views — engine-owned
@@ -63,6 +64,12 @@ sources/calendar/
   previous committed rows (SQLite transaction) and the previous views
   tree until their respective swap/commit — never a half-written
   mixture within either store.
+- `valea` is a RESERVED name, rejected as an external-source slug by
+  setup, URL-setting, config validation (a config file carrying it is
+  `invalid_config`), and purge — `purge_calendar_source_files` may only
+  ever target a VALIDATED EXTERNAL slug, so no code path can delete the
+  local calendar's `sources/calendar/valea/` tree. (Purging local events
+  is simply deleting their files — no bulk RPC exists or is needed.)
 - `.source` binds the slug to its feed (host + URL fingerprint). A slug
   whose keychain URL no longer matches `.source` refuses to sync
   (`identity_mismatch`, resolved by purge) — same posture as mail's
@@ -77,9 +84,13 @@ spec: the workspace template ships an old `account`/`caldav`/
 carry one. Handling is explicit and destructive-by-design (no
 backwards compatibility, nothing in the legacy file is real data): the
 template file is REPLACED with the v1 shape (empty `sources:`) in this
-change; `Settings.load/1` treats any non-v1 file as
-`{:invalid, reason}` surfaced in `calendar_status` (never blocking the
-local Valea calendar, which needs no config to work); the first
+change, and `Settings.load/1`, on finding EXACTLY that known legacy
+placeholder shape, rewrites the file to v1-empty once (logged notice) —
+so every existing workspace converges to v1 on first load and the
+local-calendar bootstrap guarantee below holds there too. Any OTHER
+non-v1 content is `{:invalid, reason}` surfaced in `calendar_status`;
+invalidity never blocks the local Valea calendar (mount availability
+keys on the FILE EXISTING, not on it being valid), and the first
 `setup_calendar_source` or `enable_calendar_feed` rewrites the file
 wholesale to v1. Format:
 
@@ -313,13 +324,14 @@ endpoint:
 ## Mounts and policy
 
 - ONE synthetic mount `calendar` (kind `:calendar`) covering
-  `sources/calendar/` — appended by `Mounts.list/1` whenever a v1
-  `config/calendar.yaml` exists, INCLUDING with zero sources (the
-  template ships exactly that, so every new workspace can grant a
-  session calendar access and an agent can create the FIRST
-  `valea/events/` file through the normal file API — no UI bootstrap
-  required); enabled always (per-source health is status, not mount
-  availability). Follows every
+  `sources/calendar/` — appended by `Mounts.list/1` whenever
+  `config/calendar.yaml` EXISTS (any content: v1 with zero sources — the
+  template's shape — and even a not-yet-rewritten or invalid file; the
+  mount keys on existence, validity is status), so every workspace, new
+  or pre-existing, can grant a session calendar access and an agent can
+  create the FIRST `valea/events/` file through the normal file API —
+  no UI bootstrap required. Enabled always (per-source health is
+  status, not mount availability). Follows every
   `kind: :mail` exclusion (never a Knowledge/editor/ICM-mutation target,
   excluded from cockpit sections, watcher ICM events, doctor, global
   search; `unique_mount_key` reserves `calendar`).
@@ -507,7 +519,8 @@ disabled) are 404 without detail.
 - FE: vitest for CalendarStore + shapes (merging, coloring, editor
   round-trip, feed block).
 - RPC: the mail_rpc_test shape for every action incl. typed confirms and
-  generation guards; `list_calendar_events` range tests: a timed event
+  generation guards; `valea` rejected as a source slug by setup/set-url/
+  purge (purge additionally refuses any non-configured-external target); `list_calendar_events` range tests: a timed event
   straddling the range start is included (overlap, not start-filter), a
   UTC-date-vs-local-date boundary event lands on the correct local day,
   all-day exclusive-end overlap, and mixed ordering (all-day before
