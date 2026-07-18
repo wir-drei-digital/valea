@@ -46,6 +46,17 @@ defmodule ValeaWeb.Router do
     get "/raw", FilesController, :serve
   end
 
+  # Deliberately token-EXEMPT — a calendar app's subscription fetcher
+  # cannot send headers; the feed carries its own credential (`?token=`,
+  # hash-compared constant-time by the controller) on the 127.0.0.1
+  # listener. Same arrangement as the files `:serve` scope above, minus
+  # `:accepts` — subscription clients send `Accept: text/calendar` (or
+  # nothing), and the response type is fixed server-side. See
+  # `ValeaWeb.CalendarFeedController`.
+  scope "/calendar", ValeaWeb do
+    get "/feed.ics", CalendarFeedController, :feed
+  end
+
   # SPA catch-all (static build baked into priv/static in `just build`).
   scope "/", ValeaWeb do
     get "/*path", SpaController, :index
