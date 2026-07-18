@@ -14,11 +14,26 @@
     minutesOfDay,
     nowOffsetPct,
     timeLabel,
+    type AllDayEntry,
     type CalendarEvent
   } from './calendar-shapes';
   import EventCard from './EventCard.svelte';
 
-  let { days, events, now }: { days: Date[]; events: CalendarEvent[]; now: Date } = $props();
+  let {
+    days,
+    events,
+    now,
+    allDay = [],
+    onSelect
+  }: {
+    days: Date[];
+    events: CalendarEvent[];
+    now: Date;
+    /** Spec F all-day lane entries — a chip row between header and time grid. */
+    allDay?: AllDayEntry[];
+    /** Selection callback (Spec F): grid events and all-day chips report their `id`. */
+    onSelect?: (id: string) => void;
+  } = $props();
 
   // 64px per hour — dense enough for a 9–18 band without scrolling on a
   // laptop, roomy enough for a title + time line on a 45-minute event.
@@ -36,9 +51,22 @@
     return visible.filter((ev) => ev.day === key).sort((a, b) => a.startMin - b.startMin);
   }
 
+  const allDayVisible = $derived(allDay.filter((entry) => dayKeys.includes(entry.day)));
+
+  function allDayFor(key: string): AllDayEntry[] {
+    return allDayVisible.filter((entry) => entry.day === key);
+  }
+
   function linePct(hour: number): number {
     return ((hour * 60 - window.startMin) / (window.endMin - window.startMin)) * 100;
   }
+
+  const ALL_DAY_CHIP: Record<AllDayEntry['kind'], string> = {
+    booked: 'border-l-2 border-act bg-act-tint text-ink-heading',
+    block: 'bg-paper-track text-ink-secondary',
+    hold: 'border border-dashed border-suggest-dash text-suggest-ink',
+    routine: 'border border-act bg-paper-card text-ink-heading'
+  };
 </script>
 
 <div
@@ -69,6 +97,31 @@
     </div>
   {/each}
 
+  <!-- all-day lane (Spec F) — rendered only when the visible days carry any all-day chips -->
+  {#if allDayVisible.length > 0}
+    <div class="border-paper-hairline text-ink-meta border-b py-1.5 pr-2.5 text-right text-[10.5px]" role="presentation">
+      all-day
+    </div>
+    {#each days as day (dayKey(day))}
+      <div class="border-paper-hairline flex min-h-7 flex-col gap-0.5 border-b border-l p-1" role="gridcell">
+        {#each allDayFor(dayKey(day)) as entry (entry.id)}
+          <svelte:element
+            this={onSelect ? 'button' : 'span'}
+            {...onSelect ? { type: 'button', onclick: () => onSelect?.(entry.id) } : {}}
+            class={[
+              'truncate rounded-[5px] px-1.5 py-0.5 text-left text-[10.5px] leading-snug',
+              ALL_DAY_CHIP[entry.kind],
+              entry.cancelled && 'line-through opacity-70'
+            ]}
+            title={entry.title}
+          >
+            {entry.title}
+          </svelte:element>
+        {/each}
+      </div>
+    {/each}
+  {/if}
+
   <!-- hour gutter -->
   <div class="relative" style={`height:${bodyHeight}px`} role="presentation">
     {#each hours as hour (hour)}
@@ -98,7 +151,7 @@
       {#each eventsFor(key) as event (event.id)}
         {@const box = eventBox(event, window)}
         <div class="absolute right-1.5 left-1" style={`top:${box.topPct}%;height:${box.heightPct}%`}>
-          <EventCard {event} past={isPastEvent(event, now)} />
+          <EventCard {event} past={isPastEvent(event, now)} onSelect={onSelect ? (ev) => onSelect?.(ev.id) : undefined} />
         </div>
       {/each}
 

@@ -252,3 +252,122 @@ describe('labels', () => {
     expect(minutesOfDay(new Date(2026, 6, 8, 9, 30))).toBe(570);
   });
 });
+
+// -- occurrenceToGridEvents (Spec F adapter) ----------------------------------
+
+import { localParts, occurrenceKind, occurrenceToGridEvents, type CalendarOccurrence } from './calendar-shapes';
+
+function row(partial: Partial<CalendarOccurrence>): CalendarOccurrence {
+  return {
+    source: 'work',
+    all_day: false,
+    start: '2026-07-21T07:30:00Z',
+    end: '2026-07-21T08:00:00Z',
+    summary: 'Standup',
+    location: null,
+    status: 'confirmed',
+    description: null,
+    view_path: 'sources/calendar/work/views/events/ev-0000000000000000.md',
+    path: null,
+    ...partial
+  };
+}
+
+describe('occurrenceToGridEvents', () => {
+  it('converts a timed UTC row to host-local wall minutes (Zurich, CEST +02:00)', () => {
+    const { segments, allDay } = occurrenceToGridEvents(row({}), 'Europe/Zurich');
+    expect(allDay).toEqual([]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].day).toBe('2026-07-21');
+    expect(segments[0].startMin).toBe(9 * 60 + 30);
+    expect(segments[0].endMin).toBe(10 * 60);
+    expect(segments[0].kind).toBe('booked');
+  });
+
+  it('lands a UTC-evening instant on the NEXT local day in a positive-offset zone', () => {
+    const { segments } = occurrenceToGridEvents(
+      row({ start: '2026-07-21T22:30:00Z', end: '2026-07-21T23:00:00Z' }),
+      'Europe/Zurich'
+    );
+    expect(segments).toHaveLength(1);
+    expect(segments[0].day).toBe('2026-07-22');
+    expect(segments[0].startMin).toBe(30);
+  });
+
+  it('lands a UTC-morning instant on the PREVIOUS local day in a negative-offset zone', () => {
+    const { segments } = occurrenceToGridEvents(
+      row({ start: '2026-07-21T02:00:00Z', end: '2026-07-21T03:00:00Z' }),
+      'America/New_York'
+    );
+    expect(segments).toHaveLength(1);
+    expect(segments[0].day).toBe('2026-07-20');
+    expect(segments[0].startMin).toBe(22 * 60);
+  });
+
+  it('splits a multi-day timed occurrence into per-local-day segments', () => {
+    const { segments } = occurrenceToGridEvents(
+      row({ start: '2026-07-21T20:00:00Z', end: '2026-07-23T06:00:00Z' }),
+      'Europe/Zurich'
+    );
+    expect(segments.map((s) => [s.day, s.startMin, s.endMin])).toEqual([
+      ['2026-07-21', 22 * 60, 24 * 60],
+      ['2026-07-22', 0, 24 * 60],
+      ['2026-07-23', 0, 8 * 60]
+    ]);
+    expect(new Set(segments.map((s) => s.id)).size).toBe(3);
+  });
+
+  it('closes an exact-local-midnight end on the previous day (no empty trailing segment)', () => {
+    const { segments } = occurrenceToGridEvents(
+      row({ start: '2026-07-21T20:00:00Z', end: '2026-07-21T22:00:00Z' }),
+      'Europe/Zurich'
+    );
+    expect(segments.map((s) => [s.day, s.startMin, s.endMin])).toEqual([['2026-07-21', 22 * 60, 24 * 60]]);
+  });
+
+  it('uses all-day plain dates DIRECTLY with the exclusive end (no zone conversion)', () => {
+    const { segments, allDay } = occurrenceToGridEvents(
+      row({ all_day: true, start: '2026-07-21', end: '2026-07-24' }),
+      'America/New_York' // a negative-offset zone must NOT shift the days
+    );
+    expect(segments).toEqual([]);
+    expect(allDay.map((e) => e.day)).toEqual(['2026-07-21', '2026-07-22', '2026-07-23']);
+  });
+
+  it('renders a one-day all-day event as exactly one chip', () => {
+    const { allDay } = occurrenceToGridEvents(row({ all_day: true, start: '2026-07-21', end: '2026-07-22' }), 'UTC');
+    expect(allDay).toHaveLength(1);
+    expect(allDay[0].day).toBe('2026-07-21');
+    expect(allDay[0].cancelled).toBe(false);
+  });
+
+  it('maps kinds per the spec: tentative → hold, valea → block, cancelled valea flagged', () => {
+    expect(occurrenceKind(row({ status: 'tentative' }))).toBe('hold');
+    expect(occurrenceKind(row({ source: 'valea', path: 'sources/calendar/valea/events/x.md', view_path: null }))).toBe(
+      'block'
+    );
+    const { allDay } = occurrenceToGridEvents(
+      row({ source: 'valea', status: 'cancelled', all_day: true, start: '2026-07-21', end: '2026-07-22' }),
+      'UTC'
+    );
+    expect(allDay[0].cancelled).toBe(true);
+    expect(allDay[0].kind).toBe('block');
+  });
+
+  it('keeps DST-day segments honest (spring-forward day is 23h in Zurich)', () => {
+    // 2026-03-29 02:00 CET jumps to 03:00 CEST. 00:00Z = 01:00 local; 04:00Z = 06:00 local.
+    const { segments } = occurrenceToGridEvents(
+      row({ start: '2026-03-29T00:00:00Z', end: '2026-03-29T04:00:00Z' }),
+      'Europe/Zurich'
+    );
+    expect(segments).toHaveLength(1);
+    expect(segments[0].startMin).toBe(60);
+    expect(segments[0].endMin).toBe(6 * 60);
+  });
+});
+
+describe('localParts', () => {
+  it('is stable across the h23 midnight edge (00, never 24)', () => {
+    expect(localParts('2026-07-21T22:00:00Z', 'Europe/Zurich')).toEqual({ day: '2026-07-22', minutes: 0 });
+  });
+});

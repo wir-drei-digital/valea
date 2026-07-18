@@ -98,7 +98,33 @@ import {
   unmountIcm as httpUnmountIcm,
   unmountIcmChannel,
   icmDoctor as httpIcmDoctor,
-  icmDoctorChannel
+  icmDoctorChannel,
+  calendarStatus as httpCalendarStatus,
+  calendarStatusChannel,
+  setupCalendarSource as httpSetupCalendarSource,
+  setupCalendarSourceChannel,
+  setCalendarSourceUrl as httpSetCalendarSourceUrl,
+  setCalendarSourceUrlChannel,
+  removeCalendarSource as httpRemoveCalendarSource,
+  removeCalendarSourceChannel,
+  purgeCalendarSourceFiles as httpPurgeCalendarSourceFiles,
+  purgeCalendarSourceFilesChannel,
+  calendarSyncNow as httpCalendarSyncNow,
+  calendarSyncNowChannel,
+  calendarDoctor as httpCalendarDoctor,
+  calendarDoctorChannel,
+  listCalendarEvents as httpListCalendarEvents,
+  listCalendarEventsChannel,
+  createValeaEvent as httpCreateValeaEvent,
+  createValeaEventChannel,
+  updateValeaEvent as httpUpdateValeaEvent,
+  updateValeaEventChannel,
+  deleteValeaEvent as httpDeleteValeaEvent,
+  deleteValeaEventChannel,
+  enableCalendarFeed as httpEnableCalendarFeed,
+  enableCalendarFeedChannel,
+  rotateCalendarFeedToken as httpRotateCalendarFeedToken,
+  rotateCalendarFeedTokenChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -145,7 +171,20 @@ import type {
   CreateIcmFields,
   SetIcmEnabledFields,
   UnmountIcmFields,
-  IcmDoctorFields
+  IcmDoctorFields,
+  CalendarStatusFields,
+  SetupCalendarSourceFields,
+  SetCalendarSourceUrlFields,
+  RemoveCalendarSourceFields,
+  PurgeCalendarSourceFilesFields,
+  CalendarSyncNowFields,
+  CalendarDoctorFields,
+  ListCalendarEventsFields,
+  CreateValeaEventFields,
+  UpdateValeaEventFields,
+  DeleteValeaEventFields,
+  EnableCalendarFeedFields,
+  RotateCalendarFeedTokenFields
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -685,6 +724,151 @@ function callGetMailDraftChannel(
 ) {
   return wrapChannelCall((handlers) =>
     getMailDraftChannel({ channel, input, fields: getMailDraftFields, ...handlers })
+  );
+}
+
+// -- calendar (Spec F) --------------------------------------------------------
+
+// `sources` (like mail's `accounts`) and `events` are RAW unconstrained
+// arrays — snake_case entries the calendar store normalizes itself; the
+// typed top-level keys (`feedEnabled`/`valeaEventCount`/`configInvalid`)
+// arrive camelCased like every typed field.
+const calendarStatusFields: CalendarStatusFields = ['sources', 'feedEnabled', 'valeaEventCount', 'configInvalid'];
+const listCalendarEventsFields: ListCalendarEventsFields = ['events'];
+const setupCalendarSourceFields: SetupCalendarSourceFields = ['saved'];
+const setCalendarSourceUrlFields: SetCalendarSourceUrlFields = ['accepted'];
+const removeCalendarSourceFields: RemoveCalendarSourceFields = ['removed'];
+const purgeCalendarSourceFilesFields: PurgeCalendarSourceFilesFields = ['purged'];
+const calendarSyncNowFields: CalendarSyncNowFields = ['started'];
+const calendarDoctorFields: CalendarDoctorFields = ['ok', 'checks'];
+const createValeaEventFields: CreateValeaEventFields = ['created', 'path'];
+const updateValeaEventFields: UpdateValeaEventFields = ['updated'];
+const deleteValeaEventFields: DeleteValeaEventFields = ['deleted'];
+const enableCalendarFeedFields: EnableCalendarFeedFields = ['token'];
+const rotateCalendarFeedTokenFields: RotateCalendarFeedTokenFields = ['token'];
+
+/** Valea-event attributes shared by create/update — generated-input camelCase (`allDay`). */
+export type ValeaEventAttrs = {
+  title: string;
+  start: string;
+  end?: string | null;
+  allDay?: boolean | null;
+  location?: string | null;
+  status?: string | null;
+  description?: string | null;
+};
+
+function callCalendarStatusChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    calendarStatusChannel({ channel, fields: calendarStatusFields, ...handlers })
+  );
+}
+
+function callSetupCalendarSourceChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { source: string; name: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setupCalendarSourceChannel({ channel, input, fields: setupCalendarSourceFields, ...handlers })
+  );
+}
+
+function callSetCalendarSourceUrlChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { source: string; url: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setCalendarSourceUrlChannel({ channel, input, fields: setCalendarSourceUrlFields, ...handlers })
+  );
+}
+
+function callRemoveCalendarSourceChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { source: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    removeCalendarSourceChannel({ channel, input, fields: removeCalendarSourceFields, ...handlers })
+  );
+}
+
+function callPurgeCalendarSourceFilesChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { source: string; confirmation: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    purgeCalendarSourceFilesChannel({ channel, input, fields: purgeCalendarSourceFilesFields, ...handlers })
+  );
+}
+
+function callCalendarSyncNowChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { source: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    calendarSyncNowChannel({ channel, input, fields: calendarSyncNowFields, ...handlers })
+  );
+}
+
+function callCalendarDoctorChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { source: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    calendarDoctorChannel({ channel, input, fields: calendarDoctorFields, ...handlers })
+  );
+}
+
+function callListCalendarEventsChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { from: string; to: string; zone: string }
+) {
+  return wrapChannelCall((handlers) =>
+    listCalendarEventsChannel({ channel, input, fields: listCalendarEventsFields, ...handlers })
+  );
+}
+
+function callCreateValeaEventChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: ValeaEventAttrs & { name: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    createValeaEventChannel({ channel, input, fields: createValeaEventFields, ...handlers })
+  );
+}
+
+function callUpdateValeaEventChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: ValeaEventAttrs & { name: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    updateValeaEventChannel({ channel, input, fields: updateValeaEventFields, ...handlers })
+  );
+}
+
+function callDeleteValeaEventChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { name: string; confirmation: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    deleteValeaEventChannel({ channel, input, fields: deleteValeaEventFields, ...handlers })
+  );
+}
+
+function callEnableCalendarFeedChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    enableCalendarFeedChannel({ channel, input, fields: enableCalendarFeedFields, ...handlers })
+  );
+}
+
+function callRotateCalendarFeedTokenChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    rotateCalendarFeedTokenChannel({ channel, input, fields: rotateCalendarFeedTokenFields, ...handlers })
   );
 }
 
@@ -1419,6 +1603,94 @@ export const api = {
     runRpc(
       (channel) => callGetMailDraftChannel(channel, { account, draftName }),
       () => httpGetMailDraft(withAuth({ input: { account, draftName }, fields: getMailDraftFields }))
+    ),
+
+  // -- calendar (Spec F). `calendarStatus`/`listCalendarEvents` deliver their
+  // `sources`/`events` arrays RAW (snake_case entries) — the calendar store
+  // owns normalizing them, same raw-delivery split as `mailStatusFields`.
+
+  calendarStatus: () =>
+    runRpc(callCalendarStatusChannel, () => httpCalendarStatus(withAuth({ fields: calendarStatusFields }))),
+
+  setupCalendarSource: (source: string, name: string, generation: number) =>
+    runRpc(
+      (channel) => callSetupCalendarSourceChannel(channel, { source, name, generation }),
+      () => httpSetupCalendarSource(withAuth({ input: { source, name, generation }, fields: setupCalendarSourceFields }))
+    ),
+
+  setCalendarSourceUrl: (source: string, url: string, generation: number) =>
+    runRpc(
+      (channel) => callSetCalendarSourceUrlChannel(channel, { source, url, generation }),
+      () =>
+        httpSetCalendarSourceUrl(withAuth({ input: { source, url, generation }, fields: setCalendarSourceUrlFields }))
+    ),
+
+  removeCalendarSource: (source: string, generation: number) =>
+    runRpc(
+      (channel) => callRemoveCalendarSourceChannel(channel, { source, generation }),
+      () => httpRemoveCalendarSource(withAuth({ input: { source, generation }, fields: removeCalendarSourceFields }))
+    ),
+
+  purgeCalendarSourceFiles: (source: string, confirmation: string, generation: number) =>
+    runRpc(
+      (channel) => callPurgeCalendarSourceFilesChannel(channel, { source, confirmation, generation }),
+      () =>
+        httpPurgeCalendarSourceFiles(
+          withAuth({ input: { source, confirmation, generation }, fields: purgeCalendarSourceFilesFields })
+        )
+    ),
+
+  calendarSyncNow: (source: string, generation: number) =>
+    runRpc(
+      (channel) => callCalendarSyncNowChannel(channel, { source, generation }),
+      () => httpCalendarSyncNow(withAuth({ input: { source, generation }, fields: calendarSyncNowFields }))
+    ),
+
+  calendarDoctor: (source: string, generation: number) =>
+    runRpc(
+      (channel) => callCalendarDoctorChannel(channel, { source, generation }),
+      () => httpCalendarDoctor(withAuth({ input: { source, generation }, fields: calendarDoctorFields }))
+    ),
+
+  listCalendarEvents: (from: string, to: string, zone: string) =>
+    runRpc(
+      (channel) => callListCalendarEventsChannel(channel, { from, to, zone }),
+      () => httpListCalendarEvents(withAuth({ input: { from, to, zone }, fields: listCalendarEventsFields }))
+    ),
+
+  createValeaEvent: (name: string, attrs: ValeaEventAttrs, generation: number) =>
+    runRpc(
+      (channel) => callCreateValeaEventChannel(channel, { name, ...attrs, generation }),
+      () =>
+        httpCreateValeaEvent(withAuth({ input: { name, ...attrs, generation }, fields: createValeaEventFields }))
+    ),
+
+  updateValeaEvent: (name: string, attrs: ValeaEventAttrs, generation: number) =>
+    runRpc(
+      (channel) => callUpdateValeaEventChannel(channel, { name, ...attrs, generation }),
+      () =>
+        httpUpdateValeaEvent(withAuth({ input: { name, ...attrs, generation }, fields: updateValeaEventFields }))
+    ),
+
+  deleteValeaEvent: (name: string, confirmation: string, generation: number) =>
+    runRpc(
+      (channel) => callDeleteValeaEventChannel(channel, { name, confirmation, generation }),
+      () =>
+        httpDeleteValeaEvent(
+          withAuth({ input: { name, confirmation, generation }, fields: deleteValeaEventFields })
+        )
+    ),
+
+  enableCalendarFeed: (generation: number) =>
+    runRpc(
+      (channel) => callEnableCalendarFeedChannel(channel, { generation }),
+      () => httpEnableCalendarFeed(withAuth({ input: { generation }, fields: enableCalendarFeedFields }))
+    ),
+
+  rotateCalendarFeedToken: (generation: number) =>
+    runRpc(
+      (channel) => callRotateCalendarFeedTokenChannel(channel, { generation }),
+      () => httpRotateCalendarFeedToken(withAuth({ input: { generation }, fields: rotateCalendarFeedTokenFields }))
     ),
 
   // Icms (task 3.4, `Valea.Api.Icms`). `listIcms` delivers its `icms` array

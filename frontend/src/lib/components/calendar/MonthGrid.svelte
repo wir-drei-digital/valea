@@ -10,6 +10,7 @@
     isPastEvent,
     monthGridFor,
     timeLabel,
+    type AllDayEntry,
     type CalendarEvent
   } from './calendar-shapes';
 
@@ -17,12 +18,22 @@
     anchor,
     events,
     now,
-    onSelectDay
+    onSelectDay,
+    allDay = [],
+    onSelect
   }: {
     anchor: Date;
     events: CalendarEvent[];
     now: Date;
     onSelectDay: (day: Date) => void;
+    /** Spec F all-day entries — rendered first in each cell's chip stack. */
+    allDay?: AllDayEntry[];
+    /**
+     * Selection callback (Spec F). Month cells are already buttons (day
+     * drill-down), so chips report selection via a bubbling-stopped click
+     * on the chip span; keyboard selection happens in the day/week views.
+     */
+    onSelect?: (id: string) => void;
   } = $props();
 
   const MAX_CHIPS = 3;
@@ -31,8 +42,38 @@
   const weeks = $derived(monthGridFor(anchor));
   const todayKey = $derived(dayKey(now));
 
-  function eventsFor(key: string): CalendarEvent[] {
-    return events.filter((ev) => ev.day === key).sort((a, b) => a.startMin - b.startMin);
+  /** One cell's chip stack: all-day chips first, then timed, one flat list for the cap. */
+  type Chip = { id: string; title: string; kind: CalendarEvent['kind']; cancelled: boolean; time: string | null; past: boolean };
+
+  function chipsFor(key: string): Chip[] {
+    const allDayChips = allDay
+      .filter((entry) => entry.day === key)
+      .map((entry) => ({
+        id: entry.id,
+        title: entry.title,
+        kind: entry.kind,
+        cancelled: entry.cancelled,
+        time: null,
+        past: key < todayKey
+      }));
+    const timedChips = events
+      .filter((ev) => ev.day === key)
+      .sort((a, b) => a.startMin - b.startMin)
+      .map((ev) => ({
+        id: ev.id,
+        title: ev.title,
+        kind: ev.kind,
+        cancelled: ev.cancelled === true,
+        time: timeLabel(ev.startMin),
+        past: isPastEvent(ev, now)
+      }));
+    return [...allDayChips, ...timedChips];
+  }
+
+  function selectChip(eventClick: MouseEvent, id: string): void {
+    if (!onSelect) return;
+    eventClick.stopPropagation();
+    onSelect(id);
   }
 
   const CHIP_CLASS: Record<CalendarEvent['kind'], string> = {
@@ -56,43 +97,48 @@
         {@const key = dayKey(day)}
         {@const inMonth = day.getMonth() === anchor.getMonth()}
         {@const isToday = key === todayKey}
-        {@const dayEvents = eventsFor(key)}
+        {@const dayChips = chipsFor(key)}
         <!-- Cells stay opaque (a translucent cell lets the hairline gap
              color bleed through and reads darker, not dimmer) — out-month
-             days dim their CONTENT instead. -->
-        <button
-          type="button"
+             days dim their CONTENT instead. The cell itself is a plain div
+             so chips can be REAL buttons (Spec F selection) without nested
+             interactives; the day number is the day-view drill-down. -->
+        <div
           class={[
             'flex min-h-[92px] flex-col items-stretch gap-1 px-1.5 pt-1.5 pb-2 text-left transition-colors',
             isToday ? 'bg-paper-pill' : 'bg-paper-surface hover:bg-paper-panel'
           ]}
-          onclick={() => onSelectDay(day)}
-          aria-label={`Open ${key}`}
         >
-          <span
+          <button
+            type="button"
             class={[
-              'px-1 text-[11.5px] tabular-nums',
+              'w-fit px-1 text-left text-[11.5px] tabular-nums',
               isToday ? 'text-warn-ink font-semibold' : inMonth ? 'text-ink-secondary' : 'text-ink-meta'
             ]}
+            onclick={() => onSelectDay(day)}
+            aria-label={`Open ${key}`}
           >
             {day.getDate()}
-          </span>
-          {#each dayEvents.slice(0, MAX_CHIPS) as event (event.id)}
-            <span
+          </button>
+          {#each dayChips.slice(0, MAX_CHIPS) as chip (chip.id)}
+            <svelte:element
+              this={onSelect ? 'button' : 'span'}
+              {...onSelect ? { type: 'button', onclick: (e: MouseEvent) => selectChip(e, chip.id) } : {}}
               class={[
-                'truncate rounded-[5px] px-1.5 py-0.5 text-[10.5px] leading-snug',
-                CHIP_CLASS[event.kind],
-                (isPastEvent(event, now) || !inMonth) && 'opacity-55'
+                'truncate rounded-[5px] px-1.5 py-0.5 text-left text-[10.5px] leading-snug',
+                CHIP_CLASS[chip.kind],
+                (chip.past || !inMonth) && 'opacity-55',
+                chip.cancelled && 'line-through opacity-70'
               ]}
-              title={`${timeLabel(event.startMin)} ${event.title}`}
+              title={chip.time ? `${chip.time} ${chip.title}` : chip.title}
             >
-              {event.title}
-            </span>
+              {chip.title}
+            </svelte:element>
           {/each}
-          {#if dayEvents.length > MAX_CHIPS}
-            <span class="text-ink-meta px-1 text-[10.5px]">+{dayEvents.length - MAX_CHIPS} more</span>
+          {#if dayChips.length > MAX_CHIPS}
+            <span class="text-ink-meta px-1 text-[10.5px]">+{dayChips.length - MAX_CHIPS} more</span>
           {/if}
-        </button>
+        </div>
       {/each}
     {/each}
   </div>

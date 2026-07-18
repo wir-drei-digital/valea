@@ -3,6 +3,7 @@ import type { IcmNode } from '../shell/nav';
 import { workspaceStore } from './workspace.svelte';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 import { wireMailEvents } from './mail.svelte';
+import { wireCalendarEvents } from './calendar.svelte';
 import { mountsStore, wireMountsEvents } from './mounts.svelte';
 import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
 
@@ -381,6 +382,7 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
   });
 
   wireMailEvents(channel);
+  wireCalendarEvents(channel);
   wireMountsEvents(channel);
   wireRecentSessionsEvents(channel);
 }

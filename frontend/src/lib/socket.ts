@@ -130,6 +130,29 @@ export type MailSyncPush = { account: string; phase: 'started' | 'finished'; new
 /** `mail_message` push payload — one account's message file was created/updated on disk (`SyncPass`). */
 export type MailMessagePush = { account: string; path: string };
 
+/**
+ * `calendar_status` push payload — ONE source's `Valea.Calendar.Engine`
+ * status map, channel-stringified with the slug added under `source`. Same
+ * snake_case-not-camelCased situation as `MailStatusPush` (the channel
+ * builds this itself); engines exist only for VALID sources, so pushes
+ * never carry the RPC's `valid: false` variant.
+ * `stores/calendar.svelte.ts`'s `normalizeCalendarSourceStatus` narrows it.
+ */
+export type CalendarStatusPush = {
+  source: string;
+  state: string;
+  last_sync_at: string | null;
+  last_error: string | null;
+  event_count: number;
+  notices: string[];
+  url_present: boolean;
+  unsupported_series: number;
+  workspace_id: string | null;
+};
+
+/** `calendar_synced` push payload — Spec F pins this wire shape SNAKE_CASE (`event_count`). */
+export type CalendarSyncedPush = { source: string; event_count: number };
+
 export function joinWorkspaceEvents(handlers: {
   onWorkspace?: (payload: WorkspaceEventPayload) => void;
   onIcmChanged?: () => void;
@@ -137,6 +160,9 @@ export function joinWorkspaceEvents(handlers: {
   onMailStatus?: (payload: MailStatusPush) => void;
   onMailSync?: (payload: MailSyncPush) => void;
   onMailMessage?: (payload: MailMessagePush) => void;
+  onCalendarStatus?: (payload: CalendarStatusPush) => void;
+  onCalendarSynced?: (payload: CalendarSyncedPush) => void;
+  onCalendarLocalChanged?: () => void;
 }): Channel {
   const sock = connectSocket();
   const channel = sock.channel('workspace:events', {});
@@ -158,6 +184,15 @@ export function joinWorkspaceEvents(handlers: {
   }
   if (handlers.onMailMessage) {
     channel.on('mail_message', (payload: MailMessagePush) => handlers.onMailMessage?.(payload));
+  }
+  if (handlers.onCalendarStatus) {
+    channel.on('calendar_status', (payload: CalendarStatusPush) => handlers.onCalendarStatus?.(payload));
+  }
+  if (handlers.onCalendarSynced) {
+    channel.on('calendar_synced', (payload: CalendarSyncedPush) => handlers.onCalendarSynced?.(payload));
+  }
+  if (handlers.onCalendarLocalChanged) {
+    channel.on('calendar_local_changed', () => handlers.onCalendarLocalChanged?.());
   }
 
   channel.join();
