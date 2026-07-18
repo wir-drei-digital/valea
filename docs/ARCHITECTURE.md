@@ -567,7 +567,8 @@ always decides.
   typed-confirm purge/re-adopt/discard, `MailDoctorPanel`,
   `SyncStatusLine`), route `routes/mail/+page.svelte`.
 - **Desktop**: `desktop/src-tauri/src/keychain.rs` — unchanged Tauri
-  commands; entries now keyed `<workspace_id>` / `<slug>:imap`.
+  commands; entries keyed `<workspace_id>` / `<slug>:imap` (mail) and
+  `<workspace_id>` / `<slug>:ics` (calendar feed URLs — Spec F).
 
 ### Mounts + policy (agent access)
 
@@ -634,6 +635,108 @@ check carries a copyable remedy; credentials scrubbed from error text.
   mailbox replacement blocks until an explicit re-adopt; vanished folders
   hold their local copy pending a user decision (discard is typed-confirm);
   uncertain op outcomes park as `needs_review`, never guessed.
+
+## Calendar (Spec F — ICS feeds in, Valea calendar out)
+
+Read-only mirrors of the user's external calendars via polled ICS
+subscription feeds (Google secret address, iCloud, Infomaniak — the one
+mechanism every provider ships without OAuth/CalDAV/Graph), plus one
+agent-writable local "Valea calendar" served back out as a tokened ICS
+feed. File-first: every event the agent can see or create is a plain file
+under `sources/calendar/`. Full spec:
+`docs/superpowers/specs/2026-07-18-calendar-feeds-design.md`.
+
+### `sources/calendar/` layout
+
+`<slug>/` per subscribed feed (slug grammar as mail; `valea` RESERVED):
+`.source` (host + URL-hash identity, the `.account` posture), `feed.ics`
+(the last SUCCESSFUL raw snapshot — the single durable commit point),
+`views/events/ev-<hash16>.md` (derived per-VEVENT markdown, one per master
+plus per-override files; frontmatter carries the real UID + raw
+RECURRENCE-ID — hostile UIDs never become filename material). Plus
+`valea/events/<name>.md` — agent/user-created events, the ONLY
+agent-writable path (markdown frontmatter: title/start/end/all_day/
+location/status + body; fail-closed validation, no-follow, all-day ends
+RFC-5545-EXCLUSIVE; UID derived from the file name so edits keep identity).
+
+### Sync engine + the guarded derive
+
+`Valea.Calendar.Supervisor` (beside `Valea.Mail.Supervisor`; also the
+per-slug lifecycle serializer for setup/set-url/remove/purge/rehash) runs
+one `Valea.Calendar.Engine` per valid source. A pass: conditional GET
+(`Valea.Calendar.Fetch` — HTTPS-only, same-origin redirect cap 3, SSRF
+address rejection before every connect, 20 MB/30 s caps, TLS verified) →
+parse (`Valea.Calendar.Ics`, hand-written RFC 5545 with a pinned RRULE
+subset; unsupported recurrence/TZID is UNAVAILABLE with a counted notice,
+never fabricated; DST resolution deterministic) → the feed-level
+acceptance guard → atomic `feed.ics` swap → the SHARED GUARDED DERIVE:
+views rebuilt + swapped with a `.rev` marker FIRST, SQLite occurrence
+rows + `derived_rev` in one transaction SECOND. The revision string
+(snapshot hash : host zone : day-quantized window) is checked on EVERY
+pass including 304s and re-derived on any mismatch, so crashes between
+swaps, failed derives behind 304s, host-zone changes, and the rolling
+window all self-heal; activation re-derives unconditionally (through the
+same guard — a damaged on-disk snapshot can never erase a healthy
+mirror). Occurrences live only in the index (`calendar_occurrences`,
+tagged all-day/timed; rebuildable pure cache). The Valea calendar has no
+engine: `Valea.Calendar.Local` validates and lists the event files LIVE
+at query time.
+
+### Credential posture
+
+The FEED URL IS A CREDENTIAL (Google's secret address embeds a private
+token): OS keychain `"<workspace_id>" / "<slug>:ics"`, RAM-only closure in
+the engine, env fallback `VALEA_CAL_URL_<SLUG>`, never in any workspace
+file, log, error, or status. Setup order is pinned: `setup_calendar_source`
+→ `set_calendar_source_url` (the HTTPS admission gate + `.source` claim) →
+keychain write only on acceptance. Restart resupply mirrors mail's.
+
+### The served feed
+
+`GET /calendar/feed.ics?token=<plain>` on the loopback endpoint
+(token-exempt from the control token; 32-byte token stored only as sha256,
+constant-time compare, 404 on every failure). Serves ONLY the rendered
+Valea calendar — external mirrors are never served, so the endpoint cannot
+exfiltrate provider data. Rendering composes VEVENTs from validated struct
+fields with RFC 5545 escaping/folding (agent text can never smuggle raw
+ICS). Reachability, honestly: loopback-only — calendar apps ON THIS
+MACHINE can subscribe (Calendar.app "On My Mac"); server-side fetchers
+(iCloud/Google/Outlook.com) cannot reach loopback, so no phone propagation
+in this phase.
+
+### Mounts + policy
+
+ONE synthetic `calendar` mount (kind `:calendar`) whenever
+`config/calendar.yaml` EXISTS (validity is status, not availability — a
+fresh template workspace can grant calendar access and an agent can create
+the first `valea/events/` file with no UI bootstrap). Sessions opt in via
+bare-string `"calendar"` in `related_icms` or `include_mounts`.
+`PermissionPolicy` tier (after mail, same semantics): anything under
+`sources/calendar` outside an opted-in session is **denied, never asked**;
+in scope, writes only under `valea/events/`, reads everywhere. The
+managedSettings mirror enumerates per-source deny globs as defense-in-depth.
+
+### RPC + UI
+
+`Valea.Api.Calendar` (13 actions, mail conventions: generation guards,
+slug-validated before I/O, typed confirms for purge/delete):
+`calendar_status` (+ invalid-config entries + `config_invalid`),
+`setup_calendar_source`, `set_calendar_source_url`,
+`remove_calendar_source`, `purge_calendar_source_files`,
+`calendar_sync_now`, `calendar_doctor`, `list_calendar_events` (half-open
+zone-interpreted range, overlap matching, tagged all-day/timed rows, live
+valea merge), `create/update/delete_valea_event`, `enable_calendar_feed` +
+`rotate_calendar_feed_token` (plain token shown once). Channel pushes:
+`calendar_status`, `calendar_synced` (`event_count` — snake, per spec),
+`calendar_local_changed`. Frontend: `stores/calendar.svelte.ts`
+(push-wired store, `<slug>:ics` resupply), `occurrenceToGridEvents`
+adapter + all-day lane + selection popover on the existing grids, the
+Valea event editor (inclusive dates at the edges, exclusive on the wire),
+`CalendarSetupPanel` with doctor/typed-confirm purge and the served-feed
+block. Cockpit `today()` gains a lenient calendar line. Doctor
+(`Valea.Calendar.Doctor`): `config_present` → `url_present` → `reachable`
+→ `parse_ok` → `freshness`, plus `feed_endpoint` — through the engine's
+credential-safe `with_credentials` seam; no URL ever appears in output.
 
 ## ICM project workspaces
 
@@ -1344,3 +1447,5 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-12-knowledge-depth-design.md](superpowers/specs/2026-07-12-knowledge-depth-design.md) — Knowledge & editor depth (Spec C): scan-backed search with an FTS5 upgrade seam, AST-confirmed backlinks, byte-surgical rename link-rewrite, page templates, contained image upload/serve endpoints, the `[[`/`@` page-link picker, the Cmd+K search palette + MRU + dangling-link handling, and the backlinks panel + page-aware impact dialogs + template select UI. Its workflow-frontmatter reference union (`Valea.ICM.References`) is deleted by Spec D §A; page-link rename integrity (`Valea.ICM.LinkRewrite`) is unaffected. Template discovery is made recursive by Spec D §D2.
 - [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — **Shipped** (see [ICM project workspaces](#icm-project-workspaces) above): private, hidden, id-based Valea workspace profiles; user-owned ICM projects mounted only by reference; one primary ICM and `cwd` per session; explicit cross-ICM context; project/session navigation; simplified onboarding. Supersedes Plan A/A2 outright — their implementation has been fully removed (Phase 11 clean-cut). Substrate for Spec D below; not reopened by it.
 - [2026-07-16-agent-native-icms-design.md](superpowers/specs/2026-07-16-agent-native-icms-design.md) — **Shipped** (Spec D — see the banner at the top of this file and every section it points to). Deletes the workflow subsystem outright; replaces "run" with the session-with-context primitive (`context_doc`/`input`); makes Today a file (`today.json`) the agent maintains; adds adopt-a-folder mounting, a depth-aware `RiskTier`, an ICM-internal secrets deny tier, and the 3-layer prose starter seed; re-scopes Mail's outbound path to manual until a future mail redesign.
+- [2026-07-17-mail-maildir-design.md](superpowers/specs/2026-07-17-mail-maildir-design.md) — **Shipped** (Spec E — see [Mail](#mail-spec-e--mail-as-maildir) above): multi-account windowed maildir mirrors, declared-ops two-way sync (moves + flags only, durable ledger, execution-time verification, never expunge as policy), derived views + SQLite index, per-account mail mounts with deny-not-ask, agent drafts + user-only Push-to-Drafts (no SMTP), Gmail provider profile, fail-closed identity/replacement recovery. Supersedes the 2026-07-11 mail spec's sync/read path.
+- [2026-07-18-calendar-feeds-design.md](superpowers/specs/2026-07-18-calendar-feeds-design.md) — **Shipped** (Spec F — see [Calendar](#calendar-spec-f--ics-feeds-in-valea-calendar-out) above): ICS subscription-feed mirrors (no CalDAV/OAuth/Graph), the hand-written RFC 5545 parser with honest unsupported-recurrence/timezone handling, the two-store guarded derive protocol, the agent-writable Valea calendar + tokened loopback served feed, one calendar mount with mail's deny-not-ask tier, feed-URL-as-credential keychain posture.
