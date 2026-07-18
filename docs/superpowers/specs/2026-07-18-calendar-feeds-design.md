@@ -27,12 +27,23 @@ sources/calendar/
 ```
 
 - `<id>` for external views: `ev-<hash16>` where hash16 = first 16 hex of
-  sha256(source slug <> "\0" <> VEVENT UID). External UIDs are arbitrary,
-  possibly hostile bytes — they never become filename material directly;
-  the real UID lives in the view's frontmatter.
-- `feed.ics` is replaced atomically (tmp + fsync + rename) only after a
-  fetch AND parse succeed; a broken fetch never damages the last good
-  mirror.
+  sha256(source slug <> "\0" <> VEVENT UID <> "\0" <> canonical
+  RECURRENCE-ID) — canonical = the override instant normalized per the
+  timezone rules below rendered as a UTC ISO string (or the plain date
+  for all-day), empty for a master. A master and its overrides therefore
+  never collide on one path. External UIDs are arbitrary, possibly
+  hostile bytes — they never become filename material directly; the real
+  UID and raw RECURRENCE-ID live in the view's frontmatter.
+- `feed.ics` is the SINGLE durable commit point and the authority for
+  everything derived: it is replaced atomically (tmp + fsync + rename)
+  only after a fetch AND parse succeed, and the views + index are then
+  DERIVED from the newly committed snapshot (idempotent rebuild).
+  Activation always re-derives views + index from `feed.ics`
+  unconditionally, so a crash anywhere between the swap and the derive
+  self-heals at the next activation or pass; a failure BEFORE the swap
+  leaves the previous snapshot and everything derived from it fully
+  intact. No cross-store transaction is needed because derived state is
+  never the authority.
 - `.source` binds the slug to its feed (host + URL fingerprint). A slug
   whose keychain URL no longer matches `.source` refuses to sync
   (`identity_mismatch`, resolved by purge) — same posture as mail's
@@ -95,20 +106,44 @@ this repo already owns its IMAP protocol core for the same reason). Scope:
 - Value types: DATE, DATE-TIME (floating, UTC `Z`, and `TZID=` forms),
   DURATION, and RRULE parts FREQ (DAILY/WEEKLY/MONTHLY/YEARLY), COUNT,
   UNTIL, INTERVAL, BYDAY (including ordinals, e.g. `2MO`), BYMONTHDAY,
-  BYMONTH, WKST; plus RDATE/EXDATE lists.
+  BYMONTH, BYSETPOS, WKST; plus RDATE/EXDATE lists. (BYSETPOS is in the
+  supported set because Outlook-style "second Monday" rules depend on
+  it.)
 - Expansion: `expand(vevent, window_from, window_to)` → occurrence list,
-  honoring COUNT/UNTIL, EXDATE, RDATE, and override VEVENTs
-  (RECURRENCE-ID replaces the master's matching occurrence; a CANCELLED
-  override removes it). Expansion is iterative with a hard iteration cap
-  (guards pathological rules); an RRULE using an unsupported part is
-  fail-soft: the master occurrence is kept, the rule is not expanded, and
-  a per-source notice records the skipped rule.
-- Timezones: `TZID` values are resolved as IANA names via the `tzdata`
-  time-zone database (new dependency, configured as Elixir's
-  `:time_zone_database`). VTIMEZONE definitions in the feed are ignored
-  in favor of the IANA lookup. Unknown TZID → treat the time as floating
-  local, add a per-source notice. All index times are stored as UTC
-  instants plus an `all_day` flag (all-day events stored as dates).
+  honoring COUNT/UNTIL, EXDATE, RDATE, and override VEVENTs. Override
+  matching is defined on CANONICAL INSTANTS: both the master's expanded
+  occurrence times and the override's RECURRENCE-ID are normalized
+  through the same timezone resolution as DTSTART (all-day compares as
+  plain dates; floating compares only against floating) and matched on
+  equality; a RECURRENCE-ID that matches no expanded occurrence renders
+  the override as a standalone event with a per-source notice. A
+  CANCELLED override removes its occurrence. `RANGE=THISANDFUTURE` is
+  recognized but NOT implemented: the whole series is treated as
+  unsupported (below) rather than mis-rendered. Expansion is iterative
+  with a hard iteration cap (guards pathological rules).
+- Unsupported recurrence is UNAVAILABLE, never fabricated: an RRULE
+  using a part outside the supported set (e.g. BYWEEKNO, BYYEARDAY), a
+  THISANDFUTURE override, or an unresolvable timezone (below) marks the
+  whole series `recurrence_unsupported` — NO occurrences are emitted
+  (not even DTSTART: one stale instance masquerading as the series is
+  worse than visible absence), the view is still written with
+  `recurrence_unsupported: true` and the raw rule, a per-source notice
+  records it, and the UI surfaces "N series unsupported" on the source's
+  status line so absence is discoverable, not silent.
+- Timezones: `TZID` values are resolved in a fixed chain: (1) as IANA
+  names via the `tzdata` time-zone database (new dependency, configured
+  as Elixir's `:time_zone_database`); (2) through a static Windows→IANA
+  alias table (CLDR windowsZones — Outlook feeds use TZIDs like
+  "W. Europe Standard Time"); (3) otherwise the affected VEVENT/series
+  is UNSUPPORTED (skipped with a notice, per the rule above) — an
+  unknown TZID is never guessed as local/floating time, because a wrong
+  guess silently moves real appointments. VTIMEZONE component
+  definitions are still not interpreted (the alias chain covers real
+  provider feeds; a fixture proving otherwise widens the alias table,
+  not the parser). All index times are stored as UTC instants plus an
+  `all_day` flag (all-day events stored as dates; floating times are
+  resolved against the host zone AT DERIVE TIME and re-derived on every
+  pass, so a host-zone change corrects itself on the next sync).
 - Fail-soft per component: one malformed VEVENT is skipped with a notice;
   it never fails the feed. A feed that yields ZERO parseable events where
   the previous snapshot had events is treated as a failed fetch
@@ -121,11 +156,20 @@ A minimal HTTPS GET built on `:httpc` with explicit TLS verification
 (`verify_peer`, hostname check, CA trust via the same OS-provided
 mechanism `ImapClient` already uses — the same no-insecure-escape-hatch
 posture). Pinned behavior:
-HTTPS-only (an `http://` URL is rejected at setup), redirect cap 3
-(same-scheme only), response size cap 20 MB, timeout 30 s, conditional
-GET via stored ETag/Last-Modified (304 → pass ends with `unchanged`).
-The URL never appears in logs or error strings (redacted like mail
-credentials — a feed URL IS the secret).
+HTTPS-only (an `http://` URL is rejected at setup), redirect cap 3 and
+SAME-ORIGIN only (scheme + host + port — a cross-origin redirect fails
+the pass; a provider that moves publishes a new URL, the user re-pastes
+it), response size cap 20 MB, timeout 30 s, conditional GET via stored
+ETag/Last-Modified (304 → pass ends with `unchanged`). Before every
+connect, the host's resolved addresses are checked and loopback,
+link-local, RFC 1918/ULA, and reserved ranges are rejected — the poller
+must not be an SSRF primitive against the user's own machine or LAN.
+Residual risk, accepted and documented: a DNS-rebinding feed host could
+still race the check against the connect's second resolution; the
+attacker in that position already controls a feed the user chose to
+subscribe to, and the impact is bounded to a GET whose response lands in
+that source's own mirror. The URL never appears in logs or error strings
+(redacted like mail credentials — a feed URL IS the secret).
 
 ## Sync engine
 
@@ -137,8 +181,9 @@ mail supervisor/engine pattern minus everything two-way:
 - Activation: verify `.source` (absent → claim; mismatch → inert
   `identity_mismatch`), read the keychain-supplied URL (RAM only), rebuild
   the index from `feed.ics` + views (self-heal), start the poll timer.
-- A pass: conditional GET → parse → rebuild this source's views + index
-  rows within the window → atomically swap `feed.ics` → broadcast. Single
+- A pass: conditional GET → parse → atomically swap `feed.ics` (the
+  commit point) → derive this source's views + index rows from the new
+  snapshot → broadcast. Single
   in-flight pass per engine (monitored Task, the mail single-flight
   shape). Any failure (network, TLS, parse, empty-feed guard) marks the
   source degraded with a reason and leaves the previous mirror fully
@@ -346,13 +391,20 @@ disabled) are 404 without detail.
   UNTIL, INTERVAL, BYDAY ordinals, BYMONTHDAY, EXDATE, RDATE, overrides,
   cancelled overrides, iteration cap, unsupported-part fail-soft) +
   fixture feeds captured from Google, iCloud, Infomaniak, and Outlook
-  exports (committed under `test/fixtures/ics/`).
+  exports (committed under `test/fixtures/ics/`), including: a master
+  with multiple overrides (distinct view paths, correct replacement), a
+  DST-boundary series with EXDATEs, Windows-TZID events, a
+  THISANDFUTURE override (whole series unsupported), and unsupported
+  BYWEEKNO (no fabricated single occurrence).
 - Fetch: a scripted local HTTP(S) model server (the FakeImapServer
-  pattern): 200/304/redirect-cap/oversize/timeout/TLS-failure/HTML-error
+  pattern): 200/304/redirect-cap/CROSS-ORIGIN-redirect-rejected/
+  private-range-target-rejected/oversize/timeout/TLS-failure/HTML-error
   -page cases.
 - Engine: activation/identity binding, replace-mirror semantics (a
   shrunken feed removes rows/views), degraded-keeps-mirror, empty-feed
-  guard, single-flight, per-source isolation.
+  guard, single-flight, per-source isolation, and crash self-heal (kill
+  between the feed.ics swap and the derive → next activation converges
+  to the committed snapshot).
 - Local calendar: validation table (incl. control chars, symlinks,
   date sanity), UID stability across edits, render escaping (agent text
   with ICS metacharacters stays inert), served-feed token
