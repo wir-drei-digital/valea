@@ -1117,6 +1117,193 @@ defmodule Valea.Api.CalendarRpcTest do
     end
   end
 
+  # -- in-lock workspace verification (Codex round 4) ---------------------------
+
+  describe "in-lock workspace verification" do
+    # The Codex round-4 posture: a lifecycle RPC parked behind a
+    # workspace switch must not mutate the newly current workspace, so
+    # every lifecycle mutation re-runs the generation check + root
+    # resolution INSIDE the serialized section (`verified_lifecycle/2`)
+    # — the out-of-lock pre-check passing before the switch is not
+    # enough. Deterministic, no sleeps (the local_test shape): the
+    # serializer is held open, the RPC provably parks behind it (its
+    # lifecycle call is visible in the serializer's mailbox, which
+    # implies its pre-checks already PASSED against the then-current
+    # generation), the generation is invalidated in place, then the
+    # serializer is released and the parked closure re-verifies.
+
+    test "setup: a parked-then-stale RPC refuses with the config byte-identical and no engine",
+         %{workspace: workspace, generation: generation} do
+      before = File.read!(config_path(workspace))
+
+      assert_stale_in_lock!(
+        "setup_calendar_source",
+        %{"source" => "work", "name" => "Work", "generation" => generation},
+        ["saved"]
+      )
+
+      assert File.read!(config_path(workspace)) == before
+      assert status_entry("work") == nil
+    end
+
+    test "set-url: a parked-then-stale RPC claims no .source and leaves the engine URL-less",
+         %{workspace: workspace, generation: generation} do
+      setup_source!(generation, "work")
+      await_source!("work")
+      before = File.read!(config_path(workspace))
+
+      assert_stale_in_lock!(
+        "set_calendar_source_url",
+        %{"source" => "work", "url" => url("work"), "generation" => generation},
+        ["accepted"]
+      )
+
+      refute File.exists?(Path.join([workspace, "sources", "calendar", "work", ".source"]))
+      assert status_entry("work")["url_present"] == false
+      assert File.read!(config_path(workspace)) == before
+    end
+
+    test "remove: a parked-then-stale RPC leaves the entry configured and the engine running",
+         %{workspace: workspace, generation: generation} do
+      setup_source!(generation, "work")
+      await_source!("work")
+      before = File.read!(config_path(workspace))
+
+      assert_stale_in_lock!(
+        "remove_calendar_source",
+        %{"source" => "work", "generation" => generation},
+        ["removed"]
+      )
+
+      assert File.read!(config_path(workspace)) == before
+      assert status_entry("work")["valid"] == true
+    end
+
+    test "purge: a parked-then-stale RPC leaves files and index rows intact",
+         %{workspace: workspace, generation: generation} do
+      setup_source!(generation, "work")
+      await_source!("work")
+      set_url!("work", generation)
+
+      plant_rows!(workspace, "work", [
+        timed_row("t1", "2026-07-20T10:00:00Z", "2026-07-20T11:00:00Z", "Standup")
+      ])
+
+      assert %{"success" => true} =
+               rpc("remove_calendar_source", %{"source" => "work", "generation" => generation}, [
+                 "removed"
+               ])
+
+      assert Store.occurrence_count("work") == 1
+
+      assert_stale_in_lock!(
+        "purge_calendar_source_files",
+        %{"source" => "work", "confirmation" => "work", "generation" => generation},
+        ["purged"]
+      )
+
+      assert File.dir?(Path.join([workspace, "sources", "calendar", "work"]))
+      assert Store.occurrence_count("work") == 1
+    end
+
+    test "rotate: a parked-then-stale RPC leaves the stored token hash unchanged",
+         %{workspace: workspace, generation: generation} do
+      assert %{"success" => true, "data" => %{"token" => token}} =
+               rpc("enable_calendar_feed", %{"generation" => generation}, ["token"])
+
+      before = File.read!(config_path(workspace))
+      hash = :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
+      assert before =~ hash
+
+      assert_stale_in_lock!(
+        "rotate_calendar_feed_token",
+        %{"generation" => generation},
+        ["token"]
+      )
+
+      assert File.read!(config_path(workspace)) == before
+    end
+  end
+
+  # Holds the lifecycle serializer open (the local_test shape): the
+  # returned task is parked INSIDE `lifecycle/1` until `send(sup,
+  # :release)`, so anything enqueued meanwhile provably runs after.
+  defp hold_lifecycle! do
+    sup = Process.whereis(Valea.Calendar.Supervisor)
+    assert is_pid(sup)
+    test_pid = self()
+
+    holder =
+      Task.async(fn ->
+        Valea.Calendar.Supervisor.lifecycle(fn ->
+          send(test_pid, :held)
+
+          receive do
+            :release -> :ok
+          end
+        end)
+      end)
+
+    assert_receive :held
+    {sup, holder}
+  end
+
+  # Spin (a pure state check — never proceeds early, no sleeps) until a
+  # lifecycle call is parked in the serializer's mailbox (the local_test
+  # helper): `GenServer.call` enqueues its request message before
+  # blocking, so once the call is visible the racing RPC has necessarily
+  # passed its out-of-lock pre-checks and parked behind the held
+  # serializer.
+  defp await_lifecycle_queued(sup, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 5_000
+
+    {:messages, messages} = Process.info(sup, :messages)
+
+    queued? =
+      Enum.any?(messages, fn
+        {:"$gen_call", _from, {:lifecycle, _fun}} -> true
+        _other -> false
+      end)
+
+    cond do
+      queued? ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("the RPC never queued behind the held lifecycle serializer")
+
+      true ->
+        :erlang.yield()
+        await_lifecycle_queued(sup, deadline)
+    end
+  end
+
+  # Simulates the instant a workspace switch completes while the RPC is
+  # parked: bumps the Manager's generation counter in place. (A real
+  # teardown/reopen would kill the held serializer — and with it the
+  # queued call this test is pinning — so the counter bump IS the
+  # deterministic seam, exactly what `check_generation/1` keys on.)
+  defp invalidate_generation! do
+    :sys.replace_state(Manager, fn state -> %{state | generation: state.generation + 1} end)
+  end
+
+  # The shared runner: hold the serializer, enqueue `action` so it parks
+  # behind it (pre-checks passed), invalidate the generation, release,
+  # and assert the parked closure's in-lock re-verification surfaced the
+  # typed stale-generation error. Effect-freedom is asserted per-test.
+  defp assert_stale_in_lock!(action, input, fields) do
+    {sup, holder} = hold_lifecycle!()
+
+    task = Task.async(fn -> rpc(action, input, fields) end)
+    await_lifecycle_queued(sup)
+    invalidate_generation!()
+    send(sup, :release)
+
+    assert :ok = Task.await(holder)
+    assert %{"success" => false, "errors" => errors} = Task.await(task)
+    assert inspect(errors) =~ "workspace_changed"
+  end
+
   # -- read-only actions without an open workspace ------------------------------
 
   describe "read-only actions without an open workspace" do

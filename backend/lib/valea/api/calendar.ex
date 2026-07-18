@@ -20,7 +20,9 @@ defmodule Valea.Api.Calendar do
       `started`, `ok`, `created`, `updated`, `deleted`,
       `feed_enabled`).
     * Every MUTATING action takes `generation` and guards with
-      `Valea.Workspace.Manager.check_generation/1` first; the read-only
+      `Valea.Workspace.Manager.check_generation/1` first (a fast path —
+      for the lifecycle mutations the AUTHORITATIVE check re-runs inside
+      the serialized section, see `verified_lifecycle/2`); the read-only
       actions (`calendar_status`, `list_calendar_events`) still resolve
       `Manager.current/0` before touching anything.
     * Every `source` argument is grammar-validated FIRST
@@ -32,9 +34,15 @@ defmodule Valea.Api.Calendar do
       runs BEFORE any engine call or `.source` claim — a rejected URL
       leaves no state behind anywhere.
     * Lifecycle mutations (setup / set-url / remove / purge, plus the
-      feed-token config writes) run through
+      feed-token config writes) run through `verified_lifecycle/2`:
       `Valea.Calendar.Supervisor.lifecycle/1`, the per-slug serializer —
-      no two lifecycle mutations can interleave (spec §Sync engine).
+      no two lifecycle mutations can interleave (spec §Sync engine) —
+      with the generation check AND root resolution RE-RUN inside the
+      serialized section, so a stale RPC parked behind a workspace
+      switch can never mutate the newly opened workspace and every
+      effect acts on the root resolved under the lock (the valea-event
+      actions carry the same posture via `Local.write/5`'s `verify:`
+      hook).
 
   ## `list_calendar_events`
 
@@ -107,10 +115,10 @@ defmodule Valea.Api.Calendar do
         %{source: slug, name: name, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, _ws} <- Manager.current(),
              :ok <- validate_slug(slug),
              :ok <-
-               CalendarSupervisor.lifecycle(fn ->
+               verified_lifecycle(generation, fn root ->
                  with :ok <- Settings.put_source(root, slug, name) do
                    CalendarSupervisor.rehash()
                  end
@@ -139,7 +147,7 @@ defmodule Valea.Api.Calendar do
              {:ok, _ws} <- Manager.current(),
              :ok <- validate_slug(slug),
              :ok <- Fetch.validate_url(url),
-             :ok <- CalendarSupervisor.lifecycle(fn -> Engine.set_url(slug, url) end) do
+             :ok <- verified_lifecycle(generation, fn _root -> Engine.set_url(slug, url) end) do
           {:ok, %{"accepted" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -157,10 +165,10 @@ defmodule Valea.Api.Calendar do
         %{source: slug, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, _ws} <- Manager.current(),
              :ok <- validate_slug(slug),
              :ok <-
-               CalendarSupervisor.lifecycle(fn ->
+               verified_lifecycle(generation, fn root ->
                  with :ok <- Settings.remove_source(root, slug) do
                    CalendarSupervisor.rehash()
                  end
@@ -181,19 +189,28 @@ defmodule Valea.Api.Calendar do
 
       # Typed confirm = slug; only ever a non-configured EXTERNAL target
       # (the reserved `valea` fails the slug grammar; a slug that is
-      # neither configured nor has files on disk is `not_found`). The
-      # deletion itself runs through the Supervisor's per-slug lifecycle
-      # serialization (`purge!/1`): refuse-while-configured, await any
-      # in-flight pass, re-check, then delete files + index rows.
+      # neither configured nor has files on disk is `not_found` —
+      # `ensure_purge_target/2` runs INSIDE the serialized section
+      # against the in-lock root, so the target validation can never see
+      # a different workspace than the deletion). The deletion itself is
+      # `Supervisor.purge!/1`: called from within `verified_lifecycle/2`
+      # it re-enters the serializer directly (`lifecycle/1`'s
+      # re-entrancy guard) — refuse-while-configured, await any
+      # in-flight pass, re-check, then delete files + index rows, all
+      # ONE serialized unit with the workspace verification.
       run fn input, _ctx ->
         %{source: slug, confirmation: confirmation, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, _ws} <- Manager.current(),
              :ok <- validate_slug(slug),
              :ok <- require_confirmation(confirmation, slug),
-             :ok <- ensure_purge_target(root, slug),
-             :ok <- CalendarSupervisor.purge!(slug) do
+             :ok <-
+               verified_lifecycle(generation, fn root ->
+                 with :ok <- ensure_purge_target(root, slug) do
+                   CalendarSupervisor.purge!(slug)
+                 end
+               end) do
           {:ok, %{"purged" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -376,15 +393,17 @@ defmodule Valea.Api.Calendar do
 
       # The plain token is returned exactly ONCE; only its sha256 hex is
       # persisted (`Settings.generate_feed_token/1`). The config write is
-      # serialized through the lifecycle so it can never interleave with
-      # a concurrent setup/remove rewrite of the same file.
+      # serialized through the lifecycle (with the workspace re-verified
+      # in-lock) so it can never interleave with a concurrent
+      # setup/remove rewrite of the same file — nor land on a workspace
+      # opened after this request was issued.
       run fn input, _ctx ->
         %{generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, _ws} <- Manager.current(),
              {:ok, token} <-
-               CalendarSupervisor.lifecycle(fn -> Settings.generate_feed_token(root) end) do
+               verified_lifecycle(generation, fn root -> Settings.generate_feed_token(root) end) do
           {:ok, %{"token" => token}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -403,9 +422,9 @@ defmodule Valea.Api.Calendar do
         %{generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
-             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, _ws} <- Manager.current(),
              {:ok, token} <-
-               CalendarSupervisor.lifecycle(fn -> Settings.generate_feed_token(root) end) do
+               verified_lifecycle(generation, fn root -> Settings.generate_feed_token(root) end) do
           {:ok, %{"token" => token}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -438,6 +457,36 @@ defmodule Valea.Api.Calendar do
   def error_for(reason), do: Error.new(inspect(reason))
 
   # -- guards -------------------------------------------------------------------
+
+  # THE shared wrapper for every lifecycle-serialized mutation (setup /
+  # set-url / remove / purge / feed-token — the valea-event actions get
+  # the identical posture through `Local.write/5`'s `verify:` hook):
+  # enters `Valea.Calendar.Supervisor.lifecycle/1` and RE-RUNS the
+  # workspace guards INSIDE the serialized section — after any queued
+  # mutation (or completed workspace switch) ahead of it — handing `fun`
+  # the FRESH root resolved under the lock. The out-of-lock pre-checks in
+  # each action are only a fast path; this is the authoritative check: a
+  # stale RPC whose lifecycle call lands on a NEWLY opened workspace's
+  # supervisor fails `check_generation/1` here, before any effect against
+  # the new root. The guard errors are the exact atoms the pre-checks
+  # already surface (`:workspace_changed`, `:no_workspace`), so
+  # `error_for/1` maps them identically — no wire change. A serializer
+  # that is gone, or dies out from under the queued call (workspace
+  # closing, nothing reopened yet), is the same stale-workspace condition
+  # the generation pre-check reports for a closed workspace — surfaced as
+  # `:workspace_changed`, never a raw exit.
+  defp verified_lifecycle(generation, fun) when is_function(fun, 1) do
+    CalendarSupervisor.lifecycle(fn ->
+      with :ok <- Manager.check_generation(generation),
+           {:ok, %{path: root}} <- Manager.current() do
+        fun.(root)
+      end
+    end)
+  catch
+    :exit, {:noproc, {GenServer, :call, _args}} -> {:error, :workspace_changed}
+    :exit, {:shutdown, {GenServer, :call, _args}} -> {:error, :workspace_changed}
+    :exit, {{:shutdown, _reason}, {GenServer, :call, _args}} -> {:error, :workspace_changed}
+  end
 
   defp validate_slug(slug) do
     if Settings.valid_slug?(slug), do: :ok, else: {:error, :invalid_slug}
