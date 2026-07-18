@@ -429,6 +429,7 @@ const cockpitTodayFields = [
     ]
   },
   { mail: ['account', 'configured', 'state', 'pendingOps', 'notices'] },
+  { calendar: ['eventsToday', { next: ['time', 'title'] }] },
   { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] }
 ] as unknown as CockpitTodayFields;
 
@@ -733,7 +734,13 @@ function callGetMailDraftChannel(
 // arrays — snake_case entries the calendar store normalizes itself; the
 // typed top-level keys (`feedEnabled`/`valeaEventCount`/`configInvalid`)
 // arrive camelCased like every typed field.
-const calendarStatusFields: CalendarStatusFields = ['sources', 'feedEnabled', 'valeaEventCount', 'configInvalid'];
+const calendarStatusFields: CalendarStatusFields = [
+  'sources',
+  'feedEnabled',
+  'valeaEventCount',
+  'valeaInvalid',
+  'configInvalid'
+];
 const listCalendarEventsFields: ListCalendarEventsFields = ['events'];
 const setupCalendarSourceFields: SetupCalendarSourceFields = ['saved'];
 const setCalendarSourceUrlFields: SetCalendarSourceUrlFields = ['accepted'];

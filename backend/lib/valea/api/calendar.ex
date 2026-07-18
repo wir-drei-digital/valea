@@ -90,6 +90,7 @@ defmodule Valea.Api.Calendar do
                     sources: [type: {:array, :map}, allow_nil?: false],
                     feed_enabled: [type: :boolean, allow_nil?: false],
                     valea_event_count: [type: :integer, allow_nil?: false],
+                    valea_invalid: [type: {:array, :map}, allow_nil?: false],
                     config_invalid: [type: :string, allow_nil?: true]
                   ]
 
@@ -561,10 +562,19 @@ defmodule Valea.Api.Calendar do
         _valid_or_absent -> {status_sources(load), nil}
       end
 
+    valea = Local.list(root)
+
     %{
       "sources" => sources,
       "feed_enabled" => feed_enabled?(load),
-      "valea_event_count" => length(Local.list(root).valid),
+      "valea_event_count" => length(valea.valid),
+      # Spec §The Valea calendar: a file that fails validation is "listed as
+      # `invalid` with its reason (UI + status), rendered NOWHERE" — this is
+      # the status half; the setup panel renders it.
+      "valea_invalid" =>
+        Enum.map(valea.invalid, fn entry ->
+          %{"name" => entry.name, "reason" => entry.reason}
+        end),
       "config_invalid" => config_invalid
     }
   end

@@ -24,9 +24,14 @@
     onSettings?: () => void;
   } = $props();
 
-  const stateLabel = $derived(mailStateLabel(status?.state));
   const syncedLabel = $derived(relativeTime(status?.lastSyncAt));
   const error = $derived(syncErrorText(status, requestError));
+  // An idle engine whose last pass FAILED must not claim "Up to date" —
+  // the warn line below carries the detail; the state line stays honest
+  // (2026-07-19 browser test run: dead-host account read "Up to date").
+  const stateLabel = $derived(
+    status?.state === 'idle' && error ? 'Last sync failed — will retry' : mailStateLabel(status?.state)
+  );
 </script>
 
 <div class="flex flex-col gap-1">

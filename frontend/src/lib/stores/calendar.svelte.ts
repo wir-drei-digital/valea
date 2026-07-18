@@ -110,6 +110,8 @@ export class CalendarStore {
   configInvalid: string | null = $state(null);
   feedEnabled = $state(false);
   valeaEventCount = $state(0);
+  /** Valea event files that failed fail-closed validation — listed with reasons, rendered nowhere (spec §The Valea calendar). */
+  valeaInvalid: { name: string; reason: string }[] = $state([]);
   events: CalendarOccurrence[] = $state([]);
   /** The visible range the route last loaded — refreshed in place on pushes. */
   range: { from: string; to: string; zone: string } | null = $state(null);
@@ -135,12 +137,19 @@ export class CalendarStore {
       sources?: unknown;
       feedEnabled?: boolean;
       valeaEventCount?: number;
+      valeaInvalid?: unknown;
       configInvalid?: string | null;
     };
     const raw = Array.isArray(data.sources) ? (data.sources as Record<string, unknown>[]) : [];
     this.sources = raw.map(normalizeCalendarSourceStatus);
     this.feedEnabled = data.feedEnabled === true;
     this.valeaEventCount = data.valeaEventCount ?? 0;
+    this.valeaInvalid = (Array.isArray(data.valeaInvalid) ? data.valeaInvalid : []).flatMap((entry) => {
+      const rec = entry as Record<string, unknown>;
+      return typeof rec.name === 'string' && typeof rec.reason === 'string'
+        ? [{ name: rec.name, reason: rec.reason }]
+        : [];
+    });
     this.configInvalid = data.configInvalid ?? null;
     void resupplyCalendarUrls(this.sources, this.#api);
   }

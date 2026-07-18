@@ -789,11 +789,11 @@ export async function calendarDoctorChannel<Fields extends CalendarDoctorFields 
 }
 
 
-export type CalendarStatusFields = UnifiedFieldSelection<{sources: Array<Record<string, any>>, feedEnabled: boolean, valeaEventCount: number, configInvalid: string | null, __type: "TypedMap", __primitiveFields: "sources" | "feedEnabled" | "valeaEventCount" | "configInvalid"}>[];
+export type CalendarStatusFields = UnifiedFieldSelection<{sources: Array<Record<string, any>>, feedEnabled: boolean, valeaEventCount: number, valeaInvalid: Array<Record<string, any>>, configInvalid: string | null, __type: "TypedMap", __primitiveFields: "sources" | "feedEnabled" | "valeaEventCount" | "valeaInvalid" | "configInvalid"}>[];
 
 export type InferCalendarStatusResult<
   Fields extends CalendarStatusFields | undefined,
-> = InferResult<{sources: Array<Record<string, any>>, feedEnabled: boolean, valeaEventCount: number, configInvalid: string | null, __type: "TypedMap", __primitiveFields: "sources" | "feedEnabled" | "valeaEventCount" | "configInvalid"}, Fields>;
+> = InferResult<{sources: Array<Record<string, any>>, feedEnabled: boolean, valeaEventCount: number, valeaInvalid: Array<Record<string, any>>, configInvalid: string | null, __type: "TypedMap", __primitiveFields: "sources" | "feedEnabled" | "valeaEventCount" | "valeaInvalid" | "configInvalid"}, Fields>;
 
 export type CalendarStatusResult<Fields extends CalendarStatusFields | undefined = undefined> = | { success: true; data: InferCalendarStatusResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

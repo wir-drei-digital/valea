@@ -39,7 +39,7 @@ defmodule Valea.Api.CalendarRpcTest do
   alias Valea.Calendar.Store
   alias Valea.Workspace.Manager
 
-  @status_fields ["sources", "feedEnabled", "valeaEventCount", "configInvalid"]
+  @status_fields ["sources", "feedEnabled", "valeaEventCount", "valeaInvalid", "configInvalid"]
 
   setup do
     dir =
@@ -224,7 +224,35 @@ defmodule Valea.Api.CalendarRpcTest do
       assert data["sources"] == []
       assert data["feedEnabled"] == false
       assert data["valeaEventCount"] == 0
+      assert data["valeaInvalid"] == []
       assert data["configInvalid"] == nil
+    end
+
+    test "an invalid valea event file is listed with its reason and excluded from the count", %{
+      workspace: workspace
+    } do
+      events = Path.join([workspace, "sources", "calendar", "valea", "events"])
+      File.mkdir_p!(events)
+
+      File.write!(Path.join(events, "good.md"), """
+      ---
+      title: "Fine"
+      start: "2026-07-19T10:00:00Z"
+      end: "2026-07-19T11:00:00Z"
+      ---
+      """)
+
+      File.write!(Path.join(events, "broken.md"), """
+      ---
+      title: "No start"
+      ---
+      """)
+
+      assert %{"success" => true, "data" => data} = rpc("calendar_status", %{}, @status_fields)
+
+      assert data["valeaEventCount"] == 1
+      assert [%{"name" => "broken.md", "reason" => reason}] = data["valeaInvalid"]
+      assert is_binary(reason) and reason != ""
     end
 
     test "lists a valid, running source plus an invalid-config entry, sorted by source", %{

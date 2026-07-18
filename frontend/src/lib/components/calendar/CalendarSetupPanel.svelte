@@ -277,6 +277,24 @@
     </div>
   </form>
 
+  {#if calendarStore.valeaInvalid.length > 0}
+    <div class="border-paper-hairline flex flex-col gap-1.5 rounded-[9px] border p-3">
+      <p class="text-ink-heading text-[13px] font-semibold">Invalid Valea event files</p>
+      <p class="text-ink-secondary text-[12px] leading-relaxed">
+        These files under <span class="font-mono text-[11.5px]">sources/calendar/valea/events/</span> failed
+        validation and are shown nowhere — neither on the grid nor in the served feed — until fixed.
+      </p>
+      <ul class="flex flex-col gap-1">
+        {#each calendarStore.valeaInvalid as entry (entry.name)}
+          <li class="text-[11.5px]">
+            <span class="text-warn-ink font-mono">{entry.name}</span>
+            <span class="text-ink-meta"> — {entry.reason}</span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
   <div class="border-paper-hairline flex flex-col gap-2 rounded-[9px] border p-3">
     <p class="text-ink-heading text-[13px] font-semibold">Served feed (Valea calendar)</p>
     <p class="text-ink-secondary text-[12px] leading-relaxed">
