@@ -192,6 +192,139 @@ defmodule Valea.Agents.SessionSettingsTest do
     end
   end
 
+  # Spec F Task 5 (calendar spec §"Mounts and policy"): the managedSettings
+  # mirror of PermissionPolicy's calendar tier. Same defense-in-depth
+  # posture as the mail mirror above (case-sensitive globs; the casefolded,
+  # authoritative gate is the policy). Out of scope: `sources/calendar/**`
+  # denied over Read+Edit+Write. In scope: "everything except
+  # `valea/events/**` is write-denied" is mirrored by ENUMERATION at
+  # settings-build time — deny always beats allow in the settings model, so
+  # the exception cannot be carved with an allow rule: one Edit+Write deny
+  # per (configured slug ∪ on-disk dir/file) except `valea`, plus
+  # NON-recursive denies on `sources/calendar/*` and
+  # `sources/calendar/valea/*` (stray top-level files and valea's own
+  # engine-owned files; `valea/events/*` matches neither glob).
+  describe "calendar mount mirror" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "vss-cal-#{System.unique_integer([:positive])}")
+      ws = Path.join(tmp, "ws")
+      cal = Path.join(ws, "sources/calendar")
+
+      File.mkdir_p!(Path.join(ws, "config"))
+
+      # `mara` is configured AND on disk (with a crash-leftover views dir);
+      # `ghost` is configured but has no directory yet; `oldacct` was
+      # removed from config but its directory was never purged; `stray.txt`
+      # is a stray top-level file.
+      File.write!(Path.join(ws, "config/calendar.yaml"), """
+      version: 1
+      sources:
+        mara:
+          name: "Mara"
+        ghost:
+          name: "Ghost"
+      """)
+
+      for d <- [
+            Path.join(cal, "mara/views/events"),
+            Path.join(cal, "mara/views.tmp-crash/events"),
+            Path.join(cal, "oldacct/views"),
+            Path.join(cal, "valea/events")
+          ],
+          do: File.mkdir_p!(d)
+
+      File.write!(Path.join(cal, "stray.txt"), "stray")
+      on_exit(fn -> File.rm_rf!(tmp) end)
+
+      %{ws: ws, cal: cal}
+    end
+
+    defp calendar_scope(ws, cal, in_scope?) do
+      related =
+        if in_scope? do
+          [
+            %{
+              mount_key: "calendar",
+              id: nil,
+              root: cal,
+              entrypoint: nil,
+              manifest: nil,
+              kind: :calendar
+            }
+          ]
+        else
+          []
+        end
+
+      scope(%{
+        workspace: %{id: "ws", root: ws, name: "W", generation: 1},
+        related_icms: related,
+        calendar_in_scope: in_scope?
+      })
+    end
+
+    test "in scope: every enumerated name except valea is write-denied wholesale", %{
+      ws: ws,
+      cal: cal
+    } do
+      perms = SessionSettings.content(calendar_scope(ws, cal, true))["permissions"]
+
+      # Readable at all (the related-root allow), and NO read deny in scope.
+      assert "Read(#{cal}/**)" in perms["allow"]
+      refute "Read(#{cal}/**)" in perms["deny"]
+
+      # Configured slugs (present or not) AND on-disk leftovers — the
+      # per-directory glob covers `.source`, `feed.ics`, `views/**`, crash
+      # leftovers like `views.tmp-*`, everything.
+      for name <- ["mara", "ghost", "oldacct"], op <- ["Edit", "Write"] do
+        entry = "#{op}(#{cal}/#{name}/**)"
+        assert entry in perms["deny"], "expected deny to include #{entry}"
+      end
+
+      # Stray top-level files + valea's own engine-owned files: the two
+      # NON-recursive denies.
+      for pattern <- ["*", "valea/*"], op <- ["Edit", "Write"] do
+        entry = "#{op}(#{cal}/#{pattern})"
+        assert entry in perms["deny"], "expected deny to include #{entry}"
+      end
+
+      # The agent-writable surface: nothing denies valea/events, and no
+      # wholesale valea/** deny sneaks in.
+      refute Enum.any?(perms["deny"], &String.contains?(&1, "valea/events"))
+      refute "Edit(#{cal}/valea/**)" in perms["deny"]
+      refute "Write(#{cal}/valea/**)" in perms["deny"]
+    end
+
+    test "out of scope: the whole territory is denied over Read+Edit+Write", %{
+      ws: ws,
+      cal: cal
+    } do
+      perms = SessionSettings.content(calendar_scope(ws, cal, false))["permissions"]
+
+      for op <- ["Read", "Edit", "Write"] do
+        assert "#{op}(#{cal}/**)" in perms["deny"]
+      end
+
+      refute "Read(#{cal}/**)" in perms["allow"]
+    end
+
+    test "a scope with no calendar keys at all still carries the out-of-scope territory deny" do
+      perms = SessionSettings.content(scope(%{}))["permissions"]
+      assert "Read(/ws/sources/calendar/**)" in perms["deny"]
+      assert "Write(/ws/sources/calendar/**)" in perms["deny"]
+    end
+
+    test "context.md renders a calendar related entry naming the write surface", %{
+      ws: ws,
+      cal: cal
+    } do
+      md = SessionSettings.context(calendar_scope(ws, cal, true))
+      assert md =~ "calendar"
+      assert md =~ "valea/events/"
+      refute md =~ "entrypoint \n"
+    end
+  end
+
   # Spec §"Safety invariants" — the RPC trust boundary: agent sessions speak
   # ACP only. Beyond the launch-directive assertions in
   # `session_scope_test.exs`, grep-assert that neither the session server

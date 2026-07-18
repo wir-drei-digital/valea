@@ -43,6 +43,13 @@ defmodule Valea.MountsTest do
     resolved
   end
 
+  # The `icms:` config entries only — the template workspace ships
+  # `config/calendar.yaml`, so `Mounts.list/1`/`enabled/1` always append
+  # the synthetic `kind: :calendar` mount (Spec F Task 5); this suite
+  # asserts on the config-truth ICM set it actually declares.
+  defp icm_list(ws), do: Enum.filter(Mounts.list(ws), &(&1.kind == :icm))
+  defp icm_enabled(ws), do: Enum.filter(Mounts.enabled(ws), &(&1.kind == :icm))
+
   test "an icms: entry becomes a healthy external mount", %{ws: ws, home: home} do
     root = icm!(home, "Coaching", "6f9f0c9e-3ccd-4fa5-a219-113a70618b55")
     write_icms(ws, "  coaching:\n    path: #{root}\n    enabled: true\n")
@@ -50,7 +57,7 @@ defmodule Valea.MountsTest do
 
     assert [
              %{name: "coaching", root: ^real_root, degraded: nil, enabled: true} = m
-           ] = Mounts.list(ws)
+           ] = icm_list(ws)
 
     assert m.manifest.id == "6f9f0c9e-3ccd-4fa5-a219-113a70618b55"
     assert Mounts.mount_by_key(ws, "coaching").root == real_root
@@ -61,19 +68,19 @@ defmodule Valea.MountsTest do
     a = icm!(home, "A", "31201697-cff8-4d99-9dc5-b140e4178716")
     b = icm!(home, "B", "31201697-cff8-4d99-9dc5-b140e4178716")
     write_icms(ws, "  a:\n    path: #{a}\n  b:\n    path: #{b}\n")
-    assert Enum.all?(Mounts.list(ws), &(&1.degraded != nil))
+    assert Enum.all?(icm_list(ws), &(&1.degraded != nil))
   end
 
   test "a path inside the workspace is degraded, not mounted", %{ws: ws} do
     write_icms(ws, "  bad:\n    path: #{Path.join(ws, "sources")}\n")
-    assert [%{name: "bad", degraded: reason}] = Mounts.list(ws)
+    assert [%{name: "bad", degraded: reason}] = icm_list(ws)
     assert reason =~ "inside" or reason =~ "boundary"
   end
 
   test "two entries resolving to the same physical root are both degraded", %{ws: ws, home: home} do
     a = icm!(home, "A", "31201697-cff8-4d99-9dc5-b140e4178716")
     write_icms(ws, "  a:\n    path: #{a}\n  same:\n    path: #{a}\n")
-    assert Enum.all?(Mounts.list(ws), &(&1.degraded != nil))
+    assert Enum.all?(icm_list(ws), &(&1.degraded != nil))
   end
 
   test "list/1 is sorted by mount key, and enabled/1 excludes disabled + degraded", %{
@@ -89,8 +96,8 @@ defmodule Valea.MountsTest do
       "  zeta:\n    path: #{z}\n  alpha:\n    path: #{a}\n    enabled: false\n  gone:\n    path: #{missing}\n"
     )
 
-    assert Enum.map(Mounts.list(ws), & &1.name) == ["alpha", "gone", "zeta"]
-    assert Enum.map(Mounts.enabled(ws), & &1.name) == ["zeta"]
+    assert Enum.map(icm_list(ws), & &1.name) == ["alpha", "gone", "zeta"]
+    assert Enum.map(icm_enabled(ws), & &1.name) == ["zeta"]
   end
 
   test "mount_for/2 attributes an absolute path to the enabled, non-degraded mount that owns it",

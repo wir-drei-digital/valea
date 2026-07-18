@@ -63,7 +63,7 @@ defmodule Valea.Agents.SessionSettings do
 
     %{
       "permissions" => %{
-        "deny" => deny ++ secret_denies ++ mail_denies(scope),
+        "deny" => deny ++ secret_denies ++ mail_denies(scope) ++ calendar_denies(scope),
         "ask" => ["Write", "Edit", "Bash"],
         "allow" => read_root_allows ++ input_allows ++ write_path_allows ++ write_root_allows
       }
@@ -109,6 +109,75 @@ defmodule Valea.Agents.SessionSettings do
     in_scope_denies ++ out_of_scope_denies
   end
 
+  # Spec F Task 5 (calendar spec §"Mounts and policy") — the managedSettings
+  # mirror of PermissionPolicy's calendar tier, over the ONE
+  # `sources/calendar` territory. Out of scope: the whole territory is
+  # denied over Read+Edit+Write (mirrors the policy's blanket deny — keyed
+  # off the workspace root, so it applies whether or not the mount exists).
+  #
+  # In scope: "everything except `valea/events/**` is write-denied" is
+  # mirrored by ENUMERATION — deny always beats allow in the settings
+  # model, so the exception can NOT be carved with an allow rule. For every
+  # name in (configured source slugs — valid AND invalid entries — ∪ the
+  # on-disk `sources/calendar/` listing) minus the reserved `valea`, one
+  # wholesale `Edit`+`Write` deny on `<name>/**` — covering `.source`,
+  # `feed.ics`, `views/**`, crash leftovers (`views.tmp-*`/`views.old-*`),
+  # and removed-but-unpurged slug dirs alike; plus NON-recursive
+  # `Edit`+`Write` denies on `sources/calendar/*` (stray top-level files)
+  # and `sources/calendar/valea/*` (valea's own engine-owned `feed.ics`) —
+  # `valea/events/*.md` matches neither glob, so the agent-writable surface
+  # stays open. The enumeration is a SNAPSHOT at settings-build time (per
+  # session start, like the rest of managedSettings); PermissionPolicy
+  # remains the authoritative gate for anything appearing mid-session.
+  #
+  # Like the mail mirror above, these globs are case-SENSITIVE
+  # defense-in-depth: the authoritative, casefolded enforcement is
+  # PermissionPolicy's calendar deny tier, not this layer.
+  defp calendar_denies(scope) do
+    cal_root = Path.join([scope.workspace.root, "sources", "calendar"])
+    in_scope? = Enum.any?(scope.related_icms, &(Map.get(&1, :kind) == :calendar))
+
+    if in_scope? do
+      per_name =
+        for name <- calendar_source_names(scope.workspace.root, cal_root),
+            op <- ["Edit", "Write"] do
+          "#{op}(#{cal_root}/#{name}/**)"
+        end
+
+      non_recursive =
+        for pattern <- ["*", "valea/*"], op <- ["Edit", "Write"] do
+          "#{op}(#{cal_root}/#{pattern})"
+        end
+
+      per_name ++ non_recursive
+    else
+      for op <- ["Read", "Edit", "Write"], do: "#{op}(#{cal_root}/**)"
+    end
+  end
+
+  # Configured slugs (valid and invalid entries both — an invalid entry may
+  # still own a directory) ∪ whatever is on disk, minus the reserved
+  # `valea`. A missing/invalid config or a not-yet-created directory each
+  # contribute nothing — fail-soft, the union still covers the other side.
+  defp calendar_source_names(workspace_root, cal_root) do
+    configured =
+      case Valea.Calendar.Settings.load(workspace_root) do
+        {:ok, %{sources: sources, invalid: invalid}} -> Map.keys(sources) ++ Map.keys(invalid)
+        _absent_or_invalid -> []
+      end
+
+    listed =
+      case File.ls(cal_root) do
+        {:ok, names} -> names
+        {:error, _reason} -> []
+      end
+
+    (configured ++ listed)
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 == "valea"))
+    |> Enum.sort()
+  end
+
   @spec context(map()) :: String.t()
   def context(scope) do
     related =
@@ -130,10 +199,15 @@ defmodule Valea.Agents.SessionSettings do
     """
   end
 
-  # A mail mount (Task 14) has no entrypoint/manifest — its line names the
-  # account and the narrowed write surface instead of an entrypoint.
+  # A synthetic mount (mail — Task 14; calendar — Spec F Task 5) has no
+  # entrypoint/manifest — its line names the mount and the narrowed write
+  # surface instead of an entrypoint.
   defp related_line(%{kind: :mail} = r) do
     "- #{r.mount_key} (#{r.root}) — mail account mount; writable only under ops/pending/ and drafts/"
+  end
+
+  defp related_line(%{kind: :calendar} = r) do
+    "- #{r.mount_key} (#{r.root}) — calendar mount; writable only under valea/events/"
   end
 
   defp related_line(r), do: "- #{r.mount_key} (#{r.root}) — entrypoint #{r.entrypoint}"

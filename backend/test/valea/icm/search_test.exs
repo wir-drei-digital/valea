@@ -90,7 +90,9 @@ defmodule Valea.ICM.SearchTest do
         pages: %{"Offers/Retainer.md" => slow_body}
       )
 
-    [mount] = Valea.Mounts.enabled(ws)
+    # ICM mounts only — `enabled/1` also carries the synthetic calendar
+    # mount (Spec F Task 5), which the search surface never scans.
+    [mount] = Enum.filter(Valea.Mounts.enabled(ws), &(&1.kind == :icm))
 
     {:ok, %{results: [], skipped: [skipped_name]}} =
       Search.search(ws, "coaching", nil, mounts: [mount], timeout_ms: 0)

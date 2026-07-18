@@ -469,4 +469,120 @@ defmodule Valea.Mounts.ContextTest do
       assert result.issues == []
     end
   end
+
+  # -- the bare-string calendar entry (Spec F Task 5, calendar spec
+  # §"Mounts and policy") — same grammar as `mail-<slug>`, over the ONE
+  # reserved key `calendar`. Requires an enabled, non-degraded
+  # `kind: :calendar` mount (i.e. `config/calendar.yaml` exists and no
+  # `icms:` entry shadows the key); anything else is an issue, never a
+  # grant.
+
+  describe "bare-string calendar entries" do
+    setup %{ws: ws, home: home} do
+      primary_root = icm!(home, "Coaching", "6f9f0c9e-3ccd-4fa5-a219-113a70618b55")
+      write_icms(ws, "  coaching:\n    path: #{primary_root}\n")
+      %{primary_root: primary_root}
+    end
+
+    test "a workspace with calendar.yaml resolves to a kind: :calendar related entry", %{
+      ws: ws,
+      primary_root: primary_root
+    } do
+      # Manager.create seeded the template's v1-empty calendar.yaml.
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - calendar
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+      cal_root = Path.join([real!(ws), "sources", "calendar"])
+
+      assert result.issues == []
+
+      assert [
+               %{
+                 mount_key: "calendar",
+                 id: nil,
+                 root: ^cal_root,
+                 entrypoint: nil,
+                 manifest: nil,
+                 kind: :calendar
+               }
+             ] = result.related
+    end
+
+    test "no calendar.yaml surfaces an issue, never a grant", %{
+      ws: ws,
+      primary_root: primary_root
+    } do
+      File.rm!(Path.join(ws, "config/calendar.yaml"))
+
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - calendar
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+
+      assert result.related == []
+      assert [%{id: nil, name: "calendar", reason: :mail_unavailable}] = result.issues
+    end
+
+    test "an icms: entry shadowing the calendar key must NOT resolve through the grammar", %{
+      ws: ws,
+      home: home,
+      primary_root: primary_root
+    } do
+      shadow_root = icm!(home, "Shadow", "31201697-cff8-4d99-9dc5-b140e4178716")
+
+      write_icms(ws, """
+        coaching:
+          path: #{primary_root}
+        calendar:
+          path: #{shadow_root}
+      """)
+
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - calendar
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+
+      assert result.related == []
+      assert [%{name: "calendar", reason: :mail_unavailable}] = result.issues
+    end
+
+    test "near-miss bare strings are still dropped silently", %{
+      ws: ws,
+      primary_root: primary_root
+    } do
+      write_context!(primary_root, """
+      ---
+      format: 1
+      related_icms:
+        - calendars
+        - Calendar
+      ---
+      """)
+
+      primary = Mounts.mount_by_key(ws, "coaching")
+      result = Context.resolve(ws, primary)
+
+      assert result.related == []
+      assert result.issues == []
+    end
+  end
 end

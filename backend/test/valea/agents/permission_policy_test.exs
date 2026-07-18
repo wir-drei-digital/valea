@@ -417,4 +417,214 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
       assert {:allow, _} = P.decide(read(Path.join(icm, "AGENTS.md")), ctx)
     end
   end
+
+  # Spec F Task 5 (calendar-feeds spec §"Mounts and policy"): the calendar
+  # deny tier — mail's exact semantics over ONE synthetic mount.
+  # `ctx.calendar_in_scope?` (boolean, default false) says whether this
+  # session's scope includes the calendar mount; the territory is ALWAYS
+  # `<workspace_root>/sources/calendar` (blanket, like mail's
+  # `sources/mail` — one mount, no per-slug lists). Precedence: denied tool
+  # -> protected -> icm_secret -> mail -> CALENDAR -> escaped -> ask/allow.
+  #
+  #   1. Unmounted deny: any candidate under `sources/calendar` in a
+  #      session WITHOUT the calendar mount is `{:deny, "reject_once"}`,
+  #      never a prompt — casefolded (downcase + NFC) on both sides and
+  #      symlink-resolved, exactly like the mail tier.
+  #   2. Write surface: in scope, write kinds are allowed (grant/ask flow)
+  #      ONLY under `valea/events/`; everything else — `.source`,
+  #      `feed.ics`, `views/`, stray files, valea's own rendered feed — is
+  #      engine-owned and denied, even against a broad write grant.
+  #   3. Reads: in scope, EVERYTHING under the territory stays readable via
+  #      the ordinary read-root allow (mirrors and views are exactly the
+  #      calendar data the session was granted; no spool-like secret area).
+  describe "calendar mount rules" do
+    setup %{ctx: ctx, ws: ws} do
+      cal = Path.join(ws, "sources/calendar")
+
+      for d <- [
+            Path.join(cal, "mara/views"),
+            Path.join(cal, "valea/events")
+          ],
+          do: File.mkdir_p!(d)
+
+      File.write!(Path.join(cal, "mara/.source"), "url-ref")
+      File.write!(Path.join(cal, "mara/feed.ics"), "BEGIN:VCALENDAR")
+      File.write!(Path.join(cal, "mara/views/ev-1.md"), "view")
+      File.write!(Path.join(cal, "valea/feed.ics"), "BEGIN:VCALENDAR")
+      File.write!(Path.join(cal, "stray.txt"), "stray")
+
+      in_scope_ctx =
+        ctx
+        |> Map.put(:calendar_in_scope?, true)
+        |> Map.update!(:read_roots, &(&1 ++ [cal]))
+
+      out_ctx = Map.put(ctx, :calendar_in_scope?, false)
+
+      %{in_scope: in_scope_ctx, out: out_ctx, cal: cal}
+    end
+
+    test "an unmounted session's calendar reads AND writes are denied, not asked", %{
+      out: out,
+      cal: cal
+    } do
+      for rel <- ["mara/views/ev-1.md", "mara/feed.ics", "valea/events/x.md", "stray.txt"] do
+        assert {:deny, "reject_once"} = P.decide(read(Path.join(cal, rel)), out),
+               "expected read deny for #{rel}"
+      end
+
+      assert {:deny, "reject_once"} = P.decide(write(Path.join(cal, "valea/events/x.md")), out)
+    end
+
+    test "a ctx without the calendar key at all is fail-closed (deny, not ask)", %{
+      ctx: ctx,
+      cal: cal
+    } do
+      refute Map.has_key?(ctx, :calendar_in_scope?)
+      assert {:deny, "reject_once"} = P.decide(read(Path.join(cal, "mara/views/ev-1.md")), ctx)
+    end
+
+    test "case-variant spellings of unmounted calendar territory hit the same deny", %{
+      out: out,
+      ws: ws
+    } do
+      assert {:deny, "reject_once"} =
+               P.decide(read(Path.join(ws, "sources/CALENDAR/mara/feed.ics")), out)
+
+      assert {:deny, "reject_once"} =
+               P.decide(read(Path.join(ws, "sources/calendar/MARA/views/ev-1.md")), out)
+    end
+
+    # APFS is normalization-insensitive: an NFD spelling of the same
+    # workspace path names the same calendar territory and must hit the
+    # same deny — mirrors the mail tier's NFD case.
+    test "NFD-variant spellings resolved to the same territory are denied", %{ws: ws} do
+      accented = Path.join(ws, "café")
+      File.mkdir_p!(Path.join(accented, "sources/calendar/mara"))
+
+      ctx = %{
+        workspace_root: accented,
+        cwd: accented,
+        read_roots: [],
+        session_kind: "chat",
+        write_paths: [],
+        write_roots: [],
+        calendar_in_scope?: false
+      }
+
+      nfd = :unicode.characters_to_nfd_binary("café")
+      candidate = Path.join([ws, nfd, "sources/calendar/mara/feed.ics"])
+      assert {:deny, "reject_once"} = P.decide(read(candidate), ctx)
+    end
+
+    test "a symlink resolving INTO unmounted calendar territory is denied", %{
+      out: out,
+      icm: icm,
+      cal: cal
+    } do
+      link = Path.join(icm, "cal-link.md")
+      File.ln_s!(Path.join(cal, "mara/feed.ics"), link)
+
+      # `icm` is a granted read_root, but the candidate RESOLVES into
+      # calendar territory — the deny keys on the resolved path.
+      assert {:deny, "reject_once"} = P.decide(read(link), out)
+    end
+
+    test "in-scope reads are allowed everywhere in the territory (views, feeds, events)", %{
+      in_scope: in_scope,
+      cal: cal
+    } do
+      for rel <- ["mara/views/ev-1.md", "mara/feed.ics", "valea/feed.ics", "valea/events/x.md"] do
+        assert {:allow, "allow_once"} = P.decide(read(Path.join(cal, rel)), in_scope),
+               "expected allow for #{rel}"
+      end
+    end
+
+    test "in-scope writes outside valea/events/ are denied — even with a broad grant", %{
+      in_scope: in_scope,
+      cal: cal
+    } do
+      granted = %{in_scope | write_roots: [cal]}
+
+      for rel <- [
+            "mara/.source",
+            "mara/feed.ics",
+            "mara/views/x.md",
+            "stray.txt",
+            "valea/feed.ics"
+          ] do
+        assert {:deny, "reject_once"} = P.decide(write(Path.join(cal, rel)), in_scope),
+               "expected deny for ungranted write to #{rel}"
+
+        assert {:deny, "reject_once"} = P.decide(write(Path.join(cal, rel)), granted),
+               "expected deny for granted write to #{rel}"
+      end
+    end
+
+    test "in-scope writes under valea/events/ ask without a grant, allow with one", %{
+      in_scope: in_scope,
+      cal: cal
+    } do
+      target = Path.join(cal, "valea/events/team-sync.md")
+      assert :ask = P.decide(write(target), in_scope)
+
+      granted = %{in_scope | write_roots: [Path.join(cal, "valea/events")]}
+      assert {:allow, "allow_once"} = P.decide(write(target), granted)
+    end
+
+    test "case-variant writes outside valea/events/ in scope are still denied", %{
+      in_scope: in_scope,
+      ws: ws
+    } do
+      assert {:deny, "reject_once"} =
+               P.decide(write(Path.join(ws, "sources/calendar/mara/VIEWS/x.md")), in_scope)
+
+      assert {:deny, "reject_once"} =
+               P.decide(write(Path.join(ws, "sources/CALENDAR/stray2.txt")), in_scope)
+    end
+
+    # Spec F §"Mounts and policy" — EMPTY-WORKSPACE BOOTSTRAP: a fresh
+    # template workspace (only `sources/calendar/valea/events/` exists, no
+    # external sources, zero events yet) + an opted-in session can create
+    # its FIRST `valea/events/` file through the normal write path — never
+    # a deny.
+    test "empty-workspace bootstrap: the first valea/events write is never denied" do
+      tmp = Path.join(System.tmp_dir!(), "pp-cal-boot-#{System.unique_integer([:positive])}")
+      ws = Path.join(tmp, "ws")
+      icm = Path.join(tmp, "icm")
+      events = Path.join(ws, "sources/calendar/valea/events")
+      for d <- [events, icm], do: File.mkdir_p!(d)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+
+      ctx = %{
+        workspace_root: ws,
+        cwd: icm,
+        read_roots: [icm, Path.join(ws, "sources/calendar")],
+        session_kind: "chat",
+        write_paths: [],
+        write_roots: [],
+        calendar_in_scope?: true
+      }
+
+      first = Path.join(events, "first-event.md")
+      assert :ask = P.decide(write(first), ctx)
+
+      granted = %{ctx | write_roots: [events]}
+      assert {:allow, "allow_once"} = P.decide(write(first), granted)
+    end
+
+    test "the mail tier is unaffected by an in-scope calendar", %{in_scope: in_scope, ws: ws} do
+      # No mail keys in this ctx — mail territory (blanket sources/mail)
+      # still denies exactly as before.
+      assert {:deny, "reject_once"} =
+               P.decide(read(Path.join(ws, "sources/mail/mara/maildir/cur/m1.eml")), in_scope)
+    end
+
+    test "non-calendar paths keep their decisions with calendar keys present", %{
+      in_scope: in_scope,
+      icm: icm
+    } do
+      assert {:allow, _} = P.decide(read(Path.join(icm, "AGENTS.md")), in_scope)
+      assert :ask = P.decide(write(Path.join(icm, "Pricing/x.md")), in_scope)
+    end
+  end
 end

@@ -43,6 +43,12 @@ defmodule Valea.Mounts.MutationTest do
     entry
   end
 
+  # The `icms:` config entries only — the template workspace ships
+  # `config/calendar.yaml`, so `Mounts.list/1` always appends the synthetic
+  # `kind: :calendar` mount (Spec F Task 5); these mutation tests assert on
+  # the config-truth ICM set they actually mutate.
+  defp icm_list(ws), do: Enum.filter(Mounts.list(ws), &(&1.kind == :icm))
+
   # -- mount/2 -------------------------------------------------------------
 
   describe "mount/2" do
@@ -56,7 +62,7 @@ defmodule Valea.Mounts.MutationTest do
                Mounts.mount(ws, root)
 
       assert [%{name: "coaching", root: real_root, degraded: nil, enabled: true}] =
-               Mounts.list(ws)
+               icm_list(ws)
 
       assert real_root == real!(root)
 
@@ -97,7 +103,7 @@ defmodule Valea.Mounts.MutationTest do
 
       assert {:ok, _} = Mounts.mount(ws, a)
       assert {:error, :duplicate_id} = Mounts.mount(ws, b)
-      assert [%{name: "a", degraded: nil}] = Mounts.list(ws)
+      assert [%{name: "a", degraded: nil}] = icm_list(ws)
     end
 
     test "mounting the same path twice fails :duplicate_root", %{ws: ws, home: home} do
@@ -105,14 +111,14 @@ defmodule Valea.Mounts.MutationTest do
 
       assert {:ok, _} = Mounts.mount(ws, a)
       assert {:error, :duplicate_root} = Mounts.mount(ws, a)
-      assert [%{name: "a", degraded: nil}] = Mounts.list(ws)
+      assert [%{name: "a", degraded: nil}] = icm_list(ws)
     end
 
     test "rejects a folder with no icm.yaml with :no_manifest", %{ws: ws, home: home} do
       bare = Path.join(home, "bare")
       File.mkdir_p!(bare)
       assert {:error, :no_manifest} = Mounts.mount(ws, bare)
-      assert Mounts.list(ws) == []
+      assert icm_list(ws) == []
     end
 
     test "rejects a path inside the workspace", %{ws: ws} do
@@ -166,7 +172,7 @@ defmodule Valea.Mounts.MutationTest do
       assert icm_yaml =~ "id: \"#{id}\""
       assert icm_yaml =~ "name: \"Coaching\""
 
-      assert [%{name: "coaching", root: root, degraded: nil, enabled: true}] = Mounts.list(ws)
+      assert [%{name: "coaching", root: root, degraded: nil, enabled: true}] = icm_list(ws)
       assert root == real!(target)
     end
 
@@ -235,11 +241,11 @@ defmodule Valea.Mounts.MutationTest do
       {:ok, _} = Mounts.mount(ws, root)
 
       assert :ok = Mounts.set_enabled(ws, "coaching", false)
-      assert [%{name: "coaching", enabled: false}] = Mounts.list(ws)
+      assert [%{name: "coaching", enabled: false}] = icm_list(ws)
       assert last_audit_entry()["type"] == "icm_disabled"
 
       assert :ok = Mounts.set_enabled(ws, "coaching", true)
-      assert [%{name: "coaching", enabled: true}] = Mounts.list(ws)
+      assert [%{name: "coaching", enabled: true}] = icm_list(ws)
       assert last_audit_entry()["type"] == "icm_enabled"
     end
 
@@ -257,7 +263,7 @@ defmodule Valea.Mounts.MutationTest do
 
       assert {:ok, resolved} = Mounts.unmount(ws, "coaching")
       assert resolved == real!(root)
-      assert Mounts.list(ws) == []
+      assert icm_list(ws) == []
       assert File.exists?(Path.join(root, "icm.yaml"))
       assert last_audit_entry()["type"] == "icm_unmounted"
     end
@@ -385,6 +391,36 @@ defmodule Valea.Mounts.MutationTest do
 
       # Still listed after both rejected mutations.
       assert %{kind: :mail} = Mounts.mount_by_key(ws, "mail-mara")
+    end
+  end
+
+  # -- the calendar mount is never a mutation target either (Spec F Task 5,
+  # calendar spec §"Mounts and policy") — same posture as the mail guards
+  # above: `sources/calendar` lives INSIDE the workspace (boundary gate),
+  # and "calendar" is never an `icms:` config entry.
+
+  describe "calendar mount guards" do
+    test "mount/create/adopt reject roots under sources/calendar (inside the workspace)", %{
+      ws: ws
+    } do
+      target = Path.join([ws, "sources", "calendar", "mara"])
+      File.mkdir_p!(target)
+
+      assert {:error, :inside_workspace} = Mounts.mount(ws, target)
+      assert {:error, :inside_workspace} = Mounts.create(ws, "Sneaky", target)
+      assert {:error, :inside_workspace} = Mounts.adopt(ws, target, "Sneaky")
+    end
+
+    test "unmount/set_enabled reject the calendar mount key (config truth is icms:-only)", %{
+      ws: ws
+    } do
+      assert %{kind: :calendar} = Mounts.mount_by_key(ws, "calendar")
+
+      assert {:error, :mount_not_found} = Mounts.unmount(ws, "calendar")
+      assert {:error, :mount_not_found} = Mounts.set_enabled(ws, "calendar", false)
+
+      # Still listed after both rejected mutations.
+      assert %{kind: :calendar} = Mounts.mount_by_key(ws, "calendar")
     end
   end
 end

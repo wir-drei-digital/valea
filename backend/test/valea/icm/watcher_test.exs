@@ -51,7 +51,16 @@ defmodule Valea.ICM.WatcherTest do
     poll_until_mounts_changed(fn _i -> declare_external!(ws.path, "b", ext_b) end)
     settle_watcher!()
 
-    resolved_icm_roots = ws.path |> Valea.Mounts.enabled() |> Enum.map(& &1.root) |> MapSet.new()
+    # ICM mounts only — `enabled/1` also carries the synthetic calendar
+    # mount (Spec F Task 5), whose `sources/calendar` root is covered by
+    # the FIXED `sources/` listener, never the dynamic ICM set.
+    resolved_icm_roots =
+      ws.path
+      |> Valea.Mounts.enabled()
+      |> Enum.filter(&(&1.kind == :icm))
+      |> Enum.map(& &1.root)
+      |> MapSet.new()
+
     assert MapSet.size(resolved_icm_roots) == 2
 
     roots = Watcher.watched_roots()

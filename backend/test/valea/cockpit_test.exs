@@ -104,7 +104,10 @@ defmodule Valea.CockpitTest do
 
       {:ok, %{"sections" => sections}} = Valea.Cockpit.today()
       {:ok, enabled_mounts} = Mounts.enabled()
-      assert Enum.map(sections, & &1["mount_key"]) == Enum.map(enabled_mounts, & &1.name)
+      # Sections are ICM content only — `enabled/0` also carries the
+      # synthetic calendar mount (Spec F Task 5), which never sections.
+      icm_mounts = Enum.filter(enabled_mounts, &(&1.kind == :icm))
+      assert Enum.map(sections, & &1["mount_key"]) == Enum.map(icm_mounts, & &1.name)
     end
   end
 

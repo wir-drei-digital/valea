@@ -44,10 +44,19 @@ defmodule Valea.Mounts.Context do
   non-degraded `kind: :mail` mount — anything else (unconfigured account,
   degraded identity, or an `icms:` entry shadowing the key) surfaces as a
   `:mail_unavailable` issue, never a grant. The resolved entry has `id:
-  nil`, `entrypoint: nil`, `manifest: nil`, `kind: :mail`. Bare strings
-  OUTSIDE the `mail-*` namespace are dropped exactly like any other
-  malformed entry always was; map entries keep the ICM id semantics
-  untouched (`kind: :icm`).
+  nil`, `entrypoint: nil`, `manifest: nil`, `kind: :mail`.
+
+  The bare string `calendar` (Spec F Task 5, calendar spec §"Mounts and
+  policy") works the same way over the ONE synthetic calendar mount:
+  it requires an enabled, non-degraded `kind: :calendar` mount (i.e.
+  `config/calendar.yaml` exists and no `icms:` entry shadows the key)
+  and resolves to the same entry shape with `kind: :calendar`; anything
+  else is the same `:mail_unavailable` issue (the issue carries the
+  entry's own name, so the UI can still say WHAT is unavailable).
+
+  Bare strings outside the `mail-*` namespace and the exact `calendar`
+  key are dropped exactly like any other malformed entry always was; map
+  entries keep the ICM id semantics untouched (`kind: :icm`).
   """
 
   alias Valea.ICM
@@ -62,7 +71,7 @@ defmodule Valea.Mounts.Context do
           root: String.t(),
           entrypoint: String.t() | nil,
           manifest: Valea.Mounts.Manifest.t() | nil,
-          kind: :icm | :mail
+          kind: :icm | :mail | :calendar
         }
 
   @type issue :: %{
@@ -119,9 +128,14 @@ defmodule Valea.Mounts.Context do
          1 <- Map.get(doc, "format", 1),
          list when is_list(list) <- Map.get(doc, "related_icms") do
       # Maps are ICM id entries; a bare string is only meaningful in the
-      # `mail-*` namespace (the mail opt-in grammar) — anything else stays
-      # dropped, as every non-map entry always was.
-      Enum.filter(list, &(is_map(&1) or (is_binary(&1) and String.starts_with?(&1, "mail-"))))
+      # `mail-*` namespace (the mail opt-in grammar) or as the exact
+      # `calendar` key (Spec F Task 5) — anything else stays dropped, as
+      # every non-map entry always was.
+      Enum.filter(
+        list,
+        &(is_map(&1) or
+            (is_binary(&1) and (String.starts_with?(&1, "mail-") or &1 == "calendar")))
+      )
     else
       _ -> []
     end
@@ -150,6 +164,31 @@ defmodule Valea.Mounts.Context do
 
       _unavailable ->
         {:error, %{id: nil, name: mount_key, reason: :mail_unavailable}}
+    end
+  end
+
+  # Bare-string calendar entry (Spec F Task 5): the mail grammar verbatim
+  # over the single `calendar` mount — the `kind: :calendar` requirement is
+  # just as load-bearing (an `icms:` entry named `calendar` shadows the
+  # synthetic mount in `mount_by_key/2`; it must NOT grant anything through
+  # this grammar). Unavailable (no `config/calendar.yaml`, or shadowed) is
+  # the same issue shape the mail grammar produces — the issue's `name`
+  # says what was declared.
+  defp resolve_entry(workspace, "calendar") do
+    case Mounts.mount_by_key(workspace, "calendar") do
+      %{kind: :calendar, enabled: true, degraded: nil, root: root} ->
+        {:ok,
+         %{
+           mount_key: "calendar",
+           id: nil,
+           root: root,
+           entrypoint: nil,
+           manifest: nil,
+           kind: :calendar
+         }}
+
+      _unavailable ->
+        {:error, %{id: nil, name: "calendar", reason: :mail_unavailable}}
     end
   end
 

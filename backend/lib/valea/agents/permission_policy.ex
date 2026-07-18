@@ -54,6 +54,9 @@ defmodule Valea.Agents.PermissionPolicy do
        candidate violates the mail tier: unmounted mail territory, an
        in-scope `spool/` read, or an in-scope write outside
        `ops/pending/`+`drafts/`.
+    4b. **Deny** (calendar rules, Spec F Task 5 — see "Calendar rules"
+       below) if any candidate violates the calendar tier: unmounted
+       calendar territory, or an in-scope write outside `valea/events/`.
     5. **Deny** (symlink escape) if any candidate resolves OUTSIDE every
        recognized area — `workspace_root` itself, every `read_root`, and
        every write grant (`write_paths`/`write_roots`). A relative candidate
@@ -92,11 +95,35 @@ defmodule Valea.Agents.PermissionPolicy do
       Read kinds: `spool/` is denied; everything else stays readable via
       the ordinary read-root allow.
 
-  Mail matching — and ONLY mail matching — is casefolded on BOTH sides
-  (`casefold/1`: NFC-normalize, then `String.downcase/1`): APFS is case-
-  and normalization-insensitive, so `sources/MAIL/…` or an NFD-variant
-  spelling names the same mailbox and must hit the same deny. The global
-  `split_under_root?/2` used by every other tier is untouched.
+  ## Calendar rules (Spec F Task 5, calendar spec §"Mounts and policy")
+
+  `ctx` carries `calendar_in_scope?` (boolean, default `false` —
+  fail-closed for any ctx built before the calendar kind existed). The
+  territory is ALWAYS `<workspace_root>/sources/calendar` — ONE synthetic
+  mount, so there are no per-slug root lists to thread.
+
+    * **Unmounted deny (deny, not ask).** Any candidate under calendar
+      territory in a session whose scope does NOT include the calendar
+      mount is `{:deny, "reject_once"}`, for every kind — leftover files
+      from removed sources included, exactly like mail's blanket
+      `sources/mail` deny.
+    * **Write surface.** In scope, write kinds are denied everywhere
+      EXCEPT `valea/events/` (which falls through to the ordinary
+      grant/ask flow — deny still precedes the write-allow tier, so a
+      broad grant can never buy `.source`/`feed.ics`/`views/` back).
+      Read kinds are allowed EVERYWHERE in scope (mirrors and views are
+      exactly the calendar data the session was granted; there is no
+      spool-like secret area).
+
+  Calendar matching shares the mail tier's `casefold/1`/
+  `casefold_under_root?/2` helpers verbatim (extracted, not duplicated).
+
+  Mail and calendar matching — and ONLY those — are casefolded on BOTH
+  sides (`casefold/1`: NFC-normalize, then `String.downcase/1`): APFS is
+  case- and normalization-insensitive, so `sources/MAIL/…` or an
+  NFD-variant spelling names the same mailbox and must hit the same
+  deny. The global `split_under_root?/2` used by every other tier is
+  untouched.
 
   Relative candidates resolve against `cwd` (never `workspace_root`) — this
   is the behavioral heart of the split. `read_roots`/`write_paths`/
@@ -149,6 +176,14 @@ defmodule Valea.Agents.PermissionPolicy do
       [casefold(Path.join([workspace_root, "sources", "mail"]))] ++
         Enum.map(ctx[:mail_roots_all] || [], &casefold(split_real(&1)))
 
+    # Calendar rules (Spec F Task 5) — same casefolded, symlink-resolved
+    # posture as mail, over the ONE `sources/calendar` territory root
+    # (derived from `workspace_root`, so the deny covers leftover files no
+    # configured source claims). In/out of scope is a ctx boolean;
+    # defaults false — fail-closed.
+    calendar_territory = casefold(Path.join([workspace_root, "sources", "calendar"]))
+    calendar_in_scope? = ctx[:calendar_in_scope?] || false
+
     paths = extract_paths(item)
     resolved = Enum.map(paths, &split_resolve_candidate(&1, cwd))
 
@@ -163,6 +198,9 @@ defmodule Valea.Agents.PermissionPolicy do
         {:deny, "reject_once"}
 
       Enum.any?(resolved, &mail_denied?(&1, kind, mail_territory, mail_in_scope)) ->
+        {:deny, "reject_once"}
+
+      Enum.any?(resolved, &calendar_denied?(&1, kind, calendar_territory, calendar_in_scope?)) ->
         {:deny, "reject_once"}
 
       Enum.any?(
@@ -317,11 +355,52 @@ defmodule Valea.Agents.PermissionPolicy do
     end
   end
 
-  # Casefold for mail comparisons ONLY: NFC-normalize (APFS is
-  # normalization-insensitive — NFD and NFC spellings name the same file),
-  # then downcase (APFS is case-insensitive). Applied to BOTH sides of
-  # every mail membership check. Invalid UTF-8 falls back to the raw
-  # binary — downcase alone still applies.
+  # -- calendar rules (Spec F Task 5) — see the moduledoc's "Calendar
+  # rules" section ----------------------------------------------------------
+
+  # `territory_root` arrives ALREADY symlink-resolved (`split_real/1` on
+  # `workspace_root`) and casefolded; the candidate is casefolded here via
+  # the SAME `casefold/1`/`casefold_under_root?/2` helpers the mail tier
+  # uses (shared, not duplicated). Resolve failures are never a calendar
+  # deny — `{:error, :outside}` still hits the escape deny right after
+  # this tier, and other errors keep falling to `:ask` — mirroring
+  # `mail_denied?/4` exactly.
+  defp calendar_denied?({:error, _}, _kind, _territory_root, _in_scope?), do: false
+
+  defp calendar_denied?({:ok, path}, kind, territory_root, in_scope?) do
+    cf = casefold(path)
+
+    cond do
+      not casefold_under_root?(cf, territory_root) ->
+        false
+
+      # Not in scope: ANY touch of calendar territory is a deny — never a
+      # prompt (one generic-looking approval must not be able to expose
+      # the whole calendar subtree).
+      not in_scope? ->
+        true
+
+      # In scope, write kinds: ONLY `valea/events/` is agent-writable —
+      # `.source`, `feed.ics`, `views/`, crash leftovers, and valea's own
+      # rendered feed are engine-owned. Deny precedes the write-allow
+      # tier, so a broad grant can never buy them back.
+      write_kind?(kind) ->
+        not casefold_under_root?(cf, territory_root <> "/valea/events")
+
+      # In scope, reads (and any non-write kind): allowed everywhere in
+      # the territory — the ordinary read-root allow decides from here.
+      true ->
+        false
+    end
+  end
+
+  defp write_kind?(kind), do: kind in @write_kinds
+
+  # Casefold for mail AND calendar comparisons ONLY: NFC-normalize (APFS
+  # is normalization-insensitive — NFD and NFC spellings name the same
+  # file), then downcase (APFS is case-insensitive). Applied to BOTH sides
+  # of every mail/calendar membership check. Invalid UTF-8 falls back to
+  # the raw binary — downcase alone still applies.
   defp casefold(path) do
     case :unicode.characters_to_nfc_binary(path) do
       nfc when is_binary(nfc) -> String.downcase(nfc)

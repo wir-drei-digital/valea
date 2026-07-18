@@ -106,6 +106,11 @@ defmodule Valea.Agents.SessionServer do
     # account's root — deny, not ask. `icm_roots` deliberately KEEPS the
     # in-scope mail roots (they're in `related_icms`): the ICM-secrets deny
     # applies inside a mail mount too (e.g. `drafts/.env`).
+    # `calendar_in_scope?` (Spec F Task 5) threads the same way for the
+    # calendar tier — ONE mount, so a boolean, not a root list; the
+    # `sources/calendar` territory root is derived from `workspace_root`
+    # inside the policy. Defaults false: fail-closed for any scope built
+    # before the calendar kind existed.
     policy_ctx = %{
       workspace_root: scope.workspace.root,
       cwd: scope.cwd,
@@ -115,7 +120,8 @@ defmodule Valea.Agents.SessionServer do
       write_roots: scope.write_roots,
       icm_roots: [scope.primary_icm.root | Enum.map(scope.related_icms, & &1.root)],
       mail_roots_all: Map.get(scope, :mail_roots_all, []),
-      mail_roots_in_scope: Map.get(scope, :mail_roots_in_scope, [])
+      mail_roots_in_scope: Map.get(scope, :mail_roots_in_scope, []),
+      calendar_in_scope?: Map.get(scope, :calendar_in_scope, false)
     }
 
     case ProcessRuntime.start(

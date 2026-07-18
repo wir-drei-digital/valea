@@ -366,6 +366,194 @@ defmodule Valea.Agents.SessionScopeTest do
     assert scope.mail_roots_in_scope == []
   end
 
+  # -- Spec F Task 5: the calendar mount in scope (calendar spec §"Mounts
+  # and policy"). Manager.create seeds the workspace template, which ships
+  # `config/calendar.yaml` (v1-empty) — so every fresh workspace already
+  # carries the synthetic calendar mount.
+
+  test "a related_icms bare-string calendar entry resolves into scope.related_icms and flips calendar_in_scope",
+       %{ws: ws, home: home, generation: generation} do
+    primary_root = mounted_primary!(ws, home)
+
+    File.write!(Path.join(primary_root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - calendar
+    ---
+    """)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sc1"
+             })
+
+    cal_root = real!(Path.join([ws, "sources", "calendar"]))
+
+    assert [%{mount_key: "calendar", id: nil, root: ^cal_root, kind: :calendar}] =
+             scope.related_icms
+
+    assert scope.calendar_in_scope == true
+    assert cal_root in scope.additional_roots
+  end
+
+  test "include_mounts appends the calendar mount without a CONTEXT.md declaration",
+       %{ws: ws, home: home, generation: generation} do
+    mounted_primary!(ws, home)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sc2",
+               include_mounts: ["calendar"]
+             })
+
+    cal_root = real!(Path.join([ws, "sources", "calendar"]))
+    assert [%{mount_key: "calendar", kind: :calendar}] = scope.related_icms
+    assert scope.calendar_in_scope == true
+    assert cal_root in scope.additional_roots
+  end
+
+  test "include_mounts naming a declared calendar dedupes against the grammar entry",
+       %{ws: ws, home: home, generation: generation} do
+    primary_root = mounted_primary!(ws, home)
+
+    File.write!(Path.join(primary_root, "CONTEXT.md"), """
+    ---
+    format: 1
+    related_icms:
+      - calendar
+    ---
+    """)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sc3",
+               include_mounts: ["calendar"]
+             })
+
+    assert Enum.count(scope.related_icms, &(&1.mount_key == "calendar")) == 1
+  end
+
+  test "a scope without a calendar opt-in has calendar_in_scope false", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sc4"
+             })
+
+    assert scope.calendar_in_scope == false
+  end
+
+  test "include_mounts with calendar is rejected when config/calendar.yaml is absent", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+    File.rm!(Path.join(ws, "config/calendar.yaml"))
+
+    assert SessionScope.resolve(%{
+             kind: "chat",
+             mount_key: "coaching",
+             generation: generation,
+             session_id: "sc5",
+             include_mounts: ["calendar"]
+           }) == {:error, :mail_unavailable}
+  end
+
+  test "an ICM key in include_mounts is still rejected include_not_mail alongside calendar", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+
+    assert SessionScope.resolve(%{
+             kind: "chat",
+             mount_key: "coaching",
+             generation: generation,
+             session_id: "sc6",
+             include_mounts: ["calendar", "coaching"]
+           }) == {:error, :include_not_mail}
+  end
+
+  test "the calendar mount can never be the session primary", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+
+    assert SessionScope.resolve(%{
+             kind: "chat",
+             mount_key: "calendar",
+             generation: generation,
+             session_id: "sc7"
+           }) == {:error, :icm_unavailable}
+  end
+
+  # EMPTY-WORKSPACE BOOTSTRAP (Spec F §"Mounts and policy"): a FRESH
+  # template workspace (v1-empty calendar.yaml, zero sources, an empty
+  # valea/events/) + an opted-in session must be able to create its first
+  # `valea/events/` file through the normal write path — the policy answers
+  # :ask (a user approval away), NEVER a deny, and the managedSettings
+  # snapshot carries no deny glob over valea/events/.
+  test "empty-workspace bootstrap: an opted-in session can write its first valea/events file",
+       %{ws: ws, home: home, generation: generation} do
+    mounted_primary!(ws, home)
+
+    assert {:ok, scope} =
+             SessionScope.resolve(%{
+               kind: "chat",
+               mount_key: "coaching",
+               generation: generation,
+               session_id: "sc8",
+               include_mounts: ["calendar"]
+             })
+
+    # The policy ctx exactly as SessionServer.init/1 builds it from scope.
+    policy_ctx = %{
+      workspace_root: scope.workspace.root,
+      cwd: scope.cwd,
+      read_roots: [scope.primary_icm.root | scope.additional_roots],
+      session_kind: scope.kind,
+      write_paths: scope.write_paths,
+      write_roots: scope.write_roots,
+      icm_roots: [scope.primary_icm.root | Enum.map(scope.related_icms, & &1.root)],
+      mail_roots_all: scope.mail_roots_all,
+      mail_roots_in_scope: scope.mail_roots_in_scope,
+      calendar_in_scope?: scope.calendar_in_scope
+    }
+
+    first = Path.join([ws, "sources", "calendar", "valea", "events", "first-event.md"])
+
+    item = %{"rawInput" => %{"file_path" => first}, "toolName" => "Write", "kind" => "write"}
+    assert :ask = Valea.Agents.PermissionPolicy.decide(item, policy_ctx)
+
+    read_item = %{"rawInput" => %{"file_path" => first}, "toolName" => "Read", "kind" => "read"}
+    assert {:allow, _} = Valea.Agents.PermissionPolicy.decide(read_item, policy_ctx)
+
+    settings = Jason.decode!(scope.managed_settings)
+    refute Enum.any?(settings["permissions"]["deny"], &String.contains?(&1, "valea/events"))
+  end
+
   # Spec §"Safety invariants" — the RPC trust boundary: agent sessions speak
   # ACP only. Nothing in the launch directives (env, managedSettings JSON,
   # extra argv) may carry the loopback RPC endpoint or the control token

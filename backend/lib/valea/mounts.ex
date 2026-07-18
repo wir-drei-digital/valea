@@ -82,6 +82,20 @@ defmodule Valea.Mounts do
   `unique_mount_key/2` never mints into the namespace), never
   editor-addressable (`mount_for/2` and `Valea.ICM` exclude them), and
   never part of the Knowledge tree grouping.
+
+  ## The synthetic calendar mount (Spec F Task 5, calendar spec §"Mounts and policy")
+
+  `list/1` additionally APPENDS one `kind: :calendar` mount — key
+  `calendar`, rooted at `<ws>/sources/calendar` — whenever
+  `config/calendar.yaml` EXISTS. Existence is the ONLY key: any content
+  mounts (the template's v1-empty shape, the legacy placeholder, even an
+  invalid document) — validity is per-source status, never mount
+  availability — so every workspace, new or pre-existing, can grant a
+  session calendar access and an agent can create the FIRST
+  `valea/events/` file through the normal file API. Always `enabled`,
+  never degraded (per-source health is status). Follows every mail-mount
+  exclusion above (session-scope material only; `unique_mount_key/2`
+  reserves the `calendar` key).
   """
 
   alias Valea.Mounts.Context
@@ -94,19 +108,21 @@ defmodule Valea.Mounts do
   # A resolved mount. `root` is the ABSOLUTE path — an ICM mount is
   # external (by-reference), so there is no workspace-relative path to
   # carry; a synthetic mail mount's root lives INSIDE the workspace at
-  # `sources/mail/<slug>`. `enabled` from config. `degraded` carries a
+  # `sources/mail/<slug>`, the synthetic calendar mount's at
+  # `sources/calendar`. `enabled` from config. `degraded` carries a
   # reason string when the manifest is missing/broken — or, for a mail
   # mount, when its Engine reports a blocked identity (still listed for
-  # the UI, excluded from the effective set). `kind` separates the two
-  # families: `:icm` (config `icms:` entries) vs `:mail` (Task 14's
-  # synthetic per-account mounts, `manifest` always `nil`).
+  # the UI, excluded from the effective set). `kind` separates the
+  # families: `:icm` (config `icms:` entries) vs the synthetic, non-ICM
+  # kinds `:mail` (Task 14's per-account mounts) and `:calendar` (Spec F
+  # Task 5's single mount) — both with `manifest` always `nil`.
   @type mount :: %{
           name: String.t(),
           root: String.t(),
           manifest: %Valea.Mounts.Manifest{} | nil,
           enabled: boolean(),
           degraded: String.t() | nil,
-          kind: :icm | :mail
+          kind: :icm | :mail | :calendar
         }
 
   @doc """
@@ -138,7 +154,7 @@ defmodule Valea.Mounts do
       |> degrade_duplicate_ids()
       |> Enum.sort_by(& &1.name)
 
-    icm_mounts ++ mail_mounts(workspace, ws_resolved)
+    icm_mounts ++ mail_mounts(workspace, ws_resolved) ++ calendar_mounts(workspace, ws_resolved)
   end
 
   # -- synthetic mail mounts (Task 14, mail spec §"Mount & containment") ----
@@ -196,6 +212,45 @@ defmodule Valea.Mounts do
     end
   catch
     :exit, _reason -> nil
+  end
+
+  # -- the synthetic calendar mount (Spec F Task 5, calendar spec §"Mounts
+  # and policy") -----------------------------------------------------------
+  #
+  # ONE `kind: :calendar` mount — key `calendar`, rooted at
+  # `<ws>/sources/calendar`, `manifest: nil` — whenever
+  # `config/calendar.yaml` EXISTS. EXISTENCE is the whole test: template
+  # v1-empty, legacy placeholder, and invalid documents all mount (validity
+  # is per-source status, surfaced by `Valea.Calendar.Doctor`/the engine,
+  # never mount availability), so a fresh template workspace can opt a
+  # session in and bootstrap its first `valea/events/` file with no UI
+  # step. Always enabled, never degraded (per-source health is status, not
+  # access to the local subtree). APPENDED last, after the mail mounts, so
+  # a legacy/hand-edited `icms:` entry (or even a hostile `mail-*`-style
+  # collision) named `calendar` shadows this mount in `mount_by_key/2`
+  # deterministically — fail-closed for the calendar grammar, which
+  # additionally requires `kind: :calendar`, while the shadowing ICM entry
+  # stays reachable for repair (unmount).
+  #
+  # No `config/calendar.yaml` means no mount — but `sources/calendar` (and
+  # any leftover files in it) is still covered by
+  # `Valea.Agents.PermissionPolicy`'s blanket calendar deny, which is keyed
+  # off the workspace root, not this listing.
+  defp calendar_mounts(workspace, ws_resolved) do
+    if File.exists?(Path.join(workspace, "config/calendar.yaml")) do
+      [
+        %{
+          name: "calendar",
+          root: Path.join([ws_resolved, "sources", "calendar"]),
+          manifest: nil,
+          enabled: true,
+          degraded: nil,
+          kind: :calendar
+        }
+      ]
+    else
+      []
+    end
   end
 
   @doc "Only enabled, non-degraded mounts in the current workspace — the effective composition set."
@@ -261,9 +316,10 @@ defmodule Valea.Mounts do
     |> list()
     # ICM mounts only: attribution feeds the EDITOR's `(mount_key,
     # rel_path)` addressing (`Valea.Icm.Locator.for_path/2` expects a
-    # manifest id). A synthetic mail mount (Task 14) has no manifest and
-    # is never editor-addressable, so a path under `sources/mail` falls
-    # through to workspace attribution instead.
+    # manifest id). A synthetic non-ICM mount (mail, Task 14; calendar,
+    # Spec F Task 5) has no manifest and is never editor-addressable, so a
+    # path under `sources/mail` or `sources/calendar` falls through to
+    # workspace attribution instead.
     |> Enum.filter(&(&1.kind == :icm and effective?(&1) and path_under_root?(path, &1.root)))
     |> most_specific_root()
   end
@@ -328,12 +384,16 @@ defmodule Valea.Mounts do
           workspace
           |> Context.resolve(primary)
           |> Map.fetch!(:related)
-          # Mail entries (`kind: :mail`, Task 14) are session-scope
-          # material only — the editor scan scope must NEVER include a
-          # mailbox: search/backlinks over attacker-authored mail is noise,
-          # and rename link-rewrite WRITES into every scoped root, which
-          # would violate "only the engine mutates maildir/".
-          |> Enum.reject(&(Map.get(&1, :kind) == :mail))
+          # Synthetic non-ICM entries (`kind: :mail`, Task 14; `kind:
+          # :calendar`, Spec F Task 5) are session-scope material only —
+          # the editor scan scope must NEVER include a mailbox or the
+          # calendar subtree: search/backlinks over externally-authored
+          # content is noise, and rename link-rewrite WRITES into every
+          # scoped root, which would violate "only the engine mutates
+          # maildir/" and its calendar mirror. Keyed `== :icm` (not a
+          # kind denylist) so any future synthetic kind stays excluded by
+          # construction.
+          |> Enum.reject(&(Map.get(&1, :kind) != :icm))
           |> Enum.reject(&(&1.mount_key == primary.name))
           |> Enum.uniq_by(& &1.mount_key)
           |> Enum.map(&related_to_mount/1)
@@ -551,12 +611,21 @@ defmodule Valea.Mounts do
   mail mounts: a display name slugifying into it (e.g. "Mail Personal" ->
   `mail-personal`) is re-prefixed to `icm-mail-...` so a newly-registered
   ICM can never shadow (or be shadowed by) a mail account's mount key.
+  The exact key `calendar` is RESERVED the same way for Spec F Task 5's
+  synthetic calendar mount ("Calendar" -> `icm-calendar`).
   """
   @spec unique_mount_key(workspace :: String.t(), name :: String.t()) :: String.t()
   def unique_mount_key(workspace, name) when is_binary(workspace) and is_binary(name) do
     existing = workspace |> read_icms_config() |> Map.keys() |> MapSet.new()
     base = Scaffold.slugify(name)
-    base = if String.starts_with?(base, "mail-"), do: "icm-" <> base, else: base
+
+    base =
+      cond do
+        String.starts_with?(base, "mail-") -> "icm-" <> base
+        base == "calendar" -> "icm-calendar"
+        true -> base
+      end
+
     unique_key(base, existing, 1)
   end
 

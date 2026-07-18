@@ -78,8 +78,10 @@ defmodule Valea.Mounts.MailMountsTest do
     AgentCase.mount_test_icm!(ws, name: "Zeta")
     write_mail_yaml!(ws, account_block("aaa") <> account_block("bbb"))
 
+    # The template workspace ships `config/calendar.yaml`, so the synthetic
+    # calendar mount (Spec F Task 5) is appended after the mail mounts.
     names = Enum.map(Mounts.list(ws), & &1.name)
-    assert names == ["zeta", "mail-aaa", "mail-bbb"]
+    assert names == ["zeta", "mail-aaa", "mail-bbb", "calendar"]
     assert Enum.all?(Mounts.list(ws), &Map.has_key?(&1, :kind))
   end
 
@@ -183,5 +185,89 @@ defmodule Valea.Mounts.MailMountsTest do
 
     {:ok, %{results: results}} = Valea.ICM.Search.search(ws, "xylophone-needle")
     assert Enum.map(results, & &1.mount) == [icm.mount_key]
+  end
+
+  # -- the calendar mount (Spec F Task 5, calendar spec §"Mounts and policy") --
+  #
+  # ONE synthetic `kind: :calendar` mount covering `sources/calendar/`,
+  # appended by `list/1` whenever `config/calendar.yaml` EXISTS — any
+  # content (the template's v1-empty shape, a legacy placeholder, even an
+  # invalid document): the mount keys on EXISTENCE; validity is status.
+  # Follows every mail-mount exclusion (session-scope material only).
+  describe "calendar mount" do
+    test "a fresh template workspace carries the calendar mount (v1-empty config)", %{ws: ws} do
+      cal_root = Path.join([real!(ws), "sources", "calendar"])
+
+      assert %{
+               name: "calendar",
+               root: ^cal_root,
+               manifest: nil,
+               enabled: true,
+               degraded: nil,
+               kind: :calendar
+             } = Mounts.mount_by_key(ws, "calendar")
+
+      assert "calendar" in Enum.map(Mounts.enabled(ws), & &1.name)
+    end
+
+    test "the mount disappears when calendar.yaml is removed and reappears on ANY content", %{
+      ws: ws
+    } do
+      yaml = Path.join(ws, "config/calendar.yaml")
+      File.rm!(yaml)
+      assert Mounts.mount_by_key(ws, "calendar") == nil
+      assert Enum.filter(Mounts.list(ws), &(&1.kind == :calendar)) == []
+
+      # Invalid content still mounts — validity is status, not availability.
+      File.write!(yaml, "definitely: not-a-v1-calendar-config\n")
+
+      assert %{kind: :calendar, enabled: true, degraded: nil} =
+               Mounts.mount_by_key(ws, "calendar")
+    end
+
+    test "unique_mount_key/2 never mints the reserved calendar key", %{ws: ws} do
+      refute Mounts.unique_mount_key(ws, "Calendar") == "calendar"
+    end
+
+    test "the calendar mount is excluded from list_icms and tree_for/1", %{
+      ws: ws,
+      generation: generation
+    } do
+      icm = AgentCase.mount_test_icm!(ws, name: "Primary")
+
+      assert {:ok, %{icms: icms}} =
+               Valea.Api.Icms
+               |> Ash.ActionInput.for_action(:list_icms, %{generation: generation})
+               |> Ash.run_action()
+
+      assert Enum.map(icms, & &1.mount_key) == [icm.mount_key]
+      assert {:error, :outside_workspace} = Valea.ICM.tree_for("calendar")
+    end
+
+    test "scoped_roots/2 (editor scan scope) never includes the calendar mount", %{ws: ws} do
+      icm = AgentCase.mount_test_icm!(ws, name: "Primary")
+
+      File.write!(Path.join(icm.root, "CONTEXT.md"), """
+      ---
+      format: 1
+      related_icms:
+        - calendar
+      ---
+      """)
+
+      assert Enum.map(Mounts.scoped_roots(ws, icm.mount_key), & &1.name) == [icm.mount_key]
+    end
+
+    test "global editor search never sweeps the calendar mount", %{ws: ws} do
+      icm = AgentCase.mount_test_icm!(ws, name: "Primary")
+      File.write!(Path.join(icm.root, "Notes.md"), "# Notes\nquartz-needle here\n")
+
+      views = Path.join([ws, "sources", "calendar", "mara", "views"])
+      File.mkdir_p!(views)
+      File.write!(Path.join(views, "ev-1.md"), "quartz-needle in calendar\n")
+
+      {:ok, %{results: results}} = Valea.ICM.Search.search(ws, "quartz-needle")
+      assert Enum.map(results, & &1.mount) == [icm.mount_key]
+    end
   end
 end
