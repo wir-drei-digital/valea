@@ -79,6 +79,11 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# Full IANA time-zone database for the calendar subsystem. TZID resolution,
+# DST-transition determinism, and floating-time resolution against the host
+# zone all go through Elixir's DateTime API, which needs a real database.
+config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
+
 # codepagex ships every code page it knows about behind a compile flag —
 # without this, `mix compile` regenerates modules for all of them (slow,
 # and pulls in a bunch of legacy encodings Valea never needs). The mail

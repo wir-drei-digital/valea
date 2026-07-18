@@ -57,6 +57,7 @@ defmodule Valea.MixProject do
       {:file_system, "~> 1.0"},
       {:erlexec, "~> 2.0"},
       {:yaml_elixir, "~> 2.11"},
+      {:tzdata, "~> 1.1"},
       {:gen_smtp, "~> 1.2"},
       {:floki, "~> 0.36"},
       {:codepagex, "~> 0.1"},
