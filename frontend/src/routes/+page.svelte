@@ -12,6 +12,7 @@
   import { knowledgeHref } from '$lib/shell/nav';
   import {
     normalizeCockpitToday,
+    calendarSummaryLine,
     mailSummaryLine,
     type CockpitToday,
     type TodaySection
@@ -135,6 +136,9 @@
         {#each today.mail.filter((m) => m.configured) as mail (mail.account)}
           <p class="text-ink-meta text-[13px]">{mailSummaryLine(mail)}</p>
         {/each}
+        {#if today.calendar}
+          <p class="text-ink-meta text-[13px]">{calendarSummaryLine(today.calendar)}</p>
+        {/if}
       </header>
 
       {#if today.sections.length === 0}

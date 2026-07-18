@@ -31,9 +31,15 @@ export type MailAccountSummary = {
   pendingOps: number;
   notices: string[];
 };
+/** The cockpit calendar line (`Valea.Cockpit.calendar_summary/0`, Spec F) — `null` when the subsystem has nothing to say. */
+export type CalendarSummary = {
+  eventsToday: number;
+  next: { time: string; title: string } | null;
+};
 export type CockpitToday = {
   sections: TodaySection[];
   mail: MailAccountSummary[];
+  calendar: CalendarSummary | null;
   recentSessions: RecentSession[];
 };
 
@@ -69,11 +75,27 @@ function normalizeSection(raw: Record<string, unknown>): TodaySection {
   };
 }
 
+function normalizeCalendarSummary(raw: unknown): CalendarSummary | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const rec = raw as Record<string, unknown>;
+  const next = pick(rec, 'next', 'next');
+  const nextRec =
+    next && typeof next === 'object' && !Array.isArray(next) ? (next as Record<string, unknown>) : null;
+  return {
+    eventsToday: num(pick(rec, 'events_today', 'eventsToday')),
+    next:
+      nextRec && typeof nextRec.time === 'string' && typeof nextRec.title === 'string'
+        ? { time: nextRec.time, title: nextRec.title }
+        : null
+  };
+}
+
 export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToday {
   const sections = pick(raw, 'sections', 'sections');
   const mail = pick(raw, 'mail', 'mail');
   const recent = pick(raw, 'recent_sessions', 'recentSessions');
   return {
+    calendar: normalizeCalendarSummary(pick(raw, 'calendar', 'calendar')),
     sections: (Array.isArray(sections) ? sections : [])
       .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
       .map(normalizeSection),
@@ -104,4 +126,10 @@ export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToda
  */
 export function mailSummaryLine(mail: MailAccountSummary): string {
   return `${mail.account}: ${mail.state} · ${mail.pendingOps} pending`;
+}
+
+/** Spec F's Today-page calendar line: "3 events today · next: 09:30 Coffee with Priya" (no next → count only). */
+export function calendarSummaryLine(calendar: CalendarSummary): string {
+  const count = `${calendar.eventsToday} ${calendar.eventsToday === 1 ? 'event' : 'events'} today`;
+  return calendar.next ? `${count} · next: ${calendar.next.time} ${calendar.next.title}` : count;
 }

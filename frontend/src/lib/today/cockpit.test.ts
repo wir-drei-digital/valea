@@ -168,3 +168,27 @@ describe('mailSummaryLine', () => {
     );
   });
 });
+
+// -- Spec F calendar line -----------------------------------------------------
+
+import { calendarSummaryLine } from './cockpit';
+
+describe('calendar summary (Spec F)', () => {
+  it('normalizes the camelCased typed shape (and a snake fallback) with a null next', () => {
+    expect(normalizeCockpitToday({ calendar: { eventsToday: 3, next: null } }).calendar).toEqual({
+      eventsToday: 3,
+      next: null
+    });
+    expect(normalizeCockpitToday({ calendar: { events_today: 2, next: { time: '09:30', title: 'Standup' } } }).calendar)
+      .toEqual({ eventsToday: 2, next: { time: '09:30', title: 'Standup' } });
+    expect(normalizeCockpitToday({}).calendar).toBeNull();
+    expect(normalizeCockpitToday({ calendar: null }).calendar).toBeNull();
+  });
+
+  it('renders the pinned line shape', () => {
+    expect(calendarSummaryLine({ eventsToday: 3, next: { time: '09:30', title: 'Coffee with Priya' } })).toBe(
+      '3 events today · next: 09:30 Coffee with Priya'
+    );
+    expect(calendarSummaryLine({ eventsToday: 1, next: null })).toBe('1 event today');
+  });
+});

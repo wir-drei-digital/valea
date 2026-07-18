@@ -147,7 +147,6 @@ export type CalendarStatusPush = {
   notices: string[];
   url_present: boolean;
   unsupported_series: number;
-  workspace_id: string | null;
 };
 
 /** `calendar_synced` push payload — Spec F pins this wire shape SNAKE_CASE (`event_count`). */
