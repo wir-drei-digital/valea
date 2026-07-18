@@ -254,11 +254,15 @@ the purge rather than racing the deletion.
   and the engine idles with `url_present: false` until resupply
   (`set_calendar_source_url`) provides one. The poll timer starts only
   when a URL is present and identity verified.
-- A pass: conditional GET → parse → atomically swap `feed.ics` (the
-  commit point) → derive this source's views + index rows from the new
-  snapshot → broadcast. Single
+- A pass: conditional GET → parse PLUS the feed-level acceptance guard
+  (previous-event evidence = the live index occurrence count) → only
+  past BOTH, atomically swap `feed.ics` (the commit point) → the shared
+  guarded derive of this source's views + index rows from the new
+  snapshot → broadcast. An acceptance rejection leaves the PRIOR
+  snapshot AND both derived stores unchanged — a rejected response is
+  never committed as `feed.ics`. Single
   in-flight pass per engine (monitored Task, the mail single-flight
-  shape). Any failure (network, TLS, parse, empty-feed guard) marks the
+  shape). Any failure (network, TLS, parse, acceptance guard) marks the
   source degraded with a reason and leaves the previous mirror fully
   intact; the next tick retries.
 - Status per source: `state` (inactive | idle | syncing | degraded |
