@@ -39,8 +39,15 @@ sources/calendar/
   everything derived: it is replaced atomically (tmp + fsync + rename)
   only after a fetch AND parse succeed, and the views + index are then
   DERIVED from the newly committed snapshot (idempotent rebuild).
-  Activation always re-derives views + index from `feed.ics`
-  unconditionally, so a crash anywhere between the swap and the derive
+  EVERY derive from the committed snapshot — at activation, after a
+  fetch, or via the marker check on a 304 — runs the SAME admission
+  first: parse plus the feed-level acceptance guard (previous-event
+  evidence = the index's CURRENT occurrence count for the source at
+  guard time); a snapshot that fails it (e.g. damaged out-of-band)
+  leaves BOTH derived stores untouched and marks the source degraded —
+  a derive is always an unconditional ATTEMPT, never an unconditional
+  commit. Activation always makes that attempt (no marker
+  consultation), so a crash anywhere between the swap and the derive
   self-heals at the next activation or pass; a failure BEFORE the swap
   leaves the previous snapshot and everything derived from it fully
   intact. Derived state additionally carries a DERIVE MARKER in BOTH
@@ -237,8 +244,10 @@ single process, so no two lifecycle mutations for a slug can interleave
 serialization, and a concurrent setup for the same slug queues behind
 the purge rather than racing the deletion.
 
-- Activation: rebuild views + index from `feed.ics` unconditionally
-  (self-heal — needs no credential), then install the credential: read
+- Activation: attempt the rebuild of views + index from `feed.ics`
+  (self-heal — needs no credential; commits only past the shared
+  parse + acceptance admission above, preserving both derived stores
+  on rejection), then install the credential: read
   the keychain/env-supplied URL (RAM only) if one is available; ONLY
   with a URL in hand verify `.source` (absent → claim; mismatch → inert
   `identity_mismatch`). With no URL available, `.source` stays untouched
