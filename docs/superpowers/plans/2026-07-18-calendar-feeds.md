@@ -194,12 +194,20 @@ defmodule Valea.Calendar.Settings do
   # sources: %{slug => %{name: String.t(), past_days: 30, future_days: 365, interval_minutes: 30}}
   @spec load(root :: String.t()) :: {:ok, %__MODULE__{}} | {:invalid, String.t()} | :absent
   @spec valid_slug?(String.t()) :: boolean()   # grammar AND slug != "valea"
-  @spec put_source(root, slug, name) :: :ok | {:error, term()}      # wholesale v1 rewrite
+  @spec put_source(root, slug, name) :: :ok | {:error, term()}
   @spec remove_source(root, slug) :: :ok | {:error, term()}
   @spec generate_feed_token(root) :: {:ok, plain_token :: String.t()} | {:error, term()}
-  # 32 bytes from :crypto.strong_rand_bytes, Base.url_encode64(padding: false);
-  # persists ONLY the sha256 hex as feed.token_hash (overwrite = rotation);
-  # returns the plain token exactly once. Tasks 4 and 6 are consumers.
+  # ONE canonical v1 rewrite path shared by all three mutations: read current state,
+  # apply the change, write the whole v1 document. On a VALID v1 file, put_source/
+  # remove_source PRESERVE feed.token_hash and the other sources; generate_feed_token
+  # PRESERVES sources (32 bytes :crypto.strong_rand_bytes, Base.url_encode64
+  # padding: false; persists ONLY the sha256 hex; overwrite = rotation; plain token
+  # returned exactly once). On an INVALID or legacy-shaped file, any of the three
+  # replaces it WHOLESALE with a fresh v1 carrying only its own change (spec §Config:
+  # "the first setup_calendar_source or enable_calendar_feed rewrites the file
+  # wholesale to v1" — nothing in a non-v1 file is real data to preserve). load/1
+  # itself NEVER rewrites anything except the exact legacy placeholder below —
+  # the read path stays non-destructive. Tasks 4 and 6 are consumers.
   @spec env_var(slug :: String.t()) :: String.t()   # "VALEA_CAL_URL_" <> upcased, - → _
 end
 
@@ -228,7 +236,7 @@ end
 
 **Steps:**
 
-- [ ] **Step 1: tests first.** `fetch_test.exs` against `FakeFeedServer` (scripted TCP like FakeImapServer, plain HTTP locally + a TLS scenario): 200-with-etag, 304, redirect chain of 3 followed / 4 → `:redirect_limit`, cross-origin redirect rejected, oversize aborted, timeout, HTML-error-page bodies pass through (guarding is Ics/engine's job). SSRF unit tests hit the address-classifier directly (private/loopback/link-local/ULA/reserved v4+v6). `settings_test.exs`: v1 round-trip, defaults, interval floor, bad slug, `valea` slug → invalid, EXACT legacy placeholder → rewritten-once + notice, NEGATIVE convergence cases (empty document, subset of legacy keys, legacy keys with altered values, extra key added) → `{:invalid, _}` with file untouched, junk → invalid, absent → `:absent`, `generate_feed_token/1` (token is 32 bytes decoded, base64url no padding, ONLY the sha256 hex lands in the file, second call rotates the hash). `store_test.exs`: replace_source! transactional replace, derived_rev round-trip, mark_error preserves rows, clear_source!, overlap query truth table (timed straddling boundaries, all-day exclusive end, mixed).
+- [ ] **Step 1: tests first.** `fetch_test.exs` against `FakeFeedServer` (scripted TCP like FakeImapServer, plain HTTP locally + a TLS scenario): 200-with-etag, 304, redirect chain of 3 followed / 4 → `:redirect_limit`, cross-origin redirect rejected, oversize aborted, timeout, HTML-error-page bodies pass through (guarding is Ics/engine's job). SSRF unit tests hit the address-classifier directly (private/loopback/link-local/ULA/reserved v4+v6). `settings_test.exs`: v1 round-trip, defaults, interval floor, bad slug, `valea` slug → invalid, EXACT legacy placeholder → rewritten-once + notice, NEGATIVE convergence cases (empty document, subset of legacy keys, legacy keys with altered values, extra key added) → `{:invalid, _}` with file untouched, junk → invalid, absent → `:absent`, `generate_feed_token/1` (token is 32 bytes decoded, base64url no padding, ONLY the sha256 hex lands in the file, second call rotates the hash), MUTATION-INTERACTION cases (put_source/remove_source after a token exists → token_hash preserved; generate_feed_token with sources configured → sources preserved; each of put_source and generate_feed_token on an invalid-config file → wholesale fresh v1 with only its own change). `store_test.exs`: replace_source! transactional replace, derived_rev round-trip, mark_error preserves rows, clear_source!, overlap query truth table (timed straddling boundaries, all-day exclusive end, mixed).
 - [ ] **Step 2: migration + resources + implementations** until green. NOTE: `FakeFeedServer`'s TLS side can reuse the dovecot/test cert helpers if present; if standing up TLS locally is disproportionate, cover TLS-failure via an `:ssl` error injection on the client seam and say so in the report.
 - [ ] **Step 3: full backend suite; commit** `feat(backend): calendar fetch/settings/store foundations (Spec F Task 2)`.
 
@@ -302,7 +310,7 @@ rev = Base.encode16(:crypto.hash(:sha256, snapshot_bytes), case: :lower)
 
 **Steps:**
 
-- [ ] **Step 1: `views_test.exs` + `source` tests first** — view frontmatter exact keys (`uid, source, summary, start, end, all_day, location, status, recurring, rrule` — same yaml escaping as `Valea.Mail.Views`), DESCRIPTION as body, one file per master incl. per-override files at distinct `Ics.view_id` paths, `recurrence_unsupported: true` view with raw rule and NO index rows, `.rev` written inside the swapped dir, double-rename replace, hostile UID never in a filename. Then `engine_test.exs` covering EVERY spec §Testing engine case: activation/identity (claim, mismatch → inert), replace-mirror (shrunken feed removes rows+views), degraded-keeps-mirror, zero-parseable guard, partial-damage guard (populated mirror SURVIVES 1-valid+3-malformed; shrunken all-parseable replaces), single-flight, per-source isolation, crash self-heal (kill between feed.ics swap and derive → next activation converges), stale-derive repair THROUGH a 304, two-store checks (kill between views swap and SQLite commit → mismatch → re-derive; and the inverse), host-zone change re-derive, ROLLING-WINDOW re-derive (advance the clock past the future boundary under continuing 304s → day-quantized rev mismatch → rows roll in/out), window-config change re-derive, purge-vs-degraded serialization (remove → in-flight pass awaited → purge → no resurrection). Inject clock + zone via engine opts (e.g. `now_fun`, `zone_fun`) so tests don't sleep.
+- [ ] **Step 1: `views_test.exs` + `source` tests first** — view frontmatter exact keys (`uid, source, summary, start, end, all_day, location, status, recurring, rrule, recurrence_id` — the raw RECURRENCE-ID string, empty for masters, per spec §Storage layout "the real UID and raw RECURRENCE-ID live in the view's frontmatter"; same yaml escaping as `Valea.Mail.Views`), DESCRIPTION as body, one file per master incl. per-override files at distinct `Ics.view_id` paths (tests assert the master's empty `recurrence_id` and each override's RAW value), `recurrence_unsupported: true` view with raw rule and NO index rows, `.rev` written inside the swapped dir, double-rename replace, hostile UID never in a filename. Then `engine_test.exs` covering EVERY spec §Testing engine case: activation/identity (claim, mismatch → inert), replace-mirror (shrunken feed removes rows+views), degraded-keeps-mirror, zero-parseable guard, partial-damage guard (populated mirror SURVIVES 1-valid+3-malformed; shrunken all-parseable replaces), single-flight, per-source isolation, crash self-heal (kill between feed.ics swap and derive → next activation converges), stale-derive repair THROUGH a 304, two-store checks (kill between views swap and SQLite commit → mismatch → re-derive; and the inverse), host-zone change re-derive, ROLLING-WINDOW re-derive (advance the clock past the future boundary under continuing 304s → day-quantized rev mismatch → rows roll in/out), window-config change re-derive, purge-vs-degraded serialization (remove → in-flight pass awaited → purge → no resurrection). Inject clock + zone via engine opts (e.g. `now_fun`, `zone_fun`) so tests don't sleep.
 - [ ] **Step 2: implement** `source.ex`, `views.ex`, `engine.ex`, `supervisor.ex`, runtime/application wiring, until green.
 - [ ] **Step 3: full backend suite; commit** `feat(backend): calendar sync engine with two-store derive marker (Spec F Task 3)`.
 
@@ -350,7 +358,7 @@ end
 
 **Pinned validation (Local, fail-closed — brief carries spec §The Valea calendar verbatim):** unknown frontmatter keys reject; control chars reject in every field (body: newlines/tabs allowed, other C0 reject); `title` required non-empty ≤ 500 chars; timed `start` ISO 8601 WITH offset, `start < end`, `end` default start+1h; `all_day: true` ⇒ plain dates, `end` EXCLUSIVE and STRICTLY > start (equal dates reject), default start+1 day; `status` ∈ confirmed|tentative|cancelled (default confirmed); body ≤ 16 KB (16_384 bytes); symlink/hard-link → reject unread. Invalid files are listed with reasons, rendered NOWHERE.
 
-**Feed endpoint:** token = 32 random bytes base64url; only sha256 hex stored (`Settings.set_feed_token_hash/2`); controller: `Plug.Crypto.secure_compare(sha256(param), stored_hash)`; no token configured / missing / mismatch / any error → 404 empty body, no detail; NO other parameters honored; serves ONLY `Render.feed(valid valea events)` with `content-type: text/calendar; charset=utf-8`. Token generation/rotation is `Valea.Calendar.Settings.generate_feed_token/1` — PRODUCED AND TESTED IN TASK 2; this task and Task 6 only consume it.
+**Feed endpoint:** the controller only READS the stored hash (`Settings.load/1` → `feed_token_hash`) and compares `Plug.Crypto.secure_compare(sha256(param), stored_hash)`; no token configured / missing / mismatch / any error → 404 empty body, no detail; NO other parameters honored; serves ONLY `Render.feed(valid valea events)` with `content-type: text/calendar; charset=utf-8`. Enable/rotate EXCLUSIVELY call `Valea.Calendar.Settings.generate_feed_token/1` — produced and tested in Task 2; this task and Task 6 only consume it; no second token-mutation path exists.
 
 **Steps:**
 
