@@ -16,6 +16,7 @@ defmodule Valea.Workspace.Runtime do
       {Valea.ICM.Watcher, root},
       {Valea.Audit, %{root: root, generation: gen}},
       {Valea.Mail.Supervisor, %{root: root, generation: gen}},
+      {Valea.Calendar.Supervisor, %{root: root, generation: gen}},
       {DynamicSupervisor, name: Valea.Agents.SessionSupervisor, strategy: :one_for_one}
     ]
 

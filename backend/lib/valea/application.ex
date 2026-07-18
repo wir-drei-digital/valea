@@ -15,6 +15,9 @@ defmodule Valea.Application do
       # Valea.Mail.Engine.via/1) — outlives workspace switches for the same
       # reason as the registry above.
       {Registry, keys: :unique, name: Valea.Mail.Registry},
+      # App-level: one Valea.Calendar.Engine per source slug registers here
+      # (see Valea.Calendar.Engine.via/1) — same posture as the mail registry.
+      {Registry, keys: :unique, name: Valea.Calendar.Registry},
       # Repo starts under here when a workspace opens — the app boots
       # workspace-less by design; there is no database until then.
       Valea.Workspace.Supervisor,
