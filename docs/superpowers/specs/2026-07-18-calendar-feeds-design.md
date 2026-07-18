@@ -237,9 +237,14 @@ single process, so no two lifecycle mutations for a slug can interleave
 serialization, and a concurrent setup for the same slug queues behind
 the purge rather than racing the deletion.
 
-- Activation: verify `.source` (absent → claim; mismatch → inert
-  `identity_mismatch`), read the keychain-supplied URL (RAM only), rebuild
-  the index from `feed.ics` + views (self-heal), start the poll timer.
+- Activation: rebuild views + index from `feed.ics` unconditionally
+  (self-heal — needs no credential), then install the credential: read
+  the keychain/env-supplied URL (RAM only) if one is available; ONLY
+  with a URL in hand verify `.source` (absent → claim; mismatch → inert
+  `identity_mismatch`). With no URL available, `.source` stays untouched
+  and the engine idles with `url_present: false` until resupply
+  (`set_calendar_source_url`) provides one. The poll timer starts only
+  when a URL is present and identity verified.
 - A pass: conditional GET → parse → atomically swap `feed.ics` (the
   commit point) → derive this source's views + index rows from the new
   snapshot → broadcast. Single
