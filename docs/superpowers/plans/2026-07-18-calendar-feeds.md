@@ -196,7 +196,10 @@ defmodule Valea.Calendar.Settings do
   @spec valid_slug?(String.t()) :: boolean()   # grammar AND slug != "valea"
   @spec put_source(root, slug, name) :: :ok | {:error, term()}      # wholesale v1 rewrite
   @spec remove_source(root, slug) :: :ok | {:error, term()}
-  @spec set_feed_token_hash(root, hash_hex :: String.t()) :: :ok | {:error, term()}
+  @spec generate_feed_token(root) :: {:ok, plain_token :: String.t()} | {:error, term()}
+  # 32 bytes from :crypto.strong_rand_bytes, Base.url_encode64(padding: false);
+  # persists ONLY the sha256 hex as feed.token_hash (overwrite = rotation);
+  # returns the plain token exactly once. Tasks 4 and 6 are consumers.
   @spec env_var(slug :: String.t()) :: String.t()   # "VALEA_CAL_URL_" <> upcased, - → _
 end
 
@@ -220,12 +223,12 @@ end
 **Pinned values:**
 - Fetch: HTTPS only; manual redirects (autoredirect off), cap 3, SAME-ORIGIN (scheme+host+port) else `:cross_origin_redirect`; body cap 20 MB (streamed check); timeout 30_000 ms; conditional GET via If-None-Match/If-Modified-Since; TLS = ImapClient's verify_peer + OS CA posture. Before EVERY connect (initial + each redirect): resolve host, reject loopback/link-local/RFC1918/ULA/reserved (IPv4 + IPv6) → `:ssrf_blocked`. The URL never appears in any error/log — errors are atoms.
 - Store row text formats: timed `occ_start`/`occ_end` = `YYYY-MM-DDTHH:MM:SSZ`; all-day = `YYYY-MM-DD` with `occ_end` EXCLUSIVE. Columns: `calendar_occurrences(source, uid, all_day, occ_start, occ_end, summary, location, status, view_path)` indexed on `(occ_start, occ_end)` + `(source)`; `calendar_sync_state(source PK, etag, last_modified, last_sync_at, last_error, derived_rev)`. `migrate? false` resources, hand migration mirrors the mail one.
-- Settings: v1 YAML per spec §Config. `load/1` legacy-placeholder convergence: if the file parses and its top-level keys are exactly a subset of `{account, caldav, ics_fallback, event_types}` (the known template shape), REWRITE to v1-empty (`version: 1\nsources: {}\n`), log one notice, return the empty settings. Any other non-v1 content → `{:invalid, reason}`. Defaults past 30 / future 365 / interval 30, interval floor 5.
+- Settings: v1 YAML per spec §Config. `load/1` legacy-placeholder convergence is an EXACT-VALUE match, nothing looser: the parsed document must equal the known template placeholder — top-level keys exactly `{account, caldav, ics_fallback, event_types}` with `account == "mara@example.com"`, `caldav == %{url: "https://caldav.example.com/", username_env: "CALDAV_USERNAME", password_env: "CALDAV_PASSWORD"}`, `ics_fallback == %{path: "sources/calendar/import.ics"}`, and `event_types` exactly the template's three keyword lists (compare against a module-attribute copy of the shipped placeholder). Only THAT document is rewritten to v1-empty (`version: 1\nsources: {}\n`, one logged notice). EVERY other non-v1 document — empty file, partial legacy keys, altered values, anything custom — is `{:invalid, reason}`; never rewritten, never silently replaced. Defaults past 30 / future 365 / interval 30, interval floor 5.
 - Template: `calendar.yaml` becomes exactly `version: 1\nsources: {}\n`; add the `valea/events/.gitkeep`.
 
 **Steps:**
 
-- [ ] **Step 1: tests first.** `fetch_test.exs` against `FakeFeedServer` (scripted TCP like FakeImapServer, plain HTTP locally + a TLS scenario): 200-with-etag, 304, redirect chain of 3 followed / 4 → `:redirect_limit`, cross-origin redirect rejected, oversize aborted, timeout, HTML-error-page bodies pass through (guarding is Ics/engine's job). SSRF unit tests hit the address-classifier directly (private/loopback/link-local/ULA/reserved v4+v6). `settings_test.exs`: v1 round-trip, defaults, interval floor, bad slug, `valea` slug → invalid, legacy placeholder → rewritten-once + notice, junk → invalid, absent → `:absent`. `store_test.exs`: replace_source! transactional replace, derived_rev round-trip, mark_error preserves rows, clear_source!, overlap query truth table (timed straddling boundaries, all-day exclusive end, mixed).
+- [ ] **Step 1: tests first.** `fetch_test.exs` against `FakeFeedServer` (scripted TCP like FakeImapServer, plain HTTP locally + a TLS scenario): 200-with-etag, 304, redirect chain of 3 followed / 4 → `:redirect_limit`, cross-origin redirect rejected, oversize aborted, timeout, HTML-error-page bodies pass through (guarding is Ics/engine's job). SSRF unit tests hit the address-classifier directly (private/loopback/link-local/ULA/reserved v4+v6). `settings_test.exs`: v1 round-trip, defaults, interval floor, bad slug, `valea` slug → invalid, EXACT legacy placeholder → rewritten-once + notice, NEGATIVE convergence cases (empty document, subset of legacy keys, legacy keys with altered values, extra key added) → `{:invalid, _}` with file untouched, junk → invalid, absent → `:absent`, `generate_feed_token/1` (token is 32 bytes decoded, base64url no padding, ONLY the sha256 hex lands in the file, second call rotates the hash). `store_test.exs`: replace_source! transactional replace, derived_rev round-trip, mark_error preserves rows, clear_source!, overlap query truth table (timed straddling boundaries, all-day exclusive end, mixed).
 - [ ] **Step 2: migration + resources + implementations** until green. NOTE: `FakeFeedServer`'s TLS side can reuse the dovecot/test cert helpers if present; if standing up TLS locally is disproportionate, cover TLS-failure via an `:ssl` error injection on the client seam and say so in the report.
 - [ ] **Step 3: full backend suite; commit** `feat(backend): calendar fetch/settings/store foundations (Spec F Task 2)`.
 
@@ -347,7 +350,7 @@ end
 
 **Pinned validation (Local, fail-closed — brief carries spec §The Valea calendar verbatim):** unknown frontmatter keys reject; control chars reject in every field (body: newlines/tabs allowed, other C0 reject); `title` required non-empty ≤ 500 chars; timed `start` ISO 8601 WITH offset, `start < end`, `end` default start+1h; `all_day: true` ⇒ plain dates, `end` EXCLUSIVE and STRICTLY > start (equal dates reject), default start+1 day; `status` ∈ confirmed|tentative|cancelled (default confirmed); body ≤ 16 KB (16_384 bytes); symlink/hard-link → reject unread. Invalid files are listed with reasons, rendered NOWHERE.
 
-**Feed endpoint:** token = 32 random bytes base64url; only sha256 hex stored (`Settings.set_feed_token_hash/2`); controller: `Plug.Crypto.secure_compare(sha256(param), stored_hash)`; no token configured / missing / mismatch / any error → 404 empty body, no detail; NO other parameters honored; serves ONLY `Render.feed(valid valea events)` with `content-type: text/calendar; charset=utf-8`. Token generation/rotation: `Valea.Calendar.Settings.generate_feed_token(root) :: {:ok, plain_token}` — stores the sha256 hex (overwriting any previous = rotation) and returns the plain token exactly once; RPC exposure is Task 6.
+**Feed endpoint:** token = 32 random bytes base64url; only sha256 hex stored (`Settings.set_feed_token_hash/2`); controller: `Plug.Crypto.secure_compare(sha256(param), stored_hash)`; no token configured / missing / mismatch / any error → 404 empty body, no detail; NO other parameters honored; serves ONLY `Render.feed(valid valea events)` with `content-type: text/calendar; charset=utf-8`. Token generation/rotation is `Valea.Calendar.Settings.generate_feed_token/1` — PRODUCED AND TESTED IN TASK 2; this task and Task 6 only consume it.
 
 **Steps:**
 
@@ -384,11 +387,11 @@ defp calendar_denied?({:ok, path}, kind, territory_root, in_scope?) do
 end
 ```
 
-- `session_settings.ex` managedSettings mirror: out-of-scope session → deny `Read`+`Edit`+`Write` on `sources/calendar/**`; in-scope → deny `Edit`+`Write` on the four globs `sources/calendar/*/.source`, `sources/calendar/*/feed.ics`, `sources/calendar/*/views/**`, and `sources/calendar/*` (non-recursive — stray top-level files), leaving `valea/events/**` writable. PermissionPolicy remains the authoritative gate; the mirror is advisory parity like mail's.
+- `session_settings.ex` managedSettings mirror: out-of-scope session → deny `Read`+`Edit`+`Write` on `sources/calendar/**`. In-scope → mirror "everything except `valea/events/**` is write-denied" by ENUMERATION at settings-build time (deny always beats allow in the settings model, so an exception can't be carved with an allow rule): for every name in (configured source slugs ∪ `File.ls` of `sources/calendar/`) minus `valea`, deny `Edit`+`Write` on `sources/calendar/<name>/**` — the wholesale per-directory glob covers `.source`, `feed.ics`, `views/**`, AND crash leftovers like `views.tmp-*`/`views.old-*` and removed-but-unpurged slug dirs; plus deny `Edit`+`Write` on `sources/calendar/*` and `sources/calendar/valea/*` (both non-recursive — stray top-level files; `valea/events/*.md` stays writable because those paths match neither glob). The snapshot is per-session-start like the rest of managedSettings; PermissionPolicy remains the authoritative gate for anything appearing mid-session.
 
 **Steps:**
 
-- [ ] **Step 1: tests first** — the mail deny-suite shape for calendar: unmounted session deny-not-ask (incl. casefold + NFD variants, symlink-resolved paths), in-scope write allowed ONLY under `valea/events/` (deny `.source`, `feed.ics`, `views/x.md`, `sources/calendar/stray.txt`), in-scope reads allowed on views + feed.ics, managedSettings mirror snapshot both postures, mounts appear/disappear on calendar.yaml existence, include_mounts accepts `"calendar"` + still rejects ICM keys, and the EMPTY-WORKSPACE BOOTSTRAP: fresh template workspace + opted-in session can create its first `valea/events/x.md` through the normal write path.
+- [ ] **Step 1: tests first** — the mail deny-suite shape for calendar: unmounted session deny-not-ask (incl. casefold + NFD variants, symlink-resolved paths), in-scope write allowed ONLY under `valea/events/` (deny `.source`, `feed.ics`, `views/x.md`, `sources/calendar/stray.txt`), in-scope reads allowed on views + feed.ics, managedSettings mirror snapshot both postures (in-scope: a configured slug's `views.tmp-crash/events/x.md` and a removed-but-unpurged leftover dir's files are BOTH write-denied by the enumeration; `valea/events/x.md` is not), mounts appear/disappear on calendar.yaml existence, include_mounts accepts `"calendar"` + still rejects ICM keys, and the EMPTY-WORKSPACE BOOTSTRAP: fresh template workspace + opted-in session can create its first `valea/events/x.md` through the normal write path.
 - [ ] **Step 2: implement; audit every `kind` site (list them in the report); green; full backend suite.**
 - [ ] **Step 3: commit** `feat(backend): calendar mount + permission tier with mail deny semantics (Spec F Task 5)`.
 
@@ -403,7 +406,28 @@ end
 
 **The 13 actions — implement EXACTLY the spec §RPC surface table (the brief includes the table verbatim).** Conventions from `Valea.Api.Mail`: string falsy keys, `generation` + `check_generation` on every mutating action, slug grammar validated before ANY I/O (`Settings.valid_slug?/1` — which already embeds the `valea` reservation), `url` argument `sensitive? true`, `list_calendar_events`' `zone` validated against the tz database (invalid → error, never a silent default). Mutating lifecycle actions run through `Valea.Calendar.Supervisor.lifecycle/1`. `purge_calendar_source_files` additionally requires typed `confirmation == slug` and refuses any non-configured-external target. `create/update/delete_valea_event` go through `Local.write/4` / `Local.delete/2` with `Local.valid_name?/1` first; delete takes typed `confirmation == name`; all three fire `{:calendar_local_changed}`. `enable_calendar_feed`/`rotate_calendar_feed_token` call `Settings.generate_feed_token/1` (Task 4) and return the plain token once.
 
-**`list_calendar_events` (pin, from the spec row):** half-open `[from, to)` interpreted in `zone`; zone boundaries resolved with the Task-1 DST rules; timed rows by OVERLAP (`occ_start < zone_end AND occ_end > zone_start`), all-day by date-range overlap `[start,end)` vs `[from,to)`; valea events merged live (`Local.list/1`, same overlap rules, timed events UTC-normalized); ordered chronologically IN `zone` — per local day: all-day rows first, then timed by local start; tagged shape (`all_day` boolean discriminates instants vs dates); every row carries `source` (`"valea"` for local, which also carries `path`).
+**`list_calendar_events` (pin, from the spec row):** half-open `[from, to)` interpreted in `zone`; zone boundaries resolved with the Task-1 DST rules; timed rows by OVERLAP (`occ_start < zone_end AND occ_end > zone_start`), all-day by date-range overlap `[start,end)` vs `[from,to)`; valea events merged live (`Local.list/1`, same overlap rules, timed events UTC-normalized); ordered chronologically IN `zone` — per local day: all-day rows first, then timed by local start.
+
+**THE occurrence wire schema (single source of truth — Task 7 consumes exactly this; string keys, snake_case, no camelCase translation, per the `Valea.Api.Mail` convention):**
+
+```
+CalendarOccurrence = {
+  "source":      string,                 // slug, or "valea"
+  "all_day":     boolean,                // the shape discriminator
+  "start":       string,                 // all_day=false: "YYYY-MM-DDTHH:MM:SSZ" (UTC)
+  "end":         string,                 //   all_day=true: "YYYY-MM-DD" plain dates, end EXCLUSIVE
+  "summary":     string,                 // external SUMMARY; valea `title` NORMALIZED to this key
+  "location":    string | null,
+  "status":      "confirmed" | "tentative" | "cancelled",
+  "description": string | null,          // valea: file body; external: HYDRATED at query time by
+                                         //   reading the view file body for rows in range (SQLite
+                                         //   stores NO description column — spec's pinned columns)
+  "view_path":   string | null,          // external rows: workspace-relative view file path
+  "path":        string | null           // valea rows: workspace-relative event file path
+}
+```
+
+RPC serialization tests assert this exact shape for one external timed, one external all-day, and one valea row.
 
 **Doctor:** per source, sequential, gated: `config_present` → `url_present` (keychain closure or env) → `reachable` (conditional GET through `Fetch`, reports status class + TLS) → `parse_ok` (parseable count + per-component notices) → `freshness` (last successful sync age vs 2× interval). Plus `feed_endpoint` (token configured + route answering — loopback self-request). Every check carries a copyable remedy; NO URL ever appears in any detail/remedy string.
 
@@ -429,7 +453,10 @@ end
 **Interfaces:**
 
 ```ts
-// calendar-shapes.ts — the adapter (spec §UI, verbatim contract):
+// calendar-shapes.ts — the adapter (spec §UI, verbatim contract).
+// CalendarOccurrence is EXACTLY Task 6's pinned wire schema (string keys, snake_case:
+// source / all_day / start / end / summary / location / status / description /
+// view_path / path) — type it from that block, and build test fixtures from it.
 export function occurrenceToGridEvents(row: CalendarOccurrence, hostZone: string):
   { segments: GridEvent[]; allDay: AllDayEntry[] }
 // TIMED rows: UTC instants → host-local wall time, split multi-day occurrences into one
