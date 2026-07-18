@@ -42,8 +42,16 @@ sources/calendar/
   unconditionally, so a crash anywhere between the swap and the derive
   self-heals at the next activation or pass; a failure BEFORE the swap
   leaves the previous snapshot and everything derived from it fully
-  intact. No cross-store transaction is needed because derived state is
-  never the authority.
+  intact. Derived state additionally carries a DERIVE MARKER
+  (`calendar_sync_state.derived_rev` = sha256 of the snapshot bytes +
+  the host zone name at derive time): EVERY pass — including a 304
+  `unchanged` — compares the marker against (current snapshot hash,
+  current host zone) and re-derives on mismatch, so a derivation
+  failure, a crash after the swap, or a host-zone change is repaired on
+  the next tick even when the feed itself sends 304s. The derive itself
+  is a per-source SQLite transaction plus a views-directory rebuild into
+  a tmp dir swapped in by rename. No cross-store transaction beyond
+  that is needed because derived state is never the authority.
 - `.source` binds the slug to its feed (host + URL fingerprint). A slug
   whose keychain URL no longer matches `.source` refuses to sync
   (`identity_mismatch`, resolved by purge) — same posture as mail's
@@ -140,10 +148,16 @@ this repo already owns its IMAP protocol core for the same reason). Scope:
   guess silently moves real appointments. VTIMEZONE component
   definitions are still not interpreted (the alias chain covers real
   provider feeds; a fixture proving otherwise widens the alias table,
-  not the parser). All index times are stored as UTC instants plus an
-  `all_day` flag (all-day events stored as dates; floating times are
-  resolved against the host zone AT DERIVE TIME and re-derived on every
-  pass, so a host-zone change corrects itself on the next sync).
+  not the parser). Local wall times at DST transitions resolve
+  DETERMINISTICALLY: an ambiguous time (clock rolled back) takes the
+  EARLIER UTC instant; a nonexistent time (clock jumped forward) takes
+  the first instant AFTER the gap — applied identically to DTSTART,
+  expansion, EXDATE/RDATE, and RECURRENCE-ID canonicalization, so
+  override identities can never diverge from occurrence identities. All
+  index times are stored as UTC instants plus an `all_day` flag
+  (all-day events stored as dates; floating times are resolved against
+  the host zone at derive time; the derive marker re-derives them when
+  the host zone changes).
 - Fail-soft per component: one malformed VEVENT is skipped with a notice;
   it never fails the feed. A feed that yields ZERO parseable events where
   the previous snapshot had events is treated as a failed fetch
@@ -215,9 +229,11 @@ Agenda: follow up on the workshop plan.
 
 - Validation is fail-closed (the DraftFile posture): unknown frontmatter
   keys rejected; control characters rejected in every field; `start` must
-  be < `end` (or `end` omitted for a 1-hour default; all-day: end date ≥
-  start date); dates must parse as ISO 8601 with offset or as plain dates
-  when `all_day`; body length capped (16 KB). A file that fails validation
+  be < `end` (`end` omitted → 1-hour default). All-day events: dates
+  only; `end` is EXCLUSIVE per RFC 5545 DATE-typed DTEND and must be
+  STRICTLY > `start` (`end` omitted → start + 1 day, one-day event);
+  the UI editor speaks inclusive dates and converts both ways. Dates
+  must parse as ISO 8601 with offset, or as plain dates when `all_day`; body length capped (16 KB). A file that fails validation
   is listed as `invalid` with its reason (UI + status), rendered NOWHERE
   (neither grid nor served feed). Symlinked/hard-linked entries are
   rejected unread (no-follow lstat, the drafts posture). No recurrence in
@@ -326,7 +342,7 @@ falsy-field string-key rule as elsewhere. External snake_case names:
 | `setup_calendar_source` | `source, name, generation` | `"saved" => true` (slug-validated; config write + supervisor rehash) |
 | `set_calendar_source_url` | `source, url (sensitive), generation` | `"accepted" => true` (HTTPS-only validation; RAM + used for `.source` claim) |
 | `remove_calendar_source` | `source, generation` | `"removed" => true` (config removal + engine stop; files stay) |
-| `purge_calendar_source_files` | `source, confirmation, generation` | `"purged" => true` (typed confirm = slug; refuses on healthy running engine) |
+| `purge_calendar_source_files` | `source, confirmation, generation` | `"purged" => true` (typed confirm = slug; SERIALIZED with sync: refuses while the source is still configured (`remove_calendar_source` first — the rehash stops its engine), awaits any in-flight pass task via the Supervisor, then deletes `sources/calendar/<slug>` (slug-validated + `Paths.resolve_real` containment) and clears its index + sync-state rows in the same operation — a degraded-but-polling engine can never resurrect a purged mirror) |
 | `calendar_sync_now` | `source, generation` | `"started" => true` |
 | `calendar_doctor` | `source, generation` | `"ok" =>, checks:` |
 | `list_calendar_events` | `from, to (ISO dates)` | `events: {:array, :map}` (occurrence rows; each carries source, and for valea events the file path) |
@@ -345,14 +361,25 @@ query — live-read, no watcher).
 ## UI
 
 - `/calendar` route: delete `placeholder-week.ts`; a `CalendarStore`
-  (accounts/window/events shape, push-wired like mail) feeds the existing
-  `WeekGrid`/`MonthGrid`/day view with merged real events, colored by
-  source (deterministic color from slug). The stale route comment about
-  the deleted approval queue is replaced. External events: read-only
-  (click → detail popover: title, time, location, source, description).
-  Valea events: same popover + Edit/Delete; a "New event" button opens
-  the small editor panel (title, start/end or all-day, location,
-  description) → `create_valea_event`.
+  (sources/window/events shape, push-wired like mail) holds the RPC
+  occurrence rows. The existing grid contract is NOT the RPC shape —
+  `calendar-shapes.ts` gains an explicit adapter,
+  `occurrenceToGridEvents(row, hostZone)`: converts UTC instants to
+  host-local wall time, splits multi-day occurrences into one grid
+  segment per local day (`day`/`startMin`/`endMin`), routes all-day
+  events to the grids' all-day lane (new — `WeekGrid`/`MonthGrid` gain
+  an all-day row), and maps kind: external+confirmed → `booked`,
+  external+tentative → `hold`, valea → `block` (CANCELLED occurrences
+  are already removed at expansion). `EventCard`/`WeekGrid`/`MonthGrid`
+  gain a selection callback prop (`onSelect(event)` — today they have
+  none); the route's placeholder rail is replaced by a source legend
+  (deterministic color per slug) + upcoming-events list. External
+  events: read-only (select → detail popover: title, local time,
+  location, source, description). Valea events: same popover +
+  Edit/Delete; a "New event" button opens the small editor panel
+  (title, start/end or all-day, location, description) →
+  `create_valea_event`. The stale route comment about the deleted
+  approval queue is replaced.
 - Setup panel: source list with per-source status/doctor/typed-confirm
   purge, add-source form (slug, name, URL → keychain via
   `keychainSet(workspaceId, "<slug>:ics", url)` then
@@ -393,7 +420,9 @@ disabled) are 404 without detail.
   fixture feeds captured from Google, iCloud, Infomaniak, and Outlook
   exports (committed under `test/fixtures/ics/`), including: a master
   with multiple overrides (distinct view paths, correct replacement), a
-  DST-boundary series with EXDATEs, Windows-TZID events, a
+  DST-boundary series with EXDATEs (both the ambiguous roll-back hour
+  and the nonexistent spring-forward hour, asserting the pinned
+  earlier-instant / after-gap choices), Windows-TZID events, a
   THISANDFUTURE override (whole series unsupported), and unsupported
   BYWEEKNO (no fabricated single occurrence).
 - Fetch: a scripted local HTTP(S) model server (the FakeImapServer
@@ -402,11 +431,16 @@ disabled) are 404 without detail.
   -page cases.
 - Engine: activation/identity binding, replace-mirror semantics (a
   shrunken feed removes rows/views), degraded-keeps-mirror, empty-feed
-  guard, single-flight, per-source isolation, and crash self-heal (kill
+  guard, single-flight, per-source isolation, crash self-heal (kill
   between the feed.ics swap and the derive → next activation converges
-  to the committed snapshot).
+  to the committed snapshot), stale-derive repair THROUGH a 304 (failed
+  derive + subsequent 304 pass → re-derive via the marker), host-zone
+  change re-derive, and purge-vs-degraded-engine serialization (purge
+  after remove during an in-flight pass → pass awaited, no
+  resurrection).
 - Local calendar: validation table (incl. control chars, symlinks,
-  date sanity), UID stability across edits, render escaping (agent text
+  date sanity, all-day exclusive-end incl. equal-dates rejection),
+  UID stability across edits, render escaping (agent text
   with ICS metacharacters stays inert), served-feed token
   (constant-time compare, rotate invalidates, no parameters honored).
 - Policy: the mail deny-suite shape for the calendar tier (unmounted
@@ -441,7 +475,9 @@ documented). No per-feed mounts (one calendar mount).
   `SessionSettings` (calendar tier; extract shared casefold helpers),
   `Valea.Cockpit` (+ calendar line), workspace events channel (+ three
   pushes), router (+ feed route), `frontend/src/routes/calendar/+page.svelte`
-  (real data; delete `placeholder-week.ts`), keychain docs (`<slug>:ics`),
+  (real data; delete `placeholder-week.ts`),
+  `frontend/src/lib/components/calendar/{calendar-shapes.ts,WeekGrid,MonthGrid,EventCard}`
+  (adapter, all-day lane, selection callbacks), keychain docs (`<slug>:ics`),
   `docs/ARCHITECTURE.md` (+ Calendar section), workspace template
   (`sources/calendar/valea/events/.gitkeep`).
 - **Deleted:** `frontend/src/lib/components/calendar/placeholder-week.ts`.
