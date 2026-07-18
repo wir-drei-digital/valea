@@ -44,7 +44,13 @@ sources/calendar/
   leaves the previous snapshot and everything derived from it fully
   intact. Derived state additionally carries a DERIVE MARKER in BOTH
   derived stores — the revision string `rev = sha256(snapshot bytes)
-  <> ":" <> host zone name`: the views tree is rebuilt into a tmp dir
+  <> ":" <> host zone name <> ":" <> window_from_date <> ":" <>
+  window_to_date`, where the window dates are TODAY'S concrete expansion
+  bounds (host-zone today ± the source's configured past/future days,
+  quantized to whole dates — so the rolling window advances the
+  revision once per day, and a stable feed answering 304 forever still
+  re-derives daily as events roll into or out of the window; a window
+  config change invalidates the same way): the views tree is rebuilt into a tmp dir
   CONTAINING a `views/.rev` file with `rev` and swapped in by rename
   FIRST; only then does a per-source SQLite transaction replace the
   occurrence rows and write `calendar_sync_state.derived_rev = rev`. A
@@ -468,7 +474,11 @@ disabled) are 404 without detail.
   derive + subsequent 304 pass → re-derive via the marker), the
   TWO-STORE completion checks (kill between the views swap and the
   SQLite commit → derived_rev mismatch → re-derive; and the inverse),
-  host-zone change re-derive, and purge-vs-degraded-engine
+  host-zone change re-derive, ROLLING-WINDOW re-derive (advance the
+  clock past the previous future boundary while the feed keeps
+  answering 304 → the day-quantized revision mismatches → occurrences
+  newly inside the window appear, expired ones leave), window-config
+  change re-derive, and purge-vs-degraded-engine
   serialization (purge after remove during an in-flight pass → pass
   awaited, no resurrection).
 - Local calendar: validation table (incl. control chars, symlinks,
