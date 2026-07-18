@@ -207,17 +207,20 @@ defmodule Valea.Calendar.Settings do
   @spec put_source(root, slug, name) :: :ok | {:error, term()}
   @spec remove_source(root, slug) :: :ok | {:error, term()}
   @spec generate_feed_token(root) :: {:ok, plain_token :: String.t()} | {:error, term()}
-  # ONE canonical v1 rewrite path shared by all three mutations: read current state,
-  # apply the change, write the whole v1 document. On a VALID v1 file, put_source/
-  # remove_source PRESERVE feed.token_hash and the other sources; generate_feed_token
-  # PRESERVES sources (32 bytes :crypto.strong_rand_bytes, Base.url_encode64
-  # padding: false; persists ONLY the sha256 hex; overwrite = rotation; plain token
-  # returned exactly once). On an INVALID or legacy-shaped file, any of the three
-  # replaces it WHOLESALE with a fresh v1 carrying only its own change (spec §Config:
-  # "the first setup_calendar_source or enable_calendar_feed rewrites the file
-  # wholesale to v1" — nothing in a non-v1 file is real data to preserve). load/1
-  # itself NEVER rewrites anything except the exact legacy placeholder below —
-  # the read path stays non-destructive. Tasks 4 and 6 are consumers.
+  # ONE canonical v1 rewrite path: read current state, apply the change, write the
+  # whole v1 document. On a VALID v1 file, put_source/remove_source PRESERVE
+  # feed.token_hash and the other sources; generate_feed_token PRESERVES sources
+  # (32 bytes :crypto.strong_rand_bytes, Base.url_encode64 padding: false; persists
+  # ONLY the sha256 hex; overwrite = rotation; plain token returned exactly once).
+  # On an INVALID or legacy-shaped file, destructive convergence is authorized for
+  # EXACTLY the spec's two entry points and nothing else (spec §Config: "the first
+  # setup_calendar_source or enable_calendar_feed rewrites the file wholesale to
+  # v1"): put_source and generate_feed_token replace it WHOLESALE with a fresh v1
+  # carrying only their own change; remove_source is NON-destructive — it returns
+  # {:error, {:invalid, reason}} and leaves the file byte-identical (there is no
+  # v1 source to remove in a non-v1 file). load/1 itself NEVER rewrites anything
+  # except the exact legacy placeholder below — the read path stays non-destructive.
+  # Tasks 4 and 6 are consumers.
   @spec env_var(slug :: String.t()) :: String.t()   # "VALEA_CAL_URL_" <> upcased, - → _
 end
 
@@ -246,7 +249,7 @@ end
 
 **Steps:**
 
-- [ ] **Step 1: tests first.** `fetch_test.exs` against `FakeFeedServer` (scripted TCP like FakeImapServer, plain HTTP locally + a TLS scenario): 200-with-etag, 304, redirect chain of 3 followed / 4 → `:redirect_limit`, cross-origin redirect rejected, oversize aborted, timeout, HTML-error-page bodies pass through (guarding is Ics/engine's job). SSRF unit tests hit the address-classifier directly (private/loopback/link-local/ULA/reserved v4+v6). `settings_test.exs`: v1 round-trip, defaults, interval floor, bad slug, `valea` slug → invalid, EXACT legacy placeholder → rewritten-once + notice, NEGATIVE convergence cases (empty document, subset of legacy keys, legacy keys with altered values, extra key added) → `{:invalid, _}` with file untouched, junk → invalid, absent → `:absent`, `generate_feed_token/1` (token is 32 bytes decoded, base64url no padding, ONLY the sha256 hex lands in the file, second call rotates the hash), MUTATION-INTERACTION cases (put_source/remove_source after a token exists → token_hash preserved; generate_feed_token with sources configured → sources preserved; EACH of put_source, remove_source, AND generate_feed_token on an invalid-config file AND on a legacy-shaped file → wholesale fresh v1 carrying only its own change, no inherited sources or token hash), per-entry invalid split (one broken entry lands in `invalid` while valid entries load; a `valea` source key → whole-file `{:error, {:invalid, _}}`). `store_test.exs`: replace_source! transactional replace, derived_rev round-trip, mark_error preserves rows, clear_source!, overlap query truth table (timed straddling boundaries, all-day exclusive end, mixed).
+- [ ] **Step 1: tests first.** `fetch_test.exs` against `FakeFeedServer` (scripted TCP like FakeImapServer, plain HTTP locally + a TLS scenario): 200-with-etag, 304, redirect chain of 3 followed / 4 → `:redirect_limit`, cross-origin redirect rejected, oversize aborted, timeout, HTML-error-page bodies pass through (guarding is Ics/engine's job). SSRF unit tests hit the address-classifier directly (private/loopback/link-local/ULA/reserved v4+v6). `settings_test.exs`: v1 round-trip, defaults, interval floor, bad slug, `valea` slug → invalid, EXACT legacy placeholder → rewritten-once + notice, NEGATIVE convergence cases (empty document, subset of legacy keys, legacy keys with altered values, extra key added) → `{:invalid, _}` with file untouched, junk → invalid, absent → `:absent`, `generate_feed_token/1` (token is 32 bytes decoded, base64url no padding, ONLY the sha256 hex lands in the file, second call rotates the hash), MUTATION-INTERACTION cases (put_source/remove_source after a token exists → token_hash preserved; generate_feed_token with sources configured → sources preserved; EACH of put_source and generate_feed_token on an invalid-config file AND on a legacy-shaped file → wholesale fresh v1 carrying only its own change, no inherited sources or token hash; remove_source on the SAME invalid and legacy-shaped files → `{:error, {:invalid, _}}` with the file byte-identical), per-entry invalid split (one broken entry lands in `invalid` while valid entries load; a `valea` source key → whole-file `{:error, {:invalid, _}}`). `store_test.exs`: replace_source! transactional replace, derived_rev round-trip, mark_error preserves rows, clear_source!, overlap query truth table (timed straddling boundaries, all-day exclusive end, mixed).
 - [ ] **Step 2: migration + resources + implementations** until green. NOTE: `FakeFeedServer`'s TLS side can reuse the dovecot/test cert helpers if present; if standing up TLS locally is disproportionate, cover TLS-failure via an `:ssl` error injection on the client seam and say so in the report.
 - [ ] **Step 3: full backend suite; commit** `feat(backend): calendar fetch/settings/store foundations (Spec F Task 2)`.
 
