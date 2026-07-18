@@ -42,16 +42,21 @@ sources/calendar/
   unconditionally, so a crash anywhere between the swap and the derive
   self-heals at the next activation or pass; a failure BEFORE the swap
   leaves the previous snapshot and everything derived from it fully
-  intact. Derived state additionally carries a DERIVE MARKER
-  (`calendar_sync_state.derived_rev` = sha256 of the snapshot bytes +
-  the host zone name at derive time): EVERY pass — including a 304
-  `unchanged` — compares the marker against (current snapshot hash,
-  current host zone) and re-derives on mismatch, so a derivation
-  failure, a crash after the swap, or a host-zone change is repaired on
-  the next tick even when the feed itself sends 304s. The derive itself
-  is a per-source SQLite transaction plus a views-directory rebuild into
-  a tmp dir swapped in by rename. No cross-store transaction beyond
-  that is needed because derived state is never the authority.
+  intact. Derived state additionally carries a DERIVE MARKER in BOTH
+  derived stores — the revision string `rev = sha256(snapshot bytes)
+  <> ":" <> host zone name`: the views tree is rebuilt into a tmp dir
+  CONTAINING a `views/.rev` file with `rev` and swapped in by rename
+  FIRST; only then does a per-source SQLite transaction replace the
+  occurrence rows and write `calendar_sync_state.derived_rev = rev`. A
+  derive counts as complete only when `views/.rev` AND `derived_rev`
+  both equal the current (snapshot, host zone) revision; EVERY pass —
+  including a 304 `unchanged` — and every activation checks BOTH and
+  re-derives on any mismatch, so a derivation failure, a crash between
+  the two stores' swaps, or a host-zone change is repaired on the next
+  tick even when the feed itself sends 304s. Queries meanwhile see the
+  previous committed rows (SQLite transaction) and the previous views
+  tree until their respective swap/commit — never a half-written
+  mixture within either store.
 - `.source` binds the slug to its feed (host + URL fingerprint). A slug
   whose keychain URL no longer matches `.source` refuses to sync
   (`identity_mismatch`, resolved by purge) — same posture as mail's
@@ -369,7 +374,7 @@ falsy-field string-key rule as elsewhere. External snake_case names:
 | `purge_calendar_source_files` | `source, confirmation, generation` | `"purged" => true` (typed confirm = slug; runs THROUGH the Supervisor's per-slug lifecycle serialization: refuses while the source is still configured (`remove_calendar_source` first — the rehash stops its engine), awaits any in-flight pass task, re-checks the slug is still unconfigured, then deletes `sources/calendar/<slug>` (slug-validated + `Paths.resolve_real` containment) and clears its index + sync-state rows in the same operation — a degraded-but-polling engine can never resurrect a purged mirror) |
 | `calendar_sync_now` | `source, generation` | `"started" => true` |
 | `calendar_doctor` | `source, generation` | `"ok" =>, checks:` |
-| `list_calendar_events` | `from, to (ISO dates)` | `events: {:array, :map}` (occurrence rows in the tagged shape: `all_day: false` → UTC instants, `all_day: true` → plain dates with exclusive end; each carries source, and for valea events the file path) |
+| `list_calendar_events` | `from, to (ISO dates), zone (IANA name)` | `events: {:array, :map}` — the range is the half-open interval `[from, to)` interpreted in `zone` (the client's display zone, validated against the tz database). Timed rows match by OVERLAP: `occ_start < zone_end AND occ_end > zone_start` (never a start-only filter — an event straddling the range boundary is included); all-day rows match by date-range overlap of `[start, end)` against `[from, to)`. Rows come back in chronological order IN `zone` (per day: all-day rows first, then timed by local start), valea live-read events merged under the same rule. Tagged shape: `all_day: false` → UTC instants, `all_day: true` → plain dates with exclusive end; each row carries source, and for valea events the file path |
 | `create_valea_event` | `name, title, start, end, all_day, location, status, description, generation` | `"created" =>, path:` (refuses existing name; `name` is a bare basename without extension — separator/traversal rejected before path construction, the get_mail_draft posture) |
 | `update_valea_event` | `name, title, start, end, all_day, location, status, description, generation` | `"updated" => true` (full-replace write of the named file) |
 | `delete_valea_event` | `name, confirmation, generation` | `"deleted" => true` (typed confirm = name) |
@@ -460,10 +465,12 @@ disabled) are 404 without detail.
   guard, single-flight, per-source isolation, crash self-heal (kill
   between the feed.ics swap and the derive → next activation converges
   to the committed snapshot), stale-derive repair THROUGH a 304 (failed
-  derive + subsequent 304 pass → re-derive via the marker), host-zone
-  change re-derive, and purge-vs-degraded-engine serialization (purge
-  after remove during an in-flight pass → pass awaited, no
-  resurrection).
+  derive + subsequent 304 pass → re-derive via the marker), the
+  TWO-STORE completion checks (kill between the views swap and the
+  SQLite commit → derived_rev mismatch → re-derive; and the inverse),
+  host-zone change re-derive, and purge-vs-degraded-engine
+  serialization (purge after remove during an in-flight pass → pass
+  awaited, no resurrection).
 - Local calendar: validation table (incl. control chars, symlinks,
   date sanity, all-day exclusive-end incl. equal-dates rejection),
   UID stability across edits, render escaping (agent text
@@ -476,7 +483,11 @@ disabled) are 404 without detail.
 - FE: vitest for CalendarStore + shapes (merging, coloring, editor
   round-trip, feed block).
 - RPC: the mail_rpc_test shape for every action incl. typed confirms and
-  generation guards.
+  generation guards; `list_calendar_events` range tests: a timed event
+  straddling the range start is included (overlap, not start-filter), a
+  UTC-date-vs-local-date boundary event lands on the correct local day,
+  all-day exclusive-end overlap, and mixed ordering (all-day before
+  timed per local day).
 
 ## Non-goals
 
