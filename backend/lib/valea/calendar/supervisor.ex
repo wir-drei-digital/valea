@@ -42,7 +42,10 @@ defmodule Valea.Calendar.Supervisor do
   @doc """
   Serializes `fun` through the one supervisor process (generous timeout).
   Re-entrant: called from INSIDE a lifecycle fun it runs directly instead
-  of deadlocking on a self-call.
+  of deadlocking on a self-call. Besides the API-layer mutations,
+  `Valea.Calendar.Settings.load/1` routes its legacy-placeholder
+  convergence write through here (with an in-section re-read), so no
+  stale reader can overwrite a serialized config mutation.
   """
   @spec lifecycle((-> any())) :: any()
   def lifecycle(fun) when is_function(fun, 0) do

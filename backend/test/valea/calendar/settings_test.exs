@@ -4,6 +4,7 @@ defmodule Valea.Calendar.SettingsTest do
   import ExUnit.CaptureLog
 
   alias Valea.Calendar.Settings
+  alias Valea.Calendar.Supervisor, as: CalSupervisor
 
   @v1_empty "version: 1\nsources: {}\n"
 
@@ -237,6 +238,104 @@ defmodule Valea.Calendar.SettingsTest do
       write!(root, bytes)
       assert {:error, {:invalid, _}} = Settings.load(root)
       assert read!(root) == bytes
+    end
+  end
+
+  describe "load/1 — convergence vs concurrent lifecycle mutations" do
+    # The Codex-review race: a reader (calendar_status) sees the exact
+    # legacy placeholder, then a SERIALIZED mutation (setup_calendar_source
+    # / generate_feed_token, both inside CalSupervisor.lifecycle/1) writes
+    # a real v1 config — the stale reader must NOT rename v1-empty over
+    # it. Deterministic, no sleeps: the serializer is held open by the
+    # test, the loader provably parks behind it (its call is visible in
+    # the serializer's mailbox, which implies its stale read completed),
+    # the mutation lands, then the serializer is released.
+    test "a stale legacy read cannot overwrite a setup serialized in between", %{root: root} do
+      # Start the real serializer BEFORE planting the placeholder — its
+      # init must not converge the file ahead of the test.
+      start_supervised!({CalSupervisor, %{root: root, generation: 1}})
+      sup = Process.whereis(CalSupervisor)
+      write!(root, @legacy_placeholder)
+
+      test_pid = self()
+
+      holder =
+        Task.async(fn ->
+          CalSupervisor.lifecycle(fn ->
+            send(test_pid, :held)
+
+            receive do
+              :release -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :held
+
+      # The stale reader: the file is untouched until put_source below,
+      # so this load reads the EXACT placeholder, then blocks on the
+      # held serializer before it can write.
+      loader = Task.async(fn -> Settings.load(root) end)
+      await_lifecycle_queued(sup)
+
+      # The serialized mutation lands while the stale reader is parked.
+      assert :ok = Settings.put_source(root, "work", "Work")
+
+      send(sup, :release)
+      assert :ok = Task.await(holder)
+
+      # The stale convergence no-oped and loaded what actually won.
+      assert {:ok, %Settings{sources: %{"work" => %{name: "Work"}}}} = Task.await(loader)
+      assert {:ok, %Settings{sources: sources}} = Settings.load(root)
+      assert Map.keys(sources) == ["work"]
+      refute read!(root) == @v1_empty
+    end
+
+    test "without a supervisor, racing loads both converge with no torn writes", %{root: root} do
+      # Fallback path: no serializer process — each load re-reads before
+      # its rename and writes through a UNIQUE temp name.
+      assert Process.whereis(CalSupervisor) == nil
+      write!(root, @legacy_placeholder)
+
+      [a, b] = for _i <- 1..2, do: Task.async(fn -> Settings.load(root) end)
+
+      assert {:ok, %Settings{sources: sources_a, feed_token_hash: nil}} = Task.await(a)
+      assert {:ok, %Settings{sources: sources_b, feed_token_hash: nil}} = Task.await(b)
+      assert sources_a == %{}
+      assert sources_b == %{}
+
+      # Exactly the converged v1-empty document, byte-for-byte — and no
+      # temp-file debris (every unique tmp was renamed into place).
+      assert read!(root) == @v1_empty
+      assert Path.wildcard(Path.join(root, "config/calendar.yaml.tmp*")) == []
+    end
+  end
+
+  # Spin (a pure state check — never proceeds early, no sleeps) until a
+  # lifecycle call is parked in the serializer's mailbox. GenServer.call
+  # enqueues its request message before blocking, so once the call is
+  # visible the loader has necessarily finished its stale read.
+  defp await_lifecycle_queued(sup, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 5_000
+
+    {:messages, messages} = Process.info(sup, :messages)
+
+    queued? =
+      Enum.any?(messages, fn
+        {:"$gen_call", _from, {:lifecycle, _fun}} -> true
+        _other -> false
+      end)
+
+    cond do
+      queued? ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("Settings.load never queued behind the held lifecycle serializer")
+
+      true ->
+        :erlang.yield()
+        await_lifecycle_queued(sup, deadline)
     end
   end
 

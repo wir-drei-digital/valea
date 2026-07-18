@@ -28,6 +28,16 @@ defmodule Valea.Calendar.Settings do
   `{:error, {:invalid, reason}}` and is never rewritten by the read
   path.
 
+  The convergence WRITE is itself a config mutation and participates in
+  the same serialization as every other one: it runs inside
+  `Valea.Calendar.Supervisor.lifecycle/1` whenever that serializer is up
+  (directly otherwise — unit tests, pre-runtime) and RE-READS the file
+  inside the serialized section, writing v1-empty only if the on-disk
+  document is STILL the exact placeholder. A stale reader that saw the
+  placeholder before a serialized `put_source/3` or
+  `generate_feed_token/1` landed therefore no-ops instead of renaming
+  empty bytes over the newer configuration (see `converge_legacy/1`).
+
   ## One canonical v1 rewrite path
 
   Each mutator reads the current state, applies its one change, and
@@ -103,19 +113,17 @@ defmodule Valea.Calendar.Settings do
   Loads and validates `<root>/config/calendar.yaml`. `{:error, :absent}`
   when the file is missing; `{:error, {:invalid, reason}}` for any non-v1
   document except the exact legacy placeholder, which is converged to
-  v1-empty once (logged notice) and loads as zero sources.
+  v1-empty once (logged notice) and loads as zero sources. The
+  convergence write is serialized against the lifecycle mutations and
+  re-checked on disk there — a load that raced a concurrent setup or
+  token rotation no-ops and returns whatever configuration won (see the
+  moduledoc).
   """
   @spec load(String.t()) :: {:ok, t()} | {:error, :absent} | {:error, {:invalid, String.t()}}
   def load(root) when is_binary(root) do
     case read_doc(root) do
       {:ok, doc} when doc == @legacy_placeholder ->
-        atomic_write!(yaml_path(root), @v1_empty)
-
-        Logger.info(
-          "config/calendar.yaml: exact legacy placeholder detected — converged to v1 (empty sources)"
-        )
-
-        {:ok, %Settings{}}
+        converge_legacy(root)
 
       {:ok, doc} ->
         build(doc)
@@ -260,6 +268,72 @@ defmodule Valea.Calendar.Settings do
     end
   end
 
+  # -- legacy convergence -----------------------------------------------------
+
+  # The convergence write must not race the serialized lifecycle
+  # mutations: a `calendar_status` load that saw the placeholder could
+  # otherwise rename stale v1-empty bytes over a `setup_calendar_source`
+  # or `generate_feed_token` that landed in between (both run inside
+  # `Valea.Calendar.Supervisor.lifecycle/1`). So the write runs inside
+  # that same serializer whenever the supervisor process is up —
+  # `lifecycle/1` is re-entrant, so `load/1` calls from within lifecycle'd
+  # operations (rehash, purge, supervisor init) call straight through
+  # without deadlocking — and the document is RE-READ inside the
+  # serialized section: only if it is STILL the exact placeholder does
+  # the v1-empty write happen. A stale reader becomes a no-op and loads
+  # whatever actually won. Without a supervisor (unit tests, pre-runtime)
+  # the same re-read-guarded write runs directly.
+  defp converge_legacy(root) do
+    case serialize_through_lifecycle(fn -> converge_if_still_placeholder(root) end) do
+      # `lifecycle/1` degrades a raising fun to this typed error; a
+      # convergence-write failure is a disk error and load's contract is
+      # to raise on those (as the direct `atomic_write!/2` path does).
+      {:error, {:lifecycle_failed, message}} ->
+        raise "config/calendar.yaml legacy convergence failed: #{message}"
+
+      result ->
+        result
+    end
+  end
+
+  defp converge_if_still_placeholder(root) do
+    case read_doc(root) do
+      {:ok, doc} when doc == @legacy_placeholder ->
+        atomic_write!(yaml_path(root), @v1_empty)
+
+        Logger.info(
+          "config/calendar.yaml: exact legacy placeholder detected — converged to v1 (empty sources)"
+        )
+
+        {:ok, %Settings{}}
+
+      # A serialized mutation replaced the placeholder between the first
+      # read and acquiring the serializer — load what won instead.
+      {:ok, doc} ->
+        build(doc)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp serialize_through_lifecycle(fun) do
+    if is_pid(Process.whereis(Valea.Calendar.Supervisor)) do
+      try do
+        Valea.Calendar.Supervisor.lifecycle(fun)
+      catch
+        # The supervisor exited between the whereis check and the call
+        # (workspace closing) — the direct re-read-guarded write is all
+        # that's left, and nothing else is mutating during teardown.
+        :exit, {:noproc, {GenServer, :call, _args}} -> fun.()
+        :exit, {:shutdown, {GenServer, :call, _args}} -> fun.()
+        :exit, {{:shutdown, _reason}, {GenServer, :call, _args}} -> fun.()
+      end
+    else
+      fun.()
+    end
+  end
+
   # -- file I/O ---------------------------------------------------------------
 
   defp yaml_path(root), do: Path.join(root, "config/calendar.yaml")
@@ -289,9 +363,13 @@ defmodule Valea.Calendar.Settings do
     atomic_write!(yaml_path(root), render(state))
   end
 
+  # Unique per-write temp name (the `Valea.Calendar.Source` pattern): a
+  # shared fixed `.tmp` would let one writer rename another writer's
+  # half-written bytes into place; with a unique name every rename
+  # installs a fully written document wholesale.
   defp atomic_write!(path, bytes) do
     File.mkdir_p!(Path.dirname(path))
-    tmp = path <> ".tmp"
+    tmp = path <> ".tmp-#{System.unique_integer([:positive])}"
     File.write!(tmp, bytes)
     File.rename!(tmp, path)
   end
