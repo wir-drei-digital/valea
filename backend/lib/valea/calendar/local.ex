@@ -48,20 +48,35 @@ defmodule Valea.Calendar.Local do
 
   ## Write serialization
 
-  `write/4` and `delete/2` are invoked directly by concurrent RPCs, so
+  `write/5` and `delete/3` are invoked directly by concurrent RPCs, so
   their disk sections (mode check through rename/rm) run inside
-  `Valea.Calendar.Supervisor.lifecycle/1` whenever that serializer is up
-  (directly otherwise — unit tests, pre-runtime), the
-  `Valea.Calendar.Settings` legacy-convergence posture: the
-  `:create`-refuses-existing / `:update`-requires-existing check is
-  RE-EVALUATED inside the serialized section, so two racing creates of
-  one name resolve to exactly one `{:ok, _}` and one `{:error, :exists}`
-  instead of both "succeeding". `lifecycle/1` is re-entrant, so a write
-  issued from within a lifecycle'd operation calls straight through
-  without deadlocking. Each write installs through a UNIQUE hidden temp
-  name (removed on failure), so even the unserialized fallback can never
-  rename another writer's bytes or leave debris. `list/1` stays
-  lock-free — live reads, agent-written files are the API there.
+  `Valea.Calendar.Supervisor.lifecycle/1`, the `Valea.Calendar.Settings`
+  legacy-convergence posture: the `:create`-refuses-existing /
+  `:update`-requires-existing check is RE-EVALUATED inside the
+  serialized section, so two racing creates of one name resolve to
+  exactly one `{:ok, _}` and one `{:error, :exists}` instead of both
+  "succeeding". There is NO unserialized fallback: when the serializer
+  is not running (no open workspace, mid-teardown) mutations refuse with
+  `{:error, :not_running}` — a stale RPC captured before a workspace
+  switch can never write the old root behind the lock's back, and a
+  serializer that dies out from under a queued call surfaces the same
+  refusal instead of degrading to a direct write.
+
+  The optional `verify:` hook (a zero-arity closure returning
+  `{:ok, root}` — the root to mutate — or `{:error, reason}`) runs
+  FIRST, INSIDE the serialized section, after any queued mutation ahead
+  of it: `Valea.Api.Calendar` passes the workspace generation check plus
+  the live root resolution there, so a stale RPC that reaches a NEW
+  workspace's serializer fails its generation check before touching
+  disk. Absent, the positional `root` is used unchanged (internal/test
+  callers).
+
+  `lifecycle/1` is re-entrant, so a write issued from within a
+  lifecycle'd operation calls straight through without deadlocking. Each
+  write installs through a UNIQUE hidden temp name (removed on failure),
+  so a crashed writer can never rename another writer's bytes or leave
+  visible debris. `list/1` stays lock-free — live reads, agent-written
+  files are the API there.
   """
 
   alias Valea.Paths
@@ -182,15 +197,25 @@ defmodule Valea.Calendar.Local do
   `:update` requires one (`{:error, :not_found}`) — both re-checked
   inside the lifecycle-serialized disk section (moduledoc §Write
   serialization), so concurrent writes of one name cannot both pass.
+
+  `opts` takes `verify:` (moduledoc §Write serialization): a zero-arity
+  closure run FIRST, INSIDE the serialized section, returning
+  `{:ok, root}` (the root actually mutated) or `{:error, reason}`
+  (propagated, nothing written). Absent, `root` is used unchanged.
+  Without a running `Valea.Calendar.Supervisor` the write refuses
+  `{:error, :not_running}` — there is no unserialized fallback.
   """
-  @spec write(String.t(), String.t(), map(), :create | :update) ::
-          {:ok, String.t()} | {:error, :exists | :not_found | {:invalid, String.t()}}
-  def write(root, name, attrs, mode)
-      when is_binary(root) and is_map(attrs) and mode in [:create, :update] do
+  @spec write(String.t(), String.t(), map(), :create | :update, keyword()) ::
+          {:ok, String.t()}
+          | {:error, :exists | :not_found | :not_running | {:invalid, String.t()} | term()}
+  def write(root, name, attrs, mode, opts \\ [])
+      when is_binary(root) and is_map(attrs) and mode in [:create, :update] and is_list(opts) do
     with :ok <- require_valid_name(name),
          {:ok, raw, body} <- attrs_to_raw(attrs),
          {:ok, _fields} <- wrap_invalid(validate(raw, body)) do
-      serialized(fn -> checked_write(root, name, raw, body, mode) end)
+      serialized(root, opts, fn verified_root ->
+        checked_write(verified_root, name, raw, body, mode)
+      end)
     end
   end
 
@@ -198,12 +223,15 @@ defmodule Valea.Calendar.Local do
   Deletes `<name>.md`. `{:error, :not_found}` for an invalid name (never
   path-constructed), a missing file, or an entry that fails containment
   (a planted symlink is refused, not followed — remove it by hand). The
-  disk section is lifecycle-serialized like `write/4`'s.
+  disk section is lifecycle-serialized like `write/5`'s, `opts` takes
+  the same `verify:` hook, and without a running serializer the delete
+  refuses `{:error, :not_running}` — no unserialized fallback.
   """
-  @spec delete(String.t(), String.t()) :: :ok | {:error, :not_found}
-  def delete(root, name) when is_binary(root) do
+  @spec delete(String.t(), String.t(), keyword()) ::
+          :ok | {:error, :not_found | :not_running | term()}
+  def delete(root, name, opts \\ []) when is_binary(root) and is_list(opts) do
     if valid_name?(name) do
-      serialized(fn -> checked_delete(root, name) end)
+      serialized(root, opts, fn verified_root -> checked_delete(verified_root, name) end)
     else
       {:error, :not_found}
     end
@@ -531,7 +559,7 @@ defmodule Valea.Calendar.Local do
 
   # -- body ---------------------------------------------------------------------
 
-  # The description is the body with trailing newlines trimmed (write/4
+  # The description is the body with trailing newlines trimmed (write/5
   # composes them back), capped at 16384 bytes; newlines and tabs are the
   # only control characters a body may carry.
   defp validate_body(body) do
@@ -553,7 +581,7 @@ defmodule Valea.Calendar.Local do
 
   # -- the write path -----------------------------------------------------------
 
-  # The disk section of write/4 — everything that must not interleave
+  # The disk section of write/5 — everything that must not interleave
   # with another writer of the same name: the events-dir check, the
   # containment re-check, the mode check, and the temp-write + rename.
   # Runs inside serialized/1, so the mode check is authoritative at
@@ -568,7 +596,7 @@ defmodule Valea.Calendar.Local do
     end
   end
 
-  # The disk section of delete/2 (the name is grammar-validated by the
+  # The disk section of delete/3 (the name is grammar-validated by the
   # caller, so no path was ever constructed from a bad one).
   defp checked_delete(root, name) do
     with {:ok, %File.Stat{type: :directory}} <- File.lstat(Path.join(root, @events_rel)),
@@ -606,39 +634,54 @@ defmodule Valea.Calendar.Local do
     end
   end
 
-  # Serializes a disk section through `Valea.Calendar.Supervisor.lifecycle/1`
-  # whenever that process is up (directly otherwise). `lifecycle/1`
-  # degrades a raising fun to `{:error, {:lifecycle_failed, message}}`;
-  # a disk failure here is re-raised, preserving write/4's and delete/2's
-  # raise-on-disk-error contract (the direct path raises in place). The
-  # funs' own returns never carry that shape, so the match is unambiguous.
-  defp serialized(fun) do
-    case serialize_through_lifecycle(fun) do
+  # Serializes a disk section through `Valea.Calendar.Supervisor.lifecycle/1`.
+  # The `verify:` closure (default: hand back the positional root) runs
+  # FIRST, INSIDE the serialized section — after any queued mutation
+  # ahead of it — and only its `{:ok, root}` reaches the disk section, so
+  # a stale caller's generation check cannot pass against a root it
+  # captured before a workspace switch. `lifecycle/1` degrades a raising
+  # fun to `{:error, {:lifecycle_failed, message}}`; a disk failure here
+  # is re-raised, preserving write/5's and delete/3's raise-on-disk-error
+  # contract. The funs' own returns never carry that shape, so the match
+  # is unambiguous.
+  defp serialized(root, opts, fun) do
+    verify = Keyword.get(opts, :verify, fn -> {:ok, root} end)
+
+    result =
+      serialize_through_lifecycle(fn ->
+        with {:ok, verified_root} <- verify.() do
+          fun.(verified_root)
+        end
+      end)
+
+    case result do
       {:error, {:lifecycle_failed, message}} ->
         raise "valea calendar event mutation failed: #{message}"
 
-      result ->
-        result
+      other ->
+        other
     end
   end
 
-  # The `Valea.Calendar.Settings.serialize_through_lifecycle/1` shape:
-  # `lifecycle/1` is re-entrant (a fun already running inside the
-  # supervisor process calls straight through), and a supervisor that
-  # exits between the whereis check and the call (workspace closing)
-  # degrades to the direct path — nothing else is mutating during
-  # teardown.
+  # The `Valea.Calendar.Settings.serialize_through_lifecycle/1` shape,
+  # MINUS the direct fallback: `lifecycle/1` is re-entrant (a fun already
+  # running inside the supervisor process calls straight through), but a
+  # serializer that is not running — or that exits between the whereis
+  # check and the call, or out from under the queued call (workspace
+  # closing) — REFUSES `{:error, :not_running}` instead of degrading to
+  # an unserialized direct write: a stale RPC must never mutate a root it
+  # resolved before a workspace switch behind the lock's back.
   defp serialize_through_lifecycle(fun) do
     if is_pid(Process.whereis(Valea.Calendar.Supervisor)) do
       try do
         Valea.Calendar.Supervisor.lifecycle(fun)
       catch
-        :exit, {:noproc, {GenServer, :call, _args}} -> fun.()
-        :exit, {:shutdown, {GenServer, :call, _args}} -> fun.()
-        :exit, {{:shutdown, _reason}, {GenServer, :call, _args}} -> fun.()
+        :exit, {:noproc, {GenServer, :call, _args}} -> {:error, :not_running}
+        :exit, {:shutdown, {GenServer, :call, _args}} -> {:error, :not_running}
+        :exit, {{:shutdown, _reason}, {GenServer, :call, _args}} -> {:error, :not_running}
       end
     else
-      fun.()
+      {:error, :not_running}
     end
   end
 
@@ -647,11 +690,11 @@ defmodule Valea.Calendar.Local do
   end
 
   # The validation table speaks bare reason strings (the listing's
-  # vocabulary); write/4's contract wraps them as `{:invalid, reason}`.
+  # vocabulary); write/5's contract wraps them as `{:invalid, reason}`.
   defp wrap_invalid({:ok, _fields} = ok), do: ok
   defp wrap_invalid({:error, reason}), do: {:error, {:invalid, reason}}
 
-  # write/4 may bootstrap the directory (mkdir_p), but an EXISTING entry
+  # write/5 may bootstrap the directory (mkdir_p), but an EXISTING entry
   # at that path that is not a real directory is refused, matching
   # list/1's no-follow posture.
   defp ensure_events_dir(root) do

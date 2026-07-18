@@ -1,13 +1,13 @@
 defmodule Valea.Calendar.LocalTest do
-  # async: false — the concurrent-write regression tests start the
-  # globally-named Valea.Calendar.Supervisor (the settings_test posture).
+  # async: false — the write/delete tests start the globally-named
+  # Valea.Calendar.Supervisor (the settings_test posture).
   use ExUnit.Case, async: false
 
   alias Valea.Calendar.Local
   alias Valea.Calendar.Local.Event
   alias Valea.Calendar.Supervisor, as: CalSupervisor
 
-  setup do
+  setup context do
     root =
       Path.join(
         System.tmp_dir!(),
@@ -16,6 +16,14 @@ defmodule Valea.Calendar.LocalTest do
 
     File.mkdir_p!(Path.join(root, "sources/calendar/valea/events"))
     on_exit(fn -> File.rm_rf!(root) end)
+
+    # Mutations REFUSE without the serializer (no unserialized fallback),
+    # so write/delete tests run with the supervisor up; the tests pinning
+    # the no-supervisor refusal opt out via @tag :no_supervisor.
+    unless context[:no_supervisor] do
+      start_supervised!({CalSupervisor, %{root: root, generation: 1}})
+    end
+
     {:ok, root: root}
   end
 
@@ -484,7 +492,7 @@ defmodule Valea.Calendar.LocalTest do
     end
   end
 
-  describe "write/4" do
+  describe "write/5" do
     test "create writes a valid file that round-trips through list", %{root: root} do
       assert {:ok, "sources/calendar/valea/events/coffee.md"} =
                Local.write(
@@ -605,7 +613,7 @@ defmodule Valea.Calendar.LocalTest do
     end
   end
 
-  describe "write/4 — concurrent writes (lifecycle-serialized)" do
+  describe "write/5 — concurrent writes (lifecycle-serialized)" do
     # The Codex-review race: write/4 is invoked directly by concurrent
     # create/update RPCs; before the fix, both racing creates of one name
     # passed the mode check and shared ONE fixed temp path — one request
@@ -618,7 +626,6 @@ defmodule Valea.Calendar.LocalTest do
     # released and the parked writer's mode check re-evaluates.
     test "a :create parked behind a create of the same name re-checks and gets :exists",
          %{root: root} do
-      start_supervised!({CalSupervisor, %{root: root, generation: 1}})
       sup = Process.whereis(CalSupervisor)
       test_pid = self()
 
@@ -670,7 +677,6 @@ defmodule Valea.Calendar.LocalTest do
     end
 
     test "a concurrent create-then-update keeps the update's content", %{root: root} do
-      start_supervised!({CalSupervisor, %{root: root, generation: 1}})
       sup = Process.whereis(CalSupervisor)
       test_pid = self()
 
@@ -718,13 +724,11 @@ defmodule Valea.Calendar.LocalTest do
       assert %{valid: [%Event{title: "Updated"}], invalid: []} = Local.list(root)
     end
 
-    test "without a supervisor, concurrent writes to different names all land intact",
+    test "concurrent writes to different names all land intact",
          %{root: root} do
-      # Fallback path: no serializer process — every write installs
-      # through its own UNIQUE temp name, so no writer can rename another
-      # writer's bytes or crash on a vanished temp.
-      assert Process.whereis(CalSupervisor) == nil
-
+      # Every write installs through its own UNIQUE temp name inside the
+      # serializer, so no writer can rename another writer's bytes or
+      # crash on a vanished temp.
       names = for i <- 1..8, do: "event-#{i}"
 
       tasks =
@@ -759,7 +763,117 @@ defmodule Valea.Calendar.LocalTest do
     end
   end
 
-  describe "delete/2" do
+  describe "write/5 + delete/3 — the verify: hook" do
+    # The Codex round-3 gap: the generation check and root resolution ran
+    # BEFORE the serialized section, so a stale RPC parked behind a
+    # workspace switch could still mutate the root it captured before the
+    # switch. The API's verify closure (generation check + live root
+    # resolution) now runs FIRST, INSIDE the lock — this test simulates
+    # the workspace-switch generation bump with a verify that refuses.
+    test "a verify that fails inside the serialized section refuses with nothing on disk",
+         %{root: root} do
+      sup = Process.whereis(CalSupervisor)
+      test_pid = self()
+
+      holder =
+        Task.async(fn ->
+          CalSupervisor.lifecycle(fn ->
+            send(test_pid, :held)
+
+            receive do
+              :release -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :held
+
+      # The stale writer: validation passes, then it parks on the held
+      # serializer — its verify (the simulated generation bump) can only
+      # run once the section ahead of it releases.
+      late =
+        Task.async(fn ->
+          Local.write(
+            root,
+            "stale",
+            %{title: "Stale", start: "2026-07-21T09:30:00+02:00"},
+            :create,
+            verify: fn -> {:error, :workspace_changed} end
+          )
+        end)
+
+      await_lifecycle_queued(sup)
+      send(sup, :release)
+
+      assert :ok = Task.await(holder)
+      # The typed verify error propagates verbatim; no disk section ran.
+      assert {:error, :workspace_changed} = Task.await(late)
+      refute File.exists?(Path.join(events_dir(root), "stale.md"))
+      assert Path.wildcard(Path.join(events_dir(root), ".*.tmp-*"), match_dot: true) == []
+    end
+
+    test "the verify's root — not the caller's — is the root mutated", %{root: root} do
+      # The API resolves the root OUTSIDE the lock and the verify
+      # re-resolves it INSIDE; the mutation must land under the verify's
+      # (fresh) root, never the possibly-stale positional one.
+      decoy = Path.join(root, "decoy")
+      File.mkdir_p!(Path.join(decoy, "sources/calendar/valea/events"))
+
+      assert {:ok, _path} =
+               Local.write(
+                 decoy,
+                 "moved",
+                 %{title: "T", start: "2026-07-21T09:30:00+02:00"},
+                 :create,
+                 verify: fn -> {:ok, root} end
+               )
+
+      assert %{valid: [%Event{name: "moved"}], invalid: []} = Local.list(root)
+      assert Local.list(decoy) == %{valid: [], invalid: []}
+    end
+
+    test "a failing verify refuses a delete with the file intact", %{root: root} do
+      write_event!(root, "keep.md", valid_timed())
+
+      assert {:error, :workspace_changed} =
+               Local.delete(root, "keep", verify: fn -> {:error, :workspace_changed} end)
+
+      assert File.exists?(Path.join(events_dir(root), "keep.md"))
+    end
+  end
+
+  describe "write/5 + delete/3 — no serializer, no fallback" do
+    # The round-3 fix's other half: without a running serializer a
+    # mutation REFUSES instead of degrading to an unserialized direct
+    # write (which let two stale creates both pass check_mode, and a
+    # stale RPC write a closed workspace's root).
+    @tag :no_supervisor
+    test "write refuses :not_running with nothing on disk", %{root: root} do
+      assert Process.whereis(CalSupervisor) == nil
+
+      assert {:error, :not_running} =
+               Local.write(
+                 root,
+                 "orphan",
+                 %{title: "T", start: "2026-07-21T09:30:00+02:00"},
+                 :create
+               )
+
+      refute File.exists?(Path.join(events_dir(root), "orphan.md"))
+      assert Path.wildcard(Path.join(events_dir(root), ".*.tmp-*"), match_dot: true) == []
+    end
+
+    @tag :no_supervisor
+    test "delete refuses :not_running and leaves the file", %{root: root} do
+      assert Process.whereis(CalSupervisor) == nil
+      write_event!(root, "keep.md", valid_timed())
+
+      assert {:error, :not_running} = Local.delete(root, "keep")
+      assert File.exists?(Path.join(events_dir(root), "keep.md"))
+    end
+  end
+
+  describe "delete/3" do
     test "deletes an existing event", %{root: root} do
       assert {:ok, _} =
                Local.write(

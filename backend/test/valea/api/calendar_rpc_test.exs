@@ -850,6 +850,33 @@ defmodule Valea.Api.CalendarRpcTest do
                Path.join([workspace, "sources", "calendar", "valea", "events", "bad-date.md"])
              )
     end
+
+    test "a stale generation against a running workspace refuses with nothing on disk", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      # The Codex round-3 posture: the generation guard also re-runs
+      # INSIDE the write serializer (`Local.write/5`'s verify hook), so a
+      # stale mutation surfaces the standard workspace_changed error and
+      # never touches the events tree.
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "create_valea_event",
+                 %{
+                   "name" => "stale",
+                   "title" => "Stale",
+                   "start" => "2026-07-21T09:30:00+02:00",
+                   "generation" => generation - 1
+                 },
+                 ["created", "path"]
+               )
+
+      assert inspect(errors) =~ "workspace_changed"
+
+      refute File.exists?(
+               Path.join([workspace, "sources", "calendar", "valea", "events", "stale.md"])
+             )
+    end
   end
 
   describe "update_valea_event" do

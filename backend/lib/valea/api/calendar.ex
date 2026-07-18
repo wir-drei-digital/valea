@@ -287,16 +287,22 @@ defmodule Valea.Api.Calendar do
 
       # `name` is a bare basename without extension — the grammar
       # (`Local.valid_name?/1`) rejects separators/traversal BEFORE any
-      # path construction (the get_mail_draft posture); `Local.write/4`
+      # path construction (the get_mail_draft posture); `Local.write/5`
       # then validates the attrs through the full fail-closed table and
-      # refuses an existing name.
+      # refuses an existing name. The generation check + root resolution
+      # RE-RUN inside the write's serialized section (`verify_workspace/1`)
+      # so a stale RPC parked behind a workspace switch can never mutate
+      # the old root.
       run fn input, _ctx ->
         %{name: name, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- validate_event_name(name),
-             {:ok, path} <- Local.write(root, name, event_attrs(input.arguments), :create) do
+             {:ok, path} <-
+               Local.write(root, name, event_attrs(input.arguments), :create,
+                 verify: verify_workspace(generation)
+               ) do
           broadcast_local_changed()
           {:ok, %{"created" => true, "path" => path}}
         else
@@ -318,14 +324,18 @@ defmodule Valea.Api.Calendar do
       argument :description, :string, allow_nil?: true
       argument :generation, :integer, allow_nil?: false
 
-      # Full-replace write of the named file (spec table).
+      # Full-replace write of the named file (spec table); generation +
+      # root re-verified inside the serialized section (create's posture).
       run fn input, _ctx ->
         %{name: name, generation: generation} = input.arguments
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- validate_event_name(name),
-             {:ok, _path} <- Local.write(root, name, event_attrs(input.arguments), :update) do
+             {:ok, _path} <-
+               Local.write(root, name, event_attrs(input.arguments), :update,
+                 verify: verify_workspace(generation)
+               ) do
           broadcast_local_changed()
           {:ok, %{"updated" => true}}
         else
@@ -348,7 +358,7 @@ defmodule Valea.Api.Calendar do
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- validate_event_name(name),
              :ok <- require_confirmation(confirmation, name),
-             :ok <- Local.delete(root, name) do
+             :ok <- Local.delete(root, name, verify: verify_workspace(generation)) do
           broadcast_local_changed()
           {:ok, %{"deleted" => true}}
         else
@@ -439,6 +449,23 @@ defmodule Valea.Api.Calendar do
 
   defp require_confirmation(confirmation, expected) do
     if confirmation == expected, do: :ok, else: {:error, :confirmation_mismatch}
+  end
+
+  # The `verify:` closure for `Local.write/5` / `Local.delete/3` —
+  # executed INSIDE the write serializer, after any queued mutation ahead
+  # of it: the generation check AND the root resolution both re-run under
+  # the lock, so a mutation parked behind a workspace switch fails
+  # `workspace_changed` against the NEW workspace's serializer instead of
+  # writing the root it captured before the switch. The errors are the
+  # exact atoms the pre-checks already surface (`:workspace_changed`,
+  # `:no_workspace`), so `error_for/1` maps them identically.
+  defp verify_workspace(generation) do
+    fn ->
+      with :ok <- Manager.check_generation(generation),
+           {:ok, %{path: root}} <- Manager.current() do
+        {:ok, root}
+      end
+    end
   end
 
   # A purge target must be a real external source: still configured (the
@@ -681,7 +708,7 @@ defmodule Valea.Api.Calendar do
 
   # -- valea event writes -------------------------------------------------------
 
-  # `Local.write/4`'s attrs shape (atom keys; nil/"" optionals dropped by
+  # `Local.write/5`'s attrs shape (atom keys; nil/"" optionals dropped by
   # Local's own attrs_to_raw).
   defp event_attrs(arguments) do
     %{
