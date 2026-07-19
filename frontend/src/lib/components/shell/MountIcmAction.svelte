@@ -119,13 +119,13 @@
         class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading mt-1 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors"
       >
         <Plus class="size-3" strokeWidth={1.5} aria-hidden="true" />
-        Mount an ICM
+        Add a project
       </button>
     {/snippet}
   </DropdownMenu.Trigger>
   <DropdownMenu.Content align="start">
-    <DropdownMenu.Item onSelect={() => (mountOpen = true)}>Mount an existing ICM…</DropdownMenu.Item>
-    <DropdownMenu.Item onSelect={() => (createOpen = true)}>Create a new ICM…</DropdownMenu.Item>
+    <DropdownMenu.Item onSelect={() => (mountOpen = true)}>Use an existing folder…</DropdownMenu.Item>
+    <DropdownMenu.Item onSelect={() => (createOpen = true)}>Create a new project…</DropdownMenu.Item>
   </DropdownMenu.Content>
 </DropdownMenu.Root>
 
@@ -134,7 +134,7 @@
 <Dialog.Root bind:open={createOpen}>
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
-      <Dialog.Title class="font-display text-[19px] text-ink-heading">Create a new ICM</Dialog.Title>
+      <Dialog.Title class="font-display text-[19px] text-ink-heading">Create a new project</Dialog.Title>
       <Dialog.Description class="text-ink-body">
         Give it a name and a folder. Valea creates a small starter knowledge module there — plain Markdown pages you
         own.

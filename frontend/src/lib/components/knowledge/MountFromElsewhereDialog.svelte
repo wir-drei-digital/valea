@@ -232,7 +232,7 @@
 <Dialog.Root bind:open>
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
-      <Dialog.Title class="font-display text-[19px] text-ink-heading">Mount an existing ICM</Dialog.Title>
+      <Dialog.Title class="font-display text-[19px] text-ink-heading">Use an existing folder</Dialog.Title>
       <Dialog.Description class="text-ink-body">
         Reads a knowledge folder right where it already lives — we'll show you what's inside before anything mounts.
         Nothing is copied or moved.

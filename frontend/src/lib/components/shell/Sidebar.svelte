@@ -48,7 +48,7 @@
   </div>
 
   <nav class="flex-1 overflow-y-auto px-2 pb-2">
-    {#each sections as section (section.label ?? 'daily')}
+    {#each sections as section, index (section.label ?? 'daily')}
       {#if section.label}
         <SectionOverline label={section.label} />
       {/if}
@@ -64,11 +64,16 @@
           />
         {/each}
       </div>
-    {/each}
 
-    <SectionOverline label="ICMs" />
-    <IcmProjects {activeMountKey} />
-    <MountIcmAction />
+      {#if index === 0}
+        <!-- Projects (the user's ICM folders) are the app's primary object —
+             they sit directly under the daily group, above the workspace
+             utilities. "Projects" over "ICMs": nav copy stays jargon-free. -->
+        <SectionOverline label="Projects" />
+        <IcmProjects {activeMountKey} />
+        <MountIcmAction />
+      {/if}
+    {/each}
   </nav>
 
   <footer class="mt-auto flex flex-col gap-2 px-3 pb-3">

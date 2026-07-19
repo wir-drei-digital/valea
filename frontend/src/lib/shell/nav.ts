@@ -57,16 +57,15 @@ export function mainNav(): NavSection[] {
         { id: 'tasks', label: 'Tasks', href: '/tasks', icon: ListTodo }
       ]
     },
+    // ONE workspace-wide utility group (the old "Assistant"/"System" split
+    // said nothing — Knowledge/Files aren't assistant-specific). The primary
+    // Projects section is rendered by the Sidebar between the daily group
+    // and this one.
     {
-      label: 'Assistant',
+      label: 'Workspace',
       items: [
         { id: 'knowledge', label: 'Knowledge', href: '/knowledge', icon: BookOpen },
-        { id: 'files', label: 'Files', href: '/files', icon: Folder }
-      ]
-    },
-    {
-      label: 'System',
-      items: [
+        { id: 'files', label: 'Files', href: '/files', icon: Folder },
         { id: 'sources', label: 'Sources', href: '/sources', icon: Plug },
         { id: 'audit', label: 'Audit log', href: '/audit', icon: ListChecks }
       ]
