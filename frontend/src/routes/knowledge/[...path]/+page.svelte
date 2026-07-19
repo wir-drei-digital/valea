@@ -79,7 +79,7 @@
   // (the memory screen's kind line), or the section root for top-level pages.
   const parentLabel = $derived.by(() => {
     const segments = decodedPath.split('/').filter(Boolean);
-    return segments.length > 1 ? segments[segments.length - 2] : 'Knowledge';
+    return segments.length > 1 ? segments[segments.length - 2] : 'Files';
   });
 
   // The list pane always shows a folder's entries — the open folder itself,
@@ -97,7 +97,7 @@
     if (parent?.type === 'folder') {
       return { title: parent.name, path: parent.path, entries: parent.children ?? [] };
     }
-    return { title: 'Knowledge', path: '', entries: mountTree };
+    return { title: 'Files', path: '', entries: mountTree };
   });
 
   type PageContent = IcmPageData;

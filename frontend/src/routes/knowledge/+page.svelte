@@ -158,7 +158,7 @@
 
 <AppFrame>
   {#snippet list()}
-    <ListPane title="Knowledge">
+    <ListPane title="Files">
       {#snippet action()}
         {#if selectedMountKey}
           {@const mountKey = selectedMountKey}
@@ -345,13 +345,13 @@
           class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
         >
           <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-          Back to Knowledge
+          Back to Files
         </button>
         <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
       </div>
     {:else}
       <PageHeader
-        title="Knowledge"
+        title="Files"
         subtitle="Your business memory — every page is a plain Markdown file in your workspace."
       />
     {/if}

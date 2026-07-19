@@ -15,13 +15,18 @@
   import { degradedChipLabel } from '$lib/components/knowledge/mount-sections';
   import type { AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { orderGroups, isGroupExpanded, diagnosisSummary } from './icm-projects';
+  import {
+    normalizeMountsDoctorChecks,
+    type MountsDoctorCheck
+  } from '$lib/components/knowledge/mount-sections';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import * as Dialog from '$lib/components/ui/dialog/index.js';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Plus from '@lucide/svelte/icons/plus';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
-  import BookOpen from '@lucide/svelte/icons/book-open';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
   import PowerOff from '@lucide/svelte/icons/power-off';
   import Stethoscope from '@lucide/svelte/icons/stethoscope';
 
@@ -44,7 +49,13 @@
   let startError: Record<string, string> = $state({});
   let disabling: Record<string, boolean> = $state({});
   let diagnosing: Record<string, boolean> = $state({});
-  let diagnosis: Record<string, { ok: boolean; summary: string } | null> = $state({});
+  /** The open Diagnose dialog's payload — detailed checks in a modal, never inline in the tree. */
+  let doctorModal: {
+    name: string;
+    ok: boolean;
+    summary: string;
+    checks: MountsDoctorCheck[];
+  } | null = $state(null);
 
   function toggle(mountKey: string): void {
     collapsed = { ...collapsed, [mountKey]: !collapsed[mountKey] };
@@ -99,35 +110,34 @@
     disabling = { ...disabling, [mountKey]: false };
   }
 
-  // "Diagnose" (kebab, spec ambiguity resolution) — runs `icm_doctor`
-  // against this one ICM and surfaces a minimal inline result under the
-  // row, same "no toast system in this codebase" posture as
-  // `MountsDoctorPanel`'s copy-feedback (`mount-sections.ts`'s
-  // `normalizeMountsDoctorChecks` shapes the same `checks` payload for the
-  // full Knowledge-page panel; this is the one-ICM, one-line summary).
-  // Summary wording is `icm-projects.ts`'s `diagnosisSummary` (fix wave,
-  // Finding 3) — counts every non-"ok" check, not just "failed", so an
-  // `ok: false` result made of "unknown" checks doesn't misread as healthy.
-  async function diagnose(mountKey: string): Promise<void> {
+  // "Diagnose" (kebab) — runs `icm_doctor` against this one ICM and shows
+  // the DETAILED checks in a modal (same shape `MountsDoctorPanel` renders
+  // on the Files page; `normalizeMountsDoctorChecks` shapes both). The
+  // one-line verdict is `icm-projects.ts`'s `diagnosisSummary` — counts
+  // every non-"ok" check, not just "failed", so an `ok: false` result made
+  // of "unknown" checks doesn't misread as healthy.
+  async function diagnose(mountKey: string, name: string): Promise<void> {
     diagnosing = { ...diagnosing, [mountKey]: true };
-    diagnosis = { ...diagnosis, [mountKey]: null };
     const result = await api.icmDoctor(mountKey, workspaceStore.generation ?? 0);
     diagnosing = { ...diagnosing, [mountKey]: false };
 
     if (!result.ok) {
-      diagnosis = { ...diagnosis, [mountKey]: { ok: false, summary: 'Could not run checks. Try again.' } };
+      doctorModal = { name, ok: false, summary: 'Could not run checks. Try again.', checks: [] };
       return;
     }
 
-    const data = result.data as { ok: boolean; checks: Array<{ status?: string }> };
-    diagnosis = { ...diagnosis, [mountKey]: diagnosisSummary(data) };
+    const data = result.data as { ok: boolean; checks: unknown };
+    doctorModal = {
+      name,
+      ...diagnosisSummary(data as { ok: boolean; checks: Array<{ status?: string }> }),
+      checks: normalizeMountsDoctorChecks(data.checks)
+    };
   }
 </script>
 
 <div class="flex flex-col gap-0.5">
   {#each groups as group (group.mountKey)}
     {@const expanded = isGroupExpanded(group, activeMountKey, collapsed)}
-    {@const empty = group.sessions.length === 0 && !group.degraded}
     <div class="group/icm relative">
       <div class="flex items-center gap-1 rounded-md py-[3px] pr-9 pl-2">
         <button
@@ -153,14 +163,16 @@
         {#if group.degraded}
           <TriangleAlert class="text-warn-ink size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
         {:else}
+          <!-- Opening the project's file browser is the row's first-class
+               quick action (the name link goes there too); starting a
+               session lives as the labeled "+ New session" child below. -->
           <button
             type="button"
-            onclick={() => void startSession(group.mountKey)}
-            disabled={!!starting[group.mountKey]}
-            aria-label={`New session in ${group.name}`}
+            onclick={() => void goto(`/knowledge?icm=${encodeURIComponent(group.mountKey)}`)}
+            aria-label={`Open files of ${group.name}`}
             class="text-ink-meta hover:bg-paper-card hover:text-ink-heading shrink-0 rounded-md p-0.5 opacity-0 transition-opacity group-hover/icm:opacity-100 group-focus-within/icm:opacity-100 focus-visible:opacity-100"
           >
-            <Plus class="size-3.5" strokeWidth={1.5} />
+            <FolderOpen class="size-3.5" strokeWidth={1.5} />
           </button>
         {/if}
       </div>
@@ -189,10 +201,13 @@
             </DropdownMenu.Item>
           {/if}
           <DropdownMenu.Item onSelect={() => void goto(`/knowledge?icm=${encodeURIComponent(group.mountKey)}`)}>
-            <BookOpen class="size-3.5" strokeWidth={1.5} />
-            Open knowledge
+            <FolderOpen class="size-3.5" strokeWidth={1.5} />
+            Open files
           </DropdownMenu.Item>
-          <DropdownMenu.Item disabled={!!diagnosing[group.mountKey]} onSelect={() => void diagnose(group.mountKey)}>
+          <DropdownMenu.Item
+            disabled={!!diagnosing[group.mountKey]}
+            onSelect={() => void diagnose(group.mountKey, group.name)}
+          >
             <Stethoscope class="size-3.5" strokeWidth={1.5} />
             {diagnosing[group.mountKey] ? 'Diagnosing…' : 'Diagnose'}
           </DropdownMenu.Item>
@@ -208,15 +223,16 @@
       <div class="border-paper-chip-border ml-[17px] flex flex-col gap-0.5 border-l pl-2">
         {#if group.degraded}
           <p class="text-warn-ink px-2 py-1 text-[11px]">{degradedChipLabel(group)}</p>
-        {:else if empty}
+        {:else}
           <button
             type="button"
             onclick={() => void startSession(group.mountKey)}
-            class="text-ink-meta hover:text-ink-heading px-2 py-1 text-left text-[12px]"
+            disabled={!!starting[group.mountKey]}
+            class="text-ink-meta hover:text-ink-heading flex items-center gap-1.5 px-2 py-1 text-left text-[12px]"
           >
-            Start a session
+            <Plus class="size-3" strokeWidth={1.5} aria-hidden="true" />
+            New session
           </button>
-        {:else}
           {#each group.sessions as session (session.id)}
             <a
               href={`/chat?session=${session.id}`}
@@ -243,13 +259,49 @@
         {#if startError[group.mountKey]}
           <p class="text-warn-ink px-2 py-0.5 text-[11px]" role="alert">{startError[group.mountKey]}</p>
         {/if}
-        {#if diagnosis[group.mountKey]}
-          {@const result = diagnosis[group.mountKey]}
-          <p class={[result?.ok ? 'text-ink-meta' : 'text-warn-ink', 'px-2 py-0.5 text-[11px]']} role="status">
-            {result?.summary}
-          </p>
-        {/if}
       </div>
     {/if}
   {/each}
 </div>
+
+<!-- Diagnose result — a modal with the full gated checks, never inline in
+     the project tree (same ✓/✕/○ vocabulary as the calendar setup panel;
+     "unknown" = gated behind an earlier failure, muted, not failed). -->
+<Dialog.Root open={doctorModal !== null} onOpenChange={(open) => !open && (doctorModal = null)}>
+  <Dialog.Content class="sm:max-w-md">
+    {#if doctorModal}
+      <Dialog.Header>
+        <Dialog.Title class="font-display text-[19px] text-ink-heading">
+          Diagnose — {doctorModal.name}
+        </Dialog.Title>
+        <Dialog.Description class={doctorModal.ok ? 'text-ink-body' : 'text-warn-ink'}>
+          {doctorModal.summary}
+        </Dialog.Description>
+      </Dialog.Header>
+      {#if doctorModal.checks.length > 0}
+        <ul class="flex flex-col gap-1.5">
+          {#each doctorModal.checks as check (check.id)}
+            <li class="text-[12px]">
+              <span
+                class={check.status === 'ok'
+                  ? 'text-act'
+                  : check.status === 'failed'
+                    ? 'text-warn-ink'
+                    : 'text-ink-meta'}
+              >
+                {check.status === 'ok' ? '✓' : check.status === 'failed' ? '✕' : '○'}
+              </span>
+              <span class="text-ink-body">{check.label}</span>
+              {#if check.detail}
+                <span class="text-ink-meta"> — {check.detail}</span>
+              {/if}
+              {#if check.status === 'failed' && check.remedy}
+                <p class="text-ink-meta mt-0.5 pl-4 font-mono text-[11px]">{check.remedy}</p>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
+  </Dialog.Content>
+</Dialog.Root>
