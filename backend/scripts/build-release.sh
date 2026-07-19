@@ -13,6 +13,24 @@ export MIX_ENV=prod
 # fetch a pinned, isolated zig 0.15.2 into a cache dir and put it first on PATH.
 # This only kicks in when wrapping the Burrito target.
 if [ "$RELEASE" = "valea_desktop" ]; then
+  # Pin Burrito to the single target matching this host (overridable by an
+  # explicit BURRITO_TARGET). Without this, a multi-target config would make
+  # Burrito wrap EVERY target from one host — but the assembled release
+  # carries host-compiled NIFs (exqlite, erlexec), so cross-wrapped outputs
+  # would be silently broken. Targets are declared in mix.exs.
+  if [ -z "${BURRITO_TARGET:-}" ]; then
+    case "$(uname -s)-$(uname -m)" in
+      Darwin-arm64) BURRITO_TARGET="macos_arm" ;;
+      Linux-x86_64) BURRITO_TARGET="linux_x64" ;;
+      *)
+        echo "No Burrito target for host $(uname -s)/$(uname -m) — see mix.exs releases." >&2
+        exit 1
+        ;;
+    esac
+    export BURRITO_TARGET
+  fi
+  echo "Burrito target: $BURRITO_TARGET"
+
   ZIG_VERSION="0.15.2"
   if ! command -v zig >/dev/null 2>&1 || [ "$(zig version 2>/dev/null)" != "$ZIG_VERSION" ]; then
     case "$(uname -m)" in

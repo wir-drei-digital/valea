@@ -1,23 +1,28 @@
 <script lang="ts">
-  // The Valea mark: a leaf inside a circle, drawn in the accent green
-  // (var(--act)) with the leaf cut in the paper surface color so it works
-  // on any pane background. Sized by the parent via the `size` class.
+  // The Valea mark: a two-leaf sprig inside a circle, drawn in the accent
+  // green (var(--act)) with the sprig cut in the paper surface color so it
+  // works on any pane background. Sized by the parent via the `size` class.
   let { size = 'size-8' }: { size?: string } = $props();
 </script>
 
 <svg viewBox="0 0 32 32" class={[size, 'shrink-0']} role="img" aria-label="Valea">
   <circle cx="16" cy="16" r="16" fill="var(--act)" />
-  <!-- Leaf blade: two arcs meeting at tip (top-right) and base (bottom-left). -->
+  <!-- Stem: rises from the base, leaning gently right. -->
   <path
-    d="M22.4 9.6 C 22.9 16.4 19.4 21.4 12.4 22.6 C 10.4 17.2 13.4 11.2 22.4 9.6 Z"
+    d="M15.4 25.5 C 15.6 20.5, 16.4 14.5, 19 9"
+    fill="none"
+    stroke="var(--paper-card)"
+    stroke-width="1.7"
+    stroke-linecap="round"
+  />
+  <!-- Lower leaf, branching up-left off the stem. -->
+  <path
+    d="M15.9 18.9 C 12 18.7, 9.5 16.2, 8.9 12.1 C 13 12.3, 15.7 15, 15.9 18.9 Z"
     fill="var(--paper-card)"
   />
-  <!-- Central vein, drawn in the accent so it reads as a cut in the blade. -->
+  <!-- Upper leaf, branching up-right toward the stem tip. -->
   <path
-    d="M21 11 C 17 13.6 14.4 16.8 12.9 21.4"
-    fill="none"
-    stroke="var(--act)"
-    stroke-width="1.1"
-    stroke-linecap="round"
+    d="M17.4 13.3 C 21.2 13.4, 23.7 11, 24.2 7 C 20.2 7.1, 17.6 9.6, 17.4 13.3 Z"
+    fill="var(--paper-card)"
   />
 </svg>

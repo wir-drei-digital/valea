@@ -53,6 +53,10 @@ The desktop app spawns the sidecar on the fixed port **4817**, binds loopback on
 
 Note: `cargo check` in `desktop/src-tauri` requires the sidecar binary to exist (tauri-build validates `externalBin`) — run `just package-backend` once after a fresh clone.
 
+## Releases & auto-update
+
+Pushing a tag `vX.Y.Z` (matching the `version` in `desktop/src-tauri/tauri.conf.json`) builds macOS (Apple silicon) and Linux (x86_64) bundles onto a draft GitHub release; publishing the draft goes live. Installed apps check twice a day, download in the background, and offer "Restart to update" at the bottom of the sidebar. See [docs/RELEASING.md](docs/RELEASING.md) for the full runbook (secrets, signing, why there's no Windows build yet).
+
 ## API layer
 
 The frontend talks to the backend through a generated, fully-typed RPC client ([ash_typescript](https://github.com/ash-project/ash_typescript)) transported over Phoenix channels, not hand-written REST calls. Run `just codegen` after changing any Ash action exposed via `typescript_rpc`; `just test` fails if the checked-in client (`frontend/src/lib/api/ash_rpc.ts`) is stale.

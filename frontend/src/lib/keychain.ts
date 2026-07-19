@@ -1,5 +1,6 @@
-// This is the ONLY module allowed to touch Tauri IPC (grep-able boundary,
-// mirrors `api/client.ts`'s header comment for `ash_rpc`). It wraps the
+// This module and `updater.ts` are the ONLY modules allowed to touch
+// Tauri IPC (grep-able boundary, mirrors `api/client.ts`'s header comment
+// for `ash_rpc`). This one wraps the
 // desktop crate's `keyring`-backed commands (mail design spec,
 // §Credentials): service name = the app bundle identifier, account =
 // `workspace_id:username`, where `workspace_id` is the persistent UUID

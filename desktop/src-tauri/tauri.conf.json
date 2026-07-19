@@ -30,9 +30,21 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/wir-drei-digital/valea/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERDQkE5QUVBQTVENEVENTUKUldSVjdkU2w2cHE2M05jeDFFTVNvb2RzU1hRazQ1aFFUMXltM0R6dTZEcUIvU1YyaTJrSnRsK3MK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/valea-server"],
     "icon": [
       "icons/32x32.png",

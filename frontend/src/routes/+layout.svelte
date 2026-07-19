@@ -8,6 +8,7 @@
   import { onMount } from 'svelte';
   import Onboarding from '$lib/components/onboarding/Onboarding.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { updatesStore } from '$lib/stores/updates.svelte';
   import { refreshSidebarProjectStores, wireIcmEvents } from '$lib/stores/icm.svelte';
   import SearchPalette from '$lib/components/palette/SearchPalette.svelte';
 
@@ -42,6 +43,11 @@
     wireIcmEvents(() => {
       void workspaceStore.refresh();
     });
+
+    // Auto-update polling — a no-op everywhere except the packaged desktop
+    // app (see `updatesSupported`), so browser dev and vitest never start
+    // timers. Idempotent, and the root layout never unmounts, so no cleanup.
+    updatesStore.start();
   });
 </script>
 

@@ -33,6 +33,15 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // Auto-update: the SPA (stores/updates.svelte.ts) drives check/
+        // download/install through these two plugins; `updater` verifies the
+        // minisign signature against the pubkey in tauri.conf.json, `process`
+        // provides the relaunch. Sidecar cleanup on relaunch needs no extra
+        // wiring — restart goes through the normal exit path, so the
+        // RunEvent::Exit handler below kills the old sidecar before the new
+        // process boots its own.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Backend(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             keychain::mail_secret_set,

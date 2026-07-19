@@ -1435,6 +1435,28 @@ Related, not under `shell/` but part of the same top-level chrome:
 - `frontend/src/lib/components/today/` — `OpenLoops.svelte` (plain checklist rows over the `today.json`-sourced `open_loops`; the checkbox is visual only, no interactive control yet), the sole surviving component of the pre-Spec-D Today cockpit. Prepared items and the mail summary line are now rendered directly inline in `frontend/src/routes/+page.svelte` itself (the `today.json` rewrite, Spec D §C) rather than through a dedicated per-item card component — see "Today = a file the agent maintains" above.
 - `frontend/src/lib/components/ui/` — shadcn-svelte primitives (button, dialog, input, label, badge, separator, skeleton, scroll-area, tooltip).
 
+## Release & auto-update
+
+Tag-driven pipeline (`.github/workflows/release.yml`): a `v*` tag builds
+native bundles per platform — macOS Apple-silicon and Linux x86_64, each
+runner producing its own Burrito sidecar (`BURRITO_TARGET` pins the one
+target matching the host; the payload embeds host-compiled NIFs, so nothing
+is ever cross-wrapped) — and uploads them to a single **draft** GitHub
+release with a merged `latest.json`. Publishing the draft is go-live;
+`docs/RELEASING.md` is the runbook (secrets, signing, the Windows blocker
+list).
+
+In-app: `tauri-plugin-updater` + `tauri-plugin-process` (registered in
+`main.rs`, granted to the loopback-served SPA by
+`capabilities/updates.json`), minisign pubkey + `releases/latest` endpoint
+in `tauri.conf.json`. Frontend-side, `lib/updater.ts` is the second Tauri
+IPC boundary module (keychain.ts's contract: browser no-ops, never throws),
+`stores/updates.svelte.ts` runs check → auto-download → ready and is
+started once from the root layout (packaged-desktop-only gate), and
+`shell/UpdateNotice.svelte` renders every phase at the bottom of the
+sidebar footer — quiet until there is actually something to install.
+App-version truth for the updater: `desktop/src-tauri/tauri.conf.json`.
+
 ## Spec index
 
 - [2026-07-09-valea-foundation-design.md](superpowers/specs/2026-07-09-valea-foundation-design.md) — Foundation: monorepo scaffold, workspace creation/selection, app shell, Today cockpit (seeded), ICM tree in nav.
@@ -1448,4 +1470,5 @@ Related, not under `shell/` but part of the same top-level chrome:
 - [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — **Shipped** (see [ICM project workspaces](#icm-project-workspaces) above): private, hidden, id-based Valea workspace profiles; user-owned ICM projects mounted only by reference; one primary ICM and `cwd` per session; explicit cross-ICM context; project/session navigation; simplified onboarding. Supersedes Plan A/A2 outright — their implementation has been fully removed (Phase 11 clean-cut). Substrate for Spec D below; not reopened by it.
 - [2026-07-16-agent-native-icms-design.md](superpowers/specs/2026-07-16-agent-native-icms-design.md) — **Shipped** (Spec D — see the banner at the top of this file and every section it points to). Deletes the workflow subsystem outright; replaces "run" with the session-with-context primitive (`context_doc`/`input`); makes Today a file (`today.json`) the agent maintains; adds adopt-a-folder mounting, a depth-aware `RiskTier`, an ICM-internal secrets deny tier, and the 3-layer prose starter seed; re-scopes Mail's outbound path to manual until a future mail redesign.
 - [2026-07-17-mail-maildir-design.md](superpowers/specs/2026-07-17-mail-maildir-design.md) — **Shipped** (Spec E — see [Mail](#mail-spec-e--mail-as-maildir) above): multi-account windowed maildir mirrors, declared-ops two-way sync (moves + flags only, durable ledger, execution-time verification, never expunge as policy), derived views + SQLite index, per-account mail mounts with deny-not-ask, agent drafts + user-only Push-to-Drafts (no SMTP), Gmail provider profile, fail-closed identity/replacement recovery. Supersedes the 2026-07-11 mail spec's sync/read path.
+- [2026-07-19-release-auto-update-design.md](superpowers/specs/2026-07-19-release-auto-update-design.md) — **Shipped** (see [Release & auto-update](#release--auto-update) above): tag-driven GitHub Actions release matrix (native per-platform Burrito sidecars, draft-release go-live gate, minisign-signed updater artifacts), Tauri v2 auto-update wiring, and the sidebar-bottom update notice with background download + restart-to-update.
 - [2026-07-18-calendar-feeds-design.md](superpowers/specs/2026-07-18-calendar-feeds-design.md) — **Shipped** (Spec F — see [Calendar](#calendar-spec-f--ics-feeds-in-valea-calendar-out) above): ICS subscription-feed mirrors (no CalDAV/OAuth/Graph), the hand-written RFC 5545 parser with honest unsupported-recurrence/timezone handling, the two-store guarded derive protocol, the agent-writable Valea calendar + tokened loopback served feed, one calendar mount with mail's deny-not-ask tier, feed-URL-as-credential keychain posture.

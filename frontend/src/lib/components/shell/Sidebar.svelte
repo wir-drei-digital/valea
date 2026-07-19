@@ -7,6 +7,7 @@
   import IcmProjects from './IcmProjects.svelte';
   import MountIcmAction from './MountIcmAction.svelte';
   import StatusPill from './StatusPill.svelte';
+  import UpdateNotice from './UpdateNotice.svelte';
   import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
 
   let {
@@ -62,6 +63,7 @@
   </nav>
 
   <footer class="mt-auto flex flex-col gap-2 px-3 pb-3">
+    <UpdateNotice />
     <WorkspaceSwitcher {onBeforeMutateActive} />
     <StatusPill label={syncedAt ? `All local · synced ${syncedAt}` : 'All local'} />
   </footer>

@@ -43,7 +43,9 @@ build:
     cp -R frontend/build/. backend/priv/static/
     backend/scripts/build-release.sh valea
 
-# Package the backend as the desktop sidecar binary
+# Package the backend as the desktop sidecar binary (host-native only:
+# the release embeds host-compiled NIFs, so each OS builds its own — the
+# same recipe runs on the macOS and Linux release runners).
 package-backend:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -51,10 +53,15 @@ package-backend:
     cd ..
     rm -rf backend/priv/static/_app backend/priv/static/index.html
     cp -R frontend/build/. backend/priv/static/
+    case "$(uname -s)-$(uname -m)" in
+      Darwin-arm64) export BURRITO_TARGET="${BURRITO_TARGET:-macos_arm}" ;;
+      Linux-x86_64) export BURRITO_TARGET="${BURRITO_TARGET:-linux_x64}" ;;
+      *) echo "No sidecar target for host $(uname -s)/$(uname -m) — see mix.exs releases." >&2; exit 1 ;;
+    esac
     backend/scripts/build-release.sh valea_desktop
     triple=$(rustc -vV | sed -n 's/host: //p')
     mkdir -p desktop/src-tauri/binaries
-    cp backend/burrito_out/valea_desktop_macos_arm "desktop/src-tauri/binaries/valea-server-${triple}"
+    cp "backend/burrito_out/valea_desktop_${BURRITO_TARGET}" "desktop/src-tauri/binaries/valea-server-${triple}"
 
 # Full desktop bundle
 desktop-bundle: package-backend

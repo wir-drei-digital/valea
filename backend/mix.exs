@@ -22,7 +22,22 @@ defmodule Valea.MixProject do
       valea_desktop: [
         include_executables_for: [:unix],
         steps: [:assemble, &Burrito.wrap/1],
-        burrito: [targets: [macos_arm: [os: :darwin, cpu: :aarch64]]]
+        # One target per build host, selected via BURRITO_TARGET
+        # (scripts/build-release.sh derives it from uname): the sidecar
+        # embeds natively-compiled NIFs (exqlite's sqlite3, erlexec's port
+        # program), so cross-wrapping a release assembled on a different
+        # host would ship the wrong binaries. Never build these cross.
+        #
+        # No windows target yet — the app itself can't run there: erlexec
+        # is Unix-only and boots with the OTP app, and the maildir's ":2,"
+        # flag filenames are illegal on NTFS. See docs/RELEASING.md
+        # ("Windows") before adding one.
+        burrito: [
+          targets: [
+            macos_arm: [os: :darwin, cpu: :aarch64],
+            linux_x64: [os: :linux, cpu: :x86_64]
+          ]
+        ]
       ]
     ]
   end
