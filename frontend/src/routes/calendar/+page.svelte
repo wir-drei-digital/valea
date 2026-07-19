@@ -8,7 +8,7 @@
   // everything on this grid is a plain file under `sources/calendar/`.
   import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
-  import { AppFrame, Rail, RailCard, SegmentedControl } from '$lib/components/shell';
+  import { AppFrame, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -22,13 +22,11 @@
     addDays,
     addMonths,
     dayKey,
-    localParts,
     monthGridFor,
     monthLabel,
     occurrenceKey,
     occurrenceToGridEvents,
     rangeLabel,
-    timeLabel,
     workWeekFor,
     type AllDayEntry,
     type CalendarEvent,
@@ -121,38 +119,6 @@
     anchor = addDays(anchor, (view === 'week' ? 7 : 1) * direction);
   }
 
-  // -- rail derivations -------------------------------------------------------
-
-  /** Deterministic legend color per source slug (stable across sessions — pure string hash). */
-  function sourceHue(slug: string): number {
-    let hash = 0;
-    for (let i = 0; i < slug.length; i++) hash = (hash * 31 + slug.charCodeAt(i)) >>> 0;
-    return hash % 360;
-  }
-
-  const legendSources = $derived.by((): string[] => {
-    const slugs = new Set(calendarStore.sources.map((s) => s.source));
-    if (calendarStore.valeaEventCount > 0 || calendarStore.events.some((row) => row.source === 'valea')) {
-      slugs.add('valea');
-    }
-    return [...slugs].sort();
-  });
-
-  const upcoming = $derived.by((): { row: CalendarOccurrence; label: string }[] => {
-    const today = dayKey(now);
-    const nowMs = now.getTime();
-    return calendarStore.events
-      .filter((row) => (row.all_day ? row.end > today : Date.parse(row.end + '') > nowMs))
-      .slice(0, 5)
-      .map((row) => ({
-        row,
-        label: row.all_day
-          ? `${row.start} · all day`
-          : `${localParts(row.start, zone).day} ${timeLabel(localParts(row.start, zone).minutes)}`
-      }));
-  });
-
-  const unsupportedTotal = $derived(calendarStore.sources.reduce((sum, s) => sum + s.unsupportedSeries, 0));
 </script>
 
 <AppFrame mainVariant="column">
@@ -228,64 +194,4 @@
     </div>
   {/snippet}
 
-  {#snippet rail()}
-    <Rail title="Sources">
-      {#if calendarStore.configInvalid}
-        <RailCard tone="suggest" overline="config invalid">
-          <p class="text-ink-body text-[12.5px] leading-relaxed">{calendarStore.configInvalid}</p>
-        </RailCard>
-      {/if}
-
-      {#if legendSources.length > 0}
-        <ul class="flex flex-col gap-1.5">
-          {#each legendSources as slug (slug)}
-            {@const status = calendarStore.sources.find((s) => s.source === slug)}
-            <li class="text-ink-body flex items-center gap-2 text-[12.5px]">
-              <span
-                class="size-2.5 rounded-full"
-                style={`background: hsl(${sourceHue(slug)} 45% 55%)`}
-                aria-hidden="true"
-              ></span>
-              {slug === 'valea' ? 'Valea calendar' : slug}
-              {#if status && status.unsupportedSeries > 0}
-                <span class="text-warn-ink text-[11px]">· {status.unsupportedSeries} series unsupported</span>
-              {/if}
-              {#if status && status.state === 'degraded'}
-                <span class="text-warn-ink text-[11px]">· degraded</span>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="text-ink-secondary text-[12.5px] leading-relaxed">
-          No calendar sources yet. Add an ICS feed under Sources, or let an agent create events in the Valea
-          calendar.
-        </p>
-      {/if}
-
-      {#if unsupportedTotal > 0}
-        <p class="text-ink-meta text-[11.5px] leading-relaxed">
-          Unsupported recurring series are never guessed at. They stay off the grid and are counted here instead.
-        </p>
-      {/if}
-
-      {#if upcoming.length > 0}
-        <RailCard tone="act" overline="Upcoming">
-          <ul class="flex flex-col gap-1">
-          {#each upcoming as item (occurrenceKey(item.row))}
-            <li class="text-[12px]">
-              <span class="text-ink-heading font-semibold">{item.row.summary}</span>
-              <span class="text-ink-subtitle tabular-nums"> · {item.label}</span>
-            </li>
-          {/each}
-          </ul>
-        </RailCard>
-      {/if}
-
-      <p class="text-ink-meta mt-auto pb-1 text-[11.5px] leading-relaxed">
-        External feeds are read-only mirrors. Valea-calendar events are plain files agents edit through the normal
-        permission gate.
-      </p>
-    </Rail>
-  {/snippet}
 </AppFrame>

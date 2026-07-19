@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "frontend-dev",
-      "runtimeExecutable": "bash",
+      "runtimeExecutable": "zsh",
       "runtimeArgs": [
         "-lc",
         "cd frontend && VITE_VALEA_CONTROL_TOKEN=valea-dev-token bun run dev"
@@ -12,7 +12,7 @@
     },
     {
       "name": "backend-dev",
-      "runtimeExecutable": "bash",
+      "runtimeExecutable": "zsh",
       "runtimeArgs": [
         "-lc",
         "cd backend && VALEA_APP_DIR=/private/tmp/claude-501/-Users-daniel-Development-valea/5a15bea4-0971-419d-8875-54e428e3ad85/scratchpad/valea-app-dir mix phx.server"

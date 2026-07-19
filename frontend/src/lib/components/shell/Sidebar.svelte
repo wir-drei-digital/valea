@@ -8,7 +8,6 @@
   import MountIcmAction from './MountIcmAction.svelte';
   import StatusPill from './StatusPill.svelte';
   import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
-  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 
   let {
     activeMountKey = null,
@@ -65,18 +64,5 @@
   <footer class="mt-auto flex flex-col gap-2 px-3 pb-3">
     <WorkspaceSwitcher {onBeforeMutateActive} />
     <StatusPill label={syncedAt ? `All local · synced ${syncedAt}` : 'All local'} />
-    <Tooltip.Provider>
-      <Tooltip.Root>
-        <!-- Wrapper span carries the trigger + hover, since a disabled <button> swallows pointer events. -->
-        <Tooltip.Trigger class="inline-block w-fit cursor-not-allowed">
-          <span
-            class="font-mono text-ink-meta hover:text-ink-secondary pointer-events-none block px-2 py-2 text-left text-[11.5px]"
-          >
-            &gt;_ Open the hood
-          </span>
-        </Tooltip.Trigger>
-        <Tooltip.Content>Coming with the audit log</Tooltip.Content>
-      </Tooltip.Root>
-    </Tooltip.Provider>
   </footer>
 </div>
