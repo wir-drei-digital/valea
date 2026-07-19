@@ -439,7 +439,8 @@
               onChange={(v) => toggleView(v as 'friendly' | 'raw')}
             />
           </div>
-          <h1 class="font-display text-ink-heading text-[30px] leading-tight font-medium">{content.title}</h1>
+          <!-- No repeated title here — the document's own `# h1` renders in
+               the editor below, in the same display-font style (tiptap.css). -->
           <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
             <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
             <span class="text-ink-meta font-mono text-[11.5px]">{decodedPath}</span>
@@ -481,12 +482,6 @@
         <PageMeta frontmatter={content.frontmatter} />
 
         <BacklinksPanel {mountKey} path={decodedPath} />
-
-        <div class="bg-paper-pill rounded-xl px-4 py-3">
-          <p class="text-[13px] text-ink-body">
-            This folder is yours — plain files. Export or hand it over anytime.
-          </p>
-        </div>
       </article>
     {/if}
   {/snippet}
