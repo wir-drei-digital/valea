@@ -64,7 +64,7 @@
   <div class="flex flex-col gap-1.5">
     <h2 class="font-display text-[19px] text-ink-heading">Checking your assistant</h2>
     <p class="max-w-[480px] text-[13px] text-ink-body">
-      Valea uses your own Claude Code. Nothing to configure in here — sign in once in a terminal
+      Valea uses your own Claude Code. Nothing to configure in here. Sign in once in a terminal
       and check again.
     </p>
   </div>

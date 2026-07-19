@@ -242,7 +242,7 @@
         {/if}
 
         <p class="text-ink-body text-[12.5px]">
-          Nothing is copied or moved — Valea reads it right where it already lives.
+          Nothing is copied or moved. Valea reads it right where it already lives.
         </p>
 
         <div class="flex flex-col gap-1.5">

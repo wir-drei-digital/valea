@@ -153,7 +153,7 @@
     try {
       const mountKey = icmStore.groups[0]?.mount;
       if (!mountKey) {
-        sessionError = 'No enabled ICM to host the session — enable one in the sidebar.';
+        sessionError = 'No enabled project can host the session. Enable one in the sidebar.';
         return;
       }
       // The session is opted into the whole account's mail mount (T14

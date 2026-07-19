@@ -8,7 +8,7 @@
     <EmptyState
       icon={ListTodo}
       title="Open loops arrive in a later step."
-      body="Tasks will gather here from mail, sessions, and workflows — with their sources attached."
+      body="Tasks will gather here from mail, sessions, and workflows, with their sources attached."
     />
   {/snippet}
 </AppFrame>

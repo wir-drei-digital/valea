@@ -30,7 +30,7 @@
   // the warn line below carries the detail; the state line stays honest
   // (2026-07-19 browser test run: dead-host account read "Up to date").
   const stateLabel = $derived(
-    status?.state === 'idle' && error ? 'Last sync failed — will retry' : mailStateLabel(status?.state)
+    status?.state === 'idle' && error ? 'Last sync failed, will retry' : mailStateLabel(status?.state)
   );
 </script>
 

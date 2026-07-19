@@ -76,7 +76,7 @@
       case 'icm_unavailable':
         return "That ICM isn't available right now.";
       case 'harness_unavailable':
-        return "The assistant isn't ready yet — check Chat for details.";
+        return "The assistant isn't ready yet. Check Chat for details.";
       default:
         return 'The session could not be started. Please try again.';
     }
@@ -272,7 +272,7 @@
     {#if doctorModal}
       <Dialog.Header>
         <Dialog.Title class="font-display text-[19px] text-ink-heading">
-          Diagnose — {doctorModal.name}
+          Diagnose: {doctorModal.name}
         </Dialog.Title>
         <Dialog.Description class={doctorModal.ok ? 'text-ink-body' : 'text-warn-ink'}>
           {doctorModal.summary}
@@ -293,7 +293,7 @@
               </span>
               <span class="text-ink-body">{check.label}</span>
               {#if check.detail}
-                <span class="text-ink-meta"> — {check.detail}</span>
+                <span class="text-ink-meta"> · {check.detail}</span>
               {/if}
               {#if check.status === 'failed' && check.remedy}
                 <p class="text-ink-meta mt-0.5 pl-4 font-mono text-[11px]">{check.remedy}</p>

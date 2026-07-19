@@ -3,7 +3,6 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { AppShell, Sidebar } from '$lib/components/shell';
-  import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { resolveActiveMountKey } from '$lib/shell/icm-route';
@@ -47,6 +46,6 @@
 
 <AppShell {list} {main} {rail} {mainVariant}>
   {#snippet sidebar()}
-    <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {activeMountKey} {onBeforeMutateActive} />
+    <Sidebar {activeMountKey} {onBeforeMutateActive} />
   {/snippet}
 </AppShell>

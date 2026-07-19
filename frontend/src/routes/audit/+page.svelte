@@ -22,7 +22,7 @@
   {#snippet main()}
     <PageHeader
       title="Audit log"
-      subtitle="Every action — synced, drafted, approved — recorded here as plain lines, oldest at the bottom."
+      subtitle="Every action is recorded here as plain lines, oldest at the bottom."
     />
 
     {#if !auditStore.loaded}
@@ -35,7 +35,7 @@
       <EmptyState
         icon={ListChecks}
         title="Nothing recorded yet."
-        body="Every action the assistant takes — synced, drafted, approved — will show up here as a plain receipt."
+        body="Every action the assistant takes will show up here as a plain receipt."
       />
     {:else}
       <div class="flex flex-col">

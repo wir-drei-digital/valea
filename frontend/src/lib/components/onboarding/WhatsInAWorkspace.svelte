@@ -20,7 +20,7 @@
     <dl class="flex flex-col gap-3 text-[13px]">
       <div class="flex flex-col gap-0.5">
         <dt class="font-mono text-[11.5px] text-ink-meta">icm/</dt>
-        <dd class="text-ink-body">Your business memory, written as Markdown pages — offers, policies, clients.</dd>
+        <dd class="text-ink-body">Your business memory, written as Markdown pages: offers, policies, clients.</dd>
       </div>
       <div class="flex flex-col gap-0.5">
         <dt class="font-mono text-[11.5px] text-ink-meta">workflows/</dt>

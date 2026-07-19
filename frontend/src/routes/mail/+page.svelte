@@ -138,7 +138,7 @@
     try {
       const mountKey = icmStore.groups[0]?.mount;
       if (!mountKey) {
-        cleanupError = 'No enabled ICM to host the session — enable one in the sidebar.';
+        cleanupError = 'No enabled project can host the session. Enable one in the sidebar.';
         return;
       }
       const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {

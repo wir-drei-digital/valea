@@ -123,7 +123,7 @@
         <p class="text-warn-ink text-[12.5px]">{impact}</p>
         <ul class="flex flex-col gap-1">
           {#each referencedPages as ref (ref.sourcePath)}
-            <li class="text-warn-ink text-[12.5px]">{ref.linkText || ref.sourcePath} links here — that link will break.</li>
+            <li class="text-warn-ink text-[12.5px]">{ref.linkText || ref.sourcePath} links here. That link will break.</li>
           {/each}
         </ul>
       {/if}

@@ -73,7 +73,7 @@ export function opResultMessage(result: string, reason: string | null): string |
 
   switch (reason) {
     case 'server_changed':
-      return 'The message changed on the server — sync and try again.';
+      return 'The message changed on the server. Sync and try again.';
     case 'no_credential':
       return 'Enter your mailbox password first.';
     case 'blocked':
@@ -133,7 +133,7 @@ export function draftRecipientsLine(recipients: MailDraft['recipients']): string
 export function pushErrorMessage(code: string): string {
   switch (code) {
     case 'content_changed':
-      return 'The draft changed since you opened it — review it again, then push.';
+      return 'The draft changed since you opened it. Review it again, then push.';
     case 'duplicate_active':
       return 'This draft is already being pushed.';
     case 'invalid_draft':
@@ -303,7 +303,7 @@ export function mailStateLabel(state: string | null | undefined): string {
     case 'identity_mismatch':
       return 'Folder belongs to a different account';
     case 'mailbox_replaced':
-      return 'Mailbox replaced — needs re-adopt';
+      return 'Mailbox replaced, needs re-adopt';
     case 'invalid_config':
       return 'Invalid configuration';
     default:

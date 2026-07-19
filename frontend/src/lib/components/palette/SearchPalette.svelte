@@ -80,7 +80,7 @@
 
   function skippedNoteFor(skipped: string[]): string | null {
     if (skipped.length === 0) return null;
-    return `Skipped ${skipped.join(', ')} — took too long to search.`;
+    return `Skipped ${skipped.join(', ')} (took too long to search).`;
   }
 
   async function runSearch(query: string): Promise<void> {

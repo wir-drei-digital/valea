@@ -139,7 +139,7 @@ describe('diagnosisSummary', () => {
 
     expect(diagnosisSummary(data)).toEqual({
       ok: false,
-      summary: '2 checks need attention — see Knowledge for details.'
+      summary: '2 checks need attention.'
     });
   });
 
@@ -148,21 +148,21 @@ describe('diagnosisSummary', () => {
 
     expect(diagnosisSummary(data)).toEqual({
       ok: false,
-      summary: '2 checks need attention — see Knowledge for details.'
+      summary: '2 checks need attention.'
     });
   });
 
   it('uses singular wording for exactly one non-ok check', () => {
     expect(diagnosisSummary({ ok: false, checks: [{ status: 'failed' }] })).toEqual({
       ok: false,
-      summary: '1 check needs attention — see Knowledge for details.'
+      summary: '1 check needs attention.'
     });
   });
 
   it('treats a missing status as non-ok (defensive — mirrors normalizeMountsDoctorChecks defaulting a missing status to "unknown")', () => {
     expect(diagnosisSummary({ ok: false, checks: [{}] })).toEqual({
       ok: false,
-      summary: '1 check needs attention — see Knowledge for details.'
+      summary: '1 check needs attention.'
     });
   });
 });

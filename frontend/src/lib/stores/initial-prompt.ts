@@ -23,7 +23,7 @@ export function takeInitialPrompt(sessionId: string): string | null {
 export function pageSessionPrompt(relativePath: string): string {
   return [
     `Read \`${relativePath}\` and follow it.`,
-    `If it describes a procedure or workflow, execute it step by step — I'll approve any file changes through the permission gate as you go.`,
+    `If it describes a procedure or workflow, execute it step by step. I'll approve any file changes through the permission gate as you go.`,
     `If it's reference material, give me a short summary and wait for my direction.`
   ].join(' ');
 }

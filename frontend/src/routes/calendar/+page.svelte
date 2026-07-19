@@ -258,14 +258,14 @@
         </ul>
       {:else}
         <p class="text-ink-secondary text-[12.5px] leading-relaxed">
-          No calendar sources yet — add an ICS feed under Sources, or let an agent create events in the Valea
+          No calendar sources yet. Add an ICS feed under Sources, or let an agent create events in the Valea
           calendar.
         </p>
       {/if}
 
       {#if unsupportedTotal > 0}
         <p class="text-ink-meta text-[11.5px] leading-relaxed">
-          Unsupported recurring series are never guessed at — they are absent from the grid and counted here instead.
+          Unsupported recurring series are never guessed at. They stay off the grid and are counted here instead.
         </p>
       {/if}
 

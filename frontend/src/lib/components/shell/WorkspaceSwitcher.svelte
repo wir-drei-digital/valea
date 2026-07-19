@@ -188,7 +188,7 @@
         <li class="text-[12.5px] text-ink-body">
           {session.title}
           {#if session.icmMount}
-            <span class="text-ink-meta">— {session.icmMount}</span>
+            <span class="text-ink-meta">· {session.icmMount}</span>
           {/if}
         </li>
       {/each}

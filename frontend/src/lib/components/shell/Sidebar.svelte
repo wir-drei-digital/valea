@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { mainNav } from '$lib/shell/nav';
+  import Logo from './Logo.svelte';
   import SidebarItem from './SidebarItem.svelte';
   import SectionOverline from './SectionOverline.svelte';
   import IcmProjects from './IcmProjects.svelte';
@@ -10,12 +11,10 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 
   let {
-    workspaceName,
     activeMountKey = null,
     syncedAt,
     onBeforeMutateActive
   }: {
-    workspaceName: string;
     /** Forwarded to `IcmProjects` — see its own doc comment for what this drives. */
     activeMountKey?: string | null;
     syncedAt?: string;
@@ -24,27 +23,14 @@
   } = $props();
 
   const sections = mainNav();
-  const initials = $derived(
-    workspaceName
-      .split(' ')
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((w) => w[0]?.toUpperCase())
-      .join('')
-  );
 </script>
 
 <div class="flex h-full flex-col">
+  <!-- Brand header: the mark + wordmark. The ACTIVE WORKSPACE is the
+       footer's WorkspaceSwitcher, not this header. -->
   <div class="flex items-center gap-2.5 px-3 pt-4 pb-3">
-    <div
-      class="flex size-8 shrink-0 items-center justify-center rounded-full bg-paper-nav-active text-[12px] font-semibold text-ink-heading"
-    >
-      {initials}
-    </div>
-    <div class="min-w-0">
-      <p class="truncate text-[13.5px] font-semibold text-ink-heading">{workspaceName}</p>
-      <p class="text-ink-meta text-[11px]">Local workspace</p>
-    </div>
+    <Logo />
+    <p class="font-display text-ink-heading text-[17px] font-medium">Valea</p>
   </div>
 
   <nav class="flex-1 overflow-y-auto px-2 pb-2">

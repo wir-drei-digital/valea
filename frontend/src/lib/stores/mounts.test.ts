@@ -284,11 +284,11 @@ describe('declareMountErrorMessage', () => {
     ['workspace_not_open', 'No workspace is open.'],
     ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
     ['invalid_mount_name', 'Give this mount a name without "/", "..", or control characters.'],
-    ['not_absolute', "Enter a full path (or one starting with ~) — a relative path can't be mounted."],
-    ['inside_workspace', "That folder is already inside this workspace — it doesn't need mounting."],
+    ['not_absolute', "Enter a full path (or one starting with ~). A relative path can't be used."],
+    ['inside_workspace', 'That folder is already inside this workspace, so there is nothing to add.'],
     [
       'ancestor_of_workspace',
-      'That folder contains this workspace — mounting it would put the workspace inside itself.'
+      'That folder contains this workspace, so adding it would put the workspace inside itself.'
     ],
     ['home_or_root', "That's your entire home folder (or your whole disk) — pick something more specific."],
     ['not_found', "That folder doesn't exist. Check the path and try again."],
@@ -321,7 +321,7 @@ describe('createIcmErrorMessage', () => {
   const createSpecificCases: Array<[string, string]> = [
     [
       'already_exists',
-      'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.'
+      'That folder already holds a project. Choose "Use an existing folder" to add it instead.'
     ],
     ['not_a_directory', 'That path points at an existing file, not a folder. Choose a folder location.'],
     [

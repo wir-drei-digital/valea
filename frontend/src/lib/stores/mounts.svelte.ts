@@ -281,11 +281,11 @@ export function declareMountErrorMessage(code: string): string {
     case 'invalid_mount_name':
       return 'Give this mount a name without "/", "..", or control characters.';
     case 'not_absolute':
-      return "Enter a full path (or one starting with ~) — a relative path can't be mounted.";
+      return "Enter a full path (or one starting with ~). A relative path can't be used.";
     case 'inside_workspace':
-      return "That folder is already inside this workspace — it doesn't need mounting.";
+      return "That folder is already inside this workspace, so there is nothing to add.";
     case 'ancestor_of_workspace':
-      return 'That folder contains this workspace — mounting it would put the workspace inside itself.';
+      return 'That folder contains this workspace, so adding it would put the workspace inside itself.';
     case 'home_or_root':
       return "That's your entire home folder (or your whole disk) — pick something more specific.";
     case 'not_found':
@@ -324,7 +324,7 @@ export function declareMountErrorMessage(code: string): string {
 export function createIcmErrorMessage(code: string): string {
   switch (code) {
     case 'already_exists':
-      return 'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.';
+      return 'That folder already holds a project. Choose "Use an existing folder" to add it instead.';
     case 'not_a_directory':
       return 'That path points at an existing file, not a folder. Choose a folder location.';
     case 'inside_workspace':

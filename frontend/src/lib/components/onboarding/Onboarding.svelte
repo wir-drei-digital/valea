@@ -38,7 +38,7 @@
           Welcome. Your business runs on a folder you own.
         </h1>
         <p class="text-ink-subtitle mx-auto max-w-[560px] text-[14.5px] leading-relaxed">
-          This app is a cockpit over plain files — your offers, policies, workflows and memory. No account to create.
+          This app is a cockpit over plain files: your offers, policies, workflows and memory. No account to create.
           Choose how to begin:
         </p>
       </div>
@@ -50,12 +50,12 @@
         <p class="text-overline text-act">START FRESH · MOST PEOPLE BEGIN HERE</p>
         <h2 class="font-display text-ink-heading text-[20px] font-medium">Create your first ICM</h2>
         <p class="text-ink-body text-[13.5px]">
-          Give it a name and a folder. Valea creates a small starter knowledge module there — plain Markdown pages
-          you own — and opens it straight into your first chat.
+          Give it a name and a folder. Valea creates a small starter project there, plain Markdown pages
+          you own, and opens it straight into your first chat.
         </p>
 
         <ol class="flex flex-col">
-          {#each ['A folder of Markdown pages, yours to keep', "You choose where it lives — export or move it anytime", 'Chat with it right away — nothing connects without asking you'] as step, i}
+          {#each ['A folder of Markdown pages, yours to keep', 'You choose where it lives, move it anytime', 'Chat with it right away, nothing connects without asking you'] as step, i}
             <li class={['flex items-start gap-3.5 py-3', i < 2 ? 'border-b border-paper-hairline' : '']}>
               <span class="text-ink-meta w-4 shrink-0 text-[13px] tabular-nums">{i + 1}</span>
               <span class="text-ink-body text-[13px] leading-relaxed">{step}</span>
@@ -74,7 +74,7 @@
         <p class="text-overline">USE EXISTING ICM · BRING YOUR OWN FOLDER</p>
         <h2 class="font-display text-ink-heading text-[20px] font-medium">Use an existing ICM folder</h2>
         <p class="text-ink-body text-[13.5px]">
-          From a consultant, a backup, or another machine. Point at the folder — we'll show you what's inside before
+          From a consultant, a backup, or another machine. Point at the folder and we'll show you what's inside before
           anything mounts. Nothing is copied or moved; it stays exactly where it is.
         </p>
 

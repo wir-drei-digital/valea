@@ -454,7 +454,7 @@
           </p>
         {:else if store.state === 'dirty' && store.error}
           <p role="alert" class="text-warn-ink text-[12px]">
-            Couldn't save this page. Your changes are still here — retrying on your next edit.
+            Couldn't save this page. Your changes are still here and will retry on your next edit.
           </p>
         {/if}
 

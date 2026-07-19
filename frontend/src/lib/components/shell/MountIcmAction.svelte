@@ -136,7 +136,7 @@
     <Dialog.Header>
       <Dialog.Title class="font-display text-[19px] text-ink-heading">Create a new project</Dialog.Title>
       <Dialog.Description class="text-ink-body">
-        Give it a name and a folder. Valea creates a small starter knowledge module there — plain Markdown pages you
+        Give it a name and a folder. Valea creates a small starter project there: plain Markdown pages you
         own.
       </Dialog.Description>
     </Dialog.Header>
@@ -164,7 +164,7 @@
           </div>
         {:else}
           <Input id="mount-action-create-folder" bind:value={folder} oninput={onFolderInput} disabled={submitting} />
-          <p class="text-ink-meta text-[11px]">Dev only — the desktop app suggests this automatically.</p>
+          <p class="text-ink-meta text-[11px]">Dev only: the desktop app suggests this automatically.</p>
         {/if}
       </div>
 

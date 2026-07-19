@@ -3,7 +3,6 @@
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import { AppShell, Sidebar } from '$lib/components/shell';
-  import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
@@ -110,7 +109,7 @@
 
 <AppShell>
   {#snippet sidebar()}
-    <Sidebar workspaceName={workspaceStore.name ?? 'Workspace'} {activeMountKey} />
+    <Sidebar {activeMountKey} />
   {/snippet}
 
   {#snippet main()}
@@ -147,8 +146,8 @@
             <strong class="text-ink-heading">Nothing prepared yet.</strong>
             Today renders a
             <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">today.json</code>
-            file from the root of each ICM — a small JSON file your agent keeps up to date with prepared
-            work, open loops, and notes. Ask your agent to maintain one; the starter ICM's
+            file from the root of each project. Your agent keeps it up to date with prepared
+            work, open loops, and notes. Ask your agent to maintain one; the starter project's
             <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">AGENTS.md</code> documents the
             shape.
           </p>

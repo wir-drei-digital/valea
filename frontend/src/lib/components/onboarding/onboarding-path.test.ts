@@ -155,7 +155,7 @@ describe('startFresh', () => {
     expect(setPendingIcmError).toHaveBeenCalledWith(
       'Name',
       '~/Documents/Valea/Name',
-      'That folder already holds an ICM — choose "Use an existing ICM folder" to mount it instead.'
+      'That folder already holds a project. Choose "Use an existing folder" to add it instead.'
     );
     expect(goToKnowledge).toHaveBeenCalledTimes(1);
     expect(goToFirstSession).not.toHaveBeenCalled();

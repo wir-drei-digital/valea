@@ -165,12 +165,12 @@ describe('classifyMounts', () => {
 });
 
 describe('degradedChipLabel', () => {
-  it('prefixes the reason with "Degraded — "', () => {
-    expect(degradedChipLabel({ degraded: 'icm.yaml is missing' })).toBe('Degraded — icm.yaml is missing');
+  it('prefixes the reason with "Degraded: "', () => {
+    expect(degradedChipLabel({ degraded: 'icm.yaml is missing' })).toBe('Degraded: icm.yaml is missing');
   });
 
   it('falls back to a generic reason when degraded is null (defensive — callers only invoke this for a degraded mount)', () => {
-    expect(degradedChipLabel({ degraded: null })).toBe('Degraded — unknown reason');
+    expect(degradedChipLabel({ degraded: null })).toBe('Degraded: unknown reason');
   });
 });
 

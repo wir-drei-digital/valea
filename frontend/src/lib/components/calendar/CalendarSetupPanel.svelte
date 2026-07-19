@@ -56,7 +56,7 @@
     }
     if (!result.urlStored) {
       addWarning =
-        'URL accepted but not saved to the keychain — the source works for this session; after a restart you will be asked for the URL again.';
+        'URL accepted but not saved to the keychain. The source works for this session, and after a restart you will be asked for it again.';
     }
     slug = '';
     name = '';
@@ -126,7 +126,7 @@
     <h2 class="font-display text-ink-heading text-[17px] font-medium">Calendar sources</h2>
     <p class="text-ink-secondary mt-1 text-[12.5px] leading-relaxed">
       Subscribed ICS feeds are mirrored read-only into <span class="font-mono">sources/calendar/</span>. The feed URL
-      is a credential (Google's "secret address" embeds a private token) — it is stored in the OS keychain, never in
+      is a credential (Google's "secret address" embeds a private token). It is stored in the OS keychain, never in
       workspace files.
     </p>
   </div>
@@ -153,7 +153,7 @@
               {/if}
               {#if calendarStore.urlNotStored.includes(source.source)}
                 <p class="text-warn-ink text-[11.5px]">
-                  URL not durably stored — re-add it below to retry the keychain write.
+                  URL not durably stored. Re-add it below to retry the keychain write.
                 </p>
               {/if}
             </div>
@@ -230,7 +230,7 @@
                   </span>
                   <span class="text-ink-body">{String(check.label ?? check.id ?? '')}</span>
                   {#if check.detail}
-                    <span class="text-ink-meta"> — {String(check.detail)}</span>
+                    <span class="text-ink-meta"> · {String(check.detail)}</span>
                   {/if}
                   {#if check.status === 'failed' && check.remedy}
                     <p class="text-ink-meta mt-0.5 pl-4 font-mono text-[10.5px]">{String(check.remedy)}</p>
@@ -282,13 +282,13 @@
       <p class="text-ink-heading text-[13px] font-semibold">Invalid Valea event files</p>
       <p class="text-ink-secondary text-[12px] leading-relaxed">
         These files under <span class="font-mono text-[11.5px]">sources/calendar/valea/events/</span> failed
-        validation and are shown nowhere — neither on the grid nor in the served feed — until fixed.
+        validation and stay off the grid and the served feed until fixed.
       </p>
       <ul class="flex flex-col gap-1">
         {#each calendarStore.valeaInvalid as entry (entry.name)}
           <li class="text-[11.5px]">
             <span class="text-warn-ink font-mono">{entry.name}</span>
-            <span class="text-ink-meta"> — {entry.reason}</span>
+            <span class="text-ink-meta"> · {entry.reason}</span>
           </li>
         {/each}
       </ul>
@@ -299,7 +299,7 @@
     <p class="text-ink-heading text-[13px] font-semibold">Served feed (Valea calendar)</p>
     <p class="text-ink-secondary text-[12px] leading-relaxed">
       Valea serves your local calendar back out as an ICS feed. Calendar apps ON THIS MACHINE can subscribe
-      (Calendar.app "On My Mac", Thunderbird, Outlook local); server-side fetchers — iCloud, Google, Outlook.com —
+      (Calendar.app "On My Mac", Thunderbird, Outlook local). Server-side fetchers like iCloud, Google, and Outlook.com
       cannot reach a loopback address, so the feed does not propagate to phones in this phase.
     </p>
     {#if calendarStore.feedToken}
@@ -307,7 +307,7 @@
         <Input type="text" readonly value={feedUrl(calendarStore.feedToken)} aria-label="Feed URL" />
         <Button type="button" variant="outline" size="sm" onclick={copyFeedUrl}>Copy</Button>
       </div>
-      <p class="text-ink-meta text-[11.5px]">Shown once — the token is stored only as a hash.</p>
+      <p class="text-ink-meta text-[11.5px]">Shown once. The token is stored only as a hash.</p>
     {/if}
     <div class="flex items-center gap-2">
       {#if !calendarStore.feedEnabled}

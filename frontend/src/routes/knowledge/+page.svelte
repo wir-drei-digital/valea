@@ -352,7 +352,7 @@
     {:else}
       <PageHeader
         title="Files"
-        subtitle="Your business memory — every page is a plain Markdown file in your workspace."
+        subtitle="Your business memory. Every page is a plain Markdown file in your workspace."
       />
     {/if}
   {/snippet}

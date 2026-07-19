@@ -16,7 +16,7 @@
   <ul class="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-6">
     <li class="flex items-center gap-2">
       <span class="size-1.5 shrink-0 rounded-full bg-act-dot"></span>
-      Runs on this Mac — nothing leaves it during setup
+      Runs on this Mac, nothing leaves it during setup
     </li>
     <li class="flex items-center gap-2">
       <Lock class="size-3.5 shrink-0 text-ink-meta" strokeWidth={1.5} />

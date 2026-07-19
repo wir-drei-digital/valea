@@ -195,7 +195,7 @@
 
           {#if !status.valid}
             <p class="text-warn-ink mt-1.5 text-[12.5px]">
-              Invalid configuration{status.reason ? ` — ${status.reason}` : ''}. Fix
+              Invalid configuration{status.reason ? `: ${status.reason}` : ''}. Fix
               <code class="bg-paper-track rounded px-1 py-0.5 text-[11.5px]">config/mail.yaml</code> by hand, then reopen
               the workspace.
             </p>
@@ -207,8 +207,8 @@
 
           {#if status.state === 'identity_mismatch'}
             <p class="text-warn-ink mt-1.5 text-[12.5px]">
-              The folder on disk belongs to a different account identity. Purge its local files to start over — your
-              mailbox on the server is untouched.
+              The folder on disk belongs to a different account identity. Purge its local files to start over.
+              Your mailbox on the server is untouched.
             </p>
             <div class="mt-2">
               <Button
@@ -248,7 +248,7 @@
           {#each status.heldFolders as folder (folder)}
             <div class="mt-1.5 flex flex-wrap items-center gap-2">
               <p class="text-suggest-ink text-[12.5px]">
-                Folder <span class="font-mono text-[11.5px]">{folder}</span> disappeared from the server — its local
+                Folder <span class="font-mono text-[11.5px]">{folder}</span> disappeared from the server. Its local
                 copy is held.
               </p>
               <Button
@@ -319,7 +319,7 @@
       <p class="text-ink-body text-[13.5px]">Mailbox connected.</p>
       {#if devModeNote}
         <p class="text-suggest-ink text-[12.5px]">
-          Dev mode — the password is held in memory only and not persisted.
+          Dev mode: the password is held in memory only and never persisted.
         </p>
       {/if}
       <Button type="button" variant="outline" size="sm" onclick={() => ((submitted = false), (account = ''))}>
@@ -336,7 +336,7 @@
       <div class="flex flex-col gap-1.5">
         <Label for="mail-setup-account">Account id</Label>
         <Input id="mail-setup-account" bind:value={account} disabled={submitting} placeholder="work" />
-        <p class="text-ink-meta text-[11.5px]">Lowercase letters, digits, and dashes — names the folder under sources/mail/</p>
+        <p class="text-ink-meta text-[11.5px]">Lowercase letters, digits, and dashes. Names the folder under sources/mail/</p>
       </div>
 
       <div class="flex flex-col gap-1.5">
@@ -347,7 +347,7 @@
       <div class="flex flex-col gap-1.5">
         <Label for="mail-setup-port">Port</Label>
         <Input id="mail-setup-port" inputmode="numeric" bind:value={portText} disabled={submitting} />
-        <p class="text-ink-meta text-[11.5px]">TLS — always on</p>
+        <p class="text-ink-meta text-[11.5px]">TLS, always on</p>
       </div>
 
       <div class="flex flex-col gap-1.5">

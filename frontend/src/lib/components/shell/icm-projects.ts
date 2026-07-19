@@ -105,7 +105,7 @@ export function diagnosisSummary(data: { ok: boolean; checks: Array<{ status?: s
     ok: false,
     summary:
       needsAttention === 1
-        ? '1 check needs attention — see Knowledge for details.'
-        : `${needsAttention} checks need attention — see Knowledge for details.`
+        ? '1 check needs attention.'
+        : `${needsAttention} checks need attention.`
   };
 }

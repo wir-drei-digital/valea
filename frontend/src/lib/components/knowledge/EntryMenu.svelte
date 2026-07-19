@@ -65,7 +65,7 @@
     sessionError = null;
     const icmId = mountsStore.mounts.find((m) => m.mountKey === mountKey)?.id;
     if (!icmId) {
-      sessionError = 'This ICM has no loadable identity — run Diagnose from the sidebar.';
+      sessionError = 'This project has no loadable identity. Run Diagnose from the sidebar.';
       return;
     }
     const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {

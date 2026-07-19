@@ -269,7 +269,7 @@
         <EmptyState
           icon={MessageSquare}
           title="Your assistant"
-          body="Talk to your assistant about the business — everything it knows is a file in your folder."
+          body="Talk to your assistant about the business. Everything it knows is a file in your folder."
         >
           {#snippet actions()}
             <Button type="button" onclick={() => void startSession()}>Start a session</Button>

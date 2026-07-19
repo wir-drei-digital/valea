@@ -132,7 +132,7 @@
     <Dialog.Header>
       <Dialog.Title class="font-display text-[19px] text-ink-heading">Start fresh</Dialog.Title>
       <Dialog.Description class="text-ink-body">
-        This folder is yours — plain files you can open, export, or hand off anytime. Nothing connects without
+        This folder is yours: plain files you can open, export, or hand off anytime. Nothing connects without
         asking you.
       </Dialog.Description>
     </Dialog.Header>
@@ -160,7 +160,7 @@
           </div>
         {:else}
           <Input id="fresh-icm-folder" bind:value={folder} oninput={onFolderInput} disabled={submitting} />
-          <p class="text-ink-meta text-[11px]">Dev only — the desktop app suggests this automatically.</p>
+          <p class="text-ink-meta text-[11px]">Dev only: the desktop app suggests this automatically.</p>
         {/if}
       </div>
 
@@ -173,7 +173,7 @@
           disabled={submitting}
           placeholder="Coaching Practice"
         />
-        <p class="text-ink-meta text-[11px]">How this shows up in the workspace switcher — usually the same name.</p>
+        <p class="text-ink-meta text-[11px]">How this shows up in the workspace switcher, usually the same name.</p>
       </div>
 
       {#if error}

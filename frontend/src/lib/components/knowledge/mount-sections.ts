@@ -117,7 +117,7 @@ export function classifyMounts(mounts: MountSummary[]): MountClassification {
  * `MountClassification.degraded`.
  */
 export function degradedChipLabel(mount: Pick<MountSummary, 'degraded'>): string {
-  return `Degraded — ${mount.degraded ?? 'unknown reason'}`;
+  return `Degraded: ${mount.degraded ?? 'unknown reason'}`;
 }
 
 // -- mounts doctor: check-row shaping (backend: `Valea.Mounts.Doctor.run/1`,

@@ -226,7 +226,7 @@ describe('mailStateLabel', () => {
     ['auth_failed', 'Sign-in failed'],
     ['inactive', 'Not connected'],
     ['identity_mismatch', 'Folder belongs to a different account'],
-    ['mailbox_replaced', 'Mailbox replaced — needs re-adopt'],
+    ['mailbox_replaced', 'Mailbox replaced, needs re-adopt'],
     ['invalid_config', 'Invalid configuration']
   ])('labels state=%s as %s', (state, expected) => {
     expect(mailStateLabel(state)).toBe(expected);
@@ -309,7 +309,7 @@ describe('opResultMessage', () => {
 
   it('maps known rejection reasons to calm sentences and falls back with the raw reason', () => {
     expect(opResultMessage('rejected', 'server_changed')).toBe(
-      'The message changed on the server — sync and try again.'
+      'The message changed on the server. Sync and try again.'
     );
     expect(opResultMessage('rejected', 'no_credential')).toBe('Enter your mailbox password first.');
     expect(opResultMessage('rejected', 'weird_reason')).toBe('The action was rejected (weird_reason).');
@@ -367,7 +367,7 @@ describe('draftRecipientsLine', () => {
 
 describe('pushErrorMessage', () => {
   it.each([
-    ['content_changed', 'The draft changed since you opened it — review it again, then push.'],
+    ['content_changed', 'The draft changed since you opened it. Review it again, then push.'],
     ['duplicate_active', 'This draft is already being pushed.'],
     ['push_failed', "The push failed before anything was sent. It's safe to try again."],
     ['anything_else', 'Could not push the draft. Check the account state and try again.']

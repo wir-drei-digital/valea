@@ -185,7 +185,7 @@
       } else if (outcome.stage === 'inspect') {
         mountError = outcome.error;
       } else {
-        mountError = 'That folder changed since you last checked it — choose it again to continue.';
+        mountError = 'That folder changed since you last checked it. Choose it again to continue.';
       }
       return;
     }
@@ -211,7 +211,7 @@
       if (outcome.stage === 'mount') {
         mountError = declareMountErrorMessage(outcome.error);
       } else {
-        mountError = "Couldn't adopt this folder — re-check it with Inspect and try again.";
+        mountError = "Couldn't adopt this folder. Re-check it with Inspect and try again.";
       }
       return;
     }
@@ -234,7 +234,7 @@
     <Dialog.Header>
       <Dialog.Title class="font-display text-[19px] text-ink-heading">Use an existing folder</Dialog.Title>
       <Dialog.Description class="text-ink-body">
-        Reads a knowledge folder right where it already lives — we'll show you what's inside before anything mounts.
+        Reads a folder right where it already lives. We'll show you what's inside before anything is added.
         Nothing is copied or moved.
       </Dialog.Description>
     </Dialog.Header>
@@ -315,7 +315,7 @@
             {inspecting ? 'Checking…' : 'Choose folder…'}
           </Button>
         </div>
-        <p class="text-ink-meta text-[11px]">Dev only — the desktop app uses a folder picker here.</p>
+        <p class="text-ink-meta text-[11px]">Dev only: the desktop app uses a folder picker here.</p>
       {/if}
 
       {#if inspectError}

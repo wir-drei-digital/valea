@@ -43,7 +43,7 @@
     <Dialog.Header>
       <Dialog.Title class="font-display text-[19px] text-ink-heading">Unmount "{name}"?</Dialog.Title>
       <Dialog.Description class="text-ink-body">
-        This removes it from this workspace's mount list — the folder stays exactly where it is on disk. Nothing
+        This removes it from this workspace's list. The folder stays exactly where it is on disk. Nothing
         is deleted, moved, or copied.
       </Dialog.Description>
     </Dialog.Header>
