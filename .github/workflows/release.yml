@@ -1,0 +1,181 @@
+# Desktop release pipeline (docs/superpowers/specs/2026-07-19-release-auto-update-design.md,
+# operational guide: docs/RELEASING.md).
+#
+# Tag push `vX.Y.Z` → per-platform bundles + signed updater artifacts on ONE
+# draft GitHub release, with `latest.json` merged across platforms by
+# tauri-action. Publishing the draft is the manual go-live act — the app's
+# updater only sees `releases/latest`, i.e. published releases.
+#
+# `workflow_dispatch` is the dry run: builds everything, creates no release,
+# parks the bundles as workflow artifacts instead.
+#
+# Every sidecar is built NATIVELY on a runner matching its target — the
+# Burrito payload embeds host-compiled NIFs (exqlite, erlexec), so there is
+# deliberately no cross-compilation anywhere in this pipeline.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest # Apple silicon; no Intel lane (see RELEASING.md)
+            burrito_target: macos_arm
+          - os: ubuntu-22.04 # oldest image → oldest glibc the AppImage links against
+            burrito_target: linux_x64
+          # No Windows lane: the app can't run there yet (erlexec is
+          # Unix-only, maildir ":2," filenames are illegal on NTFS) — see
+          # docs/RELEASING.md "Windows" for the full blocker list.
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert tag matches tauri.conf.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          conf_version=$(jq -r .version desktop/src-tauri/tauri.conf.json)
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$conf_version" != "$tag_version" ]; then
+            echo "Tag ${GITHUB_REF_NAME} != tauri.conf.json version ${conf_version} — bump the config (and Cargo.toml if you keep them aligned) before tagging." >&2
+            exit 1
+          fi
+
+      # ── Toolchains ────────────────────────────────────────────────────
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install Erlang/Elixir (Linux)
+        if: runner.os == 'Linux'
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      # setup-beam has no macOS support, so the mac lane mirrors the local
+      # dev setup instead: asdf against the same .tool-versions. The whole
+      # asdf data dir is cached — OTP compiles from source exactly once per
+      # .tool-versions bump, later runs restore in seconds.
+      - name: Cache asdf (macOS)
+        if: runner.os == 'macOS'
+        id: asdf-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.asdf
+          key: asdf-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.tool-versions') }}
+
+      - name: Install Erlang/Elixir via asdf (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install asdf autoconf openssl@3
+          if [ "${{ steps.asdf-cache.outputs.cache-hit }}" != "true" ]; then
+            asdf plugin add erlang
+            asdf plugin add elixir
+            export KERL_CONFIGURE_OPTIONS="--without-javac --without-wx --without-odbc --with-ssl=$(brew --prefix openssl@3)"
+            asdf install
+          fi
+          echo "$HOME/.asdf/shims" >> "$GITHUB_PATH"
+
+      - name: Install Tauri system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libxdo-dev libssl-dev build-essential curl wget file
+
+      # ── Caches ────────────────────────────────────────────────────────
+      - name: Cache backend deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/deps
+            backend/_build
+          key: mix-prod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.tool-versions', 'backend/mix.lock') }}
+
+      - name: Cache Burrito's pinned zig
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/zig
+          key: zig-0.15.2-${{ runner.os }}-${{ runner.arch }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # ── Build ─────────────────────────────────────────────────────────
+      - name: Install JS deps
+        run: |
+          (cd frontend && bun install --frozen-lockfile)
+          (cd desktop && bun install --frozen-lockfile)
+
+      - name: Bootstrap hex/rebar
+        run: cd backend && mix local.hex --force && mix local.rebar --force
+
+      - name: Build SPA + Burrito sidecar
+        env:
+          BURRITO_TARGET: ${{ matrix.burrito_target }}
+        run: just package-backend
+
+      - name: Build bundles${{ startsWith(github.ref, 'refs/tags/') && ' and upload to draft release' || '' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple Developer ID signing + notarization — inert until the
+          # secrets exist (docs/RELEASING.md "macOS signing"); ad-hoc signed
+          # bundles until then.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: desktop
+          # Empty on workflow_dispatch → build only, no release touched.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('Valea {0}', github.ref_name) || '' }}
+          releaseDraft: true
+          releaseBody: |
+            Draft — publish to go live. Installed apps auto-update from the
+            published release's `latest.json`; installers below are for
+            first-time installs.
+
+      - name: Park bundles as workflow artifacts (dry run)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.burrito_target }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/rpm/*.rpm
