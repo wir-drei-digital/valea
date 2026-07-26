@@ -148,11 +148,17 @@ undecodable** (connection drop, timeout, TLS teardown on the reply
 read). Failures before `DATA` is accepted for transmission are always
 `:error`. `:unknown` enters reconciliation and is never retried.
 
-`Valea.Mail.SmtpClient` implements it on `gen_smtp_client` (gen_smtp is
-already a dependency). gen_smtp's TLS defaults are not acceptable —
-`tls_options` are set explicitly: `verify_peer`, CA store, SNI,
-`customize_hostname_check` with wildcard support — the same posture as
-`ImapClient`. AUTH PLAIN/LOGIN only, only over the established TLS layer.
+`Valea.Mail.SmtpClient` is **hand-written on `:ssl`/`:gen_tcp`** (implicit
+TLS on 465; `:gen_tcp` + STARTTLS upgrade on 587), the same
+verified-TLS posture as `ImapClient`: `verify_peer`, CA store, SNI,
+hostname verification with wildcard support; trust-root override tests
+only. gen_smtp stays MIME-only. (Planning amendment, was
+"gen_smtp_client": that client cannot express the tri-state contract —
+its `network_failure` taxonomy does not localize a failure relative to
+the DATA dot, and its `retries` host-loop re-runs the entire session
+*including DATA* on temporary failures, a structural violation of the
+no-retransmission rule.) AUTH PLAIN/LOGIN only, only over the
+established TLS layer.
 **All-or-nothing recipients**: every `RCPT TO` (to + cc + bcc) must be
 accepted; any rejection aborts with `RSET`/`QUIT` *before* `DATA` and
 returns `{:error, {:rejected_recipients, ...}}` with per-recipient
@@ -165,7 +171,7 @@ scripted failure points at every protocol step.
 A send is a new ledger op kind, `kind: send`, in `mail_pending_ops` —
 executed by the existing ops executor, serialized through the account's
 Engine, exactly like push. **Settings pinning is an invariant, not an
-implementation choice**: the identity-fingerprint comparison, the atomic
+implementation choice**: the review-fingerprint comparison, the atomic
 claim, the snapshot, and the wire/record composition all run
 synchronously inside one Engine call, against one captured
 `state.settings` value — never against settings re-read outside the
@@ -287,8 +293,8 @@ reference → compose without threading headers plus a panel warning.
 Threading is part of the review contract even though it lives outside
 the draft bytes: the review snapshot resolves and returns the exact
 threading headers (or their absence + the warning), and send-time
-composition re-resolves and compares — a mismatch rejects with a
-re-review error. The referenced canonical file is immutable per msg_id,
+composition re-resolves and re-derives the review fingerprint's
+threading component — a mismatch rejects with a re-review error. The referenced canonical file is immutable per msg_id,
 so header *values* cannot drift; what this catches is *presence* drift
 (the referenced message deleted server-side between review and send
 would otherwise silently flip the send from threaded to unthreaded).
@@ -332,16 +338,20 @@ Clicking calls a new **atomic review-snapshot RPC**,
 `get_mail_draft_review(account, draft_name)`: one no-follow single-link
 read into a buffer, returning the parsed recipient set, subject,
 threading warning, sending identity (`from_name <from>`, account slug),
-an **identity fingerprint** — an opaque hash of the account's full,
+a **review fingerprint** — an opaque hash over the account's full,
 normalized SMTP send config (`from`, `from_name`, host, port, security,
-username) as resolved for this review — the raw body, and the
-`content_hash` **of that same buffer**. The modal renders exclusively
-from this response and binds **both** the content hash and the identity
-fingerprint into `send_draft`: the draft hash alone cannot cover the
-sending identity, because settings edits hot-reload engines with no
-generation change — a second tab changing `smtp.from` between
-modal-open and confirm would otherwise transmit under an identity the
-human never reviewed. Nothing shown to the human may come from a
+username) **plus the review's resolved threading** (the exact
+`In-Reply-To`/`References` values, or their recorded absence), both as
+resolved for this review — the raw body, and the `content_hash` **of
+that same buffer**. (Planning amendment: the fingerprint folds in the
+threading resolution because `send_draft` carries no other channel for
+the review's threading state — one token now binds both drift classes.)
+The modal renders exclusively from this response and binds **both** the
+content hash and the review fingerprint into `send_draft`: the draft
+hash alone cannot cover the sending identity or threading, because
+settings edits hot-reload engines with no generation change — a second
+tab changing `smtp.from` between modal-open and confirm would otherwise
+transmit under an identity the human never reviewed. Nothing shown to the human may come from a
 different read than the hashes they confirm (list-derived parses are
 display-only, never confirm inputs). A draft edited between modal-open
 and confirm → server-side hash mismatch → re-review error, modal
@@ -454,14 +464,18 @@ control-token-gated — agents have no transport to it.
 
 - `get_mail_draft_review(account, draft_name)` — the atomic
   review-snapshot read backing the confirm modal (one buffer: parsed
-  recipients + subject + identity + identity fingerprint + resolved
+  recipients + subject + identity + review fingerprint + resolved
   threading headers or absent-with-warning + raw body + that buffer's
   `content_hash`).
-- `send_draft(account, draft_name, content_hash, identity_fingerprint,
+- `send_draft(account, draft_name, content_hash, review_fingerprint,
   generation)` — same basename validation, containment, and no-follow
-  snapshot rules as `push_draft_to_mailbox`; re-derives the identity
-  fingerprint from current settings and rejects `re_review_required` on
-  mismatch before any snapshot or composition; returns the op status.
+  snapshot rules as `push_draft_to_mailbox`; re-derives the review
+  fingerprint from current settings + a fresh threading resolution and
+  rejects `re_review_required` on mismatch **before any claim, spool
+  write, or composition** (the threading component requires parsing the
+  snapshot, so the side-effect-free snapshot read necessarily precedes
+  the check — nothing durable or transmitted does); returns the op
+  status.
 - `resolve_send_review(account, op_id, resolution, generation)` —
   `resolution: sent | not_sent`; only valid on a `send_review` op of that
   account.
@@ -517,7 +531,8 @@ control-token-gated — agents have no transport to it.
 ## Change map
 
 - **New:** `Valea.Mail.SmtpTransport` (behaviour), `Valea.Mail.SmtpClient`
-  (gen_smtp_client + strict TLS), `send` op kind in the ops executor
+  (hand-written `:ssl`/STARTTLS wire client, strict TLS — see §SMTP
+  transport & client), `send` op kind in the ops executor
   (claim/snapshot shared with push; transmit + Sent-copy + review
   states), activation-time local send classification in the Engine,
   `send_message_id/3` + `DraftFile.canonical_send_bytes/1` (one
