@@ -465,7 +465,9 @@ defmodule Valea.ICM.Watcher do
       path == root ->
         []
 
-      String.starts_with?(path, root <> "/") ->
+      # Equality is already consumed above, so this is the STRICT-descendant
+      # branch — `Valea.Paths.ancestor?/2` owns the segment-boundary decision.
+      Valea.Paths.ancestor?(root, path) ->
         path |> String.replace_prefix(root <> "/", "") |> Path.split()
 
       true ->
@@ -577,7 +579,7 @@ defmodule Valea.ICM.Watcher do
     Map.put(state, timer_key, Process.send_after(self(), flush_msg, @debounce_ms))
   end
 
-  defp under?(path, dir), do: path == dir or String.starts_with?(path, dir <> "/")
+  defp under?(path, dir), do: Valea.Paths.ancestor?(dir, path)
 
   defp canonical(path) do
     case Valea.Paths.resolve_real(".", path) do

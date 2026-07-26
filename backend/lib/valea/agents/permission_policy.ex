@@ -127,8 +127,10 @@ defmodule Valea.Agents.PermissionPolicy do
 
   Relative candidates resolve against `cwd` (never `workspace_root`) — this
   is the behavioral heart of the split. `read_roots`/`write_paths`/
-  `write_roots` are absolute, so membership is segment-boundary: `resolved ==
-  root or starts_with?(resolved <> "/", root <> "/")`.
+  `write_roots` are absolute, so membership is segment-boundary — the resolved
+  candidate IS the root or lies beneath it, decided by `Valea.Paths.ancestor?/2`
+  (the one place that owns the separator join, and the only one that knows
+  windows compares case-folded).
 
   `@root_files` (`AGENTS.md`/`CLAUDE.md`, always-allowed relative reads) now
   resolve against `cwd` (the ICM root that actually carries those files),
@@ -248,7 +250,7 @@ defmodule Valea.Agents.PermissionPolicy do
   # longer required to be an ancestor of `cwd`. Relative candidates are the
   # one case that resolves against `cwd` — the behavioral heart of the split.
   defp split_resolve_candidate(path, cwd) do
-    if String.starts_with?(path, "/") do
+    if Valea.Paths.absolute?(path) do
       Valea.Paths.resolve_real(path, path)
     else
       Valea.Paths.resolve_real(path, cwd)
@@ -408,11 +410,12 @@ defmodule Valea.Agents.PermissionPolicy do
     end
   end
 
-  # Same segment-boundary membership as `split_under_root?/2`, over
-  # already-casefolded strings — a separate helper so the global,
-  # case-sensitive one stays untouched (moduledoc pin).
-  defp casefold_under_root?(cf_path, cf_root),
-    do: cf_path == cf_root or String.starts_with?(cf_path <> "/", cf_root <> "/")
+  # Same segment-boundary membership as `split_under_root?/2` — both delegate
+  # the join to `Valea.Paths.ancestor?/2` — but over already-casefolded
+  # strings, so mail/calendar matching is case- AND normalization-insensitive
+  # on every platform. A separate helper so the global one, which casefolds
+  # nothing of its own, stays untouched (moduledoc pin).
+  defp casefold_under_root?(cf_path, cf_root), do: Valea.Paths.ancestor?(cf_root, cf_path)
 
   # A relative candidate that lexically escapes `cwd` (the only base relative
   # candidates ever resolve against) can't be checked against any OTHER root
@@ -464,8 +467,7 @@ defmodule Valea.Agents.PermissionPolicy do
   # `mounts/ab/...` (a component boundary, not a character boundary).
   defp split_root_member?(path, roots), do: Enum.any?(roots, &split_under_root?(path, &1))
 
-  defp split_under_root?(path, root),
-    do: path == root or String.starts_with?(path <> "/", root <> "/")
+  defp split_under_root?(path, root), do: Valea.Paths.ancestor?(root, path)
 
   ## ===========================================================================
   ## Shared

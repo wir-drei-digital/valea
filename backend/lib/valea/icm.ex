@@ -203,12 +203,12 @@ defmodule Valea.ICM do
   # Containment has two layers, both required:
   #
   #   1. LEXICAL — `abs` (the `..`-collapsed expansion of `rel_path` against
-  #      `root`) must fall under `root` as a string. This alone is what this
-  #      function did before symlink-hardening; it still runs first as a
-  #      cheap reject for the common case (and the mount-root sentinel: an
-  #      empty `rel_path` expands to `root` itself, which never starts with
-  #      `root <> "/"`, so `contain(root, "")` stays rejected — the mount
-  #      root itself is never a valid rename/delete/page target).
+  #      `root`) must fall STRICTLY under `root` as a string. This alone is
+  #      what this function did before symlink-hardening; it still runs first
+  #      as a cheap reject for the common case (and the mount-root sentinel:
+  #      an empty `rel_path` expands to `root` itself, which the `abs != root`
+  #      half rejects, so `contain(root, "")` stays rejected — the mount root
+  #      itself is never a valid rename/delete/page target).
   #   2. REAL — a path that is lexically inside `root` can still walk OUT via
   #      a symlink planted inside the mount (the workspace's own `..`-guard
   #      only ever collapses literal `..` segments; it has no idea a
@@ -230,7 +230,7 @@ defmodule Valea.ICM do
   defp contain(root, rel_path) do
     abs = Path.expand(rel_path, root)
 
-    if String.starts_with?(abs, root <> "/") do
+    if Paths.ancestor?(root, abs) and abs != root do
       case Paths.resolve_real(abs, root) do
         {:ok, _real} -> {:ok, abs}
         {:error, _reason} -> {:error, :outside_workspace}

@@ -401,7 +401,7 @@ defmodule Valea.Api.ICM do
       %{enabled: true, degraded: nil, root: root} = mount ->
         abs = target_abs(workspace, target_path)
 
-        with true <- String.starts_with?(abs, root <> "/"),
+        with true <- Valea.Paths.ancestor?(root, abs) and abs != root,
              {:ok, _real} <- Valea.Paths.resolve_real(abs, root) do
           {:ok, %{mount: mount, abs: abs}}
         else
@@ -444,8 +444,11 @@ defmodule Valea.Api.ICM do
   defp most_specific_root([]), do: nil
   defp most_specific_root(matches), do: Enum.max_by(matches, &byte_size(&1.root))
 
+  # Segment-boundary attribution, `Valea.Paths.ancestor?/2` owning the join.
+  # The `root != ""` guard is load-bearing: a degraded mount carries an empty
+  # root, which would otherwise "contain" every absolute path.
   defp mount_prefix?(path, root) do
-    root != "" and (path == root or String.starts_with?(path <> "/", root <> "/"))
+    root != "" and Valea.Paths.ancestor?(root, path)
   end
 
   defp target_abs(_workspace, "/" <> _ = abs), do: Path.expand(abs)

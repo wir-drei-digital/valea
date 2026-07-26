@@ -420,11 +420,13 @@ defmodule Valea.Mounts do
   defp most_specific_root([]), do: nil
   defp most_specific_root(matches), do: Enum.max_by(matches, &byte_size(&1.root))
 
-  # Segment-boundary "is `path` under (or equal to) `root`?" -- mirrors
-  # `Valea.Mounts.External`'s own `under?/2`: a trailing-slash join, never a
-  # lexical string prefix, so `/a/b` never matches an `/a/bc` root.
+  # Segment-boundary "is `path` under (or equal to) `root`?" -- `Paths.ancestor?/2`
+  # owns the trailing-slash join (never a lexical string prefix, so `/a/b` never
+  # matches an `/a/bc` root; case-folded on windows). The `root != ""` guard is
+  # load-bearing: a degraded mount carries an empty root, and EVERY absolute path
+  # is trivially an "ancestor?" descendant of the empty string.
   defp path_under_root?(path, root) do
-    root != "" and (path == root or String.starts_with?(path <> "/", root <> "/"))
+    root != "" and Paths.ancestor?(root, path)
   end
 
   # -- mutations: mount / create / set_enabled / unmount (icms:-only) ------
@@ -933,14 +935,14 @@ defmodule Valea.Mounts do
   defp home_or_root?(resolved),
     do: resolved == "/" or resolved == resolve_best_effort(System.user_home!())
 
-  # Segment-boundary "is `descendant` under (or equal to) `ancestor`?" — a
-  # trailing-slash join, not a lexical string prefix, so `/a/b` never
-  # matches an `/a/bc` ancestor. `/` is always an ancestor of everything.
+  # Segment-boundary "is `descendant` under (or equal to) `ancestor`?" —
+  # `Paths.ancestor?/2` joins on the separator, so `/a/b` never matches an
+  # `/a/bc` ancestor. The `"/"` clause stays explicit: that join makes the
+  # unix root `"//"`, which matches nothing, so `/` being an ancestor of
+  # everything is stated here rather than derived.
   defp under_boundary?(_descendant, "/"), do: true
 
-  defp under_boundary?(descendant, ancestor) do
-    descendant == ancestor or String.starts_with?(descendant <> "/", ancestor <> "/")
-  end
+  defp under_boundary?(descendant, ancestor), do: Paths.ancestor?(ancestor, descendant)
 
   defp build_resolved_icm_mount(name, path, resolved, enabled) do
     case check_icm_glob_safety(resolved) do
@@ -999,7 +1001,13 @@ defmodule Valea.Mounts do
   # resolving it against itself makes containment trivially satisfied and
   # yields the fully-symlink-walked physical path — mirrors
   # `Valea.Mounts.External`'s identically-named private helper.
+  # `Paths.normalize/1` is the mount-root INGRESS (spec §D2): every
+  # user/config-supplied path that becomes a `mount.root` — plus the workspace
+  # root and `$HOME` — reaches its canonical internal form here, once, before
+  # any containment comparison sees it. Identity on unix.
   defp resolve_best_effort(path) do
+    path = Paths.normalize(path)
+
     case Paths.resolve_real(path, path) do
       {:ok, resolved} -> resolved
       {:error, _reason} -> path

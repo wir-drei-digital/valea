@@ -218,8 +218,8 @@ defmodule ValeaWeb.FilesController do
   end
 
   # Containment has two layers, both required: LEXICAL (the `..`-collapsed
-  # expansion of `rel_path` against `root` must fall under `root` as a
-  # string) and REAL (`Valea.Paths.resolve_real/2` walks the path the way
+  # expansion of `rel_path` against `root` must fall STRICTLY under `root` as
+  # a string — the root itself is not a servable file) and REAL (`Valea.Paths.resolve_real/2` walks the path the way
   # the OS would, so a symlink planted inside the mount can't smuggle
   # authority to somewhere else entirely). Returns the LEXICAL absolute
   # path on success — every caller does I/O on the path named, exactly as
@@ -227,7 +227,7 @@ defmodule ValeaWeb.FilesController do
   defp contain(root, rel_path) do
     abs = Path.expand(rel_path, root)
 
-    if String.starts_with?(abs, root <> "/") do
+    if Paths.ancestor?(root, abs) and abs != root do
       case Paths.resolve_real(abs, root) do
         {:ok, _real} -> {:ok, abs}
         {:error, _reason} -> {:error, :outside_mount}

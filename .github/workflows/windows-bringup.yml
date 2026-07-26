@@ -59,9 +59,25 @@ jobs:
       # path functions and the real filesystem, so its Windows semantics
       # (root-floor, UNC roots, case-folded containment) must be proven on the
       # native lane, not just the pure suite on Unix. GATING — Task 3 is not
-      # complete until this is green. Task 4 appends paths_boundary_test.exs.
+      # complete until this is green.
+      #
+      # Task 4 (spec §D4) rewired every absoluteness/ancestry gate onto that
+      # API, so its own guard (paths_boundary_test) AND the suites of the
+      # migrated modules run here too — the containment decisions those suites
+      # exercise are exactly what changed shape.
       - name: Paths containment suite (gating)
-        run: cd backend && mix test test/valea/paths_test.exs
+        run: |
+          cd backend && mix test \
+            test/valea/paths_test.exs \
+            test/valea/paths_boundary_test.exs \
+            test/valea/mounts/mounts_test.exs \
+            test/valea/mounts/mounts_mutation_test.exs \
+            test/valea/agents/permission_policy_test.exs \
+            test/valea/icm_test.exs \
+            test/valea/icm_symlink_containment_test.exs \
+            test/valea_web/icm_rpc_test.exs \
+            test/valea/calendar/local_test.exs \
+            test/valea_web/files_controller_test.exs
       - name: Build SPA + Burrito sidecar
         env:
           BURRITO_TARGET: windows_x64

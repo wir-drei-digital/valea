@@ -9,6 +9,7 @@ defmodule Valea.Harnesses.ClaudeCode do
   alias Valea.Agents.CommandSpec
   alias Valea.Agents.Env
   alias Valea.Agents.SessionSettings
+  alias Valea.Paths
 
   @impl true
   def definition, do: %{id: "claude_code", name: "Claude Code"}
@@ -50,12 +51,18 @@ defmodule Valea.Harnesses.ClaudeCode do
     Enum.map(scope.related_icms, & &1.root) ++ scope.read_paths
   end
 
+  # The configured command is a CONFIG-supplied path, so `Paths.normalize/1` is
+  # its ingress (spec §D2) and `Paths.absolute?/1` its absoluteness gate: an
+  # absolute command is taken as named, a bare command name goes through PATH.
+  # `System.find_executable/1`'s answer is re-gated the same way — only a
+  # root-anchored, regular file is ever spawned.
   defp resolve(cmd, args, opts) do
-    resolved = if String.starts_with?(cmd, "/"), do: cmd, else: System.find_executable(cmd)
+    cmd = Paths.normalize(cmd)
+    resolved = if Paths.absolute?(cmd), do: cmd, else: System.find_executable(cmd)
 
     case resolved do
       abs when is_binary(abs) ->
-        if String.starts_with?(abs, "/") and File.regular?(abs),
+        if Paths.absolute?(abs) and File.regular?(abs),
           do: {:ok, %CommandSpec{cmd: abs, args: args, env: opts[:env] || %{}}},
           else: {:error, :harness_unavailable}
 
