@@ -166,12 +166,21 @@ defmodule Valea.Paths do
   Exists so the Windows root-floor semantics are testable on a Unix host
   (spec §D testing split).
 
-  `base` is the root the walk floors against and MUST classify `:absolute`
-  for `platform`. A base that does not (drive-relative `C:foo`, device
-  `\\\\.\\…`, bare `//host`, or a plain relative path) has no root to floor
-  `..` against, so it raises `ArgumentError`: callers of this seam always
-  hold a root, and inventing one here is exactly the ambiguity containment
-  must never resolve — least of all silently.
+  BOTH arguments have a contract, and both fail LOUD (`ArgumentError`) rather
+  than resolve an ambiguity — this is a pure seam whose callers hold real
+  paths, so a violation is a caller bug, not user input:
+
+    * `base` MUST classify `:absolute` for `platform` — it is the root the
+      walk floors against. A drive-relative `C:foo`, device `\\\\.\\…`, bare
+      `//host` or plain relative base has no root to floor `..` against, and
+      inventing one is exactly the ambiguity containment must never resolve.
+    * `path` must classify `:absolute` or `:relative`. A `:drive_relative` or
+      `:invalid` path has no defined resolution; silently substituting the
+      base would coerce an ambiguous form to the workspace root — the same
+      fail-open shape the global constraint forbids.
+
+  `resolve_real/2` faces untrusted input instead, so it keeps returning
+  `{:error, :invalid}` for those shapes rather than raising.
   """
   @spec resolve_lexical(String.t(), String.t(), platform()) :: String.t()
   def resolve_lexical(path, base, platform \\ host_platform()) do
@@ -181,10 +190,10 @@ defmodule Valea.Paths do
       {:ok, root, acc, remaining} ->
         render(lexical_walk(root, acc, remaining))
 
-      # A non-resolvable `path` shape (drive-relative/device/invalid) has no
-      # walk to run; the floored base is the fail-closed answer.
-      {:error, _} ->
-        render(base_pair)
+      {:error, classification} ->
+        raise ArgumentError,
+              "resolve_lexical/3 got an unresolvable path #{inspect(path)} " <>
+                "(#{classification} on #{platform})"
     end
   end
 
@@ -312,6 +321,11 @@ defmodule Valea.Paths do
 
   # //host/share[/...] -> {"//host/share", remaining_components} | nil.
   # Host AND share are both part of the root (spec §D1); neither may be empty.
+  # A THIRD leading slash means there is no host component at all ("///a/b"):
+  # `trim: true` would otherwise read "a" as the host and invent a root out of
+  # a malformed path, so it is rejected here and classifies `:invalid`.
+  defp unc_root("//" <> "/" <> _), do: nil
+
   defp unc_root("//" <> rest) do
     case String.split(rest, "/", trim: true) do
       [host, share | comps] when host != "" and share != "" -> {"//#{host}/#{share}", comps}
@@ -326,8 +340,23 @@ defmodule Valea.Paths do
   defp drive_abs?(p), do: Regex.match?(~r{^[A-Za-z]:/}, p)
 
   # \\?\UNC\h\s\... (as //?/UNC/h/s/...) -> //h/s/...  ;  \\?\C:\... -> C:/...
-  defp strip_extended("//?/UNC/" <> rest), do: "//" <> rest
-  defp strip_extended("//?/" <> rest), do: rest
+  #
+  # The `UNC` token is matched CASE-INSENSITIVELY: `\\?\unc\srv\share` is
+  # legal on Windows, and a case-sensitive match would strip only the `\\?\`
+  # and leave `unc/srv/share` — a RELATIVE string, i.e. a UNC absolute
+  # silently degraded into a non-root. Recurses until the string stops
+  # changing so nested wrappers (`//?///?/C:/a`) normalize to the same thing
+  # `classify/2` reads; each pass consumes at least 4 bytes, so it terminates.
+  defp strip_extended("//?/" <> rest) do
+    case rest do
+      <<u, n, c, ?/, tail::binary>> when u in [?U, ?u] and n in [?N, ?n] and c in [?C, ?c] ->
+        strip_extended("//" <> tail)
+
+      _ ->
+        strip_extended(rest)
+    end
+  end
+
   defp strip_extended(p), do: p
 
   defp upcase_drive(<<letter, ?:, rest::binary>>) when letter in ?a..?z,

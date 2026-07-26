@@ -182,6 +182,18 @@ defmodule Valea.PathsTest do
       assert Valea.Paths.classify("\\\\.\\COM1", :windows) == :invalid
       assert Valea.Paths.classify("//srv", :windows) == :invalid
       assert Valea.Paths.classify("/rootless", :windows) == :invalid
+      # A third leading slash has no host component — never invent a root out
+      # of a malformed path just because `trim: true` would read "a" as one.
+      assert Valea.Paths.classify("///a/b", :windows) == :invalid
+    end
+
+    test "the extended-length UNC token is case-insensitive" do
+      # `\\?\unc\…` is legal on Windows. A case-sensitive token match strips
+      # only the `\\?\` and leaves a RELATIVE "unc/srv/share" — a UNC
+      # absolute silently degraded into a non-root.
+      assert Valea.Paths.classify("\\\\?\\unc\\srv\\share\\x", :windows) == :absolute
+      assert Valea.Paths.classify("\\\\?\\Unc\\srv\\share\\x", :windows) == :absolute
+      assert Valea.Paths.classify("\\\\?\\UNC\\srv\\share\\x", :windows) == :absolute
     end
 
     test "unix unchanged" do
@@ -190,11 +202,45 @@ defmodule Valea.PathsTest do
     end
   end
 
+  describe "absolute?/2" do
+    test "windows: drive/UNC roots yes, drive-relative no" do
+      assert Valea.Paths.absolute?("C:/a", :windows)
+      assert Valea.Paths.absolute?("//srv/share/a", :windows)
+      refute Valea.Paths.absolute?("C:foo", :windows)
+      refute Valea.Paths.absolute?("a/b", :windows)
+    end
+
+    test "unix: leading slash only" do
+      assert Valea.Paths.absolute?("/a/b", :unix)
+      refute Valea.Paths.absolute?("a/b", :unix)
+      refute Valea.Paths.absolute?("C:/a", :unix)
+    end
+  end
+
   describe "normalize/2" do
     test "extended-length wrappers strip to plain forms" do
       assert Valea.Paths.normalize("\\\\?\\C:\\a\\b", :windows) == "C:/a/b"
       assert Valea.Paths.normalize("\\\\?\\UNC\\srv\\share\\x", :windows) == "//srv/share/x"
       assert Valea.Paths.normalize("c:\\a", :windows) == "C:/a"
+    end
+
+    test "the UNC token is stripped case-insensitively" do
+      assert Valea.Paths.normalize("\\\\?\\unc\\srv\\share\\x", :windows) == "//srv/share/x"
+      assert Valea.Paths.normalize("\\\\?\\Unc\\srv\\share\\x", :windows) == "//srv/share/x"
+    end
+
+    test "nested wrappers unwrap fully, and classify/2 agrees" do
+      nested = "//?///?/C:/a"
+      assert Valea.Paths.normalize(nested, :windows) == "C:/a"
+      # The two must never disagree about what a string IS: normalize
+      # unwrapping one layer while classify recursed would split them.
+      assert Valea.Paths.classify(nested, :windows) == :absolute
+      assert Valea.Paths.classify(Valea.Paths.normalize(nested, :windows), :windows) == :absolute
+    end
+
+    test "unix is identity — a backslash is a legal filename byte there" do
+      assert Valea.Paths.normalize("weird\\name", :unix) == "weird\\name"
+      assert Valea.Paths.normalize("c:\\a", :unix) == "c:\\a"
     end
   end
 
@@ -219,6 +265,11 @@ defmodule Valea.PathsTest do
 
       assert Valea.Paths.resolve_lexical("../../../..", "C:/a/b", :windows) == "C:/"
     end
+
+    test "`..` cannot pop above the unix root either" do
+      assert Valea.Paths.resolve_lexical("../../..", "/a", :unix) == "/"
+      assert Valea.Paths.resolve_lexical("../../../b", "/a", :unix) == "/b"
+    end
   end
 
   describe "resolve_lexical/3 base contract" do
@@ -226,8 +277,11 @@ defmodule Valea.PathsTest do
     # (Task 4/6/7 sites) always have one. A non-absolute base has no root to
     # floor `..` against, so it is a caller BUG — fail loud with a clear
     # error, never guess a root and never silently parse an ambiguous form.
+    # The message patterns pin WHICH guard fired: base-side, not path-side.
+    @base_guard ~r/root-anchored base/
+
     test "drive-relative base is rejected, not parsed" do
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, @base_guard, fn ->
         Valea.Paths.resolve_lexical("..", "C:foo", :windows)
       end
     end
@@ -235,23 +289,54 @@ defmodule Valea.PathsTest do
     test "device base is rejected, not mistaken for a UNC root" do
       # "//./dev" splits host="." share="dev" and would otherwise parse as a
       # UNC root; the classifier rejects device paths, so this must raise.
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, @base_guard, fn ->
         Valea.Paths.resolve_lexical("..", "//./dev", :windows)
       end
     end
 
     test "bare-host and relative bases are rejected" do
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, @base_guard, fn ->
         Valea.Paths.resolve_lexical("..", "//srv", :windows)
       end
 
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, @base_guard, fn ->
         Valea.Paths.resolve_lexical("..", "relative/base", :windows)
       end
 
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, @base_guard, fn ->
         Valea.Paths.resolve_lexical("..", "relative/base", :unix)
       end
+    end
+  end
+
+  describe "resolve_lexical/3 path contract" do
+    # An unresolvable `path` must NOT silently fall back to the base:
+    # coercing an ambiguous form to the workspace root is the ambiguity
+    # resolution the global constraint forbids. Fail loud, same as the base
+    # guard — and pin the PATH-side message so the two stay distinguishable.
+    @path_guard ~r/unresolvable path/
+
+    test "drive-relative path raises instead of collapsing to the base" do
+      assert_raise ArgumentError, @path_guard, fn ->
+        Valea.Paths.resolve_lexical("C:foo", "C:/work", :windows)
+      end
+    end
+
+    test "device path raises" do
+      assert_raise ArgumentError, @path_guard, fn ->
+        Valea.Paths.resolve_lexical("//./PhysicalDrive0", "C:/work", :windows)
+      end
+    end
+
+    test "current-drive-rooted path raises" do
+      assert_raise ArgumentError, @path_guard, fn ->
+        Valea.Paths.resolve_lexical("/rootless", "C:/work", :windows)
+      end
+    end
+
+    test "a resolvable path still resolves normally (the guard is narrow)" do
+      assert Valea.Paths.resolve_lexical("a/../b", "C:/work", :windows) == "C:/work/b"
+      assert Valea.Paths.resolve_lexical("C:/other/x", "C:/work", :windows) == "C:/other/x"
     end
   end
 
