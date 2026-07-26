@@ -451,6 +451,15 @@ defmodule Valea.Api.ICM do
     root != "" and Valea.Paths.ancestor?(root, path)
   end
 
-  defp target_abs(_workspace, "/" <> _ = abs), do: Path.expand(abs)
-  defp target_abs(workspace, rel), do: Path.expand(rel, workspace)
+  # An already-absolute target is taken as named; anything else is
+  # workspace-relative. `Valea.Paths.absolute?/1` decides, so a windows `C:/…`
+  # target is not silently re-anchored UNDER the workspace (which is how a
+  # `"/" <> _` head read it), and an ambiguous windows form stays non-absolute
+  # — landing on the relative branch, where `find_mount/2` attributes it to no
+  # mount and `contained_target/2` rejects it.
+  defp target_abs(workspace, target_path) do
+    if Valea.Paths.absolute?(target_path),
+      do: Path.expand(target_path),
+      else: Path.expand(target_path, workspace)
+  end
 end

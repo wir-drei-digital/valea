@@ -232,6 +232,14 @@ defmodule Valea.ICM.LinkRewrite do
   # For a same-ICM link this produces byte-identical output to the old
   # mount-relative computation (the shared `target_root`/`source_root`
   # prefix simply drops out of the common-prefix match).
+  #
+  # PATHS-EXEMPT (spec §D4): the first argument is the raw MARKDOWN
+  # destination string as authored in the document, so a leading `/` means
+  # root-relative in URL space — the same classification
+  # `Valea.ICM.Backlinks.dest_entry/3` makes, and deliberately NOT a
+  # filesystem-absoluteness question. Routing it through
+  # `Valea.Paths.absolute?/1` would start reading `C:/…` in a markdown link as
+  # a root, which is a URL-grammar change, not a windows fix.
   defp replacement("/" <> _, _source_dir_abs, new_abs), do: new_abs
 
   defp replacement(_url, source_dir_abs, new_abs),
@@ -262,6 +270,12 @@ defmodule Valea.ICM.LinkRewrite do
     with :ok <- File.write(tmp, bytes), do: File.rename(tmp, abs)
   end
 
-  defp to_abs(_mount_root, "/" <> _ = abs), do: Path.expand(abs)
-  defp to_abs(mount_root, rel), do: Path.expand(rel, mount_root)
+  # Unlike `replacement/3` above, this one IS a filesystem decision: `rel` is
+  # an ICM locator (mount-relative in practice) being turned into a real
+  # on-disk path for `Path.dirname`/absolute comparison, so an already-rooted
+  # locator must be recognized as rooted rather than re-anchored under
+  # `mount_root` (spec §D4).
+  defp to_abs(mount_root, rel) do
+    if Valea.Paths.absolute?(rel), do: Path.expand(rel), else: Path.expand(rel, mount_root)
+  end
 end

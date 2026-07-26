@@ -896,10 +896,17 @@ defmodule Valea.Mounts do
     end
   end
 
-  defp absolute_or_tilde?("/" <> _rest), do: true
+  # The `~` clauses stay pattern matches, and stay FIRST: `~`/`~/…` is Valea's
+  # own home-relative convention (expanded by `Path.expand/1`), not a
+  # filesystem root, so `Paths.absolute?/1` says false for it — put the
+  # catch-all first and tilde support would silently vanish. Root anchoring
+  # itself is `Paths.absolute?/1`, which accepts windows `C:/…`, `C:\…` and
+  # `//host/share/…` while still refusing the ambiguous forms (drive-relative
+  # `C:foo`, current-drive-rooted `/foo`) — same fail-closed posture the
+  # classifier takes everywhere else (spec §D1/D3).
   defp absolute_or_tilde?("~"), do: true
   defp absolute_or_tilde?("~/" <> _rest), do: true
-  defp absolute_or_tilde?(_relative), do: false
+  defp absolute_or_tilde?(path), do: Paths.absolute?(path)
 
   # Claude Code's permission globs (`Read(<root>/**)`) are matched by ITS
   # OWN glob engine, not the filesystem — a resolved root containing a
@@ -916,33 +923,66 @@ defmodule Valea.Mounts do
 
   # BOTH arguments must already be REALPATH-resolved absolute paths (`~`
   # expanded, symlinks walked) — this function only compares. Checked in
-  # order: `:home_or_root` (ref == resolved `$HOME` or `/`),
+  # order: `:home_or_root` (ref == resolved `$HOME`, or a filesystem root),
   # `:inside_workspace` (ref under-or-equal the workspace root),
   # `:ancestor_of_workspace` (workspace root under the ref). `:home_or_root`
   # is checked first: `$HOME` is very often itself an ancestor of the
   # workspace, so checking `:ancestor_of_workspace` first would mask the
   # more specific, more useful `:home_or_root` reason. Comparisons use
   # segment-boundary prefix logic, never a lexical string prefix.
-  defp check_boundaries("/" <> _ = resolved_ref, "/" <> _ = resolved_workspace) do
-    cond do
-      home_or_root?(resolved_ref) -> {:error, :home_or_root}
-      under_boundary?(resolved_ref, resolved_workspace) -> {:error, :inside_workspace}
-      under_boundary?(resolved_workspace, resolved_ref) -> {:error, :ancestor_of_workspace}
-      true -> :ok
+  #
+  # The absoluteness PRECONDITION is `Paths.absolute?/1` rather than a
+  # `"/" <> _` head: the head understood only unix roots, so on windows every
+  # legal `C:/…` pair raised FunctionClauseError from a guardrail whose whole
+  # job is to answer in {:ok, reason}.
+  defp check_boundaries(resolved_ref, resolved_workspace) do
+    if Paths.absolute?(resolved_ref) and Paths.absolute?(resolved_workspace) do
+      cond do
+        home_or_root?(resolved_ref) -> {:error, :home_or_root}
+        under_boundary?(resolved_ref, resolved_workspace) -> {:error, :inside_workspace}
+        under_boundary?(resolved_workspace, resolved_ref) -> {:error, :ancestor_of_workspace}
+        true -> :ok
+      end
+    else
+      # Precondition violated. LOUD, and never `:ok`: a boundary guard that
+      # cannot anchor its inputs must not be able to approve a mount. Same
+      # fail-closed direction the old FunctionClauseError had, now naming the
+      # offender instead of the clause.
+      raise ArgumentError,
+            "check_boundaries/2 needs realpath-resolved absolute paths, got " <>
+              "#{inspect(resolved_ref)} and #{inspect(resolved_workspace)}"
     end
   end
 
   defp home_or_root?(resolved),
-    do: resolved == "/" or resolved == resolve_best_effort(System.user_home!())
+    do: filesystem_root?(resolved) or resolved == resolve_best_effort(System.user_home!())
+
+  # Platform-aware "is `path` a filesystem ROOT?" — `/` on unix, `C:/` or
+  # `//host/share` on windows — WITHOUT restating the root grammar here. It
+  # leans on the root-floor rule `Paths.resolve_real/2` already implements
+  # (spec §D1): `..` against a root is a no-op, because a floor can never be
+  # climbed above, so it resolves back inside the root (`{:ok, _}`); against
+  # any deeper path it pops to the parent, which is OUTSIDE it
+  # (`{:error, :outside}`). On unix that is true of `/` and nothing else, so
+  # this is byte-equivalent to the `resolved == "/"` it replaces for the
+  # already-resolved paths this function is contracted to receive.
+  defp filesystem_root?(path), do: match?({:ok, _}, Paths.resolve_real("..", path))
 
   # Segment-boundary "is `descendant` under (or equal to) `ancestor`?" —
   # `Paths.ancestor?/2` joins on the separator, so `/a/b` never matches an
-  # `/a/bc` ancestor. The `"/"` clause stays explicit: that join makes the
-  # unix root `"//"`, which matches nothing, so `/` being an ancestor of
-  # everything is stated here rather than derived.
-  defp under_boundary?(_descendant, "/"), do: true
-
-  defp under_boundary?(descendant, ancestor), do: Paths.ancestor?(ancestor, descendant)
+  # `/a/bc` ancestor. A ROOT ancestor already ENDS in that separator, which
+  # the join would double into a prefix nothing matches (`"//"`), so the
+  # trailing one is stripped first — that, not a `"/"`-only clause, is what
+  # makes a root an ancestor of everything beneath it on BOTH platforms. The
+  # old unix-only clause left `C:/` reading as "not an ancestor": fail-OPEN,
+  # the one direction a mount guardrail may never fail. A root that trims to
+  # `""` (unix `/`) contains everything by definition.
+  defp under_boundary?(descendant, ancestor) do
+    case String.trim_trailing(ancestor, "/") do
+      "" -> true
+      trimmed -> Paths.ancestor?(trimmed, descendant)
+    end
+  end
 
   defp build_resolved_icm_mount(name, path, resolved, enabled) do
     case check_icm_glob_safety(resolved) do

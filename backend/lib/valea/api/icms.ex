@@ -415,13 +415,19 @@ defmodule Valea.Api.Icms do
   # Duplicated (rather than exposed as new public API) from `Valea.Mounts`
   # — see moduledoc's "inspect_icm" section for why: the live check needs a
   # `workspace` to compare against, and there is none here.
-  defp absolute_or_tilde?("/" <> _rest), do: true
+  # `~`-clauses first, then `Paths.absolute?/1` — see `Valea.Mounts`'s copy for
+  # why the order is load-bearing and what windows shapes this accepts.
   defp absolute_or_tilde?("~"), do: true
   defp absolute_or_tilde?("~/" <> _rest), do: true
-  defp absolute_or_tilde?(_relative), do: false
+  defp absolute_or_tilde?(path), do: Paths.absolute?(path)
 
   defp home_or_root?(resolved),
-    do: resolved == "/" or resolved == resolve_best_effort(System.user_home!())
+    do: filesystem_root?(resolved) or resolved == resolve_best_effort(System.user_home!())
+
+  # Root-floor test, mirroring `Valea.Mounts.filesystem_root?/1` — see there
+  # for why `..` against a root resolving back INSIDE it identifies the root on
+  # both platforms, and why this does not restate the root grammar.
+  defp filesystem_root?(path), do: match?({:ok, _}, Paths.resolve_real("..", path))
 
   @glob_metacharacters ["*", "?", "[", "]", "{", "}", "(", ")"]
 
@@ -431,8 +437,12 @@ defmodule Valea.Api.Icms do
   # inspected path is not naturally contained in any existing base, so
   # resolving it against itself makes containment trivially satisfied and
   # yields the fully symlink-walked physical path. Mirrors `Valea.Mounts`'s
-  # identically-named private helper exactly.
+  # identically-named private helper exactly — including `Paths.normalize/1`
+  # as the ingress for the user-typed path this adopt-a-folder preview
+  # inspects (spec §D2). Identity on unix.
   defp resolve_best_effort(path) do
+    path = Paths.normalize(path)
+
     case Paths.resolve_real(path, path) do
       {:ok, resolved} -> resolved
       {:error, _reason} -> path
