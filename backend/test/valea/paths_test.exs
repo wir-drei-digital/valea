@@ -160,4 +160,76 @@ defmodule Valea.PathsTest do
       assert Paths.relative("mounts/primary", "mounts/primary/Rates.md") == "Rates.md"
     end
   end
+
+  # --- Windows-support Task 3 (spec D1-D3, D5) ---
+  # These exercise the PURE platform API (classify/normalize/ancestor?/
+  # resolve_lexical) with constructed Windows-shaped inputs, so they run on
+  # every host — the classifier no longer delegates to host-dependent OTP
+  # (spec §D testing split). resolve_real's filesystem walk on Windows is
+  # covered by the native CI lane, not here.
+
+  describe "classify/2 windows shapes (pure — runs on every host)" do
+    test "drive and UNC absolutes" do
+      assert Valea.Paths.classify("C:/Users/mara", :windows) == :absolute
+      assert Valea.Paths.classify("C:\\Users\\mara", :windows) == :absolute
+      assert Valea.Paths.classify("//srv/share/icm", :windows) == :absolute
+      assert Valea.Paths.classify("\\\\srv\\share", :windows) == :absolute
+    end
+
+    test "rejected forms" do
+      assert Valea.Paths.classify("C:foo", :windows) == :drive_relative
+      assert Valea.Paths.classify("C:", :windows) == :drive_relative
+      assert Valea.Paths.classify("\\\\.\\COM1", :windows) == :invalid
+      assert Valea.Paths.classify("//srv", :windows) == :invalid
+      assert Valea.Paths.classify("/rootless", :windows) == :invalid
+    end
+
+    test "unix unchanged" do
+      assert Valea.Paths.classify("/a/b", :unix) == :absolute
+      assert Valea.Paths.classify("C:/x", :unix) == :relative
+    end
+  end
+
+  describe "normalize/2" do
+    test "extended-length wrappers strip to plain forms" do
+      assert Valea.Paths.normalize("\\\\?\\C:\\a\\b", :windows) == "C:/a/b"
+      assert Valea.Paths.normalize("\\\\?\\UNC\\srv\\share\\x", :windows) == "//srv/share/x"
+      assert Valea.Paths.normalize("c:\\a", :windows) == "C:/a"
+    end
+  end
+
+  describe "ancestor?/3" do
+    test "case-folded on windows, exact on unix" do
+      assert Valea.Paths.ancestor?("C:/Work/ICM", "c:/work/icm/notes.md", :windows)
+      refute Valea.Paths.ancestor?("/work/icm", "/work/ICM/notes.md", :unix)
+      assert Valea.Paths.ancestor?("//SRV/Share/icm", "//srv/share/icm/a", :windows)
+    end
+
+    test "no prefix-collision false positives" do
+      refute Valea.Paths.ancestor?("C:/work/icm", "C:/work/icm-private/x", :windows)
+    end
+  end
+
+  describe "root-floor (pure helpers)" do
+    test "`..` cannot pop above a UNC share or drive root" do
+      assert Valea.Paths.resolve_lexical("../..", "//srv/share/icm", :windows) == "//srv/share"
+
+      assert Valea.Paths.resolve_lexical("../../../../..", "//srv/share/icm", :windows) ==
+               "//srv/share"
+
+      assert Valea.Paths.resolve_lexical("../../../..", "C:/a/b", :windows) == "C:/"
+    end
+  end
+
+  describe "8.3 short names (spec D5)" do
+    test "8.3-style short-name aliases stay fail-closed (never resolved to long names)" do
+      # DOCUME~1 is just a literal component to the walk; if the base is the
+      # long-name form, containment must DENY, not alias. Pin it.
+      refute Valea.Paths.ancestor?(
+               "C:/Users/mara/Documents",
+               "C:/Users/mara/DOCUME~1/x",
+               :windows
+             )
+    end
+  end
 end

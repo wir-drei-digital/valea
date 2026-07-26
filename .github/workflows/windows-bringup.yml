@@ -55,6 +55,13 @@ jobs:
         with:
           name: windows-test-survey
           path: windows-test-survey.txt
+      # Spec §D testing split: the platform-aware Valea.Paths walk touches OTP
+      # path functions and the real filesystem, so its Windows semantics
+      # (root-floor, UNC roots, case-folded containment) must be proven on the
+      # native lane, not just the pure suite on Unix. GATING — Task 3 is not
+      # complete until this is green. Task 4 appends paths_boundary_test.exs.
+      - name: Paths containment suite (gating)
+        run: cd backend && mix test test/valea/paths_test.exs
       - name: Build SPA + Burrito sidecar
         env:
           BURRITO_TARGET: windows_x64
