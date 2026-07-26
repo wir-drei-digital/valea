@@ -38,4 +38,18 @@ defmodule Valea.Agents.RiskTierTest do
     assert RiskTier.classify(%{}) == nil
     assert RiskTier.classify(nil) == nil
   end
+
+  test ".claude paths classify high at any depth (skills configure future agent behavior)" do
+    assert RiskTier.classify(Locator.icm(@icm_id, ".claude/skills/icm-architect/SKILL.md")) ==
+             "high"
+
+    assert RiskTier.classify(Locator.icm(@icm_id, ".claude/settings.json")) == "high"
+
+    assert RiskTier.classify(Locator.icm(@icm_id, "clients/.claude/skills/x/SKILL.md")) ==
+             "high"
+  end
+
+  test "a file merely named .claude-something stays medium" do
+    assert RiskTier.classify(Locator.icm(@icm_id, "notes/.claude-ideas.md")) == "medium"
+  end
 end

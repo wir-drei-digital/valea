@@ -3,8 +3,10 @@ defmodule Valea.Agents.RiskTier do
   Server-derived risk tier for a `Valea.Icm.Locator`: "high" for
   the ICM's instruction spine — `AGENTS.md`/`CLAUDE.md`/
   `CONTEXT.md` by basename at ANY depth (real ICMs route with nested
-  CONTEXT.md files), plus the root `icm.yaml` identity file. Everything
-  else in an ICM is "medium"; non-ICM locators carry no tier.
+  CONTEXT.md files), plus the root `icm.yaml` identity file, plus anything
+  under a `.claude/` directory at any depth (skills and harness config
+  change future agent behavior — ICM skills design spec, §Risk tier).
+  Everything else in an ICM is "medium"; non-ICM locators carry no tier.
 
   Classification works DIRECTLY off the locator's own `path` — which is
   already relative to the ICM's root, by construction (`Locator.icm/2`,
@@ -30,12 +32,15 @@ defmodule Valea.Agents.RiskTier do
   @doc """
   "high" for the ICM's instruction spine — `AGENTS.md`/`CLAUDE.md`/
   `CONTEXT.md` by basename at ANY depth (real ICMs route with nested
-  CONTEXT.md files), plus the root `icm.yaml` identity file. Everything
-  else in an ICM is "medium"; non-ICM locators carry no tier.
+  CONTEXT.md files), plus the root `icm.yaml` identity file, plus anything
+  under a `.claude/` directory at any depth (skills and harness config
+  change future agent behavior — ICM skills design spec, §Risk tier).
+  Everything else in an ICM is "medium"; non-ICM locators carry no tier.
   """
   @spec classify(map()) :: String.t() | nil
   def classify(%{"kind" => "icm", "path" => path}) when is_binary(path) do
-    if Path.basename(path) in @behavior_basenames or path == "icm.yaml" do
+    if Path.basename(path) in @behavior_basenames or path == "icm.yaml" or
+         ".claude" in Path.split(path) do
       "high"
     else
       "medium"
