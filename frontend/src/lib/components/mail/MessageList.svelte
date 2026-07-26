@@ -10,10 +10,18 @@
   // between rows. The old review/processed status dot is gone with the
   // status marker itself — the maildir backend has no per-message workflow
   // state (spec E: flags are IMAP's, not Valea's).
-  import { fromLabel, subjectLabel, relativeTime } from './mail-shapes';
+  //
+  // Rows carry the `account` they belong to into their href (`messageHref`):
+  // a `msgId` only identifies a message WITHIN an account, so an unqualified
+  // link resolves against whichever account is selected when it's opened.
+  import { fromLabel, subjectLabel, relativeTime, messageHref } from './mail-shapes';
   import type { MailMessageSummary } from '$lib/stores/mail.svelte';
 
-  let { messages, selectedId }: { messages: MailMessageSummary[]; selectedId: string | null } = $props();
+  let {
+    messages,
+    selectedId,
+    account
+  }: { messages: MailMessageSummary[]; selectedId: string | null; account: string } = $props();
 </script>
 
 <ul class="divide-paper-hairline flex flex-col divide-y">
@@ -21,7 +29,7 @@
     {@const selected = message.msgId === selectedId}
     <li>
       <a
-        href={`/mail?message=${encodeURIComponent(message.msgId)}`}
+        href={messageHref(account, message.msgId)}
         class="block border-l-[3px] py-3 pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
         class:border-act={selected}
         class:border-transparent={!selected}

@@ -13,6 +13,8 @@ defmodule Valea.Workspace.Manager do
   """
   use GenServer
 
+  require Logger
+
   alias Valea.App.Config
   alias Valea.Workspace.Scaffold
 
@@ -306,13 +308,47 @@ defmodule Valea.Workspace.Manager do
     %{state | workspace: nil, children: []}
   end
 
+  # `journal_mode` + `busy_timeout` are what keep the shared `app.sqlite`
+  # honest under CONCURRENCY: several mail Engines (one process per account)
+  # write the pending-ops ledger while the UI reads it. In rollback mode one
+  # writer blocks every reader for its whole transaction — WAL doesn't — and
+  # a genuine writer collision should WAIT rather than fail with SQLITE_BUSY,
+  # so the 2s adapter default is widened to 5s. Both are spelled out rather
+  # than inherited: they are load-bearing for multi-account, not defaults
+  # this app can afford to have quietly change underneath it.
+  #
+  # WAL needs a filesystem with working shared memory (a network volume may
+  # not have one), so it is VERIFIED rather than assumed — and a volume that
+  # can't do WAL degrades to a log line plus a slower-but-correct rollback
+  # journal, never a failed workspace open.
   defp start_repo(workspace_path) do
-    spec = {Valea.Repo, database: Path.join(workspace_path, "app.sqlite"), pool_size: 5}
+    spec =
+      {Valea.Repo,
+       database: Path.join(workspace_path, "app.sqlite"),
+       pool_size: 5,
+       journal_mode: :wal,
+       busy_timeout: 5000}
 
     case DynamicSupervisor.start_child(Valea.Workspace.DynamicSupervisor, spec) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, pid}} -> {:ok, pid}
-      {:error, reason} -> {:error, {:repo_start_failed, reason}}
+      {:ok, pid} ->
+        warn_unless_wal()
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        {:ok, pid}
+
+      {:error, reason} ->
+        {:error, {:repo_start_failed, reason}}
+    end
+  end
+
+  defp warn_unless_wal do
+    case Valea.Repo.query("PRAGMA journal_mode") do
+      {:ok, %{rows: [["wal"]]}} ->
+        :ok
+
+      other ->
+        Logger.warning("sqlite WAL unavailable, continuing in rollback mode: #{inspect(other)}")
     end
   end
 

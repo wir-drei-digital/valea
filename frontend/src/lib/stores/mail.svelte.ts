@@ -258,15 +258,32 @@ export class MailStore {
   }
 
   /**
+   * The selected account's drafts. `list_mail_drafts` is workspace-wide (it
+   * returns every account's drafts in one list, which the Drafts panel wants),
+   * so anything showing "the drafts" for the account being read — the pane's
+   * count above all — has to narrow it here rather than use `drafts.length`.
+   */
+  get selectedDrafts(): MailDraft[] {
+    return this.drafts.filter((draft) => draft.account === this.selectedAccount);
+  }
+
+  /**
    * Switches the UI to `slug`: resets the folder selection to INBOX, drops
    * the open message detail, and refetches folders + messages. A re-select
    * of the current account is a no-op.
+   *
+   * The folder/message lists are cleared SYNCHRONOUSLY, before the refetch:
+   * otherwise the previous account's rows stay on screen for the whole
+   * round-trip, under the new account's name — long enough to click a
+   * message that belongs to the mailbox the user just switched away from.
    */
   async selectAccount(slug: string): Promise<void> {
     if (slug === this.selectedAccount) return;
     this.selectedAccount = slug;
     this.selectedFolder = INBOX_FOLDER;
     this.selected = null;
+    this.folders = [];
+    this.messages = [];
     await Promise.all([this.refreshFolders(), this.refreshMessages()]);
   }
 

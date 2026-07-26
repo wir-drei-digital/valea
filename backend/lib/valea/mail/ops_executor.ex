@@ -651,11 +651,31 @@ defmodule Valea.Mail.OpsExecutor do
           :ok | {:needs_review, String.t()} | {:rejected, String.t()}
   def execute_append(ctx, op_id) when is_binary(op_id) do
     case Store.op_by_id(op_id) do
-      {:ok, %{state: "complete"}} -> :ok
-      {:ok, %{state: "rejected", error: reason}} -> {:rejected, reason || "rejected"}
-      {:ok, op_row} -> dispatch_append(ctx, op_row)
-      {:error, _} -> {:rejected, "op_gone"}
+      {:ok, op_row} ->
+        assert_op_account!(op_row, ctx)
+
+        case op_row do
+          %{state: "complete"} -> :ok
+          %{state: "rejected", error: reason} -> {:rejected, reason || "rejected"}
+          _pending -> dispatch_append(ctx, op_row)
+        end
+
+      {:error, _} ->
+        {:rejected, "op_gone"}
     end
+  end
+
+  # The pending-ops ledger is WORKSPACE-wide — every account's rows share one
+  # `app.sqlite` — while an op id is all an Engine hands the executor. An id
+  # from a different account arriving on this account's connection would
+  # append (later: send) one person's message through another person's
+  # mailbox, so it is a wiring bug to fail loudly on, never a rejection to
+  # record against the innocent op.
+  defp assert_op_account!(%{account: account} = op_row, %{account: account}), do: op_row
+
+  defp assert_op_account!(op_row, ctx) do
+    raise ArgumentError,
+          "op #{op_row.id} belongs to account #{op_row.account}, engine ctx is #{ctx.account}"
   end
 
   defp dispatch_append(ctx, op_row) do

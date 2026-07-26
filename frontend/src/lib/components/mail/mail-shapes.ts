@@ -196,6 +196,17 @@ export function subjectLabel(subject: string | null | undefined): string {
 }
 
 /**
+ * The `/mail` link for one message row, ACCOUNT-QUALIFIED: a `msgId` is only
+ * unique within its account, so a bare `?message=` link means "this id, in
+ * whichever account happens to be selected when the link is opened". Naming
+ * the account makes a copied/bookmarked/back-button link reopen the message
+ * it actually points at, and lets the route select the right account first.
+ */
+export function messageHref(account: string, msgId: string): string {
+  return `/mail?account=${encodeURIComponent(account)}&message=${encodeURIComponent(msgId)}`;
+}
+
+/**
  * The read pane's meta detail for a message's placement: comma-joined
  * `folders` frontmatter plus the maildir flag letters when present —
  * `"INBOX, Archive · flags: S"`. Replaces the deleted review/processed

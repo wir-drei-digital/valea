@@ -268,6 +268,34 @@ describe('MailStore.selectAccount', () => {
     expect(listMailMessages).toHaveBeenCalledWith('zoe', 'INBOX');
   });
 
+  // The switch must not leave the OLD account's folders/messages on screen
+  // while the new account's lists are in flight — with a slow backend that
+  // window is long enough to click a message that belongs to the account the
+  // user just switched away from.
+  it("clears the previous account's lists synchronously, before the refetch lands", async () => {
+    const folders = [{ name: 'INBOX', dir: 'INBOX', held: false, messageCount: 4, backfillComplete: true }];
+    const messages = [{ msgId: 'm1', subject: 'Alpha' }];
+    // Once `stalled` flips, the refetches never resolve — so whatever the
+    // store still shows is unambiguously the previous account's data.
+    let stalled = false;
+    const listMailFolders = vi.fn(async () =>
+      stalled ? new Promise<FoldersResult>(() => {}) : ({ ok: true, data: { folders } } as FoldersResult)
+    );
+    const listMailMessages = vi.fn(async () =>
+      stalled ? new Promise<MessagesResult>(() => {}) : ({ ok: true, data: { messages } } as MessagesResult)
+    );
+    const store = new MailStore(fakeApi({ listMailFolders, listMailMessages }) as never);
+    await store.refreshStatus();
+    expect(store.folders).toEqual(folders);
+    expect(store.messages).toEqual(messages);
+
+    stalled = true;
+    void store.selectAccount('zoe');
+
+    expect(store.folders).toEqual([]);
+    expect(store.messages).toEqual([]);
+  });
+
   it('is a no-op when re-selecting the current account', async () => {
     const listMailFolders = vi.fn(async () => ({ ok: true, data: { folders: [] } }) as FoldersResult);
     const store = new MailStore(fakeApi({ listMailFolders }) as never);
@@ -601,6 +629,24 @@ describe('normalizeMailDraft + MailStore.refreshDrafts', () => {
 
     expect(store.drafts).toHaveLength(1);
     expect(store.drafts[0].name).toBe('reply.md');
+  });
+
+  // `list_mail_drafts` is workspace-wide (every account's drafts in one
+  // list), but the mail pane's Drafts count belongs to the account being
+  // read — a count including a second account's drafts is simply wrong.
+  it('selectedDrafts narrows the workspace-wide list to the selected account', async () => {
+    const drafts = [rawDraft, { ...rawDraft, account: 'zoe', name: 'zoe-reply.md' }];
+    const store = new MailStore(
+      fakeApi({ listMailDrafts: async () => ({ ok: true, data: { drafts } }) }) as never
+    );
+    await store.refreshStatus();
+    await store.refreshDrafts();
+
+    expect(store.selectedAccount).toBe('mara');
+    expect(store.selectedDrafts.map((d) => d.name)).toEqual(['reply.md']);
+
+    await store.selectAccount('zoe');
+    expect(store.selectedDrafts.map((d) => d.name)).toEqual(['zoe-reply.md']);
   });
 });
 

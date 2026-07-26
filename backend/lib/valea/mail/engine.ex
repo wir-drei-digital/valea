@@ -126,6 +126,7 @@ defmodule Valea.Mail.Engine do
   alias Valea.Mail.SyncPass
 
   @default_interval_minutes 5
+  @max_poll_jitter_ms 60_000
 
   @typedoc """
   `credential` is `"present"` or `"missing"`; `state` is one of `"inactive"`,
@@ -150,7 +151,19 @@ defmodule Valea.Mail.Engine do
           folders: %{String.t() => String.t()} | nil
         }
 
-  @doc "The `{:via, Registry, ...}` name a slug's Engine is registered under."
+  @doc """
+  The `{:via, Registry, ...}` name a slug's Engine is registered under.
+
+  The key is the account SLUG ALONE, not `{workspace_id, slug}` — safe only
+  because `Valea.Workspace.Manager` serializes workspace open/close through
+  its own GenServer, and `do_close/1` terminates the previous workspace's
+  Runtime (and with it every Engine) SYNCHRONOUSLY before a new open starts.
+  Two workspaces therefore never have a live Engine for the same slug at the
+  same time. If that invariant ever changes (concurrent workspaces, an
+  overlapping open), this key MUST grow the workspace id — otherwise the
+  second workspace's Engine collides with the first's registration and its
+  account silently never starts.
+  """
   @spec via(String.t()) :: {:via, Registry, {Valea.Mail.Registry, String.t()}}
   def via(slug) when is_binary(slug), do: {:via, Registry, {Valea.Mail.Registry, slug}}
 
@@ -1030,9 +1043,40 @@ defmodule Valea.Mail.Engine do
 
   # -- poll timer -----------------------------------------------------------
 
+  @doc """
+  Delay until the next poll: the account's configured interval PLUS a
+  jitter, so the accounts of one workspace don't poll in lockstep.
+
+  Every Engine is started by the same supervisor within milliseconds of its
+  siblings, so a bare `interval * 60_000` would have N accounts open N
+  connections at the same instant, forever — a self-inflicted thundering
+  herd that grows with each mailbox added. The jitter is applied to EVERY
+  scheduling (activation included), which is what actually spreads them out;
+  re-jittering on each poll also keeps them from re-converging after a pass
+  that ran long.
+
+  Jitter is `0..min(60s, interval/4)` — bounded by a quarter of the interval
+  so a short interval isn't dominated by it, and capped at a minute so a
+  long one still polls when the user expects. `:mail_poll_jitter` overrides
+  it with a fixed number of milliseconds (the test seam).
+  """
+  @spec poll_delay_ms(pos_integer()) :: pos_integer()
+  def poll_delay_ms(interval_minutes)
+      when is_integer(interval_minutes) and interval_minutes > 0 do
+    interval_ms = interval_minutes * 60_000
+    interval_ms + poll_jitter_ms(interval_ms)
+  end
+
+  defp poll_jitter_ms(interval_ms) do
+    case Application.get_env(:valea, :mail_poll_jitter, :random) do
+      fixed when is_integer(fixed) -> fixed
+      _random -> :rand.uniform(min(@max_poll_jitter_ms, div(interval_ms, 4)) + 1) - 1
+    end
+  end
+
   defp schedule_poll(state) do
     cancel_timer(state.poll_timer)
-    timer = Process.send_after(self(), :poll, interval_minutes(state) * 60_000)
+    timer = Process.send_after(self(), :poll, poll_delay_ms(interval_minutes(state)))
     %{state | poll_timer: timer}
   end
 

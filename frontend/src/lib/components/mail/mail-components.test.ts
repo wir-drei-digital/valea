@@ -8,6 +8,7 @@ import {
   relativeTime,
   fromLabel,
   subjectLabel,
+  messageHref,
   addressLabel,
   addressListLabel,
   formatDateTime,
@@ -108,6 +109,13 @@ describe('subjectLabel', () => {
     expect(subjectLabel(null)).toBe('(no subject)');
     expect(subjectLabel(undefined)).toBe('(no subject)');
     expect(subjectLabel('   ')).toBe('(no subject)');
+  });
+});
+
+describe('messageHref', () => {
+  it('qualifies the link with the account and escapes both params', () => {
+    expect(messageHref('personal', 'a b')).toBe('/mail?account=personal&message=a%20b');
+    expect(messageHref('work-2', '1465.M2#x')).toBe('/mail?account=work-2&message=1465.M2%23x');
   });
 });
 

@@ -531,6 +531,32 @@ defmodule Valea.Mail.EngineTest do
     assert Engine.status("mara").state == "idle"
   end
 
+  # Every Engine in a workspace is started by the same supervisor within
+  # milliseconds of each other, so a bare `interval * 60_000` would have N
+  # accounts poll in lockstep forever. `poll_delay_ms/1` is the (pure,
+  # timer-free) stagger — asserted here rather than through the timer.
+  describe "poll_delay_ms" do
+    test "adds the configured jitter to the interval (the test seam)" do
+      on_exit(fn -> Application.delete_env(:valea, :mail_poll_jitter) end)
+
+      Application.put_env(:valea, :mail_poll_jitter, 0)
+      assert Engine.poll_delay_ms(15) == 15 * 60_000
+
+      Application.put_env(:valea, :mail_poll_jitter, 1234)
+      assert Engine.poll_delay_ms(15) == 15 * 60_000 + 1234
+    end
+
+    test "jitters within [interval, interval + 60s] by default, and actually varies" do
+      Application.delete_env(:valea, :mail_poll_jitter)
+
+      base = 15 * 60_000
+      delays = for _ <- 1..50, do: Engine.poll_delay_ms(15)
+
+      assert Enum.all?(delays, &(&1 in base..(base + 60_000)))
+      assert length(Enum.uniq(delays)) >= 2
+    end
+  end
+
   # -- single-flight sync ------------------------------------------------------
 
   test "sync_now runs a pass in the background: status 'syncing', single-flight, result flips state",

@@ -993,6 +993,23 @@ defmodule Valea.Mail.OpsExecutorTest do
       # No duplicate landed in Drafts.
       assert ModelMailTransport.messages(name, "Drafts") == []
     end
+
+    # The ledger is workspace-wide: EVERY account's ops share one
+    # `app.sqlite`, and op ids are the only thing an Engine hands the
+    # executor. An id belonging to a different account arriving on this
+    # account's connection is a wiring bug — it would append one person's
+    # draft into another person's mailbox — so it must blow up loudly rather
+    # than execute.
+    test "an op id from another account raises instead of executing", %{root: root} do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      other_ctx = %{c | account: "other"}
+
+      assert_raise ArgumentError, fn -> OpsExecutor.execute_append(other_ctx, op.id) end
+      assert ModelMailTransport.messages(name, "Drafts") == []
+      assert {:ok, %{state: "pending"}} = Store.op_by_id(op.id)
+    end
   end
 
   describe "recover appends" do

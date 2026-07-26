@@ -40,6 +40,9 @@
   });
 
   const selectedId = $derived(page.url.searchParams.get('message'));
+  // `?account=` qualifies `?message=` (`messageHref`): a msg id is only
+  // unique within its account, so a deep link names both.
+  const selectedAccountParam = $derived(page.url.searchParams.get('account'));
   const draftsRequested = $derived(page.url.searchParams.get('drafts') === '1');
 
   // Accounts & settings live in a MODAL over the mail view (the calendar
@@ -67,34 +70,46 @@
   //
   // `untrack` around both `mailStore.selected` reads is load-bearing, not
   // decorative: this effect's own `select()` call is what LATER mutates
-  // `mailStore.selected`. Reading it un-tracked inside the effect body
-  // would register it as a dependency, so that later mutation would
-  // re-trigger this same effect — an infinite `get_mail_message` loop
-  // keyed on nothing the user did (caught live on an earlier revision).
-  // The effect must only re-run when `selectedId` (the URL param) changes,
-  // never as a side effect of its own fetch completing.
+  // `mailStore.selected`. Reading it tracked inside the effect body would
+  // register it as a dependency, so that later mutation would re-trigger
+  // this same effect — an infinite `get_mail_message` loop keyed on nothing
+  // the user did (caught live on an earlier revision).
+  //
+  // `selectedAccount`/`accounts` ARE tracked, though (the untracked read
+  // they replace latched this effect to whatever was known on its first
+  // run): a deep link arriving before `refreshStatus` resolves has no
+  // account yet, and "no account YET" must not be treated as "no account" —
+  // it waits, and the effect re-runs when the accounts land. `?account=`
+  // wins over the store's selection so the link opens the message in the
+  // account it actually belongs to, switching accounts first if needed.
   let activeId: string | null = $state(null);
   let activeDetail: MailMessageDetail | null = $state(null);
   let loadError = $state(false);
 
   $effect(() => {
     const id = selectedId;
+    const accParam = selectedAccountParam;
+    const storeAccount = mailStore.selectedAccount;
+    const accountsReady = mailStore.accounts.length > 0;
     activeId = null;
     activeDetail = null;
     loadError = false;
     if (!id) return;
 
-    // `select()` reads the store's selected account — none known yet (no
-    // account configured, or `refreshStatus` still in flight) means there
-    // is nothing to select against.
-    if (!untrack(() => mailStore.selectedAccount)) {
-      loadError = true;
-      return;
+    const target = accParam ?? storeAccount;
+    if (!target) {
+      if (accountsReady) loadError = true; // accounts loaded, none selectable
+      return; // otherwise wait — effect re-runs when accounts arrive
     }
 
     let cancelled = false;
-    const before = untrack(() => mailStore.selected);
-    void mailStore.select(id).then(() => {
+    void (async () => {
+      if (target !== untrack(() => mailStore.selectedAccount)) {
+        await mailStore.selectAccount(target);
+        if (cancelled) return;
+      }
+      const before = untrack(() => mailStore.selected);
+      await mailStore.select(id);
       if (cancelled) return;
       const selected = untrack(() => mailStore.selected);
       if (selected !== before) {
@@ -103,12 +118,16 @@
       } else {
         loadError = true;
       }
-    });
+    })();
 
     return () => {
       cancelled = true;
     };
   });
+
+  // The drafts list is workspace-wide (every account's), the pane's count is
+  // not — it belongs to the account being read.
+  const draftsCount = $derived(mailStore.selectedDrafts.length);
 
   // "Sync now" lives in the pane header next to the title; its in-flight
   // and error state belong to the route, and the resulting message is
@@ -178,7 +197,7 @@
           {#if mailStore.selectedAccount}
             <div class="flex items-center gap-1.5">
               <Button type="button" variant="ghost" size="sm" onclick={() => void goto('/mail?drafts=1')}>
-                Drafts{mailStore.drafts.length > 0 ? ` (${mailStore.drafts.length})` : ''}
+                Drafts{draftsCount > 0 ? ` (${draftsCount})` : ''}
               </Button>
               <Button
                 type="button"
@@ -195,7 +214,7 @@
             {/if}
           {/if}
         </div>
-        <MessageList messages={mailStore.messages} {selectedId} />
+        <MessageList messages={mailStore.messages} {selectedId} account={mailStore.selectedAccount ?? ''} />
       {/snippet}
       {#snippet footer()}
         <SyncStatusLine
