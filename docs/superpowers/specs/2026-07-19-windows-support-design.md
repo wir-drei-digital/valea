@@ -1,7 +1,9 @@
 # Windows support — design
 
 Date: 2026-07-19
-Status: draft, ready for review
+Status: draft v3 — Codex round 1 folded in (all 5 findings verified and
+accepted); scope amendment per Daniel: network-share (UNC) workspaces are
+in-scope, v1 rejection dropped (§D1/D7, A5/A6). Ready for review
 Scope: make Windows x86_64 a first-class desktop target — app runtime +
 packaging + CI lane. Successor to the Windows section of
 [the release spec](2026-07-19-release-auto-update-design.md) and
@@ -100,6 +102,10 @@ amalgamation with MSVC (runner has it); mdex resolves a
 `rustler_precompiled` artifact or falls back to compiling with the
 runner's Rust. Both are verify-tasks in T1, not design work.
 
+**A4 — TLS trust.** `Valea.Mail.ImapClient` dials `verify: :verify_peer`
+against `:public_key.cacerts_get()`; OTP ≥ 25.1 reads the Windows system
+store. Verify in T5 with a real IMAPS connect; no code planned.
+
 **A5 — watcher availability model.** `file_system`'s Windows backend
 (`inotifywait.exe` port) may be unavailable, and today that is a **boot
 crash**, not degradation: `Valea.ICM.Watcher.init/1` and its dynamic
@@ -119,10 +125,23 @@ Design (both sites):
   navigation/RPC.
 - Test: a start-error double proves a workspace still opens with the
   watcher disabled.
+- Network-share roots: the backend (`ReadDirectoryChangesW`) may start
+  fine over SMB yet miss events — change notification over SMB is
+  best-effort by protocol. No detection machinery; the doctor check's
+  copy says "best-effort on network paths", and the tree still refreshes
+  on navigation/RPC as everywhere else.
 
-**A4 — TLS trust.** `Valea.Mail.ImapClient` dials `verify: :verify_peer`
-against `:public_key.cacerts_get()`; OTP ≥ 25.1 reads the Windows system
-store. Verify in T5 with a real IMAPS connect; no code planned.
+**A6 — storage placement on Windows (network-share reality).** What
+users put on shares is their **user-owned ICM folders** (mounted by
+reference — plain file IO, supported per §D). The app-owned workspace
+profile (SQLite `app.sqlite`, `sources/` mail+calendar mirrors, session
+transcripts) must stay on a **local, non-roaming** disk: corporate
+folder redirection can place `%APPDATA%` (Roaming) on a share, and
+SQLite in WAL mode is documented-unsafe over network filesystems. So on
+Windows the backend's default app dir and the shell's
+`secret_key_base`/data dir both pin to `%LOCALAPPDATA%`
+(`app_local_data_dir`, not `app_data_dir`) — decided here, before first
+release, so there is never a migration from a roaming location.
 
 ## B. Agent runtime on Windows
 
@@ -184,9 +203,10 @@ binary, second `[[bin]]` in the existing `desktop/src-tauri` crate.
 *Stderr file lifecycle:*
 
 - Path supplied per spawn via `VALEA_SPAWN_STDERR_FILE`, allocated by the
-  adapter under the session's transcript directory (unique per spawn:
-  `<session>/stderr-<os_pid>.log`), created by the shim with
-  share-read so the backend can read while the child runs.
+  adapter under the session's transcript directory **before** spawning
+  (unique via a monotonic per-spawn suffix — the OS pid isn't known yet
+  at allocation time), created by the shim with share-read so the
+  backend can read while the child runs.
 - Size-capped (1 MiB): past the cap the shim stops writing and appends a
   single `[truncated]` marker on close.
 - Consumption: no live tail. The adapter reads the file (bounded, tail
@@ -286,15 +306,26 @@ fix.
   classifier (OTP's `Path.type/1` is host-dependent — on a Unix host
   `Path.type("C:/x")` is `:relative` — so it can neither implement nor
   cross-platform-test Windows semantics):
-  - `classify/1` → `:absolute` (`/x` on Unix; `C:/x`, `C:\x` on
-    Windows), `:drive_relative` (`C:foo` — **rejected** as `:invalid`
-    wherever a path is consumed), `:unc` (`\\server\…` and `\\?\…` —
-    **rejected in v1**: Valea workspaces/ICMs live on local disks; UNC
-    gets an honest "unsupported location" error, not undefined
-    containment semantics), `:relative`.
+  - `classify/1` → `:absolute` (`/x` on Unix; `C:/x`, `C:\x`, **and UNC
+    `\\server\share\…`** on Windows — network shares are a supported
+    workspace surface, per Daniel 2026-07-19), `:drive_relative`
+    (`C:foo` — **rejected** as `:invalid` wherever a path is consumed),
+    `:relative`. Extended-length forms are syntactic wrappers, not a
+    category: `normalize/1` rewrites `\\?\C:\…` → `C:/…` and
+    `\\?\UNC\server\share\…` → `//server/share/…` at ingress. Device
+    paths (`\\.\…`) are `:invalid`.
+  - **UNC root = `//host/share`** — host *and* share are both part of
+    the root, and host/share compare case-folded.
+  - **Root-floor rule** (applies to UNC and drive roots alike): `..` in
+    the resolution walk can never pop above the path's root —
+    `//host/share` and `C:/` are floors the same way `/` is on Unix.
+    Implemented in our own walk, never via host `Path.dirname` (whose
+    behavior at `C:/` is host-dependent). Escape-above-root attempts
+    resolve to the root and then fail containment normally.
   - `absolute?/1`, `ancestor?/2` (the `prefix <> "/"` idiom, done once,
     case-folded per D3), `normalize/1` (D2). Absolute walks start from
-    the path's own root (`C:/`), never a hard-coded `"/"`.
+    the path's own root (`C:/`, `//host/share`), never a hard-coded
+    `"/"`.
 - **D2 — normalization at ingress**: `normalize/1` applied where
   user/config paths enter (mount roots, adopt-a-folder, session cwd,
   configured agent commands): backslashes → `/`, drive letter
@@ -315,10 +346,19 @@ fix.
   `DOCUME~1` aliases resolve to a *different string* than the long-name
   base and get denied (fail-closed — correct direction). Keep it that
   way; add a test pinning the denial so nobody "fixes" it into a bypass.
-- **D6 — reparse points**: NTFS junctions/symlinks surface through
-  `File.read_link` and take the existing symlink walk. OneDrive/Dropbox
-  cloud-placeholder reparse points are documented as unsupported
-  workspace/ICM locations (RELEASING note), not detected code.
+- **D6 — reparse points**: on local NTFS, junctions/symlinks surface
+  through `File.read_link` and take the existing symlink walk.
+  OneDrive/Dropbox cloud-placeholder reparse points are documented as
+  unsupported workspace/ICM locations (RELEASING note), not detected
+  code.
+- **D7 — the SMB reparse blind spot (honest limit)**: reparse points
+  that live **on the server side of a network share** are evaluated by
+  the server and are generally invisible to the client — `resolve_real`
+  cannot see, let alone police, a junction inside `\\host\share\icm`
+  that redirects elsewhere on the server. For share-hosted ICMs the
+  share's own configuration is therefore part of the trust boundary.
+  Documented in RELEASING and the security notes as a stated limit of
+  containment on network shares — never presented as covered.
 
 Testing split (Codex round 1 corrected the original claim): the pure
 suite covers **our own** classifier/normalizer/ancestor logic with
@@ -361,7 +401,7 @@ revisit once the lane is stable).
 
 ## Sequencing
 
-1. **T1 build bring-up**: A1–A3, A5 + F; goal = a `workflow_dispatch`
+1. **T1 build bring-up**: A1–A3, A5–A6 + F; goal = a `workflow_dispatch`
    run producing an installable NSIS bundle whose sidecar *boots* (the
    watcher availability model is part of boot, hence T1; agents disabled
    at this point is acceptable mid-branch, never merged). T1 also runs
@@ -395,6 +435,10 @@ installers.
 6. Cross-OS workspace: workspace created on macOS, opened from a shared
    checkout on Windows (paths normalize, `:`-maildir documented-fails
    with the honest error, not a crash).
+7. Network share: mount an ICM from `\\server\share\…` (a second VM or
+   host share) — browse, edit, agent session with a permission ask
+   inside it; a `..`-above-share-root probe is denied (root-floor);
+   watcher doctor check reports best-effort.
 
 ## Risks & open verifications
 
@@ -405,7 +449,9 @@ installers.
 | `file_system` Windows backend availability | degrade-not-crash designed in | A5, T1 |
 | OTP `cacerts_get()` on Windows | expected fine (OTP ≥ 25.1) | A4, T5 |
 | `find_executable` + `PATHEXT` semantics on OTP/win32 | unverified; resolver falls back to trying the extension list itself | B3, T3 |
-| UNC/`\\?\` rejection surprising users on network drives | accepted for v1; honest "unsupported location" error + RELEASING note | D1 |
+| Server-side reparse points on SMB shares invisible to containment | accepted, stated as a trust-boundary limit, documented | D7, RELEASING |
+| Watcher misses events on SMB roots | best-effort by protocol; doctor copy says so; nav/RPC refresh unaffected | A5 |
+| SQLite (WAL) on redirected/roaming folders | avoided by design — profile pinned to `%LOCALAPPDATA%` | A6 |
 | Claude Code Windows install discovery paths | needs enumeration | B5, T3 |
 | Job Object + Tauri shell interplay (nested job limits on Win10) | low — nested jobs supported since Win 8 | E1, T3 |
 | SmartScreen on unsigned NSIS | accepted, documented | F, RELEASING |
