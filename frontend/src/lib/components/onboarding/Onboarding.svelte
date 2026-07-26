@@ -4,7 +4,7 @@
   // anatomy: two cards (start fresh / continue), trust bar footer, recent
   // workspaces list.
   import { Button } from '$lib/components/ui/button/index.js';
-  import Folder from '@lucide/svelte/icons/folder';
+  import Logo from '$lib/components/shell/Logo.svelte';
   import CreateWorkspaceDialog from './CreateWorkspaceDialog.svelte';
   import OpenWorkspaceFlow from './OpenWorkspaceFlow.svelte';
   import TrustBar from './TrustBar.svelte';
@@ -27,11 +27,8 @@
 <div class="flex min-h-screen flex-col">
   <div class="mx-auto flex w-full max-w-[1010px] flex-1 flex-col justify-center gap-10 px-8 py-14">
     <header class="flex flex-col items-center gap-6 text-center">
-      <div
-        class="bg-act flex size-14 items-center justify-center rounded-[15px] shadow-[0_10px_24px_rgba(47,93,72,0.28)]"
-        aria-hidden="true"
-      >
-        <Folder class="size-6 text-white" strokeWidth={1.75} />
+      <div class="drop-shadow-[0_10px_24px_rgba(47,93,72,0.28)]" aria-hidden="true">
+        <Logo size="size-14" />
       </div>
       <div class="flex flex-col gap-3">
         <h1 class="font-display text-ink-heading text-[38px] leading-[1.15] font-medium text-balance">

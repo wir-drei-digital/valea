@@ -39,17 +39,18 @@
 </script>
 
 <div class="flex h-full flex-col">
-  <!-- Brand header: the mark + wordmark. The ACTIVE WORKSPACE is the
-       footer's WorkspaceSwitcher, not this header. -->
-  <div
-    data-tauri-drag-region
-    class={['flex items-center gap-2.5 px-3 pb-3', desktop ? 'pt-12' : 'pt-4']}
-  >
-    <span class={['flex items-center gap-2.5', desktop && 'pointer-events-none select-none']}>
+  <!-- Brand header. In the DESKTOP app this band is chromeless — no mark,
+       no wordmark (the traffic lights live here instead; the brand shows on
+       the onboarding screen) — but it stays as the traffic-light clearance
+       and a window-drag surface. In the browser it carries the lockup. -->
+  {#if desktop}
+    <div data-tauri-drag-region class="h-12 shrink-0"></div>
+  {:else}
+    <div class="flex items-center gap-2.5 px-3 pt-4 pb-3">
       <Logo />
       <p class="font-display text-ink-heading text-[17px] font-medium">Valea</p>
-    </span>
-  </div>
+    </div>
+  {/if}
 
   <nav class="flex-1 overflow-y-auto px-2 pb-2">
     {#each sections as section, index (section.label ?? 'daily')}

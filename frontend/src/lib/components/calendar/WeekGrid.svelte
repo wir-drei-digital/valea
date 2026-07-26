@@ -9,7 +9,6 @@
     dayKey,
     eventBox,
     gutterHours,
-    hourWindow,
     isPastEvent,
     minutesOfDay,
     nowOffsetPct,
@@ -24,7 +23,8 @@
     events,
     now,
     allDay = [],
-    onSelect
+    onSelect,
+    onCreateSlot
   }: {
     days: Date[];
     events: CalendarEvent[];
@@ -33,19 +33,45 @@
     allDay?: AllDayEntry[];
     /** Selection callback (Spec F): grid events and all-day chips report their `id`. */
     onSelect?: (id: string) => void;
+    /** Clicking an empty slot: the day plus the (30-minute-snapped) minutes-of-day the click landed on. */
+    onCreateSlot?: (day: Date, minutes: number) => void;
   } = $props();
 
-  // 64px per hour — dense enough for a 9–18 band without scrolling on a
-  // laptop, roomy enough for a title + time line on a 45-minute event.
+  // 64px per hour — roomy enough for a title + time line on a 45-minute event.
   const HOUR_PX = 64;
+
+  // The grid shows the FULL day, midnight to midnight — the page's own
+  // scroll container carries the height; `morningAnchor` below scrolls the
+  // working hours into view so nobody lands on 00:00.
+  const window = { startMin: 0, endMin: 24 * 60 };
 
   const dayKeys = $derived(days.map(dayKey));
   const visible = $derived(events.filter((ev) => dayKeys.includes(ev.day)));
-  const window = $derived(hourWindow(visible));
-  const hours = $derived(gutterHours(window));
-  const bodyHeight = $derived(((window.endMin - window.startMin) / 60) * HOUR_PX);
+  const hours = gutterHours(window);
+  const bodyHeight = ((window.endMin - window.startMin) / 60) * HOUR_PX;
   const todayKey = $derived(dayKey(now));
   const nowPct = $derived(nowOffsetPct(minutesOfDay(now), window));
+
+  // Scroll 08:00 to the top of the visible pane on mount (and when the
+  // visible day set changes, which re-creates the anchor element).
+  let morningAnchor = $state<HTMLElement | null>(null);
+  $effect(() => {
+    morningAnchor?.scrollIntoView({ block: 'start' });
+  });
+
+  function slotClick(event: MouseEvent, day: Date): void {
+    if (!onCreateSlot) return;
+    // Only clicks on the column's own empty surface — an EventCard (or any
+    // other child control) handles its own click.
+    const target = event.target as HTMLElement;
+    const column = event.currentTarget as HTMLElement;
+    if (target !== column && target.getAttribute('aria-hidden') !== 'true') return;
+    const rect = column.getBoundingClientRect();
+    const ratio = (event.clientY - rect.top) / rect.height;
+    const raw = window.startMin + ratio * (window.endMin - window.startMin);
+    const minutes = Math.max(0, Math.min(23 * 60 + 30, Math.floor(raw / 30) * 30));
+    onCreateSlot(day, minutes);
+  }
 
   function eventsFor(key: string): CalendarEvent[] {
     return visible.filter((ev) => ev.day === key).sort((a, b) => a.startMin - b.startMin);
@@ -124,6 +150,12 @@
 
   <!-- hour gutter -->
   <div class="relative" style={`height:${bodyHeight}px`} role="presentation">
+    <span
+      bind:this={morningAnchor}
+      class="pointer-events-none absolute inset-x-0"
+      style={`top:${linePct(8)}%`}
+      aria-hidden="true"
+    ></span>
     {#each hours as hour (hour)}
       <span
         class="text-ink-meta absolute right-2.5 -translate-y-1/2 text-[10.5px] tabular-nums"
@@ -137,7 +169,15 @@
   <!-- day columns -->
   {#each days as day (dayKey(day))}
     {@const key = dayKey(day)}
-    <div class="border-paper-hairline relative border-b border-l" style={`height:${bodyHeight}px`} role="gridcell">
+    <!-- Pointer-only slot affordance — the header's "New event" button is
+         the keyboard path to the same editor, so no key handler here. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions, a11y_interactive_supports_focus -->
+    <div
+      class="border-paper-hairline relative border-b border-l"
+      style={`height:${bodyHeight}px`}
+      role="gridcell"
+      onclick={(e) => slotClick(e, day)}
+    >
       {#each hours as hour (hour)}
         {#if hour * 60 > window.startMin}
           <div

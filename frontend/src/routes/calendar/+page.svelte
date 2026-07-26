@@ -17,6 +17,7 @@
   import EventPopover from '$lib/components/calendar/EventPopover.svelte';
   import EventEditorPanel from '$lib/components/calendar/EventEditorPanel.svelte';
   import CalendarSetupPanel from '$lib/components/calendar/CalendarSetupPanel.svelte';
+  import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { calendarStore } from '$lib/stores/calendar.svelte';
   import {
     addDays,
@@ -38,11 +39,25 @@
   let anchor = $state(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()));
   let view = $state<'day' | 'week' | 'month'>('week');
   let now = $state(new Date());
-  // `/calendar?setup=1` deep-links straight into the Sources panel (the
-  // mail route's `?setup=1` convention) — used by the /sources hub.
+  // `/calendar?setup=1` deep-links straight into the Sources dialog (the
+  // mail route's `?setup=1` convention) — used by the /sources hub. Both
+  // Sources and the event editor are MODALS over the grid now, never a
+  // swapped-out main pane.
   let showSetup = $state(page.url.searchParams.get('setup') === '1');
   let selectedId: string | null = $state(null);
-  let editor: { mode: 'create' } | { mode: 'edit'; occurrence: CalendarOccurrence } | null = $state(null);
+  let editor:
+    | { mode: 'create'; prefill?: Date }
+    | { mode: 'edit'; occurrence: CalendarOccurrence }
+    | null = $state(null);
+
+  /** A clicked empty grid slot opens the create dialog seeded with that datetime. */
+  function createAtSlot(day: Date, minutes: number): void {
+    selectedId = null;
+    editor = {
+      mode: 'create',
+      prefill: new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, minutes)
+    };
+  }
 
   // Keep the now-line and past-event dimming honest while the app stays
   // open; a minute of drift is the finest granularity the grid renders.
@@ -126,49 +141,48 @@
     <div class="relative flex min-h-0 flex-1 flex-col">
       <header class="flex flex-wrap items-center gap-x-4 gap-y-2 px-7 pt-6 pb-4">
         <h1 class="font-display text-ink-heading text-[22px] leading-tight font-medium">
-          {showSetup ? 'Calendar sources' : title}
+          {title}
         </h1>
 
-        {#if !showSetup}
-          <div class="flex items-center gap-1">
-            <Button type="button" variant="outline" size="icon-sm" aria-label="Previous" onclick={() => step(-1)}>
-              <ChevronLeft strokeWidth={1.5} />
-            </Button>
-            <Button type="button" variant="outline" size="icon-sm" aria-label="Next" onclick={() => step(1)}>
-              <ChevronRight strokeWidth={1.5} />
-            </Button>
-          </div>
-        {/if}
+        <div class="flex items-center gap-1">
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Previous" onclick={() => step(-1)}>
+            <ChevronLeft strokeWidth={1.5} />
+          </Button>
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Next" onclick={() => step(1)}>
+            <ChevronRight strokeWidth={1.5} />
+          </Button>
+        </div>
 
         <span class="min-w-2 flex-1" aria-hidden="true"></span>
 
-        {#if !showSetup}
-          <Button type="button" variant="outline" size="sm" onclick={() => (editor = { mode: 'create' })}>
-            New event
-          </Button>
-          <SegmentedControl
-            label="Calendar view"
-            value={view}
-            options={[
-              { value: 'day', label: 'Day' },
-              { value: 'week', label: 'Week' },
-              { value: 'month', label: 'Month' }
-            ]}
-            onChange={(v) => (view = v as 'day' | 'week' | 'month')}
-          />
-        {/if}
-        <Button type="button" variant={showSetup ? 'default' : 'outline'} size="sm" onclick={() => (showSetup = !showSetup)}>
-          {showSetup ? 'Back to calendar' : 'Sources'}
+        <Button type="button" variant="outline" size="sm" onclick={() => (editor = { mode: 'create' })}>
+          New event
         </Button>
+        <SegmentedControl
+          label="Calendar view"
+          value={view}
+          options={[
+            { value: 'day', label: 'Day' },
+            { value: 'week', label: 'Week' },
+            { value: 'month', label: 'Month' }
+          ]}
+          onChange={(v) => (view = v as 'day' | 'week' | 'month')}
+        />
+        <Button type="button" variant="outline" size="sm" onclick={() => (showSetup = true)}>Sources</Button>
       </header>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-7 pb-7">
-        {#if showSetup}
-          <CalendarSetupPanel />
-        {:else if view === 'month'}
+        {#if view === 'month'}
           <MonthGrid {anchor} events={grid.segments} allDay={grid.allDay} {now} onSelectDay={openDay} onSelect={select} />
         {:else}
-          <WeekGrid {days} events={grid.segments} allDay={grid.allDay} {now} onSelect={select} />
+          <WeekGrid
+            {days}
+            events={grid.segments}
+            allDay={grid.allDay}
+            {now}
+            onSelect={select}
+            onCreateSlot={createAtSlot}
+          />
         {/if}
       </div>
 
@@ -184,13 +198,27 @@
         />
       {/if}
 
-      {#if editor}
-        <EventEditorPanel
-          initial={editor.mode === 'edit' ? editor.occurrence : null}
-          onClose={() => (editor = null)}
-          onSaved={() => (editor = null)}
-        />
-      {/if}
+      <!-- Event editor — a modal (create is reachable from the header
+           button AND any empty grid slot, which seeds the start time). -->
+      <Dialog.Root open={editor !== null} onOpenChange={(open) => !open && (editor = null)}>
+        <Dialog.Content class="max-h-[85vh] overflow-y-auto sm:max-w-md">
+          {#if editor}
+            <EventEditorPanel
+              initial={editor.mode === 'edit' ? editor.occurrence : null}
+              prefillStart={editor.mode === 'create' ? (editor.prefill ?? null) : null}
+              onClose={() => (editor = null)}
+              onSaved={() => (editor = null)}
+            />
+          {/if}
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <!-- Calendar sources — a modal too (deep-linked by /sources via ?setup=1). -->
+      <Dialog.Root bind:open={showSetup}>
+        <Dialog.Content class="max-h-[85vh] overflow-y-auto sm:max-w-xl">
+          <CalendarSetupPanel />
+        </Dialog.Content>
+      </Dialog.Root>
     </div>
   {/snippet}
 

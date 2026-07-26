@@ -40,7 +40,8 @@
     activeMountKey = null
   }: { activeMountKey?: string | null } = $props();
 
-  const groups = $derived(orderGroups(mountsStore.mounts, recentSessionsStore.groups));
+  const view = $derived(orderGroups(mountsStore.mounts, recentSessionsStore.groups));
+  const groups = $derived(view.groups);
 
   // Local, in-memory only (not persisted) — same "collapse is an opt-in the
   // user reaches for" default `isGroupExpanded` documents.
@@ -246,14 +247,6 @@
               <span class="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
             </a>
           {/each}
-          {#if group.hasMore}
-            <a
-              href={`/chat?icm=${encodeURIComponent(group.mountKey)}`}
-              class="text-ink-meta hover:text-ink-heading px-2 py-1 text-[11.5px]"
-            >
-              Show all…
-            </a>
-          {/if}
         {/if}
 
         {#if startError[group.mountKey]}
@@ -262,6 +255,14 @@
       </div>
     {/if}
   {/each}
+
+  {#if view.overflow}
+    <!-- The nav shows only the NAV_SESSIONS_TOTAL most recent sessions —
+         everything else lives in the chat route's all-sessions pane. -->
+    <a href="/chat?all=1" class="text-ink-meta hover:text-ink-heading px-2 py-1 text-[11.5px]">
+      Show all
+    </a>
+  {/if}
 </div>
 
 <!-- Diagnose result — a modal with the full gated checks, never inline in

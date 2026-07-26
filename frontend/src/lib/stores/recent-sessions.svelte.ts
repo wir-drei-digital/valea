@@ -1,6 +1,6 @@
 import type { Channel } from 'phoenix';
 import { api, type Api } from '../api/client';
-import { SESSIONS_PER_GROUP } from '../components/shell/icm-projects';
+import { NAV_SESSIONS_TOTAL } from '../components/shell/icm-projects';
 import type { AgentSessionSummary } from './sessions-list.svelte';
 
 /** Minimal surface of `api` this store depends on — same `Pick<Api, ...>` convention as the other stores. */
@@ -13,11 +13,11 @@ type RecentSessionsApi = Pick<Api, 'listRecentSessionsByIcm'>;
  * `Valea.Agents.trim_summary/1` server-side), already live-first/newest
  * ordered and capped at the requested limit by the backend
  * (`Valea.Agents.list_recent_sessions_by_icm/1`'s `build_group/3`) — this
- * store preserves that RAW, un-sliced list (up to `SESSIONS_PER_GROUP + 1`
- * items — see `refresh()` below) rather than re-sorting or capping it
- * further; `icm-projects.ts`'s `orderGroups` is what slices display down to
- * `SESSIONS_PER_GROUP` and derives `hasMore` from whether this list
- * overflowed that cap.
+ * store preserves that RAW, un-sliced list (up to `NAV_SESSIONS_TOTAL + 1`
+ * items per group — see `refresh()` below) rather than re-sorting or
+ * capping it further; `icm-projects.ts`'s `orderGroups` is what selects the
+ * workspace-wide `NAV_SESSIONS_TOTAL` most recent sessions for display and
+ * derives `overflow` (the "Show all" row) from the leftover.
  */
 export type RecentSessionGroup = {
   mountKey: string;
@@ -48,21 +48,19 @@ export class RecentSessionsStore {
   }
 
   /**
-   * Requests `SESSIONS_PER_GROUP + 1` (6), not `SESSIONS_PER_GROUP` (5) —
-   * fix wave, Finding 1: the backend truncates server-side
-   * (`Valea.Agents.list_recent_sessions_by_icm/1`'s `Enum.take(limit)`), so
-   * a group requested at exactly 5 can NEVER come back with more than 5,
-   * and `icm-projects.ts`'s `orderGroups` (`hasMore: all.length >
-   * SESSIONS_PER_GROUP`) could never observe an overflow — "Show all…"
-   * would be permanently dead. The one extra session is a pure overflow
-   * SIGNAL, not a display item: `orderGroups` still slices its own display
-   * list down to `SESSIONS_PER_GROUP` and treats a 6th entry here purely as
-   * "this ICM has more than the display cap". Explicit (not relying on
-   * `api.listRecentSessionsByIcm`'s own default) so this store's contract
-   * doesn't silently drift if that wrapper's default ever changes.
+   * Requests `NAV_SESSIONS_TOTAL + 1` per group, not `NAV_SESSIONS_TOTAL` —
+   * the backend truncates server-side (`Valea.Agents.
+   * list_recent_sessions_by_icm/1`'s `Enum.take(limit)`), so without the
+   * extra item `orderGroups` could never observe an overflow and the "Show
+   * all" row would be permanently dead. The display cap itself is GLOBAL
+   * (the ten most recent sessions across every group), and no single group
+   * can contribute more than ten of those, so `+1` per group is exactly
+   * enough signal. Explicit (not relying on `api.listRecentSessionsByIcm`'s
+   * own default) so this store's contract doesn't silently drift if that
+   * wrapper's default ever changes.
    */
   async refresh(): Promise<void> {
-    const result = await this.#api.listRecentSessionsByIcm(SESSIONS_PER_GROUP + 1);
+    const result = await this.#api.listRecentSessionsByIcm(NAV_SESSIONS_TOTAL + 1);
     if (!result.ok) return;
 
     const data = result.data as { groups?: RecentSessionGroup[] };

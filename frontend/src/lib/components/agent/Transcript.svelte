@@ -26,8 +26,10 @@
    * (item.text, and everything MessageItem/ThoughtItem/ToolCallCard/
    * PermissionCard render) reaches the DOM through plain Svelte
    * interpolation ({value}), which auto-escapes. `{@html}` is FORBIDDEN in
-   * this component and every component it renders — do not introduce it
-   * here, and do not add a markdown renderer for agent output.
+   * this component and every component it renders. Assistant messages DO
+   * render as markdown — but via marked's token tree walked by
+   * MarkdownBlocks/MarkdownInline (see `agent-markdown.ts`), never a
+   * markdown→HTML string; the interpolation-only rule holds throughout.
    */
   import type { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import MessageItem from './MessageItem.svelte';

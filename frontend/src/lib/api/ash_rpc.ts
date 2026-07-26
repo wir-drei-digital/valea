@@ -569,11 +569,11 @@ export async function harnessDoctorChannel<Fields extends HarnessDoctorFields | 
 }
 
 
-export type ListAgentSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListAgentSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListAgentSessionsResult<
   Fields extends ListAgentSessionsFields | undefined,
-> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListAgentSessionsResult<Fields extends ListAgentSessionsFields | undefined = undefined> = | { success: true; data: InferListAgentSessionsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

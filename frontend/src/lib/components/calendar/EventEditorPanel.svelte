@@ -14,11 +14,14 @@
 
   let {
     initial = null,
+    prefillStart = null,
     onClose,
     onSaved
   }: {
     /** `null` → create; an occurrence (valea) → edit that event file. */
     initial?: CalendarOccurrence | null;
+    /** Create mode only: seed start (and start+1h end) from a clicked grid slot. */
+    prefillStart?: Date | null;
     onClose: () => void;
     onSaved: () => void;
   } = $props();
@@ -61,10 +64,22 @@
   let status = $state('confirmed');
   let description = $state('');
 
+  function dateToLocalInput(d: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
   // Seed from the occurrence being edited (runs once — `initial` never
   // changes for an open panel; the route remounts per selection).
   $effect.pre(() => {
-    if (!initial) return;
+    if (!initial) {
+      // Create mode: a clicked grid slot seeds start + a one-hour end.
+      if (prefillStart) {
+        start = dateToLocalInput(prefillStart);
+        end = dateToLocalInput(new Date(prefillStart.getTime() + 60 * 60 * 1000));
+      }
+      return;
+    }
     name = initialName;
     title = initial.summary;
     allDay = initial.all_day;
@@ -132,11 +147,9 @@
   }
 </script>
 
-<div
-  class="border-paper-hairline bg-paper-card absolute top-16 right-7 z-20 flex w-96 flex-col gap-3 rounded-[9px] border p-4 shadow-lg"
-  role="dialog"
-  aria-label={editing ? 'Edit event' : 'New event'}
->
+<!-- Layout-neutral: the calendar route hosts this inside a Dialog, which
+     provides the modal chrome (backdrop, card, close). -->
+<div class="flex w-full flex-col gap-3" aria-label={editing ? 'Edit event' : 'New event'}>
   <p class="text-ink-heading text-[14px] font-semibold">{editing ? 'Edit event' : 'New event'}</p>
 
   {#if !editing}

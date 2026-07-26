@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { RecentSessionsStore, recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
-import { SESSIONS_PER_GROUP } from '../components/shell/icm-projects';
+import { NAV_SESSIONS_TOTAL } from '../components/shell/icm-projects';
 import type { ApiResult } from '../api/client';
 import type { Channel } from 'phoenix';
 
@@ -68,13 +68,13 @@ describe('RecentSessionsStore.refresh', () => {
     expect(store.groups).toEqual([]);
   });
 
-  it('requests SESSIONS_PER_GROUP + 1 sessions per group — the extra one is a pure overflow signal (Finding 1): the backend truncates server-side, so `orderGroups` can only ever see >5 to set hasMore if the store asks for 6', async () => {
+  it('requests NAV_SESSIONS_TOTAL + 1 sessions per group — the extra one is a pure overflow signal: the backend truncates server-side, so `orderGroups` can only observe an overflow if the store over-asks by one', async () => {
     const listRecentSessionsByIcm = vi.fn(async () => ({ ok: true, data: { groups: [] } }) as RecentResult);
     const store = new RecentSessionsStore(fakeApi({ listRecentSessionsByIcm }));
 
     await store.refresh();
 
-    expect(listRecentSessionsByIcm).toHaveBeenCalledWith(SESSIONS_PER_GROUP + 1);
+    expect(listRecentSessionsByIcm).toHaveBeenCalledWith(NAV_SESSIONS_TOTAL + 1);
   });
 });
 

@@ -11,6 +11,8 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import MessageSquare from '@lucide/svelte/icons/message-square';
   import Folder from '@lucide/svelte/icons/folder';
+  import Archive from '@lucide/svelte/icons/archive';
+  import { groupAllSessions } from '$lib/components/shell/icm-projects';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -53,6 +55,17 @@
   // `?session=`; `?icm=` is never consulted here, so it can never reassign
   // which session's channel this page joins.
   const selectedId = $derived(page.url.searchParams.get('session'));
+
+  // `?all=1` opens the all-sessions pane (the sidebar's "Show all" row) —
+  // by default the chat route renders WITHOUT a list pane, since the main
+  // nav's project groups already carry the recent sessions.
+  const showAllPane = $derived(page.url.searchParams.get('all') === '1');
+  const allGroups = $derived(groupAllSessions(sessionsList.sessions));
+
+  /** Keeps ?all=1 sticky across in-pane navigation. */
+  function sessionHref(id: string): string {
+    return showAllPane ? `/chat?all=1&session=${id}` : `/chat?session=${id}`;
+  }
 
   // True whenever the most recent "start a session" attempt (from either the
   // list footer or the empty state) hit `harness_unavailable`, or the user
@@ -191,15 +204,6 @@
     }
   }
 
-  function sortedSessions(sessions: AgentSessionSummary[]): AgentSessionSummary[] {
-    // Live sessions first, then ended — most recently started first within
-    // each group.
-    return [...sessions].sort((a, b) => {
-      if (a.live !== b.live) return a.live ? -1 : 1;
-      return (b.startedAt ?? '').localeCompare(a.startedAt ?? '');
-    });
-  }
-
   function sessionTitle(session: AgentSessionSummary): string {
     if (session.title && session.title.trim().length > 0) return session.title;
     // Untitled workflow runs show a plain title here — the workflow's file
@@ -265,52 +269,130 @@
   async function startFollowUp(): Promise<void> {
     await startSession();
   }
+
+  // --- Archive (ended sessions only — the backend refuses a live one) ---
+
+  let archiving: Record<string, boolean> = $state({});
+  let archiveError = $state<string | null>(null);
+
+  async function archiveSession(id: string): Promise<void> {
+    archiveError = null;
+    archiving = { ...archiving, [id]: true };
+    const result = await api.archiveAgentSession(id, workspaceStore.generation ?? 0);
+    archiving = { ...archiving, [id]: false };
+
+    if (!result.ok) {
+      archiveError =
+        result.error === 'session_live'
+          ? 'This session is still running — stop it before archiving.'
+          : 'Could not archive the session. Please try again.';
+      return;
+    }
+
+    void sessionsList.refresh();
+    void recentSessionsStore.refresh();
+    if (selectedId === id) {
+      void goto(showAllPane ? '/chat?all=1' : '/chat');
+    }
+  }
+
+  // --- Stick-to-bottom auto-scroll while a reply streams in ---
+  //
+  // `pinned` tracks whether the user is (near) the bottom; any timeline
+  // change scrolls back down ONLY while pinned, so reading older content
+  // mid-stream is never yanked away. Deliberately a plain variable, not
+  // $state — the effect must re-run on `store.items` changes, never on
+  // scroll-position changes.
+  let scroller = $state<HTMLDivElement | null>(null);
+  let pinned = true;
+
+  function onTranscriptScroll(): void {
+    const el = scroller;
+    if (!el) return;
+    pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  }
+
+  $effect(() => {
+    void store?.items;
+    const el = scroller;
+    if (!el || !pinned) return;
+    el.scrollTop = el.scrollHeight;
+  });
+
+  // Opening a different session always starts pinned at the newest content.
+  $effect(() => {
+    void selectedId;
+    pinned = true;
+  });
 </script>
 
-<AppFrame mainVariant="column">
-  {#snippet list()}
-    <ListPane title="Chat">
-      {#snippet action()}
-        <Button type="button" variant="outline" size="sm" onclick={() => void startSession()}>
-          New session
-        </Button>
-      {/snippet}
-      {#snippet children()}
-        <ul class="divide-paper-hairline flex flex-col divide-y">
-          {#each sortedSessions(sessionsList.sessions) as session (session.id)}
-            {@const selected = session.id === selectedId}
-            <li class:opacity-75={!session.live}>
-              <a
-                href={`/chat?session=${session.id}`}
-                class="block border-l-[3px] py-3 pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
-                class:border-act={selected}
-                class:border-transparent={!selected}
-                class:bg-paper-card={selected}
-              >
-                <span class="flex items-baseline justify-between gap-3">
-                  <span class="flex min-w-0 items-center gap-1.5">
-                    {#if session.live}
-                      <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
-                    {/if}
-                    <span class="text-ink-heading truncate text-[13.5px] [font-weight:650]">
-                      {sessionTitle(session)}
+<!-- The all-sessions pane (sidebar "Show all", `?all=1`): EVERY session,
+     grouped by project, most recently active first — the default chat
+     route renders with NO list pane, since the main nav's project groups
+     already carry the recent sessions. -->
+{#snippet allSessions()}
+  <ListPane title="All sessions">
+    {#snippet action()}
+      <Button type="button" variant="outline" size="sm" onclick={() => void startSession()}>
+        New session
+      </Button>
+    {/snippet}
+    {#snippet children()}
+      {#if allGroups.length === 0}
+        <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">No sessions yet.</p>
+      {:else}
+        {#each allGroups as group (group.mountKey)}
+          <section class="pb-1">
+            <p class="text-overline px-3.5 pt-3 pb-1">{group.name}</p>
+            <ul class="flex flex-col">
+              {#each group.sessions as session (session.id)}
+                {@const selected = session.id === selectedId}
+                <li class="group/row relative" class:opacity-75={!session.live && !selected}>
+                  <a
+                    href={sessionHref(session.id)}
+                    class="block border-l-[3px] py-2 pr-9 pl-3.5 transition-colors hover:bg-paper-pill"
+                    class:border-act={selected}
+                    class:border-transparent={!selected}
+                    class:bg-paper-card={selected}
+                  >
+                    <span class="flex items-baseline justify-between gap-3">
+                      <span class="flex min-w-0 items-center gap-1.5">
+                        {#if session.live}
+                          <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
+                        {/if}
+                        <span class="text-ink-heading truncate text-[13px] [font-weight:650]">
+                          {sessionTitle(session)}
+                        </span>
+                      </span>
+                      <span class="text-ink-meta shrink-0 text-[11px]">{relativeTime(session.startedAt)}</span>
                     </span>
-                  </span>
-                  <span class="text-ink-meta shrink-0 text-[11.5px]">{relativeTime(session.startedAt)}</span>
-                </span>
-                {#if session.kind === 'workflow' && session.workflow}
-                  <span class="text-ink-meta mt-1 block truncate font-mono text-[10.5px]">
-                    {session.workflow}
-                  </span>
-                {/if}
-              </a>
-            </li>
-          {/each}
-        </ul>
-      {/snippet}
-    </ListPane>
-  {/snippet}
+                  </a>
+                  {#if !session.live}
+                    <button
+                      type="button"
+                      aria-label={`Archive ${sessionTitle(session)}`}
+                      title="Archive"
+                      disabled={!!archiving[session.id]}
+                      onclick={() => void archiveSession(session.id)}
+                      class="text-ink-meta hover:text-ink-heading hover:bg-paper-card absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100"
+                    >
+                      <Archive class="size-3.5" strokeWidth={1.5} />
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/each}
+      {/if}
+      {#if archiveError}
+        <p class="text-warn-ink px-3.5 py-1 text-[11.5px]" role="alert">{archiveError}</p>
+      {/if}
+    {/snippet}
+  </ListPane>
+{/snippet}
 
+<AppFrame mainVariant="column" list={showAllPane ? allSessions : undefined}>
   {#snippet main()}
     {#if doctorOverride}
       <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
@@ -346,17 +428,34 @@
       <!-- Transcript scrolls; the composer (or the ended/starting row) stays
            docked at the pane's bottom edge, per the cockpit chat screen. -->
       <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
-        {#if openSessionIcmName}
+        {#if openSessionIcmName || ended}
           <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
-            <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-            <span class="text-ink-meta text-[12px]">
-              Working in <span class="text-ink-secondary font-medium">{openSessionIcmName}</span>
-            </span>
+            {#if openSessionIcmName}
+              <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+              <span class="text-ink-meta text-[12px]">
+                Working in <span class="text-ink-secondary font-medium">{openSessionIcmName}</span>
+              </span>
+            {/if}
+            <span class="min-w-0 flex-1" aria-hidden="true"></span>
+            {#if ended && selectedId}
+              <button
+                type="button"
+                onclick={() => selectedId && void archiveSession(selectedId)}
+                disabled={!!archiving[selectedId]}
+                class="text-ink-meta hover:text-ink-heading flex shrink-0 items-center gap-1 text-[12px] transition-colors"
+              >
+                <Archive class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
+                {archiving[selectedId] ? 'Archiving…' : 'Archive'}
+              </button>
+            {/if}
           </div>
+          {#if archiveError && !showAllPane}
+            <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>
+          {/if}
         {/if}
         <PlanBar item={planItem} />
 
-        <div class="min-h-0 flex-1 overflow-y-auto">
+        <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
           <Transcript {store} />
         </div>
 

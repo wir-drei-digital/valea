@@ -161,16 +161,7 @@ defmodule Valea.Api.Agents do
                       allow_nil?: false,
                       constraints: [
                         items: [
-                          fields: [
-                            id: [type: :string, allow_nil?: false],
-                            kind: [type: :string, allow_nil?: false],
-                            title: [type: :string, allow_nil?: false],
-                            workflow: [type: :string, allow_nil?: true],
-                            run_id: [type: :string, allow_nil?: true],
-                            started_at: [type: :string, allow_nil?: false],
-                            status: [type: :string, allow_nil?: false],
-                            live: [type: :boolean, allow_nil?: false]
-                          ]
+                          fields: @session_summary_fields
                         ]
                       ]
                     ]
@@ -427,7 +418,9 @@ defmodule Valea.Api.Agents do
       run_id: s["run_id"],
       started_at: s["started_at"],
       status: s["status"],
-      live: s["live"]
+      live: s["live"],
+      icm_mount: s["icm_mount"],
+      icm_name: s["icm_name"]
     }
   end
 
