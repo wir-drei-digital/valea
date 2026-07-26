@@ -108,5 +108,6 @@ defmodule Valea.Api do
     resource Valea.Api.Mail
     resource Valea.Api.Calendar
     resource Valea.Api.Icms
+    resource Valea.Api.Skills
   end
 end
