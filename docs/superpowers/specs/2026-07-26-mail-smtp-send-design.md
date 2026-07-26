@@ -145,8 +145,13 @@ provably unsent, safe to reject the op and let the human click again).
 `{:unknown, ...}` is reserved for exactly the case where message bytes
 may have reached the server but the final reply is **missing or
 undecodable** (connection drop, timeout, TLS teardown on the reply
-read). Failures before `DATA` is accepted for transmission are always
-`:error`. `:unknown` enters reconciliation and is never retried.
+read). The `354` reply is the line: failures before it are always
+`:error`; after it, **every** failure without a parseable final reply —
+including a socket/write error mid-payload or mid-terminator — is
+`:unknown` (a partially-written payload's terminating dot may already
+have been flushed by TCP; nothing after the `354` may ever classify as
+provably unsent without a received reply). `:unknown` enters
+reconciliation and is never retried.
 
 `Valea.Mail.SmtpClient` is **hand-written on `:ssl`/`:gen_tcp`** (implicit
 TLS on 465; `:gen_tcp` + STARTTLS upgrade on 587), the same
