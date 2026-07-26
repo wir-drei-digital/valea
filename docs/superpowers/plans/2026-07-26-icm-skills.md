@@ -21,6 +21,23 @@
 - Full check: `cd backend && mix test`, `cd frontend && bun run check && bun run test`. Codegen staleness gate: `cd backend && mix ash_typescript.codegen && git diff --exit-code ../frontend/src/lib/api/`.
 - Commit after every task with a `feat(skills):`/`docs(skills):` conventional message and the `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` trailer.
 
+## Execution bundles
+
+The 12 tasks below execute as THREE bundles — one worker/session and one
+review gate per bundle, commits still land per task. Run the bundle's
+tasks in order; verify at the bundle boundary before moving on.
+
+- **Bundle A — backend skills context (Tasks 1–5).** Vendor + catalog +
+  provenance + state + ops. Gate: `cd backend && mix test test/valea/skills*
+  test/valea/skills/` all green.
+- **Bundle B — RPC and guardrails (Tasks 6–8).** Mounts dismissal state,
+  `Valea.Api.Skills`, RiskTier. Gate: `cd backend && mix test` (full suite)
+  green.
+- **Bundle C — frontend and docs (Tasks 9–12).** Codegen + client, settings
+  section + consent dialog, offer card, ARCHITECTURE.md. Gate: `cd frontend
+  && bun run check && bun run test`, codegen staleness check, and the two
+  in-browser verifications (Tasks 10/11) done.
+
 ---
 
 ### Task 1: Vendor the icm-architect snapshot + catalog.yaml
