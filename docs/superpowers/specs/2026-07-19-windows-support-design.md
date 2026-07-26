@@ -331,9 +331,15 @@ fix.
   configured agent commands): backslashes → `/`, drive letter
   case-folded, via `Path.expand` semantics.
 - **D3 — containment**: comparisons case-insensitive on Windows
-  (`String.downcase` both sides — NTFS default; per-dir
-  case-sensitivity is out of scope and documented), unchanged
-  (case-sensitive) on Unix.
+  (`String.downcase` both sides — NTFS default), unchanged
+  (case-sensitive) on Unix. **Accepted risk (T3 review)**: on a tree
+  with per-directory case sensitivity enabled (`fsutil
+  setCaseSensitiveInfo`, the WSL default for its trees), two
+  same-spelling-different-case siblings are genuinely distinct
+  directories, and case-folded containment would treat a path under
+  one as contained by the other — fail-open relative to that
+  NON-DEFAULT configuration. Case-sensitive directories are documented
+  as unsupported workspace/ICM locations (RELEASING), not detected.
 - **D4 — call-site migration (the inventory)**: every
   absoluteness/ancestor/prefix decision in `PermissionPolicy` (×4),
   `Mounts` (×2), `ICM.Watcher` (×2), `Harnesses.ClaudeCode` (×2),
@@ -450,6 +456,7 @@ installers.
 | OTP `cacerts_get()` on Windows | expected fine (OTP ≥ 25.1) | A4, T5 |
 | `find_executable` + `PATHEXT` semantics on OTP/win32 | unverified; resolver falls back to trying the extension list itself | B3, T3 |
 | Server-side reparse points on SMB shares invisible to containment | accepted, stated as a trust-boundary limit, documented | D7, RELEASING |
+| Case-folded containment on per-directory case-sensitive NTFS trees | accepted, non-default config, documented unsupported | D3, RELEASING |
 | Watcher misses events on SMB roots | best-effort by protocol; doctor copy says so; nav/RPC refresh unaffected | A5 |
 | SQLite (WAL) on redirected/roaming folders | avoided by design — profile pinned to `%LOCALAPPDATA%` | A6 |
 | Claude Code Windows install discovery paths | needs enumeration | B5, T3 |
