@@ -214,6 +214,80 @@ export async function executeActionChannelPush<T>(
 
 
 
+export type ArchiveAgentSessionInput = {
+  sessionId: string;
+  generation: number;
+};
+
+export type ArchiveAgentSessionFields = UnifiedFieldSelection<{archived: boolean, __type: "TypedMap", __primitiveFields: "archived"}>[];
+
+export type InferArchiveAgentSessionResult<
+  Fields extends ArchiveAgentSessionFields | undefined,
+> = InferResult<{archived: boolean, __type: "TypedMap", __primitiveFields: "archived"}, Fields>;
+
+export type ArchiveAgentSessionResult<Fields extends ArchiveAgentSessionFields | undefined = undefined> = | { success: true; data: InferArchiveAgentSessionResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function archiveAgentSession<Fields extends ArchiveAgentSessionFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ArchiveAgentSessionInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ArchiveAgentSessionResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "archive_agent_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ArchiveAgentSessionResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function archiveAgentSessionChannel<Fields extends ArchiveAgentSessionFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ArchiveAgentSessionInput;
+  fields: Fields;
+  resultHandler: (result: ArchiveAgentSessionResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ArchiveAgentSessionResult<Fields>>(
+    config.channel,
+    {
+    action: "archive_agent_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type CreateAgentSessionInput = {
   mountKey: string;
   generation: number;
@@ -365,6 +439,71 @@ export async function createFollowUpChannel<Fields extends CreateFollowUpFields 
 }
 
 
+export type HarnessConfigFields = UnifiedFieldSelection<{command: Array<string>, approved: boolean, isDefault: boolean, defaultCommand: Array<string>, __type: "TypedMap", __primitiveFields: "command" | "approved" | "isDefault" | "defaultCommand"}>[];
+
+export type InferHarnessConfigResult<
+  Fields extends HarnessConfigFields | undefined,
+> = InferResult<{command: Array<string>, approved: boolean, isDefault: boolean, defaultCommand: Array<string>, __type: "TypedMap", __primitiveFields: "command" | "approved" | "isDefault" | "defaultCommand"}, Fields>;
+
+export type HarnessConfigResult<Fields extends HarnessConfigFields | undefined = undefined> = | { success: true; data: InferHarnessConfigResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function harnessConfig<Fields extends HarnessConfigFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<HarnessConfigResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "harness_config",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<HarnessConfigResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function harnessConfigChannel<Fields extends HarnessConfigFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: HarnessConfigResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<HarnessConfigResult<Fields>>(
+    config.channel,
+    {
+    action: "harness_config",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type HarnessDoctorFields = UnifiedFieldSelection<{ok: boolean, checks: Array<{id: string, status: string, detail: string, remedy: string | null, __type: "TypedMap", __primitiveFields: "id" | "status" | "detail" | "remedy"}>, __type: "TypedMap", __primitiveFields: "ok"}>[];
 
 export type InferHarnessDoctorResult<
@@ -499,11 +638,11 @@ export type ListRecentSessionsByIcmInput = {
   limit: number;
 };
 
-export type ListRecentSessionsByIcmFields = UnifiedFieldSelection<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListRecentSessionsByIcmFields = UnifiedFieldSelection<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListRecentSessionsByIcmResult<
   Fields extends ListRecentSessionsByIcmFields | undefined,
-> = InferResult<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListRecentSessionsByIcmResult<Fields extends ListRecentSessionsByIcmFields | undefined = undefined> = | { success: true; data: InferListRecentSessionsByIcmResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -573,11 +712,11 @@ export type ListSessionsInput = {
   cursor?: string | null;
 };
 
-export type ListSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}>[];
+export type ListSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}>[];
 
 export type InferListSessionsResult<
   Fields extends ListSessionsFields | undefined,
-> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}, Fields>;
+> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}, Fields>;
 
 export type ListSessionsResult<Fields extends ListSessionsFields | undefined = undefined> = | { success: true; data: InferListSessionsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -632,6 +771,79 @@ export async function listSessionsChannel<Fields extends ListSessionsFields | un
     config.channel,
     {
     action: "list_sessions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetHarnessCommandInput = {
+  command: Array<string>;
+};
+
+export type SetHarnessCommandFields = UnifiedFieldSelection<{command: Array<string>, approved: boolean, isDefault: boolean, defaultCommand: Array<string>, __type: "TypedMap", __primitiveFields: "command" | "approved" | "isDefault" | "defaultCommand"}>[];
+
+export type InferSetHarnessCommandResult<
+  Fields extends SetHarnessCommandFields | undefined,
+> = InferResult<{command: Array<string>, approved: boolean, isDefault: boolean, defaultCommand: Array<string>, __type: "TypedMap", __primitiveFields: "command" | "approved" | "isDefault" | "defaultCommand"}, Fields>;
+
+export type SetHarnessCommandResult<Fields extends SetHarnessCommandFields | undefined = undefined> = | { success: true; data: InferSetHarnessCommandResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function setHarnessCommand<Fields extends SetHarnessCommandFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetHarnessCommandInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetHarnessCommandResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_harness_command",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetHarnessCommandResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function setHarnessCommandChannel<Fields extends SetHarnessCommandFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetHarnessCommandInput;
+  fields: Fields;
+  resultHandler: (result: SetHarnessCommandResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetHarnessCommandResult<Fields>>(
+    config.channel,
+    {
+    action: "set_harness_command",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

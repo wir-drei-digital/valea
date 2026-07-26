@@ -133,6 +133,52 @@ defmodule Valea.Agents do
   end
 
   @doc """
+  Archives an ENDED session: moves its transcript from `logs/sessions/`
+  into `logs/sessions/archived/` — a plain file move, file-first and
+  hand-reversible. Archived transcripts disappear from every listing and
+  from `attach_or_replay/1` (all of them scan only `logs/sessions/*.jsonl`;
+  the `archived/` entry fails the `.jsonl` filename filter).
+
+  A LIVE session refuses with `{:error, :session_live}` — its
+  `SessionServer` owns the transcript file (appends, plus the sanctioned
+  line-1 title rewrite) while running, so the file must never move under
+  it. `{:error, :not_found}` when no transcript matches. The id becomes a
+  filename component, so it is guarded with a `Path.basename/1` round-trip
+  — a traversal-shaped id can never resolve outside `logs/sessions/`.
+  """
+  @spec archive_session(String.t()) ::
+          :ok | {:error, :no_workspace | :not_found | :session_live | File.posix()}
+  def archive_session(id) when is_binary(id) do
+    with {:ok, %{path: workspace}} <- Manager.current() do
+      path = transcript_path(workspace, id)
+
+      cond do
+        Path.basename(path) != id <> ".jsonl" ->
+          {:error, :not_found}
+
+        not File.regular?(path) ->
+          {:error, :not_found}
+
+        Registry.lookup(Valea.Agents.SessionRegistry, id) != [] ->
+          {:error, :session_live}
+
+        true ->
+          dest_dir = Path.join(sessions_dir(workspace), "archived")
+          File.mkdir_p!(dest_dir)
+
+          case File.rename(path, Path.join(dest_dir, id <> ".jsonl")) do
+            :ok ->
+              Valea.Audit.append("session_archived", %{"session_id" => id})
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+      end
+    end
+  end
+
+  @doc """
   Workspace-wide session index for the SPA's session list: scans
   `{workspace}/logs/sessions/*.jsonl` for their metadata (line 1), newest
   `started_at` first, merging in live status from the Registry via
@@ -278,7 +324,11 @@ defmodule Valea.Agents do
       run_id: s["run_id"],
       started_at: s["started_at"],
       status: s["status"],
-      live: s["live"]
+      live: s["live"],
+      # The session's primary-ICM identity snapshot (session/v1 metadata) —
+      # the chat header renders "in <icm_name>" off the summary alone.
+      icm_mount: s["icm_mount"],
+      icm_name: s["icm_name"]
     }
   end
 

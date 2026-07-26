@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
   import { AppShell, Sidebar } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { setInitialPrompt } from '$lib/stores/initial-prompt';
   import { resolveActiveMountKey } from '$lib/shell/icm-route';
   import { mountProvenanceLabel } from '$lib/shell/provenance';
   import { knowledgeHref } from '$lib/shell/nav';
@@ -16,7 +19,9 @@
     type CockpitToday,
     type TodaySection
   } from '$lib/today/cockpit';
+  import { mostRecentMountKey } from '$lib/today/quick-session';
   import OpenLoops from '$lib/components/today/OpenLoops.svelte';
+  import { Composer } from '$lib/components/agent';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 
@@ -105,6 +110,49 @@
       .filter((loop): loop is { title: string; source: string | null } => loop.title !== null)
       .map((loop) => ({ title: loop.title, source: loop.source ?? '' }));
   }
+
+  // Quick composer: start a session in the most recently used ICM straight
+  // from the cockpit — no detour through /chat's empty state. Target
+  // selection mirrors the chat route's own default (first enabled mount)
+  // when no session exists yet; the placeholder names the target so it's
+  // never ambiguous where the session will run.
+  const quickTarget = $derived(
+    mostRecentMountKey(recentSessionsStore.groups, icmStore.groups[0]?.mount ?? null)
+  );
+  const quickTargetName = $derived.by(() => {
+    if (!quickTarget) return null;
+    return (
+      recentSessionsStore.groups.find((g) => g.mountKey === quickTarget)?.icmName ??
+      icmStore.groups.find((g) => g.mount === quickTarget)?.title ??
+      quickTarget
+    );
+  });
+
+  let quickBusy = $state(false);
+  let quickError = $state<string | null>(null);
+
+  async function quickStart(text: string): Promise<void> {
+    const mountKey = quickTarget;
+    if (!mountKey || quickBusy) return;
+    quickBusy = true;
+    quickError = null;
+    try {
+      const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0);
+      if (!result.ok) {
+        quickError =
+          result.error === 'harness_unavailable'
+            ? "The assistant isn't ready — open Agent settings (gear in the sidebar) and run the checks."
+            : 'The session could not be started. Please try again.';
+        return;
+      }
+      const data = result.data as { id: string };
+      setInitialPrompt(data.id, text);
+      void recentSessionsStore.refresh();
+      void goto(`/chat?session=${data.id}`);
+    } finally {
+      quickBusy = false;
+    }
+  }
 </script>
 
 <AppShell>
@@ -139,6 +187,22 @@
           <p class="text-ink-meta text-[13px]">{calendarSummaryLine(today.calendar)}</p>
         {/if}
       </header>
+
+      {#if quickTarget}
+        <div class="-mx-4 mt-4">
+          <Composer
+            busy={quickBusy}
+            configItems={[]}
+            placeholder={`Start a session in ${quickTargetName ?? 'your project'}…`}
+            onSend={(text) => void quickStart(text)}
+            onStop={() => {}}
+            onSetConfig={() => {}}
+          />
+        </div>
+        {#if quickError}
+          <p class="text-warn-ink mt-1 text-[12.5px]" role="alert">{quickError}</p>
+        {/if}
+      {/if}
 
       {#if today.sections.length === 0}
         <div class="border-paper-border bg-paper-card mt-8 rounded-xl border p-5">

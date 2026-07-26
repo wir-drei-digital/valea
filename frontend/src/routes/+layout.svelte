@@ -11,8 +11,17 @@
   import { updatesStore } from '$lib/stores/updates.svelte';
   import { refreshSidebarProjectStores, wireIcmEvents } from '$lib/stores/icm.svelte';
   import SearchPalette from '$lib/components/palette/SearchPalette.svelte';
+  import { inDesktop } from '$lib/keychain';
 
   let { children } = $props();
+
+  // Desktop only: the window has no native title bar (overlay style), so a
+  // thin strip along the very top edge is always a drag region — this is
+  // what makes the window draggable on every screen, onboarding included
+  // (the sidebar's brand band is a second, larger drag surface once the
+  // shell renders). 12px tall: inside every pane's own top padding, so it
+  // never sits over anything interactive.
+  const desktop = inDesktop();
 
   // Joins `workspace:events` once, through the single `wireIcmEvents` call:
   // `icm_changed` keeps the sidebar tree live (Task 18 acceptance
@@ -50,6 +59,10 @@
     updatesStore.start();
   });
 </script>
+
+{#if desktop}
+  <div data-tauri-drag-region class="fixed inset-x-0 top-0 z-50 h-3" aria-hidden="true"></div>
+{/if}
 
 {#if workspaceStore.state === 'loading'}
   <div class="flex min-h-screen items-center justify-center bg-paper-surface"></div>

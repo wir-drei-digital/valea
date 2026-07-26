@@ -3,7 +3,6 @@ import Inbox from '@lucide/svelte/icons/inbox';
 import Mail from '@lucide/svelte/icons/mail';
 import Calendar from '@lucide/svelte/icons/calendar';
 import MessageSquare from '@lucide/svelte/icons/message-square';
-import ListTodo from '@lucide/svelte/icons/list-todo';
 import Plug from '@lucide/svelte/icons/plug';
 import ListChecks from '@lucide/svelte/icons/list-checks';
 
@@ -51,8 +50,7 @@ export function mainNav(): NavSection[] {
         { id: 'today', label: 'Today', href: '/', icon: Inbox },
         { id: 'mail', label: 'Mail', href: '/mail', icon: Mail },
         { id: 'calendar', label: 'Calendar', href: '/calendar', icon: Calendar },
-        { id: 'chat', label: 'Chat', href: '/chat', icon: MessageSquare },
-        { id: 'tasks', label: 'Tasks', href: '/tasks', icon: ListTodo }
+        { id: 'chat', label: 'Chat', href: '/chat', icon: MessageSquare }
       ]
     },
     // ONE workspace-wide utility group. The primary Projects section is

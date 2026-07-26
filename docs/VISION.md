@@ -68,9 +68,10 @@ weekly admin review. (Seed persona: Mara Lindt, Mara Lindt Coaching.)
    directly when a session names it as context, the same way a person would
    hand a colleague a runbook. Routing between documents is itself prose —
    `CONTEXT.md` tables at every level saying where to look for what.
-   Nothing is hidden — Valea must not become a new black box ("Open the
-   hood"), and the human stays in the loop through the live permission
-   ask-gate on every consequential step, not a structured approval schema.
+   Nothing is hidden — Valea must not become a new black box (everything
+   it renders stays plain files the user can open), and the human stays in
+   the loop through the live permission ask-gate on every consequential
+   step, not a structured approval schema.
 
 4. **AI prepares; human approves.** The assistant summarizes, classifies,
    drafts, prepares briefs, suggests tasks, and proposes memory updates. It
@@ -112,8 +113,8 @@ Calm, trustworthy, warm, focused, local, transparent. Design language: *"paper
 [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md)).
 
 Copy patterns we use: "Prepared for you", "Needs your approval", "Used these
-sources", "Nothing has been sent or changed without your approval", "Open the
-hood", "Why this?". Never: hype language, glowing AI effects, "automated for
+sources", "Nothing has been sent or changed without your approval", "What's
+in a workspace?", "Why this?". Never: hype language, glowing AI effects, "automated for
 you" without explanation, vanity-metric dashboards. Plain language first;
 technical detail is one toggle away, never the default.
 
@@ -150,7 +151,8 @@ above — not a Valea-scheduled "workflow run".)*
 2. Morning cockpit: "Good morning, Mara. Two sessions today, one new inquiry,
    one overdue invoice. I prepared three things overnight — nothing has been
    sent or changed without your approval."
-3. The user reviews, edits, approves, rejects, or snoozes. High-risk items
+3. The user reviews, edits, approves, or rejects — live, in the moment,
+   through the ask-gate. High-risk items
    (anything that leaves the house) are visually unmistakable and never one
    click from disaster.
 4. Approved actions execute (MVP: local drafts only); the audit log records
@@ -193,7 +195,7 @@ clearly marked in their design specs until implemented.
    ICM paper's Layer 0/1 as combined root `AGENTS.md`/`CLAUDE.md` files, and
    hosts Layer 2 stage contracts as `icm/Workflows/*.md` inside the
    reference tree itself (later superseded by ICM mounts, item 7). After this phase Valea is a demo-able product with
-   no accounts connected. *(shipped, pending merge; spec:
+   no accounts connected. *(shipped; spec:
    2026-07-10-agent-slice-design.md — its workflow-execution/approval-queue
    half is superseded by item 10 below; the agent runtime, chat UI, trust
    model, and audit log it shipped remain live.)*
@@ -204,12 +206,19 @@ clearly marked in their design specs until implemented.
    surface stays files: views to read, `ops/pending/` + `drafts/` to
    write. *(shipped; specs: 2026-07-11-mail-design.md, superseded by
    2026-07-17-mail-maildir-design.md)*
-5. **Calendar** — a sync-to-files engine that reads CalDAV / imports ICS
-   into `sources/calendar/`, today + week views. Same file-first posture as
-   Mail.
+5. **Calendar** — a sync-to-files engine that mirrors the user's external
+   calendars into `sources/calendar/` via polled ICS subscription feeds
+   (deliberately no CalDAV/OAuth — the secret-address feed is the one
+   mechanism every provider ships), day/week/month views. Same file-first
+   posture as Mail — plus one agent-writable local "Valea calendar" (plain
+   event files) served back out as a tokened loopback ICS feed. *(shipped;
+   spec: 2026-07-18-calendar-feeds-design.md)*
 6. **Workflows & agents, full depth** — registry UI, context bundles,
    additional harnesses beyond Claude Code, everything the prototype slice
-   deferred.
+   deferred. *(Mostly dissolved by item 10: the agent-native redesign
+   deliberately deleted the workflow registry and context-bundle ideas
+   rather than building them out. The one piece that survives as future
+   scope is additional harnesses beyond Claude Code.)*
 7. **ICM projects & workspace profiles** — replaced the interim embedded/global
    mount composition with the final boundary: private Valea workspace profiles
    mount user-owned ICM folders by reference; every session selects one
@@ -234,9 +243,8 @@ clearly marked in their design specs until implemented.
    decided queue items) stage memory-update PROPOSAL PAIRS instead of editing
    directly, applied by a hash-guarded queue executor with conflict
    hand-back and content-hash crash recovery; rejections optionally carry a
-   one-line reason, visible in the decided history. *(Spec B — shipped,
-   pending merge on `feat/methodology-depth`; spec:
-   2026-07-12-methodology-depth-design.md. **Its queue-backed
+   one-line reason, visible in the decided history. *(Spec B — shipped;
+   spec: 2026-07-12-methodology-depth-design.md. **Its queue-backed
    memory-update-proposal machinery is superseded by item 10 below** — the
    risk tier and the chat ask-gate line-diff dialog survive, updated for a
    depth-aware tier rule instead of the `Workflows/*.md`-prefix rule
@@ -257,8 +265,7 @@ clearly marked in their design specs until implemented.
    page-link picker inserting standard link marks, a Cmd+K search palette
    with an MRU, link-click navigation with dangling-link decoration and
    create-on-click, a backlinks panel, and page-aware rename/delete impact
-   dialogs. *(Spec C — shipped, pending merge on
-   `worktree-knowledge-depth`; spec:
+   dialogs. *(Spec C — shipped; spec:
    2026-07-12-knowledge-depth-design.md. Its page-templates discovery was
    made recursive by item 10 below — any folder named `templates/`, not
    only a single top-level `Templates/` per mount.)*
@@ -284,8 +291,9 @@ clearly marked in their design specs until implemented.
     full list of what this deleted.)*
 
 The MVP is complete when the core acceptance scenario runs end-to-end: open
-app → move Priya's inquiry to AI/Review → start a session with an inquiry
-workflow document and the message as input → review the prepared draft
-with sources via the ask-gate diff → approve → local draft created, full
-chain in the audit log — and "Open the hood" shows the plain files behind
-all of it.
+app → pick a real client inquiry in Mail → start a session about that
+message (or with an inquiry playbook document as its context document and
+the message as its input grant) → review the prepared reply via the
+ask-gate diff → approve → the reply lands as a draft file the user pushes
+to the mailbox's own Drafts folder, with the full chain in the audit log —
+and every step of it is plain files on disk the user can open.

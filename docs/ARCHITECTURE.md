@@ -56,7 +56,7 @@ production     desktop sidecar :4817 — Phoenix serves the built SPA; window lo
 
 - **Backend:** Elixir / Phoenix / Ash, SQLite (AshSqlite). Binds loopback only.
 - **Frontend:** SvelteKit static SPA (Svelte 5 runes, no SSR — ever), Bun, Tailwind v4 + shadcn-svelte.
-- **Desktop:** Tauri v2. `main.rs` spawns the backend as a Burrito-packaged sidecar binary on the fixed port 4817, polls until reachable, then shows the window; kills the sidecar on exit. Dev builds skip the sidecar entirely. In production the window loads the SPA **from the sidecar origin** — `tauri.conf.json` sets `build.frontendDist` to the URL `http://localhost:4817` (not a bundled asset dir), where `just package-backend` has baked the SPA into the backend's `priv/static`. Because the window renders same-origin with the backend, the frontend's relative `/rpc/run` and `/socket` URLs reach the sidecar unchanged (no `PUBLIC_API_URL`/`PUBLIC_WS_URL` injection needed). The window is only shown after the port polls ready, so loading from the sidecar origin never races the boot.
+- **Desktop:** Tauri v2. The window is 1280×860 (min 1080×700, centered) with a macOS overlay title bar (`titleBarStyle: "Overlay"`, `hiddenTitle`, traffic lights at 18,24) — no native bar, so dragging is `data-tauri-drag-region` surfaces (`core:window:allow-start-dragging` in `capabilities/default.json`): a 12px strip along the window's top edge (root `+layout.svelte`, every screen incl. onboarding) plus the sidebar's brand band, whose desktop-only extra top padding also clears the traffic lights. `main.rs` spawns the backend as a Burrito-packaged sidecar binary on the fixed port 4817, polls until reachable, then shows the window; kills the sidecar on exit. Dev builds skip the sidecar entirely. In production the window loads the SPA **from the sidecar origin** — `tauri.conf.json` sets `build.frontendDist` to the URL `http://localhost:4817` (not a bundled asset dir), where `just package-backend` has baked the SPA into the backend's `priv/static`. Because the window renders same-origin with the backend, the frontend's relative `/rpc/run` and `/socket` URLs reach the sidecar unchanged (no `PUBLIC_API_URL`/`PUBLIC_WS_URL` injection needed). The window is only shown after the port polls ready, so loading from the sidecar origin never races the boot.
 - Web (non-desktop) release: `just build` bakes the SPA into `backend/priv/static` and produces a standalone Phoenix release.
 
 ## Workspace model
@@ -153,7 +153,7 @@ below); nothing canonical lives in the workspace folder itself.
   - `Valea.Api.ICM`: `icm_tree` → `:tree` (`icmTree`, arg `mount_key`) — ONE mounted ICM's tree, `{mount_key:, title:, tree:}`, every node `path` relative to that ICM's own root (task 4.2's re-key; a caller that needs every enabled ICM's tree calls this once per mount key); `icm_page` → `:page` (`icmPage`, args `mount_key, path`).
   - `Valea.Api.Icms`: `list_icms` → `:list_icms` (`listIcms`) — every `icms:`-config entry (enabled/disabled/degraded), typed `mountKey`/`id`/`name`/`description`/`root`/`enabled`/`degraded` (`id` the manifest's stable UUID, `null` for a degraded mount with no loadable manifest; `root` always the resolved absolute path — every mount is by-reference, there is no embedded form); `mount_icm` → `:mount_icm` (`mountIcm`, args `path, generation`) — mounts an existing, already-healthy external ICM folder; `adopt_icm` → `:adopt_icm` (`adoptIcm`, args `path, name, generation`) — mints a minimal `{format: 2, id, name}` identity file into a manifest-less folder (the ONLY write) and mounts it (see "Dynamic-tree riders" → adopt-a-folder below); `create_icm` → `:create_icm` (`createIcm`, args `name, path, generation`) — mints a brand-new ICM at `path` (seeding `backend/priv/icm_template/`) and mounts it, the only other mutation that writes into an ICM's own folder; `set_icm_enabled` → `:set_icm_enabled` (`setIcmEnabled`, args `mount_key, enabled, generation`); `unmount_icm` → `:unmount_icm` (`unmountIcm`, args `mount_key, generation`) — config-only, never touches the folder; `icm_doctor` → `:icm_doctor` (`icmDoctor`, args `mount_key, generation`) — per-mount health checks; `inspect_icm` → `:inspect_icm` (`inspectIcm`, arg `path`) — the "what's in this folder" mount/onboarding preview, now also reporting `adoptable`. See [ICM project workspaces](#icm-project-workspaces) below.
   - `Valea.Api.Cockpit`: `cockpit_today` → `:today` (`cockpitToday`) — the `today.json` cockpit aggregation (see "Today = a file the agent maintains" below).
-  - `Valea.Api.Agents`: `create_agent_session` → `:create_session` (`createAgentSession`, args `mount_key, generation`, optional `context_doc, input`) — the session-with-context primitive (see "Session creation, permission asks, and audit" below); `list_agent_sessions` → `:list_sessions` (`listAgentSessions`); `list_recent_sessions_by_icm` → same name (`listRecentSessionsByIcm`, arg `limit`); `list_sessions` → `:list_sessions_for` (`listSessions`, args `mount_key`, optional `cursor`); `create_follow_up` → same name (`createFollowUp`, args `session_id, generation`); `harness_doctor` → same name (`harnessDoctor`).
+  - `Valea.Api.Agents`: `create_agent_session` → `:create_session` (`createAgentSession`, args `mount_key, generation`, optional `context_doc, input`) — the session-with-context primitive (see "Session creation, permission asks, and audit" below); `list_agent_sessions` → `:list_sessions` (`listAgentSessions`); `list_recent_sessions_by_icm` → same name (`listRecentSessionsByIcm`, arg `limit`); `list_sessions` → `:list_sessions_for` (`listSessions`, args `mount_key`, optional `cursor`); `create_follow_up` → same name (`createFollowUp`, args `session_id, generation`); `harness_doctor` → same name (`harnessDoctor`); `harness_config` → same name (`harnessConfig`) and `set_harness_command` → same name (`setHarnessCommand`, arg `command` argv array) — the Agent-settings dialog's pair over `Valea.App.Config`'s trusted harness command (app-level, deliberately no `generation`; the save RPC persists AND approves in one gesture — it is the UI consent `App.Config.set_harness_command/1` withholds for a non-default command, reachable only through the control-token-gated RPC surface).
   - `Valea.Api.Audit`: `list_audit_entries` → same name (`listAuditEntries`, arg `limit`) — relocated from the deleted `Valea.Api.Queue` (Spec D §A); `Valea.Audit` itself is queue-independent.
   - `Valea.Api.Mail`: see "RPC + channel events" under Mail below.
 - **Transport: Phoenix channels first, HTTP fallback.** One socket (`ValeaWeb.UserSocket`, path `/socket`) carries two independent channel topics: `ash_typescript_rpc:client` (ash_typescript's channel-RPC transport — every `icmTree()`-style call goes here when the channel is joined) and the single consolidated **`workspace:events`** channel, joined once from `frontend/src/routes/+layout.svelte` via `wireIcmEvents()` (`frontend/src/lib/stores/icm.svelte.ts`) and pushing two event names: `workspace` (`{open, name?, path?}`, on open/close) and `icm_changed` (`{}`, on any change under `{workspace}/icm`, debounced 200ms by `Valea.ICM.Watcher`). There is no per-feature channel sprawl — `workspace:events` is the one realtime channel, and non-realtime RPC prefers `ash_typescript_rpc:client` but transparently falls back to plain `POST /rpc/run` (`ValeaWeb.RpcController.run/2`) when the socket/channel isn't joined (see `frontend/src/lib/api/client.ts`).
@@ -249,7 +249,15 @@ files it needs and returns the directives the ACP launch path uses to spawn
 and configure the adapter subprocess) with `Valea.Harnesses.ClaudeCode` as
 the only implementation. The executable is resolved from **trusted app
 config** (`Valea.App.Config`), never from a workspace or ICM file — an
-opened folder can never make Valea execute an arbitrary binary.
+opened folder can never make Valea execute an arbitrary binary. The user
+adjusts it in the Agent-settings dialog (sidebar gear:
+`HarnessSettingsModal.svelte` — harness command + the same doctor checks),
+whose save action is the consent step (see the `set_harness_command` RPC
+note under "API layer"). A failed prompt turn (e.g. the adapter's
+"Authentication required" JSON-RPC error) surfaces as a terracotta error
+card in the transcript AND completes the turn lifecycle — the codec emits
+a `turn` item alongside the error item, so the composer's busy state never
+strands on "Working…".
 `Valea.Agents.Env` passes the subprocess
 a minimal allowlisted environment (`HOME`, `PATH`, `USER`, `LANG`/`LC_*`,
 `TMPDIR`, `SHELL`, Claude/Anthropic auth vars when present) — never the
@@ -1110,9 +1118,11 @@ as a Knowledge link), `open_loops: [{title, source}]`, `notes`.
 `Valea.Cockpit.today/0` (`backend/lib/valea/cockpit.ex`) merges `today.json`
 across every enabled ICM (`Valea.Mounts.enabled/0` order, each section
 provenance-labeled with the ICM name) with live state Valea itself owns:
-mail counts (`review_count`/`inbox_count`/`configured`, degrading to zero
-when the Mail Engine isn't up rather than crashing the whole payload) and
-the 5 most recent sessions. Leniency contract: an ICM with no `today.json`
+per-account mail status (one entry per running Mail Engine —
+`account`/`configured`/`state`/`pending_ops`/`notices`, degrading to an
+empty list when no Engine is up rather than crashing the whole payload),
+the lenient calendar line (`events_today` + `next`, see Calendar above),
+and the 5 most recent sessions. Leniency contract: an ICM with no `today.json`
 at all gets no section (not an error); unreadable/malformed JSON gets a
 section with `"ok" => false` (the FE renders a calm "today.json couldn't be
 read" note, never an error state); wrong-typed fields degrade to `nil`/`[]`
@@ -1181,7 +1191,7 @@ carries secret-shaped files at all.
 
 ## Knowledge & editor depth (Spec C)
 
-*(pending merge on `worktree-knowledge-depth`; spec:
+*(shipped; spec:
 [2026-07-12-knowledge-depth-design.md](superpowers/specs/2026-07-12-knowledge-depth-design.md))*
 
 Makes Knowledge a genuinely daily-usable surface: a `[[`/`@` link picker,
@@ -1416,7 +1426,7 @@ UI follows the "paper & ink, with a green pen for approval" design system: [docs
 
 - `AppShell.svelte` — the four-column grid shell (Sidebar · optional ListPane · Main · optional Rail); pages compose inside it.
 - `AppFrame.svelte` — outer frame/chrome wrapper around `AppShell`.
-- `Sidebar.svelte` — left nav column (top-level sections, e.g. Today, Knowledge).
+- `Sidebar.svelte` — left nav column: the daily group (Today, Mail, Calendar, Chat), the Projects section (`IcmProjects.svelte`), and a Workspace utility group (Sources, Audit log). The file browser (route `/knowledge`, titled "Files" in the UI) is reached through each project's own row rather than a global nav item. A Tasks nav item existed as a stub and was dropped (2026-07-26) until the feature actually exists.
 - `SidebarItem.svelte` — single sidebar row/link.
 - `Rail.svelte` — optional right-hand rail column.
 - `ListPane.svelte` — optional second column for list-over-detail views (e.g. Knowledge's folder/page list).

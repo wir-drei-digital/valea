@@ -438,4 +438,110 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert Enum.all?(checks, &(&1["remedy"] == nil or is_binary(&1["remedy"])))
     end
   end
+
+  describe "archive_agent_session" do
+    test "archives an ended session out of the listings; refuses a live one; not_found after",
+         %{generation: generation, icm: icm, workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      assert %{"success" => true, "data" => %{"id" => id}} =
+               rpc(
+                 "create_agent_session",
+                 %{"mountKey" => icm.mount_key, "generation" => generation},
+                 ["id"]
+               )
+
+      # Live sessions refuse to archive — the SessionServer owns the file.
+      assert %{"success" => false} =
+               rpc(
+                 "archive_agent_session",
+                 %{"sessionId" => id, "generation" => generation},
+                 ["archived"]
+               )
+
+      AgentCase.kill_session(id)
+
+      # Registry removal on process death is asynchronous — wait it out.
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
+
+      assert %{"success" => true, "data" => %{"archived" => true}} =
+               rpc(
+                 "archive_agent_session",
+                 %{"sessionId" => id, "generation" => generation},
+                 ["archived"]
+               )
+
+      # Gone from listings; the transcript file moved under archived/.
+      assert %{"success" => true, "data" => %{"sessions" => sessions}} =
+               rpc("list_agent_sessions", %{}, [%{"sessions" => ["id"]}])
+
+      refute Enum.any?(sessions, &(&1["id"] == id))
+      assert File.regular?(Path.join([workspace, "logs", "sessions", "archived", id <> ".jsonl"]))
+
+      # Archiving again (or a traversal-shaped id) is not_found.
+      assert %{"success" => false} =
+               rpc(
+                 "archive_agent_session",
+                 %{"sessionId" => id, "generation" => generation},
+                 ["archived"]
+               )
+
+      assert %{"success" => false} =
+               rpc(
+                 "archive_agent_session",
+                 %{"sessionId" => "../secrets", "generation" => generation},
+                 ["archived"]
+               )
+    end
+  end
+
+  defp wait_until(fun, tries \\ 50) do
+    cond do
+      fun.() ->
+        :ok
+
+      tries == 0 ->
+        flunk("condition never became true")
+
+      true ->
+        Process.sleep(20)
+        wait_until(fun, tries - 1)
+    end
+  end
+
+  describe "harness settings" do
+    test "harness_config reports the current command; set_harness_command persists AND approves" do
+      on_exit(fn -> Valea.App.Config.set_harness_command(["claude-agent-acp"]) end)
+
+      assert %{"success" => true, "data" => data} =
+               rpc("harness_config", %{}, ["command", "approved", "isDefault", "defaultCommand"])
+
+      assert data["command"] == ["claude-agent-acp"]
+      assert data["approved"] == true
+      assert data["isDefault"] == true
+      assert data["defaultCommand"] == ["claude-agent-acp"]
+
+      assert %{"success" => true, "data" => updated} =
+               rpc(
+                 "set_harness_command",
+                 %{"command" => ["/usr/local/bin/custom-acp", "--acp"]},
+                 ["command", "approved", "isDefault"]
+               )
+
+      # The RPC is the UI consent step — unlike a bare
+      # `App.Config.set_harness_command/1`, it approves what it just set.
+      assert updated["command"] == ["/usr/local/bin/custom-acp", "--acp"]
+      assert updated["approved"] == true
+      assert updated["isDefault"] == false
+      assert Valea.App.Config.harness_command_approved?() == true
+    end
+
+    test "set_harness_command rejects an effectively-empty command" do
+      assert %{"success" => false} =
+               rpc("set_harness_command", %{"command" => ["  ", ""]}, ["command"])
+
+      # Nothing was persisted by the rejected call.
+      assert Valea.App.Config.harness_command() == ["claude-agent-acp"]
+    end
+  end
 end

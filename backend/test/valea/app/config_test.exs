@@ -126,4 +126,13 @@ defmodule Valea.App.ConfigTest do
   test "set_harness_command rejects an empty list" do
     assert_raise FunctionClauseError, fn -> apply(Config, :set_harness_command, [[]]) end
   end
+
+  test "approve_harness_command marks the current non-default command approved" do
+    Config.set_harness_command(["/usr/bin/custom-acp"])
+    assert Config.harness_command_approved?() == false
+
+    Config.approve_harness_command()
+    assert Config.harness_command_approved?() == true
+    assert Config.harness_command() == ["/usr/bin/custom-acp"]
+  end
 end

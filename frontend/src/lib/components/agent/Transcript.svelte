@@ -13,6 +13,10 @@
    *    onAnswerPermission callback through)
    *  - turn                     -> a hairline + the stop reason, but ONLY
    *    when it's not the boring "end_turn" case
+   *  - error                    -> a terracotta notice card. These are the
+   *    adapter's soft failures (e.g. a JSON-RPC error reply to a prompt —
+   *    "Authentication required") — invisible before this branch existed,
+   *    which read as "I sent a message and nothing happened"
    *  - plan/config/usage/commands/meta/session_info -> NOT rendered here.
    *    They're dock singletons: T18 renders PlanBar/UsageLine/Composer
    *    alongside this component, deriving each one's item from the same
@@ -47,6 +51,14 @@
       <ToolCallCard {item} />
     {:else if item.type === 'permission'}
       <PermissionCard {item} onAnswer={(kind) => store.answerPermission(item.id, kind)} />
+    {:else if item.type === 'error'}
+      <div class="border-warn-border bg-warn-tint rounded-xl border px-4 py-3" role="alert">
+        <p class="text-warn-ink text-[13px]">The assistant couldn't continue: {asString(item.text)}</p>
+        <p class="text-warn-ink mt-1 text-[12px]">
+          If this keeps happening, open Agent settings (the gear at the bottom of the sidebar) and
+          run the checks.
+        </p>
+      </div>
     {:else if item.type === 'turn' && asString(item.stop_reason) && asString(item.stop_reason) !== 'end_turn'}
       <div class="flex items-center gap-2 py-1" role="status">
         <span class="bg-paper-hairline h-px flex-1" aria-hidden="true"></span>

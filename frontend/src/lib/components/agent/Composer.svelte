@@ -17,13 +17,15 @@
     configItems,
     onSend,
     onStop,
-    onSetConfig
+    onSetConfig,
+    placeholder = 'Message the agent…'
   }: {
     busy: boolean;
     configItems: AcpItemLike[];
     onSend: (text: string) => void;
     onStop: () => void;
     onSetConfig: (configId: string, value: string) => void;
+    placeholder?: string;
   } = $props();
 
   let text = $state('');
@@ -31,7 +33,13 @@
 
   const LINE_HEIGHT_PX = 20; // matches text-[13.5px] leading-[1.5] rendered height
   const MAX_LINES = 8;
-  const MAX_HEIGHT_PX = LINE_HEIGHT_PX * MAX_LINES;
+  // The textarea carries 5px vertical padding each side (see its class) so
+  // its single-line box (30px) matches the Send button's height inside the
+  // items-end row — without it the one-line placeholder sat visibly lower
+  // than the button's own label. scrollHeight includes that padding
+  // (border-box), so the cap accounts for it too.
+  const PAD_Y_TOTAL_PX = 10;
+  const MAX_HEIGHT_PX = LINE_HEIGHT_PX * MAX_LINES + PAD_Y_TOTAL_PX;
 
   function autogrow() {
     if (!textareaEl) return;
@@ -78,8 +86,8 @@
         onkeydown={onKeydown}
         disabled={busy}
         rows="1"
-        placeholder="Message the agent…"
-        class="text-ink-body placeholder:text-ink-meta block max-h-[160px] min-h-[20px] flex-1 resize-none overflow-y-auto bg-transparent text-[13.5px] leading-[1.5] focus:outline-none disabled:opacity-60"
+        {placeholder}
+        class="text-ink-body placeholder:text-ink-meta block max-h-[170px] min-h-[30px] flex-1 resize-none overflow-y-auto bg-transparent py-[5px] text-[13.5px] leading-[1.5] focus:outline-none disabled:opacity-60"
       ></textarea>
 
       {#if busy}

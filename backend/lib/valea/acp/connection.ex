@@ -52,6 +52,13 @@ defmodule Valea.Acp.Connection do
             # Message ids seen during session/load replay, so intra-replay
             # duplicates collapse in addition to launch.known_message_ids.
             seen_message_ids: MapSet.new(),
+            # The messageId of the message currently being accumulated — the
+            # last id dedup/2 kept. Chunks of ONE streaming message all carry
+            # the same messageId (claude-agent-acp 0.58.1+ stamps live chunks
+            # too), so "already seen" must not skip the ACTIVE message's own
+            # continuation chunks — only a NON-consecutive repeat of an older
+            # id is a duplicate.
+            active_message_id: nil,
             # True once the agent has advertised session config options (via the
             # session response result or a config_option_update). Selects the
             # set_config_option wire method vs the deprecated set_mode fallback.
@@ -281,28 +288,35 @@ defmodule Valea.Acp.Connection do
 
   defp dispatch(state, %{"id" => id, "error" => err}) when is_map_key(state.pending, id) do
     {tag, pending} = Map.pop(state.pending, id)
-    # Surface as a soft error item; do not crash.
-    item = %{"id" => "error-#{id}", "type" => "error", "text" => inspect(err)}
-    # Effects by tag:
+    # Surface as a soft error item; do not crash. `error_message/1` keeps the
+    # item's text human-readable ("Authentication required"), never a raw
+    # inspect of the JSON-RPC error map — the transcript renders this string
+    # verbatim.
+    item = %{"id" => "error-#{id}", "type" => "error", "text" => error_message(err)}
+    # Items/effects by tag:
     #   * :prompt — a failed prompt must still complete the turn lifecycle,
     #     otherwise the server stays "busy" forever and the queue never drains.
+    #     That means the turn ITEM too, not just the {:turn, _} effect: the
+    #     client's busy falling edge listens for a `turn` item exactly as it
+    #     does on a successful turn.
     #   * handshake tags — an ERROR here is fatal per spec: emit
     #     {:handshake_failed, reason} so the SessionServer transitions to :failed
     #     (the soft error item alone has no effect and would leave it :running).
     #   * anything else (e.g. :set_config_option) — keep just the error item.
-    effects =
+    {items, effects} =
       cond do
         tag == :prompt ->
-          [{:turn, "error"}]
+          turn = %{"id" => "turn-#{state.turn}", "type" => "turn", "stop_reason" => "error"}
+          {[item, turn], [{:turn, "error"}]}
 
         tag in [:initialize, :session_new, :session_load, :session_resume] ->
-          [{:handshake_failed, error_message(err)}]
+          {[item], [{:handshake_failed, error_message(err)}]}
 
         true ->
-          []
+          {[item], []}
       end
 
-    {%{state | pending: pending}, [item], [], effects}
+    {%{state | pending: pending}, items, [], effects}
   end
 
   defp dispatch(state, msg), do: dispatch_incoming(state, msg)
@@ -638,10 +652,22 @@ defmodule Valea.Acp.Connection do
 
   defp reduce_update(state, _u, _other), do: {state, nil}
 
-  # session/load replay dedup: a chunk carrying a messageId already known (from
-  # the launch, or seen earlier this replay) is skipped; a new messageId is
-  # recorded so intra-replay duplicates also collapse. Chunks without a
-  # messageId (live stream) always pass through.
+  # Message dedup, two layers:
+  #
+  #   * `launch.known_message_ids` — messages already persisted in the
+  #     transcript; every chunk of one of those is a session/load replay of
+  #     history we already have, skipped unconditionally.
+  #   * `seen_message_ids` — ids kept earlier in THIS connection, so a
+  #     duplicate re-delivery collapses. Crucially, "seen" only skips once the
+  #     message is no longer the ACTIVE one (`active_message_id`): live
+  #     streams (claude-agent-acp 0.58.1+) stamp the SAME messageId on every
+  #     chunk of one message, so a seen-but-active id is a continuation chunk
+  #     that must accumulate, not a duplicate. The one shape this cannot
+  #     distinguish is an identical full-message re-delivery arriving
+  #     IMMEDIATELY consecutively (indistinguishable from a continuation
+  #     without comparing content) — accepted; nothing sends that.
+  #
+  # Chunks without a messageId always pass through.
   defp dedup(state, u) do
     case u["messageId"] do
       nil ->
@@ -650,10 +676,20 @@ defmodule Valea.Acp.Connection do
       id ->
         known = Map.get(state.launch, :known_message_ids, MapSet.new())
 
-        if MapSet.member?(known, id) or MapSet.member?(state.seen_message_ids, id) do
-          {:skip, state}
-        else
-          {:keep, %{state | seen_message_ids: MapSet.put(state.seen_message_ids, id)}}
+        cond do
+          MapSet.member?(known, id) ->
+            {:skip, state}
+
+          MapSet.member?(state.seen_message_ids, id) and id != state.active_message_id ->
+            {:skip, state}
+
+          true ->
+            {:keep,
+             %{
+               state
+               | seen_message_ids: MapSet.put(state.seen_message_ids, id),
+                 active_message_id: id
+             }}
         end
     end
   end

@@ -11,6 +11,15 @@
       "port": 4273
     },
     {
+      "name": "backend-dev-real",
+      "runtimeExecutable": "zsh",
+      "runtimeArgs": [
+        "-lc",
+        "export PATH=\"$HOME/.asdf/shims:$PATH\"; cd backend && mix phx.server"
+      ],
+      "port": 4200
+    },
+    {
       "name": "backend-dev",
       "runtimeExecutable": "zsh",
       "runtimeArgs": [

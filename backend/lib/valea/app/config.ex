@@ -100,6 +100,20 @@ defmodule Valea.App.Config do
     })
   end
 
+  @doc "The built-in default harness command (Claude Code's ACP adapter)."
+  def default_harness_command, do: @default_harness_command
+
+  @doc """
+  Marks the CURRENT harness command as approved. This is the UI consent
+  `set_harness_command/1` withholds for a non-default command — callable
+  only from the control-token-gated settings RPC (`Valea.Api.Agents`'s
+  `set_harness_command` action), never from anything an opened folder or an
+  agent can reach.
+  """
+  def approve_harness_command do
+    write(%{read() | "harness_command_approved" => true})
+  end
+
   defp write(config) do
     File.mkdir_p!(dir())
     path = Path.join(dir(), @file_name)

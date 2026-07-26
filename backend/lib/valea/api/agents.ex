@@ -42,7 +42,18 @@ defmodule Valea.Api.Agents do
     run_id: [type: :string, allow_nil?: true],
     started_at: [type: :string, allow_nil?: false],
     status: [type: :string, allow_nil?: false],
-    live: [type: :boolean, allow_nil?: false]
+    live: [type: :boolean, allow_nil?: false],
+    icm_mount: [type: :string, allow_nil?: true],
+    icm_name: [type: :string, allow_nil?: true]
+  ]
+
+  # Shared `constraints fields:` shape for the harness-settings payload
+  # (`harness_config` / `set_harness_command` both return it).
+  @harness_config_fields [
+    command: [type: {:array, :string}, allow_nil?: false],
+    approved: [type: :boolean, allow_nil?: false],
+    is_default: [type: :boolean, allow_nil?: false],
+    default_command: [type: {:array, :string}, allow_nil?: false]
   ]
 
   actions do
@@ -290,6 +301,81 @@ defmodule Valea.Api.Agents do
         {:ok, %{"ok" => ok, "checks" => Enum.map(checks, &atomize_check/1)}}
       end
     end
+
+    # Harness settings (the ACP-configuration modal). App-level, not
+    # workspace-level — no `generation` argument on purpose: the harness
+    # command lives in `Valea.App.Config` (trusted app config, the whole
+    # point being that no workspace or ICM content can influence which
+    # binary runs — see the trust model in ARCHITECTURE.md).
+    action :harness_config, :map do
+      constraints fields: @harness_config_fields
+
+      run fn _input, _ctx ->
+        {:ok, harness_config_payload()}
+      end
+    end
+
+    action :set_harness_command, :map do
+      constraints fields: @harness_config_fields
+
+      # The command as argv (executable + args). An empty/blank list is
+      # rejected; passing the default restores the built-in adapter.
+      argument :command, {:array, :string}, allow_nil?: false
+
+      run fn input, _ctx ->
+        command =
+          input.arguments.command
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        if command == [] do
+          {:error, Error.new("empty_command")}
+        else
+          # This RPC IS the UI consent `App.Config.set_harness_command/1`
+          # withholds for a non-default command: it is reachable only through
+          # the control-token-gated RPC surface (never by an agent — the
+          # launch surface carries no RPC endpoint or token), and the caller
+          # is the settings dialog whose save button names exactly what will
+          # run. So set-then-approve here is the consent step, not a bypass.
+          :ok = Valea.App.Config.set_harness_command(command)
+          :ok = Valea.App.Config.approve_harness_command()
+          {:ok, harness_config_payload()}
+        end
+      end
+    end
+
+    action :archive_agent_session, :map do
+      constraints fields: [archived: [type: :boolean, allow_nil?: false]]
+
+      argument :session_id, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # Ended sessions only — a live one returns `session_live` (see
+      # `Valea.Agents.archive_session/1`).
+      run fn input, _ctx ->
+        with :ok <- Manager.check_generation(input.arguments.generation),
+             :ok <- Valea.Agents.archive_session(input.arguments.session_id) do
+          {:ok, %{"archived" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+  end
+
+  # String-keyed on purpose — `approved`/`is_default` can legitimately be
+  # `false`, and ash_typescript's untyped-map extraction nulls out a `false`
+  # found under an ATOM key (see `harness_doctor`'s identical note above).
+  defp harness_config_payload do
+    command = Valea.App.Config.harness_command()
+    default = Valea.App.Config.default_harness_command()
+
+    %{
+      "command" => command,
+      "approved" => Valea.App.Config.harness_command_approved?(),
+      "is_default" => command == default,
+      "default_command" => default
+    }
   end
 
   @doc false

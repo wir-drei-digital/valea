@@ -10,6 +10,7 @@
   import { AppFrame, ListPane, EmptyState } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import MessageSquare from '@lucide/svelte/icons/message-square';
+  import Folder from '@lucide/svelte/icons/folder';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -230,6 +231,22 @@
   const usageItem = $derived.by(() => store?.items.findLast((item) => item.type === 'usage'));
   const configItems = $derived.by(() => store?.items.filter((item) => item.type === 'config') ?? []);
 
+  // Which ICM the OPEN session runs in ("in the chat session, it is not
+  // clear for which ICM the current session is active"). The summary's own
+  // `icmName` (session/v1 metadata, threaded through `trim_summary/1`) is
+  // authoritative; the recent-sessions groups are the fallback while the
+  // flat list is still loading (a freshly created session reaches this page
+  // right after `sessionsList.refresh()`, so the gap is brief).
+  const openSessionIcmName = $derived.by(() => {
+    if (!selectedId) return null;
+    const summary = sessionsList.sessions.find((s) => s.id === selectedId);
+    if (summary?.icmName) return summary.icmName;
+    for (const group of recentSessionsStore.groups) {
+      if (group.sessions.some((s) => s.id === selectedId)) return group.icmName;
+    }
+    return null;
+  });
+
   const ended = $derived.by(
     () =>
       store !== null &&
@@ -329,6 +346,14 @@
       <!-- Transcript scrolls; the composer (or the ended/starting row) stays
            docked at the pane's bottom edge, per the cockpit chat screen. -->
       <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
+        {#if openSessionIcmName}
+          <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
+            <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+            <span class="text-ink-meta text-[12px]">
+              Working in <span class="text-ink-secondary font-medium">{openSessionIcmName}</span>
+            </span>
+          </div>
+        {/if}
         <PlanBar item={planItem} />
 
         <div class="min-h-0 flex-1 overflow-y-auto">

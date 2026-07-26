@@ -197,7 +197,7 @@ defmodule Valea.Acp.ConnectionTest do
     {state, _items, [frame2]} = Connection.prompt(state, "again")
     err_id = Jason.decode!(frame2)["id"]
 
-    {state, _items, _replies, effects} =
+    {state, items, _replies, effects} =
       Connection.handle_bytes(
         state,
         frame(%{
@@ -209,6 +209,45 @@ defmodule Valea.Acp.ConnectionTest do
 
     assert {:turn, "error"} in effects
     refute Connection.turn_in_flight?(state)
+
+    # The error item carries the JSON-RPC error's human-readable message —
+    # never an inspect of the raw map — and a turn ITEM rides along so the
+    # client's busy falling edge fires exactly as it does on a successful
+    # turn (the {:turn, _} effect alone is server-side only).
+    assert %{"type" => "error", "text" => "boom"} = Enum.find(items, &(&1["type"] == "error"))
+
+    assert %{"type" => "turn", "stop_reason" => "error"} =
+             Enum.find(items, &(&1["type"] == "turn"))
+  end
+
+  # === 5b. Live-chunk continuation vs duplicate collapse ===
+
+  test "live chunks sharing one messageId accumulate; a NON-consecutive repeat of an older messageId collapses" do
+    state = connected_state()
+
+    # claude-agent-acp 0.58.1+ stamps a messageId on LIVE chunks too — every
+    # chunk of one streaming message carries the SAME id. That is a
+    # continuation, not a duplicate: the text must accumulate.
+    chunk = fn id, text ->
+      update("agent_message_chunk", %{
+        "messageId" => id,
+        "content" => %{"type" => "text", "text" => text}
+      })
+    end
+
+    {state, [i1], _, _} = Connection.handle_bytes(state, chunk.("m-live", "Hel"))
+    {state, [i2], _, _} = Connection.handle_bytes(state, chunk.("m-live", "lo world"))
+    assert i1["text"] == "Hel"
+    assert i2["text"] == "Hello world"
+
+    # A different message starts (new id) — accumulates under way as usual…
+    {state, [i3], _, _} = Connection.handle_bytes(state, chunk.("m-next", "Again"))
+    assert i3["text"] =~ "Again"
+
+    # …and only NOW does a stray re-delivery of the OLD id count as a
+    # duplicate (the message it belonged to is no longer the active one).
+    {_state, items, _, _} = Connection.handle_bytes(state, chunk.("m-live", "Hel"))
+    assert items == []
   end
 
   # === 6. Message accumulation ===

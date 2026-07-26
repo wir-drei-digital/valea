@@ -13,6 +13,9 @@ export type AgentSessionSummary = {
   startedAt?: string | null;
   status: string;
   live: boolean;
+  /** The session's primary-ICM identity snapshot (session/v1 metadata). */
+  icmMount?: string | null;
+  icmName?: string | null;
 };
 
 /**

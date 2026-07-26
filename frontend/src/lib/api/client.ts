@@ -47,6 +47,12 @@ import {
   createFollowUpChannel,
   harnessDoctor as httpHarnessDoctor,
   harnessDoctorChannel,
+  harnessConfig as httpHarnessConfig,
+  harnessConfigChannel,
+  setHarnessCommand as httpSetHarnessCommand,
+  setHarnessCommandChannel,
+  archiveAgentSession as httpArchiveAgentSession,
+  archiveAgentSessionChannel,
   listAuditEntries as httpListAuditEntries,
   listAuditEntriesChannel,
   mailStatus as httpMailStatus,
@@ -145,6 +151,9 @@ import type {
   ListSessionsFields,
   CreateFollowUpFields,
   HarnessDoctorFields,
+  HarnessConfigFields,
+  SetHarnessCommandFields,
+  ArchiveAgentSessionFields,
   ListAuditEntriesFields,
   MailStatusFields,
   SetupMailAccountFields,
@@ -385,7 +394,7 @@ const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
 // literal. The backend actions accept these exact nested literals (verified
 // by the passing `agents_rpc_test.exs` suite).
 const listAgentSessionsFields = [
-  { sessions: ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live'] }
+  { sessions: ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live', 'icmMount', 'icmName'] }
 ] as unknown as ListAgentSessionsFields;
 
 // Task 6.2 — same anonymous-embedded-map-array codegen gap as
@@ -395,7 +404,18 @@ const listAgentSessionsFields = [
 // generated `Fields` type collapses to `never` for the literal. The backend
 // action accepts this exact nested literal (verified by
 // `test/valea/api/agents_test.exs`).
-const sessionSummarySelection = ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live'];
+const sessionSummarySelection = [
+  'id',
+  'kind',
+  'title',
+  'workflow',
+  'runId',
+  'startedAt',
+  'status',
+  'live',
+  'icmMount',
+  'icmName'
+];
 const listRecentSessionsByIcmFields = [
   { groups: ['mountKey', 'icmName', { sessions: sessionSummarySelection }] }
 ] as unknown as ListRecentSessionsByIcmFields;
@@ -408,6 +428,9 @@ const harnessDoctorFields = [
   'ok',
   { checks: ['id', 'status', 'detail', 'remedy'] }
 ] as unknown as HarnessDoctorFields;
+const harnessConfigFields: HarnessConfigFields = ['command', 'approved', 'isDefault', 'defaultCommand'];
+const setHarnessCommandFields: SetHarnessCommandFields = ['command', 'approved', 'isDefault', 'defaultCommand'];
+const archiveAgentSessionFields: ArchiveAgentSessionFields = ['archived'];
 
 // Cockpit (Spec D §C rewrite — see `Valea.Api.Cockpit`'s moduledoc). Same
 // anonymous-embedded-map-array codegen gap as `icmEntryReferencesFields`
@@ -575,6 +598,30 @@ function callCreateFollowUpChannel(
 function callHarnessDoctorChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
   return wrapChannelCall((handlers) =>
     harnessDoctorChannel({ channel, fields: harnessDoctorFields, ...handlers })
+  );
+}
+
+function callHarnessConfigChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    harnessConfigChannel({ channel, fields: harnessConfigFields, ...handlers })
+  );
+}
+
+function callSetHarnessCommandChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { command: string[] }
+) {
+  return wrapChannelCall((handlers) =>
+    setHarnessCommandChannel({ channel, input, fields: setHarnessCommandFields, ...handlers })
+  );
+}
+
+function callArchiveAgentSessionChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { sessionId: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    archiveAgentSessionChannel({ channel, input, fields: archiveAgentSessionFields, ...handlers })
   );
 }
 
@@ -1462,6 +1509,24 @@ export const api = {
 
   harnessDoctor: () =>
     runRpc(callHarnessDoctorChannel, () => httpHarnessDoctor(withAuth({ fields: harnessDoctorFields }))),
+
+  harnessConfig: () =>
+    runRpc(callHarnessConfigChannel, () => httpHarnessConfig(withAuth({ fields: harnessConfigFields }))),
+
+  setHarnessCommand: (command: string[]) =>
+    runRpc(
+      (channel) => callSetHarnessCommandChannel(channel, { command }),
+      () => httpSetHarnessCommand(withAuth({ input: { command }, fields: setHarnessCommandFields }))
+    ),
+
+  archiveAgentSession: (sessionId: string, generation: number) =>
+    runRpc(
+      (channel) => callArchiveAgentSessionChannel(channel, { sessionId, generation }),
+      () =>
+        httpArchiveAgentSession(
+          withAuth({ input: { sessionId, generation }, fields: archiveAgentSessionFields })
+        )
+    ),
 
   listAuditEntries: (limit: number) =>
     runRpc(

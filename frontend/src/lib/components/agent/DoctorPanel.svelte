@@ -21,6 +21,11 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { api } from '$lib/api/client';
 
+  // `showIntro: false` drops the panel's own heading/explainer — used when a
+  // host surface (the Agent settings dialog) already provides its own
+  // section framing around the checks.
+  let { showIntro = true }: { showIntro?: boolean } = $props();
+
   type DoctorCheck = { id: string; status: string; detail: string; remedy: string | null };
 
   const CHECK_LABELS: Record<string, string> = {
@@ -61,13 +66,15 @@
 </script>
 
 <div class="flex flex-col gap-4 py-2">
-  <div class="flex flex-col gap-1.5">
-    <h2 class="font-display text-[19px] text-ink-heading">Checking your assistant</h2>
-    <p class="max-w-[480px] text-[13px] text-ink-body">
-      Valea uses your own Claude Code. Nothing to configure in here. Sign in once in a terminal
-      and check again.
-    </p>
-  </div>
+  {#if showIntro}
+    <div class="flex flex-col gap-1.5">
+      <h2 class="font-display text-[19px] text-ink-heading">Checking your assistant</h2>
+      <p class="max-w-[480px] text-[13px] text-ink-body">
+        Valea uses your own Claude Code. Sign in once in a terminal and check again — or adjust
+        the harness in Agent settings (the gear at the bottom of the sidebar).
+      </p>
+    </div>
+  {/if}
 
   {#if loading}
     <p class="text-ink-meta text-[13px]">Running checks…</p>
