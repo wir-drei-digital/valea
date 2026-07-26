@@ -241,7 +241,16 @@ defmodule Valea.Api.Agents do
     # create_follow_up/2`'s moduledoc for the full error-mapping rationale
     # (`original_not_found` / `icm_unavailable` / `workspace_changed`, all
     # covered for free by `error_for/1`'s generic atom clause below).
-    action :create_follow_up, :map do
+    # Same-transcript resume — "continue this session", never a new one
+    # (which replaced the deleted `create_follow_up`; a follow-up that
+    # started a FRESH session was just confusing). Scope is RE-resolved at
+    # resume time from what the original transcript's meta recorded: the
+    # same primary ICM, the same `include_mounts` opt-ins (fail-closed if
+    # one is no longer available), and the original `input` grant
+    # re-resolved BEST-EFFORT — the conversation already contains whatever
+    # was read from it, so a vanished input file NARROWS the resumed scope
+    # (no grant) instead of blocking the resume.
+    action :resume_agent_session, :map do
       constraints fields: [id: [type: :string, allow_nil?: false]]
 
       argument :session_id, :string, allow_nil?: false
@@ -250,8 +259,27 @@ defmodule Valea.Api.Agents do
       run fn input, _ctx ->
         %{session_id: session_id, generation: generation} = input.arguments
 
-        case Valea.Agents.create_follow_up(session_id, generation) do
-          {:ok, %{id: id}} -> {:ok, %{id: id}}
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: workspace}} <- Manager.current(),
+             {:ok, meta} <- Valea.Agents.session_meta(session_id),
+             {:ok, scope} <-
+               SessionScope.resolve(%{
+                 kind: meta["kind"] || "chat",
+                 mount_key: meta["icm_mount"],
+                 generation: generation,
+                 session_id: session_id,
+                 read_paths: resume_read_paths(meta["input"], workspace),
+                 include_mounts: meta["include_mounts"] || []
+               }),
+             {:ok, %{id: id}} <-
+               Valea.Agents.resume_session(%{id: session_id, scope: scope, meta: meta}) do
+          Valea.Audit.append("session_resumed", %{
+            "session_id" => id,
+            "mount_key" => meta["icm_mount"]
+          })
+
+          {:ok, %{id: id}}
+        else
           {:error, reason} -> {:error, error_for(reason)}
         end
       end
@@ -351,6 +379,20 @@ defmodule Valea.Api.Agents do
           {:error, reason} -> {:error, error_for(reason)}
         end
       end
+    end
+  end
+
+  # Best-effort re-grant of the original `input` locator on resume: a
+  # resolvable locator re-grants exactly the one path; an unresolvable one
+  # (file gone, ICM since unmounted) yields NO grant — narrowing, never
+  # widening, and never blocking the resume itself (the conversation
+  # already contains whatever was read from it).
+  defp resume_read_paths(nil, _workspace), do: []
+
+  defp resume_read_paths(input_locator, workspace) do
+    case resolve_session_input(input_locator, workspace) do
+      {:ok, path} when is_binary(path) -> [path]
+      _ -> []
     end
   end
 

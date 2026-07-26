@@ -43,8 +43,8 @@ import {
   listRecentSessionsByIcmChannel,
   listSessions as httpListSessionsFor,
   listSessionsChannel as listSessionsForChannel,
-  createFollowUp as httpCreateFollowUp,
-  createFollowUpChannel,
+  resumeAgentSession as httpResumeAgentSession,
+  resumeAgentSessionChannel,
   harnessDoctor as httpHarnessDoctor,
   harnessDoctorChannel,
   harnessConfig as httpHarnessConfig,
@@ -149,7 +149,7 @@ import type {
   ListAgentSessionsFields,
   ListRecentSessionsByIcmFields,
   ListSessionsFields,
-  CreateFollowUpFields,
+  ResumeAgentSessionFields,
   HarnessDoctorFields,
   HarnessConfigFields,
   SetHarnessCommandFields,
@@ -423,7 +423,7 @@ const listSessionsForFields = [
   { sessions: sessionSummarySelection },
   'nextCursor'
 ] as unknown as ListSessionsFields;
-const createFollowUpFields: CreateFollowUpFields = ['id'];
+const resumeAgentSessionFields: ResumeAgentSessionFields = ['id'];
 const harnessDoctorFields = [
   'ok',
   { checks: ['id', 'status', 'detail', 'remedy'] }
@@ -586,12 +586,12 @@ function callListSessionsForChannel(
   );
 }
 
-function callCreateFollowUpChannel(
+function callResumeAgentSessionChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { sessionId: string; generation: number }
 ) {
   return wrapChannelCall((handlers) =>
-    createFollowUpChannel({ channel, input, fields: createFollowUpFields, ...handlers })
+    resumeAgentSessionChannel({ channel, input, fields: resumeAgentSessionFields, ...handlers })
   );
 }
 
@@ -1492,18 +1492,17 @@ export const api = {
       () => httpListSessionsFor(withAuth({ input: { mountKey, cursor }, fields: listSessionsForFields }))
     ),
 
-  // Task 6.3 — follow-up inherits the ORIGINAL session's own primary ICM
-  // server-side (`Valea.Agents.create_follow_up/2`); the caller only names
-  // which session to follow up on. `icm_unavailable` (ICM since
-  // unmounted/disabled/degraded) and `original_not_found` surface as
-  // ordinary RPC errors, same shape as any other action this wrapper
-  // propagates.
-  createFollowUp: (sessionId: string, generation: number) =>
+  // Same-transcript resume (replaced the deleted create_follow_up): the
+  // server re-resolves scope from the ORIGINAL transcript's own meta and
+  // revives the session under the SAME id/transcript. `icm_unavailable`
+  // (ICM since unmounted/disabled/degraded), `not_found`, and
+  // `workspace_changed` surface as ordinary RPC errors.
+  resumeAgentSession: (sessionId: string, generation: number) =>
     runRpc(
-      (channel) => callCreateFollowUpChannel(channel, { sessionId, generation }),
+      (channel) => callResumeAgentSessionChannel(channel, { sessionId, generation }),
       () =>
-        httpCreateFollowUp(
-          withAuth({ input: { sessionId, generation }, fields: createFollowUpFields })
+        httpResumeAgentSession(
+          withAuth({ input: { sessionId, generation }, fields: resumeAgentSessionFields })
         )
     ),
 

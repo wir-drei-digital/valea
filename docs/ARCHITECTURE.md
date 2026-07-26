@@ -153,7 +153,7 @@ below); nothing canonical lives in the workspace folder itself.
   - `Valea.Api.ICM`: `icm_tree` → `:tree` (`icmTree`, arg `mount_key`) — ONE mounted ICM's tree, `{mount_key:, title:, tree:}`, every node `path` relative to that ICM's own root (task 4.2's re-key; a caller that needs every enabled ICM's tree calls this once per mount key); `icm_page` → `:page` (`icmPage`, args `mount_key, path`).
   - `Valea.Api.Icms`: `list_icms` → `:list_icms` (`listIcms`) — every `icms:`-config entry (enabled/disabled/degraded), typed `mountKey`/`id`/`name`/`description`/`root`/`enabled`/`degraded` (`id` the manifest's stable UUID, `null` for a degraded mount with no loadable manifest; `root` always the resolved absolute path — every mount is by-reference, there is no embedded form); `mount_icm` → `:mount_icm` (`mountIcm`, args `path, generation`) — mounts an existing, already-healthy external ICM folder; `adopt_icm` → `:adopt_icm` (`adoptIcm`, args `path, name, generation`) — mints a minimal `{format: 2, id, name}` identity file into a manifest-less folder (the ONLY write) and mounts it (see "Dynamic-tree riders" → adopt-a-folder below); `create_icm` → `:create_icm` (`createIcm`, args `name, path, generation`) — mints a brand-new ICM at `path` (seeding `backend/priv/icm_template/`) and mounts it, the only other mutation that writes into an ICM's own folder; `set_icm_enabled` → `:set_icm_enabled` (`setIcmEnabled`, args `mount_key, enabled, generation`); `unmount_icm` → `:unmount_icm` (`unmountIcm`, args `mount_key, generation`) — config-only, never touches the folder; `icm_doctor` → `:icm_doctor` (`icmDoctor`, args `mount_key, generation`) — per-mount health checks; `inspect_icm` → `:inspect_icm` (`inspectIcm`, arg `path`) — the "what's in this folder" mount/onboarding preview, now also reporting `adoptable`. See [ICM project workspaces](#icm-project-workspaces) below.
   - `Valea.Api.Cockpit`: `cockpit_today` → `:today` (`cockpitToday`) — the `today.json` cockpit aggregation (see "Today = a file the agent maintains" below).
-  - `Valea.Api.Agents`: `create_agent_session` → `:create_session` (`createAgentSession`, args `mount_key, generation`, optional `context_doc, input`) — the session-with-context primitive (see "Session creation, permission asks, and audit" below); `list_agent_sessions` → `:list_sessions` (`listAgentSessions`); `list_recent_sessions_by_icm` → same name (`listRecentSessionsByIcm`, arg `limit`); `list_sessions` → `:list_sessions_for` (`listSessions`, args `mount_key`, optional `cursor`); `create_follow_up` → same name (`createFollowUp`, args `session_id, generation`); `harness_doctor` → same name (`harnessDoctor`); `harness_config` → same name (`harnessConfig`) and `set_harness_command` → same name (`setHarnessCommand`, arg `command` argv array) — the Agent-settings dialog's pair over `Valea.App.Config`'s trusted harness command (app-level, deliberately no `generation`; the save RPC persists AND approves in one gesture — it is the UI consent `App.Config.set_harness_command/1` withholds for a non-default command, reachable only through the control-token-gated RPC surface).
+  - `Valea.Api.Agents`: `create_agent_session` → `:create_session` (`createAgentSession`, args `mount_key, generation`, optional `context_doc, input`) — the session-with-context primitive (see "Session creation, permission asks, and audit" below); `list_agent_sessions` → `:list_sessions` (`listAgentSessions`); `list_recent_sessions_by_icm` → same name (`listRecentSessionsByIcm`, arg `limit`); `list_sessions` → `:list_sessions_for` (`listSessions`, args `mount_key`, optional `cursor`); `resume_agent_session` → same name (`resumeAgentSession`, args `session_id, generation`) — same-transcript resume (replaced the deleted `create_follow_up`; see "Session persistence" below); `harness_doctor` → same name (`harnessDoctor`); `harness_config` → same name (`harnessConfig`) and `set_harness_command` → same name (`setHarnessCommand`, arg `command` argv array) — the Agent-settings dialog's pair over `Valea.App.Config`'s trusted harness command (app-level, deliberately no `generation`; the save RPC persists AND approves in one gesture — it is the UI consent `App.Config.set_harness_command/1` withholds for a non-default command, reachable only through the control-token-gated RPC surface).
   - `Valea.Api.Audit`: `list_audit_entries` → same name (`listAuditEntries`, arg `limit`) — relocated from the deleted `Valea.Api.Queue` (Spec D §A); `Valea.Audit` itself is queue-independent.
   - `Valea.Api.Mail`: see "RPC + channel events" under Mail below.
 - **Transport: Phoenix channels first, HTTP fallback.** One socket (`ValeaWeb.UserSocket`, path `/socket`) carries two independent channel topics: `ash_typescript_rpc:client` (ash_typescript's channel-RPC transport — every `icmTree()`-style call goes here when the channel is joined) and the single consolidated **`workspace:events`** channel, joined once from `frontend/src/routes/+layout.svelte` via `wireIcmEvents()` (`frontend/src/lib/stores/icm.svelte.ts`) and pushing two event names: `workspace` (`{open, name?, path?}`, on open/close) and `icm_changed` (`{}`, on any change under `{workspace}/icm`, debounced 200ms by `Valea.ICM.Watcher`). There is no per-feature channel sprawl — `workspace:events` is the one realtime channel, and non-realtime RPC prefers `ash_typescript_rpc:client` but transparently falls back to plain `POST /rpc/run` (`ValeaWeb.RpcController.run/2`) when the socket/channel isn't joined (see `frontend/src/lib/api/client.ts`).
@@ -879,7 +879,7 @@ rule this used to apply was deleted with the workflow subsystem, Spec D
 `Valea.Agents.SessionScope.resolve/1` (`backend/lib/valea/agents/session_scope.ex`)
 is the **single launch authority** — the only place mount-key lookup,
 direct related-ICM resolution, and read/write-root assembly live. Neither
-`Valea.Api.Agents.create_session` nor `Valea.Agents.create_follow_up/2`
+`Valea.Api.Agents.create_session` nor its `resume_agent_session` action
 re-derives any of these rules; both call `resolve/1` and use the scope it
 returns. The pipeline: (1)
 `Manager.check_generation/1` fails first on a stale generation
@@ -1040,12 +1040,23 @@ transcript) carries a full identity snapshot: `workspace_id`,
 `workflow`/`run_id` (kept in the schema, always `nil` now),
 `context_doc`/`input` (the session-with-context primitive's own two
 locators — see "Session creation, permission asks, and audit" above),
-`harness`, `generation`, `started_at`. A follow-up session inherits the
-original session's workspace and primary ICM; if that ICM is no longer
-mounted or healthy, the transcript stays viewable but follow-up creation is
-disabled with a repair action. There is no reader for a pre-redesign
-transcript — `Valea.Agents.list_sessions/0` silently skips any file whose
-line 1 is not this exact schema.
+`harness`, `generation`, `started_at`. An ENDED session RESUMES IN ITS OWN
+TRANSCRIPT (`resume_agent_session` → `Valea.Agents.resume_session/1` — the
+"continue this session" the chat composer offers on an ended session; the
+deleted `create_follow_up`'s new-session-per-continuation model is gone):
+scope is re-resolved from this meta (same primary ICM, same
+`include_mounts`, the `input` grant re-resolved best-effort — a vanished
+input narrows, never blocks), the new `SessionServer` seeds its
+timeline/seq from the existing items so appends stay monotonic, line 1 is
+never rewritten (beyond the sanctioned title update), and the adapter
+launches preferring ACP `session/resume` with the recorded
+`acp_session_id` (codec fallback: `session/load`, whose history replay
+dedups against the per-item persisted `message_id`s → `session/new` for a
+session that died before the handshake). If the ICM is no longer mounted
+or healthy, the transcript stays viewable but resuming fails with
+`icm_unavailable`. There is no reader for a pre-redesign transcript —
+`Valea.Agents.list_sessions/0` silently skips any file whose line 1 is not
+this exact schema.
 
 ## Agent-native ICMs (Spec D)
 

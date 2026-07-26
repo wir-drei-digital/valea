@@ -325,17 +325,24 @@ defmodule Valea.Acp.Connection do
   defp error_message(%{"message" => m}) when is_binary(m), do: m
   defp error_message(err), do: inspect(err)
 
+  defp cap?(true), do: true
+  defp cap?(cap) when is_map(cap), do: true
+  defp cap?(_), do: false
+
   defp handle_response(state, :initialize, result) do
     negotiated = result["protocolVersion"]
 
     if negotiated != 1 do
       {state, [], [], [{:handshake_failed, "protocol version mismatch: #{inspect(negotiated)}"}]}
     else
+      # A capability may be advertised as `true` OR as an (even empty)
+      # object — claude-agent-acp 0.58.1 sends `resume: {}`. Presence of
+      # either form counts.
       caps = %{
-        load?: get_in(result, ["agentCapabilities", "loadSession"]) == true,
+        load?: cap?(get_in(result, ["agentCapabilities", "loadSession"])),
         resume?:
-          get_in(result, ["agentCapabilities", "sessionCapabilities", "resume"]) == true ||
-            get_in(result, ["sessionCapabilities", "resume"]) == true
+          cap?(get_in(result, ["agentCapabilities", "sessionCapabilities", "resume"])) ||
+            cap?(get_in(result, ["sessionCapabilities", "resume"]))
       }
 
       {state, frame} = open_session_frames(state, caps)
@@ -569,7 +576,11 @@ defmodule Valea.Acp.Connection do
 
       {:keep, state} ->
         state = mark_agent_output(state)
-        accumulate(state, "msg-#{state.turn}", "message", %{"role" => "assistant"}, text(u))
+
+        {state, item} =
+          accumulate(state, "msg-#{state.turn}", "message", %{"role" => "assistant"}, text(u))
+
+        {state, put_message_id(item, u)}
     end
   end
 
@@ -595,7 +606,10 @@ defmodule Valea.Acp.Connection do
             state
           end
 
-        accumulate(state, "user-#{state.turn}", "message", %{"role" => "user"}, text(u))
+        {state, item} =
+          accumulate(state, "user-#{state.turn}", "message", %{"role" => "user"}, text(u))
+
+        {state, put_message_id(item, u)}
     end
   end
 
@@ -697,6 +711,15 @@ defmodule Valea.Acp.Connection do
   # Record that the current turn has produced agent-side output, so the next
   # user_message_chunk during session/load replay opens a new turn.
   defp mark_agent_output(state), do: %{state | turn_seen_response: true}
+
+  # Persist the chunk's messageId on the item (and so into the transcript):
+  # a later same-transcript RESUME seeds `known_message_ids` from exactly
+  # these, so the session/load fallback's history replay dedups instead of
+  # duplicating what the timeline already holds.
+  defp put_message_id(item, %{"messageId" => mid}) when is_binary(mid),
+    do: Map.put(item, "message_id", mid)
+
+  defp put_message_id(item, _u), do: item
 
   defp accumulate(state, id, type, base, chunk) do
     prev = Map.get(state.reduce, id, Map.merge(%{"id" => id, "type" => type, "text" => ""}, base))

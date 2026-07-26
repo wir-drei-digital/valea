@@ -2,7 +2,7 @@ defmodule Valea.Api.AgentsTest do
   @moduledoc """
   Direct Ash-action coverage for the Task 6.2/6.3 additions to
   `Valea.Api.Agents` (`list_recent_sessions_by_icm`, `list_sessions_for`,
-  `create_follow_up`) — same style as `Valea.Api.IcmsTest`: calls each
+  `resume_agent_session`) — same style as `Valea.Api.IcmsTest`: calls each
   generic action straight through `Ash.ActionInput.for_action/3` +
   `Ash.run_action/1`, bypassing the RPC/channel transport entirely (that
   layer is exercised by the codegen'd client + `bun run check`, not this
@@ -56,56 +56,101 @@ defmodule Valea.Api.AgentsTest do
              run(:list_sessions_for, %{mount_key: icm.mount_key, cursor: nil})
   end
 
-  test "create_follow_up inherits the original session's ICM", %{
-    ws: ws,
-    generation: generation,
-    icm: icm
-  } do
-    {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: icm.mount_key})
-    on_exit(fn -> kill_session(original_id) end)
+  test "resume_agent_session revives an ended session IN PLACE — same id, same transcript, line 1 untouched",
+       %{
+         ws: ws,
+         generation: generation,
+         icm: icm
+       } do
+    {:ok, %{id: id}} = start_session(ws, "happy", %{mount_key: icm.mount_key})
+    kill_session(id)
+    wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
 
-    assert {:ok, %{id: follow_up_id}} =
-             run(:create_follow_up, %{session_id: original_id, generation: generation})
+    transcript_path = Path.join(ws, "logs/sessions/#{id}.jsonl")
+    [meta_before | _] = ws |> transcript_lines(id)
 
-    on_exit(fn -> kill_session(follow_up_id) end)
-    assert follow_up_id != original_id
+    assert {:ok, %{id: ^id}} =
+             run(:resume_agent_session, %{session_id: id, generation: generation})
+
+    on_exit(fn -> kill_session(id) end)
+
+    # Live again under the SAME id (idempotent while live), and the
+    # transcript's identity line is byte-identical.
+    assert [_ | _] = Registry.lookup(Valea.Agents.SessionRegistry, id)
+
+    assert {:ok, %{id: ^id}} =
+             run(:resume_agent_session, %{session_id: id, generation: generation})
+
+    assert [^meta_before | _] = transcript_lines(ws, id)
+    assert File.regular?(transcript_path)
+
+    # The revived server's attach snapshot carries the seeded history.
+    assert {:ok, %{items: items, status: status}} = Valea.Agents.attach_or_replay(id)
+    assert is_list(items)
+    assert status in ["starting", "running"]
   end
 
-  test "create_follow_up surfaces icm_unavailable once the ICM is unmounted", %{
+  test "resume_agent_session surfaces icm_unavailable once the ICM is unmounted", %{
     ws: ws,
     generation: generation,
     icm: icm
   } do
-    {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: icm.mount_key})
-    kill_session(original_id)
+    {:ok, %{id: id}} = start_session(ws, "happy", %{mount_key: icm.mount_key})
+    kill_session(id)
+    wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
 
     {:ok, _path} = Mounts.unmount(ws, icm.mount_key)
 
     assert {:error, error} =
-             run(:create_follow_up, %{session_id: original_id, generation: generation})
+             run(:resume_agent_session, %{session_id: id, generation: generation})
 
     assert %Valea.Api.Error{code: "icm_unavailable"} = error.errors |> hd()
   end
 
-  test "create_follow_up surfaces original_not_found for an unknown session id", %{
+  test "resume_agent_session surfaces not_found for an unknown or traversal-shaped session id", %{
     generation: generation
   } do
-    assert {:error, error} = run(:create_follow_up, %{session_id: "nope", generation: generation})
-    assert %Valea.Api.Error{code: "original_not_found"} = error.errors |> hd()
+    assert {:error, error} =
+             run(:resume_agent_session, %{session_id: "nope", generation: generation})
+
+    assert %Valea.Api.Error{code: "not_found"} = error.errors |> hd()
+
+    assert {:error, error} =
+             run(:resume_agent_session, %{session_id: "../secrets", generation: generation})
+
+    assert %Valea.Api.Error{code: "not_found"} = error.errors |> hd()
   end
 
-  test "create_follow_up rejects a stale generation with workspace_changed", %{
+  defp transcript_lines(ws, id) do
+    Path.join(ws, "logs/sessions/#{id}.jsonl") |> File.read!() |> String.split("\n", trim: true)
+  end
+
+  defp wait_until(fun, tries \\ 50) do
+    cond do
+      fun.() ->
+        :ok
+
+      tries == 0 ->
+        flunk("condition never became true")
+
+      true ->
+        Process.sleep(20)
+        wait_until(fun, tries - 1)
+    end
+  end
+
+  test "resume_agent_session rejects a stale generation with workspace_changed", %{
     ws: ws,
     generation: generation,
     icm: icm
   } do
-    {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: icm.mount_key})
-    on_exit(fn -> kill_session(original_id) end)
+    {:ok, %{id: id}} = start_session(ws, "happy", %{mount_key: icm.mount_key})
+    on_exit(fn -> kill_session(id) end)
 
     stale = generation - 1
 
     assert {:error, error} =
-             run(:create_follow_up, %{session_id: original_id, generation: stale})
+             run(:resume_agent_session, %{session_id: id, generation: stale})
 
     assert %Valea.Api.Error{code: "workspace_changed"} = error.errors |> hd()
   end

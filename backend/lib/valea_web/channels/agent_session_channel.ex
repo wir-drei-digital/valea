@@ -44,9 +44,16 @@ defmodule ValeaWeb.AgentSessionChannel do
   # An ended session has no live process to act on — every inbound control
   # event on it replies the same error, regardless of which event it is. This
   # clause runs BEFORE the specific handlers below because it matches first.
+  # The Registry re-check makes same-transcript RESUME race-free: a prompt
+  # arriving right after `resume_agent_session` returns (but before this
+  # channel processed the revived server's status broadcast) finds the live
+  # process and falls through to the normal handlers instead of bouncing.
   @impl true
-  def handle_in(_event, _payload, %{assigns: %{ended: true}} = socket) do
-    {:reply, {:error, %{reason: "session_not_found"}}, socket}
+  def handle_in(event, payload, %{assigns: %{ended: true}} = socket) do
+    case Registry.lookup(Valea.Agents.SessionRegistry, socket.assigns.session_id) do
+      [] -> {:reply, {:error, %{reason: "session_not_found"}}, socket}
+      [_ | _] -> handle_in(event, payload, assign(socket, :ended, false))
+    end
   end
 
   def handle_in("prompt", %{"content" => content}, socket) when is_binary(content) do
@@ -95,11 +102,16 @@ defmodule ValeaWeb.AgentSessionChannel do
 
   def handle_info({:session_status, status}, socket) do
     push(socket, "status", %{status: to_string(status)})
-    {:noreply, socket}
+    # A status broadcast can only come from a LIVE SessionServer — if this
+    # channel joined an ENDED session (file replay) and the session was
+    # since RESUMED in place (same id, same topic), un-latch the ended flag
+    # so inbound prompt/cancel/permission events route to the revived
+    # server instead of bouncing off the join-time snapshot.
+    {:noreply, assign(socket, :ended, false)}
   end
 
   def handle_info({:session_exit, exit_code}, socket) do
     push(socket, "exit", %{exit_code: exit_code})
-    {:noreply, socket}
+    {:noreply, assign(socket, :ended, true)}
   end
 end

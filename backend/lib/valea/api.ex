@@ -40,7 +40,7 @@ defmodule Valea.Api do
       rpc_action(:list_agent_sessions, :list_sessions)
       rpc_action(:list_recent_sessions_by_icm, :list_recent_sessions_by_icm)
       rpc_action(:list_sessions, :list_sessions_for)
-      rpc_action(:create_follow_up, :create_follow_up)
+      rpc_action(:resume_agent_session, :resume_agent_session)
       rpc_action(:harness_doctor, :harness_doctor)
       rpc_action(:harness_config, :harness_config)
       rpc_action(:set_harness_command, :set_harness_command)

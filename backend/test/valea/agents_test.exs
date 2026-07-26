@@ -191,62 +191,75 @@ defmodule Valea.AgentsTest do
     end
   end
 
-  describe "create_follow_up/2" do
-    test "starts a new session with the SAME icm_mount as the original", %{
-      ws: ws,
-      generation: generation,
-      alpha: alpha
-    } do
-      {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
-      on_exit(fn -> kill_session(original_id) end)
+  describe "session_meta/1 + resume_session/1" do
+    test "session_meta returns the transcript's line-1 identity; unknown/traversal ids are not_found",
+         %{ws: ws, alpha: alpha} do
+      {:ok, %{id: id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
+      on_exit(fn -> kill_session(id) end)
 
-      assert {:ok, %{id: follow_up_id}} = Agents.create_follow_up(original_id, generation)
-      on_exit(fn -> kill_session(follow_up_id) end)
-
-      assert follow_up_id != original_id
-
-      transcript = File.read!(Path.join(ws, "logs/sessions/#{follow_up_id}.jsonl"))
-      [meta_line | _] = String.split(transcript, "\n", trim: true)
-      meta = Jason.decode!(meta_line)
-
+      assert {:ok, meta} = Agents.session_meta(id)
       assert meta["icm_mount"] == alpha.mount_key
       assert meta["kind"] == "chat"
+
+      assert {:error, :not_found} = Agents.session_meta("nope")
+      assert {:error, :not_found} = Agents.session_meta("../secrets")
     end
 
-    test "an unknown original session id surfaces original_not_found", %{generation: generation} do
-      assert {:error, :original_not_found} = Agents.create_follow_up("nope", generation)
-    end
-
-    test "no open workspace surfaces original_not_found" do
+    test "session_meta is not_found with no open workspace" do
       Manager.close()
-      assert {:error, :original_not_found} = Agents.create_follow_up("nope", 1)
+      assert {:error, :not_found} = Agents.session_meta("nope")
     end
 
-    test "a stale generation surfaces workspace_changed", %{
-      ws: ws,
-      generation: generation,
-      alpha: alpha
-    } do
-      {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
-      on_exit(fn -> kill_session(original_id) end)
+    test "resume_session revives an ended session in the SAME transcript, seq continuing after the history",
+         %{ws: ws, generation: generation, alpha: alpha} do
+      {:ok, %{id: id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
+      kill_session(id)
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
 
-      assert {:error, :workspace_changed} =
-               Agents.create_follow_up(original_id, generation - 1)
+      path = Path.join(ws, "logs/sessions/#{id}.jsonl")
+      lines_before = path |> File.read!() |> String.split("\n", trim: true)
+      {:ok, %{cursor: cursor_before}} = Agents.attach_or_replay(id)
+
+      {:ok, meta} = Agents.session_meta(id)
+
+      {:ok, scope} =
+        Valea.Agents.SessionScope.resolve(%{
+          kind: "chat",
+          mount_key: meta["icm_mount"],
+          generation: generation,
+          session_id: id
+        })
+
+      assert {:ok, %{id: ^id}} = Agents.resume_session(%{id: id, scope: scope, meta: meta})
+      on_exit(fn -> kill_session(id) end)
+
+      # Same file, identity line untouched, nothing lost.
+      lines_after = path |> File.read!() |> String.split("\n", trim: true)
+      assert hd(lines_after) == hd(lines_before)
+
+      # Live attach again, snapshot seeded with the pre-resume history and
+      # a cursor that CONTINUES from it (the channel's seq gate stays
+      # monotonic across the revival).
+      assert {:ok, %{cursor: cursor, status: status}} = Agents.attach_or_replay(id)
+      assert cursor >= cursor_before
+      assert status in ["starting", "running"]
+
+      # Idempotent by goal state while live.
+      assert {:ok, %{id: ^id}} = Agents.resume_session(%{id: id, scope: scope, meta: meta})
     end
+  end
 
-    test "an unmounted ICM surfaces icm_unavailable; the original transcript stays viewable", %{
-      ws: ws,
-      generation: generation,
-      alpha: alpha
-    } do
-      {:ok, %{id: original_id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
-      kill_session(original_id)
+  defp wait_until(fun, tries \\ 50) do
+    cond do
+      fun.() ->
+        :ok
 
-      {:ok, _path} = Mounts.unmount(ws, alpha.mount_key)
+      tries == 0 ->
+        flunk("condition never became true")
 
-      assert {:error, :icm_unavailable} = Agents.create_follow_up(original_id, generation)
-
-      assert {:ok, %{status: "ended"}} = Agents.attach_or_replay(original_id)
+      true ->
+        Process.sleep(20)
+        wait_until(fun, tries - 1)
     end
   end
 end

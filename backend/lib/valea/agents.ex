@@ -11,7 +11,6 @@ defmodule Valea.Agents do
   workspace-wide session index for the SPA's session list).
   """
 
-  alias Valea.Agents.SessionScope
   alias Valea.Agents.SessionServer
   alias Valea.Mounts
   alias Valea.Workspace.Manager
@@ -333,56 +332,96 @@ defmodule Valea.Agents do
   end
 
   @doc """
-  Starts a follow-up session for `session_id` (Task 6.3, spec §"Session
-  persistence"): reads the ORIGINAL transcript's own `icm_mount` (never a
-  caller-supplied one — a follow-up always inherits its parent's primary
-  ICM) and resolves a FRESH `SessionScope` for that `mount_key` via
-  `SessionScope.resolve/1` — the single scope authority; no root is
-  re-derived here. `{:error, :original_not_found}` when `session_id` names
-  no transcript in the CURRENTLY open workspace (including when no
-  workspace is open at all). `resolve/1`'s own errors
-  (`:workspace_changed` for a stale `generation`, `:icm_unavailable` for an
-  original ICM that's since been unmounted/disabled/degraded) pass through
-  unchanged — the original transcript itself is untouched either way, so it
-  stays viewable (the UI's repair action is a later phase's concern).
+  Line-1 (`session/v1`) metadata of `id`'s transcript in the open
+  workspace — the resume path's read of the original session's identity
+  (`icm_mount`, `acp_session_id`, `context_doc`/`input`, `include_mounts`,
+  `title`). The id becomes a filename component, so it carries the same
+  `Path.basename/1` round-trip guard `archive_session/1` uses.
   """
-  @spec create_follow_up(String.t(), integer()) ::
-          {:ok, %{id: String.t()}}
-          | {:error, :original_not_found | :icm_unavailable | :workspace_changed}
-  def create_follow_up(session_id, generation) do
-    with {:ok, %{mount_key: mount_key, kind: kind}} <- original_session(session_id) do
-      id = generate_session_id()
-
-      with {:ok, scope} <-
-             SessionScope.resolve(%{
-               kind: kind,
-               mount_key: mount_key,
-               generation: generation,
-               session_id: id
-             }) do
-        start_session(%{
-          id: id,
-          kind: kind,
-          title: "New session",
-          scope: scope,
-          run: nil,
-          initial_prompt: nil,
-          on_turn_end: nil
-        })
-      end
-    end
-  end
-
-  defp original_session(session_id) do
+  @spec session_meta(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def session_meta(id) when is_binary(id) do
     case Manager.current() do
       {:ok, %{path: workspace}} ->
-        case read_meta(transcript_path(workspace, session_id)) do
-          {:ok, meta} -> {:ok, %{mount_key: meta["icm_mount"], kind: meta["kind"]}}
-          :error -> {:error, :original_not_found}
+        path = transcript_path(workspace, id)
+
+        with true <- Path.basename(path) == id <> ".jsonl",
+             {:ok, meta} <- read_meta(path) do
+          {:ok, meta}
+        else
+          _ -> {:error, :not_found}
         end
 
       {:error, :no_workspace} ->
-        {:error, :original_not_found}
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Revives an ENDED session IN ITS OWN transcript — same id, same file, same
+  chat URL; "continue", not "new session". The new `SessionServer` seeds
+  its timeline and seq from the transcript's existing items (so appends
+  stay monotonic after the history the channel replay already delivered),
+  and launches the adapter preferring ACP `session/resume` with the
+  recorded `acp_session_id` (the codec falls back to `session/load` —
+  whose history replay dedups against the persisted `message_id`s — per
+  the adapter's capabilities). A session that died before its handshake
+  ever recorded an acp id resumes as a FRESH agent conversation in the
+  same transcript. Idempotent by goal state: an already-live session
+  returns `{:ok, %{id: id}}`.
+
+  The caller (the `resume_agent_session` RPC) supplies a freshly resolved
+  `scope` — grants are re-resolved at resume time, never widened beyond
+  what the original session recorded.
+  """
+  @spec resume_session(%{id: String.t(), scope: map(), meta: map()}) ::
+          {:ok, %{id: String.t()}} | {:error, term()}
+  def resume_session(%{id: id, scope: scope, meta: meta}) do
+    case Registry.lookup(Valea.Agents.SessionRegistry, id) do
+      [_ | _] ->
+        {:ok, %{id: id}}
+
+      [] ->
+        %{items: timeline, cursor: seq} = replay_reply(transcript_path(scope.workspace.root, id))
+
+        known =
+          timeline
+          |> Enum.map(& &1["message_id"])
+          |> Enum.filter(&is_binary/1)
+          |> MapSet.new()
+
+        # The agent-assigned conversation id lives in the TIMELINE's
+        # `acp_session` meta item (the `{:conversation_id}` effect APPENDS an
+        # item — line 1's own `acp_session_id` field is written once as nil
+        # and never rewritten). The timeline upserts by id, so this is always
+        # the LATEST conversation id, including one minted by an earlier
+        # resume that itself fell back to a fresh conversation.
+        acp_id =
+          meta["acp_session_id"] ||
+            Enum.find_value(timeline, fn
+              %{"id" => "acp_session", "acp_session_id" => cid} when is_binary(cid) -> cid
+              _ -> nil
+            end)
+
+        case start_session(%{
+               id: id,
+               kind: meta["kind"] || "chat",
+               title: meta["title"],
+               scope: scope,
+               run: nil,
+               initial_prompt: nil,
+               on_turn_end: nil,
+               resume: %{
+                 conversation_id: acp_id,
+                 known_message_ids: known,
+                 timeline: timeline,
+                 seq: seq
+               }
+             }) do
+          {:ok, %{id: ^id}} -> {:ok, %{id: id}}
+          # Lost the Registry race to a concurrent resume — goal state met.
+          {:error, {:already_started, _pid}} -> {:ok, %{id: id}}
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 

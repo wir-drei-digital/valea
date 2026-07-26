@@ -365,80 +365,6 @@ export async function createAgentSessionChannel<Fields extends CreateAgentSessio
 }
 
 
-export type CreateFollowUpInput = {
-  sessionId: string;
-  generation: number;
-};
-
-export type CreateFollowUpFields = UnifiedFieldSelection<{id: string, __type: "TypedMap", __primitiveFields: "id"}>[];
-
-export type InferCreateFollowUpResult<
-  Fields extends CreateFollowUpFields | undefined,
-> = InferResult<{id: string, __type: "TypedMap", __primitiveFields: "id"}, Fields>;
-
-export type CreateFollowUpResult<Fields extends CreateFollowUpFields | undefined = undefined> = | { success: true; data: InferCreateFollowUpResult<Fields>; }
-| { success: false; errors: AshRpcError[]; }
-
-;
-
-/**
- * Execute generic action on Agents
- *
- * @ashActionType :action
- */
-export async function createFollowUp<Fields extends CreateFollowUpFields | undefined = undefined>(
-  config: {
-  tenant?: string;
-  input: CreateFollowUpInput;
-  fields: Fields;
-  headers?: Record<string, string>;
-  fetchOptions?: RequestInit;
-  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-}
-): Promise<CreateFollowUpResult<Fields extends undefined ? [] : Fields>> {
-  const payload = {
-    action: "create_follow_up",
-    ...(config.tenant !== undefined && { tenant: config.tenant }),
-    input: config.input,
-    ...(config.fields !== undefined && { fields: config.fields })
-  };
-
-  return executeActionRpcRequest<CreateFollowUpResult<Fields extends undefined ? [] : Fields>>(
-    payload,
-    config
-  );
-}
-
-
-/**
- * Execute generic action on Agents
- *
- * @ashActionType :action
- */
-export async function createFollowUpChannel<Fields extends CreateFollowUpFields | undefined = undefined>(config: {
-  channel: Channel;
-  tenant?: string;
-  input: CreateFollowUpInput;
-  fields: Fields;
-  resultHandler: (result: CreateFollowUpResult<Fields>) => void;
-  errorHandler?: (error: any) => void;
-  timeoutHandler?: () => void;
-  timeout?: number;
-}) {
-  executeActionChannelPush<CreateFollowUpResult<Fields>>(
-    config.channel,
-    {
-    action: "create_follow_up",
-    ...(config.tenant !== undefined && { tenant: config.tenant }),
-    input: config.input,
-    ...(config.fields !== undefined && { fields: config.fields })
-  },
-    config.timeout,
-    config
-  );
-}
-
-
 export type HarnessConfigFields = UnifiedFieldSelection<{command: Array<string>, approved: boolean, isDefault: boolean, defaultCommand: Array<string>, __type: "TypedMap", __primitiveFields: "command" | "approved" | "isDefault" | "defaultCommand"}>[];
 
 export type InferHarnessConfigResult<
@@ -771,6 +697,80 @@ export async function listSessionsChannel<Fields extends ListSessionsFields | un
     config.channel,
     {
     action: "list_sessions",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ResumeAgentSessionInput = {
+  sessionId: string;
+  generation: number;
+};
+
+export type ResumeAgentSessionFields = UnifiedFieldSelection<{id: string, __type: "TypedMap", __primitiveFields: "id"}>[];
+
+export type InferResumeAgentSessionResult<
+  Fields extends ResumeAgentSessionFields | undefined,
+> = InferResult<{id: string, __type: "TypedMap", __primitiveFields: "id"}, Fields>;
+
+export type ResumeAgentSessionResult<Fields extends ResumeAgentSessionFields | undefined = undefined> = | { success: true; data: InferResumeAgentSessionResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function resumeAgentSession<Fields extends ResumeAgentSessionFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ResumeAgentSessionInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ResumeAgentSessionResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "resume_agent_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ResumeAgentSessionResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function resumeAgentSessionChannel<Fields extends ResumeAgentSessionFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ResumeAgentSessionInput;
+  fields: Fields;
+  resultHandler: (result: ResumeAgentSessionResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ResumeAgentSessionResult<Fields>>(
+    config.channel,
+    {
+    action: "resume_agent_session",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

@@ -134,12 +134,22 @@ defmodule Valea.Agents.SessionServer do
            self()
          ) do
       {:ok, handle} ->
+        # Same-transcript RESUME (see `Valea.Agents.resume_session/1`): the
+        # caller hands over the ended session's fold — its acp conversation
+        # id (nil if the original died before the handshake), the persisted
+        # `message_id`s (the session/load fallback's replay dedup set), and
+        # the existing timeline + last seq, so new items append AFTER the
+        # history and the channel's `seq > cursor` gate stays monotonic.
+        # Mode `:resume` is a PREFERENCE — the codec falls back per the
+        # adapter's advertised caps (resume → load → new).
+        resume = Map.get(opts, :resume)
+
         {conn, frames} =
           Connection.new(%{
             cwd: scope.cwd,
-            mode: :new,
-            conversation_id: nil,
-            known_message_ids: MapSet.new(),
+            mode: if(resume && resume.conversation_id, do: :resume, else: :new),
+            conversation_id: resume && resume.conversation_id,
+            known_message_ids: (resume && resume.known_message_ids) || MapSet.new(),
             client_version: version(),
             additional_roots: scope.additional_roots,
             managed_settings: scope.managed_settings
@@ -158,8 +168,8 @@ defmodule Valea.Agents.SessionServer do
           handle: handle,
           transcript: transcript,
           title: Map.get(opts, :title),
-          seq: 0,
-          timeline: [],
+          seq: (resume && resume.seq) || 0,
+          timeline: (resume && resume.timeline) || [],
           status: :starting,
           exited?: false,
           queue: [],
@@ -466,9 +476,20 @@ defmodule Valea.Agents.SessionServer do
     path = Path.join([scope.workspace.root, "logs", "sessions", id <> ".jsonl"])
     File.mkdir_p!(Path.dirname(path))
 
+    if Map.get(opts, :resume) do
+      # Same-transcript resume: line 1 (the session's identity) was written
+      # at the original start and stays untouched; new items append after
+      # the existing history.
+      path
+    else
+      write_transcript_meta(path, opts, scope, run)
+    end
+  end
+
+  defp write_transcript_meta(path, opts, scope, run) do
     meta = %{
       "schema" => "session/v1",
-      "id" => id,
+      "id" => Map.fetch!(opts, :id),
       "acp_session_id" => nil,
       "workspace_id" => scope.workspace.id,
       "workspace_name" => scope.workspace.name,

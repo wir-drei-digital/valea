@@ -266,8 +266,45 @@
     () => store !== null && store.status === 'failed' && store.error === 'harness_unavailable'
   );
 
-  async function startFollowUp(): Promise<void> {
-    await startSession();
+  // --- Same-transcript resume: sending into an ENDED session revives it
+  // in place (same id, same transcript, same URL) and then delivers the
+  // prompt — "continue", never a confusing new session. The RPC only
+  // returns ok once the revived server is registered, so the immediate
+  // prompt push routes to it (the channel re-checks the Registry).
+
+  let resuming = $state(false);
+  let resumeError = $state<string | null>(null);
+
+  async function resumeAndPrompt(text: string): Promise<void> {
+    const id = selectedId;
+    const session = store;
+    if (!id || !session || resuming) return;
+    resuming = true;
+    resumeError = null;
+    const result = await api.resumeAgentSession(id, workspaceStore.generation ?? 0);
+    resuming = false;
+    if (!result.ok) {
+      resumeError = resumeErrorMessage(result.error);
+      return;
+    }
+    session.prompt(text);
+    void sessionsList.refresh();
+    void recentSessionsStore.refresh();
+  }
+
+  function resumeErrorMessage(code: string): string {
+    switch (code) {
+      case 'workspace_changed':
+        return 'Your workspace changed. Reopen it and try again.';
+      case 'icm_unavailable':
+        return "This session's project isn't available. Enable it in the sidebar and try again.";
+      case 'harness_unavailable':
+        return "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks.";
+      case 'not_found':
+        return 'This session is no longer on disk.';
+      default:
+        return 'Could not continue the session. Please try again.';
+    }
   }
 
   // --- Archive (ended sessions only — the backend refuses a live one) ---
@@ -463,18 +500,18 @@
 
         {#if starting}
           <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
-        {:else if ended}
-          <div class="border-paper-hairline mx-4 mb-4 flex items-center justify-between gap-3 border-t px-0 pt-3">
-            <p class="text-ink-meta text-[12.5px]">This session has ended.</p>
-            <Button type="button" variant="outline" size="sm" onclick={() => void startFollowUp()}>
-              Start a follow-up session
-            </Button>
-          </div>
         {:else}
+          {#if resumeError}
+            <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{resumeError}</p>
+          {/if}
+          <!-- An ended session keeps its composer: sending resumes it in
+               place (same transcript) and delivers the message — the
+               placeholder carries the affordance, no extra button. -->
           <Composer
-            busy={store.busy}
+            busy={store.busy || resuming}
             {configItems}
-            onSend={(text) => store?.prompt(text)}
+            placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
+            onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.prompt(text))}
             onStop={() => store?.cancel()}
             onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
           />

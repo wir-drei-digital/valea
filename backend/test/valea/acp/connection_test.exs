@@ -125,6 +125,22 @@ defmodule Valea.Acp.ConnectionTest do
     assert p["sessionId"] == "conv-1"
     assert p["mcpServers"] == []
 
+    # A capability advertised as an (empty) OBJECT counts too — this is the
+    # form claude-agent-acp 0.58.1 actually sends
+    # (`agentCapabilities.sessionCapabilities.resume: {}`).
+    {state, init_id} = boot(:resume)
+
+    {_s, _i, replies, _e} =
+      Connection.handle_bytes(
+        state,
+        init_response(init_id, %{
+          "agentCapabilities" => %{"sessionCapabilities" => %{"resume" => %{}}}
+        })
+      )
+
+    assert [%{"method" => "session/resume", "params" => %{"sessionId" => "conv-1"}}] =
+             decode_lines(replies)
+
     # only loadSession true -> session/load
     {state, init_id} = boot(:resume)
 
@@ -239,6 +255,9 @@ defmodule Valea.Acp.ConnectionTest do
     {state, [i2], _, _} = Connection.handle_bytes(state, chunk.("m-live", "lo world"))
     assert i1["text"] == "Hel"
     assert i2["text"] == "Hello world"
+    # The messageId is stamped onto the item (and so persisted) — a later
+    # same-transcript resume seeds `known_message_ids` from it.
+    assert i2["message_id"] == "m-live"
 
     # A different message starts (new id) — accumulates under way as usual…
     {state, [i3], _, _} = Connection.handle_bytes(state, chunk.("m-next", "Again"))
