@@ -137,12 +137,16 @@ Remedies stay copyable strings.
 
 `envelope` is `%{from: addr, rcpt: [addr]}` — computed from the parsed
 draft, never from raw strings. The tri-state return is the load-bearing
-contract: implementations MUST distinguish "failed before the server
-could have accepted the message" (`:error` — safe to reject the op and
-let the human click again) from "the message may have been accepted"
-(`:unknown` — enters reconciliation, never retried). Any failure after
-`DATA` is issued and the final `.` transmitted is `:unknown`, including
-timeouts and TLS teardown errors on the reply read.
+contract, and the boundary is defined by **server knowledge, not protocol
+phase**: a *received, parseable* final reply always decides — `250` →
+`{:ok, :accepted}`; any received final non-2xx after the terminating dot
+→ `{:error, ...}` (the server definitively refused the message —
+provably unsent, safe to reject the op and let the human click again).
+`{:unknown, ...}` is reserved for exactly the case where message bytes
+may have reached the server but the final reply is **missing or
+undecodable** (connection drop, timeout, TLS teardown on the reply
+read). Failures before `DATA` is accepted for transmission are always
+`:error`. `:unknown` enters reconciliation and is never retried.
 
 `Valea.Mail.SmtpClient` implements it on `gen_smtp_client` (gen_smtp is
 already a dependency). gen_smtp's TLS defaults are not acceptable —
@@ -166,17 +170,25 @@ Engine, exactly like push. Steps 1–2 are push's own, verbatim:
    partial-unique index **one non-terminal op per `(account, origin)`**
    (widened in the hand migration to span `append` and `send` together) —
    so a draft cannot be pushed and sent concurrently, or sent twice from
-   two tabs. The op records a
-   **deterministic, Valea-generated Message-ID** —
-   `send_message_id(account, draft_name, content_hash)`, domain-separated
-   from `push_message_id` so a pushed copy and a sent message of
-   identical content never share a Message-ID. Born `claimed`, before any
-   network I/O.
+   two tabs. Born `claimed`, before any network I/O; the op's
+   Message-ID is recorded in step 2 (it needs the snapshot bytes).
 2. **Immutable snapshot.** Same containment as push: validated basename,
    `resolve_real` under the account's `drafts/` root, no-follow open of a
    regular single-link file, read once into a buffer, verify
    `content_hash` against that buffer, `DraftFile.parse_and_validate`
-   from it, compose from it. Composition produces **two byte-variants
+   from it, compose from it. From that same buffer the op records its
+   **deterministic, Valea-generated Message-ID** —
+   `send_message_id(account, draft_name, canonical_hash)`,
+   domain-separated from `push_message_id` so a pushed copy and a sent
+   message of identical content never share a Message-ID.
+   `canonical_hash` is the SHA-256 of the draft's **canonical bytes** —
+   the snapshot with the engine-owned `status:` frontmatter line elided
+   (exactly the line `stamp_status` owns) — NOT the raw `content_hash`:
+   engine status stamps insert or rewrite that line, so hashing raw
+   bytes would give a status-less draft a different Message-ID after one
+   failed attempt, breaking the same-ID retry property. The
+   review-binding `content_hash` stays the exact raw bytes; only the
+   *identity* is canonical. Composition produces **two byte-variants
    from the one buffer**: the *wire* message (no `Bcc` header) and the
    *record* message (with `Bcc` — the user's own Sent record). Both,
    plus the envelope, go into `spool/` with an fsynced manifest; both
@@ -224,15 +236,24 @@ Engine, exactly like push. Steps 1–2 are push's own, verbatim:
    construction), which lets recipient clients thread/dedupe the
    duplicate; that is the accepted worst case of a wrong resolution.
 
-**Crash recovery** extends the existing boot reconciliation: a `claimed`
-send without its spool payload is provably un-transmitted → `rejected`,
-draft reverts. A `pending`/`executing` send whose manifest shows DATA was
-never reached is provably unsent → `rejected`. Anything at-or-past DATA
-without a recorded outcome recovers as `{:unknown}` → the `send_review`
-path above. A `transmitted` op resumes at the Sent-copy step
-(idempotent). Manifests carry every transition, so database loss
-reconstructs the same states from `spool/`, and affected drafts stay
-blocked until proven — nothing retries a transmit, ever.
+**Crash recovery** is a deliberate extension of where recovery runs
+today, not just what it covers: the existing `OpsExecutor.recover/1`
+executes only inside an IMAP-connected sync pass — a send stranded
+pre-DATA would otherwise stay `pending` forever if IMAP is paused or
+failing while SMTP is independently configured. Spec G therefore adds a
+**local send-classification pass at Engine activation, requiring no
+network at all**: from manifests + ledger alone, a `claimed` send
+without its spool payload is provably un-transmitted → `rejected`, draft
+reverts; a `pending`/`executing` send whose manifest shows DATA was
+never reached is provably unsent → `rejected`; anything at-or-past DATA
+without a recorded outcome → `send_review`. Only two follow-ups need a
+connection and defer to the next IMAP-connected pass: the Gmail
+Message-ID reconciliation (until then the op renders `send_review` with
+a "reconciling — awaiting mailbox connection" notice) and a
+`transmitted` op's idempotent Sent-copy resume. Manifests carry every
+transition, so database loss reconstructs the same states from
+`spool/`, and affected drafts stay blocked until proven — nothing
+retries a transmit, ever.
 
 Threading (`in_reply_to: <msg_id>`) resolves `In-Reply-To`/`References`
 from the referenced raw canonical file, as push does; unmirrored
@@ -249,15 +270,43 @@ derives from the ledger, never from frontmatter — an agent-written
 `status: sent` with no corroborating ledger op renders `draft` with a
 `status_forged` notice.
 
+**Display projection (kind-aware, ordered).** Today's `draft_display`
+finds *any* active op then *any* complete op and renders every completed
+op as `pushed` — with two op kinds sharing one origin that projection is
+wrong (push-complete + send-rejected must NOT strand as `pushed`). Spec
+G replaces it with an explicit rule over `ops_by_origin` **ordered
+newest-first** (the Store query gains ordering):
+
+1. The active op, if any, governs: `pushing | sending | send_review`
+   by kind/state (the widened unique index guarantees at most one).
+2. Else the **newest terminal send op** governs the primary state —
+   `complete` → `sent`, `rejected` → `draft` (error surfaced) — but
+   only while the file's current hash still matches that op's recorded
+   raw `content_hash`; an edited draft falls back to `draft` with an
+   "an earlier revision was sent" note (push's CAS reporting rule,
+   applied to display).
+3. Else the frontmatter forgery check, else `draft`.
+
+`pushed` becomes a **separate boolean fact** (any complete append op),
+rendered as a badge beside the primary state, never overriding it. Send
+and Push buttons key off the primary state (`draft`), independent of the
+badge.
+
 **UI.** The drafts panel gains a Send button per draft, rendered only
-when the account has SMTP configured and the draft parses valid. Clicking
-opens a confirm modal showing the **parsed** recipient set (to/cc/bcc
-exactly as they will be transmitted), subject, and the sending identity
-(`from_name <from>`, account slug); confirm is one click — no typed
-confirmation (the review is the modal; the hash binds it). The RPC
-carries `content_hash` like push. `send_review` rows render the
-explanation and the two resolution actions; `sent_copy_failed` renders
-its retry.
+when the account has SMTP configured and the draft parses valid.
+Clicking calls a new **atomic review-snapshot RPC**,
+`get_mail_draft_review(account, draft_name)`: one no-follow single-link
+read into a buffer, returning the parsed recipient set, subject,
+threading warning, sending identity (`from_name <from>`, account slug),
+the raw body, and the `content_hash` **of that same buffer** — the modal
+renders exclusively from this response and binds exactly that hash into
+`send_draft`. Nothing shown to the human may come from a different read
+than the hash they confirm (list-derived parses are display-only,
+never confirm inputs). A draft edited between modal-open and confirm →
+server-side hash mismatch → re-review error, modal refreshes. Confirm
+is one click — no typed confirmation (the review is the modal; the hash
+binds it). `send_review` rows render the explanation and the two
+resolution actions; `sent_copy_failed` renders its retry.
 
 ## Draft iteration loop
 
@@ -284,13 +333,19 @@ calls `revise_mail_draft(account, draft_name, feedback, generation)`:
   prompt (the drafting context is worth keeping) and its `session_id`
   returns.
 - Otherwise a new session starts via the existing create-session
-  plumbing: `include_mounts: ["mail-<slug>"]`, the draft as the `input`
-  locator (which also issues the exact read grant), and the feedback
-  wrapped in a fixed prompt template ("revise the draft at <path> per
-  this feedback; edit the file in place; keep the frontmatter valid;
-  do not touch status") as the **initial prompt** — this finally exposes
-  the Spec D `initial_prompt` plumbing through the RPC layer instead of
-  the hardcoded `nil` at both call sites.
+  plumbing — which **requires a primary ICM** (`mount_key` is mandatory;
+  a mail mount is supplementary, never primary). `revise_mail_draft`
+  therefore takes a required `mount_key`, chosen by the UI with the same
+  MRU-ICM heuristic the Today quick composer already uses; a workspace
+  with no enabled ICM fails closed (`no_icm_available`, panel remedy:
+  enable a project first) — the server never guesses a primary. The
+  session gets `include_mounts: ["mail-<slug>"]`, the draft as the
+  `input` locator (which also issues the exact read grant), and the
+  feedback wrapped in a fixed prompt template ("revise the draft at
+  <path> per this feedback; edit the file in place; keep the frontmatter
+  valid; do not touch status") as the **initial prompt** — this finally
+  exposes the Spec D `initial_prompt` plumbing through the RPC layer
+  instead of the hardcoded `nil` at both call sites.
 - The response carries the `session_id`; the UI shows "sent to session"
   with an open-session link. The agent's subsequent edits ripple back
   through the live-drafts event. Session discovery is a query over
@@ -311,11 +366,17 @@ ask-gated like any draft write; the feedback prompt grants nothing.
    selection; a deep link before status resolves retries once accounts
    arrive instead of latching a permanent load error. This fixes the
    stale read pane on account switch and cross-account msg_id ambiguity.
-2. **SQLite under concurrent engines.** The workspace Repo turns on
-   `journal_mode: :wal` and an explicit generous `busy_timeout`; each
-   Engine's poll timer gets per-account random jitter (a bounded fraction
-   of the interval) so N accounts stop ticking in lockstep after
-   `{:workspace_opened}`. First passes on two busy accounts must both
+2. **SQLite under concurrent engines.** The workspace Repo sets
+   `journal_mode: WAL` and `busy_timeout: 5000` (ms) at open; the WAL
+   pragma's result is verified (`"wal"`) — a filesystem that refuses WAL
+   degrades to a logged status notice, never a crash. Poll scheduling
+   gains per-account jitter: a uniform integer delay in
+   `[0, min(60_000 ms, interval_ms div 4)]`, drawn per timer from the
+   Engine's PRNG, applied to the first (activation) schedule and every
+   subsequent one, so N accounts stop ticking in lockstep after
+   `{:workspace_opened}`. Test seam: an app-env override
+   (`:mail_poll_jitter`) pins jitter to 0 (or a fixed value) for
+   deterministic tests. First passes on two busy accounts must both
    complete in tests.
 3. **Per-account drafts count.** The list-pane "Drafts (N)" counts only
    the selected account's drafts (the panel keeps listing all accounts,
@@ -336,6 +397,10 @@ All mutating actions take `generation`; account-scoped actions validate
 the slug before any path I/O, as everywhere. The RPC channel remains
 control-token-gated — agents have no transport to it.
 
+- `get_mail_draft_review(account, draft_name)` — the atomic
+  review-snapshot read backing the confirm modal (one buffer: parsed
+  recipients + subject + identity + raw body + that buffer's
+  `content_hash`).
 - `send_draft(account, draft_name, content_hash, generation)` — same
   basename validation, containment, and no-follow snapshot rules as
   `push_draft_to_mailbox`; returns the op status.
@@ -344,9 +409,10 @@ control-token-gated — agents have no transport to it.
   account.
 - `retry_sent_copy(account, op_id, generation)` — re-runs only the
   idempotent Sent-copy append of a completed-with-notice send.
-- `revise_mail_draft(account, draft_name, feedback, generation)` — the
-  Request-changes entry point (routes or creates a session; returns
-  `session_id`).
+- `revise_mail_draft(account, draft_name, feedback, mount_key, generation)`
+  — the Request-changes entry point (routes to a running session or
+  creates one with `mount_key` as the primary ICM; fails closed
+  `no_icm_available`; returns `session_id`).
 - `setup_mail_account` gains the optional `smtp` block;
   `set_mail_credential` gains a `kind: imap | smtp` argument (secret
   stays `sensitive? true`); `mail_doctor` includes the SMTP checks when
@@ -389,9 +455,11 @@ control-token-gated — agents have no transport to it.
 - **New:** `Valea.Mail.SmtpTransport` (behaviour), `Valea.Mail.SmtpClient`
   (gen_smtp_client + strict TLS), `send` op kind in the ops executor
   (claim/snapshot shared with push; transmit + Sent-copy + review
-  states), `send_message_id/3` in `DraftMime`, wire/record dual compose,
-  `revise_mail_draft` + session-locator discovery, watcher drafts
-  classification + `mail_draft_changed`, `resolve_send_review` /
+  states), activation-time local send classification in the Engine,
+  `send_message_id/3` + canonical-bytes hashing in `DraftMime`/
+  `DraftFile`, wire/record dual compose, `revise_mail_draft` +
+  session-locator discovery, watcher drafts classification +
+  `mail_draft_changed`, `get_mail_draft_review` / `resolve_send_review` /
   `retry_sent_copy` / `send_draft` RPCs, SMTP doctor checks, SMTP
   keychain entries + setup UI, Send button + confirm modal +
   `send_review` UI.
@@ -406,7 +474,9 @@ control-token-gated — agents have no transport to it.
   poll (jitter).
 - **Rewritten:** ARCHITECTURE.md/VISION.md outbound sections ("no SMTP" →
   human-only transmission invariant); the `THERE IS NO SMTP` code
-  comments become pointers to the new invariant.
+  comments become pointers to the new invariant; `draft_display` →
+  the kind-aware ordered projection (`Store.ops_by_origin` gains
+  newest-first ordering).
 - **Unchanged:** IMAP `Transport` behaviour, sync engine, ops-file
   vocabulary, permission tiers, push flow semantics.
 
@@ -429,7 +499,9 @@ boundary.
 - **Fake SMTP transport** with scripted failure points at every step:
   connect/TLS/EHLO/AUTH failure; one-of-N `RCPT` rejected (abort before
   DATA, per-recipient errors, nothing delivered); disconnect mid-DATA
-  (`:unknown`); lost final response (`:unknown`); clean accept.
+  (`:unknown`); lost final response (`:unknown`); **received final `4xx`
+  and `5xx` after the terminating dot** (`:error` — op rejected, draft
+  reverts, never parked); clean accept.
 - **Scenario suite:** double-click single-send (unique claim, second
   caller sees the op); push-vs-send mutual exclusion on one draft;
   draft-edited-mid-send CAS (new revision untouched, panel reports the
@@ -443,7 +515,19 @@ boundary.
   the append; crash at every ledger state (claimed-no-spool → rejected;
   pre-DATA → rejected; post-DATA unknown → `send_review`; transmitted →
   Sent-copy resumes; database loss → manifests reconstruct, drafts
-  blocked until proven); Bcc golden tests (wire variant has no Bcc
+  blocked until proven); **activation-time recovery with IMAP down**
+  (pre-DATA stranded send classified `rejected` at Engine activation
+  with no IMAP connectivity; a gmail `send_review` renders the
+  awaiting-connection notice until the next connected pass); **display
+  projection** (push-complete then send-rejected → primary state `draft`
+  + `pushed` badge + surfaced error, Send retry available; newest-send
+  ordering; edited-after-sent → `draft` + earlier-revision note);
+  **canonical send identity** (a draft without an initial `status:` line
+  keeps the same send Message-ID across a failed attempt's engine
+  stamps; any human/agent edit changes it); **review-snapshot race**
+  (draft edited between modal-open and confirm → `send_draft` hash
+  mismatch, re-review error, nothing transmitted); Bcc golden tests
+  (wire variant has no Bcc
   header, envelope includes bcc rcpts, record variant keeps Bcc);
   non-ASCII address rejects; From/from_name from config only (frontmatter
   cannot override); oversized compose rejects; agent cannot reach
@@ -485,8 +569,9 @@ boundary.
   believes sent — mitigated by telling them exactly what to check before
   resolving.
 - **Deterministic Message-IDs leak a hash of (account, draft name,
-  content hash) shape** — opaque and collision-resistant; accepted for
-  the idempotency and cross-attempt discoverability it buys.
+  canonical content hash) shape** — opaque and collision-resistant;
+  accepted for the idempotency and cross-attempt discoverability it
+  buys.
 - **SMTP AUTH with app passwords only** — OAuth stays a non-goal; Gmail
   requires an app password, as for IMAP today.
 - **The revise flow's session discovery is best-effort** — locator match
