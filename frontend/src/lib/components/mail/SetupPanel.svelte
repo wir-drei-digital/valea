@@ -2,10 +2,10 @@
   // Mail account management (mail design spec E §Account setup + doctor /
   // §Credentials): the configured-account list with per-account maintenance
   // (doctor, held-folder discard, re-adopt/purge recovery, remove), plus
-  // the add-account form. Rendered from `routes/mail/+page.svelte` in TWO
-  // places: the explicit `?setup=1` destination and the main-pane empty
-  // state when no account is configured — so this component owns its own
-  // heading/copy rather than expecting a wrapper to supply page chrome.
+  // the add-account form. Rendered from `routes/mail/+page.svelte` inside
+  // the settings DIALOG (the calendar route's Sources pattern; `?setup=1`
+  // deep-links it open) — this component owns its own heading/copy, the
+  // dialog only supplies the modal chrome.
   //
   // Submit flow is `submitMailSetup` (`mail-shapes.ts`) — this component
   // only wires it to the real `api`, `keychain.ts`, and `mailStore`. The

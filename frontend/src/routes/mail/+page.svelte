@@ -24,6 +24,7 @@
   import SyncStatusLine from '$lib/components/mail/SyncStatusLine.svelte';
   import MessageView from '$lib/components/mail/MessageView.svelte';
   import SetupPanel from '$lib/components/mail/SetupPanel.svelte';
+  import * as Dialog from '$lib/components/ui/dialog/index.js';
 
   // `mail_status`/`mail_sync`/`mail_message` are wired ONCE, at the layout
   // (`wireMailEvents`, called from `wireIcmEvents` in `icm.svelte.ts`'s
@@ -39,8 +40,13 @@
   });
 
   const selectedId = $derived(page.url.searchParams.get('message'));
-  const setupRequested = $derived(page.url.searchParams.get('setup') === '1');
   const draftsRequested = $derived(page.url.searchParams.get('drafts') === '1');
+
+  // Accounts & settings live in a MODAL over the mail view (the calendar
+  // route's Sources pattern) — `?setup=1` deep-links it open (the /sources
+  // hub and older links keep working); every in-app trigger just flips the
+  // state.
+  let showSetup = $state(page.url.searchParams.get('setup') === '1');
 
   // Race-safe selection load: `MailStore.select` writes into the shared
   // `mailStore.selected` singleton with no per-call id tag, so two
@@ -195,20 +201,29 @@
         <SyncStatusLine
           status={mailStore.selectedStatus}
           requestError={syncRequestError}
-          onSettings={() => void goto('/mail?setup=1')}
+          onSettings={() => (showSetup = true)}
         />
       {/snippet}
     </ListPane>
   {/snippet}
 
   {#snippet main()}
-    {#if setupRequested}
-      <SetupPanel />
-    {:else if draftsRequested}
+    {#if draftsRequested}
       <DraftsPanel />
     {:else if !selectedId}
       {#if mailStore.accounts.length === 0}
-        <SetupPanel />
+        <!-- No mailbox yet — the welcoming path into the setup modal. -->
+        <div class="mx-auto w-full max-w-[560px] px-8 py-8">
+          <EmptyState
+            icon={MailIcon}
+            title="No mailbox connected yet."
+            body="Valea mirrors your inbox into plain files on this Mac. Your assistant reads them, prepares replies as drafts, and nothing is ever sent without you."
+          >
+            {#snippet actions()}
+              <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
+            {/snippet}
+          </EmptyState>
+        </div>
       {:else}
         <EmptyState icon={MailIcon} title="Mail" body="Pick a message from the list to read it here." />
       {/if}
@@ -221,3 +236,11 @@
     {/if}
   {/snippet}
 </AppFrame>
+
+<!-- Mail accounts & settings — a modal over the mail view (same pattern as
+     the calendar route's Sources dialog; SetupPanel owns its own heading). -->
+<Dialog.Root bind:open={showSetup}>
+  <Dialog.Content class="max-h-[85vh] overflow-y-auto sm:max-w-xl">
+    <SetupPanel />
+  </Dialog.Content>
+</Dialog.Root>
