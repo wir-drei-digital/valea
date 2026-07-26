@@ -4621,6 +4621,381 @@ export async function setupMailAccountChannel<Fields extends SetupMailAccountFie
 }
 
 
+export type DismissSkillsOfferInput = {
+  mountKey: string;
+  skillId: string;
+  generation: number;
+};
+
+export type DismissSkillsOfferFields = UnifiedFieldSelection<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}>[];
+
+export type InferDismissSkillsOfferResult<
+  Fields extends DismissSkillsOfferFields | undefined,
+> = InferResult<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}, Fields>;
+
+export type DismissSkillsOfferResult<Fields extends DismissSkillsOfferFields | undefined = undefined> = | { success: true; data: InferDismissSkillsOfferResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function dismissSkillsOffer<Fields extends DismissSkillsOfferFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DismissSkillsOfferInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DismissSkillsOfferResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "dismiss_skills_offer",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DismissSkillsOfferResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function dismissSkillsOfferChannel<Fields extends DismissSkillsOfferFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DismissSkillsOfferInput;
+  fields: Fields;
+  resultHandler: (result: DismissSkillsOfferResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DismissSkillsOfferResult<Fields>>(
+    config.channel,
+    {
+    action: "dismiss_skills_offer",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type InstallSkillInput = {
+  mountKey: string;
+  skillId: string;
+  generation: number;
+};
+
+export type InstallSkillFields = UnifiedFieldSelection<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}>[];
+
+export type InferInstallSkillResult<
+  Fields extends InstallSkillFields | undefined,
+> = InferResult<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}, Fields>;
+
+export type InstallSkillResult<Fields extends InstallSkillFields | undefined = undefined> = | { success: true; data: InferInstallSkillResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function installSkill<Fields extends InstallSkillFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: InstallSkillInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<InstallSkillResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "install_skill",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<InstallSkillResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function installSkillChannel<Fields extends InstallSkillFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: InstallSkillInput;
+  fields: Fields;
+  resultHandler: (result: InstallSkillResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<InstallSkillResult<Fields>>(
+    config.channel,
+    {
+    action: "install_skill",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListSkillsInput = {
+  mountKey: string;
+  generation: number;
+};
+
+export type ListSkillsFields = UnifiedFieldSelection<{skills: Array<{skillId: string, name: string, description: string | null, sourceUrl: string | null, license: string | null, pinned: string | null, state: string, installedVersion: string | null, __type: "TypedMap", __primitiveFields: "skillId" | "name" | "description" | "sourceUrl" | "license" | "pinned" | "state" | "installedVersion"}>, dismissed: Array<string>, __type: "TypedMap", __primitiveFields: "dismissed"}>[];
+
+export type InferListSkillsResult<
+  Fields extends ListSkillsFields | undefined,
+> = InferResult<{skills: Array<{skillId: string, name: string, description: string | null, sourceUrl: string | null, license: string | null, pinned: string | null, state: string, installedVersion: string | null, __type: "TypedMap", __primitiveFields: "skillId" | "name" | "description" | "sourceUrl" | "license" | "pinned" | "state" | "installedVersion"}>, dismissed: Array<string>, __type: "TypedMap", __primitiveFields: "dismissed"}, Fields>;
+
+export type ListSkillsResult<Fields extends ListSkillsFields | undefined = undefined> = | { success: true; data: InferListSkillsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function listSkills<Fields extends ListSkillsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListSkillsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListSkillsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_skills",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListSkillsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function listSkillsChannel<Fields extends ListSkillsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListSkillsInput;
+  fields: Fields;
+  resultHandler: (result: ListSkillsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListSkillsResult<Fields>>(
+    config.channel,
+    {
+    action: "list_skills",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type UninstallSkillInput = {
+  mountKey: string;
+  skillId: string;
+  generation: number;
+};
+
+export type UninstallSkillFields = UnifiedFieldSelection<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}>[];
+
+export type InferUninstallSkillResult<
+  Fields extends UninstallSkillFields | undefined,
+> = InferResult<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}, Fields>;
+
+export type UninstallSkillResult<Fields extends UninstallSkillFields | undefined = undefined> = | { success: true; data: InferUninstallSkillResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function uninstallSkill<Fields extends UninstallSkillFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: UninstallSkillInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<UninstallSkillResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "uninstall_skill",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<UninstallSkillResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function uninstallSkillChannel<Fields extends UninstallSkillFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: UninstallSkillInput;
+  fields: Fields;
+  resultHandler: (result: UninstallSkillResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<UninstallSkillResult<Fields>>(
+    config.channel,
+    {
+    action: "uninstall_skill",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type UpdateSkillInput = {
+  mountKey: string;
+  skillId: string;
+  force?: boolean;
+  generation: number;
+};
+
+export type UpdateSkillFields = UnifiedFieldSelection<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}>[];
+
+export type InferUpdateSkillResult<
+  Fields extends UpdateSkillFields | undefined,
+> = InferResult<{ok: boolean, __type: "TypedMap", __primitiveFields: "ok"}, Fields>;
+
+export type UpdateSkillResult<Fields extends UpdateSkillFields | undefined = undefined> = | { success: true; data: InferUpdateSkillResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function updateSkill<Fields extends UpdateSkillFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: UpdateSkillInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<UpdateSkillResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "update_skill",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<UpdateSkillResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Skills
+ *
+ * @ashActionType :action
+ */
+export async function updateSkillChannel<Fields extends UpdateSkillFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: UpdateSkillInput;
+  fields: Fields;
+  resultHandler: (result: UpdateSkillResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<UpdateSkillResult<Fields>>(
+    config.channel,
+    {
+    action: "update_skill",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type InferCloseWorkspaceResult = Record<string, any>;
 
 export type CloseWorkspaceResult = | { success: true; data: InferCloseWorkspaceResult; }

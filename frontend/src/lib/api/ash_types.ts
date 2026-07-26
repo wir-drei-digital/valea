@@ -103,6 +103,20 @@ export type MailAttributesOnlySchema = {
 };
 
 
+// Skills Schema
+export type SkillsResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type SkillsAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Workspace Schema
 export type WorkspaceResourceSchema = {
   __type: "Resource";
@@ -180,6 +194,15 @@ export type MailFilterInput = {
 
 
 };
+export type SkillsFilterInput = {
+  and?: Array<SkillsFilterInput>;
+  or?: Array<SkillsFilterInput>;
+  not?: Array<SkillsFilterInput>;
+
+
+
+
+};
 export type WorkspaceFilterInput = {
   and?: Array<WorkspaceFilterInput>;
   or?: Array<WorkspaceFilterInput>;
@@ -189,6 +212,8 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
 
 
 

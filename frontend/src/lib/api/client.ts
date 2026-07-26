@@ -130,7 +130,17 @@ import {
   enableCalendarFeed as httpEnableCalendarFeed,
   enableCalendarFeedChannel,
   rotateCalendarFeedToken as httpRotateCalendarFeedToken,
-  rotateCalendarFeedTokenChannel
+  rotateCalendarFeedTokenChannel,
+  listSkills as httpListSkills,
+  listSkillsChannel,
+  installSkill as httpInstallSkill,
+  installSkillChannel,
+  updateSkill as httpUpdateSkill,
+  updateSkillChannel,
+  uninstallSkill as httpUninstallSkill,
+  uninstallSkillChannel,
+  dismissSkillsOffer as httpDismissSkillsOffer,
+  dismissSkillsOfferChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -193,7 +203,17 @@ import type {
   UpdateValeaEventFields,
   DeleteValeaEventFields,
   EnableCalendarFeedFields,
-  RotateCalendarFeedTokenFields
+  RotateCalendarFeedTokenFields,
+  ListSkillsFields,
+  ListSkillsInput,
+  InstallSkillFields,
+  InstallSkillInput,
+  UpdateSkillFields,
+  UpdateSkillInput,
+  UninstallSkillFields,
+  UninstallSkillInput,
+  DismissSkillsOfferFields,
+  DismissSkillsOfferInput
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -525,6 +545,26 @@ const icmDoctorFields: IcmDoctorFields = ['ok', 'checks'];
 // small identity file into it — see `IcmInspection.adoptable`'s doc comment
 // in onboarding-path.ts.
 const inspectIcmFields: InspectIcmFields = ['ok', 'name', 'description', 'reason', 'adoptable'];
+
+// Skills (ICM skills design spec §Frontend, Task 9 — `Valea.Api.Skills`).
+// `listSkills` selects the full per-row shape plus the top-level `dismissed`
+// string array. Same anonymous-embedded-map-array codegen gap as
+// `listIcmsFields` above (see the comment on `icmEntryReferencesFields`) —
+// `skills` is a constrained `Array<TypedMap>`, which `ComplexFieldSelection`
+// can't express, so the generated `ListSkillsFields` type collapses to
+// `never` for the literal; cast, not inferred. `dismissed` is a plain
+// top-level primitive field with no such gap, so it rides as a bare name
+// alongside the nested `skills` selection, same shape as `icmSearchFields`'s
+// `'skipped'`. The four mutating actions each return a plain `{ok}`
+// top-level boolean, so `['ok']` needs no cast.
+const listSkillsFields = [
+  { skills: ['skillId', 'name', 'description', 'sourceUrl', 'license', 'pinned', 'state', 'installedVersion'] },
+  'dismissed'
+] as unknown as ListSkillsFields;
+const installSkillFields: InstallSkillFields = ['ok'];
+const updateSkillFields: UpdateSkillFields = ['ok'];
+const uninstallSkillFields: UninstallSkillFields = ['ok'];
+const dismissSkillsOfferFields: DismissSkillsOfferFields = ['ok'];
 
 // `icm_tree` (task 4.2 re-key) — a single ICM's `{mountKey, title, tree}`,
 // no more all-mounts grouped envelope (`mounts: [...]`). `mountKey`/`title`
@@ -989,6 +1029,51 @@ function callIcmDoctorChannel(
 ) {
   return wrapChannelCall((handlers) =>
     icmDoctorChannel({ channel, input, fields: icmDoctorFields, ...handlers })
+  );
+}
+
+function callListSkillsChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: ListSkillsInput
+) {
+  return wrapChannelCall((handlers) =>
+    listSkillsChannel({ channel, input, fields: listSkillsFields, ...handlers })
+  );
+}
+
+function callInstallSkillChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: InstallSkillInput
+) {
+  return wrapChannelCall((handlers) =>
+    installSkillChannel({ channel, input, fields: installSkillFields, ...handlers })
+  );
+}
+
+function callUpdateSkillChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: UpdateSkillInput
+) {
+  return wrapChannelCall((handlers) =>
+    updateSkillChannel({ channel, input, fields: updateSkillFields, ...handlers })
+  );
+}
+
+function callUninstallSkillChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: UninstallSkillInput
+) {
+  return wrapChannelCall((handlers) =>
+    uninstallSkillChannel({ channel, input, fields: uninstallSkillFields, ...handlers })
+  );
+}
+
+function callDismissSkillsOfferChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: DismissSkillsOfferInput
+) {
+  return wrapChannelCall((handlers) =>
+    dismissSkillsOfferChannel({ channel, input, fields: dismissSkillsOfferFields, ...handlers })
   );
 }
 
@@ -1836,6 +1921,47 @@ export const api = {
     runRpc(
       (channel) => callIcmDoctorChannel(channel, { mountKey, generation }),
       () => httpIcmDoctor(withAuth({ input: { mountKey, generation }, fields: icmDoctorFields }))
+    ),
+
+  // Skills (ICM skills design spec §Frontend, Task 9 — `Valea.Api.Skills`).
+  // The settings/offer UI is the consent step; every action is generation-
+  // guarded and control-token-gated (agents carry no RPC access — see the
+  // resource's moduledoc). Each wrapper takes the generated `*Input` object
+  // verbatim, so `generation` is caller-supplied from `workspaceStore`, same
+  // store-free-api convention the icms/mail wrappers keep (see this module's
+  // header comment). `listSkills` delivers `{skills, dismissed}`;
+  // install/update/uninstall/dismiss each resolve `{ok: true}`.
+  listSkills: (input: ListSkillsInput) =>
+    runRpc(
+      (channel) => callListSkillsChannel(channel, input),
+      () => httpListSkills(withAuth({ input, fields: listSkillsFields }))
+    ),
+
+  installSkill: (input: InstallSkillInput) =>
+    runRpc(
+      (channel) => callInstallSkillChannel(channel, input),
+      () => httpInstallSkill(withAuth({ input, fields: installSkillFields }))
+    ),
+
+  // `force` (default false) overwrites an install the user has edited — the
+  // consent dialog's "Replace my edited copy" path sets it; a plain update
+  // leaves it unset.
+  updateSkill: (input: UpdateSkillInput) =>
+    runRpc(
+      (channel) => callUpdateSkillChannel(channel, input),
+      () => httpUpdateSkill(withAuth({ input, fields: updateSkillFields }))
+    ),
+
+  uninstallSkill: (input: UninstallSkillInput) =>
+    runRpc(
+      (channel) => callUninstallSkillChannel(channel, input),
+      () => httpUninstallSkill(withAuth({ input, fields: uninstallSkillFields }))
+    ),
+
+  dismissSkillsOffer: (input: DismissSkillsOfferInput) =>
+    runRpc(
+      (channel) => callDismissSkillsOfferChannel(channel, input),
+      () => httpDismissSkillsOffer(withAuth({ input, fields: dismissSkillsOfferFields }))
     ),
 
   // Images (Task C7). Plain HTTP, not Ash RPC — see `uploadImage`'s own doc

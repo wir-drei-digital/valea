@@ -97,6 +97,14 @@ defmodule Valea.Api do
       rpc_action(:unmount_icm, :unmount_icm)
       rpc_action(:icm_doctor, :icm_doctor)
     end
+
+    resource Valea.Api.Skills do
+      rpc_action(:list_skills, :list_skills)
+      rpc_action(:install_skill, :install_skill)
+      rpc_action(:update_skill, :update_skill)
+      rpc_action(:uninstall_skill, :uninstall_skill)
+      rpc_action(:dismiss_skills_offer, :dismiss_skills_offer)
+    end
   end
 
   resources do
