@@ -117,4 +117,31 @@ defmodule Valea.MountsTest do
     assert Mounts.mount_by_key(ws, "nope") == nil
     assert Mounts.mount_by_id(ws, "00000000-0000-0000-0000-000000000000") == nil
   end
+
+  describe "skills offer dismissal" do
+    # Reuse this file's existing fixture idiom: an `icm!/3` external folder
+    # mounted via `Mounts.mount/2` gives `ws` (workspace path) and a mounted
+    # `key` ("coaching", from the manifest name).
+    test "absent -> [], dismiss appends idempotently and survives re-read", %{ws: ws, home: home} do
+      root = icm!(home, "Coaching", "6f9f0c9e-3ccd-4fa5-a219-113a70618b55")
+      {:ok, %{mount_key: key}} = Mounts.mount(ws, root)
+
+      assert Mounts.skills_offers_dismissed(ws, key) == []
+
+      assert :ok = Mounts.dismiss_skills_offer(ws, key, "icm-architect")
+      assert :ok = Mounts.dismiss_skills_offer(ws, key, "icm-architect")
+
+      assert Mounts.skills_offers_dismissed(ws, key) == ["icm-architect"]
+
+      # The entry's other keys survive the rewrite (generic encoder).
+      assert Mounts.mount_by_key(ws, key).enabled
+    end
+
+    test "unknown mount key refuses", %{ws: ws} do
+      assert {:error, :mount_not_found} =
+               Mounts.dismiss_skills_offer(ws, "ghost", "icm-architect")
+
+      assert Mounts.skills_offers_dismissed(ws, "ghost") == []
+    end
+  end
 end

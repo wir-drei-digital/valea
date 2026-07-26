@@ -571,6 +571,46 @@ defmodule Valea.Mounts do
   end
 
   @doc """
+  The skill ids whose one-time offer card the user dismissed for this
+  mount (ICM skills design spec, §Frontend/Offer card) — operational
+  state, so it lives on the `icms:` entry in `config/workspace.yaml`,
+  never inside the user-owned ICM. `[]` when absent or malformed.
+  """
+  @spec skills_offers_dismissed(String.t(), String.t()) :: [String.t()]
+  def skills_offers_dismissed(workspace, mount_key) do
+    case workspace |> read_icms_config() |> Map.get(mount_key) do
+      %{"skills_offers_dismissed" => list} when is_list(list) ->
+        Enum.filter(list, &is_binary/1)
+
+      _absent_or_malformed ->
+        []
+    end
+  end
+
+  @doc """
+  Appends `skill_id` to the mount's dismissed-offers list (idempotent).
+  A list rather than a boolean so future catalog entries each get their
+  own one-time offer. No audit event: offer dismissal is minor
+  operational state, unlike enable/disable.
+  """
+  @spec dismiss_skills_offer(String.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def dismiss_skills_offer(workspace, mount_key, skill_id)
+      when is_binary(skill_id) do
+    with :ok <- validate_mount_name(mount_key),
+         icms = read_icms_config(workspace),
+         :ok <- ensure_icm_present(icms, mount_key) do
+      dismissed =
+        (skills_offers_dismissed(workspace, mount_key) ++ [skill_id]) |> Enum.uniq()
+
+      new_icms =
+        Map.update!(icms, mount_key, &Map.put(&1, "skills_offers_dismissed", dismissed))
+
+      write_icms(workspace, new_icms)
+    end
+  end
+
+  @doc """
   Removes the `icms.<mount_key>` config entry from `workspace`'s
   `config/workspace.yaml` — config-only, the ICM's own folder is NEVER
   touched. Preserves every other entry and every other top-level key.
@@ -1116,15 +1156,25 @@ defmodule Valea.Mounts do
   end
 
   # A map value nests one indent level deeper (or renders `{}` inline when
-  # empty); anything else (including a list — no config shape this module
-  # writes ever nests one, so it falls through to `render_scalar/1`'s own
-  # `inspect/1` catch-all rather than a dedicated branch) renders as a
-  # single `key: scalar` line.
+  # empty); a list value renders as a block sequence one indent deeper (or
+  # `[]` inline when empty) — its elements go through `render_scalar/1`, so
+  # a list of strings (the `skills_offers_dismissed` offer state — ICM
+  # skills design spec, §Frontend/Offer card) round-trips as a real YAML
+  # sequence rather than an `inspect/1`-stringified scalar. Anything else
+  # renders as a single `key: scalar` line.
   defp render_yaml_entry(key, value, indent) when is_map(value) do
     if map_size(value) == 0 do
       ["#{indent}#{yaml_key(key)}: {}"]
     else
       ["#{indent}#{yaml_key(key)}:" | render_yaml_map(value, indent <> "  ")]
+    end
+  end
+
+  defp render_yaml_entry(key, value, indent) when is_list(value) do
+    if value == [] do
+      ["#{indent}#{yaml_key(key)}: []"]
+    else
+      ["#{indent}#{yaml_key(key)}:" | Enum.map(value, &"#{indent}  - #{render_scalar(&1)}")]
     end
   end
 
