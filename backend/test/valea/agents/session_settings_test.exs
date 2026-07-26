@@ -144,9 +144,17 @@ defmodule Valea.Agents.SessionSettingsTest do
         assert "#{op}(/ws/sources/mail/mara/spool/**)" in perms["deny"]
       end
 
-      # Engine-owned subtrees + identity + audit trail: write-denied,
-      # readable (no Read deny).
-      for pattern <- ["maildir/**", "views/**", "quarantine/**", ".account", "ops/done/**"] do
+      # Engine-owned subtrees + identity + audit trail + the agent
+      # briefing: write-denied, readable (no Read deny).
+      for pattern <- [
+            "maildir/**",
+            "views/**",
+            "quarantine/**",
+            ".account",
+            "ops/done/**",
+            "AGENTS.md",
+            "CLAUDE.md"
+          ] do
         for op <- ["Edit", "Write"] do
           entry = "#{op}(/ws/sources/mail/mara/#{pattern})"
           assert entry in perms["deny"], "expected deny to include #{entry}"
@@ -189,6 +197,11 @@ defmodule Valea.Agents.SessionSettingsTest do
       assert md =~ "mail-mara"
       refute md =~ "entrypoint \n"
       refute md =~ "— entrypoint\n"
+    end
+
+    test "context.md points the agent at the mail root's AGENTS.md briefing" do
+      md = SessionSettings.context(mail_scope())
+      assert md =~ "read its AGENTS.md before acting"
     end
   end
 

@@ -315,6 +315,32 @@ defmodule Valea.Mail.EngineTest do
            }) == :ok
   end
 
+  test "activation materializes the account-root AGENTS.md briefing + CLAUDE.md link", %{
+    root: root
+  } do
+    start_engine!(root, 57, "mara")
+    open(root, 57)
+
+    assert Engine.status("mara").state == "idle"
+
+    agents = Path.join([root, "sources", "mail", "mara", "AGENTS.md"])
+    assert File.read!(agents) =~ "Mail account `mara`"
+
+    claude = Path.join([root, "sources", "mail", "mara", "CLAUDE.md"])
+    assert File.read_link(claude) == {:ok, "AGENTS.md"}
+  end
+
+  test "identity mismatch blocks the briefing too: nothing is materialized", %{root: root} do
+    :ok =
+      Account.write_if_absent!(root, "mara", %{host: "other.example.com", username: "x@y.z"})
+
+    start_engine!(root, 58, "mara")
+    open(root, 58)
+
+    assert Engine.status("mara").state == "identity_mismatch"
+    refute File.exists?(Path.join([root, "sources", "mail", "mara", "AGENTS.md"]))
+  end
+
   test "identity mismatch: a pre-written .account with a DIFFERENT identity blocks activation entirely",
        %{root: root} do
     :ok =

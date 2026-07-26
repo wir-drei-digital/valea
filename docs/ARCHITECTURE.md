@@ -480,6 +480,9 @@ Push-to-Drafts APPEND). Full spec:
 sources/mail/<slug>/
   .account                  # identity file (host+username) — engine-owned
   .readopt                  # one-shot re-adopt authorization marker (transient)
+  AGENTS.md                 # engine-owned agent briefing: views format, ops
+                            #   vocabulary, draft grammar (CLAUDE.md → AGENTS.md
+                            #   symlink); re-rendered on every activation
   maildir/                  # the mirror: nested plain dirs, .folder identity files,
                             #   <msg_id>,U=<uid>:2,<flags> filenames — engine-owned
   views/messages/<id>.md    # derived markdown views (+ .fingerprints/ sidecars)
@@ -564,6 +567,11 @@ always decides.
   `mail_uid_map`, `mail_messages`, `mail_pending_ops`. Everything but
   the ledger is rebuildable from files; the ledger is the durable ops
   record.
+- **`Valea.Mail.AgentsFile`** — materializes the engine-owned
+  `AGENTS.md` briefing (from `priv/mail_template/`, `{{account}}`
+  substituted) + relative `CLAUDE.md` symlink at the account root on
+  every activation; idempotent, tmp+rename (never writes through a
+  planted symlink), file-fallback `@AGENTS.md` on no-symlink platforms.
 - **`Valea.Mail.Settings`** / **`Valea.Mail.Account`** /
   **`Valea.Mail.Doctor`** — v4 multi-account config, `.account`/`.readopt`
   identity files, per-account preflight (see Doctor below).
@@ -588,7 +596,10 @@ target. Sessions opt in per account: bare-string `mail-<slug>` entries in
 mail rules → escaped → ask/allow): anything under `sources/mail` NOT in
 scope is **denied, never asked** (casefold+NFC, segment-bounded); within
 an in-scope mount, writes only under `ops/pending/` + `drafts/`, `spool/`
-unreadable, everything else read-only. The managedSettings mirror repeats
+unreadable, everything else read-only. The session `context.md` line for
+a mail mount points the agent at the account root's `AGENTS.md`
+briefing, which documents the views format, the closed ops vocabulary,
+and the draft grammar in the agent's own terms. The managedSettings mirror repeats
 the same rules as defense-in-depth; the launch surface carries no RPC
 endpoint or control token (agent RPC isolation is test-asserted).
 

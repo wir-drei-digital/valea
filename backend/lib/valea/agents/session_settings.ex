@@ -74,7 +74,8 @@ defmodule Valea.Agents.SessionSettings do
   # of PermissionPolicy's mail tier. For each IN-SCOPE mail root: `spool/**`
   # is denied outright (Read+Edit+Write — engine-owned outbound payloads),
   # and the engine-owned/audit subtrees (`maildir/**`, `views/**`,
-  # `quarantine/**`, `.account`, `ops/done/**`) are write-denied but stay
+  # `quarantine/**`, `.account`, `ops/done/**`, plus the materialized
+  # `AGENTS.md`/`CLAUDE.md` briefing) are write-denied but stay
   # readable — the agent-writable surface is exactly `ops/pending/` and
   # `drafts/`. Each NOT-in-scope account's whole root is denied over
   # Read+Edit+Write.
@@ -83,7 +84,7 @@ defmodule Valea.Agents.SessionSettings do
   # defense-in-depth: the authoritative, casefolded (case- AND
   # normalization-insensitive) enforcement is PermissionPolicy's mail deny
   # tier, not this layer.
-  @mail_write_denied ~w(maildir/** views/** quarantine/** .account ops/done/**)
+  @mail_write_denied ~w(maildir/** views/** quarantine/** .account ops/done/** AGENTS.md CLAUDE.md)
 
   defp mail_denies(scope) do
     in_scope = Map.get(scope, :mail_roots_in_scope, [])
@@ -203,7 +204,7 @@ defmodule Valea.Agents.SessionSettings do
   # entrypoint/manifest — its line names the mount and the narrowed write
   # surface instead of an entrypoint.
   defp related_line(%{kind: :mail} = r) do
-    "- #{r.mount_key} (#{r.root}) — mail account mount; writable only under ops/pending/ and drafts/"
+    "- #{r.mount_key} (#{r.root}) — mail account mount; read its AGENTS.md before acting; writable only under ops/pending/ and drafts/"
   end
 
   defp related_line(%{kind: :calendar} = r) do

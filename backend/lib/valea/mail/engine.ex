@@ -117,6 +117,7 @@ defmodule Valea.Mail.Engine do
   use GenServer
 
   alias Valea.Mail.Account
+  alias Valea.Mail.AgentsFile
   alias Valea.Mail.Doctor
   alias Valea.Mail.Index
   alias Valea.Mail.OpsExecutor
@@ -798,6 +799,11 @@ defmodule Valea.Mail.Engine do
   end
 
   defp do_activate(state) do
+    # Engine-owned agent briefing at the account root, refreshed on every
+    # activation so it always matches this app version's ops/draft grammar.
+    # After the identity gate on purpose: a mismatched mailbox gets nothing.
+    :ok = AgentsFile.materialize!(state.root, state.account)
+
     {:ok, _count} = Index.rebuild(state.root, state.account)
 
     new_state =
