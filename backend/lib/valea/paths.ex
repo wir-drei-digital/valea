@@ -165,19 +165,41 @@ defmodule Valea.Paths do
   and can never climb above the path's root (`/`, `C:/`, `//host/share`).
   Exists so the Windows root-floor semantics are testable on a Unix host
   (spec §D testing split).
+
+  `base` is the root the walk floors against and MUST classify `:absolute`
+  for `platform`. A base that does not (drive-relative `C:foo`, device
+  `\\\\.\\…`, bare `//host`, or a plain relative path) has no root to floor
+  `..` against, so it raises `ArgumentError`: callers of this seam always
+  hold a root, and inventing one here is exactly the ambiguity containment
+  must never resolve — least of all silently.
   """
   @spec resolve_lexical(String.t(), String.t(), platform()) :: String.t()
   def resolve_lexical(path, base, platform \\ host_platform()) do
-    base_pair = absolute_root(base, platform)
+    base_pair = base_root!(base, platform)
 
     case start_pair(path, base_pair, platform) do
       {:ok, root, acc, remaining} ->
         render(lexical_walk(root, acc, remaining))
 
-      # Non-resolvable shape (drive-relative/device/invalid). Only reachable
-      # by feeding a bad `path`; render the base rather than crash the seam.
+      # A non-resolvable `path` shape (drive-relative/device/invalid) has no
+      # walk to run; the floored base is the fail-closed answer.
       {:error, _} ->
         render(base_pair)
+    end
+  end
+
+  # Parse a caller-supplied base, refusing anything without a root. The
+  # classifier is the single gate: it rejects device paths that `unc_root/1`
+  # would otherwise happily read as `//host/share`.
+  defp base_root!(base, platform) do
+    case classify(base, platform) do
+      :absolute ->
+        absolute_root(base, platform)
+
+      other ->
+        raise ArgumentError,
+              "resolve_lexical/3 needs a root-anchored base, got #{inspect(base)} " <>
+                "(#{other} on #{platform})"
     end
   end
 
@@ -192,8 +214,22 @@ defmodule Valea.Paths do
           {:ok, String.t()} | {:error, :outside | :invalid}
   def resolve_real(path, base) do
     platform = host_platform()
-    base_pair = resolve_base(base, platform)
+    # `Path.expand` (host-native, so appropriate for the host-supplied base)
+    # makes the base absolute and collapses its lexical `.`/`..` first.
+    expanded = Path.expand(base)
 
+    if absolute?(expanded, platform) do
+      resolve_from_base(path, resolve_base(expanded, platform), platform)
+    else
+      # Unreachable on Unix — `Path.expand` always returns a "/"-rooted path
+      # there, so the Unix contract is untouched. On Windows a base that
+      # expands to a rootless/ambiguous form fails CLOSED here rather than
+      # reaching the root parser with nothing to anchor the walk on.
+      {:error, :invalid}
+    end
+  end
+
+  defp resolve_from_base(path, base_pair, platform) do
     case start_pair(path, base_pair, platform) do
       {:error, _} ->
         # Drive-relative / device / current-drive-rooted: fail closed.
@@ -211,14 +247,13 @@ defmodule Valea.Paths do
     end
   end
 
-  # Resolve the base to a symlink-resolved `{root, comps}` floor+components
-  # pair, the way the old resolve_fully did for a string. `Path.expand`
-  # (host-native, so appropriate for the host-supplied base) makes it
-  # absolute and collapses any lexical `.`/`..` first; the physical walk then
-  # resolves its symlinks (e.g. macOS /var -> /private/var). Falls back to the
-  # parsed-but-unwalked pair if the base cannot be resolved.
-  defp resolve_base(base, platform) do
-    {root, comps} = absolute_root(Path.expand(base), platform)
+  # Resolve an already-expanded, root-anchored base to a symlink-resolved
+  # `{root, comps}` floor+components pair, the way the old resolve_fully did
+  # for a string: the physical walk resolves its symlinks (e.g. macOS
+  # /var -> /private/var). Falls back to the parsed-but-unwalked pair if the
+  # base cannot be resolved.
+  defp resolve_base(expanded, platform) do
+    {root, comps} = absolute_root(expanded, platform)
 
     case walk(root, [], comps, @max_hops, platform) do
       {:ok, pair, _hops} -> pair
@@ -246,7 +281,9 @@ defmodule Valea.Paths do
   end
 
   # Parse an absolute path into {root, comps}. root is the floor `..` cannot
-  # climb above; comps are the components below it.
+  # climb above; comps are the components below it. PRECONDITION: `path`
+  # classifies `:absolute` for `platform` — every caller gates on `classify`
+  # first, which is also what keeps device paths out of `unc_root/1`.
   defp absolute_root(path, :unix), do: {"/", segments(path, :unix)}
 
   defp absolute_root(path, :windows) do
@@ -256,11 +293,20 @@ defmodule Valea.Paths do
       {root, comps} ->
         {root, comps}
 
+      # Drive-absolute "C:/...": the root keeps its trailing slash so it
+      # renders as a floor ("C:/"), distinct from drive-relative "C:".
       nil ->
-        # Drive-absolute "C:/...": the root keeps its trailing slash so it
-        # renders as a floor ("C:/"), distinct from drive-relative "C:".
-        <<letter, ?:, ?/, rest::binary>> = p
-        {<<letter, ?:, ?/>>, segments(rest, :windows)}
+        case p do
+          <<letter, ?:, ?/, rest::binary>> ->
+            {<<letter, ?:, ?/>>, segments(rest, :windows)}
+
+          # Precondition violated. Total on purpose: a future caller that
+          # forgets to classify gets a named error naming the input, never a
+          # MatchError from a partial binary match — and never a half-parsed
+          # root, which is the only way this could go fail-OPEN.
+          _ ->
+            raise ArgumentError, "not an absolute windows path: #{inspect(path)}"
+        end
     end
   end
 

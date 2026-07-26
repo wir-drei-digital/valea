@@ -221,6 +221,40 @@ defmodule Valea.PathsTest do
     end
   end
 
+  describe "resolve_lexical/3 base contract" do
+    # The pure seam's `base` is a ROOT-anchored path by contract; callers
+    # (Task 4/6/7 sites) always have one. A non-absolute base has no root to
+    # floor `..` against, so it is a caller BUG — fail loud with a clear
+    # error, never guess a root and never silently parse an ambiguous form.
+    test "drive-relative base is rejected, not parsed" do
+      assert_raise ArgumentError, fn ->
+        Valea.Paths.resolve_lexical("..", "C:foo", :windows)
+      end
+    end
+
+    test "device base is rejected, not mistaken for a UNC root" do
+      # "//./dev" splits host="." share="dev" and would otherwise parse as a
+      # UNC root; the classifier rejects device paths, so this must raise.
+      assert_raise ArgumentError, fn ->
+        Valea.Paths.resolve_lexical("..", "//./dev", :windows)
+      end
+    end
+
+    test "bare-host and relative bases are rejected" do
+      assert_raise ArgumentError, fn ->
+        Valea.Paths.resolve_lexical("..", "//srv", :windows)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Valea.Paths.resolve_lexical("..", "relative/base", :windows)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Valea.Paths.resolve_lexical("..", "relative/base", :unix)
+      end
+    end
+  end
+
   describe "8.3 short names (spec D5)" do
     test "8.3-style short-name aliases stay fail-closed (never resolved to long names)" do
       # DOCUME~1 is just a literal component to the walk; if the base is the
