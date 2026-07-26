@@ -102,6 +102,17 @@ defmodule Valea.Mail.EngineTest.LeakyConnectTransport do
   def logout(_conn), do: :ok
 end
 
+# A transport whose `connect/3` RAISES — standing in for any unexpected raise
+# inside the push Task (`OpsExecutor.execute_append/2`'s cross-account op-id
+# guard raises exactly the same way, one call further in). Deliberately NOT a
+# `@behaviour Valea.Mail.Transport`: nothing past `connect/3` is reachable, and
+# stubbing twenty unreachable callbacks would only obscure that.
+defmodule Valea.Mail.EngineTest.RaisingConnectTransport do
+  def connect(_config, _credential, _opts) do
+    raise ArgumentError, "op 42 belongs to account other, engine ctx is mara"
+  end
+end
+
 defmodule Valea.Mail.EngineTest do
   use ExUnit.Case, async: false
 
@@ -1025,6 +1036,36 @@ defmodule Valea.Mail.EngineTest do
     File.rm!(spool)
     assert {:ok, "pushed"} = Engine.push_draft(slug, "reply.md", hash)
     assert [_msg] = ModelMailTransport.messages(name, "Drafts")
+  end
+
+  # The push Task rescues everything so a raise can't fell the Engine — but a
+  # rescue that returns a display string and says nothing is how a wiring bug
+  # (a cross-account op id) becomes an op that retries every pass forever with
+  # no trace. The caller still gets `"pushing"`; the raise must reach the log.
+  test "an unexpected raise inside the push is logged, not silently swallowed", %{root: root} do
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.RaisingConnectTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+
+    slug = "mara"
+    start_engine!(root, 83, slug)
+    open(root, 83)
+    :ok = Engine.set_credential(slug, "app-password")
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    hash = Valea.Mail.DraftFile.content_hash(@draft_md)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, "pushing"} = Engine.push_draft(slug, "reply.md", hash)
+      end)
+
+    assert log =~ "mail push failed (account mara, op "
+    assert log =~ "op 42 belongs to account other, engine ctx is mara"
+    # The credential never rides along into the log.
+    refute log =~ "app-password"
+
+    # Durable and untouched: the op is still pending for the next pass.
+    assert [%{state: "pending"}] = Store.ops_by_origin(slug, "drafts/reply.md")
   end
 
   test "push_draft rides the serialized work slot: no second connection while a pass runs", %{

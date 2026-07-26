@@ -9,6 +9,8 @@ import {
   fromLabel,
   subjectLabel,
   messageHref,
+  accountSwitchHref,
+  targetAccount,
   addressLabel,
   addressListLabel,
   formatDateTime,
@@ -116,6 +118,47 @@ describe('messageHref', () => {
   it('qualifies the link with the account and escapes both params', () => {
     expect(messageHref('personal', 'a b')).toBe('/mail?account=personal&message=a%20b');
     expect(messageHref('work-2', '1465.M2#x')).toBe('/mail?account=work-2&message=1465.M2%23x');
+  });
+});
+
+// The switcher↔effect contract. Switching accounts is a NAVIGATION: the
+// route's selection effect tracks `mailStore.selectedAccount`, so a switcher
+// that wrote the store first would re-run that effect while `page.url` still
+// named the OLD account — the effect would read the stale `?account=`, switch
+// back, and the user's choice would snap away. These two helpers are the two
+// halves of "the URL leads": what the switcher navigates to, and how the
+// effect resolves the account from the URL.
+describe('accountSwitchHref', () => {
+  it('carries the new account and drops an open message', () => {
+    expect(accountSwitchHref(new URL('http://app/mail?account=mara&message=m1'), 'zoe')).toBe(
+      '/mail?account=zoe'
+    );
+    expect(accountSwitchHref(new URL('http://app/mail'), 'zoe')).toBe('/mail?account=zoe');
+  });
+
+  it('keeps the drafts panel open across the switch', () => {
+    expect(accountSwitchHref(new URL('http://app/mail?drafts=1'), 'zoe')).toBe('/mail?account=zoe&drafts=1');
+  });
+});
+
+describe('targetAccount', () => {
+  const accounts = [{ account: 'mara' }, { account: 'zoe' }];
+
+  it('lets the URL lead when it names a configured account', () => {
+    expect(targetAccount('zoe', 'mara', accounts)).toBe('zoe');
+  });
+
+  it('falls back to the store when the URL names no configured account', () => {
+    expect(targetAccount('gone', 'mara', accounts)).toBe('mara');
+  });
+
+  it('takes a deep link at its word before the account list has loaded', () => {
+    expect(targetAccount('zoe', null, [])).toBe('zoe');
+  });
+
+  it('is the store selection when the URL says nothing', () => {
+    expect(targetAccount(null, 'mara', accounts)).toBe('mara');
+    expect(targetAccount(null, null, [])).toBeNull();
   });
 });
 

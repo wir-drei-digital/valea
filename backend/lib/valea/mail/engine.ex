@@ -116,6 +116,8 @@ defmodule Valea.Mail.Engine do
   """
   use GenServer
 
+  require Logger
+
   alias Valea.Mail.Account
   alias Valea.Mail.AgentsFile
   alias Valea.Mail.Doctor
@@ -702,7 +704,24 @@ defmodule Valea.Mail.Engine do
         "pushing"
     end
   rescue
-    _ -> "pushing"
+    # The executor answers its OWN failures as `{:rejected, _}`/
+    # `{:needs_review, _}`, so anything RAISED here is unexpected — a wiring
+    # bug like the cross-account op-id guard in `OpsExecutor.execute_append/2`,
+    # or a malformed settings map. The op is durable either way, so the caller
+    # still gets `"pushing"` and the next pass reconciles; but without this log
+    # the raise would dissolve into that display string and the push would
+    # retry every pass forever with nothing anywhere to explain it. Scrubbed:
+    # an exception message can quote whatever was passed to `connect/3`.
+    e ->
+      Logger.error(
+        Redact.text(
+          "mail push failed (account #{args.account}, op #{op_id}): " <>
+            Exception.format(:error, e, __STACKTRACE__),
+          resolve_secret(args.credential)
+        )
+      )
+
+      "pushing"
   catch
     :exit, _ -> "pushing"
   end

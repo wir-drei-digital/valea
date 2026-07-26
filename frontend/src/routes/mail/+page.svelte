@@ -14,7 +14,7 @@
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { setInitialPrompt } from '$lib/stores/initial-prompt';
-  import { cleanupPrompt, syncNowErrorMessage } from '$lib/components/mail/mail-shapes';
+  import { cleanupPrompt, syncNowErrorMessage, targetAccount } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import AccountSwitcher from '$lib/components/mail/AccountSwitcher.svelte';
@@ -79,34 +79,35 @@
   // they replace latched this effect to whatever was known on its first
   // run): a deep link arriving before `refreshStatus` resolves has no
   // account yet, and "no account YET" must not be treated as "no account" —
-  // it waits, and the effect re-runs when the accounts land. `?account=`
-  // wins over the store's selection so the link opens the message in the
-  // account it actually belongs to, switching accounts first if needed.
+  // it waits, and the effect re-runs when the accounts land.
+  //
+  // This effect is also the ONLY thing that switches accounts (`?account=`
+  // is the source of truth — `AccountSwitcher` navigates rather than writing
+  // the store, or its write would race the URL and be reverted here), so the
+  // account switch runs before the `!id` bail-out: switching accounts with
+  // no message open is exactly that case.
   let activeId: string | null = $state(null);
   let activeDetail: MailMessageDetail | null = $state(null);
   let loadError = $state(false);
 
   $effect(() => {
     const id = selectedId;
-    const accParam = selectedAccountParam;
-    const storeAccount = mailStore.selectedAccount;
     const accountsReady = mailStore.accounts.length > 0;
+    const target = targetAccount(selectedAccountParam, mailStore.selectedAccount, mailStore.accounts);
     activeId = null;
     activeDetail = null;
     loadError = false;
-    if (!id) return;
-
-    const target = accParam ?? storeAccount;
-    if (!target) {
-      if (accountsReady) loadError = true; // accounts loaded, none selectable
-      return; // otherwise wait — effect re-runs when accounts arrive
-    }
 
     let cancelled = false;
     void (async () => {
-      if (target !== untrack(() => mailStore.selectedAccount)) {
+      if (target && target !== untrack(() => mailStore.selectedAccount)) {
         await mailStore.selectAccount(target);
         if (cancelled) return;
+      }
+      if (!id) return;
+      if (!target) {
+        if (accountsReady) loadError = true; // accounts loaded, none selectable
+        return; // otherwise wait — effect re-runs when accounts arrive
       }
       const before = untrack(() => mailStore.selected);
       await mailStore.select(id);

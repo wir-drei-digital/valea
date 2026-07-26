@@ -207,6 +207,41 @@ export function messageHref(account: string, msgId: string): string {
 }
 
 /**
+ * Where the account switcher navigates. Switching accounts is a NAVIGATION,
+ * not a store write: `?account=` is what the route reads to decide which
+ * mailbox it is showing, and `mailStore.selectedAccount` is a tracked
+ * dependency of that selection effect. Writing the store here would re-run
+ * the effect against the not-yet-updated URL — which still names the OLD
+ * account — and switch straight back. The URL leads; the store follows.
+ *
+ * Any open `?message=` is dropped (a msg id belongs to the account it was
+ * opened from); `?drafts=1` survives, since that panel spans accounts.
+ */
+export function accountSwitchHref(url: URL, slug: string): string {
+  const params = new URLSearchParams({ account: slug });
+  if (url.searchParams.get('drafts') === '1') params.set('drafts', '1');
+  return `/mail?${params.toString()}`;
+}
+
+/**
+ * Which account the `/mail` view should be reading. The URL leads —
+ * `?account=` names the account a link was written for — but only while it
+ * still names a configured account: an unknown slug (a removed account, a
+ * stale bookmark) falls back to the store's own selection instead of pointing
+ * the app at a mailbox that isn't there. Before the account list has loaded
+ * nothing can be checked, so the link is taken at its word.
+ */
+export function targetAccount(
+  accParam: string | null,
+  storeAccount: string | null,
+  accounts: Pick<MailAccountStatus, 'account'>[]
+): string | null {
+  if (accParam === null) return storeAccount;
+  if (accounts.length === 0) return accParam;
+  return accounts.some((a) => a.account === accParam) ? accParam : storeAccount;
+}
+
+/**
  * The read pane's meta detail for a message's placement: comma-joined
  * `folders` frontmatter plus the maildir flag letters when present —
  * `"INBOX, Archive · flags: S"`. Replaces the deleted review/processed

@@ -670,7 +670,9 @@ defmodule Valea.Mail.OpsExecutor do
   # from a different account arriving on this account's connection would
   # append (later: send) one person's message through another person's
   # mailbox, so it is a wiring bug to fail loudly on, never a rejection to
-  # record against the innocent op.
+  # record against the innocent op. `Engine.run_push/2` turns the raise into
+  # an `:error` log (op id + account) and leaves the op pending — nothing here
+  # is recorded against it.
   defp assert_op_account!(%{account: account} = op_row, %{account: account}), do: op_row
 
   defp assert_op_account!(op_row, ctx) do
