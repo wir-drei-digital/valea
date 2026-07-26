@@ -1,0 +1,8 @@
+version: 1
+skills:
+  icm-architect:
+    name: "ICM Architect"
+    description: "Structure this ICM's folders and add new workflow documents using the ICM methodology's five forms."
+    source_url: "https://github.com/RinDig/icm-architect"
+    license: "MIT"
+    pinned: "8f9cdf95e5051f126babc455b7a0558426db43d4"
