@@ -135,4 +135,21 @@ defmodule Valea.App.ConfigTest do
     assert Config.harness_command_approved?() == true
     assert Config.harness_command() == ["/usr/bin/custom-acp"]
   end
+
+  describe "default_dir/2 (spec A6 — profile must be local, non-roaming)" do
+    test "windows pins to LOCALAPPDATA, not roaming basedir" do
+      assert Valea.App.Config.default_dir({:win32, :nt}, "C:/Users/mara/AppData/Local") ==
+               "C:/Users/mara/AppData/Local/valea"
+    end
+
+    test "windows without LOCALAPPDATA falls back to OTP basedir" do
+      assert Valea.App.Config.default_dir({:win32, :nt}, nil) ==
+               :filename.basedir(:user_data, "valea")
+    end
+
+    test "unix keeps the OTP basedir" do
+      assert Valea.App.Config.default_dir({:unix, :darwin}, nil) ==
+               :filename.basedir(:user_data, "valea")
+    end
+  end
 end

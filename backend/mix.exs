@@ -20,7 +20,7 @@ defmodule Valea.MixProject do
     [
       valea: [include_executables_for: [:unix]],
       valea_desktop: [
-        include_executables_for: [:unix],
+        include_executables_for: [:unix, :windows],
         steps: [:assemble, &Burrito.wrap/1],
         # One target per build host, selected via BURRITO_TARGET
         # (scripts/build-release.sh derives it from uname): the sidecar
@@ -28,14 +28,17 @@ defmodule Valea.MixProject do
         # program), so cross-wrapping a release assembled on a different
         # host would ship the wrong binaries. Never build these cross.
         #
-        # No windows target yet — the app itself can't run there: erlexec
-        # is Unix-only and boots with the OTP app, and the maildir's ":2,"
-        # flag filenames are illegal on NTFS. See docs/RELEASING.md
-        # ("Windows") before adding one.
+        # windows_x64 is the Windows bring-up target (windows-support spec
+        # A1/A2): the release is ASSEMBLED on a Windows host, where erlexec
+        # is dropped (its C++ port program is Unix-only, spec A1) and the
+        # exqlite/mdex NIFs compile native. Wrapped for that host only, like
+        # the others. See
+        # docs/superpowers/specs/2026-07-19-windows-support-design.md.
         burrito: [
           targets: [
             macos_arm: [os: :darwin, cpu: :aarch64],
-            linux_x64: [os: :linux, cpu: :x86_64]
+            linux_x64: [os: :linux, cpu: :x86_64],
+            windows_x64: [os: :windows, cpu: :x86_64]
           ]
         ]
       ]
@@ -47,8 +50,15 @@ defmodule Valea.MixProject do
       mod: {Valea.Application, []},
       # :inets — the OTP `:httpc` client `Valea.Calendar.Fetch` is built on;
       # listed here so releases carry it.
-      extra_applications: [:logger, :runtime_tools, :erlexec, :inets]
+      extra_applications: [:logger, :runtime_tools, :inets] ++ platform_extra_applications()
     ]
+  end
+
+  defp platform_extra_applications do
+    case :os.type() do
+      {:win32, _} -> []
+      _ -> [:erlexec]
+    end
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -72,7 +82,6 @@ defmodule Valea.MixProject do
       {:dotenvy, "~> 1.0"},
       {:corsica, "~> 2.1"},
       {:file_system, "~> 1.0"},
-      {:erlexec, "~> 2.0"},
       {:yaml_elixir, "~> 2.11"},
       {:tzdata, "~> 1.1"},
       {:gen_smtp, "~> 1.2"},
@@ -81,7 +90,18 @@ defmodule Valea.MixProject do
       {:igniter, "~> 0.6", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:burrito, "~> 1.0", runtime: false}
-    ]
+    ] ++ platform_deps()
+  end
+
+  # erlexec is Unix-only — its C++ port program does not COMPILE on Windows
+  # (windows-support spec A1), so on a Windows build host the dependency
+  # must not exist at all. Native-per-platform builds make this branch safe:
+  # the host IS the target.
+  defp platform_deps do
+    case :os.type() do
+      {:win32, _} -> []
+      _ -> [{:erlexec, "~> 2.0"}]
+    end
   end
 
   defp aliases do

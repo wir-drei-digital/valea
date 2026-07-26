@@ -73,7 +73,9 @@ fn main() {
 }
 
 fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = app.path().app_data_dir()?;
+    // windows-support spec A6: LOCAL app data, never Roaming — identical
+    // paths on macOS/Linux, %LOCALAPPDATA% instead of %APPDATA% on Windows.
+    let data_dir = app.path().app_local_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
 
     let secret = read_or_create_secret(&data_dir.join("secret_key_base"))?;

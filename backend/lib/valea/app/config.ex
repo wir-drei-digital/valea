@@ -17,10 +17,20 @@ defmodule Valea.App.Config do
 
   def dir do
     case System.get_env("VALEA_APP_DIR") do
-      nil -> :filename.basedir(:user_data, "valea")
+      nil -> default_dir(:os.type(), System.get_env("LOCALAPPDATA"))
       override -> override
     end
   end
+
+  # Spec A6 (windows-support): OTP's `:user_data` basedir is ROAMING AppData
+  # on Windows; corporate folder redirection can put Roaming on an SMB share,
+  # and SQLite-in-WAL is documented-unsafe over network filesystems. The
+  # workspace profile therefore pins to %LOCALAPPDATA%. Decided before the
+  # first Windows release so there is never a roaming→local migration.
+  def default_dir({:win32, _}, local_appdata) when is_binary(local_appdata),
+    do: Path.join(local_appdata, "valea")
+
+  def default_dir(_os, _local_appdata), do: :filename.basedir(:user_data, "valea")
 
   @doc "App-owned parent directory for hidden workspace folders — `dir()/workspaces`."
   def workspaces_dir, do: Path.join(dir(), "workspaces")

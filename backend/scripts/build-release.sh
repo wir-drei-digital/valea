@@ -22,6 +22,7 @@ if [ "$RELEASE" = "valea_desktop" ]; then
     case "$(uname -s)-$(uname -m)" in
       Darwin-arm64) BURRITO_TARGET="macos_arm" ;;
       Linux-x86_64) BURRITO_TARGET="linux_x64" ;;
+      Windows_NT-x86_64 | MINGW*-x86_64 | MSYS*-x86_64) BURRITO_TARGET="windows_x64" ;;
       *)
         echo "No Burrito target for host $(uname -s)/$(uname -m) — see mix.exs releases." >&2
         exit 1
@@ -41,16 +42,26 @@ if [ "$RELEASE" = "valea_desktop" ]; then
     case "$(uname -s)" in
       Darwin) ZIG_OS="macos" ;;
       Linux) ZIG_OS="linux" ;;
+      Windows_NT | MINGW* | MSYS*) ZIG_OS="windows" ;;
       *) echo "Unsupported OS for zig: $(uname -s)" >&2; exit 1 ;;
     esac
     ZIG_DIR="${ZIG_CACHE_DIR:-$HOME/.local/zig}/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}"
-    if [ ! -x "$ZIG_DIR/zig" ]; then
+    ZIG_EXE="zig"
+    if [ "$ZIG_OS" = "windows" ]; then ZIG_EXE="zig.exe"; fi
+    if [ ! -e "$ZIG_DIR/$ZIG_EXE" ]; then
       echo "Fetching pinned zig ${ZIG_VERSION} for Burrito into $ZIG_DIR ..."
       mkdir -p "$(dirname "$ZIG_DIR")"
-      TARBALL="zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}.tar.xz"
-      curl -fsSL -o "$(dirname "$ZIG_DIR")/$TARBALL" \
-        "https://ziglang.org/download/${ZIG_VERSION}/${TARBALL}"
-      tar -xJf "$(dirname "$ZIG_DIR")/$TARBALL" -C "$(dirname "$ZIG_DIR")"
+      if [ "$ZIG_OS" = "windows" ]; then
+        ARCHIVE="zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}.zip"
+        curl -fsSL -o "$(dirname "$ZIG_DIR")/$ARCHIVE" \
+          "https://ziglang.org/download/${ZIG_VERSION}/${ARCHIVE}"
+        unzip -qo "$(dirname "$ZIG_DIR")/$ARCHIVE" -d "$(dirname "$ZIG_DIR")"
+      else
+        TARBALL="zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}.tar.xz"
+        curl -fsSL -o "$(dirname "$ZIG_DIR")/$TARBALL" \
+          "https://ziglang.org/download/${ZIG_VERSION}/${TARBALL}"
+        tar -xJf "$(dirname "$ZIG_DIR")/$TARBALL" -C "$(dirname "$ZIG_DIR")"
+      fi
     fi
     export PATH="$ZIG_DIR:$PATH"
     echo "Using zig $(zig version) from $ZIG_DIR"

@@ -56,12 +56,16 @@ package-backend:
     case "$(uname -s)-$(uname -m)" in
       Darwin-arm64) export BURRITO_TARGET="${BURRITO_TARGET:-macos_arm}" ;;
       Linux-x86_64) export BURRITO_TARGET="${BURRITO_TARGET:-linux_x64}" ;;
+      Windows_NT-x86_64|MINGW*-x86_64|MSYS*-x86_64) export BURRITO_TARGET="${BURRITO_TARGET:-windows_x64}" ;;
       *) echo "No sidecar target for host $(uname -s)/$(uname -m) — see mix.exs releases." >&2; exit 1 ;;
     esac
     backend/scripts/build-release.sh valea_desktop
     triple=$(rustc -vV | sed -n 's/host: //p')
     mkdir -p desktop/src-tauri/binaries
-    cp "backend/burrito_out/valea_desktop_${BURRITO_TARGET}" "desktop/src-tauri/binaries/valea-server-${triple}"
+    exe=""
+    case "$BURRITO_TARGET" in windows_*) exe=".exe" ;; esac
+    cp "backend/burrito_out/valea_desktop_${BURRITO_TARGET}${exe}" \
+       "desktop/src-tauri/binaries/valea-server-${triple}${exe}"
 
 # Full desktop bundle
 desktop-bundle: package-backend
