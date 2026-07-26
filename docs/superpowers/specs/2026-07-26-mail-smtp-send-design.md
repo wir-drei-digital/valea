@@ -164,7 +164,18 @@ scripted failure points at every protocol step.
 
 A send is a new ledger op kind, `kind: send`, in `mail_pending_ops` —
 executed by the existing ops executor, serialized through the account's
-Engine, exactly like push. Steps 1–2 are push's own, verbatim:
+Engine, exactly like push. **Settings pinning is an invariant, not an
+implementation choice**: the identity-fingerprint comparison, the atomic
+claim, the snapshot, and the wire/record composition all run
+synchronously inside one Engine call, against one captured
+`state.settings` value — never against settings re-read outside the
+Engine (a settings edit hot-reloads by stopping and restarting the
+Engine, so either the new Engine rejects the stale fingerprint, or the
+old Engine completes verify-and-compose entirely under the reviewed
+settings; an Engine stopped mid-call is the already-specified crash
+case). An implementation that checks the fingerprint in the RPC layer
+and composes in a different process fails this spec. Steps 1–2 are
+push's own, verbatim:
 
 1. **Atomic claim.** One SQLite transaction inserts the send op under the
    partial-unique index **one non-terminal op per `(account, origin)`**
@@ -482,7 +493,9 @@ control-token-gated — agents have no transport to it.
   **sending identity too** — `send_draft` carries the review's identity
   fingerprint and rejects if the account's SMTP send config changed
   since the modal was opened (settings hot-reload has no generation
-  bump, so the fingerprint is the only guard).
+  bump, so the fingerprint is the only guard). The check is pinned:
+  fingerprint comparison, claim, snapshot, and composition share one
+  Engine call and one captured `state.settings` (see §Send pipeline).
 - **No automated retransmission, structurally.** The executor calls
   `SmtpTransport.send` at most once per op; every recovery path either
   proves the outcome, rejects (provably unsent), or parks in
@@ -587,7 +600,11 @@ boundary.
   warning on refresh); **identity drift** (`smtp.from` or `from_name`
   changed between modal-open and confirm — settings edit or second tab —
   → `send_draft` rejects `re_review_required` before snapshot, nothing
-  composed or transmitted); **review-snapshot race**
+  composed or transmitted; **settings-reload interleave** — reload
+  arriving before the Engine call → new Engine rejects the stale
+  fingerprint; reload arriving after entry → the op composes entirely
+  under the captured reviewed settings, asserted via the spooled wire
+  payload's From); **review-snapshot race**
   (draft edited between modal-open and confirm → `send_draft` hash
   mismatch, re-review error, nothing transmitted); Bcc golden tests
   (wire variant has no Bcc
