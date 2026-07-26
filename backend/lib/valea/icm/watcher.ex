@@ -108,6 +108,25 @@ defmodule Valea.ICM.Watcher do
   workspace's source of truth (`config/`) lives — is deliberately kept
   out of this window entirely.
 
+  ## When the FS backend is unavailable (spec A5)
+
+  `file_system` is not guaranteed to start on every platform — on Windows
+  the native backend may be missing entirely. A failure to start the FIXED
+  listener is NOT a workspace-boot crash: `init/1` catches the
+  `{:error, reason}`, logs once, and enters a DISABLED state —
+  `watching: false`, both listeners `nil`, and `start_icm_watcher/2` a
+  guaranteed no-op (so `recompute_dirs/1` cannot resurrect a listener
+  either). The GenServer stays alive and keeps serving its read API:
+  `watching?/1` reports `false` and `watched_roots/1` reports an EMPTY set
+  (a disabled watcher covers nothing — NOT the would-be set of `sources/`
+  plus the enabled roots). A workspace therefore opens normally; its tree
+  just refreshes on navigation instead of live. `Valea.Mounts.Doctor`'s
+  `watcher_live` check reads `watching?/1` to surface this honestly — an
+  enabled mount reports "unknown, file watching unavailable" rather than a
+  stale "failed". Only listener START errors degrade this way; a
+  bad-argument or bad-shape config still raises (a config error is a bug,
+  not an unsupported platform).
+
   ## Why the fixed trees are created up front
 
   FSEvents (the macOS backend — and watcher backends generally) only
@@ -132,7 +151,35 @@ defmodule Valea.ICM.Watcher do
 
   @debounce_ms 200
 
-  def start_link(root), do: GenServer.start_link(__MODULE__, root, name: __MODULE__)
+  @doc """
+  Starts the watcher. Accepts either a bare workspace `root` — the
+  supervisor child spec `{Valea.ICM.Watcher, root}` in
+  `Valea.Workspace.Runtime`, unchanged — or `{root, opts}`:
+
+    * `opts[:fs_mod]` — the `FileSystem`-shaped module the listeners are
+      started with (default: the `:icm_watcher_fs_mod` app-env seam, itself
+      defaulting to the real `FileSystem`). Reading the seam HERE, not in
+      `init/1`, is what lets the real workspace-runtime path — which only
+      ever passes a bare `root` — be driven through a stub too (spec A5's
+      "a workspace still opens with watching disabled" acceptance).
+    * `opts[:name]` — the registered name (default: `__MODULE__`, the
+      singleton). Tests that must not collide with the singleton pass a
+      private name.
+  """
+  def start_link(arg) do
+    {root, opts} =
+      case arg do
+        {root, opts} when is_binary(root) and is_list(opts) -> {root, opts}
+        root when is_binary(root) -> {root, []}
+      end
+
+    fs_mod =
+      Keyword.get(opts, :fs_mod, Application.get_env(:valea, :icm_watcher_fs_mod, FileSystem))
+
+    name = Keyword.get(opts, :name, __MODULE__)
+
+    GenServer.start_link(__MODULE__, {root, Keyword.put(opts, :fs_mod, fs_mod)}, name: name)
+  end
 
   @doc """
   Best-effort snapshot of every root this process's `FileSystem` listeners
@@ -147,22 +194,51 @@ defmodule Valea.ICM.Watcher do
   tests — cleaner than exposing internal state for a single-field read.
 
   Returns an empty `MapSet` when this GenServer isn't registered (no
-  workspace open, or a race during open/close) rather than raising — a
-  doctor check must degrade gracefully, never crash its caller. Mirrors the
-  `Process.whereis/1` guard `Valea.Audit`/`Valea.Cockpit` already use for the
-  same "this process may legitimately not exist" situation.
+  workspace open, or a race during open/close) OR when file watching is
+  disabled (the FS backend was unavailable at open — `watching?/1` is
+  `false`; see spec A5) rather than raising — a doctor check must degrade
+  gracefully, never crash its caller. Mirrors the `Process.whereis/1` guard
+  `Valea.Audit`/`Valea.Cockpit` already use for the same "this process may
+  legitimately not exist" situation. Takes an optional `server` (default
+  singleton) so a privately-named instance can be addressed in tests.
   """
-  @spec watched_roots() :: MapSet.t(String.t())
-  def watched_roots do
-    if Process.whereis(__MODULE__) do
-      GenServer.call(__MODULE__, :watched_roots)
+  @spec watched_roots(GenServer.server()) :: MapSet.t(String.t())
+  def watched_roots(server \\ __MODULE__) do
+    if Process.whereis(server) do
+      GenServer.call(server, :watched_roots)
     else
       MapSet.new()
     end
   end
 
+  @doc """
+  Whether this watcher's `FileSystem` backend is live — `true` when the
+  FIXED listener started and subscribed, `false` when it could not start
+  (spec A5: the backend is unavailable on this platform) and the watcher is
+  running in its DISABLED state.
+
+  Optimistically `true` when no watcher process is registered (no workspace
+  open, or a race during open/close): "no process" is a TRANSIENT absence,
+  not a statement that the backend is unavailable — `Valea.Mounts.Doctor`
+  tells the two apart via `watched_roots/1` (an empty set from a
+  not-running watcher ⇒ a stale "failed", not "unavailable"). Only a
+  RUNNING watcher can truthfully report the backend down. Takes an optional
+  `server` (default singleton) so a privately-named instance can be
+  addressed in tests.
+  """
+  @spec watching?(GenServer.server()) :: boolean()
+  def watching?(server \\ __MODULE__) do
+    if Process.whereis(server) do
+      GenServer.call(server, :watching?)
+    else
+      true
+    end
+  end
+
   @impl true
-  def init(root) do
+  def init({root, opts}) do
+    fs_mod = Keyword.get(opts, :fs_mod, FileSystem)
+
     sources_path = Path.join(root, "sources")
     config_path = Path.join(root, "config")
 
@@ -173,11 +249,27 @@ defmodule Valea.ICM.Watcher do
 
     # Two listeners — see moduledoc. The fixed one is started once here
     # and never restarted; only the dynamic (ICM-root) one is ever
-    # swapped by `recompute_dirs/1`.
-    {:ok, fixed_watcher} = FileSystem.start_link(dirs: fixed_dirs(root))
-    FileSystem.subscribe(fixed_watcher)
+    # swapped by `recompute_dirs/1`. A fixed-listener START error is not
+    # fatal (spec A5): log once and fall into the DISABLED state
+    # (`watching: false`, both listeners `nil`) instead of crashing the
+    # workspace open. `FileSystem.subscribe/1` is the real module in both
+    # arms — it is only reached on success, where `fs_mod` is `FileSystem`
+    # anyway.
+    {fixed_watcher, watching} =
+      case fs_mod.start_link(dirs: fixed_dirs(root)) do
+        {:ok, watcher} ->
+          FileSystem.subscribe(watcher)
+          {watcher, true}
 
-    icm_watcher = start_icm_watcher(Map.keys(icm_roots))
+        {:error, reason} ->
+          Logger.warning(
+            "ICM file watching disabled (#{inspect(reason)}) — tree refreshes on navigation only"
+          )
+
+          {nil, false}
+      end
+
+    icm_watcher = start_icm_watcher(Map.keys(icm_roots), %{fs_mod: fs_mod, watching: watching})
 
     # FSEvents (the macOS backend) reports paths through their PHYSICAL
     # (symlink-resolved) form — e.g. under `/private/var/...` even when the
@@ -192,6 +284,8 @@ defmodule Valea.ICM.Watcher do
        fixed_watcher: fixed_watcher,
        icm_watcher: icm_watcher,
        root: root,
+       fs_mod: fs_mod,
+       watching: watching,
        sources_path: canonical(sources_path),
        config_path: canonical(config_path),
        icm_roots: icm_roots,
@@ -203,6 +297,19 @@ defmodule Valea.ICM.Watcher do
   end
 
   @impl true
+  def handle_call(:watching?, _from, state) do
+    {:reply, state.watching, state}
+  end
+
+  # A disabled watcher (the FS backend was unavailable at open) runs no
+  # listeners, so it covers nothing — an empty set, NOT the would-be set of
+  # `sources/` plus the enabled ICM roots. Keeps `watched_roots/1` honest
+  # with `watching?/1` and lets `Valea.Mounts.Doctor` short-circuit to
+  # "unknown" (see moduledoc, spec A5).
+  def handle_call(:watched_roots, _from, %{watching: false} = state) do
+    {:reply, MapSet.new(), state}
+  end
+
   def handle_call(:watched_roots, _from, state) do
     {:reply, MapSet.new([state.sources_path | Map.keys(state.icm_roots)]), state}
   end
@@ -403,20 +510,43 @@ defmodule Valea.ICM.Watcher do
 
       %{
         state
-        | icm_watcher: start_icm_watcher(Map.keys(new_icm_roots)),
+        | icm_watcher: start_icm_watcher(Map.keys(new_icm_roots), state),
           icm_roots: new_icm_roots
       }
     end
   end
 
+  # No dynamic listener when file watching is disabled — the fixed listener
+  # already failed to start, so the FS backend is unavailable process-wide
+  # (spec A5); there is nothing to subscribe to. This clause short-circuits
+  # every recompute back to `nil`, so `recompute_dirs/1` no-ops naturally in
+  # the disabled state. `ctx` is any map carrying `:fs_mod`/`:watching` —
+  # the fresh `%{fs_mod:, watching:}` from `init/1` or the whole `state`
+  # from `recompute_dirs/1`.
+  defp start_icm_watcher(_roots, %{watching: false}), do: nil
+
   # No dynamic listener while there is nothing to watch — `nil`, never a
   # `FileSystem` process with an empty dir list.
-  defp start_icm_watcher([]), do: nil
+  defp start_icm_watcher([], _ctx), do: nil
 
-  defp start_icm_watcher(roots) do
-    {:ok, watcher} = FileSystem.start_link(dirs: roots)
-    FileSystem.subscribe(watcher)
-    watcher
+  defp start_icm_watcher(roots, %{fs_mod: fs_mod}) do
+    case fs_mod.start_link(dirs: roots) do
+      {:ok, watcher} ->
+        FileSystem.subscribe(watcher)
+        watcher
+
+      # A dynamic-start error degrades exactly like the fixed listener's:
+      # log once, return `nil`, don't crash. We only reach here with
+      # `watching: true` (the fixed listener came up), so the workspace's
+      # own trees stay covered; only these ICM roots fall back to a
+      # navigation refresh.
+      {:error, reason} ->
+        Logger.warning(
+          "ICM root watching unavailable (#{inspect(reason)}) — those roots refresh on navigation only"
+        )
+
+        nil
+    end
   end
 
   defp stop_icm_watcher(nil), do: :ok

@@ -69,14 +69,27 @@ defmodule Valea.Mounts.Doctor do
   in the `detail`/`remedy` wording, same as every other non-fatal-but-worth-
   fixing check in this codebase.
 
-  `watcher_live` asks `Valea.ICM.Watcher.watched_roots/0` (best-effort — an
-  empty set, never a crash, when the watcher isn't running) whether this
-  mount's resolved root is in the CURRENT watched set. A DISABLED mount is
-  never in that set by design (the watcher only ever watches enabled,
-  non-degraded roots), so `watcher_live` is `"unknown"` (not checked —
-  nothing to fix, the mount is intentionally off) rather than `"failed"`
-  for a disabled mount; only an ENABLED mount whose root the watcher
-  currently is NOT covering reports `"failed"`.
+  `watcher_live` asks `Valea.ICM.Watcher.watching?/0` and
+  `watched_roots/0` (both best-effort — a disabled or absent watcher answers
+  without crashing) whether this mount's resolved root is live-watched.
+  Three "not failed" cases short-circuit before the stale check:
+
+    * a DISABLED mount is never in the watched set by design (the watcher
+      only watches enabled, non-degraded roots), so it is `"unknown"` — not
+      checked, nothing to fix, intentionally off;
+    * when the WATCHER itself is disabled (`watching?/0` is `false` — the
+      `file_system` backend was unavailable at open, spec A5), EVERY enabled
+      mount is `"unknown"` with an "unavailable on this system" detail
+      rather than a misleading `"failed"`: nothing is watched, and a missing
+      platform backend is not something the user can repair;
+    * an ENABLED mount whose root a LIVE watcher IS covering is `"ok"` — its
+      detail carries a "best-effort on network paths" note for a `//`-rooted
+      (UNC) root, whose change events a watcher backend cannot promise.
+
+  Only an ENABLED mount whose root is NOT in the watched set — while file
+  watching is otherwise available (a running watcher that hasn't picked the
+  root up yet, or none running at all, which reads the same optimistic way)
+  — reports `"failed"` (a stale/transient miss; reopen the workspace).
 
   Never reads or leaks file CONTENTS — `secrets_hygiene` only lists
   directory ENTRY NAMES at the mount root (`File.ls/1`), never opens a
@@ -119,6 +132,7 @@ defmodule Valea.Mounts.Doctor do
                     "secrets out of this mount's root, keep them elsewhere, or leave this " <>
                     "mount disabled while it holds them."
   @watcher_disabled_detail "not checked — this mount is disabled."
+  @watcher_unavailable_detail "File watching is unavailable on this system — the tree refreshes on navigation instead."
   @watcher_stale_remedy "If this mount was just enabled, give the watcher a moment to catch " <>
                           "up; otherwise reopen the workspace."
 
@@ -385,7 +399,14 @@ defmodule Valea.Mounts.Doctor do
 
   # -- 2e. watcher_live -----------------------------------------------------------
 
-  defp watcher_live_check(mount) do
+  # Public only so the Windows-only network-path OK branch is testable: a
+  # `//`-rooted (UNC) `mount.root` never survives POSIX realpath resolution
+  # (`Valea.Paths` collapses `//` to `/`), so it cannot be produced through
+  # `run/1,2` on a POSIX CI — the test drives this check directly with a
+  # hand-built mount and a watcher double. `@doc false` keeps it out of the
+  # documented contract (`run/0,1,2`).
+  @doc false
+  def watcher_live_check(mount) do
     id = check_id(mount, "watcher_live")
     label = "#{mount.name}: watcher live"
 
@@ -393,8 +414,14 @@ defmodule Valea.Mounts.Doctor do
       not mount.enabled ->
         unknown(id, label, @watcher_disabled_detail)
 
+      # The whole watcher is disabled (spec A5) — the FS backend never
+      # started, so NO enabled mount is watched. Report the platform reality
+      # once per mount, never a stale "failed" the user cannot act on.
+      not Watcher.watching?() ->
+        unknown(id, label, @watcher_unavailable_detail)
+
       MapSet.member?(Watcher.watched_roots(), mount.root) ->
-        ok(id, label, "#{mount.root} is in the watcher's current root set.")
+        ok(id, label, watched_ok_detail(mount.root))
 
       true ->
         failed(
@@ -405,6 +432,21 @@ defmodule Valea.Mounts.Doctor do
         )
     end
   end
+
+  defp watched_ok_detail(root) do
+    if network_share?(root) do
+      "#{root} is in the watcher's current root set (best-effort on network paths)."
+    else
+      "#{root} is in the watcher's current root set."
+    end
+  end
+
+  # A UNC / network-share root (`//server/share`). A plain `//` prefix check
+  # for now — Task 3's path classifier and Task 4's `Valea.Paths` migration
+  # will own this properly later; until then such a root only ever appears
+  # on Windows (POSIX realpath resolution collapses `//` to `/`), where a
+  # watcher backend can only promise best-effort coverage over it.
+  defp network_share?(root), do: String.starts_with?(root, "//")
 
   # -- check builders (same shape as Valea.Mail.Doctor / Valea.Agents.Doctor) -
 

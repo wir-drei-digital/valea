@@ -533,6 +533,71 @@ defmodule Valea.Mounts.DoctorTest do
     end
   end
 
+  # -- watcher_live, spec A5: a disabled watcher & UNC roots --------------------
+  #
+  # Two seams the `run/1,2` black box cannot reach on a POSIX CI:
+  #   * a watcher whose FS backend never started (as on Windows) — reproduced
+  #     by starting the REAL watcher under the SINGLETON name with a failing
+  #     `fs_mod`, no workspace opened;
+  #   * a `//`-rooted (UNC) mount in the OK state — POSIX realpath resolution
+  #     collapses `//` to `/`, so `Mounts.list/1` can never yield such a root
+  #     (see `Valea.ICM.Watcher`/`Valea.Paths`); the check is therefore driven
+  #     directly with a hand-built mount and a watcher double.
+  describe "run/1 — watcher_live when the FS backend is unavailable (spec A5)" do
+    defmodule FailingFS do
+      def start_link(_opts), do: {:error, :backend_unavailable}
+    end
+
+    test "every enabled mount is 'unknown' (file watching unavailable), never 'failed'" do
+      watcher_root = tmp_dir!("vmounts-doctor-watcher")
+
+      start_supervised!({Valea.ICM.Watcher, {watcher_root, fs_mod: FailingFS}})
+      assert Valea.ICM.Watcher.watching?() == false
+
+      {root, _ext} = healthy_workspace!("outside")
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+      check = find(checks, "watcher_live:outside")
+
+      # A disabled watcher must NOT mis-diagnose an enabled mount as a stale
+      # "failed" — nothing is watched, and the user cannot fix a missing
+      # platform backend.
+      assert check["status"] == "unknown"
+      assert check["detail"] =~ "unavailable"
+      assert check["remedy"] == nil
+    end
+  end
+
+  describe "watcher_live_check/1 — network-share (UNC) root wording (spec A5)" do
+    defmodule StubWatcher do
+      use GenServer
+
+      def start_link(roots),
+        do: GenServer.start_link(__MODULE__, MapSet.new(roots), name: Valea.ICM.Watcher)
+
+      @impl true
+      def init(roots), do: {:ok, roots}
+
+      @impl true
+      def handle_call(:watching?, _from, roots), do: {:reply, true, roots}
+      def handle_call(:watched_roots, _from, roots), do: {:reply, roots, roots}
+    end
+
+    test "a //server/share root in the OK state carries the best-effort note; a local root does not" do
+      start_supervised!({StubWatcher, ["//srv/share", "/local/root"]})
+
+      network = Doctor.watcher_live_check(%{name: "share", root: "//srv/share", enabled: true})
+      assert network["status"] == "ok"
+
+      assert network["detail"] ==
+               "//srv/share is in the watcher's current root set (best-effort on network paths)."
+
+      local = Doctor.watcher_live_check(%{name: "local", root: "/local/root", enabled: true})
+      assert local["status"] == "ok"
+      assert local["detail"] == "/local/root is in the watcher's current root set."
+    end
+  end
+
   # -- overall ok computation ----------------------------------------------------
 
   describe "run/1 — overall ok" do

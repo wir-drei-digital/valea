@@ -313,6 +313,68 @@ defmodule Valea.ICM.WatcherTest do
     refute_received {:mail_draft_changed, _slug}
   end
 
+  # -- degraded (FS backend unavailable) start, spec A5 --------------------
+  #
+  # The module-level `setup` above always opens a real workspace (which
+  # starts the SINGLETON-named watcher on the real `FileSystem` backend), so
+  # these tests can never take the default name — the first would die with
+  # `:already_started`. Step 1 therefore drives its own instance under a
+  # PRIVATE name against a bare tmp dir (no `Manager`); Step 3b then proves
+  # the REAL workspace-runtime path degrades too, driven through the app-env
+  # `fs_mod` seam.
+  describe "degraded start (windows spec A5)" do
+    defmodule FailingFS do
+      def start_link(_opts), do: {:error, :backend_unavailable}
+    end
+
+    setup do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-watch-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      %{root: root}
+    end
+
+    test "enters disabled state instead of crashing when the FS backend can't start", %{
+      root: root
+    } do
+      pid =
+        start_supervised!(
+          {Valea.ICM.Watcher, {root, fs_mod: FailingFS, name: :degraded_watcher_test}}
+        )
+
+      assert Valea.ICM.Watcher.watching?(:degraded_watcher_test) == false
+      # the GenServer still serves its API in the disabled state:
+      assert Enum.empty?(Valea.ICM.Watcher.watched_roots(:degraded_watcher_test))
+      assert Process.alive?(pid)
+    end
+
+    test "workspace open survives an unavailable FS backend (spec A5)" do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-app-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+        )
+
+      System.put_env("VALEA_APP_DIR", dir)
+      Application.put_env(:valea, :icm_watcher_fs_mod, FailingFS)
+
+      on_exit(fn ->
+        Valea.Workspace.Manager.close()
+        Application.delete_env(:valea, :icm_watcher_fs_mod)
+        File.rm_rf!(dir)
+        System.delete_env("VALEA_APP_DIR")
+      end)
+
+      assert {:ok, _ws} = Valea.Workspace.Manager.create("W")
+      assert Valea.ICM.Watcher.watching?() == false
+    end
+  end
+
   # -- helpers ---------------------------------------------------------------
 
   defp resolve_real!(path) do
