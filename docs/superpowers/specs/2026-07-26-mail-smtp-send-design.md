@@ -321,12 +321,21 @@ Clicking calls a new **atomic review-snapshot RPC**,
 `get_mail_draft_review(account, draft_name)`: one no-follow single-link
 read into a buffer, returning the parsed recipient set, subject,
 threading warning, sending identity (`from_name <from>`, account slug),
-the raw body, and the `content_hash` **of that same buffer** — the modal
-renders exclusively from this response and binds exactly that hash into
-`send_draft`. Nothing shown to the human may come from a different read
-than the hash they confirm (list-derived parses are display-only,
-never confirm inputs). A draft edited between modal-open and confirm →
-server-side hash mismatch → re-review error, modal refreshes. Confirm
+an **identity fingerprint** — an opaque hash of the account's full,
+normalized SMTP send config (`from`, `from_name`, host, port, security,
+username) as resolved for this review — the raw body, and the
+`content_hash` **of that same buffer**. The modal renders exclusively
+from this response and binds **both** the content hash and the identity
+fingerprint into `send_draft`: the draft hash alone cannot cover the
+sending identity, because settings edits hot-reload engines with no
+generation change — a second tab changing `smtp.from` between
+modal-open and confirm would otherwise transmit under an identity the
+human never reviewed. Nothing shown to the human may come from a
+different read than the hashes they confirm (list-derived parses are
+display-only, never confirm inputs). A draft edited between modal-open
+and confirm → server-side hash mismatch → re-review error, modal
+refreshes; an SMTP-config change in that window → the same
+`re_review_required` rejection before snapshot or composition. Confirm
 is one click — no typed confirmation (the review is the modal; the hash
 binds it). `send_review` rows render the explanation and the two
 resolution actions; `sent_copy_failed` renders its retry.
@@ -434,11 +443,14 @@ control-token-gated — agents have no transport to it.
 
 - `get_mail_draft_review(account, draft_name)` — the atomic
   review-snapshot read backing the confirm modal (one buffer: parsed
-  recipients + subject + identity + resolved threading headers or
-  absent-with-warning + raw body + that buffer's `content_hash`).
-- `send_draft(account, draft_name, content_hash, generation)` — same
-  basename validation, containment, and no-follow snapshot rules as
-  `push_draft_to_mailbox`; returns the op status.
+  recipients + subject + identity + identity fingerprint + resolved
+  threading headers or absent-with-warning + raw body + that buffer's
+  `content_hash`).
+- `send_draft(account, draft_name, content_hash, identity_fingerprint,
+  generation)` — same basename validation, containment, and no-follow
+  snapshot rules as `push_draft_to_mailbox`; re-derives the identity
+  fingerprint from current settings and rejects `re_review_required` on
+  mismatch before any snapshot or composition; returns the op status.
 - `resolve_send_review(account, op_id, resolution, generation)` —
   `resolution: sent | not_sent`; only valid on a `send_review` op of that
   account.
@@ -466,7 +478,11 @@ control-token-gated — agents have no transport to it.
 - **What the human reviewed is what gets sent.** The same hash-bound,
   snapshot-once, compose-from-buffer chain as push, extended to the wire
   payload: the transmitted bytes' hash is persisted and re-verified
-  immediately before the one `send` call.
+  immediately before the one `send` call. The binding covers the
+  **sending identity too** — `send_draft` carries the review's identity
+  fingerprint and rejects if the account's SMTP send config changed
+  since the modal was opened (settings hot-reload has no generation
+  bump, so the fingerprint is the only guard).
 - **No automated retransmission, structurally.** The executor calls
   `SmtpTransport.send` at most once per op; every recovery path either
   proves the outcome, rejects (provably unsent), or parks in
@@ -568,7 +584,10 @@ boundary.
   `canonical_send_bytes/1` and `stamp_status/2` round-trip); **threading
   presence drift** (referenced message deleted between review snapshot
   and send → send rejects with re-review, panel shows the unthreaded
-  warning on refresh); **review-snapshot race**
+  warning on refresh); **identity drift** (`smtp.from` or `from_name`
+  changed between modal-open and confirm — settings edit or second tab —
+  → `send_draft` rejects `re_review_required` before snapshot, nothing
+  composed or transmitted); **review-snapshot race**
   (draft edited between modal-open and confirm → `send_draft` hash
   mismatch, re-review error, nothing transmitted); Bcc golden tests
   (wire variant has no Bcc
