@@ -154,6 +154,19 @@ export function configCurrent(item: AcpItemLike): string | null {
   return typeof current === 'string' ? current : null;
 }
 
+/**
+ * The agent's own session title, from the `session_info` singleton
+ * (`Connection.reduce_update/3`'s "session_info_update" clause — ACP
+ * protocol-level, so any ACP agent that pushes titles feeds this, not just
+ * the current harness). The item is upserted in place by id, and a
+ * title-less info push replaces it wholesale — so only a present, non-empty
+ * title counts; callers keep their previous value on undefined.
+ */
+export function sessionInfoTitle(items: AcpItemLike[]): string | undefined {
+  const info = items.findLast((item) => item.type === 'session_info');
+  return info ? asPresentString(info.title) : undefined;
+}
+
 export type UsageField = { label: string; value: string };
 
 // camelCase/snake_case field name -> "Title Case" label, e.g. "inputTokens" -> "Input tokens".

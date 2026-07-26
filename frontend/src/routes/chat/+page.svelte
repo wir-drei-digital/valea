@@ -19,6 +19,7 @@
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import { takeInitialPrompt } from '$lib/stores/initial-prompt';
   import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel } from '$lib/components/agent';
+  import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
 
   const sessionsList = new SessionsListStore(api);
 
@@ -116,6 +117,40 @@
     if (status !== previousStatus) {
       previousStatus = status;
       void recentSessionsStore.refresh();
+    }
+  });
+
+  // Same pattern as the status effect above, for the session's TITLE: the
+  // agent pushes its own session title over ACP (`session_info` item,
+  // protocol-level — any ACP agent), and the backend persists it into the
+  // transcript meta every session listing reads. A transition in the OPEN
+  // session's live title is the one signal this page can observe, so it
+  // re-fetches both its own list pane and the sidebar's project groups.
+  // Only-on-transition, and only when a real title appeared — switching to a
+  // session that already has one resets tracking without firing (its list
+  // rows are already correct), and a title-less `session_info` upsert
+  // (undefined) never triggers a refresh.
+  const liveTitle = $derived.by(() => (store ? sessionInfoTitle(store.items) : undefined));
+
+  let titleEffectStore: AgentSessionStore | null = null;
+  let previousTitle: string | undefined = undefined;
+
+  $effect(() => {
+    const current = store;
+    const title = liveTitle;
+
+    if (current !== titleEffectStore) {
+      titleEffectStore = current;
+      previousTitle = title;
+      return;
+    }
+
+    if (title !== previousTitle) {
+      previousTitle = title;
+      if (title) {
+        void sessionsList.refresh();
+        void recentSessionsStore.refresh();
+      }
     }
   });
 

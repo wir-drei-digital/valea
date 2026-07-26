@@ -157,6 +157,7 @@ defmodule Valea.Agents.SessionServer do
           conn: conn,
           handle: handle,
           transcript: transcript,
+          title: Map.get(opts, :title),
           seq: 0,
           timeline: [],
           status: :starting,
@@ -515,10 +516,46 @@ defmodule Valea.Agents.SessionServer do
     seq = state.seq + 1
     line = Jason.encode!(%{"seq" => seq, "item" => item}) <> "\n"
     File.write(state.transcript, line, [:append])
+    state = maybe_persist_title(state, item)
     timeline = upsert(state.timeline, item)
     state = %{state | seq: seq, timeline: timeline}
     broadcast(state, {:session_event, seq, item})
     state
+  end
+
+  # ACP `session_info_update` (protocol-level — any ACP agent, not just this
+  # harness) carries the agent's own generated session title. Persist it into
+  # the transcript's line-1 meta so the listings — which read ONLY line 1
+  # (`Valea.Agents.session_summary/1`) — surface it for live and ended
+  # sessions alike. The ONE sanctioned line-1 rewrite (atomic: temp file +
+  # rename, and this process is the file's only writer); item lines stay
+  # append-only. A title-less/empty/unchanged info push never rewrites.
+  defp maybe_persist_title(
+         %{title: current} = state,
+         %{"type" => "session_info", "title" => title}
+       )
+       when is_binary(title) and title != "" and title != current do
+    rewrite_meta_title(state, title)
+    %{state | title: title}
+  end
+
+  defp maybe_persist_title(state, _item), do: state
+
+  defp rewrite_meta_title(state, title) do
+    path = state.transcript
+    tmp = path <> ".tmp"
+
+    with {:ok, content} <- File.read(path),
+         [meta_line, rest] <- String.split(content, "\n", parts: 2),
+         {:ok, meta} <- Jason.decode(meta_line),
+         :ok <- File.write(tmp, Jason.encode!(Map.put(meta, "title", title)) <> "\n" <> rest),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      # A malformed or vanished transcript must never crash the session — the
+      # meta title just stays stale until the next info push.
+      _ -> :ok
+    end
   end
 
   defp upsert(timeline, item) do

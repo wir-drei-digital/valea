@@ -1,6 +1,6 @@
 # Scripted ACP adapter for SessionServer integration tests.
-# Scenarios: happy | permission | permission_risk_tier | permission_read_policy |
-# crash_mid_turn | stderr_noise | hang
+# Scenarios: happy | titled | permission | permission_risk_tier |
+# permission_read_policy | crash_mid_turn | stderr_noise | hang
 #
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
@@ -60,8 +60,27 @@ defmodule FakeAdapter do
     reply(id, %{"sessionId" => ctx.session})
   end
 
-  defp handle(%{"method" => "session/prompt", "id" => id}, ctx) do
+  defp handle(%{"method" => "session/prompt", "id" => id} = msg, ctx) do
     case ctx.scenario do
+      "titled" ->
+        # ACP `session_info_update`: an agent-generated session title pushed
+        # at turn end (protocol-level — any ACP agent, not just Claude).
+        # Derived from the prompt text so each turn can push a DIFFERENT
+        # title without the script needing mutable state. The two title-less
+        # pushes after it are the guard cases: neither may clobber the title.
+        text = get_in(msg, ["params", "prompt", Access.at(0), "text"]) || ""
+
+        update(ctx, %{"sessionUpdate" => "session_info_update", "title" => "T: " <> text})
+        update(ctx, %{"sessionUpdate" => "session_info_update"})
+        update(ctx, %{"sessionUpdate" => "session_info_update", "title" => ""})
+
+        update(ctx, %{
+          "sessionUpdate" => "agent_message_chunk",
+          "content" => %{"type" => "text", "text" => "ok"}
+        })
+
+        reply(id, %{"stopReason" => "end_turn"})
+
       "crash_mid_turn" ->
         update(ctx, %{
           "sessionUpdate" => "agent_message_chunk",

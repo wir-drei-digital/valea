@@ -10,7 +10,8 @@ import {
   planProgress,
   configOptions,
   configCurrent,
-  usageFields
+  usageFields,
+  sessionInfoTitle
 } from './item-shapes';
 
 describe('asString / asPresentString', () => {
@@ -189,5 +190,34 @@ describe('usageFields', () => {
   it('never invents a derived field — only echoes what the item carries', () => {
     const fields = usageFields({ id: 'usage', type: 'usage', inputTokens: 10 });
     expect(fields).toEqual([{ label: 'Input tokens', value: '10' }]);
+  });
+});
+
+describe('sessionInfoTitle', () => {
+  it('returns the agent-provided title from the session_info singleton', () => {
+    const items = [
+      { id: 'user-1', type: 'message' },
+      { id: 'session_info', type: 'session_info', title: 'Fix the login flow' }
+    ];
+    expect(sessionInfoTitle(items)).toBe('Fix the login flow');
+  });
+
+  it('is undefined when no session_info item exists, or its title is empty/missing', () => {
+    expect(sessionInfoTitle([])).toBeUndefined();
+    expect(sessionInfoTitle([{ id: 'session_info', type: 'session_info' }])).toBeUndefined();
+    expect(
+      sessionInfoTitle([{ id: 'session_info', type: 'session_info', title: '   ' }])
+    ).toBeUndefined();
+    expect(
+      sessionInfoTitle([{ id: 'session_info', type: 'session_info', title: 42 }])
+    ).toBeUndefined();
+  });
+
+  it('reads the last session_info item when several are present', () => {
+    const items = [
+      { id: 'a', type: 'session_info', title: 'Old' },
+      { id: 'b', type: 'session_info', title: 'New' }
+    ];
+    expect(sessionInfoTitle(items)).toBe('New');
   });
 });

@@ -111,6 +111,47 @@ defmodule Valea.Agents.SessionServerTest do
     assert Enum.any?(lines, &(&1 == %{"seq" => echo_seq, "item" => echo}))
   end
 
+  test "session_info_update title is persisted into transcript meta and listings", %{root: root} do
+    {:ok, %{id: id}} = start_session(root, "titled")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    path = Path.join(root, "logs/sessions/#{id}.jsonl")
+    [meta_line | _] = path |> File.read!() |> String.split("\n", trim: true)
+    original = Jason.decode!(meta_line)
+    assert original["title"] == "Test"
+
+    :ok = Valea.Agents.SessionServer.prompt(id, "fix the login flow")
+
+    assert_receive {:session_event, _,
+                    %{"type" => "session_info", "title" => "T: fix the login flow"}},
+                   10_000
+
+    assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+
+    # Line 1 now carries the agent's title — and ONLY the title changed; the
+    # scenario's trailing nil/"" info pushes must not have clobbered it. The
+    # item lines after line 1 survive the rewrite untouched.
+    [meta_line | item_lines] = path |> File.read!() |> String.split("\n", trim: true)
+    assert Jason.decode!(meta_line) == Map.put(original, "title", "T: fix the login flow")
+    assert Enum.any?(item_lines, &(Jason.decode!(&1)["item"]["type"] == "session_info"))
+
+    # The session listing (which reads only line 1) surfaces it.
+    {:ok, sessions} = Valea.Agents.list_sessions()
+    assert %{"title" => "T: fix the login flow"} = Enum.find(sessions, &(&1["id"] == id))
+
+    # A later turn's fresh title replaces the earlier one.
+    :ok = Valea.Agents.SessionServer.prompt(id, "now the signup flow")
+
+    assert_receive {:session_event, _,
+                    %{"type" => "session_info", "title" => "T: now the signup flow"}},
+                   10_000
+
+    assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+
+    [meta_line | _] = path |> File.read!() |> String.split("\n", trim: true)
+    assert Jason.decode!(meta_line)["title"] == "T: now the signup flow"
+  end
+
   test "permission request reaches the timeline as ask; answering resolves it", %{root: root} do
     {:ok, %{id: id}} = start_session(root, "permission")
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
