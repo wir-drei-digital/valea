@@ -228,10 +228,17 @@ function addressListLine(list: { name: string | null; email: string }[]): string
  *    message's id over a bounded window and came back empty. Strong evidence
  *    of a non-delivery, though not proof (Sent Mail visibility after a 250 is
  *    not guaranteed instant).
- *  - anything else (`send_unknown: …`, or no notice yet) — reconciliation
- *    hasn't been able to run: it needs an IMAP connection this account hasn't
- *    had since the send. Nothing has been checked, so the copy says so
- *    instead of implying evidence that doesn't exist.
+ *  - anything else (`send_unknown: …`, or no notice yet) — NOTHING has been
+ *    checked, and the copy says exactly that.
+ *
+ * The fallback deliberately claims no reconciliation state of any kind. It
+ * covers both profiles and the notice alone cannot tell them apart: a generic
+ * (non-Gmail) account is never reconciled — there is no automatic search for
+ * it, ever — so wording it as "still reconciling / awaiting a mailbox
+ * connection" would be false for that account even while its mailbox syncs
+ * perfectly, at the exact moment the user is deciding whether mail went out.
+ * A gmail account that hasn't been reconciled yet is covered by the same
+ * sentence, truthfully: nothing has been checked.
  *
  * Both end on the same instruction, because the resolution is the same act:
  * look in your own Sent folder and tell Valea what you found.
@@ -243,10 +250,41 @@ export function sendReviewExplanation(notice: string | null): string {
     return `Sent Mail was checked and found empty — this message most likely did not go out. ${check}`;
   }
 
-  return (
-    'The server never confirmed this send, and your mailbox has not been reachable to check — ' +
-    `still reconciling, awaiting a mailbox connection. ${check}`
-  );
+  return `The server never confirmed this send, and nothing has been checked automatically. ${check}`;
+}
+
+/**
+ * The confirm modal's error + drift-gate state. `reloadable: true` means the
+ * server has REFUSED the review currently on screen, so the confirm button is
+ * withheld until a fresh review actually arrives — re-offering Send against a
+ * refused review is offering a click that cannot succeed.
+ */
+export type SendGate = { error: string | null; reloadable: boolean };
+
+/** Nothing wrong, Send armed — the modal's opening state, and the state a successful reload restores. */
+export const SEND_GATE_CLEAR: SendGate = { error: null, reloadable: false };
+
+/**
+ * State after a send attempt failed. The two DRIFT refusals
+ * (`re_review_required`, `content_changed`) are the only ones a reload fixes,
+ * and both are pre-transmit: nothing was sent.
+ */
+export function sendGateAfterSendFailure(code: string): SendGate {
+  return {
+    error: sendErrorMessage(code),
+    reloadable: code === 're_review_required' || code === 'content_changed'
+  };
+}
+
+/**
+ * State after a RELOAD attempt failed. It swaps in the fetch's own error but
+ * carries `reloadable` through untouched — a failed reload leaves the refused
+ * review exactly as refused, so dropping the gate here would re-arm Send on
+ * a review the server has already rejected. This function can only ever
+ * preserve the gate, never open one.
+ */
+export function sendGateAfterReloadFailure(gate: SendGate, code: string): SendGate {
+  return { error: sendErrorMessage(code), reloadable: gate.reloadable };
 }
 
 /**

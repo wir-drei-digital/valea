@@ -30,6 +30,8 @@ import {
   sendConfirmSummary,
   sendReviewExplanation,
   sendErrorMessage,
+  sendGateAfterSendFailure,
+  sendGateAfterReloadFailure,
   canSendDraft,
   draftNoticeMessage
 } from './mail-shapes';
@@ -532,16 +534,56 @@ describe('sendReviewExplanation', () => {
     );
   });
 
-  // Task 4 handoff: a parked op WITHOUT the checked-empty notice is still
-  // reconciling — the search needs an IMAP connection it hasn't had yet.
-  it('explains an unreconciled parked send as awaiting a mailbox connection', () => {
-    const awaiting =
-      'The server never confirmed this send, and your mailbox has not been reachable to check — ' +
-      'still reconciling, awaiting a mailbox connection. ' +
+  // Every other notice covers BOTH profiles, and the frontend cannot tell
+  // them apart from a notice alone: a generic account is never reconciled at
+  // all (nothing is ever searched for it), so any "awaiting a mailbox
+  // connection / still reconciling" wording would be plainly false for one of
+  // the two — at the exact moment the user decides whether mail went out.
+  // The honest fallback claims no check of any kind.
+  it('explains an unconfirmed parked send without claiming anything was checked', () => {
+    const unchecked =
+      'The server never confirmed this send, and nothing has been checked automatically. ' +
       'Check your own Sent folder (and, if in doubt, the recipient), then tell Valea what you found.';
 
-    expect(sendReviewExplanation('send_unknown: :closed')).toBe(awaiting);
-    expect(sendReviewExplanation(null)).toBe(awaiting);
+    expect(sendReviewExplanation('send_unknown: :closed')).toBe(unchecked);
+    expect(sendReviewExplanation(null)).toBe(unchecked);
+    expect(sendReviewExplanation('send_unknown: :closed')).not.toMatch(/reconcil|reachable|awaiting/i);
+  });
+});
+
+// The drift gate: once the server has refused the review on screen, Send must
+// not come back until a FRESH review has actually arrived.
+describe('sendGateAfterSendFailure / sendGateAfterReloadFailure', () => {
+  it('withholds Send for the two drift refusals, which a reload fixes', () => {
+    for (const code of ['re_review_required', 'content_changed']) {
+      expect(sendGateAfterSendFailure(code)).toEqual({ error: sendErrorMessage(code), reloadable: true });
+    }
+  });
+
+  it('leaves Send armed for a failure a reload cannot fix', () => {
+    expect(sendGateAfterSendFailure('no_smtp_credential')).toEqual({
+      error: sendErrorMessage('no_smtp_credential'),
+      reloadable: false
+    });
+  });
+
+  // The regression this pins: a FAILED reload must not drop the gate. Doing
+  // so re-arms Send against the very review the server just refused —
+  // a confirm guaranteed to fail, offered as though it were fine.
+  it('keeps Send withheld when the reload itself fails, showing the reload error', () => {
+    const refused = sendGateAfterSendFailure('re_review_required');
+
+    expect(sendGateAfterReloadFailure(refused, 'not_found')).toEqual({
+      error: sendErrorMessage('not_found'),
+      reloadable: true
+    });
+  });
+
+  it('never ARMS the gate on its own — it only ever preserves what it was handed', () => {
+    expect(sendGateAfterReloadFailure({ error: null, reloadable: false }, 'workspace_changed')).toEqual({
+      error: sendErrorMessage('workspace_changed'),
+      reloadable: false
+    });
   });
 });
 

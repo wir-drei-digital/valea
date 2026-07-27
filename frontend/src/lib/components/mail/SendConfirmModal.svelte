@@ -21,7 +21,13 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { mailStore, type MailDraftReview } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { sendConfirmSummary, sendErrorMessage } from './mail-shapes';
+  import {
+    sendConfirmSummary,
+    sendGateAfterSendFailure,
+    sendGateAfterReloadFailure,
+    SEND_GATE_CLEAR,
+    type SendGate
+  } from './mail-shapes';
 
   let {
     review,
@@ -44,17 +50,18 @@
   const current = $derived(reloaded ?? review);
   let sending = $state(false);
   let reloading = $state(false);
-  let error: string | null = $state(null);
-  /** Set when the error is a drift refusal — the only case where reloading the review is the fix. */
-  let reloadable = $state(false);
+  // Error + drift gate as ONE value, moved only by the pure transitions in
+  // `mail-shapes.ts` — the invariant they encode (Send never re-arms without
+  // a fresh review) is the whole point of this modal, so it is unit-tested
+  // there rather than living as ad-hoc assignments in here.
+  let gate: SendGate = $state(SEND_GATE_CLEAR);
 
   const summary = $derived(sendConfirmSummary(current));
   const busy = $derived(sending || reloading);
 
   async function confirm(): Promise<void> {
     sending = true;
-    error = null;
-    reloadable = false;
+    gate = SEND_GATE_CLEAR;
     const outcome = await mailStore.sendDraft(
       account,
       draftName,
@@ -65,28 +72,27 @@
     sending = false;
 
     if ('error' in outcome) {
-      error = sendErrorMessage(outcome.error);
-      reloadable = outcome.error === 're_review_required' || outcome.error === 'content_changed';
+      gate = sendGateAfterSendFailure(outcome.error);
       return;
     }
     onclose();
   }
 
   // Both drift refusals are pre-transmit: nothing was sent, and a fresh
-  // snapshot is all that stands between here and another confirm.
+  // snapshot is all that stands between here and another confirm. A reload
+  // that FAILS keeps the gate closed — the refused review is still refused,
+  // so the only affordance stays "try the reload again".
   async function reload(): Promise<void> {
     reloading = true;
     const next = await mailStore.draftReview(account, draftName);
     reloading = false;
 
     if ('error' in next) {
-      error = sendErrorMessage(next.error);
-      reloadable = false;
+      gate = sendGateAfterReloadFailure(gate, next.error);
       return;
     }
     reloaded = next;
-    error = null;
-    reloadable = false;
+    gate = SEND_GATE_CLEAR;
   }
 </script>
 
@@ -112,8 +118,8 @@
           class="border-paper-hairline bg-paper-surface text-ink-body max-h-[220px] overflow-auto rounded-lg border px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap">{current.content}</pre>
       </div>
 
-      {#if error}
-        <p role="alert" class="text-warn-ink text-[12.5px]">{error}</p>
+      {#if gate.error}
+        <p role="alert" class="text-warn-ink text-[12.5px]">{gate.error}</p>
       {/if}
     </div>
 
@@ -123,7 +129,7 @@
            beside it: the same tokens would be refused identically, so the
            only honest next action is a fresh review — after which Send comes
            straight back. -->
-      {#if reloadable}
+      {#if gate.reloadable}
         <Button type="button" variant="outline" size="sm" disabled={busy} onclick={() => void reload()}>
           {reloading ? 'Reloading…' : 'Reload review'}
         </Button>
