@@ -294,6 +294,7 @@ export type CreateAgentSessionInput = {
   contextDoc?: Record<string, any> | null;
   input?: Record<string, any> | null;
   includeMounts?: Array<string> | null;
+  initialPrompt?: string | null;
 };
 
 export type CreateAgentSessionFields = UnifiedFieldSelection<{id: string, inputPath: string | null, __type: "TypedMap", __primitiveFields: "id" | "inputPath"}>[];
@@ -4684,6 +4685,83 @@ export async function retrySentCopyChannel<Fields extends RetrySentCopyFields | 
     config.channel,
     {
     action: "retry_sent_copy",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ReviseMailDraftInput = {
+  account: string;
+  draftName: string;
+  feedback: string;
+  mountKey: string;
+  generation: number;
+};
+
+export type ReviseMailDraftFields = UnifiedFieldSelection<{sessionId: string, routed: string, __type: "TypedMap", __primitiveFields: "sessionId" | "routed"}>[];
+
+export type InferReviseMailDraftResult<
+  Fields extends ReviseMailDraftFields | undefined,
+> = InferResult<{sessionId: string, routed: string, __type: "TypedMap", __primitiveFields: "sessionId" | "routed"}, Fields>;
+
+export type ReviseMailDraftResult<Fields extends ReviseMailDraftFields | undefined = undefined> = | { success: true; data: InferReviseMailDraftResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function reviseMailDraft<Fields extends ReviseMailDraftFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ReviseMailDraftInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ReviseMailDraftResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "revise_mail_draft",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ReviseMailDraftResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function reviseMailDraftChannel<Fields extends ReviseMailDraftFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ReviseMailDraftInput;
+  fields: Fields;
+  resultHandler: (result: ReviseMailDraftResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ReviseMailDraftResult<Fields>>(
+    config.channel,
+    {
+    action: "revise_mail_draft",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

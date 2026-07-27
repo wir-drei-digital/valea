@@ -266,6 +266,40 @@ defmodule ValeaWeb.AgentsRpcTest do
       assert inspect(errors) =~ "context_doc_unavailable"
     end
 
+    # Spec G Task 7: the opening prompt can now be handed to the SERVER
+    # (`initialPrompt`), instead of every entry point stashing it client-side
+    # and replaying it after the chat route mounts. `revise_mail_draft` is the
+    # first caller that has no client to replay from at all.
+    test "initial_prompt is enqueued server-side — the first user message needs no client replay",
+         %{generation: generation, icm: icm, workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      assert %{"success" => true, "data" => %{"id" => id}} =
+               rpc(
+                 "create_agent_session",
+                 %{
+                   "mountKey" => icm.mount_key,
+                   "generation" => generation,
+                   "initialPrompt" => "look at the draft"
+                 },
+                 ["id"]
+               )
+
+      on_exit(fn -> AgentCase.kill_session(id) end)
+
+      wait_until(fn ->
+        Path.join([workspace, "logs", "sessions", id <> ".jsonl"])
+        |> File.stream!()
+        |> Stream.drop(1)
+        |> Enum.any?(fn line ->
+          case Jason.decode(line) do
+            {:ok, %{"item" => %{"role" => "user", "text" => "look at the draft"}}} -> true
+            _other -> false
+          end
+        end)
+      end)
+    end
+
     test "session_started audit entry carries the context fields", %{
       generation: generation,
       icm: icm,

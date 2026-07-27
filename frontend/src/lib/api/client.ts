@@ -97,6 +97,8 @@ import {
   resolveSendReviewChannel,
   retrySentCopy as httpRetrySentCopy,
   retrySentCopyChannel,
+  reviseMailDraft as httpReviseMailDraft,
+  reviseMailDraftChannel,
   inspectIcm as httpInspectIcm,
   inspectIcmChannel,
   listIcms as httpListIcms,
@@ -194,6 +196,7 @@ import type {
   SendDraftFields,
   ResolveSendReviewFields,
   RetrySentCopyFields,
+  ReviseMailDraftFields,
   IcmTreeFields,
   InspectIcmFields,
   ListIcmsFields,
@@ -532,6 +535,7 @@ const getMailDraftReviewFields: GetMailDraftReviewFields = [
 const sendDraftFields: SendDraftFields = ['state'];
 const resolveSendReviewFields: ResolveSendReviewFields = ['resolved'];
 const retrySentCopyFields: RetrySentCopyFields = ['retried'];
+const reviseMailDraftFields: ReviseMailDraftFields = ['sessionId', 'routed'];
 // Same `Array<TypedMap>` codegen gap as `listMailMessagesFields` above.
 const mailApplyOpsFields = [{ results: ['op', 'result', 'reason'] }] as unknown as MailApplyOpsFields;
 const setupMailAccountFields: SetupMailAccountFields = ['saved'];
@@ -924,6 +928,15 @@ function callRetrySentCopyChannel(
 ) {
   return wrapChannelCall((handlers) =>
     retrySentCopyChannel({ channel, input, fields: retrySentCopyFields, ...handlers })
+  );
+}
+
+function callReviseMailDraftChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; draftName: string; feedback: string; mountKey: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    reviseMailDraftChannel({ channel, input, fields: reviseMailDraftFields, ...handlers })
   );
 }
 
@@ -1959,6 +1972,23 @@ export const api = {
     runRpc(
       (channel) => callRetrySentCopyChannel(channel, { account, opId, generation }),
       () => httpRetrySentCopy(withAuth({ input: { account, opId, generation }, fields: retrySentCopyFields }))
+    ),
+
+  // "Request changes" (spec G §UI): hand feedback on a draft to an agent,
+  // which edits the file in place. The backend owns the correlation — a live
+  // session whose input locator already names this draft gets the feedback as
+  // another turn (`routed: 'existing'`), otherwise one is created on
+  // `mountKey` with the account's mail mount included (`routed: 'new'`), its
+  // opening prompt seeded SERVER-side. Unlike every other session entry point
+  // here, nothing is stashed client-side: the caller may never navigate to
+  // the session at all.
+  reviseMailDraft: (account: string, draftName: string, feedback: string, mountKey: string, generation: number) =>
+    runRpc(
+      (channel) => callReviseMailDraftChannel(channel, { account, draftName, feedback, mountKey, generation }),
+      () =>
+        httpReviseMailDraft(
+          withAuth({ input: { account, draftName, feedback, mountKey, generation }, fields: reviseMailDraftFields })
+        )
     ),
 
   // -- calendar (Spec F). `calendarStatus`/`listCalendarEvents` deliver their

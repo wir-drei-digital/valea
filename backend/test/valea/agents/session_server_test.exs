@@ -111,6 +111,38 @@ defmodule Valea.Agents.SessionServerTest do
     assert Enum.any?(lines, &(&1 == %{"seq" => echo_seq, "item" => echo}))
   end
 
+  # Spec G Task 7: `:initial_prompt` has existed on `start_session/1` since the
+  # first session task but nothing ever asserted it actually reaches the
+  # adapter — `revise_mail_draft` now depends on it as its ONLY way to seed a
+  # freshly created session (the FE never calls `prompt/2` for that flow), so
+  # the enqueue path is pinned here.
+  test "initial_prompt is enqueued and sent without any prompt/2 call", %{root: root} do
+    {:ok, %{id: id}} = start_session(root, "happy", %{initial_prompt: "seeded hello"})
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    assert_receive {:session_event, _,
+                    %{"type" => "message", "role" => "user", "text" => "seeded hello"}},
+                   10_000
+
+    assert_receive {:session_event, _, %{"type" => "message", "role" => "assistant"}}, 10_000
+    assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+  end
+
+  # The Registry VALUE now carries the session's input locator, so a caller
+  # holding a file can ask "is a live session already working on this?"
+  # without reading a single transcript.
+  test "list_running_session_inputs reports each live session's input locator", %{root: root} do
+    locator = %{"kind" => "workspace", "path" => "sources/notes/msg.md"}
+
+    {:ok, %{id: with_input}} = start_session(root, "happy", %{input: locator})
+    {:ok, %{id: without_input}} = start_session(root, "happy")
+
+    running = Valea.Agents.list_running_session_inputs()
+
+    assert {^with_input, ^locator} = Enum.find(running, &(elem(&1, 0) == with_input))
+    assert {^without_input, nil} = Enum.find(running, &(elem(&1, 0) == without_input))
+  end
+
   test "session_info_update title is persisted into transcript meta and listings", %{root: root} do
     {:ok, %{id: id}} = start_session(root, "titled")
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)

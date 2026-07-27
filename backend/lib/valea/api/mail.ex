@@ -72,6 +72,25 @@ defmodule Valea.Api.Mail do
   echoes it back, and `Valea.Mail.Engine` holds it only as a zero-arity
   closure in process state (see that module's moduledoc).
 
+  ## `revise_mail_draft` and agent sessions
+
+  This is the one action here that reaches outside mail — it prompts or
+  creates an agent session so the human's feedback reaches whatever is
+  writing the draft. It is deliberately the INBOUND direction only: it
+  creates `kind: "chat"` sessions scoped exactly like every other mail
+  session (the account's mount included read-only, plus one exact read
+  grant for the draft) and prompts them, and nothing about it hands a
+  session a route to `send_draft`/`push_draft_to_mailbox` — those live on
+  this control-token-gated RPC surface, which agent sessions have no
+  transport to.
+
+  Which session gets the feedback is decided by CORRELATION, never by the
+  caller: a LIVE session whose own input locator already resolves to this
+  exact draft (`Valea.Agents.list_running_session_inputs/0`, matched
+  through `Valea.Icm.Locator.resolve/2`) gets it as another turn, so a
+  second round of changes continues the conversation instead of forking a
+  new one. Only with no such session is one created.
+
   ## Stubs
 
   `mail_apply_ops` (Task 13 wires the real ops executor), `push_draft_to_mailbox`
@@ -85,6 +104,8 @@ defmodule Valea.Api.Mail do
     type_name("Mail")
   end
 
+  alias Valea.Agents.SessionScope
+  alias Valea.Agents.SessionServer
   alias Valea.Api.Error
   alias Valea.Mail.Account
   alias Valea.Mail.DraftFile
@@ -695,6 +716,66 @@ defmodule Valea.Api.Mail do
       end
     end
 
+    action :revise_mail_draft, :map do
+      constraints fields: [
+                    session_id: [type: :string, allow_nil?: false],
+                    routed: [type: :string, allow_nil?: false]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+      argument :draft_name, :string, allow_nil?: false
+      argument :feedback, :string, allow_nil?: false
+      # The ICM that HOSTS the session when a new one has to be started —
+      # never where the draft lives (that is always the account's own mail
+      # mount, included by key below). Unused on the routing path.
+      argument :mount_key, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # "Request changes" (spec G §UI): hand the human's feedback to an
+      # agent, which edits the draft file in place. The one thing this must
+      # get right is CORRELATION — a user who asks for a second round of
+      # changes means "keep going", not "start over" — so a LIVE session
+      # whose own input locator already resolves to this exact draft gets the
+      # feedback as another turn, and only when there is none is a session
+      # created (scoped exactly like every other mail session: the account
+      # mounted read-only via `include_mounts`, plus ONE exact read grant for
+      # the draft itself).
+      #
+      # Creating or prompting a chat session is the whole of what this does.
+      # It never reaches `send_draft`/`push_draft_to_mailbox` — those live on
+      # this control-token-gated RPC surface, which agent sessions have no
+      # transport to, and nothing here hands one out.
+      run fn input, _ctx ->
+        %{
+          account: slug,
+          draft_name: name,
+          feedback: feedback,
+          mount_key: mount_key,
+          generation: generation
+        } = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- validate_draft_name(name),
+             {:ok, draft_abs} <- existing_draft_path(root, slug, name),
+             {:ok, routed} <-
+               route_revision(%{
+                 root: root,
+                 slug: slug,
+                 name: name,
+                 feedback: feedback,
+                 draft_abs: draft_abs,
+                 mount_key: mount_key,
+                 generation: generation
+               }) do
+          {:ok, routed}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :get_mail_draft, :map do
       constraints fields: [
                     content: [type: :string, allow_nil?: false],
@@ -735,6 +816,11 @@ defmodule Valea.Api.Mail do
   #   * `:blocked` (Engine.sync_now/1's mailbox_replaced-sticky refusal) ->
   #     `"mailbox_replaced"` — the client-facing name for the SAME
   #     condition `mail_status`'s `state` field already uses.
+  #   * `:icm_unavailable` (`SessionScope.resolve/1` refusing the primary
+  #     ICM `revise_mail_draft` would host its session on) ->
+  #     `"no_icm_available"` — the mail UI has no ICM picker, so from here
+  #     an unknown/disabled/degraded mount key all mean the same thing to
+  #     the user: nothing can host the session yet.
   #   * `:enoent`/`:outside`/`:invalid` (a missing file, or
   #     `Paths.resolve_real/2` rejecting containment) -> `"not_found"` —
   #     never distinguishes "doesn't exist" from "resolves outside the
@@ -742,6 +828,7 @@ defmodule Valea.Api.Mail do
   #     section).
   def error_for(:no_workspace), do: Error.new("workspace_not_open")
   def error_for(:blocked), do: Error.new("mailbox_replaced")
+  def error_for(:icm_unavailable), do: Error.new("no_icm_available")
   def error_for(:enoent), do: Error.new("not_found")
   def error_for(:outside), do: Error.new("not_found")
   def error_for(:invalid), do: Error.new("not_found")
@@ -1088,6 +1175,146 @@ defmodule Valea.Api.Mail do
     else
       {:error, :invalid_draft_name}
     end
+  end
+
+  # -- revise_mail_draft (spec G §Request changes) -----------------------------
+
+  # The draft must EXIST before any session is created or prompted, and it is
+  # stat'd with the same no-follow posture as every other draft path here: a
+  # symlink or hard-linked entry is `link_unsafe`, never followed. The
+  # returned path is then re-derived through `Valea.Icm.Locator.resolve/2` —
+  # the same call a running session's own locator goes through — so the two
+  # sides of the correlation comparison below are always in the same
+  # (symlink-resolved) vocabulary, on a platform where `/var` really is
+  # `/private/var`.
+  defp existing_draft_path(root, slug, name) do
+    path = Path.join([root, "sources", "mail", slug, "drafts", name])
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, links: 1}} ->
+        Valea.Icm.Locator.resolve(root, draft_locator(slug, name))
+
+      {:ok, _link_or_special} ->
+        {:error, :link_unsafe}
+
+      {:error, _reason} ->
+        {:error, :not_found}
+    end
+  end
+
+  # Correlation, then action. A LIVE session whose own input locator already
+  # resolves to this draft gets the feedback as another TURN — a second round
+  # of changes means "keep going", not "start over" — and only when there is
+  # none does a session get created.
+  defp route_revision(%{root: root, slug: slug, name: name, draft_abs: draft_abs} = req) do
+    prompt = revise_prompt(draft_rel_path(slug, name), req.feedback)
+
+    case find_session_for_draft(root, draft_abs) do
+      {:ok, session_id} ->
+        # `prompt/2` is a cast: a session that died between the Registry read
+        # and this call swallows it, and the FE's link lands on an archived
+        # transcript. Correlation here is best-effort by design — the
+        # alternative (a call, a liveness re-check, a retry) buys a narrower
+        # race at the cost of blocking a UI action on a GenServer round-trip.
+        _ = SessionServer.prompt(session_id, prompt)
+        {:ok, %{"session_id" => session_id, "routed" => "existing"}}
+
+      :none ->
+        start_revise_session(req, prompt)
+    end
+  end
+
+  # The one live session already working on this exact file, if any. An input
+  # locator that is absent, malformed, or no longer resolvable (its ICM
+  # unmounted, its file gone) simply doesn't match — never an error, since a
+  # stale locator on some UNRELATED session says nothing about this request.
+  defp find_session_for_draft(root, draft_abs) do
+    Valea.Agents.list_running_session_inputs()
+    |> Enum.find(fn {_id, input} -> locator_resolves_to?(root, input, draft_abs) end)
+    |> case do
+      {id, _input} -> {:ok, id}
+      nil -> :none
+    end
+  end
+
+  defp locator_resolves_to?(root, input, draft_abs) when is_map(input) do
+    case Valea.Icm.Locator.resolve(root, input) do
+      {:ok, ^draft_abs} -> true
+      _other -> false
+    end
+  end
+
+  defp locator_resolves_to?(_root, _input, _draft_abs), do: false
+
+  # A fresh session for this draft, resolved and started exactly the way
+  # `Valea.Api.Agents`'s `create_session` does it (id first, so the scope can
+  # be resolved against it, then `start_session/1` with that same id): a chat
+  # session on the caller's chosen primary ICM, the account's mail mount
+  # included by key, and ONE exact read grant for the draft.
+  defp start_revise_session(
+         %{
+           slug: slug,
+           name: name,
+           draft_abs: draft_abs,
+           mount_key: mount_key,
+           generation: generation
+         },
+         prompt
+       ) do
+    id = Valea.Agents.generate_session_id()
+    include_mounts = ["mail-" <> slug]
+    input_locator = draft_locator(slug, name)
+
+    with {:ok, scope} <-
+           SessionScope.resolve(%{
+             kind: "chat",
+             mount_key: mount_key,
+             generation: generation,
+             session_id: id,
+             read_paths: [draft_abs],
+             include_mounts: include_mounts
+           }),
+         {:ok, %{id: id}} <-
+           Valea.Agents.start_session(%{
+             id: id,
+             kind: "chat",
+             title: "New session",
+             scope: scope,
+             run: nil,
+             initial_prompt: prompt,
+             on_turn_end: nil,
+             context_doc: nil,
+             input: input_locator,
+             include_mounts: include_mounts
+           }) do
+      Valea.Audit.append("session_started", %{
+        "session_id" => id,
+        "mount_key" => mount_key,
+        "context_doc" => nil,
+        "input" => input_locator,
+        "include_mounts" => include_mounts
+      })
+
+      {:ok, %{"session_id" => id, "routed" => "new"}}
+    end
+  end
+
+  defp draft_locator(slug, name),
+    do: %{"kind" => "workspace", "path" => draft_rel_path(slug, name)}
+
+  # The pinned prompt for a revision turn. It names the file by its
+  # workspace-relative path (what the session was granted), and states the
+  # two things an agent must not get wrong: the frontmatter vocabulary, and
+  # that `status:` is engine-owned — a forged stamp is what the display
+  # projection's `status_forged` notice exists to catch.
+  defp revise_prompt(rel_path, feedback) do
+    """
+    Revise the mail draft at #{rel_path} per this feedback. Edit the file in place. Keep the \
+    frontmatter valid (to/cc/bcc/subject/in_reply_to only) and do not touch the status field.
+
+    Feedback:
+    #{feedback}
+    """
   end
 
   # Raw no-follow read for get_mail_draft — same lstat posture as

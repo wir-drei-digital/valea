@@ -80,6 +80,16 @@ defmodule Valea.Api.Agents do
       # stay wire-stable), fail-closed, before any session starts.
       argument :include_mounts, {:array, :string}, allow_nil?: true
 
+      # Spec G Task 7: the session's opening turn, seeded SERVER-side —
+      # `SessionServer.init/1` enqueues it before the handshake even
+      # completes, so it is sent the moment the adapter is ready. Optional:
+      # an entry point that has a live client to replay from may still stash
+      # the prompt client-side and call `prompt/2` after the chat route
+      # mounts (what every existing caller does). One that does NOT — the
+      # `revise_mail_draft` RPC, which may create a session the user never
+      # navigates to — passes it here instead.
+      argument :initial_prompt, :string, allow_nil?: true
+
       # Task 5.5 / Task 9 (Spec D §B): `create_session` resolves `mount_key`
       # — the session's PRIMARY ICM, chosen by the caller (for now, the
       # frontend defaults to the first enabled ICM until Phase 9's sidebar
@@ -133,7 +143,7 @@ defmodule Valea.Api.Agents do
                  title: "New session",
                  scope: scope,
                  run: nil,
-                 initial_prompt: nil,
+                 initial_prompt: Map.get(input.arguments, :initial_prompt),
                  on_turn_end: nil,
                  context_doc: context_doc,
                  input: input_locator,

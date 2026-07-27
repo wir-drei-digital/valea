@@ -1836,6 +1836,222 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
+  # -- revise_mail_draft (spec G §Request changes) --------------------------------
+
+  describe "revise_mail_draft" do
+    # This suite's own setup opens a workspace but mounts no ICM (mail needs
+    # none) — the revise flow does: it hosts the session on a primary ICM,
+    # with the account's mail mount included.
+    defp mount_primary_icm!(workspace) do
+      Valea.App.Config.set_harness_command(Valea.AgentCase.fake_cmd("happy"))
+      Valea.AgentCase.mount_test_icm!(workspace, name: "Primary")
+    end
+
+    defp write_draft!(workspace, account, name) do
+      dir = Path.join([workspace, "sources", "mail", account, "drafts"])
+      File.mkdir_p!(dir)
+
+      File.write!(Path.join(dir, name), """
+      ---
+      to: [alex@example.com]
+      subject: "Re: Kickoff"
+      status: draft
+      ---
+      Hello Alex.
+      """)
+
+      Path.join([workspace, "sources", "mail", account, "drafts", name])
+    end
+
+    defp revise(input) do
+      rpc("revise_mail_draft", input, ["sessionId", "routed"])
+    end
+
+    test "routes to the LIVE session whose input locator already names this draft", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      icm = mount_primary_icm!(workspace)
+      write_draft!(workspace, "mara", "reply.md")
+
+      locator = %{"kind" => "workspace", "path" => "sources/mail/mara/drafts/reply.md"}
+
+      {:ok, %{id: existing}} =
+        Valea.AgentCase.start_session(workspace, "happy", %{
+          input: locator,
+          mount_key: icm.mount_key,
+          include_mounts: ["mail-mara"]
+        })
+
+      on_exit(fn -> Valea.AgentCase.kill_session(existing) end)
+      Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> existing)
+
+      assert %{"success" => true, "data" => %{"sessionId" => ^existing, "routed" => "existing"}} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "reply.md",
+                 "feedback" => "warmer, and mention Tuesday",
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation
+               })
+
+      # The feedback reached that session as a real turn — no new session,
+      # no transcript of its own.
+      assert_receive {:session_event, _,
+                      %{"type" => "message", "role" => "user", "text" => text}},
+                     10_000
+
+      assert text =~ "sources/mail/mara/drafts/reply.md"
+      assert text =~ "warmer, and mention Tuesday"
+      assert text =~ "do not touch the status field"
+    end
+
+    test "with no live session on the draft, starts one carrying the mail mount, the input locator, and the prompt",
+         %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      icm = mount_primary_icm!(workspace)
+      write_draft!(workspace, "mara", "reply.md")
+
+      assert %{"success" => true, "data" => %{"sessionId" => id, "routed" => "new"}} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "reply.md",
+                 "feedback" => "shorter please",
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation
+               })
+
+      on_exit(fn -> Valea.AgentCase.kill_session(id) end)
+
+      meta =
+        Path.join([workspace, "logs", "sessions", id <> ".jsonl"])
+        |> File.stream!()
+        |> Enum.at(0)
+        |> Jason.decode!()
+
+      assert meta["kind"] == "chat"
+      assert meta["icm_mount"] == icm.mount_key
+      assert meta["include_mounts"] == ["mail-mara"]
+
+      assert meta["input"] == %{
+               "kind" => "workspace",
+               "path" => "sources/mail/mara/drafts/reply.md"
+             }
+
+      # The session is scoped exactly like any other mail session — the
+      # account mounted read-only, plus the one exact read grant for the
+      # draft. Nothing here is a path to sending.
+      pid = GenServer.whereis({:via, Registry, {Valea.Agents.SessionRegistry, id}})
+      ctx = :sys.get_state(pid).policy_ctx
+      assert [mail_root] = ctx.mail_roots_in_scope
+      assert String.ends_with?(mail_root, "sources/mail/mara")
+      assert Enum.any?(ctx.read_roots, &String.ends_with?(&1, "drafts/reply.md"))
+
+      # And the feedback was seeded server-side, with no prompt call at all.
+      Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+      assert_receive {:session_event, _,
+                      %{"type" => "message", "role" => "user", "text" => text}},
+                     10_000
+
+      assert text =~ "shorter please"
+    end
+
+    test "an unusable mount_key surfaces no_icm_available", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      mount_primary_icm!(workspace)
+      write_draft!(workspace, "mara", "reply.md")
+
+      assert %{"success" => false, "errors" => errors} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "reply.md",
+                 "feedback" => "nope",
+                 "mountKey" => "not-a-mount",
+                 "generation" => generation
+               })
+
+      assert inspect(errors) =~ "no_icm_available"
+    end
+
+    test "a missing draft is not_found and starts nothing", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      icm = mount_primary_icm!(workspace)
+
+      assert %{"success" => false, "errors" => errors} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "ghost.md",
+                 "feedback" => "nope",
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation
+               })
+
+      assert inspect(errors) =~ "not_found"
+      assert Valea.Agents.list_running_session_inputs() == []
+    end
+
+    test "a symlinked draft is refused, no session started", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      icm = mount_primary_icm!(workspace)
+
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+      outside = Path.join(workspace, "planted.md")
+      File.write!(outside, "sensitive target content")
+      File.ln_s!(outside, Path.join(drafts_dir, "link.md"))
+
+      assert %{"success" => false, "errors" => errors} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "link.md",
+                 "feedback" => "nope",
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation
+               })
+
+      assert inspect(errors) =~ "link_unsafe"
+      assert Valea.Agents.list_running_session_inputs() == []
+    end
+
+    test "a stale generation surfaces workspace_changed", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      icm = mount_primary_icm!(workspace)
+      write_draft!(workspace, "mara", "reply.md")
+
+      assert %{"success" => false, "errors" => errors} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "reply.md",
+                 "feedback" => "nope",
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation - 1
+               })
+
+      assert inspect(errors) =~ "workspace_changed"
+      assert Valea.Agents.list_running_session_inputs() == []
+    end
+  end
+
   # -- mail_inbox: removed ------------------------------------------------------
 
   describe "mail_inbox (removed)" do

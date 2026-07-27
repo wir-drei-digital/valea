@@ -33,7 +33,11 @@ import {
   sendGateAfterSendFailure,
   sendGateAfterReloadFailure,
   canSendDraft,
-  draftNoticeMessage
+  draftNoticeMessage,
+  canReviseDraft,
+  reviseOutcomeMessage,
+  reviseErrorMessage,
+  NO_HOST_ICM_MESSAGE
 } from './mail-shapes';
 import {
   normalizeMailDraft,
@@ -672,6 +676,57 @@ describe('canSendDraft', () => {
   // so the affordance has to come back — same as the push path's retry.
   it('is true again for a rejected row (the state reverts to draft, the notice carries the reason)', () => {
     expect(canSendDraft(draftRow({ status_display: 'draft', notice: 'send_failed' }), smtpAccount)).toBe(true);
+  });
+});
+
+describe('canReviseDraft', () => {
+  it('is offered for every settled row, including an unparseable one', () => {
+    for (const state of ['draft', 'pushed', 'sent', 'rejected', 'needs_review']) {
+      expect(canReviseDraft({ statusDisplay: state })).toBe(true);
+    }
+  });
+
+  // A claim in flight is hash-bound to bytes already snapshotted — inviting
+  // an edit there would only earn a `content_changed` refusal.
+  it('is withheld while a push or send is actually in flight', () => {
+    for (const state of ['pushing', 'sending', 'send_review']) {
+      expect(canReviseDraft({ statusDisplay: state })).toBe(false);
+    }
+  });
+});
+
+describe('reviseOutcomeMessage', () => {
+  // Both outcomes lead the same way — the feedback is with an agent now —
+  // because that is the part the user asked for. Which session it landed in
+  // is the follow-on detail, not the headline.
+  it('leads with the outcome and names where the feedback went', () => {
+    expect(reviseOutcomeMessage('existing')).toBe('Sent to session — it was already working on this draft.');
+    expect(reviseOutcomeMessage('new')).toBe('Sent to session — a new one is now on this draft.');
+  });
+
+  it('degrades to the bare outcome for an unknown routing', () => {
+    expect(reviseOutcomeMessage('something_else')).toBe('Sent to session.');
+  });
+});
+
+describe('reviseErrorMessage', () => {
+  // `no_icm_available` is the backend's name for the same condition the panel
+  // detects client-side when no mount can host a session — one sentence for
+  // both, so the user never sees two spellings of one problem.
+  it('maps no_icm_available to the same copy as the client-side no-mount case', () => {
+    expect(reviseErrorMessage('no_icm_available')).toBe(NO_HOST_ICM_MESSAGE);
+    expect(NO_HOST_ICM_MESSAGE).toBe('No enabled project can host the session. Enable one in the sidebar.');
+  });
+
+  it.each([
+    ['not_found', 'This draft no longer exists.'],
+    ['link_unsafe', 'This draft file is not a regular file.'],
+    ['harness_unavailable', "The assistant isn't ready — open Agent settings (gear in the sidebar) and run the checks."],
+    ['workspace_not_open', 'No workspace is open.'],
+    ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
+    ['anything_else', 'Could not send the feedback. Please try again.']
+  ])('maps error code=%s to a calm sentence', (code, expected) => {
+    expect(reviseErrorMessage(code)).toBe(expected);
   });
 });
 

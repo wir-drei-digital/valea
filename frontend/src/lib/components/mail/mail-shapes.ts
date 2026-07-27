@@ -346,6 +346,68 @@ export function canSendDraft(
   return !('invalid' in draft.recipients);
 }
 
+// -- request changes (spec G §UI) ---------------------------------------------
+//
+// "Request changes" hands feedback to an agent, which edits the draft file in
+// place. The backend owns the correlation: a live session whose input locator
+// already names this draft gets another turn (`routed: 'existing'`), otherwise
+// one is created (`routed: 'new'`). Nothing here can send.
+
+/**
+ * The one sentence for "nothing can host an agent session yet" — used BOTH
+ * for the client-side no-mount case (no ICM group to pick a mount key from)
+ * and for the backend's `no_icm_available`, which is the same condition
+ * observed one layer down. Shared so the two can never drift apart.
+ */
+export const NO_HOST_ICM_MESSAGE = 'No enabled project can host the session. Enable one in the sidebar.';
+
+/**
+ * Whether a row may offer "Request changes". Everything except a row with an
+ * op ACTUALLY in flight: a push/send holds a claim bound to the exact bytes
+ * it snapshotted, so inviting an edit mid-flight would only earn a
+ * `content_changed` refusal. An unparseable draft deliberately still
+ * qualifies — "fix this draft" is exactly what feedback is for.
+ */
+export function canReviseDraft(draft: Pick<MailDraft, 'statusDisplay'>): boolean {
+  return !['pushing', 'sending', 'send_review'].includes(draft.statusDisplay);
+}
+
+/**
+ * Confirmation copy after feedback was accepted. Both routings lead with the
+ * outcome the user asked for; which session it landed in follows as the
+ * detail that makes the accompanying link make sense.
+ */
+export function reviseOutcomeMessage(routed: string): string {
+  switch (routed) {
+    case 'existing':
+      return 'Sent to session — it was already working on this draft.';
+    case 'new':
+      return 'Sent to session — a new one is now on this draft.';
+    default:
+      return 'Sent to session.';
+  }
+}
+
+/** Error copy for `revise_mail_draft`. */
+export function reviseErrorMessage(code: string): string {
+  switch (code) {
+    case 'no_icm_available':
+      return NO_HOST_ICM_MESSAGE;
+    case 'harness_unavailable':
+      return "The assistant isn't ready — open Agent settings (gear in the sidebar) and run the checks.";
+    case 'not_found':
+      return 'This draft no longer exists.';
+    case 'link_unsafe':
+      return 'This draft file is not a regular file.';
+    case 'workspace_not_open':
+      return 'No workspace is open.';
+    case 'workspace_changed':
+      return 'Your workspace changed. Reopen it and try again.';
+    default:
+      return 'Could not send the feedback. Please try again.';
+  }
+}
+
 // -- relative time — mirrors `routes/chat/+page.svelte`'s `relativeTime` ---
 // (this codebase duplicates this small helper per call site rather than
 // centralizing it; kept here, not inline in a component, purely so it's

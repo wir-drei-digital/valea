@@ -31,8 +31,10 @@ defmodule Valea.Agents do
   `managed_context` stay keyed to one identity; generated here when
   absent), `:handshake_timeout_ms` (test override), and `:context_doc`/
   `:input` (Spec D §B — the session-with-context primitive's own two
-  locators, opaque here: passed straight through to `SessionServer.init/1`'s
-  transcript meta, never inspected or resolved in this module).
+  locators, opaque here: passed straight through to `SessionServer.init/1`,
+  never inspected or resolved in this module; both land in the transcript
+  meta, and `:input` additionally becomes the session's Registry
+  registration value, which `list_running_session_inputs/0` reads back).
   """
   @spec start_session(map()) :: {:ok, %{id: String.t()}} | {:error, term()}
   def start_session(opts) when is_map(opts) do
@@ -71,6 +73,35 @@ defmodule Valea.Agents do
 
     suffix = :crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower)
     stamp <> "-" <> suffix
+  end
+
+  @doc """
+  Every LIVE session paired with the input locator it was started with —
+  `{session_id, input}`, `input` being the raw string-keyed locator map (or
+  `nil` for a session started without one).
+
+  Read straight off the Registry's registration VALUE
+  (`Valea.Agents.SessionServer`'s `via/2`), never off transcripts: this is a
+  routing decision on the hot path of a UI action ("is a session already
+  working on this file?" — `Valea.Api.Mail`'s `revise_mail_draft`), and a
+  directory scan would both cost more and answer the wrong question (ENDED
+  sessions have transcripts too).
+
+  The locators come back UNRESOLVED, exactly as their callers supplied them:
+  resolving one is the caller's job (`Valea.Icm.Locator.resolve/2`), since
+  only the caller knows which workspace it means to resolve against and what
+  a resolution failure should mean.
+  """
+  @spec list_running_session_inputs() :: [{String.t(), map() | nil}]
+  def list_running_session_inputs do
+    Valea.Agents.SessionRegistry
+    |> Registry.select([{{:"$1", :_, :"$2"}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.map(fn
+      {id, %{input: input}} -> {id, input}
+      # Defensive: a registration value from anything but `via/2` has no
+      # locator to report, and must never crash the enumeration.
+      {id, _other} -> {id, nil}
+    end)
   end
 
   @doc """
@@ -410,6 +441,13 @@ defmodule Valea.Agents do
                run: nil,
                initial_prompt: nil,
                on_turn_end: nil,
+               # Re-register the input locator the ORIGINAL start recorded, so
+               # `list_running_session_inputs/0` keeps answering "a session is
+               # already working on this file" across a revival. Read-only
+               # here: the resume path never rewrites line 1 (see
+               # `SessionServer.open_transcript/2`), so this only ever restores
+               # what that line already says.
+               input: meta["input"],
                resume: %{
                  conversation_id: acp_id,
                  known_message_ids: known,

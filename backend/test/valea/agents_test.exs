@@ -247,6 +247,38 @@ defmodule Valea.AgentsTest do
       # Idempotent by goal state while live.
       assert {:ok, %{id: ^id}} = Agents.resume_session(%{id: id, scope: scope, meta: meta})
     end
+
+    # The registry value is what "is a session already working on this file?"
+    # is answered from (`list_running_session_inputs/0`). A resume that
+    # dropped it would silently break that correlation for exactly the
+    # sessions most likely to be asked about — the ones a user came back to.
+    test "a resumed session re-registers the input locator its transcript recorded",
+         %{ws: ws, generation: generation, alpha: alpha} do
+      locator = %{"kind" => "workspace", "path" => "sources/notes/msg.md"}
+
+      {:ok, %{id: id}} =
+        start_session(ws, "happy", %{mount_key: alpha.mount_key, input: locator})
+
+      kill_session(id)
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
+
+      {:ok, meta} = Agents.session_meta(id)
+      assert meta["input"] == locator
+
+      {:ok, scope} =
+        Valea.Agents.SessionScope.resolve(%{
+          kind: "chat",
+          mount_key: meta["icm_mount"],
+          generation: generation,
+          session_id: id
+        })
+
+      assert {:ok, %{id: ^id}} = Agents.resume_session(%{id: id, scope: scope, meta: meta})
+      on_exit(fn -> kill_session(id) end)
+
+      assert {^id, ^locator} =
+               Agents.list_running_session_inputs() |> Enum.find(&(elem(&1, 0) == id))
+    end
   end
 
   defp wait_until(fun, tries \\ 50) do

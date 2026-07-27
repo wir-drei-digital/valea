@@ -35,7 +35,7 @@ defmodule Valea.Agents.SessionServer do
   ## Client API — everything is addressed by session id through the Registry.
 
   def start_link(%{id: id} = opts) do
-    GenServer.start_link(__MODULE__, opts, name: via(id))
+    GenServer.start_link(__MODULE__, opts, name: via(id, Map.get(opts, :input)))
   end
 
   @doc "Timeline snapshot: `%{items, cursor, busy, status}`."
@@ -50,7 +50,15 @@ defmodule Valea.Agents.SessionServer do
 
   def stop(id), do: cast(id, :stop)
 
-  defp via(id), do: {:via, Registry, {Valea.Agents.SessionRegistry, id}}
+  # The registration VALUE carries the session's input locator (Spec D §B's
+  # `:input`, verbatim — the same raw string-keyed map the transcript meta
+  # records, or `nil`), so a caller holding a FILE can ask "is a live session
+  # already working on this?" without opening a single transcript
+  # (`Valea.Agents.list_running_session_inputs/0`, the routing decision behind
+  # `revise_mail_draft`). Registration only — `whereis/1` looks up by KEY and
+  # is value-agnostic, so every existing address path is untouched.
+  defp via(id, input),
+    do: {:via, Registry, {Valea.Agents.SessionRegistry, id, %{input: input}}}
 
   defp whereis(id) do
     case Registry.lookup(Valea.Agents.SessionRegistry, id) do
