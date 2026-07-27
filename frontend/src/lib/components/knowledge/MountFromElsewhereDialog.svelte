@@ -26,6 +26,7 @@
   import { api } from '$lib/api/client';
   import { mountsStore, declareMountErrorMessage } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { skillsOfferStore } from '$lib/stores/skills-offer.svelte';
   import { basename, type IcmInspection } from '$lib/components/onboarding/onboarding-path';
   import {
     adoptExisting,
@@ -190,6 +191,14 @@
       return;
     }
 
+    // Fire the one-time skill offer for the freshly-mounted ICM HERE, in the
+    // dialog's own success path — Knowledge's footer entry point mounts
+    // through this dialog with no `onMounted`, so relying on the caller to
+    // offer (as the sidebar's `goToMounted` does) would skip the offer
+    // entirely for that path. On the sidebar path this fires a second time
+    // via `onMounted` → `goToMounted`; that's harmless — `offerFor` writes
+    // the same key into the `$state` map idempotently (one card either way).
+    void skillsOfferStore.offerFor(outcome.mountKey);
     open = false;
     onMounted?.(outcome.mountKey);
   }
@@ -216,6 +225,10 @@
       return;
     }
 
+    // Same as `confirm` above: offer here so a Knowledge-footer adopt (no
+    // `onMounted`) still gets the one-time card; the sidebar path's second
+    // fire via `onMounted` is a harmless idempotent no-op.
+    void skillsOfferStore.offerFor(outcome.mountKey);
     open = false;
     onMounted?.(outcome.mountKey);
   }
