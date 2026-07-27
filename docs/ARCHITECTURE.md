@@ -546,11 +546,16 @@ always decides.
   `.readopt` marker consumed by the next successful pass). ONE
   background-work slot per Engine: sync passes AND ops batches are strictly
   serialized (`busy?/1`), ops run in monitored Tasks with deferred replies
-  — `status/1` always answers instantly. Spec G adds the send-side surface
-  (`draft_review/2`, `send_draft/4`, `resolve_send_review/3`,
-  `retry_sent_copy/2`) behind a deliberately weaker gate than sync's
-  (`validate_active/1` + SMTP config/credential — an unreachable mailbox
-  must not block a send), a second RAM-only `smtp_credential` closure
+  — `status/1` always answers instantly. Spec G adds the send-side surface,
+  gated more weakly than sync deliberately — an unreachable mailbox must
+  block neither a send nor the clearing of a parked op, so none of these
+  require the IMAP credential. `send_draft/4` takes `validate_active/1`
+  plus SMTP config + credential; `resolve_send_review/3` and
+  `retry_sent_copy/2` take `validate_active/1` alone (they are ledger and
+  IMAP acts, never transmissions); `draft_review/2` is ungated entirely —
+  it is a read answered inline, and it reports `smtp_configured` in its
+  payload rather than refusing. Also a second RAM-only `smtp_credential`
+  closure
   (`set_credential/3` takes `kind: :imap | :smtp`; env fallback
   `VALEA_MAIL_SMTP_PASSWORD_<SLUG>`), and a network-free send
   classification at activation (see §Send).
@@ -635,8 +640,9 @@ always decides.
   planted symlink), file-fallback `@AGENTS.md` on no-symlink platforms.
 - **`Valea.Mail.Settings`** / **`Valea.Mail.Account`** /
   **`Valea.Mail.Doctor`** — v5 multi-account config (incl. the optional
-  `smtp` block, its port/security validation, and `smtp_fingerprint/1` —
-  the frozen input string the review fingerprint hashes),
+  `smtp` block, its port/security validation, and `fingerprint_input/1` —
+  the frozen input string the review fingerprint hashes; `smtp_fingerprint/1`
+  is its standalone sha256 digest),
   `.account`/`.readopt` identity files, per-account preflight (see Doctor
   below).
 - **`Valea.Api.Mail`** — the account-scoped RPC surface (below), including
@@ -753,9 +759,10 @@ phase.** The executor re-verifies the spooled wire payload's hash, then
 calls `SmtpTransport.send/5` **once**; the op has durably left `pending`
 before the call, so no recovery, reconciliation, resolution, or retry path
 can ever reach the transport (the tests assert the call COUNT, not just
-the outcome). A received, parseable final reply always decides: `250` →
-`{:ok, :accepted}`; any received final non-2xx after the terminating dot →
-`{:error, _}`, a definitive refusal and therefore provably unsent. The
+the outcome). A received, parseable final reply always decides: any final
+`2xx` → `{:ok, :accepted}`; any received final non-2xx after the
+terminating dot → `{:error, _}`, a definitive refusal and therefore
+provably unsent. The
 `354` reply is the line — every failure before it is `:error`, and after
 it **every** failure without a parseable final reply (socket drop,
 timeout, TLS teardown mid-payload or mid-terminator) is `{:unknown, _}`,
@@ -796,9 +803,14 @@ to `executing` durably first, so it provably never started) → `rejected`;
 `executing` (at-or-past DATA with no recorded outcome) → `send_review`.
 `transmitted` and `send_review` are left alone — their follow-ups (the
 Sent-copy resume, the gmail reconciliation) need a connection and defer to
-the next connected pass, rendering "awaiting mailbox connection" until
-then. The IMAP-connected half may only resume the append or reconcile;
-there is no path from it to the SMTP transport at all.
+the next connected pass. The UI deliberately claims no reconciliation
+state while they wait: a `transmitted` op just renders `sending`, and a
+parked op's explanation says only what has actually been checked (the
+generic profile is never reconciled at all, so "awaiting a mailbox
+connection" would be a false promise for it — see
+`mail-shapes.ts`'s `sendReviewExplanation`). The IMAP-connected half may
+only resume the append or reconcile; there is no path from it to the SMTP
+transport at all.
 `abandon_send/2` terminates a `claimed`/`pending` send the Engine knows
 will never run (the account stopped being sendable while it queued) so it
 cannot hold the draft's claim; it is gated on state, not on the caller's
@@ -842,8 +854,10 @@ running session whose `input` locator resolves to this draft file, else
 creates one on the given primary ICM with the mail mount, the draft as
 `input`, and a fixed revise prompt as `create_session`'s now-exposed
 `initial_prompt`; fails closed `no_icm_available`). `set_mail_credential`
-takes `kind: imap | smtp`; `setup_mail_account` takes the optional `smtp`
-block. Channel pushes (`workspace:events`) carry the account slug:
+takes `kind: imap | smtp`; `setup_mail_account` takes the SMTP config as
+six flat optional arguments (`smtp_host`, `smtp_port`, `smtp_security`,
+`smtp_username`, `smtp_from`, `smtp_from_name` — this resource's argument
+style is flat, not nested maps). Channel pushes (`workspace:events`) carry the account slug:
 `mail_status`, `mail_sync`, `mail_message`, and `mail_draft` (from the ICM
 watcher's debounced `{:mail_draft_changed, slug}` on the `"mail"` PubSub
 topic — an agent's draft edit refreshes the Drafts panel with no

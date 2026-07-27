@@ -167,9 +167,16 @@ App password (OAuth is a non-goal), provider `gmail`.
 - Expected: the op parks as `send_review`, then reconciliation searches
   Sent Mail for the op's `Message-ID` over the bounded re-check window,
   finds it, and the op **completes on its own** — proof, not a guess. If
-  the search comes back empty it stays parked with the
-  "Sent Mail was checked and found empty" note and is never auto-rejected;
-  with IMAP not yet connected it renders the awaiting-connection notice.
+  the search comes back empty it stays parked with "Sent Mail was checked
+  and found empty — this message most likely did not go out." and is never
+  auto-rejected. Before any reconciliation has run (IMAP not yet
+  connected), the row reads the **unchecked** copy — "The server never
+  confirmed this send, and nothing has been checked automatically." — and
+  NOT a "still reconciling / awaiting connection" promise; that wording was
+  deliberately rejected because it would be false for a generic account,
+  which is never reconciled at all. Both variants end with the same
+  instruction to check your own Sent folder. Treat any reconciliation-state
+  claim in this row as a **failure**, not as the expected output.
 - Observed:
 
 ### B3. Same-Message-ID re-send after a wrong `not_sent`
