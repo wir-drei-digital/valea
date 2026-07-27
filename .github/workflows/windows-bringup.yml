@@ -98,3 +98,11 @@ jobs:
           path: |
             desktop/src-tauri/target/release/bundle/nsis/*.exe
             desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
+      # Spec B2: the valea-spawn contract (tree kill on stdin EOF, capped
+      # stderr file, exit-code mirror, COMSPEC quoting for .cmd targets) is
+      # Job-Object and cmd.exe behaviour — it does not exist to be tested
+      # anywhere but here. GATING: Task 5 is not complete until this is green.
+      # Runs after the artifact upload so a shim regression still leaves the
+      # bundle available for inspection.
+      - name: valea-spawn shim suite (gating)
+        run: cd desktop/src-tauri && cargo test --release --test spawn_shim

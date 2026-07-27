@@ -66,6 +66,16 @@ package-backend:
     case "$BURRITO_TARGET" in windows_*) exe=".exe" ;; esac
     cp "backend/burrito_out/valea_desktop_${BURRITO_TARGET}${exe}" \
        "desktop/src-tauri/binaries/valea-server-${triple}${exe}"
+    # windows-support spec B2: the agent-spawn shim is a second externalBin,
+    # listed only in tauri.windows.conf.json — build and stage it under the
+    # same triple-suffixed name Tauri expects.
+    case "$BURRITO_TARGET" in
+      windows_*)
+        (cd desktop/src-tauri && cargo build --release --bin valea-spawn)
+        cp desktop/src-tauri/target/release/valea-spawn.exe \
+           "desktop/src-tauri/binaries/valea-spawn-${triple}.exe"
+        ;;
+    esac
 
 # Full desktop bundle
 desktop-bundle: package-backend

@@ -11,11 +11,19 @@ use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
 mod keychain;
+mod winjob;
 
 const BACKEND_PORT: u16 = 4817;
 
 /// Holds the sidecar process so it can be killed on exit.
 struct Backend(Mutex<Option<CommandChild>>);
+
+/// Owns the sidecar's kill-on-close Job handle for the app's lifetime
+/// (windows-support spec E1). Never read back — its existence IS the
+/// semantics: whenever this process goes away, so does the Job handle, and
+/// with it the whole BEAM tree that `Backend`'s `kill()` cannot reach.
+#[cfg(windows)]
+struct SidecarJob(Mutex<Option<winjob::Job>>);
 
 /// Outcome of the sidecar readiness probe.
 enum Readiness {
@@ -30,7 +38,7 @@ enum Readiness {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         // Auto-update: the SPA (stores/updates.svelte.ts) drives check/
@@ -60,7 +68,15 @@ fn main() {
                 start_sidecar(app.handle())?;
             }
             Ok(())
-        })
+        });
+
+    // windows-support spec E1: the sidecar's Job handle needs an owner that
+    // outlives `start_sidecar` — dropping it would close the Job and kill the
+    // sidecar on the spot. See `SidecarJob`.
+    #[cfg(windows)]
+    let builder = builder.manage(SidecarJob(Mutex::new(None)));
+
+    builder
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
@@ -85,7 +101,18 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
     let token = random_hex();
     let nonce = random_hex();
 
-    let (_rx, child) = app
+    // windows-support spec B2: agents are spawned through the valea-spawn
+    // shim, which Tauri bundles next to the app executable (externalBin strips
+    // the target triple from the copied name). Handing the backend an absolute
+    // path keeps PATH lookup out of it. Absent — an unbundled run — means the
+    // env var is simply not set, and the backend's doctor reports the gap.
+    #[cfg(windows)]
+    let spawn_shim = std::env::current_exe()?
+        .parent()
+        .map(|d| d.join("valea-spawn.exe"))
+        .filter(|p| p.exists());
+
+    let cmd = app
         .shell()
         .sidecar("valea-server")?
         .env("PHX_SERVER", "true")
@@ -93,8 +120,25 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
         .env("PHX_HOST", "localhost")
         .env("SECRET_KEY_BASE", secret)
         .env("VALEA_CONTROL_TOKEN", &token)
-        .env("VALEA_READY_NONCE", &nonce)
-        .spawn()?;
+        .env("VALEA_READY_NONCE", &nonce);
+
+    #[cfg(windows)]
+    let cmd = match &spawn_shim {
+        Some(shim) => cmd.env("VALEA_SPAWN_SHIM", shim),
+        None => cmd,
+    };
+
+    let (_rx, child) = cmd.spawn()?;
+
+    // windows-support spec E1: the Burrito wrapper can't exec() on Windows, so
+    // the `child.kill()` in main()'s RunEvent::Exit handler would orphan the
+    // BEAM. Put the sidecar in a kill-on-close Job whose handle lives in managed
+    // state until process exit, where its Drop reaps whatever `kill()` missed.
+    #[cfg(windows)]
+    {
+        let job = winjob::Job::assign_kill_on_close(child.pid())?;
+        app.state::<SidecarJob>().0.lock().unwrap().replace(job);
+    }
 
     app.state::<Backend>().0.lock().unwrap().replace(child);
 
