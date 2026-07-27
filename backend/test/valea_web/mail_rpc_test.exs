@@ -1960,6 +1960,116 @@ defmodule ValeaWeb.MailRpcTest do
       assert text =~ "shorter please"
     end
 
+    # Correlation matches the path a session DECLARED, never where that path
+    # currently points. Resolve-based matching followed symlinks, so anything
+    # able to write a live session's input file could redirect it at a draft
+    # and absorb that draft's feedback — the human's words in an unrelated
+    # session's transcript, behind a "Sent to session" link to the wrong
+    # place. The decoy here is that exact move.
+    test "a live session whose input file was replaced by a symlink to the draft does NOT match",
+         %{
+           workspace: workspace,
+           generation: generation
+         } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      icm = mount_primary_icm!(workspace)
+      write_draft!(workspace, "mara", "reply.md")
+
+      decoy_dir = Path.join([workspace, "sources", "notes"])
+      File.mkdir_p!(decoy_dir)
+      decoy = Path.join(decoy_dir, "decoy.md")
+      File.write!(decoy, "an ordinary note")
+
+      {:ok, %{id: decoy_session}} =
+        Valea.AgentCase.start_session(workspace, "happy", %{
+          input: %{"kind" => "workspace", "path" => "sources/notes/decoy.md"},
+          mount_key: icm.mount_key
+        })
+
+      on_exit(fn -> Valea.AgentCase.kill_session(decoy_session) end)
+
+      # The redirect: the declared path now RESOLVES to the draft.
+      File.rm!(decoy)
+      File.ln_s!(Path.join([workspace, "sources", "mail", "mara", "drafts", "reply.md"]), decoy)
+
+      assert {:ok, resolved} =
+               Valea.Icm.Locator.resolve(workspace, %{
+                 "kind" => "workspace",
+                 "path" => "sources/notes/decoy.md"
+               })
+
+      assert String.ends_with?(resolved, "sources/mail/mara/drafts/reply.md")
+
+      assert %{"success" => true, "data" => %{"sessionId" => id, "routed" => "new"}} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "reply.md",
+                 "feedback" => "warmer please",
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation
+               })
+
+      on_exit(fn -> Valea.AgentCase.kill_session(id) end)
+      refute id == decoy_session
+    end
+
+    # A dead session must never absorb feedback. Its registry entry OUTLIVES
+    # it — the Registry reaps on a `DOWN` its partition still has to process
+    # — and a `GenServer.cast/2` to a dead pid is silently `:ok`, so nothing
+    # downstream would notice. Suspending the partition holds the tree in
+    # exactly that state deterministically, instead of racing a window that
+    # is real but only microseconds wide in practice.
+    test "a session whose registry entry outlives it is not routed to", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      icm = mount_primary_icm!(workspace)
+      write_draft!(workspace, "mara", "reply.md")
+
+      {:ok, %{id: dead}} =
+        Valea.AgentCase.start_session(workspace, "happy", %{
+          input: %{"kind" => "workspace", "path" => "sources/mail/mara/drafts/reply.md"},
+          mount_key: icm.mount_key,
+          include_mounts: ["mail-mara"]
+        })
+
+      assert Enum.any?(Valea.Agents.list_running_session_inputs(), &(elem(&1, 0) == dead))
+
+      # Freeze reaping. Registration is a direct ETS insert and keeps working
+      # while the partition is suspended, so the session this call goes on to
+      # start still registers normally.
+      [{_name, partition, _type, _mods} | _] =
+        Supervisor.which_children(Valea.Agents.SessionRegistry)
+
+      :sys.suspend(partition)
+      on_exit(fn -> :sys.resume(partition) end)
+
+      Valea.AgentCase.kill_session(dead)
+      # The stale entry is genuinely still in the table — this is the state
+      # under test, not an assumption about timing.
+      assert [{stale_pid, _value}] = Registry.lookup(Valea.Agents.SessionRegistry, dead)
+      refute Process.alive?(stale_pid)
+
+      assert %{"success" => true, "data" => %{"sessionId" => id, "routed" => "new"}} =
+               revise(%{
+                 "account" => "mara",
+                 "draftName" => "reply.md",
+                 "feedback" => "shorter please",
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation
+               })
+
+      on_exit(fn -> Valea.AgentCase.kill_session(id) end)
+      refute id == dead
+
+      # The replacement is real and live, with its own transcript.
+      assert File.regular?(Path.join([workspace, "logs", "sessions", id <> ".jsonl"]))
+      assert Enum.any?(Valea.Agents.list_running_session_inputs(), &(elem(&1, 0) == id))
+    end
+
     test "an unusable mount_key surfaces no_icm_available", %{
       workspace: workspace,
       generation: generation

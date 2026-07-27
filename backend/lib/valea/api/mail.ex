@@ -85,11 +85,16 @@ defmodule Valea.Api.Mail do
   transport to.
 
   Which session gets the feedback is decided by CORRELATION, never by the
-  caller: a LIVE session whose own input locator already resolves to this
-  exact draft (`Valea.Agents.list_running_session_inputs/0`, matched
-  through `Valea.Icm.Locator.resolve/2`) gets it as another turn, so a
-  second round of changes continues the conversation instead of forking a
+  caller: a LIVE session whose own input locator already NAMES this draft
+  (`Valea.Agents.list_running_session_inputs/0`) gets it as another turn, so
+  a second round of changes continues the conversation instead of forking a
   new one. Only with no such session is one created.
+
+  Matching is on the DECLARED path, not on where that path currently
+  resolves to — see `locator_names_draft?/4`. Symlink-following comparison
+  would let anything able to write a live session's input file redirect it
+  at a draft and claim that draft's feedback; a declared path is a name, and
+  a name cannot be repointed after the fact.
 
   ## Stubs
 
@@ -1203,21 +1208,34 @@ defmodule Valea.Api.Mail do
   end
 
   # Correlation, then action. A LIVE session whose own input locator already
-  # resolves to this draft gets the feedback as another TURN — a second round
-  # of changes means "keep going", not "start over" — and only when there is
+  # names this draft gets the feedback as another TURN — a second round of
+  # changes means "keep going", not "start over" — and only when there is
   # none does a session get created.
   defp route_revision(%{root: root, slug: slug, name: name, draft_abs: draft_abs} = req) do
-    prompt = revise_prompt(draft_rel_path(slug, name), req.feedback)
+    rel_path = draft_rel_path(slug, name)
+    prompt = revise_prompt(rel_path, req.feedback)
 
-    case find_session_for_draft(root, draft_abs) do
+    case find_session_for_draft(root, rel_path, draft_abs) do
       {:ok, session_id} ->
-        # `prompt/2` is a cast: a session that died between the Registry read
-        # and this call swallows it, and the FE's link lands on an archived
-        # transcript. Correlation here is best-effort by design — the
-        # alternative (a call, a liveness re-check, a retry) buys a narrower
-        # race at the cost of blocking a UI action on a GenServer round-trip.
-        _ = SessionServer.prompt(session_id, prompt)
-        {:ok, %{"session_id" => session_id, "routed" => "existing"}}
+        # `SessionServer.prompt/2` resolves the id through a plain Registry
+        # lookup — no GenServer round-trip — and answers
+        # `{:error, :not_running}` when the entry is gone by the time it
+        # looks, i.e. the session died AND was reaped between the enumeration
+        # above and this call. Honour that rather than discarding it:
+        # reporting "sent to session" for a turn that provably never landed,
+        # behind a link to a transcript that will never show it, is worse
+        # than starting the session the user asked for.
+        #
+        # The wider half of the same window — died but not yet reaped, where
+        # the lookup still yields a dead pid and the cast is silently `:ok` —
+        # is closed upstream, by `list_running_session_inputs/0` filtering on
+        # liveness. What remains is a session dying in the microseconds
+        # between that filter and this cast: best-effort by design, as the
+        # spec accepts for correlation.
+        case SessionServer.prompt(session_id, prompt) do
+          :ok -> {:ok, %{"session_id" => session_id, "routed" => "existing"}}
+          {:error, :not_running} -> start_revise_session(req, prompt)
+        end
 
       :none ->
         start_revise_session(req, prompt)
@@ -1228,23 +1246,49 @@ defmodule Valea.Api.Mail do
   # locator that is absent, malformed, or no longer resolvable (its ICM
   # unmounted, its file gone) simply doesn't match — never an error, since a
   # stale locator on some UNRELATED session says nothing about this request.
-  defp find_session_for_draft(root, draft_abs) do
+  defp find_session_for_draft(root, rel_path, draft_abs) do
     Valea.Agents.list_running_session_inputs()
-    |> Enum.find(fn {_id, input} -> locator_resolves_to?(root, input, draft_abs) end)
+    |> Enum.find(fn {_id, input} -> locator_names_draft?(root, input, rel_path, draft_abs) end)
     |> case do
       {id, _input} -> {:ok, id}
       nil -> :none
     end
   end
 
-  defp locator_resolves_to?(root, input, draft_abs) when is_map(input) do
+  # A WORKSPACE locator is matched on the path it DECLARES, never on where
+  # that path happens to point right now. `Valea.Icm.Locator.resolve/2`
+  # follows symlinks, so resolve-based matching would let anything able to
+  # write some live session's input file redirect it at a draft and thereby
+  # claim that draft's feedback — the human's words landing in an unrelated
+  # session's transcript, under a "Sent to session" link pointing at the
+  # wrong place. No capability is gained either way (the policy's mail tier
+  # still denies that session the draft), but the wrong session must not
+  # match. A declared path is a NAME, and comparing names is what correlation
+  # actually means here; the `/var` -> `/private/var` normalization that
+  # motivated resolving in the first place applies to the workspace ROOT,
+  # which both sides drop entirely.
+  #
+  # A locator spelling the same file differently (`./sources/...`) simply
+  # doesn't match, and falls through to starting a session — the safe
+  # direction.
+  defp locator_names_draft?(
+         _root,
+         %{"kind" => "workspace", "path" => path},
+         rel_path,
+         _draft_abs
+       ),
+       do: path == rel_path
+
+  # Every other locator kind keeps resolve-based comparison: an ICM locator
+  # addresses a path relative to a mount root that only `resolve/2` knows.
+  defp locator_names_draft?(root, input, _rel_path, draft_abs) when is_map(input) do
     case Valea.Icm.Locator.resolve(root, input) do
       {:ok, ^draft_abs} -> true
       _other -> false
     end
   end
 
-  defp locator_resolves_to?(_root, _input, _draft_abs), do: false
+  defp locator_names_draft?(_root, _input, _rel_path, _draft_abs), do: false
 
   # A fresh session for this draft, resolved and started exactly the way
   # `Valea.Api.Agents`'s `create_session` does it (id first, so the scope can

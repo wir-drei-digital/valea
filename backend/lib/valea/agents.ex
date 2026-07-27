@@ -91,16 +91,26 @@ defmodule Valea.Agents do
   resolving one is the caller's job (`Valea.Icm.Locator.resolve/2`), since
   only the caller knows which workspace it means to resolve against and what
   a resolution failure should mean.
+
+  RUNNING means running, and the filter below is the only thing making that
+  true. A dead session's registry entry OUTLIVES it — reaping waits on the
+  `DOWN` the Registry's partition still has to process — and neither
+  `Registry.select/2` nor `Registry.lookup/2` screens for liveness, so both
+  keep reporting the entry until then. Nothing downstream would catch the
+  mistake either: `GenServer.cast/2` to a dead pid is silently `:ok`, so a
+  caller acting on an unfiltered list would address a corpse and be told it
+  worked.
   """
   @spec list_running_session_inputs() :: [{String.t(), map() | nil}]
   def list_running_session_inputs do
     Valea.Agents.SessionRegistry
-    |> Registry.select([{{:"$1", :_, :"$2"}, [], [{{:"$1", :"$2"}}]}])
+    |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}])
+    |> Enum.filter(fn {_id, pid, _value} -> Process.alive?(pid) end)
     |> Enum.map(fn
-      {id, %{input: input}} -> {id, input}
+      {id, _pid, %{input: input}} -> {id, input}
       # Defensive: a registration value from anything but `via/2` has no
       # locator to report, and must never crash the enumeration.
-      {id, _other} -> {id, nil}
+      {id, _pid, _other} -> {id, nil}
     end)
   end
 
