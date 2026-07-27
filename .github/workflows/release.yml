@@ -9,9 +9,12 @@
 # `workflow_dispatch` is the dry run: builds everything, creates no release,
 # parks the bundles as workflow artifacts instead.
 #
+# Three platforms: macOS Apple silicon, Linux x86_64, Windows x86_64.
+#
 # Every sidecar is built NATIVELY on a runner matching its target — the
-# Burrito payload embeds host-compiled NIFs (exqlite, erlexec), so there is
-# deliberately no cross-compilation anywhere in this pipeline.
+# Burrito payload embeds host-compiled NIFs (exqlite, and erlexec on the
+# Unix lanes), so there is deliberately no cross-compilation anywhere in
+# this pipeline.
 name: Release
 
 on:
@@ -36,11 +39,17 @@ jobs:
             burrito_target: macos_arm
           - os: ubuntu-22.04 # oldest image → oldest glibc the AppImage links against
             burrito_target: linux_x64
-          # No Windows lane: the app can't run there yet (erlexec is
-          # Unix-only, maildir ":2," filenames are illegal on NTFS) — see
-          # docs/RELEASING.md "Windows" for the full blocker list.
+          - os: windows-latest # NSIS installer + updater .exe (docs/RELEASING.md "Windows")
+            burrito_target: windows_x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    # Windows runners default to pwsh, where this job's shell steps do not
+    # parse (`(cd frontend && …)` subshells) — pin bash everywhere, exactly
+    # as the bring-up lane (windows-bringup.yml) does. Git Bash ships on the
+    # Windows image; the Unix lanes already ran bash.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -65,8 +74,11 @@ jobs:
         with:
           tool: just
 
-      - name: Install Erlang/Elixir (Linux)
-        if: runner.os == 'Linux'
+      # setup-beam covers Linux AND Windows natively; only macOS needs the
+      # asdf path below. Guarding this on `!= macOS` (not `== Linux`) is
+      # what keeps the Windows lane from reaching `mix` with no Erlang.
+      - name: Install Erlang/Elixir (Linux/Windows)
+        if: runner.os != 'macOS'
         uses: erlef/setup-beam@v1
         with:
           version-file: .tool-versions
@@ -179,3 +191,5 @@ jobs:
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
             desktop/src-tauri/target/release/bundle/deb/*.deb
             desktop/src-tauri/target/release/bundle/rpm/*.rpm
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.exe.sig

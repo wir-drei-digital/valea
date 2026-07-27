@@ -10,13 +10,18 @@ Operational guide for the desktop release pipeline
 |---|---|---|---|
 | macOS Apple silicon | `macos-latest` | `.dmg` | `.app.tar.gz` + `.sig` |
 | Linux x86_64 | `ubuntu-22.04` | AppImage, `.deb`, `.rpm` | AppImage + `.sig` |
+| Windows x86_64 | `windows-latest` | NSIS `.exe` | NSIS `.exe` + `.sig` |
 
 Every build is native — the Burrito sidecar embeds host-compiled NIFs
-(exqlite, erlexec), so there is no cross-compilation lane, and no Intel
-macOS lane (GitHub retired the last Intel runners; Apple silicon covers
-every Mac since 2020). Only the AppImage self-updates on Linux; `.deb`/
-`.rpm` installs update through the package manager story we don't have yet
-— point those users at the AppImage if they want auto-update.
+(exqlite, and erlexec on the Unix lanes), so there is no cross-compilation
+lane, and no Intel macOS lane (GitHub retired the last Intel runners;
+Apple silicon covers every Mac since 2020). Only the AppImage self-updates
+on Linux; `.deb`/`.rpm` installs update through the package manager story
+we don't have yet — point those users at the AppImage if they want
+auto-update. On Windows the updater artifact IS the installer
+(`installMode: "passive"`): it reruns with a progress bar and restarts the
+app itself, so the frontend's relaunch call is never observed — see
+"Windows" below.
 
 ## One-time setup: GitHub secrets
 
@@ -52,14 +57,16 @@ that release manually once. Annoying, not fatal — but avoidable.
    ```
 
    The workflow fails fast if the tag and config version disagree.
-3. CI builds both platforms onto one **draft** release (first macOS run
-   compiles OTP via asdf, ~25 min; cached afterwards).
+3. CI builds all three platforms onto one **draft** release (first macOS
+   run compiles OTP via asdf, ~25 min; cached afterwards).
 4. Smoke-test an installer from the draft's assets if the change warrants
    it, then **publish the release**. Publishing is go-live: the app's
    updater reads `releases/latest/download/latest.json`, which only ever
    serves the newest *published* release. Check the draft has `latest.json`
-   with both a `darwin-aarch64` and a `linux-x86_64` entry before
-   publishing.
+   with a `darwin-aarch64`, a `linux-x86_64` AND a `windows-x86_64` entry
+   before publishing — a lane that failed silently shows up here as a
+   missing platform, and publishing anyway strands that platform's users
+   on their current version.
 5. Rollback = publish a newer fixed version. Un-publishing breaks nobody
    (apps just see no update), but never delete a published release's
    assets out from under updaters mid-download.
@@ -90,24 +97,107 @@ notarization `APPLE_ID` + `APPLE_PASSWORD` (app-specific) +
 
 ## Windows
 
-There is deliberately no Windows lane: the pipeline could build one today,
-but the app cannot run there yet. Blockers, in order of size:
+The lane is a normal matrix row now (design:
+[windows-support](superpowers/specs/2026-07-19-windows-support-design.md)).
+It builds like the others — `setup-beam` covers Windows natively, MSVC is
+preinstalled, and `just package-backend` selects the `windows_x64` Burrito
+target and additionally builds and stages the `valea-spawn.exe` shim (the
+agent runtime's Job-Object process supervisor, `tauri.windows.conf.json`'s
+second `externalBin`). What follows is what is *different* about the
+Windows product.
 
-- **erlexec is Unix-only** and is listed in `extra_applications`, so the
-  sidecar would crash at boot, before any feature code. The agent runtime
-  (`Valea.Agents.ProcessRuntime`) needs a Windows process-spawning story.
-- **Maildir flag filenames** (Spec E) use the `:2,`-style info suffix; `:`
-  is illegal in NTFS filenames, so mail storage needs a naming scheme
-  change (Dovecot solves this with a configurable separator).
-- The 3-layer prose seed writes a **`CLAUDE.md` symlink**; symlink creation
-  on Windows needs developer mode or elevation — needs a copy/junction
-  fallback.
-- Already fine: the keychain commands use the `keyring` crate with
-  `windows-native` enabled; Tauri v2 and Burrito both support Windows.
+### Pending gates — read before tagging a Windows release
 
-When those land: uncomment/add the `windows_x64` Burrito target in
-`backend/mix.exs`, set `include_executables_for: [:unix, :windows]` on
-`valea_desktop`, teach `backend/scripts/build-release.sh` + the Justfile
-recipe a Windows host mapping (and zig fetch), and add a `windows-latest`
-matrix entry (setup-beam supports Windows). The updater config already
-carries a Windows `installMode`.
+Everything below was written and unit-tested on macOS; **no native Windows
+CI run has happened yet** (the branch has no remote while it's being
+built). Dispatch `.github/workflows/windows-bringup.yml` from the branch
+and work through the "Batched CI gates" list in
+[the acceptance doc](superpowers/acceptance/2026-07-19-windows-support.md)
+first — the bring-up lane is what runs the gating *suites* (paths,
+containment, the full backend suite, the `valea-spawn` cargo tests);
+`release.yml` only builds bundles and would happily ship a red one.
+Retire the bring-up workflow, and this subsection, once it goes fully
+green and a `release.yml` dry run produces a good NSIS bundle.
+
+### SmartScreen and code signing (follow-up)
+
+The NSIS installer is **not Authenticode-signed**, so a first-time
+download shows Microsoft Defender SmartScreen's "Windows protected your
+PC" — More info → Run anyway. Same posture (and same fix shape) as
+[macOS signing](#macos-signing-follow-up): buy a code-signing
+certificate, add it as a secret, and the warning goes away as reputation
+accrues. Unlike the Apple secrets, no passthrough is wired in the workflow
+yet — signing would add `bundle.windows.certificateThumbprint` (or a
+`signCommand`) plus a timestamp URL to the Tauri config.
+
+Auto-update is unaffected either way: the updater verifies our own
+minisign signature over the downloaded `.exe` before running it.
+
+### Where Valea keeps its profile
+
+On Windows the backend's app dir and the shell's data dir (including
+`secret_key_base`) pin to **`%LOCALAPPDATA%`** (`app_local_data_dir`),
+never `%APPDATA%`/Roaming. Corporate folder redirection routinely puts
+Roaming on a network share, and SQLite in WAL mode is documented-unsafe
+over network filesystems — `app.sqlite`, the `sources/` mail and calendar
+mirrors, and session transcripts all live there. Decided before the first
+Windows release specifically so no user ever has to be migrated off a
+roaming location. The consequence is intended: the profile does not follow
+the user between machines.
+
+### Network shares and cloud folders
+
+User-owned **ICM folders on a share are supported** — `\\server\share\…`
+(or a mapped drive) is plain file IO, UNC roots normalize, and the
+containment floor stops a `..` walk at the share root. Three honest limits
+apply, and none of them are detected in code:
+
+- **Server-side reparse points are invisible to containment** (spec D7).
+  A junction that lives on the *server* side of a share is resolved by the
+  server; the client never sees it, so Valea's symlink walk cannot police
+  a redirect out of `\\host\share\icm`. For share-hosted ICMs **the
+  share's own configuration is part of the trust boundary.** Also recorded
+  in [ARCHITECTURE.md](ARCHITECTURE.md) "Trust model".
+- **File watching over SMB is best-effort** (spec A5). The backend may
+  start fine and still miss events — change notification over SMB is
+  best-effort by protocol. The ICM doctor's "watcher live" row says so for
+  a `//`-rooted mount; the tree still refreshes on navigation and RPC, as
+  it does everywhere.
+- **The profile stays local** (spec A6). Point ICM mounts at a share if
+  you like; never the workspace itself.
+
+**Cloud-placeholder locations are unsupported** (spec D6): OneDrive,
+Dropbox, and iCloud Drive "files on demand" folders hold reparse-point
+placeholders that the sync client hydrates on access. Valea does not
+detect them; a workspace or an ICM inside one is out of support (dehydrated
+files, hydration latency inside the agent's own reads, and a third party
+rewriting files underneath the watcher).
+
+**Per-directory case-sensitive NTFS trees are unsupported** (spec D3):
+containment compares case-folded on Windows, so a directory flipped with
+`fsutil file setCaseSensitiveInfo` can hold two paths Valea considers the
+same one. Non-default configuration, documented rather than detected.
+
+### Moving a workspace between machines
+
+Paths normalize, so a workspace folder itself travels — with one hard edge
+in the mail store.
+
+A maildir store records its flag separator once, at creation, in
+`sources/mail/<slug>/.account` (`maildir_separator`): `;` for a store
+created on Windows (`:` is illegal in NTFS filenames), `:` everywhere
+else. **The file wins over the host**: an absent field means the legacy
+`:`, and a store that says `:` keeps saying `:` when it is opened on
+Windows — never OS-defaulted, so no store ever silently starts mixing two
+naming conventions inside one maildir.
+
+On Windows that rule buys honesty rather than function. `:` is not a legal
+NTFS filename character, so a legacy store cannot *operate* there — and
+copying one onto NTFS mangles it before Valea is ever involved: the copy
+tool refuses, truncates, or rewrites the names on its own. Don't migrate
+mail across OSes by copying files. Re-add the account on the new machine
+and let it sync; the maildir is a mirror of the server, not the original.
+
+An `.account` file that can't be parsed (or carries an unrecognized
+separator) blocks that account inert, with UI copy pointing at the file:
+repair or restore `.account`. Purging the local mirror is not the remedy.

@@ -345,6 +345,38 @@ describe('syncErrorText', () => {
     expect(syncErrorText({ ...baseStatus, lastError: null }, null)).toBeNull();
     expect(syncErrorText(null, null)).toBeNull();
   });
+
+  // windows-support spec C1: `Valea.Mail.Engine`'s `activate_with_separator`
+  // blocks the account inert with this EXACT `last_error` when
+  // `.account`'s `maildir_separator` is unreadable. It shares the
+  // `identity_mismatch` state (whose panel copy offers a purge), so the
+  // error line has to say the file — not the mail — is the problem.
+  const SEPARATOR_ERROR = 'invalid maildir_separator in .account';
+
+  it("rewrites the engine's raw invalid-separator error into copy about the .account file", () => {
+    const text = syncErrorText({ ...baseStatus, lastError: SEPARATOR_ERROR }, null);
+
+    expect(text).not.toBe(SEPARATOR_ERROR);
+    expect(text).toContain('.account');
+    expect(text).toMatch(/restore|fix/i);
+    // The recovery is repairing one metadata file; the mail underneath is fine.
+    expect(text).not.toMatch(/purge/i);
+  });
+
+  it('still prefers a local request error over the rewritten one', () => {
+    expect(syncErrorText({ ...baseStatus, lastError: SEPARATOR_ERROR }, 'No workspace is open.')).toBe(
+      'No workspace is open.'
+    );
+  });
+
+  it('passes through any other engine error verbatim (unknown strings are not swallowed)', () => {
+    expect(syncErrorText({ ...baseStatus, lastError: 'connection closed by peer' }, null)).toBe(
+      'connection closed by peer'
+    );
+    // The lookup key is backend-supplied: an inherited object property must
+    // never be mistaken for copy (hence a Map, not a record literal).
+    expect(syncErrorText({ ...baseStatus, lastError: 'toString' }, null)).toBe('toString');
+  });
 });
 
 describe('syncNowErrorMessage', () => {

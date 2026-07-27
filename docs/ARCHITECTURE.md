@@ -202,6 +202,18 @@ human reviewing a permission ask (via `PermissionCard`'s line-diff, see
 "Chat teaching" below) IS the approval; (4) `logs/audit.jsonl` + per-session
 transcript files make every action reconstructable.
 
+Stated limit — **containment on network shares** (windows-support spec D7):
+every ancestry decision above is made client-side, over paths the client can
+resolve. Reparse points that live on the *server* side of an SMB share are
+evaluated by the server and are generally invisible to the client, so
+`Valea.Paths.resolve_real/2`'s symlink walk cannot see — let alone deny — a
+junction inside `\\host\share\icm` that redirects elsewhere on that server.
+For a share-hosted ICM the share's own configuration is therefore part of the
+trust boundary, and that is documented for users
+([RELEASING.md](RELEASING.md) "Windows"), never presented as covered. Local
+NTFS junctions and symlinks are ordinary reparse points that `File.read_link`
+surfaces, and they take the normal symlink walk.
+
 ### Agent runtime
 
 `Valea.Acp.Connection` (`backend/lib/valea/acp/connection.ex`) is a pure
@@ -1766,13 +1778,20 @@ Related, not under `shell/` but part of the same top-level chrome:
 ## Release & auto-update
 
 Tag-driven pipeline (`.github/workflows/release.yml`): a `v*` tag builds
-native bundles per platform — macOS Apple-silicon and Linux x86_64, each
-runner producing its own Burrito sidecar (`BURRITO_TARGET` pins the one
-target matching the host; the payload embeds host-compiled NIFs, so nothing
-is ever cross-wrapped) — and uploads them to a single **draft** GitHub
-release with a merged `latest.json`. Publishing the draft is go-live;
-`docs/RELEASING.md` is the runbook (secrets, signing, the Windows blocker
-list).
+native bundles per platform — macOS Apple-silicon, Linux x86_64 and Windows
+x86_64, each runner producing its own Burrito sidecar (`BURRITO_TARGET` pins
+the one target matching the host; the payload embeds host-compiled NIFs, so
+nothing is ever cross-wrapped) — and uploads them to a single **draft**
+GitHub release with a merged `latest.json`. Publishing the draft is go-live;
+`docs/RELEASING.md` is the runbook (secrets, signing, the Windows lane).
+
+The Windows lane ships an NSIS installer that doubles as the updater
+artifact (`.exe` + `.sig`, `installMode: "passive"` — the installer restarts
+the app itself, so the frontend's relaunch call is never observed), is
+unsigned pending Authenticode (SmartScreen on first install), and stages a
+second `externalBin` next to the sidecar: `valea-spawn.exe`, the Job-Object
+process supervisor the Windows agent adapter spawns through (see "Agent
+runtime").
 
 In-app: `tauri-plugin-updater` + `tauri-plugin-process` (registered in
 `main.rs`, granted to the loopback-served SPA by
@@ -1798,7 +1817,7 @@ App-version truth for the updater: `desktop/src-tauri/tauri.conf.json`.
 - [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — **Shipped** (see [ICM project workspaces](#icm-project-workspaces) above): private, hidden, id-based Valea workspace profiles; user-owned ICM projects mounted only by reference; one primary ICM and `cwd` per session; explicit cross-ICM context; project/session navigation; simplified onboarding. Supersedes Plan A/A2 outright — their implementation has been fully removed (Phase 11 clean-cut). Substrate for Spec D below; not reopened by it.
 - [2026-07-16-agent-native-icms-design.md](superpowers/specs/2026-07-16-agent-native-icms-design.md) — **Shipped** (Spec D — see the banner at the top of this file and every section it points to). Deletes the workflow subsystem outright; replaces "run" with the session-with-context primitive (`context_doc`/`input`); makes Today a file (`today.json`) the agent maintains; adds adopt-a-folder mounting, a depth-aware `RiskTier`, an ICM-internal secrets deny tier, and the 3-layer prose starter seed; re-scopes Mail's outbound path to manual until a future mail redesign.
 - [2026-07-17-mail-maildir-design.md](superpowers/specs/2026-07-17-mail-maildir-design.md) — **Shipped** (Spec E — see [Mail](#mail-spec-e--mail-as-maildir-spec-g--human-only-send) above): multi-account windowed maildir mirrors, declared-ops two-way sync (moves + flags only, durable ledger, execution-time verification, never expunge as policy), derived views + SQLite index, per-account mail mounts with deny-not-ask, agent drafts + user-only Push-to-Drafts, Gmail provider profile, fail-closed identity/replacement recovery. Supersedes the 2026-07-11 mail spec's sync/read path. **Its "there is no SMTP" outbound invariant is rewritten** by Spec G below — the invariant is human-only transmission, not the absence of a transport; everything else in it stands.
-- [2026-07-19-windows-support-design.md](superpowers/specs/2026-07-19-windows-support-design.md) — **Draft, pending review**: Windows x86_64 as a first-class desktop target — conditional erlexec + `ProcessAdapter` behaviour with a Job-Object `valea-spawn` shim (stdin-close ⇒ tree death), per-store maildir separator (`;` on NTFS, tolerant parser, no data migration), drive-letter/case-insensitive-safe `Valea.Paths`, sidecar Job Object in the shell, NSIS + updater CI lane. Supersedes the "Windows" blocker section of docs/RELEASING.md once implemented.
+- [2026-07-19-windows-support-design.md](superpowers/specs/2026-07-19-windows-support-design.md) — **Shipped** (Windows lane gated on the branch's first green bring-up dispatch + VM acceptance — see [docs/superpowers/acceptance/2026-07-19-windows-support.md](superpowers/acceptance/2026-07-19-windows-support.md)): Windows x86_64 as a first-class desktop target — conditional erlexec + `ProcessAdapter` behaviour with a Job-Object `valea-spawn` shim (stdin-close ⇒ tree death), per-store maildir separator (`;` on NTFS, tolerant parser, no data migration), drive-letter/case-insensitive-safe `Valea.Paths` plus the containment-site migration onto it, sidecar Job Object in the shell, watcher degrade-not-crash, `%LOCALAPPDATA%` profile pin, NSIS + updater release row. Replaces the "Windows" blocker section of docs/RELEASING.md with that file's lane runbook.
 - [2026-07-19-release-auto-update-design.md](superpowers/specs/2026-07-19-release-auto-update-design.md) — **Shipped** (see [Release & auto-update](#release--auto-update) above): tag-driven GitHub Actions release matrix (native per-platform Burrito sidecars, draft-release go-live gate, minisign-signed updater artifacts), Tauri v2 auto-update wiring, and the sidebar-bottom update notice with background download + restart-to-update.
 - [2026-07-18-calendar-feeds-design.md](superpowers/specs/2026-07-18-calendar-feeds-design.md) — **Shipped** (Spec F — see [Calendar](#calendar-spec-f--ics-feeds-in-valea-calendar-out) above): ICS subscription-feed mirrors (no CalDAV/OAuth/Graph), the hand-written RFC 5545 parser with honest unsupported-recurrence/timezone handling, the two-store guarded derive protocol, the agent-writable Valea calendar + tokened loopback served feed, one calendar mount with mail's deny-not-ask tier, feed-URL-as-credential keychain posture.
 - [2026-07-26-icm-skills-design.md](superpowers/specs/2026-07-26-icm-skills-design.md) — **Shipped** (see [ICM skills](#icm-skills) above): ICM skills (vendored install, consent, settings) — consent-gated install of repo-vendored agent skills into a user-owned ICM's `.claude/skills/`; pinned snapshots + `catalog.yaml` in `backend/priv/skills/` with no runtime fetching; `.provenance.yaml`-derived per-mount state; staged tmp+rename installs with `resolve_real/2` containment; generation-guarded, control-token-gated list/install/update/uninstall/dismiss; a Skills section in agent settings and a one-time dismissible mount-moment offer card.

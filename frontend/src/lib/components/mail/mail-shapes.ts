@@ -617,9 +617,39 @@ export function mailStateLabel(state: string | null | undefined): string {
   }
 }
 
+/**
+ * Engine `last_error` strings that deserve their own user copy instead of
+ * being surfaced raw. Everything else passes through verbatim — most of
+ * what the engine reports is already a human sentence (a connect failure's
+ * reason, "authentication failed"), and swallowing an unrecognized one
+ * behind a generic line would lose the only detail there is.
+ *
+ * `invalid maildir_separator in .account` (windows-support spec C1) is the
+ * one that must NOT reach the user raw: `Valea.Mail.Engine` blocks that
+ * account inert under the `identity_mismatch` state, whose panel copy
+ * offers "Purge local files…" — but nothing is wrong with the mail. One
+ * metadata file records the store's flag separator (`:` legacy / `;` on
+ * Windows), and it is unreadable; repairing or restoring that file is the
+ * whole fix.
+ *
+ * A `Map`, not an object literal: the lookup key is an arbitrary
+ * backend-supplied string, and an object would answer `"toString"` or
+ * `"constructor"` with an inherited function instead of a miss.
+ */
+const ENGINE_ERROR_COPY = new Map<string, string>([
+  [
+    'invalid maildir_separator in .account',
+    "This mailbox folder's .account file is unreadable (bad maildir_separator). Fix or restore that one file — the stored mail itself is intact."
+  ]
+]);
+
 /** Local request error (the `syncNow` RPC call itself failing) wins over the engine's own `lastError`; `null` when neither is present. */
 export function syncErrorText(status: MailAccountStatus | null, requestError: string | null): string | null {
-  return requestError ?? status?.lastError ?? null;
+  if (requestError !== null) return requestError;
+
+  const lastError = status?.lastError ?? null;
+  if (lastError === null) return null;
+  return ENGINE_ERROR_COPY.get(lastError) ?? lastError;
 }
 
 export function syncNowErrorMessage(code: string): string {

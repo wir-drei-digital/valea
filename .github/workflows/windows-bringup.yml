@@ -1,6 +1,15 @@
 # Windows bring-up lane (windows-support spec T1/F). Dispatch-only on
 # purpose: main must not ship a release lane that produces broken
-# installers. Task 8 retires this file into the release.yml matrix.
+# installers.
+#
+# RETIREMENT: delete this workflow after the first fully-green dispatch of
+# it AND a good `release.yml` Windows dry run — until then it is THE gate
+# for this branch. Task 8 promoted Windows into the release matrix, but
+# every gating run this file owns (paths suite, full backend suite, the
+# `valea-spawn` shim's first compile) is still pending: release.yml builds
+# bundles, it does not run these suites. See
+# docs/superpowers/acceptance/2026-07-19-windows-support.md "Batched CI
+# gates" for the dispatch order and what each run must prove.
 name: Windows bring-up
 on:
   workflow_dispatch:

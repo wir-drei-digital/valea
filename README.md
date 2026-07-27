@@ -55,7 +55,7 @@ Note: `cargo check` in `desktop/src-tauri` requires the sidecar binary to exist 
 
 ## Releases & auto-update
 
-Pushing a tag `vX.Y.Z` (matching the `version` in `desktop/src-tauri/tauri.conf.json`) builds macOS (Apple silicon) and Linux (x86_64) bundles onto a draft GitHub release; publishing the draft goes live. Installed apps check twice a day, download in the background, and offer "Restart to update" at the bottom of the sidebar. See [docs/RELEASING.md](docs/RELEASING.md) for the full runbook (secrets, signing, why there's no Windows build yet).
+Pushing a tag `vX.Y.Z` (matching the `version` in `desktop/src-tauri/tauri.conf.json`) builds macOS (Apple silicon), Linux (x86_64) and Windows (x86_64) bundles onto a draft GitHub release; publishing the draft goes live. Installed apps check twice a day, download in the background, and offer "Restart to update" at the bottom of the sidebar. See [docs/RELEASING.md](docs/RELEASING.md) for the full runbook (secrets, signing, and what's different on Windows).
 
 ## API layer
 
