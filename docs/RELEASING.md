@@ -136,8 +136,11 @@ minisign signature over the downloaded `.exe` before running it.
 ### Where Valea keeps its profile
 
 On Windows the backend's app dir and the shell's data dir (including
-`secret_key_base`) pin to **`%LOCALAPPDATA%`** (`app_local_data_dir`),
-never `%APPDATA%`/Roaming. Corporate folder redirection routinely puts
+`secret_key_base`) pin to **`%LOCALAPPDATA%`** (`app_local_data_dir`).
+The one way Roaming could still be reached is `%LOCALAPPDATA%` being unset
+entirely, where Tauri's `basedir` fallback resolves to Roaming — practically
+unreachable on a real Windows session, and not a case we handle specially.
+Corporate folder redirection routinely puts
 Roaming on a network share, and SQLite in WAL mode is documented-unsafe
 over network filesystems — `app.sqlite`, the `sources/` mail and calendar
 mirrors, and session transcripts all live there. Decided before the first

@@ -145,7 +145,7 @@ jobs:
       - name: Bootstrap hex/rebar
         run: cd backend && mix local.hex --force && mix local.rebar --force
 
-      - name: Build SPA + Burrito sidecar
+      - name: Build SPA + Burrito sidecar (+ spawn shim on Windows)
         env:
           BURRITO_TARGET: ${{ matrix.burrito_target }}
         run: just package-backend

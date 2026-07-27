@@ -232,12 +232,26 @@ hanging the turn.
 
 `Valea.Agents.SessionServer` (one GenServer per session, `restart:
 :temporary`, under `Valea.Agents.SessionSupervisor`) spawns the adapter
-through `Valea.Agents.ProcessRuntime` — an `erlexec` wrapper (vendored from
+through `Valea.Agents.ProcessRuntime`, a facade over the
+`Valea.Agents.ProcessAdapter` behaviour. One implementation is pinned into
+app env **once at boot** (`select_adapter!/0`) rather than branched on per
+spawn, so the choice is inspectable and the slot doubles as the test seam.
+On unix that is `ProcessRuntime.Exec` — the `erlexec` wrapper (vendored from
 legend's `LocalPty`) run with `{:group, 0}, :kill_group, :monitor` so
 `stop/1` kills the adapter's **entire process group**, never orphaning
 children; this is the packaging risk item proven live in the Burrito
-sidecar (Task 1). stderr is logged and truncated, never fed to the JSON
-decoder. A 30 s handshake watchdog fails the session with a doctor-readable
+sidecar (Task 1). On Windows it is `ProcessRuntime.PortShim`, an Erlang Port
+onto the `valea-spawn` shim, which supplies the two things a Port cannot: a
+separate stderr channel, and a kill that reaches grandchildren. The shim
+runs the child in a **Job Object** with `KILL_ON_JOB_CLOSE` and treats EOF
+on its own stdin as the teardown signal, so `stop/1` is `Port.close/1` and
+nothing else — no taskkill, no pid races, no orphans. The three owner
+messages are identical on both, so `SessionServer` neither knows nor cares
+which is live. stderr is never fed to the JSON decoder either way: a live
+stream on unix, and on Windows a file under `logs/sessions/` (capped at
+1 MiB by the shim, its last 64 KiB emitted as one message at exit) — the
+documented platform difference, coarser rather than absent.
+A 30 s handshake watchdog fails the session with a doctor-readable
 reason if the adapter never answers `initialize`. Every timeline item is
 appended to `logs/sessions/<id>.jsonl` as it arrives — line 1 is a
 `session/v1` metadata record — a full workspace + ICM identity snapshot
@@ -271,14 +285,25 @@ card in the transcript AND completes the turn lifecycle — the codec emits
 a `turn` item alongside the error item, so the composer's busy state never
 strands on "Working…".
 `Valea.Agents.Env` passes the subprocess
-a minimal allowlisted environment (`HOME`, `PATH`, `USER`, `LANG`/`LC_*`,
-`TMPDIR`, `SHELL`, Claude/Anthropic auth vars when present) — never the
-backend's own environment, so secrets like `SECRET_KEY_BASE` cannot leak
-into the agent process. `Valea.Agents.Doctor` probes Node 22+, the adapter
+a minimal allowlisted environment — never the backend's own, so secrets like
+`SECRET_KEY_BASE` cannot leak into the agent process. The allowlist is
+**platform-split**, because the two platforms do not share variable names
+and Windows programs (node included) fail in confusing ways without theirs:
+unix gets `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`/`LC_*`, `TMPDIR`,
+`SHELL`; Windows gets `PATH`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`,
+`TEMP`/`TMP`, `PATHEXT`, `COMSPEC`, `SystemRoot`, `SystemDrive`. The
+Claude/Anthropic auth vars are on both lists when present; nothing else is.
+This is an allowlist of what Valea **adds** — both spawn mechanisms merge
+into the environment the backend inherited — not a sandbox.
+`Valea.Agents.Doctor` probes Node 22+, the adapter
 binary (`--version`), and auth (`claude-agent-acp --cli auth status`),
-returning ok/failed/unknown per check with a copyable remedy — probes run
-through the same erlexec group-kill so a hung adapter can't leave orphans
-during a doctor check.
+returning ok/failed/unknown per check with a copyable remedy. Probes go
+through the same `ProcessRuntime` facade, so each exercises the platform's
+real adapter (and on unix the same group-kill, so a hung adapter can't leave
+orphans during a doctor check); each runs in its own `Task`, brutal-killed
+on timeout so one wedged probe can't hold the others, and with
+`stdin: :closed` — a probe asks a question and waits, and a target entitled
+to read stdin would otherwise never exit.
 
 ### Permission model
 

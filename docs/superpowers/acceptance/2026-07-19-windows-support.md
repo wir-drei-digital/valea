@@ -41,11 +41,19 @@ code has ever been compiled or run on Windows.
       resolved a `rustler_precompiled` artifact or compiled with the
       runner's Rust. Any of these failing is a packaging fix, not a code
       fix — record which.
+- [ ] **CI1b · First compile of the shell's Windows code.** The "Build
+      NSIS bundle (no release)" step is the FIRST time three things are
+      compiled anywhere: `main.rs`'s `app_local_data_dir` swap, its
+      `#[cfg(windows)]` shim-env / `SidecarJob` block, and `src/winjob.rs`.
+      None of them belongs to the sidecar or shim builds above, so a red
+      compile HERE is a **T1/T5 finding**, not a packaging one — read it
+      against those tasks and record the error verbatim.
 - [ ] **CI2 · T3/T4 paths + containment gate.** The "Paths containment
       suite (gating)" step: `paths_test.exs` and `paths_boundary_test.exs`
-      plus the suites of every module whose containment calls were
-      rewired onto `Valea.Paths` (mounts, permission policy, ICM, symlink
-      containment, ICM RPC, calendar local, files controller). These
+      plus the gating step's module list (mounts, permission policy, ICM,
+      symlink containment, ICM RPC, calendar local, files controller) —
+      that list, not every module rewired onto `Valea.Paths`: the watcher
+      and ClaudeCode suites run under CI3 with the rest. These
       exercise real OTP path functions and the real filesystem — drive
       letters, UNC roots, the root floor, case-folded containment, 8.3
       short-name denial — which is exactly what the pure suite on macOS
@@ -106,6 +114,13 @@ code has ever been compiled or run on Windows.
       `%LOCALAPPDATA%\valea\workspaces\<uuid>\` — **not** under
       `%APPDATA%`/Roaming (spec A6). The ICM folder lands wherever you
       chose it, with the 3-layer seed inside.
+      - [ ] Confirm the app dir path **round-trips through
+        `Valea.Paths.normalize/2` and the app boots with it**: Tauri hands
+        the backend a mixed-separator string
+        (`C:\Users\<you>\AppData\Local/valea` — its own join, not ours), so
+        this is the one path in the product that arrives half-normalized.
+        It reaching the profile above at all is the proof; a boot failure
+        or a workspace created somewhere else is a D2 finding.
 - [ ] **A3 · CLAUDE.md symlink fallback.** On this VM with **developer
       mode OFF** (check Settings → System → For developers first; symlink
       creation without it needs elevation), open the freshly created
