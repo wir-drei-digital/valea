@@ -51,10 +51,19 @@ defmodule Valea.Mail.Engine do
   pattern-match into state.
 
   Two ways a credential arrives: the `set_mail_credential` RPC (via
-  `set_credential/2`) or — dev-only, browser-mode fallback documented in the
+  `set_credential/3`) or — dev-only, browser-mode fallback documented in the
   design spec's §Credentials — `Valea.Mail.Settings.env_credential/1`
   (`VALEA_MAIL_PASSWORD_<SLUG>`), read once at activation and only if no
   credential has already been supplied.
+
+  There are TWO such slots, never one: `credential` (IMAP) and
+  `smtp_credential` (SMTP, spec G §Configuration & credentials), each with
+  its own keychain entry and its own env fallback
+  (`VALEA_MAIL_SMTP_PASSWORD_<SLUG>`). `set_credential/3`'s `kind` picks the
+  slot; the 2-arity call is IMAP, exactly as before. They are independent on
+  purpose — the setup UI's "same as IMAP" writes a COPY, so rotating one
+  never silently moves the other, and a bad SMTP password can never pause
+  the IMAP sync.
 
   ## Sync passes
 
@@ -136,21 +145,31 @@ defmodule Valea.Mail.Engine do
   `"mailbox_replaced"` — plain `String.t()` below because Elixir/Dialyzer
   typespecs don't support singleton-string (as opposed to singleton-atom)
   literal types.
+
+  Two fields ride STRING keys — `"smtp_configured"` (boolean) and
+  `"smtp_credential"` (`"present"` | `"missing"` | `"n/a"`, the last when the
+  account has no `smtp:` block at all). That is the falsy-map-field rule
+  documented in `Valea.Api.Mail`'s moduledoc: ash_typescript nulls a
+  top-level atom-keyed field whose value is `false`, and `smtp_configured`
+  is `false` for every push-only account. (The atom-keyed fields above
+  predate the rule and reach the RPC through `mail_status`'s own
+  stringification, which is why they still work.)
   """
   @type status :: %{
-          account: String.t(),
-          configured: boolean(),
-          credential: String.t(),
-          state: String.t(),
-          last_sync_at: String.t() | nil,
-          last_error: String.t() | nil,
-          username: String.t() | nil,
-          workspace_id: String.t() | nil,
-          pending_ops: non_neg_integer(),
-          held_folders: [String.t()],
-          backfill: %{String.t() => boolean()} | nil,
-          notices: [String.t()],
-          folders: %{String.t() => String.t()} | nil
+          :account => String.t(),
+          :configured => boolean(),
+          :credential => String.t(),
+          :state => String.t(),
+          :last_sync_at => String.t() | nil,
+          :last_error => String.t() | nil,
+          :username => String.t() | nil,
+          :workspace_id => String.t() | nil,
+          :pending_ops => non_neg_integer(),
+          :held_folders => [String.t()],
+          :backfill => %{String.t() => boolean()} | nil,
+          :notices => [String.t()],
+          :folders => %{String.t() => String.t()} | nil,
+          optional(String.t()) => boolean() | String.t()
         }
 
   @doc """
@@ -189,17 +208,22 @@ defmodule Valea.Mail.Engine do
   end
 
   @doc """
-  Stores `secret` as `slug`'s credential (RAM only, never logged) and
-  broadcasts the updated status. If the Engine had paused on `auth_failed`,
-  this clears it and re-arms polling — the next poll tick runs a pass; this
-  call never starts one itself. `{:error, :not_found}` when no Engine is
-  running for `slug`.
+  Stores `secret` in `slug`'s `kind` credential slot (RAM only, never logged)
+  and broadcasts the updated status. `kind` defaults to `:imap`, so the
+  2-arity call means exactly what it always meant.
+
+  For `:imap`: if the Engine had paused on `auth_failed`, this clears it and
+  re-arms polling — the next poll tick runs a pass; this call never starts
+  one itself. For `:smtp` it only fills the send-side slot: SMTP has no poll
+  loop to re-arm, and an SMTP auth failure never pauses the IMAP sync.
+  `{:error, :not_found}` when no Engine is running for `slug`.
   """
-  @spec set_credential(String.t(), String.t()) :: :ok | {:error, :not_found}
-  def set_credential(slug, secret) when is_binary(slug) and is_binary(secret) do
+  @spec set_credential(String.t(), String.t(), :imap | :smtp) :: :ok | {:error, :not_found}
+  def set_credential(slug, secret, kind \\ :imap)
+      when is_binary(slug) and is_binary(secret) and kind in [:imap, :smtp] do
     case whereis(slug) do
       nil -> {:error, :not_found}
-      pid -> GenServer.call(pid, {:set_credential, secret})
+      pid -> GenServer.call(pid, {:set_credential, secret, kind})
     end
   end
 
@@ -358,6 +382,10 @@ defmodule Valea.Mail.Engine do
       connect_opts: Map.get(cfg, :connect_opts, []),
       active: false,
       credential: nil,
+      # The SEND-side secret, a slot of its own (spec G §Credentials) — same
+      # zero-arity-closure discipline as `credential`, never the same value
+      # by construction.
+      smtp_credential: nil,
       status: "inactive",
       last_sync_at: nil,
       last_error: nil,
@@ -391,12 +419,18 @@ defmodule Valea.Mail.Engine do
   # diff, not part of this module's public interface.
   def handle_call(:current_settings, _from, state), do: {:reply, state.settings, state}
 
-  def handle_call({:set_credential, secret}, _from, state) do
+  def handle_call({:set_credential, secret, :imap}, _from, state) do
     new_state =
       state
       |> Map.put(:credential, fn -> secret end)
       |> clear_auth_failed()
 
+    broadcast_status(new_state)
+    {:reply, :ok, new_state}
+  end
+
+  def handle_call({:set_credential, secret, :smtp}, _from, state) do
+    new_state = Map.put(state, :smtp_credential, fn -> secret end)
     broadcast_status(new_state)
     {:reply, :ok, new_state}
   end
@@ -843,6 +877,7 @@ defmodule Valea.Mail.Engine do
         state
         | active: true,
           credential: state.credential || env_credential(state.account),
+          smtp_credential: state.smtp_credential || smtp_env_credential(state.account),
           status: "idle",
           workspace_id: load_workspace_id(state.root)
       }
@@ -879,12 +914,13 @@ defmodule Valea.Mail.Engine do
     end
   end
 
-  defp env_credential(slug) do
-    case Valea.Mail.Settings.env_credential(slug) do
-      nil -> nil
-      secret -> fn -> secret end
-    end
-  end
+  defp env_credential(slug), do: wrap_secret(Valea.Mail.Settings.env_credential(slug))
+
+  defp smtp_env_credential(slug),
+    do: wrap_secret(Valea.Mail.Settings.smtp_env_credential(slug))
+
+  defp wrap_secret(nil), do: nil
+  defp wrap_secret(secret), do: fn -> secret end
 
   # -- sync gating ----------------------------------------------------------
 
@@ -1123,6 +1159,7 @@ defmodule Valea.Mail.Engine do
       notices: state.notices,
       folders: nil
     }
+    |> Map.merge(smtp_status(state))
   end
 
   defp build_status(state) do
@@ -1158,7 +1195,27 @@ defmodule Valea.Mail.Engine do
         "trash" => state.settings.folders.trash
       }
     }
+    |> Map.merge(smtp_status(state))
   end
+
+  # Whether this account can send at all, and whether its SEND credential is
+  # in RAM — `"n/a"` (not `"missing"`) for a push-only account, which has no
+  # SMTP credential to be missing. String keys, per the falsy-map-field rule
+  # in `Valea.Api.Mail`'s moduledoc: `smtp_configured` is `false` for every
+  # push-only account, and an atom-keyed `false` is nulled by ash_typescript.
+  defp smtp_status(state) do
+    configured =
+      state.settings != nil and Valea.Mail.Settings.smtp_configured?(state.settings)
+
+    %{
+      "smtp_configured" => configured,
+      "smtp_credential" => smtp_credential_status(configured, state.smtp_credential)
+    }
+  end
+
+  defp smtp_credential_status(false, _credential), do: "n/a"
+  defp smtp_credential_status(true, nil), do: "missing"
+  defp smtp_credential_status(true, _credential), do: "present"
 
   # `status/1` must NEVER crash this GenServer, whatever state `Valea.Repo`
   # is in — a `handle_call` that raises takes the WHOLE Engine down (and

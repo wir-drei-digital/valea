@@ -1,14 +1,35 @@
 defmodule Valea.Mail.Settings do
   @moduledoc """
-  `config/mail.yaml` v4 (mail design spec E, §config/mail.yaml (v4)) ⇄
-  `%{slug => %Settings{}}`. Non-secret only — this file never holds a
-  password; the credential lives in the OS keychain, handed to the Engine
-  over the control plane (see the spec's §Credentials).
+  `config/mail.yaml` v5 (mail SMTP-send design spec G, §Configuration &
+  credentials) ⇄ `%{slug => %Settings{}}`. Non-secret only — this file
+  never holds a password; the credentials (IMAP and SMTP, separately) live
+  in the OS keychain, handed to the Engine over the control plane (see the
+  spec's §Credentials).
 
-  v4 replaces the v3 single-account top-level `account:`/`imap:`/`folders:`/
+  v4 replaced the v3 single-account top-level `account:`/`imap:`/`folders:`/
   `sync:` shape with a multi-account `accounts:` map keyed by a URL-safe
   slug. There is no v3 compatibility: a v3-shaped file (no `accounts:` key)
   loads as `{:error, {:invalid, _}}`.
+
+  ## v5: the optional `smtp:` block
+
+  v5 adds one optional per-account `smtp:` block and flips the `safety:`
+  block's `outbound:` value to `human_send_and_push`. A v4 file loads
+  unchanged — every account simply gets `smtp: nil` — and is normalized to
+  v5 on the next write (`render/1` only ever emits v5). The `version:` key
+  itself is documentation, not a gate: `load/1` has never read it, and a
+  file's SHAPE (an `accounts:` mapping, per-account validity) is what
+  decides.
+
+  `smtp: nil` means a PUSH-ONLY account: no Send action, everything else
+  unchanged. When present, the block is validated at load —
+  `security` defaults from the port (587 → `:starttls`, 465 → `:tls`; any
+  other port must state `security:` explicitly, and an explicit value
+  contradicting the 587/465 convention is rejected), `from` defaults to
+  `username` and must be a single addr-spec (it becomes the `From` header —
+  a draft can never override it), and a `from_name` carrying CR/LF/NUL is
+  rejected outright (header injection). A broken `smtp:` block invalidates
+  only ITS account, exactly like a broken `imap:` one.
 
   ## Per-account validity
 
@@ -31,16 +52,18 @@ defmodule Valea.Mail.Settings do
 
   ## Safety block
 
-  `render/1` always emits the fixed v4 safety invariant
-  (`never_expunge: true`, `outbound: push_drafts_only`) — this Engine never
-  expunges a message and never sends anything directly; it only ever
-  creates drafts.
+  `render/1` always emits the fixed v5 safety invariant
+  (`never_expunge: true`, `outbound: human_send_and_push`) — this Engine
+  never expunges a message, and the only transmission path is a HUMAN
+  clicking Send or Push in the app (no agent-facing tool or file convention
+  can reach either).
   """
 
   alias __MODULE__
   alias Valea.Mail.Normalizer
 
   @default_port 993
+  @default_smtp_port 587
   @default_folders %{drafts: "Drafts", sent: "Sent", archive: "Archive", trash: "Trash"}
   @default_sync %{
     window_days: 90,
@@ -65,16 +88,29 @@ defmodule Valea.Mail.Settings do
   # risk (the character class structurally cannot break a YAML block).
   @slug_re ~r/^[a-z0-9][a-z0-9-]{0,31}$/
 
+  # A LOCAL copy of `Valea.Mail.DraftFile`'s `@addr_re` (RFC 5322 addr-spec,
+  # dot-atom local part + dotted domain labels), used to validate `smtp.from`.
+  # Task 3 of spec G promotes DraftFile's to a public `valid_addr_spec?/1` and
+  # this copy goes away with it — one grammar, one place.
+  @addr_re ~r/^[A-Za-z0-9!#$%&'*+\/=?^_`{|}~-]+(\.[A-Za-z0-9!#$%&'*+\/=?^_`{|}~-]+)*@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/
+
   defstruct slug: nil,
             provider: :generic,
             imap: %{host: nil, port: @default_port, username: nil},
+            smtp: nil,
             folders: @default_folders,
             sync: @default_sync
 
+  @typedoc """
+  One account's non-secret settings. `smtp: nil` is a push-only account
+  (v4 files, and any v5 account that simply has no `smtp:` block); when
+  present, `from` is ALWAYS populated (defaulted to `username` at load).
+  """
   @type t :: %__MODULE__{
           slug: String.t() | nil,
           provider: :generic | :gmail,
           imap: %{host: String.t() | nil, port: pos_integer(), username: String.t() | nil},
+          smtp: smtp() | nil,
           folders: %{drafts: String.t(), sent: String.t(), archive: String.t(), trash: String.t()},
           sync: %{
             window_days: pos_integer(),
@@ -82,6 +118,15 @@ defmodule Valea.Mail.Settings do
             max_message_bytes: pos_integer(),
             exclude_folders: [String.t()]
           }
+        }
+
+  @type smtp :: %{
+          host: String.t(),
+          port: pos_integer(),
+          security: :starttls | :tls,
+          username: String.t(),
+          from: String.t(),
+          from_name: String.t() | nil
         }
 
   @doc """
@@ -123,6 +168,40 @@ defmodule Valea.Mail.Settings do
 
   def detect_provider(_host), do: :generic
 
+  @doc "True when this account carries an `smtp:` block — i.e. it can send, not only push."
+  @spec smtp_configured?(t()) :: boolean()
+  def smtp_configured?(%Settings{smtp: nil}), do: false
+  def smtp_configured?(%Settings{}), do: true
+
+  @doc """
+  An opaque hash over everything that decides HOW and AS WHOM this account
+  transmits — `nil` for a push-only account.
+
+  This is the settings component of the send flow's **review fingerprint**
+  (spec G, §Send pipeline): the value the user reviewed is pinned into the
+  send op, and a send whose fingerprint no longer matches is refused rather
+  than transmitted under changed identity or against a different server.
+  Task 4's `review_fingerprint/2` joins the resolved threading to this
+  hash — nothing else may fold into it, and the input string below is
+  frozen: changing it invalidates in-flight reviews.
+
+  Deliberately EXCLUDES everything that doesn't change what lands in the
+  recipient's mailbox (`sync:`, `folders:`, the IMAP block): a poll-interval
+  edit must not force the user to re-review a composed message.
+  """
+  @spec smtp_fingerprint(t()) :: String.t() | nil
+  def smtp_fingerprint(%Settings{smtp: nil}), do: nil
+
+  def smtp_fingerprint(%Settings{smtp: smtp}) do
+    :sha256
+    |> :crypto.hash(fingerprint_input(smtp))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp fingerprint_input(smtp) do
+    "smtp\n#{smtp.from}\n#{smtp.from_name || ""}\n#{smtp.host}\n#{smtp.port}\n#{smtp.security}\n#{smtp.username}\n"
+  end
+
   @doc "The Gmail virtual folders excluded from sync (they mirror every other folder)."
   @spec gmail_excludes() :: [String.t()]
   def gmail_excludes, do: @gmail_excludes
@@ -158,19 +237,22 @@ defmodule Valea.Mail.Settings do
           required(:host) => String.t(),
           required(:port) => pos_integer(),
           required(:username) => String.t(),
+          optional(:smtp) => map() | nil,
           optional(:folders) => map() | nil,
           optional(:sync) => map() | nil
-        }) :: :ok | {:error, :invalid_slug}
+        }) :: :ok | {:error, :invalid_slug | :invalid_smtp}
   def upsert_account!(root, slug, %{host: host, port: port, username: username} = attrs)
       when is_binary(root) and is_binary(slug) and is_binary(host) and is_integer(port) and
              port > 0 and is_binary(username) do
-    with :ok <- validate_new_slug(root, slug) do
+    with :ok <- validate_new_slug(root, slug),
+         {:ok, smtp} <- validate_smtp_attrs(Map.get(attrs, :smtp)) do
       provider = detect_provider(host)
 
       account = %Settings{
         slug: slug,
         provider: provider,
         imap: %{host: host, port: port, username: username},
+        smtp: smtp,
         folders:
           merge_override(default_folders_for(provider), Map.get(attrs, :folders), &is_binary/1),
         sync: merge_sync_override(default_sync_for(provider), Map.get(attrs, :sync))
@@ -182,6 +264,27 @@ defmodule Valea.Mail.Settings do
     end
   end
 
+  # An `smtp:` the caller (i.e. the setup RPC, i.e. a human filling a form)
+  # got wrong must NEVER be written: a rendered-but-unloadable block would
+  # invalidate the whole account on the next load — killing its IMAP sync
+  # too, over a typo'd From address. Validated here through the SAME parser
+  # the load path uses, so what upsert accepts is exactly what load accepts.
+  defp validate_smtp_attrs(nil), do: {:ok, nil}
+
+  defp validate_smtp_attrs(attrs) when is_map(attrs) do
+    yaml_shape =
+      attrs
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
+
+    case parse_smtp(yaml_shape) do
+      {:ok, smtp} -> {:ok, smtp}
+      {:error, _reason} -> {:error, :invalid_smtp}
+    end
+  end
+
+  defp validate_smtp_attrs(_attrs), do: {:error, :invalid_smtp}
+
   @doc "Removes the account at `slug` (a no-op `:ok` if it was already absent) and rewrites the file."
   @spec remove_account!(String.t(), String.t()) :: :ok
   def remove_account!(root, slug) when is_binary(root) and is_binary(slug) do
@@ -191,10 +294,11 @@ defmodule Valea.Mail.Settings do
   end
 
   @doc """
-  Renders the full v4 `config/mail.yaml` bytes for `accounts` (a
+  Renders the full v5 `config/mail.yaml` bytes for `accounts` (a
   `%{slug => t()}` map, as `load/1`'s ok-map's `accounts:` field) — the
   fixed `safety:` block (`never_expunge: true`, `outbound:
-  push_drafts_only`) is always emitted. String fields go through the
+  human_send_and_push`) is always emitted, and a per-account `smtp:` block
+  only for an account that has one. String fields go through the
   injection-hardened `yaml_string/1` (same shape as `Valea.Mail.MessageFile`'s
   helper of the same name); slugs are grammar-validated elsewhere and never
   reach here unvalidated, so they're safe to interpolate unquoted as YAML
@@ -209,10 +313,10 @@ defmodule Valea.Mail.Settings do
       end
 
     """
-    version: 4
+    version: 5
     #{accounts_block}safety:
       never_expunge: true
-      outbound: push_drafts_only
+      outbound: human_send_and_push
     """
   end
 
@@ -224,13 +328,22 @@ defmodule Valea.Mail.Settings do
   """
   @spec env_credential(String.t()) :: String.t() | nil
   def env_credential(slug) when is_binary(slug) do
-    var_name =
-      slug
-      |> String.upcase()
-      |> String.replace("-", "_")
-
-    System.get_env("VALEA_MAIL_PASSWORD_#{var_name}")
+    System.get_env("VALEA_MAIL_PASSWORD_#{env_var_suffix(slug)}")
   end
+
+  @doc """
+  The SMTP counterpart of `env_credential/1`:
+  `VALEA_MAIL_SMTP_PASSWORD_<SLUG>`. A separate variable on purpose — the
+  two secrets are independent (the setup UI's "same as IMAP" writes a COPY
+  into the SMTP keychain entry, never an alias), so rotation of one never
+  silently moves the other.
+  """
+  @spec smtp_env_credential(String.t()) :: String.t() | nil
+  def smtp_env_credential(slug) when is_binary(slug) do
+    System.get_env("VALEA_MAIL_SMTP_PASSWORD_#{env_var_suffix(slug)}")
+  end
+
+  defp env_var_suffix(slug), do: slug |> String.upcase() |> String.replace("-", "_")
 
   # -- file I/O -----------------------------------------------------------------
 
@@ -326,9 +439,10 @@ defmodule Valea.Mail.Settings do
     if valid_slug?(slug) do
       imap = fetch_map(attrs, "imap")
 
-      with {:ok, host} <- fetch_required_string(imap, "host"),
-           {:ok, username} <- fetch_required_string(imap, "username"),
-           {:ok, port} <- fetch_port(imap) do
+      with {:ok, host} <- fetch_required_string(imap, "imap", "host"),
+           {:ok, username} <- fetch_required_string(imap, "imap", "username"),
+           {:ok, port} <- fetch_port(imap),
+           {:ok, smtp} <- build_smtp(attrs) do
         # Resolve provider: explicit YAML value takes precedence, fallback to host detection
         provider =
           case provider_from_string(Map.get(attrs, "provider")) do
@@ -341,6 +455,7 @@ defmodule Valea.Mail.Settings do
            slug: slug,
            provider: provider,
            imap: %{host: host, port: port, username: username},
+           smtp: smtp,
            folders:
              merge_yaml(default_folders_for(provider), Map.get(attrs, "folders"), &is_binary/1),
            sync: merge_yaml_sync(default_sync_for(provider), Map.get(attrs, "sync"))
@@ -363,11 +478,11 @@ defmodule Valea.Mail.Settings do
     end
   end
 
-  defp fetch_required_string(map, key) do
+  defp fetch_required_string(map, block, key) do
     case Map.fetch(map, key) do
       {:ok, v} when is_binary(v) and v != "" -> {:ok, v}
-      {:ok, _other} -> {:error, "imap.#{key} must be a non-empty string"}
-      :error -> {:error, "imap.#{key} is required"}
+      {:ok, _other} -> {:error, "#{block}.#{key} must be a non-empty string"}
+      :error -> {:error, "#{block}.#{key} is required"}
     end
   end
 
@@ -378,6 +493,122 @@ defmodule Valea.Mail.Settings do
       :error -> {:ok, @default_port}
     end
   end
+
+  # -- smtp block (v5) ------------------------------------------------------
+
+  # No `smtp:` key at all is the NORMAL push-only account, not an error; a
+  # present-but-not-a-mapping one is a hand-edit worth reporting.
+  defp build_smtp(attrs) do
+    case Map.get(attrs, "smtp") do
+      nil -> {:ok, nil}
+      smtp when is_map(smtp) -> parse_smtp(smtp)
+      _other -> {:error, "smtp must be a mapping"}
+    end
+  end
+
+  defp parse_smtp(smtp) do
+    with {:ok, host} <- fetch_required_string(smtp, "smtp", "host"),
+         {:ok, username} <- fetch_required_string(smtp, "smtp", "username"),
+         {:ok, port} <- fetch_smtp_port(smtp),
+         {:ok, security} <- fetch_security(smtp, port),
+         {:ok, from} <- fetch_from(smtp, username),
+         {:ok, from_name} <- fetch_from_name(smtp) do
+      {:ok,
+       %{
+         host: host,
+         port: port,
+         security: security,
+         username: username,
+         from: from,
+         from_name: from_name
+       }}
+    end
+  end
+
+  defp fetch_smtp_port(smtp) do
+    case Map.fetch(smtp, "port") do
+      {:ok, v} when is_integer(v) and v > 0 -> {:ok, v}
+      {:ok, _other} -> {:error, "smtp.port must be a positive integer"}
+      :error -> {:ok, @default_smtp_port}
+    end
+  end
+
+  # There is no plaintext mode and no `none` value — TLS is mandatory and
+  # verified either way (spec G, §Configuration & credentials). `security`
+  # only ever picks WHICH TLS: implicit on connect (`:tls`) or a STARTTLS
+  # upgrade. 587/465 carry their convention as the default; any other port
+  # must say so explicitly rather than have one guessed for it.
+  defp fetch_security(smtp, port) do
+    case Map.get(smtp, "security") do
+      nil -> default_security(port)
+      "starttls" -> check_port_convention(:starttls, port)
+      "tls" -> check_port_convention(:tls, port)
+      _other -> {:error, ~s(smtp.security must be "starttls" or "tls")}
+    end
+  end
+
+  defp default_security(587), do: {:ok, :starttls}
+  defp default_security(465), do: {:ok, :tls}
+
+  defp default_security(port) do
+    {:error, "smtp.security is required for port #{port} (only 587 and 465 have a default)"}
+  end
+
+  defp check_port_convention(:tls, 587) do
+    {:error, "smtp.security tls contradicts port 587 (587 is starttls, 465 is tls)"}
+  end
+
+  defp check_port_convention(:starttls, 465) do
+    {:error, "smtp.security starttls contradicts port 465 (465 is tls, 587 is starttls)"}
+  end
+
+  defp check_port_convention(security, _port), do: {:ok, security}
+
+  # The `From` identity is config-owned, never frontmatter-owned (spec G), so
+  # it is validated HERE, once, rather than trusted at composition time: an
+  # account whose From isn't a single addr-spec cannot compose a valid message
+  # and is invalid outright.
+  defp fetch_from(smtp, username) do
+    case Map.get(smtp, "from") do
+      nil -> check_addr_spec(username)
+      "" -> check_addr_spec(username)
+      from when is_binary(from) -> check_addr_spec(from)
+      _other -> {:error, "smtp.from must be a string"}
+    end
+  end
+
+  defp check_addr_spec(addr) do
+    if valid_addr_spec?(addr) do
+      {:ok, addr}
+    else
+      {:error, "smtp.from must be a single addr-spec (defaults to smtp.username)"}
+    end
+  end
+
+  defp fetch_from_name(smtp) do
+    case Map.get(smtp, "from_name") do
+      nil ->
+        {:ok, nil}
+
+      "" ->
+        {:ok, nil}
+
+      name when is_binary(name) ->
+        # CR/LF/NUL would break out of the encoded display name at header
+        # serialization — rejected at the config boundary, never sanitized
+        # silently into something the user didn't write.
+        if String.contains?(name, ["\r", "\n", <<0>>]) do
+          {:error, "smtp.from_name must not contain CR, LF or NUL"}
+        else
+          {:ok, name}
+        end
+
+      _other ->
+        {:error, "smtp.from_name must be a string"}
+    end
+  end
+
+  defp valid_addr_spec?(addr), do: Regex.match?(@addr_re, addr)
 
   # -- defaults by provider -------------------------------------------------
 
@@ -456,7 +687,7 @@ defmodule Valea.Mail.Settings do
           host: #{yaml_string(a.imap.host)}
           port: #{a.imap.port}
           username: #{yaml_string(a.imap.username)}
-        folders:
+    #{render_smtp(a.smtp)}    folders:
           drafts: #{yaml_string(a.folders.drafts)}
           sent: #{yaml_string(a.folders.sent)}
           archive: #{yaml_string(a.folders.archive)}
@@ -468,6 +699,26 @@ defmodule Valea.Mail.Settings do
           exclude_folders: #{render_string_list(a.sync.exclude_folders)}
     """
   end
+
+  # Emitted only for a sending account — a push-only one keeps the v4 shape
+  # exactly (no empty `smtp:` key). Every line carries its own final
+  # indentation because it is interpolated into `render_account/2`'s heredoc
+  # at column 0.
+  defp render_smtp(nil), do: ""
+
+  defp render_smtp(smtp) do
+    """
+        smtp:
+          host: #{yaml_string(smtp.host)}
+          port: #{smtp.port}
+          security: #{smtp.security}
+          username: #{yaml_string(smtp.username)}
+          from: #{yaml_string(smtp.from)}
+    """ <> render_from_name(smtp.from_name)
+  end
+
+  defp render_from_name(nil), do: ""
+  defp render_from_name(from_name), do: "      from_name: #{yaml_string(from_name)}\n"
 
   defp render_string_list([]), do: "[]"
   defp render_string_list(list), do: "[" <> Enum.map_join(list, ", ", &yaml_string/1) <> "]"

@@ -170,6 +170,17 @@ defmodule Valea.Mail.EngineTest do
     )
   end
 
+  defp smtp_settings do
+    %{
+      host: "smtp.fastmail.com",
+      port: 587,
+      security: :starttls,
+      username: "mara@example.com",
+      from: "mara@example.com",
+      from_name: nil
+    }
+  end
+
   defp start_engine!(root, generation, slug, opts \\ []) do
     cfg =
       %{root: root, generation: generation, account: slug}
@@ -413,6 +424,73 @@ defmodule Valea.Mail.EngineTest do
     start_engine!(root, 9, "mara")
     open(root, 9)
     assert Engine.status("mara").credential == "missing"
+  end
+
+  # -- smtp credential (v5) ------------------------------------------------------
+
+  test "set_credential/3 with :smtp fills a SEPARATE slot; the 2-arity call stays imap-only", %{
+    root: root
+  } do
+    start_engine!(root, 90, "mara", settings: settings("mara", %{smtp: smtp_settings()}))
+    open(root, 90)
+
+    status = Engine.status("mara")
+    assert status["smtp_configured"] == true
+    assert status["smtp_credential"] == "missing"
+    assert status.credential == "missing"
+
+    # The 2-arity call is still exactly `:imap` — it must not fill the smtp slot.
+    assert :ok = Engine.set_credential("mara", "imap-secret")
+    status = Engine.status("mara")
+    assert status.credential == "present"
+    assert status["smtp_credential"] == "missing"
+
+    assert :ok = Engine.set_credential("mara", "s3", :smtp)
+    status = Engine.status("mara")
+    assert status["smtp_credential"] == "present"
+    assert status.credential == "present"
+  end
+
+  test "an account with no smtp block reports smtp_configured false and credential n/a", %{
+    root: root
+  } do
+    start_engine!(root, 91, "mara")
+    open(root, 91)
+
+    status = Engine.status("mara")
+    assert status["smtp_configured"] == false
+    assert status["smtp_credential"] == "n/a"
+  end
+
+  test "env fallback: VALEA_MAIL_SMTP_PASSWORD_<SLUG> seeds the smtp credential at activation", %{
+    root: root
+  } do
+    System.put_env("VALEA_MAIL_SMTP_PASSWORD_MARA", "smtp-dev-fallback")
+    on_exit(fn -> System.delete_env("VALEA_MAIL_SMTP_PASSWORD_MARA") end)
+
+    start_engine!(root, 92, "mara", settings: settings("mara", %{smtp: smtp_settings()}))
+    open(root, 92)
+
+    status = Engine.status("mara")
+    assert status["smtp_credential"] == "present"
+    # The IMAP slot has its OWN env var and stays empty.
+    assert status.credential == "missing"
+  end
+
+  test "redaction: the smtp secret never appears in :sys.get_state", %{root: root} do
+    start_engine!(root, 93, "mara", settings: settings("mara", %{smtp: smtp_settings()}))
+    open(root, 93)
+
+    secret = "smtp-super-duper-secret-XYZ"
+    :ok = Engine.set_credential("mara", secret, :smtp)
+
+    dump =
+      Engine.via("mara")
+      |> GenServer.whereis()
+      |> :sys.get_state()
+      |> inspect(limit: :infinity, printable_limit: :infinity)
+
+    refute dump =~ secret
   end
 
   test "redaction: :sys.get_state never exposes the raw credential", %{root: root} do
@@ -908,7 +986,7 @@ defmodule Valea.Mail.EngineTest do
 
   test "Valea.Mail.Supervisor boots with NO engine for an invalid account entry", %{root: root} do
     File.write!(Path.join(root, "config/mail.yaml"), """
-    version: 4
+    version: 5
     accounts:
       mara:
         provider: generic
@@ -917,7 +995,7 @@ defmodule Valea.Mail.EngineTest do
           username: "mara@example.com"
     safety:
       never_expunge: true
-      outbound: push_drafts_only
+      outbound: human_send_and_push
     """)
 
     start_supervised!({MailSupervisor, %{root: root, generation: 1}})

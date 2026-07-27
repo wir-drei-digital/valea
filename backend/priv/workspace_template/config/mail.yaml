@@ -1,5 +1,5 @@
-version: 4
+version: 5
 accounts: {}
 safety:
   never_expunge: true
-  outbound: push_drafts_only
+  outbound: human_send_and_push

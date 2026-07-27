@@ -4472,6 +4472,7 @@ export async function removeMailAccountChannel<Fields extends RemoveMailAccountF
 export type SetMailCredentialInput = {
   account: string;
   secret: string;
+  kind?: string | null;
   generation: number;
 };
 
@@ -4550,6 +4551,12 @@ export type SetupMailAccountInput = {
   port: number;
   username: string;
   generation: number;
+  smtpHost?: string | null;
+  smtpPort?: number | null;
+  smtpSecurity?: string | null;
+  smtpUsername?: string | null;
+  smtpFrom?: string | null;
+  smtpFromName?: string | null;
 };
 
 export type SetupMailAccountFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];

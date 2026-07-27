@@ -8,6 +8,7 @@ defmodule ValeaWeb.MailRpcTest do
   alias Valea.Mail.Account
   alias Valea.Mail.Index
   alias Valea.Mail.Maildir
+  alias Valea.Mail.Settings
   alias Valea.Mail.Views
   alias Valea.Workspace.Manager
 
@@ -241,6 +242,84 @@ defmodule ValeaWeb.MailRpcTest do
       assert File.read!(Path.join(workspace, "config/mail.yaml")) == before
     end
 
+    test "the optional smtp_* args write an smtp block and flip smtp_configured", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "mara",
+                   "host" => "imap.fastmail.com",
+                   "port" => 993,
+                   "username" => "mara@example.com",
+                   "smtp_host" => "smtp.fastmail.com",
+                   "smtp_port" => 587,
+                   "smtp_username" => "mara@example.com",
+                   "smtp_from_name" => "Mara",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert {:ok, %{accounts: %{"mara" => account}}} = Settings.load(workspace)
+
+      assert account.smtp == %{
+               host: "smtp.fastmail.com",
+               port: 587,
+               security: :starttls,
+               username: "mara@example.com",
+               from: "mara@example.com",
+               from_name: "Mara"
+             }
+
+      status = await_engine_active!("mara")
+      assert status["smtp_configured"] == true
+      assert status["smtp_credential"] == "missing"
+    end
+
+    test "omitting every smtp_* arg leaves a push-only account", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+
+      assert {:ok, %{accounts: %{"mara" => account}}} = Settings.load(workspace)
+      assert account.smtp == nil
+
+      status = await_engine_active!("mara")
+      assert status["smtp_configured"] == false
+      assert status["smtp_credential"] == "n/a"
+    end
+
+    test "an invalid smtp block is refused without writing anything", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      before_bytes = File.read!(Path.join(workspace, "config/mail.yaml"))
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "mara",
+                   "host" => "imap.fastmail.com",
+                   "port" => 993,
+                   "username" => "mara@example.com",
+                   "smtp_host" => "smtp.fastmail.com",
+                   "smtp_port" => 587,
+                   "smtp_username" => "mara@example.com",
+                   "smtp_from" => "not an addr",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert inspect(errors) =~ "invalid_smtp"
+      assert File.read!(Path.join(workspace, "config/mail.yaml")) == before_bytes
+    end
+
     test "identity mismatch on an existing local subtree refuses without touching config", %{
       workspace: workspace,
       generation: generation
@@ -453,6 +532,74 @@ defmodule ValeaWeb.MailRpcTest do
 
       status = await_engine_active!("mara")
       assert status["credential"] == "present"
+    end
+
+    test "kind: smtp fills the separate smtp slot; the default kind stays imap", %{
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "mara",
+                   "host" => "imap.fastmail.com",
+                   "port" => 993,
+                   "username" => "mara@example.com",
+                   "smtp_host" => "smtp.fastmail.com",
+                   "smtp_port" => 587,
+                   "smtp_username" => "mara@example.com",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      await_engine_active!("mara")
+
+      assert %{"success" => true, "data" => %{"accepted" => true}} =
+               rpc(
+                 "set_mail_credential",
+                 %{"account" => "mara", "secret" => "imap-secret", "generation" => generation},
+                 ["accepted"]
+               )
+
+      status = await_engine_active!("mara")
+      assert status["credential"] == "present"
+      assert status["smtp_credential"] == "missing"
+
+      assert %{"success" => true, "data" => %{"accepted" => true}} =
+               rpc(
+                 "set_mail_credential",
+                 %{
+                   "account" => "mara",
+                   "secret" => "smtp-secret",
+                   "kind" => "smtp",
+                   "generation" => generation
+                 },
+                 ["accepted"]
+               )
+
+      status = await_engine_active!("mara")
+      assert status["smtp_credential"] == "present"
+      assert status["credential"] == "present"
+    end
+
+    test "an unknown kind is rejected", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "set_mail_credential",
+                 %{
+                   "account" => "mara",
+                   "secret" => "x",
+                   "kind" => "pop3",
+                   "generation" => generation
+                 },
+                 ["accepted"]
+               )
+
+      assert inspect(errors) =~ "invalid_credential_kind"
     end
 
     test "an unknown account surfaces not_found", %{generation: generation} do

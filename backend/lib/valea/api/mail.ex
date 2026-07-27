@@ -50,6 +50,15 @@ defmodule Valea.Api.Mail do
   (`{:error, :outside}`) exactly like a real traversal attempt, never
   followed and read.
 
+  ## `set_mail_credential`'s `kind`
+
+  `kind` selects which of the account's TWO credential slots the secret
+  fills — `"imap"` (the default when the argument is omitted, i.e. what
+  every caller predating settings v5 means) or `"smtp"`. They are separate
+  secrets with separate keychain entries; the setup UI's "same as IMAP"
+  sends the same value twice, as a copy. An unknown value is rejected
+  (`"invalid_credential_kind"`) — never `String.to_atom/1`'d.
+
   ## `set_mail_credential`'s secret
 
   The `secret` argument is marked `sensitive? true` (the standard Ash
@@ -118,6 +127,20 @@ defmodule Valea.Api.Mail do
       argument :username, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
+      # The optional v5 SMTP block, flat (this resource's argument style is
+      # flat throughout, never nested maps). ALL of them blank/absent = a
+      # push-only account, which is the v4 behaviour verbatim. Any of them
+      # present builds the block, validated by `Settings` — an invalid one is
+      # REFUSED (`"invalid_smtp"`) rather than written, since a rendered-but-
+      # unloadable smtp block would invalidate the whole account, IMAP sync
+      # included.
+      argument :smtp_host, :string, allow_nil?: true
+      argument :smtp_port, :integer, allow_nil?: true, constraints: [min: 1]
+      argument :smtp_security, :string, allow_nil?: true
+      argument :smtp_username, :string, allow_nil?: true
+      argument :smtp_from, :string, allow_nil?: true
+      argument :smtp_from_name, :string, allow_nil?: true
+
       run fn input, _ctx ->
         %{
           account: slug,
@@ -127,12 +150,18 @@ defmodule Valea.Api.Mail do
           generation: generation
         } = input.arguments
 
+        attrs = %{
+          host: host,
+          port: port,
+          username: username,
+          smtp: smtp_attrs(input.arguments)
+        }
+
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- validate_slug(slug),
              :ok <- check_identity_for_setup(root, slug, host, username),
-             :ok <-
-               Settings.upsert_account!(root, slug, %{host: host, port: port, username: username}) do
+             :ok <- Settings.upsert_account!(root, slug, attrs) do
           :ok = MailSupervisor.reload_settings_all(root)
           {:ok, %{"saved" => true}}
         else
@@ -240,6 +269,11 @@ defmodule Valea.Api.Mail do
 
       argument :account, :string, allow_nil?: false
       argument :secret, :string, allow_nil?: false, sensitive?: true
+      # Which credential slot this secret fills: `"imap"` (the default, and
+      # what every pre-v5 caller means) or `"smtp"`. The two are independent
+      # secrets with separate keychain entries — "same as IMAP" in the setup
+      # UI sends the same value twice, as a copy.
+      argument :kind, :string, allow_nil?: true
       argument :generation, :integer, allow_nil?: false
 
       run fn input, _ctx ->
@@ -247,7 +281,8 @@ defmodule Valea.Api.Mail do
 
         with :ok <- Manager.check_generation(generation),
              :ok <- validate_slug(slug),
-             :ok <- Engine.set_credential(slug, secret) do
+             {:ok, kind} <- credential_kind(input.arguments[:kind]),
+             :ok <- Engine.set_credential(slug, secret, kind) do
           {:ok, %{"accepted" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -596,6 +631,44 @@ defmodule Valea.Api.Mail do
   defp require_confirmation(confirmation, expected) do
     if confirmation == expected, do: :ok, else: {:error, :confirmation_mismatch}
   end
+
+  # -- smtp block / credential kind (v5) --------------------------------------
+
+  # Collapses `setup_mail_account`'s flat `smtp_*` arguments into the nested
+  # `:smtp` attrs `Settings.upsert_account!/3` takes — `nil` (a push-only
+  # account) when the form left every one of them empty. Blank strings count
+  # as absent: the setup form submits `""` for an untouched field, and an
+  # empty `security`/`from`/`from_name` means "use the default", not "this
+  # value is the empty string". Everything past this point is validated by
+  # `Settings` itself, so there is exactly one smtp grammar in the codebase.
+  defp smtp_attrs(arguments) do
+    smtp = %{
+      host: blank_to_nil(arguments[:smtp_host]),
+      port: arguments[:smtp_port],
+      security: blank_to_nil(arguments[:smtp_security]),
+      username: blank_to_nil(arguments[:smtp_username]),
+      from: blank_to_nil(arguments[:smtp_from]),
+      from_name: blank_to_nil(arguments[:smtp_from_name])
+    }
+
+    if Enum.all?(smtp, fn {_key, value} -> is_nil(value) end), do: nil, else: smtp
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(_value), do: nil
+
+  # `nil` (the argument omitted) is `:imap` — what every caller predating the
+  # SMTP slot means. Never `String.to_atom/1` on RPC input.
+  defp credential_kind(nil), do: {:ok, :imap}
+  defp credential_kind("imap"), do: {:ok, :imap}
+  defp credential_kind("smtp"), do: {:ok, :smtp}
+  defp credential_kind(_other), do: {:error, :invalid_credential_kind}
 
   defp check_identity_for_setup(root, slug, host, username) do
     case Account.verify(root, slug, %{host: host, username: username}) do
