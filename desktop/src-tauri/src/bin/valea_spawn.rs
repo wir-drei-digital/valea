@@ -9,8 +9,20 @@
 //   stdin        passed through to the child; EOF is the kill switch.
 //   stdout       passed through verbatim (the agent's NDJSON stream).
 //   stderr       the child's stderr goes to VALEA_SPAWN_STDERR_FILE, capped.
-//   exit code    the child's, mirrored; 120 when our own stdin hit EOF;
-//                64 for a usage/contract violation (see `run`).
+//   exit code    the child's, mirrored — but only ever the child's if a child
+//                actually ran. Otherwise exactly one of:
+//                   64  usage/contract violation, nothing spawned: no <cmd>,
+//                       no VALEA_SPAWN_STDERR_FILE, or an arg containing `"`
+//                       handed to a .cmd/.bat target.
+//                   65  VALEA_SPAWN_STDERR_FILE could not be created, nothing
+//                       spawned. Distinct from 64 because the argv is fine and
+//                       only the path is wrong — a retry with a different path
+//                       is the fix.
+//                  120  our own stdin reached EOF; the tree has been killed.
+//                These are not a separate channel — a child is free to exit 64
+//                itself and the shim will mirror it. What the shim guarantees
+//                is the converse: when IT returns 64 or 65, no child was ever
+//                spawned, so there is no output and no stderr file to find.
 //
 // Do NOT copy main.rs's `windows_subsystem = "windows"` attribute here: this is
 // a console binary and must stay one. A GUI-subsystem build starts with no
@@ -47,6 +59,8 @@ mod win {
     /// Exit code for a contract violation: no command argument, no
     /// VALEA_SPAWN_STDERR_FILE, or an unquotable arg for a batch target.
     const EXIT_USAGE: i32 = 64;
+    /// Exit code when VALEA_SPAWN_STDERR_FILE names a path we cannot create.
+    const EXIT_STDERR_FILE: i32 = 65;
 
     pub fn run() -> i32 {
         let mut args = std::env::args_os().skip(1);
@@ -57,6 +71,24 @@ mod win {
         // agent misconfiguration turns into an unexplainable hang.
         let Ok(stderr_path) = std::env::var("VALEA_SPAWN_STDERR_FILE") else {
             return EXIT_USAGE;
+        };
+
+        // Spec B2: CreateProcess cannot execute .cmd/.bat directly — batch
+        // targets route through COMSPEC, and the shim owns the quoting.
+        let mut command = match build_command(&cmd, args) {
+            Some(c) => c,
+            // Embedded-quote arg to a batch target: unquotable for cmd.exe.
+            None => return EXIT_USAGE,
+        };
+
+        // Opened BEFORE the child exists — every failure mode of this path has
+        // to be an exit code, never a hang. If pump 3 opened it instead, a
+        // failure would take down only that thread, the child's stderr pipe
+        // would fill at ~64 KB, and `child.wait()` below would block forever.
+        // Created share-read/write (Rust's default) so the backend can tail it
+        // while the agent still runs.
+        let Ok(stderr_file) = std::fs::File::create(&stderr_path) else {
+            return EXIT_STDERR_FILE;
         };
 
         // Job first, child second, assign before any pumping. The Job handle
@@ -82,13 +114,6 @@ mod win {
             .expect("set job limits");
         }
 
-        // Spec B2: CreateProcess cannot execute .cmd/.bat directly — batch
-        // targets route through COMSPEC, and the shim owns the quoting.
-        let mut command = match build_command(&cmd, args) {
-            Some(c) => c,
-            // Embedded-quote arg to a batch target: unquotable for cmd.exe.
-            None => return EXIT_USAGE,
-        };
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -130,12 +155,12 @@ mod win {
             })
             .expect("spawn stdout pump");
 
-        // Pump 3: child stderr -> capped file. Created share-read (Rust's
-        // default) so the backend can tail it while the agent still runs.
+        // Pump 3: child stderr -> the capped file opened above. Nothing in here
+        // can fail in a way that stops the drain.
         let err = std::thread::Builder::new()
             .name("stderr-pump".into())
             .spawn(move || {
-                let mut f = std::fs::File::create(&stderr_path).expect("create stderr file");
+                let mut f = stderr_file;
                 let mut buf = [0u8; 8192];
                 let mut written: u64 = 0;
                 loop {

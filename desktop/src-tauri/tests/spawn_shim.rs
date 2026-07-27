@@ -28,6 +28,7 @@ const SHIM: &str = env!("CARGO_BIN_EXE_valea-spawn");
 const CAP: usize = 1024 * 1024;
 const TRUNCATED: &str = "\n[truncated]\n";
 const EXIT_USAGE: i32 = 64;
+const EXIT_STDERR_FILE: i32 = 65;
 const EXIT_STDIN_EOF: i32 = 120;
 
 // -- (a) exit-code passthrough ----------------------------------------------
@@ -233,6 +234,38 @@ fn embedded_quote_arg_to_a_batch_target_exits_64() {
         !err.exists(),
         "a child was spawned despite the unquotable argument"
     );
+    cleanup(&dir);
+}
+
+// -- (h) uncreatable stderr file, pre-spawn ----------------------------------
+
+#[test]
+fn uncreatable_stderr_file_exits_65_before_spawning() {
+    let dir = scratch("stderr-uncreatable");
+    // File::create does not create intermediate directories, so a path under a
+    // directory that does not exist fails cleanly.
+    let err = dir.join("no-such-dir").join("stderr.log");
+    let marker = dir.join("marker.txt");
+
+    // The child would leave `marker.txt` behind if it ever ran; its absence is
+    // the proof that the 65 happens strictly before the spawn — which is what
+    // makes the pump-3-can't-open-the-file hang structurally impossible.
+    let (code, out) = run_shim(
+        &dir,
+        Some(&err),
+        &["cmd.exe", "/c", "echo", "ran", ">", "marker.txt"],
+    );
+
+    assert_eq!(
+        code, EXIT_STDERR_FILE,
+        "an uncreatable stderr file must be its own exit code, not 64 and not a hang"
+    );
+    assert!(out.is_empty());
+    assert!(
+        !marker.exists(),
+        "a child ran despite the stderr file being uncreatable"
+    );
+    assert!(!err.exists(), "the stderr file was created after all");
     cleanup(&dir);
 }
 
