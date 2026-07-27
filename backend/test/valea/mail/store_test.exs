@@ -431,6 +431,157 @@ defmodule Valea.Mail.StoreTest do
       assert {:error, :not_found} = Store.op_by_id("does-not-exist")
     end
 
+    test "create_pending_op/1 round-trips the send columns" do
+      assert {:ok, op} =
+               Store.create_pending_op(
+                 op_attrs(%{
+                   kind: "send",
+                   origin: "drafts/reply.md",
+                   state: "claimed",
+                   content_hash: "aa11",
+                   wire_sha256: "bb22",
+                   record_sha256: "cc33",
+                   envelope_rcpt: ~s(["alex@example.com"])
+                 })
+               )
+
+      assert {:ok, stored} = Store.op_by_id(op.id)
+      assert stored.kind == "send"
+      assert stored.content_hash == "aa11"
+      assert stored.wire_sha256 == "bb22"
+      assert stored.record_sha256 == "cc33"
+      assert stored.envelope_rcpt == ~s(["alex@example.com"])
+    end
+
+    test "transition_op/3 merges the send columns onto the row" do
+      {:ok, op} = Store.create_pending_op(op_attrs(%{kind: "send", state: "claimed"}))
+
+      assert :ok =
+               Store.transition_op(op.id, "pending", %{
+                 wire_sha256: "w",
+                 record_sha256: "r",
+                 envelope_rcpt: ~s(["a@example.com","b@example.com"])
+               })
+
+      assert {:ok, %{state: "pending", wire_sha256: "w", record_sha256: "r"} = stored} =
+               Store.op_by_id(op.id)
+
+      assert stored.envelope_rcpt == ~s(["a@example.com","b@example.com"])
+    end
+
+    # The widened partial-unique index: at most one non-terminal op per
+    # (account, origin) across BOTH outbound kinds, so a draft can never be
+    # pushed and sent at once, nor sent twice from two tabs.
+    test "a second active send for the same (account, origin) is rejected" do
+      assert {:ok, _} =
+               Store.create_pending_op(
+                 op_attrs(%{kind: "send", origin: "drafts/reply.md", state: "pending"})
+               )
+
+      assert {:error, :duplicate_active} =
+               Store.create_pending_op(
+                 op_attrs(%{kind: "send", origin: "drafts/reply.md", state: "claimed"})
+               )
+    end
+
+    test "an active append blocks a send on the same origin, and vice versa" do
+      assert {:ok, append} =
+               Store.create_pending_op(
+                 op_attrs(%{kind: "append", origin: "drafts/reply.md", state: "pending"})
+               )
+
+      assert {:error, :duplicate_active} =
+               Store.create_pending_op(
+                 op_attrs(%{kind: "send", origin: "drafts/reply.md", state: "claimed"})
+               )
+
+      assert :ok = Store.transition_op(append.id, "complete")
+
+      assert {:ok, send_op} =
+               Store.create_pending_op(
+                 op_attrs(%{kind: "send", origin: "drafts/reply.md", state: "claimed"})
+               )
+
+      assert {:error, :duplicate_active} =
+               Store.create_pending_op(
+                 op_attrs(%{kind: "append", origin: "drafts/reply.md", state: "claimed"})
+               )
+
+      assert :ok = Store.transition_op(send_op.id, "rejected", %{error: "nope"})
+
+      assert {:ok, _} =
+               Store.create_pending_op(
+                 op_attrs(%{kind: "append", origin: "drafts/reply.md", state: "claimed"})
+               )
+    end
+
+    test "the two send in-flight states are non-terminal for the claim too" do
+      {:ok, op} = Store.create_pending_op(op_attrs(%{kind: "send", state: "pending"}))
+
+      for state <- ["transmitted", "send_review"] do
+        assert :ok = Store.transition_op(op.id, state)
+
+        assert {:error, :duplicate_active} =
+                 Store.create_pending_op(op_attrs(%{kind: "send", state: "claimed"}))
+      end
+    end
+
+    test "pending_ops/1 includes the transmitted and send_review states" do
+      {:ok, transmitted} =
+        Store.create_pending_op(op_attrs(%{kind: "send", origin: "drafts/a.md"}))
+
+      {:ok, parked} = Store.create_pending_op(op_attrs(%{kind: "send", origin: "drafts/b.md"}))
+      {:ok, done} = Store.create_pending_op(op_attrs(%{kind: "send", origin: "drafts/c.md"}))
+
+      Store.transition_op(transmitted.id, "transmitted")
+      Store.transition_op(parked.id, "send_review", %{error: "unknown"})
+      Store.transition_op(done.id, "complete")
+
+      ids = Store.pending_ops("mara@example.com") |> Enum.map(& &1.id) |> Enum.sort()
+      assert ids == Enum.sort([transmitted.id, parked.id])
+    end
+
+    test "ops_by_origin/2 returns the newest op first" do
+      {:ok, older} =
+        Store.create_pending_op(
+          op_attrs(%{
+            kind: "append",
+            origin: "drafts/reply.md",
+            state: "complete",
+            inserted_at: "2026-07-26T10:00:00.000000Z"
+          })
+        )
+
+      {:ok, newer} =
+        Store.create_pending_op(
+          op_attrs(%{
+            kind: "send",
+            origin: "drafts/reply.md",
+            state: "rejected",
+            inserted_at: "2026-07-26T11:00:00.000000Z"
+          })
+        )
+
+      assert Store.ops_by_origin("mara@example.com", "drafts/reply.md")
+             |> Enum.map(& &1.id) == [newer.id, older.id]
+    end
+
+    # The v3 migration replaces the append-only partial index with one widened
+    # across both outbound kinds — an existing workspace database that already
+    # ran `20260717000001` must come out with exactly the new index.
+    test "the migration leaves only the widened outbound index on mail_pending_ops" do
+      %{rows: rows} =
+        Ecto.Adapters.SQL.query!(
+          Valea.Repo,
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'mail_pending_ops'",
+          []
+        )
+
+      names = rows |> List.flatten() |> Enum.sort()
+      assert "mail_pending_ops_active_outbound" in names
+      refute "mail_pending_ops_active_append" in names
+    end
+
     test "a non-claim create failure raises loudly instead of returning :duplicate_active" do
       # `state` is NOT NULL in the migration AND `allow_nil? false` on the
       # resource — omitting it is a programmer error caught at the changeset

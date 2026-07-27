@@ -1,27 +1,35 @@
 defmodule Valea.Mail.Store.PendingOp do
   @moduledoc """
-  The durable ops ledger — one row per push operation (`"move"` from a
-  reviewed message to its destination folder, or `"append"` of a pushed
-  draft) as it is claimed, executed, and resolved. Unlike every other
-  `Valea.Mail.Store` table, this one is NOT pure cache: it is the record of
-  in-flight/at-most-once side effects against the remote mailbox, so a
-  crash mid-push must find its own row again on restart rather than risk a
-  duplicate append or a re-executed move.
+  The durable ops ledger — one row per outbound operation (`"move"` from a
+  reviewed message to its destination folder, `"append"` of a pushed
+  draft, or `"send"` of a transmitted one) as it is claimed, executed, and
+  resolved. Unlike every other `Valea.Mail.Store` table, this one is NOT
+  pure cache: it is the record of in-flight/at-most-once side effects
+  against the remote mailbox, so a crash mid-push must find its own row
+  again on restart rather than risk a duplicate append, a re-executed
+  move, or — the one that cannot be undone — a retransmitted message.
 
   `id` is an opaque, caller-generated `Ash.UUID` (assigned by
   `Valea.Mail.Store.create_pending_op/1`, not database-generated) — the
   handle `transition_op/3`/`op_by_id/1` key off. `state` walks
   `"claimed" -> "pending" -> "executing" -> "complete"`, with `"rejected"`
-  and `"needs_review"` as terminal/parked side branches.
+  and `"needs_review"` as terminal/parked side branches. A `"send"` op
+  walks two states of its own between `"executing"` and `"complete"`:
+  `"transmitted"` (the message is provably out; its Sent copy is not filed
+  yet) and `"send_review"` (the transmit outcome is unknowable — parked
+  for the human, never retried).
 
-  The one-non-terminal-push-per-draft invariant — a given `(account,
-  origin)` append can have at most one row that is neither `"rejected"` nor
-  `"complete"` — is enforced by a hand-written SQLite **partial** unique
-  index (`mail_pending_ops_active_append`, see the migration), not an Ash
-  `identity`: `Ash.Resource.Info.identities/1` has no partial-index
-  concept, and the moment the row transitions out of "active" a new
-  `origin` claim must be allowed again. `Valea.Mail.Store.create_pending_op/1`
-  turns a violation of that index into `{:error, :duplicate_active}`.
+  The one-non-terminal-op-per-draft invariant — a given `(account,
+  origin)` can have at most one `append`-or-`send` row that is neither
+  `"rejected"` nor `"complete"` — is enforced by a hand-written SQLite
+  **partial** unique index (`mail_pending_ops_active_outbound`, see the
+  `20260726000001` migration; it superseded the append-only
+  `mail_pending_ops_active_append`), not an Ash `identity`:
+  `Ash.Resource.Info.identities/1` has no partial-index concept, and the
+  moment the row transitions out of "active" a new `origin` claim must be
+  allowed again. Spanning both kinds is what makes push and send mutually
+  exclusive on one draft. `Valea.Mail.Store.create_pending_op/1` turns a
+  violation of that index into `{:error, :duplicate_active}`.
   """
   use Ash.Resource,
     domain: Valea.Mail.Store,
@@ -56,6 +64,10 @@ defmodule Valea.Mail.Store.PendingOp do
         :origin,
         :spool_path,
         :payload_sha256,
+        :content_hash,
+        :wire_sha256,
+        :record_sha256,
+        :envelope_rcpt,
         :state,
         :error,
         :inserted_at,
@@ -72,6 +84,10 @@ defmodule Valea.Mail.Store.PendingOp do
         :dest_uidvalidity,
         :spool_path,
         :payload_sha256,
+        :content_hash,
+        :wire_sha256,
+        :record_sha256,
+        :envelope_rcpt,
         :updated_at
       ]
     end
@@ -96,6 +112,16 @@ defmodule Valea.Mail.Store.PendingOp do
     attribute :origin, :string, allow_nil?: false, public?: true
     attribute :spool_path, :string, public?: true
     attribute :payload_sha256, :string, public?: true
+    # Send-only columns (spec G, §Send pipeline). `content_hash` is the RAW
+    # reviewed bytes' hash — the display projection's gate for "is the file
+    # still the revision that was sent?"; `wire_sha256`/`record_sha256` are
+    # the two spooled byte variants (re-verified before the one transmit and
+    # before the Sent copy); `envelope_rcpt` is the JSON array of bare
+    # addr-specs the envelope carried.
+    attribute :content_hash, :string, public?: true
+    attribute :wire_sha256, :string, public?: true
+    attribute :record_sha256, :string, public?: true
+    attribute :envelope_rcpt, :string, public?: true
     attribute :state, :string, allow_nil?: false, public?: true
     attribute :error, :string, public?: true
     attribute :inserted_at, :string, public?: true

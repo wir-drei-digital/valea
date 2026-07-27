@@ -315,8 +315,10 @@ defmodule Valea.Mail.Store do
   @doc """
   Creates a `mail_pending_ops` row. `id` is generated (`Ash.UUID`) unless
   already present in `attrs`. Returns `{:error, :duplicate_active}` when
-  `attrs` would violate the one-non-terminal-append-per-`(account, origin)`
-  partial unique index (`mail_pending_ops_active_append`).
+  `attrs` would violate the one-non-terminal-outbound-op-per-`(account,
+  origin)` partial unique index (`mail_pending_ops_active_outbound`, which
+  spans `append` AND `send` — a draft can never be pushed and sent at
+  once, nor sent twice from two tabs).
   """
   @spec create_pending_op(map()) :: {:ok, map()} | {:error, :duplicate_active}
   def create_pending_op(attrs) do
@@ -389,6 +391,10 @@ defmodule Valea.Mail.Store do
             :dest_uidvalidity,
             :spool_path,
             :payload_sha256,
+            :content_hash,
+            :wire_sha256,
+            :record_sha256,
+            :envelope_rcpt,
             :updated_at
           ])
           |> Map.put_new(:updated_at, now_iso8601())
@@ -405,29 +411,50 @@ defmodule Valea.Mail.Store do
     end
   end
 
-  @doc "Every `mail_pending_ops` row for `account` still in flight (`claimed`/`pending`/`executing`/`needs_review`)."
+  @doc """
+  Every `mail_pending_ops` row for `account` still in flight. The states
+  are exactly the non-terminal ones the claim index treats as active:
+  `claimed`/`pending`/`executing`/`needs_review` plus the send-only
+  `transmitted` (out, Sent copy not filed yet) and `send_review` (outcome
+  unknowable, parked for the human) — both of which the recovery paths
+  must keep seeing until they resolve.
+  """
   @spec pending_ops(String.t()) :: [map()]
   def pending_ops(account) do
     PendingOp
     |> Ash.Query.filter(
-      account == ^account and state in ["claimed", "pending", "executing", "needs_review"]
+      account == ^account and
+        state in [
+          "claimed",
+          "pending",
+          "executing",
+          "needs_review",
+          "transmitted",
+          "send_review"
+        ]
     )
     |> Ash.read!()
     |> Enum.map(&pending_op_map/1)
   end
 
   @doc """
-  Every `mail_pending_ops` row for `(account, origin)`, ANY state — the
-  push flow's corroboration lookup (a non-`draft` frontmatter status is
-  allowed only when a prior engine-written op for this draft exists) and
-  `list_mail_drafts`'s ledger-derived status, both of which must see
-  terminal (`complete`/`rejected`) rows the active-only `pending_ops/1`
-  filters out.
+  Every `mail_pending_ops` row for `(account, origin)`, ANY state, NEWEST
+  FIRST — the push flow's corroboration lookup (a non-`draft` frontmatter
+  status is allowed only when a prior engine-written op for this draft
+  exists) and `list_mail_drafts`'s ledger-derived display projection, both
+  of which must see terminal (`complete`/`rejected`) rows the active-only
+  `pending_ops/1` filters out.
+
+  The ordering is load-bearing for the projection (spec G, §Display
+  projection): with two op kinds sharing one origin, the NEWEST terminal
+  send op governs the displayed state — a push completed last week must
+  not outrank a send rejected a minute ago.
   """
   @spec ops_by_origin(String.t(), String.t()) :: [map()]
   def ops_by_origin(account, origin) do
     PendingOp
     |> Ash.Query.filter(account == ^account and origin == ^origin)
+    |> Ash.Query.sort(inserted_at: :desc)
     |> Ash.read!()
     |> Enum.map(&pending_op_map/1)
   end
@@ -476,6 +503,10 @@ defmodule Valea.Mail.Store do
       origin: row.origin,
       spool_path: row.spool_path,
       payload_sha256: row.payload_sha256,
+      content_hash: row.content_hash,
+      wire_sha256: row.wire_sha256,
+      record_sha256: row.record_sha256,
+      envelope_rcpt: row.envelope_rcpt,
       state: row.state,
       error: row.error,
       inserted_at: row.inserted_at,
