@@ -27,6 +27,7 @@
   import MountFromElsewhereDialog from '$lib/components/knowledge/MountFromElsewhereDialog.svelte';
   import { mountsStore, createIcmErrorMessage } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { skillsOfferStore } from '$lib/stores/skills-offer.svelte';
   import { defaultIcmFolder } from '$lib/components/onboarding/onboarding-path';
   import { createNewIcm, type CreateNewIcmDeps } from './mount-icm-action';
 
@@ -79,8 +80,9 @@
     createIcm: (n, path, generation) => mountsStore.create(n, path, generation)
   };
 
-  /** Lands the user on the ICM they just mounted/created — same continuation `useExistingIcm`'s `goToMountedIcm` gives onboarding. */
+  /** Lands the user on the ICM they just mounted/created — same continuation `useExistingIcm`'s `goToMountedIcm` gives onboarding. Also fires the one-time skill offer for the fresh mount (shared by both the create and mount-existing/adopt success paths that funnel through here). */
   function goToMounted(mountKey: string) {
+    void skillsOfferStore.offerFor(mountKey);
     void goto(`/knowledge?icm=${encodeURIComponent(mountKey)}`);
   }
 

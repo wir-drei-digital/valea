@@ -16,6 +16,7 @@
   import { goto } from '$app/navigation';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
+  import { skillsOfferStore } from '$lib/stores/skills-offer.svelte';
   import { startFresh, defaultIcmFolder, type StartFreshDeps } from './onboarding-path';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
@@ -78,7 +79,12 @@
     currentGeneration: () => workspaceStore.generation,
     setPendingIcmError: (n, ref, message) => mountsStore.setPendingAdoptError(n, ref, message),
     goToKnowledge: () => void goto('/knowledge'),
-    goToFirstSession: (mountKey) => void goto(`/chat?icm=${mountKey}`)
+    goToFirstSession: (mountKey) => {
+      // A freshly-created ICM is the prime moment to offer its methodology
+      // skill — fire the one-time offer before navigating into it.
+      void skillsOfferStore.offerFor(mountKey);
+      void goto(`/chat?icm=${mountKey}`);
+    }
   };
 
   // `Valea.Workspace.Manager.create/1`'s (id-based) failure surface — small

@@ -18,6 +18,7 @@
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
+  import { skillsOfferStore } from '$lib/stores/skills-offer.svelte';
   import {
     adoptExistingIcm,
     basename,
@@ -121,6 +122,15 @@
     return { ok: true, mountKey: data.mountKey };
   }
 
+  // Shared success continuation for both the mount-existing and adopt paths:
+  // fire the one-time skill offer for the fresh mount, then land on it. The
+  // mount/adopt moment is exactly when offering its methodology skill reads
+  // as helpful rather than nagging.
+  function goToMountedIcm(mountKey: string) {
+    void skillsOfferStore.offerFor(mountKey);
+    void goto(`/knowledge?icm=${mountKey}`);
+  }
+
   const deps: UseExistingIcmDeps = {
     inspectIcm: inspectIcmDep,
     // `workspaceStore.create`'s `parentDir` is accepted-but-ignored
@@ -130,7 +140,7 @@
     currentGeneration: () => workspaceStore.generation,
     setPendingMountError: (n, ref, message) => mountsStore.setPendingAdoptError(n, ref, message),
     goToKnowledge: () => void goto('/knowledge'),
-    goToMountedIcm: (mountKey) => void goto(`/knowledge?icm=${mountKey}`)
+    goToMountedIcm
   };
 
   // Calls `adopt_icm` directly, same shape `mountIcmDep` above has — the one
@@ -157,7 +167,7 @@
     currentGeneration: () => workspaceStore.generation,
     setPendingMountError: (n, ref, message) => mountsStore.setPendingAdoptError(n, ref, message),
     goToKnowledge: () => void goto('/knowledge'),
-    goToMountedIcm: (mountKey) => void goto(`/knowledge?icm=${mountKey}`)
+    goToMountedIcm
   };
 
   // `Valea.Workspace.Manager.create/1`'s (id-based) failure surface — small

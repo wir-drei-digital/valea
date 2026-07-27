@@ -15,6 +15,8 @@
   import { degradedChipLabel } from '$lib/components/knowledge/mount-sections';
   import type { AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { orderGroups, isGroupExpanded, diagnosisSummary } from './icm-projects';
+  import { skillsOfferStore } from '$lib/stores/skills-offer.svelte';
+  import SkillsOfferCard from './SkillsOfferCard.svelte';
   import {
     normalizeMountsDoctorChecks,
     type MountsDoctorCheck
@@ -253,6 +255,11 @@
           <p class="text-warn-ink px-2 py-0.5 text-[11px]" role="alert">{startError[group.mountKey]}</p>
         {/if}
       </div>
+    {/if}
+
+    {@const offer = skillsOfferStore.offerUnder(group.mountKey)}
+    {#if offer}
+      <SkillsOfferCard {offer} mountName={group.name} />
     {/if}
   {/each}
 
