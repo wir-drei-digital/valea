@@ -75,11 +75,20 @@
   // this same effect — an infinite `get_mail_message` loop keyed on nothing
   // the user did (caught live on an earlier revision).
   //
-  // `selectedAccount`/`accounts` ARE tracked, though (the untracked read
-  // they replace latched this effect to whatever was known on its first
-  // run): a deep link arriving before `refreshStatus` resolves has no
-  // account yet, and "no account YET" must not be treated as "no account" —
-  // it waits, and the effect re-runs when the accounts land.
+  // `selectedAccount` and the ARRIVAL of accounts ARE tracked, though (the
+  // untracked read they replace latched this effect to whatever was known on
+  // its first run): a deep link arriving before `refreshStatus` resolves has
+  // no account yet, and "no account YET" must not be treated as "no
+  // account" — it waits, and the effect re-runs when the accounts land.
+  //
+  // What is NOT tracked is `targetAccount`'s membership SCAN. It reads
+  // `accounts[i].account` for every row, and `handleMailStatus` REPLACES a
+  // row object on every `mail_status` push — several per poll cycle, none of
+  // which change which accounts exist. Tracking that scan re-ran this whole
+  // effect (clearing `activeDetail`, re-fetching the open message) roughly
+  // twice per poll: a visible read-pane flicker and redundant RPCs on a
+  // screen the user wasn't touching. `accounts.length` stays the
+  // arrived-signal; the scan itself is untracked.
   //
   // This effect is also the ONLY thing that switches accounts (`?account=`
   // is the source of truth — `AccountSwitcher` navigates rather than writing
@@ -92,15 +101,17 @@
 
   $effect(() => {
     const id = selectedId;
+    const accParam = selectedAccountParam;
+    const storeAccount = mailStore.selectedAccount;
     const accountsReady = mailStore.accounts.length > 0;
-    const target = targetAccount(selectedAccountParam, mailStore.selectedAccount, mailStore.accounts);
+    const target = untrack(() => targetAccount(accParam, storeAccount, mailStore.accounts));
     activeId = null;
     activeDetail = null;
     loadError = false;
 
     let cancelled = false;
     void (async () => {
-      if (target && target !== untrack(() => mailStore.selectedAccount)) {
+      if (target && target !== storeAccount) {
         await mailStore.selectAccount(target);
         if (cancelled) return;
       }

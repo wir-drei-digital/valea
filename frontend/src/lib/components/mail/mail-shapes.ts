@@ -21,8 +21,8 @@
  *    comment in `socket.ts`), plus the RPC-only `"invalid_config"`.
  */
 
-import type { MailAccountStatus, MailDraft, MailFolder } from '$lib/stores/mail.svelte';
-import type { Api } from '$lib/api/client';
+import type { MailAccountStatus, MailDraft, MailDraftReview, MailFolder } from '$lib/stores/mail.svelte';
+import type { Api, MailSmtpSetup } from '$lib/api/client';
 
 // -- account/folder chrome (AccountSwitcher / FolderList) -------------------
 
@@ -113,6 +113,15 @@ export function draftStatusBadge(statusDisplay: string): { label: string; tone: 
       return { label: 'Needs review', tone: 'warn' };
     case 'rejected':
       return { label: 'Rejected', tone: 'warn' };
+    // -- send (spec G). `send_review` is not an error and not a failure: the
+    // outcome is genuinely unknown and only the human can settle it, so the
+    // badge asks rather than accuses.
+    case 'sending':
+      return { label: 'Sending…', tone: 'busy' };
+    case 'send_review':
+      return { label: 'Needs your answer', tone: 'warn' };
+    case 'sent':
+      return { label: 'Sent', tone: 'ok' };
     default:
       return { label: 'Draft', tone: 'neutral' };
   }
@@ -127,6 +136,28 @@ export function draftRecipientsLine(recipients: MailDraft['recipients']): string
   if (to) parts.push(`To ${to}`);
   if (recipients.subject) parts.push(recipients.subject);
   return parts.join(' · ') || '(no recipients)';
+}
+
+/**
+ * A draft row's ledger notice as a sentence. Only the fixed vocabulary is
+ * translated; a rejected op's notice is a composed reason string (with its
+ * transport detail already redacted backend-side) and is the most specific
+ * thing available, so it passes through verbatim rather than being flattened
+ * into something vaguer.
+ */
+export function draftNoticeMessage(notice: string | null): string | null {
+  switch (notice) {
+    case null:
+      return null;
+    case 'earlier_revision_sent':
+      return 'An earlier revision of this draft was sent. This file has changed since.';
+    case 'status_forged':
+      return "This draft's status was written by something other than Valea, so it is being ignored.";
+    case 'sent_copy_failed':
+      return "This was sent, but the copy for your Sent folder didn't land.";
+    default:
+      return notice;
+  }
 }
 
 /** Error copy for a failed push (`push_draft_to_mailbox` / `get_mail_draft` error codes). */
@@ -153,6 +184,128 @@ export function pushErrorMessage(code: string): string {
     default:
       return 'Could not push the draft. Check the account state and try again.';
   }
+}
+
+// -- send (spec G §UI) --------------------------------------------------------
+//
+// The confirm modal renders EXCLUSIVELY from the review snapshot — the
+// drafts list's own parse is display-only and never reaches this function.
+
+const NEW_THREAD_WARNING =
+  "The message this replies to isn't mirrored here, so this will start a new thread.";
+
+/**
+ * The confirm modal's summary lines: who this goes to, as what, from whom.
+ * Cc/Bcc lines are omitted when empty (an empty "Bcc:" line reads like a
+ * bug); the identity line is the config-owned `from_name <from>` plus the
+ * account slug, because with several accounts configured "which mailbox is
+ * this leaving from" is exactly the question a confirm step must answer.
+ * The threading warning is appended last, only when the reply's reference
+ * could not be resolved.
+ */
+export function sendConfirmSummary(review: MailDraftReview): string[] {
+  const lines = [`To: ${addressListLine(review.recipients.to)}`];
+  if (review.recipients.cc.length > 0) lines.push(`Cc: ${addressListLine(review.recipients.cc)}`);
+  if (review.recipients.bcc.length > 0) lines.push(`Bcc: ${addressListLine(review.recipients.bcc)}`);
+  lines.push(`Subject: ${review.subject.trim() || '(no subject)'}`);
+
+  const identity = addressLabel({ name: review.identity.fromName, email: review.identity.from });
+  lines.push(`From: ${identity || '(no sending identity configured)'} · ${review.identity.account}`);
+
+  if (review.threadingWarning) lines.push(NEW_THREAD_WARNING);
+  return lines;
+}
+
+function addressListLine(list: { name: string | null; email: string }[]): string {
+  return list.map((addr) => addressLabel(addr)).join(', ');
+}
+
+/**
+ * What a send parked in `send_review` actually means, from its ledger notice
+ * (spec G §Send pipeline 3-4). Two cases, and the difference matters:
+ *
+ *  - `gmail_sent_checked_empty` — Gmail's Sent Mail WAS searched for this
+ *    message's id over a bounded window and came back empty. Strong evidence
+ *    of a non-delivery, though not proof (Sent Mail visibility after a 250 is
+ *    not guaranteed instant).
+ *  - anything else (`send_unknown: …`, or no notice yet) — reconciliation
+ *    hasn't been able to run: it needs an IMAP connection this account hasn't
+ *    had since the send. Nothing has been checked, so the copy says so
+ *    instead of implying evidence that doesn't exist.
+ *
+ * Both end on the same instruction, because the resolution is the same act:
+ * look in your own Sent folder and tell Valea what you found.
+ */
+export function sendReviewExplanation(notice: string | null): string {
+  const check = 'Check your own Sent folder (and, if in doubt, the recipient), then tell Valea what you found.';
+
+  if (notice === 'gmail_sent_checked_empty') {
+    return `Sent Mail was checked and found empty — this message most likely did not go out. ${check}`;
+  }
+
+  return (
+    'The server never confirmed this send, and your mailbox has not been reachable to check — ' +
+    `still reconciling, awaiting a mailbox connection. ${check}`
+  );
+}
+
+/**
+ * Error copy for the send flow (`get_mail_draft_review` / `send_draft` /
+ * `resolve_send_review` / `retry_sent_copy`). The two drift codes
+ * (`re_review_required`, `content_changed`) name the fix — reload the review
+ * — because that is exactly one click away in the modal, and both are
+ * pre-transmit refusals: nothing was sent.
+ */
+export function sendErrorMessage(code: string): string {
+  switch (code) {
+    case 're_review_required':
+      return 'The sending identity or the thread changed while you were reviewing. Reload the review, then confirm again.';
+    case 'content_changed':
+      return 'The draft changed since you opened it. Reload the review, then send.';
+    case 'draft_too_large':
+      return 'This draft is too large to send.';
+    case 'smtp_not_configured':
+      return 'Add SMTP details for this account before sending.';
+    case 'no_smtp_credential':
+      return 'Enter your SMTP password first.';
+    case 'not_reviewable':
+      return 'This send was already resolved.';
+    case 'not_retryable':
+      return 'There is nothing left to retry for this message.';
+    case 'duplicate_active':
+      return 'This draft already has a push or a send in flight.';
+    case 'invalid_draft':
+      return "The draft couldn't be validated. Check its recipients and subject.";
+    case 'link_unsafe':
+      return 'This draft file is not a regular file and cannot be sent.';
+    case 'status_forged':
+      return 'This draft claims a status nothing corroborates. Reload it, then try again.';
+    case 'not_found':
+      return 'This draft no longer exists.';
+    case 'workspace_not_open':
+      return 'No workspace is open.';
+    case 'workspace_changed':
+      return 'Your workspace changed. Reopen it and try again.';
+    default:
+      return 'Could not send the draft. Check the account state and try again.';
+  }
+}
+
+/**
+ * Whether a row may offer Send (spec G §UI): a parseable draft whose PRIMARY
+ * state is `draft`, on an account with a loadable `smtp:` block. The `pushed`
+ * badge is deliberately not consulted — it is a fact beside the state, not a
+ * state, so a pushed-then-edited draft stays sendable. A missing SMTP secret
+ * does NOT hide the button: the backend answers `no_smtp_credential`, which
+ * tells the user what to do; hiding it would just look broken.
+ */
+export function canSendDraft(
+  draft: Pick<MailDraft, 'statusDisplay' | 'recipients'>,
+  status: Pick<MailAccountStatus, 'smtpConfigured'> | null
+): boolean {
+  if (!status?.smtpConfigured) return false;
+  if (draft.statusDisplay !== 'draft') return false;
+  return !('invalid' in draft.recipients);
 }
 
 // -- relative time — mirrors `routes/chat/+page.svelte`'s `relativeTime` ---
@@ -400,7 +553,100 @@ export type MailSetupFormInput = {
   /** The typed password. Component-local `$state`, never a store field — see `SetupPanel.svelte`. */
   secret: string;
   generation: number;
+  /** The optional SMTP block (spec G). Absent/`null` = a push-only account. */
+  smtp?: MailSetupSmtpInput | null;
 };
+
+/**
+ * The SMTP fieldset as the form holds it. `port`/`security` may be "not
+ * supplied" (`null` / `''`) — the backend then applies its own convention
+ * (587 → STARTTLS, 465 → TLS), which is why blank is a real, valid state
+ * here rather than something to fill in client-side.
+ */
+export type MailSetupSmtpInput = {
+  host: string;
+  port: number | null;
+  security: '' | 'starttls' | 'tls';
+  username: string;
+  /** Blank = default to `username` backend-side (only valid when that IS an address — see `smtpFormError`). */
+  from: string;
+  fromName: string;
+  /** The typed SMTP password; ignored (and allowed to be blank) when `sameAsImap`. */
+  secret: string;
+  /** "Same as IMAP" — COPIES the IMAP secret into the `<slug>:smtp` entry (a copy, not an alias). */
+  sameAsImap: boolean;
+};
+
+/**
+ * The addr-spec grammar, mirrored client-side from
+ * `Valea.Mail.DraftFile.@addr_re` (dot-atom local part, `@`, dotted
+ * alnum/hyphen domain) — deliberately conservative, and structurally
+ * rejecting whitespace and angle brackets, so `"Mara <mara@x>"` is not an
+ * addr-spec. Used only to pre-empt the reason-free `invalid_smtp`; the
+ * backend remains the authority.
+ */
+export const MAIL_ADDR_RE =
+  /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
+
+/**
+ * Everything about the SMTP fieldset that can be judged without a round
+ * trip, in the order the fields appear. This exists because
+ * `setup_mail_account` answers a REASON-FREE `"invalid_smtp"` (the settings
+ * parser's message is deliberately not leaked through the RPC), so without
+ * this a typo'd port/security pair would be a dead end.
+ *
+ * The rules mirror `Valea.Mail.Settings.parse_smtp/1` exactly:
+ * host/username required; positive port; the 587↔STARTTLS / 465↔TLS
+ * convention (other ports allowed, but must state `security`); `from`
+ * defaulting to `username` and required to be a single addr-spec — so a
+ * bare (non-email) login MUST supply an explicit From; and no CR/LF/NUL in
+ * the display name. Returns the message to show, or `null` when nothing is
+ * wrong. Not a substitute for the backend check — a pre-emption of it.
+ */
+export function smtpFormError(smtp: MailSetupSmtpInput): string | null {
+  const host = smtp.host.trim();
+  const username = smtp.username.trim();
+  const from = smtp.from.trim();
+
+  if (!host) return 'Enter the SMTP server host.';
+  if (!username) return 'Enter the SMTP username.';
+  if (smtp.port !== null && (!Number.isFinite(smtp.port) || smtp.port <= 0)) return 'Enter a valid SMTP port.';
+
+  const port = smtp.port ?? 587;
+  if (smtp.security === 'tls' && port === 587) {
+    return 'Port 587 uses STARTTLS. Pick STARTTLS, or use port 465 for TLS.';
+  }
+  if (smtp.security === 'starttls' && port === 465) {
+    return 'Port 465 uses TLS. Pick TLS, or use port 587 for STARTTLS.';
+  }
+  if (smtp.security === '' && port !== 587 && port !== 465) {
+    return 'Pick a security setting — only ports 587 and 465 have a default.';
+  }
+
+  if (!from && !MAIL_ADDR_RE.test(username)) {
+    return 'This username is not an email address, so enter the From address to send as.';
+  }
+  if (from && !MAIL_ADDR_RE.test(from)) {
+    return 'From must be a single email address, like you@example.com.';
+  }
+  if (/[\r\n\0]/.test(smtp.fromName)) return 'The display name cannot contain line breaks.';
+  if (!smtp.sameAsImap && !smtp.secret) return 'Enter the SMTP password.';
+
+  return null;
+}
+
+/** The wire shape of the optional smtp block — blank fields become `null` ("not supplied"), never `""`. */
+function smtpSetupArgs(smtp: MailSetupSmtpInput | null | undefined): MailSmtpSetup | null {
+  if (!smtp) return null;
+  return {
+    host: smtp.host.trim(),
+    port: smtp.port,
+    security: smtp.security || null,
+    username: smtp.username.trim(),
+    from: smtp.from.trim() || null,
+    fromName: smtp.fromName.trim() || null
+  };
+}
 
 export type MailSetupDeps = {
   api: MailSetupApi;
@@ -440,31 +686,51 @@ export type MailSetupOutcome = { ok: true; devMode: boolean } | { ok: false; err
  * `setMailCredential`; the caller renders the "not persisted" note off
  * `devMode: true`.
  *
+ * SMTP (spec G) rides the same sequencing, one slot later: its secret goes
+ * to the SEPARATE `<slug>:smtp` keychain entry and over `setMailCredential`
+ * with `kind: 'smtp'`. "Same as IMAP" COPIES the typed IMAP secret into that
+ * entry — a copy, not an alias, so the two rotate independently.
+ *
  * Either path short-circuits with `{ ok: false, error }` the moment
- * `setupMailAccount` or `setMailCredential` itself fails — the raw error
- * code from the RPC (map it with `mailSetupErrorMessage` for display).
+ * `setupMailAccount` or either `setMailCredential` fails — the raw error
+ * code from the RPC (map it with `mailSetupErrorMessage` for display). An
+ * `invalid_smtp` refusal therefore hands NO secret to anything: the account
+ * wasn't written, so there is nothing to supply a credential to.
  */
 export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetupDeps): Promise<MailSetupOutcome> {
   const slug = input.account;
   if (!mailSlugValid(slug)) return { ok: false, error: 'invalid_slug' };
 
-  const setupResult = await deps.api.setupMailAccount(slug, input.host, input.port, input.username, input.generation);
+  const setupResult = await deps.api.setupMailAccount(
+    slug,
+    input.host,
+    input.port,
+    input.username,
+    input.generation,
+    smtpSetupArgs(input.smtp)
+  );
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
 
-  if (deps.inDesktop()) {
+  const smtpSecret = input.smtp ? (input.smtp.sameAsImap ? input.secret : input.smtp.secret) : null;
+  const desktop = deps.inDesktop();
+
+  if (desktop) {
     const workspaceId = await deps.refreshWorkspaceId();
     if (workspaceId) {
       await deps.keychainSet(workspaceId, `${slug}:imap`, input.secret);
+      if (smtpSecret !== null) await deps.keychainSet(workspaceId, `${slug}:smtp`, smtpSecret);
     }
-
-    const credResult = await deps.api.setMailCredential(slug, input.secret, input.generation);
-    if (!credResult.ok) return { ok: false, error: credResult.error };
-    return { ok: true, devMode: false };
   }
 
   const credResult = await deps.api.setMailCredential(slug, input.secret, input.generation);
   if (!credResult.ok) return { ok: false, error: credResult.error };
-  return { ok: true, devMode: true };
+
+  if (smtpSecret !== null) {
+    const smtpResult = await deps.api.setMailCredential(slug, smtpSecret, input.generation, 'smtp');
+    if (!smtpResult.ok) return { ok: false, error: smtpResult.error };
+  }
+
+  return { ok: true, devMode: !desktop };
 }
 
 /** Same error-code vocabulary as `syncNowErrorMessage` (both actions are gated by `Manager.check_generation/1`). */
@@ -478,6 +744,11 @@ export function mailSetupErrorMessage(code: string): string {
       return 'Account id must be lowercase letters, digits, and dashes (up to 32 characters).';
     case 'identity_mismatch':
       return 'A different account already owns this folder on disk. Purge it first from the account list.';
+    case 'invalid_smtp':
+      // Reason-free by design (the settings parser's message isn't leaked
+      // through the RPC), so this names the fields rather than the fault —
+      // `smtpFormError` catches everything checkable before we get here.
+      return 'The SMTP details were rejected. Check the host, port, security, and From address.';
     default:
       return 'Could not save your mail account. Check the details and try again.';
   }

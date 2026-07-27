@@ -26,6 +26,10 @@ type MailApi = Pick<
   | 'listMailDrafts'
   | 'getMailDraft'
   | 'pushDraftToMailbox'
+  | 'getMailDraftReview'
+  | 'sendDraft'
+  | 'resolveSendReview'
+  | 'retrySentCopy'
 >;
 
 const INBOX_FOLDER = 'INBOX';
@@ -61,6 +65,10 @@ export type MailAccountStatus = {
    * composes its move op from these, never from a hardcoded name.
    */
   folders: Record<string, string> | null;
+  /** Whether the account has a loadable `smtp:` block (spec G) — the gate on every Send affordance. */
+  smtpConfigured: boolean;
+  /** The SMTP credential slot: `"n/a"` for a push-only account, which is NOT the same as a missing secret. */
+  smtpCredential: 'present' | 'missing' | 'n/a';
 };
 
 /** One folder of `list_mail_folders` — camelCased per-item typed map (`ListMailFoldersFields` in `api/client.ts`). */
@@ -113,6 +121,12 @@ function strings(v: unknown): string[] {
  * `normalizeIcmNode`'s guard in `icm.svelte.ts`. `valid` defaults to `true`
  * when absent — channel pushes only ever come from a live engine, and the
  * RPC marks only the broken entries with `valid: false`.
+ *
+ * `smtp_configured`/`smtp_credential` ride STRING keys on the engine's
+ * status map (the falsy-map-field rule documented on `Valea.Mail.Engine`'s
+ * `@type status` — ash_typescript nulls a top-level atom-keyed field whose
+ * value is `false`), which changes nothing here: `accounts` is delivered
+ * raw, so every entry field arrives snake_cased either way.
  */
 export function normalizeMailAccountStatus(raw: Record<string, unknown>): MailAccountStatus {
   return {
@@ -129,8 +143,22 @@ export function normalizeMailAccountStatus(raw: Record<string, unknown>): MailAc
     pendingOps: typeof raw.pending_ops === 'number' ? raw.pending_ops : 0,
     heldFolders: strings(raw.held_folders),
     notices: strings(raw.notices),
-    folders: normalizeFolderNames(raw.folders)
+    folders: normalizeFolderNames(raw.folders),
+    smtpConfigured: raw.smtp_configured === true,
+    smtpCredential: smtpCredentialState(raw.smtp_credential)
   };
+}
+
+/**
+ * Narrows the SMTP credential slot to its closed union. Anything that isn't
+ * one of the two real states degrades to `"n/a"` — "this account has no
+ * `smtp:` block", the safe reading: it gates the resupply path OFF rather
+ * than sending a secret at an account that may not want one.
+ */
+function smtpCredentialState(raw: unknown): 'present' | 'missing' | 'n/a' {
+  if (raw === 'present') return 'present';
+  if (raw === 'missing') return 'missing';
+  return 'n/a';
 }
 
 function normalizeFolderNames(raw: unknown): Record<string, string> | null {
@@ -144,9 +172,13 @@ function normalizeFolderNames(raw: unknown): Record<string, string> | null {
 /**
  * One draft of `list_mail_drafts` — normalized from the raw string-keyed
  * entry (`Valea.Api.Mail.draft_entry/3`). `statusDisplay` is LEDGER-derived
- * backend-side (`draft`/`pushing`/`pushed`/`needs_review`/`rejected`);
- * `recipients` is either the parsed to/cc/bcc+subject or `{invalid}` for an
- * unparseable/link-unsafe draft.
+ * backend-side (`draft`/`pushing`/`pushed`/`sending`/`send_review`/`sent`/
+ * `needs_review`/`rejected`); `recipients` is either the parsed
+ * to/cc/bcc+subject or `{invalid}` for an unparseable/link-unsafe draft.
+ *
+ * `pushed` is a separate FACT, not a state (spec G §Display projection): any
+ * completed append, rendered as a badge BESIDE the primary state and never
+ * overriding it — Send and Push both key off the primary state alone.
  */
 export type MailDraft = {
   account: string;
@@ -154,6 +186,15 @@ export type MailDraft = {
   path: string;
   statusDisplay: string;
   notice: string | null;
+  /** Any completed push — a badge fact beside the primary state. */
+  pushed: boolean;
+  /**
+   * The ledger op id a row's resolution actions act on (`resolve_send_review`
+   * / `retry_sent_copy`). `null` whenever the row carries none, which the
+   * resolution UI treats as "no actionable op": the actions are hidden rather
+   * than fired at a guessed id.
+   */
+  opId: string | null;
   recipients:
     | { invalid: string }
     | {
@@ -192,7 +233,75 @@ export function normalizeMailDraft(raw: Record<string, unknown>): MailDraft {
     path: str(raw.path) ?? '',
     statusDisplay: str(raw.status_display) ?? 'draft',
     notice: str(raw.notice),
+    pushed: raw.pushed === true,
+    opId: str(raw.op_id),
     recipients
+  };
+}
+
+/**
+ * The `get_mail_draft_review` snapshot (spec G §UI): everything the confirm
+ * modal renders AND both tokens it confirms with, all out of ONE backend-side
+ * read of the draft (`OpsExecutor.review_snapshot/2`). Nothing shown to the
+ * human may come from a different read than the hashes they confirm — which
+ * is why the modal renders exclusively from this, never from the (display-
+ * only) parse in the drafts list.
+ *
+ * `reviewFingerprint` is `null` exactly for a push-only account (no `smtp:`
+ * block); it is passed back to `send_draft` VERBATIM, never re-derived here.
+ */
+export type MailDraftReview = {
+  /** The raw draft bytes of that same buffer — the modal's body preview. */
+  content: string;
+  contentHash: string;
+  reviewFingerprint: string | null;
+  recipients: {
+    to: { name: string | null; email: string }[];
+    cc: { name: string | null; email: string }[];
+    bcc: { name: string | null; email: string }[];
+  };
+  subject: string;
+  /** The RESOLVED threading headers, or `null` when this isn't a reply (or the reference isn't mirrored). */
+  threading: { inReplyTo: string; references: string[] } | null;
+  /** True when an `in_reply_to` could not be resolved — the message will start a NEW thread. */
+  threadingWarning: boolean;
+  /** The config-owned sending identity. A draft can never set or override it. */
+  identity: { from: string | null; fromName: string | null; account: string };
+  smtpConfigured: boolean;
+};
+
+/**
+ * Narrows the review payload: the action's TYPED fields arrive camelCased
+ * (`contentHash`, `threadingWarning`, `reviewFingerprint`,
+ * `smtpConfigured`), its three unconstrained nested maps keep the snake keys
+ * `review_snapshot/2` writes (`in_reply_to`, `from_name`, …). Every field
+ * degrades to a harmless default rather than throwing — same defensive
+ * posture as `attachmentsFromFrontmatter`.
+ */
+export function normalizeMailDraftReview(raw: Record<string, unknown>): MailDraftReview {
+  const recipients = (raw.recipients ?? {}) as Record<string, unknown>;
+  const identity = (raw.identity ?? {}) as Record<string, unknown>;
+  const threading = raw.threading as Record<string, unknown> | null | undefined;
+  const inReplyTo = threading ? str(threading.in_reply_to) : null;
+
+  return {
+    content: str(raw.content) ?? '',
+    contentHash: str(raw.contentHash) ?? '',
+    reviewFingerprint: str(raw.reviewFingerprint),
+    recipients: {
+      to: normalizeAddresses(recipients.to),
+      cc: normalizeAddresses(recipients.cc),
+      bcc: normalizeAddresses(recipients.bcc)
+    },
+    subject: str(raw.subject) ?? '',
+    threading: inReplyTo ? { inReplyTo, references: strings(threading?.references) } : null,
+    threadingWarning: raw.threadingWarning === true,
+    identity: {
+      from: str(identity.from),
+      fromName: str(identity.from_name),
+      account: str(identity.account) ?? ''
+    },
+    smtpConfigured: raw.smtpConfigured === true
   };
 }
 
@@ -405,6 +514,72 @@ export class MailStore {
   }
 
   /**
+   * The atomic review snapshot behind the send confirm modal (spec G §UI).
+   * Read-only — it claims nothing, transmits nothing, and deliberately does
+   * NOT touch the drafts list. Resolves the normalized review, or `{error}`
+   * with the raw code (map it with `sendErrorMessage`).
+   */
+  async draftReview(account: string, draftName: string): Promise<MailDraftReview | { error: string }> {
+    const result = await this.#api.getMailDraftReview(account, draftName);
+    if (!result.ok) return { error: result.error };
+    return normalizeMailDraftReview(result.data as Record<string, unknown>);
+  }
+
+  /**
+   * Transmits a reviewed draft — the ONE sending action in the app, and the
+   * only one that cannot be undone.
+   *
+   * `contentHash` and `reviewFingerprint` MUST come verbatim from the
+   * `draftReview` response the human just confirmed: this method never
+   * re-reads the draft and never re-hashes anything (contrast `pushDraft`,
+   * which owns its own fetch-and-hash). That is the one-buffer contract —
+   * a hash computed from a second read could cover bytes nobody reviewed,
+   * and the fingerprint is the only token binding the sending identity and
+   * the resolved threading, neither of which lives in the draft bytes.
+   *
+   * Always refetches the drafts list, so a `sending`/`send_review`/`sent`
+   * badge lands even when this call reports an error.
+   */
+  async sendDraft(
+    account: string,
+    draftName: string,
+    contentHash: string,
+    reviewFingerprint: string | null,
+    generation: number
+  ): Promise<{ state: string } | { error: string }> {
+    const sent = await this.#api.sendDraft(account, draftName, contentHash, reviewFingerprint, generation);
+    void this.refreshDrafts();
+    if (!sent.ok) return { error: sent.error };
+
+    const data = sent.data as { state?: string };
+    return { state: data.state ?? 'sending' };
+  }
+
+  /**
+   * The human's verdict on a send parked in `send_review` (spec G §Send
+   * pipeline 4): `"sent"` runs the idempotent Sent copy and completes the op,
+   * `"not_sent"` rejects it and reverts the draft for another explicit
+   * click. Neither transmits. Resolves the error code, or `null` on success.
+   */
+  async resolveSendReview(
+    account: string,
+    opId: string,
+    resolution: 'sent' | 'not_sent',
+    generation: number
+  ): Promise<string | null> {
+    const result = await this.#api.resolveSendReview(account, opId, resolution, generation);
+    void this.refreshDrafts();
+    return result.ok ? null : result.error;
+  }
+
+  /** Re-runs only the idempotent Sent-copy append of a send that completed with a `sent_copy_failed` notice — never the transmit. */
+  async retrySentCopy(account: string, opId: string, generation: number): Promise<string | null> {
+    const result = await this.#api.retrySentCopy(account, opId, generation);
+    void this.refreshDrafts();
+    return result.ok ? null : result.error;
+  }
+
+  /**
    * `mail_status` push handler. Upserts the pushed account's status row by
    * slug, then — only when the push is about the SELECTED account —
    * refetches folders + messages: workspace-open activation runs
@@ -531,12 +706,19 @@ export function wireMailEvents(channel: Channel): void {
  * username across hosts. Matches `submitMailSetup`'s write key
  * (`mail-shapes.ts`).
  *
- * Per-account and self-terminating: only valid, configured accounts with
- * `credential === 'missing'` and a known `workspaceId` are attempted, a
- * missing keychain entry just skips that account, and a successful resupply
- * flips that Engine's credential to `"present"`, so the next `mail_status`
- * push it causes fails the filter instead of looping. Resolves the number
- * of accounts actually resupplied (browser: always 0 — no keychain).
+ * SMTP (spec G) is a SEPARATE entry (`<slug>:smtp`) resupplied on the same
+ * pass and handed over with `kind: 'smtp'` — a copy of the IMAP secret at
+ * setup time, never an alias, so the two rotate independently. The two slots
+ * are also independent HERE: an account whose IMAP credential survived can
+ * still be missing its SMTP one, and a push-only account (`smtpCredential:
+ * 'n/a'`) is never asked for one at all.
+ *
+ * Per-slot and self-terminating: only valid, configured accounts with a
+ * `missing` slot and a known `workspaceId` are attempted, a missing keychain
+ * entry just skips that slot, and a successful resupply flips that Engine's
+ * credential to `"present"`, so the next `mail_status` push it causes fails
+ * the filter instead of looping. Resolves the number of SECRETS actually
+ * resupplied — up to two per account (browser: always 0 — no keychain).
  */
 export async function resupplyCredentials(
   accounts: MailAccountStatus[],
@@ -546,15 +728,35 @@ export async function resupplyCredentials(
 
   let resupplied = 0;
   for (const status of accounts) {
-    if (!status.valid || !status.configured || status.credential !== 'missing') continue;
-    if (!status.workspaceId) continue;
+    if (!status.valid || !status.configured || !status.workspaceId) continue;
 
-    const secret = await keychainGet(status.workspaceId, `${status.account}:imap`);
-    if (secret === null) continue;
+    if (status.credential === 'missing') {
+      if (await resupplySlot(status.workspaceId, status.account, 'imap', apiOverride)) resupplied += 1;
+    }
 
-    const generation = workspaceStore.generation ?? 0;
-    const result = await apiOverride.setMailCredential(status.account, secret, generation);
-    if (result.ok) resupplied += 1;
+    if (status.smtpConfigured && status.smtpCredential === 'missing') {
+      if (await resupplySlot(status.workspaceId, status.account, 'smtp', apiOverride)) resupplied += 1;
+    }
   }
   return resupplied;
+}
+
+/** One `<slug>:<kind>` keychain read + hand-off; `false` when nothing was stored or the RPC refused it. */
+async function resupplySlot(
+  workspaceId: string,
+  account: string,
+  kind: 'imap' | 'smtp',
+  apiOverride: Pick<Api, 'setMailCredential'>
+): Promise<boolean> {
+  const secret = await keychainGet(workspaceId, `${account}:${kind}`);
+  if (secret === null) return false;
+
+  const generation = workspaceStore.generation ?? 0;
+  // The IMAP call stays 3-arity — the `kind` argument is omitted, not passed
+  // as `'imap'`, so this path is byte-for-byte the pre-spec-G call.
+  const result =
+    kind === 'imap'
+      ? await apiOverride.setMailCredential(account, secret, generation)
+      : await apiOverride.setMailCredential(account, secret, generation, 'smtp');
+  return result.ok;
 }

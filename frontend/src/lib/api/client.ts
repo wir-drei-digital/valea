@@ -89,6 +89,14 @@ import {
   listMailDraftsChannel,
   getMailDraft as httpGetMailDraft,
   getMailDraftChannel,
+  getMailDraftReview as httpGetMailDraftReview,
+  getMailDraftReviewChannel,
+  sendDraft as httpSendDraft,
+  sendDraftChannel,
+  resolveSendReview as httpResolveSendReview,
+  resolveSendReviewChannel,
+  retrySentCopy as httpRetrySentCopy,
+  retrySentCopyChannel,
   inspectIcm as httpInspectIcm,
   inspectIcmChannel,
   listIcms as httpListIcms,
@@ -182,6 +190,10 @@ import type {
   PushDraftToMailboxFields,
   ListMailDraftsFields,
   GetMailDraftFields,
+  GetMailDraftReviewFields,
+  SendDraftFields,
+  ResolveSendReviewFields,
+  RetrySentCopyFields,
   IcmTreeFields,
   InspectIcmFields,
   ListIcmsFields,
@@ -502,6 +514,24 @@ const pushDraftToMailboxFields: PushDraftToMailboxFields = ['state'];
 // owns normalizing entries, same raw-delivery split as `mailStatusFields`.
 const listMailDraftsFields: ListMailDraftsFields = ['drafts'];
 const getMailDraftFields: GetMailDraftFields = ['content', 'path'];
+// The review snapshot's TYPED fields arrive camelCased; its three nested
+// maps (`recipients`/`threading`/`identity`) are unconstrained passthroughs
+// keeping `OpsExecutor.review_snapshot/2`'s snake keys, normalized by
+// `stores/mail.svelte.ts` — same raw-delivery split as `mailStatusFields`.
+const getMailDraftReviewFields: GetMailDraftReviewFields = [
+  'content',
+  'contentHash',
+  'recipients',
+  'subject',
+  'threading',
+  'threadingWarning',
+  'identity',
+  'reviewFingerprint',
+  'smtpConfigured'
+];
+const sendDraftFields: SendDraftFields = ['state'];
+const resolveSendReviewFields: ResolveSendReviewFields = ['resolved'];
+const retrySentCopyFields: RetrySentCopyFields = ['retried'];
 // Same `Array<TypedMap>` codegen gap as `listMailMessagesFields` above.
 const mailApplyOpsFields = [{ results: ['op', 'result', 'reason'] }] as unknown as MailApplyOpsFields;
 const setupMailAccountFields: SetupMailAccountFields = ['saved'];
@@ -678,9 +708,51 @@ function callMailStatusChannel(channel: NonNullable<ReturnType<typeof channelAva
   return wrapChannelCall((handlers) => mailStatusChannel({ channel, fields: mailStatusFields, ...handlers }));
 }
 
+/**
+ * The optional v5 SMTP block of `setupMailAccount`, in this wrapper's own
+ * un-prefixed shape — flattened onto the RPC's six `smtp*` arguments by
+ * `smtpSetupInput` below. `null`/absent = a push-only account (the v4
+ * behaviour verbatim); a blank string or `null` field means "not supplied",
+ * which the backend turns back into its own default (port 587, `from`
+ * defaulting to `username`).
+ */
+export type MailSmtpSetup = {
+  host?: string | null;
+  port?: number | null;
+  /** `"starttls"` | `"tls"` — a STRING on the wire, validated against the port convention backend-side. */
+  security?: string | null;
+  username?: string | null;
+  from?: string | null;
+  fromName?: string | null;
+};
+
+function smtpSetupInput(smtp: MailSmtpSetup | null) {
+  if (!smtp) return {};
+  return {
+    smtpHost: smtp.host ?? null,
+    smtpPort: smtp.port ?? null,
+    smtpSecurity: smtp.security ?? null,
+    smtpUsername: smtp.username ?? null,
+    smtpFrom: smtp.from ?? null,
+    smtpFromName: smtp.fromName ?? null
+  };
+}
+
 function callSetupMailAccountChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { account: string; host: string; port: number; username: string; generation: number }
+  input: {
+    account: string;
+    host: string;
+    port: number;
+    username: string;
+    generation: number;
+    smtpHost?: string | null;
+    smtpPort?: number | null;
+    smtpSecurity?: string | null;
+    smtpUsername?: string | null;
+    smtpFrom?: string | null;
+    smtpFromName?: string | null;
+  }
 ) {
   return wrapChannelCall((handlers) =>
     setupMailAccountChannel({ channel, input, fields: setupMailAccountFields, ...handlers })
@@ -689,7 +761,7 @@ function callSetupMailAccountChannel(
 
 function callSetMailCredentialChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { account: string; secret: string; generation: number }
+  input: { account: string; secret: string; generation: number; kind?: 'imap' | 'smtp' }
 ) {
   return wrapChannelCall((handlers) =>
     setMailCredentialChannel({ channel, input, fields: setMailCredentialFields, ...handlers })
@@ -812,6 +884,46 @@ function callGetMailDraftChannel(
 ) {
   return wrapChannelCall((handlers) =>
     getMailDraftChannel({ channel, input, fields: getMailDraftFields, ...handlers })
+  );
+}
+
+function callGetMailDraftReviewChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; draftName: string }
+) {
+  return wrapChannelCall((handlers) =>
+    getMailDraftReviewChannel({ channel, input, fields: getMailDraftReviewFields, ...handlers })
+  );
+}
+
+function callSendDraftChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: {
+    account: string;
+    draftName: string;
+    contentHash: string;
+    reviewFingerprint: string | null;
+    generation: number;
+  }
+) {
+  return wrapChannelCall((handlers) => sendDraftChannel({ channel, input, fields: sendDraftFields, ...handlers }));
+}
+
+function callResolveSendReviewChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; opId: string; resolution: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    resolveSendReviewChannel({ channel, input, fields: resolveSendReviewFields, ...handlers })
+  );
+}
+
+function callRetrySentCopyChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; opId: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    retrySentCopyChannel({ channel, input, fields: retrySentCopyFields, ...handlers })
   );
 }
 
@@ -1635,20 +1747,52 @@ export const api = {
 
   mailStatus: () => runRpc(callMailStatusChannel, () => httpMailStatus(withAuth({ fields: mailStatusFields }))),
 
-  setupMailAccount: (account: string, host: string, port: number, username: string, generation: number) =>
+  // `smtp` is the OPTIONAL v5 send block (spec G §Configuration &
+  // credentials), flattened onto the action's six `smtp*` arguments. Passing
+  // `null` (the default) means a push-only account — byte-for-byte the v4
+  // call. An smtp block the backend can't load is REFUSED (`invalid_smtp`)
+  // rather than written, so the account keeps syncing over IMAP.
+  setupMailAccount: (
+    account: string,
+    host: string,
+    port: number,
+    username: string,
+    generation: number,
+    smtp: MailSmtpSetup | null = null
+  ) =>
     runRpc(
-      (channel) => callSetupMailAccountChannel(channel, { account, host, port, username, generation }),
+      (channel) =>
+        callSetupMailAccountChannel(channel, {
+          account,
+          host,
+          port,
+          username,
+          generation,
+          ...smtpSetupInput(smtp)
+        }),
       () =>
         httpSetupMailAccount(
-          withAuth({ input: { account, host, port, username, generation }, fields: setupMailAccountFields })
+          withAuth({
+            input: { account, host, port, username, generation, ...smtpSetupInput(smtp) },
+            fields: setupMailAccountFields
+          })
         )
     ),
 
-  setMailCredential: (account: string, secret: string, generation: number) =>
+  // `kind` selects WHICH credential slot the secret fills — omitted means
+  // `imap`, exactly what this call has always meant. The two are separate
+  // keychain entries and separate RAM-only closures per Engine; an SMTP auth
+  // failure never pauses the IMAP sync.
+  setMailCredential: (account: string, secret: string, generation: number, kind?: 'imap' | 'smtp') =>
     runRpc(
-      (channel) => callSetMailCredentialChannel(channel, { account, secret, generation }),
+      (channel) => callSetMailCredentialChannel(channel, { account, secret, generation, ...(kind ? { kind } : {}) }),
       () =>
-        httpSetMailCredential(withAuth({ input: { account, secret, generation }, fields: setMailCredentialFields }))
+        httpSetMailCredential(
+          withAuth({
+            input: { account, secret, generation, ...(kind ? { kind } : {}) },
+            fields: setMailCredentialFields
+          })
+        )
     ),
 
   mailSyncNow: (account: string, generation: number) =>
@@ -1759,6 +1903,62 @@ export const api = {
     runRpc(
       (channel) => callGetMailDraftChannel(channel, { account, draftName }),
       () => httpGetMailDraft(withAuth({ input: { account, draftName }, fields: getMailDraftFields }))
+    ),
+
+  // -- send (spec G). THE atomic review snapshot behind the confirm modal:
+  // one no-follow read backend-side, from which the rendered recipients/
+  // subject/identity/threading AND both confirm tokens (`contentHash`,
+  // `reviewFingerprint`) come. Read-only — it claims nothing and touches no
+  // network.
+  getMailDraftReview: (account: string, draftName: string) =>
+    runRpc(
+      (channel) => callGetMailDraftReviewChannel(channel, { account, draftName }),
+      () => httpGetMailDraftReview(withAuth({ input: { account, draftName }, fields: getMailDraftReviewFields }))
+    ),
+
+  // The ONE action in this codebase that transmits — human-only by
+  // construction (this surface is control-token-gated; agent sessions have
+  // no transport to it). Both tokens come VERBATIM from the review response
+  // the human confirmed: `reviewFingerprint` binds the sending identity and
+  // the resolved threading, which the content hash alone cannot cover.
+  sendDraft: (
+    account: string,
+    draftName: string,
+    contentHash: string,
+    reviewFingerprint: string | null,
+    generation: number
+  ) =>
+    runRpc(
+      (channel) =>
+        callSendDraftChannel(channel, { account, draftName, contentHash, reviewFingerprint, generation }),
+      () =>
+        httpSendDraft(
+          withAuth({
+            input: { account, draftName, contentHash, reviewFingerprint, generation },
+            fields: sendDraftFields
+          })
+        )
+    ),
+
+  // The human's verdict on a send parked in `send_review`: `sent` runs the
+  // idempotent Sent copy and completes the op, `not_sent` rejects it and
+  // reverts the draft for another explicit click. Neither transmits.
+  resolveSendReview: (account: string, opId: string, resolution: 'sent' | 'not_sent', generation: number) =>
+    runRpc(
+      (channel) => callResolveSendReviewChannel(channel, { account, opId, resolution, generation }),
+      () =>
+        httpResolveSendReview(
+          withAuth({ input: { account, opId, resolution, generation }, fields: resolveSendReviewFields })
+        )
+    ),
+
+  // Re-runs ONLY the idempotent Sent-copy append of a send that completed
+  // with a `sent_copy_failed` notice — the mail is already transmitted, and
+  // this path cannot reach the SMTP transport at all.
+  retrySentCopy: (account: string, opId: string, generation: number) =>
+    runRpc(
+      (channel) => callRetrySentCopyChannel(channel, { account, opId, generation }),
+      () => httpRetrySentCopy(withAuth({ input: { account, opId, generation }, fields: retrySentCopyFields }))
     ),
 
   // -- calendar (Spec F). `calendarStatus`/`listCalendarEvents` deliver their

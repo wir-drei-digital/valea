@@ -2,12 +2,14 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   submitMailSetup,
   mailSetupErrorMessage,
+  smtpFormError,
   normalizeMailDoctorChecks,
   foldersCheckFailed,
   createFoldersAndRecheck,
   createFoldersErrorMessage,
   type MailSetupDeps,
   type MailSetupFormInput,
+  type MailSetupSmtpInput,
   type CreateFoldersDeps
 } from './mail-shapes';
 import type { ApiResult } from '$lib/api/client';
@@ -59,12 +61,15 @@ describe('submitMailSetup — browser (dev) path', () => {
 
     // `account` IS the slug — a real form field validated client-side
     // against `MAIL_SLUG_RE`; the backend re-validates on its side.
+    // The sixth argument is the optional v5 SMTP block — `null` for a
+    // push-only account, which is the v4 behaviour verbatim.
     expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
       'work-inbox',
       'imap.example.com',
       993,
       'mara@example.com',
-      3
+      3,
+      null
     );
     expect(deps.refreshWorkspaceId).not.toHaveBeenCalled();
     expect(deps.keychainSet).not.toHaveBeenCalled();
@@ -181,12 +186,185 @@ describe('submitMailSetup — failure short-circuiting', () => {
   });
 });
 
+// -- SMTP (spec G §Configuration & credentials) --------------------------------
+
+describe('submitMailSetup — with an SMTP block', () => {
+  const smtp: MailSetupSmtpInput = {
+    host: 'smtp.example.com',
+    port: 587,
+    security: 'starttls',
+    username: 'mara@example.com',
+    from: '',
+    fromName: 'Mara Vance',
+    secret: 'smtp-only-secret',
+    sameAsImap: false
+  };
+
+  it('passes the SMTP block to setupMailAccount and keys its secret on <slug>:smtp with kind smtp', async () => {
+    const deps = makeDeps({ inDesktop: vi.fn(() => true) });
+
+    const outcome = await submitMailSetup({ ...input, smtp }, deps);
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      'work-inbox',
+      'imap.example.com',
+      993,
+      'mara@example.com',
+      3,
+      {
+        host: 'smtp.example.com',
+        port: 587,
+        security: 'starttls',
+        username: 'mara@example.com',
+        from: null,
+        fromName: 'Mara Vance'
+      }
+    );
+    expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:imap', 'hunter2');
+    expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:smtp', 'smtp-only-secret');
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3);
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'smtp-only-secret', 3, 'smtp');
+    expect(outcome).toEqual({ ok: true, devMode: false });
+  });
+
+  // "Same as IMAP" COPIES the IMAP secret into the smtp entry (spec G: a
+  // copy, not an alias — rotation stays independent).
+  it('"same as IMAP" copies the IMAP secret into the smtp entry rather than aliasing it', async () => {
+    const deps = makeDeps({ inDesktop: vi.fn(() => true) });
+
+    await submitMailSetup({ ...input, smtp: { ...smtp, secret: '', sameAsImap: true } }, deps);
+
+    expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:imap', 'hunter2');
+    expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:smtp', 'hunter2');
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3, 'smtp');
+  });
+
+  it('browser (dev) path hands both secrets over directly, touching no keychain', async () => {
+    const deps = makeDeps();
+
+    const outcome = await submitMailSetup({ ...input, smtp }, deps);
+
+    expect(deps.keychainSet).not.toHaveBeenCalled();
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3);
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'smtp-only-secret', 3, 'smtp');
+    expect(outcome).toEqual({ ok: true, devMode: true });
+  });
+
+  it('a failed IMAP credential handoff never hands the SMTP one over either', async () => {
+    const deps = makeDeps({
+      api: {
+        setupMailAccount: vi.fn(async () => ok({ saved: true })),
+        setMailCredential: vi.fn(async () => fail('workspace_changed'))
+      }
+    });
+
+    const outcome = await submitMailSetup({ ...input, smtp }, deps);
+
+    expect(outcome).toEqual({ ok: false, error: 'workspace_changed' });
+    expect(deps.api.setMailCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces invalid_smtp from the RPC without handing any secret over', async () => {
+    const deps = makeDeps({
+      inDesktop: vi.fn(() => true),
+      api: {
+        setupMailAccount: vi.fn(async () => fail('invalid_smtp')),
+        setMailCredential: vi.fn(async () => ok({ accepted: true }))
+      }
+    });
+
+    const outcome = await submitMailSetup({ ...input, smtp }, deps);
+
+    expect(outcome).toEqual({ ok: false, error: 'invalid_smtp' });
+    expect(deps.keychainSet).not.toHaveBeenCalled();
+    expect(deps.api.setMailCredential).not.toHaveBeenCalled();
+  });
+});
+
+// `invalid_smtp` comes back from the RPC with NO reason detail (Task 2
+// handoff), so everything checkable client-side is checked here — otherwise
+// a typo'd port/security pair is a dead end for the user.
+describe('smtpFormError', () => {
+  const valid: MailSetupSmtpInput = {
+    host: 'smtp.example.com',
+    port: 587,
+    security: '',
+    username: 'mara@example.com',
+    from: '',
+    fromName: '',
+    secret: 'smtp-secret',
+    sameAsImap: false
+  };
+
+  it('accepts a well-formed block (blank security defaults from the port)', () => {
+    expect(smtpFormError(valid)).toBeNull();
+    expect(smtpFormError({ ...valid, port: 465 })).toBeNull();
+    expect(smtpFormError({ ...valid, port: 587, security: 'starttls' })).toBeNull();
+    expect(smtpFormError({ ...valid, port: 465, security: 'tls' })).toBeNull();
+    expect(smtpFormError({ ...valid, port: 2525, security: 'tls' })).toBeNull();
+  });
+
+  it('requires a host and a username', () => {
+    expect(smtpFormError({ ...valid, host: '  ' })).toBe('Enter the SMTP server host.');
+    expect(smtpFormError({ ...valid, username: '' })).toBe('Enter the SMTP username.');
+  });
+
+  it('requires a positive port', () => {
+    expect(smtpFormError({ ...valid, port: 0 })).toBe('Enter a valid SMTP port.');
+    expect(smtpFormError({ ...valid, port: Number.NaN })).toBe('Enter a valid SMTP port.');
+  });
+
+  // Mirrors `Valea.Mail.Settings`'s port convention exactly (587↔starttls,
+  // 465↔tls; any other port must state security explicitly).
+  it('enforces the port/security convention', () => {
+    expect(smtpFormError({ ...valid, port: 587, security: 'tls' })).toBe(
+      'Port 587 uses STARTTLS. Pick STARTTLS, or use port 465 for TLS.'
+    );
+    expect(smtpFormError({ ...valid, port: 465, security: 'starttls' })).toBe(
+      'Port 465 uses TLS. Pick TLS, or use port 587 for STARTTLS.'
+    );
+    expect(smtpFormError({ ...valid, port: 2525, security: '' })).toBe(
+      'Pick a security setting — only ports 587 and 465 have a default.'
+    );
+  });
+
+  // The backend refuses a bare login with no explicit From (`smtp.from`
+  // defaults to `smtp.username`, which must be a single addr-spec).
+  it('requires an explicit From when the username is not an email address', () => {
+    expect(smtpFormError({ ...valid, username: 'mara' })).toBe(
+      'This username is not an email address, so enter the From address to send as.'
+    );
+    expect(smtpFormError({ ...valid, username: 'mara', from: 'mara@example.com' })).toBeNull();
+  });
+
+  it('rejects a From that is not a single address', () => {
+    expect(smtpFormError({ ...valid, from: 'Mara <mara@example.com>' })).toBe(
+      'From must be a single email address, like you@example.com.'
+    );
+    expect(smtpFormError({ ...valid, from: 'a@b.co, c@d.co' })).toBe(
+      'From must be a single email address, like you@example.com.'
+    );
+  });
+
+  it('rejects a display name carrying a line break', () => {
+    expect(smtpFormError({ ...valid, fromName: 'Mara\nVance' })).toBe(
+      'The display name cannot contain line breaks.'
+    );
+  });
+
+  it('requires a password unless the IMAP one is being copied', () => {
+    expect(smtpFormError({ ...valid, secret: '' })).toBe('Enter the SMTP password.');
+    expect(smtpFormError({ ...valid, secret: '', sameAsImap: true })).toBeNull();
+  });
+});
+
 describe('mailSetupErrorMessage', () => {
   it.each([
     ['workspace_not_open', 'No workspace is open.'],
     ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
     ['invalid_slug', 'Account id must be lowercase letters, digits, and dashes (up to 32 characters).'],
-    ['identity_mismatch', 'A different account already owns this folder on disk. Purge it first from the account list.']
+    ['identity_mismatch', 'A different account already owns this folder on disk. Purge it first from the account list.'],
+    ['invalid_smtp', 'The SMTP details were rejected. Check the host, port, security, and From address.']
   ])('maps error code=%s to a calm sentence', (code, expected) => {
     expect(mailSetupErrorMessage(code)).toBe(expected);
   });

@@ -26,9 +26,19 @@ import {
   draftStatusBadge,
   draftRecipientsLine,
   pushErrorMessage,
-  sha256Hex
+  sha256Hex,
+  sendConfirmSummary,
+  sendReviewExplanation,
+  sendErrorMessage,
+  canSendDraft,
+  draftNoticeMessage
 } from './mail-shapes';
-import { normalizeMailAccountStatus, type MailAccountStatus } from '$lib/stores/mail.svelte';
+import {
+  normalizeMailDraft,
+  normalizeMailDraftReview,
+  normalizeMailAccountStatus,
+  type MailAccountStatus
+} from '$lib/stores/mail.svelte';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -386,6 +396,9 @@ describe('draftStatusBadge', () => {
     ['pushed', 'Pushed', 'ok'],
     ['needs_review', 'Needs review', 'warn'],
     ['rejected', 'Rejected', 'warn'],
+    ['sending', 'Sending…', 'busy'],
+    ['send_review', 'Needs your answer', 'warn'],
+    ['sent', 'Sent', 'ok'],
     ['unknown_future', 'Draft', 'neutral']
   ])('maps %s to %s/%s', (state, label, tone) => {
     expect(draftStatusBadge(state)).toEqual({ label, tone });
@@ -424,6 +437,199 @@ describe('pushErrorMessage', () => {
     ['anything_else', 'Could not push the draft. Check the account state and try again.']
   ])('maps error code=%s to a calm sentence', (code, expected) => {
     expect(pushErrorMessage(code)).toBe(expected);
+  });
+});
+
+// -- send (spec G) ------------------------------------------------------------
+
+describe('sendConfirmSummary', () => {
+  const review = normalizeMailDraftReview({
+    content: 'Body.',
+    contentHash: 'h',
+    recipients: {
+      to: [
+        { name: 'Alex', email: 'alex@example.com' },
+        { name: null, email: 'bo@example.com' }
+      ],
+      cc: [{ name: null, email: 'cc@example.com' }],
+      bcc: [{ name: null, email: 'bcc@example.com' }]
+    },
+    subject: 'Re: Kickoff',
+    threading: { in_reply_to: '<m1@example.com>', references: [] },
+    threadingWarning: false,
+    identity: { from: 'mara@example.com', from_name: 'Mara Vance', account: 'mara' },
+    reviewFingerprint: 'fp',
+    smtpConfigured: true
+  });
+
+  it('lists the parsed recipient set, the subject, and the config-owned sending identity', () => {
+    expect(sendConfirmSummary(review)).toEqual([
+      'To: Alex <alex@example.com>, bo@example.com',
+      'Cc: cc@example.com',
+      'Bcc: bcc@example.com',
+      'Subject: Re: Kickoff',
+      'From: Mara Vance <mara@example.com> · mara'
+    ]);
+  });
+
+  it('omits empty Cc/Bcc lines and names a missing subject', () => {
+    const bare = normalizeMailDraftReview({
+      contentHash: 'h',
+      recipients: { to: [{ name: null, email: 'alex@example.com' }], cc: [], bcc: [] },
+      subject: '',
+      identity: { from: 'mara@example.com', from_name: null, account: 'mara' },
+      smtpConfigured: true
+    });
+
+    expect(sendConfirmSummary(bare)).toEqual([
+      'To: alex@example.com',
+      'Subject: (no subject)',
+      'From: mara@example.com · mara'
+    ]);
+  });
+
+  // Threading is part of the review contract even though it lives outside
+  // the draft bytes — an unmirrored `in_reply_to` composes WITHOUT threading
+  // headers, which the human has to be told before confirming.
+  it('appends the threading warning line only when the reference could not be resolved', () => {
+    const warned = normalizeMailDraftReview({
+      contentHash: 'h',
+      recipients: { to: [{ name: null, email: 'alex@example.com' }], cc: [], bcc: [] },
+      subject: 'Re: Kickoff',
+      threading: null,
+      threadingWarning: true,
+      identity: { from: 'mara@example.com', from_name: null, account: 'mara' },
+      smtpConfigured: true
+    });
+
+    const lines = sendConfirmSummary(warned);
+    expect(lines[lines.length - 1]).toBe(
+      "The message this replies to isn't mirrored here, so this will start a new thread."
+    );
+    expect(sendConfirmSummary(review)).not.toContain(
+      "The message this replies to isn't mirrored here, so this will start a new thread."
+    );
+  });
+
+  it('never claims a sending identity the account does not have', () => {
+    const pushOnly = normalizeMailDraftReview({
+      contentHash: 'h',
+      recipients: { to: [{ name: null, email: 'alex@example.com' }], cc: [], bcc: [] },
+      subject: 'S',
+      identity: { from: null, from_name: null, account: 'mara' },
+      smtpConfigured: false
+    });
+
+    expect(sendConfirmSummary(pushOnly)).toContain('From: (no sending identity configured) · mara');
+  });
+});
+
+describe('sendReviewExplanation', () => {
+  it('states the gmail reconciliation evidence when Sent Mail was searched and came back empty', () => {
+    expect(sendReviewExplanation('gmail_sent_checked_empty')).toBe(
+      'Sent Mail was checked and found empty — this message most likely did not go out. ' +
+        'Check your own Sent folder (and, if in doubt, the recipient), then tell Valea what you found.'
+    );
+  });
+
+  // Task 4 handoff: a parked op WITHOUT the checked-empty notice is still
+  // reconciling — the search needs an IMAP connection it hasn't had yet.
+  it('explains an unreconciled parked send as awaiting a mailbox connection', () => {
+    const awaiting =
+      'The server never confirmed this send, and your mailbox has not been reachable to check — ' +
+      'still reconciling, awaiting a mailbox connection. ' +
+      'Check your own Sent folder (and, if in doubt, the recipient), then tell Valea what you found.';
+
+    expect(sendReviewExplanation('send_unknown: :closed')).toBe(awaiting);
+    expect(sendReviewExplanation(null)).toBe(awaiting);
+  });
+});
+
+describe('draftNoticeMessage', () => {
+  it('spells out the ledger notices a row can carry', () => {
+    expect(draftNoticeMessage('earlier_revision_sent')).toBe(
+      'An earlier revision of this draft was sent. This file has changed since.'
+    );
+    expect(draftNoticeMessage('status_forged')).toBe(
+      "This draft's status was written by something other than Valea, so it is being ignored."
+    );
+    expect(draftNoticeMessage('sent_copy_failed')).toBe(
+      "This was sent, but the copy for your Sent folder didn't land."
+    );
+  });
+
+  // A rejected send's notice is a composed reason string (redacted transport
+  // detail included) — it is already the most specific thing we have, so it
+  // passes through rather than being flattened into a generic sentence.
+  it('passes an unmapped reason through, and drops an absent one', () => {
+    expect(draftNoticeMessage('rejected_recipients: alex@example.com: 550 no such user')).toBe(
+      'rejected_recipients: alex@example.com: 550 no such user'
+    );
+    expect(draftNoticeMessage(null)).toBeNull();
+  });
+});
+
+describe('sendErrorMessage', () => {
+  it.each([
+    [
+      're_review_required',
+      'The sending identity or the thread changed while you were reviewing. Reload the review, then confirm again.'
+    ],
+    ['content_changed', 'The draft changed since you opened it. Reload the review, then send.'],
+    ['draft_too_large', 'This draft is too large to send.'],
+    ['smtp_not_configured', 'Add SMTP details for this account before sending.'],
+    ['no_smtp_credential', 'Enter your SMTP password first.'],
+    ['not_reviewable', 'This send was already resolved.'],
+    ['not_retryable', 'There is nothing left to retry for this message.'],
+    ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
+    ['anything_else', 'Could not send the draft. Check the account state and try again.']
+  ])('maps error code=%s to a calm sentence', (code, expected) => {
+    expect(sendErrorMessage(code)).toBe(expected);
+  });
+});
+
+describe('canSendDraft', () => {
+  const smtpAccount = normalizeMailAccountStatus({
+    account: 'mara',
+    configured: true,
+    credential: 'present',
+    state: 'idle',
+    smtp_configured: true,
+    smtp_credential: 'present'
+  });
+  const draftRow = (overrides: Record<string, unknown> = {}) =>
+    normalizeMailDraft({
+      account: 'mara',
+      name: 'reply.md',
+      path: 'p',
+      status_display: 'draft',
+      parsed_recipients: { to: [{ name: null, email: 'a@b.co' }], cc: [], bcc: [], subject: 'S' },
+      ...overrides
+    });
+
+  it('is true for a parsed draft on an SMTP-configured account', () => {
+    expect(canSendDraft(draftRow(), smtpAccount)).toBe(true);
+  });
+
+  // `pushed` is a badge, never the primary state: a draft that was pushed
+  // and then edited is still sendable.
+  it('stays true for a draft carrying the pushed badge', () => {
+    expect(canSendDraft(draftRow({ pushed: true }), smtpAccount)).toBe(true);
+  });
+
+  it('is false for a push-only account, an unknown account, an unparseable draft, or any non-draft state', () => {
+    expect(canSendDraft(draftRow(), normalizeMailAccountStatus({ account: 'mara' }))).toBe(false);
+    expect(canSendDraft(draftRow(), null)).toBe(false);
+    expect(canSendDraft(draftRow({ parsed_recipients: { invalid: 'link_unsafe' } }), smtpAccount)).toBe(false);
+    for (const state of ['pushing', 'pushed', 'sending', 'send_review', 'sent', 'needs_review']) {
+      expect(canSendDraft(draftRow({ status_display: state }), smtpAccount)).toBe(false);
+    }
+  });
+
+  // A rejected send reverts the draft to `draft` with the reason surfaced,
+  // so the affordance has to come back — same as the push path's retry.
+  it('is true again for a rejected row (the state reverts to draft, the notice carries the reason)', () => {
+    expect(canSendDraft(draftRow({ status_display: 'draft', notice: 'send_failed' }), smtpAccount)).toBe(true);
   });
 });
 

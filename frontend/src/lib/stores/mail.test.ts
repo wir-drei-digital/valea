@@ -4,6 +4,7 @@ import {
   mailStore,
   normalizeMailAccountStatus,
   normalizeMailDraft,
+  normalizeMailDraftReview,
   resupplyCredentials,
   wireMailEvents,
   type MailAccountStatus
@@ -40,6 +41,10 @@ type OpsResult = ApiResult<{ results: { op: number; result: string; reason: stri
 type DraftsResult = ApiResult<{ drafts: Record<string, any>[] }>;
 type DraftContentResult = ApiResult<{ content: string; path: string }>;
 type PushResult = ApiResult<{ state: string }>;
+type ReviewResult = ApiResult<Record<string, any>>;
+type SendResult = ApiResult<{ state: string }>;
+type ResolveResult = ApiResult<{ resolved: boolean }>;
+type RetryResult = ApiResult<{ retried: boolean }>;
 
 // `account` (the slug) deliberately differs from `username` (the IMAP
 // login) throughout these fixtures — the keychain lookup keys on the SLUG
@@ -82,7 +87,12 @@ function fakeApi(overrides: {
   listMailMessages?: (account: string, folder: string, opts?: object) => Promise<MessagesResult>;
   getMailMessage?: (account: string, msgId: string) => Promise<DetailResult>;
   mailSyncNow?: (account: string, generation: number) => Promise<SyncResult>;
-  setMailCredential?: (account: string, secret: string, generation: number) => Promise<CredentialResult>;
+  setMailCredential?: (
+    account: string,
+    secret: string,
+    generation: number,
+    kind?: 'imap' | 'smtp'
+  ) => Promise<CredentialResult>;
   applyMailOps?: (account: string, ops: Record<string, unknown>[], generation: number) => Promise<OpsResult>;
   listMailDrafts?: () => Promise<DraftsResult>;
   getMailDraft?: (account: string, draftName: string) => Promise<DraftContentResult>;
@@ -92,6 +102,21 @@ function fakeApi(overrides: {
     contentHash: string,
     generation: number
   ) => Promise<PushResult>;
+  getMailDraftReview?: (account: string, draftName: string) => Promise<ReviewResult>;
+  sendDraft?: (
+    account: string,
+    draftName: string,
+    contentHash: string,
+    reviewFingerprint: string | null,
+    generation: number
+  ) => Promise<SendResult>;
+  resolveSendReview?: (
+    account: string,
+    opId: string,
+    resolution: 'sent' | 'not_sent',
+    generation: number
+  ) => Promise<ResolveResult>;
+  retrySentCopy?: (account: string, opId: string, generation: number) => Promise<RetryResult>;
 }) {
   return {
     mailStatus:
@@ -112,9 +137,37 @@ function fakeApi(overrides: {
       overrides.getMailDraft ??
       (async () => ({ ok: true, data: { content: '', path: '' } }) as DraftContentResult),
     pushDraftToMailbox:
-      overrides.pushDraftToMailbox ?? (async () => ({ ok: true, data: { state: 'pushing' } }) as PushResult)
+      overrides.pushDraftToMailbox ?? (async () => ({ ok: true, data: { state: 'pushing' } }) as PushResult),
+    getMailDraftReview:
+      overrides.getMailDraftReview ?? (async () => ({ ok: true, data: rawReview }) as ReviewResult),
+    sendDraft: overrides.sendDraft ?? (async () => ({ ok: true, data: { state: 'sent' } }) as SendResult),
+    resolveSendReview:
+      overrides.resolveSendReview ?? (async () => ({ ok: true, data: { resolved: true } }) as ResolveResult),
+    retrySentCopy:
+      overrides.retrySentCopy ?? (async () => ({ ok: true, data: { retried: true } }) as RetryResult)
   };
 }
+
+// `get_mail_draft_review`'s payload exactly as it arrives: the action's
+// TYPED top-level fields camelCased by codegen (`contentHash`,
+// `threadingWarning`, `reviewFingerprint`, `smtpConfigured`), the
+// unconstrained nested maps (`recipients`/`threading`/`identity`) verbatim
+// as `OpsExecutor.review_snapshot/2` builds them — snake keys inside.
+const rawReview: Record<string, any> = {
+  content: '---\nto: [alex@example.com]\nsubject: "Re: Kickoff"\n---\nBody.\n',
+  contentHash: 'a'.repeat(64),
+  recipients: {
+    to: [{ name: null, email: 'alex@example.com' }],
+    cc: [{ name: 'Bo', email: 'bo@example.com' }],
+    bcc: []
+  },
+  subject: 'Re: Kickoff',
+  threading: { in_reply_to: '<m1@example.com>', references: ['<m0@example.com>'] },
+  threadingWarning: false,
+  identity: { from: 'mara@example.com', from_name: 'Mara Vance', account: 'mara' },
+  reviewFingerprint: 'fp-' + 'b'.repeat(61),
+  smtpConfigured: true
+};
 
 /** Drains the microtask queue so the store's fire-and-forget (`void`) refetches settle before asserting. */
 function flush(): Promise<void> {
@@ -144,8 +197,35 @@ describe('normalizeMailAccountStatus', () => {
       pendingOps: 2,
       heldFolders: ['Old/Archive'],
       notices: ['one notice'],
-      folders: null
+      folders: null,
+      smtpConfigured: false,
+      smtpCredential: 'n/a'
     } satisfies MailAccountStatus);
+  });
+
+  // `smtp_configured`/`smtp_credential` ride STRING keys on the engine's
+  // status map (`Valea.Mail.Engine`'s `@type status` — the falsy-map-field
+  // rule), and `accounts` is delivered raw, so they arrive snake_cased like
+  // every other entry field.
+  it('maps the string-keyed smtp status fields', () => {
+    const normalized = normalizeMailAccountStatus({
+      ...rawMara,
+      smtp_configured: true,
+      smtp_credential: 'missing'
+    });
+
+    expect(normalized.smtpConfigured).toBe(true);
+    expect(normalized.smtpCredential).toBe('missing');
+  });
+
+  it('defaults a push-only account to smtpConfigured=false / smtpCredential="n/a"', () => {
+    expect(normalizeMailAccountStatus(rawMara)).toMatchObject({
+      smtpConfigured: false,
+      smtpCredential: 'n/a'
+    });
+    // An unrecognized value narrows to the closed union's "no smtp" member
+    // rather than being trusted through (same posture as `credential`).
+    expect(normalizeMailAccountStatus({ ...rawMara, smtp_credential: 'weird' }).smtpCredential).toBe('n/a');
   });
 
   it('normalizes the configured folder-name map when present', () => {
@@ -534,6 +614,67 @@ describe('resupplyCredentials', () => {
     expect(setMailCredential).toHaveBeenCalledWith('zoe', 's3cret-zoe', expect.any(Number));
   });
 
+  // Spec G §Configuration & credentials: the SMTP secret is a SEPARATE
+  // keychain entry (`<slug>:smtp`), resupplied on the same restart-recovery
+  // path as the IMAP one and handed over with `kind: 'smtp'`.
+  it('resupplies the smtp entry independently, under <slug>:smtp with kind smtp', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockImplementation(async (_ws, key) =>
+      key === 'mara:imap' ? 'imap-secret' : key === 'mara:smtp' ? 'smtp-secret' : null
+    );
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const count = await resupplyCredentials(
+      [
+        normalizeMailAccountStatus({
+          ...rawMara,
+          credential: 'missing',
+          smtp_configured: true,
+          smtp_credential: 'missing'
+        })
+      ],
+      { setMailCredential } as never
+    );
+
+    expect(count).toBe(2);
+    expect(keychainGet).toHaveBeenCalledWith('ws-1', 'mara:smtp');
+    expect(setMailCredential).toHaveBeenCalledWith('mara', 'imap-secret', expect.any(Number));
+    expect(setMailCredential).toHaveBeenCalledWith('mara', 'smtp-secret', expect.any(Number), 'smtp');
+  });
+
+  it('resupplies smtp even when the imap credential is already present', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockImplementation(async (_ws, key) => (key === 'mara:smtp' ? 'smtp-secret' : null));
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const count = await resupplyCredentials(
+      [normalizeMailAccountStatus({ ...rawMara, smtp_configured: true, smtp_credential: 'missing' })],
+      { setMailCredential } as never
+    );
+
+    expect(count).toBe(1);
+    expect(setMailCredential).toHaveBeenCalledTimes(1);
+    expect(setMailCredential).toHaveBeenCalledWith('mara', 'smtp-secret', expect.any(Number), 'smtp');
+  });
+
+  it('never touches the smtp entry for a push-only account or one whose smtp secret is already present', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockResolvedValue('any-secret');
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    await resupplyCredentials(
+      [
+        normalizeMailAccountStatus(rawMara), // push-only: smtp_credential "n/a"
+        normalizeMailAccountStatus({ ...rawZoe, smtp_configured: true, smtp_credential: 'present' })
+      ],
+      { setMailCredential } as never
+    );
+
+    expect(keychainGet).not.toHaveBeenCalledWith('ws-1', 'mara:smtp');
+    expect(keychainGet).not.toHaveBeenCalledWith('ws-1', 'zoe:smtp');
+    expect(setMailCredential).not.toHaveBeenCalled();
+  });
+
   it('skips invalid and unconfigured entries outright', async () => {
     vi.mocked(inDesktop).mockReturnValue(true);
     const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
@@ -606,6 +747,8 @@ describe('normalizeMailDraft + MailStore.refreshDrafts', () => {
       path: 'sources/mail/mara/drafts/reply.md',
       statusDisplay: 'draft',
       notice: null,
+      pushed: false,
+      opId: null,
       recipients: {
         to: [{ name: null, email: 'alex@example.com' }],
         cc: [],
@@ -613,6 +756,22 @@ describe('normalizeMailDraft + MailStore.refreshDrafts', () => {
         subject: 'Re: Kickoff'
       }
     });
+  });
+
+  // `pushed` is a separate FACT, not a state (spec G §Display projection) —
+  // a completed push riding alongside a `send_review` primary state.
+  it('maps the pushed badge fact and the op id of a resolvable row', () => {
+    const row = normalizeMailDraft({
+      ...rawDraft,
+      status_display: 'send_review',
+      notice: 'gmail_sent_checked_empty',
+      pushed: true,
+      op_id: 'op-7'
+    });
+
+    expect(row.statusDisplay).toBe('send_review');
+    expect(row.pushed).toBe(true);
+    expect(row.opId).toBe('op-7');
   });
 
   it('normalizes an invalid draft entry to {invalid}', () => {
@@ -696,6 +855,134 @@ describe('MailStore.pushDraft', () => {
 
     expect(outcome).toEqual({ error: 'content_changed' });
     expect(listMailDrafts).toHaveBeenCalled();
+  });
+});
+
+describe('MailStore.draftReview', () => {
+  it('normalizes the one-buffer review snapshot (camelCased typed fields, snake-keyed nested maps)', async () => {
+    const getMailDraftReview = vi.fn(async () => ({ ok: true, data: rawReview }) as ReviewResult);
+    const store = new MailStore(fakeApi({ getMailDraftReview }) as never);
+
+    const review = await store.draftReview('mara', 'reply.md');
+
+    expect(getMailDraftReview).toHaveBeenCalledWith('mara', 'reply.md');
+    expect(review).toEqual({
+      content: rawReview.content,
+      contentHash: rawReview.contentHash,
+      reviewFingerprint: rawReview.reviewFingerprint,
+      recipients: {
+        to: [{ name: null, email: 'alex@example.com' }],
+        cc: [{ name: 'Bo', email: 'bo@example.com' }],
+        bcc: []
+      },
+      subject: 'Re: Kickoff',
+      threading: { inReplyTo: '<m1@example.com>', references: ['<m0@example.com>'] },
+      threadingWarning: false,
+      identity: { from: 'mara@example.com', fromName: 'Mara Vance', account: 'mara' },
+      smtpConfigured: true
+    });
+  });
+
+  it('surfaces the error code', async () => {
+    const store = new MailStore(
+      fakeApi({ getMailDraftReview: async () => ({ ok: false, error: 'invalid_draft' }) }) as never
+    );
+
+    expect(await store.draftReview('mara', 'reply.md')).toEqual({ error: 'invalid_draft' });
+  });
+});
+
+describe('normalizeMailDraftReview', () => {
+  it('degrades an absent threading/identity/recipients payload instead of throwing', () => {
+    const review = normalizeMailDraftReview({ content: 'x', contentHash: 'h', smtpConfigured: false });
+
+    expect(review).toEqual({
+      content: 'x',
+      contentHash: 'h',
+      reviewFingerprint: null,
+      recipients: { to: [], cc: [], bcc: [] },
+      subject: '',
+      threading: null,
+      threadingWarning: false,
+      identity: { from: null, fromName: null, account: '' },
+      smtpConfigured: false
+    });
+  });
+});
+
+describe('MailStore.sendDraft', () => {
+  // The one-buffer contract (spec G §UI): everything the human confirmed
+  // came out of ONE review read, so the send carries THAT read's tokens —
+  // never a fresh fetch, never a re-hash.
+  it("passes the review's hash and fingerprint verbatim and never re-reads the draft", async () => {
+    const sendDraft = vi.fn(async () => ({ ok: true, data: { state: 'sent' } }) as SendResult);
+    const getMailDraft = vi.fn(
+      async () => ({ ok: true, data: { content: 'other', path: 'p' } }) as DraftContentResult
+    );
+    const store = new MailStore(fakeApi({ sendDraft, getMailDraft }) as never);
+
+    const outcome = await store.sendDraft('mara', 'reply.md', 'hash-from-review', 'fp-from-review', 7);
+
+    expect(sendDraft).toHaveBeenCalledWith('mara', 'reply.md', 'hash-from-review', 'fp-from-review', 7);
+    expect(getMailDraft).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ state: 'sent' });
+  });
+
+  it('refetches the drafts list on success AND on failure, surfacing the error code', async () => {
+    const listMailDrafts = vi.fn(async () => ({ ok: true, data: { drafts: [] } }) as DraftsResult);
+    const store = new MailStore(
+      fakeApi({ sendDraft: async () => ({ ok: false, error: 're_review_required' }), listMailDrafts }) as never
+    );
+
+    const outcome = await store.sendDraft('mara', 'reply.md', 'h', 'fp', 7);
+    await flush();
+
+    expect(outcome).toEqual({ error: 're_review_required' });
+    expect(listMailDrafts).toHaveBeenCalled();
+  });
+});
+
+describe('MailStore.resolveSendReview / retrySentCopy', () => {
+  it('resolveSendReview passes the verdict through and refreshes the drafts list', async () => {
+    const resolveSendReview = vi.fn(async () => ({ ok: true, data: { resolved: true } }) as ResolveResult);
+    const listMailDrafts = vi.fn(async () => ({ ok: true, data: { drafts: [] } }) as DraftsResult);
+    const store = new MailStore(fakeApi({ resolveSendReview, listMailDrafts }) as never);
+
+    const error = await store.resolveSendReview('mara', 'op-7', 'not_sent', 7);
+    await flush();
+
+    expect(resolveSendReview).toHaveBeenCalledWith('mara', 'op-7', 'not_sent', 7);
+    expect(error).toBeNull();
+    expect(listMailDrafts).toHaveBeenCalled();
+  });
+
+  it('resolveSendReview resolves the error code on failure', async () => {
+    const store = new MailStore(
+      fakeApi({ resolveSendReview: async () => ({ ok: false, error: 'not_reviewable' }) }) as never
+    );
+
+    expect(await store.resolveSendReview('mara', 'op-7', 'sent', 7)).toBe('not_reviewable');
+  });
+
+  it('retrySentCopy re-runs the Sent copy and refreshes the drafts list', async () => {
+    const retrySentCopy = vi.fn(async () => ({ ok: true, data: { retried: true } }) as RetryResult);
+    const listMailDrafts = vi.fn(async () => ({ ok: true, data: { drafts: [] } }) as DraftsResult);
+    const store = new MailStore(fakeApi({ retrySentCopy, listMailDrafts }) as never);
+
+    const error = await store.retrySentCopy('mara', 'op-7', 7);
+    await flush();
+
+    expect(retrySentCopy).toHaveBeenCalledWith('mara', 'op-7', 7);
+    expect(error).toBeNull();
+    expect(listMailDrafts).toHaveBeenCalled();
+  });
+
+  it('retrySentCopy resolves the error code on failure', async () => {
+    const store = new MailStore(
+      fakeApi({ retrySentCopy: async () => ({ ok: false, error: 'not_retryable' }) }) as never
+    );
+
+    expect(await store.retrySentCopy('mara', 'op-7', 7)).toBe('not_retryable');
   });
 });
 

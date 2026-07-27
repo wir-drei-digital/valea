@@ -122,6 +122,10 @@ export type MailStatusPush = {
   held_folders: string[];
   backfill: Record<string, boolean> | null;
   notices: string[];
+  /** Whether the account has a loadable `smtp:` block — `false` for a push-only account (spec G). */
+  smtp_configured: boolean;
+  /** The SEND credential slot: `"n/a"` (not `"missing"`) when there is no `smtp:` block to have a secret for. */
+  smtp_credential: 'present' | 'missing' | 'n/a';
 };
 
 /** `mail_sync` push payload — `{:mail_sync_started, slug}` / `{:mail_sync_finished, slug, ...}`. */

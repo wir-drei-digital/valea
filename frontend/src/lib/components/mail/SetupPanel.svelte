@@ -29,7 +29,9 @@
     mailSetupErrorMessage,
     mailMaintenanceErrorMessage,
     mailStateLabel,
-    mailSlugValid
+    mailSlugValid,
+    smtpFormError,
+    type MailSetupSmtpInput
   } from './mail-shapes';
   import MailDoctorPanel from './MailDoctorPanel.svelte';
 
@@ -38,6 +40,35 @@
   let portText = $state('993');
   let username = $state('');
   let secret = $state('');
+
+  // The optional SMTP block (spec G). Off by default: an account with no
+  // `smtp:` is a push-only account, which is what every account was before
+  // spec G and what most should stay. Both password fields are
+  // component-local `$state` on exactly the same terms as `secret` above —
+  // read at submit time, cleared immediately after, never stored.
+  let smtpEnabled = $state(false);
+  let smtpHost = $state('');
+  let smtpPortText = $state('587');
+  let smtpSecurity: '' | 'starttls' | 'tls' = $state('');
+  let smtpUsername = $state('');
+  let smtpFrom = $state('');
+  let smtpFromName = $state('');
+  let smtpSecret = $state('');
+  let smtpSameAsImap = $state(true);
+
+  function smtpInput(): MailSetupSmtpInput {
+    const port = Number(smtpPortText.trim());
+    return {
+      host: smtpHost,
+      port: smtpPortText.trim() === '' ? null : port,
+      security: smtpSecurity,
+      username: smtpUsername,
+      from: smtpFrom,
+      fromName: smtpFromName,
+      secret: smtpSecret,
+      sameAsImap: smtpSameAsImap
+    };
+  }
 
   let submitting = $state(false);
   let error: string | null = $state(null);
@@ -66,6 +97,9 @@
     if (!Number.isFinite(port) || port <= 0) return 'Enter a valid port.';
     if (!username.trim()) return 'Enter the mailbox username.';
     if (!secret) return 'Enter the mailbox password.';
+    // `setup_mail_account` answers a reason-free `invalid_smtp`, so
+    // everything checkable is checked here first (see `smtpFormError`).
+    if (smtpEnabled) return smtpFormError(smtpInput());
     return null;
   }
 
@@ -85,7 +119,8 @@
         port: Number(portText),
         username: username.trim(),
         secret,
-        generation
+        generation,
+        smtp: smtpEnabled ? smtpInput() : null
       },
       {
         api,
@@ -101,6 +136,7 @@
     // Cleared immediately after submit either way — never held longer than
     // the RPC call that needed it, never put in a store.
     secret = '';
+    smtpSecret = '';
 
     if (!outcome.ok) {
       error = mailSetupErrorMessage(outcome.error);
@@ -364,6 +400,100 @@
           bind:value={secret}
           disabled={submitting}
         />
+      </div>
+
+      <!-- Sending is opt-in, per account (spec G §Configuration &
+           credentials). Without this block the account is push-only: Valea
+           can place drafts in your mailbox but has no transport to send. -->
+      <div class="border-paper-hairline flex flex-col gap-3 border-t pt-4">
+        <label class="text-ink-body flex items-center gap-2 text-[13px]">
+          <input type="checkbox" bind:checked={smtpEnabled} disabled={submitting} />
+          Also let me send from this account
+        </label>
+
+        {#if smtpEnabled}
+          <p class="text-ink-meta max-w-[420px] text-[11.5px]">
+            Only you can send — your assistant prepares drafts and you confirm each one. TLS is always on.
+          </p>
+
+          <div class="flex flex-col gap-1.5">
+            <Label for="mail-smtp-host">SMTP host</Label>
+            <Input id="mail-smtp-host" bind:value={smtpHost} disabled={submitting} placeholder="smtp.example.com" />
+          </div>
+
+          <div class="flex items-end gap-2">
+            <div class="flex flex-1 flex-col gap-1.5">
+              <Label for="mail-smtp-port">Port</Label>
+              <Input id="mail-smtp-port" inputmode="numeric" bind:value={smtpPortText} disabled={submitting} />
+            </div>
+            <div class="flex flex-1 flex-col gap-1.5">
+              <Label for="mail-smtp-security">Security</Label>
+              <select
+                id="mail-smtp-security"
+                class="border-paper-hairline bg-paper-surface rounded-[7px] border px-2 py-1.5 text-[12.5px]"
+                bind:value={smtpSecurity}
+                disabled={submitting}
+              >
+                <option value="">Match the port</option>
+                <option value="starttls">STARTTLS (587)</option>
+                <option value="tls">TLS (465)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <Label for="mail-smtp-username">SMTP username</Label>
+            <Input
+              id="mail-smtp-username"
+              bind:value={smtpUsername}
+              disabled={submitting}
+              placeholder="you@example.com"
+            />
+          </div>
+
+          <!-- From is CONFIG-OWNED: a draft can never set or override it.
+               It defaults to the SMTP username, which only works when that
+               username is itself an address — otherwise `smtpFormError`
+               requires this field before the RPC is ever called. -->
+          <div class="flex flex-col gap-1.5">
+            <Label for="mail-smtp-from">Send as</Label>
+            <Input
+              id="mail-smtp-from"
+              bind:value={smtpFrom}
+              disabled={submitting}
+              placeholder={smtpUsername.trim() || 'you@example.com'}
+            />
+            <p class="text-ink-meta text-[11.5px]">
+              The From address on everything you send. Leave blank to use the SMTP username.
+            </p>
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <Label for="mail-smtp-from-name">Display name</Label>
+            <Input id="mail-smtp-from-name" bind:value={smtpFromName} disabled={submitting} placeholder="Mara Vance" />
+          </div>
+
+          <!-- The SMTP secret is a SEPARATE keychain entry from the IMAP one;
+               "same as IMAP" copies the typed password into it (a copy, not
+               an alias — rotation stays independent). -->
+          <label class="text-ink-body flex items-center gap-2 text-[13px]">
+            <input type="checkbox" bind:checked={smtpSameAsImap} disabled={submitting} />
+            Same password as IMAP
+          </label>
+
+          {#if !smtpSameAsImap}
+            <div class="flex flex-col gap-1.5">
+              <Label for="mail-smtp-password">SMTP password</Label>
+              <Input
+                id="mail-smtp-password"
+                type="password"
+                autocomplete="off"
+                bind:value={smtpSecret}
+                disabled={submitting}
+              />
+            </div>
+          {/if}
+        {/if}
       </div>
 
       {#if error}
