@@ -193,7 +193,17 @@ defmodule Valea.Mail.Settings do
     |> Base.encode16(case: :lower)
   end
 
-  defp fingerprint_input(smtp) do
+  @doc """
+  The canonical, FROZEN input string `smtp_fingerprint/1` hashes — public so
+  the send flow's `Valea.Mail.OpsExecutor.review_fingerprint/2` can extend it
+  with the review's resolved threading without re-spelling it (two spellings
+  of a frozen string is exactly the bug that would silently stop rejecting
+  identity drift).
+
+  Changing this string invalidates every in-flight review.
+  """
+  @spec fingerprint_input(smtp()) :: String.t()
+  def fingerprint_input(smtp) do
     "smtp\n#{smtp.from}\n#{smtp.from_name || ""}\n#{smtp.host}\n#{smtp.port}\n#{smtp.security}\n#{smtp.username}\n"
   end
 

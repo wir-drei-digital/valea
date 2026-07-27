@@ -58,6 +58,8 @@ defmodule Valea.Mail.OpsExecutor do
   alias Valea.Mail.MessageFile
   alias Valea.Mail.Normalizer
   alias Valea.Mail.OpsFile
+  alias Valea.Mail.Redact
+  alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.Views
   alias Valea.Paths
@@ -68,13 +70,30 @@ defmodule Valea.Mail.OpsExecutor do
   # never STOREd by the executor's flag path, only set at APPEND time.
   @draft_flags ["\\Draft"]
 
+  # The Sent copy of a message this user just transmitted is, by
+  # construction, one they have read.
+  @sent_flags ["\\Seen"]
+
+  # How many COMPLETE-but-empty Sent-Mail searches park a gmail send for good
+  # (spec G: "an empty search is a strong signal but not proof … the search
+  # re-runs over a short bounded window").
+  @reconcile_attempt_limit 3
+
+  # Every non-terminal ledger state — exactly what the claim index treats as
+  # active, and what the display projection lets govern a draft's state.
+  @active_states ["claimed", "pending", "executing", "needs_review", "transmitted", "send_review"]
+
   @type ctx :: %{
           required(:root) => String.t(),
           required(:account) => String.t(),
           required(:settings) => Valea.Mail.Settings.t(),
           required(:transport) => module(),
           required(:conn) => term(),
-          optional(:opid) => String.t() | nil
+          optional(:opid) => String.t() | nil,
+          # The SEND half (spec G). Absent on every pull/move/append path —
+          # nothing outside `execute_send/2`'s `pending` branch reads either.
+          optional(:smtp_transport) => module(),
+          optional(:smtp_credential) => String.t() | nil
         }
 
   @type result_map :: %{required(String.t()) => term()}
@@ -454,14 +473,16 @@ defmodule Valea.Mail.OpsExecutor do
   # append (Push-to-Drafts) — prepare (local) + execute (network) + reconcile
   # ==========================================================================
   #
-  # THERE IS NO SMTP. The only outbound path is the USER clicking
-  # Push-to-Drafts, which APPENDs the rendered MIME to the account's Drafts
-  # folder. `prepare_push/3` is fully LOCAL (atomic claim + hash-verified
-  # snapshot + compose + fsynced spool) and runs synchronously in the Engine
-  # loop; `execute_append/2` is the network half and rides the Engine's
-  # single serialized work slot exactly like a sync pass. The push is
-  # idempotent by a stable Valea-generated Message-ID: every attempt searches
-  # the Drafts folder for it first, so a lost response never lands a duplicate.
+  # Push-to-Drafts APPENDs the rendered MIME to the account's Drafts folder —
+  # the low-trust outbound path, and the only one for an account with no
+  # `smtp:` block (the transmitting sibling is the `send` section below; both
+  # are reachable ONLY from an explicit human click, spec G's invariant).
+  # `prepare_push/3` is fully LOCAL (atomic claim + hash-verified snapshot +
+  # compose + fsynced spool) and runs synchronously in the Engine loop;
+  # `execute_append/2` is the network half and rides the Engine's single
+  # serialized work slot exactly like a sync pass. The push is idempotent by a
+  # stable Valea-generated Message-ID: every attempt searches the Drafts
+  # folder for it first, so a lost response never lands a duplicate.
 
   @doc """
   LOCAL phase of a push (no connection): validates the draft basename,
@@ -507,7 +528,7 @@ defmodule Valea.Mail.OpsExecutor do
           snapshot_and_spool_guarded(ctx, op_row, draft_name, content_hash, buffer, path)
 
         {:error, :duplicate_active} ->
-          {:duplicate, existing_display(ctx.account, origin)}
+          {:duplicate, existing_display(ctx.account, origin, "pushing")}
       end
     end
   rescue
@@ -583,12 +604,18 @@ defmodule Valea.Mail.OpsExecutor do
   defp corroborate_status(_ctx, _op_row, %{status: "draft"}), do: :ok
 
   defp corroborate_status(ctx, op_row, _parsed) do
-    others =
-      ctx.account
-      |> Store.ops_by_origin(op_row.origin)
-      |> Enum.reject(&(&1.id == op_row.id))
+    if prior_op?(ctx, op_row.origin, op_row.id),
+      do: :ok,
+      else: {:error, "status_forged"}
+  end
 
-    if others == [], do: {:error, "status_forged"}, else: :ok
+  # Is there any OTHER ledger op for this draft — i.e. did the engine itself
+  # ever stamp this file? `exclude_id` drops the caller's own already-claimed
+  # row (the push path claims first, the send path checks before claiming).
+  defp prior_op?(ctx, origin, exclude_id) do
+    ctx.account
+    |> Store.ops_by_origin(origin)
+    |> Enum.any?(&(&1.id != exclude_id))
   end
 
   defp compose_and_spool(ctx, op_row, draft_name, content_hash, parsed, path) do
@@ -839,10 +866,15 @@ defmodule Valea.Mail.OpsExecutor do
     end
   end
 
-  defp all_known_folders(ctx, op_row) do
+  defp all_known_folders(ctx, op_row),
+    do: known_folders_with(ctx, drafts_folder(ctx, op_row))
+
+  # Every mirrored folder plus `folder` (which may not be mirrored at all —
+  # an account's Drafts or Sent folder need not be in the sync set).
+  defp known_folders_with(ctx, folder) do
     ctx
     |> known_folders()
-    |> MapSet.put(drafts_folder(ctx, op_row))
+    |> MapSet.put(folder)
     |> MapSet.to_list()
   end
 
@@ -893,8 +925,12 @@ defmodule Valea.Mail.OpsExecutor do
     end
   end
 
-  defp write_spool_payload!(ctx, id, bytes) do
-    path = spool_payload_path(ctx, id)
+  defp write_spool_payload!(ctx, id, bytes),
+    do: write_spool_file!(spool_payload_path(ctx, id), bytes)
+
+  # fsynced tmp + rename: the payload the network phase will re-hash must be
+  # on disk BEFORE the ledger says it is.
+  defp write_spool_file!(path, bytes) do
     File.mkdir_p!(Path.dirname(path))
     tmp = path <> ".tmp-#{System.unique_integer([:positive])}"
     File.write!(tmp, bytes)
@@ -1016,13 +1052,14 @@ defmodule Valea.Mail.OpsExecutor do
     _error -> :unchanged
   end
 
-  # Stamp using the manifest's recorded snapshot: the `pushing`-stamped hash
-  # when present (so a happy-path terminal stamp chains cleanly), else the
-  # original snapshot hash.
+  # Stamp using the manifest's recorded snapshot: the in-flight stamp's hash
+  # when present (`sending` for a send, `pushing` for a push — so a terminal
+  # stamp chains cleanly off it), else the original snapshot hash. An edited
+  # draft matches none of them and is left alone, which is the whole point.
   defp cas_stamp_op(ctx, op_row, status) do
     manifest = read_manifest(ctx, op_row.id) || %{}
     name = manifest["msg_id"] || op_row.msg_id
-    expected = manifest["pushing_hash"] || manifest["content_hash"]
+    expected = manifest["sending_hash"] || manifest["pushing_hash"] || manifest["content_hash"]
 
     if is_binary(name) and is_binary(expected) do
       case resolve_draft_path(ctx, name) do
@@ -1046,24 +1083,737 @@ defmodule Valea.Mail.OpsExecutor do
 
   defp draft_from(ctx), do: ctx.settings.imap.username
 
-  defp existing_display(account, origin) do
+  # The display state of whichever op currently holds this draft's claim —
+  # the answer a losing claimant gets. `fallback` is what to say when the
+  # winning row has already resolved between the failed claim and this read
+  # (a push says "pushing", a send says "sending": both are about to be
+  # refreshed from the ledger anyway).
+  defp existing_display(account, origin, fallback) do
     account
     |> Store.ops_by_origin(origin)
-    |> Enum.find(&(&1.state in ["claimed", "pending", "executing", "needs_review"]))
+    |> Enum.find(&(&1.state in @active_states))
     |> case do
-      %{state: state} -> op_display(state)
-      nil -> "pushing"
+      %{kind: kind, state: state} -> op_display(kind, state)
+      nil -> fallback
     end
   end
 
-  @doc "Maps a `mail_pending_ops` state to the user-facing draft display state."
+  @doc "The non-terminal `mail_pending_ops` states — an op in one of these holds its draft's claim."
+  @spec active_states() :: [String.t()]
+  def active_states, do: @active_states
+
+  @doc """
+  Maps a `mail_pending_ops` state to the user-facing draft display state,
+  in PUSH vocabulary (plus the two send-only states, whose names are the
+  same either way). Prefer `op_display/2` wherever the op's kind is known:
+  one origin can carry ops of both kinds, and `complete` means `pushed` for
+  an append but `sent` for a send.
+  """
   @spec op_display(String.t()) :: String.t()
   def op_display("complete"), do: "pushed"
   def op_display("needs_review"), do: "needs_review"
   def op_display("rejected"), do: "rejected"
+  def op_display("transmitted"), do: "sending"
+  def op_display("send_review"), do: "send_review"
   def op_display(_active), do: "pushing"
 
+  @doc """
+  Kind-aware display state (spec G, §Display projection): a send in ANY
+  pre-terminal state reads `sending`, its parked state `send_review`, and its
+  completion `sent` — never the append vocabulary `op_display/1` speaks.
+  """
+  @spec op_display(String.t(), String.t()) :: String.t()
+  def op_display("send", "complete"), do: "sent"
+
+  def op_display("send", state) when state in ["transmitted", "send_review", "rejected"],
+    do: op_display(state)
+
+  def op_display("send", _active), do: "sending"
+  def op_display(_kind, state), do: op_display(state)
+
   defp sha256_hex(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  # ==========================================================================
+  # send (spec G, §Send pipeline) — prepare (local) + transmit + Sent copy
+  # ==========================================================================
+  #
+  # The transmitting sibling of the push above, sharing its machinery verbatim
+  # (claim → snapshot → compose → spool → ledger) and adding exactly one
+  # irreversible step. Three properties hold structurally, not by convention:
+  #
+  #   * **At most one `SmtpTransport.send/5` per op.** Only the `pending`
+  #     branch of `execute_send/2` can reach the transport, and reaching it
+  #     transitions the op out of `pending` (durably, BEFORE the call) — so no
+  #     recovery, reconciliation, retry, or resolution path can transmit. The
+  #     tests assert the call COUNT, not just the outcome.
+  #   * **Nothing after the DATA dot is ever called provably-unsent.** The
+  #     transport's tri-state decides: `{:error, _}` rejects (safe — the
+  #     human can click again), `{:unknown, _}` parks in `send_review` for a
+  #     human, and only a received `2xx` completes.
+  #   * **What the human reviewed is what gets sent.** The review fingerprint
+  #     (settings identity + resolved threading) is re-derived from the
+  #     Engine's captured settings and compared BEFORE anything durable
+  #     exists; the wire bytes' hash is re-verified immediately before the
+  #     one transmit.
+
+  @doc """
+  The review fingerprint: an opaque hash over everything that decides HOW,
+  AS WHOM, and INTO WHICH THREAD this account transmits — the account's SMTP
+  send config (`Valea.Mail.Settings.smtp_fingerprint/1`'s frozen input
+  string) joined to the review's RESOLVED threading.
+
+  `send_draft` carries the value the human's review modal was rendered from;
+  a re-derivation that no longer matches means the sending identity or the
+  thread the message would join has drifted since (a settings hot-reload has
+  no generation bump, and the referenced message can be deleted server-side),
+  so the send is refused rather than transmitted under terms nobody
+  reviewed. `nil` for a push-only account, exactly where `smtp_fingerprint/1`
+  is `nil`.
+  """
+  @spec review_fingerprint(Settings.t(), DraftMime.threading() | nil) :: String.t() | nil
+  def review_fingerprint(%{smtp: nil}, _threading), do: nil
+
+  def review_fingerprint(%{smtp: smtp}, threading) do
+    :sha256
+    |> :crypto.hash(
+      Settings.fingerprint_input(smtp) <> "\nthreading\n" <> canonical_threading(threading)
+    )
+    |> Base.encode16(case: :lower)
+  end
+
+  # An absent thread is the string "none", never "" — so "no threading" and
+  # "threaded onto a message whose id happens to be empty" can't collide.
+  defp canonical_threading(nil), do: "none"
+  defp canonical_threading(%{in_reply_to: nil}), do: "none"
+
+  defp canonical_threading(%{in_reply_to: in_reply_to, references: references}),
+    do: in_reply_to <> "\n" <> Enum.join(references || [], "\n")
+
+  @doc """
+  LOCAL phase of a send (no connection, no transmission): the same
+  validate → contain → no-follow-snapshot → hash-verify → parse chain as
+  `prepare_push/3`, plus the send-only guards, then the atomic claim, the
+  dual composition, and the fsynced spool.
+
+  The order is the contract (spec G §Send pipeline / §RPC surface). Every
+  check that can refuse the send runs BEFORE anything durable exists — the
+  threading resolution and fingerprint comparison need the parsed snapshot,
+  so the side-effect-free read necessarily precedes them, but the claim,
+  the spool, and the composition all come after:
+
+    1. basename → containment → no-follow read → `content_hash` verify →
+       `parse_and_validate` → status anti-forgery → size guard.
+    2. threading resolved from the referenced message's canonical file.
+    3. review fingerprint re-derived and compared (`re_review_required`).
+    4. atomic claim on the widened `(account, origin)` index — a push or a
+       second send holding this draft loses here, with no second op created.
+    5. wire + record composed from the ONE buffer, both fsynced into
+       `spool/` with a manifest, hashes onto the row, `claimed → pending`,
+       draft CAS-stamped `sending`.
+
+  `ctx` is the LOCAL ctx `%{root, account, settings}` — the Engine's
+  captured `state.settings`, never a re-read (see the Engine's
+  `send_draft/4`).
+  """
+  @spec prepare_send(map(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:duplicate, String.t()} | {:error, String.t()}
+  def prepare_send(ctx, draft_name, content_hash, review_fingerprint)
+      when is_binary(draft_name) and is_binary(content_hash) do
+    with :ok <- validate_draft_name(draft_name),
+         {:ok, path} <- resolve_draft_path(ctx, draft_name),
+         {:ok, buffer} <- read_draft_nofollow(path),
+         :ok <- verify_send_hash(buffer, content_hash),
+         {:ok, validated} <- validate_send_draft(buffer),
+         :ok <- corroborate_send_status(ctx, draft_name, validated),
+         :ok <- check_send_size(ctx, buffer),
+         {threading, notice} <- resolve_threading(ctx, validated.in_reply_to),
+         :ok <- check_review_fingerprint(ctx, threading, review_fingerprint) do
+      claim_send(ctx, %{
+        draft_name: draft_name,
+        content_hash: content_hash,
+        buffer: buffer,
+        validated: validated,
+        threading: threading,
+        notice: notice,
+        path: path
+      })
+    end
+  rescue
+    # Same posture as `prepare_push/3`: this runs INSIDE the Engine's
+    # handle_call, and a raise here would fell the Engine and with it the
+    # RAM-only credentials. Nothing has been transmitted at any point this
+    # can raise, so degrading to a clean refusal is always safe.
+    _error -> {:error, "send_failed"}
+  catch
+    :exit, _reason -> {:error, "send_failed"}
+  end
+
+  defp verify_send_hash(buffer, content_hash) do
+    if DraftFile.content_hash(buffer) == content_hash,
+      do: :ok,
+      else: {:error, "content_changed"}
+  end
+
+  defp validate_send_draft(buffer) do
+    case DraftFile.parse_and_validate(buffer) do
+      {:ok, validated} -> {:ok, validated}
+      {:error, reason} -> {:error, "invalid_draft: #{reason}"}
+    end
+  end
+
+  # The push path corroborates AFTER claiming (and excludes its own row); the
+  # send path refuses before claiming, so there is no row to exclude.
+  defp corroborate_send_status(_ctx, _draft_name, %{status: "draft"}), do: :ok
+
+  defp corroborate_send_status(ctx, draft_name, _validated) do
+    if prior_op?(ctx, draft_origin(draft_name), nil),
+      do: :ok,
+      else: {:error, "status_forged"}
+  end
+
+  # `sync.max_message_bytes` bounds what this account will transmit. Measured
+  # on the reviewed SNAPSHOT rather than the composed message, because the
+  # bound has to be enforced from the pre-claim position the ordering above
+  # demands — and because the snapshot is what the human actually reviewed.
+  defp check_send_size(ctx, buffer) do
+    if byte_size(buffer) > ctx.settings.sync.max_message_bytes,
+      do: {:error, "draft_too_large"},
+      else: :ok
+  end
+
+  defp check_review_fingerprint(ctx, threading, claimed) do
+    if review_fingerprint(ctx.settings, threading) == claimed,
+      do: :ok,
+      else: {:error, "re_review_required"}
+  end
+
+  defp claim_send(ctx, snapshot) do
+    origin = draft_origin(snapshot.draft_name)
+    canonical_hash = sha256_hex(DraftFile.canonical_send_bytes(snapshot.buffer))
+
+    message_id =
+      DraftMime.send_message_id(ctx.account, snapshot.draft_name, canonical_hash)
+
+    case Store.create_pending_op(%{
+           kind: "send",
+           account: ctx.account,
+           origin: origin,
+           target_folder: ctx.settings.folders.sent,
+           message_id: message_id,
+           msg_id: snapshot.draft_name,
+           content_hash: snapshot.content_hash,
+           state: "claimed"
+         }) do
+      {:ok, op_row} ->
+        spool_send_guarded(ctx, op_row, Map.put(snapshot, :canonical_hash, canonical_hash))
+
+      {:error, :duplicate_active} ->
+        # Covers the push-vs-send mutex too: the widened index is one claim
+        # per draft across both outbound kinds.
+        {:duplicate, existing_display(ctx.account, origin, "sending")}
+    end
+  end
+
+  # Post-claim guard, exactly as the push has: a raise past the claim
+  # terminates the claimed op `rejected` (best effort) so the claim can never
+  # wedge the draft. Still strictly pre-transmit — `execute_send/2` owns
+  # everything from `pending` on.
+  defp spool_send_guarded(ctx, op_row, snapshot) do
+    spool_send(ctx, op_row, snapshot)
+  rescue
+    _error ->
+      best_effort_reject(op_row.id, "send_failed")
+      {:error, "send_failed"}
+  catch
+    :exit, _reason ->
+      best_effort_reject(op_row.id, "send_failed")
+      {:error, "send_failed"}
+  end
+
+  defp spool_send(ctx, op_row, snapshot) do
+    smtp = ctx.settings.smtp
+
+    {:ok, %{wire: wire, record: record, envelope: envelope}} =
+      DraftMime.compose_send(
+        snapshot.validated,
+        snapshot.threading,
+        op_row.message_id,
+        smtp.from,
+        smtp.from_name
+      )
+
+    wire_sha = sha256_hex(wire)
+    record_sha = sha256_hex(record)
+
+    write_spool_file!(send_payload_path(ctx, op_row.id, :wire), wire)
+    write_spool_file!(send_payload_path(ctx, op_row.id, :record), record)
+
+    manifest = %{
+      "kind" => "send",
+      "account" => ctx.account,
+      "origin" => op_row.origin,
+      "target_folder" => op_row.target_folder,
+      "message_id" => op_row.message_id,
+      "msg_id" => snapshot.draft_name,
+      "content_hash" => snapshot.content_hash,
+      "canonical_hash" => snapshot.canonical_hash,
+      "review_fingerprint" => review_fingerprint(ctx.settings, snapshot.threading),
+      "wire_sha256" => wire_sha,
+      "record_sha256" => record_sha,
+      "envelope" => %{"from" => envelope.from, "rcpt" => envelope.rcpt},
+      "threading" => %{
+        "in_reply_to" => snapshot.threading[:in_reply_to],
+        "references" => snapshot.threading[:references] || []
+      },
+      "provider" => provider_string(ctx),
+      "notice" => snapshot.notice,
+      "reconcile_attempts" => 0,
+      "transitions" => ["spooled"]
+    }
+
+    write_manifest!(ctx, op_row.id, manifest)
+
+    Store.transition_op(op_row.id, "pending", %{
+      wire_sha256: wire_sha,
+      record_sha256: record_sha,
+      envelope_rcpt: Jason.encode!(envelope.rcpt)
+    })
+
+    # CAS-stamp `status: sending` (courtesy — the LEDGER is authoritative).
+    # The stamped hash chains the terminal `sent`/`draft` stamp, exactly as
+    # the push's `pushing_hash` does.
+    case cas_stamp_draft(snapshot.path, snapshot.content_hash, "sending") do
+      {:ok, sending_hash} ->
+        write_manifest!(ctx, op_row.id, Map.put(manifest, "sending_hash", sending_hash))
+
+      :unchanged ->
+        :ok
+    end
+
+    {:ok,
+     Map.merge(op_row, %{state: "pending", wire_sha256: wire_sha, record_sha256: record_sha})}
+  end
+
+  @doc """
+  NETWORK phase of a send: the one transmit, then the Sent copy. Dispatches
+  on the op's durable state, and ONLY the `pending` branch can reach the SMTP
+  transport — every other state is a resume, a reconcile, or a refusal.
+
+    * `:ok` — sent and filed (op `complete`, draft `sent`). A `complete` op
+      carrying `sent_copy_failed` is also `:ok`: the mail IS sent, only its
+      Sent copy is outstanding (`retry_sent_copy/2`).
+    * `{:sending, notice}` — transmitted, Sent copy deferred (no IMAP
+      connection yet); the next connected recover finishes it.
+    * `{:send_review, reason}` — the outcome is not knowable; parked for the
+      human, spool kept, NEVER retried.
+    * `{:rejected, reason}` — provably unsent (op `rejected`, draft reverted
+      to `draft` for a fresh review-and-click).
+  """
+  @spec execute_send(ctx(), String.t()) ::
+          :ok | {:sending, String.t()} | {:send_review, String.t()} | {:rejected, String.t()}
+  def execute_send(ctx, op_id) when is_binary(op_id) do
+    case Store.op_by_id(op_id) do
+      {:ok, op_row} ->
+        assert_op_account!(op_row, ctx)
+        dispatch_send(ctx, op_row)
+
+      {:error, _} ->
+        {:rejected, "op_gone"}
+    end
+  end
+
+  defp dispatch_send(ctx, op_row) do
+    case op_row.state do
+      "pending" -> transmit(ctx, op_row)
+      # The crash window: the op is at-or-past DATA with no recorded outcome.
+      "executing" -> park_send_review(op_row, "crashed_during_transmit")
+      "transmitted" -> sent_copy_step(ctx, op_row)
+      "send_review" -> reconcile_send(ctx, op_row)
+      "complete" -> :ok
+      "rejected" -> {:rejected, op_row.error || "rejected"}
+      # `claimed` included: it has no spool payload, so it is provably
+      # un-transmitted and belongs to `classify_sends_local/1`, not here.
+      _other -> {:rejected, "unexpected_state"}
+    end
+  end
+
+  # THE transmit. Both durable records (ledger `executing`, manifest
+  # `transmitting`) are written BEFORE the call, so a crash at any instant
+  # around it is recoverable as "at-or-past DATA, outcome unknown" rather
+  # than being mistaken for un-transmitted.
+  defp transmit(ctx, op_row) do
+    case load_verified_send_payload(ctx, op_row, :wire) do
+      {:ok, wire} ->
+        manifest = read_manifest(ctx, op_row.id) || %{}
+        Store.transition_op(op_row.id, "executing")
+        manifest = transition(ctx, op_row.id, manifest, "transmitting")
+
+        ctx.smtp_transport.send(
+          ctx.settings.smtp,
+          ctx.smtp_credential,
+          send_envelope(ctx, op_row, manifest),
+          wire,
+          []
+        )
+        |> handle_transmit_result(ctx, op_row, manifest)
+
+      {:error, :missing_spool} ->
+        reject_send(ctx, op_row, "spool_missing")
+
+      {:error, :payload_mismatch} ->
+        reject_send(ctx, op_row, "payload_hash_mismatch")
+    end
+  end
+
+  defp handle_transmit_result({:ok, :accepted}, ctx, op_row, manifest) do
+    Store.transition_op(op_row.id, "transmitted")
+    transition(ctx, op_row.id, manifest, "transmitted")
+    sent_copy_step(ctx, %{op_row | state: "transmitted"})
+  end
+
+  defp handle_transmit_result({:error, {:rejected_recipients, list}}, ctx, op_row, _manifest) do
+    reject_send(ctx, op_row, rejected_recipients_reason(list))
+  end
+
+  defp handle_transmit_result({:error, reason}, ctx, op_row, _manifest) do
+    # Provably unsent (everything before the server's 354, plus a RECEIVED
+    # final non-2xx after the dot): reject, revert the draft, let the human
+    # click again.
+    reject_send(ctx, op_row, scrub(ctx, "send_failed: #{inspect(reason)}"))
+  end
+
+  defp handle_transmit_result({:unknown, reason}, ctx, op_row, manifest) do
+    # The message may or may not have been delivered and nothing can prove
+    # which: park it. The spool survives for the gmail reconciliation and the
+    # human resolution — and nothing will ever transmit it again.
+    transition(ctx, op_row.id, manifest, "send_review")
+    park_send_review(op_row, scrub(ctx, "send_unknown: #{inspect(reason)}"))
+  end
+
+  defp rejected_recipients_reason(list) do
+    "rejected_recipients: " <>
+      Enum.map_join(list, "; ", fn {addr, reason} -> "#{addr}: #{reason}" end)
+  end
+
+  # The op's error string is broadcast to the UI and stored in the ledger —
+  # defense-in-depth against a transport error term that quoted the secret.
+  defp scrub(ctx, string), do: Redact.text(string, Map.get(ctx, :smtp_credential))
+
+  # The envelope the manifest recorded (it survives database loss); the row +
+  # settings are the fallback for a manifest that lost the key.
+  defp send_envelope(ctx, op_row, manifest) do
+    case manifest["envelope"] do
+      %{"from" => from, "rcpt" => rcpt} when is_binary(from) and is_list(rcpt) ->
+        %{from: from, rcpt: rcpt}
+
+      _missing ->
+        %{from: ctx.settings.smtp.from, rcpt: decode_rcpt(op_row.envelope_rcpt)}
+    end
+  end
+
+  defp decode_rcpt(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, list} when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp decode_rcpt(_json), do: []
+
+  # -- Sent copy ---------------------------------------------------------------
+
+  # Gmail files SMTP-sent mail into Sent Mail itself — appending would
+  # duplicate it. Every other provider gets the RECORD variant (Bcc kept)
+  # through the push's own idempotent, search-first append machinery.
+  defp sent_copy_step(ctx, op_row) do
+    if gmail?(ctx), do: complete_send(ctx, op_row, nil), else: generic_sent_copy(ctx, op_row)
+  end
+
+  # No connection: the mail is out and the op stays `transmitted`, resumed by
+  # the next IMAP-connected recover. NEVER a reason to re-transmit.
+  defp generic_sent_copy(%{conn: nil}, _op_row), do: {:sending, "sent_copy_pending"}
+
+  defp generic_sent_copy(ctx, op_row) do
+    sent = sent_folder(ctx, op_row)
+
+    case check_append_present(ctx, sent, op_row.message_id) do
+      {:ok, true} -> complete_send(ctx, op_row, nil)
+      {:ok, false} -> file_sent_copy(ctx, op_row, sent)
+      # An unanswerable search is never "not present" (it would duplicate the
+      # copy). Leave the op `transmitted` for the next pass to re-prove.
+      {:error, _reason} -> {:sending, "sent_copy_pending"}
+    end
+  end
+
+  defp file_sent_copy(ctx, op_row, sent) do
+    case load_verified_send_payload(ctx, op_row, :record) do
+      {:ok, record} ->
+        case ctx.transport.append(ctx.conn, sent, @sent_flags, record) do
+          {:ok, _result} ->
+            complete_send(ctx, op_row, nil)
+
+          {:error, _reason} ->
+            # A failed Sent copy CANNOT un-send the mail: complete either way,
+            # with a notice + retry affordance when the copy really is missing.
+            if append_present?(ctx, sent, op_row.message_id),
+              do: complete_send(ctx, op_row, nil),
+              else: complete_send(ctx, op_row, "sent_copy_failed")
+        end
+
+      {:error, _reason} ->
+        complete_send(ctx, op_row, "sent_copy_failed")
+    end
+  end
+
+  defp sent_folder(ctx, op_row), do: op_row.target_folder || ctx.settings.folders.sent
+
+  # -- send terminal transitions -----------------------------------------------
+
+  defp complete_send(ctx, op_row, error) do
+    Store.transition_op(op_row.id, "complete", %{error: error})
+    cas_stamp_op(ctx, op_row, "sent")
+    audit_send(ctx, op_row, error)
+
+    # A `sent_copy_failed` completion KEEPS the spool: `retry_sent_copy/2`
+    # re-runs the append from that record payload.
+    if is_nil(error), do: cleanup_send_spool(ctx, op_row.id)
+    :ok
+  end
+
+  defp reject_send(ctx, op_row, reason) do
+    Store.transition_op(op_row.id, "rejected", %{error: reason})
+    cas_stamp_op(ctx, op_row, "draft")
+    cleanup_send_spool(ctx, op_row.id)
+    {:rejected, reason}
+  end
+
+  # Parked for the human. The draft keeps its `sending` stamp on purpose: it
+  # is NOT provably unsent, and reverting it would invite a second send.
+  defp park_send_review(op_row, reason) do
+    Store.transition_op(op_row.id, "send_review", %{error: reason})
+    {:send_review, reason}
+  end
+
+  defp audit_send(ctx, op_row, error) do
+    if Process.whereis(Valea.Audit) do
+      Valea.Audit.append("mail_sent", %{
+        "account" => ctx.account,
+        "op" => op_row.id,
+        "message_id" => op_row.message_id,
+        "recipients" => length(decode_rcpt(op_row.envelope_rcpt)),
+        "sent_copy" => error || "filed"
+      })
+    end
+
+    :ok
+  end
+
+  # -- send reconciliation / human resolution ----------------------------------
+
+  # A parked send. The generic profile has nothing that could prove either
+  # way — only the human can resolve it. The gmail profile can search Sent
+  # Mail, which is proof when it hits.
+  defp reconcile_send(ctx, op_row) do
+    if gmail?(ctx),
+      do: gmail_reconcile_send(ctx, op_row),
+      else: {:send_review, "awaiting_resolution"}
+  end
+
+  defp gmail_reconcile_send(%{conn: nil}, op_row),
+    do: {:send_review, op_row.error || "awaiting_reconcile"}
+
+  defp gmail_reconcile_send(ctx, op_row) do
+    case check_append_present(ctx, sent_folder(ctx, op_row), op_row.message_id) do
+      {:ok, true} ->
+        resume_transmitted(ctx, op_row)
+
+      {:ok, false} ->
+        if send_present_anywhere?(ctx, op_row),
+          do: resume_transmitted(ctx, op_row),
+          else: count_empty_check(ctx, op_row)
+
+      # A failed search proves nothing and must not count against the bounded
+      # window: stay parked, try again next pass.
+      {:error, _reason} ->
+        {:send_review, op_row.error || "awaiting_reconcile"}
+    end
+  end
+
+  # Found: transmission is PROVEN, so the op rejoins the accepted path.
+  defp resume_transmitted(ctx, op_row) do
+    Store.transition_op(op_row.id, "transmitted")
+    transition(ctx, op_row.id, read_manifest(ctx, op_row.id) || %{}, "transmitted")
+    sent_copy_step(ctx, %{op_row | state: "transmitted"})
+  end
+
+  # A complete-but-empty search is a strong signal, not proof (Sent Mail
+  # visibility after a 250 is not guaranteed instant). Count it; past the
+  # bounded window say so and stay parked — NEVER auto-reject.
+  defp count_empty_check(ctx, op_row) do
+    manifest = read_manifest(ctx, op_row.id) || %{}
+    attempts = (manifest["reconcile_attempts"] || 0) + 1
+    write_manifest!(ctx, op_row.id, Map.put(manifest, "reconcile_attempts", attempts))
+
+    if attempts >= @reconcile_attempt_limit do
+      Store.transition_op(op_row.id, "send_review", %{error: "gmail_sent_checked_empty"})
+      {:send_review, "gmail_sent_checked_empty"}
+    else
+      {:send_review, op_row.error || "awaiting_reconcile"}
+    end
+  end
+
+  # Our Message-ID is Valea-generated and unique to this op, so ANY folder
+  # holding it proves the transmission — unlike the append path, several hits
+  # are not ambiguous here.
+  defp send_present_anywhere?(ctx, op_row) do
+    ctx
+    |> known_folders_with(sent_folder(ctx, op_row))
+    |> Enum.any?(fn folder ->
+      case ctx.transport.examine(ctx.conn, folder) do
+        {:ok, _info} -> search_message_id(ctx, op_row.message_id) != []
+        {:error, _reason} -> false
+      end
+    end)
+  end
+
+  @doc """
+  The human's verdict on a parked send (spec G §Send pipeline 4):
+  `:sent` runs the idempotent Sent copy and completes; `:not_sent` rejects
+  the op and reverts the draft for another explicit click (which re-sends
+  under the SAME deterministic Message-ID, so a wrong verdict threads/dedupes
+  recipient-side rather than reading as an unrelated second mail).
+
+  Only ever valid on a `send_review` op of `ctx.account`. Never transmits.
+  """
+  @spec resolve_send_review(ctx(), String.t(), :sent | :not_sent) ::
+          :ok | {:error, :not_reviewable}
+  def resolve_send_review(ctx, op_id, resolution)
+      when is_binary(op_id) and resolution in [:sent, :not_sent] do
+    case Store.op_by_id(op_id) do
+      {:ok, %{state: "send_review", account: account} = op_row} when account == ctx.account ->
+        apply_resolution(ctx, op_row, resolution)
+        :ok
+
+      _other ->
+        {:error, :not_reviewable}
+    end
+  end
+
+  defp apply_resolution(ctx, op_row, :sent), do: resume_transmitted(ctx, op_row)
+  defp apply_resolution(ctx, op_row, :not_sent), do: reject_send(ctx, op_row, "resolved_not_sent")
+
+  @doc """
+  Re-runs ONLY the idempotent Sent copy of a send that completed with a
+  `sent_copy_failed` notice. The mail was already transmitted — this touches
+  IMAP alone and can never reach the SMTP transport.
+  """
+  @spec retry_sent_copy(ctx(), String.t()) :: :ok | {:error, :not_retryable}
+  def retry_sent_copy(ctx, op_id) when is_binary(op_id) do
+    case Store.op_by_id(op_id) do
+      {:ok, %{state: "complete", error: "sent_copy_failed", account: account} = op_row}
+      when account == ctx.account ->
+        _ = sent_copy_step(ctx, op_row)
+        :ok
+
+      _other ->
+        {:error, :not_retryable}
+    end
+  end
+
+  @doc """
+  The Engine-activation classification pass (spec G §Crash recovery): resolves
+  every in-flight send from the LEDGER AND MANIFESTS ALONE — no network, so a
+  send stranded by a crash is never held hostage to a paused or failing IMAP
+  sync.
+
+    * `claimed` — no spool payload can exist yet → provably un-transmitted →
+      `rejected`, draft reverted.
+    * `pending` — spooled, but the transmit provably never started (it
+      transitions `executing` first, durably) → `rejected`, draft reverted.
+    * `executing` — at-or-past DATA with no recorded outcome → `send_review`.
+    * `transmitted` / `send_review` — left exactly alone: their follow-ups
+      (the Sent-copy resume, the gmail reconciliation) need a connection.
+
+  Deliberately NOT called from a sync pass: a `pending` send can legitimately
+  be sitting in the Engine's work queue while a pass runs, and rejecting THAT
+  would break a send the user is waiting on.
+  """
+  @spec classify_sends_local(map()) :: :ok
+  def classify_sends_local(ctx) do
+    ctx.account
+    |> Store.pending_ops()
+    |> Enum.filter(&(&1.kind == "send"))
+    |> Enum.each(&classify_send_local(ctx, &1))
+
+    :ok
+  rescue
+    # Activation must never fail on this: an Engine that doesn't start is an
+    # account that silently stops syncing.
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp classify_send_local(ctx, %{state: "claimed"} = op_row),
+    do: reject_send(ctx, op_row, "crashed_before_spool")
+
+  defp classify_send_local(ctx, %{state: "pending"} = op_row),
+    do: reject_send(ctx, op_row, "crashed_before_transmit")
+
+  defp classify_send_local(_ctx, %{state: "executing"} = op_row),
+    do: park_send_review(op_row, "crashed_during_transmit")
+
+  defp classify_send_local(_ctx, _op_row), do: :ok
+
+  # The IMAP-connected half of send recovery, run inside `recover/1`. It can
+  # only ever RESUME the idempotent Sent copy or RECONCILE (search) — there is
+  # no path from here to the SMTP transport, and `claimed`/`pending` sends are
+  # deliberately untouched (a queued send is legitimately `pending`).
+  defp recover_sends(ctx) do
+    ctx.account
+    |> Store.pending_ops()
+    |> Enum.filter(&(&1.kind == "send"))
+    |> Enum.each(&recover_send(ctx, &1))
+  end
+
+  defp recover_send(ctx, %{state: "transmitted"} = op_row), do: sent_copy_step(ctx, op_row)
+  defp recover_send(ctx, %{state: "send_review"} = op_row), do: reconcile_send(ctx, op_row)
+
+  # The network-path mirror of `classify_sends_local/1`'s `executing` clause,
+  # for a row that entered this state without an Engine restart in between (a
+  # crashed send task, or an orphan manifest recreated by the sweep above).
+  # Safe here where a `pending` classification would not be: an `executing`
+  # send holds the Engine's single work slot, so one can never be in flight
+  # while a pass runs.
+  defp recover_send(_ctx, %{state: "executing"} = op_row),
+    do: park_send_review(op_row, "crashed_during_transmit")
+
+  defp recover_send(_ctx, _op_row), do: :ok
+
+  # -- send spool --------------------------------------------------------------
+
+  defp load_verified_send_payload(ctx, op_row, variant) do
+    expected = if variant == :wire, do: op_row.wire_sha256, else: op_row.record_sha256
+
+    case File.read(send_payload_path(ctx, op_row.id, variant)) do
+      {:ok, payload} ->
+        if is_binary(expected) and sha256_hex(payload) == expected,
+          do: {:ok, payload},
+          else: {:error, :payload_mismatch}
+
+      {:error, _reason} ->
+        {:error, :missing_spool}
+    end
+  end
+
+  defp send_payload_path(ctx, id, variant),
+    do: Path.join(spool_dir(ctx), "#{id}.#{variant}.eml")
+
+  defp cleanup_send_spool(ctx, id) do
+    File.rm(send_payload_path(ctx, id, :wire))
+    File.rm(send_payload_path(ctx, id, :record))
+    cleanup(ctx, id)
+  end
 
   # ==========================================================================
   # flag STORE (contract 5)
@@ -1210,6 +1960,7 @@ defmodule Valea.Mail.OpsExecutor do
     sweep_orphan_manifests(ctx)
     recover_moves(ctx)
     recover_appends(ctx)
+    recover_sends(ctx)
     recover_ops_files(ctx)
     :ok
   end
@@ -1246,6 +1997,7 @@ defmodule Valea.Mail.OpsExecutor do
     case read_manifest(ctx, id) do
       %{"kind" => "move"} = manifest -> recreate_move_row(ctx, id, manifest)
       %{"kind" => "append"} = manifest -> recreate_append_row(ctx, id, manifest)
+      %{"kind" => "send"} = manifest -> recreate_send_row(ctx, id, manifest)
       _malformed -> quarantine_manifest(ctx, id, "malformed_or_unknown_manifest")
     end
   end
@@ -1325,6 +2077,60 @@ defmodule Valea.Mail.OpsExecutor do
   rescue
     _error -> quarantine_manifest(ctx, id, "append_manifest_recreate_failed")
   end
+
+  # A send is recreated at the state its manifest's LAST recorded transition
+  # proves: `spooled` never reached the transport (`pending`), `transmitting`
+  # is at-or-past DATA with no recorded outcome (`executing`, which the
+  # classification pass immediately parks in `send_review`), `transmitted`
+  # resumes its Sent copy, `send_review` stays parked. Anything unrecognized
+  # fails SAFE to `executing` — never to a state that could transmit.
+  defp recreate_send_row(ctx, id, manifest) do
+    required = [
+      manifest["account"],
+      manifest["target_folder"],
+      manifest["message_id"],
+      manifest["origin"]
+    ]
+
+    if Enum.any?(required, &is_nil/1) do
+      quarantine_manifest(ctx, id, "incomplete_send_manifest")
+    else
+      case Store.create_pending_op(%{
+             id: id,
+             kind: "send",
+             account: manifest["account"],
+             target_folder: manifest["target_folder"],
+             message_id: manifest["message_id"],
+             msg_id: manifest["msg_id"],
+             origin: manifest["origin"],
+             content_hash: manifest["content_hash"],
+             wire_sha256: manifest["wire_sha256"],
+             record_sha256: manifest["record_sha256"],
+             envelope_rcpt: encode_manifest_rcpt(manifest["envelope"]),
+             state: send_recreate_state(manifest)
+           }) do
+        {:ok, _row} ->
+          :ok
+
+        {:error, :duplicate_active} ->
+          quarantine_manifest(ctx, id, "duplicate_active_send_manifest")
+      end
+    end
+  rescue
+    _error -> quarantine_manifest(ctx, id, "send_manifest_recreate_failed")
+  end
+
+  defp send_recreate_state(manifest) do
+    case List.last(manifest["transitions"] || []) do
+      "spooled" -> "pending"
+      "transmitted" -> "transmitted"
+      "send_review" -> "send_review"
+      _at_or_past_data -> "executing"
+    end
+  end
+
+  defp encode_manifest_rcpt(%{"rcpt" => rcpt}) when is_list(rcpt), do: Jason.encode!(rcpt)
+  defp encode_manifest_rcpt(_envelope), do: nil
 
   # Move the unresolvable manifest to `quarantine/` (with a `.reason` sidecar)
   # so the pass continues and the operator can inspect it — the same posture as
