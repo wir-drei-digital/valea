@@ -16,6 +16,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import DoctorPanel from './DoctorPanel.svelte';
+  import SkillsPanel from './SkillsPanel.svelte';
   import { api } from '$lib/api/client';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
@@ -146,6 +147,14 @@
           Three checks against the harness this app will actually launch.
         </p>
         <DoctorPanel showIntro={false} />
+      </div>
+
+      <div class="border-paper-hairline mt-4 border-t pt-4">
+        <h3 class="text-overline mb-1">Skills</h3>
+        <p class="text-ink-body mb-2 text-[12.5px]">
+          Teach your assistant a way of working by installing a skill into an ICM's own folder.
+        </p>
+        <SkillsPanel />
       </div>
     {/if}
   </Dialog.Content>
