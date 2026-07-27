@@ -254,6 +254,47 @@ defmodule Valea.PathsTest do
     test "no prefix-collision false positives" do
       refute Valea.Paths.ancestor?("C:/work/icm", "C:/work/icm-private/x", :windows)
     end
+
+    # The premise `Valea.Mounts.under_boundary?/2` is built on (spec §D4): this
+    # function JOINS a separator onto `ancestor`, so a root — which already ends
+    # in one — matches nothing when passed raw. That is the shape that made
+    # `C:\` mountable as an ICM; the guard trims the trailing separator first.
+    # Both halves are pinned here so "simplifying" either side breaks loudly.
+    test "a root ancestor matches nothing until its trailing separator is trimmed" do
+      refute Valea.Paths.ancestor?("C:/", "C:/Users/x", :windows)
+      assert Valea.Paths.ancestor?("C:", "C:/Users/x", :windows)
+      refute Valea.Paths.ancestor?("/", "/Users/x", :unix)
+    end
+
+    test "a UNC share root carries no trailing separator, so the trim is a no-op there" do
+      assert Valea.Paths.ancestor?("//h/s", "//h/s/x", :windows)
+      assert Valea.Paths.ancestor?("//h/s", "//h/s", :windows)
+      refute Valea.Paths.ancestor?("//h/s", "//h/share-other/x", :windows)
+    end
+  end
+
+  describe "unc?/2" do
+    test "windows: a well-formed //host/share root, and anything beneath it" do
+      assert Valea.Paths.unc?("//srv/share", :windows)
+      assert Valea.Paths.unc?("//srv/share/x", :windows)
+      assert Valea.Paths.unc?("\\\\srv\\share\\x", :windows)
+      assert Valea.Paths.unc?("//?/UNC/srv/share/x", :windows)
+    end
+
+    test "windows: anything the classifier refuses to read as a share root is false" do
+      # no host component / host with no share / not UNC at all / a device path
+      refute Valea.Paths.unc?("///a/b", :windows)
+      refute Valea.Paths.unc?("//srv", :windows)
+      refute Valea.Paths.unc?("C:/x", :windows)
+      refute Valea.Paths.unc?("//./COM1", :windows)
+      refute Valea.Paths.unc?("notes/a.md", :windows)
+    end
+
+    test "unix: always false — `//host/share` has no share semantics there" do
+      refute Valea.Paths.unc?("//srv/share/x", :unix)
+      refute Valea.Paths.unc?("/a/b", :unix)
+      refute Valea.Paths.unc?("C:/x", :unix)
+    end
   end
 
   describe "root-floor (pure helpers)" do

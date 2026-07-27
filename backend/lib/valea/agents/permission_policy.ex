@@ -118,12 +118,16 @@ defmodule Valea.Agents.PermissionPolicy do
   Calendar matching shares the mail tier's `casefold/1`/
   `casefold_under_root?/2` helpers verbatim (extracted, not duplicated).
 
-  Mail and calendar matching — and ONLY those — are casefolded on BOTH
-  sides (`casefold/1`: NFC-normalize, then `String.downcase/1`): APFS is
-  case- and normalization-insensitive, so `sources/MAIL/…` or an
-  NFD-variant spelling names the same mailbox and must hit the same
-  deny. The global `split_under_root?/2` used by every other tier is
-  untouched.
+  Mail and calendar matching are the only tiers that casefold EXPLICITLY, on
+  BOTH sides (`casefold/1`: NFC-normalize, then `String.downcase/1`), on every
+  platform: APFS is case- and normalization-insensitive, so `sources/MAIL/…`
+  or an NFD-variant spelling names the same mailbox and must hit the same
+  deny. The global `split_under_root?/2` every other tier uses casefolds
+  nothing of its own — but it is no longer unconditionally byte-exact either:
+  it delegates to `Valea.Paths.ancestor?/3`, which compares case-folded on
+  WINDOWS (NTFS default) and exact on unix, and never NFC-normalizes on
+  either. So mail/calendar stay strictly the more aggressive match on both
+  platforms, which is what the tier ordering assumes.
 
   Relative candidates resolve against `cwd` (never `workspace_root`) — this
   is the behavioral heart of the split. `read_roots`/`write_paths`/

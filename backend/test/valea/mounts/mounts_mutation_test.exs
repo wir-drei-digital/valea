@@ -155,6 +155,38 @@ defmodule Valea.Mounts.MutationTest do
     end
   end
 
+  # The `mount/2` tests above cannot see the root-trim inside
+  # `under_boundary?/2` (spec §D4): on unix nothing hands it a root-shaped
+  # ancestor, so DELETING the trim leaves every one of them green. These call
+  # the `@doc false` seam directly, and each assertion below fails if the trim
+  # goes away — that is the point of them.
+  describe "under_boundary?/2 — the root trim (windows spec D4)" do
+    test "a trailing-separator ancestor still contains what lies under it" do
+      # `Paths.ancestor?/2` joins a separator on, so an ancestor that ALREADY
+      # ends in one would be compared as `"/a//"` and match nothing at all.
+      assert Mounts.under_boundary?("/a/x", "/a/")
+      assert Mounts.under_boundary?("/a/x/y", "/a/")
+      assert Mounts.under_boundary?("/a", "/a/")
+    end
+
+    test "a root ancestor contains everything (the trimmed-to-empty floor)" do
+      assert Mounts.under_boundary?("/", "/")
+      assert Mounts.under_boundary?("/anything/at/all", "/")
+    end
+
+    test "trimming never widens the match past a segment boundary" do
+      refute Mounts.under_boundary?("/ab", "/a/")
+      refute Mounts.under_boundary?("/a-private/x", "/a")
+      refute Mounts.under_boundary?("/b/x", "/a")
+    end
+
+    test "an ordinary, separator-free ancestor is unaffected" do
+      assert Mounts.under_boundary?("/a/b", "/a")
+      assert Mounts.under_boundary?("/a", "/a")
+      refute Mounts.under_boundary?("/a", "/a/b")
+    end
+  end
+
   # -- create/3 (icms: + portable template seed) ---------------------------
 
   describe "create/3" do

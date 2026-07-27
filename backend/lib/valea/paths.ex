@@ -123,6 +123,34 @@ defmodule Valea.Paths do
   def absolute?(path, platform \\ host_platform()), do: classify(path, platform) == :absolute
 
   @doc """
+  True iff `path` is a UNC share root or something beneath it —
+  `//host/share[/…]` — under `platform`. `normalize/2` runs first, so the
+  backslash form `\\\\host\\share` and the extended-length
+  `\\\\?\\UNC\\host\\share` wrapper answer the same as the plain one.
+
+  Both halves of the root are required: a bare `//host` (no share) and a
+  third-slash `///a/b` (no host) are NOT shares, and neither is a device path
+  `\\\\.\\COM1` — the `classify/2` gate keeps all three out, so this never
+  reports a share where the classifier refuses to see a root.
+
+  Always false on `:unix`, where `//host/share` carries no share semantics
+  (POSIX realpath collapses the doubled separator) — pass `:windows`
+  explicitly to ask the SHAPE question on any host.
+
+  For callers that must treat network storage differently from local — a
+  filesystem watcher can only promise best-effort coverage over SMB. NOT for
+  containment: that is `ancestor?/3`'s job.
+  """
+  @spec unc?(String.t(), platform()) :: boolean()
+  def unc?(path, platform \\ host_platform())
+  def unc?(_path, :unix), do: false
+
+  def unc?(path, :windows) do
+    p = normalize(path, :windows)
+    classify(p, :windows) == :absolute and match?({_, _}, unc_root(p))
+  end
+
+  @doc """
   Normalize a path to Valea's canonical internal form for `platform`.
 
   Identity on `:unix` (where `\\` is a legal filename byte, so nothing is

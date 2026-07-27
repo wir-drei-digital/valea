@@ -441,12 +441,16 @@ defmodule Valea.Mounts.Doctor do
     end
   end
 
-  # A UNC / network-share root (`//server/share`). A plain `//` prefix check
-  # for now — Task 3's path classifier and Task 4's `Valea.Paths` migration
-  # will own this properly later; until then such a root only ever appears
-  # on Windows (POSIX realpath resolution collapses `//` to `/`), where a
-  # watcher backend can only promise best-effort coverage over it.
-  defp network_share?(root), do: String.starts_with?(root, "//")
+  # A UNC / network-share root (`//server/share`). `Valea.Paths.unc?/2` owns the
+  # parse (spec §D4), asked with `:windows` EXPLICITLY rather than the host
+  # default: this is a question about the shape of a configured root string, and
+  # it has to answer the same on the host that exercises it as on the Windows
+  # machine where such a root actually appears (POSIX realpath collapses `//` to
+  # `/`, so a real one never occurs on unix). Stricter than the `//`-prefix
+  # check it replaces, in the right direction — a bare `//server` with no share,
+  # and a device path, are no longer called network shares. A watcher backend
+  # can only promise best-effort coverage over a real one.
+  defp network_share?(root), do: Valea.Paths.unc?(root, :windows)
 
   # -- check builders (same shape as Valea.Mail.Doctor / Valea.Agents.Doctor) -
 

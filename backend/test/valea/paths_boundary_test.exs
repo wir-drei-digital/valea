@@ -16,6 +16,35 @@ defmodule Valea.PathsBoundaryTest do
   # real filesystem gate in the same file (`to_abs/2`, in both).
   @exempt_marker "paths-exempt:"
 
+  # The marker inventory, pinned. A THIRD marker anywhere — however well
+  # commented — has to come here first, which is the review step the marker
+  # mechanism would otherwise let someone skip.
+  @expected_markers %{
+    "lib/valea/icm/backlinks.ex" => 1,
+    "lib/valea/icm/link_rewrite.ex" => 1
+  }
+
+  # WHAT THESE DETECTORS CANNOT SEE (grep-empty is not proof — the pattern
+  # family below was itself invisible to the first detector for a whole
+  # commit). Known blind spots, all of them real ways to reintroduce a
+  # unix-only path decision without tripping anything here:
+  #
+  #   * a multi-line function head, where `def foo(` and the `"/" <> rest`
+  #     pattern land on different lines (both regexes are line-anchored);
+  #   * the binary-syntax spelling `<<"/", _::binary>>` — same decision, none
+  #     of the literals these regexes look for;
+  #   * a second argument that is not a bare literal: `starts_with?(x, ["/",
+  #     …])` or `starts_with?(x, @root_prefix)`, and prefixes built by
+  #     concatenation or from a module attribute;
+  #   * a doubled separator, `starts_with?(root, "//")` — which is how the UNC
+  #     check in `mounts/doctor.ex` sat unflagged until it was migrated to
+  #     `Valea.Paths.unc?/2`;
+  #   * host-dependent OTP calls that decide the same thing by other means:
+  #     `Path.type/1`, `Path.absname/1`, `Path.dirname/1` at a root.
+  #
+  # Treat these as a regression net, not an audit. A new path decision still
+  # needs a human to ask "does this belong in `Valea.Paths`?".
+
   test "absoluteness/ancestor string logic lives only in Valea.Paths (windows spec D4)" do
     offenders =
       scannable_files()
@@ -57,6 +86,21 @@ defmodule Valea.PathsBoundaryTest do
              "(route through absolute?/classify): #{inspect(offenders)}"
   end
 
+  test "the site-exemption inventory is exactly the reviewed one (windows spec D4)" do
+    actual =
+      Path.wildcard("lib/**/*.ex")
+      |> Enum.map(fn f ->
+        {f, f |> File.read!() |> String.split("\n") |> Enum.count(&marker?/1)}
+      end)
+      |> Enum.reject(fn {_f, count} -> count == 0 end)
+      |> Map.new()
+
+    assert actual == @expected_markers,
+           "the `# paths-exempt:` inventory changed — a new site exemption needs a reviewed " <>
+             "reason in @expected_markers, not just a marker. " <>
+             "expected #{inspect(@expected_markers)}, got #{inspect(actual)}"
+  end
+
   # Every non-exempt `lib` module as `{path, source}`, with site-marked lines
   # removed so both detectors share one notion of what is in scope.
   defp scannable_files do
@@ -65,6 +109,11 @@ defmodule Valea.PathsBoundaryTest do
     |> Enum.map(fn f -> {f, f |> File.read!() |> strip_marked_sites()} end)
   end
 
+  # A marker must be a real COMMENT line — the marker text appearing inside a
+  # string literal, a doc block's prose, or trailing live code excuses nothing.
+  defp marker?(line),
+    do: Regex.match?(~r/^\s*#/, line) and String.contains?(line, @exempt_marker)
+
   # Drops each `# paths-exempt:` marker together with the one line it excuses.
   defp strip_marked_sites(src) do
     {kept, _} =
@@ -72,7 +121,7 @@ defmodule Valea.PathsBoundaryTest do
       |> String.split("\n")
       |> Enum.reduce({[], false}, fn line, {kept, excused?} ->
         cond do
-          String.contains?(line, @exempt_marker) -> {kept, true}
+          marker?(line) -> {kept, true}
           excused? -> {kept, false}
           true -> {[line | kept], false}
         end

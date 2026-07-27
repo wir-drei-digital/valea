@@ -977,7 +977,14 @@ defmodule Valea.Mounts do
   # old unix-only clause left `C:/` reading as "not an ancestor": fail-OPEN,
   # the one direction a mount guardrail may never fail. A root that trims to
   # `""` (unix `/`) contains everything by definition.
-  defp under_boundary?(descendant, ancestor) do
+  #
+  # Public ONLY so that trim is directly testable: it is invisible through
+  # `mount/2`, whose inputs can never be a root-shaped ancestor on unix, so
+  # deleting it would leave the whole suite green. Same precedent (and same
+  # reason) as `Valea.Mounts.Doctor.watcher_live_check/1` — `@doc false` keeps
+  # it out of the documented contract (`list/1`, `mount/2`, `adopt/3`, …).
+  @doc false
+  def under_boundary?(descendant, ancestor) do
     case String.trim_trailing(ancestor, "/") do
       "" -> true
       trimmed -> Paths.ancestor?(trimmed, descendant)
