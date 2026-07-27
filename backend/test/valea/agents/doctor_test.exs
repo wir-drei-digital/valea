@@ -278,6 +278,30 @@ defmodule Valea.Agents.DoctorTest do
     assert %{"status" => "unknown", "remedy" => nil} = check(checks, "auth")
   end
 
+  # The runtime's messages are untagged and addressed to whoever called
+  # `start/2`, so before each probe got its OWN process a straggler from a
+  # timed-out probe — exactly the two messages below — was collected as the
+  # NEXT check's result. Planting them up front is the cheap synthetic of that
+  # race: with per-probe task isolation they stay in this process's mailbox,
+  # unread, and every check still reports the truth.
+  test "a stray runtime message in the caller's mailbox is not read as a probe's result", %{
+    dir: dir
+  } do
+    node = fake_node!(dir, "v22.3.0")
+    Valea.App.Config.set_harness_command([ok_adapter!(dir)])
+
+    send(self(), {:runtime_exit, 99})
+    send(self(), {:runtime_output, "straggler"})
+
+    assert {:ok, %{checks: checks, ok: true}} = Doctor.run(%{node: node})
+    assert %{"status" => "ok"} = check(checks, "node")
+    assert %{"status" => "ok"} = check(checks, "adapter")
+    assert %{"status" => "ok"} = check(checks, "auth")
+
+    assert_received {:runtime_exit, 99}
+    assert_received {:runtime_output, "straggler"}
+  end
+
   test "run/0 delegates to run/1 with no overrides", %{dir: dir} do
     Valea.App.Config.set_harness_command([ok_adapter!(dir)])
 

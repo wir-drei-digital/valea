@@ -26,7 +26,14 @@ defmodule Valea.Agents.Doctor do
 
   @timeout_ms 5_000
   # How long a killed probe gets to confirm it is gone before we stop waiting.
-  @kill_grace_ms 5_000
+  # Must CLEAR erlexec's own escalation window: `Exec` spawns with
+  # `{:kill_timeout, 5}`, i.e. SIGTERM and then, five seconds later, SIGKILL —
+  # so a grace of 5s could expire in the same instant the kill it is waiting
+  # for is issued.
+  @kill_grace_ms 12_000
+  # Slack above the probe's own bound, so the outer task wait is a backstop
+  # for a hung ADAPTER, never the thing that decides a probe's fate.
+  @await_margin_ms 5_000
 
   @node_remedy "Install Node 22 or newer (https://nodejs.org)"
   @adapter_remedy "npm install -g @agentclientprotocol/claude-agent-acp"
@@ -196,7 +203,27 @@ defmodule Valea.Agents.Doctor do
     end
   end
 
+  # Each probe runs in its OWN process. The runtime's messages are untagged
+  # and addressed to whoever called `start/2`, so with a shared mailbox a
+  # straggler from a timed-out probe was collected as the NEXT check's result
+  # — a wrong exit code attributed to the wrong check, which is the one thing
+  # a diagnostic must never do. An isolated mailbox makes that structurally
+  # impossible (and needs no draining: it dies with the task).
   defp spawn_and_await(cmd, args, timeout_ms) do
+    task = Task.async(fn -> probe(cmd, args, timeout_ms) end)
+
+    # `yield`+`shutdown` rather than `await/2`: the probe is already bounded by
+    # `timeout_ms + @kill_grace_ms`, so this outer bound should never fire —
+    # and if it somehow does, the doctor must report it, not raise inside a
+    # health check.
+    case Task.yield(task, timeout_ms + @kill_grace_ms + @await_margin_ms) ||
+           Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> {:error, :timeout}
+    end
+  end
+
+  defp probe(cmd, args, timeout_ms) do
     # A probe has no session, so its stderr file has no transcript to live
     # beside; tmp plus a best-effort delete is the whole lifecycle. The unix
     # adapter ignores the key entirely.
@@ -206,7 +233,18 @@ defmodule Valea.Agents.Doctor do
         "valea-doctor-#{System.unique_integer([:positive])}.stderr.log"
       )
 
-    spec = %{cmd: cmd, args: args, env: %{}, cd: probe_cwd(), stderr_path: stderr_path}
+    # `stdin: :closed` — a probe asks a question and waits for the answer, so
+    # its target has to see EOF: with an open stdin, a program entitled to
+    # read it (`cat`, or any CLI that checks for piped input) never exits and
+    # every probe becomes a 5s timeout.
+    spec = %{
+      cmd: cmd,
+      args: args,
+      env: %{},
+      cd: probe_cwd(),
+      stderr_path: stderr_path,
+      stdin: :closed
+    }
 
     try do
       case ProcessRuntime.start(spec, self()) do
@@ -215,7 +253,6 @@ defmodule Valea.Agents.Doctor do
       end
     after
       File.rm(stderr_path)
-      drain()
     end
   end
 
@@ -246,7 +283,10 @@ defmodule Valea.Agents.Doctor do
         ProcessRuntime.stop(handle)
         # `stop/1` is asynchronous, so waiting for the exit it produces is
         # what keeps this function's old promise: the OS process tree is
-        # confirmed gone before run/1 returns to the caller.
+        # confirmed gone before run/1 returns to the caller. And if the grace
+        # runs out anyway, the task this runs in exits — taking the port with
+        # it on windows, while the group kill already issued above finishes on
+        # unix. Nothing survives to contaminate the next check either way.
         receive do
           {:runtime_exit, _} -> :ok
         after
@@ -254,19 +294,6 @@ defmodule Valea.Agents.Doctor do
         end
 
         {:error, :timeout}
-    end
-  end
-
-  # The runtime addresses its messages to the CALLING process and does not tag
-  # them with a spawn id, so a probe that timed out must not leave a straggler
-  # for the next probe's collector to read as its own output.
-  defp drain do
-    receive do
-      {:runtime_output, _} -> drain()
-      {:runtime_stderr, _} -> drain()
-      {:runtime_exit, _} -> drain()
-    after
-      0 -> :ok
     end
   end
 

@@ -1,8 +1,15 @@
 defmodule Valea.Agents.Env do
   @moduledoc """
-  The minimal environment handed to an agent adapter subprocess. Never the
-  backend's own env (which may carry SECRET_KEY_BASE and friends) — only
-  this fixed allowlist, and only the keys that are actually set.
+  What Valea CONTRIBUTES to an agent adapter subprocess's environment: this
+  fixed allowlist, and only the keys that are actually set.
+
+  Contributes, not defines — both spawn mechanisms (erlexec's `{:env, …}` on
+  unix, a Port's `{:env, …}` on windows) MERGE their list into the environment
+  the backend itself inherited. So this is not a sandbox around the child; it
+  is a rule about what Valea itself hands over. That is still the thing worth
+  controlling: a key like SECRET_KEY_BASE must never be ADDED by us, and
+  nothing here can add it. A caller that needs a genuinely sealed environment
+  needs a different mechanism than an allowlist.
 
   One list per platform (windows-support spec B4). Same posture on both:
   fixed, never inherit-all, no Valea control-plane keys. The lists differ

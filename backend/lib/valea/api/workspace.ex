@@ -136,37 +136,60 @@ defmodule Valea.Api.Workspace do
                   ]
 
       run fn _input, _ctx ->
-        {cmd, args} = echo_command()
+        # In its OWN process: the runtime's messages are untagged and go to
+        # whoever called `start/2`, and this check deliberately returns while
+        # the subprocess is still exiting — leaving a `{:runtime_exit, nil}`
+        # behind in a long-lived RPC process's mailbox. An isolated mailbox
+        # dies with the task instead.
+        task = Task.async(&runtime_probe/0)
 
-        with {:ok, handle} <-
-               Valea.Agents.ProcessRuntime.start(
-                 %{
-                   cmd: cmd,
-                   args: args,
-                   env: %{},
-                   cd: System.tmp_dir!(),
-                   stderr_path:
-                     Path.join(
-                       System.tmp_dir!(),
-                       "valea-runtime-check-#{System.unique_integer([:positive])}.stderr.log"
-                     )
-                 },
-                 self()
-               ),
-             :ok <- Valea.Agents.ProcessRuntime.write(handle, "ping\n") do
-          receive do
-            {:runtime_output, "ping\n"} ->
-              Valea.Agents.ProcessRuntime.stop(handle)
-              {:ok, %{"ok" => true, "detail" => "spawn/echo/kill ok"}}
-          after
-            3_000 ->
-              Valea.Agents.ProcessRuntime.stop(handle)
-              {:ok, %{"ok" => false, "detail" => "no echo within 3s"}}
-          end
-        else
-          {:error, reason} -> {:ok, %{"ok" => false, "detail" => reason}}
+        case Task.yield(task, 10_000) || Task.shutdown(task, :brutal_kill) do
+          {:ok, result} -> result
+          _ -> {:ok, %{"ok" => false, "detail" => "runtime check did not finish"}}
         end
       end
+    end
+  end
+
+  defp runtime_probe do
+    {cmd, args} = echo_command()
+
+    spec = %{
+      cmd: cmd,
+      args: args,
+      env: %{},
+      cd: System.tmp_dir!(),
+      stderr_path:
+        Path.join(
+          System.tmp_dir!(),
+          "valea-runtime-check-#{System.unique_integer([:positive])}.stderr.log"
+        )
+    }
+
+    with {:ok, handle} <- Valea.Agents.ProcessRuntime.start(spec, self()),
+         :ok <- Valea.Agents.ProcessRuntime.write(handle, "ping\n") do
+      result = await_echo("")
+      Valea.Agents.ProcessRuntime.stop(handle)
+      result
+    else
+      {:error, reason} -> {:ok, %{"ok" => false, "detail" => reason}}
+    end
+  end
+
+  # Compares TRIMMED content, not exact bytes: `findstr` (the windows echo
+  # below) terminates lines with CRLF, so an `=== "ping\n"` match would never
+  # fire there — and a smoke check that can only pass on one platform is worse
+  # than none. Accumulates because a pipe may split the line into chunks.
+  defp await_echo(acc) do
+    receive do
+      {:runtime_output, data} ->
+        acc = acc <> data
+
+        if String.trim_trailing(acc) == "ping",
+          do: {:ok, %{"ok" => true, "detail" => "spawn/echo/kill ok"}},
+          else: await_echo(acc)
+    after
+      3_000 -> {:ok, %{"ok" => false, "detail" => "no echo within 3s"}}
     end
   end
 

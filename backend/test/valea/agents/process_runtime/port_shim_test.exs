@@ -34,19 +34,33 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
     %{dir: dir, stderr_path: Path.join([dir, "logs", "agent.stderr.log"])}
   end
 
+  # Every SPAWNED fixture below is `sh`, and every test that spawns one is
+  # tagged `:unix_only` — deliberately, with no `.cmd` twin. A batch file that
+  # keeps none of the shim's contract but sits where a shim goes is worse than
+  # no fixture at all: it would look like Windows coverage while proving
+  # nothing. The Windows lane covers this adapter for real, through the facade
+  # against the actual valea-spawn.exe (process_runtime_test.exs).
+  defp sh!(dir, name, body) do
+    path = Path.join(dir, name <> ".sh")
+    File.write!(path, "#!/bin/sh\n" <> body)
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  # For the tests that only need SOMETHING to exist at VALEA_SPAWN_SHIM: they
+  # assert `start/2` refuses before it would ever spawn, so this file is never
+  # executed and is portable for that reason alone.
+  defp shim_placeholder!(dir) do
+    path = Path.join(dir, "shim-placeholder")
+    File.write!(path, "")
+    System.put_env("VALEA_SPAWN_SHIM", path)
+    path
+  end
+
   # A stand-in for valea-spawn: `exec` the target with its stderr redirected
   # into the contract's file, so stdout/stdin/exit-code all pass through.
   defp fake_shim!(dir) do
-    path =
-      PlatformFixtures.script!(
-        dir,
-        "fake-shim",
-        ~S"""
-        exec "$@" 2>>"$VALEA_SPAWN_STDERR_FILE"
-        """,
-        "@echo off\r\n"
-      )
-
+    path = sh!(dir, "fake-shim", ~S|exec "$@" 2>>"$VALEA_SPAWN_STDERR_FILE"| <> "\n")
     System.put_env("VALEA_SPAWN_SHIM", path)
     path
   end
@@ -58,18 +72,13 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
   # and watch it for EOF — the real shim has a pump thread per stream.
   defp teardown_shim!(dir) do
     path =
-      PlatformFixtures.script!(
-        dir,
-        "teardown-shim",
-        ~S"""
-        "$@" 2>>"$VALEA_SPAWN_STDERR_FILE" 0</dev/null &
-        child=$!
-        cat >/dev/null
-        kill -9 "$child" 2>/dev/null
-        exit 120
-        """,
-        "@echo off\r\n"
-      )
+      sh!(dir, "teardown-shim", ~S"""
+      "$@" 2>>"$VALEA_SPAWN_STDERR_FILE" 0</dev/null &
+      child=$!
+      cat >/dev/null
+      kill -9 "$child" 2>/dev/null
+      exit 120
+      """)
 
     System.put_env("VALEA_SPAWN_SHIM", path)
     path
@@ -79,16 +88,11 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
   # do: the stderr file exists and is empty, no stdout, a shim-level code.
   defp failing_shim!(dir, code, extra_stdout \\ "") do
     path =
-      PlatformFixtures.script!(
-        dir,
-        "fake-shim-#{code}-#{System.unique_integer([:positive])}",
-        ~s"""
-        : > "$VALEA_SPAWN_STDERR_FILE"
-        #{extra_stdout}
-        exit #{code}
-        """,
-        "@echo off\r\nexit /b #{code}\r\n"
-      )
+      sh!(dir, "fake-shim-#{code}-#{System.unique_integer([:positive])}", ~s"""
+      : > "$VALEA_SPAWN_STDERR_FILE"
+      #{extra_stdout}
+      exit #{code}
+      """)
 
     System.put_env("VALEA_SPAWN_SHIM", path)
     path
@@ -128,14 +132,14 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
   test "missing stderr_path -> refuses (a dropped stderr stream is an unexplainable hang)", %{
     dir: dir
   } do
-    fake_shim!(dir)
+    shim_placeholder!(dir)
     spec = spec(dir, "anything", []) |> Map.delete(:stderr_path)
 
     assert {:error, "stderr path missing (windows spec B2)"} = PortShim.start(spec, self())
   end
 
   test "missing executable -> the same error the unix adapter gives", %{dir: dir} do
-    fake_shim!(dir)
+    shim_placeholder!(dir)
     missing = Path.join(dir, "no-such-agent")
 
     assert {:error, "executable not found: " <> ^missing} =
@@ -145,7 +149,7 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
   test "a .cmd target with an unquotable argument is refused up front (shim exit 64)", %{
     dir: dir
   } do
-    fake_shim!(dir)
+    shim_placeholder!(dir)
     batch = Path.join(dir, "agent.cmd")
     File.write!(batch, "@echo off\r\n")
 
@@ -158,7 +162,7 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
   @tag :unix_only
   test "relays stdout, accepts stdin, and stop/1 closes the port", %{dir: dir} do
     fake_shim!(dir)
-    echo = PlatformFixtures.script!(dir, "echo", "exec cat\n", "@echo off\r\nfindstr \"^\"\r\n")
+    echo = sh!(dir, "echo", "exec cat\n")
 
     assert {:ok, handle} = PortShim.start(spec(dir, echo, []), self())
     assert is_integer(handle.os_pid)
@@ -177,13 +181,7 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
   test "the stderr FILE's tail arrives as one runtime_stderr before the exit", %{dir: dir} do
     fake_shim!(dir)
 
-    noisy =
-      PlatformFixtures.script!(
-        dir,
-        "noisy",
-        "echo out; echo boom 1>&2; exit 3\n",
-        "@echo off\r\necho out\r\necho boom 1>&2\r\nexit /b 3\r\n"
-      )
+    noisy = sh!(dir, "noisy", "echo out; echo boom 1>&2; exit 3\n")
 
     assert {:ok, _handle} = PortShim.start(spec(dir, noisy, []), self())
 
@@ -199,13 +197,7 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
   } do
     fake_shim!(dir)
 
-    dump =
-      PlatformFixtures.script!(
-        dir,
-        "dump-env",
-        "echo \"$VALEA_SPAWN_STDERR_FILE|$AGENT_MARKER|$PWD\"\n",
-        "@echo off\r\necho %VALEA_SPAWN_STDERR_FILE%|%AGENT_MARKER%|%CD%\r\n"
-      )
+    dump = sh!(dir, "dump-env", "echo \"$VALEA_SPAWN_STDERR_FILE|$AGENT_MARKER|$PWD\"\n")
 
     cwd = Path.join(dir, "workdir")
     File.mkdir_p!(cwd)
@@ -223,6 +215,25 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
     assert line =~ "seen"
     assert line =~ Path.basename(cwd)
     assert File.dir?(Path.dirname(stderr_path))
+  end
+
+  # A Windows profile directory is frequently not ASCII, and `USERPROFILE` is
+  # on the windows allowlist — so an env value erts cannot encode would mean
+  # "this user cannot start an agent at all". `open_port`'s `{:env, …}` takes
+  # charlists interpreted with the emulator's file name encoding, and a
+  # codepoint above 255 is a hard badarg on a `+fnl` host; the adapter
+  # converts for the encoding erts will actually use.
+  @tag :unix_only
+  test "a non-Latin1 env value does not crash the spawn", %{dir: dir} do
+    fake_shim!(dir)
+    dump = sh!(dir, "dump-marker", "echo \"$AGENT_MARKER\"\n")
+    marker = "Ünïcode-日本"
+
+    assert {:ok, _handle} =
+             PortShim.start(spec(dir, dump, [], %{env: %{"AGENT_MARKER" => marker}}), self())
+
+    assert_receive {:runtime_output, line}, 5_000
+    assert String.trim(line) == marker
   end
 
   @tag :unix_only
@@ -261,13 +272,7 @@ defmodule Valea.Agents.ProcessRuntime.PortShimTest do
     marker = "valea-portshim-orphan-#{System.unique_integer([:positive])}"
     on_exit(fn -> System.cmd("pkill", ["-9", "-f", marker], stderr_to_stdout: true) end)
 
-    sleeper =
-      PlatformFixtures.script!(
-        dir,
-        "sleeper",
-        "exec -a \"#{marker}\" sleep 60\n",
-        "@echo off\r\ntimeout /t 60 /nobreak >nul\r\n"
-      )
+    sleeper = sh!(dir, "sleeper", "exec -a \"#{marker}\" sleep 60\n")
 
     test_pid = self()
 

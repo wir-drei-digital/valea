@@ -120,6 +120,78 @@ defmodule Valea.Agents.ProcessRuntimeTest do
     assert_receive {:runtime_exit, _}, 6_000
   end
 
+  # The two portable cases above had to relax exactly two things for the
+  # windows lane: the exact stdout bytes (`findstr` echoes CRLF) and the ORDER
+  # of stop-vs-stderr (the shim only delivers stderr as a file tail at exit).
+  # Neither relaxation should cost the unix lane an assertion it has always
+  # made, so the originals live on here, verbatim.
+  @tag :unix_only
+  test "unix: stdin is echoed back byte-for-byte", %{dir: dir, stderr_path: stderr_path} do
+    cat = System.find_executable("cat")
+
+    {:ok, handle} = ProcessRuntime.start(spec(dir, cat, [], stderr_path), self())
+
+    :ok = ProcessRuntime.write(handle, "hello\n")
+    assert_receive {:runtime_output, "hello\n"}, 2_000
+
+    :ok = ProcessRuntime.stop(handle)
+    assert_receive {:runtime_exit, _code}, 6_000
+  end
+
+  @tag :unix_only
+  test "unix: stderr streams live, before any stop", %{dir: dir, stderr_path: stderr_path} do
+    sh = System.find_executable("sh")
+
+    {:ok, handle} =
+      ProcessRuntime.start(
+        spec(dir, sh, ["-c", "echo out; echo err 1>&2; sleep 5"], stderr_path),
+        self()
+      )
+
+    assert_receive {:runtime_output, out}, 2_000
+    assert out =~ "out"
+    assert_receive {:runtime_stderr, err}, 2_000
+    assert err =~ "err"
+
+    :ok = ProcessRuntime.stop(handle)
+    assert_receive {:runtime_exit, _}, 6_000
+  end
+
+  # `stdin: :closed` exists because a probe that waits for its target to exit
+  # hangs forever against a target entitled to read stdin. Measured: `cat`
+  # with an open stdin never exits; with `:closed` it sees EOF at once.
+  # PortShim cannot honour the key (EOF is the shim's teardown signal), which
+  # is why this is a unix assertion — see `Valea.Agents.ProcessAdapter`.
+  @tag :unix_only
+  test "unix: stdin: :closed hands the child an immediate EOF", %{
+    dir: dir,
+    stderr_path: stderr_path
+  } do
+    cat = System.find_executable("cat")
+
+    {:ok, _closed} =
+      ProcessRuntime.start(
+        spec(dir, cat, [], stderr_path) |> Map.put(:stdin, :closed),
+        self()
+      )
+
+    assert_receive {:runtime_exit, 0}, 2_000
+  end
+
+  @tag :unix_only
+  test "unix: the default keeps stdin open, as a session needs", %{
+    dir: dir,
+    stderr_path: stderr_path
+  } do
+    cat = System.find_executable("cat")
+
+    {:ok, handle} = ProcessRuntime.start(spec(dir, cat, [], stderr_path), self())
+
+    refute_receive {:runtime_exit, _}, 500
+    :ok = ProcessRuntime.stop(handle)
+    assert_receive {:runtime_exit, _}, 6_000
+  end
+
   @tag :unix_only
   test "stop kills the whole process group (no orphaned children)", %{
     dir: dir,

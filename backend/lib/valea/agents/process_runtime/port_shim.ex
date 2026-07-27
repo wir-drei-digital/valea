@@ -157,6 +157,14 @@ defmodule Valea.Agents.ProcessRuntime.PortShim do
       # adapter earns the same promise.
       Process.monitor(owner)
 
+      # Trapping turns the port's own exit into a message instead of taking
+      # the relay down with it. A port that dies WITHOUT delivering
+      # `:exit_status` (driver failure, an emulator-side close) would
+      # otherwise kill the relay silently and leave the owner waiting forever
+      # for a `:runtime_exit` that can no longer come. `Process.exit(relay,
+      # :kill)` on the start-timeout path is untrappable, so that stays exact.
+      Process.flag(:trap_exit, true)
+
       case open_port(shim, spec, stderr_path) do
         {:ok, port} ->
           send(parent, {:relay_started, self(), os_pid(port)})
@@ -170,6 +178,11 @@ defmodule Valea.Agents.ProcessRuntime.PortShim do
   end
 
   defp open_port(shim, spec, stderr_path) do
+    # `spec.stdin` is deliberately not consulted: a Port cannot half-close its
+    # stdin, and for the shim EOF there means "kill the tree" (exit 120). A
+    # `:closed` probe therefore runs with an open, never-written stdin here —
+    # see `Valea.Agents.ProcessAdapter` for why that is acceptable and what a
+    # probe that actually reads stdin would need instead.
     opts = [
       :binary,
       :exit_status,
@@ -193,9 +206,30 @@ defmodule Valea.Agents.ProcessRuntime.PortShim do
   defp env_charlists(env, stderr_path) do
     env
     |> Map.put("VALEA_SPAWN_STDERR_FILE", stderr_path)
-    |> Enum.map(fn {key, value} ->
-      {String.to_charlist(key), String.to_charlist(value)}
-    end)
+    |> Enum.map(fn {key, value} -> {native_charlist(key), native_charlist(value)} end)
+  end
+
+  # `open_port`'s `{:env, …}` takes CHARLISTS (a binary is rejected outright:
+  # "invalid option in list") and erts converts them with the emulator's file
+  # name encoding. That encoding is not universal, and getting it wrong is not
+  # a cosmetic bug — measured on both settings:
+  #
+  #   +fnu (macOS, Windows): a charlist of CODEPOINTS is encoded correctly;
+  #                          feeding it UTF-8 bytes instead double-encodes.
+  #   +fnl (a latin1 host):  a codepoint above 255 cannot be represented and
+  #                          `Port.open` raises badarg — a user whose
+  #                          USERPROFILE or PATH is not Latin-1 could not
+  #                          spawn an agent at all; UTF-8 BYTES pass through
+  #                          verbatim, which is what a POSIX environment
+  #                          wants anyway.
+  #
+  # So the conversion asks which encoding erts will actually apply, instead of
+  # assuming one.
+  defp native_charlist(value) do
+    case :file.native_name_encoding() do
+      :latin1 -> :binary.bin_to_list(value)
+      _utf8 -> String.to_charlist(value)
+    end
   end
 
   defp relay_loop(port, ctx, saw_output?) do
@@ -225,6 +259,13 @@ defmodule Valea.Agents.ProcessRuntime.PortShim do
       # The owner is the ONLY thing this relay monitors (see spawn_relay/4).
       {:DOWN, _ref, :process, _pid, _reason} ->
         close_port(port)
+
+      # The port died without an `:exit_status` (it is always delivered
+      # first, so reaching here means the port itself failed). Report the
+      # exit we cannot name rather than dying quietly and hanging the owner.
+      {:EXIT, ^port, _reason} ->
+        emit_stderr_tail(ctx)
+        send(ctx.owner, {:runtime_exit, nil})
     end
   end
 

@@ -21,11 +21,32 @@ defmodule Valea.Agents.ProcessAdapter do
       cannot: a separate stderr channel (a file) and a Job Object that kills
       the whole tree.
 
-  `start/2`'s spec map is `%{cmd, args, env, cd}` plus `stderr_path` — the
-  file the windows shim writes the child's stderr to (spec B2). `Exec`
-  ignores that key; `PortShim` refuses to start without it. A `stderr` on
-  unix is a stream, on windows a file tail delivered at exit — that
-  coarseness is the documented platform difference, not a bug.
+  ## The spec map
+
+    * `cmd`, `args`, `cd` — what to run and where.
+    * `env` — what Valea CONTRIBUTES to the child's environment. Both
+      mechanisms (erlexec's `{:env, …}`, a Port's `{:env, …}`) MERGE into the
+      environment the backend itself inherited; neither replaces it. So this
+      map is not a sandbox — `Valea.Agents.Env.minimal/0` decides what Valea
+      adds, and secrets stay out of it because they must never be ADDED, not
+      because the child is otherwise sealed off.
+    * `stderr_path` — the file the windows shim writes the child's stderr to
+      (spec B2). `Exec` ignores it; `PortShim` refuses to start without it.
+      Note that stderr on unix is a live stream and on windows a file tail
+      delivered at exit — that coarseness is the documented platform
+      difference, not a bug.
+    * `stdin` — `:open` (default, what a session needs) or `:closed`.
+      `:closed` means the child must see EOF on stdin immediately: a probe
+      that runs `some-cli --version` and waits for it to exit hangs forever
+      otherwise, because a program with an open stdin is entitled to read it.
+      `Exec` honours this by omitting erlexec's `:stdin` option, so the child
+      gets `/dev/null`. **`PortShim` CANNOT honour it**: the shim's contract
+      makes stdin EOF the teardown signal (exit 120, Job closed), so closing
+      it would kill the very process we are probing. On windows a
+      `stdin: :closed` spawn therefore runs with an open-but-never-written
+      stdin. That is acceptable only because no current probe's target reads
+      stdin; a future probe that needs a real EOF needs a different
+      mechanism (a shim flag), not a tweak here.
   """
 
   @doc "Spawn `spec` and relay its streams to `owner`. Returns an opaque handle."

@@ -70,7 +70,6 @@ defmodule Valea.Agents.ProcessRuntime.Exec do
       argv = [spec.cmd | spec.args]
 
       run_opts = [
-        :stdin,
         {:stdout, self()},
         {:stderr, self()},
         {:env, Map.to_list(spec.env)},
@@ -80,6 +79,17 @@ defmodule Valea.Agents.ProcessRuntime.Exec do
         :monitor,
         {:kill_timeout, 5}
       ]
+
+      # `spec.stdin` (default `:open`) is the session's shape and the original
+      # behaviour of this module. `:closed` omits the option so erlexec hands
+      # the child `/dev/null` — an immediate EOF, which is what makes a probe
+      # like `cat`/`some-cli --version` exit instead of waiting forever for
+      # input nobody will send. See `Valea.Agents.ProcessAdapter`.
+      run_opts =
+        case Map.get(spec, :stdin, :open) do
+          :closed -> run_opts
+          _open -> [:stdin | run_opts]
+        end
 
       case :exec.run(argv, run_opts) do
         {:ok, _pid, os_pid} ->
