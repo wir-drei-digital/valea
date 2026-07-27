@@ -938,7 +938,7 @@ defmodule Valea.Api.Mail do
 
   defp draft_entry(root, account, name) do
     {parsed, raw_hash} = read_and_parse_draft(root, account, name)
-    {display, notice, pushed?} = draft_display(account, name, parsed, raw_hash)
+    {display, notice, pushed?, op_id} = draft_display(account, name, parsed, raw_hash)
 
     %{
       "account" => account,
@@ -946,6 +946,10 @@ defmodule Valea.Api.Mail do
       "path" => draft_rel_path(account, name),
       "status_display" => display,
       "notice" => notice,
+      # The op the send-resolution actions act on, when this row has one:
+      # `resolve_send_review` for a parked send, `retry_sent_copy` for a
+      # completed one whose Sent copy is outstanding. `nil` everywhere else.
+      "op_id" => op_id,
       # A separate FACT, not a state: any completed push. Rendered as a badge
       # beside the primary state, never overriding it (spec G §Display
       # projection) — Send and Push both key off the primary state.
@@ -990,10 +994,17 @@ defmodule Valea.Api.Mail do
   #      `earlier_revision_sent` note once it has been edited (push's CAS
   #      reporting rule, applied to display), `draft` + the surfaced error
   #      when it was rejected (which is retryable).
-  #   3. Else the frontmatter forgery check: an engine-owned status with no
-  #      corroborating ledger op is agent-forged → `draft` + `status_forged`.
+  #   3. Else no ledger op governs the state, so the file is a DRAFT — and the
+  #      only question left is whether its engine-owned `status:` stamp is
+  #      corroborated by history (the engine wrote it: a completed push, a
+  #      resolved send) or forged by an agent → `draft` + `status_forged`.
+  #      The frontmatter never supplies the state itself, only that verdict.
   #
-  # A completed push is NOT a state here — it is the `pushed` badge.
+  # A completed push is NOT a state here — it is the `pushed` badge, so a
+  # pushed draft still reads `draft` and still offers Send and Push (spec G
+  # §Display projection: "`pushed` becomes a separate boolean fact … rendered
+  # as a badge beside the primary state, never overriding it. Send and Push
+  # buttons key off the primary state (`draft`), independent of the badge.").
   defp draft_display(account, name, parsed, raw_hash) do
     ops = Store.ops_by_origin(account, "drafts/" <> name)
     active = Enum.find(ops, &(&1.state in OpsExecutor.active_states()))
@@ -1001,32 +1012,53 @@ defmodule Valea.Api.Mail do
     pushed? = Enum.any?(ops, &(&1.kind == "append" and &1.state == "complete"))
     fm_status = frontmatter_status(parsed)
 
-    {state, error} =
+    {state, error, op_id} =
       cond do
         active != nil ->
-          {OpsExecutor.op_display(active.kind, active.state), active.error}
+          {OpsExecutor.op_display(active.kind, active.state), active.error, send_op_id(active)}
 
         newest_send != nil and newest_send.state == "complete" and
             newest_send.content_hash == raw_hash ->
           # `error` may be `sent_copy_failed`: sent, with its Sent copy
-          # outstanding and a retry affordance.
-          {"sent", newest_send.error}
+          # outstanding and a retry affordance — which needs this op's id.
+          {"sent", newest_send.error, newest_send.id}
 
         newest_send != nil and newest_send.state == "complete" ->
-          {"draft", "earlier_revision_sent"}
+          {"draft", "earlier_revision_sent", nil}
 
         newest_send != nil ->
-          {"draft", newest_send.error}
+          {"draft", newest_send.error, nil}
 
-        fm_status in ["pushing", "pushed", "sending", "send_review", "sent"] ->
-          {"draft", "status_forged"}
+        not stamp_corroborated?(ops, fm_status) ->
+          {"draft", "status_forged", nil}
 
         true ->
-          {fm_status || "draft", nil}
+          {"draft", nil, nil}
       end
 
-    {state, error, pushed?}
+    {state, error, pushed?, op_id}
   end
+
+  # The op the send-resolution RPCs act on for this row: `resolve_send_review`
+  # needs the parked op's id, `retry_sent_copy` the completed send's. Only ever
+  # a SEND op — no RPC takes an append op id, and a row governed by an append
+  # has no resolution to offer.
+  defp send_op_id(%{kind: "send", id: id}), do: id
+  defp send_op_id(_append), do: nil
+
+  # Anti-forgery (spec §Drafting & push, extended to the send stamps): a
+  # non-`draft` `status:` is believable only when a ledger op OF THE MATCHING
+  # KIND corroborates it — i.e. the engine wrote it, on this draft, for this
+  # kind of outbound action. Mirrors the executor's own `prior_op?/3` rule one
+  # notch stricter: a completed push does NOT corroborate an agent-written
+  # `status: sent`.
+  defp stamp_corroborated?(_ops, status) when status in [nil, "draft"], do: true
+
+  defp stamp_corroborated?(ops, status) when status in ["pushing", "pushed"],
+    do: Enum.any?(ops, &(&1.kind == "append"))
+
+  defp stamp_corroborated?(ops, _sending_or_sent),
+    do: Enum.any?(ops, &(&1.kind == "send"))
 
   defp frontmatter_status({:ok, %{status: status}}), do: status
   defp frontmatter_status(_other), do: nil

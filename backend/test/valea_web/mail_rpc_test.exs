@@ -1396,6 +1396,8 @@ defmodule ValeaWeb.MailRpcTest do
       assert draft["status_display"] == "draft"
       assert draft["notice"] =~ "550 no such user"
       assert draft["pushed"] == true
+      # A retryable draft has no resolution action to key an op on.
+      assert draft["op_id"] == nil
     end
 
     test "the NEWEST terminal send governs, not the first one found", %{
@@ -1455,6 +1457,7 @@ defmodule ValeaWeb.MailRpcTest do
         ])
 
       assert draft["status_display"] == "sending"
+      assert draft["op_id"] == only_op_id("send")
     end
 
     test "a parked send renders send_review with its reason", %{
@@ -1468,6 +1471,9 @@ defmodule ValeaWeb.MailRpcTest do
 
       assert draft["status_display"] == "send_review"
       assert draft["notice"] == "gmail_sent_checked_empty"
+      # Without this id the panel renders the explanation with no way to
+      # answer it — `resolve_send_review` is keyed on the parked op.
+      assert draft["op_id"] == only_op_id("send")
     end
 
     # The projection's `sent` gate compares the completed op's recorded
@@ -1527,6 +1533,74 @@ defmodule ValeaWeb.MailRpcTest do
       Enum.find(drafts, &(&1["name"] == name))
     end
 
+    defp only_op_id(kind) do
+      [%{id: id}] =
+        Valea.Mail.Store.ops_by_origin("mara", "drafts/reply.md")
+        |> Enum.filter(&(&1.kind == kind))
+
+      id
+    end
+
+    # A REAL push (RPC → Engine → executor → fake IMAP), so the engine's own
+    # `pushed` stamp lands on the file exactly as it does in production —
+    # which is what the corroboration rule has to recognize.
+    defp real_push!(workspace, generation) do
+      FakeMailTransport.script([
+        {:connect, :_, {:ok, FakeMailTransport}},
+        {:examine, :_, {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}},
+        {:uid_search, :_, {:ok, []}},
+        {:append, :_, {:ok, %{dest_uid: 1}}},
+        {:logout, :_, :ok}
+      ])
+
+      setup_account!(generation, account: "mara")
+      set_credential!("mara", generation)
+      await_engine_active!("mara")
+      write_rpc_draft!(workspace, "mara", "reply.md", @projection_md)
+
+      assert %{"success" => true, "data" => %{"state" => "pushed"}} =
+               rpc(
+                 "push_draft_to_mailbox",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "reply.md",
+                   "contentHash" => Valea.Mail.DraftFile.content_hash(@projection_md),
+                   "generation" => generation
+                 },
+                 ["state"]
+               )
+
+      listed_draft("reply.md")
+    end
+
+    test "a REAL push renders draft + the pushed badge, never status_forged", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      draft = real_push!(workspace, generation)
+      path = Path.join([workspace, "sources", "mail", "mara", "drafts", "reply.md"])
+
+      # The engine stamped the file `pushed`...
+      assert File.read!(path) =~ "status: pushed"
+
+      # ...and that stamp is corroborated by its own append op, so it is
+      # history, not forgery. `pushed` stays a BADGE: the primary state is
+      # `draft`, which is what keeps Send and Push offered on it.
+      assert draft["status_display"] == "draft"
+      assert draft["notice"] == nil
+      assert draft["pushed"] == true
+      assert draft["op_id"] == nil
+
+      # Corroboration is KIND-MATCHED: an agent rewriting that stamp to a send
+      # status has no send op behind it, so the forgery notice still fires.
+      File.write!(path, String.replace(File.read!(path), "status: pushed", "status: sent"))
+
+      forged = listed_draft("reply.md")
+      assert forged["status_display"] == "draft"
+      assert forged["notice"] == "status_forged"
+      assert forged["pushed"] == true
+    end
+
     test "a REAL send renders sent — the engine's own stamps do not read as an edit", %{
       workspace: workspace,
       generation: generation
@@ -1536,6 +1610,9 @@ defmodule ValeaWeb.MailRpcTest do
       assert draft["status_display"] == "sent"
       assert draft["notice"] == nil
       assert draft["pushed"] == false
+      # The completed send's id — `retry_sent_copy`'s target if its Sent copy
+      # had failed (it did not here).
+      assert draft["op_id"] == only_op_id("send")
 
       # Only while the file still hashes to what was sent: a genuine edit
       # afterwards is an unsent draft again, with the earlier revision noted.
@@ -1557,6 +1634,8 @@ defmodule ValeaWeb.MailRpcTest do
       # must survive to the panel rather than being swallowed by a stale hash.
       assert draft["status_display"] == "sent"
       assert draft["notice"] == "sent_copy_failed"
+      # Without this id the panel's Retry action has nothing to call.
+      assert draft["op_id"] == only_op_id("send")
     end
 
     test "a forged engine-owned status with no ledger op still renders draft", %{
@@ -1569,6 +1648,7 @@ defmodule ValeaWeb.MailRpcTest do
       assert draft["status_display"] == "draft"
       assert draft["notice"] == "status_forged"
       assert draft["pushed"] == false
+      assert draft["op_id"] == nil
     end
   end
 
