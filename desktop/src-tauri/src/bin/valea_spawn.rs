@@ -13,7 +13,7 @@
 //                soon as the direct child is reaped, so detached grandchildren
 //                die then too — not only on the stdin-EOF path.
 //   exit code    the child's, mirrored — but only ever the child's if a child
-//                actually ran. Otherwise exactly one of:
+//                actually ran. Otherwise one of the shim-level codes below:
 //                   64  usage/contract violation, nothing spawned: no <cmd>,
 //                       no VALEA_SPAWN_STDERR_FILE, or an arg containing `"`
 //                       handed to a .cmd/.bat target. Non-UTF-8 argv on the
@@ -29,6 +29,10 @@
 //                       printed to the shim's OWN stderr; the stderr file
 //                       exists but is empty.
 //                  120  our own stdin reached EOF; the tree has been killed.
+//                  101  (or anything else not listed above) a shim-internal
+//                       panic — the remaining `expect`s all read "this cannot
+//                       fail unless Windows itself is broken". Not part of the
+//                       contract: file a bug.
 //                These are not a separate channel — a child is free to exit 64
 //                itself and the shim will mirror it. What the shim guarantees
 //                is the converse: when IT returns 64, 65 or 66, no child was
@@ -54,7 +58,7 @@ fn main() {
 
 #[cfg(windows)]
 mod win {
-    use std::io::{copy, Read, Write};
+    use std::io::{copy, sink, Read, Write};
     use std::os::windows::io::AsRawHandle;
     use std::process::{Command, Stdio};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -163,15 +167,21 @@ mod win {
         std::thread::Builder::new()
             .name("stdin-pump".into())
             .spawn(move || {
-                match copy(&mut std::io::stdin().lock(), &mut child_stdin) {
-                    // Genuine EOF on OUR stdin: the owner is shutting us down.
-                    Ok(_) => std::process::exit(EXIT_STDIN_EOF),
-                    // A write error means the CHILD's stdin went away — it
-                    // exited, or the pipe broke. That is not a shutdown
-                    // request, so say nothing and let `child.wait()` below
-                    // report the real exit code instead of masking it with 120.
-                    Err(_) => (),
+                // A write error means the CHILD's stdin went away — it exited,
+                // or the pipe broke. That is not a shutdown request, so we must
+                // not report 120 for it and mask the child's real code. But we
+                // must not stop watching either: EOF on our stdin is the ONLY
+                // teardown signal the backend ever sends, and that has to stay
+                // literally true for the shim's whole life. So on a write error
+                // we keep reading our stdin and throw the bytes away, and the
+                // EOF that eventually arrives still means what it always means.
+                // By then `child.wait()` has long since reported the child's
+                // code and the main thread is already exiting with it.
+                let mut stdin = std::io::stdin().lock();
+                if copy(&mut stdin, &mut child_stdin).is_err() {
+                    let _ = copy(&mut stdin, &mut sink());
                 }
+                std::process::exit(EXIT_STDIN_EOF);
             })
             .expect("spawn stdin pump");
 

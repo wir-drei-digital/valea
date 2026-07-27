@@ -78,12 +78,20 @@ package-backend:
         # placeholder is enough to get past it.
         shim="desktop/src-tauri/binaries/valea-spawn-${triple}.exe"
         [ -f "$shim" ] || : > "$shim"
+        # The placeholder must never survive a failure. It exists only to get
+        # the externalBin check past this one build; left behind at 0 bytes, a
+        # later bare `bun tauri build` would bundle it and the installer would
+        # ship a shim that does nothing — every agent silently failing to
+        # spawn. Delete it on any error and let the recipe die instead.
+        trap 'rm -f "$shim"' ERR
         (cd desktop/src-tauri && cargo build --release --bin valea-spawn)
         # The copy MUST stay after the build. binaries/ is what gets bundled,
         # so if these two ever swap the installer ships whatever the
         # placeholder happened to be — an empty file on a cold checkout, or a
         # stale shim on a warm one.
         cp desktop/src-tauri/target/release/valea-spawn.exe "$shim"
+        [ -s "$shim" ]
+        trap - ERR
         ;;
     esac
 
