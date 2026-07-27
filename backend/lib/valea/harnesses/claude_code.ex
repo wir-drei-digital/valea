@@ -11,9 +11,21 @@ defmodule Valea.Harnesses.ClaudeCode do
   alias Valea.Agents.SessionSettings
   alias Valea.Paths
 
+  # PATHEXT's own default, for the case where the variable is unset.
+  @default_pathext ~w(.exe .cmd .bat .com)
+
   @impl true
   def definition, do: %{id: "claude_code", name: "Claude Code"}
 
+  @doc """
+  The command to spawn, resolved against this machine.
+
+  `opts` carries `:env` (merged into the returned spec) and, TEST-ONLY,
+  `:platform` — which platform's command-RESOLUTION strategy to apply, so
+  Windows resolution is provable on a Unix host (spec §D testing split).
+  It does NOT relax the gates below: absoluteness and regular-file checks
+  always ask the real host, because what they gate is a real host path.
+  """
   @impl true
   def acp_command(opts \\ %{}) do
     case Valea.App.Config.harness_command() do
@@ -58,7 +70,7 @@ defmodule Valea.Harnesses.ClaudeCode do
   # root-anchored, regular file is ever spawned.
   defp resolve(cmd, args, opts) do
     cmd = Paths.normalize(cmd)
-    resolved = if Paths.absolute?(cmd), do: cmd, else: System.find_executable(cmd)
+    resolved = if Paths.absolute?(cmd), do: cmd, else: search(cmd, resolver_platform(opts))
 
     case resolved do
       abs when is_binary(abs) ->
@@ -70,4 +82,54 @@ defmodule Valea.Harnesses.ClaudeCode do
         {:error, :harness_unavailable}
     end
   end
+
+  defp resolver_platform(opts), do: Map.get(opts, :platform) || Paths.host_platform()
+
+  # On unix, PATH is the whole story. On Windows an executable's name usually
+  # is not its filename (spec B3): `claude-agent-acp` is really
+  # `claude-agent-acp.cmd`, so PATHEXT decides what "on PATH" even means, and
+  # npm's global bin is frequently not on PATH at all for a GUI-launched
+  # process. Hence the three-step search — PATH, PATH×PATHEXT, then the two
+  # install locations.
+  defp search(cmd, :windows) do
+    System.find_executable(cmd) || search_pathext(cmd) || search_install_locations(cmd)
+  end
+
+  defp search(cmd, _unix), do: System.find_executable(cmd)
+
+  defp search_pathext(cmd) do
+    Enum.find_value(pathext(), fn ext -> System.find_executable(cmd <> ext) end)
+  end
+
+  defp pathext do
+    case System.get_env("PATHEXT") do
+      value when is_binary(value) and value != "" ->
+        value |> String.split(";", trim: true) |> Enum.map(&String.downcase/1)
+
+      _ ->
+        @default_pathext
+    end
+  end
+
+  # Derived from the CONFIGURED name — never a hardcoded basename. `claude.exe`
+  # is the interactive CLI, not the ACP adapter; resolving it would spawn an
+  # executable that does not speak the protocol. Only a BARE name is probed:
+  # anything with a separator in it is a path the user chose, and looking
+  # elsewhere for it would resolve something they did not ask for.
+  defp search_install_locations(cmd) do
+    if bare_name?(cmd) do
+      appdata = System.get_env("APPDATA")
+      profile = System.get_env("USERPROFILE")
+
+      [
+        appdata && Path.join([appdata, "npm", cmd <> ".cmd"]),
+        profile && Path.join([profile, ".local", "bin", cmd <> ".exe"]),
+        profile && Path.join([profile, ".local", "bin", cmd <> ".cmd"])
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.find(&File.regular?/1)
+    end
+  end
+
+  defp bare_name?(cmd), do: not String.contains?(cmd, ["/", "\\"])
 end

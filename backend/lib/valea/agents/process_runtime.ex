@@ -1,108 +1,59 @@
 defmodule Valea.Agents.ProcessRuntime do
   @moduledoc """
-  Spawns an OS subprocess with plain stdio pipes via erlexec and relays its
+  The ONE way anything in Valea spawns an agent subprocess. Relays its
   output to an owner process as messages:
 
       {:runtime_output, binary}   # stdout — the NDJSON stream
       {:runtime_stderr, binary}   # stderr — NEVER fed to the JSON decoder
-      {:runtime_exit, code | nil} # nil for signal kills
+      {:runtime_exit, code | nil} # nil when the code is unknown (signal kill)
 
-  Vendored pattern from legend's Legend.Runtimes.LocalPty (pipes mode).
-  `stop/1` kills the whole process group so adapter children never orphan.
+  Since windows-support spec B1 this module is a facade over
+  `Valea.Agents.ProcessAdapter`: the erlexec implementation moved verbatim to
+  `Valea.Agents.ProcessRuntime.Exec`, and Windows gets
+  `Valea.Agents.ProcessRuntime.PortShim` (an Erlang Port onto the
+  `valea-spawn` shim). The public API — `start/2`, `write/2`, `stop/1` and
+  the three owner messages — did not change, so `Valea.Agents.SessionServer`
+  neither knows nor cares which one is live.
+
+  Selection happens ONCE at boot: `Valea.Application.start/2` calls
+  `select_adapter!/0`, which pins the platform's adapter into app env. Doing
+  it once (rather than branching on `:os.type()` per spawn) is what makes the
+  choice inspectable and the boundary testable — the app-env slot doubles as
+  the test seam: `Application.put_env(:valea, :process_adapter, Fake)`, reset
+  with `select_adapter!/0` in `on_exit`. `adapter/0` falls back to the
+  platform default so a call that beats boot (or a test that forgot the
+  reset) still spawns correctly rather than crashing on `nil`.
   """
 
-  @start_timeout_ms 5_000
+  @behaviour Valea.Agents.ProcessAdapter
 
+  @doc """
+  Pins this host's adapter into app env. Called first in
+  `Valea.Application.start/2`, and by tests to undo an injected fake.
+  """
+  @spec select_adapter!() :: :ok
+  def select_adapter!, do: Application.put_env(:valea, :process_adapter, default_adapter())
+
+  @doc "The adapter every call routes through."
+  @spec adapter() :: module()
+  def adapter, do: Application.get_env(:valea, :process_adapter) || default_adapter()
+
+  defp default_adapter do
+    case :os.type() do
+      {:win32, _} -> Valea.Agents.ProcessRuntime.PortShim
+      _ -> Valea.Agents.ProcessRuntime.Exec
+    end
+  end
+
+  @impl true
   @spec start(map(), pid()) :: {:ok, map()} | {:error, String.t()}
-  def start(%{cmd: cmd} = spec, owner) when is_pid(owner) do
-    cond do
-      !is_binary(cmd) or cmd == "" -> {:error, "no executable configured"}
-      !File.exists?(cmd) -> {:error, "executable not found: #{cmd}"}
-      true -> do_start(spec, owner)
-    end
-  end
+  def start(spec, owner), do: adapter().start(spec, owner)
 
-  defp do_start(spec, owner) do
-    relay = spawn_relay(spec, owner)
-
-    receive do
-      {:relay_started, ^relay, os_pid} -> {:ok, %{os_pid: os_pid, exec_pid: relay}}
-      {:relay_failed, ^relay, reason} -> {:error, inspect(reason)}
-    after
-      @start_timeout_ms ->
-        Process.exit(relay, :kill)
-        {:error, "subprocess start timed out"}
-    end
-  end
-
-  defp spawn_relay(spec, owner) do
-    parent = self()
-
-    spawn(fn ->
-      argv = [spec.cmd | spec.args]
-
-      run_opts = [
-        :stdin,
-        {:stdout, self()},
-        {:stderr, self()},
-        {:env, Map.to_list(spec.env)},
-        {:cd, spec.cd},
-        {:group, 0},
-        :kill_group,
-        :monitor,
-        {:kill_timeout, 5}
-      ]
-
-      case :exec.run(argv, run_opts) do
-        {:ok, _pid, os_pid} ->
-          send(parent, {:relay_started, self(), os_pid})
-          relay_loop(os_pid, owner)
-
-        {:error, reason} ->
-          send(parent, {:relay_failed, self(), reason})
-      end
-    end)
-  end
-
-  defp relay_loop(os_pid, owner) do
-    receive do
-      {:stdout, ^os_pid, data} ->
-        send(owner, {:runtime_output, data})
-        relay_loop(os_pid, owner)
-
-      {:stderr, ^os_pid, data} ->
-        send(owner, {:runtime_stderr, data})
-        relay_loop(os_pid, owner)
-
-      {:DOWN, ^os_pid, :process, _pid, reason} ->
-        send(owner, {:runtime_exit, decode_exit(reason)})
-
-      {:write, data} ->
-        :exec.send(os_pid, IO.iodata_to_binary(data))
-        relay_loop(os_pid, owner)
-
-      :stop ->
-        :exec.stop(os_pid)
-        relay_loop(os_pid, owner)
-    end
-  end
-
+  @impl true
   @spec write(map(), iodata()) :: :ok
-  def write(%{exec_pid: relay}, data) do
-    send(relay, {:write, data})
-    :ok
-  end
+  def write(handle, data), do: adapter().write(handle, data)
 
+  @impl true
   @spec stop(map()) :: :ok
-  def stop(%{exec_pid: relay}) do
-    send(relay, :stop)
-    :ok
-  end
-
-  defp decode_exit(:normal), do: 0
-  defp decode_exit({:exit_status, status}), do: :exec.status(status) |> exit_code()
-  defp decode_exit(_), do: nil
-
-  defp exit_code({:status, code}), do: code
-  defp exit_code({:signal, _sig, _core}), do: nil
+  def stop(handle), do: adapter().stop(handle)
 end

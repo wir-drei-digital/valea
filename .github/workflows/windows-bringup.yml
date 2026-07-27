@@ -46,15 +46,6 @@ jobs:
       # "missing dependencies" before the suite even starts.
       - name: Fetch backend deps
         run: cd backend && mix deps.get
-      # Spec T1: run the FULL suite once to harvest the real Windows failure
-      # list for Tasks 2-7. Non-gating by design.
-      - name: Backend suite (survey run, non-gating)
-        continue-on-error: true
-        run: cd backend && mix test 2>&1 | tee ../windows-test-survey.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-test-survey
-          path: windows-test-survey.txt
       # Spec §D testing split: the platform-aware Valea.Paths walk touches OTP
       # path functions and the real filesystem, so its Windows semantics
       # (root-floor, UNC roots, case-folded containment) must be proven on the
@@ -78,10 +69,31 @@ jobs:
             test/valea_web/icm_rpc_test.exs \
             test/valea/calendar/local_test.exs \
             test/valea_web/files_controller_test.exs
-      - name: Build SPA + Burrito sidecar
+      # Also builds and stages `valea-spawn.exe` (spec B2) — which is why the
+      # full suite runs AFTER it: on Windows the process adapter is `PortShim`,
+      # and it refuses to spawn without the shim (never a silent Port-only
+      # fallback). A bare `cargo build --bin valea-spawn` here would not do:
+      # tauri-build's externalBin check runs on every build of that package and
+      # fails until BOTH binaries are staged, which is the dance this recipe
+      # already owns.
+      - name: Build SPA + Burrito sidecar (+ spawn shim)
         env:
           BURRITO_TARGET: windows_x64
         run: just package-backend
+      # GATING since Task 6: paths (T3/T4) plus the platform fixtures and the
+      # Port adapter (T6) are what make the whole suite runnable here, so a red
+      # run is a Windows regression, not a survey finding. VALEA_SPAWN_SHIM
+      # points at the STAGED shim — the exact file the installer ships, not a
+      # side build of it.
+      - name: Backend suite (gating)
+        env:
+          VALEA_SPAWN_SHIM: '${{ github.workspace }}\desktop\src-tauri\binaries\valea-spawn-x86_64-pc-windows-msvc.exe'
+        run: cd backend && mix test 2>&1 | tee ../windows-test-run.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-test-run
+          path: windows-test-run.txt
       - name: Build NSIS bundle (no release)
         uses: tauri-apps/tauri-action@v0
         env:

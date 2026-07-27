@@ -132,12 +132,33 @@ defmodule Valea.Agents.SessionServer do
       calendar_in_scope?: Map.get(scope, :calendar_in_scope, false)
     }
 
+    # Where the windows adapter's spawn shim writes the agent's stderr
+    # (windows-support spec B2). Computed HERE, before the spawn, because the
+    # shim needs the path in its env and the transcript (which shares this
+    # directory, and therefore its retention) is only opened further down. The
+    # monotonic suffix keeps two starts of the same session id — a restart,
+    # a resume — from writing over each other; the OS pid that would
+    # otherwise disambiguate does not exist yet. `Exec` ignores the key.
+    stderr_path =
+      Path.join([
+        scope.workspace.root,
+        "logs",
+        "sessions",
+        id <>
+          "-" <>
+          Integer.to_string(System.unique_integer([:positive, :monotonic])) <>
+          ".stderr.log"
+      ])
+
+    File.mkdir_p!(Path.dirname(stderr_path))
+
     case ProcessRuntime.start(
            %{
              cmd: spec.cmd,
              args: spec.args ++ scope.argv_extra,
              env: Map.merge(spec.env, scope.env),
-             cd: scope.cwd
+             cd: scope.cwd,
+             stderr_path: stderr_path
            },
            self()
          ) do

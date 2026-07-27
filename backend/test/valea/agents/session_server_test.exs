@@ -20,6 +20,50 @@ defmodule Valea.Agents.SessionServerTest do
     %{root: ws.path, ws: ws, icm: icm}
   end
 
+  # windows-support spec B2/B3a. The start spec is what the process adapter
+  # sees, so pinning it needs an adapter — a recorder that forwards to the
+  # host's real one, injected through the same app-env seam
+  # `ProcessRuntime.select_adapter!/0` owns.
+  defmodule SpecRecorder do
+    @behaviour Valea.Agents.ProcessAdapter
+
+    @impl true
+    def start(spec, owner) do
+      send(Application.fetch_env!(:valea, :spec_recorder_probe), {:start_spec, spec})
+      real().start(spec, owner)
+    end
+
+    @impl true
+    def write(handle, data), do: real().write(handle, data)
+
+    @impl true
+    def stop(handle), do: real().stop(handle)
+
+    defp real, do: Application.fetch_env!(:valea, :spec_recorder_target)
+  end
+
+  test "the start spec carries a stderr path under logs/sessions/", %{root: root} do
+    Application.put_env(:valea, :spec_recorder_target, Valea.Agents.ProcessRuntime.adapter())
+    Application.put_env(:valea, :spec_recorder_probe, self())
+    Application.put_env(:valea, :process_adapter, SpecRecorder)
+
+    on_exit(fn ->
+      Valea.Agents.ProcessRuntime.select_adapter!()
+      Application.delete_env(:valea, :spec_recorder_target)
+      Application.delete_env(:valea, :spec_recorder_probe)
+    end)
+
+    {:ok, %{id: id}} = start_session(root, "happy")
+
+    assert_receive {:start_spec, spec}, 10_000
+    assert spec.cd
+    assert String.starts_with?(spec.stderr_path, Path.join([root, "logs", "sessions"]))
+    assert String.starts_with?(Path.basename(spec.stderr_path), id <> "-")
+    assert String.ends_with?(spec.stderr_path, ".stderr.log")
+    # The shim only creates the FILE; the directory has to already exist.
+    assert File.dir?(Path.dirname(spec.stderr_path))
+  end
+
   test "happy path: handshake, prompt, transcript file, turn end", %{root: root} do
     {:ok, %{id: id}} = start_session(root, "happy")
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)

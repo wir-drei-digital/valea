@@ -4,6 +4,11 @@ defmodule Valea.Application do
 
   @impl true
   def start(_type, _args) do
+    # FIRST, before anything can spawn an agent: pin this host's process
+    # adapter (windows-support spec B1). One decision, at boot, in app env —
+    # so which adapter is live is inspectable rather than re-derived per spawn.
+    Valea.Agents.ProcessRuntime.select_adapter!()
+
     children = [
       ValeaWeb.Telemetry,
       {Phoenix.PubSub, name: Valea.PubSub},

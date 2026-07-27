@@ -19,11 +19,14 @@ defmodule Valea.Agents.Doctor do
   """
 
   alias Valea.Agents.CommandSpec
+  alias Valea.Agents.ProcessRuntime
   alias Valea.Harnesses.ClaudeCode
 
   @type check :: %{String.t() => String.t() | nil}
 
   @timeout_ms 5_000
+  # How long a killed probe gets to confirm it is gone before we stop waiting.
+  @kill_grace_ms 5_000
 
   @node_remedy "Install Node 22 or newer (https://nodejs.org)"
   @adapter_remedy "npm install -g @agentclientprotocol/claude-agent-acp"
@@ -179,58 +182,98 @@ defmodule Valea.Agents.Doctor do
 
   # -- shared ------------------------------------------------------------
 
-  # Runs cmd/args via erlexec (not System.cmd/Port) so a timeout can
-  # GUARANTEE the OS process tree is gone, not just the BEAM-side handle.
-  # `{:group, 0}` + `:kill_group` puts the child in its own process group;
-  # on timeout `:exec.stop/1` kills that whole group and — per erlexec —
-  # blocks until it has actually exited, so no orphaned `sleep`/shell
-  # descendants survive a hung adapter across repeated doctor runs. This is
-  # the same pattern `Valea.Agents.ProcessRuntime` uses for long-lived
-  # runtime subprocesses.
+  # Runs cmd/args through `Valea.Agents.ProcessRuntime` — the very adapter a
+  # real session spawns through (spec B5), not System.cmd/Port — so a timeout
+  # can GUARANTEE the OS process tree is gone, not just the BEAM-side handle:
+  # erlexec's process-group kill on unix, the spawn shim's Job Object on
+  # windows. Without that, repeated doctor runs against a hung adapter would
+  # pile up orphaned `sleep`/shell descendants.
   defp run_cmd(cmd, args, timeout_ms \\ @timeout_ms) do
     if File.exists?(cmd) do
-      exec_and_await(cmd, args, timeout_ms)
+      spawn_and_await(cmd, args, timeout_ms)
     else
       {:error, :enoent}
     end
   end
 
-  defp exec_and_await(cmd, args, timeout_ms) do
-    run_opts = [:monitor, :stdout, :stderr, {:group, 0}, :kill_group]
+  defp spawn_and_await(cmd, args, timeout_ms) do
+    # A probe has no session, so its stderr file has no transcript to live
+    # beside; tmp plus a best-effort delete is the whole lifecycle. The unix
+    # adapter ignores the key entirely.
+    stderr_path =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-doctor-#{System.unique_integer([:positive])}.stderr.log"
+      )
 
-    case :exec.run([cmd | args], run_opts) do
-      {:ok, _pid, os_pid} -> await_exit(os_pid, timeout_ms, [])
-      {:error, reason} -> {:error, reason}
+    spec = %{cmd: cmd, args: args, env: %{}, cd: probe_cwd(), stderr_path: stderr_path}
+
+    try do
+      case ProcessRuntime.start(spec, self()) do
+        {:ok, handle} -> await_exit(handle, timeout_ms, [])
+        {:error, reason} -> {:error, reason}
+      end
+    after
+      File.rm(stderr_path)
+      drain()
     end
   end
 
-  defp await_exit(os_pid, timeout_ms, acc) do
+  # The adapters take cwd explicitly; the BEAM's own is what a probe used to
+  # inherit, so that is what it keeps getting. Falls back to tmp rather than
+  # raising: a deleted working directory is exactly the kind of broken machine
+  # the doctor exists to describe, not to crash on.
+  defp probe_cwd do
+    case File.cwd() do
+      {:ok, cwd} -> cwd
+      _ -> System.tmp_dir!()
+    end
+  end
+
+  defp await_exit(handle, timeout_ms, acc) do
     receive do
-      {:stdout, ^os_pid, data} ->
-        await_exit(os_pid, timeout_ms, [data | acc])
+      {:runtime_output, data} ->
+        await_exit(handle, timeout_ms, [data | acc])
 
-      {:stderr, ^os_pid, data} ->
-        await_exit(os_pid, timeout_ms, [data | acc])
+      {:runtime_stderr, data} ->
+        await_exit(handle, timeout_ms, [data | acc])
 
-      {:DOWN, ^os_pid, :process, _pid, reason} ->
+      {:runtime_exit, code} ->
         output = acc |> Enum.reverse() |> IO.iodata_to_binary()
-        {:ok, {output, exit_code(reason)}}
+        {:ok, {output, exit_code(code)}}
     after
       timeout_ms ->
-        # Synchronous: does not return until the whole process group has
-        # exited, so the OS process tree is confirmed gone before this
-        # function (and therefore run/1) returns to the caller.
-        :exec.stop(os_pid)
+        ProcessRuntime.stop(handle)
+        # `stop/1` is asynchronous, so waiting for the exit it produces is
+        # what keeps this function's old promise: the OS process tree is
+        # confirmed gone before run/1 returns to the caller.
+        receive do
+          {:runtime_exit, _} -> :ok
+        after
+          @kill_grace_ms -> :ok
+        end
+
         {:error, :timeout}
     end
   end
 
-  defp exit_code(:normal), do: 0
-  defp exit_code({:exit_status, status}), do: status |> :exec.status() |> status_to_code()
-  defp exit_code(_signal_or_other), do: 1
+  # The runtime addresses its messages to the CALLING process and does not tag
+  # them with a spawn id, so a probe that timed out must not leave a straggler
+  # for the next probe's collector to read as its own output.
+  defp drain do
+    receive do
+      {:runtime_output, _} -> drain()
+      {:runtime_stderr, _} -> drain()
+      {:runtime_exit, _} -> drain()
+    after
+      0 -> :ok
+    end
+  end
 
-  defp status_to_code({:status, code}), do: code
-  defp status_to_code({:signal, _sig, _core}), do: 1
+  # `nil` is the runtime's "killed, code unknown" (a signal on unix); the
+  # checks above only ever ask "was it zero?", so any non-answer is a 1.
+  defp exit_code(code) when is_integer(code), do: code
+  defp exit_code(_unknown), do: 1
 
   defp ok(id, detail), do: %{"id" => id, "status" => "ok", "detail" => detail, "remedy" => nil}
 

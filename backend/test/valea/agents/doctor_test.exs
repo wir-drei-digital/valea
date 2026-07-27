@@ -2,6 +2,7 @@ defmodule Valea.Agents.DoctorTest do
   use ExUnit.Case, async: false
 
   alias Valea.Agents.Doctor
+  alias Valea.PlatformFixtures
 
   setup do
     dir =
@@ -23,40 +24,66 @@ defmodule Valea.Agents.DoctorTest do
 
   # -- fake executables ----------------------------------------------------
 
-  defp script!(dir, name, body) do
-    path = Path.join(dir, name)
-    File.write!(path, "#!/bin/sh\n" <> body)
-    File.chmod!(path, 0o755)
-    path
-  end
+  # Both lanes need these probes (spec B5), so every fixture ships a `sh` and
+  # a `cmd` body — see `Valea.PlatformFixtures`. Only the ASSERTIONS that
+  # cannot cross platforms (`pgrep -f`, `exec -a`) are tagged.
+  defp script!(dir, name, unix_body, windows_body),
+    do: PlatformFixtures.script!(dir, name, unix_body, windows_body)
 
   # Answers both `--version` (adapter check) and `--cli auth status` (auth
   # check) successfully, regardless of which one is invoked.
   defp ok_adapter!(dir) do
-    script!(dir, "acp-ok", """
-    case "$1" in
-      --version) echo "0.58.1" ;;
-      --cli) exit 0 ;;
-    esac
-    """)
+    script!(
+      dir,
+      "acp-ok",
+      """
+      case "$1" in
+        --version) echo "0.58.1" ;;
+        --cli) exit 0 ;;
+      esac
+      """,
+      """
+      @echo off\r
+      if "%1"=="--version" echo 0.58.1\r
+      exit /b 0\r
+      """
+    )
   end
 
   defp adapter_fails!(dir) do
-    script!(dir, "acp-adapter-fail", """
-    case "$1" in
-      --version) exit 1 ;;
-      --cli) exit 0 ;;
-    esac
-    """)
+    script!(
+      dir,
+      "acp-adapter-fail",
+      """
+      case "$1" in
+        --version) exit 1 ;;
+        --cli) exit 0 ;;
+      esac
+      """,
+      """
+      @echo off\r
+      if "%1"=="--version" exit /b 1\r
+      exit /b 0\r
+      """
+    )
   end
 
   defp auth_fails!(dir) do
-    script!(dir, "acp-auth-fail", """
-    case "$1" in
-      --version) echo "0.58.1" ;;
-      --cli) exit 1 ;;
-    esac
-    """)
+    script!(
+      dir,
+      "acp-auth-fail",
+      """
+      case "$1" in
+        --version) echo "0.58.1" ;;
+        --cli) exit 1 ;;
+      esac
+      """,
+      """
+      @echo off\r
+      if "%1"=="--version" (echo 0.58.1& exit /b 0)\r
+      exit /b 1\r
+      """
+    )
   end
 
   # `exec -a marker` renames the sleeper's argv[0] so the orphan-check test
@@ -64,13 +91,25 @@ defmodule Valea.Agents.DoctorTest do
   # is really just `sleep`. The pid doesn't change — `exec` replaces the
   # current script process's image in place — so it's still the exact
   # process the doctor's timeout path must kill.
+  #
+  # The windows body sleeps with `ping`, not `timeout`: `timeout` refuses to
+  # run at all when stdin is a pipe, which it always is under the spawn shim.
   defp auth_hangs!(dir, marker) do
-    script!(dir, "acp-auth-hang", """
-    case "$1" in
-      --version) echo "0.58.1" ;;
-      --cli) exec -a "#{marker}" sleep 10 ;;
-    esac
-    """)
+    script!(
+      dir,
+      "acp-auth-hang",
+      """
+      case "$1" in
+        --version) echo "0.58.1" ;;
+        --cli) exec -a "#{marker}" sleep 10 ;;
+      esac
+      """,
+      """
+      @echo off\r
+      if "%1"=="--version" (echo 0.58.1& exit /b 0)\r
+      ping -n 11 127.0.0.1 >nul\r
+      """
+    )
   end
 
   defp pgrep_count(marker) do
@@ -101,7 +140,12 @@ defmodule Valea.Agents.DoctorTest do
   end
 
   defp fake_node!(dir, version_line) do
-    script!(dir, "node-fake", "echo \"#{version_line}\"\n")
+    script!(
+      dir,
+      "node-fake",
+      "echo \"#{version_line}\"\n",
+      "@echo off\r\necho #{version_line}\r\n"
+    )
   end
 
   defp check(checks, id), do: Enum.find(checks, &(&1["id"] == id))
@@ -176,6 +220,7 @@ defmodule Valea.Agents.DoctorTest do
            } = check(checks, "auth")
   end
 
+  @tag :unix_only
   @tag timeout: 20_000
   test "auth hangs past the 5s timeout -> unknown, not failed, and the hung OS process is killed",
        %{dir: dir} do
@@ -193,11 +238,32 @@ defmodule Valea.Agents.DoctorTest do
     assert %{"status" => "unknown", "remedy" => nil, "detail" => detail} = check(checks, "auth")
     assert detail =~ "could not be determined"
 
-    # The whole point of routing through erlexec's process-group kill: the
+    # The whole point of routing the probe through the process adapter: the
     # sleeping child must not survive as an orphan after Doctor.run/1
     # returns, or repeated doctor runs against a hung adapter would pile up
-    # zombie `sleep` processes.
+    # zombie `sleep` processes. On unix that promise is erlexec's process-
+    # group kill; `pgrep -f` is how you ask.
     assert_no_process_matching(marker)
+  end
+
+  # The windows twin: same probe, same 5s timeout, and the same "unknown, not
+  # failed" verdict — the orphan half of the assertion is `tasklist`'s job,
+  # and the adapter's Job Object is what makes it true (spec B2).
+  @tag :windows_only
+  @tag timeout: 20_000
+  test "auth hangs past the 5s timeout -> unknown, and no sleeper survives", %{dir: dir} do
+    node = fake_node!(dir, "v22.3.0")
+    Valea.App.Config.set_harness_command([auth_hangs!(dir, "unused-on-windows")])
+
+    assert {:ok, %{checks: checks, ok: false}} = Doctor.run(%{node: node})
+
+    assert %{"status" => "ok"} = check(checks, "adapter")
+    assert %{"status" => "unknown", "remedy" => nil, "detail" => detail} = check(checks, "auth")
+    assert detail =~ "could not be determined"
+
+    Process.sleep(500)
+    {out, _} = System.cmd("tasklist", ["/fi", "imagename eq ping.exe"], stderr_to_stdout: true)
+    refute out =~ "ping.exe"
   end
 
   test "adapter unresolvable -> adapter failed, auth is an honest unknown (not failed)", %{

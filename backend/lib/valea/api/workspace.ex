@@ -136,11 +136,21 @@ defmodule Valea.Api.Workspace do
                   ]
 
       run fn _input, _ctx ->
-        cat = System.find_executable("cat") || "/bin/cat"
+        {cmd, args} = echo_command()
 
         with {:ok, handle} <-
                Valea.Agents.ProcessRuntime.start(
-                 %{cmd: cat, args: [], env: %{}, cd: System.tmp_dir!()},
+                 %{
+                   cmd: cmd,
+                   args: args,
+                   env: %{},
+                   cd: System.tmp_dir!(),
+                   stderr_path:
+                     Path.join(
+                       System.tmp_dir!(),
+                       "valea-runtime-check-#{System.unique_integer([:positive])}.stderr.log"
+                     )
+                 },
                  self()
                ),
              :ok <- Valea.Agents.ProcessRuntime.write(handle, "ping\n") do
@@ -157,6 +167,16 @@ defmodule Valea.Api.Workspace do
           {:error, reason} -> {:ok, %{"ok" => false, "detail" => reason}}
         end
       end
+    end
+  end
+
+  # A stdin->stdout echo for the runtime smoke check. `findstr "^"` (every
+  # line matches) is Windows's `cat`; the spawn shim runs it directly, never
+  # through `cmd /c` — the shim owns that decision (windows spec B2).
+  defp echo_command do
+    case :os.type() do
+      {:win32, _} -> {System.find_executable("findstr") || "findstr.exe", ["^"]}
+      _ -> {System.find_executable("cat") || "/bin/cat", []}
     end
   end
 
