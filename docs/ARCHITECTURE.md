@@ -1211,6 +1211,29 @@ override in this spec — Doctor's existing `secrets_hygiene` warning (see
 "Watcher and doctor" above) stays the visibility layer for a mount that
 carries secret-shaped files at all.
 
+## ICM skills
+
+Consent-gated install of repo-vendored agent skills into a user-owned
+ICM's `.claude/skills/` (spec:
+`docs/superpowers/specs/2026-07-26-icm-skills-design.md`). Pinned
+snapshots + `catalog.yaml` live in `backend/priv/skills/` (first entry:
+icm-architect); no runtime fetching exists. `Valea.Skills` derives
+per-mount state (`not_installed` → `foreign` → `edited` →
+`update_available` → `installed`, first match wins) from a
+`.provenance.yaml` hash-manifest sidecar written inside the installed
+folder, and performs staged tmp+rename installs/updates/uninstalls with
+`Valea.Paths.resolve_real/2` containment (a symlinked `.claude` refuses).
+`Valea.Api.Skills` exposes list/install/update/uninstall/dismiss as
+generation-guarded, control-token-gated actions — the settings click is
+the consent step; agents have no RPC access. Updates are badge +
+one-click, never silent; an edited install warns before overwrite
+(`force`). `RiskTier` classifies anything under `.claude/` in a mount as
+high. UI: a Skills section in the agent settings modal
+(`SkillsPanel.svelte` + `SkillConsentDialog.svelte`) and a one-time,
+dismissible offer card under the ICM's sidebar group at the
+mount/create/adopt moment (dismissals persist per skill id in the
+`icms:` entry's `skills_offers_dismissed` list).
+
 ## Knowledge & editor depth (Spec C)
 
 *(shipped; spec:
@@ -1505,3 +1528,4 @@ App-version truth for the updater: `desktop/src-tauri/tauri.conf.json`.
 - [2026-07-19-windows-support-design.md](superpowers/specs/2026-07-19-windows-support-design.md) — **Draft, pending review**: Windows x86_64 as a first-class desktop target — conditional erlexec + `ProcessAdapter` behaviour with a Job-Object `valea-spawn` shim (stdin-close ⇒ tree death), per-store maildir separator (`;` on NTFS, tolerant parser, no data migration), drive-letter/case-insensitive-safe `Valea.Paths`, sidecar Job Object in the shell, NSIS + updater CI lane. Supersedes the "Windows" blocker section of docs/RELEASING.md once implemented.
 - [2026-07-19-release-auto-update-design.md](superpowers/specs/2026-07-19-release-auto-update-design.md) — **Shipped** (see [Release & auto-update](#release--auto-update) above): tag-driven GitHub Actions release matrix (native per-platform Burrito sidecars, draft-release go-live gate, minisign-signed updater artifacts), Tauri v2 auto-update wiring, and the sidebar-bottom update notice with background download + restart-to-update.
 - [2026-07-18-calendar-feeds-design.md](superpowers/specs/2026-07-18-calendar-feeds-design.md) — **Shipped** (Spec F — see [Calendar](#calendar-spec-f--ics-feeds-in-valea-calendar-out) above): ICS subscription-feed mirrors (no CalDAV/OAuth/Graph), the hand-written RFC 5545 parser with honest unsupported-recurrence/timezone handling, the two-store guarded derive protocol, the agent-writable Valea calendar + tokened loopback served feed, one calendar mount with mail's deny-not-ask tier, feed-URL-as-credential keychain posture.
+- [2026-07-26-icm-skills-design.md](superpowers/specs/2026-07-26-icm-skills-design.md) — **Shipped** (see [ICM skills](#icm-skills) above): ICM skills (vendored install, consent, settings) — consent-gated install of repo-vendored agent skills into a user-owned ICM's `.claude/skills/`; pinned snapshots + `catalog.yaml` in `backend/priv/skills/` with no runtime fetching; `.provenance.yaml`-derived per-mount state; staged tmp+rename installs with `resolve_real/2` containment; generation-guarded, control-token-gated list/install/update/uninstall/dismiss; a Skills section in agent settings and a one-time dismissible mount-moment offer card.
