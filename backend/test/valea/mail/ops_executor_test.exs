@@ -718,7 +718,10 @@ defmodule Valea.Mail.OpsExecutorTest do
   alias Valea.Mail.DraftFile
   alias Valea.Mail.OpsExecutor
 
-  defp local_ctx(c), do: Map.take(c, [:root, :account, :settings])
+  # Mirrors `Valea.Mail.Engine`'s own push ctx exactly — including `:separator`,
+  # which the threading path needs (see the missing-source-file test below).
+  # Keep these two shapes in step: a key dropped here is a KeyError in prod.
+  defp local_ctx(c), do: Map.take(c, [:root, :account, :settings, :separator])
 
   defp drafts_dir(root), do: Path.join([root, "sources", "mail", "mara", "drafts"])
 
@@ -882,6 +885,43 @@ defmodule Valea.Mail.OpsExecutorTest do
       payload = File.read!(spool_eml(root, op.id))
       # @raw_a's Message-ID is <alpha@example.com>.
       assert payload =~ "In-Reply-To: <alpha@example.com>"
+    end
+
+    # T7 review Critical: `resolve_threading/2` reaches `source_file_path/5`,
+    # whose else-arm ENCODES a filename — so the push ctx needs the store
+    # separator even though nothing about a push writes to the maildir. When
+    # the referenced occurrence's file is gone (the out-of-band damage class
+    # `SyncPass.restore_missing/4` exists to repair), that encode runs. A
+    # missing `:separator` raised a KeyError THROUGH `threading_from_occurrence`'s
+    # `with/else` — which catches values, not raises — and got swallowed by
+    # `snapshot_and_spool_guarded`'s blanket rescue as a generic `push_failed`:
+    # a deterministic dead end for a user replying to a damaged message,
+    # instead of the designed degradation to an unthreaded reply.
+    test "a reply whose referenced source file is MISSING degrades to unthreaded, never rejects",
+         %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+      pull!(name, root)
+      referenced = msg_id_in("INBOX")
+
+      # Out-of-band damage: the occurrence is still in the ledger/index, but
+      # its maildir file is gone, so the name cannot be read off disk.
+      cur = Path.join([root, "sources", "mail", "mara", "maildir", dir_of("INBOX"), "cur"])
+      Enum.each(File.ls!(cur), &File.rm!(Path.join(cur, &1)))
+
+      content = write_draft!(root, "reply.md", draft_body(extra: "in_reply_to: #{referenced}"))
+      hash = DraftFile.content_hash(content)
+      c = ctx(name, root)
+
+      assert {:ok, op} = OpsExecutor.prepare_push(local_ctx(c), "reply.md", hash)
+      assert op.state == "pending"
+
+      payload = File.read!(spool_eml(root, op.id))
+      refute payload =~ "In-Reply-To:"
+
+      {:ok, manifest} = YamlElixir.read_from_file(manifest_path(root, op.id))
+      assert manifest["notice"] == "referenced message has no usable Message-ID"
     end
   end
 

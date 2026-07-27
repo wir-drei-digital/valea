@@ -114,6 +114,15 @@ defmodule Valea.Mail.SeparatorMatrixTest do
     assert Account.separator(root, "mara") == {:ok, ";"}
   end
 
+  # Read back from `.account` rather than restated as a literal — the same
+  # step `Valea.Mail.Engine` performs at activation. This is what makes
+  # `semicolon_store!/1`'s write load-bearing instead of decorative: break
+  # the round-trip and the whole matrix goes `:`, not just one assertion.
+  defp separator!(root) do
+    {:ok, separator} = Account.separator(root, "mara")
+    separator
+  end
+
   defp pass!(name, root) do
     SyncPass.run(%{
       root: root,
@@ -121,7 +130,7 @@ defmodule Valea.Mail.SeparatorMatrixTest do
       settings: settings(),
       credential: fn -> "app-password" end,
       transport: ModelMailTransport,
-      separator: ";",
+      separator: separator!(root),
       connect_opts: [name: name]
     })
   end
@@ -135,7 +144,7 @@ defmodule Valea.Mail.SeparatorMatrixTest do
       settings: settings(),
       transport: ModelMailTransport,
       conn: conn,
-      separator: ";"
+      separator: separator!(root)
     }
   end
 

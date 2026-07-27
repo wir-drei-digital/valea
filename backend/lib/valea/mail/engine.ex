@@ -517,9 +517,12 @@ defmodule Valea.Mail.Engine do
       smtp_credential: nil,
       # Pinned at activation from `.account` (moduledoc §Maildir separator).
       # `nil` until then — deliberately not `":"`, so a separator that ever
-      # escaped an inert Engine into an encode would raise at
-      # `Maildir.encode_filename/4`'s guard rather than write `:` names into
-      # a `;` store. Nothing can: every work path is gated on `active`.
+      # escaped into an encode would raise rather than write `:` names into a
+      # `;` store. Every path that can reach one is behind `validate_sync/1`,
+      # which requires BOTH `active` and non-nil `settings` — and the one
+      # activation that skips the `.account` read (`activate(%{settings:
+      # nil})`, the defensive no-settings clause) is exactly what that second
+      # condition excludes.
       separator: nil,
       status: "inactive",
       last_sync_at: nil,
@@ -606,7 +609,19 @@ defmodule Valea.Mail.Engine do
   def handle_call({:push_draft, draft_name, content_hash}, from, state) do
     case validate_sync(state) do
       :ok ->
-        local_ctx = %{root: state.root, account: state.account, settings: state.settings}
+        # `separator` is here even though nothing about a push WRITES to the
+        # maildir: `prepare_push`'s threading resolution reads the replied-to
+        # message's canonical file, and when that file is missing the lookup
+        # falls back to ENCODING its name. Omitting the key made that fallback
+        # raise a KeyError straight through the designed "compose unthreaded"
+        # degradation (a `with/else` catches values, not raises) and into the
+        # blanket rescue as a generic `push_failed`.
+        local_ctx = %{
+          root: state.root,
+          account: state.account,
+          settings: state.settings,
+          separator: state.separator
+        }
 
         case safe_prepare_push(local_ctx, draft_name, content_hash) do
           {:ok, op_row} ->
