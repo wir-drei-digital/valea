@@ -7,6 +7,9 @@ import {
   foldersCheckFailed,
   createFoldersAndRecheck,
   createFoldersErrorMessage,
+  accountRecovery,
+  isCorruptAccountMeta,
+  CORRUPT_ACCOUNT_META_ERROR,
   type MailSetupDeps,
   type MailSetupFormInput,
   type MailSetupSmtpInput,
@@ -524,5 +527,61 @@ describe('foldersCheckFailed', () => {
       false
     );
     expect(foldersCheckFailed([])).toBe(false);
+  });
+});
+
+// -- recovery-row shaping (windows-support spec C1 / T8 review) ---------------
+//
+// `SetupPanel`'s recovery block used to branch on `state` alone, which meant
+// a store blocked for a CORRUPT `.account` (an unreadable
+// `maildir_separator`) got identity-mismatch copy and a "Purge local files…"
+// button — the exact wrong remedy for a one-file metadata problem. The
+// branch lives here now so both arms are testable without a render harness.
+describe('accountRecovery', () => {
+  function status(state: string, lastError: string | null = null): Parameters<typeof accountRecovery>[0] {
+    return { account: 'mara', state, lastError };
+  }
+
+  it('offers purge for a REAL identity mismatch', () => {
+    const recovery = accountRecovery(status('identity_mismatch', null));
+
+    expect(recovery?.kind).toBe('identity_mismatch');
+    expect(recovery?.actions).toEqual(['purge']);
+    expect(recovery?.message).toMatch(/different account identity/i);
+  });
+
+  it('does NOT offer purge for a corrupt .account, and names the file', () => {
+    const recovery = accountRecovery(status('identity_mismatch', CORRUPT_ACCOUNT_META_ERROR));
+
+    expect(recovery?.kind).toBe('corrupt_account_meta');
+    expect(recovery?.actions).toEqual([]);
+    expect(recovery?.message).toContain('sources/mail/mara/.account');
+    expect(recovery?.message).toMatch(/repair|restore/i);
+    expect(recovery?.message).not.toMatch(/purge/i);
+    // Never the engine's raw string.
+    expect(recovery?.message).not.toBe(CORRUPT_ACCOUNT_META_ERROR);
+  });
+
+  it('keeps re-adopt + purge for a replaced mailbox, whatever the lastError', () => {
+    const recovery = accountRecovery(status('mailbox_replaced', CORRUPT_ACCOUNT_META_ERROR));
+
+    expect(recovery?.kind).toBe('mailbox_replaced');
+    expect(recovery?.actions).toEqual(['readopt', 'purge']);
+  });
+
+  it('is null for every non-recovery state (the row keeps its normal affordances)', () => {
+    expect(accountRecovery(status('idle'))).toBeNull();
+    expect(accountRecovery(status('auth_failed', 'authentication failed'))).toBeNull();
+    expect(accountRecovery(status('syncing'))).toBeNull();
+  });
+});
+
+describe('isCorruptAccountMeta', () => {
+  it('matches the engine string byte-for-byte and nothing else', () => {
+    expect(isCorruptAccountMeta(CORRUPT_ACCOUNT_META_ERROR)).toBe(true);
+    expect(isCorruptAccountMeta('invalid maildir_separator')).toBe(false);
+    expect(isCorruptAccountMeta('authentication failed')).toBe(false);
+    expect(isCorruptAccountMeta(null)).toBe(false);
+    expect(isCorruptAccountMeta(undefined)).toBe(false);
   });
 });

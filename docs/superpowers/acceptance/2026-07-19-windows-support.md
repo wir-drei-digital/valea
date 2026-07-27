@@ -14,12 +14,19 @@ the small edits this branch deliberately left for after the gates. Spec:
 
 ## Batched CI gates (do these first)
 
-`.github/workflows/windows-bringup.yml` runs all of them in ONE
-`workflow_dispatch` from this branch, in the order below. It is a single
-run, but each step is a **separate gate** — read them individually, and
-don't let a green summary hide a step that was skipped because an earlier
-one failed. Everything here is a first execution: none of this code has
-ever been compiled or run on Windows.
+CI1–CI4 come from ONE `workflow_dispatch` of
+`.github/workflows/windows-bringup.yml`; **CI5 is a manual check on the
+VM** and **CI6 dispatches a different workflow** (`release.yml`). The
+numbering below is by concern, NOT the workflow's step order — that order
+is: paths suite (CI2) → build SPA + sidecar + shim (CI1's harvest) →
+backend suite (CI3) → NSIS bundle → shim suite (CI4). The suite runs
+first on purpose: it needs no bundle, so a red there costs a minute
+instead of a build.
+
+One run, but each step is a **separate gate** — read them individually,
+and don't let a green summary hide a step that never executed because an
+earlier one failed. Everything here is a first execution: none of this
+code has ever been compiled or run on Windows.
 
 - [ ] **CI1 · T1 survey harvest.** From the "Build SPA + Burrito sidecar
       (+ spawn shim)" step's log, confirm three things the packaging path
@@ -51,16 +58,24 @@ ever been compiled or run on Windows.
       `pgrep`-based process tests) and the `PortShim` adapter path to be
       the interesting parts.
 - [ ] **CI4 · T5 `valea-spawn` shim suite.** The
-      `cargo test --release --test spawn_shim` step — the **first compile
-      of every `#[cfg(windows)]` line in the repo** (the shim, `winjob.rs`,
-      the sidecar Job Object). It proves the B2 contract that exists
-      nowhere else: tree kill on stdin EOF, capped stderr file, exit-code
-      mirror, `COMSPEC /d /s /c` quoting for `.cmd` targets, exit 64 on an
-      embedded-`"` argument to a batch target.
+      `cargo test --release --test spawn_shim` step — the first time the
+      shim's Windows behavior is **executed and asserted** anywhere. It
+      proves the B2 contract that exists nowhere else: tree kill on stdin
+      EOF, capped stderr file, exit-code mirror, `COMSPEC /d /s /c`
+      quoting for `.cmd` targets, exit 64 on an embedded-`"` argument to a
+      batch target.
+      Compilation credit, so a failure is read at the right step: the shim
+      binary first compiles earlier, inside CI1's `just package-backend`
+      (`cargo build --release --bin valea-spawn`); the sidecar's Job Object
+      (spec E1, `src/winjob.rs`) is in neither — it belongs to the main app
+      binary and first compiles in the "Build NSIS bundle (no release)"
+      step.
 - [ ] **CI5 · ClaudeCode install-location candidates (manual, on the VM).**
-      Not a CI step — `Valea.Harnesses.ClaudeCode.search_install_locations/1`
-      guesses where a real Windows install of the ACP adapter lands, and
-      the guesses have never been checked against one. Install the harness
+      Not a CI step — `Valea.Harnesses.ClaudeCode`'s
+      `search_install_locations/1` (**private — verify through the agent
+      doctor's `adapter` row, not an IEx call**) guesses where a real
+      Windows install of the ACP adapter lands, and the guesses have never
+      been checked against one. Install the harness
       on the VM the way a user would (npm global), then confirm the
       resolved path is one of the probed candidates, derived from the
       CONFIGURED command name (`claude-agent-acp` by default, never a
@@ -68,8 +83,7 @@ ever been compiled or run on Windows.
       protocol): `%APPDATA%\npm\<cmd>.cmd`,
       `%USERPROFILE%\.local\bin\<cmd>.exe`,
       `%USERPROFILE%\.local\bin\<cmd>.cmd`. If the real install lands
-      elsewhere, add that candidate; the agent doctor's `adapter` row is
-      the fast read either way.
+      elsewhere, add that candidate to the list.
 - [ ] **CI6 · `release.yml` Windows dry run.** `gh workflow run
       release.yml` once CI1–CI4 are green: the release lane must produce
       `bundles-windows_x64` containing an NSIS `.exe` and its `.sig`. This

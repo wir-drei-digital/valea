@@ -22,7 +22,7 @@
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
   import { inDesktop, keychainSet } from '$lib/keychain';
-  import { mailStore, type MailAccountStatus } from '$lib/stores/mail.svelte';
+  import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import {
     submitMailSetup,
@@ -31,7 +31,8 @@
     mailStateLabel,
     mailSlugValid,
     smtpFormError,
-    type MailSetupSmtpInput
+    type MailSetupSmtpInput,
+    accountRecovery
   } from './mail-shapes';
   import MailDoctorPanel from './MailDoctorPanel.svelte';
 
@@ -189,12 +190,12 @@
     await runAction(() => api.removeMailAccount(slug, generation));
   }
 
-  // Recovery states that swap the row's normal affordances for explanatory
-  // copy + their specific CTAs (spec E §safety invariants: both are
-  // fail-closed, user-decided states).
-  function needsRecovery(status: MailAccountStatus): boolean {
-    return status.state === 'identity_mismatch' || status.state === 'mailbox_replaced';
-  }
+  // A recovery state (`accountRecovery`, computed once per row below) swaps
+  // the row's normal affordances for explanatory copy + its own CTAs
+  // (spec E §safety invariants: fail-closed, user-decided states). That
+  // function owns the branch — including the one `identity_mismatch` case
+  // that must NOT offer a purge (a corrupt `.account`, windows-support spec
+  // C1) — so both arms stay unit-tested without a render harness.
 </script>
 
 <div class="flex flex-col items-start gap-3 py-10">
@@ -205,12 +206,13 @@
 
     <ul class="flex w-full max-w-xl flex-col gap-3">
       {#each mailStore.accounts as status (status.account)}
+        {@const recovery = accountRecovery(status)}
         <li class="border-paper-border bg-paper-card rounded-xl border px-4 py-3">
           <div class="flex items-center gap-2.5">
             <span class="text-ink-heading text-[13.5px] font-medium">{status.account}</span>
             <span class="text-ink-meta text-[12px]">{mailStateLabel(status.state)}</span>
             <span class="min-w-2 flex-1" aria-hidden="true"></span>
-            {#if status.valid && !needsRecovery(status)}
+            {#if status.valid && !recovery}
               <Button
                 type="button"
                 variant="ghost"
@@ -241,44 +243,24 @@
             <p class="text-suggest-ink mt-1 text-[12px]">{notice}</p>
           {/each}
 
-          {#if status.state === 'identity_mismatch'}
-            <p class="text-warn-ink mt-1.5 text-[12.5px]">
-              The folder on disk belongs to a different account identity. Purge its local files to start over.
-              Your mailbox on the server is untouched.
-            </p>
-            <div class="mt-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onclick={() => beginConfirm({ kind: 'purge', account: status.account })}
-              >
-                Purge local files…
-              </Button>
-            </div>
-          {:else if status.state === 'mailbox_replaced'}
-            <p class="text-warn-ink mt-1.5 text-[12.5px]">
-              The mailbox on the server looks replaced (all folders reset). Syncing is stopped until you decide:
-              re-adopt the server's current state, or purge the local mirror and start over.
-            </p>
-            <div class="mt-2 flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onclick={() => beginConfirm({ kind: 'readopt', account: status.account })}
-              >
-                Re-adopt…
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onclick={() => beginConfirm({ kind: 'purge', account: status.account })}
-              >
-                Purge local files…
-              </Button>
-            </div>
+          {#if recovery}
+            <p class="text-warn-ink mt-1.5 text-[12.5px]">{recovery.message}</p>
+            {#if recovery.actions.length > 0}
+              <div class="mt-2 flex items-center gap-2">
+                {#each recovery.actions as action, i (action)}
+                  <!-- First action is the primary recovery; a second one (always the
+                       destructive purge) is de-emphasized. -->
+                  <Button
+                    type="button"
+                    variant={i === 0 ? 'outline' : 'ghost'}
+                    size="sm"
+                    onclick={() => beginConfirm({ kind: action, account: status.account })}
+                  >
+                    {action === 'readopt' ? 'Re-adopt…' : 'Purge local files…'}
+                  </Button>
+                {/each}
+              </div>
+            {/if}
           {/if}
 
           {#each status.heldFolders as folder (folder)}

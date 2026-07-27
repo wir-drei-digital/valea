@@ -618,19 +618,34 @@ export function mailStateLabel(state: string | null | undefined): string {
 }
 
 /**
+ * `Valea.Mail.Engine`'s `last_error` for a store whose `.account` carries
+ * an unreadable `maildir_separator` (windows-support spec C1), byte for
+ * byte — `activate_with_separator/1`'s `block_inert(state, …)` argument.
+ *
+ * THE single source of this string: two surfaces discriminate on it
+ * (`syncErrorText`'s copy map and `accountRecovery`'s branch), and they
+ * must not drift.
+ */
+export const CORRUPT_ACCOUNT_META_ERROR = 'invalid maildir_separator in .account';
+
+/** True when `lastError` is the corrupt-`.account` block — a one-file metadata problem, NOT a wrong-mailbox problem. */
+export function isCorruptAccountMeta(lastError: string | null | undefined): boolean {
+  return lastError === CORRUPT_ACCOUNT_META_ERROR;
+}
+
+/**
  * Engine `last_error` strings that deserve their own user copy instead of
  * being surfaced raw. Everything else passes through verbatim — most of
  * what the engine reports is already a human sentence (a connect failure's
  * reason, "authentication failed"), and swallowing an unrecognized one
  * behind a generic line would lose the only detail there is.
  *
- * `invalid maildir_separator in .account` (windows-support spec C1) is the
- * one that must NOT reach the user raw: `Valea.Mail.Engine` blocks that
- * account inert under the `identity_mismatch` state, whose panel copy
- * offers "Purge local files…" — but nothing is wrong with the mail. One
- * metadata file records the store's flag separator (`:` legacy / `;` on
- * Windows), and it is unreadable; repairing or restoring that file is the
- * whole fix.
+ * `CORRUPT_ACCOUNT_META_ERROR` is the one that must NOT reach the user
+ * raw: the engine blocks that account inert under the `identity_mismatch`
+ * state, which historically meant "wrong mailbox on disk, purge it" — but
+ * nothing is wrong with the mail. One metadata file records the store's
+ * flag separator (`:` legacy / `;` on Windows), and it is unreadable;
+ * repairing or restoring that file is the whole fix.
  *
  * A `Map`, not an object literal: the lookup key is an arbitrary
  * backend-supplied string, and an object would answer `"toString"` or
@@ -638,7 +653,7 @@ export function mailStateLabel(state: string | null | undefined): string {
  */
 const ENGINE_ERROR_COPY = new Map<string, string>([
   [
-    'invalid maildir_separator in .account',
+    CORRUPT_ACCOUNT_META_ERROR,
     "This mailbox folder's .account file is unreadable (bad maildir_separator). Fix or restore that one file — the stored mail itself is intact."
   ]
 ]);
@@ -911,6 +926,64 @@ export function mailMaintenanceErrorMessage(code: string): string {
     default:
       return 'The action failed. Check the account state and try again.';
   }
+}
+
+// -- SetupPanel: recovery rows (spec E §safety invariants + windows C1) -----
+
+/** A fail-closed account state that replaces the row's normal affordances with copy + its own CTAs. */
+export type MailRecovery = {
+  kind: 'corrupt_account_meta' | 'identity_mismatch' | 'mailbox_replaced';
+  message: string;
+  /** The recovery buttons to offer, in render order — deliberately EMPTY for a corrupt `.account`. */
+  actions: Array<'readopt' | 'purge'>;
+};
+
+/**
+ * What `SetupPanel` should render for an account in a blocked state, or
+ * `null` for every state that keeps its normal row.
+ *
+ * The `identity_mismatch` state carries two different realities, which is
+ * why this is a function and not a `{#if status.state === …}` in the
+ * component: the engine uses it both for "the folder on disk belongs to a
+ * different mailbox" (recover by purging the local mirror) AND for "this
+ * store's `.account` is unreadable" (windows-support spec C1 — recover by
+ * repairing ONE file). Offering "Purge local files…" for the second is
+ * offering to delete the mirror over a metadata typo, so that arm gets no
+ * destructive action at all; the copy names the file and mirrors
+ * `syncErrorText`'s wording. Both surfaces key off
+ * `CORRUPT_ACCOUNT_META_ERROR` so they cannot drift.
+ */
+export function accountRecovery(
+  status: Pick<MailAccountStatus, 'account' | 'state' | 'lastError'>
+): MailRecovery | null {
+  if (status.state === 'mailbox_replaced') {
+    return {
+      kind: 'mailbox_replaced',
+      message:
+        "The mailbox on the server looks replaced (all folders reset). Syncing is stopped until you decide: re-adopt the server's current state, or purge the local mirror and start over.",
+      actions: ['readopt', 'purge']
+    };
+  }
+
+  if (status.state !== 'identity_mismatch') return null;
+
+  if (isCorruptAccountMeta(status.lastError)) {
+    return {
+      kind: 'corrupt_account_meta',
+      message:
+        `This account is paused because its metadata file (sources/mail/${status.account}/.account) ` +
+        `is unreadable — its maildir_separator value is not one this store can use. Repair or restore ` +
+        `that one file to resume; the mail already mirrored here and your mailbox on the server are both intact.`,
+      actions: []
+    };
+  }
+
+  return {
+    kind: 'identity_mismatch',
+    message:
+      'The folder on disk belongs to a different account identity. Purge its local files to start over. Your mailbox on the server is untouched.',
+    actions: ['purge']
+  };
 }
 
 // -- MailDoctorPanel: check-row shaping (backend: `Valea.Mail.Doctor.run/1`,
