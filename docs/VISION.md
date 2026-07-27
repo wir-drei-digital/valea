@@ -163,8 +163,10 @@ above — not a Valea-scheduled "workflow run".)*
 
 ## MVP non-goals
 
-No full email client replacement (rules engines, full search), no email
-sending (drafts + user-pushed Drafts-folder handoff only), no CalDAV writes, no browser automation, no
+No full email client replacement (rules engines, full search), no
+unattended email sending (every transmission is a human click on a
+reviewed draft — no agent send path, no send queues, no scheduling, no
+automated retry), no CalDAV writes, no browser automation, no
 bookkeeping integration, no visual workflow builder, no multi-agent
 orchestration UI, no cloud sync, no mobile app, no team collaboration, no
 plugin marketplace, no external booking links.
@@ -201,11 +203,17 @@ clearly marked in their design specs until implemented.
    model, and audit log it shipped remain live.)*
 4. **Mail** — per-account maildir mirrors under `sources/mail/<slug>/` with
    derived markdown views, two-way sync through declared, verified ops
-   (moves + flags; never expunge), and agent-proposed drafts the USER
-   pushes to the mailbox's Drafts folder — no SMTP anywhere. The agent's
-   surface stays files: views to read, `ops/pending/` + `drafts/` to
-   write. *(shipped; specs: 2026-07-11-mail-design.md, superseded by
-   2026-07-17-mail-maildir-design.md)*
+   (moves + flags; never expunge), and agent-proposed drafts that leave the
+   machine only when the user says so. Valea transmits mail only on an
+   explicit human action, bound by hash to the exact draft — and the exact
+   sending identity and thread — the user reviewed; the agent has no path
+   to send, and nothing ever retransmits on its own. Two outbound moves,
+   both the user's: push a draft into the mailbox's own Drafts folder, or
+   send it over SMTP from a confirm dialog. The agent's surface stays
+   files: views to read, `ops/pending/` + `drafts/` to write. *(shipped;
+   specs: 2026-07-11-mail-design.md, superseded by
+   2026-07-17-mail-maildir-design.md; the outbound half rewritten by
+   2026-07-26-mail-smtp-send-design.md)*
 5. **Calendar** — a sync-to-files engine that mirrors the user's external
    calendars into `sources/calendar/` via polled ICS subscription feeds
    (deliberately no CalDAV/OAuth — the secret-address feed is the one
@@ -294,6 +302,7 @@ The MVP is complete when the core acceptance scenario runs end-to-end: open
 app → pick a real client inquiry in Mail → start a session about that
 message (or with an inquiry playbook document as its context document and
 the message as its input grant) → review the prepared reply via the
-ask-gate diff → approve → the reply lands as a draft file the user pushes
-to the mailbox's own Drafts folder, with the full chain in the audit log —
-and every step of it is plain files on disk the user can open.
+ask-gate diff → approve → the reply lands as a draft file the user reads
+and then either sends with one confirmed click or pushes into the
+mailbox's own Drafts folder, with the full chain in the audit log — and
+every step of it is plain files on disk the user can open.

@@ -157,8 +157,10 @@
         return;
       }
       // The session is opted into the whole account's mail mount (T14
-      // `includeMounts`) on top of the exact-file input grant — the agent
-      // can read the mailbox views and write ops/drafts, never send.
+      // `includeMounts`) on top of the exact-file input grant — the agent can
+      // read the mailbox views and write ops/drafts. It cannot send: a draft
+      // it writes goes out only when the user pushes or sends it from the
+      // Drafts panel (spec G §Invariant rewrite).
       const mailMountKey = `mail-${account}`;
       const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {
         input: { kind: 'workspace', path: message.path },

@@ -490,8 +490,11 @@ export class MailStore {
   }
 
   /**
-   * Push-to-Drafts (the ONE outbound action — spec E: no SMTP): fetches the
-   * draft's exact bytes, hashes them (sha256 hex, the backend's
+   * Push-to-Drafts — one of the two outbound actions, both user-only
+   * (`sendDraft` is the other; spec G §Invariant rewrite: Valea transmits
+   * mail only on an explicit human action, hash-bound to the exact draft the
+   * human reviewed, and agents have no path to either). Fetches the draft's
+   * exact bytes, hashes them (sha256 hex, the backend's
    * `DraftFile.content_hash/1` encoding), and pushes bound to that revision.
    * Resolves the resulting display state, or `{error}` when any step failed;
    * always refetches the drafts list so badges reflect the ledger.

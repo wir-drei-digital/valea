@@ -162,7 +162,9 @@
   // "Clean up inbox" (mail design spec E §UI): a session on the primary ICM,
   // opted into the selected account's mail mount, opened with the pinned
   // cleanup prompt — the agent reviews views/ and declares ops files; it
-  // cannot touch the mailbox directly and cannot send anything.
+  // cannot touch the mailbox directly, and it has no path to transmission:
+  // sending is a human action on the control-token-gated RPC surface no
+  // agent session can reach (spec G §Invariant rewrite).
   let cleanupStarting = $state(false);
   let cleanupError = $state<string | null>(null);
 

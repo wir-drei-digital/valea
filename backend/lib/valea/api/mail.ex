@@ -540,11 +540,19 @@ defmodule Valea.Api.Mail do
       argument :content_hash, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
-      # The ONE user-initiated outbound action (spec §Drafting & push; THERE
-      # IS NO SMTP). Serialized through the account's Engine
-      # (`Engine.push_draft/3`): atomic claim + hash-bound snapshot + compose +
-      # fsynced spool, then the idempotent APPEND. Returns the resulting draft
-      # display state (`pushing`/`pushed`/`needs_review`/`rejected`).
+      # One of the TWO user-initiated outbound actions (spec E §Drafting &
+      # push; `send_draft` below is the other). The invariant both serve:
+      # Valea transmits mail only on an explicit human action, hash-bound to
+      # the exact draft the human reviewed — agents have no transport to this
+      # RPC surface at all, and nothing here retransmits
+      # (docs/superpowers/specs/2026-07-26-mail-smtp-send-design.md,
+      # §Invariant rewrite + §Safety invariants).
+      #
+      # Serialized through the account's Engine (`Engine.push_draft/3`):
+      # atomic claim + hash-bound snapshot + compose + fsynced spool, then the
+      # idempotent APPEND into the account's own Drafts folder. Returns the
+      # resulting draft display state
+      # (`pushing`/`pushed`/`needs_review`/`rejected`).
       run fn input, _ctx ->
         %{
           account: slug,

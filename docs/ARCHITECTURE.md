@@ -462,17 +462,28 @@ onboarding flow rather than upgraded in place, and `Valea.Agents.list_sessions/0
 silently skips any transcript whose line 1 is not the current `session/v1`
 metadata record rather than attempting to read it.
 
-## Mail (Spec E — mail as maildir)
+## Mail (Spec E — mail as maildir; Spec G — human-only send)
 
 A per-account, two-way mail subsystem: Valea mirrors each configured IMAP
 account into a plain-file maildir under `sources/mail/<slug>/`, derives
 readable markdown views from it, and executes ONLY declared, verified
 operations back against the server. The agent's integration surface stays
 files: it reads views, writes declared-op YAML into `ops/pending/`, and
-proposes draft files — it can never touch the mailbox directly and can
-never send (there is no SMTP anywhere; the one outbound path is the USER's
-Push-to-Drafts APPEND). Full spec:
-`docs/superpowers/specs/2026-07-17-mail-maildir-design.md`.
+proposes draft files — it can never touch the mailbox directly.
+
+**The outbound invariant: Valea transmits mail only on an explicit human
+action, hash-bound to the exact draft — and the exact sending identity and
+threading — the human reviewed. Agents have no path to send. No code path
+retransmits.** The invariant is human-only transmission, not the absence of
+a transport. Two outbound affordances exist, both user-only and both bound
+to the reviewed revision: **Push-to-Drafts** (an idempotent APPEND into the
+account's own Drafts folder — the low-trust fallback, and the only option
+for an account with no `smtp:` block) and **Send** (SMTP, behind a confirm
+modal — see [Send](#send-spec-g) below). Full specs:
+`docs/superpowers/specs/2026-07-17-mail-maildir-design.md` (sync, ops,
+views, push) and
+`docs/superpowers/specs/2026-07-26-mail-smtp-send-design.md` (send, draft
+iteration loop, multi-account hardening).
 
 ### `sources/mail/<slug>/` layout
 
@@ -494,12 +505,25 @@ sources/mail/<slug>/
   quarantine/               # damaged/foreign files moved aside, never deleted
 ```
 
-`config/mail.yaml` (v4) is multi-account: a map of slug
+`config/mail.yaml` (v5) is multi-account: a map of slug
 (`^[a-z0-9][a-z0-9-]{0,31}$`) → `{provider, imap.{host,port,username},
+smtp.{host,port,security,username,from,from_name}?,
 folders.{drafts,sent,archive,trash}, sync.{window_days,interval_minutes,
 max_message_bytes,exclude_folders}}`. Provider `gmail` swaps in the
 `[Gmail]/...` special-folder names and the X-GM-MSGID move postconditions.
 No credential ever lives in this file.
+
+The `smtp:` block is **optional — absent means the account is push-only**
+and no Send affordance renders for it. `security` is `starttls` (587) or
+`tls` (465), defaulted from the port and validated against the port
+convention; any other port must state it explicitly. There is no plaintext
+mode and no `none` value — TLS is mandatory and verified for SMTP exactly
+as for IMAP. `from` is validated as a single addr-spec and defaults to
+`smtp.username`; with the optional RFC-2047-encoded `from_name` it is the
+**config-owned sending identity a draft can never override**. The `safety:`
+block reads `never_expunge: true, outbound: human_send_and_push` (a v4
+file loads unchanged and normalizes the old `push_drafts_only` value on
+the next save).
 
 ### Identity model
 
@@ -522,7 +546,14 @@ always decides.
   `.readopt` marker consumed by the next successful pass). ONE
   background-work slot per Engine: sync passes AND ops batches are strictly
   serialized (`busy?/1`), ops run in monitored Tasks with deferred replies
-  — `status/1` always answers instantly.
+  — `status/1` always answers instantly. Spec G adds the send-side surface
+  (`draft_review/2`, `send_draft/4`, `resolve_send_review/3`,
+  `retry_sent_copy/2`) behind a deliberately weaker gate than sync's
+  (`validate_active/1` + SMTP config/credential — an unreachable mailbox
+  must not block a send), a second RAM-only `smtp_credential` closure
+  (`set_credential/3` takes `kind: :imap | :smtp`; env fallback
+  `VALEA_MAIL_SMTP_PASSWORD_<SLUG>`), and a network-free send
+  classification at activation (see §Send).
 - **`Valea.Mail.SyncPass`** — push-then-pull. Push: recover + execute
   claimed ops. Pull: read-only Phase-A scan, replacement detection, then
   per-folder (with re-SELECT + divergence guard): UID-watermark discovery,
@@ -546,45 +577,87 @@ always decides.
   `\Deleted` only via `uid_mark_deleted`); UNCHANGEDSINCE-guarded atomic
   flag replace with recorded baselines; Gmail X-GM-MSGID postconditions;
   confirm-first, non-destructive reconciliation for uncertain outcomes
-  (`needs_review` parks, never guesses). Also owns the push path: atomic
-  append claim (partial unique index → `duplicate_active`), hash-bound
-  snapshot (CAS against the exact bytes the user reviewed), idempotent
-  search-first APPEND (a lost response never double-appends).
+  (`needs_review` parks, never guesses). Also owns BOTH outbound paths —
+  push (atomic append claim under the partial unique index →
+  `duplicate_active`, hash-bound snapshot CAS against the exact bytes the
+  user reviewed, idempotent search-first APPEND so a lost response never
+  double-appends) and send (`review_snapshot/2`, `review_fingerprint/2`,
+  `prepare_send/4`, `execute_send/2`, `resolve_send_review/3`,
+  `classify_sends_local/1`, `abandon_send/2`, `retry_sent_copy/2` —
+  see §Send).
 - **`Valea.Mail.DraftMime`** (resurrected from git history) — draft file →
-  plain-text MIME for the push APPEND; header-injection-hardened (composes
-  from validated structs, RFC 2047, deterministic
-  `<valea.push.<hash>@valea.invalid>` Message-ID).
+  plain-text MIME; header-injection-hardened (composes from validated
+  structs, RFC 2047, `From` taken from settings only). Deterministic,
+  domain-separated Message-IDs: `<valea.push.<hash>@valea.invalid>` for the
+  push APPEND, `send_message_id/3` over `DraftFile.canonical_send_bytes/1`
+  (the snapshot minus the engine-owned `status:` line, so engine stamps
+  cannot change a draft's send identity between attempts) for a send. A
+  send composes **two byte-variants from one buffer**: the *wire* message
+  (no `Bcc` header — Bcc rides the envelope only) and the *record* message
+  (with `Bcc`, for the user's own Sent copy).
 - **`Valea.Mail.Transport`** / **`Valea.Mail.ImapClient`** — TLS-mandatory
   IMAP; `BODY.PEEK` everywhere; `examine/2` read-only selects; UID-only
-  ops; COPYUID/APPENDUID parsing; optional CONDSTORE/QRESYNC; no send
-  callback exists on the behaviour.
+  ops; COPYUID/APPENDUID parsing; optional CONDSTORE/QRESYNC; **no send
+  callback exists on the behaviour** — a structural fact Spec G leaves
+  untouched by putting SMTP in a separate behaviour.
+- **`Valea.Mail.SmtpTransport`** / **`Valea.Mail.SmtpClient`** — the send
+  boundary: a deliberately tiny behaviour whose one callback returns the
+  tri-state `{:ok, :accepted} | {:error, reason} | {:unknown, reason}`, and
+  a hand-written `:ssl`/`:gen_tcp` client implementing it (implicit TLS on
+  465, STARTTLS upgrade on 587; `verify_peer` + CA store + SNI + hostname
+  verification, the same construction as `ImapClient`; AUTH PLAIN/LOGIN
+  only over the established TLS layer, mechanisms read only from the
+  post-upgrade `EHLO`). One shot per call: no retry, no reconnect, no
+  second `DATA`. All-or-nothing recipients — one `RCPT` rejection aborts
+  with `RSET`/`QUIT` before `DATA`.
 - **`Valea.Mail.Views`** / **`Valea.Mail.Index`** — derived markdown views
   (frontmatter incl. `account`/`folders`/`flags`, sidecar fingerprints,
   parse-checked) and the rebuildable SQLite index (`Index.rebuild/2`
   self-heals from raw maildir files on every activation).
 - **`Valea.Mail.Store`** — Ash domain over hand-migrated
   (`migrate? false`) cache/ledger tables: `mail_sync_state`,
-  `mail_uid_map`, `mail_messages`, `mail_pending_ops`. Everything but
-  the ledger is rebuildable from files; the ledger is the durable ops
-  record.
+  `mail_uid_map`, `mail_messages`, `mail_pending_ops` (whose `kind` admits
+  `send`, with the wire/record hashes + envelope and the widened
+  `(account, origin)` claim index). Everything but the ledger is
+  rebuildable from files; the ledger is the durable ops record.
+  `ops_by_origin/2` is ordered newest-first — the display projection
+  depends on it. N concurrent Engines write this database, so the
+  workspace Repo opens with `journal_mode: WAL` (result verified; a
+  filesystem that refuses WAL degrades to a logged notice, never a crash)
+  and `busy_timeout: 5000`, and each Engine jitters its poll schedule by a
+  per-timer uniform delay in `[0, min(60s, interval/4)]` so accounts stop
+  ticking in lockstep after `{:workspace_opened}` (test seam:
+  `:mail_poll_jitter`).
 - **`Valea.Mail.AgentsFile`** — materializes the engine-owned
   `AGENTS.md` briefing (from `priv/mail_template/`, `{{account}}`
   substituted) + relative `CLAUDE.md` symlink at the account root on
   every activation; idempotent, tmp+rename (never writes through a
   planted symlink), file-fallback `@AGENTS.md` on no-symlink platforms.
 - **`Valea.Mail.Settings`** / **`Valea.Mail.Account`** /
-  **`Valea.Mail.Doctor`** — v4 multi-account config, `.account`/`.readopt`
-  identity files, per-account preflight (see Doctor below).
-- **`Valea.Api.Mail`** — the account-scoped RPC surface (below).
+  **`Valea.Mail.Doctor`** — v5 multi-account config (incl. the optional
+  `smtp` block, its port/security validation, and `smtp_fingerprint/1` —
+  the frozen input string the review fingerprint hashes),
+  `.account`/`.readopt` identity files, per-account preflight (see Doctor
+  below).
+- **`Valea.Api.Mail`** — the account-scoped RPC surface (below), including
+  the kind-aware `draft_display` projection.
 - **Frontend**: `stores/mail.svelte.ts` (multi-account `MailStore`,
-  `resupplyCredentials`, draft push with client-side sha256), components
-  under `components/mail/` (`AccountSwitcher`, `FolderList`, `MessageList`,
-  `MessageView` with archive/flag ops, `DraftsPanel`, `SetupPanel` with
-  typed-confirm purge/re-adopt/discard, `MailDoctorPanel`,
-  `SyncStatusLine`), route `routes/mail/+page.svelte`.
+  `resupplyCredentials`, draft push with client-side sha256, plus
+  `draftReview`/`sendDraft`/`resolveSendReview`/`retrySentCopy` and the
+  `mail_draft` push handler that refetches the drafts list live),
+  components under `components/mail/` (`AccountSwitcher`, `FolderList`,
+  `MessageList`, `MessageView` with archive/flag ops, `DraftsPanel` with
+  Push/Send/Request-changes, `SendConfirmModal` (renders exclusively from
+  the review snapshot), `SetupPanel` with typed-confirm
+  purge/re-adopt/discard and the SMTP setup + "same as IMAP" credential
+  shortcut, `MailDoctorPanel`, `SyncStatusLine`), route
+  `routes/mail/+page.svelte` (account-qualified `?account=&message=`
+  selection).
 - **Desktop**: `desktop/src-tauri/src/keychain.rs` — unchanged Tauri
-  commands; entries keyed `<workspace_id>` / `<slug>:imap` (mail) and
-  `<workspace_id>` / `<slug>:ics` (calendar feed URLs — Spec F).
+  commands; entries keyed `<workspace_id>` / `<slug>:imap` and
+  `<workspace_id>` / `<slug>:smtp` (mail — separate entries, so SMTP
+  rotation stays independent of IMAP) and `<workspace_id>` / `<slug>:ics`
+  (calendar feed URLs — Spec F).
 
 ### Mounts + policy (agent access)
 
@@ -611,6 +684,140 @@ iterates configured accounts with `credential == "missing"` after
 restarts. Dev fallback: `VALEA_MAIL_PASSWORD_<SLUG>` read once at
 activation.
 
+SMTP adds a **second, independent credential per account** on the same
+model: keychain entry `"<workspace_id>" / "<slug>:smtp"`, its own RAM-only
+closure, dev fallback `VALEA_MAIL_SMTP_PASSWORD_<SLUG>`. The setup UI's
+"same as IMAP" shortcut writes a *copy* into the SMTP entry, never an
+alias, so rotating one never silently moves the other. The two are
+isolated in both directions: a missing or rejected SMTP password disables
+only sending for that account (`smtp_credential: "missing"`,
+`no_smtp_credential`) and never pauses the IMAP sync; an unreachable
+mailbox never blocks a send.
+
+### Send (Spec G)
+
+A send is a ledger op kind — `kind: send` in `mail_pending_ops`, executed
+by the same ops executor and serialized through the account's Engine,
+exactly like a push. Its durable states are
+`claimed → pending → executing → transmitted → complete`, with `rejected`
+(provably unsent) and `send_review` (unknowable, parked for the human) as
+the other two outcomes. The `(account, origin)` partial-unique claim index
+is widened to span `append` and `send` together, so one draft can never be
+pushed and sent concurrently, or sent twice from two tabs.
+
+**Settings pinning is an invariant, not an implementation choice.** The
+review-fingerprint comparison, the atomic claim, the snapshot, and the
+wire/record composition all run synchronously inside ONE
+`Engine.send_draft/4` call, against ONE captured `state.settings`. A
+settings edit hot-reloads by stopping and restarting the Engine, so either
+the new Engine refuses the stale fingerprint, or the old Engine completes
+verify-and-compose entirely under the settings the human reviewed. Only
+the transmit and the Sent copy ride the serialized work slot. An
+implementation that checked the fingerprint in the RPC layer and composed
+in another process would violate the design, not merely its style.
+
+**The review fingerprint** (`OpsExecutor.review_fingerprint/2`) is an
+opaque sha256 over the account's normalized SMTP send config
+(`Settings.fingerprint_input/1`: from, from_name, host, port, security,
+username) joined to the review's *resolved threading* — the exact
+`In-Reply-To`/`References` values, or the literal `none`. The confirm
+modal renders exclusively from `get_mail_draft_review`'s one-buffer
+snapshot and binds BOTH that buffer's `content_hash` and this fingerprint
+into `send_draft`. The draft hash alone cannot cover the sending identity
+or the thread the message would join: a settings hot-reload carries no
+generation bump (a second tab editing `smtp.from` would otherwise transmit
+under an identity nobody reviewed), and the referenced message can be
+deleted server-side between review and click, silently flipping a threaded
+send to unthreaded. Either drift is `re_review_required`, refused before
+any claim, spool write, or composition; an edit to the draft in the same
+window is the same refusal by content hash.
+
+**Snapshot and identity.** Push's containment rules verbatim — validated
+basename, `resolve_real` under the account's `drafts/` root, no-follow
+open of a regular single-link file, read ONCE into a buffer, hash
+verified against that buffer, parsed and composed from it. The op's
+Message-ID is `DraftMime.send_message_id/3` over
+`DraftFile.canonical_send_bytes/1` (the snapshot with the engine-owned
+`status:` line elided — so a failed attempt's status stamp cannot change
+the draft's send identity, which is what makes a re-send after a wrong
+`not_sent` carry the SAME Message-ID for recipient-side dedupe). It is
+domain-separated from the push Message-ID, so a pushed copy and a sent
+message of identical content never collide. Composition produces two
+byte-variants from the one buffer — *wire* (no `Bcc` header; Bcc rides the
+envelope only) and *record* (with `Bcc`, for the user's own Sent copy) —
+both hashed, both spooled with an fsynced manifest before the op leaves
+`claimed`.
+
+**Transmit — the tri-state boundary is server knowledge, not protocol
+phase.** The executor re-verifies the spooled wire payload's hash, then
+calls `SmtpTransport.send/5` **once**; the op has durably left `pending`
+before the call, so no recovery, reconciliation, resolution, or retry path
+can ever reach the transport (the tests assert the call COUNT, not just
+the outcome). A received, parseable final reply always decides: `250` →
+`{:ok, :accepted}`; any received final non-2xx after the terminating dot →
+`{:error, _}`, a definitive refusal and therefore provably unsent. The
+`354` reply is the line — every failure before it is `:error`, and after
+it **every** failure without a parseable final reply (socket drop,
+timeout, TLS teardown mid-payload or mid-terminator) is `{:unknown, _}`,
+because TCP may already have flushed the terminating dot. `{:error, _}`
+rejects the op with a surfaced reason and reverts the draft to `draft` —
+retrying is a fresh human click on the reviewed draft, never an automatic
+one. `{:unknown, _}` parks and is **never retried**.
+
+**Sent copy.** After a proven accept the op goes `transmitted` (durable),
+then the generic profile APPENDs the *record* bytes to `folders.sent`
+through the existing idempotent search-first append machinery; the gmail
+profile skips it (Google files Sent Mail itself — appending would
+duplicate). A Sent-copy failure cannot un-send the mail: the op completes
+carrying a `sent_copy_failed` notice and a `retry_sent_copy` affordance
+that re-runs only the idempotent append. With no IMAP connection yet the
+op simply waits in `transmitted` and the next connected pass finishes it.
+
+**`send_review` and human resolution.** A parked op keeps its spool and
+renders an explanation. On the gmail profile, reconciliation searches Sent
+Mail (then the other known folders) for the op's Message-ID over a short
+bounded window — found is proof, and the op continues as accepted; empty
+is a strong signal but not proof, so the op stays parked with a
+"checked and found empty" note rather than being auto-rejected. On the
+generic profile nothing can prove either way. Either way the human decides
+via `resolve_send_review`: `sent` runs the idempotent Sent copy and
+completes; `not_sent` rejects the op and reverts the draft for another
+explicit click. The panel says exactly what to check first (their own Sent
+folder, then the recipient). The accepted worst case of a wrong `not_sent`
+is a duplicate delivery sharing one Message-ID, which recipient clients
+thread and dedupe.
+
+**Crash recovery runs without a network.** `OpsExecutor.recover/1` only
+executes inside an IMAP-connected sync pass, so Spec G adds
+`classify_sends_local/1` at **Engine activation**, resolving every
+in-flight send from the ledger and manifests alone: `claimed` (no spool
+payload can exist yet) → `rejected`; `pending` (the transmit transitions
+to `executing` durably first, so it provably never started) → `rejected`;
+`executing` (at-or-past DATA with no recorded outcome) → `send_review`.
+`transmitted` and `send_review` are left alone — their follow-ups (the
+Sent-copy resume, the gmail reconciliation) need a connection and defer to
+the next connected pass, rendering "awaiting mailbox connection" until
+then. The IMAP-connected half may only resume the append or reconcile;
+there is no path from it to the SMTP transport at all.
+`abandon_send/2` terminates a `claimed`/`pending` send the Engine knows
+will never run (the account stopped being sendable while it queued) so it
+cannot hold the draft's claim; it is gated on state, not on the caller's
+say-so.
+
+**Display projection (kind-aware, ordered).** `draft_display` derives from
+the LEDGER, never from frontmatter, over `Store.ops_by_origin`
+newest-first: (1) the active op governs — `pushing | sending |
+send_review | needs_review`; (2) else the newest terminal SEND governs —
+`sent` while the file still hashes to the revision that was sent, `draft`
++ an `earlier_revision_sent` note once edited, `draft` + the surfaced
+error when rejected; (3) else `draft`, with a `status_forged` notice when
+the frontmatter `status:` is uncorroborated by history. A completed push
+is NOT a state but a separate `pushed` **badge** — a pushed draft still
+reads `draft` and still offers both Send and Push. Draft status vocabulary
+is `draft | pushing | pushed | sending | send_review | sent`, and an
+agent-written `status: sent` with no corroborating ledger op still renders
+`draft`.
+
 ### RPC surface (`Valea.Api.Mail`)
 
 All account-scoped; every mutating action takes `generation`
@@ -624,8 +831,31 @@ entries), `setup_mail_account`, `remove_mail_account`,
 `get_mail_message` (msg_id grammar + `Paths.resolve_real` containment),
 `mail_apply_ops` (the UI's archive/flag actions through the same
 executor), `push_draft_to_mailbox` + `list_mail_drafts` + `get_mail_draft`
-(the push flow). Channel pushes (`workspace:events`) carry the account
-slug: `mail_status`, `mail_sync`, `mail_message`.
+(the push flow). Spec G adds the send flow —
+`get_mail_draft_review` (the atomic review snapshot the confirm modal
+renders from), `send_draft(account, draft_name, content_hash,
+review_fingerprint, generation)`, `resolve_send_review(account, op_id,
+resolution, generation)`, `retry_sent_copy(account, op_id, generation)` —
+and `revise_mail_draft(account, draft_name, feedback, mount_key,
+generation)`, the Request-changes entry point (routes the feedback to a
+running session whose `input` locator resolves to this draft file, else
+creates one on the given primary ICM with the mail mount, the draft as
+`input`, and a fixed revise prompt as `create_session`'s now-exposed
+`initial_prompt`; fails closed `no_icm_available`). `set_mail_credential`
+takes `kind: imap | smtp`; `setup_mail_account` takes the optional `smtp`
+block. Channel pushes (`workspace:events`) carry the account slug:
+`mail_status`, `mail_sync`, `mail_message`, and `mail_draft` (from the ICM
+watcher's debounced `{:mail_draft_changed, slug}` on the `"mail"` PubSub
+topic — an agent's draft edit refreshes the Drafts panel with no
+navigation).
+
+**The RPC surface is the trust boundary.** It is control-token-gated, and
+agent sessions speak ACP only — their launch surface carries no RPC
+endpoint and no token (test-asserted). That is the whole enforcement of
+the human-only send invariant: `send_draft` and `resolve_send_review` are
+ordinary actions on a surface agents structurally cannot reach, and the
+declared-ops file vocabulary (`move`, `flag`) cannot express send, append,
+or delete.
 
 ### Doctor checks (`Valea.Mail.Doctor.run/1`)
 
@@ -633,8 +863,15 @@ Sequential, gated: `config_present` → `credential_present` →
 `maildir_writable` → `tcp_reachable` → one connect fanning out to
 `tls_ok` + `login_ok` + `folders` (the account's four CONFIGURED special
 folders exist) + `move_capability`. `create_folders/1` creates the missing
-configured folders (never `[Gmail]/*` system names). Never raises; every
-check carries a copyable remedy; credentials scrubbed from error text.
+configured folders (never `[Gmail]/*` system names). A **sending** account
+appends three more, `smtp_tcp` → `smtp_tls` → `smtp_auth`, derived from
+ONE connect (EHLO, STARTTLS where configured, AUTH, QUIT — never a `MAIL
+FROM`, nothing that could enqueue anything anywhere); a push-only account
+gets no SMTP checks at all, and a missing SMTP credential fails
+`smtp_auth` with the resupply remedy rather than opening a session. Run on
+demand only, never on a timer (providers rate-limit AUTH). Never raises;
+every check carries a copyable remedy; credentials scrubbed from error
+text.
 
 ### Safety invariants
 
@@ -646,10 +883,32 @@ check carries a copyable remedy; credentials scrubbed from error text.
 - **Never expunge as policy** — the agent vocabulary is moves + flags; the
   only deletion-shaped server op is the ladder's targeted expunge of a
   copy-confirmed source.
-- **No SMTP.** The transport has no send callback; the agent can only
-  write draft FILES; `push_draft_to_mailbox` (user-only, hash-bound,
-  idempotent) APPENDs to the account's Drafts folder — the user sends from
-  their own mail client.
+- **Human-only transmission.** Valea transmits mail only on an explicit
+  human action. Both outbound paths (`push_draft_to_mailbox`, `send_draft`)
+  live on the control-token-gated RPC surface that agent sessions have no
+  transport to; the declared-ops vocabulary cannot express send, append, or
+  delete; the agent can only write draft FILES. Agent-triggered send is a
+  permanent invariant, not a deferral.
+- **What the human reviewed is what gets sent.** Snapshot once, hash the
+  buffer, compose from that buffer, re-verify the wire payload's hash
+  immediately before the one transmit — and bind the sending identity and
+  the resolved threading too, via the review fingerprint (settings
+  hot-reload has no generation bump, so the fingerprint is the only guard).
+  Fingerprint check, claim, snapshot, and composition share one Engine call
+  and one captured settings value.
+- **No automated retransmission, structurally.** `SmtpTransport.send` is
+  called at most once per op, after the op has durably left `pending`.
+  Every recovery path either proves the outcome, rejects it as provably
+  unsent, or parks it in `send_review` for the human — no recovery,
+  reconciliation, or resolution routine can reach the transport.
+- **All-or-nothing recipients; `From` is config-owned; Bcc never leaves
+  the machine on the wire.** One `RCPT` rejection aborts before `DATA`;
+  frontmatter can influence neither the envelope sender nor the `From`
+  header; the wire variant carries no `Bcc` header — the record variant
+  with it exists only for the user's own Sent folder.
+- **The IMAP transport stays send-free.** SMTP is a separate behaviour, so
+  "`Valea.Mail.Transport` has no send callback" remains a checkable
+  structural fact.
 - **Fail-closed recovery** — identity mismatch refuses activation;
   mailbox replacement blocks until an explicit re-adopt; vanished folders
   hold their local copy pending a user decision (discard is typed-confirm);
@@ -1524,8 +1783,9 @@ App-version truth for the updater: `desktop/src-tauri/tauri.conf.json`.
 - [2026-07-12-knowledge-depth-design.md](superpowers/specs/2026-07-12-knowledge-depth-design.md) — Knowledge & editor depth (Spec C): scan-backed search with an FTS5 upgrade seam, AST-confirmed backlinks, byte-surgical rename link-rewrite, page templates, contained image upload/serve endpoints, the `[[`/`@` page-link picker, the Cmd+K search palette + MRU + dangling-link handling, and the backlinks panel + page-aware impact dialogs + template select UI. Its workflow-frontmatter reference union (`Valea.ICM.References`) is deleted by Spec D §A; page-link rename integrity (`Valea.ICM.LinkRewrite`) is unaffected. Template discovery is made recursive by Spec D §D2.
 - [2026-07-13-icm-project-workspaces-design.md](superpowers/specs/2026-07-13-icm-project-workspaces-design.md) — **Shipped** (see [ICM project workspaces](#icm-project-workspaces) above): private, hidden, id-based Valea workspace profiles; user-owned ICM projects mounted only by reference; one primary ICM and `cwd` per session; explicit cross-ICM context; project/session navigation; simplified onboarding. Supersedes Plan A/A2 outright — their implementation has been fully removed (Phase 11 clean-cut). Substrate for Spec D below; not reopened by it.
 - [2026-07-16-agent-native-icms-design.md](superpowers/specs/2026-07-16-agent-native-icms-design.md) — **Shipped** (Spec D — see the banner at the top of this file and every section it points to). Deletes the workflow subsystem outright; replaces "run" with the session-with-context primitive (`context_doc`/`input`); makes Today a file (`today.json`) the agent maintains; adds adopt-a-folder mounting, a depth-aware `RiskTier`, an ICM-internal secrets deny tier, and the 3-layer prose starter seed; re-scopes Mail's outbound path to manual until a future mail redesign.
-- [2026-07-17-mail-maildir-design.md](superpowers/specs/2026-07-17-mail-maildir-design.md) — **Shipped** (Spec E — see [Mail](#mail-spec-e--mail-as-maildir) above): multi-account windowed maildir mirrors, declared-ops two-way sync (moves + flags only, durable ledger, execution-time verification, never expunge as policy), derived views + SQLite index, per-account mail mounts with deny-not-ask, agent drafts + user-only Push-to-Drafts (no SMTP), Gmail provider profile, fail-closed identity/replacement recovery. Supersedes the 2026-07-11 mail spec's sync/read path.
+- [2026-07-17-mail-maildir-design.md](superpowers/specs/2026-07-17-mail-maildir-design.md) — **Shipped** (Spec E — see [Mail](#mail-spec-e--mail-as-maildir-spec-g--human-only-send) above): multi-account windowed maildir mirrors, declared-ops two-way sync (moves + flags only, durable ledger, execution-time verification, never expunge as policy), derived views + SQLite index, per-account mail mounts with deny-not-ask, agent drafts + user-only Push-to-Drafts, Gmail provider profile, fail-closed identity/replacement recovery. Supersedes the 2026-07-11 mail spec's sync/read path. **Its "there is no SMTP" outbound invariant is rewritten** by Spec G below — the invariant is human-only transmission, not the absence of a transport; everything else in it stands.
 - [2026-07-19-windows-support-design.md](superpowers/specs/2026-07-19-windows-support-design.md) — **Draft, pending review**: Windows x86_64 as a first-class desktop target — conditional erlexec + `ProcessAdapter` behaviour with a Job-Object `valea-spawn` shim (stdin-close ⇒ tree death), per-store maildir separator (`;` on NTFS, tolerant parser, no data migration), drive-letter/case-insensitive-safe `Valea.Paths`, sidecar Job Object in the shell, NSIS + updater CI lane. Supersedes the "Windows" blocker section of docs/RELEASING.md once implemented.
 - [2026-07-19-release-auto-update-design.md](superpowers/specs/2026-07-19-release-auto-update-design.md) — **Shipped** (see [Release & auto-update](#release--auto-update) above): tag-driven GitHub Actions release matrix (native per-platform Burrito sidecars, draft-release go-live gate, minisign-signed updater artifacts), Tauri v2 auto-update wiring, and the sidebar-bottom update notice with background download + restart-to-update.
 - [2026-07-18-calendar-feeds-design.md](superpowers/specs/2026-07-18-calendar-feeds-design.md) — **Shipped** (Spec F — see [Calendar](#calendar-spec-f--ics-feeds-in-valea-calendar-out) above): ICS subscription-feed mirrors (no CalDAV/OAuth/Graph), the hand-written RFC 5545 parser with honest unsupported-recurrence/timezone handling, the two-store guarded derive protocol, the agent-writable Valea calendar + tokened loopback served feed, one calendar mount with mail's deny-not-ask tier, feed-URL-as-credential keychain posture.
 - [2026-07-26-icm-skills-design.md](superpowers/specs/2026-07-26-icm-skills-design.md) — **Shipped** (see [ICM skills](#icm-skills) above): ICM skills (vendored install, consent, settings) — consent-gated install of repo-vendored agent skills into a user-owned ICM's `.claude/skills/`; pinned snapshots + `catalog.yaml` in `backend/priv/skills/` with no runtime fetching; `.provenance.yaml`-derived per-mount state; staged tmp+rename installs with `resolve_real/2` containment; generation-guarded, control-token-gated list/install/update/uninstall/dismiss; a Skills section in agent settings and a one-time dismissible mount-moment offer card.
+- [2026-07-26-mail-smtp-send-design.md](superpowers/specs/2026-07-26-mail-smtp-send-design.md) — **Shipped** (Spec G — see [Mail](#mail-spec-e--mail-as-maildir-spec-g--human-only-send) and [Send](#send-spec-g) above): human-only SMTP send — Spec E's "there is no SMTP" invariant rewritten to *Valea transmits mail only on an explicit human action, hash-bound to the exact draft, sending identity, and threading the human reviewed; agents have no path to send; no code path retransmits*. Settings v5 (optional per-account `smtp` block, separate SMTP keychain entry, `outbound: human_send_and_push`), a hand-written tri-state `SmtpClient` on `:ssl`/`:gen_tcp` (the `354` boundary; `:unknown` never retried), the `send` ledger op kind with settings-pinned claim/snapshot/compose, wire/record dual compose, `send_review` + human resolution, network-free send classification at Engine activation, the kind-aware ordered display projection, the draft iteration loop (live `mail_draft` events + Request-changes routing into a session via `initial_prompt`), and the multi-account hardening pass (account-qualified selection, WAL + `busy_timeout`, per-account poll jitter). Live-acceptance checklist: `docs/superpowers/acceptance/2026-07-26-mail-smtp-send.md`.

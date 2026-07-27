@@ -1,13 +1,13 @@
 defmodule Valea.Mail.SmtpClient do
   @moduledoc """
   `Valea.Mail.SmtpTransport` over a real socket — hand-written on
-  `:ssl`/`:gen_tcp`, deliberately NOT on `gen_smtp_client` (gen_smtp stays
-  MIME-only here). Two reasons, both structural: that client's
-  `network_failure` taxonomy cannot localize a failure relative to the DATA
-  dot, so the tri-state contract is inexpressible in it; and its `retries`
-  host-loop re-runs the whole session *including DATA* on temporary
-  failures, which is retransmission — the one thing this stack must never
-  do.
+  `:ssl`/`:gen_tcp`, deliberately NOT on gen_smtp's own SMTP client
+  (gen_smtp stays MIME-only here). Two reasons, both structural: that
+  client's `network_failure` taxonomy cannot localize a failure relative to
+  the DATA dot, so the tri-state contract is inexpressible in it; and its
+  `retries` host-loop re-runs the whole session *including DATA* on
+  temporary failures, which is retransmission — the one thing this stack
+  must never do.
 
   Ground rules enforced here:
 

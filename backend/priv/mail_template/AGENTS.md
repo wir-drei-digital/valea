@@ -5,9 +5,10 @@ ICM: there is no knowledge here, only mail and the two places where you
 write. Everything you may do with this account is described below — if a
 capability is not listed here, it does not exist.
 
-You cannot send mail. There is no SMTP path in Valea at all. Nothing you
-write here reaches anyone until the user reviews it and pushes it
-themselves.
+You cannot send mail. Valea can — but only when the user clicks Send or
+Push on a draft they have just read, bound to those exact bytes. No tool,
+file, or op available to you transmits anything, and nothing you write here
+reaches anyone until the user decides that it should.
 
 ## What to read
 
@@ -121,10 +122,12 @@ threading headers from it. At least one `to` address is required.
 Threading, the `From` address, and the `Message-ID` are all composed by
 Valea from vetted values. Do not put headers in the body.
 
-A draft is a proposal. The user reads it, decides, and pushes it into the
-account's own Drafts folder — bound to the exact bytes they reviewed. If
-you revise a draft after a push, it is a new proposal and needs a new
-decision.
+A draft is a proposal. The user reads it and decides: send it, or push it
+into the account's own Drafts folder to finish in their own mail client.
+Either way the decision is bound to the exact bytes they reviewed — so if
+you revise a draft afterwards, it is a new proposal and needs a new
+decision. The user may also send you feedback on a draft; when they do,
+revise that file in place and leave `status:` alone.
 
 ## Working style
 

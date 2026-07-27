@@ -1897,9 +1897,13 @@ export const api = {
       () => httpMailApplyOps(withAuth({ input: { account, ops, generation }, fields: mailApplyOpsFields }))
     ),
 
-  // The ONE user-initiated outbound action (spec E: THERE IS NO SMTP) —
-  // `contentHash` is the sha256 hex of the exact bytes `getMailDraft`
-  // returned, binding the push to the revision the user reviewed.
+  // One of the two user-initiated outbound actions (`sendDraft` is the
+  // other). Valea transmits mail only on an explicit human action, hash-bound
+  // to the exact draft the human reviewed; agents have no path to this RPC
+  // surface, and no code path retransmits — see
+  // docs/superpowers/specs/2026-07-26-mail-smtp-send-design.md §Invariant
+  // rewrite. `contentHash` is the sha256 hex of the exact bytes
+  // `getMailDraft` returned, binding the push to that revision.
   pushDraftToMailbox: (account: string, draftName: string, contentHash: string, generation: number) =>
     runRpc(
       (channel) => callPushDraftToMailboxChannel(channel, { account, draftName, contentHash, generation }),

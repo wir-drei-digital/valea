@@ -1008,6 +1008,6 @@ export function messageSessionPrompt(inputPath: string, mailMountKey: string): s
     `Read the mail message at \`${inputPath}\` — the whole account is also mounted read-only as \`${mailMountKey}\`.`,
     `Summarize who it's from and what they need, then help me decide how to handle it.`,
     `To act on the mailbox (archive, move, flag), write a YAML ops file into the mount's ops/pending/ (vocabulary: move, flag) — the engine validates and executes it; never modify maildir/ directly.`,
-    `If a reply is warranted, write a draft file under the mount's drafts/ — you cannot send anything; only I can push a draft to the mailbox.`
+    `If a reply is warranted, write a draft file under the mount's drafts/ — you cannot send anything; only I can send a draft or push it to the mailbox, after reading it.`
   ].join(' ');
 }
