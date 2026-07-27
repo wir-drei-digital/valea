@@ -130,17 +130,36 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
 
     let (_rx, child) = cmd.spawn()?;
 
+    // Registered FIRST, before anything else that can fail: a spawned sidecar
+    // that is not in `Backend` is one RunEvent::Exit will never kill, i.e. a
+    // BEAM left running after the app window closes.
+    #[cfg(windows)]
+    let pid = child.pid();
+    app.state::<Backend>().0.lock().unwrap().replace(child);
+
     // windows-support spec E1: the Burrito wrapper can't exec() on Windows, so
     // the `child.kill()` in main()'s RunEvent::Exit handler would orphan the
-    // BEAM. Put the sidecar in a kill-on-close Job whose handle lives in managed
-    // state until process exit, where its Drop reaps whatever `kill()` missed.
+    // BEAM. Put the sidecar in a kill-on-close Job and park the handle in
+    // managed state for the app's lifetime. Nothing drops that handle — tao's
+    // event loop diverges through `process::exit`, so `Job::drop` never runs;
+    // the reap happens because process teardown closes the handle table, which
+    // is what fires KILL_ON_JOB_CLOSE. That also covers a crash or a force-quit,
+    // where `kill()` never gets a chance.
     #[cfg(windows)]
-    {
-        let job = winjob::Job::assign_kill_on_close(child.pid())?;
-        app.state::<SidecarJob>().0.lock().unwrap().replace(job);
+    match winjob::Job::assign_kill_on_close(pid) {
+        Ok(job) => {
+            app.state::<SidecarJob>().0.lock().unwrap().replace(job);
+        }
+        Err(e) => {
+            // Without the Job there is no guarantee the tree dies with the app,
+            // so refuse to run half-managed: take the sidecar back out and kill
+            // what we just started before failing setup.
+            if let Some(child) = app.state::<Backend>().0.lock().unwrap().take() {
+                let _ = child.kill();
+            }
+            return Err(e.into());
+        }
     }
-
-    app.state::<Backend>().0.lock().unwrap().replace(child);
 
     // Probe readiness off the main thread, then either build the window (with
     // the token init script) or show a fatal dialog — both on the main thread.

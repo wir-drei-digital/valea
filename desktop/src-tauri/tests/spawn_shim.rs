@@ -10,8 +10,11 @@
 //!   - argv is `valea-spawn <cmd> [args…]`
 //!   - VALEA_SPAWN_STDERR_FILE is required; missing => exit 64
 //!   - stdout is a verbatim passthrough, stderr goes to that file, capped
-//!   - the shim's exit code is the child's; stdin EOF exits 120 and kills the
-//!     whole tree, including processes `start /b` detached out of it
+//!   - the shim's exit code is the child's, except for the shim-level codes:
+//!     64 (usage), 65 (stderr file uncreatable), 66 (target unspawnable),
+//!     120 (our stdin hit EOF) — none of which can accompany a child that ran
+//!   - nothing in the tree outlives the shim, including processes `start /b`
+//!     detached out of it, on BOTH the stdin-EOF path and the normal-exit path
 #![cfg(windows)]
 
 use std::fs;
@@ -29,6 +32,7 @@ const CAP: usize = 1024 * 1024;
 const TRUNCATED: &str = "\n[truncated]\n";
 const EXIT_USAGE: i32 = 64;
 const EXIT_STDERR_FILE: i32 = 65;
+const EXIT_SPAWN_FAILED: i32 = 66;
 const EXIT_STDIN_EOF: i32 = 120;
 
 // -- (a) exit-code passthrough ----------------------------------------------
@@ -266,6 +270,83 @@ fn uncreatable_stderr_file_exits_65_before_spawning() {
         "a child ran despite the stderr file being uncreatable"
     );
     assert!(!err.exists(), "the stderr file was created after all");
+    cleanup(&dir);
+}
+
+// -- (i) unspawnable target --------------------------------------------------
+
+#[test]
+fn unspawnable_target_exits_66() {
+    let dir = scratch("no-such-target");
+    let err = dir.join("stderr.log");
+
+    let (code, out) = run_shim(
+        &dir,
+        Some(&err),
+        &["valea-no-such-executable-9f3a.exe", "x"],
+    );
+
+    assert_eq!(
+        code, EXIT_SPAWN_FAILED,
+        "a target that cannot be spawned needs its own code, not a panic"
+    );
+    assert!(out.is_empty());
+    // The stderr file is opened before the spawn attempt, so it exists — but
+    // nothing ever wrote to it, which is how 66 differs from a child that ran.
+    assert_eq!(
+        fs::metadata(&err).expect("stderr file").len(),
+        0,
+        "nothing should have written to the stderr file"
+    );
+    cleanup(&dir);
+}
+
+// -- (j) pipe-holding grandchild must not delay the exit code -----------------
+
+#[test]
+fn detached_grandchild_holding_pipes_cannot_delay_the_exit_code() {
+    let dir = scratch("pipe-holder");
+    let err = dir.join("stderr.log");
+
+    // The grandchild is detached with `start /b`, so it inherits the direct
+    // child's stdout AND stderr pipe write-ends and keeps both readable after
+    // that child exits. Without the explicit job close after `wait`, joining the
+    // pumps would block for as long as the grandchild lives and the child's
+    // exit code would never surface. `ping -n 3` gives the grandchild ~2s to
+    // exist before the child exits, so this is a real race, not a formality.
+    fs::write(
+        dir.join("holder.cmd"),
+        "@echo off\r\n\
+         start /b \"\" cmd /c \"ping -n 300 127.0.0.1 > lock.txt\"\r\n\
+         ping -n 3 127.0.0.1 > nul\r\n\
+         exit 7\r\n",
+    )
+    .expect("write holder.cmd");
+
+    let started = Instant::now();
+    let (code, _out) = run_shim(&dir, Some(&err), &["cmd.exe", "/c", "holder.cmd"]);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        code, 7,
+        "the child's exit code must survive a pipe-holding grandchild"
+    );
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "the shim took {elapsed:?} — the pumps were waiting on the grandchild"
+    );
+
+    // And the grandchild really is gone: the shim already exited, so the only
+    // thing that could still hold lock.txt open is a survivor.
+    let lock = dir.join("lock.txt");
+    assert!(
+        lock.exists(),
+        "the grandchild never started — this proves nothing"
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || fs::remove_file(&lock).is_ok()),
+        "lock.txt is still held open — the grandchild outlived the shim"
+    );
     cleanup(&dir);
 }
 

@@ -71,9 +71,19 @@ package-backend:
     # same triple-suffixed name Tauri expects.
     case "$BURRITO_TARGET" in
       windows_*)
+        # Chicken-and-egg: tauri-build runs on EVERY cargo build in this
+        # package — including the one that produces the shim — and its
+        # externalBin check fails on a missing file. So the file the check
+        # looks for has to exist before the build that creates it; an empty
+        # placeholder is enough to get past it.
+        shim="desktop/src-tauri/binaries/valea-spawn-${triple}.exe"
+        [ -f "$shim" ] || : > "$shim"
         (cd desktop/src-tauri && cargo build --release --bin valea-spawn)
-        cp desktop/src-tauri/target/release/valea-spawn.exe \
-           "desktop/src-tauri/binaries/valea-spawn-${triple}.exe"
+        # The copy MUST stay after the build. binaries/ is what gets bundled,
+        # so if these two ever swap the installer ships whatever the
+        # placeholder happened to be — an empty file on a cold checkout, or a
+        # stale shim on a warm one.
+        cp desktop/src-tauri/target/release/valea-spawn.exe "$shim"
         ;;
     esac
 

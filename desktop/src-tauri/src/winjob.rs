@@ -60,6 +60,18 @@ impl Job {
             )?;
         }
 
+        // Like the shim (src/bin/valea_spawn.rs), this enrolls a process that is
+        // ALREADY running, so anything it spawned before we got here is never in
+        // the Job. The stakes are higher here than in the shim: the pid we are
+        // handed is the Burrito wrapper, and the BEAM is exactly such a child.
+        // What makes it safe in practice is that the wrapper unpacks its payload
+        // to disk before launching the BEAM — hundreds of milliseconds of
+        // filesystem work against the microseconds between Tauri's spawn
+        // returning and this call. If it ever did lose that race the sidecar
+        // would simply not be enrolled, and the readiness probe's PortCollision
+        // arm in main.rs is the backstop that keeps a stray BEAM from being
+        // mistaken for ours on the next launch.
+        //
         // PROCESS_SET_QUOTA | PROCESS_TERMINATE is the documented minimum for
         // AssignProcessToJobObject.
         let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) }?;
