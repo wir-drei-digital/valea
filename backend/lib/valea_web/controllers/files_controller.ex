@@ -225,9 +225,13 @@ defmodule ValeaWeb.FilesController do
   # path on success — every caller does I/O on the path named, exactly as
   # requested; `resolve_real/2` here is a gate, not a rewrite.
   defp contain(root, rel_path) do
-    abs = Path.expand(rel_path, root)
+    # Normalized at construction: `Path.expand/2` is host-native and OTP's
+    # win32 `filename` functions DOWNCASE the drive letter, while `root` is
+    # already in `Paths` vocabulary (UPPERCASE drive). Without this the
+    # strict-child guard below can never be false on Windows.
+    abs = Paths.normalize(Path.expand(rel_path, root))
 
-    if Paths.ancestor?(root, abs) and abs != root do
+    if Paths.ancestor?(root, abs) and not Paths.same_path?(abs, root) do
       case Paths.resolve_real(abs, root) do
         {:ok, _real} -> {:ok, abs}
         {:error, _reason} -> {:error, :outside_mount}

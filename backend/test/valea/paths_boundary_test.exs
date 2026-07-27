@@ -40,7 +40,15 @@ defmodule Valea.PathsBoundaryTest do
   #     check in `mounts/doctor.ex` sat unflagged until it was migrated to
   #     `Valea.Paths.unc?/2`;
   #   * host-dependent OTP calls that decide the same thing by other means:
-  #     `Path.type/1`, `Path.absname/1`, `Path.dirname/1` at a root.
+  #     `Path.type/1`, `Path.absname/1`, `Path.dirname/1` at a root;
+  #   * plain `==`/`!=`/`in` BETWEEN TWO PATH STRINGS — `abs != root`,
+  #     `path == Path.join(dir, "x")`, `rel in @root_files`. No regex can
+  #     tell a path comparison from any other string comparison, and this is
+  #     the family that made four strict-child guards dead on Windows at
+  #     once: OTP's win32 `filename` functions DOWNCASE a drive letter while
+  #     `Valea.Paths.normalize/2` UPCASES it, so an OTP-derived string and a
+  #     `Valea.Paths`-derived one never compare equal there.
+  #     `Valea.Paths.same_path?/3` is the tool; nothing here enforces it.
   #
   # Treat these as a regression net, not an audit. A new path decision still
   # needs a human to ask "does this belong in `Valea.Paths`?".
@@ -84,6 +92,44 @@ defmodule Valea.PathsBoundaryTest do
     assert offenders == [],
            "absoluteness decided by binary pattern outside Valea.Paths " <>
              "(route through absolute?/classify): #{inspect(offenders)}"
+  end
+
+  # The INVERSE family of the two detectors above. Those two ask "is this
+  # path absolute / under that one?"; this one asks "what is left of it once
+  # the root is dropped?" — and every host-native way of answering decides it
+  # case-SENSITIVELY on every host:
+  #
+  #   * `Path.relative_to/2` compares segments byte-for-byte, and on a
+  #     mismatch returns the ORIGINAL ABSOLUTE PATH. On Windows one
+  #     case-flipped ANCESTOR segment (`C:/Users/Mara/…` under a
+  #     `C:/Users/mara/…` root) is enough, and a caller that then reads the
+  #     first segment of the "relative" answer sees the drive letter — which
+  #     is how the workspace protected-dir HARD DENY degraded to `:ask`;
+  #   * `String.replace_prefix(p, root <> "/", "")` and
+  #     `String.trim_leading(p, root <> "/")` are the same decision spelled
+  #     as string surgery — and additionally silently no-op (returning the
+  #     input unchanged) instead of failing, so the bug is invisible.
+  #
+  # `Valea.Paths.relative_to/3` is the one answer: it folds case for the
+  # COMPARISON only, keeps the remainder's original casing, and mirrors
+  # `Path.relative_to/2`'s non-ancestor return so caller guards are unchanged.
+  test "relativization is case-folded too — no host-native remainder math (windows spec D4)" do
+    otp_relative_to = ~r/Path\.relative_to\(/
+    prefix_surgery = ~r/replace_prefix\([^\n)]*<>\s*"\/"/
+    trim_surgery = ~r/trim_leading\([^\n)]*<>\s*"\/"/
+
+    offenders =
+      scannable_files()
+      |> Enum.filter(fn {_f, src} ->
+        Regex.match?(otp_relative_to, src) or
+          Regex.match?(prefix_surgery, src) or
+          Regex.match?(trim_surgery, src)
+      end)
+      |> Enum.map(&elem(&1, 0))
+
+    assert offenders == [],
+           "host-native relativization outside Valea.Paths " <>
+             "(route through relative_to/3): #{inspect(offenders)}"
   end
 
   test "the site-exemption inventory is exactly the reviewed one (windows spec D4)" do

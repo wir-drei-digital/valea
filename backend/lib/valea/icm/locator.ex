@@ -135,10 +135,10 @@ defmodule Valea.Icm.Locator do
       when is_binary(workspace) and is_binary(physical_abs) do
     case Mounts.mount_for(workspace, physical_abs) do
       %{root: root, manifest: %{id: id}} ->
-        icm(id, Path.relative_to(physical_abs, root))
+        icm(id, Paths.relative_to(physical_abs, root))
 
       nil ->
-        workspace(Path.relative_to(physical_abs, resolve_best_effort(workspace)))
+        workspace(Paths.relative_to(physical_abs, resolve_best_effort(workspace)))
     end
   end
 

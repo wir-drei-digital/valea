@@ -422,8 +422,11 @@ defmodule Valea.Mail.SyncPass do
       |> walk_dirs()
       |> Enum.reduce(%{}, fn dir_abs, acc ->
         case Maildir.read_folder_identity(dir_abs) do
-          {:ok, imap_name} -> Map.put(acc, imap_name, Path.relative_to(dir_abs, maildir_root))
-          :error -> acc
+          {:ok, imap_name} ->
+            Map.put(acc, imap_name, Valea.Paths.relative_to(dir_abs, maildir_root))
+
+          :error ->
+            acc
         end
       end)
     else

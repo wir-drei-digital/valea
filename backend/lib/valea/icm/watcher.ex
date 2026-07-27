@@ -316,6 +316,16 @@ defmodule Valea.ICM.Watcher do
 
   @impl true
   def handle_info({:file_event, _pid, {path, _events}}, state) do
+    # INGRESS NORMALIZATION. `file_system`'s Windows backend emits its own
+    # path shape — a LOWERCASE drive letter with forward slashes
+    # (`c:/users/mara/valea/config/workspace.yaml`) — while every root in
+    # `state` is `Paths` vocabulary (UPPERCASE drive, via `canonical/1`).
+    # Classified raw, nothing under `config/` or any ICM root would ever
+    # match, and workspace.yaml edits plus icm.yaml discovery would die
+    # silently. One normalize here puts both sides in one vocabulary for
+    # every comparison downstream.
+    path = Valea.Paths.normalize(path)
+
     case classify_path(path, state) do
       :config -> {:noreply, note_config_event(path, state)}
       {:icm, root} -> {:noreply, note_icm_event(path, root, state)}
@@ -442,7 +452,7 @@ defmodule Valea.ICM.Watcher do
   # mount set and produces no event at all — content under `config/` never
   # feeds `icm_changed` either.
   defp note_config_event(path, state) do
-    if path == Path.join(state.config_path, "workspace.yaml") do
+    if Valea.Paths.same_path?(path, Path.join(state.config_path, "workspace.yaml")) do
       state = arm(:discovery_timer, :flush_discovery, state)
       %{state | discovery_pending: true}
     else
@@ -462,13 +472,19 @@ defmodule Valea.ICM.Watcher do
 
   defp relative_segments(path, root) do
     cond do
-      path == root ->
+      # `same_path?/2`, not `==`: `path` is backend-shaped (normalized at
+      # ingress) and `root` is `canonical/1`-shaped, and on Windows the same
+      # directory can reach the two with different casing.
+      Valea.Paths.same_path?(path, root) ->
         []
 
       # Equality is already consumed above, so this is the STRICT-descendant
-      # branch — `Valea.Paths.ancestor?/2` owns the segment-boundary decision.
+      # branch — `Valea.Paths.ancestor?/2` owns the segment-boundary decision,
+      # and `relative_to/3` the remainder, under the SAME case rule. A
+      # `String.replace_prefix/3` here would answer case-sensitively, silently
+      # no-op on a case difference, and hand back an absolute path to split.
       Valea.Paths.ancestor?(root, path) ->
-        path |> String.replace_prefix(root <> "/", "") |> Path.split()
+        path |> Valea.Paths.relative_to(root) |> Path.split()
 
       true ->
         []

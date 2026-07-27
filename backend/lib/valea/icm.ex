@@ -206,9 +206,10 @@ defmodule Valea.ICM do
   #      `root`) must fall STRICTLY under `root` as a string. This alone is
   #      what this function did before symlink-hardening; it still runs first
   #      as a cheap reject for the common case (and the mount-root sentinel:
-  #      an empty `rel_path` expands to `root` itself, which the `abs != root`
-  #      half rejects, so `contain(root, "")` stays rejected — the mount root
-  #      itself is never a valid rename/delete/page target).
+  #      an empty `rel_path` expands to `root` itself, which the
+  #      `not same_path?(abs, root)` half rejects, so `contain(root, "")`
+  #      stays rejected — the mount root itself is never a valid
+  #      rename/delete/page target).
   #   2. REAL — a path that is lexically inside `root` can still walk OUT via
   #      a symlink planted inside the mount (the workspace's own `..`-guard
   #      only ever collapses literal `..` segments; it has no idea a
@@ -228,9 +229,13 @@ defmodule Valea.ICM do
   # mount is still permitted (legitimate internal links keep working) since
   # its resolved form still lands under `root`.
   defp contain(root, rel_path) do
-    abs = Path.expand(rel_path, root)
+    # `Path.expand/2` is host-native, and on Windows OTP's `filename`
+    # functions DOWNCASE the drive letter while `Paths.normalize/2` UPCASES
+    # it — so an unnormalized `abs` is in a different vocabulary from `root`
+    # (already normalized), and the strict-child guard below would be dead.
+    abs = Paths.normalize(Path.expand(rel_path, root))
 
-    if Paths.ancestor?(root, abs) and abs != root do
+    if Paths.ancestor?(root, abs) and not Paths.same_path?(abs, root) do
       case Paths.resolve_real(abs, root) do
         {:ok, _real} -> {:ok, abs}
         {:error, _reason} -> {:error, :outside_workspace}
@@ -255,7 +260,7 @@ defmodule Valea.ICM do
   end
 
   defp node_for(abs, root) do
-    rel = Path.relative_to(abs, root)
+    rel = Paths.relative_to(abs, root)
 
     cond do
       File.dir?(abs) ->
@@ -404,7 +409,7 @@ defmodule Valea.ICM do
          :ok <- check_parent_is_directory(parent_abs),
          name_with_ext <- ensure_md_extension(normalized_name),
          abs <- Path.join(parent_abs, name_with_ext),
-         {:ok, _} <- contain(root, Path.relative_to(abs, root)),
+         {:ok, _} <- contain(root, Paths.relative_to(abs, root)),
          false <- File.exists?(abs),
          :ok <- ensure_parent_directory(parent_abs) do
       title = Path.basename(name_with_ext, ".md")
@@ -476,7 +481,7 @@ defmodule Valea.ICM do
          :ok <- check_parent_is_directory(parent_abs),
          name_with_ext <- ensure_md_extension(normalized_name),
          abs <- Path.join(parent_abs, name_with_ext),
-         {:ok, _} <- contain(root, Path.relative_to(abs, root)),
+         {:ok, _} <- contain(root, Paths.relative_to(abs, root)),
          false <- File.exists?(abs),
          {:ok, template_bytes} <-
            read_template(mount, mount_key, template_mount_key, template_rel_path),
@@ -541,7 +546,7 @@ defmodule Valea.ICM do
          parent_abs <- Path.join(root, parent_rel_path),
          :ok <- check_parent_is_directory(parent_abs),
          abs <- Path.join(parent_abs, normalized_name),
-         {:ok, _} <- contain(root, Path.relative_to(abs, root)),
+         {:ok, _} <- contain(root, Paths.relative_to(abs, root)),
          false <- File.exists?(abs),
          :ok <- ensure_parent_directory(parent_abs),
          :ok <- create_directory(abs) do
@@ -575,7 +580,7 @@ defmodule Valea.ICM do
   end
 
   defp format_create_response({:ok, _}, abs, mount) do
-    {:ok, %{path: Path.relative_to(abs, mount.root)}}
+    {:ok, %{path: Paths.relative_to(abs, mount.root)}}
   end
 
   defp format_create_response({:error, reason}, _abs, _mount) do
@@ -682,7 +687,7 @@ defmodule Valea.ICM do
     |> Path.join(glob)
     |> Path.wildcard()
     |> Enum.filter(&File.regular?/1)
-    |> Enum.map(&Path.relative_to(&1, root))
+    |> Enum.map(&Paths.relative_to(&1, root))
     |> Enum.sort()
     |> Enum.map(fn child_old_rel ->
       suffix = String.trim_leading(child_old_rel, old_rel)

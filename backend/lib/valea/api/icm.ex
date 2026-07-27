@@ -401,7 +401,7 @@ defmodule Valea.Api.ICM do
       %{enabled: true, degraded: nil, root: root} = mount ->
         abs = target_abs(workspace, target_path)
 
-        with true <- Valea.Paths.ancestor?(root, abs) and abs != root,
+        with true <- Valea.Paths.ancestor?(root, abs) and not Valea.Paths.same_path?(abs, root),
              {:ok, _real} <- Valea.Paths.resolve_real(abs, root) do
           {:ok, %{mount: mount, abs: abs}}
         else
@@ -457,9 +457,14 @@ defmodule Valea.Api.ICM do
   # `"/" <> _` head read it), and an ambiguous windows form stays non-absolute
   # — landing on the relative branch, where `find_mount/2` attributes it to no
   # mount and `contained_target/2` rejects it.
+  # Normalized at construction: `Path.expand/1,2` is host-native and OTP's
+  # win32 `filename` functions DOWNCASE the drive letter, while every root
+  # this result is compared against is already in `Paths` vocabulary
+  # (UPPERCASE drive). Mixing the two makes `same_path?`/`ancestor?` answer
+  # about strings that only LOOK unrelated.
   defp target_abs(workspace, target_path) do
     if Valea.Paths.absolute?(target_path),
-      do: Path.expand(target_path),
-      else: Path.expand(target_path, workspace)
+      do: Valea.Paths.normalize(Path.expand(target_path)),
+      else: Valea.Paths.normalize(Path.expand(target_path, workspace))
   end
 end

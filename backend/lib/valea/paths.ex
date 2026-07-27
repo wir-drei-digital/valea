@@ -40,7 +40,19 @@ defmodule Valea.Paths do
   The classifier is our OWN (OTP's `Path.type/1` is host-dependent — on a
   Unix host `Path.type("C:/x")` is `:relative`), so Windows path semantics
   are testable on any host through the pure seams `classify/2`,
-  `normalize/2`, `ancestor?/3` and `resolve_lexical/3`.
+  `normalize/2`, `ancestor?/3`, `relative_to/3`, `same_path?/3` and
+  `resolve_lexical/3`.
+
+  The case rule has to hold across a WHOLE decision, not just its first
+  half. `ancestor?/3` (is it under?), `relative_to/3` (what is left of it?)
+  and `same_path?/3` (is it that one?) all fold the same way, because the
+  host-native counterparts do not: `Path.relative_to/2` compares segments
+  byte-for-byte and returns the ORIGINAL ABSOLUTE PATH on a mismatch, and a
+  bare `==` between an OTP-derived string and one of ours is guaranteed
+  false on Windows (OTP's win32 `filename` functions DOWNCASE a drive
+  letter, `normalize/2` UPCASES it). Mixing vocabularies inside one decision
+  is how a containment check keeps passing while the guard behind it goes
+  dead.
   """
 
   @max_hops 32
@@ -185,6 +197,109 @@ defmodule Valea.Paths do
 
   defp fold(a, d, :windows), do: {String.downcase(a), String.downcase(d)}
   defp fold(a, d, :unix), do: {a, d}
+
+  @doc """
+  What is left of `path` once `root` is dropped — the RELATIVIZATION
+  counterpart to `ancestor?/3`, and the reason no caller may reach for
+  `Path.relative_to/2`.
+
+  That one compares segments byte-for-byte on every host, and on a mismatch
+  returns the ORIGINAL ABSOLUTE PATH. On Windows a single case-flipped
+  ANCESTOR segment is enough (`C:/Users/Mara/…` under a `C:/Users/mara/…`
+  root): containment says yes (`ancestor?/3` folds case), the "remainder"
+  comes back absolute, and a caller reading its first segment sees the DRIVE
+  instead of `secrets` — a fail-open on exactly the deny it was computing.
+
+  Same contract as `ancestor?/3`: one vocabulary on both sides (both
+  absolute physical paths, or both relative to the same base), segments
+  compared case-folded on `:windows` and byte-exact on `:unix`. Folding is
+  for COMPARISON ONLY — the remainder keeps `path`'s ORIGINAL casing,
+  since it is the string the caller goes on to do I/O with. Drive letters
+  and separator style are vocabulary, not content: both sides run through
+  `normalize/2` before splitting, so `c:\\ws\\a` under `C:/ws` is `a`.
+
+  Return shapes mirror `Path.relative_to/2`, so existing caller guards read
+  the same:
+
+    * `path` strictly under `root` -> the remainder, joined with `"/"`;
+    * `path` IS `root` -> `"."`;
+    * anything else -> `path` UNCHANGED. CALLERS MUST ESTABLISH ANCESTRY
+      FIRST (`ancestor?/3`, or `resolve_real/2`'s containment): a
+      non-ancestor answer is indistinguishable from a legitimate remainder,
+      which is the whole shape of the bug above.
+
+  One deliberate divergence: this is pure segment math and does NOT collapse
+  `.` or `..` the way `Path.relative_to/2` does. Nothing here resolves
+  lexically unless asked — that is `resolve_lexical/3` — so callers pass
+  already-expanded paths.
+  """
+  @spec relative_to(String.t(), String.t(), platform()) :: String.t()
+  def relative_to(path, root, platform \\ host_platform()) do
+    case strip_segments(
+           rooted_segments(path, platform),
+           rooted_segments(root, platform),
+           platform
+         ) do
+      :not_under -> path
+      [] -> "."
+      rest -> Enum.join(rest, "/")
+    end
+  end
+
+  # Segment list with the ROOT KEPT as its own leading element for an
+  # absolute path (`["/", "a", "b"]`, `["C:/", "a"]`, `["//h/s", "a"]`), so an
+  # absolute path can never relativize as the relative one with the same tail.
+  # Matches host `Path.split/1` for Unix inputs (verified) while staying
+  # host-independent for Windows shapes. Anything without a root — relative,
+  # drive-relative, device — splits as plain segments and simply fails to
+  # match a rooted `root`, which is the `:not_under` answer we want.
+  defp rooted_segments(path, platform) do
+    case classify(path, platform) do
+      :absolute ->
+        {root, comps} = absolute_root(path, platform)
+        [root | comps]
+
+      _rootless ->
+        segments(path, platform)
+    end
+  end
+
+  # Drop `root`'s leading segments from `path`'s. `:not_under` rather than a
+  # partial answer is the only other outcome — the caller decides what a
+  # non-ancestor means, and never receives a half-stripped path.
+  defp strip_segments(rest, [], _platform), do: rest
+  defp strip_segments([], _root_rest, _platform), do: :not_under
+
+  defp strip_segments([seg | rest], [root_seg | root_rest], platform) do
+    case fold(seg, root_seg, platform) do
+      {same, same} -> strip_segments(rest, root_rest, platform)
+      _differ -> :not_under
+    end
+  end
+
+  @doc """
+  True iff `a` and `b` name the same path under `platform`: `normalize/2` on
+  both sides, then the same case rule as `ancestor?/3` — folded on
+  `:windows`, byte-exact on `:unix`.
+
+  The tool for the one family no boundary regex can see: a plain `==` or
+  `!=` between two path strings. It matters most where the two sides came
+  from different vocabularies — OTP's win32 `filename` functions DOWNCASE a
+  drive letter (`Path.expand/2` returns `c:/x`) while `normalize/2` UPCASES
+  it, so `Path.expand(rel, root) != root` is guaranteed TRUE on Windows even
+  when the two name the same directory. That is how a strict-child guard
+  goes quietly dead.
+
+  Lexical only. Two different strings can still reach one file through
+  symlinks or 8.3 aliases; that question is `resolve_real/2`'s.
+  """
+  @spec same_path?(String.t(), String.t(), platform()) :: boolean()
+  def same_path?(a, b, platform \\ host_platform()) do
+    case fold(normalize(a, platform), normalize(b, platform), platform) do
+      {same, same} -> true
+      _differ -> false
+    end
+  end
 
   @doc """
   Pure lexical resolution of `path` against absolute `base` under `platform`

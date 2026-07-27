@@ -92,8 +92,11 @@ defmodule Valea.Mail.Index do
       |> walk_dirs()
       |> Enum.flat_map(fn dir_abs ->
         case Maildir.read_folder_identity(dir_abs) do
-          {:ok, imap_name} -> [{imap_name, dir_abs, Path.relative_to(dir_abs, maildir_root)}]
-          :error -> []
+          {:ok, imap_name} ->
+            [{imap_name, dir_abs, Valea.Paths.relative_to(dir_abs, maildir_root)}]
+
+          :error ->
+            []
         end
       end)
     else

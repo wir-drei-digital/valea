@@ -64,7 +64,7 @@ defmodule Valea.ICM.Backlinks do
             abs <- Path.wildcard(Path.join(scoped.root, "**/*.md")),
             {:ok, content} <- [File.read(abs)],
             String.contains?(content, needle) or String.contains?(content, encoded_needle),
-            source_rel = Path.relative_to(abs, scoped.root),
+            source_rel = Valea.Paths.relative_to(abs, scoped.root),
             not (scoped.root == mount.root and source_rel == target_rel_path),
             text <- confirmed_link_texts(scoped.root, source_rel, content, target_abs) do
           %{source_path: source_rel, mount: scoped.name, link_text: text}

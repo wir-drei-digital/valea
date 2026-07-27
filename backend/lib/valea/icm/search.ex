@@ -129,7 +129,7 @@ defmodule Valea.ICM.Search do
             occurrences(body_down, t)
         end)
 
-      rel = Path.relative_to(abs, root)
+      rel = Valea.Paths.relative_to(abs, root)
 
       [
         %{

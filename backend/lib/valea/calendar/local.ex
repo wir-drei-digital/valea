@@ -777,12 +777,16 @@ defmodule Valea.Calendar.Local do
   # Lexical + real containment (the FilesController `contain/2` shape):
   # the name is grammar-validated already, but every access still runs
   # back through `Paths.resolve_real/2` — never trust a lexically built
-  # path for I/O. STRICT containment (`abs != root`), same as every other
-  # `contain/2`: the root itself is never an event file.
+  # path for I/O. STRICT containment (`not Paths.same_path?(abs, root)`),
+  # same as every other `contain/2`: the root itself is never an event file.
   defp contain(root, name) do
-    abs = Path.expand(Path.join(@events_rel, name <> ".md"), root)
+    # Normalized at construction: `Path.expand/2` is host-native and OTP's
+    # win32 `filename` functions DOWNCASE the drive letter, while `root` is
+    # already in `Paths` vocabulary (UPPERCASE drive) — an unnormalized `abs`
+    # would make the strict-child guard below unfalsifiable on Windows.
+    abs = Paths.normalize(Path.expand(Path.join(@events_rel, name <> ".md"), root))
 
-    if Paths.ancestor?(root, abs) and abs != root do
+    if Paths.ancestor?(root, abs) and not Paths.same_path?(abs, root) do
       case Paths.resolve_real(abs, root) do
         {:ok, _real} -> {:ok, abs}
         {:error, _reason} -> {:error, {:invalid, "event path escapes the workspace"}}

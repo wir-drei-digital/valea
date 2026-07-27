@@ -109,7 +109,7 @@ defmodule Valea.ICM.LinkRewrite do
       sources =
         for scoped <- Mounts.scoped_roots(workspace, mount_key),
             abs <- Path.wildcard(Path.join(scoped.root, "**/*.md")),
-            do: {scoped.root, Path.relative_to(abs, scoped.root), abs}
+            do: {scoped.root, Valea.Paths.relative_to(abs, scoped.root), abs}
 
       needles = basename_needles(pairs)
 

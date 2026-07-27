@@ -273,7 +273,7 @@ defmodule Valea.Agents.PermissionPolicy do
   # or an exact task input outside the workspace — must not be swept into
   # this deny just because `Path.basename/1` matches the db prefix; that
   # would over-deny territory the spec never asked this check to cover.
-  # `Path.relative_to/2` on a path outside `workspace_root` returns it
+  # `Valea.Paths.relative_to/3` on a path outside `workspace_root` returns it
   # unchanged, so the basename/top-segment tests below are only meaningful
   # once containment is confirmed first.
   defp split_protected?({:error, _}, _workspace_root), do: false
@@ -290,7 +290,7 @@ defmodule Valea.Agents.PermissionPolicy do
   defp split_icm_secret?({:ok, abs}, icm_roots) do
     Enum.any?(icm_roots, fn root ->
       if split_under_root?(abs, root) do
-        rel = String.trim_leading(abs, root <> "/")
+        rel = Valea.Paths.relative_to(abs, root)
         secret_relative?(rel)
       else
         false
@@ -456,7 +456,7 @@ defmodule Valea.Agents.PermissionPolicy do
   end
 
   defp split_root_file?(resolved, cwd) do
-    split_under_root?(resolved, cwd) and Path.relative_to(resolved, cwd) in @root_files
+    split_under_root?(resolved, cwd) and Valea.Paths.relative_to(resolved, cwd) in @root_files
   end
 
   defp split_all_write?(resolved, write_paths, write_roots) do
@@ -482,8 +482,17 @@ defmodule Valea.Agents.PermissionPolicy do
   # `split_protected?/2` above): a hard-deny if the resolved path's top
   # segment (relative to `root`) is a protected dir name, or its basename
   # starts with the db prefix — both compared case-insensitively.
+  #
+  # The relativization must be `Valea.Paths.relative_to/3`, never
+  # `Path.relative_to/2`: containment above is case-FOLDED on Windows, so the
+  # host call's byte-exact segment compare can disagree with it. One
+  # case-flipped ANCESTOR segment (`C:/Users/Mara/…` under a
+  # `C:/Users/mara/…` root) and `rel` comes back ABSOLUTE, `top` becomes the
+  # drive letter, and this hard deny silently degrades to `:ask` on
+  # `<workspace>/secrets`. The two halves of one decision have to share a
+  # case rule.
   defp protected_relative?(path, root, protected_dirs, db_prefix) do
-    rel = Path.relative_to(path, root)
+    rel = Valea.Paths.relative_to(path, root)
     top = rel |> Path.split() |> List.first()
 
     (is_binary(top) and String.downcase(top) in protected_dirs) or

@@ -273,6 +273,117 @@ defmodule Valea.PathsTest do
     end
   end
 
+  describe "relative_to/3" do
+    # THE attack this function exists for. `Valea.Agents.PermissionPolicy`
+    # confirms containment with `ancestor?/3` (case-folded since T3), then
+    # asks for the TOP SEGMENT of the remainder to hard-deny
+    # `<workspace>/secrets`. With `Path.relative_to/2` doing the second half,
+    # one case-flipped ANCESTOR segment makes the "remainder" the full
+    # absolute path, the top segment the DRIVE, and the hard deny collapses
+    # to `:ask` — a fail-OPEN on the workspace's secrets directory.
+    test "a case-flipped ancestor segment still yields the real remainder on windows" do
+      root = "C:/Users/mara/valea"
+      path = "C:/Users/Mara/valea/secrets/api_key.txt"
+
+      # The premise: containment already says yes (T3 made this case-folded).
+      assert Valea.Paths.ancestor?(root, path, :windows)
+
+      rel = Valea.Paths.relative_to(path, root, :windows)
+      assert rel == "secrets/api_key.txt"
+      assert rel |> Path.split() |> List.first() == "secrets"
+
+      # ... and what the host-native call hands the same caller: anything but
+      # the remainder. On a Windows HOST both sides split as absolute, the
+      # segment compare fails on `Mara`/`mara`, and it returns the input
+      # unchanged — top segment `c:/`, so the `secrets` deny never fires. (On
+      # THIS host the same strings are merely relative names, so it emits a
+      # `..` escape instead; different wrong answer, same missing deny.)
+      otp = Path.relative_to(path, root)
+      refute otp == rel
+      refute otp |> Path.split() |> List.first() == "secrets"
+    end
+
+    test "the remainder keeps its ORIGINAL casing — folding is for comparison only" do
+      assert Valea.Paths.relative_to("C:/WS/Secrets/API_Key.TXT", "c:/ws", :windows) ==
+               "Secrets/API_Key.TXT"
+    end
+
+    test "a drive letter and a separator style are vocabulary, not content" do
+      assert Valea.Paths.relative_to("c:\\ws\\a\\b.md", "C:/ws", :windows) == "a/b.md"
+      assert Valea.Paths.relative_to("//SRV/Share/ws/a.md", "//srv/share/ws", :windows) == "a.md"
+    end
+
+    test "unix stays byte-exact — a case flip is a DIFFERENT path there" do
+      assert Valea.Paths.relative_to("/work/icm/a.md", "/work/icm", :unix) == "a.md"
+      assert Valea.Paths.relative_to("/work/ICM/a.md", "/work/icm", :unix) == "/work/ICM/a.md"
+
+      # The Unix contract is byte-for-byte the host call's, case flip included
+      # — that is what makes this migration a no-op on this platform.
+      assert Path.relative_to("/work/ICM/a.md", "/work/icm") == "/work/ICM/a.md"
+    end
+
+    # The mirror contract, pinned against the real OTP function on this host:
+    # callers guard on these return shapes (`rel in @root_files`, `top segment
+    # of rel`), so a divergence here is a silent behaviour change on Unix.
+    test "mirrors Path.relative_to/2 on the shapes callers guard on" do
+      for {path, root} <- [
+            {"/a/b/c", "/a/b"},
+            {"/a/b/c/d", "/a/b"},
+            {"/a/b", "/a/b"},
+            {"/a/b/", "/a/b"},
+            {"/a/x", "/a/b"},
+            {"/a/bc", "/a/b"},
+            {"/a/b", "/a/b/c"},
+            {"/a/b/c", "/a/b/"},
+            {"/a/b/c", "/"},
+            {"/a//b//c", "/a/b"},
+            {"rel/x", "/a/b"},
+            {"a/b/c", "a/b"}
+          ] do
+        assert Valea.Paths.relative_to(path, root, :unix) == Path.relative_to(path, root),
+               "diverged from Path.relative_to/2 for #{inspect(path)} under #{inspect(root)}"
+      end
+    end
+
+    test "a non-ancestor comes back unchanged — ancestry is the caller's gate" do
+      assert Valea.Paths.relative_to("C:/other/x", "C:/ws", :windows) == "C:/other/x"
+      # A sibling whose NAME merely starts with the root's, i.e. the same
+      # component-boundary rule `ancestor?/3` enforces.
+      assert Valea.Paths.relative_to("C:/ws-private/x", "C:/ws", :windows) == "C:/ws-private/x"
+      # An absolute path is never the relative one with the same tail.
+      assert Valea.Paths.relative_to("/a/b/c", "a/b", :unix) == "/a/b/c"
+    end
+
+    # Deliberate divergence from `Path.relative_to/2`, which expands first:
+    # nothing in Valea.Paths resolves lexically unless asked (that is
+    # `resolve_lexical/3`). Pinned so the omission stays a decision.
+    test "pure segment math: `..` is not collapsed" do
+      assert Valea.Paths.relative_to("/a/b/../c", "/a", :unix) == "b/../c"
+    end
+  end
+
+  describe "same_path?/3" do
+    # The `==`-between-path-strings family. OTP's win32 `filename` functions
+    # DOWNCASE a drive letter (`Path.expand/2` -> `c:/x`) while `normalize/2`
+    # UPCASES it, so a bare `==` between an OTP-derived string and a
+    # Valea.Paths-derived one is guaranteed false on Windows — which is what
+    # silently disarmed the `abs != root` strict-child guards.
+    test "windows folds case and vocabulary; unix compares bytes" do
+      assert Valea.Paths.same_path?("c:/x", "C:/x", :windows)
+      refute Valea.Paths.same_path?("c:/x", "C:/x", :unix)
+
+      assert Valea.Paths.same_path?("C:\\ws\\a", "C:/WS/A", :windows)
+      assert Valea.Paths.same_path?("\\\\?\\C:\\ws", "c:/ws", :windows)
+      assert Valea.Paths.same_path?("//SRV/Share/x", "//srv/share/x", :windows)
+    end
+
+    test "different paths stay different on both platforms" do
+      refute Valea.Paths.same_path?("C:/ws", "C:/ws/a", :windows)
+      refute Valea.Paths.same_path?("/a/b", "/a/b/c", :unix)
+      assert Valea.Paths.same_path?("/a/b", "/a/b", :unix)
+    end
+  end
+
   describe "unc?/2" do
     test "windows: a well-formed //host/share root, and anything beneath it" do
       assert Valea.Paths.unc?("//srv/share", :windows)

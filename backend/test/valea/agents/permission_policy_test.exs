@@ -62,6 +62,36 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
     assert {:deny, _} = P.decide(read(Path.join(ws, "secrets/x")), ctx)
   end
 
+  # `protected_relative?/2` computes the top segment with
+  # `Valea.Paths.relative_to/3` (case-FOLDED on Windows) rather than
+  # `Path.relative_to/2`, so both halves of the deny — containment and
+  # remainder — share one case rule. On Unix that migration must be a pure
+  # no-op, and this pins BOTH halves of what "no-op" means here.
+  test "unix: the protected top segment is case-folded, the ancestor path is not", %{
+    ctx: ctx,
+    ws: ws
+  } do
+    # Half one, unchanged: the explicit `String.downcase/1` on the TOP
+    # segment is still the only case-insensitivity in the deny.
+    File.mkdir_p!(Path.join(ws, "SECRETS"))
+    File.write!(Path.join(ws, "SECRETS/x"), "s")
+    assert {:deny, _} = P.decide(read(Path.join(ws, "SECRETS/x")), ctx)
+
+    # Half two, unchanged: an ANCESTOR segment still compares byte-for-byte
+    # on Unix, so a case-flipped root yields no remainder at all — exactly
+    # what `Path.relative_to/2` did. (On :windows this is the C1 attack: the
+    # flip is contained, and the remainder must still be `secrets/x`.)
+    flipped = Path.join(Path.dirname(ws), String.upcase(Path.basename(ws)))
+    candidate = Path.join(flipped, "secrets/x")
+    refute candidate == Path.join(ws, "secrets/x")
+    assert Valea.Paths.relative_to(candidate, ws, :unix) == candidate
+
+    # ... whereas on :windows the same flip IS the same directory, and the
+    # remainder the deny reads must still be `secrets/x`, not a drive letter.
+    assert Valea.Paths.relative_to("C:/Users/Mara/ws/secrets/x", "C:/Users/mara/ws", :windows) ==
+             "secrets/x"
+  end
+
   test "workspace app.sqlite* files are still hard-denied", %{ctx: ctx, ws: ws} do
     assert {:deny, _} = P.decide(read(Path.join(ws, "app.sqlite")), ctx)
     assert {:deny, _} = P.decide(read(Path.join(ws, "app.sqlite-wal")), ctx)
