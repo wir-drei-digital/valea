@@ -1470,6 +1470,95 @@ defmodule ValeaWeb.MailRpcTest do
       assert draft["notice"] == "gmail_sent_checked_empty"
     end
 
+    # The projection's `sent` gate compares the completed op's recorded
+    # revision against the file's CURRENT hash — and the engine's own stamps
+    # move that hash twice (`sending`, then `sent`). Hand-built ledger rows
+    # cannot catch a gate that drifts off the real stamp chain, so this one
+    # drives a REAL send end to end (executor + engine + both transports) and
+    # then reads the projection.
+    defp real_send!(workspace, generation, opts) do
+      start_supervised!(FakeSmtpTransport)
+      Application.put_env(:valea, :mail_smtp_transport, FakeSmtpTransport)
+      on_exit(fn -> Application.delete_env(:valea, :mail_smtp_transport) end)
+      FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+      FakeMailTransport.script([
+        {:connect, :_, {:ok, FakeMailTransport}},
+        {:examine, :_, {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}},
+        {:uid_search, :_, {:ok, []}},
+        {:append, :_, Keyword.get(opts, :append, {:ok, %{dest_uid: 1}})},
+        {:logout, :_, :ok}
+      ])
+
+      setup_smtp_account!(generation)
+      set_credential!("mara", generation)
+      write_rpc_draft!(workspace, "mara", "reply.md", @projection_md)
+
+      %{"success" => true, "data" => review} =
+        rpc("get_mail_draft_review", %{"account" => "mara", "draftName" => "reply.md"}, [
+          "contentHash",
+          "reviewFingerprint"
+        ])
+
+      result =
+        rpc(
+          "send_draft",
+          %{
+            "account" => "mara",
+            "draftName" => "reply.md",
+            "contentHash" => review["contentHash"],
+            "reviewFingerprint" => review["reviewFingerprint"],
+            "generation" => generation
+          },
+          ["state"]
+        )
+
+      assert %{"success" => true, "data" => %{"state" => "sent"}} = result
+      # Exactly one transmission for the whole flow.
+      assert length(FakeSmtpTransport.calls()) == 1
+
+      listed_draft("reply.md")
+    end
+
+    defp listed_draft(name) do
+      %{"success" => true, "data" => %{"drafts" => drafts}} =
+        rpc("list_mail_drafts", %{}, ["drafts"])
+
+      Enum.find(drafts, &(&1["name"] == name))
+    end
+
+    test "a REAL send renders sent — the engine's own stamps do not read as an edit", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      draft = real_send!(workspace, generation, [])
+
+      assert draft["status_display"] == "sent"
+      assert draft["notice"] == nil
+      assert draft["pushed"] == false
+
+      # Only while the file still hashes to what was sent: a genuine edit
+      # afterwards is an unsent draft again, with the earlier revision noted.
+      path = Path.join([workspace, "sources", "mail", "mara", "drafts", "reply.md"])
+      File.write!(path, String.replace(File.read!(path), "Hello Alex.", "Hello Alex, PS."))
+
+      edited = listed_draft("reply.md")
+      assert edited["status_display"] == "draft"
+      assert edited["notice"] == "earlier_revision_sent"
+    end
+
+    test "a REAL send whose Sent copy failed still renders sent, carrying its notice", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      draft = real_send!(workspace, generation, append: {:error, :mailbox_full})
+
+      # The mail IS sent — the notice (and the retry affordance keyed off it)
+      # must survive to the panel rather than being swallowed by a stale hash.
+      assert draft["status_display"] == "sent"
+      assert draft["notice"] == "sent_copy_failed"
+    end
+
     test "a forged engine-owned status with no ledger op still renders draft", %{
       workspace: workspace,
       generation: generation

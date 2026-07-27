@@ -1247,6 +1247,15 @@ defmodule Valea.Mail.EngineTest do
 
   defp draft_hash, do: Valea.Mail.DraftFile.content_hash(@draft_md)
 
+  defp read_draft_status(root, slug, name) do
+    {:ok, %{status: status}} =
+      Path.join([root, "sources", "mail", slug, "drafts", name])
+      |> File.read!()
+      |> Valea.Mail.DraftFile.parse_and_validate()
+
+    status
+  end
+
   defp use_transports!(imap) do
     Application.put_env(:valea, :mail_transport, imap)
     Application.put_env(:valea, :mail_smtp_transport, FakeSmtpTransport)
@@ -1273,6 +1282,17 @@ defmodule Valea.Mail.EngineTest do
         from_name: from_name
       }
     }
+  end
+
+  # The queued send's ledger state, or nil — `prepare_send/4` creates the row
+  # `claimed` and transitions it to `pending` once both spool payloads are
+  # fsynced, so a test that only waits for the row to EXIST can observe the
+  # claim mid-flight.
+  defp queued_send_state(slug) do
+    case Store.ops_by_origin(slug, "drafts/reply.md") do
+      [%{state: state}] -> state
+      _none_or_many -> nil
+    end
   end
 
   defp wait_until(fun, remaining \\ 200) do
@@ -1407,8 +1427,9 @@ defmodule Valea.Mail.EngineTest do
     end)
 
     # The LOCAL claim/spool runs inline, but nothing connects and — the point —
-    # NOTHING is transmitted while the send waits for the slot.
-    wait_until(fn -> Store.ops_by_origin(slug, "drafts/reply.md") != [] end)
+    # NOTHING is transmitted while the send waits for the slot. (`pending`, not
+    # merely present: the claim is born `claimed` and transitions once spooled.)
+    wait_until(fn -> queued_send_state(slug) == "pending" end)
     refute_receive {:connect_called, _concurrent}, 200
     assert FakeSmtpTransport.calls() == []
 
@@ -1510,6 +1531,75 @@ defmodule Valea.Mail.EngineTest do
     assert envelope.from == "mara@example.com"
     assert data =~ "From: Mara Ito <mara@example.com>"
     refute data =~ "Someone Else"
+  end
+
+  # A send can be QUEUED behind a pass and then find the account no longer
+  # sendable when the slot frees (here: the pass reports the mailbox was
+  # replaced). Dropping the entry silently would strand the op `pending`
+  # forever — `recover_sends` deliberately skips `pending`, and the
+  # classification pass only runs at activation — with the draft's claim held
+  # on the widened outbound index: no Send, no Resolve, stuck on `sending`.
+  test "a queued send dropped at drain is terminated, and the draft claims cleanly again", %{
+    root: root
+  } do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+    use_transports!(Valea.Mail.EngineTest.HangingTransport)
+    FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+    slug = "mara"
+    start_engine!(root, 97, slug, settings: settings(slug, %{smtp: smtp_settings()}))
+    open(root, 97)
+    credential_pair!(slug)
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    {:ok, review} = Engine.draft_review(slug, "reply.md")
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, pass_pid}
+
+    test_pid = self()
+
+    spawn(fn ->
+      send(
+        test_pid,
+        {:send_reply,
+         Engine.send_draft(slug, "reply.md", draft_hash(), review["review_fingerprint"])}
+      )
+    end)
+
+    wait_until(fn -> queued_send_state(slug) == "pending" end)
+    assert [queued] = Store.ops_by_origin(slug, "drafts/reply.md")
+
+    # The pass comes back mailbox_replaced: the account goes sticky-blocked and
+    # the queued send is dropped at drain.
+    send(pass_pid, {:release, {:error, :mailbox_replaced}})
+    assert_receive {:send_reply, {:ok, "rejected"}}, 2_000
+
+    assert {:ok, %{state: "rejected", error: "abandoned_before_transmit"}} =
+             Store.op_by_id(queued.id)
+
+    # Provably un-transmitted, and the draft is a draft again.
+    assert FakeSmtpTransport.calls() == []
+    assert read_draft_status(root, slug, "reply.md") == "draft"
+    assert Store.pending_ops(slug) == []
+
+    # ...so once the block is cleared, a fresh click claims and sends normally.
+    assert :ok = Engine.readopt(slug)
+    {:ok, fresh} = Engine.draft_review(slug, "reply.md")
+
+    spawn(fn ->
+      send(
+        test_pid,
+        {:send_reply,
+         Engine.send_draft(slug, "reply.md", fresh["content_hash"], fresh["review_fingerprint"])}
+      )
+    end)
+
+    assert_receive {:connect_called, send_pid}, 2_000
+    send(send_pid, {:release, {:ok, send_pid}})
+    assert_receive {:send_reply, {:ok, "sent"}}, 2_000
+    assert length(FakeSmtpTransport.calls()) == 1
   end
 
   # Spec G §Crash recovery: the classification pass runs at ACTIVATION and

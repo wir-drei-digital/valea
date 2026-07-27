@@ -150,6 +150,9 @@ defmodule Valea.Mail.OpsExecutorSendTest do
     """
   end
 
+  defp current_draft_hash(root, name),
+    do: DraftFile.content_hash(File.read!(Path.join(drafts_dir(root), name)))
+
   defp read_draft_status(root, name) do
     {:ok, %{status: status}} =
       DraftFile.parse_and_validate(File.read!(Path.join(drafts_dir(root), name)))
@@ -483,11 +486,17 @@ defmodule Valea.Mail.OpsExecutorSendTest do
       assert filed.raw =~ "Bcc: hidden@example.com"
       assert "\\Seen" in filed.flags
 
-      assert {:ok, %{state: "complete", error: nil}} = Store.op_by_id(op.id)
+      assert {:ok, %{state: "complete", error: nil} = row} = Store.op_by_id(op.id)
       assert read_draft_status(root, "reply.md") == "sent"
       refute File.exists?(spool_wire(root, op.id))
       refute File.exists?(spool_record(root, op.id))
       refute File.exists?(manifest_path(root, op.id))
+
+      # The terminal stamp REWROTE the draft, so the row's recorded revision
+      # followed it — the display projection renders `sent` only while the
+      # file still hashes to the completed op's `content_hash`.
+      assert row.content_hash == current_draft_hash(root, "reply.md")
+      assert row.content_hash != op.content_hash
     end
 
     test "rejected recipients: op rejected with the joined per-recipient reasons, draft reverts",
@@ -657,12 +666,21 @@ defmodule Valea.Mail.OpsExecutorSendTest do
       # The record payload is KEPT so the retry affordance has something to file.
       assert File.exists?(spool_record(root, op.id))
 
+      # The notice must survive to the display: the row still records the
+      # revision that was sent, so the projection reads `sent` + the notice
+      # (and its retry affordance) rather than "an earlier revision was sent".
+      assert {:ok, %{content_hash: recorded}} = Store.op_by_id(op.id)
+      assert recorded == current_draft_hash(root, "reply.md")
+
       # retry_sent_copy re-runs ONLY the append.
       assert :ok = OpsExecutor.retry_sent_copy(c, op.id)
       assert length(ModelMailTransport.messages(name, "Sent")) == 1
-      assert {:ok, %{state: "complete", error: nil}} = Store.op_by_id(op.id)
+      assert {:ok, %{state: "complete", error: nil} = row} = Store.op_by_id(op.id)
       assert length(send_calls()) == 1
       refute File.exists?(spool_record(root, op.id))
+      # The re-completion's stamp is a no-op (the file is already `sent`), so
+      # the recorded revision carries over rather than reverting.
+      assert row.content_hash == current_draft_hash(root, "reply.md")
     end
 
     test "retry_sent_copy refuses an op that is not a completed sent_copy_failed", %{root: root} do

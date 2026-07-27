@@ -1056,19 +1056,23 @@ defmodule Valea.Mail.OpsExecutor do
   # when present (`sending` for a send, `pushing` for a push — so a terminal
   # stamp chains cleanly off it), else the original snapshot hash. An edited
   # draft matches none of them and is left alone, which is the whole point.
+  #
+  # Returns `cas_stamp_draft/3`'s result — `{:ok, stamped_hash} | :unchanged`.
+  # The send path PERSISTS that hash (see `complete_send/3`): the terminal
+  # stamp moves the file, so a ledger row still holding the pre-stamp reviewed
+  # hash would make the display projection read every sent draft as an edited
+  # one.
   defp cas_stamp_op(ctx, op_row, status) do
     manifest = read_manifest(ctx, op_row.id) || %{}
     name = manifest["msg_id"] || op_row.msg_id
     expected = manifest["sending_hash"] || manifest["pushing_hash"] || manifest["content_hash"]
 
-    if is_binary(name) and is_binary(expected) do
-      case resolve_draft_path(ctx, name) do
-        {:ok, path} -> cas_stamp_draft(path, expected, status)
-        {:error, _reason} -> :unchanged
-      end
+    with true <- is_binary(name) and is_binary(expected),
+         {:ok, path} <- resolve_draft_path(ctx, name) do
+      cas_stamp_draft(path, expected, status)
+    else
+      _not_stampable -> :unchanged
     end
-
-    :ok
   end
 
   defp atomic_overwrite!(path, bytes) do
@@ -1623,9 +1627,27 @@ defmodule Valea.Mail.OpsExecutor do
 
   # -- send terminal transitions -----------------------------------------------
 
+  # The terminal `sent` stamp REWRITES the draft, so the row's `content_hash`
+  # must follow it: the display projection renders `sent` only while the file
+  # still hashes to the completed op's recorded revision, and a row left
+  # holding the pre-stamp reviewed hash would tell the user their sent mail
+  # was an "earlier revision" — swallowing the `sent_copy_failed` notice with
+  # it and re-arming Send on a message that already went out.
+  #
+  # `:unchanged` (the draft was edited mid-send, so the stamp deliberately did
+  # not touch it) keeps whatever the row already knows: the reviewed hash on a
+  # first completion — which is what makes the edited draft correctly read
+  # `draft` + `earlier_revision_sent` — or the stamped hash a previous
+  # completion persisted, so a `retry_sent_copy/2` re-completion keeps
+  # rendering `sent`.
   defp complete_send(ctx, op_row, error) do
-    Store.transition_op(op_row.id, "complete", %{error: error})
-    cas_stamp_op(ctx, op_row, "sent")
+    content_hash =
+      case cas_stamp_op(ctx, op_row, "sent") do
+        {:ok, stamped} -> stamped
+        :unchanged -> op_row.content_hash
+      end
+
+    Store.transition_op(op_row.id, "complete", %{error: error, content_hash: content_hash})
     audit_send(ctx, op_row, error)
 
     # A `sent_copy_failed` completion KEEPS the spool: `retry_sent_copy/2`
@@ -1771,6 +1793,31 @@ defmodule Valea.Mail.OpsExecutor do
 
       _other ->
         {:error, :not_retryable}
+    end
+  end
+
+  @doc """
+  Terminates a send the Engine knows will never execute — a queued transmit
+  dropped because the account stopped being sendable while it waited, or one
+  whose task died before it started. Without this the op would hold its
+  draft's claim on the widened outbound index until the next Engine
+  activation: no Send, no Resolve, stuck rendering `sending`.
+
+  Provably un-transmitted BY STATE, not by the caller's say-so: only
+  `claimed`/`pending` can be abandoned, and `execute_send/2` transitions the
+  op out of `pending` (durably, ledger AND manifest) before the transport is
+  touched — so this can never terminate a message that may have gone out.
+  """
+  @spec abandon_send(map(), String.t()) :: :ok | {:error, :not_abandonable}
+  def abandon_send(ctx, op_id) when is_binary(op_id) do
+    case Store.op_by_id(op_id) do
+      {:ok, %{kind: "send", state: state, account: account} = op_row}
+      when state in ["claimed", "pending"] and account == ctx.account ->
+        reject_send(ctx, op_row, "abandoned_before_transmit")
+        :ok
+
+      _other ->
+        {:error, :not_abandonable}
     end
   end
 

@@ -746,14 +746,17 @@ defmodule Valea.Mail.Engine do
   end
 
   # The send-family Task died before reporting. Everything it was doing is
-  # durable in the ledger — a transmitted op resumes its Sent copy, an
-  # unresolved one is classified at the next activation — so reply the
-  # in-flight display rather than hang the caller.
+  # durable in the ledger — a transmitted op resumes its Sent copy, a parked
+  # one waits for its human — so reply rather than hang the caller. A send op
+  # STILL `pending` here never reached the transport (the transmit transitions
+  # out of `pending` first), and nothing else would resolve it before the next
+  # activation, so it is terminated exactly like a dropped queue entry; an op
+  # at-or-past DATA is refused by `abandon_send/2` and left to recovery.
   def handle_info(
         {:DOWN, ref, :process, pid, _reason},
         %{ops_current: %{task: {pid, ref}, from: from, send_work: work}} = state
       ) do
-    GenServer.reply(from, send_work_fallback(work))
+    GenServer.reply(from, abandon_dropped(state, work))
     {:noreply, %{state | ops_current: nil} |> drain_ops()}
   end
 
@@ -956,6 +959,37 @@ defmodule Valea.Mail.Engine do
   defp send_work_fallback({:send, _op_id}), do: {:ok, "sending"}
   defp send_work_fallback(_resolve_or_retry), do: :ok
 
+  # A send this Engine will NOT execute — its queue entry was dropped because
+  # the account stopped being sendable while it waited, or its task died
+  # before transmitting. Nothing else would ever resolve it: `recover_sends`
+  # deliberately skips `pending` (a legitimately queued send is `pending` too,
+  # and the difference is known exactly HERE), and the classification pass
+  # only runs at activation — so the op would hold the draft's claim, stuck
+  # rendering `sending`, until the app restarted. Terminate it: a dropped
+  # entry is provably un-transmitted, and `abandon_send/2` re-checks that
+  # against the op's own state before touching it.
+  defp abandon_dropped(state, {:send, op_id}) do
+    case safe_abandon_send(state, op_id) do
+      :ok -> {:ok, "rejected"}
+      {:error, _reason} -> send_work_fallback({:send, op_id})
+    end
+  end
+
+  defp abandon_dropped(_state, resolve_or_retry), do: send_work_fallback(resolve_or_retry)
+
+  defp safe_abandon_send(state, op_id) do
+    OpsExecutor.abandon_send(
+      %{root: state.root, account: state.account, settings: state.settings},
+      op_id
+    )
+  rescue
+    # Runs in the Engine loop: a Store failure here must never fell the
+    # Engine. The op stays `pending` and the next activation classifies it.
+    _error -> {:error, :not_abandonable}
+  catch
+    :exit, _reason -> {:error, :not_abandonable}
+  end
+
   # A connection is a bonus here, never a precondition (see `run_send_work/2`).
   defp connect_for_send(args) do
     case args.transport.connect(
@@ -1028,8 +1062,7 @@ defmodule Valea.Mail.Engine do
         start_send_work_task(state, from, work)
 
       {:error, _reason} ->
-        # The op is already durable; recovery/classification resolves it.
-        GenServer.reply(from, send_work_fallback(work))
+        GenServer.reply(from, abandon_dropped(state, work))
         drain_ops(state)
     end
   end
