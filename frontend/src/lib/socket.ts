@@ -135,6 +135,16 @@ export type MailSyncPush = { account: string; phase: 'started' | 'finished'; new
 export type MailMessagePush = { account: string; path: string };
 
 /**
+ * `mail_draft` push payload — a draft file under
+ * `sources/mail/<account>/drafts/` was written on disk (`Valea.ICM.Watcher`,
+ * debounced per account). Carries the slug and NOTHING else by design: the
+ * store refetches the whole (workspace-wide) drafts list rather than patching
+ * one row, since a row's state is ledger-derived backend-side and can't be
+ * reconstructed from a path.
+ */
+export type MailDraftPush = { account: string };
+
+/**
  * `calendar_status` push payload — ONE source's `Valea.Calendar.Engine`
  * status map, channel-stringified with the slug added under `source`. Same
  * snake_case-not-camelCased situation as `MailStatusPush` (the channel
@@ -163,6 +173,7 @@ export function joinWorkspaceEvents(handlers: {
   onMailStatus?: (payload: MailStatusPush) => void;
   onMailSync?: (payload: MailSyncPush) => void;
   onMailMessage?: (payload: MailMessagePush) => void;
+  onMailDraft?: (payload: MailDraftPush) => void;
   onCalendarStatus?: (payload: CalendarStatusPush) => void;
   onCalendarSynced?: (payload: CalendarSyncedPush) => void;
   onCalendarLocalChanged?: () => void;
@@ -187,6 +198,9 @@ export function joinWorkspaceEvents(handlers: {
   }
   if (handlers.onMailMessage) {
     channel.on('mail_message', (payload: MailMessagePush) => handlers.onMailMessage?.(payload));
+  }
+  if (handlers.onMailDraft) {
+    channel.on('mail_draft', (payload: MailDraftPush) => handlers.onMailDraft?.(payload));
   }
   if (handlers.onCalendarStatus) {
     channel.on('calendar_status', (payload: CalendarStatusPush) => handlers.onCalendarStatus?.(payload));

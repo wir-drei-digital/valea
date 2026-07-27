@@ -228,6 +228,91 @@ defmodule Valea.ICM.WatcherTest do
     refute Process.whereis(Valea.ICM.Watcher)
   end
 
+  # -- mail drafts under sources/ (spec G Task 6) --------------------------
+
+  test "a draft write under sources/mail/<slug>/drafts broadcasts mail_draft_changed for that slug",
+       %{ws: ws} do
+    write_mail_config!(ws.path, ["mara"])
+    drafts = mail_dir!(ws.path, "mara", "drafts")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    poll_until_draft_slugs(
+      fn i -> File.write!(Path.join(drafts, "hello-#{i}.md"), "to: a@b.c") end,
+      ["mara"]
+    )
+  end
+
+  test "non-draft writes under sources/ broadcast nothing", %{ws: ws} do
+    write_mail_config!(ws.path, ["mara"])
+    drafts = mail_dir!(ws.path, "mara", "drafts")
+    cur = mail_dir!(ws.path, "mara", "maildir/cur")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    # Warm-up: prove this listener is actually delivering draft events
+    # before relying on their absence below.
+    poll_until_draft_slugs(fn i -> File.write!(Path.join(drafts, "warm-#{i}.md"), "warm") end, [
+      "mara"
+    ])
+
+    drain_drafts()
+
+    File.write!(Path.join(cur, "1753000000.M1P1.host:2,S"), "raw message")
+    File.write!(Path.join(ws.path, "sources/other.txt"), "not mail")
+    # A non-`.md` file sitting IN the drafts dir is not a draft either.
+    File.write!(Path.join(drafts, "notes.txt"), "not a draft")
+
+    # No positive event to wait on for a (correctly) suppressed write — a
+    # bounded sleep comfortably past the 200ms debounce window is the only
+    # way to assert the negative, same idiom as the disabled-ICM test above.
+    Process.sleep(500)
+
+    refute_received {:mail_draft_changed, _slug}
+  end
+
+  test "two configured accounts touched in one debounce window broadcast one event each", %{
+    ws: ws
+  } do
+    write_mail_config!(ws.path, ["mara", "zoe"])
+    mara_drafts = mail_dir!(ws.path, "mara", "drafts")
+    zoe_drafts = mail_dir!(ws.path, "zoe", "drafts")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    poll_until_draft_slugs(
+      fn i ->
+        File.write!(Path.join(mara_drafts, "a-#{i}.md"), "one")
+        File.write!(Path.join(zoe_drafts, "b-#{i}.md"), "two")
+      end,
+      ["mara", "zoe"]
+    )
+  end
+
+  test "a drafts write under an UNCONFIGURED slug broadcasts nothing", %{ws: ws} do
+    write_mail_config!(ws.path, ["mara"])
+    drafts = mail_dir!(ws.path, "mara", "drafts")
+    ghost = mail_dir!(ws.path, "ghost", "drafts")
+    # Not a legal slug at all (uppercase + underscore) — rejected by the
+    # path grammar before it can ever reach the configured-account check.
+    shouty = mail_dir!(ws.path, "Not_A_Slug", "drafts")
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    poll_until_draft_slugs(fn i -> File.write!(Path.join(drafts, "warm-#{i}.md"), "warm") end, [
+      "mara"
+    ])
+
+    drain_drafts()
+
+    File.write!(Path.join(ghost, "x.md"), "no such account")
+    File.write!(Path.join(shouty, "x.md"), "not even a slug")
+
+    Process.sleep(500)
+
+    refute_received {:mail_draft_changed, _slug}
+  end
+
   # -- helpers ---------------------------------------------------------------
 
   defp resolve_real!(path) do
@@ -292,6 +377,74 @@ defmodule Valea.ICM.WatcherTest do
     receive do
       {:icm_changed} -> drain_any()
       {:mounts_changed} -> drain_any()
+    after
+      500 -> :ok
+    end
+  end
+
+  # A v5 `config/mail.yaml` declaring `slugs` as real accounts — the
+  # watcher's draft flush only broadcasts for slugs that are actually
+  # configured here (`Valea.Mail.Settings.load/1`).
+  defp write_mail_config!(ws_path, slugs) do
+    accounts =
+      Enum.flat_map(slugs, fn slug ->
+        [
+          "  #{slug}:",
+          "    imap:",
+          "      host: mail.example.com",
+          "      port: 993",
+          "      username: #{slug}@example.com"
+        ]
+      end)
+
+    File.write!(
+      Path.join(ws_path, "config/mail.yaml"),
+      Enum.join(["version: 5", "accounts:"] ++ accounts, "\n") <> "\n"
+    )
+  end
+
+  # `sources/mail/<slug>/<sub>`, created up front so the writes the tests
+  # actually assert on are plain file writes.
+  defp mail_dir!(ws_path, slug, sub) do
+    dir = Path.join([ws_path, "sources/mail", slug, sub])
+    File.mkdir_p!(dir)
+    dir
+  end
+
+  defp poll_until_draft_slugs(trigger, expected, attempts_left \\ 10, seen \\ MapSet.new())
+
+  defp poll_until_draft_slugs(_trigger, expected, 0, seen) do
+    flunk(
+      "expected mail_draft_changed for #{inspect(expected)}; only saw #{inspect(MapSet.to_list(seen))}"
+    )
+  end
+
+  defp poll_until_draft_slugs(trigger, expected, attempts_left, seen) do
+    if MapSet.subset?(MapSet.new(expected), seen) do
+      :ok
+    else
+      trigger.(attempts_left)
+      seen = drain_draft_slugs(seen)
+
+      if MapSet.subset?(MapSet.new(expected), seen) do
+        :ok
+      else
+        poll_until_draft_slugs(trigger, expected, attempts_left - 1, seen)
+      end
+    end
+  end
+
+  defp drain_draft_slugs(seen) do
+    receive do
+      {:mail_draft_changed, slug} -> drain_draft_slugs(MapSet.put(seen, slug))
+    after
+      300 -> seen
+    end
+  end
+
+  defp drain_drafts do
+    receive do
+      {:mail_draft_changed, _slug} -> drain_drafts()
     after
       500 -> :ok
     end

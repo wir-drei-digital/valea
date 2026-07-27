@@ -14,20 +14,32 @@ defmodule Valea.ICM.Watcher do
       touched (the source of truth for enabled/disabled state AND for
       every ICM's `path:` declaration) — ALSO broadcasts `{:mounts_changed}`
       on `"mounts"` and triggers a root-set recompute (see below)
-    * a change under `sources/` produces no event at all — this tree is
-      watched (see "why the fixed trees are created up front" below) but
-      has no consumer that needs a live-refresh hint yet
+    * a write to a MAIL DRAFT — `sources/mail/<slug>/drafts/<name>.md`,
+      and nothing else under `sources/` — broadcasts
+      `{:mail_draft_changed, slug}` on `"mail"` for each touched account
+      that is actually configured in `config/mail.yaml` (spec G: a draft
+      composed or edited by an agent, or by hand, shows up in the UI
+      without a manual refresh)
+    * every other change under `sources/` produces no event at all — the
+      tree is watched (see "why the fixed trees are created up front"
+      below) for the drafts above, and the engine's own maildir/view
+      writes already announce themselves through `Valea.Mail.Engine`'s
+      broadcasts rather than needing a second, fs-derived hint
 
   Each tree gets its own debounce timer so a burst of activity in one does
-  not delay or coalesce with the other. `discovery_timer`/`discovery_pending`
-  cover every discovery-relevant source above (each ICM root's own
-  `icm.yaml`, and `config/workspace.yaml`) rather than a separate timer per
-  source: every event seen during the window is classified as it arrives,
-  and on flush the handler emits `icm_changed` unconditionally plus
-  `mounts_changed` only if something discovery-relevant was seen — so a
-  manifest touch inside a content burst still gets both events, exactly
-  once, together. Events carry no payload by design — consumers refetch
-  (cheap to rebuild, and the fs events themselves are noisy).
+  not delay or coalesce with the other — `draft_timer`/`draft_pending`
+  deliberately do NOT reuse the discovery pair below: a draft burst must
+  never drag the mount-set recompute in behind it (and vice versa).
+  `discovery_timer`/`discovery_pending` cover every discovery-relevant
+  source above (each ICM root's own `icm.yaml`, and `config/workspace.yaml`)
+  rather than a separate timer per source: every event seen during the
+  window is classified as it arrives, and on flush the handler emits
+  `icm_changed` unconditionally plus `mounts_changed` only if something
+  discovery-relevant was seen — so a manifest touch inside a content burst
+  still gets both events, exactly once, together. Events carry no payload
+  beyond the account slug a draft flush names (nothing at all, for the
+  other two) by design — consumers refetch (cheap to rebuild, and the fs
+  events themselves are noisy).
 
   ## No metadata regeneration here (as of Task 8.1)
 
@@ -115,6 +127,7 @@ defmodule Valea.ICM.Watcher do
 
   require Logger
 
+  alias Valea.Mail.Settings
   alias Valea.Mounts
 
   @debounce_ms 200
@@ -183,7 +196,9 @@ defmodule Valea.ICM.Watcher do
        config_path: canonical(config_path),
        icm_roots: icm_roots,
        discovery_timer: nil,
-       discovery_pending: false
+       discovery_pending: false,
+       draft_timer: nil,
+       draft_pending: MapSet.new()
      }}
   end
 
@@ -197,6 +212,7 @@ defmodule Valea.ICM.Watcher do
     case classify_path(path, state) do
       :config -> {:noreply, note_config_event(path, state)}
       {:icm, root} -> {:noreply, note_icm_event(path, root, state)}
+      {:mail_draft, slug} -> {:noreply, note_mail_draft_event(slug, state)}
       :ignore -> {:noreply, state}
     end
   end
@@ -217,19 +233,60 @@ defmodule Valea.ICM.Watcher do
     {:noreply, %{state | discovery_timer: nil, discovery_pending: false}}
   end
 
+  # One broadcast per DISTINCT account touched during the window, and only
+  # for accounts `config/mail.yaml` actually declares: the path grammar
+  # alone can't know that, and a stray `sources/mail/<anything>/drafts/`
+  # tree (a leftover from a removed account, a hand-made folder) must not
+  # push a phantom account at the UI. Settings are read HERE, on flush,
+  # rather than cached in state — the file changes independently of this
+  # process, and one YAML read per debounce window is cheap.
+  def handle_info(:flush_drafts, state) do
+    configured = configured_slugs(state.root)
+
+    for slug <- state.draft_pending, slug in configured do
+      Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_draft_changed, slug})
+    end
+
+    {:noreply, %{state | draft_timer: nil, draft_pending: MapSet.new()}}
+  end
+
+  defp configured_slugs(root) do
+    case Settings.load(root) do
+      {:ok, %{accounts: accounts}} -> Map.keys(accounts)
+      _other -> []
+    end
+  end
+
   # -- classification --------------------------------------------------
 
   defp classify_path(path, state) do
     cond do
-      # sources/ is watched (see moduledoc) but has no discovery- or
-      # content-relevant consumer yet — an explicit :ignore, rather than
-      # falling through to ICM-root classification (which would
-      # coincidentally also land on :ignore, since no ICM root can live
-      # inside the workspace), so the intent is documented here rather
-      # than incidental.
-      under?(path, state.sources_path) -> :ignore
+      under?(path, state.sources_path) -> classify_sources(path, state.sources_path)
       under?(path, state.config_path) -> :config
       true -> classify_icm_root(path, state.icm_roots)
+    end
+  end
+
+  # `sources/` carries exactly ONE live-refresh consumer: mail drafts.
+  # Deliberately narrow — the path must be a `.md` file sitting DIRECTLY in
+  # `sources/mail/<slug>/drafts/` (four segments, no deeper), with `<slug>`
+  # matching the account slug grammar (`Valea.Mail.Settings.valid_slug?/1`,
+  # the same grammar `config/mail.yaml` accepts) so an arbitrary directory
+  # name can never enter the pending set. Everything else under `sources/`
+  # — the engine's own maildir and view writes above all, which run in
+  # bursts on every sync pass — stays an explicit `:ignore` rather than
+  # falling through to ICM-root classification (which would coincidentally
+  # also land on `:ignore`, since no ICM root can live inside the
+  # workspace), so the intent is documented here rather than incidental.
+  defp classify_sources(path, sources_path) do
+    case relative_segments(path, sources_path) do
+      ["mail", slug, "drafts", file] ->
+        if Settings.valid_slug?(slug) and String.ends_with?(file, ".md"),
+          do: {:mail_draft, slug},
+          else: :ignore
+
+      _other ->
+        :ignore
     end
   end
 
@@ -284,6 +341,16 @@ defmodule Valea.ICM.Watcher do
     else
       state
     end
+  end
+
+  # Per-account accumulation: the flush broadcasts once per DISTINCT slug
+  # touched during the window, so an agent writing five drafts for one
+  # account produces one refetch hint, not five. Its own timer — a draft
+  # burst must not arm (or postpone) the discovery flush, which recomputes
+  # the whole mount set.
+  defp note_mail_draft_event(slug, state) do
+    state = arm(:draft_timer, :flush_drafts, state)
+    %{state | draft_pending: MapSet.put(state.draft_pending, slug)}
   end
 
   defp relative_segments(path, root) do

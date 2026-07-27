@@ -194,6 +194,15 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     }
   end
 
+  test "a changed draft file pushes mail_draft with only its account" do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_draft_changed, "mara"})
+
+    assert_push "mail_draft", payload
+    # Payload-less by design beyond the slug — the store refetches the whole
+    # (workspace-wide) drafts list rather than patching one row.
+    assert payload == %{"account" => "mara"}
+  end
+
   test "a calendar status change pushes calendar_status with string keys + source" do
     Phoenix.PubSub.broadcast(
       Valea.PubSub,

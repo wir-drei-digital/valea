@@ -2,7 +2,7 @@ import { api, type Api } from '../api/client';
 import { workspaceStore } from './workspace.svelte';
 import { sha256Hex } from '../components/mail/mail-shapes';
 import { inDesktop, keychainGet } from '../keychain';
-import type { MailStatusPush, MailSyncPush, MailMessagePush } from '../socket';
+import type { MailStatusPush, MailSyncPush, MailMessagePush, MailDraftPush } from '../socket';
 import type { Channel } from 'phoenix';
 
 /**
@@ -310,14 +310,15 @@ export function normalizeMailDraftReview(raw: Record<string, unknown>): MailDraf
  * the selected account's folder list, the selected folder's message list,
  * and the currently open message's detail.
  *
- * `handleMailStatus`/`handleMailSync`/`handleMailMessage` are plain public
- * methods, not wired to a channel by this store itself — per this
- * codebase's established `workspace:events` convention (see `wireIcmEvents`
- * in `icm.svelte.ts`), only ONE `joinWorkspaceEvents` call site may exist.
- * All three payloads carry the account slug; the folder/message refetches
- * are FILTERED to the currently selected account (a push for a background
- * account only upserts its status row), so a busy second account can't
- * churn the list the user is actually reading.
+ * `handleMailStatus`/`handleMailSync`/`handleMailMessage`/`handleMailDraft`
+ * are plain public methods, not wired to a channel by this store itself —
+ * per this codebase's established `workspace:events` convention (see
+ * `wireIcmEvents` in `icm.svelte.ts`), only ONE `joinWorkspaceEvents` call
+ * site may exist. All four payloads carry the account slug; the
+ * folder/message refetches are FILTERED to the currently selected account (a
+ * push for a background account only upserts its status row), so a busy
+ * second account can't churn the list the user is actually reading. The
+ * drafts refetch is deliberately NOT filtered — see `handleMailDraft`.
  */
 export class MailStore {
   accounts: MailAccountStatus[] = $state([]);
@@ -623,6 +624,24 @@ export class MailStore {
   }
 
   /**
+   * `mail_draft` push handler — a draft file was written under
+   * `sources/mail/<account>/drafts/` (an agent composing through the
+   * ask-gate, or a hand edit). Unlike the folder/message handlers this is
+   * deliberately NOT filtered to the selected account: `list_mail_drafts` is
+   * workspace-wide in one call (the Drafts panel wants every account), and
+   * `selectedDrafts` narrows it for display — so filtering here would only
+   * leave a background account's rows stale while still costing the same
+   * single refetch when the user switches to it.
+   *
+   * Refetches rather than patching the pushed row: a row's `statusDisplay`
+   * is derived from the ops LEDGER backend-side, which the push (slug only)
+   * says nothing about.
+   */
+  handleMailDraft(_payload: MailDraftPush): void {
+    void this.refreshDrafts();
+  }
+
+  /**
    * Subscribes to `mail_status` pushes — beyond this store's own refetch
    * reaction (see `handleMailStatus` above). The Today page
    * (`routes/+page.svelte`) hooks this to refetch `cockpit_today`: the
@@ -664,14 +683,15 @@ export const mailStore = new MailStore(api);
 let mailEventsWired = false;
 
 /**
- * Attaches the three mail push handlers (`mail_status`/`mail_sync`/
- * `mail_message`) to an already-joined `workspace:events` channel, driving
- * the singleton `mailStore`. Takes the channel as a parameter rather than
- * joining its own — same reason `wireIcmEvents` does (see its own doc
- * comment in `icm.svelte.ts`): Phoenix's JS client only reliably delivers
- * pushes to ONE join per topic per socket, so every store rides the single
- * `workspace:events` join `wireIcmEvents` (`routes/+layout.svelte`'s one
- * call site) owns, rather than opening a second one here.
+ * Attaches the four mail push handlers (`mail_status`/`mail_sync`/
+ * `mail_message`/`mail_draft`) to an already-joined `workspace:events`
+ * channel, driving the singleton `mailStore`. Takes the channel as a
+ * parameter rather than joining its own — same reason `wireIcmEvents` does
+ * (see its own doc comment in `icm.svelte.ts`): Phoenix's JS client only
+ * reliably delivers pushes to ONE join per topic per socket, so every store
+ * rides the single `workspace:events` join `wireIcmEvents`
+ * (`routes/+layout.svelte`'s one call site) owns, rather than opening a
+ * second one here.
  *
  * SINGLE CALL SITE: wired from `wireIcmEvents` itself (`icm.svelte.ts`),
  * alongside `wireMountsEvents`/`wireRecentSessionsEvents` — NOT from the
@@ -689,6 +709,7 @@ export function wireMailEvents(channel: Channel): void {
   channel.on('mail_status', (payload: MailStatusPush) => mailStore.handleMailStatus(payload));
   channel.on('mail_sync', (payload: MailSyncPush) => mailStore.handleMailSync(payload));
   channel.on('mail_message', (payload: MailMessagePush) => mailStore.handleMailMessage(payload));
+  channel.on('mail_draft', (payload: MailDraftPush) => mailStore.handleMailDraft(payload));
 }
 
 /**

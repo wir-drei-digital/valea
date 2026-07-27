@@ -63,6 +63,15 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
     {:noreply, socket}
   end
 
+  # A draft file changed on disk (`Valea.ICM.Watcher`, debounced per
+  # account). Carries the slug and nothing else — the store refetches the
+  # workspace-wide drafts list, whose per-row states are ledger-derived
+  # backend-side and so can't be patched from a path alone.
+  def handle_info({:mail_draft_changed, slug}, socket) do
+    push(socket, "mail_draft", %{"account" => slug})
+    {:noreply, socket}
+  end
+
   # Calendar pushes (calendar spec F, §RPC surface "Channel pushes"): the
   # spec's channel table is the wire contract — string keys, SNAKE_CASE
   # `event_count` (deliberately NOT mail's camelCase push style).

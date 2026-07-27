@@ -571,6 +571,25 @@ describe('MailStore push handlers (account filtering)', () => {
     await flush();
     expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
   });
+
+  it('handleMailDraft refetches the drafts list for ANY account', async () => {
+    const drafts = [{ account: 'zoe', name: 'reply.md', path: 'sources/mail/zoe/drafts/reply.md' }];
+    const listMailDrafts = vi.fn(async () => ({ ok: true, data: { drafts } }) as DraftsResult);
+    const store = new MailStore(fakeApi({ listMailDrafts }) as never);
+    await store.refreshStatus();
+
+    // Unlike folders/messages, the drafts list is workspace-wide (every
+    // account in one call), so a BACKGROUND account's draft is refetched
+    // too — `selectedDrafts` narrows it for display.
+    store.handleMailDraft({ account: 'zoe' });
+    await flush();
+    expect(listMailDrafts).toHaveBeenCalledTimes(1);
+    expect(store.drafts.map((d) => d.account)).toEqual(['zoe']);
+
+    store.handleMailDraft({ account: 'mara' });
+    await flush();
+    expect(listMailDrafts).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('resupplyCredentials', () => {
@@ -987,15 +1006,20 @@ describe('MailStore.resolveSendReview / retrySentCopy', () => {
 });
 
 describe('wireMailEvents', () => {
-  it('attaches the three handlers once and stays idempotent on repeat calls', () => {
+  it('attaches the four handlers once and stays idempotent on repeat calls', () => {
     const on = vi.fn();
     const channel = { on } as unknown as Channel;
 
     wireMailEvents(channel);
     wireMailEvents(channel);
 
-    expect(on).toHaveBeenCalledTimes(3);
-    expect(on.mock.calls.map((c) => c[0])).toEqual(['mail_status', 'mail_sync', 'mail_message']);
+    expect(on).toHaveBeenCalledTimes(4);
+    expect(on.mock.calls.map((c) => c[0])).toEqual([
+      'mail_status',
+      'mail_sync',
+      'mail_message',
+      'mail_draft'
+    ]);
   });
 
   it('exports the singleton store', () => {
