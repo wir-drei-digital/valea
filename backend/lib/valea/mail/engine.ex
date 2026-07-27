@@ -30,7 +30,7 @@ defmodule Valea.Mail.Engine do
 
   Activation calls `Valea.Mail.Account.verify/3` against `sources/mail/
   <slug>/.account` before anything else: `:absent` claims the slug
-  (`write_if_absent!/3`) and proceeds; `{:error, :identity_mismatch}` — the
+  (`write_if_absent!/4`) and proceeds; `{:error, :identity_mismatch}` — the
   slug's local subtree was provisioned against a DIFFERENT host/username —
   leaves the Engine inert (`active: false`, `state: "identity_mismatch"`),
   never running `Index.rebuild/2` or a sync pass, but still answering
@@ -38,6 +38,26 @@ defmodule Valea.Mail.Engine do
   Resolving it is a purge (Task 10's `purge_mail_account_files`), not
   `readopt/1` — a mismatched identity is a different account entirely, not
   the SAME account's mailbox getting replaced (see below).
+
+  ## Maildir separator (windows-support spec C1)
+
+  This module owns the separator POLICY; `Valea.Mail.Account` owns the
+  durable state and `Valea.Mail.Maildir` the codec. Activation is the one
+  place the two meet:
+
+    * claiming an unclaimed slug picks the NEW-store separator from the host
+      platform — `;` on Windows (`:` is illegal on NTFS), `:` elsewhere;
+    * every activation — new or existing — then READS the separator back
+      from `.account` (`Account.separator/2`) and pins it into state, so an
+      existing store's recorded convention always wins over the host's;
+    * `{:error, :invalid_separator}` takes the same inert, sticky path as
+      `:identity_mismatch` — no index rebuild, no pass — with `last_error`
+      naming the corrupt field. Encoding filenames against a guess would
+      scatter names the rest of the store can't be listed against.
+
+  The pinned separator rides in the args/ctx of every background worker
+  (`SyncPass`, `OpsExecutor`) exactly like `root`/`account`: those modules
+  never re-derive it, and never default it.
 
   ## Credential handling
 
@@ -495,6 +515,12 @@ defmodule Valea.Mail.Engine do
       # zero-arity-closure discipline as `credential`, never the same value
       # by construction.
       smtp_credential: nil,
+      # Pinned at activation from `.account` (moduledoc §Maildir separator).
+      # `nil` until then — deliberately not `":"`, so a separator that ever
+      # escaped an inert Engine into an encode would raise at
+      # `Maildir.encode_filename/4`'s guard rather than write `:` names into
+      # a `;` store. Nothing can: every work path is gated on `active`.
+      separator: nil,
       status: "inactive",
       last_sync_at: nil,
       last_error: nil,
@@ -808,7 +834,8 @@ defmodule Valea.Mail.Engine do
       settings: state.settings,
       transport: state.transport,
       connect_opts: state.connect_opts,
-      credential: state.credential
+      credential: state.credential,
+      separator: state.separator
     }
 
     task =
@@ -844,7 +871,8 @@ defmodule Valea.Mail.Engine do
       settings: state.settings,
       transport: state.transport,
       connect_opts: state.connect_opts,
-      credential: state.credential
+      credential: state.credential,
+      separator: state.separator
     }
 
     task =
@@ -1144,7 +1172,8 @@ defmodule Valea.Mail.Engine do
             account: args.account,
             settings: args.settings,
             transport: args.transport,
-            conn: conn
+            conn: conn,
+            separator: args.separator
           }
 
           push_display(OpsExecutor.execute_append(ctx, op_id))
@@ -1200,7 +1229,8 @@ defmodule Valea.Mail.Engine do
             account: args.account,
             settings: args.settings,
             transport: args.transport,
-            conn: conn
+            conn: conn,
+            separator: args.separator
           }
 
           OpsExecutor.recover(ctx)
@@ -1263,22 +1293,52 @@ defmodule Valea.Mail.Engine do
 
     case Account.verify(state.root, state.account, identity) do
       :absent ->
-        :ok = Account.write_if_absent!(state.root, state.account, identity)
-        do_activate(state)
+        :ok = Account.write_if_absent!(state.root, state.account, identity, new_store_separator())
+        activate_with_separator(state)
 
       :ok ->
-        do_activate(state)
+        activate_with_separator(state)
 
       {:error, :identity_mismatch} ->
-        new_state = %{
-          state
-          | active: false,
-            status: "identity_mismatch",
-            workspace_id: load_workspace_id(state.root)
-        }
+        block_inert(state, nil)
+    end
+  end
 
-        broadcast_status(new_state)
-        new_state
+  # The separator is read back from `.account` even for the slug we just
+  # claimed: one code path, and the FILE — not this process's idea of the
+  # host — is what every subsequent encode is bound to.
+  defp activate_with_separator(state) do
+    case Account.separator(state.root, state.account) do
+      {:ok, separator} ->
+        do_activate(%{state | separator: separator})
+
+      {:error, :invalid_separator} ->
+        block_inert(state, "invalid maildir_separator in .account")
+    end
+  end
+
+  # The shared fail-closed activation outcome (moduledoc §Identity binding /
+  # §Maildir separator): inert, never indexed, never synced, but still
+  # answering `status/1` so the operator can see why.
+  defp block_inert(state, last_error) do
+    new_state = %{
+      state
+      | active: false,
+        status: "identity_mismatch",
+        last_error: last_error,
+        workspace_id: load_workspace_id(state.root)
+    }
+
+    broadcast_status(new_state)
+    new_state
+  end
+
+  # New stores only — an EXISTING `.account` is always authoritative over
+  # the host (spec C1: absent field = legacy = `:`, never OS-defaulted).
+  defp new_store_separator do
+    case Valea.Paths.host_platform() do
+      :windows -> ";"
+      _ -> ":"
     end
   end
 
@@ -1433,6 +1493,7 @@ defmodule Valea.Mail.Engine do
       credential: state.credential,
       transport: state.transport,
       connect_opts: state.connect_opts,
+      separator: state.separator,
       readopt_authorized: readopt_authorized
     }
 

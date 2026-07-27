@@ -145,7 +145,7 @@ defmodule Valea.Mail.MessageFile do
   them in once occurrences are known). There is deliberately no
   `status`/`uid`/`source`/`source_ref` field — those belonged to the
   retired single-flat-file design; occurrence identity now lives on the
-  maildir filename (`Valea.Mail.Maildir.encode_filename/3`) and in
+  maildir filename (`Valea.Mail.Maildir.encode_filename/4`) and in
   `mail_messages`/`mail_uid_map`, not in the shared view.
   """
   @spec render(Message.t(), map()) :: binary()

@@ -46,7 +46,7 @@ defmodule Valea.Mail.Reconcile do
   # cleared — the next windowed backfill re-records it if it is still in-window.
   @oversize_msg_id "__oversize__"
 
-  @typedoc "The per-folder reconciliation context `SyncPass` threads in (root, account, transport, conn, dir_rel, select, settings)."
+  @typedoc "The per-folder reconciliation context `SyncPass` threads in (root, account, transport, conn, separator, dir_rel, select, settings)."
   @type ctx :: map()
 
   # -- folder_reset -----------------------------------------------------------
@@ -131,7 +131,7 @@ defmodule Valea.Mail.Reconcile do
 
   defp stored_identity(ctx, occ) do
     fingerprint = Views.stored_fingerprint(ctx.root, ctx.account, occ.msg_id)
-    filename = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags)
+    filename = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags, ctx.separator)
     {fingerprint, index_message_id(ctx.account, occ.msg_id), filename, occ.flags}
   end
 
@@ -288,7 +288,7 @@ defmodule Valea.Mail.Reconcile do
   end
 
   defp apply_rebind(ctx, folder, dir_abs, new_uidvalidity, cand, new_uid) do
-    new_filename = Maildir.encode_filename(cand.msg_id, new_uid, cand.flags)
+    new_filename = Maildir.encode_filename(cand.msg_id, new_uid, cand.flags, ctx.separator)
 
     if new_filename != cand.filename do
       cur = Path.join(dir_abs, "cur")

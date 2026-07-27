@@ -98,6 +98,7 @@ defmodule Valea.Mail.SyncPass do
           settings: Valea.Mail.Settings.t(),
           credential: (-> String.t()) | String.t(),
           transport: module(),
+          separator: Maildir.separator(),
           readopt_authorized: boolean()
         }
 
@@ -136,6 +137,10 @@ defmodule Valea.Mail.SyncPass do
       settings: args.settings,
       transport: args.transport,
       conn: conn,
+      # The STORE's separator, pinned by `Valea.Mail.Engine` at activation
+      # (windows-support spec C1). Required, never defaulted: a missing key
+      # raises here rather than silently writing `:` names into a `;` store.
+      separator: args.separator,
       readopt_authorized: Map.get(args, :readopt_authorized, false)
     }
 
@@ -557,7 +562,7 @@ defmodule Valea.Mail.SyncPass do
       {:ok, raw} ->
         maildir_flags = Maildir.flags_from_imap(imap_flags)
         {:ok, %{msg_id: msg_id}} = Views.land(ctx.root, ctx.account, raw, %{})
-        filename = Maildir.encode_filename(msg_id, uid, maildir_flags)
+        filename = Maildir.encode_filename(msg_id, uid, maildir_flags, ctx.separator)
         Maildir.deliver!(dir_abs, filename, raw)
 
         Store.put_occurrence(ctx.account, folder, %{
@@ -641,8 +646,8 @@ defmodule Valea.Mail.SyncPass do
     if MapSet.equal?(new_flags, occ.flags) do
       acc
     else
-      old_name = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags)
-      new_name = Maildir.encode_filename(occ.msg_id, occ.uid, new_flags)
+      old_name = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags, ctx.separator)
+      new_name = Maildir.encode_filename(occ.msg_id, occ.uid, new_flags, ctx.separator)
       rename_cur(dir_abs, old_name, new_name)
 
       Store.put_occurrence(ctx.account, folder, %{
@@ -681,7 +686,7 @@ defmodule Valea.Mail.SyncPass do
   end
 
   defp remove_occurrence(ctx, folder, dir_abs, occ, acc) do
-    rm_cur_by_uid(dir_abs, occ.uid, occ.msg_id, occ.flags)
+    rm_cur_by_uid(ctx, dir_abs, occ.uid, occ.msg_id, occ.flags)
     Store.delete_occurrence(ctx.account, folder, occ.uid)
     Store.delete_index_row(ctx.account, folder, occ.uid)
 
@@ -755,7 +760,7 @@ defmodule Valea.Mail.SyncPass do
         Views.land(ctx.root, ctx.account, raw, %{msg_id_hint: occ.msg_id})
 
       if landed == occ.msg_id do
-        filename = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags)
+        filename = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags, ctx.separator)
         Maildir.deliver!(dir_abs, filename, raw)
         write_index_row!(ctx, folder, dir_rel, occ.uid, occ.msg_id, occ.flags, filename)
         refresh_view(ctx, occ.msg_id)
@@ -912,7 +917,7 @@ defmodule Valea.Mail.SyncPass do
   # Remove the occurrence's file by finding the on-disk file whose parsed UID
   # matches (robust to an out-of-band flag rename), falling back to the name
   # computed from the cached flags.
-  defp rm_cur_by_uid(dir_abs, uid, msg_id, flags) do
+  defp rm_cur_by_uid(ctx, dir_abs, uid, msg_id, flags) do
     cur = Path.join(dir_abs, "cur")
 
     found =
@@ -920,7 +925,14 @@ defmodule Valea.Mail.SyncPass do
       |> Maildir.list_occurrences()
       |> Enum.find(&(&1.uid == uid))
 
-    name = if found, do: found.filename, else: Maildir.encode_filename(msg_id, uid, flags)
+    # The on-disk name wins when we can see it (it is separator-agnostic —
+    # `list_occurrences/1` parses either form); the encoded fallback is only
+    # reached when the file is already gone.
+    name =
+      if found,
+        do: found.filename,
+        else: Maildir.encode_filename(msg_id, uid, flags, ctx.separator)
+
     File.rm(Path.join(cur, name))
   end
 
@@ -946,6 +958,7 @@ defmodule Valea.Mail.SyncPass do
       settings: ctx.settings,
       transport: ctx.transport,
       conn: ctx.conn,
+      separator: ctx.separator,
       dir_rel: scan.dir_rel,
       select: scan.select
     }

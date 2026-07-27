@@ -4,7 +4,7 @@ defmodule Valea.Mail.MaildirTest do
 
   describe "filename codec" do
     test "round-trips msg_id, uid and sorted flags" do
-      name = Maildir.encode_filename("2026-07-15-alex-4f2a91c3", 42, MapSet.new(["S", "F"]))
+      name = Maildir.encode_filename("2026-07-15-alex-4f2a91c3", 42, MapSet.new(["S", "F"]), ":")
       assert name == "2026-07-15-alex-4f2a91c3,U=42:2,FS"
 
       assert {:ok, %{msg_id: "2026-07-15-alex-4f2a91c3", uid: 42, flags: flags}} =
@@ -14,7 +14,7 @@ defmodule Valea.Mail.MaildirTest do
     end
 
     test "uid-less filename (pre-confirmation) round-trips" do
-      name = Maildir.encode_filename("2026-07-15-alex-4f2a91c3", nil, MapSet.new())
+      name = Maildir.encode_filename("2026-07-15-alex-4f2a91c3", nil, MapSet.new(), ":")
       assert name == "2026-07-15-alex-4f2a91c3:2,"
       assert {:ok, %{uid: nil, flags: flags}} = Maildir.parse_filename(name)
       assert MapSet.size(flags) == 0
@@ -27,6 +27,43 @@ defmodule Valea.Mail.MaildirTest do
 
     test "rejects uid 0 (IMAP UIDs must be >= 1)" do
       assert :error = Maildir.parse_filename("id,U=0:2,S")
+    end
+
+    # windows-support spec C1: the flag separator is per-store state, not a
+    # constant — `;` where `:` is illegal (NTFS).
+    test "encode/4 uses the store separator" do
+      flags = MapSet.new(["F", "S"])
+
+      assert Maildir.encode_filename("2026-07-15-alex-4f2a91c3", 42, flags, ":") ==
+               "2026-07-15-alex-4f2a91c3,U=42:2,FS"
+
+      assert Maildir.encode_filename("2026-07-15-alex-4f2a91c3", 42, flags, ";") ==
+               "2026-07-15-alex-4f2a91c3,U=42;2,FS"
+    end
+
+    test "encode/4 refuses any separator outside the two-value vocabulary" do
+      flags = MapSet.new()
+
+      assert_raise FunctionClauseError, fn ->
+        Maildir.encode_filename("2026-07-15-alex-4f2a91c3", 1, flags, "|")
+      end
+    end
+
+    test "parse accepts both separators and excludes both from msg_id" do
+      assert {:ok, %{msg_id: "m", uid: nil}} = Maildir.parse_filename("m:2,")
+      assert {:ok, %{msg_id: "m", uid: 7}} = Maildir.parse_filename("m,U=7;2,S")
+      # separator chars illegal inside msg_id
+      assert :error = Maildir.parse_filename("a;b:2,")
+      assert :error = Maildir.parse_filename("a:b;2,")
+    end
+
+    test "a `;`-store filename round-trips through the tolerant parser" do
+      name = Maildir.encode_filename("2026-07-15-alex-4f2a91c3", 42, MapSet.new(["S"]), ";")
+
+      assert {:ok, %{msg_id: "2026-07-15-alex-4f2a91c3", uid: 42, flags: flags}} =
+               Maildir.parse_filename(name)
+
+      assert MapSet.equal?(flags, MapSet.new(["S"]))
     end
   end
 
@@ -112,11 +149,47 @@ defmodule Valea.Mail.MaildirTest do
     test "deliver! lands via tmp/ then cur/, listable" do
       dir = Path.join(System.tmp_dir!(), "maildir-#{System.unique_integer([:positive])}")
       :ok = Maildir.mailbox_dirs(dir)
-      name = Maildir.encode_filename("2026-01-01-a-deadbeef", 7, MapSet.new(["S"]))
+      name = Maildir.encode_filename("2026-01-01-a-deadbeef", 7, MapSet.new(["S"]), ":")
       :ok = Maildir.deliver!(dir, name, "raw bytes")
       assert File.read!(Path.join([dir, "cur", name])) == "raw bytes"
       assert [] = Path.wildcard(Path.join([dir, "tmp", "*"]))
       assert [%{msg_id: "2026-01-01-a-deadbeef", uid: 7}] = Maildir.list_occurrences(dir)
+    end
+
+    # windows-support spec C2 — `File.rename` semantics differ across
+    # platforms for an EXISTING target (POSIX replaces silently; the Win32
+    # `MoveFile` family only replaces when asked to). Every re-delivery path
+    # in the pull engine (`restore_missing/4` re-landing an out-of-band
+    # deleted occurrence, an idempotent re-land of the same UID) renames
+    # `tmp/<name>` onto a `cur/<name>` that may already exist, so
+    # replace-on-rename is load-bearing, not incidental. Runs on both lanes;
+    # it only has teeth on NTFS.
+    test "deliver! replaces an existing cur/ target (rename-onto-existing)" do
+      dir = Path.join(System.tmp_dir!(), "maildir-#{System.unique_integer([:positive])}")
+      :ok = Maildir.mailbox_dirs(dir)
+      name = Maildir.encode_filename("2026-01-01-a-deadbeef", 7, MapSet.new(["S"]), ":")
+
+      :ok = Maildir.deliver!(dir, name, "first bytes")
+      :ok = Maildir.deliver!(dir, name, "second bytes")
+
+      assert File.read!(Path.join([dir, "cur", name])) == "second bytes"
+      assert [] = Path.wildcard(Path.join([dir, "tmp", "*"]))
+      assert length(Maildir.list_occurrences(dir)) == 1
+    end
+
+    test "File.rename! onto an existing regular file replaces it" do
+      dir = Path.join(System.tmp_dir!(), "maildir-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      source = Path.join(dir, "source")
+      target = Path.join(dir, "target")
+      File.write!(source, "new")
+      File.write!(target, "old")
+
+      assert :ok = File.rename!(source, target)
+      assert File.read!(target) == "new"
+      refute File.exists?(source)
     end
   end
 end

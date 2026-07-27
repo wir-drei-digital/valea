@@ -91,7 +91,8 @@ defmodule Valea.Mail.OpsExecutorTest do
       account: "mara",
       settings: settings,
       transport: ModelMailTransport,
-      conn: connect(name)
+      conn: connect(name),
+      separator: ":"
     }
     |> maybe_opid(Keyword.get(opts, :opid))
   end
@@ -109,6 +110,7 @@ defmodule Valea.Mail.OpsExecutorTest do
         settings: settings,
         credential: fn -> "pw" end,
         transport: ModelMailTransport,
+        separator: ":",
         connect_opts: [name: name]
       })
   end

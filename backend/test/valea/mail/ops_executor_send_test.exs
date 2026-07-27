@@ -112,6 +112,9 @@ defmodule Valea.Mail.OpsExecutorSendTest do
       root: root,
       account: "mara",
       settings: settings,
+      # Unix-store separator, matching what `Engine` pins at activation —
+      # `required(:separator)` in the executor ctx type (windows spec C1).
+      separator: ":",
       transport: ModelMailTransport,
       conn: if(name, do: connect(name), else: nil),
       smtp_transport: FakeSmtpTransport,
@@ -119,7 +122,9 @@ defmodule Valea.Mail.OpsExecutorSendTest do
     }
   end
 
-  defp local_ctx(c), do: Map.take(c, [:root, :account, :settings])
+  # Mirrors `Engine`'s prepare_* local_ctx key-for-key (a key dropped here
+  # is a KeyError in prod — see ops_executor_test.exs's local_ctx/1).
+  defp local_ctx(c), do: Map.take(c, [:root, :account, :settings, :separator])
 
   defp drafts_dir(root), do: Path.join([root, "sources", "mail", "mara", "drafts"])
 
@@ -209,6 +214,7 @@ defmodule Valea.Mail.OpsExecutorSendTest do
         root: root,
         account: "mara",
         settings: settings,
+        separator: ":",
         credential: fn -> "pw" end,
         transport: ModelMailTransport,
         connect_opts: [name: name]

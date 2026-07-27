@@ -65,8 +65,8 @@ defmodule Valea.Mail.IndexTest do
       raw = fixture("plain.eml")
       {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
 
-      inbox_filename = Maildir.encode_filename(msg_id, 10, MapSet.new(["S"]))
-      archive_filename = Maildir.encode_filename(msg_id, 3, MapSet.new(["F", "S"]))
+      inbox_filename = Maildir.encode_filename(msg_id, 10, MapSet.new(["S"]), ":")
+      archive_filename = Maildir.encode_filename(msg_id, 3, MapSet.new(["F", "S"]), ":")
 
       Maildir.deliver!(inbox_abs, inbox_filename, raw)
       Maildir.deliver!(archive_abs, archive_filename, raw)
@@ -153,7 +153,7 @@ defmodule Valea.Mail.IndexTest do
 
       raw1 = fixture("plain.eml")
       {:ok, %{msg_id: msg_id1}} = Views.land(root, account, raw1)
-      filename1 = Maildir.encode_filename(msg_id1, 1, MapSet.new())
+      filename1 = Maildir.encode_filename(msg_id1, 1, MapSet.new(), ":")
       Maildir.deliver!(inbox_abs, filename1, raw1)
 
       # A second occurrence whose msg_id has no corresponding
@@ -166,7 +166,7 @@ defmodule Valea.Mail.IndexTest do
       raw2 = fixture("no_message_id.eml")
       {:ok, message2} = Normalizer.normalize(raw2)
       msg_id2 = MessageFile.msg_id(message2, raw2)
-      filename2 = Maildir.encode_filename(msg_id2, 2, MapSet.new())
+      filename2 = Maildir.encode_filename(msg_id2, 2, MapSet.new(), ":")
       Maildir.deliver!(inbox_abs, filename2, raw2)
 
       assert {:ok, 2} = Index.rebuild(root, account)
@@ -197,7 +197,7 @@ defmodule Valea.Mail.IndexTest do
 
       raw = fixture("plain.eml")
       {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
-      filename = Maildir.encode_filename(msg_id, 1, MapSet.new(["S"]))
+      filename = Maildir.encode_filename(msg_id, 1, MapSet.new(["S"]), ":")
       Maildir.deliver!(inbox_abs, filename, raw)
 
       view_file = Path.join(root, Views.view_rel_path(account, msg_id))
@@ -227,7 +227,7 @@ defmodule Valea.Mail.IndexTest do
 
       raw = fixture("plain.eml")
       {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
-      filename = Maildir.encode_filename(msg_id, 1, MapSet.new())
+      filename = Maildir.encode_filename(msg_id, 1, MapSet.new(), ":")
       Maildir.deliver!(inbox_abs, filename, raw)
 
       view_file = Path.join(root, Views.view_rel_path(account, msg_id))
@@ -253,7 +253,7 @@ defmodule Valea.Mail.IndexTest do
 
       # No `,U=` token — a pre-confirmation state that shouldn't normally
       # be sitting in cur/, but rebuild must degrade gracefully, not crash.
-      no_uid_filename = Maildir.encode_filename(msg_id, nil, MapSet.new())
+      no_uid_filename = Maildir.encode_filename(msg_id, nil, MapSet.new(), ":")
       Maildir.deliver!(inbox_abs, no_uid_filename, raw)
 
       log =
@@ -272,7 +272,7 @@ defmodule Valea.Mail.IndexTest do
 
       raw = fixture("plain.eml")
       {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
-      filename = Maildir.encode_filename(msg_id, 1, MapSet.new(["S"]))
+      filename = Maildir.encode_filename(msg_id, 1, MapSet.new(["S"]), ":")
       Maildir.deliver!(inbox_abs, filename, raw)
 
       assert {:ok, 1} = Index.rebuild(root, account)

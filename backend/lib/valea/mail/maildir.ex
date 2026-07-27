@@ -4,12 +4,35 @@ defmodule Valea.Mail.Maildir do
 
   Implements filename encoding/decoding, IMAP flag mapping, folder name escaping,
   and atomic maildir delivery with APFS collision handling.
+
+  ## Flag separator (windows-support spec C1)
+
+  A maildir filename spells its flags as `<msg_id>[,U=<uid>]<sep>2,<FLAGS>`,
+  where `<sep>` is classically `:` — a character NTFS refuses outright. The
+  separator is therefore **per-store state**, not a constant in this module:
+  `Valea.Mail.Account.separator/2` reads it from the store's `.account` file
+  (`;` for stores created on Windows, `:` everywhere else, and `:` for any
+  legacy store whose `.account` predates the field), and every caller threads
+  it in through the context it already carries. `encode_filename/4` has NO
+  default separator on purpose — the arity is the completeness audit, so a
+  new encode site cannot compile without deciding where its separator comes
+  from.
+
+  Reading is separator-AGNOSTIC: `parse_filename/1` accepts either character
+  unconditionally, so a listing that mixes both (a store whose files were
+  written before and after a move) still parses in full. Both characters are
+  excluded from the `msg_id` class, so the split point is never ambiguous.
   """
 
   @type flags :: MapSet.t(String.t())
 
-  # Regex for parsing maildir filenames
-  @filename_regex ~r/^(?<id>[^,:]+)(,U=(?<uid>\d+))?:2,(?<flags>[A-Za-z]*)$/
+  @typedoc "The two legal maildir flag separators — `:` classic, `;` on NTFS."
+  @type separator :: String.t()
+
+  # Regex for parsing maildir filenames. Reading is separator-agnostic (see
+  # the moduledoc): `[:;]` matches either, and BOTH are excluded from the
+  # `id` class so the split point stays unambiguous in a mixed listing.
+  @filename_regex ~r/^(?<id>[^,:;]+)(,U=(?<uid>\d+))?[:;]2,(?<flags>[A-Za-z]*)$/
 
   # Known maildir flags and their IMAP equivalents
   @flag_map %{
@@ -21,16 +44,22 @@ defmodule Valea.Mail.Maildir do
   }
 
   @doc """
-  Encode a message into a maildir filename.
+  Encode a message into a maildir filename, using `separator` (the STORE's,
+  from `Valea.Mail.Account.separator/2` — never this module's opinion, and
+  never the host OS's; see the moduledoc).
 
   Returns a filename string like:
-  - "2026-07-15-alex-4f2a91c3,U=42:2,FS" (with uid)
+  - "2026-07-15-alex-4f2a91c3,U=42:2,FS" (with uid, `:`-store)
+  - "2026-07-15-alex-4f2a91c3,U=42;2,FS" (with uid, `;`-store)
   - "2026-07-15-alex-4f2a91c3:2," (without uid, pre-confirmation)
 
-  Flags are sorted ascending alphabetically.
+  Flags are sorted ascending alphabetically. Any `separator` outside the
+  two-value vocabulary raises `FunctionClauseError` rather than writing an
+  unreadable name — the reader's `msg_id` class excludes exactly these two
+  characters, so no third one could ever round-trip.
   """
-  @spec encode_filename(String.t(), pos_integer() | nil, flags) :: String.t()
-  def encode_filename(msg_id, uid, flags) do
+  @spec encode_filename(String.t(), pos_integer() | nil, flags, separator()) :: String.t()
+  def encode_filename(msg_id, uid, flags, separator) when separator in [":", ";"] do
     sorted_flags = flags |> Enum.sort() |> Enum.join()
 
     uid_part =
@@ -39,7 +68,7 @@ defmodule Valea.Mail.Maildir do
         uid_val -> ",U=#{uid_val}"
       end
 
-    "#{msg_id}#{uid_part}:2,#{sorted_flags}"
+    "#{msg_id}#{uid_part}#{separator}2,#{sorted_flags}"
   end
 
   @doc """

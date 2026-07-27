@@ -4,7 +4,7 @@ defmodule Valea.Mail.Store.UidMap do
   (the maildir-stable id) a given `UID` last resolved to, under which
   `UIDVALIDITY`, and the maildir flag letters last synced from the server
   (`last_synced_flags`, e.g. `"FS"` — sorted, matching
-  `Valea.Mail.Maildir.encode_filename/3`'s convention). Pure cache:
+  `Valea.Mail.Maildir.encode_filename/4`'s convention). Pure cache:
   rebuildable from a fresh IMAP resync — never the source of truth for
   message content or flags (the maildir filename is).
   """

@@ -89,6 +89,10 @@ defmodule Valea.Mail.OpsExecutor do
           required(:settings) => Valea.Mail.Settings.t(),
           required(:transport) => module(),
           required(:conn) => term(),
+          # The STORE's maildir flag separator (windows-support spec C1),
+          # pinned by `Valea.Mail.Engine` at activation and threaded through
+          # unchanged — this module never derives it from the host.
+          required(:separator) => Maildir.separator(),
           optional(:opid) => String.t() | nil,
           # The SEND half (spec G). Absent on every pull/move/append path —
           # nothing outside `execute_send/2`'s `pending` branch reads either.
@@ -2022,8 +2026,8 @@ defmodule Valea.Mail.OpsExecutor do
 
     if dir_rel do
       dir_abs = folder_dir_abs(ctx, dir_rel)
-      old_name = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags)
-      new_name = Maildir.encode_filename(occ.msg_id, occ.uid, new_flags)
+      old_name = Maildir.encode_filename(occ.msg_id, occ.uid, occ.flags, ctx.separator)
+      new_name = Maildir.encode_filename(occ.msg_id, occ.uid, new_flags, ctx.separator)
       rename_cur(dir_abs, old_name, new_name)
 
       Store.put_occurrence(ctx.account, op.folder, %{
@@ -2494,7 +2498,7 @@ defmodule Valea.Mail.OpsExecutor do
       dest_abs = folder_dir_abs(ctx, dest_dir_rel)
       Maildir.mailbox_dirs(dest_abs)
       Maildir.write_folder_identity!(dest_abs, op_row.target_folder)
-      new_name = Maildir.encode_filename(msg_id, dest_uid, flags)
+      new_name = Maildir.encode_filename(msg_id, dest_uid, flags, ctx.separator)
       Maildir.deliver!(dest_abs, new_name, raw)
 
       remove_source_file(ctx, src_dir_rel, op_row.uid, msg_id, flags)
@@ -2747,7 +2751,14 @@ defmodule Valea.Mail.OpsExecutor do
   defp source_file_path(ctx, dir_rel, uid, msg_id, flags) do
     dir_abs = folder_dir_abs(ctx, dir_rel)
     found = dir_abs |> Maildir.list_occurrences() |> Enum.find(&(&1.uid == uid))
-    name = if found, do: found.filename, else: Maildir.encode_filename(msg_id, uid, flags)
+
+    # The on-disk name wins when we can see it (separator-agnostic listing);
+    # the encoded fallback only names a file that is already missing.
+    name =
+      if found,
+        do: found.filename,
+        else: Maildir.encode_filename(msg_id, uid, flags, ctx.separator)
+
     Path.join([dir_abs, "cur", name])
   end
 

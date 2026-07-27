@@ -354,7 +354,7 @@ defmodule Valea.Mail.EngineTest do
 
   test "identity mismatch blocks the briefing too: nothing is materialized", %{root: root} do
     :ok =
-      Account.write_if_absent!(root, "mara", %{host: "other.example.com", username: "x@y.z"})
+      Account.write_if_absent!(root, "mara", %{host: "other.example.com", username: "x@y.z"}, ":")
 
     start_engine!(root, 58, "mara")
     open(root, 58)
@@ -366,10 +366,15 @@ defmodule Valea.Mail.EngineTest do
   test "identity mismatch: a pre-written .account with a DIFFERENT identity blocks activation entirely",
        %{root: root} do
     :ok =
-      Account.write_if_absent!(root, "mara", %{
-        host: "imap.other.com",
-        username: "someone-else@example.com"
-      })
+      Account.write_if_absent!(
+        root,
+        "mara",
+        %{
+          host: "imap.other.com",
+          username: "someone-else@example.com"
+        },
+        ":"
+      )
 
     original = File.read!(Account.account_path(root, "mara"))
 
@@ -384,6 +389,87 @@ defmodule Valea.Mail.EngineTest do
     # mismatched file was left untouched (never overwritten).
     assert Store.folders("mara") == []
     assert File.read!(Account.account_path(root, "mara")) == original
+  end
+
+  # -- maildir separator (windows-support spec C1) ------------------------------
+
+  test "claiming a slug records the HOST's separator; every later activation reads it back",
+       %{root: root} do
+    expected = if Valea.Paths.host_platform() == :windows, do: ";", else: ":"
+
+    start_engine!(root, 53, "mara")
+    open(root, 53)
+
+    assert Engine.status("mara").state == "idle"
+    assert File.read!(Account.account_path(root, "mara")) =~ ~s(maildir_separator: "#{expected}")
+    assert Account.separator(root, "mara") == {:ok, expected}
+  end
+
+  test "an existing store's recorded separator wins over the host — the pass writes `;` names",
+       %{root: root} do
+    slug = "mara"
+
+    # A store provisioned on Windows, now being opened here: `.account` says
+    # `;`, so every filename this pass writes must say `;` too. The engine
+    # must never re-derive the separator from the host it happens to run on.
+    :ok =
+      Account.write_if_absent!(
+        root,
+        slug,
+        %{host: "imap.fastmail.com", username: "mara@example.com"},
+        ";"
+      )
+
+    raw =
+      "From: A <a@example.com>\r\nSubject: Hi\r\nDate: Wed, 15 Jul 2026 09:00:00 +0000\r\n" <>
+        "Message-ID: <sep@example.com>\r\n\r\nBody\r\n"
+
+    name = :"model_#{System.unique_integer([:positive])}"
+    {:ok, _pid} = ModelMailTransport.start_link(name: name)
+    ModelMailTransport.put_folder(name, "INBOX")
+    ModelMailTransport.put_message(name, "INBOX", raw)
+
+    Application.put_env(:valea, :mail_transport, ModelMailTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+
+    start_engine!(root, 54, slug, connect_opts: [name: name])
+    open(root, 54)
+
+    assert Engine.status(slug).state == "idle"
+    :ok = Engine.set_credential(slug, "app-password")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:mail_sync_finished, ^slug, %{errors: []}}, 2_000
+
+    dir = elem(Store.get_sync_state(slug, "INBOX"), 1).dir
+    files = File.ls!(Path.join([root, "sources", "mail", slug, "maildir", dir, "cur"]))
+
+    assert files != []
+    assert Enum.all?(files, &String.contains?(&1, ";2,"))
+    refute Enum.any?(files, &String.contains?(&1, ":2,"))
+  end
+
+  test "an invalid maildir_separator blocks activation exactly like an identity mismatch",
+       %{root: root} do
+    path = Account.account_path(root, "mara")
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(
+      path,
+      ~s(host: "imap.fastmail.com"\nusername: "mara@example.com"\nmaildir_separator: "|"\n)
+    )
+
+    start_engine!(root, 55, "mara")
+    open(root, 55)
+
+    status = Engine.status("mara")
+    assert status.state == "identity_mismatch"
+    assert status.last_error == "invalid maildir_separator in .account"
+    assert Engine.sync_now("mara") == {:error, :inactive}
+
+    # Same fail-closed posture as a mismatched identity: nothing indexed.
+    assert Store.folders("mara") == []
   end
 
   # -- credential / config gating ----------------------------------------------

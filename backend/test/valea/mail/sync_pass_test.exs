@@ -107,6 +107,7 @@ defmodule Valea.Mail.SyncPassTest do
       credential: fn -> "app-password" end,
       transport: ModelMailTransport,
       ops_enabled: false,
+      separator: ":",
       connect_opts: [name: name]
     })
   end
@@ -162,6 +163,7 @@ defmodule Valea.Mail.SyncPassTest do
         credential: fn -> send(test_pid, :credential_called) && "app-password" end,
         transport: ModelMailTransport,
         ops_enabled: false,
+        separator: ":",
         connect_opts: [name: name]
       })
 
@@ -323,7 +325,7 @@ defmodule Valea.Mail.SyncPassTest do
       assert [occ] = Store.occurrences("mara", "INBOX")
       assert occ.flags == MapSet.new(["S"])
 
-      expected_file = Maildir.encode_filename(occ.msg_id, occ.uid, MapSet.new(["S"]))
+      expected_file = Maildir.encode_filename(occ.msg_id, occ.uid, MapSet.new(["S"]), ":")
       assert cur_files(root, "mara", "INBOX") == [expected_file]
 
       # index row
@@ -414,7 +416,7 @@ defmodule Valea.Mail.SyncPassTest do
     assert {:ok, _} = run(name, root)
     [occ] = Store.occurrences("mara", "INBOX")
     assert occ.flags == MapSet.new()
-    unseen_file = Maildir.encode_filename(occ.msg_id, uid, MapSet.new())
+    unseen_file = Maildir.encode_filename(occ.msg_id, uid, MapSet.new(), ":")
     assert cur_files(root, "mara", "INBOX") == [unseen_file]
 
     # server marks it \Seen
@@ -424,7 +426,7 @@ defmodule Valea.Mail.SyncPassTest do
 
     [occ2] = Store.occurrences("mara", "INBOX")
     assert occ2.flags == MapSet.new(["S"])
-    seen_file = Maildir.encode_filename(occ.msg_id, uid, MapSet.new(["S"]))
+    seen_file = Maildir.encode_filename(occ.msg_id, uid, MapSet.new(["S"]), ":")
     assert cur_files(root, "mara", "INBOX") == [seen_file]
     assert [row] = Store.list_messages("mara", "INBOX")
     assert row.flags == "S"
@@ -454,7 +456,7 @@ defmodule Valea.Mail.SyncPassTest do
     remaining = Store.occurrences("mara", "INBOX")
     assert Enum.map(remaining, & &1.uid) |> Enum.sort() == [uid_a + 1]
     # A's file + index row + shared view gone
-    refute Maildir.encode_filename(occ_a.msg_id, uid_a, occ_a.flags) in cur_files(
+    refute Maildir.encode_filename(occ_a.msg_id, uid_a, occ_a.flags, ":") in cur_files(
              root,
              "mara",
              "INBOX"
@@ -524,7 +526,7 @@ defmodule Valea.Mail.SyncPassTest do
     assert rebound.uidvalidity == 2
 
     assert cur_files(root, "mara", "Work") ==
-             [Maildir.encode_filename(rebound.msg_id, rebound.uid, rebound.flags)]
+             [Maildir.encode_filename(rebound.msg_id, rebound.uid, rebound.flags, ":")]
 
     # Watermark re-initialized as at first sync (UIDNEXT − 1).
     {:ok, state_after} = Store.get_sync_state("mara", "Work")
@@ -568,7 +570,7 @@ defmodule Valea.Mail.SyncPassTest do
 
       assert {:ok, _} = run(name, root)
       [occ] = Store.occurrences("mara", "INBOX")
-      file = Maildir.encode_filename(occ.msg_id, uid, occ.flags)
+      file = Maildir.encode_filename(occ.msg_id, uid, occ.flags, ":")
       assert cur_files(root, "mara", "INBOX") == [file]
 
       # out-of-band deletion of the local file (message still on the server)
@@ -622,7 +624,7 @@ defmodule Valea.Mail.SyncPassTest do
       assert {:ok, _} = run(name, root)
       [occ] = Store.occurrences("mara", "INBOX")
       msg_id_a = occ.msg_id
-      file = Maildir.encode_filename(msg_id_a, uid, occ.flags)
+      file = Maildir.encode_filename(msg_id_a, uid, occ.flags, ":")
       assert cur_files(root, "mara", "INBOX") == [file]
 
       views_dir = Path.join([root, "sources", "mail", "mara", "views", "messages"])
@@ -788,8 +790,8 @@ defmodule Valea.Mail.SyncPassTest do
     assert [occ_b] = Store.occurrences("mara", "FolderB")
     refute occ_a.msg_id == occ_b.msg_id
 
-    file_a = Maildir.encode_filename(occ_a.msg_id, occ_a.uid, occ_a.flags)
-    file_b = Maildir.encode_filename(occ_b.msg_id, occ_b.uid, occ_b.flags)
+    file_a = Maildir.encode_filename(occ_a.msg_id, occ_a.uid, occ_a.flags, ":")
+    file_b = Maildir.encode_filename(occ_b.msg_id, occ_b.uid, occ_b.flags, ":")
 
     assert cur_files(root, "mara", "FolderA") == [file_a]
     assert cur_files(root, "mara", "FolderB") == [file_b]

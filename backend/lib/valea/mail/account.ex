@@ -13,7 +13,7 @@ defmodule Valea.Mail.Account do
   `config/mail.yaml` entry at a DIFFERENT mailbox (a typo'd host, or a
   destructive copy-paste) would silently start syncing an unrelated
   account's mail into the old one's local history. `verify/3` catches that
-  at activation, before any sync/index work runs; `write_if_absent!/3`
+  at activation, before any sync/index work runs; `write_if_absent!/4`
   claims the binding the first time a slug activates with no prior
   `.account` file (a brand-new account, or a purged one).
 
@@ -21,6 +21,33 @@ defmodule Valea.Mail.Account do
   spec's identity scope: those two together are ONE IMAP mailbox, and
   everything else about `Settings.t()` is free to change without implying a
   different account.
+
+  ## `maildir_separator` (windows-support spec C1)
+
+  The same file also records the store's maildir flag separator — `;` for a
+  store created on Windows (where `:` is an illegal filename character), `:`
+  everywhere else. It rides on `.account` because that file is already the
+  once-per-store, atomically-written record of "what this subtree IS", and
+  the separator has exactly that lifetime: chosen at store creation, never
+  changed afterwards.
+
+  It is deliberately NOT part of the identity `verify/3` compares. A store
+  whose separator disagrees with the host OS is not a different account — it
+  is the same account written in the other convention, which
+  `Valea.Mail.Maildir.parse_filename/1` reads either way.
+
+  Two read rules, both fail-safe in the direction that preserves an existing
+  store's on-disk format:
+
+    * **absent file, or a parseable file with no `maildir_separator` key ⇒
+      `{:ok, ":"}`** — the legacy rule. Never OS-defaulted: a Unix-created
+      store opened on Windows must not silently start writing `;` names
+      beside its existing `:` ones.
+    * **any other value (not `":"`/`";"`, non-string, or an unparseable
+      file) ⇒ `{:error, :invalid_separator}`** — fails closed, exactly like
+      a corrupt identity. `Valea.Mail.Engine` maps it to the same sticky,
+      inert activation state as `:identity_mismatch`; guessing here would
+      mean writing filenames the rest of the store can't be listed against.
 
   ## `.readopt`
 
@@ -35,6 +62,13 @@ defmodule Valea.Mail.Account do
   still-blocked pass leaves the authorization standing for the next attempt.
   """
 
+  alias Valea.Mail.Maildir
+
+  # The closed maildir-separator vocabulary — the same two characters
+  # `Valea.Mail.Maildir.parse_filename/1` reads and `encode_filename/4`
+  # guards on. Anything else is a corrupt `.account`, not a third format.
+  @separators [":", ";"]
+
   @doc "`sources/mail/<slug>/.account`, absolute under `root`."
   @spec account_path(String.t(), String.t()) :: String.t()
   def account_path(root, slug), do: Path.join([root, "sources", "mail", slug, ".account"])
@@ -45,24 +79,59 @@ defmodule Valea.Mail.Account do
 
   @doc """
   Writes `sources/mail/<slug>/.account` (atomic: temp file + rename) with
-  `identity`'s `host`/`username` — but ONLY when the file doesn't already
-  exist. A no-op `:ok` when it's already present, whatever it currently
-  holds: the caller's own `verify/3` call is what decides whether an
-  existing file is a match or a mismatch; this function only ever claims an
-  unclaimed slug.
+  `identity`'s `host`/`username` and the store's `separator` — but ONLY when
+  the file doesn't already exist. A no-op `:ok` when it's already present,
+  whatever it currently holds: the caller's own `verify/3` call is what
+  decides whether an existing file is a match or a mismatch; this function
+  only ever claims an unclaimed slug.
+
+  That no-op is what makes the separator a create-once decision — an
+  existing store's recorded separator is never re-derived from the host it
+  happens to be opened on.
   """
-  @spec write_if_absent!(String.t(), String.t(), %{host: String.t(), username: String.t()}) ::
-          :ok
-  def write_if_absent!(root, slug, %{host: host, username: username})
-      when is_binary(root) and is_binary(slug) and is_binary(host) and is_binary(username) do
+  @spec write_if_absent!(
+          String.t(),
+          String.t(),
+          %{host: String.t(), username: String.t()},
+          Maildir.separator()
+        ) :: :ok
+  def write_if_absent!(root, slug, %{host: host, username: username}, separator)
+      when is_binary(root) and is_binary(slug) and is_binary(host) and is_binary(username) and
+             separator in @separators do
     path = account_path(root, slug)
 
     if File.exists?(path) do
       :ok
     else
       File.mkdir_p!(Path.dirname(path))
-      atomic_write!(path, render(host, username))
+      atomic_write!(path, render(host, username, separator))
       :ok
+    end
+  end
+
+  @doc """
+  The maildir flag separator `slug`'s store was created with — see the
+  moduledoc, §`maildir_separator`, for the two read rules. Never raises.
+  """
+  @spec separator(String.t(), String.t()) ::
+          {:ok, Maildir.separator()} | {:error, :invalid_separator}
+  def separator(root, slug) when is_binary(root) and is_binary(slug) do
+    case File.read(account_path(root, slug)) do
+      # No file at all: a brand-new (or purged) slug, or a store older than
+      # this field. Legacy rule — `:`, never the host's convention.
+      {:error, :enoent} ->
+        {:ok, ":"}
+
+      {:error, _reason} ->
+        {:error, :invalid_separator}
+
+      {:ok, bytes} ->
+        case YamlElixir.read_from_string(bytes) do
+          {:ok, %{"maildir_separator" => value}} when value in @separators -> {:ok, value}
+          {:ok, %{"maildir_separator" => _other}} -> {:error, :invalid_separator}
+          {:ok, map} when is_map(map) -> {:ok, ":"}
+          _unparseable -> {:error, :invalid_separator}
+        end
     end
   end
 
@@ -71,7 +140,7 @@ defmodule Valea.Mail.Account do
   `.account` file for `slug`:
 
     * `:absent` — no `.account` file exists yet (a brand-new, or fully
-      purged, slug) — the caller should `write_if_absent!/3` to claim it.
+      purged, slug) — the caller should `write_if_absent!/4` to claim it.
     * `:ok` — the file exists and matches `identity` exactly.
     * `{:error, :identity_mismatch}` — the file exists and records a
       DIFFERENT `host` or `username` than `identity`.
@@ -136,8 +205,14 @@ defmodule Valea.Mail.Account do
 
   # -- .account render/parse ---------------------------------------------------
 
-  defp render(host, username) do
-    "host: #{yaml_string(host)}\nusername: #{yaml_string(username)}\n"
+  # `separator` is a closed-vocabulary literal (guarded at the one call
+  # site), but it goes through `yaml_string/1` anyway: `:` and `;` are both
+  # YAML-significant bare, and rendering every value the same way is one
+  # fewer rule to remember when a field is added.
+  defp render(host, username, separator) do
+    "host: #{yaml_string(host)}\n" <>
+      "username: #{yaml_string(username)}\n" <>
+      "maildir_separator: #{yaml_string(separator)}\n"
   end
 
   defp parse(bytes) do

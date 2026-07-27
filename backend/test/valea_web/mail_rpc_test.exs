@@ -126,7 +126,7 @@ defmodule ValeaWeb.MailRpcTest do
     """
 
     {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
-    filename = Maildir.encode_filename(msg_id, uid, MapSet.new())
+    filename = Maildir.encode_filename(msg_id, uid, MapSet.new(), ":")
     Maildir.deliver!(folder_abs, filename, raw)
     msg_id
   end
@@ -325,10 +325,15 @@ defmodule ValeaWeb.MailRpcTest do
       generation: generation
     } do
       :ok =
-        Account.write_if_absent!(workspace, "mara", %{
-          host: "imap.other.com",
-          username: "someone-else@example.com"
-        })
+        Account.write_if_absent!(
+          workspace,
+          "mara",
+          %{
+            host: "imap.other.com",
+            username: "someone-else@example.com"
+          },
+          ":"
+        )
 
       before = File.read!(Path.join(workspace, "config/mail.yaml"))
 

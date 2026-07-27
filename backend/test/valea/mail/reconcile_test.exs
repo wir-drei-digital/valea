@@ -140,6 +140,7 @@ defmodule Valea.Mail.ReconcileTest do
       credential: fn -> "app-password" end,
       transport: ModelMailTransport,
       ops_enabled: false,
+      separator: ":",
       connect_opts: [name: name]
     })
   end
@@ -222,7 +223,7 @@ defmodule Valea.Mail.ReconcileTest do
     assert y.uidvalidity == 2
 
     assert cur_files(root, "mara", "Work") ==
-             [Maildir.encode_filename(y_msg_id, 1, MapSet.new())]
+             [Maildir.encode_filename(y_msg_id, 1, MapSet.new(), ":")]
 
     refute File.exists?(view_path(root, "mara", x_msg_id))
     assert File.exists?(view_path(root, "mara", y_msg_id))
@@ -263,7 +264,11 @@ defmodule Valea.Mail.ReconcileTest do
     assert q.msg_id == q_msg_id
     assert q.uid == 1
     assert q.uidvalidity == 2
-    assert cur_files(root, "mara", "Work") == [Maildir.encode_filename(q_msg_id, 1, MapSet.new())]
+
+    assert cur_files(root, "mara", "Work") == [
+             Maildir.encode_filename(q_msg_id, 1, MapSet.new(), ":")
+           ]
+
     assert File.exists?(view_path(root, "mara", q_msg_id))
   end
 
@@ -307,7 +312,11 @@ defmodule Valea.Mail.ReconcileTest do
     assert r.msg_id == r_msg_id
     assert r.uid == 1
     assert r.uidvalidity == 2
-    assert cur_files(root, "mara", "Work") == [Maildir.encode_filename(r_msg_id, 1, MapSet.new())]
+
+    assert cur_files(root, "mara", "Work") == [
+             Maildir.encode_filename(r_msg_id, 1, MapSet.new(), ":")
+           ]
+
     assert File.exists?(view_path(root, "mara", r_msg_id))
   end
 

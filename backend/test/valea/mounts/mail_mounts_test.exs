@@ -96,10 +96,15 @@ defmodule Valea.Mounts.MailMountsTest do
     # `Valea.Mail.EngineTest`'s identity-binding case; no Repo needed, the
     # mismatch path never reaches the index rebuild).
     :ok =
-      Valea.Mail.Account.write_if_absent!(ws, "mara", %{
-        host: "imap.other.com",
-        username: "someone-else@example.com"
-      })
+      Valea.Mail.Account.write_if_absent!(
+        ws,
+        "mara",
+        %{
+          host: "imap.other.com",
+          username: "someone-else@example.com"
+        },
+        ":"
+      )
 
     settings = %Valea.Mail.Settings{
       slug: "mara",

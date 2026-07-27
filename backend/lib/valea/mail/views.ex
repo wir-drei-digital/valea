@@ -22,8 +22,9 @@ defmodule Valea.Mail.Views do
   caller landing a view doesn't necessarily have a maildir occurrence path
   handy yet (in the normal flow, `land/4` runs BEFORE the raw bytes are
   delivered into `maildir/`, precisely so the caller can build the
-  maildir filename `<msg_id>,U=<uid>:2,<flags>` from the id this function
-  returns), and a sidecar keeps this module's file I/O self-contained
+  maildir filename `<msg_id>,U=<uid><sep>2,<flags>` — `<sep>` being the
+  store's own separator, see `Valea.Mail.Maildir` — from the id this
+  function returns), and a sidecar keeps this module's file I/O self-contained
   (it never needs to know folder directory layout). The sidecar is
   removed alongside the view on full GC (`remove_occurrence/4` with
   `remaining: 0`) — a msg_id can be freely reused for new content once
