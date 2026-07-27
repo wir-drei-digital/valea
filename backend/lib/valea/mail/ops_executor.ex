@@ -1782,19 +1782,31 @@ defmodule Valea.Mail.OpsExecutor do
   Re-runs ONLY the idempotent Sent copy of a send that completed with a
   `sent_copy_failed` notice. The mail was already transmitted — this touches
   IMAP alone and can never reach the SMTP transport.
+
+  `:ok` means the copy is now FILED (or proven already present).
+  `{:error, :sent_copy_deferred}` means it is not: no connection, or a search
+  that couldn't be answered. Filing the copy is this call's entire job, so a
+  deferral is a failure of it — the caller must not be told "retried".
   """
-  @spec retry_sent_copy(ctx(), String.t()) :: :ok | {:error, :not_retryable}
+  @spec retry_sent_copy(ctx(), String.t()) ::
+          :ok | {:error, :not_retryable | :sent_copy_deferred}
   def retry_sent_copy(ctx, op_id) when is_binary(op_id) do
     case Store.op_by_id(op_id) do
       {:ok, %{state: "complete", error: "sent_copy_failed", account: account} = op_row}
       when account == ctx.account ->
-        _ = sent_copy_step(ctx, op_row)
-        :ok
+        retry_outcome(sent_copy_step(ctx, op_row))
 
       _other ->
         {:error, :not_retryable}
     end
   end
+
+  # `sent_copy_step/2` answers `:ok` only on a completed copy; `{:sending, _}`
+  # is its "deferred, nothing filed" shape (see `generic_sent_copy/2`). The op
+  # is untouched either way — still `complete` + `sent_copy_failed`, spool
+  # intact — so the retry stays available.
+  defp retry_outcome(:ok), do: :ok
+  defp retry_outcome({:sending, _notice}), do: {:error, :sent_copy_deferred}
 
   @doc """
   Terminates a send the Engine knows will never execute — a queued transmit

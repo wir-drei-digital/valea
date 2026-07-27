@@ -627,6 +627,10 @@ describe('sendErrorMessage', () => {
     ['no_smtp_credential', 'Enter your SMTP password first.'],
     ['not_reviewable', 'This send was already resolved.'],
     ['not_retryable', 'There is nothing left to retry for this message.'],
+    [
+      'sent_copy_deferred',
+      'The message was sent, but its Sent copy could not be filed — the mailbox is not reachable right now. Try again once it reconnects.'
+    ],
     ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
     ['anything_else', 'Could not send the draft. Check the account state and try again.']
   ])('maps error code=%s to a calm sentence', (code, expected) => {

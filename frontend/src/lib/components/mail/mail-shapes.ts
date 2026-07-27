@@ -310,6 +310,8 @@ export function sendErrorMessage(code: string): string {
       return 'This send was already resolved.';
     case 'not_retryable':
       return 'There is nothing left to retry for this message.';
+    case 'sent_copy_deferred':
+      return 'The message was sent, but its Sent copy could not be filed — the mailbox is not reachable right now. Try again once it reconnects.';
     case 'duplicate_active':
       return 'This draft already has a push or a send in flight.';
     case 'invalid_draft':

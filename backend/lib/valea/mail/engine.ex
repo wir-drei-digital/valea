@@ -385,6 +385,11 @@ defmodule Valea.Mail.Engine do
   human reviewed). Only the transmit + Sent copy ride the serialized work
   slot, exactly like a push.
 
+  A transmit that has to WAIT for that slot is answered `{:ok, "sending"}`
+  immediately, before it runs (see `enqueue_send_work/3`): the op is already
+  durable, so the alternative is a caller timing out — on the one
+  irreversible action — for a message that is on its way.
+
   `{:ok, display_state}` (`"sending"` | `"send_review"` | `"sent"` |
   `"rejected"`); `{:error, reason}` on a gate failure or a pre-transmit
   refusal (`re_review_required`, `content_changed`, `draft_too_large`,
@@ -432,10 +437,20 @@ defmodule Valea.Mail.Engine do
   Re-runs ONLY the idempotent Sent-copy append of a send that completed with
   a `sent_copy_failed` notice. The mail is already transmitted; this can
   never reach the SMTP transport.
+
+  `:ok` only when the copy is actually filed. `{:error, :sent_copy_deferred}`
+  when the mailbox couldn't be reached (or the search couldn't be answered)
+  and nothing was filed — the retry stays available.
   """
   @spec retry_sent_copy(String.t(), String.t()) ::
           :ok
-          | {:error, :inactive | :not_configured | :blocked | :not_found | :not_retryable}
+          | {:error,
+             :inactive
+             | :not_configured
+             | :blocked
+             | :not_found
+             | :not_retryable
+             | :sent_copy_deferred}
   def retry_sent_copy(slug, op_id) when is_binary(slug) and is_binary(op_id) do
     case whereis(slug) do
       nil -> {:error, :not_found}
@@ -741,7 +756,7 @@ defmodule Valea.Mail.Engine do
         %{ops_current: %{task: {pid, ref}, from: from, send_work: _work}} = state
       ) do
     Process.demonitor(ref, [:flush])
-    GenServer.reply(from, reply)
+    maybe_reply(from, reply)
     {:noreply, %{state | ops_current: nil} |> drain_ops()}
   end
 
@@ -756,7 +771,7 @@ defmodule Valea.Mail.Engine do
         {:DOWN, ref, :process, pid, _reason},
         %{ops_current: %{task: {pid, ref}, from: from, send_work: work}} = state
       ) do
-    GenServer.reply(from, abandon_dropped(state, work))
+    maybe_reply(from, abandon_dropped(state, work))
     {:noreply, %{state | ops_current: nil} |> drain_ops()}
   end
 
@@ -862,16 +877,43 @@ defmodule Valea.Mail.Engine do
   end
 
   # Send-family work (transmit, resolve, Sent-copy retry) shares ONE task
-  # shape: it either starts now or queues behind whatever holds the slot, and
-  # its reply is deferred until it finishes — never run inline, so the Engine
-  # loop keeps answering `status`/`sync_now`/`:poll` throughout.
+  # shape: it either starts now or queues behind whatever holds the slot —
+  # never run inline, so the Engine loop keeps answering
+  # `status`/`sync_now`/`:poll` throughout. A work slot that is free means the
+  # caller's reply is deferred until the task reports, verbatim.
   defp enqueue_send_work(state, from, work) do
     if busy?(state) do
-      {:noreply, %{state | ops_queue: state.ops_queue ++ [%{from: from, send_work: work}]}}
+      queue_send_work(state, from, work)
     else
       {:noreply, start_send_work_task(state, from, work)}
     end
   end
+
+  # A QUEUED transmit is answered now, not when it drains. By the time we get
+  # here `prepare_send` has claimed the draft, spooled the wire bytes and
+  # stamped the ledger: the op is durable and WILL transmit when the slot
+  # frees — the very argument `send_work_fallback({:send, _})` already makes
+  # for a task that dies. Holding the reply instead means a long sync pass
+  # times the caller out and the UI says "could not send" about a message
+  # that is on its way, on the one action nobody can take back. The entry
+  # queues with `from: nil` so the drain (or a drop, or a DOWN) never replies
+  # a second time; its outcome still reaches the UI through the ledger-derived
+  # draft display state. Resolve/retry are unchanged — neither is
+  # irreversible, and both are cheap enough to answer truthfully.
+  defp queue_send_work(state, from, {:send, _op_id} = work) do
+    GenServer.reply(from, {:ok, "sending"})
+    {:noreply, %{state | ops_queue: state.ops_queue ++ [%{from: nil, send_work: work}]}}
+  end
+
+  defp queue_send_work(state, from, work) do
+    {:noreply, %{state | ops_queue: state.ops_queue ++ [%{from: from, send_work: work}]}}
+  end
+
+  # `nil` is a caller that has ALREADY been answered (a queued transmit, above).
+  # Every side effect on the path still runs; only the duplicate reply is
+  # skipped.
+  defp maybe_reply(nil, _reply), do: :ok
+  defp maybe_reply(from, reply), do: GenServer.reply(from, reply)
 
   defp start_send_work_task(state, from, work) do
     parent = self()
@@ -975,6 +1017,10 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  # Only the DOWN path reaches this clause (a dropped resolve/retry entry goes
+  # through `dropped_entry_reply/2` instead): the task DID run, so the work may
+  # well have landed before it died — unlike a drop, where the executor was
+  # never called at all.
   defp abandon_dropped(_state, resolve_or_retry), do: send_work_fallback(resolve_or_retry)
 
   defp safe_abandon_send(state, op_id) do
@@ -1062,10 +1108,21 @@ defmodule Valea.Mail.Engine do
         start_send_work_task(state, from, work)
 
       {:error, _reason} ->
-        GenServer.reply(from, abandon_dropped(state, work))
+        maybe_reply(from, dropped_entry_reply(state, work))
         drain_ops(state)
     end
   end
+
+  # A queue entry the Engine will NEVER run, because the account stopped being
+  # sendable/active while it waited. A send still has to be TERMINATED (its op
+  # is durable and holds the draft's claim). A resolve/retry has no durable
+  # half at all — the executor was never called, so nothing was reviewed and
+  # nothing was filed — and must say so rather than borrow the send-side
+  # fallback's `:ok`, which would report success for work that provably did
+  # not happen.
+  defp dropped_entry_reply(state, {:send, _op_id} = work), do: abandon_dropped(state, work)
+  defp dropped_entry_reply(_state, {:resolve, _op_id, _resolution}), do: {:error, :not_reviewable}
+  defp dropped_entry_reply(_state, {:retry, _op_id}), do: {:error, :not_retryable}
 
   defp validate_send_work(state, {:send, _op_id}), do: validate_send(state)
   defp validate_send_work(state, _resolve_or_retry), do: validate_active(state)

@@ -683,6 +683,36 @@ defmodule Valea.Mail.OpsExecutorSendTest do
       assert row.content_hash == current_draft_hash(root, "reply.md")
     end
 
+    # Filing the copy is this call's ENTIRE job — there is no durable half that
+    # succeeds without it. With no connection it files nothing, so it must say
+    # so: an `:ok` here has the RPC answer `{"retried" => true}` and the UI
+    # close the notice for work that provably did not happen.
+    test "retry_sent_copy with no connection reports the deferral and leaves the ledger alone", %{
+      root: root
+    } do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+      ModelMailTransport.inject(name, {:fail, :append, :mailbox_full})
+      assert :ok = OpsExecutor.execute_send(c, op.id)
+      assert {:ok, %{state: "complete", error: "sent_copy_failed"}} = Store.op_by_id(op.id)
+
+      assert {:error, :sent_copy_deferred} = OpsExecutor.retry_sent_copy(ctx(nil, root), op.id)
+
+      # Nothing filed, nothing changed — and the retry affordance survives.
+      assert ModelMailTransport.messages(name, "Sent") == []
+      assert {:ok, %{state: "complete", error: "sent_copy_failed"}} = Store.op_by_id(op.id)
+      assert File.exists?(spool_record(root, op.id))
+      assert length(send_calls()) == 1
+
+      # ...so a connected retry still files it.
+      assert :ok = OpsExecutor.retry_sent_copy(c, op.id)
+      assert length(ModelMailTransport.messages(name, "Sent")) == 1
+      assert {:ok, %{state: "complete", error: nil}} = Store.op_by_id(op.id)
+      assert length(send_calls()) == 1
+    end
+
     test "retry_sent_copy refuses an op that is not a completed sent_copy_failed", %{root: root} do
       name = start_model!()
       {c, op} = prepared!(root, "reply.md", model: name)

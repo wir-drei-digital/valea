@@ -1433,6 +1433,12 @@ defmodule Valea.Mail.EngineTest do
     refute_receive {:connect_called, _concurrent}, 200
     assert FakeSmtpTransport.calls() == []
 
+    # ...and the caller is answered RIGHT NOW, while the pass still holds the
+    # slot. The op is durable, so holding the reply until the slot frees would
+    # time the call out on a long pass and report failure — on the one
+    # irreversible action — for a message that will transmit regardless.
+    assert_receive {:send_reply, {:ok, "sending"}}, 1_000
+
     # A second click carrying the PRE-STAMP hash is refused outright (the
     # engine's own `sending` stamp moved the file, and the review binding is
     # exact by design) — and a re-reviewed second click sees the in-flight op
@@ -1456,7 +1462,11 @@ defmodule Valea.Mail.EngineTest do
     send(pass_pid, {:release, {:error, :done}})
     assert_receive {:connect_called, send_pid}, 2_000
     send(send_pid, {:release, {:ok, send_pid}})
-    assert_receive {:send_reply, {:ok, "sent"}}, 2_000
+
+    # It runs to completion exactly once — and the already-answered caller is
+    # never replied to a second time.
+    wait_until(fn -> queued_send_state(slug) == "complete" end)
+    refute_receive {:send_reply, _second}, 200
     assert length(FakeSmtpTransport.calls()) == 1
   end
 
@@ -1571,10 +1581,16 @@ defmodule Valea.Mail.EngineTest do
     wait_until(fn -> queued_send_state(slug) == "pending" end)
     assert [queued] = Store.ops_by_origin(slug, "drafts/reply.md")
 
+    # Queued, therefore already answered — before the drop is even knowable.
+    assert_receive {:send_reply, {:ok, "sending"}}, 1_000
+
     # The pass comes back mailbox_replaced: the account goes sticky-blocked and
-    # the queued send is dropped at drain.
+    # the queued send is dropped at drain. The termination still happens (that
+    # is the point of the drop); only the second reply is skipped, and the UI
+    # learns the outcome from the ledger-derived draft state below.
     send(pass_pid, {:release, {:error, :mailbox_replaced}})
-    assert_receive {:send_reply, {:ok, "rejected"}}, 2_000
+    wait_until(fn -> read_draft_status(root, slug, "reply.md") == "draft" end)
+    refute_receive {:send_reply, _second}, 200
 
     assert {:ok, %{state: "rejected", error: "abandoned_before_transmit"}} =
              Store.op_by_id(queued.id)
@@ -1600,6 +1616,80 @@ defmodule Valea.Mail.EngineTest do
     send(send_pid, {:release, {:ok, send_pid}})
     assert_receive {:send_reply, {:ok, "sent"}}, 2_000
     assert length(FakeSmtpTransport.calls()) == 1
+  end
+
+  # A resolve/retry can be queued behind a pass and then dropped at drain, the
+  # same way a send can — but unlike a send it has NO durable half: the
+  # executor was never called, so nothing was reviewed and nothing was filed.
+  # Answering `:ok` there (the send-side fallback's shape) would have the RPC
+  # report `{"resolved" => true}` / `{"retried" => true}` for work that
+  # provably did not happen.
+  test "a queued resolve/retry dropped at drain is answered honestly, never :ok", %{root: root} do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+    use_transports!(Valea.Mail.EngineTest.HangingTransport)
+
+    slug = "mara"
+
+    {:ok, parked} =
+      Store.create_pending_op(%{
+        kind: "send",
+        account: slug,
+        origin: "drafts/parked.md",
+        target_folder: "Sent",
+        message_id: "<valea.send.parked@valea.invalid>",
+        msg_id: "parked.md",
+        state: "send_review"
+      })
+
+    {:ok, uncopied} =
+      Store.create_pending_op(%{
+        kind: "send",
+        account: slug,
+        origin: "drafts/uncopied.md",
+        target_folder: "Sent",
+        message_id: "<valea.send.uncopied@valea.invalid>",
+        msg_id: "uncopied.md",
+        state: "complete",
+        error: "sent_copy_failed"
+      })
+
+    start_engine!(root, 98, slug, settings: settings(slug, %{smtp: smtp_settings()}))
+    open(root, 98)
+    credential_pair!(slug)
+
+    engine = GenServer.whereis(Engine.via(slug))
+
+    # A hung pass holds the single work slot.
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, pass_pid}
+
+    test_pid = self()
+
+    spawn(fn ->
+      send(test_pid, {:resolve_reply, Engine.resolve_send_review(slug, parked.id, :sent)})
+    end)
+
+    spawn(fn -> send(test_pid, {:retry_reply, Engine.retry_sent_copy(slug, uncopied.id)}) end)
+
+    wait_until(fn -> length(:sys.get_state(engine).ops_queue) == 2 end)
+
+    assert [{:resolve, _, :sent}, {:retry, _}] =
+             :sys.get_state(engine).ops_queue
+             |> Enum.map(& &1.send_work)
+             |> Enum.sort_by(&elem(&1, 0))
+
+    # The pass reports mailbox_replaced: the account goes sticky-blocked and
+    # BOTH queued entries are dropped at drain, untouched by the executor.
+    send(pass_pid, {:release, {:error, :mailbox_replaced}})
+
+    assert_receive {:resolve_reply, {:error, :not_reviewable}}, 2_000
+    assert_receive {:retry_reply, {:error, :not_retryable}}, 2_000
+
+    # Proof the executor never ran: a real resolve would have moved the parked
+    # op on, and a real retry would have cleared the notice.
+    assert {:ok, %{state: "send_review"}} = Store.op_by_id(parked.id)
+    assert {:ok, %{state: "complete", error: "sent_copy_failed"}} = Store.op_by_id(uncopied.id)
   end
 
   # Spec G §Crash recovery: the classification pass runs at ACTIVATION and

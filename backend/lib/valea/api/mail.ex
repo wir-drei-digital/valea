@@ -1194,12 +1194,18 @@ defmodule Valea.Api.Mail do
 
   # The draft must EXIST before any session is created or prompted, and it is
   # stat'd with the same no-follow posture as every other draft path here: a
-  # symlink or hard-linked entry is `link_unsafe`, never followed. The
-  # returned path is then re-derived through `Valea.Icm.Locator.resolve/2` —
-  # the same call a running session's own locator goes through — so the two
-  # sides of the correlation comparison below are always in the same
-  # (symlink-resolved) vocabulary, on a platform where `/var` really is
-  # `/private/var`.
+  # symlink or hard-linked entry is `link_unsafe`, never followed.
+  #
+  # The absolute path it returns is re-derived through
+  # `Valea.Icm.Locator.resolve/2` for ONE of the two correlation branches:
+  # `locator_names_draft?/4`'s ICM-locator clause, which resolves the
+  # session's locator and compares absolute paths — both sides must therefore
+  # be symlink-resolved, on a platform where `/var` really is `/private/var`.
+  # The WORKSPACE clause deliberately does NOT use this path: it compares
+  # DECLARED relative paths, so that redirecting some live session's input
+  # symlink at a draft cannot make that session claim the draft's feedback.
+  # Do not "unify" the two branches on resolved paths — that reintroduces
+  # exactly the wrong-session routing the workspace clause exists to prevent.
   defp existing_draft_path(root, slug, name) do
     path = Path.join([root, "sources", "mail", slug, "drafts", name])
 
