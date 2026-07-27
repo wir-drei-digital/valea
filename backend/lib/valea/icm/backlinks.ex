@@ -157,6 +157,12 @@ defmodule Valea.ICM.Backlinks do
       String.starts_with?(url, ["http://", "https://", "mailto:", "#"]) ->
         []
 
+      # A markdown destination starting with `/` is root-relative in URL
+      # space — the ONE site spec §D4's exemption exists for, and NOT a
+      # filesystem-absoluteness question (contrast `to_abs/2` below, which is
+      # one). Reading `C:/…` in a markdown link as a root would change this
+      # module's URL grammar, not fix anything on windows.
+      # paths-exempt: URL space, not filesystem (§D4)
       String.starts_with?(url, "/") ->
         [%{url: url, abs: Path.expand(URI.decode(url)), text: text}]
 
@@ -193,6 +199,12 @@ defmodule Valea.ICM.Backlinks do
     |> String.trim()
   end
 
-  defp to_abs(_mount_root, "/" <> _ = abs), do: Path.expand(abs)
-  defp to_abs(mount_root, rel), do: Path.expand(rel, mount_root)
+  # A filesystem gate, unlike `dest_entry/3`'s URL check above: `rel` is an ICM
+  # locator (mount-relative in practice) being turned into a real on-disk path
+  # for `Path.dirname`/absolute comparison, so an already-rooted locator must be
+  # recognized as rooted rather than re-anchored under `mount_root` (spec §D4).
+  # Byte-identical twin of `Valea.ICM.LinkRewrite.to_abs/2`.
+  defp to_abs(mount_root, rel) do
+    if Valea.Paths.absolute?(rel), do: Path.expand(rel), else: Path.expand(rel, mount_root)
+  end
 end

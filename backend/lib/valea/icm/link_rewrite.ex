@@ -233,13 +233,13 @@ defmodule Valea.ICM.LinkRewrite do
   # mount-relative computation (the shared `target_root`/`source_root`
   # prefix simply drops out of the common-prefix match).
   #
-  # PATHS-EXEMPT (spec §D4): the first argument is the raw MARKDOWN
-  # destination string as authored in the document, so a leading `/` means
-  # root-relative in URL space — the same classification
-  # `Valea.ICM.Backlinks.dest_entry/3` makes, and deliberately NOT a
-  # filesystem-absoluteness question. Routing it through
+  # The first argument is the raw MARKDOWN destination string as authored in
+  # the document, so a leading `/` means root-relative in URL space — the same
+  # classification `Valea.ICM.Backlinks.dest_entry/3` makes, and deliberately
+  # NOT a filesystem-absoluteness question. Routing it through
   # `Valea.Paths.absolute?/1` would start reading `C:/…` in a markdown link as
   # a root, which is a URL-grammar change, not a windows fix.
+  # paths-exempt: URL space, not filesystem (§D4)
   defp replacement("/" <> _, _source_dir_abs, new_abs), do: new_abs
 
   defp replacement(_url, source_dir_abs, new_abs),

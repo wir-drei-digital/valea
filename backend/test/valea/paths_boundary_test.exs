@@ -1,39 +1,29 @@
 defmodule Valea.PathsBoundaryTest do
   use ExUnit.Case, async: true
 
-  @exempt ["lib/valea/paths.ex", "lib/valea/icm/backlinks.ex"]
+  # The ONLY wholesale exemption: `Valea.Paths` owns the path grammar, so there
+  # the patterns ARE the implementation.
+  @exempt ["lib/valea/paths.ex"]
 
-  # Same offender/exempt mechanism for the binary-pattern family below. Each
-  # entry is exempt for a stated reason, not by convenience:
+  # Everything else exempts at SITE level: a `# paths-exempt: <reason>` comment
+  # excuses THE SINGLE LINE THAT FOLLOWS IT, and nothing else. (It goes on its
+  # own line above the site rather than trailing it, because `mix format`
+  # hoists a trailing comment out of a `cond` clause to exactly that position.)
   #
-  #   * `paths.ex` — owns the path grammar; the patterns ARE the implementation.
-  #   * `icm/backlinks.ex` — `dest_entry/3` classifies MARKDOWN URL
-  #     destinations, where a leading `/` means root-relative in URL space.
-  #     Not a filesystem decision, so `Valea.Paths` must not touch it. KNOWN
-  #     HOLE: its `to_abs/2` is the unmigrated twin of the one in
-  #     `link_rewrite.ex` (a real filesystem gate) and is only exempt because
-  #     the exemption is file-level — migrate it when that file next opens.
-  #   * `icm/link_rewrite.ex` — same class: `replacement/3`'s first argument is
-  #     the raw markdown destination string from the document (see the
-  #     `# markdown-URL classification` comment there). File-level, so it can
-  #     no longer ENFORCE the filesystem sites in that file; `to_abs/2` there
-  #     was migrated to `Valea.Paths.absolute?/1` regardless.
-  @pattern_exempt [
-    "lib/valea/paths.ex",
-    "lib/valea/icm/backlinks.ex",
-    "lib/valea/icm/link_rewrite.ex"
-  ]
+  # This replaced file-level entries for `icm/backlinks.ex` and
+  # `icm/link_rewrite.ex`, each of which exists for a single markdown-URL
+  # classification — and each of which was, as a side effect, also excusing a
+  # real filesystem gate in the same file (`to_abs/2`, in both).
+  @exempt_marker "paths-exempt:"
 
   test "absoluteness/ancestor string logic lives only in Valea.Paths (windows spec D4)" do
     offenders =
-      Path.wildcard("lib/**/*.ex")
-      |> Enum.reject(fn f -> Enum.any?(@exempt, &String.ends_with?(f, &1)) end)
-      |> Enum.filter(fn f ->
-        src = File.read!(f)
-
+      scannable_files()
+      |> Enum.filter(fn {_f, src} ->
         Regex.match?(~r/starts_with\?\([^\n)]*"\/"\s*\)/, src) or
           Regex.match?(~r/starts_with\?\([^\n)]*<>\s*"\/"/, src)
       end)
+      |> Enum.map(&elem(&1, 0))
 
     assert offenders == [],
            "path logic outside Valea.Paths (route through absolute?/ancestor?): #{inspect(offenders)}"
@@ -56,15 +46,38 @@ defmodule Valea.PathsBoundaryTest do
     clause = ~r/^\s*"\/"\s*<>[^\n]*->/m
 
     offenders =
-      Path.wildcard("lib/**/*.ex")
-      |> Enum.reject(fn f -> Enum.any?(@pattern_exempt, &String.ends_with?(f, &1)) end)
-      |> Enum.filter(fn f ->
-        src = File.read!(f)
+      scannable_files()
+      |> Enum.filter(fn {_f, src} ->
         Regex.match?(head, src) or Regex.match?(clause, src)
       end)
+      |> Enum.map(&elem(&1, 0))
 
     assert offenders == [],
            "absoluteness decided by binary pattern outside Valea.Paths " <>
              "(route through absolute?/classify): #{inspect(offenders)}"
+  end
+
+  # Every non-exempt `lib` module as `{path, source}`, with site-marked lines
+  # removed so both detectors share one notion of what is in scope.
+  defp scannable_files do
+    Path.wildcard("lib/**/*.ex")
+    |> Enum.reject(fn f -> Enum.any?(@exempt, &String.ends_with?(f, &1)) end)
+    |> Enum.map(fn f -> {f, f |> File.read!() |> strip_marked_sites()} end)
+  end
+
+  # Drops each `# paths-exempt:` marker together with the one line it excuses.
+  defp strip_marked_sites(src) do
+    {kept, _} =
+      src
+      |> String.split("\n")
+      |> Enum.reduce({[], false}, fn line, {kept, excused?} ->
+        cond do
+          String.contains?(line, @exempt_marker) -> {kept, true}
+          excused? -> {kept, false}
+          true -> {[line | kept], false}
+        end
+      end)
+
+    kept |> Enum.reverse() |> Enum.join("\n")
   end
 end
