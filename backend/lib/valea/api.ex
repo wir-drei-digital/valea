@@ -69,6 +69,10 @@ defmodule Valea.Api do
       rpc_action(:push_draft_to_mailbox, :push_draft_to_mailbox)
       rpc_action(:list_mail_drafts, :list_mail_drafts)
       rpc_action(:get_mail_draft, :get_mail_draft)
+      rpc_action(:get_mail_draft_review, :get_mail_draft_review)
+      rpc_action(:send_draft, :send_draft)
+      rpc_action(:resolve_send_review, :resolve_send_review)
+      rpc_action(:retry_sent_copy, :retry_sent_copy)
     end
 
     resource Valea.Api.Calendar do

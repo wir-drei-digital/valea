@@ -1242,4 +1242,301 @@ defmodule Valea.Mail.EngineTest do
     send(push_pid, {:release, {:ok, push_pid}})
     assert_receive {:push_reply, {:ok, "pushed"}}, 2_000
   end
+
+  # -- Send serialization + settings pinning (Task 4, spec G §Send pipeline) ----
+
+  defp draft_hash, do: Valea.Mail.DraftFile.content_hash(@draft_md)
+
+  defp use_transports!(imap) do
+    Application.put_env(:valea, :mail_transport, imap)
+    Application.put_env(:valea, :mail_smtp_transport, FakeSmtpTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :mail_smtp_transport) end)
+    start_supervised!(FakeSmtpTransport)
+  end
+
+  defp credential_pair!(slug) do
+    :ok = Engine.set_credential(slug, "app-password")
+    :ok = Engine.set_credential(slug, "smtp-password", :smtp)
+  end
+
+  defp smtp_account_attrs(from_name) do
+    %{
+      host: "imap.fastmail.com",
+      port: 993,
+      username: "mara@example.com",
+      smtp: %{
+        host: "smtp.fastmail.com",
+        port: 587,
+        username: "mara@example.com",
+        from: "mara@example.com",
+        from_name: from_name
+      }
+    }
+  end
+
+  defp wait_until(fun, remaining \\ 200) do
+    cond do
+      fun.() -> :ok
+      remaining == 0 -> flunk("condition never became true")
+      true -> Process.sleep(5) && wait_until(fun, remaining - 1)
+    end
+  end
+
+  test "draft_review is the atomic review snapshot the send binds to", %{root: root} do
+    slug = "mara"
+    use_transports!(ModelMailTransport)
+    start_engine!(root, 90, slug, settings: settings(slug, %{smtp: smtp_settings()}))
+    open(root, 90)
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+
+    assert {:ok, review} = Engine.draft_review(slug, "reply.md")
+    assert review["content"] == @draft_md
+    assert review["content_hash"] == draft_hash()
+    assert review["recipients"]["to"] == [%{"name" => nil, "email" => "alex@example.com"}]
+    assert review["recipients"]["cc"] == []
+    assert review["subject"] == "Re: Kickoff"
+    assert review["threading"] == nil
+    assert review["threading_warning"] == false
+
+    assert review["identity"] == %{
+             "from" => "mara@example.com",
+             "from_name" => nil,
+             "account" => "mara"
+           }
+
+    assert is_binary(review["review_fingerprint"])
+    assert review["smtp_configured"] == true
+
+    assert {:error, "not_found"} = Engine.draft_review(slug, "nope.md")
+  end
+
+  test "send_draft transmits exactly once and files the Sent copy", %{root: root} do
+    slug = "mara"
+    name = :"model_#{System.unique_integer([:positive])}"
+    {:ok, _pid} = ModelMailTransport.start_link(name: name)
+    ModelMailTransport.put_folder(name, "Sent")
+
+    use_transports!(ModelMailTransport)
+    FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+    start_engine!(root, 91, slug,
+      settings: settings(slug, %{smtp: smtp_settings()}),
+      connect_opts: [name: name]
+    )
+
+    open(root, 91)
+    credential_pair!(slug)
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    {:ok, review} = Engine.draft_review(slug, "reply.md")
+
+    assert {:ok, "sent"} =
+             Engine.send_draft(slug, "reply.md", draft_hash(), review["review_fingerprint"])
+
+    assert [{:send, [_config, credential, envelope, data, _opts]}] = FakeSmtpTransport.calls()
+    assert credential == "smtp-password"
+    assert envelope == %{from: "mara@example.com", rcpt: ["alex@example.com"]}
+    assert data =~ "Message-ID: <valea.send."
+
+    assert [filed] = ModelMailTransport.messages(name, "Sent")
+    assert filed.raw =~ "Message-ID: <valea.send."
+  end
+
+  test "send_draft refuses a push-only account before anything is claimed", %{root: root} do
+    slug = "mara"
+    use_transports!(ModelMailTransport)
+    start_engine!(root, 92, slug)
+    open(root, 92)
+    :ok = Engine.set_credential(slug, "app-password")
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+
+    assert {:error, :smtp_not_configured} =
+             Engine.send_draft(slug, "reply.md", draft_hash(), nil)
+
+    assert Store.ops_by_origin(slug, "drafts/reply.md") == []
+    assert FakeSmtpTransport.calls() == []
+  end
+
+  test "send_draft refuses when the SMTP credential slot is empty", %{root: root} do
+    slug = "mara"
+    use_transports!(ModelMailTransport)
+    start_engine!(root, 93, slug, settings: settings(slug, %{smtp: smtp_settings()}))
+    open(root, 93)
+    # IMAP credentialed, SMTP not — the two slots are independent.
+    :ok = Engine.set_credential(slug, "app-password")
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+
+    assert {:error, :no_smtp_credential} =
+             Engine.send_draft(slug, "reply.md", draft_hash(), nil)
+
+    assert Store.ops_by_origin(slug, "drafts/reply.md") == []
+  end
+
+  test "send_draft rides the serialized work slot; a second click sees the first op", %{
+    root: root
+  } do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+    use_transports!(Valea.Mail.EngineTest.HangingTransport)
+    FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+    slug = "mara"
+    start_engine!(root, 94, slug, settings: settings(slug, %{smtp: smtp_settings()}))
+    open(root, 94)
+    credential_pair!(slug)
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    {:ok, review} = Engine.draft_review(slug, "reply.md")
+    fingerprint = review["review_fingerprint"]
+
+    # A sync pass is hung at connect — it holds the single work slot.
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, pass_pid}
+
+    test_pid = self()
+
+    spawn(fn ->
+      send(
+        test_pid,
+        {:send_reply, Engine.send_draft(slug, "reply.md", draft_hash(), fingerprint)}
+      )
+    end)
+
+    # The LOCAL claim/spool runs inline, but nothing connects and — the point —
+    # NOTHING is transmitted while the send waits for the slot.
+    wait_until(fn -> Store.ops_by_origin(slug, "drafts/reply.md") != [] end)
+    refute_receive {:connect_called, _concurrent}, 200
+    assert FakeSmtpTransport.calls() == []
+
+    # A second click carrying the PRE-STAMP hash is refused outright (the
+    # engine's own `sending` stamp moved the file, and the review binding is
+    # exact by design) — and a re-reviewed second click sees the in-flight op
+    # rather than claiming a second one. Neither transmits.
+    assert {:error, "content_changed"} =
+             Engine.send_draft(slug, "reply.md", draft_hash(), fingerprint)
+
+    {:ok, restamped} = Engine.draft_review(slug, "reply.md")
+
+    assert {:ok, "sending"} =
+             Engine.send_draft(
+               slug,
+               "reply.md",
+               restamped["content_hash"],
+               restamped["review_fingerprint"]
+             )
+
+    assert [%{kind: "send"}] = Store.pending_ops(slug)
+
+    # Release the pass; only THEN does the send transmit and file its copy.
+    send(pass_pid, {:release, {:error, :done}})
+    assert_receive {:connect_called, send_pid}, 2_000
+    send(send_pid, {:release, {:ok, send_pid}})
+    assert_receive {:send_reply, {:ok, "sent"}}, 2_000
+    assert length(FakeSmtpTransport.calls()) == 1
+  end
+
+  # Settings-reload interleave, ordering 1: the reload lands BEFORE the send
+  # call, so the restarted Engine holds the new identity and must refuse the
+  # fingerprint the human's modal was rendered from.
+  test "a review fingerprint from the pre-reload settings is refused after a settings reload", %{
+    root: root
+  } do
+    slug = "mara"
+    use_transports!(ModelMailTransport)
+    :ok = Settings.upsert_account!(root, slug, smtp_account_attrs("Mara Ito"))
+
+    start_supervised!({MailSupervisor, %{root: root, generation: 1}})
+    open(root, 1)
+    credential_pair!(slug)
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    {:ok, review} = Engine.draft_review(slug, "reply.md")
+    reviewed_fingerprint = review["review_fingerprint"]
+
+    # A second tab changes the sending identity; the engine hot-restarts.
+    :ok = Settings.upsert_account!(root, slug, smtp_account_attrs("M. Ito"))
+    assert :ok = MailSupervisor.reload_settings_all(root)
+    credential_pair!(slug)
+
+    assert {:error, "re_review_required"} =
+             Engine.send_draft(slug, "reply.md", draft_hash(), reviewed_fingerprint)
+
+    assert Store.ops_by_origin(slug, "drafts/reply.md") == []
+    assert FakeSmtpTransport.calls() == []
+
+    # Re-reviewing under the new identity is all it takes.
+    {:ok, fresh} = Engine.draft_review(slug, "reply.md")
+    assert fresh["review_fingerprint"] != reviewed_fingerprint
+  end
+
+  # Ordering 2: the config file changes with no reload — the Engine still holds
+  # the reviewed settings, and the composed message must come from THOSE, never
+  # from a re-read of `config/mail.yaml`.
+  test "composition uses the Engine's captured settings, not the config file on disk", %{
+    root: root
+  } do
+    slug = "mara"
+    name = :"model_#{System.unique_integer([:positive])}"
+    {:ok, _pid} = ModelMailTransport.start_link(name: name)
+    ModelMailTransport.put_folder(name, "Sent")
+
+    use_transports!(ModelMailTransport)
+    FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+    reviewed = %{smtp_settings() | from_name: "Mara Ito"}
+
+    start_engine!(root, 95, slug,
+      settings: settings(slug, %{smtp: reviewed}),
+      connect_opts: [name: name]
+    )
+
+    open(root, 95)
+    credential_pair!(slug)
+
+    write_draft!(root, slug, "reply.md", @draft_md)
+    {:ok, review} = Engine.draft_review(slug, "reply.md")
+
+    # Another tab rewrites the account's identity on disk. No reload yet.
+    :ok = Settings.upsert_account!(root, slug, smtp_account_attrs("Someone Else"))
+
+    assert {:ok, "sent"} =
+             Engine.send_draft(slug, "reply.md", draft_hash(), review["review_fingerprint"])
+
+    assert [{:send, [_config, _credential, envelope, data, _opts]}] = FakeSmtpTransport.calls()
+    assert envelope.from == "mara@example.com"
+    assert data =~ "From: Mara Ito <mara@example.com>"
+    refute data =~ "Someone Else"
+  end
+
+  # Spec G §Crash recovery: the classification pass runs at ACTIVATION and
+  # needs no network at all — a send stranded pre-transmit must not stay
+  # blocked behind a paused or failing IMAP sync.
+  test "activation classifies a stranded send with no connection whatsoever", %{root: root} do
+    slug = "mara"
+
+    {:ok, stranded} =
+      Store.create_pending_op(%{
+        kind: "send",
+        account: slug,
+        origin: "drafts/reply.md",
+        target_folder: "Sent",
+        message_id: "<valea.send.deadbeef@valea.invalid>",
+        msg_id: "reply.md",
+        state: "pending"
+      })
+
+    # No transport, no credential, no server: activation alone must resolve it.
+    start_engine!(root, 96, slug, settings: settings(slug, %{smtp: smtp_settings()}))
+    open(root, 96)
+    # A synchronous call behind the broadcast: activation has finished by the
+    # time this returns.
+    assert Engine.status(slug).state == "idle"
+
+    assert {:ok, %{state: "rejected", error: "crashed_before_transmit"}} =
+             Store.op_by_id(stranded.id)
+  end
 end

@@ -538,6 +538,147 @@ defmodule Valea.Api.Mail do
       end
     end
 
+    # -- send (spec G) ------------------------------------------------------
+
+    action :get_mail_draft_review, :map do
+      constraints fields: [
+                    content: [type: :string, allow_nil?: false],
+                    content_hash: [type: :string, allow_nil?: false],
+                    recipients: [type: :map, allow_nil?: false],
+                    subject: [type: :string, allow_nil?: false],
+                    threading: [type: :map, allow_nil?: true],
+                    threading_warning: [type: :boolean, allow_nil?: false],
+                    identity: [type: :map, allow_nil?: false],
+                    review_fingerprint: [type: :string, allow_nil?: true],
+                    smtp_configured: [type: :boolean, allow_nil?: false]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+      argument :draft_name, :string, allow_nil?: false
+
+      # THE atomic review snapshot behind the send confirm modal (spec G §RPC
+      # surface). ONE no-follow read inside the account's Engine call, under
+      # the same captured settings `send_draft` will be checked against:
+      # everything the human sees — recipients, subject, threading, sending
+      # identity — and BOTH tokens they confirm with (`content_hash`,
+      # `review_fingerprint`) come out of that single buffer. Read-only: it
+      # claims nothing and touches no network.
+      run fn input, _ctx ->
+        %{account: slug, draft_name: draft_name} = input.arguments
+
+        with {:ok, _ws} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             {:ok, review} <- Engine.draft_review(slug, draft_name) do
+          {:ok, review}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :send_draft, :map do
+      constraints fields: [state: [type: :string, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :draft_name, :string, allow_nil?: false
+      argument :content_hash, :string, allow_nil?: false
+      argument :review_fingerprint, :string, allow_nil?: true
+      argument :generation, :integer, allow_nil?: false
+
+      # The one action in this codebase that transmits (spec G §Send
+      # pipeline) — human-only by construction: this surface is
+      # control-token-gated and agent sessions have no transport to it.
+      # Serialized through the account's Engine, which re-derives the review
+      # fingerprint from ITS captured settings and refuses
+      # `re_review_required` before any claim, spool write, or composition.
+      run fn input, _ctx ->
+        %{
+          account: slug,
+          draft_name: draft_name,
+          content_hash: content_hash,
+          generation: generation
+        } = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, _ws} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             {:ok, state} <-
+               Engine.send_draft(
+                 slug,
+                 draft_name,
+                 content_hash,
+                 input.arguments[:review_fingerprint]
+               ) do
+          {:ok, %{"state" => state}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :resolve_send_review, :map do
+      constraints fields: [resolved: [type: :boolean, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :op_id, :string, allow_nil?: false
+      # Closed vocabulary, twice: rejected at the Ash boundary by the match
+      # constraint, and mapped to an atom by `send_resolution/1`'s closed
+      # clauses — RPC input is never `String.to_atom/1`'d (same posture as
+      # `set_mail_credential`'s `kind`).
+      argument :resolution, :string,
+        allow_nil?: false,
+        constraints: [match: ~r/^(sent|not_sent)$/]
+
+      argument :generation, :integer, allow_nil?: false
+
+      # The human's verdict on a send parked in `send_review` (spec G §Send
+      # pipeline 4). `sent` runs the idempotent Sent copy and completes the
+      # op; `not_sent` rejects it and reverts the draft for another explicit
+      # click. Neither transmits.
+      run fn input, _ctx ->
+        %{
+          account: slug,
+          op_id: op_id,
+          resolution: resolution,
+          generation: generation
+        } = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, _ws} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             {:ok, verdict} <- send_resolution(resolution),
+             :ok <- Engine.resolve_send_review(slug, op_id, verdict) do
+          {:ok, %{"resolved" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :retry_sent_copy, :map do
+      constraints fields: [retried: [type: :boolean, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :op_id, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # Re-runs ONLY the idempotent Sent-copy append of a send that completed
+      # with a `sent_copy_failed` notice — the mail is already transmitted,
+      # and this path cannot reach the SMTP transport at all.
+      run fn input, _ctx ->
+        %{account: slug, op_id: op_id, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, _ws} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- Engine.retry_sent_copy(slug, op_id) do
+          {:ok, %{"retried" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :list_mail_drafts, :map do
       constraints fields: [drafts: [type: {:array, :map}, allow_nil?: false]]
 
@@ -662,6 +803,12 @@ defmodule Valea.Api.Mail do
   end
 
   defp blank_to_nil(_value), do: nil
+
+  # The two verdicts a human can give a parked send. Closed clauses, never
+  # `String.to_atom/1` on RPC input (same posture as `credential_kind/1`).
+  defp send_resolution("sent"), do: {:ok, :sent}
+  defp send_resolution("not_sent"), do: {:ok, :not_sent}
+  defp send_resolution(_other), do: {:error, :invalid_resolution}
 
   # `nil` (the argument omitted) is `:imap` — what every caller predating the
   # SMTP slot means. Never `String.to_atom/1` on RPC input.
@@ -790,8 +937,8 @@ defmodule Valea.Api.Mail do
   end
 
   defp draft_entry(root, account, name) do
-    parsed = read_and_parse_draft(root, account, name)
-    {display, notice} = draft_display(account, name, parsed)
+    {parsed, raw_hash} = read_and_parse_draft(root, account, name)
+    {display, notice, pushed?} = draft_display(account, name, parsed, raw_hash)
 
     %{
       "account" => account,
@@ -799,6 +946,10 @@ defmodule Valea.Api.Mail do
       "path" => draft_rel_path(account, name),
       "status_display" => display,
       "notice" => notice,
+      # A separate FACT, not a state: any completed push. Rendered as a badge
+      # beside the primary state, never overriding it (spec G §Display
+      # projection) — Send and Push both key off the primary state.
+      "pushed" => pushed?,
       "parsed_recipients" => parsed_recipients(parsed)
     }
   end
@@ -806,41 +957,75 @@ defmodule Valea.Api.Mail do
   # Same no-follow posture as the push path's snapshot open: only a REGULAR
   # file with a SINGLE link is ever read — an agent-planted symlink (or
   # hard-linked file) under `drafts/` lists as invalid (`link_unsafe`) with
-  # its target content NEVER read.
+  # its target content NEVER read. Returns the parse result AND the raw
+  # bytes' hash (the projection's gate for "is this still the revision that
+  # was sent?"); `nil` when nothing could be read.
   defp read_and_parse_draft(root, account, name) do
     path = Path.join([root, "sources", "mail", account, "drafts", name])
 
     case File.lstat(path) do
       {:ok, %File.Stat{type: :regular, links: 1}} ->
         case File.read(path) do
-          {:ok, bytes} -> DraftFile.parse_and_validate(bytes)
-          {:error, _reason} -> {:error, "unreadable"}
+          {:ok, bytes} -> {DraftFile.parse_and_validate(bytes), DraftFile.content_hash(bytes)}
+          {:error, _reason} -> {{:error, "unreadable"}, nil}
         end
 
       {:ok, _link_or_special} ->
-        {:error, "link_unsafe"}
+        {{:error, "link_unsafe"}, nil}
 
       {:error, _reason} ->
-        {:error, "unreadable"}
+        {{:error, "unreadable"}, nil}
     end
   end
 
-  # Displayed state derives from the LEDGER, not the frontmatter (spec
-  # §Drafting & push): an active op's state wins; else a completed op reads
-  # `pushed`; else a frontmatter `pushing`/`pushed` with NO ledger op is an
-  # agent forgery → `draft` + a `status_forged` notice.
-  defp draft_display(account, name, parsed) do
+  # Displayed state derives from the LEDGER, never the frontmatter (spec G
+  # §Display projection), and is KIND-AWARE and ORDERED — one draft's origin
+  # can carry both a push and a send, and `complete` means `pushed` for one
+  # and `sent` for the other:
+  #
+  #   1. The active op governs (the widened claim index guarantees at most
+  #      one): `pushing` | `sending` | `send_review` | `needs_review`.
+  #   2. Else the NEWEST terminal send governs — `sent` while the file still
+  #      hashes to the revision that was sent, `draft` + an
+  #      `earlier_revision_sent` note once it has been edited (push's CAS
+  #      reporting rule, applied to display), `draft` + the surfaced error
+  #      when it was rejected (which is retryable).
+  #   3. Else the frontmatter forgery check: an engine-owned status with no
+  #      corroborating ledger op is agent-forged → `draft` + `status_forged`.
+  #
+  # A completed push is NOT a state here — it is the `pushed` badge.
+  defp draft_display(account, name, parsed, raw_hash) do
     ops = Store.ops_by_origin(account, "drafts/" <> name)
-    active = Enum.find(ops, &(&1.state in ["claimed", "pending", "executing", "needs_review"]))
-    completed = Enum.find(ops, &(&1.state == "complete"))
+    active = Enum.find(ops, &(&1.state in OpsExecutor.active_states()))
+    newest_send = Enum.find(ops, &(&1.kind == "send" and &1.state in ["complete", "rejected"]))
+    pushed? = Enum.any?(ops, &(&1.kind == "append" and &1.state == "complete"))
     fm_status = frontmatter_status(parsed)
 
-    cond do
-      active != nil -> {OpsExecutor.op_display(active.state), active.error}
-      completed != nil -> {"pushed", nil}
-      fm_status in ["pushing", "pushed"] -> {"draft", "status_forged"}
-      true -> {fm_status || "draft", nil}
-    end
+    {state, error} =
+      cond do
+        active != nil ->
+          {OpsExecutor.op_display(active.kind, active.state), active.error}
+
+        newest_send != nil and newest_send.state == "complete" and
+            newest_send.content_hash == raw_hash ->
+          # `error` may be `sent_copy_failed`: sent, with its Sent copy
+          # outstanding and a retry affordance.
+          {"sent", newest_send.error}
+
+        newest_send != nil and newest_send.state == "complete" ->
+          {"draft", "earlier_revision_sent"}
+
+        newest_send != nil ->
+          {"draft", newest_send.error}
+
+        fm_status in ["pushing", "pushed", "sending", "send_review", "sent"] ->
+          {"draft", "status_forged"}
+
+        true ->
+          {fm_status || "draft", nil}
+      end
+
+    {state, error, pushed?}
   end
 
   defp frontmatter_status({:ok, %{status: status}}), do: status

@@ -323,8 +323,10 @@ defmodule Valea.Mail.Engine do
   end
 
   @doc """
-  Pushes a reviewed draft to the account's Drafts folder — the ONE
-  user-initiated outbound action (spec §Drafting & push; THERE IS NO SMTP).
+  Pushes a reviewed draft to the account's Drafts folder — the low-trust
+  half of the two user-initiated outbound actions (spec §Drafting & push;
+  the transmitting half is `send_draft/4`, and both are reachable only from
+  an explicit human click).
   The atomic claim + hash-verified snapshot + compose + fsynced spool run
   synchronously in the Engine loop (all local, no network) — so a concurrent
   double-push sees the first op instead of creating a second — and only the
@@ -350,6 +352,94 @@ defmodule Valea.Mail.Engine do
     case whereis(slug) do
       nil -> {:error, :not_found}
       pid -> GenServer.call(pid, {:push_draft, draft_name, content_hash}, 60_000)
+    end
+  end
+
+  @doc """
+  THE atomic review snapshot behind the send confirm modal (spec G §RPC
+  surface): a `GenServer.call` so the parse, the threading resolution, and
+  the review fingerprint are all derived from ONE no-follow read under the
+  SAME captured `state.settings` the send will later be checked against.
+  Read-only — it claims nothing and never touches the network.
+  """
+  @spec draft_review(String.t(), String.t()) ::
+          {:ok, map()} | {:error, :not_found | String.t()}
+  def draft_review(slug, draft_name) when is_binary(slug) and is_binary(draft_name) do
+    case whereis(slug) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:draft_review, draft_name})
+    end
+  end
+
+  @doc """
+  Transmits a reviewed draft over SMTP — the one action in this codebase that
+  cannot be undone (spec G §Send pipeline). Human-only by construction: it is
+  reachable solely from the control-token-gated RPC surface.
+
+  Settings pinning is an invariant, not an implementation detail: the review
+  fingerprint check, the atomic claim, the snapshot, and the wire/record
+  composition all happen synchronously in THIS `handle_call`, against the one
+  captured `state.settings` — so a settings edit either restarts the Engine
+  before the call (and the new Engine refuses the stale fingerprint) or
+  arrives after it (and the message composes entirely under the settings the
+  human reviewed). Only the transmit + Sent copy ride the serialized work
+  slot, exactly like a push.
+
+  `{:ok, display_state}` (`"sending"` | `"send_review"` | `"sent"` |
+  `"rejected"`); `{:error, reason}` on a gate failure or a pre-transmit
+  refusal (`re_review_required`, `content_changed`, `draft_too_large`,
+  `status_forged`, `invalid_draft`, `not_found`, `invalid_draft_name`).
+  """
+  @spec send_draft(String.t(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, String.t()}
+          | {:error,
+             :inactive
+             | :not_configured
+             | :smtp_not_configured
+             | :no_smtp_credential
+             | :blocked
+             | :not_found
+             | String.t()}
+  def send_draft(slug, draft_name, content_hash, review_fingerprint)
+      when is_binary(slug) and is_binary(draft_name) and is_binary(content_hash) do
+    case whereis(slug) do
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        GenServer.call(pid, {:send_draft, draft_name, content_hash, review_fingerprint}, 60_000)
+    end
+  end
+
+  @doc """
+  Applies the human's verdict to a send parked in `send_review` (spec G
+  §Send pipeline 4): `:sent` runs the idempotent Sent copy and completes the
+  op, `:not_sent` rejects it and reverts the draft. Never transmits — it
+  rides the same serialized work slot only because the Sent copy needs IMAP.
+  """
+  @spec resolve_send_review(String.t(), String.t(), :sent | :not_sent) ::
+          :ok
+          | {:error, :inactive | :not_configured | :blocked | :not_found | :not_reviewable}
+  def resolve_send_review(slug, op_id, resolution)
+      when is_binary(slug) and is_binary(op_id) and resolution in [:sent, :not_sent] do
+    case whereis(slug) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:resolve_send_review, op_id, resolution}, 60_000)
+    end
+  end
+
+  @doc """
+  Re-runs ONLY the idempotent Sent-copy append of a send that completed with
+  a `sent_copy_failed` notice. The mail is already transmitted; this can
+  never reach the SMTP transport.
+  """
+  @spec retry_sent_copy(String.t(), String.t()) ::
+          :ok
+          | {:error, :inactive | :not_configured | :blocked | :not_found | :not_retryable}
+  def retry_sent_copy(slug, op_id) when is_binary(slug) and is_binary(op_id) do
+    case whereis(slug) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:retry_sent_copy, op_id}, 60_000)
     end
   end
 
@@ -379,6 +469,10 @@ defmodule Valea.Mail.Engine do
       account: cfg.account,
       settings: Map.get(cfg, :settings),
       transport: Application.get_env(:valea, :mail_transport, Valea.Mail.ImapClient),
+      # Pinned at init exactly like `transport` (and unlike `doctor_ctx/1`'s
+      # on-demand resolution): an in-flight send must not have the transport
+      # swapped under it mid-op.
+      smtp_transport: Application.get_env(:valea, :mail_smtp_transport, Valea.Mail.SmtpClient),
       connect_opts: Map.get(cfg, :connect_opts, []),
       active: false,
       credential: nil,
@@ -494,6 +588,55 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  # Send (spec G §Send pipeline). Same shape as `push_draft` above — and the
+  # shape IS the invariant: fingerprint check, claim, snapshot and composition
+  # all run HERE, inline, under this one captured `state.settings`. Only the
+  # transmit + Sent copy are deferred to the serialized work slot.
+  def handle_call({:send_draft, draft_name, content_hash, review_fingerprint}, from, state) do
+    case validate_send(state) do
+      :ok ->
+        local_ctx = %{root: state.root, account: state.account, settings: state.settings}
+
+        case safe_prepare_send(local_ctx, draft_name, content_hash, review_fingerprint) do
+          {:ok, op_row} ->
+            enqueue_send_work(state, from, {:send, op_row.id})
+
+          {:duplicate, display} ->
+            {:reply, {:ok, display}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  # The human's verdict on a parked send, and the Sent-copy retry: both are
+  # ledger acts that WANT IMAP (for the Sent copy) but never require it, and
+  # neither can reach SMTP — so they take the weaker send-side gate and ride
+  # the work slot only because the append must not race a pass.
+  def handle_call({:resolve_send_review, op_id, resolution}, from, state) do
+    case validate_active(state) do
+      :ok -> enqueue_send_work(state, from, {:resolve, op_id, resolution})
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:retry_sent_copy, op_id}, from, state) do
+    case validate_active(state) do
+      :ok -> enqueue_send_work(state, from, {:retry, op_id})
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # Read-only and local: answered inline, under the same captured settings a
+  # subsequent `send_draft` will be checked against.
+  def handle_call({:draft_review, draft_name}, _from, state) do
+    {:reply, safe_review_snapshot(state, draft_name), state}
+  end
+
   def handle_call(:readopt, _from, %{status: "mailbox_replaced"} = state) do
     :ok = Account.authorize_readopt!(state.root, state.account)
     new_state = %{state | status: "idle"} |> schedule_poll()
@@ -591,8 +734,32 @@ defmodule Valea.Mail.Engine do
     {:noreply, %{state | ops_current: nil} |> drain_ops()}
   end
 
+  # A send-family Task reported: reply to the deferred caller verbatim (a send
+  # returns `{:ok, display}`, a resolve/retry `:ok`/`{:error, _}`), then drain.
+  def handle_info(
+        {:send_work_result, pid, reply},
+        %{ops_current: %{task: {pid, ref}, from: from, send_work: _work}} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+    GenServer.reply(from, reply)
+    {:noreply, %{state | ops_current: nil} |> drain_ops()}
+  end
+
+  # The send-family Task died before reporting. Everything it was doing is
+  # durable in the ledger — a transmitted op resumes its Sent copy, an
+  # unresolved one is classified at the next activation — so reply the
+  # in-flight display rather than hang the caller.
+  def handle_info(
+        {:DOWN, ref, :process, pid, _reason},
+        %{ops_current: %{task: {pid, ref}, from: from, send_work: work}} = state
+      ) do
+    GenServer.reply(from, send_work_fallback(work))
+    {:noreply, %{state | ops_current: nil} |> drain_ops()}
+  end
+
   # Stale task chatter (already handled/superseded): ignore.
   def handle_info({:sync_result, _pid, _result}, state), do: {:noreply, state}
+  def handle_info({:send_work_result, _pid, _reply}, state), do: {:noreply, state}
   def handle_info({:ops_result, _pid, _results}, state), do: {:noreply, state}
   def handle_info({:push_result, _pid, _display}, state), do: {:noreply, state}
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
@@ -668,6 +835,152 @@ defmodule Valea.Mail.Engine do
     %{state | ops_current: %{task: task, from: from, push: {op_id, draft_name}}}
   end
 
+  # -- send execution ------------------------------------------------------
+
+  # `prepare_send` guards itself; this is the same defense-in-depth wrapper
+  # `safe_prepare_push/3` is, at the one call site inside the Engine loop.
+  defp safe_prepare_send(local_ctx, draft_name, content_hash, review_fingerprint) do
+    OpsExecutor.prepare_send(local_ctx, draft_name, content_hash, review_fingerprint)
+  rescue
+    _error -> {:error, "send_failed"}
+  catch
+    :exit, _reason -> {:error, "send_failed"}
+  end
+
+  defp safe_review_snapshot(state, draft_name) do
+    OpsExecutor.review_snapshot(
+      %{root: state.root, account: state.account, settings: state.settings},
+      draft_name
+    )
+  rescue
+    _error -> {:error, "review_failed"}
+  catch
+    :exit, _reason -> {:error, "review_failed"}
+  end
+
+  # Send-family work (transmit, resolve, Sent-copy retry) shares ONE task
+  # shape: it either starts now or queues behind whatever holds the slot, and
+  # its reply is deferred until it finishes — never run inline, so the Engine
+  # loop keeps answering `status`/`sync_now`/`:poll` throughout.
+  defp enqueue_send_work(state, from, work) do
+    if busy?(state) do
+      {:noreply, %{state | ops_queue: state.ops_queue ++ [%{from: from, send_work: work}]}}
+    else
+      {:noreply, start_send_work_task(state, from, work)}
+    end
+  end
+
+  defp start_send_work_task(state, from, work) do
+    parent = self()
+
+    args = %{
+      root: state.root,
+      account: state.account,
+      settings: state.settings,
+      transport: state.transport,
+      connect_opts: state.connect_opts,
+      credential: state.credential,
+      smtp_transport: state.smtp_transport,
+      smtp_credential: state.smtp_credential
+    }
+
+    task =
+      spawn_linked_task(fn ->
+        send(parent, {:send_work_result, self(), run_send_work(args, work)})
+      end)
+
+    %{state | ops_current: %{task: task, from: from, send_work: work}}
+  end
+
+  # Runs INSIDE the send Task. The IMAP connection is opened up front and is
+  # OPTIONAL: it exists only for the Sent copy, so an unreachable mailbox must
+  # never stop a transmit — it only leaves the op `transmitted` for the next
+  # connected pass to file.
+  defp run_send_work(args, work) do
+    conn = connect_for_send(args)
+
+    try do
+      apply_send_work(send_ctx(args, conn), work)
+    after
+      if conn, do: safe_logout(args.transport, conn)
+    end
+  rescue
+    # Same reasoning as `run_push/2`: the executor answers its own failures as
+    # tuples, so a raise here is a wiring bug that must reach the log rather
+    # than dissolve into a display string. Scrubbed of both secrets.
+    e ->
+      Logger.error(
+        Redact.text(
+          Redact.text(
+            "mail send failed (account #{args.account}, work #{inspect(work)}): " <>
+              Exception.format(:error, e, __STACKTRACE__),
+            resolve_secret(args.smtp_credential)
+          ),
+          resolve_secret(args.credential)
+        )
+      )
+
+      send_work_fallback(work)
+  catch
+    :exit, _ -> send_work_fallback(work)
+  end
+
+  defp send_ctx(args, conn) do
+    %{
+      root: args.root,
+      account: args.account,
+      settings: args.settings,
+      transport: args.transport,
+      conn: conn,
+      smtp_transport: args.smtp_transport,
+      smtp_credential: resolve_secret(args.smtp_credential)
+    }
+  end
+
+  defp apply_send_work(ctx, {:send, op_id}),
+    do: {:ok, send_display(OpsExecutor.execute_send(ctx, op_id))}
+
+  defp apply_send_work(ctx, {:resolve, op_id, resolution}),
+    do: OpsExecutor.resolve_send_review(ctx, op_id, resolution)
+
+  defp apply_send_work(ctx, {:retry, op_id}), do: OpsExecutor.retry_sent_copy(ctx, op_id)
+
+  defp send_display(:ok), do: "sent"
+  defp send_display({:sending, _notice}), do: "sending"
+  defp send_display({:send_review, _reason}), do: "send_review"
+  defp send_display({:rejected, _reason}), do: "rejected"
+
+  # What to answer when the task never reported: the send op is durable and
+  # in flight (`"sending"`), and a resolve/retry simply hasn't been applied
+  # yet — the next pass picks both up.
+  defp send_work_fallback({:send, _op_id}), do: {:ok, "sending"}
+  defp send_work_fallback(_resolve_or_retry), do: :ok
+
+  # A connection is a bonus here, never a precondition (see `run_send_work/2`).
+  defp connect_for_send(args) do
+    case args.transport.connect(
+           args.settings.imap,
+           resolve_secret(args.credential),
+           args.connect_opts
+         ) do
+      {:ok, conn} -> conn
+      {:error, _reason} -> nil
+    end
+  rescue
+    e ->
+      Logger.error(
+        Redact.text(
+          "mail send: IMAP connect raised (account #{args.account}, Sent copy deferred): " <>
+            Exception.format(:error, e, __STACKTRACE__),
+          resolve_secret(args.credential)
+        )
+      )
+
+      nil
+  catch
+    :exit, _ -> nil
+  end
+
   # After a pass / ops batch / push finishes: if nothing is in flight and
   # callers are queued, start the next one. Re-validates each queued caller at
   # drain time (the account may have become blocked meanwhile) — an ops caller
@@ -708,6 +1021,21 @@ defmodule Valea.Mail.Engine do
         drain_ops(state)
     end
   end
+
+  defp drain_entry(state, %{from: from, send_work: work}) do
+    case validate_send_work(state, work) do
+      :ok ->
+        start_send_work_task(state, from, work)
+
+      {:error, _reason} ->
+        # The op is already durable; recovery/classification resolves it.
+        GenServer.reply(from, send_work_fallback(work))
+        drain_ops(state)
+    end
+  end
+
+  defp validate_send_work(state, {:send, _op_id}), do: validate_send(state)
+  defp validate_send_work(state, _resolve_or_retry), do: validate_active(state)
 
   # Connects and runs the idempotent APPEND for the already-`pending` push op,
   # returning its final display state. A connect failure leaves the durable
@@ -872,6 +1200,18 @@ defmodule Valea.Mail.Engine do
 
     {:ok, _count} = Index.rebuild(state.root, state.account)
 
+    # Spec G §Crash recovery: resolve every stranded send from the ledger +
+    # manifests alone, BEFORE polling starts. Requires no network on purpose —
+    # a send stranded pre-transmit must not stay blocked behind a paused or
+    # failing IMAP sync (`OpsExecutor.recover/1`, which does need a
+    # connection, only ever resumes a Sent copy or reconciles from here on).
+    :ok =
+      OpsExecutor.classify_sends_local(%{
+        root: state.root,
+        account: state.account,
+        settings: state.settings
+      })
+
     new_state =
       %{
         state
@@ -936,6 +1276,32 @@ defmodule Valea.Mail.Engine do
   defp validate_sync(%{status: "mailbox_replaced"}), do: {:error, :blocked}
   defp validate_sync(%{credential: nil}), do: {:error, :no_credential}
   defp validate_sync(_state), do: :ok
+
+  # The gate every SEND-side action shares. Deliberately weaker than
+  # `validate_sync/1` in one respect: it does NOT require the IMAP
+  # credential. Sending is an SMTP act, and resolving or retrying a Sent copy
+  # is a ledger act — an account whose mailbox happens to be unreachable must
+  # still be able to send and to clear a parked op; the Sent copy simply
+  # files itself on the next connected pass.
+  defp validate_active(%{active: false}), do: {:error, :inactive}
+  defp validate_active(%{settings: nil}), do: {:error, :not_configured}
+  defp validate_active(%{status: "mailbox_replaced"}), do: {:error, :blocked}
+  defp validate_active(_state), do: :ok
+
+  defp validate_send(state) do
+    with :ok <- validate_active(state) do
+      cond do
+        not Valea.Mail.Settings.smtp_configured?(state.settings) ->
+          {:error, :smtp_not_configured}
+
+        state.smtp_credential == nil ->
+          {:error, :no_smtp_credential}
+
+        true ->
+          :ok
+      end
+    end
+  end
 
   defp maybe_start_pass(state) do
     case validate_sync(state) do

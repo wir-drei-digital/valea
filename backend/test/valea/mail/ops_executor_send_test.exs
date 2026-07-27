@@ -573,6 +573,32 @@ defmodule Valea.Mail.OpsExecutorSendTest do
       assert read_draft_status(root, "reply.md") == "draft"
     end
 
+    # The CAS stamp rule, applied to the irreversible step: the human edits the
+    # draft while the send is in flight. What was reviewed is what goes out —
+    # and the NEWER revision on disk is left completely untouched (it is an
+    # unsent draft again, which is exactly what the display projection reports).
+    test "a draft edited mid-send is never stamped; the reviewed revision still goes out", %{
+      root: root
+    } do
+      name = start_model!()
+      {c, op} = prepared!(root, "reply.md", model: name)
+
+      edited = draft_body(status: "sending", extra: "cc: [sam@example.com]")
+      write_draft!(root, "reply.md", edited)
+
+      FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+      assert :ok = OpsExecutor.execute_send(c, op.id)
+
+      # The transmitted message is the REVIEWED one — the added cc never
+      # reached the envelope or the headers.
+      assert [{:send, [_config, _credential, envelope, data, _opts]}] = send_calls()
+      assert envelope.rcpt == ["alex@example.com"]
+      refute data =~ "sam@example.com"
+
+      # And the newer revision on disk was left exactly as the human wrote it.
+      assert File.read!(Path.join(drafts_dir(root), "reply.md")) == edited
+    end
+
     test "an op id from another account raises instead of transmitting", %{root: root} do
       name = start_model!()
       {c, op} = prepared!(root, "reply.md", model: name)

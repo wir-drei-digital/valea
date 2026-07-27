@@ -1190,6 +1190,60 @@ defmodule Valea.Mail.OpsExecutor do
     do: in_reply_to <> "\n" <> Enum.join(references || [], "\n")
 
   @doc """
+  THE review snapshot (spec G §RPC surface, `get_mail_draft_review`): ONE
+  no-follow read of the draft, and everything the confirm modal renders comes
+  out of that one buffer — the parsed recipient set, the subject, the resolved
+  threading (or its absence plus the warning), the config-owned sending
+  identity, the review fingerprint, and the `content_hash` OF THAT SAME
+  BUFFER.
+
+  Nothing the human sees may come from a different read than the hashes they
+  confirm, which is why this is one function and not a composition of the
+  listing's parse plus a separate hash.
+  """
+  @spec review_snapshot(map(), String.t()) :: {:ok, map()} | {:error, String.t()}
+  def review_snapshot(ctx, draft_name) when is_binary(draft_name) do
+    with :ok <- validate_draft_name(draft_name),
+         {:ok, path} <- resolve_draft_path(ctx, draft_name),
+         {:ok, buffer} <- read_draft_nofollow(path),
+         {:ok, validated} <- validate_send_draft(buffer) do
+      {threading, notice} = resolve_threading(ctx, validated.in_reply_to)
+
+      {:ok,
+       %{
+         "content" => buffer,
+         "content_hash" => DraftFile.content_hash(buffer),
+         "recipients" => %{
+           "to" => Enum.map(validated.to, &addr_map/1),
+           "cc" => Enum.map(validated.cc, &addr_map/1),
+           "bcc" => Enum.map(validated.bcc, &addr_map/1)
+         },
+         "subject" => validated.subject,
+         "threading" => threading_map(threading),
+         "threading_warning" => notice != nil,
+         "identity" => identity_map(ctx),
+         "review_fingerprint" => review_fingerprint(ctx.settings, threading),
+         "smtp_configured" => Settings.smtp_configured?(ctx.settings)
+       }}
+    end
+  rescue
+    _error -> {:error, "review_failed"}
+  end
+
+  defp addr_map(%{name: name, email: email}), do: %{"name" => name, "email" => email}
+
+  defp threading_map(%{in_reply_to: nil}), do: nil
+
+  defp threading_map(%{in_reply_to: in_reply_to, references: references}),
+    do: %{"in_reply_to" => in_reply_to, "references" => references || []}
+
+  defp identity_map(%{settings: %{smtp: nil}} = ctx),
+    do: %{"from" => nil, "from_name" => nil, "account" => ctx.account}
+
+  defp identity_map(%{settings: %{smtp: smtp}} = ctx),
+    do: %{"from" => smtp.from, "from_name" => smtp.from_name, "account" => ctx.account}
+
+  @doc """
   LOCAL phase of a send (no connection, no transmission): the same
   validate → contain → no-follow-snapshot → hash-verify → parse chain as
   `prepare_push/3`, plus the send-only guards, then the atomic claim, the

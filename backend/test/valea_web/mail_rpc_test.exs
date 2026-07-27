@@ -1063,6 +1063,426 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
+  # -- send (spec G) ------------------------------------------------------------
+
+  describe "send RPCs (wired to the engine)" do
+    defp setup_smtp_account!(generation, opts \\ []) do
+      account = Keyword.get(opts, :account, "mara")
+
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => account,
+                   "host" => "imap.fastmail.com",
+                   "port" => 993,
+                   "username" => "#{account}@example.com",
+                   "smtpHost" => "smtp.fastmail.com",
+                   "smtpPort" => 587,
+                   "smtpUsername" => "#{account}@example.com",
+                   "smtpFromName" => "Mara Ito",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert %{"success" => true} =
+               rpc(
+                 "set_mail_credential",
+                 %{
+                   "account" => account,
+                   "secret" => "smtp-password",
+                   "kind" => "smtp",
+                   "generation" => generation
+                 },
+                 ["accepted"]
+               )
+
+      await_engine_active!(account)
+      account
+    end
+
+    defp write_rpc_draft!(workspace, account, name, body) do
+      dir = Path.join([workspace, "sources", "mail", account, "drafts"])
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, name), body)
+      body
+    end
+
+    @draft_md """
+    ---
+    to: [alex@example.com]
+    subject: "Re: Kickoff"
+    status: draft
+    ---
+    Hello Alex.
+    """
+
+    test "get_mail_draft_review returns the one-buffer review snapshot", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_smtp_account!(generation)
+      write_rpc_draft!(workspace, "mara", "reply.md", @draft_md)
+
+      assert %{"success" => true, "data" => data} =
+               rpc(
+                 "get_mail_draft_review",
+                 %{"account" => "mara", "draftName" => "reply.md"},
+                 [
+                   "content",
+                   "contentHash",
+                   "recipients",
+                   "subject",
+                   "threading",
+                   "threadingWarning",
+                   "identity",
+                   "reviewFingerprint",
+                   "smtpConfigured"
+                 ]
+               )
+
+      assert data["content"] == @draft_md
+      assert data["contentHash"] == Valea.Mail.DraftFile.content_hash(@draft_md)
+      assert data["recipients"]["to"] == [%{"name" => nil, "email" => "alex@example.com"}]
+      assert data["subject"] == "Re: Kickoff"
+      assert data["threading"] == nil
+      assert data["threadingWarning"] == false
+      assert data["identity"]["from"] == "mara@example.com"
+      assert data["identity"]["from_name"] == "Mara Ito"
+      assert data["smtpConfigured"] == true
+      assert is_binary(data["reviewFingerprint"])
+    end
+
+    test "get_mail_draft_review on a missing draft surfaces not_found", %{
+      generation: generation
+    } do
+      setup_smtp_account!(generation)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "get_mail_draft_review",
+                 %{"account" => "mara", "draftName" => "nope.md"},
+                 ["content"]
+               )
+
+      assert inspect(errors) =~ "not_found"
+    end
+
+    test "send_draft with a stale review fingerprint surfaces re_review_required", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_smtp_account!(generation)
+      write_rpc_draft!(workspace, "mara", "reply.md", @draft_md)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "send_draft",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "reply.md",
+                   "contentHash" => Valea.Mail.DraftFile.content_hash(@draft_md),
+                   "reviewFingerprint" => String.duplicate("0", 64),
+                   "generation" => generation
+                 },
+                 ["state"]
+               )
+
+      assert inspect(errors) =~ "re_review_required"
+      # Nothing claimed, nothing composed, nothing transmitted.
+      assert Valea.Mail.Store.ops_by_origin("mara", "drafts/reply.md") == []
+    end
+
+    test "send_draft on a push-only account surfaces smtp_not_configured", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      write_rpc_draft!(workspace, "mara", "reply.md", @draft_md)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "send_draft",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "reply.md",
+                   "contentHash" => Valea.Mail.DraftFile.content_hash(@draft_md),
+                   "reviewFingerprint" => "whatever",
+                   "generation" => generation
+                 },
+                 ["state"]
+               )
+
+      assert inspect(errors) =~ "smtp_not_configured"
+    end
+
+    test "send_draft rejects a traversing draft name before any I/O", %{generation: generation} do
+      setup_smtp_account!(generation)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "send_draft",
+                 %{
+                   "account" => "mara",
+                   "draftName" => "../evil.md",
+                   "contentHash" => "deadbeef",
+                   "reviewFingerprint" => "x",
+                   "generation" => generation
+                 },
+                 ["state"]
+               )
+
+      assert inspect(errors) =~ "invalid_draft_name"
+    end
+
+    test "resolve_send_review and retry_sent_copy refuse ops that are not in those states", %{
+      generation: generation
+    } do
+      setup_smtp_account!(generation)
+      # Both actions run in the Engine's work slot and open an opportunistic
+      # IMAP connection for the Sent copy. Script the refusal so this account's
+      # mailbox is cleanly unavailable (the point being that BOTH still answer
+      # from the ledger alone).
+      FakeMailTransport.script([{:connect, :_, {:error, :nope}}])
+
+      assert %{"success" => false, "errors" => resolve_errors} =
+               rpc(
+                 "resolve_send_review",
+                 %{
+                   "account" => "mara",
+                   "opId" => "no-such-op",
+                   "resolution" => "sent",
+                   "generation" => generation
+                 },
+                 ["resolved"]
+               )
+
+      assert inspect(resolve_errors) =~ "not_reviewable"
+
+      assert %{"success" => false, "errors" => retry_errors} =
+               rpc(
+                 "retry_sent_copy",
+                 %{"account" => "mara", "opId" => "no-such-op", "generation" => generation},
+                 ["retried"]
+               )
+
+      assert inspect(retry_errors) =~ "not_retryable"
+    end
+
+    test "resolve_send_review only accepts the two resolutions", %{generation: generation} do
+      setup_smtp_account!(generation)
+
+      assert %{"success" => false} =
+               rpc(
+                 "resolve_send_review",
+                 %{
+                   "account" => "mara",
+                   "opId" => "some-op",
+                   "resolution" => "maybe",
+                   "generation" => generation
+                 },
+                 ["resolved"]
+               )
+    end
+
+    test "every send action takes a generation guard", %{generation: generation} do
+      for {action, input, fields} <- [
+            {"send_draft",
+             %{
+               "account" => "mara",
+               "draftName" => "reply.md",
+               "contentHash" => "h",
+               "reviewFingerprint" => "f"
+             }, ["state"]},
+            {"resolve_send_review", %{"account" => "mara", "opId" => "o", "resolution" => "sent"},
+             ["resolved"]},
+            {"retry_sent_copy", %{"account" => "mara", "opId" => "o"}, ["retried"]}
+          ] do
+        assert %{"success" => false, "errors" => errors} =
+                 rpc(action, Map.put(input, "generation", generation - 1), fields)
+
+        assert inspect(errors) =~ "workspace_changed", "#{action} must guard the generation"
+      end
+    end
+
+    # Spec G §Safety invariants — human-only transmission. The send trigger
+    # lives on the control-token-gated RPC surface and NOWHERE else: not in the
+    # agent session plumbing, not in the ops-file vocabulary, not in the agent
+    # briefing the engine materializes into each account root.
+    test "the send actions exist only on the control-token RPC surface" do
+      send_actions = ["send_draft", "resolve_send_review", "retry_sent_copy"]
+
+      api = File.read!(Path.expand("lib/valea/api/mail.ex"))
+      for action <- send_actions, do: assert(api =~ action)
+
+      for source <- [
+            "lib/valea/agents/session_server.ex",
+            "lib/valea/harnesses/claude_code.ex",
+            "lib/valea/agents/env.ex",
+            "lib/valea/mail/ops_file.ex",
+            "lib/valea/mail/agents_file.ex"
+          ] do
+        content = File.read!(Path.expand(source))
+
+        for action <- send_actions do
+          refute content =~ action, "#{source} must not reference #{action}"
+        end
+      end
+    end
+  end
+
+  # -- display projection (spec G §Display projection) ---------------------------
+
+  describe "list_mail_drafts display projection" do
+    defp draft_with_ops!(workspace, generation, body, ops) do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "reply.md"), body)
+
+      for {kind, state, attrs} <- ops do
+        {:ok, _op} =
+          Valea.Mail.Store.create_pending_op(
+            Map.merge(
+              %{
+                kind: kind,
+                account: "mara",
+                origin: "drafts/reply.md",
+                target_folder: "Sent",
+                message_id: "<valea.#{kind}.#{System.unique_integer([:positive])}@valea.invalid>",
+                msg_id: "reply.md",
+                state: state
+              },
+              attrs
+            )
+          )
+      end
+
+      %{"success" => true, "data" => %{"drafts" => drafts}} =
+        rpc("list_mail_drafts", %{}, ["drafts"])
+
+      Enum.find(drafts, &(&1["name"] == "reply.md"))
+    end
+
+    @projection_md """
+    ---
+    to: [alex@example.com]
+    subject: "Re: Kickoff"
+    status: draft
+    ---
+    Hello Alex.
+    """
+
+    test "a completed push plus a newer rejected send renders draft + the pushed badge", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      draft =
+        draft_with_ops!(workspace, generation, @projection_md, [
+          {"append", "complete", %{inserted_at: "2026-07-26T10:00:00.000000Z"}},
+          {"send", "rejected",
+           %{
+             inserted_at: "2026-07-26T11:00:00.000000Z",
+             error: "rejected_recipients: alex@example.com: 550 no such user"
+           }}
+        ])
+
+      # The push must NOT strand the row as `pushed`: Send/Push both key off
+      # the primary state, and this draft is retryable.
+      assert draft["status_display"] == "draft"
+      assert draft["notice"] =~ "550 no such user"
+      assert draft["pushed"] == true
+    end
+
+    test "the NEWEST terminal send governs, not the first one found", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      hash = Valea.Mail.DraftFile.content_hash(@projection_md)
+
+      draft =
+        draft_with_ops!(workspace, generation, @projection_md, [
+          {"send", "complete", %{inserted_at: "2026-07-26T10:00:00.000000Z", content_hash: hash}},
+          {"send", "rejected",
+           %{inserted_at: "2026-07-26T12:00:00.000000Z", error: "send_failed: :auth_failed"}}
+        ])
+
+      assert draft["status_display"] == "draft"
+      assert draft["notice"] =~ "auth_failed"
+      assert draft["pushed"] == false
+    end
+
+    test "a completed send renders sent only while the file still hashes to it", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      hash = Valea.Mail.DraftFile.content_hash(@projection_md)
+
+      draft =
+        draft_with_ops!(workspace, generation, @projection_md, [
+          {"send", "complete", %{inserted_at: "2026-07-26T10:00:00.000000Z", content_hash: hash}}
+        ])
+
+      assert draft["status_display"] == "sent"
+      assert draft["notice"] == nil
+
+      # The human edits the draft after sending: the sent revision is history,
+      # and what is on disk now is an unsent draft again.
+      File.write!(
+        Path.join([workspace, "sources", "mail", "mara", "drafts", "reply.md"]),
+        String.replace(@projection_md, "Hello Alex.", "Hello Alex, one more thing.")
+      )
+
+      %{"success" => true, "data" => %{"drafts" => drafts}} =
+        rpc("list_mail_drafts", %{}, ["drafts"])
+
+      edited = Enum.find(drafts, &(&1["name"] == "reply.md"))
+      assert edited["status_display"] == "draft"
+      assert edited["notice"] == "earlier_revision_sent"
+    end
+
+    test "an in-flight send governs the display and surfaces its notice", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      draft =
+        draft_with_ops!(workspace, generation, @projection_md, [
+          {"send", "transmitted", %{inserted_at: "2026-07-26T10:00:00.000000Z"}}
+        ])
+
+      assert draft["status_display"] == "sending"
+    end
+
+    test "a parked send renders send_review with its reason", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      draft =
+        draft_with_ops!(workspace, generation, @projection_md, [
+          {"send", "send_review", %{error: "gmail_sent_checked_empty"}}
+        ])
+
+      assert draft["status_display"] == "send_review"
+      assert draft["notice"] == "gmail_sent_checked_empty"
+    end
+
+    test "a forged engine-owned status with no ledger op still renders draft", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      forged = String.replace(@projection_md, "status: draft", "status: sent")
+      draft = draft_with_ops!(workspace, generation, forged, [])
+
+      assert draft["status_display"] == "draft"
+      assert draft["notice"] == "status_forged"
+      assert draft["pushed"] == false
+    end
+  end
+
   describe "list_mail_drafts" do
     test "returns an empty list when no drafts exist" do
       assert %{"success" => true, "data" => %{"drafts" => []}} =

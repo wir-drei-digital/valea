@@ -3593,6 +3593,80 @@ export async function getMailDraftChannel<Fields extends GetMailDraftFields | un
 }
 
 
+export type GetMailDraftReviewInput = {
+  account: string;
+  draftName: string;
+};
+
+export type GetMailDraftReviewFields = UnifiedFieldSelection<{content: string, contentHash: string, recipients: Record<string, any>, subject: string, threading: Record<string, any> | null, threadingWarning: boolean, identity: Record<string, any>, reviewFingerprint: string | null, smtpConfigured: boolean, __type: "TypedMap", __primitiveFields: "content" | "contentHash" | "recipients" | "subject" | "threading" | "threadingWarning" | "identity" | "reviewFingerprint" | "smtpConfigured"}>[];
+
+export type InferGetMailDraftReviewResult<
+  Fields extends GetMailDraftReviewFields | undefined,
+> = InferResult<{content: string, contentHash: string, recipients: Record<string, any>, subject: string, threading: Record<string, any> | null, threadingWarning: boolean, identity: Record<string, any>, reviewFingerprint: string | null, smtpConfigured: boolean, __type: "TypedMap", __primitiveFields: "content" | "contentHash" | "recipients" | "subject" | "threading" | "threadingWarning" | "identity" | "reviewFingerprint" | "smtpConfigured"}, Fields>;
+
+export type GetMailDraftReviewResult<Fields extends GetMailDraftReviewFields | undefined = undefined> = | { success: true; data: InferGetMailDraftReviewResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailDraftReview<Fields extends GetMailDraftReviewFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GetMailDraftReviewInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GetMailDraftReviewResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "get_mail_draft_review",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GetMailDraftReviewResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailDraftReviewChannel<Fields extends GetMailDraftReviewFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GetMailDraftReviewInput;
+  fields: Fields;
+  resultHandler: (result: GetMailDraftReviewResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GetMailDraftReviewResult<Fields>>(
+    config.channel,
+    {
+    action: "get_mail_draft_review",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type GetMailMessageInput = {
   account: string;
   msgId: string;
@@ -4459,6 +4533,234 @@ export async function removeMailAccountChannel<Fields extends RemoveMailAccountF
     config.channel,
     {
     action: "remove_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ResolveSendReviewInput = {
+  account: string;
+  opId: string;
+  resolution: string;
+  generation: number;
+};
+
+export type ResolveSendReviewFields = UnifiedFieldSelection<{resolved: boolean, __type: "TypedMap", __primitiveFields: "resolved"}>[];
+
+export type InferResolveSendReviewResult<
+  Fields extends ResolveSendReviewFields | undefined,
+> = InferResult<{resolved: boolean, __type: "TypedMap", __primitiveFields: "resolved"}, Fields>;
+
+export type ResolveSendReviewResult<Fields extends ResolveSendReviewFields | undefined = undefined> = | { success: true; data: InferResolveSendReviewResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function resolveSendReview<Fields extends ResolveSendReviewFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ResolveSendReviewInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ResolveSendReviewResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "resolve_send_review",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ResolveSendReviewResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function resolveSendReviewChannel<Fields extends ResolveSendReviewFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ResolveSendReviewInput;
+  fields: Fields;
+  resultHandler: (result: ResolveSendReviewResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ResolveSendReviewResult<Fields>>(
+    config.channel,
+    {
+    action: "resolve_send_review",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RetrySentCopyInput = {
+  account: string;
+  opId: string;
+  generation: number;
+};
+
+export type RetrySentCopyFields = UnifiedFieldSelection<{retried: boolean, __type: "TypedMap", __primitiveFields: "retried"}>[];
+
+export type InferRetrySentCopyResult<
+  Fields extends RetrySentCopyFields | undefined,
+> = InferResult<{retried: boolean, __type: "TypedMap", __primitiveFields: "retried"}, Fields>;
+
+export type RetrySentCopyResult<Fields extends RetrySentCopyFields | undefined = undefined> = | { success: true; data: InferRetrySentCopyResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function retrySentCopy<Fields extends RetrySentCopyFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RetrySentCopyInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RetrySentCopyResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "retry_sent_copy",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RetrySentCopyResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function retrySentCopyChannel<Fields extends RetrySentCopyFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RetrySentCopyInput;
+  fields: Fields;
+  resultHandler: (result: RetrySentCopyResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RetrySentCopyResult<Fields>>(
+    config.channel,
+    {
+    action: "retry_sent_copy",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SendDraftInput = {
+  account: string;
+  draftName: string;
+  contentHash: string;
+  reviewFingerprint?: string | null;
+  generation: number;
+};
+
+export type SendDraftFields = UnifiedFieldSelection<{state: string, __type: "TypedMap", __primitiveFields: "state"}>[];
+
+export type InferSendDraftResult<
+  Fields extends SendDraftFields | undefined,
+> = InferResult<{state: string, __type: "TypedMap", __primitiveFields: "state"}, Fields>;
+
+export type SendDraftResult<Fields extends SendDraftFields | undefined = undefined> = | { success: true; data: InferSendDraftResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function sendDraft<Fields extends SendDraftFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SendDraftInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SendDraftResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "send_draft",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SendDraftResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function sendDraftChannel<Fields extends SendDraftFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SendDraftInput;
+  fields: Fields;
+  resultHandler: (result: SendDraftResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SendDraftResult<Fields>>(
+    config.channel,
+    {
+    action: "send_draft",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
