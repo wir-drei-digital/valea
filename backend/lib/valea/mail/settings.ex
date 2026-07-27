@@ -60,6 +60,7 @@ defmodule Valea.Mail.Settings do
   """
 
   alias __MODULE__
+  alias Valea.Mail.DraftFile
   alias Valea.Mail.Normalizer
 
   @default_port 993
@@ -87,12 +88,6 @@ defmodule Valea.Mail.Settings do
   # YAML mapping key that can be interpolated unquoted with no injection
   # risk (the character class structurally cannot break a YAML block).
   @slug_re ~r/^[a-z0-9][a-z0-9-]{0,31}$/
-
-  # A LOCAL copy of `Valea.Mail.DraftFile`'s `@addr_re` (RFC 5322 addr-spec,
-  # dot-atom local part + dotted domain labels), used to validate `smtp.from`.
-  # Task 3 of spec G promotes DraftFile's to a public `valid_addr_spec?/1` and
-  # this copy goes away with it — one grammar, one place.
-  @addr_re ~r/^[A-Za-z0-9!#$%&'*+\/=?^_`{|}~-]+(\.[A-Za-z0-9!#$%&'*+\/=?^_`{|}~-]+)*@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/
 
   defstruct slug: nil,
             provider: :generic,
@@ -578,7 +573,9 @@ defmodule Valea.Mail.Settings do
   end
 
   defp check_addr_spec(addr) do
-    if valid_addr_spec?(addr) do
+    # ONE address grammar for the whole mail stack — the same predicate the
+    # draft's own recipients are judged by (spec G, Task 3).
+    if DraftFile.valid_addr_spec?(addr) do
       {:ok, addr}
     else
       {:error, "smtp.from must be a single addr-spec (defaults to smtp.username)"}
@@ -607,8 +604,6 @@ defmodule Valea.Mail.Settings do
         {:error, "smtp.from_name must be a string"}
     end
   end
-
-  defp valid_addr_spec?(addr), do: Regex.match?(@addr_re, addr)
 
   # -- defaults by provider -------------------------------------------------
 

@@ -34,6 +34,20 @@ defmodule Valea.Mail.DoctorTest do
     )
   end
 
+  # A sending account (spec G v5): `smtp` present means the three SMTP checks
+  # run. `settings()` above leaves `smtp: nil` — a push-only account — so
+  # every pre-existing test keeps asserting the original eight checks.
+  defp smtp(port) do
+    %{
+      host: "localhost",
+      port: port,
+      security: :starttls,
+      username: "mara@example.com",
+      from: "mara@example.com",
+      from_name: nil
+    }
+  end
+
   defp ctx(overrides) do
     Map.merge(
       %{
@@ -41,7 +55,9 @@ defmodule Valea.Mail.DoctorTest do
         account: @account,
         settings: settings(),
         credential: fn -> "app-password" end,
-        transport: FakeMailTransport
+        transport: FakeMailTransport,
+        smtp_transport: FakeSmtpTransport,
+        smtp_credential: fn -> "smtp-password" end
       },
       overrides
     )
@@ -101,19 +117,26 @@ defmodule Valea.Mail.DoctorTest do
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, port} = :inet.port(listen_socket)
 
-    acceptor =
-      spawn(fn ->
-        case :gen_tcp.accept(listen_socket, 5_000) do
-          {:ok, socket} -> :gen_tcp.close(socket)
-          {:error, _} -> :ok
-        end
-      end)
+    # Accepts in a LOOP: a sending account's run makes two TCP probes (the
+    # IMAP one and the SMTP one), and both may land on this port.
+    acceptor = spawn(fn -> accept_loop(listen_socket) end)
 
     try do
       fun.(port)
     after
       Process.exit(acceptor, :kill)
       :gen_tcp.close(listen_socket)
+    end
+  end
+
+  defp accept_loop(listen_socket) do
+    case :gen_tcp.accept(listen_socket, 5_000) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+        accept_loop(listen_socket)
+
+      {:error, _} ->
+        :ok
     end
   end
 
@@ -138,6 +161,7 @@ defmodule Valea.Mail.DoctorTest do
 
   setup do
     {:ok, _} = FakeMailTransport.start_link()
+    {:ok, _} = FakeSmtpTransport.start_link()
     :ok
   end
 
@@ -476,6 +500,177 @@ defmodule Valea.Mail.DoctorTest do
       move = Enum.find(checks, &(&1["id"] == "move_capability"))
       assert move["status"] == "ok"
       assert move["detail"] == "UIDPLUS fallback"
+    end)
+  end
+
+  # -- SMTP checks (spec G) ----------------------------------------------------------
+
+  @smtp_ids ["smtp_tcp", "smtp_tls", "smtp_auth"]
+
+  test "a push-only account (no smtp block) runs EXACTLY the original eight checks" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+
+      assert {:ok, %{checks: checks, ok: true}} =
+               Doctor.run(ctx(%{root: root, settings: settings(%{imap: imap(port)})}))
+
+      assert length(checks) == 8
+      refute Enum.any?(checks, &(&1["id"] in @smtp_ids))
+      # ...and nothing was asked of the SMTP transport at all.
+      assert FakeSmtpTransport.calls() == []
+    end)
+  end
+
+  test "a sending account: eleven checks, all ok, from ONE check_auth call" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+      FakeSmtpTransport.script([{:check_auth, :_, :ok}])
+
+      the_settings = settings(%{imap: imap(port), smtp: smtp(port)})
+
+      assert {:ok, %{checks: checks, ok: true}} =
+               Doctor.run(ctx(%{root: root, settings: the_settings}))
+
+      assert Enum.map(checks, & &1["id"]) == [
+               "config_present",
+               "credential_present",
+               "maildir_writable",
+               "tcp_reachable",
+               "tls_ok",
+               "login_ok",
+               "folders",
+               "move_capability",
+               "smtp_tcp",
+               "smtp_tls",
+               "smtp_auth"
+             ]
+
+      assert Enum.all?(checks, &(&1["status"] == "ok"))
+
+      # ONE call — the doctor must never open two SMTP sessions (providers
+      # rate-limit AUTH), and it must never issue anything transactional.
+      assert [{:check_auth, [config, credential, _opts]}] = FakeSmtpTransport.calls()
+      assert config == the_settings.smtp
+      assert credential == "smtp-password"
+    end)
+  end
+
+  test "SMTP auth failure: smtp_tls ok, smtp_auth failed with a copyable remedy" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+      FakeSmtpTransport.script([{:check_auth, :_, {:error, {:auth_failed, "535 nope"}}}])
+
+      assert {:ok, %{checks: checks, ok: false}} =
+               Doctor.run(
+                 ctx(%{root: root, settings: settings(%{imap: imap(port), smtp: smtp(port)})})
+               )
+
+      by_id = Map.new(checks, &{&1["id"], &1})
+      assert by_id["smtp_tcp"]["status"] == "ok"
+      assert by_id["smtp_tls"]["status"] == "ok"
+      assert by_id["smtp_auth"]["status"] == "failed"
+      assert by_id["smtp_auth"]["remedy"] =~ "password"
+    end)
+  end
+
+  test "SMTP transport failure below AUTH: smtp_tls failed, smtp_auth unknown" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+      FakeSmtpTransport.script([{:check_auth, :_, {:error, :starttls_unsupported}}])
+
+      assert {:ok, %{checks: checks, ok: false}} =
+               Doctor.run(
+                 ctx(%{root: root, settings: settings(%{imap: imap(port), smtp: smtp(port)})})
+               )
+
+      by_id = Map.new(checks, &{&1["id"], &1})
+      assert by_id["smtp_tls"]["status"] == "failed"
+      assert by_id["smtp_tls"]["detail"] =~ "starttls_unsupported"
+      assert by_id["smtp_auth"]["status"] == "unknown"
+    end)
+  end
+
+  test "no SMTP credential: smtp_auth failed with the resupply remedy, no session opened" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+
+      assert {:ok, %{checks: checks, ok: false}} =
+               Doctor.run(
+                 ctx(%{
+                   root: root,
+                   settings: settings(%{imap: imap(port), smtp: smtp(port)}),
+                   smtp_credential: nil
+                 })
+               )
+
+      by_id = Map.new(checks, &{&1["id"], &1})
+      assert by_id["smtp_tcp"]["status"] == "ok"
+      assert by_id["smtp_tls"]["status"] == "unknown"
+      assert by_id["smtp_auth"]["status"] == "failed"
+      assert by_id["smtp_auth"]["remedy"] =~ "SMTP password"
+      assert FakeSmtpTransport.calls() == []
+    end)
+  end
+
+  test "SMTP host unreachable: smtp_tcp fails and gates smtp_tls/smtp_auth" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+      dead = closed_port()
+
+      assert {:ok, %{checks: checks, ok: false}} =
+               Doctor.run(
+                 ctx(%{root: root, settings: settings(%{imap: imap(port), smtp: smtp(dead)})})
+               )
+
+      by_id = Map.new(checks, &{&1["id"], &1})
+      assert by_id["smtp_tcp"]["status"] == "failed"
+      assert by_id["smtp_tcp"]["remedy"] =~ "port"
+      assert by_id["smtp_tls"]["status"] == "unknown"
+      assert by_id["smtp_auth"]["status"] == "unknown"
+      assert FakeSmtpTransport.calls() == []
+    end)
+  end
+
+  test "an SMTP check that raises becomes a failed check, never an exception" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+      FakeSmtpTransport.script([{:check_auth, :_, fn _args -> raise "boom" end}])
+
+      assert {:ok, %{checks: checks, ok: false}} =
+               Doctor.run(
+                 ctx(%{root: root, settings: settings(%{imap: imap(port), smtp: smtp(port)})})
+               )
+
+      by_id = Map.new(checks, &{&1["id"], &1})
+      assert by_id["smtp_tls"]["status"] == "failed"
+      assert by_id["smtp_auth"]["status"] == "unknown"
+    end)
+  end
+
+  test "the SMTP credential never appears in the result, even on failures" do
+    with_listener(fn port ->
+      root = workspace_root()
+      secret = "smtp-hunter2-super-secret"
+      FakeMailTransport.script(full_script())
+      FakeSmtpTransport.script([{:check_auth, :_, {:error, {:weird, secret}}}])
+
+      {:ok, result} =
+        Doctor.run(
+          ctx(%{
+            root: root,
+            settings: settings(%{imap: imap(port), smtp: smtp(port)}),
+            smtp_credential: fn -> secret end
+          })
+        )
+
+      refute inspect(result, limit: :infinity, printable_limit: :infinity) =~ secret
     end)
   end
 

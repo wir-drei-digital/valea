@@ -587,6 +587,70 @@ defmodule Valea.Mail.EngineTest do
     assert Enum.sort(created) == Enum.sort(["Sent", "Archive", "Trash"])
   end
 
+  # A sending account's doctor run must reach the SMTP transport with the
+  # engine's OWN smtp credential slot — the wiring that makes the three SMTP
+  # checks real rather than theoretical.
+  test "doctor/1 on a sending account probes SMTP through the configured smtp transport", %{
+    root: root
+  } do
+    {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen_socket)
+
+    acceptor =
+      spawn(fn ->
+        Enum.each(1..2, fn _ ->
+          case :gen_tcp.accept(listen_socket, 5_000) do
+            {:ok, socket} -> :gen_tcp.close(socket)
+            {:error, _} -> :ok
+          end
+        end)
+      end)
+
+    on_exit(fn ->
+      Process.exit(acceptor, :kill)
+      :gen_tcp.close(listen_socket)
+    end)
+
+    Application.put_env(:valea, :mail_transport, FakeMailTransport)
+    Application.put_env(:valea, :mail_smtp_transport, FakeSmtpTransport)
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :mail_transport)
+      Application.delete_env(:valea, :mail_smtp_transport)
+    end)
+
+    {:ok, _} = FakeMailTransport.start_link()
+    {:ok, _} = FakeSmtpTransport.start_link()
+
+    smtp = %{smtp_settings() | host: "localhost", port: port}
+
+    start_engine!(root, 94, "mara",
+      settings:
+        settings("mara", %{
+          imap: %{host: "localhost", port: port, username: "mara@example.com"},
+          smtp: smtp
+        })
+    )
+
+    open(root, 94)
+    :ok = Engine.set_credential("mara", "app-password")
+    :ok = Engine.set_credential("mara", "smtp-password", :smtp)
+
+    FakeMailTransport.script([
+      {:connect, :_, {:ok, FakeMailTransport}},
+      {:list_folders, :_, {:ok, ["Drafts", "Sent", "Archive", "Trash"]}},
+      {:capabilities, :_, {:ok, ["IMAP4rev1", "MOVE"]}},
+      {:logout, :_, :ok}
+    ])
+
+    FakeSmtpTransport.script([{:check_auth, :_, :ok}])
+
+    assert {:ok, %{ok: true, checks: checks}} = Engine.doctor("mara")
+    assert Enum.map(checks, & &1["id"]) |> Enum.take(-3) == ["smtp_tcp", "smtp_tls", "smtp_auth"]
+
+    assert [{:check_auth, [^smtp, "smtp-password", _opts]}] = FakeSmtpTransport.calls()
+  end
+
   # -- poll timer / auth_failed -------------------------------------------------
 
   test "an unsolicited :poll (simulating the timer firing) keeps the engine alive and idle", %{

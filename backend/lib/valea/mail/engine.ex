@@ -898,7 +898,14 @@ defmodule Valea.Mail.Engine do
       account: state.account,
       settings: state.settings,
       credential: state.credential,
-      transport: state.transport
+      transport: state.transport,
+      # The send-side pair (spec G). The doctor only reaches these for a
+      # sending account, and `check_auth/3` never issues MAIL FROM — running
+      # the doctor can never enqueue a message. Resolved per call rather than
+      # pinned into state at init: the doctor is an on-demand probe, so there
+      # is nothing to keep stable across a run for it.
+      smtp_transport: Application.get_env(:valea, :mail_smtp_transport, Valea.Mail.SmtpClient),
+      smtp_credential: state.smtp_credential
     }
   end
 

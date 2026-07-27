@@ -36,6 +36,16 @@ defmodule Valea.Mail.Doctor do
          (`ctx.transport.capabilities/1`) are siblings computed off the
          same live `conn` once `login_ok` is `"ok"` — one's result never
          gates the other.
+    6. `smtp_tcp` + `smtp_tls` + `smtp_auth` — appended ONLY for a sending
+       account (`ctx.settings.smtp` present; a push-only account's report
+       is exactly the eight checks above, unchanged). Same sequential
+       shape one protocol over: a raw TCP probe of the submission host,
+       then `smtp_tls`/`smtp_auth` derived from ONE
+       `ctx.smtp_transport.check_auth/3` call gated on it — one session,
+       because some providers rate-limit AUTH, and `check_auth/3` never
+       issues `MAIL FROM`, so running the doctor can never enqueue a
+       message. A missing SMTP credential fails `smtp_auth` with the
+       resupply remedy rather than opening a session that cannot succeed.
 
   `run/1` never raises: every transport call is caught, and an unexpected
   crash anywhere in the pipeline becomes a `"failed"` check with the
@@ -54,7 +64,9 @@ defmodule Valea.Mail.Doctor do
           account: String.t(),
           settings: Valea.Mail.Settings.t() | nil,
           credential: (-> String.t()) | String.t() | nil,
-          transport: module()
+          transport: module(),
+          smtp_credential: (-> String.t()) | String.t() | nil,
+          smtp_transport: module()
         }
 
   @gen_tcp_timeout_ms 5_000
@@ -71,6 +83,13 @@ defmodule Valea.Mail.Doctor do
   @move_remedy "Your server supports neither MOVE nor UIDPLUS — " <>
                  "move ops will be rejected; flags and draft pushes still work."
 
+  @smtp_tcp_remedy "Check the SMTP host and port (587 for STARTTLS, 465 for TLS), " <>
+                     "and your network connection."
+  @smtp_tls_remedy "Confirm the SMTP port and security mode — 587 is STARTTLS, " <>
+                     "465 is implicit TLS. Valea never sends without verified TLS."
+  @smtp_auth_remedy "Double-check the SMTP username and password."
+  @smtp_credential_remedy "Enter your SMTP password to send mail from this account."
+
   @doc """
   Runs the full check pipeline against `ctx`. Always succeeds — the
   returned `ok:` flag (not an `:error` tuple) is how a caller learns
@@ -85,7 +104,7 @@ defmodule Valea.Mail.Doctor do
     {tcp, tcp_ok?} = tcp_reachable(ctx, config_ok? and credential_ok?)
     {tls, login, folders, move} = transport_group(ctx, tcp_ok?)
 
-    checks = [config, credential, maildir, tcp, tls, login, folders, move]
+    checks = [config, credential, maildir, tcp, tls, login, folders, move] ++ smtp_checks(ctx)
     {:ok, %{checks: checks, ok: Enum.all?(checks, &(&1["status"] == "ok"))}}
   end
 
@@ -392,6 +411,111 @@ defmodule Valea.Mail.Doctor do
     end
   end
 
+  # -- 6. smtp_tcp / smtp_tls / smtp_auth (spec G, sending accounts only) -------
+
+  # A push-only account (no `smtp:` block — every v4 file, and any v5 account
+  # that simply cannot send) gets NO smtp checks at all: reporting three
+  # "unknown" rows for a capability the account was never configured for
+  # would read as breakage rather than as a deliberate configuration.
+  defp smtp_checks(%{settings: %{smtp: %{} = smtp}} = ctx) do
+    {tcp, tcp_ok?} = smtp_tcp_reachable(smtp)
+    {tls, auth} = smtp_auth_group(ctx, smtp, tcp_ok?)
+    [tcp, tls, auth]
+  end
+
+  defp smtp_checks(_ctx), do: []
+
+  defp smtp_tcp_reachable(%{host: host, port: port}) do
+    case :gen_tcp.connect(String.to_charlist(host), port, [], @gen_tcp_timeout_ms) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+
+        {ok(
+           "smtp_tcp",
+           "Sending server reachable",
+           "Connected to #{host}:#{port} over TCP."
+         ), true}
+
+      {:error, reason} ->
+        {failed(
+           "smtp_tcp",
+           "Sending server reachable",
+           "Could not open a TCP connection to #{host}:#{port}: #{inspect(reason)}",
+           @smtp_tcp_remedy
+         ), false}
+    end
+  rescue
+    e ->
+      {failed("smtp_tcp", "Sending server reachable", Exception.message(e), @smtp_tcp_remedy),
+       false}
+  catch
+    kind, reason ->
+      {failed("smtp_tcp", "Sending server reachable", inspect({kind, reason}), @smtp_tcp_remedy),
+       false}
+  end
+
+  defp smtp_auth_group(_ctx, _smtp, false) do
+    {unknown("smtp_tls", "Sending TLS", @gate_detail),
+     unknown("smtp_auth", "Sending login", @gate_detail)}
+  end
+
+  defp smtp_auth_group(ctx, smtp, true) do
+    # Resolved exactly once, at this boundary, and reused to scrub the secret
+    # out of an error's `inspect/1`'d reason — same posture as
+    # `transport_group/2`. A missing secret short-circuits BEFORE any session
+    # is opened: `check_auth/3` cannot succeed without one, and opening a
+    # doomed session would spend one of the provider's AUTH attempts.
+    case resolve_credential(ctx[:smtp_credential]) do
+      nil ->
+        {unknown("smtp_tls", "Sending TLS", "not checked — no SMTP password available."),
+         failed(
+           "smtp_auth",
+           "Sending login",
+           "No SMTP password has been provided yet.",
+           @smtp_credential_remedy
+         )}
+
+      secret ->
+        smtp_auth_group(ctx, smtp, secret)
+    end
+  end
+
+  defp smtp_auth_group(ctx, smtp, secret) when is_binary(secret) do
+    case do_check_auth(ctx[:smtp_transport], smtp, secret) do
+      :ok ->
+        {ok("smtp_tls", "Sending TLS", "TLS handshake succeeded."),
+         ok("smtp_auth", "Sending login", "Authenticated as #{smtp.username}.")}
+
+      # An auth failure PROVES the TLS layer came up — the credential is only
+      # ever offered over it (see `SmtpClient`), so this is the one error that
+      # splits the pair the way `{:error, :auth_failed}` does for IMAP.
+      {:error, {:auth_failed, _detail}} ->
+        {ok("smtp_tls", "Sending TLS", "TLS handshake succeeded."),
+         failed(
+           "smtp_auth",
+           "Sending login",
+           "The sending server rejected the username or password.",
+           @smtp_auth_remedy
+         )}
+
+      {:error, reason} ->
+        {failed(
+           "smtp_tls",
+           "Sending TLS",
+           Redact.text("Could not establish an SMTP session: #{inspect(reason)}", secret),
+           @smtp_tls_remedy
+         ), unknown("smtp_auth", "Sending login", @gate_detail)}
+    end
+  end
+
+  defp do_check_auth(transport, smtp_config, secret) do
+    transport.check_auth(smtp_config, secret, [])
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
   # -- create_folders helpers ---------------------------------------------------
 
   defp create_missing_special_folders(transport, conn, folders) do
@@ -431,6 +555,7 @@ defmodule Valea.Mail.Doctor do
 
   defp resolve_credential(fun) when is_function(fun, 0), do: fun.()
   defp resolve_credential(secret) when is_binary(secret), do: secret
+  defp resolve_credential(nil), do: nil
 
   defp safe_logout(transport, conn) do
     transport.logout(conn)

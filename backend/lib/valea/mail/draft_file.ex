@@ -15,22 +15,28 @@ defmodule Valea.Mail.DraftFile do
       bcc: []
       subject: "Re: Kickoff"
       in_reply_to: 2026-07-15-alex-4f2a91c3   # msg_id, optional
-      status: draft                            # draft | pushing | pushed
+      status: draft                            # engine-owned, see below
       ---
       Body in markdown; composed as text/plain.
+
+  There is deliberately **no `from`** field: the sending identity is
+  config-owned (`Settings.smtp.from`/`from_name`, spec G), so a draft
+  cannot set or override it — a `from:` key rejects as an unknown field
+  like any other.
 
   `parse_and_validate/1` is strict:
 
     * unknown frontmatter fields reject (allowed:
       `to`/`cc`/`bcc`/`subject`/`in_reply_to`/`status`);
-    * `status` is `draft` | `pushing` | `pushed` | absent (defaults
-      `draft`) — any OTHER value rejects. All three parse without
-      rejection: the **anti-forgery rule lives in the push flow**, not
-      here — the push rejects a non-`draft` stamp unless a ledger op
-      corroborates it (the engine wrote it), and listing derives the
+    * `status` is one of the six engine-owned stamps — `draft` |
+      `pushing` | `pushed` | `sending` | `send_review` | `sent` — or
+      absent (defaults `draft`); any OTHER value rejects. All six parse
+      without rejection: the **anti-forgery rule lives in the push/send
+      flows**, not here — they reject a non-`draft` stamp unless a ledger
+      op corroborates it (the engine wrote it), and listing derives the
       displayed state from the ledger, never the frontmatter. Keeping
       engine-stamped values parseable is what makes an edited,
-      previously-pushed draft re-pushable;
+      previously-pushed (or previously-sent) draft re-pushable;
     * any CR, LF, or NUL inside ANY field value rejects (header-injection
       defense);
     * `to`/`cc`/`bcc` are parsed with an RFC 5322 mailbox parser
@@ -39,12 +45,34 @@ defmodule Valea.Mail.DraftFile do
     * `in_reply_to`, when present, must match the msg_id shape.
 
   The outbound headers are always serialized from the PARSED values
-  (`Valea.Mail.DraftMime.compose/4`), never the raw frontmatter strings.
+  (`Valea.Mail.DraftMime.compose/4` / `compose_send/5`), never the raw
+  frontmatter strings.
+
+  ## Two hashes: content vs. canonical
+
+  `content_hash/1` is the review binding — the SHA-256 of the EXACT bytes
+  the human reviewed, so any edit invalidates the review. The send
+  Message-ID is derived from a different digest: the hash of
+  `canonical_send_bytes/1`, the same bytes with the engine-owned `status:`
+  line elided. They differ for one reason: a send attempt STAMPS that line
+  (`sending`, then back to `draft` on failure), so hashing the raw bytes
+  would give a status-less draft a new identity after one failed attempt —
+  and the recipient a duplicate instead of a dedupe when the human clicks
+  Send again.
   """
 
   @allowed_keys ~w(to cc bcc subject in_reply_to status)
-  @statuses ~w(draft pushing pushed)
+  @statuses ~w(draft pushing pushed sending send_review sent)
   @msg_id_re ~r/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+-[0-9a-f]{8,64}$/
+
+  # THE definition of "the engine-owned status line", in one place because two
+  # functions must agree on it byte for byte: `stamp_status/2` rewrites
+  # exactly this line, `canonical_send_bytes/1` removes exactly this line
+  # (`@status_line_re_eol` additionally takes its terminator). If a stamp ever
+  # wrote something canonicalization did not remove, every send identity would
+  # move on its first attempt.
+  @status_line_re ~r/^status:.*$/m
+  @status_line_re_eol ~r/^status:.*$\n?/m
 
   # RFC 5322 addr-spec: dot-atom local part (atext, no leading/trailing dot),
   # `@`, a dotted domain of alnum/hyphen labels. Deliberately conservative —
@@ -76,9 +104,9 @@ defmodule Valea.Mail.DraftFile do
 
   @doc """
   Rewrites the draft's engine-owned `status:` frontmatter field to `status`
-  (one of `draft`/`pushing`/`pushed`), inserting the line if absent, and
-  leaves everything else byte-for-byte. Used by the push flow's atomic
-  compare-and-swap stamp (`Valea.Mail.OpsExecutor`). `:error` when the input
+  (one of the six in `@statuses`), inserting the line if absent, and leaves
+  everything else byte-for-byte. Used by the push and send flows' atomic
+  compare-and-swap stamps (`Valea.Mail.OpsExecutor`). `:error` when the input
   has no frontmatter block.
   """
   @spec stamp_status(binary(), String.t()) :: {:ok, binary()} | :error
@@ -86,8 +114,8 @@ defmodule Valea.Mail.DraftFile do
     case split_frontmatter(bytes) do
       {:ok, block, body} ->
         new_block =
-          if Regex.match?(~r/^status:.*$/m, block) do
-            Regex.replace(~r/^status:.*$/m, block, fn _ -> "status: #{status}" end, global: false)
+          if Regex.match?(@status_line_re, block) do
+            Regex.replace(@status_line_re, block, fn _ -> "status: #{status}" end, global: false)
           else
             String.trim_trailing(block, "\n") <> "\nstatus: #{status}"
           end
@@ -96,6 +124,35 @@ defmodule Valea.Mail.DraftFile do
 
       {:error, _reason} ->
         :error
+    end
+  end
+
+  @doc """
+  The draft's **canonical send bytes**: the same bytes with the engine-owned
+  `status:` line removed from the frontmatter block (see the moduledoc,
+  "Two hashes"). Input with no frontmatter block passes through unchanged.
+
+  Guarantees `canonical_send_bytes(stamp_status(bytes, s)) ==
+  canonical_send_bytes(bytes)` for EVERY status `s` — the property the send
+  Message-ID's stability across a failed attempt rests on. That is why the
+  block's trailing newlines are normalized as well as the line removed:
+  `stamp_status/2` trims them when it appends an absent status line, so a
+  canonicalization that did not would let a draft whose frontmatter ends in a
+  blank line change identity on its first stamp.
+  """
+  @spec canonical_send_bytes(binary()) :: binary()
+  def canonical_send_bytes(bytes) when is_binary(bytes) do
+    case split_frontmatter(bytes) do
+      {:ok, block, body} ->
+        canonical_block =
+          @status_line_re_eol
+          |> Regex.replace(block, "", global: false)
+          |> String.trim_trailing("\n")
+
+        "---\n" <> canonical_block <> "\n---\n" <> body
+
+      {:error, _reason} ->
+        bytes
     end
   end
 
@@ -330,7 +387,20 @@ defmodule Valea.Mail.DraftFile do
   defp unescape("\"" <> _rest, _acc), do: :error
   defp unescape(<<c::utf8, rest::binary>>, acc), do: unescape(rest, [<<c::utf8>> | acc])
 
-  defp valid_addr_spec?(addr), do: Regex.match?(@addr_re, addr)
+  @doc """
+  True when `addr` is a single RFC 5322 addr-spec (`local@domain`) under this
+  module's deliberately conservative grammar (see `@addr_re`): dot-atom local
+  part, dotted alnum/hyphen domain labels, ASCII only. Structurally rejects
+  whitespace, angle brackets, display names, address lists, and the
+  group/route punctuation.
+
+  Public because it is the ONE address grammar in the mail stack:
+  `Valea.Mail.Settings` validates `smtp.from` with it, so the identity a
+  message is sent under and the addresses a draft may carry can never be
+  judged by two different rules.
+  """
+  @spec valid_addr_spec?(String.t()) :: boolean()
+  def valid_addr_spec?(addr) when is_binary(addr), do: Regex.match?(@addr_re, addr)
 
   # -- shared -------------------------------------------------------------------
 
