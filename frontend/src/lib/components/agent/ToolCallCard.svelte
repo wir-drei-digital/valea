@@ -4,17 +4,21 @@
   // by default — the header row doubles as the expand toggle — so a busy
   // transcript reads as a compact list of what ran, not walls of output.
   //
-  // SECURITY: `title`, `output`, and the diff's `path`/old/new lines are
-  // tool-call content the agent (or the tool it invoked) produced — untrusted
-  // the same as any other agent output. Every one of them is rendered below
-  // with plain Svelte interpolation ({value}); {@html} is FORBIDDEN here.
+  // SECURITY: `title`, `output`, the diff's `path`/old/new lines AND the
+  // location chips below are tool-call content the agent (or the tool it
+  // invoked) produced — untrusted the same as any other agent output. Every
+  // one of them is rendered below with plain Svelte interpolation ({value});
+  // {@html} is FORBIDDEN here. A chip click only hands its string to the
+  // caller, which feeds it into the `?pane=` codec — never to a fetch of its
+  // own (the pane's view refetches through the same backend-validated APIs
+  // the full view uses, so containment stays the backend's job).
   import Check from '@lucide/svelte/icons/check';
   import X from '@lucide/svelte/icons/x';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AcpItemLike } from './item-shapes';
-  import { asString, asPresentString, toolDiff, diffLines } from './item-shapes';
+  import { asString, asPresentString, toolDiff, diffLines, toolLocations } from './item-shapes';
 
-  let { item }: { item: AcpItemLike } = $props();
+  let { item, onOpenFile }: { item: AcpItemLike; onOpenFile?: (relPath: string) => void } = $props();
 
   const kind = $derived(asString(item.kind));
   const title = $derived(asString(item.title));
@@ -26,6 +30,21 @@
   const newLines = $derived(diffLines(diff?.newText));
   const hasDiff = $derived(Boolean(diff && (oldLines.length || newLines.length)));
   const hasBody = $derived(hasDiff || Boolean(output));
+
+  // The files this call touched, deduped by the identity a chip would open
+  // with (the same tool often reports the same path twice — e.g. a read
+  // followed by an edit within one call). Entries WITHOUT a `relPath` are in
+  // scope for nothing this app can open (outside the ICM, or an absolute
+  // path the backend couldn't relativize), so they render as plain text.
+  const locations = $derived.by(() => {
+    const seen = new Set<string>();
+    return toolLocations(item).filter((l) => {
+      const key = l.relPath ?? l.path;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
 
   let expanded = $state(false);
 </script>
@@ -61,6 +80,25 @@
       {/if}
     </span>
   </button>
+
+  {#if locations.length}
+    <div class="flex flex-wrap gap-1 px-3 pb-2">
+      {#each locations as loc (loc.relPath ?? loc.path)}
+        {#if loc.relPath && onOpenFile}
+          {@const relPath = loc.relPath}
+          <button
+            type="button"
+            onclick={() => onOpenFile?.(relPath)}
+            class="border-paper-chip-border hover:bg-paper-pill text-ink-secondary rounded-md border px-1.5 py-0.5 font-mono text-[11px] transition-colors"
+          >
+            {relPath}{loc.line !== undefined ? `:${loc.line}` : ''}
+          </button>
+        {:else}
+          <span class="text-ink-meta font-mono text-[11px]">{loc.relPath ?? loc.path}</span>
+        {/if}
+      {/each}
+    </div>
+  {/if}
 
   {#if expanded && hasDiff}
     <div class="border-paper-hairline overflow-x-auto border-t font-mono text-[11px] leading-relaxed">

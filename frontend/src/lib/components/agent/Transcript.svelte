@@ -38,7 +38,19 @@
   import PermissionCard from './PermissionCard.svelte';
   import { asString } from './item-shapes';
 
-  let { store }: { store: AgentSessionStore } = $props();
+  let {
+    store,
+    onOpenFile
+  }: {
+    store: AgentSessionStore;
+    /**
+     * Opens a file the agent touched, by its ICM-relative path — forwarded to
+     * every `ToolCallCard`, which turns the call's locations into clickable
+     * chips. Absent when the host has nowhere to put a file (the chips then
+     * render as plain text), so this component stays URL- and route-free.
+     */
+    onOpenFile?: (relPath: string) => void;
+  } = $props();
 </script>
 
 <div class="flex flex-col gap-4 px-4 py-5">
@@ -50,7 +62,7 @@
     {:else if item.type === 'thought'}
       <ThoughtItem text={asString(item.text)} />
     {:else if item.type === 'tool'}
-      <ToolCallCard {item} />
+      <ToolCallCard {item} {onOpenFile} />
     {:else if item.type === 'permission'}
       <PermissionCard {item} onAnswer={(kind) => store.answerPermission(item.id, kind)} />
     {:else if item.type === 'error'}

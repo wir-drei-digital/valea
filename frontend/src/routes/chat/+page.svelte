@@ -20,6 +20,8 @@
   import { sessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { DoctorPanel } from '$lib/components/agent';
   import ChatView from '$lib/components/views/ChatView.svelte';
+  import PaneHost from '$lib/components/panes/PaneHost.svelte';
+  import { parsePaneParam, withPaneParam, promoteHref, type PaneDescriptor } from '$lib/panes/pane-route';
 
   // The open transcript lives in `ChatView` (side-panes pass) — everything
   // below is the ROUTE's own business: which session is selected (`?session=`),
@@ -181,6 +183,46 @@
   function afterArchive(): void {
     void goto(showAllPane ? '/chat?all=1' : '/chat');
   }
+
+  // --- Side pane (`?pane=`) ---
+  //
+  // The URL is the ONE source of truth for what's open beside the chat, so a
+  // split view is linkable, survives reload, and the back button closes the
+  // pane. `parsePaneParam` fails closed (invalid → null → primary alone), and
+  // `PaneHost` additionally drops a pane that duplicates the primary view.
+  // Every navigation below keeps focus and scroll: opening a file from a tool
+  // chip mid-stream must not yank the transcript or blur the composer.
+  const paneDescriptor = $derived(parsePaneParam(page.url.searchParams.get('pane')));
+  const primaryDescriptor = $derived<PaneDescriptor | null>(
+    selectedId ? { kind: 'chat', sessionId: selectedId } : null
+  );
+
+  /** Tool chips and the session header's file tree both land here. */
+  function openFilePane(sel: { mountKey: string; path: string }): void {
+    void goto(withPaneParam(page.url, { kind: 'file', ...sel }), { keepFocus: true, noScroll: true });
+  }
+
+  function closePane(): void {
+    void goto(withPaneParam(page.url, null), { keepFocus: true, noScroll: true });
+  }
+
+  // `chat:new:<mount>` has no entry point on this route today (Knowledge owns
+  // that one — Task 9), but the registry maps the kind, so a hand-written or
+  // shared URL can mount it here. Wiring the rewrite is what keeps the first
+  // typed message alive: the composer clears on send, and the view hands the
+  // created id back expecting its host to re-point it at `chat:<id>` so the
+  // stashed prompt actually fires.
+  function replacePaneWithSession(id: string): void {
+    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
+      keepFocus: true,
+      noScroll: true
+    });
+  }
+
+  /** "Open as full view" — the pane's subject becomes a route of its own. */
+  function promotePane(d: PaneDescriptor): void {
+    void goto(promoteHref(d));
+  }
 </script>
 
 <!-- The all-sessions pane (sidebar "Show all", `?all=1`): EVERY session,
@@ -251,37 +293,57 @@
 
 <AppFrame list={showAllPane ? allSessions : undefined}>
   {#snippet main()}
+    <!-- The doctor override deliberately sits OUTSIDE `PaneHost`: it replaces
+         the whole main pane (it's the "the assistant isn't wired up" screen),
+         so splitting it next to a file would be nonsense. `?pane=` survives
+         in the URL, so dismissing the override restores the split. -->
     {#if doctorOverride}
       <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
         <DoctorPanel />
       </div>
-    {:else if !selectedId}
-      <div class="mx-auto w-full max-w-[660px] px-8 py-8">
-        <EmptyState
-          icon={MessageSquare}
-          title="Your assistant"
-          body="Talk to your assistant about the business. Everything it knows is a file in your folder."
-        >
-          {#snippet actions()}
-            <Button type="button" onclick={() => void startSession()}>Start a session</Button>
-            <button
-              type="button"
-              class="text-ink-secondary hover:text-ink-heading text-[12.5px]"
-              onclick={() => (doctorOverride = true)}
-            >
-              Run checks
-            </button>
-            {#if startError}
-              <p class="text-warn-ink text-[12.5px]" role="alert">{startError}</p>
-            {/if}
-          {/snippet}
-        </EmptyState>
-      </div>
     {:else}
-      <ChatView
-        descriptor={{ kind: 'chat', sessionId: selectedId }}
-        context={{ placement: 'primary', onArchived: afterArchive }}
-      />
+      <PaneHost
+        {primaryDescriptor}
+        pane={paneDescriptor}
+        paneContext={{
+          placement: 'pane',
+          sessionCreated: replacePaneWithSession,
+          onArchived: closePane
+        }}
+        onClose={closePane}
+        onPromote={promotePane}
+      >
+        {#snippet primary()}
+          {#if !selectedId}
+            <div class="mx-auto w-full max-w-[660px] px-8 py-8">
+              <EmptyState
+                icon={MessageSquare}
+                title="Your assistant"
+                body="Talk to your assistant about the business. Everything it knows is a file in your folder."
+              >
+                {#snippet actions()}
+                  <Button type="button" onclick={() => void startSession()}>Start a session</Button>
+                  <button
+                    type="button"
+                    class="text-ink-secondary hover:text-ink-heading text-[12.5px]"
+                    onclick={() => (doctorOverride = true)}
+                  >
+                    Run checks
+                  </button>
+                  {#if startError}
+                    <p class="text-warn-ink text-[12.5px]" role="alert">{startError}</p>
+                  {/if}
+                {/snippet}
+              </EmptyState>
+            </div>
+          {:else}
+            <ChatView
+              descriptor={{ kind: 'chat', sessionId: selectedId }}
+              context={{ placement: 'primary', openFile: openFilePane, onArchived: afterArchive }}
+            />
+          {/if}
+        {/snippet}
+      </PaneHost>
     {/if}
   {/snippet}
 </AppFrame>

@@ -362,6 +362,17 @@
     void sessionId;
     pinned = true;
   });
+
+  // Tool-call file chips. A location's `relPath` is relative to the ICM this
+  // session runs in, so both halves must be present: a host that can open
+  // files AND a known mount. Otherwise the chips render as plain text (see
+  // `ToolCallCard`) — same rule the header's popover tree follows.
+  const openToolFile = $derived.by(() => {
+    const key = openMountKey;
+    const open = openFile;
+    if (!key || !open) return undefined;
+    return (relPath: string) => open({ mountKey: key, path: relPath });
+  });
 </script>
 
 {#if descriptor.kind === 'chat-new'}
@@ -413,7 +424,7 @@
     <PlanBar item={planItem} />
 
     <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
-      <Transcript {store} />
+      <Transcript {store} onOpenFile={openToolFile} />
     </div>
 
     <UsageLine item={usageItem} />
