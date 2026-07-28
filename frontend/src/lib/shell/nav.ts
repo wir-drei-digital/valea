@@ -53,10 +53,18 @@ export type NavTreeItem = {
   loaded?: boolean;
   /**
    * Non-.md file leaves only — lowercase extension incl. the dot (e.g.
-   * `".pdf"`), mirroring `IcmNode.ext`. Drives the small uppercase format
-   * badge on the tree row; pages and folders leave it undefined.
+   * `".pdf"`), mirroring `IcmNode.ext`. Feeds the row's format badge.
+   * `''` for an extension-less regular file (LICENSE, Makefile, a dotfile),
+   * because that is what `Path.extname/1` returns — which is exactly why
+   * `isFile` below, and never `ext`'s truthiness, is the file/page test.
    */
   ext?: string;
+  /**
+   * `true` on non-.md file leaves and nothing else — the discriminator for
+   * anything that must treat files differently from pages. `IcmTree` uses
+   * it to withhold the `.md`-page-shaped `EntryMenu` from file rows.
+   */
+  isFile?: boolean;
 };
 
 export function mainNav(): NavSection[] {
@@ -146,7 +154,8 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
     // "visible but never clickable" special case (A-T15 fix wave) is gone
     // along with the separate non-clickable rows the Knowledge list panes
     // used to render below the tree. `ext` rides along for the row's format
-    // badge.
+    // badge, `isFile` for everything that must tell a file from a page (an
+    // extension-less file has `ext: ''`, so `ext` alone can't carry that).
     if (n.type === 'file') {
       return [
         {
@@ -154,7 +163,8 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
           href: knowledgeHref(n.mountKey, n.path),
           path: n.path,
           mountKey: n.mountKey,
-          ext: n.ext
+          ext: n.ext,
+          isFile: true
         }
       ];
     }

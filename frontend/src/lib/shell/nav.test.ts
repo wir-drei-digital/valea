@@ -73,6 +73,25 @@ describe('icmToNav', () => {
     expect(nav[0].children?.[0].ext).toBeUndefined();
   });
 
+  // `isFile` — NOT `ext` — is what marks a leaf as a non-.md file. An
+  // extension-less regular file (LICENSE, Makefile, a dotfile) arrives with
+  // `ext: ''` from `Path.extname/1`, so any truthiness check on `ext` would
+  // misclassify it as a page and hand it the page-shaped EntryMenu
+  // (rename would append `.md`). See IcmTree's leaf branch.
+  it('marks every file leaf with isFile, including extension-less ones', () => {
+    const nodes: IcmNode[] = [
+      { name: 'Founder', path: 'Founder.md', mountKey: 'primary', type: 'page', uri: 'u' },
+      { name: 'brochure.pdf', path: 'brochure.pdf', mountKey: 'primary', type: 'file', ext: '.pdf' },
+      { name: 'LICENSE', path: 'LICENSE', mountKey: 'primary', type: 'file', ext: '' },
+      { name: 'Assets', path: 'Assets', mountKey: 'primary', type: 'folder', children: [] }
+    ];
+
+    const nav = icmToNav(nodes);
+
+    expect(nav.map((n) => n.isFile)).toEqual([undefined, true, true, undefined]);
+    expect(nav[2].ext).toBe('');
+  });
+
   it('a node from a different mount gets that mount\'s own href prefix', () => {
     const nodes: IcmNode[] = [
       { name: 'A', path: 'A.md', mountKey: 'primary', type: 'page', uri: 'u' },

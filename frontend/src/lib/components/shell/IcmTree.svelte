@@ -115,10 +115,11 @@
               class="hover:bg-paper-pill text-ink-secondary flex w-full items-center gap-1 rounded-md py-[3px] pr-2 pl-2 text-left text-[12.5px] transition-colors"
             >
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
-              {#if node.ext}
+              {#if node.isFile}
                 <!-- Format badge for a non-.md file leaf — the same
                      `fileLeafLabel` text the separate (now removed)
-                     non-clickable file rows showed. -->
+                     non-clickable file rows showed ("FILE" when the file has
+                     no extension at all). -->
                 <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">
                   {fileLeafLabel(node.ext)}
                 </span>
@@ -129,28 +130,46 @@
               href={node.href}
               aria-current={activePath === node.href ? 'page' : undefined}
               class={[
-                'flex items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
+                'flex items-center gap-1 rounded-md py-[3px] pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
+                // Right padding reserves room for the EntryMenu — only the
+                // rows that actually get one need it (see below).
+                node.isFile ? 'pr-2' : 'pr-9',
                 activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
               ]}
             >
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
-              {#if node.ext}
+              {#if node.isFile}
                 <!-- Format badge for a non-.md file leaf — the same
                      `fileLeafLabel` text the separate (now removed)
-                     non-clickable file rows showed. -->
+                     non-clickable file rows showed ("FILE" when the file has
+                     no extension at all). -->
                 <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">
                   {fileLeafLabel(node.ext)}
                 </span>
               {/if}
             </a>
-            <EntryMenu
-              mountKey={node.mountKey}
-              path={node.path}
-              name={node.label}
-              isFolder={false}
-              class="absolute top-1/2 right-0.5 -translate-y-1/2"
-              onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
-            />
+            <!-- No EntryMenu on a non-.md file leaf. Rename/delete/start-a-
+                 session are all `.md`-page-shaped on the backend:
+                 `rename_target_name/2` runs `ensure_md_extension/1` for
+                 anything that isn't a folder, so renaming `brochure.pdf`
+                 would write `brochure.pdf.md` to disk and reclassify the
+                 file as a page (`icm.ex:737`). File rows became reachable
+                 here only in the side-panes pass (`icmToNav` emits file
+                 leaves now); before that they had no menu at all, so
+                 withholding it keeps the capability surface exactly as it
+                 was. A separate task extends those operations to plain
+                 files. Gated on `isFile`, never on `ext` — an
+                 extension-less file (LICENSE, Makefile) has `ext: ''`. -->
+            {#if !node.isFile}
+              <EntryMenu
+                mountKey={node.mountKey}
+                path={node.path}
+                name={node.label}
+                isFolder={false}
+                class="absolute top-1/2 right-0.5 -translate-y-1/2"
+                onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
+              />
+            {/if}
           {/if}
         </div>
       {/if}
