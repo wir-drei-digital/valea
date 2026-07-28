@@ -45,29 +45,50 @@
   // this string.
   const paneKey = $derived(active ? serializePaneParam(active) : '');
 
-  // Layout is a percent array summing to 100; paneforge also fires this once
-  // on mount with the default layout (a harmless idempotent re-save). The
-  // finite guard keeps `savePaneSplit` from ever persisting the string "NaN".
+  // Only ever fired with two panes on a real split; the single-pane layout is
+  // `[100]`, which the length guard ignores so closing a pane can't overwrite
+  // the ratio the user dragged. The finite guard keeps `savePaneSplit` from
+  // ever persisting the string "NaN".
   function onLayoutChange(layout: number[]): void {
     const primarySize = layout[0];
     if (layout.length === 2 && Number.isFinite(primarySize)) savePaneSplit(primarySize);
   }
 </script>
 
-{#if active}
-  {@const PaneView = paneComponents[active.kind]}
-  <!-- Read once per pane-open, not once per PaneHost: closing and reopening
-       a pane in the same route visit keeps the ratio the user just dragged. -->
-  {@const initialSplit = loadPaneSplit()}
-  <PaneGroup direction="horizontal" class="min-h-0 flex-1" {onLayoutChange}>
-    <Pane defaultSize={initialSplit} minSize={30} class="flex min-h-0 min-w-0 flex-col">
-      {@render primary()}
-    </Pane>
+<!--
+  The PaneGroup and the primary Pane are UNCONDITIONAL, and only the resizer +
+  side pane are conditional. This is load-bearing, not stylistic: Svelte's
+  `{#if}`/`{:else}` branches are separate effect trees, so hosting the primary
+  in one branch and bare in the other would destroy and rebuild it on every
+  pane open and close — tearing down the open session's channel (join/leave
+  churn `ChatView`'s own header comment forbids), dropping the composer's
+  unsent draft, and replaying the transcript from the top. Opening a file from
+  a tool chip mid-draft has to be free. paneforge supports panes coming and
+  going (`order` pins the primary first regardless of mount timing), and a
+  lone pane always lays out at 100% — it has no `defaultSize`, so the group's
+  default layout gives it everything left over.
+-->
+<PaneGroup direction="horizontal" class="min-h-0 flex-1" {onLayoutChange}>
+  <Pane order={1} minSize={30} class="flex min-h-0 min-w-0 flex-col">
+    {@render primary()}
+  </Pane>
+  {#if active}
+    {@const PaneView = paneComponents[active.kind]}
+    <!-- Read once per pane-OPEN (a `@const` with no reactive dependency
+         computes once per block instance), not once per PaneHost: closing and
+         reopening a pane in the same route visit keeps the ratio the user just
+         dragged. Sized from the side, so the primary stays default-less. -->
+    {@const sideSplit = 100 - loadPaneSplit()}
     <PaneResizer
       aria-label="Resize pane"
       class="bg-paper-hairline hover:bg-paper-chip-border w-[3px] shrink-0 cursor-col-resize transition-colors"
     />
-    <Pane minSize={30} class="bg-paper-panel flex min-h-0 min-w-0 flex-col">
+    <Pane
+      order={2}
+      defaultSize={sideSplit}
+      minSize={30}
+      class="bg-paper-panel flex min-h-0 min-w-0 flex-col"
+    >
       <div class="border-paper-hairline flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
         <span class="text-ink-secondary min-w-0 flex-1 truncate text-[12px] font-medium">
           {paneTitle(active)}
@@ -95,7 +116,5 @@
         <PaneView descriptor={active} context={paneContext} />
       {/key}
     </Pane>
-  </PaneGroup>
-{:else}
-  {@render primary()}
-{/if}
+  {/if}
+</PaneGroup>
