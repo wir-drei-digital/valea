@@ -820,12 +820,21 @@ defmodule Valea.Acp.Connection do
   defp put_location_line(entry, _line), do: entry
 
   defp put_location_rel(entry, path, cwd) when is_binary(cwd) do
-    cond do
-      not Valea.Paths.absolute?(path) ->
-        Map.put(entry, "relPath", path)
+    # Normalize BEFORE comparing: the agent reports raw OS paths, so a Windows
+    # agent sends `C:\ws\notes.md` against a normalized `C:/ws` cwd.
+    # `absolute?/1` and `relative_to/2` normalize internally, but `ancestor?/2`
+    # only case-folds — feeding it the backslash form answers false and every
+    # in-ICM location would silently lose its relPath. Identity on unix.
+    # "path" keeps the agent's ORIGINAL string; only "relPath" is derived from
+    # the normalized (forward-slash) form, which is what the frontend joins.
+    p = Valea.Paths.normalize(path)
 
-      Valea.Paths.ancestor?(cwd, path) ->
-        case Valea.Paths.relative_to(path, cwd) do
+    cond do
+      not Valea.Paths.absolute?(p) ->
+        Map.put(entry, "relPath", p)
+
+      Valea.Paths.ancestor?(cwd, p) ->
+        case Valea.Paths.relative_to(p, cwd) do
           "." -> entry
           rel -> Map.put(entry, "relPath", rel)
         end

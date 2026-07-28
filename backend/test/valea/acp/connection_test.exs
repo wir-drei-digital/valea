@@ -49,6 +49,30 @@ defmodule Valea.Acp.ConnectionTest do
     state
   end
 
+  # `connected_state/0` with an explicit cwd — for the platform-shaped path
+  # tests, which need a cwd whose vocabulary matches the host's.
+  defp connected_state_cwd(cwd) do
+    {state, [init_frame]} =
+      Connection.new(%{
+        cwd: cwd,
+        mode: :new,
+        conversation_id: nil,
+        known_message_ids: MapSet.new(),
+        client_version: "0.3.0"
+      })
+
+    {state, _, _, _} =
+      Connection.handle_bytes(state, init_response(Jason.decode!(init_frame)["id"]))
+
+    {state, _, _, _} =
+      Connection.handle_bytes(
+        state,
+        frame(%{"jsonrpc" => "2.0", "id" => 2, "result" => %{"sessionId" => "sess-xyz"}})
+      )
+
+    state
+  end
+
   # Drive boot(:load) through initialize + session/load so the connection is
   # ready to reduce replayed history. `known` seeds launch.known_message_ids.
   defp loaded_state(known) do
@@ -730,6 +754,39 @@ defmodule Valea.Acp.ConnectionTest do
 
     assert [item] = items
     refute Map.has_key?(item, "locations")
+  end
+
+  # `put_location_rel/3` compares on HOST platform defaults, so the backslash
+  # shape can only be exercised on a Windows host (`Paths.normalize/2` is
+  # identity on unix, and `absolute?("C:\\…", :unix)` is `:relative`). Guards
+  # the regression where the raw path reached `ancestor?/2` — which only
+  # case-folds, never normalizes — so every in-cwd Windows file silently lost
+  # its relPath. Expected values derived from the pure `:windows` seams.
+  @tag :windows_only
+  test "backslash paths normalize before containment so in-cwd files keep relPath" do
+    state = connected_state_cwd("C:/ws")
+
+    {_state, items, _replies, _effects} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{
+          "toolCallId" => "t-win",
+          "status" => "in_progress",
+          "locations" => [
+            %{"path" => "C:\\ws\\notes\\notes.md"},
+            %{"path" => "C:\\Windows\\system32\\drivers\\etc\\hosts"}
+          ]
+        })
+      )
+
+    assert [%{"locations" => locs}] = items
+
+    # "path" stays verbatim (backslashes); "relPath" is the normalized
+    # forward-slash form the frontend joins into hrefs.
+    assert locs == [
+             %{"path" => "C:\\ws\\notes\\notes.md", "relPath" => "notes/notes.md"},
+             %{"path" => "C:\\Windows\\system32\\drivers\\etc\\hosts"}
+           ]
   end
 end
 
