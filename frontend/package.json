@@ -57,6 +57,7 @@
     "@tiptap/starter-kit": "^2.27.2",
     "@tiptap/suggestion": "^2.27.2",
     "marked": "^18.0.7",
+    "pdfjs-dist": "^6.2.108",
     "phoenix": "^1.8.7",
     "tippy.js": "^6.3.7"
   }

@@ -86,7 +86,10 @@
  * and only scrolls (`.tableWrapper`'s overflow-x) past that. Scoped to
  * `.page-editor` so other ProseMirror-styled surfaces are untouched. */
 .page-editor .ProseMirror > * {
-    max-width: 596px;
+    /* `min(…, 100%)` (side-panes pass): the editor also renders inside a
+     * side pane now, which can be narrower than the prose column — a flat
+     * 596px would push it past the pane and scroll the whole page. */
+    max-width: min(596px, 100%);
     margin-left: auto;
     margin-right: auto;
 }
@@ -104,7 +107,10 @@
 .page-editor .ProseMirror table {
     margin-left: auto;
     margin-right: auto;
-    min-width: 596px;
+    /* Same reason as the per-block cap above: in a pane narrower than the
+     * prose column, "at least a column wide" becomes "at least as wide as
+     * the pane" rather than forcing a horizontal page scroll. */
+    min-width: min(596px, 100%);
 }
 
 /* Gapcursor */

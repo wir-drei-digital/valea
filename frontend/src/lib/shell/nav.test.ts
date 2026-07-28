@@ -29,7 +29,11 @@ describe('icmToNav', () => {
     expect(nav[0].children?.[0].href).toBe('/knowledge/primary/Tone%20%26%20Voice/Email%20Tone%20Guide.md');
   });
 
-  it('emits NO nav item for file leaves — only .md pages get an editor href (A-T15 fix wave)', () => {
+  // Side-panes pass: file leaves are navigable now (FileView renders the
+  // non-.md formats), so they get an href and carry their `ext` through for
+  // the tree row's format badge — the old "emitted nowhere" special case is
+  // gone.
+  it('emits file leaves with an href and their ext, at every depth', () => {
     const withFiles: IcmNode[] = [
       {
         name: 'Offers',
@@ -47,9 +51,26 @@ describe('icmToNav', () => {
 
     const nav = icmToNav(withFiles);
 
-    expect(nav).toHaveLength(1); // the top-level file leaf is dropped
-    expect(nav[0].children).toHaveLength(1); // the nested one too
-    expect(nav[0].children?.[0].label).toBe('Founder');
+    expect(nav).toHaveLength(2);
+    expect(nav[1]).toMatchObject({
+      label: 'logo.png',
+      href: '/knowledge/primary/logo.png',
+      path: 'logo.png',
+      mountKey: 'primary',
+      ext: '.png'
+    });
+    // A file leaf is a LEAF: no `children`, so `IcmTree` renders it as a row
+    // rather than an expandable folder.
+    expect(nav[1].children).toBeUndefined();
+
+    expect(nav[0].children).toHaveLength(2);
+    expect(nav[0].children?.[1]).toMatchObject({
+      label: 'brochure.pdf',
+      href: '/knowledge/primary/Offers/brochure.pdf',
+      ext: '.pdf'
+    });
+    // Pages still carry no `ext` — only file leaves do.
+    expect(nav[0].children?.[0].ext).toBeUndefined();
   });
 
   it('a node from a different mount gets that mount\'s own href prefix', () => {

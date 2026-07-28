@@ -18,14 +18,13 @@
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { recentPages } from '$lib/stores/recent-pages';
-  import { icmToNav, knowledgeHref, type IcmNode } from '$lib/shell/nav';
+  import { icmToNav, knowledgeHref } from '$lib/shell/nav';
   import { resolveIcmSelection } from '$lib/shell/icm-route';
   import {
     adoptFailureBannerText,
     classifyMounts,
     degradedChipLabel
   } from '$lib/components/knowledge/mount-sections';
-  import { fileLeafKind, fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import MountFromElsewhereDialog from '$lib/components/knowledge/MountFromElsewhereDialog.svelte';
@@ -35,9 +34,6 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import ImageIcon from '@lucide/svelte/icons/image';
-  import FileText from '@lucide/svelte/icons/file-text';
-  import FileIcon from '@lucide/svelte/icons/file';
 
   onMount(() => {
     // `icmStore.refetch()` is already kicked off by `AppFrame`'s own
@@ -103,16 +99,6 @@
     });
   });
 
-  // A-T15 fix wave: non-.md file leaves (media/PDF) at a mount's top level.
-  // Rendered as non-clickable rows below the tree — visible ("reveal"), but
-  // never navigable: only .md pages open in the editor. `IcmTree` (like the
-  // `NavTreeItem`/`icmToNav` it's built on) deliberately never carries file
-  // leaves — see `nav.ts`'s `icmToNav` doc comment — so they're listed here
-  // instead, same as before Task 9.3's relocation.
-  function fileLeaves(tree: IcmNode[]): IcmNode[] {
-    return tree.filter((n) => n.type === 'file');
-  }
-
   let newEntryMode: 'page' | 'folder' = $state('page');
   let newEntryOpen = $state(false);
   let newEntryMountKey = $state('');
@@ -171,21 +157,6 @@
   }
 </script>
 
-{#snippet fileRow(file: IcmNode)}
-  <!-- Non-clickable by design: only .md pages open in the editor. -->
-  <li class="text-ink-secondary flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-[13px]">
-    {#if fileLeafKind(file.ext) === 'image'}
-      <ImageIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-    {:else if fileLeafKind(file.ext) === 'pdf'}
-      <FileText class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-    {:else}
-      <FileIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-    {/if}
-    <span class="min-w-0 flex-1 truncate">{file.name}</span>
-    <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">{fileLeafLabel(file.ext)}</span>
-  </li>
-{/snippet}
-
 <AppFrame>
   {#snippet list()}
     <ListPane title="Files">
@@ -221,16 +192,13 @@
               {/if}
             </div>
           </div>
+          <!-- Side-panes pass: the tree carries file leaves itself now
+               (`icmToNav`), so the separate non-clickable rows that used to
+               sit below it are gone — a PDF or image row opens in
+               `FileView` like any other entry. -->
           <div class="px-1 pb-1">
             <IcmTree nodes={treeNav} activePath={page.url.pathname} />
           </div>
-          {#if fileLeaves(selectedGroup?.tree ?? []).length > 0}
-            <ul class="flex flex-col py-1">
-              {#each fileLeaves(selectedGroup?.tree ?? []) as file (file.path)}
-                {@render fileRow(file)}
-              {/each}
-            </ul>
-          {/if}
         {:else}
           <p class="text-ink-meta px-3 py-4 text-[12.5px]">No ICM is mounted yet.</p>
         {/if}

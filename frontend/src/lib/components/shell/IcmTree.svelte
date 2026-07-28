@@ -3,13 +3,15 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import IcmTree from './IcmTree.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
+  import { fileLeafLabel } from '$lib/components/knowledge/file-leaf';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
 
   let {
     nodes,
     activePath = '',
-    onBeforeMutate
+    onBeforeMutate,
+    onSelect
   }: {
     nodes: NavTreeItem[];
     activePath?: string;
@@ -20,6 +22,13 @@
      * other row passes nothing through.
      */
     onBeforeMutate?: () => Promise<void>;
+    /**
+     * Selection mode (side-panes pass): when set, leaf rows call this
+     * instead of navigating (used by popover pickers); EntryMenu is hidden
+     * on every row, since picking a file is not the place to rename or
+     * delete one. Folder expand/collapse behaves identically in both modes.
+     */
+    onSelect?: (sel: { mountKey: string; path: string }) => void;
   } = $props();
 
   // Folders default CLOSED (file-browser performance pass): the lazy tree
@@ -75,21 +84,23 @@
               <span class="text-ink-meta text-[11px] tabular-nums">{node.count}</span>
             {/if}
           </button>
-          <EntryMenu
-            mountKey={node.mountKey}
-            path={node.path}
-            name={node.label}
-            isFolder={true}
-            class="absolute top-1/2 right-0.5 -translate-y-1/2"
-            onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
-          />
+          {#if !onSelect}
+            <EntryMenu
+              mountKey={node.mountKey}
+              path={node.path}
+              name={node.label}
+              isFolder={true}
+              class="absolute top-1/2 right-0.5 -translate-y-1/2"
+              onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
+            />
+          {/if}
         </div>
         {#if treeOpenState.isOpen(node.href)}
           <div class="ml-[17px] border-l border-paper-chip-border pl-2">
             {#if node.loaded === false}
               <p class="text-ink-meta px-2 py-[3px] text-[12px]">Loading…</p>
             {:else if node.children.length}
-              <IcmTree nodes={node.children} {activePath} {onBeforeMutate} />
+              <IcmTree nodes={node.children} {activePath} {onBeforeMutate} {onSelect} />
             {:else}
               <p class="text-ink-meta px-2 py-[3px] text-[12px] italic">Empty</p>
             {/if}
@@ -97,24 +108,50 @@
         {/if}
       {:else}
         <div class="group relative">
-          <a
-            href={node.href}
-            aria-current={activePath === node.href ? 'page' : undefined}
-            class={[
-              'flex items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
-              activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
-            ]}
-          >
-            <span class="flex-1 truncate">{node.label}</span>
-          </a>
-          <EntryMenu
-            mountKey={node.mountKey}
-            path={node.path}
-            name={node.label}
-            isFolder={false}
-            class="absolute top-1/2 right-0.5 -translate-y-1/2"
-            onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
-          />
+          {#if onSelect}
+            <button
+              type="button"
+              onclick={() => onSelect?.({ mountKey: node.mountKey, path: node.path })}
+              class="hover:bg-paper-pill text-ink-secondary flex w-full items-center gap-1 rounded-md py-[3px] pr-2 pl-2 text-left text-[12.5px] transition-colors"
+            >
+              <span class="min-w-0 flex-1 truncate">{node.label}</span>
+              {#if node.ext}
+                <!-- Format badge for a non-.md file leaf — the same
+                     `fileLeafLabel` text the separate (now removed)
+                     non-clickable file rows showed. -->
+                <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">
+                  {fileLeafLabel(node.ext)}
+                </span>
+              {/if}
+            </button>
+          {:else}
+            <a
+              href={node.href}
+              aria-current={activePath === node.href ? 'page' : undefined}
+              class={[
+                'flex items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
+                activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
+              ]}
+            >
+              <span class="min-w-0 flex-1 truncate">{node.label}</span>
+              {#if node.ext}
+                <!-- Format badge for a non-.md file leaf — the same
+                     `fileLeafLabel` text the separate (now removed)
+                     non-clickable file rows showed. -->
+                <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">
+                  {fileLeafLabel(node.ext)}
+                </span>
+              {/if}
+            </a>
+            <EntryMenu
+              mountKey={node.mountKey}
+              path={node.path}
+              name={node.label}
+              isFolder={false}
+              class="absolute top-1/2 right-0.5 -translate-y-1/2"
+              onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
+            />
+          {/if}
         </div>
       {/if}
     </li>

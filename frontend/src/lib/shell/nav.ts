@@ -15,8 +15,9 @@ export type IcmNode = {
   /**
    * `'file'` (A-T15 fix wave) is a non-.md regular file (media, PDF, ...) —
    * listed by `Valea.ICM.tree_for/1` as a leaf with `ext` (lowercase, e.g.
-   * `".pdf"`) for icon selection, but never editable/navigable: only `.md`
-   * pages open in the editor.
+   * `".pdf"`). Navigable since the side-panes pass (`FileView` dispatches on
+   * format: image / pdf.js / read-only text), but never EDITABLE — only
+   * `.md` pages open in the editor.
    */
   type: 'folder' | 'page' | 'file';
   children?: IcmNode[];
@@ -50,6 +51,12 @@ export type NavTreeItem = {
   children?: NavTreeItem[];
   /** Folders only — mirrors `IcmNode.childrenLoaded` (see its doc comment). */
   loaded?: boolean;
+  /**
+   * Non-.md file leaves only — lowercase extension incl. the dot (e.g.
+   * `".pdf"`), mirroring `IcmNode.ext`. Drives the small uppercase format
+   * badge on the tree row; pages and folders leave it undefined.
+   */
+  ext?: string;
 };
 
 export function mainNav(): NavSection[] {
@@ -134,12 +141,22 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
         }
       ];
     }
-    // A-T15 fix wave: file leaves never get an editor href — only .md pages
-    // open in the editor, so a `/knowledge/<path>` link for a PDF would be a
-    // dead page. They're dropped from the sidebar nav entirely; the Knowledge
-    // route's own list panes render them as non-clickable rows instead.
+    // Side-panes pass: file leaves are navigable now — `FileView` renders
+    // the non-.md formats (plain text / pdf.js / image), so the old
+    // "visible but never clickable" special case (A-T15 fix wave) is gone
+    // along with the separate non-clickable rows the Knowledge list panes
+    // used to render below the tree. `ext` rides along for the row's format
+    // badge.
     if (n.type === 'file') {
-      return [];
+      return [
+        {
+          label: n.name,
+          href: knowledgeHref(n.mountKey, n.path),
+          path: n.path,
+          mountKey: n.mountKey,
+          ext: n.ext
+        }
+      ];
     }
     return [{ label: n.name, href: knowledgeHref(n.mountKey, n.path), path: n.path, mountKey: n.mountKey }];
   });
