@@ -7,6 +7,10 @@ license = ""
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
+# Two [[bin]] targets exist since the valea-spawn shim (windows spec B2), and
+# `tauri dev`'s bare `cargo run` needs exactly one default — without this,
+# `just dev-desktop` dies with "could not determine which binary to run".
+default-run = "valea"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
