@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
-  import { AppShell, Sidebar } from '$lib/components/shell';
+  import { AppShell, MainColumn, Sidebar } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
@@ -161,141 +161,143 @@
   {/snippet}
 
   {#snippet main()}
-    {#if loading}
-      <div class="flex flex-col gap-8" aria-hidden="true">
-        <Skeleton class="h-6 w-32" />
-        <div class="flex flex-col gap-3">
-          <Skeleton class="h-3 w-28" />
-          <Skeleton class="h-20 w-full rounded-xl" />
-          <Skeleton class="h-20 w-full rounded-xl" />
+    <MainColumn>
+      {#if loading}
+        <div class="flex flex-col gap-8" aria-hidden="true">
+          <Skeleton class="h-6 w-32" />
+          <div class="flex flex-col gap-3">
+            <Skeleton class="h-3 w-28" />
+            <Skeleton class="h-20 w-full rounded-xl" />
+            <Skeleton class="h-20 w-full rounded-xl" />
+          </div>
         </div>
-      </div>
-    {:else if failed || !today}
-      <div class="flex flex-col items-start gap-3 py-10">
-        <p class="text-ink-body text-[13.5px]">
-          Couldn't load your day. The backend may still be starting.
-        </p>
-        <Button variant="outline" size="sm" onclick={() => void load()}>Retry</Button>
-      </div>
-    {:else}
-      <header class="flex flex-col gap-2">
-        <h1 class="font-display text-ink-heading text-[22px] leading-tight font-medium">Today</h1>
-        {#each today.mail.filter((m) => m.configured) as mail (mail.account)}
-          <p class="text-ink-meta text-[13px]">{mailSummaryLine(mail)}</p>
-        {/each}
-        {#if today.calendar}
-          <p class="text-ink-meta text-[13px]">{calendarSummaryLine(today.calendar)}</p>
-        {/if}
-      </header>
-
-      {#if quickTarget}
-        <div class="-mx-4 mt-4">
-          <Composer
-            busy={quickBusy}
-            configItems={[]}
-            placeholder={`Start a session in ${quickTargetName ?? 'your project'}…`}
-            onSend={(text) => void quickStart(text)}
-            onStop={() => {}}
-            onSetConfig={() => {}}
-          />
-        </div>
-        {#if quickError}
-          <p class="text-warn-ink mt-1 text-[12.5px]" role="alert">{quickError}</p>
-        {/if}
-      {/if}
-
-      {#if today.sections.length === 0}
-        <div class="border-paper-border bg-paper-card mt-8 rounded-xl border p-5">
-          <p class="text-ink-body text-[13.5px] leading-relaxed">
-            <strong class="text-ink-heading">Nothing prepared yet.</strong>
-            Today renders a
-            <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">today.json</code>
-            file from the root of each project. Your agent keeps it up to date with prepared
-            work, open loops, and notes. Ask your agent to maintain one; the starter project's
-            <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">AGENTS.md</code> documents the
-            shape.
+      {:else if failed || !today}
+        <div class="flex flex-col items-start gap-3 py-10">
+          <p class="text-ink-body text-[13.5px]">
+            Couldn't load your day. The backend may still be starting.
           </p>
+          <Button variant="outline" size="sm" onclick={() => void load()}>Retry</Button>
         </div>
       {:else}
-        <div class="mt-8 flex flex-col gap-8">
-          {#each today.sections as section (section.mountKey)}
-            <section>
-              <div class="flex items-baseline gap-2">
-                <span class="text-ink-meta text-[12px]">{mountProvenanceLabel(section.icmName)}</span>
-                {#if section.updatedAt}
-                  <span class="text-ink-meta text-[11.5px] tabular-nums">
-                    {formatTimestamp(section.updatedAt)}
-                  </span>
-                {/if}
-              </div>
-
-              {#if !section.ok}
-                <p class="text-ink-meta mt-2 text-[13px]">today.json couldn't be read</p>
-              {:else}
-                {#if section.notes}
-                  <p class="text-ink-body mt-2 text-[13.5px]">{section.notes}</p>
-                {/if}
-
-                {#if section.prepared.length > 0}
-                  <ul class="mt-3 flex flex-col gap-3">
-                    {#each section.prepared as item, i (i)}
-                      <li>
-                        {#if item.page}
-                          <a
-                            href={knowledgeHref(section.mountKey, item.page)}
-                            class="text-ink-heading text-[13.5px] font-medium hover:underline"
-                          >
-                            {item.title ?? '(untitled)'}
-                          </a>
-                        {:else}
-                          <p class="text-ink-heading text-[13.5px] font-medium">
-                            {item.title ?? '(untitled)'}
-                          </p>
-                        {/if}
-                        {#if item.summary}
-                          <p class="text-ink-body text-[13px]">{item.summary}</p>
-                        {/if}
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-
-                {#if openLoopItems(section).length > 0}
-                  <div class="mt-3">
-                    <OpenLoops loops={openLoopItems(section)} />
-                  </div>
-                {/if}
-              {/if}
-            </section>
+        <header class="flex flex-col gap-2">
+          <h1 class="font-display text-ink-heading text-[22px] leading-tight font-medium">Today</h1>
+          {#each today.mail.filter((m) => m.configured) as mail (mail.account)}
+            <p class="text-ink-meta text-[13px]">{mailSummaryLine(mail)}</p>
           {/each}
-        </div>
-      {/if}
+          {#if today.calendar}
+            <p class="text-ink-meta text-[13px]">{calendarSummaryLine(today.calendar)}</p>
+          {/if}
+        </header>
 
-      {#if today.recentSessions.length > 0}
-        <section class="mt-10 pb-6">
-          <p class="text-overline mb-2">Recent sessions</p>
-          <ul class="flex flex-col">
-            {#each today.recentSessions as session (session.id)}
-              <li>
-                <a
-                  href={`/chat?session=${session.id}`}
-                  class="text-ink-secondary hover:bg-paper-pill flex items-center gap-2 rounded-md py-1.5 text-[13px] transition-colors"
-                >
-                  {#if session.live}
-                    <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
-                  {:else}
-                    <span class="size-1.5 shrink-0" aria-hidden="true"></span>
+        {#if quickTarget}
+          <div class="-mx-4 mt-4">
+            <Composer
+              busy={quickBusy}
+              configItems={[]}
+              placeholder={`Start a session in ${quickTargetName ?? 'your project'}…`}
+              onSend={(text) => void quickStart(text)}
+              onStop={() => {}}
+              onSetConfig={() => {}}
+            />
+          </div>
+          {#if quickError}
+            <p class="text-warn-ink mt-1 text-[12.5px]" role="alert">{quickError}</p>
+          {/if}
+        {/if}
+
+        {#if today.sections.length === 0}
+          <div class="border-paper-border bg-paper-card mt-8 rounded-xl border p-5">
+            <p class="text-ink-body text-[13.5px] leading-relaxed">
+              <strong class="text-ink-heading">Nothing prepared yet.</strong>
+              Today renders a
+              <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">today.json</code>
+              file from the root of each project. Your agent keeps it up to date with prepared
+              work, open loops, and notes. Ask your agent to maintain one; the starter project's
+              <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">AGENTS.md</code> documents the
+              shape.
+            </p>
+          </div>
+        {:else}
+          <div class="mt-8 flex flex-col gap-8">
+            {#each today.sections as section (section.mountKey)}
+              <section>
+                <div class="flex items-baseline gap-2">
+                  <span class="text-ink-meta text-[12px]">{mountProvenanceLabel(section.icmName)}</span>
+                  {#if section.updatedAt}
+                    <span class="text-ink-meta text-[11.5px] tabular-nums">
+                      {formatTimestamp(section.updatedAt)}
+                    </span>
                   {/if}
-                  <span class="min-w-0 flex-1 truncate">{session.title}</span>
-                  <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">
-                    {formatTimestamp(session.startedAt)}
-                  </span>
-                </a>
-              </li>
+                </div>
+
+                {#if !section.ok}
+                  <p class="text-ink-meta mt-2 text-[13px]">today.json couldn't be read</p>
+                {:else}
+                  {#if section.notes}
+                    <p class="text-ink-body mt-2 text-[13.5px]">{section.notes}</p>
+                  {/if}
+
+                  {#if section.prepared.length > 0}
+                    <ul class="mt-3 flex flex-col gap-3">
+                      {#each section.prepared as item, i (i)}
+                        <li>
+                          {#if item.page}
+                            <a
+                              href={knowledgeHref(section.mountKey, item.page)}
+                              class="text-ink-heading text-[13.5px] font-medium hover:underline"
+                            >
+                              {item.title ?? '(untitled)'}
+                            </a>
+                          {:else}
+                            <p class="text-ink-heading text-[13.5px] font-medium">
+                              {item.title ?? '(untitled)'}
+                            </p>
+                          {/if}
+                          {#if item.summary}
+                            <p class="text-ink-body text-[13px]">{item.summary}</p>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+
+                  {#if openLoopItems(section).length > 0}
+                    <div class="mt-3">
+                      <OpenLoops loops={openLoopItems(section)} />
+                    </div>
+                  {/if}
+                {/if}
+              </section>
             {/each}
-          </ul>
-        </section>
+          </div>
+        {/if}
+
+        {#if today.recentSessions.length > 0}
+          <section class="mt-10 pb-6">
+            <p class="text-overline mb-2">Recent sessions</p>
+            <ul class="flex flex-col">
+              {#each today.recentSessions as session (session.id)}
+                <li>
+                  <a
+                    href={`/chat?session=${session.id}`}
+                    class="text-ink-secondary hover:bg-paper-pill flex items-center gap-2 rounded-md py-1.5 text-[13px] transition-colors"
+                  >
+                    {#if session.live}
+                      <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
+                    {:else}
+                      <span class="size-1.5 shrink-0" aria-hidden="true"></span>
+                    {/if}
+                    <span class="min-w-0 flex-1 truncate">{session.title}</span>
+                    <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">
+                      {formatTimestamp(session.startedAt)}
+                    </span>
+                  </a>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
       {/if}
-    {/if}
+    </MainColumn>
   {/snippet}
 </AppShell>

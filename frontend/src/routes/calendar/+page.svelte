@@ -136,7 +136,7 @@
 
 </script>
 
-<AppFrame mainVariant="column">
+<AppFrame>
   {#snippet main()}
     <div class="relative flex min-h-0 flex-1 flex-col">
       <header class="flex flex-wrap items-center gap-x-4 gap-y-2 px-7 pt-6 pb-4">

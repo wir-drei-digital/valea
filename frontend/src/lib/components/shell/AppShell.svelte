@@ -8,28 +8,23 @@
   // Resizable (bits-ui PaneGroup) composes cleanly and is the natural
   // upgrade path once user-resizable panes are needed, but isn't installed
   // yet — deferred rather than adding a dependency this task doesn't need.
-  // `mainVariant`:
-  //  - 'prose' (default): the shell scrolls the whole main pane and centers
-  //    content in the §11 max-width column — right for document-like pages.
-  //  - 'prose-wide': same scrolling shell, but the route gets the FULL pane
-  //    width (just the px-8 gutter) and re-caps its own sections — for the
-  //    page editor, whose text stays in the prose column while tables may
-  //    grow to the pane (tiptap.css's `.page-editor` per-block caps).
-  //  - 'column': the shell hands the route a full-height, non-scrolling
-  //    flex column so it can pin chrome (e.g. the chat composer) to the
-  //    pane's bottom edge and scroll only its transcript region.
+  // The main slot is a bare full-height flex column — the old `mainVariant`
+  // prop is gone (side-panes pass). Each route/view now owns its own scroll
+  // container and width cap: `MainColumn` (this barrel) is the relocated
+  // 'prose'/'prose-wide' wrapper, and routes that already pinned chrome to
+  // the pane's bottom edge (chat's composer, calendar's grid) just render
+  // their column straight into the slot. The shell staying variant-free is
+  // what lets any view be rendered in any pane.
   let {
     sidebar,
     list,
     main,
-    rail,
-    mainVariant = 'prose'
+    rail
   }: {
     sidebar: Snippet;
     list?: Snippet;
     main: Snippet;
     rail?: Snippet;
-    mainVariant?: 'prose' | 'prose-wide' | 'column';
   } = $props();
 </script>
 
@@ -44,23 +39,9 @@
       {@render list()}
     </section>
   {/if}
-  {#if mainVariant === 'column'}
-    <main class="flex min-h-0 min-w-0 flex-1 flex-col">
-      {@render main()}
-    </main>
-  {:else if mainVariant === 'prose-wide'}
-    <main class="min-w-0 flex-1 overflow-y-auto">
-      <div class="px-8 py-8">
-        {@render main()}
-      </div>
-    </main>
-  {:else}
-    <main class="min-w-0 flex-1 overflow-y-auto">
-      <div class="mx-auto max-w-[660px] px-8 py-8">
-        {@render main()}
-      </div>
-    </main>
-  {/if}
+  <main class="flex min-h-0 min-w-0 flex-1 flex-col">
+    {@render main()}
+  </main>
   {#if rail}
     <aside
       class="w-[320px] min-w-[290px] max-w-[340px] shrink-0 overflow-y-auto border-l border-paper-hairline bg-paper-panel"

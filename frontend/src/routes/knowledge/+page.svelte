@@ -13,7 +13,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto, replaceState } from '$app/navigation';
-  import { AppFrame, ListPane, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
+  import { AppFrame, ListPane, MainColumn, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -340,51 +340,53 @@
   {/snippet}
 
   {#snippet main()}
-    <!-- Fix wave 1 (A2-T9): a declare-stage reference-adoption failure
-         outlives the onboarding screen (see PendingAdoptError's doc comment
-         in stores/mounts.svelte.ts) — surfaced HERE, the first mounts-shaped
-         surface a fresh workspace lands on, as a prominent dismissible
-         banner. Rendered above BOTH main-pane states (header and doctor)
-         so toggling the doctor can't hide it. -->
-    {#if mountsStore.pendingAdoptError}
-      <div
-        role="alert"
-        class="bg-warn-tint text-warn-ink mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3"
-      >
-        <TriangleAlert class="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-        <p class="min-w-0 flex-1 text-[13px] leading-relaxed">
-          {adoptFailureBannerText(mountsStore.pendingAdoptError)}
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          class="shrink-0"
-          onclick={() => mountsStore.clearPendingAdoptError()}
+    <MainColumn>
+      <!-- Fix wave 1 (A2-T9): a declare-stage reference-adoption failure
+           outlives the onboarding screen (see PendingAdoptError's doc comment
+           in stores/mounts.svelte.ts) — surfaced HERE, the first mounts-shaped
+           surface a fresh workspace lands on, as a prominent dismissible
+           banner. Rendered above BOTH main-pane states (header and doctor)
+           so toggling the doctor can't hide it. -->
+      {#if mountsStore.pendingAdoptError}
+        <div
+          role="alert"
+          class="bg-warn-tint text-warn-ink mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3"
         >
-          Dismiss
-        </Button>
-      </div>
-    {/if}
+          <TriangleAlert class="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+          <p class="min-w-0 flex-1 text-[13px] leading-relaxed">
+            {adoptFailureBannerText(mountsStore.pendingAdoptError)}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            class="shrink-0"
+            onclick={() => mountsStore.clearPendingAdoptError()}
+          >
+            Dismiss
+          </Button>
+        </div>
+      {/if}
 
-    {#if doctorOpen}
-      <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
-        <button
-          type="button"
-          onclick={() => (doctorOpen = false)}
-          class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
-        >
-          <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-          Back to Files
-        </button>
-        <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
-      </div>
-    {:else}
-      <PageHeader
-        title="Files"
-        subtitle="Your business memory. Every page is a plain Markdown file in your workspace."
-      />
-    {/if}
+      {#if doctorOpen}
+        <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
+          <button
+            type="button"
+            onclick={() => (doctorOpen = false)}
+            class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
+          >
+            <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
+            Back to Files
+          </button>
+          <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
+        </div>
+      {:else}
+        <PageHeader
+          title="Files"
+          subtitle="Your business memory. Every page is a plain Markdown file in your workspace."
+        />
+      {/if}
+    </MainColumn>
   {/snippet}
 </AppFrame>
 

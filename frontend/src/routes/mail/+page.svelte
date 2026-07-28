@@ -8,7 +8,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { onMount, untrack } from 'svelte';
-  import { AppFrame, ListPane, EmptyState } from '$lib/components/shell';
+  import { AppFrame, ListPane, EmptyState, MainColumn } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import MailIcon from '@lucide/svelte/icons/mail';
   import { api } from '$lib/api/client';
@@ -241,32 +241,34 @@
   {/snippet}
 
   {#snippet main()}
-    {#if draftsRequested}
-      <DraftsPanel />
-    {:else if !selectedId}
-      {#if mailStore.accounts.length === 0}
-        <!-- No mailbox yet — the welcoming path into the setup modal. -->
-        <div class="mx-auto w-full max-w-[560px] px-8 py-8">
-          <EmptyState
-            icon={MailIcon}
-            title="No mailbox connected yet."
-            body="Valea mirrors your inbox into plain files on this Mac. Your assistant reads them, prepares replies as drafts, and nothing is ever sent without you."
-          >
-            {#snippet actions()}
-              <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
-            {/snippet}
-          </EmptyState>
-        </div>
+    <MainColumn>
+      {#if draftsRequested}
+        <DraftsPanel />
+      {:else if !selectedId}
+        {#if mailStore.accounts.length === 0}
+          <!-- No mailbox yet — the welcoming path into the setup modal. -->
+          <div class="mx-auto w-full max-w-[560px] px-8 py-8">
+            <EmptyState
+              icon={MailIcon}
+              title="No mailbox connected yet."
+              body="Valea mirrors your inbox into plain files on this Mac. Your assistant reads them, prepares replies as drafts, and nothing is ever sent without you."
+            >
+              {#snippet actions()}
+                <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
+              {/snippet}
+            </EmptyState>
+          </div>
+        {:else}
+          <EmptyState icon={MailIcon} title="Mail" body="Pick a message from the list to read it here." />
+        {/if}
+      {:else if activeId === selectedId && activeDetail}
+        <MessageView message={activeDetail} />
+      {:else if loadError}
+        <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
       {:else}
-        <EmptyState icon={MailIcon} title="Mail" body="Pick a message from the list to read it here." />
+        <p class="text-ink-meta text-[13px]">Loading…</p>
       {/if}
-    {:else if activeId === selectedId && activeDetail}
-      <MessageView message={activeDetail} />
-    {:else if loadError}
-      <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
-    {:else}
-      <p class="text-ink-meta text-[13px]">Loading…</p>
-    {/if}
+    </MainColumn>
   {/snippet}
 </AppFrame>
 

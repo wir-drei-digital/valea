@@ -77,10 +77,10 @@
 }
 
 /* ========= Full-width tables (file-browser pass) =========
- * The page editor's container spans the whole main pane (AppShell's
- * 'prose-wide' variant); every TOP-LEVEL block re-caps itself to the
- * classic prose column and centers — 596px, matching what the old 660px
- * 'prose' wrapper minus its px-8 padding produced, and matching the
+ * The page editor's container spans the whole main pane (`MainColumn`'s
+ * `wide`); every TOP-LEVEL block re-caps itself to the
+ * classic prose column and centers — 596px, matching what the 660px
+ * default `MainColumn` minus its px-8 padding produces, and matching the
  * route's own `max-w-[596px]` section caps. Table wrappers are exempt:
  * a table is at least column width, centered, may grow to the full pane,
  * and only scrolls (`.tableWrapper`'s overflow-x) past that. Scoped to

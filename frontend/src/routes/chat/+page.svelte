@@ -429,7 +429,7 @@
   </ListPane>
 {/snippet}
 
-<AppFrame mainVariant="column" list={showAllPane ? allSessions : undefined}>
+<AppFrame list={showAllPane ? allSessions : undefined}>
   {#snippet main()}
     {#if doctorOverride}
       <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">

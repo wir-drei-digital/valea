@@ -16,14 +16,11 @@
     list,
     main,
     rail,
-    mainVariant,
     onBeforeMutateActive
   }: {
     list?: Snippet;
     main: Snippet;
     rail?: Snippet;
-    /** Forwarded to `AppShell` — see its doc comment. */
-    mainVariant?: 'prose' | 'prose-wide' | 'column';
     /** Forwarded to `Sidebar` — see `WorkspaceSwitcher`'s doc comment. */
     onBeforeMutateActive?: () => Promise<void>;
   } = $props();
@@ -44,7 +41,7 @@
   );
 </script>
 
-<AppShell {list} {main} {rail} {mainVariant}>
+<AppShell {list} {main} {rail}>
   {#snippet sidebar()}
     <Sidebar {activeMountKey} {onBeforeMutateActive} />
   {/snippet}
