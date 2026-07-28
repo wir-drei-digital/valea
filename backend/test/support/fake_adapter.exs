@@ -90,16 +90,25 @@ defmodule FakeAdapter do
         System.halt(9)
 
       "permission" ->
+        # Target an ordinary knowledge page inside the primary ICM (the
+        # adapter's own cwd, Task 5.4) so `PermissionPolicy.decide/2`
+        # genuinely returns :ask and the HUMAN answer is what resolves the
+        # item. The old "/ws/queue/staging/r1/proposal.json" relic escaped
+        # the test workspace, so the policy AUTO-DENIED (reject_once)
+        # before any test-driven answer — every "answering resolves it"
+        # test was silently exercising the auto-deny echo instead (their
+        # `resolved => true` assertions never checked `outcome`).
         request(50, "session/request_permission", %{
           "sessionId" => ctx.session,
           "toolCall" => %{
             "toolCallId" => "t1",
             "title" => "Write file",
             "kind" => "edit",
-            "rawInput" => %{"file_path" => "/ws/queue/staging/r1/proposal.json"}
+            "rawInput" => %{"file_path" => Path.join(File.cwd!(), "Pricing/Current Pricing.md")}
           },
           "options" => [
             %{"optionId" => "y", "name" => "Allow", "kind" => "allow_once"},
+            %{"optionId" => "ya", "name" => "Always allow", "kind" => "allow_always"},
             %{"optionId" => "n", "name" => "Reject", "kind" => "reject_once"}
           ]
         })

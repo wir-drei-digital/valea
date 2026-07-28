@@ -47,6 +47,10 @@
       error = null;
       submitting = false;
       templatePath = '';
+      // Lazy tree: `templateGroups` only sees folders whose listings are
+      // loaded — pull in every reachable `templates/` folder on open so the
+      // "Start from" select isn't empty just because nothing was expanded.
+      if (mode === 'page') void icmStore.loadTemplateFolders(mountKey);
     }
   });
 

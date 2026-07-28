@@ -11,6 +11,10 @@
   // `mainVariant`:
   //  - 'prose' (default): the shell scrolls the whole main pane and centers
   //    content in the §11 max-width column — right for document-like pages.
+  //  - 'prose-wide': same scrolling shell, but the route gets the FULL pane
+  //    width (just the px-8 gutter) and re-caps its own sections — for the
+  //    page editor, whose text stays in the prose column while tables may
+  //    grow to the pane (tiptap.css's `.page-editor` per-block caps).
   //  - 'column': the shell hands the route a full-height, non-scrolling
   //    flex column so it can pin chrome (e.g. the chat composer) to the
   //    pane's bottom edge and scroll only its transcript region.
@@ -25,7 +29,7 @@
     list?: Snippet;
     main: Snippet;
     rail?: Snippet;
-    mainVariant?: 'prose' | 'column';
+    mainVariant?: 'prose' | 'prose-wide' | 'column';
   } = $props();
 </script>
 
@@ -43,6 +47,12 @@
   {#if mainVariant === 'column'}
     <main class="flex min-h-0 min-w-0 flex-1 flex-col">
       {@render main()}
+    </main>
+  {:else if mainVariant === 'prose-wide'}
+    <main class="min-w-0 flex-1 overflow-y-auto">
+      <div class="px-8 py-8">
+        {@render main()}
+      </div>
     </main>
   {:else}
     <main class="min-w-0 flex-1 overflow-y-auto">

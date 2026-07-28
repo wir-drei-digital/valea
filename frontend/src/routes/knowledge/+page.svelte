@@ -12,12 +12,13 @@
   // as a non-clickable warning chip instead — see `classifyMounts`.
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { replaceState } from '$app/navigation';
+  import { goto, replaceState } from '$app/navigation';
   import { AppFrame, ListPane, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { icmToNav, type IcmNode } from '$lib/shell/nav';
+  import { recentPages } from '$lib/stores/recent-pages';
+  import { icmToNav, knowledgeHref, type IcmNode } from '$lib/shell/nav';
   import { resolveIcmSelection } from '$lib/shell/icm-route';
   import {
     adoptFailureBannerText,
@@ -71,6 +72,35 @@
       url.searchParams.set('icm', selectedMountKey);
       replaceState(url, page.state);
     }
+  });
+
+  // Last-opened restore (file-browser pass): landing on the Files index
+  // reopens the selected mount's most recently visited page (the
+  // `recent-pages` MRU the page route records into), so "open files" puts
+  // you back where you left off instead of on an empty header. Validated
+  // through the lazy tree first — `ensurePathLoaded` both confirms the page
+  // still exists AND pre-loads its ancestor listings, so the redirect never
+  // lands on a false "doesn't exist". Attempted at most once per visit to
+  // this route (deliberately NOT re-fired when the user switches mounts via
+  // `?icm=` while already here — that's explicit browsing, not a landing).
+  let restoreAttempted = false;
+
+  $effect(() => {
+    const mount = selectedMountKey;
+    if (restoreAttempted || !mount || !icmStore.loaded) return;
+    restoreAttempted = true;
+
+    const last = recentPages().find((p) => p.mountKey === mount);
+    if (!last) return;
+
+    void icmStore.ensurePathLoaded(mount, last.path).then((found) => {
+      if (!found || found.type !== 'page') return; // deleted/renamed since — stay on the index
+      // Still sitting on this index with the same mount selected? A user
+      // who already navigated away must not be yanked back.
+      if (page.url.pathname !== '/knowledge') return;
+      if (resolveIcmSelection(page.url.searchParams.get('icm'), enabledMountKeys) !== mount) return;
+      void goto(knowledgeHref(mount, last.path), { replaceState: true });
+    });
   });
 
   // A-T15 fix wave: non-.md file leaves (media/PDF) at a mount's top level.

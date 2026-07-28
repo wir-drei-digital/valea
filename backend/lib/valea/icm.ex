@@ -53,6 +53,97 @@ defmodule Valea.ICM do
     end
   end
 
+  @doc """
+  ONE directory level of `mount_key`'s ICM — `{:ok, %{mount_key:, title:,
+  entries:}}` where `entries` are the direct children of `rel_path` (`""`
+  for the mount's own root), in `build_tree/2`'s sort order (folders first,
+  case-insensitive by name). The lazy counterpart to `tree_for/1`: folder
+  entries carry NO `children` and their `page_count` counts only DIRECT
+  `.md` children (one extra `ls` per subfolder), never the recursive count
+  — the whole point is to avoid walking a large mount up front.
+
+  Errors: `{:error, :not_found}` when `rel_path` doesn't name an existing
+  directory; `{:error, :outside_workspace}` / `{:error, :no_workspace}`
+  from the same containment chokepoint every other function here uses.
+  """
+  def list_dir(mount_key, rel_path) do
+    with {:ok, mount} <- resolve_mount(mount_key),
+         {:ok, abs} <- contain_dir(mount.root, rel_path),
+         {:ok, names} <- ls_dir(abs) do
+      {:ok,
+       %{
+         mount_key: mount_key,
+         title: mount.manifest.name,
+         entries: shallow_entries(names, abs, mount.root)
+       }}
+    end
+  end
+
+  # `contain/2` deliberately rejects the mount root itself (it is never a
+  # valid MUTATION target) — but listing the root is exactly what a lazy
+  # tree's first fetch does, so `""` short-circuits to the root here.
+  defp contain_dir(root, ""), do: {:ok, root}
+  defp contain_dir(root, rel_path), do: contain(root, rel_path)
+
+  defp ls_dir(abs) do
+    if File.dir?(abs) do
+      case File.ls(abs) do
+        {:ok, names} -> {:ok, names}
+        {:error, _reason} -> {:error, :not_found}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp shallow_entries(names, dir, root) do
+    names
+    |> Enum.reject(&String.starts_with?(&1, "."))
+    # Same root-level manifest exclusion as `build_tree/2`.
+    |> Enum.reject(&(Paths.same_path?(dir, root) and &1 == "icm.yaml"))
+    |> Enum.map(&shallow_node_for(Path.join(dir, &1), root))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(fn n -> {if(n.type == :folder, do: 0, else: 1), String.downcase(n.name)} end)
+  end
+
+  defp shallow_node_for(abs, root) do
+    rel = Paths.relative_to(abs, root)
+
+    cond do
+      File.dir?(abs) ->
+        %{
+          name: Path.basename(abs),
+          path: rel,
+          type: :folder,
+          page_count: direct_page_count(abs)
+        }
+
+      Path.extname(abs) == ".md" ->
+        %{name: Path.basename(abs, ".md"), path: rel, type: :page, uri: uri(rel)}
+
+      File.regular?(abs) ->
+        %{
+          name: Path.basename(abs),
+          path: rel,
+          type: :file,
+          ext: abs |> Path.extname() |> String.downcase()
+        }
+
+      true ->
+        nil
+    end
+  end
+
+  defp direct_page_count(dir) do
+    case File.ls(dir) do
+      {:ok, names} ->
+        Enum.count(names, &(not String.starts_with?(&1, ".") and Path.extname(&1) == ".md"))
+
+      {:error, _reason} ->
+        0
+    end
+  end
+
   def page(mount_key, rel_path) do
     with {:ok, mount} <- resolve_mount(mount_key),
          {:ok, abs} <- contain(mount.root, rel_path) do

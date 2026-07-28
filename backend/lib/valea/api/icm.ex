@@ -69,6 +69,33 @@ defmodule Valea.Api.ICM do
       end
     end
 
+    action :list_dir, :map do
+      constraints fields: [
+                    mount_key: [type: :string, allow_nil?: false],
+                    title: [type: :string, allow_nil?: false],
+                    # Unconstrained on purpose — same raw node maps `:tree` returns.
+                    entries: [type: {:array, :map}, allow_nil?: false]
+                  ]
+
+      argument :mount_key, :string, allow_nil?: false
+      # `""` lists the mount's own root (same allow_empty? shape as the
+      # create actions' `parent_path`).
+      argument :path, :string, allow_nil?: false, constraints: [allow_empty?: true]
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{mount_key: mount_key, path: path, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{mount_key: mk, title: title, entries: entries}} <-
+               Valea.ICM.list_dir(mount_key, path) do
+          {:ok, %{mount_key: mk, title: title, entries: stringify(entries)}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :page, :map do
       argument :mount_key, :string, allow_nil?: false
       argument :path, :string, allow_nil?: false

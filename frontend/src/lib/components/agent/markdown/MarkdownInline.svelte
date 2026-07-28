@@ -5,8 +5,19 @@
   // interpolation — {@html} is FORBIDDEN in this family.
   import MarkdownInline from './MarkdownInline.svelte';
   import { safeLinkHref, unescapeMarked, type Token } from '$lib/markdown/agent-markdown';
+  import { inDesktop } from '$lib/keychain';
+  import { openExternal } from '$lib/shell/external-link';
 
   let { tokens }: { tokens: Token[] } = $props();
+
+  // Desktop: the Tauri webview has no window factory, so `target="_blank"`
+  // silently does nothing — route the click through the desktop-aware
+  // opener instead (see external-link.ts). Browser: default behavior.
+  function onLinkClick(event: MouseEvent, href: string): void {
+    if (!inDesktop()) return;
+    event.preventDefault();
+    openExternal(href);
+  }
 
   // Loose local view of marked's inline token union — only the fields this
   // template dereferences.
@@ -43,6 +54,7 @@
         {href}
         target="_blank"
         rel="noopener noreferrer"
+        onclick={(event) => onLinkClick(event, href)}
         class="text-ink-heading decoration-paper-button-border underline underline-offset-2 hover:decoration-ink-secondary"
         ><MarkdownInline tokens={token.tokens ?? []} /></a
       >

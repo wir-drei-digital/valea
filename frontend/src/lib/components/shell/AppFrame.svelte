@@ -23,7 +23,7 @@
     main: Snippet;
     rail?: Snippet;
     /** Forwarded to `AppShell` — see its doc comment. */
-    mainVariant?: 'prose' | 'column';
+    mainVariant?: 'prose' | 'prose-wide' | 'column';
     /** Forwarded to `Sidebar` — see `WorkspaceSwitcher`'s doc comment. */
     onBeforeMutateActive?: () => Promise<void>;
   } = $props();

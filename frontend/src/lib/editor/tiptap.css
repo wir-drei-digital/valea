@@ -76,6 +76,37 @@
     margin-top: 0.75em;
 }
 
+/* ========= Full-width tables (file-browser pass) =========
+ * The page editor's container spans the whole main pane (AppShell's
+ * 'prose-wide' variant); every TOP-LEVEL block re-caps itself to the
+ * classic prose column and centers — 596px, matching what the old 660px
+ * 'prose' wrapper minus its px-8 padding produced, and matching the
+ * route's own `max-w-[596px]` section caps. Table wrappers are exempt:
+ * a table is at least column width, centered, may grow to the full pane,
+ * and only scrolls (`.tableWrapper`'s overflow-x) past that. Scoped to
+ * `.page-editor` so other ProseMirror-styled surfaces are untouched. */
+.page-editor .ProseMirror > * {
+    max-width: 596px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* Both forms: a NodeView-wrapped `.tableWrapper`, AND the bare `> table`
+ * this tiptap version actually emits at the doc's top level. `100%` (the
+ * full pane), not `none`: a table's auto layout can wrap cell text to fit,
+ * so capping at the pane lets an oversized table use every available pixel
+ * and then wrap — never forcing the whole pane to scroll sideways. */
+.page-editor .ProseMirror > .tableWrapper,
+.page-editor .ProseMirror > table {
+    max-width: 100%;
+}
+
+.page-editor .ProseMirror table {
+    margin-left: auto;
+    margin-right: auto;
+    min-width: 596px;
+}
+
 /* Gapcursor */
 .ProseMirror .ProseMirror-gapcursor:after {
     border-top-color: var(--ttp-text);

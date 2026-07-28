@@ -365,6 +365,7 @@ defmodule Valea.Agents do
       started_at: s["started_at"],
       status: s["status"],
       live: s["live"],
+      busy: s["busy"] == true,
       # The session's primary-ICM identity snapshot (session/v1 metadata) —
       # the chat header renders "in <icm_name>" off the summary alone.
       icm_mount: s["icm_mount"],
@@ -509,7 +510,7 @@ defmodule Valea.Agents do
     with {:ok, meta} <- read_meta(path),
          %{"schema" => "session/v1"} <- meta do
       id = meta["id"]
-      {live?, status} = live_status(id)
+      {live?, status, busy?} = live_status(id)
 
       %{
         "id" => id,
@@ -520,6 +521,10 @@ defmodule Valea.Agents do
         "started_at" => meta["started_at"],
         "status" => status,
         "live" => live?,
+        # A turn is in flight right now (attach's own `busy`) — drives the
+        # sidebar's "agent is working" indicator. Snapshot-fresh only, like
+        # `live`: listings refresh on demand, there is no per-session push.
+        "busy" => busy?,
         # C8 identity fields (Task 6.1) — carried through so the grouped-by-ICM
         # listing (Task 6.2) can key off `icm_mount` without re-reading every
         # transcript's line 1 itself.
@@ -538,8 +543,8 @@ defmodule Valea.Agents do
 
   defp live_status(id) do
     case SessionServer.attach(id) do
-      {:ok, %{status: status}} -> {true, status}
-      {:error, :not_running} -> {false, "ended"}
+      {:ok, %{status: status, busy: busy}} -> {true, status, busy}
+      {:error, :not_running} -> {false, "ended", false}
     end
   end
 

@@ -11,6 +11,7 @@ use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
 mod keychain;
+mod links;
 mod winjob;
 
 const BACKEND_PORT: u16 = 4817;
@@ -54,7 +55,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             keychain::mail_secret_set,
             keychain::mail_secret_get,
-            keychain::mail_secret_delete
+            keychain::mail_secret_delete,
+            links::open_external
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

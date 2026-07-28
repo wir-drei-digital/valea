@@ -13,6 +13,8 @@ export type AgentSessionSummary = {
   startedAt?: string | null;
   status: string;
   live: boolean;
+  /** A turn is in flight right now (snapshot-fresh, like `live`) — the sidebar's "working" indicator. */
+  busy: boolean;
   /** The session's primary-ICM identity snapshot (session/v1 metadata). */
   icmMount?: string | null;
   icmName?: string | null;

@@ -165,6 +165,69 @@ defmodule Valea.ICMTest do
     assert {:error, :outside_workspace} = ICM.tree_for("does-not-exist")
   end
 
+  test "list_dir(\"\") lists only the root level — folders carry no children and direct page counts",
+       %{icm: icm} do
+    {:ok, listing} = ICM.list_dir(icm.mount_key, "")
+    assert listing.mount_key == icm.mount_key
+    assert listing.title == "Primary"
+
+    offers = Enum.find(listing.entries, &(&1.name == "Offers"))
+    assert offers.type == :folder
+    assert offers.path == "Offers"
+    # Lazy shape: no recursion — a folder entry has no :children key at all.
+    refute Map.has_key?(offers, :children)
+    # Direct .md children only (the starter Offers/ holds its 2 pages directly).
+    assert offers.page_count == 2
+
+    # Same root-level exclusions as tree_for.
+    refute Enum.any?(listing.entries, &(&1.name == "icm.yaml"))
+  end
+
+  test "list_dir of a subfolder lists its direct children with ICM-relative paths", %{icm: icm} do
+    {:ok, listing} = ICM.list_dir(icm.mount_key, "Offers")
+
+    child = Enum.find(listing.entries, &(&1.name == "Founder Coaching Package"))
+    assert child.type == :page
+    assert child.path == "Offers/Founder Coaching Package.md"
+    assert child.uri == "icm://Offers/Founder Coaching Package.md"
+  end
+
+  test "list_dir sorts folders before pages/files, case-insensitively, and keeps file leaves",
+       %{icm: icm} do
+    dir = Path.join(icm.root, "Offers")
+    File.mkdir_p!(Path.join(dir, "zzz sub"))
+    File.write!(Path.join(dir, "aaa.pdf"), "%PDF-1.4 fake")
+    File.write!(Path.join(dir, ".hidden.md"), "# hidden")
+
+    {:ok, listing} = ICM.list_dir(icm.mount_key, "Offers")
+
+    assert %{type: :folder, name: "zzz sub", page_count: 0} = hd(listing.entries)
+    pdf = Enum.find(listing.entries, &(&1.name == "aaa.pdf"))
+    assert %{type: :file, ext: ".pdf", path: "Offers/aaa.pdf"} = pdf
+    refute Enum.any?(listing.entries, &String.starts_with?(&1.name, "."))
+  end
+
+  test "list_dir rejects escapes, missing dirs, and page paths", %{icm: icm} do
+    assert {:error, :outside_workspace} = ICM.list_dir(icm.mount_key, "../..")
+    assert {:error, :not_found} = ICM.list_dir(icm.mount_key, "No Such Folder")
+
+    assert {:error, :not_found} =
+             ICM.list_dir(icm.mount_key, "Offers/Founder Coaching Package.md")
+  end
+
+  test "list_dir on a disabled/unknown mount or closed workspace mirrors tree_for's errors",
+       %{ws: ws, icm: icm} do
+    ext = external_icm!("Ext2")
+    {:ok, %{mount_key: ext_key}} = Mounts.mount(ws, ext)
+    :ok = Mounts.set_enabled(ws, ext_key, false)
+    assert {:error, :outside_workspace} = ICM.list_dir(ext_key, "")
+    assert {:error, :outside_workspace} = ICM.list_dir("does-not-exist", "")
+
+    mount_key = icm.mount_key
+    Manager.close()
+    assert {:error, :no_workspace} = ICM.list_dir(mount_key, "")
+  end
+
   test "page reads content with title and uri", %{icm: icm} do
     {:ok, page} = ICM.page(icm.mount_key, "Offers/Founder Coaching Package.md")
     assert page.title == "Founder Coaching Package"

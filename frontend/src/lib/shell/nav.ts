@@ -20,6 +20,14 @@ export type IcmNode = {
    */
   type: 'folder' | 'page' | 'file';
   children?: IcmNode[];
+  /**
+   * Lazy-tree marker (folders only): `false` means `children` is just the
+   * not-yet-fetched placeholder `[]`, not a genuinely empty folder — the
+   * tree UI shows a loading row and `IcmStore.loadDir` fills it in on
+   * demand. Nodes from an eagerly-fetched full tree (`icm_tree`) are
+   * stamped `true` throughout.
+   */
+  childrenLoaded?: boolean;
   pageCount?: number;
   uri?: string;
   /** Lowercase extension incl. the dot (file leaves only), e.g. `".pdf"`. */
@@ -40,6 +48,8 @@ export type NavTreeItem = {
   mountKey: string;
   count?: number;
   children?: NavTreeItem[];
+  /** Folders only — mirrors `IcmNode.childrenLoaded` (see its doc comment). */
+  loaded?: boolean;
 };
 
 export function mainNav(): NavSection[] {
@@ -87,6 +97,23 @@ export function flattenMountGroups(groups: Array<{ tree: IcmNode[] }>): IcmNode[
   return groups.flatMap((g) => g.tree);
 }
 
+/**
+ * Depth-first lookup of the node at `path` (ICM-relative) in one mount's
+ * tree. Descends only into folders whose path is a `/`-boundary prefix of
+ * `path` — in a lazy tree most siblings hold unloaded `[]` placeholders,
+ * and there is never a reason to walk them.
+ */
+export function findIcmNode(nodes: IcmNode[], path: string): IcmNode | undefined {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    if (node.type === 'folder' && path.startsWith(node.path + '/')) {
+      const found = findIcmNode(node.children ?? [], path);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 /** `/knowledge/<mountKey>/<rel>` (task 4.3) — mountKey and the ICM-relative path are each independently URL-encoded, then joined, so a `/` inside a mount key (never legal per `Valea.Mounts`'s own validation) can't be confused with the path separator. */
 export function knowledgeHref(mountKey: string, path: string): string {
   return `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
@@ -102,7 +129,8 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
           path: n.path,
           mountKey: n.mountKey,
           count: n.pageCount,
-          children: icmToNav(n.children ?? [])
+          children: icmToNav(n.children ?? []),
+          loaded: n.childrenLoaded !== false
         }
       ];
     }

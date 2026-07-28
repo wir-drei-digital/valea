@@ -1,0 +1,11 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "external-links",
+	"description": "Open http(s) links in the OS default browser (src/links.rs open_external), granted to the SPA regardless of Local/Remote origin classification — same rationale as mail-keychain.json.",
+	"windows": ["main"],
+	"local": true,
+	"remote": {
+		"urls": ["http://localhost:4817", "http://localhost:4273"]
+	},
+	"permissions": ["allow-open-external"]
+}

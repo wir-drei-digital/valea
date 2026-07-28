@@ -13,6 +13,8 @@ import {
   workspaceSwitchPreflightChannel,
   icmTree as httpIcmTree,
   icmTreeChannel,
+  icmListDir as httpIcmListDir,
+  icmListDirChannel,
   icmPage as httpIcmPage,
   icmPageChannel,
   saveIcmPage as httpSaveIcmPage,
@@ -198,6 +200,7 @@ import type {
   RetrySentCopyFields,
   ReviseMailDraftFields,
   IcmTreeFields,
+  IcmListDirFields,
   InspectIcmFields,
   ListIcmsFields,
   MountIcmFields,
@@ -369,6 +372,13 @@ function callIcmTreeChannel(
   return wrapChannelCall((handlers) => icmTreeChannel({ channel, input, fields: icmTreeFields, ...handlers }));
 }
 
+function callIcmListDirChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; path: string; generation: number }
+) {
+  return wrapChannelCall((handlers) => icmListDirChannel({ channel, input, fields: icmListDirFields, ...handlers }));
+}
+
 function callIcmPageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { mountKey: string; path: string }
@@ -429,7 +439,9 @@ const listAuditEntriesFields: ListAuditEntriesFields = ['entries'];
 // literal. The backend actions accept these exact nested literals (verified
 // by the passing `agents_rpc_test.exs` suite).
 const listAgentSessionsFields = [
-  { sessions: ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live', 'icmMount', 'icmName'] }
+  {
+    sessions: ['id', 'kind', 'title', 'workflow', 'runId', 'startedAt', 'status', 'live', 'busy', 'icmMount', 'icmName']
+  }
 ] as unknown as ListAgentSessionsFields;
 
 // Task 6.2 — same anonymous-embedded-map-array codegen gap as
@@ -448,6 +460,7 @@ const sessionSummarySelection = [
   'startedAt',
   'status',
   'live',
+  'busy',
   'icmMount',
   'icmName'
 ];
@@ -607,6 +620,12 @@ const dismissSkillsOfferFields: DismissSkillsOfferFields = ['ok'];
 // tree), so it needs no nested selection of its own, just the bare field
 // name.
 const icmTreeFields: IcmTreeFields = ['mountKey', 'title', 'tree'];
+
+// `icm_list_dir` — the lazy single-level counterpart to `icm_tree`
+// (`Valea.ICM.list_dir/2`): `entries` is one directory level's raw node
+// maps, same unconstrained shape as `tree` above (folder entries just carry
+// no `children`).
+const icmListDirFields: IcmListDirFields = ['mountKey', 'title', 'entries'];
 
 // Same anonymous-embedded-map-array codegen gap as `listAgentSessionsFields`
 // above (see the comment on `icmEntryReferencesFields`) — `messages` is an
@@ -1488,6 +1507,16 @@ export const api = {
     runRpc(
       (channel) => callIcmTreeChannel(channel, { mountKey, generation }),
       () => httpIcmTree(withAuth({ input: { mountKey, generation }, fields: icmTreeFields }))
+    ),
+
+  // `icm_list_dir` — ONE directory level of one ICM (`""` = the mount's own
+  // root), the lazy counterpart to `icmTree` above. `IcmStore` fetches root
+  // levels on load and deeper levels on demand (folder expand / deep link)
+  // instead of walking whole mounts up front.
+  icmListDir: (mountKey: string, path: string, generation: number) =>
+    runRpc(
+      (channel) => callIcmListDirChannel(channel, { mountKey, path, generation }),
+      () => httpIcmListDir(withAuth({ input: { mountKey, path, generation }, fields: icmListDirFields }))
     ),
 
   icmPage: (mountKey: string, path: string) =>

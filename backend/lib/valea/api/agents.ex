@@ -43,6 +43,7 @@ defmodule Valea.Api.Agents do
     started_at: [type: :string, allow_nil?: false],
     status: [type: :string, allow_nil?: false],
     live: [type: :boolean, allow_nil?: false],
+    busy: [type: :boolean, allow_nil?: false],
     icm_mount: [type: :string, allow_nil?: true],
     icm_name: [type: :string, allow_nil?: true]
   ]
@@ -471,6 +472,7 @@ defmodule Valea.Api.Agents do
       started_at: s["started_at"],
       status: s["status"],
       live: s["live"],
+      busy: s["busy"] == true,
       icm_mount: s["icm_mount"],
       icm_name: s["icm_name"]
     }

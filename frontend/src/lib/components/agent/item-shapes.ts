@@ -155,6 +155,22 @@ export function configCurrent(item: AcpItemLike): string | null {
 }
 
 /**
+ * The RAW ACP `configId` a `set_config_option` push must echo back —
+ * `item.config_id` (`Connection.config_item_from_option/1`). The render
+ * item's `id` is prefixed (`config-<...>`) for timeline uniqueness, and the
+ * adapter rejects that prefixed form as an unknown option — which is
+ * exactly how composer model/effort/mode changes used to error. Fallback
+ * (an item from before the backend carried `config_id`, e.g. an attach
+ * snapshot from a still-running older session): strip the known prefix.
+ */
+export function configWireId(item: AcpItemLike): string {
+  const raw = item.config_id;
+  if (typeof raw === 'string' && raw.length > 0) return raw;
+  const id = typeof item.id === 'string' ? item.id : '';
+  return id.startsWith('config-') ? id.slice('config-'.length) : id;
+}
+
+/**
  * The agent's own session title, from the `session_info` singleton
  * (`Connection.reduce_update/3`'s "session_info_update" clause — ACP
  * protocol-level, so any ACP agent that pushes titles feeds this, not just

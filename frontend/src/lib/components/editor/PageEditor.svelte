@@ -27,6 +27,7 @@
 	import { commands, type SlashCommandItem } from '$lib/editor/commands';
 	import { allowedImageFiles, isAllowedImage, resolveImageSrc } from '$lib/editor/image-upload';
 	import { classifyHref } from '$lib/editor/link-nav';
+	import { openExternal } from '$lib/shell/external-link';
 	import { api } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { encodePath } from '$lib/shell/nav';
@@ -306,7 +307,9 @@
 		const classification = classifyHref(href, pagePath);
 
 		if (classification.kind === 'external') {
-			window.open(classification.url, '_blank', 'noopener,noreferrer');
+			// Through the desktop-aware opener — a bare `window.open` is a
+			// silent no-op inside the Tauri webview (see external-link.ts).
+			openExternal(classification.url);
 			return true;
 		}
 		if (classification.kind === 'file') {

@@ -10,7 +10,7 @@
   // `AgentSessionStore.prompt` always sends immediately and raises `busy`,
   // so sending is simply disabled while busy; only Stop stays live.
   import ConfigChip from './ConfigChip.svelte';
-  import type { AcpItemLike } from './item-shapes';
+  import { configWireId, type AcpItemLike } from './item-shapes';
 
   let {
     busy,
@@ -117,7 +117,10 @@
   {#if configItems.length > 0}
     <div class="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1">
       {#each configItems as item (item.id)}
-        <ConfigChip {item} onSelect={(value) => onSetConfig(item.id, value)} />
+        <!-- configWireId, NOT item.id: the render id is `config-`-prefixed
+             for timeline uniqueness and the adapter rejects it as an
+             unknown option (see item-shapes.ts). -->
+        <ConfigChip {item} onSelect={(value) => onSetConfig(configWireId(item), value)} />
       {/each}
     </div>
   {/if}

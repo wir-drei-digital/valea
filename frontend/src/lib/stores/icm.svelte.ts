@@ -1,5 +1,5 @@
 import { api, type Api } from '../api/client';
-import type { IcmNode } from '../shell/nav';
+import { findIcmNode, type IcmNode } from '../shell/nav';
 import { workspaceStore } from './workspace.svelte';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 import { wireMailEvents } from './mail.svelte';
@@ -7,7 +7,7 @@ import { wireCalendarEvents } from './calendar.svelte';
 import { mountsStore, wireMountsEvents } from './mounts.svelte';
 import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
 
-type IcmApi = Pick<Api, 'icmTree' | 'listIcms'>;
+type IcmApi = Pick<Api, 'icmListDir' | 'listIcms'>;
 
 /** Minimal shape this store needs from `list_icms` — see `MountSummary` in `stores/mounts.svelte.ts` for the full row. */
 type IcmListRow = { mountKey: string; enabled: boolean; degraded: string | null };
@@ -46,12 +46,17 @@ export function normalizeIcmNode(raw: Record<string, any>, mountKey: string): Ic
       ? raw.page_count
       : (typeof raw.pageCount === 'number' ? raw.pageCount : 0);
 
+    // Lazy-tree marker: an `icm_list_dir` folder entry carries NO
+    // `children` at all (one level only — `Valea.ICM.list_dir/2`), so its
+    // placeholder `[]` is stamped `childrenLoaded: false`; a full-tree
+    // (`icm_tree`) node arrives with a real array and stays loaded.
     return {
       name: raw.name,
       path: raw.path,
       mountKey,
       type: 'folder',
       children: Array.isArray(raw.children) ? raw.children.map((c: Record<string, any>) => normalizeIcmNode(c, mountKey)) : [],
+      childrenLoaded: Array.isArray(raw.children),
       pageCount
     };
   }
@@ -83,11 +88,14 @@ export function normalizeIcmNode(raw: Record<string, any>, mountKey: string): Ic
 export class IcmStore {
   /**
    * One `MountGroup` per ENABLED, non-degraded mount, in `list_icms`'s
-   * order. `icm_tree` (task 4.2 re-key) is now single-ICM, so `refetch`
-   * fans out: it lists the mount catalog, then fetches each enabled mount's
-   * tree in parallel and assembles the same grouped shape this store
-   * always exposed — every other consumer (`mount-sections.ts`, the
-   * Knowledge routes) is unaffected by the RPC split underneath.
+   * order. LAZY since the file-browser performance pass: `refetch` fetches
+   * only each mount's ROOT level (`icm_list_dir` with `""`) plus whatever
+   * deeper folders were already loaded this session (`#loadedDirs`), and
+   * `loadDir`/`ensurePathLoaded` fill folders in on demand (tree expand,
+   * deep links) — a large mount is never walked wholesale up front. Every
+   * other consumer (`mount-sections.ts`, the Knowledge routes) still sees
+   * the same grouped shape; folders that haven't been fetched yet carry
+   * `childrenLoaded: false` with a `[]` placeholder.
    */
   groups: MountGroup[] = $state([]);
   /**
@@ -127,6 +135,17 @@ export class IcmStore {
    * SWITCH path): see its doc comment for why reading `workspaceStore.generation`
    * at that call site is a guaranteed-stale read, not just a possible race.
    */
+  /**
+   * Folder rel-paths (`''` = the mount root) whose single-level listings
+   * have been fetched this session, per mount key. `refetch` re-fetches
+   * exactly these — so an `icm_changed` push keeps every part of the tree
+   * the user has actually opened fresh, without ever walking the rest.
+   */
+  #loadedDirs = new Map<string, Set<string>>();
+
+  /** In-flight `loadDir` de-dupe — `ensurePathLoaded` awaits these instead of double-fetching. */
+  #inFlight = new Map<string, Promise<void>>();
+
   async refetch(generation?: number): Promise<void> {
     const gen = generation ?? workspaceStore.generation ?? 0;
 
@@ -137,22 +156,197 @@ export class IcmStore {
       (m) => m.enabled && !m.degraded
     );
 
-    const treeResults = await Promise.all(icms.map((m) => this.#api.icmTree(m.mountKey, gen)));
+    const groups = await Promise.all(icms.map((m) => this.#rebuildMountGroup(m.mountKey, gen)));
 
-    const groups: MountGroup[] = [];
-    treeResults.forEach((result, i) => {
-      if (!result.ok) return;
-      const data = result.data as { mountKey: string; title: string; tree?: Record<string, any>[] };
-      const mountKey = icms[i].mountKey;
-      groups.push({
-        mount: mountKey,
-        title: data.title,
-        tree: (data.tree ?? []).map((n) => normalizeIcmNode(n, mountKey))
-      });
-    });
+    this.groups = groups.filter((g): g is MountGroup => g !== null);
 
-    this.groups = groups;
+    // Reconcile: a concurrent `loadDir` may have grafted into the tree this
+    // assignment just replaced and still marked its dir loaded — drop any
+    // mark whose node isn't actually populated in the NEW tree, so the next
+    // expand/ensure re-fetches instead of no-oping forever.
+    for (const group of this.groups) {
+      const marked = this.#loadedDirs.get(group.mount);
+      if (!marked) continue;
+      for (const dir of [...marked]) {
+        if (dir === '') continue;
+        const node = findIcmNode(group.tree, dir);
+        if (!node || node.type !== 'folder' || node.childrenLoaded !== true) marked.delete(dir);
+      }
+    }
+
     this.loaded = true;
+  }
+
+  /**
+   * Rebuilds ONE mount's (partial) tree: the root listing, plus every
+   * deeper folder in `#loadedDirs` re-fetched and grafted back in — all
+   * listings fetched in parallel, grafted shallow-to-deep so a child dir
+   * always finds its (just-grafted) parent node. A dir that fails to list
+   * (deleted since it was loaded, transient error) falls out of
+   * `#loadedDirs`, so it isn't re-fetched forever. Returns `null` when the
+   * ROOT listing fails — the mount drops out of `groups` entirely, same as
+   * a failed `icm_tree` fetch always did.
+   */
+  async #rebuildMountGroup(mountKey: string, gen: number): Promise<MountGroup | null> {
+    const dirs = [...(this.#loadedDirs.get(mountKey) ?? [])]
+      .filter((d) => d !== '')
+      .sort((a, b) => a.split('/').length - b.split('/').length);
+
+    const [rootResult, ...dirResults] = await Promise.all([
+      this.#api.icmListDir(mountKey, '', gen),
+      ...dirs.map((d) => this.#api.icmListDir(mountKey, d, gen))
+    ]);
+
+    if (!rootResult.ok) return null;
+    const rootData = rootResult.data as { title: string; entries?: Record<string, any>[] };
+    const tree = (rootData.entries ?? []).map((n) => normalizeIcmNode(n, mountKey));
+
+    const stillLoaded = new Set(['']);
+    dirResults.forEach((result, i) => {
+      if (!result.ok) return;
+      const node = findIcmNode(tree, dirs[i]);
+      if (!node || node.type !== 'folder') return;
+      const data = result.data as { entries?: Record<string, any>[] };
+      node.children = (data.entries ?? []).map((n) => normalizeIcmNode(n, mountKey));
+      node.childrenLoaded = true;
+      stillLoaded.add(dirs[i]);
+    });
+    this.#loadedDirs.set(mountKey, stillLoaded);
+
+    return { mount: mountKey, title: rootData.title, tree };
+  }
+
+  /**
+   * Fetches ONE folder's single-level listing (`''` = the mount root) and
+   * grafts it into the live tree — the on-demand half of the lazy tree
+   * (folder expand, `ensurePathLoaded`). No-ops when that dir is already
+   * loaded; concurrent calls for the same dir share one fetch. A dir the
+   * backend reports `not_found` for is marked loaded-and-empty rather than
+   * left spinning — the `icm_changed` push that follows an external delete
+   * prunes the node itself.
+   */
+  loadDir(mountKey: string, path: string): Promise<void> {
+    if (this.#loadedDirs.get(mountKey)?.has(path)) return Promise.resolve();
+
+    const key = `${mountKey} ${path}`;
+    const inFlight = this.#inFlight.get(key);
+    if (inFlight) return inFlight;
+
+    const promise = this.#fetchAndGraft(mountKey, path).finally(() => {
+      this.#inFlight.delete(key);
+    });
+    this.#inFlight.set(key, promise);
+    return promise;
+  }
+
+  async #fetchAndGraft(mountKey: string, path: string): Promise<void> {
+    const result = await this.#api.icmListDir(mountKey, path, workspaceStore.generation ?? 0);
+    if (!result.ok) {
+      // A deleted-underneath folder is marked loaded-and-empty (the
+      // `icm_changed` push that follows prunes the node itself); any other
+      // failure is transient — leave it unmarked so the next expand retries.
+      if (result.error !== 'not_found' || path === '') return;
+      this.#graft(mountKey, path, []);
+      this.#markLoaded(mountKey, path);
+      return;
+    }
+
+    const data = result.data as { title: string; entries?: Record<string, any>[] };
+    const children = (data.entries ?? []).map((n) => normalizeIcmNode(n, mountKey));
+
+    if (path === '') {
+      // A deep link's `ensurePathLoaded` can win the race against the
+      // cold-load `refetch()` — create the group rather than dropping the
+      // graft; `refetch` replaces the whole array in `list_icms` order when
+      // it lands anyway.
+      const group = this.groups.find((g) => g.mount === mountKey);
+      if (group) {
+        group.title = data.title;
+        group.tree = children;
+      } else {
+        this.groups.push({ mount: mountKey, title: data.title, tree: children });
+      }
+    } else {
+      this.#graft(mountKey, path, children);
+    }
+    this.#markLoaded(mountKey, path);
+  }
+
+  #graft(mountKey: string, path: string, children: IcmNode[]): void {
+    const node = this.#findNode(mountKey, path);
+    if (!node || node.type !== 'folder') return;
+    node.children = children;
+    node.childrenLoaded = true;
+  }
+
+  #markLoaded(mountKey: string, path: string): void {
+    const set = this.#loadedDirs.get(mountKey) ?? new Set<string>();
+    set.add(path);
+    this.#loadedDirs.set(mountKey, set);
+  }
+
+  /**
+   * Loads every ancestor level of `path` (root first) so the node at
+   * `path` exists in the tree — the deep-link entry point for
+   * `/knowledge/<mountKey>/<rel...>`. If the node is itself a folder, its
+   * own listing is loaded too (the route's list pane shows its children).
+   * Returns the node, or `undefined` when some segment doesn't exist —
+   * which, unlike the pre-lazy full tree, is now a definitive answer only
+   * AFTER this resolves (callers keep their loading state until then).
+   */
+  async ensurePathLoaded(mountKey: string, path: string): Promise<IcmNode | undefined> {
+    await this.loadDir(mountKey, '');
+
+    if (path === '') return undefined;
+
+    const segments = path.split('/');
+    let node: IcmNode | undefined;
+    for (let i = 0; i < segments.length; i++) {
+      const ancestor = segments.slice(0, i + 1).join('/');
+      node = this.#findNode(mountKey, ancestor);
+      if (!node) return undefined;
+      if (node.type !== 'folder') return i === segments.length - 1 ? node : undefined;
+      await this.loadDir(mountKey, node.path);
+    }
+    return node;
+  }
+
+  /**
+   * Loads every folder named `templates` (case-insensitive) reachable
+   * through already-loaded levels, to a fixpoint — the template picker
+   * (`NewEntryDialog` → `template-options.ts`) walks the loaded tree, so
+   * without this a lazy tree would offer no templates until the user
+   * happened to expand the folder by hand. A `templates/` folder buried
+   * inside a folder that has never been listed stays undiscovered — the
+   * deliberate trade for not walking whole mounts.
+   */
+  async loadTemplateFolders(mountKey: string): Promise<void> {
+    await this.loadDir(mountKey, '');
+
+    for (;;) {
+      const group = this.groups.find((g) => g.mount === mountKey);
+      if (!group) return;
+
+      const pending: string[] = [];
+      const walk = (nodes: IcmNode[]) => {
+        for (const node of nodes) {
+          if (node.type !== 'folder') continue;
+          if (node.name.toLowerCase() === 'templates' && node.childrenLoaded === false) {
+            pending.push(node.path);
+          }
+          walk(node.children ?? []);
+        }
+      };
+      walk(group.tree);
+
+      if (pending.length === 0) return;
+      await Promise.all(pending.map((p) => this.loadDir(mountKey, p)));
+    }
+  }
+
+  #findNode(mountKey: string, path: string): IcmNode | undefined {
+    const group = this.groups.find((g) => g.mount === mountKey);
+    return group ? findIcmNode(group.tree, path) : undefined;
   }
 
   /**
@@ -163,6 +357,8 @@ export class IcmStore {
   reset(): void {
     this.groups = [];
     this.loaded = false;
+    this.#loadedDirs = new Map();
+    this.#inFlight = new Map();
   }
 
   /**

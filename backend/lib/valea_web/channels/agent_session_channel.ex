@@ -66,8 +66,14 @@ defmodule ValeaWeb.AgentSessionChannel do
     {:noreply, socket}
   end
 
+  # All four ACP option kinds (was allow_once/reject_once only, which
+  # silently bounced every "Allow always" click as invalid_permission_kind
+  # — the UI renders one button per option the HARNESS offered, so whatever
+  # it offered must be answerable). Kept as a literal guard: a channel
+  # payload is untrusted input, and `Connection.answer_permission/3`
+  # re-guards against the same list (`Connection.permission_kinds/0`).
   def handle_in("permission", %{"item_id" => item_id, "kind" => kind}, socket)
-      when kind in ["allow_once", "reject_once"] do
+      when kind in ["allow_once", "allow_always", "reject_once", "reject_always"] do
     SessionServer.answer_permission(socket.assigns.session_id, item_id, kind)
     {:noreply, socket}
   end

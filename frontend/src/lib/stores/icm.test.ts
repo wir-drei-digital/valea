@@ -24,7 +24,22 @@ describe('normalizeIcmNode', () => {
       mountKey: 'primary',
       type: 'folder',
       pageCount: 3,
-      children: []
+      children: [],
+      childrenLoaded: true
+    });
+  });
+
+  it('marks a children-less folder entry (icm_list_dir shape) as NOT loaded — the lazy placeholder', () => {
+    const raw = { name: 'Offers', path: 'Offers', type: 'folder', page_count: 2 };
+
+    expect(normalizeIcmNode(raw, 'primary')).toEqual<IcmNode>({
+      name: 'Offers',
+      path: 'Offers',
+      mountKey: 'primary',
+      type: 'folder',
+      pageCount: 2,
+      children: [],
+      childrenLoaded: false
     });
   });
 
@@ -45,7 +60,8 @@ describe('normalizeIcmNode', () => {
       mountKey: 'primary',
       type: 'folder',
       pageCount: 5,
-      children: []
+      children: [],
+      childrenLoaded: true
     });
   });
 
@@ -65,7 +81,8 @@ describe('normalizeIcmNode', () => {
       mountKey: 'primary',
       type: 'folder',
       pageCount: 0,
-      children: []
+      children: [],
+      childrenLoaded: true
     });
   });
 
@@ -107,7 +124,8 @@ describe('normalizeIcmNode', () => {
           mountKey: 'primary',
           type: 'folder',
           pageCount: 1,
-          children: []
+          children: [],
+          childrenLoaded: true
         },
         {
           name: 'Page',
@@ -116,7 +134,8 @@ describe('normalizeIcmNode', () => {
           type: 'page',
           uri: 'page-uri-123'
         }
-      ]
+      ],
+      childrenLoaded: true
     });
   });
 
@@ -201,152 +220,96 @@ describe('normalizeIcmNode', () => {
   });
 });
 
-// `IcmStore.refetch` (task 4.2/4.3 re-key) now fans out: `list_icms`
-// (Task 3.4) reports the mount catalog, then `icm_tree` — single-ICM per
-// call (Task 4.2) — is fetched once per enabled, non-degraded mount and
-// assembled into the same grouped `MountGroup[]` shape this store always
-// exposed. `icms` rows only need `mountKey`/`enabled`/`degraded` for this
-// fan-out; `tree` rows only need `mountKey`/`title`/`tree`.
+// `IcmStore` is LAZY (file-browser performance pass): `refetch` fans out
+// `list_icms`, then fetches each enabled mount's ROOT level only via
+// `icm_list_dir` (plus any deeper dirs already loaded this session);
+// `loadDir`/`ensurePathLoaded` fetch deeper levels on demand. The fake
+// backend is therefore a per-mount map of dir rel-path → raw entries
+// (`''` = the mount root), mirroring `Valea.ICM.list_dir/2`'s shape —
+// folder entries carry no `children`.
 function fakeApi(
   icms: Array<{ mountKey: string; enabled: boolean; degraded: string | null }>,
-  trees: Record<string, { title: string; tree: any[] } | undefined>
+  mounts: Record<string, { title: string; dirs: Record<string, any[]> } | undefined>
 ) {
+  const calls: Array<{ mountKey: string; path: string }> = [];
   return {
+    calls,
     listIcms: async () => ({ ok: true, data: { icms } }) as ApiResult<any>,
-    icmTree: async (mountKey: string) => {
-      const tree = trees[mountKey];
-      if (!tree) return { ok: false, error: 'outside_workspace' } as ApiResult<any>;
-      return { ok: true, data: { mountKey, ...tree } } as ApiResult<any>;
+    icmListDir: async (mountKey: string, path: string) => {
+      calls.push({ mountKey, path });
+      const mount = mounts[mountKey];
+      if (!mount) return { ok: false, error: 'outside_workspace' } as ApiResult<any>;
+      const entries = mount.dirs[path];
+      if (!entries) return { ok: false, error: 'not_found' } as ApiResult<any>;
+      return { ok: true, data: { mountKey, title: mount.title, entries } } as ApiResult<any>;
     }
   };
 }
 
-describe('IcmStore.loaded', () => {
-  it('starts false before any refetch resolves', () => {
-    const store = new IcmStore(fakeApi([], {}));
-
-    expect(store.loaded).toBe(false);
-    expect(store.groups).toEqual([]);
-  });
-
-  it('flips true after a successful refetch, alongside populated groups', async () => {
-    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore(
-      fakeApi(
-        [{ mountKey: 'primary', enabled: true, degraded: null }],
-        { primary: { title: 'Primary', tree: [raw] } }
-      )
-    );
-
-    await store.refetch();
-
-    expect(store.loaded).toBe(true);
-    expect(store.groups).toHaveLength(1);
-  });
-
-  it('stays false when the mount list fetch fails, so callers keep showing the loading state', async () => {
-    const store = new IcmStore({
-      listIcms: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any>,
-      icmTree: async () => ({ ok: true, data: { mountKey: 'primary', title: 'Primary', tree: [] } }) as ApiResult<any>
-    });
-
-    await store.refetch();
-
-    expect(store.loaded).toBe(false);
-  });
-
-  it('remains true on subsequent refetches (never reverts to a loading state)', async () => {
-    let call = 0;
-    const api = fakeApi([], {});
-    const store = new IcmStore({
-      listIcms: async () => {
-        call += 1;
-        return api.listIcms();
-      },
-      icmTree: api.icmTree
-    });
-
-    await store.refetch();
-    expect(store.loaded).toBe(true);
-
-    await store.refetch();
-    expect(store.loaded).toBe(true);
-    expect(call).toBe(2);
-  });
+const rawFolder = (name: string, path: string, pageCount = 0) => ({
+  name,
+  path,
+  type: 'folder',
+  page_count: pageCount
 });
+const rawPage = (name: string, path: string) => ({ name, path, type: 'page', uri: `icm://${path}` });
 
-describe('IcmStore.refetch (fan-out tree assembly)', () => {
-  it('fetches one tree per ENABLED, non-degraded mount and assembles a MountGroup per one', async () => {
-    const rawPrimary = { name: 'Folder A', path: 'folder-a', type: 'folder', page_count: 1, children: [] };
-    const rawClients = { name: 'Folder B', path: 'folder-b', type: 'folder', pageCount: 2, children: [] };
-
-    const store = new IcmStore(
-      fakeApi(
-        [
-          { mountKey: 'primary', enabled: true, degraded: null },
-          { mountKey: 'clients', enabled: true, degraded: null }
-        ],
-        {
-          primary: { title: 'Primary', tree: [rawPrimary] },
-          clients: { title: 'Clients', tree: [rawClients] }
-        }
-      )
+describe('IcmStore.refetch (lazy root-level assembly)', () => {
+  it('starts unloaded, then fetches ONLY each enabled, non-degraded mount\'s root level', async () => {
+    const api = fakeApi(
+      [
+        { mountKey: 'primary', enabled: true, degraded: null },
+        { mountKey: 'clients', enabled: true, degraded: null },
+        { mountKey: 'off', enabled: false, degraded: null },
+        { mountKey: 'broken', enabled: true, degraded: 'icm.yaml is missing' }
+      ],
+      {
+        primary: {
+          title: 'Primary',
+          dirs: { '': [rawFolder('Offers', 'Offers', 2), rawPage('Notes', 'Notes.md')] }
+        },
+        clients: { title: 'Clients', dirs: { '': [] } }
+      }
     );
+    const store = new IcmStore(api);
+    expect(store.loaded).toBe(false);
 
     await store.refetch();
 
+    expect(store.loaded).toBe(true);
+    expect(api.calls).toEqual([
+      { mountKey: 'primary', path: '' },
+      { mountKey: 'clients', path: '' }
+    ]);
     expect(store.groups).toEqual([
       {
         mount: 'primary',
         title: 'Primary',
-        tree: [{ name: 'Folder A', path: 'folder-a', mountKey: 'primary', type: 'folder', pageCount: 1, children: [] }]
+        tree: [
+          {
+            name: 'Offers',
+            path: 'Offers',
+            mountKey: 'primary',
+            type: 'folder',
+            pageCount: 2,
+            children: [],
+            childrenLoaded: false
+          },
+          { name: 'Notes', path: 'Notes.md', mountKey: 'primary', type: 'page', uri: 'icm://Notes.md' }
+        ]
       },
-      {
-        mount: 'clients',
-        title: 'Clients',
-        tree: [{ name: 'Folder B', path: 'folder-b', mountKey: 'clients', type: 'folder', pageCount: 2, children: [] }]
-      }
+      { mount: 'clients', title: 'Clients', tree: [] }
     ]);
   });
 
-  it('excludes a disabled or degraded mount from the fan-out entirely', async () => {
-    const raw = { name: 'Folder A', path: 'folder-a', type: 'folder', page_count: 0, children: [] };
-
-    const store = new IcmStore(
-      fakeApi(
-        [
-          { mountKey: 'primary', enabled: true, degraded: null },
-          { mountKey: 'off', enabled: false, degraded: null },
-          { mountKey: 'broken', enabled: true, degraded: 'icm.yaml is missing' }
-        ],
-        { primary: { title: 'Primary', tree: [raw] } }
-      )
-    );
-
-    await store.refetch();
-
-    expect(store.groups.map((g) => g.mount)).toEqual(['primary']);
-  });
-
-  it('defaults to an empty groups array when there are no enabled mounts', async () => {
-    const store = new IcmStore(fakeApi([], {}));
-
-    await store.refetch();
-
-    expect(store.groups).toEqual([]);
-    expect(store.loaded).toBe(true);
-  });
-
-  it('drops a mount whose individual icm_tree call fails, keeping the others', async () => {
-    const raw = { name: 'Folder A', path: 'folder-a', type: 'folder', page_count: 0, children: [] };
-
+  it('drops a mount whose root listing fails, keeping the others', async () => {
     const store = new IcmStore(
       fakeApi(
         [
           { mountKey: 'primary', enabled: true, degraded: null },
           { mountKey: 'gone', enabled: true, degraded: null }
         ],
-        { primary: { title: 'Primary', tree: [raw] } }
+        { primary: { title: 'Primary', dirs: { '': [] } } }
       )
     );
 
@@ -355,65 +318,199 @@ describe('IcmStore.refetch (fan-out tree assembly)', () => {
     expect(store.groups.map((g) => g.mount)).toEqual(['primary']);
   });
 
-  it('leaves groups untouched on a mount-list failure', async () => {
-    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore(
-      fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], { primary: { title: 'Primary', tree: [raw] } })
-    );
+  it('stays unloaded (and leaves groups untouched) on a mount-list failure', async () => {
+    const store = new IcmStore({
+      listIcms: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any>,
+      icmListDir: async () =>
+        ({ ok: true, data: { mountKey: 'primary', title: 'Primary', entries: [] } }) as ApiResult<any>
+    });
+
     await store.refetch();
 
-    const failing = new IcmStore({
-      listIcms: async () => ({ ok: false, error: 'unknown_error' }) as ApiResult<any>,
-      icmTree: async () => ({ ok: true, data: { mountKey: 'primary', title: 'Primary', tree: [] } }) as ApiResult<any>
-    });
-    await failing.refetch();
-
-    expect(failing.groups).toEqual([]);
+    expect(store.loaded).toBe(false);
+    expect(store.groups).toEqual([]);
   });
 });
 
-// Acceptance fix wave (Task 9.3/9.4 re-review Finding 2 — generation-coherent
-// refresh): `refetch` now takes an optional explicit `generation`, used by
-// `handleWorkspaceEvent` (the LIVE-SWITCH path, tested further below) to
-// override the `workspaceStore.generation` fallback with the workspace-change
-// push's OWN generation.
+describe('IcmStore.loadDir / ensurePathLoaded (lazy folder loading)', () => {
+  const lazyApi = () =>
+    fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], {
+      primary: {
+        title: 'Primary',
+        dirs: {
+          '': [rawFolder('Offers', 'Offers', 1)],
+          Offers: [rawFolder('Archive', 'Offers/Archive'), rawPage('Coaching', 'Offers/Coaching.md')],
+          'Offers/Archive': [rawPage('Old', 'Offers/Archive/Old.md')]
+        }
+      }
+    });
+
+  it('loadDir grafts one level into the tree and marks the folder loaded', async () => {
+    const store = new IcmStore(lazyApi());
+    await store.refetch();
+
+    await store.loadDir('primary', 'Offers');
+
+    const offers = store.groups[0].tree[0];
+    expect(offers.childrenLoaded).toBe(true);
+    expect(offers.children?.map((c) => c.name)).toEqual(['Archive', 'Coaching']);
+    // The freshly revealed subfolder is itself still a lazy placeholder.
+    expect(offers.children?.[0].childrenLoaded).toBe(false);
+  });
+
+  it('loadDir no-ops for an already-loaded dir and shares one fetch across concurrent calls', async () => {
+    const api = lazyApi();
+    const store = new IcmStore(api);
+    await store.refetch();
+    api.calls.length = 0;
+
+    await Promise.all([store.loadDir('primary', 'Offers'), store.loadDir('primary', 'Offers')]);
+    await store.loadDir('primary', 'Offers');
+
+    expect(api.calls).toEqual([{ mountKey: 'primary', path: 'Offers' }]);
+  });
+
+  it('a dir the backend reports not_found for is marked loaded-and-empty, not left spinning', async () => {
+    const api = fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], {
+      primary: { title: 'Primary', dirs: { '': [rawFolder('Ghost', 'Ghost')] } }
+    });
+    const store = new IcmStore(api);
+    await store.refetch();
+
+    await store.loadDir('primary', 'Ghost');
+
+    const ghost = store.groups[0].tree[0];
+    expect(ghost.childrenLoaded).toBe(true);
+    expect(ghost.children).toEqual([]);
+  });
+
+  it('refetch re-fetches every loaded dir and re-grafts it (icm_changed freshness), dropping dirs that vanished', async () => {
+    const mounts: Record<string, { title: string; dirs: Record<string, any[]> }> = {
+      primary: {
+        title: 'Primary',
+        dirs: {
+          '': [rawFolder('Offers', 'Offers', 1), rawFolder('Temp', 'Temp')],
+          Offers: [rawPage('Coaching', 'Offers/Coaching.md')],
+          Temp: []
+        }
+      }
+    };
+    const api = fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], mounts);
+    const store = new IcmStore(api);
+    await store.refetch();
+    await store.loadDir('primary', 'Offers');
+    await store.loadDir('primary', 'Temp');
+
+    // Simulate an external change: Temp/ deleted, Offers/ gains a page.
+    delete mounts.primary.dirs.Temp;
+    mounts.primary.dirs[''] = [rawFolder('Offers', 'Offers', 2)];
+    mounts.primary.dirs.Offers = [rawPage('Coaching', 'Offers/Coaching.md'), rawPage('New', 'Offers/New.md')];
+    api.calls.length = 0;
+
+    await store.refetch();
+
+    expect(store.loaded).toBe(true);
+    const offers = store.groups[0].tree[0];
+    expect(offers.childrenLoaded).toBe(true);
+    expect(offers.children?.map((c) => c.name)).toEqual(['Coaching', 'New']);
+    expect(api.calls).toContainEqual({ mountKey: 'primary', path: 'Offers' });
+    expect(api.calls).toContainEqual({ mountKey: 'primary', path: 'Temp' });
+
+    // Temp fell out of the loaded set — the NEXT refetch no longer asks for it.
+    api.calls.length = 0;
+    await store.refetch();
+    expect(api.calls).toContainEqual({ mountKey: 'primary', path: 'Offers' });
+    expect(api.calls.some((c) => c.path === 'Temp')).toBe(false);
+  });
+
+  it('ensurePathLoaded walks ancestors root-first and returns the node for a deep page', async () => {
+    const store = new IcmStore(lazyApi());
+    await store.refetch();
+
+    const node = await store.ensurePathLoaded('primary', 'Offers/Archive/Old.md');
+
+    expect(node?.type).toBe('page');
+    expect(node?.path).toBe('Offers/Archive/Old.md');
+    // Both ancestor levels are now genuinely loaded.
+    const offers = store.groups[0].tree[0];
+    expect(offers.childrenLoaded).toBe(true);
+    expect(offers.children?.[0].childrenLoaded).toBe(true);
+  });
+
+  it("ensurePathLoaded loads a folder path's OWN listing too, and returns undefined for a missing path", async () => {
+    const store = new IcmStore(lazyApi());
+    await store.refetch();
+
+    const folder = await store.ensurePathLoaded('primary', 'Offers');
+    expect(folder?.type).toBe('folder');
+    expect(folder?.childrenLoaded).toBe(true);
+
+    expect(await store.ensurePathLoaded('primary', 'Nope/missing.md')).toBeUndefined();
+  });
+
+  it('ensurePathLoaded creates the group when it wins the race against the cold-load refetch', async () => {
+    const store = new IcmStore(lazyApi());
+    // no refetch first — a deep link's route effect can run before AppFrame's onMount fetch lands
+
+    const node = await store.ensurePathLoaded('primary', 'Offers/Coaching.md');
+
+    expect(node?.type).toBe('page');
+    expect(store.groups.map((g) => g.mount)).toEqual(['primary']);
+  });
+
+  it('loadTemplateFolders loads every templates/ folder reachable through loaded levels, to a fixpoint', async () => {
+    const api = fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], {
+      primary: {
+        title: 'Primary',
+        dirs: {
+          '': [rawFolder('Templates', 'Templates', 1), rawFolder('Clients', 'Clients')],
+          Templates: [rawPage('Offer', 'Templates/Offer.md'), rawFolder('templates', 'Templates/templates', 1)],
+          'Templates/templates': [rawPage('Nested', 'Templates/templates/Nested.md')]
+        }
+      }
+    });
+    const store = new IcmStore(api);
+    await store.refetch();
+
+    await store.loadTemplateFolders('primary');
+
+    const templates = store.groups[0].tree[0];
+    expect(templates.childrenLoaded).toBe(true);
+    const nested = templates.children?.find((c) => c.name === 'templates');
+    expect(nested?.childrenLoaded).toBe(true);
+    // Non-template folders stay untouched.
+    expect(store.groups[0].tree[1].childrenLoaded).toBe(false);
+  });
+});
+
 describe('IcmStore.refetch (generation argument)', () => {
-  it('prefers an explicit generation argument over workspaceStore.generation', async () => {
+  it('prefers an explicit generation argument over workspaceStore.generation, threading it into icmListDir too', async () => {
     workspaceStore.generation = 1; // stale — the OUTGOING workspace's generation
-    const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ApiResult<any>);
-    const store = new IcmStore({ listIcms, icmTree: async () => ({ ok: true, data: {} }) as ApiResult<any> });
+    const listIcms = vi.fn(
+      async () =>
+        ({ ok: true, data: { icms: [{ mountKey: 'legal', enabled: true, degraded: null }] } }) as ApiResult<any>
+    );
+    const icmListDir = vi.fn(
+      async (mountKey: string) => ({ ok: true, data: { mountKey, title: 'Legal', entries: [] } }) as ApiResult<any>
+    );
+    const store = new IcmStore({ listIcms, icmListDir });
 
     await store.refetch(7); // the INCOMING workspace's generation, from the event payload
 
     expect(listIcms).toHaveBeenCalledWith(7);
+    expect(icmListDir).toHaveBeenCalledWith('legal', '', 7);
     workspaceStore.generation = null;
   });
 
   it('falls back to workspaceStore.generation when called bare, unchanged for every other caller', async () => {
     workspaceStore.generation = 42;
     const listIcms = vi.fn(async () => ({ ok: true, data: { icms: [] } }) as ApiResult<any>);
-    const store = new IcmStore({ listIcms, icmTree: async () => ({ ok: true, data: {} }) as ApiResult<any> });
+    const store = new IcmStore({ listIcms, icmListDir: async () => ({ ok: true, data: {} }) as ApiResult<any> });
 
     await store.refetch();
 
     expect(listIcms).toHaveBeenCalledWith(42);
     workspaceStore.generation = null;
-  });
-
-  it('threads the explicit generation into icmTree calls too, not just listIcms', async () => {
-    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
-    const icmTree = vi.fn(
-      async (mountKey: string) => ({ ok: true, data: { mountKey, title: 'Legal', tree: [raw] } }) as ApiResult<any>
-    );
-    const store = new IcmStore({
-      listIcms: async () =>
-        ({ ok: true, data: { icms: [{ mountKey: 'legal', enabled: true, degraded: null }] } }) as ApiResult<any>,
-      icmTree
-    });
-
-    await store.refetch(7);
-
-    expect(icmTree).toHaveBeenCalledWith('legal', 7);
   });
 
   // Reproduces the actual bug end-to-end with a fake backend that guards
@@ -423,14 +520,14 @@ describe('IcmStore.refetch (generation argument)', () => {
   it('reproduces the switch-refresh bug: stale workspaceStore.generation is rejected, the event-supplied generation is not', async () => {
     const CURRENT_GENERATION = 7;
     workspaceStore.generation = 1; // stale, from before the switch
-    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
     const api = {
       listIcms: vi.fn(async (generation: number) =>
         generation === CURRENT_GENERATION
           ? (({ ok: true, data: { icms: [{ mountKey: 'legal', enabled: true, degraded: null }] } }) as ApiResult<any>)
           : (({ ok: false, error: 'workspace_changed' }) as ApiResult<any>)
       ),
-      icmTree: async () => ({ ok: true, data: { mountKey: 'legal', title: 'Legal', tree: [raw] } }) as ApiResult<any>
+      icmListDir: async (mountKey: string) =>
+        ({ ok: true, data: { mountKey, title: 'Legal', entries: [] } }) as ApiResult<any>
     };
 
     const buggyStore = new IcmStore(api);
@@ -448,20 +545,24 @@ describe('IcmStore.refetch (generation argument)', () => {
 });
 
 describe('IcmStore.reset', () => {
-  it('empties groups and clears loaded', async () => {
-    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore(
-      fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], { primary: { title: 'Primary', tree: [raw] } })
-    );
-
+  it('empties groups, clears loaded, and forgets loaded dirs (a fresh refetch fetches roots only)', async () => {
+    const api = fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], {
+      primary: { title: 'Primary', dirs: { '': [rawFolder('Offers', 'Offers')], Offers: [] } }
+    });
+    const store = new IcmStore(api);
     await store.refetch();
-    expect(store.loaded).toBe(true);
-    expect(store.groups).toHaveLength(1);
+    await store.loadDir('primary', 'Offers');
 
     store.reset();
-
     expect(store.loaded).toBe(false);
     expect(store.groups).toEqual([]);
+
+    api.calls.length = 0;
+    await store.refetch();
+    expect(store.loaded).toBe(true);
+    expect(api.calls).toEqual([{ mountKey: 'primary', path: '' }]);
+    // The previously loaded folder is back to its lazy placeholder.
+    expect(store.groups[0].tree[0].childrenLoaded).toBe(false);
   });
 
   it('is safe to call before any refetch has resolved', () => {
@@ -471,20 +572,6 @@ describe('IcmStore.reset', () => {
 
     expect(store.loaded).toBe(false);
     expect(store.groups).toEqual([]);
-  });
-
-  it('allows a subsequent refetch to repopulate the tree after reset', async () => {
-    const raw = { name: 'Folder', path: 'folder', type: 'folder', page_count: 0, children: [] };
-    const store = new IcmStore(
-      fakeApi([{ mountKey: 'primary', enabled: true, degraded: null }], { primary: { title: 'Primary', tree: [raw] } })
-    );
-
-    await store.refetch();
-    store.reset();
-    await store.refetch();
-
-    expect(store.loaded).toBe(true);
-    expect(store.groups).toHaveLength(1);
   });
 });
 

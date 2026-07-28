@@ -238,7 +238,13 @@ defmodule Valea.Agents.SessionServerTest do
                    10_000
 
     :ok = Valea.Agents.SessionServer.answer_permission(id, perm["id"], "allow_once")
-    assert_receive {:session_event, _, %{"type" => "permission", "resolved" => true}}, 10_000
+
+    # `outcome` pinned so this keeps testing the HUMAN answer path — a bare
+    # `resolved => true` also matches a policy auto-deny echo.
+    assert_receive {:session_event, _,
+                    %{"type" => "permission", "resolved" => true, "outcome" => "allow_once"}},
+                   10_000
+
     assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
   end
 

@@ -33,6 +33,7 @@ function session(overrides: Partial<AgentSessionSummary> = {}): AgentSessionSumm
     startedAt: '2026-07-14T10:00:00Z',
     status: 'running',
     live: false,
+    busy: false,
     ...overrides
   };
 }

@@ -409,6 +409,59 @@ defmodule Valea.Acp.ConnectionTest do
     assert {^state, [], []} = Connection.answer_permission(state, item["id"], "allow_once")
   end
 
+  test "allow_always answers by kind too — every ACP option kind the harness offers is answerable" do
+    state = connected_state()
+
+    req =
+      frame(%{
+        "jsonrpc" => "2.0",
+        "id" => 11,
+        "method" => "session/request_permission",
+        "params" => %{
+          "sessionId" => "sess-xyz",
+          "toolCall" => %{
+            "title" => "ls",
+            "kind" => "execute",
+            "rawInput" => %{"command" => "ls"}
+          },
+          "options" => [
+            %{"optionId" => "opt-once", "name" => "Allow", "kind" => "allow_once"},
+            %{"optionId" => "opt-always", "name" => "Always allow", "kind" => "allow_always"},
+            %{"optionId" => "opt-no", "name" => "Reject", "kind" => "reject_once"}
+          ]
+        }
+      })
+
+    {state, [item], _replies, _effects} = Connection.handle_bytes(state, req)
+
+    {_state, [resolved], [reply]} =
+      Connection.answer_permission(state, item["id"], "allow_always")
+
+    decoded = Jason.decode!(reply)
+    assert decoded["id"] == 11
+    assert decoded["result"]["outcome"] == %{"outcome" => "selected", "optionId" => "opt-always"}
+    assert resolved["outcome"] == "allow_always"
+  end
+
+  test "a kind the harness did NOT offer stays a no-op even though it is a valid ACP kind" do
+    state = connected_state()
+
+    req =
+      frame(%{
+        "jsonrpc" => "2.0",
+        "id" => 12,
+        "method" => "session/request_permission",
+        "params" => %{
+          "toolCall" => %{"title" => "Run"},
+          "options" => [%{"optionId" => "a", "name" => "Allow", "kind" => "allow_once"}]
+        }
+      })
+
+    {state, [item], _, _} = Connection.handle_bytes(state, req)
+
+    assert {_state, [], []} = Connection.answer_permission(state, item["id"], "reject_always")
+  end
+
   # === 9. Cancellation ===
 
   test "cancel emits the cancelled outcome FIRST, then session/cancel; perms cleared" do
@@ -460,8 +513,12 @@ defmodule Valea.Acp.ConnectionTest do
         })
       )
 
+    # `config_id` is the RAW wire id the frontend must echo back through
+    # `set_config_option` — never the prefixed render "id" (the adapter
+    # rejects "config-model" as an unknown option).
     assert item == %{
              "id" => "config-model",
+             "config_id" => "model",
              "type" => "config",
              "name" => "Model",
              "category" => nil,

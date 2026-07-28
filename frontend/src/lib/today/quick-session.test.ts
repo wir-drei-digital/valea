@@ -6,6 +6,7 @@ const session = (id: string, startedAt: string | null) => ({
   kind: 'chat',
   status: 'ended',
   live: false,
+  busy: false,
   startedAt
 });
 

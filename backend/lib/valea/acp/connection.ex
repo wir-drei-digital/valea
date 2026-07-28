@@ -223,8 +223,19 @@ defmodule Valea.Acp.Connection do
     {state, [frame]}
   end
 
+  # All four ACP permission-option kinds — the harness decides which of them
+  # it offers on a given request (the UI renders one button per offered
+  # option), and resolution below is kind->optionId lookup against exactly
+  # those offered options, so an unoffered kind still falls through to the
+  # no-op branch. `allow_always`/`reject_always` persistence is the
+  # HARNESS's concern (it remembers the rule); Valea just relays the answer.
+  @permission_kinds ["allow_once", "allow_always", "reject_once", "reject_always"]
+
+  @doc false
+  def permission_kinds, do: @permission_kinds
+
   @spec answer_permission(t(), String.t(), String.t()) :: {t(), [map()], [binary()]}
-  def answer_permission(state, perm_item_id, kind) when kind in ["allow_once", "reject_once"] do
+  def answer_permission(state, perm_item_id, kind) when kind in @permission_kinds do
     with {jsonrpc_id, perms} <- Map.pop(state.perms, perm_item_id),
          true <- jsonrpc_id != nil,
          %{"options" => options} <- get_item(state, perm_item_id),
@@ -482,8 +493,16 @@ defmodule Valea.Acp.Connection do
 
   # Normalize a session config option to the `config` render item.
   defp config_item_from_option(option) do
+    config_id = to_string(option["configId"] || option["id"])
+
     %{
-      "id" => "config-" <> to_string(option["configId"] || option["id"]),
+      "id" => "config-" <> config_id,
+      # The RAW wire id `session/set_config_option` expects back as
+      # `configId`. The render item's own "id" above is prefixed for
+      # timeline uniqueness and must NEVER be echoed to the adapter — it
+      # rejects it as `Unknown config option: config-<...>` (which is
+      # exactly how every composer model/effort/mode change used to fail).
+      "config_id" => config_id,
       "type" => "config",
       "name" => option["name"],
       "category" => option["category"],

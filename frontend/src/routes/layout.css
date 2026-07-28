@@ -41,6 +41,9 @@
   --suggest-tint: #f4e8d2;
   --suggest-bg: #f9f2e3;
   --suggest-border: #e8d9b5;
+  /* blue — agent at work (session "working" indicator; muted steel so it
+     sits in the Paper & ink palette rather than shouting) */
+  --work-dot: #4a7dab;
   /* terracotta — warns */
   --warn-ink: #b4512e;
   --warn-dot: #c0793f;
@@ -119,6 +122,7 @@
   --color-suggest-tint: var(--suggest-tint);
   --color-suggest-bg: var(--suggest-bg);
   --color-suggest-border: var(--suggest-border);
+  --color-work-dot: var(--work-dot);
   --color-warn-ink: var(--warn-ink);
   --color-warn-dot: var(--warn-dot);
   --color-warn-tint: var(--warn-tint);

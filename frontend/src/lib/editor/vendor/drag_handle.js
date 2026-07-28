@@ -391,8 +391,12 @@ export const DragHandle = Extension.create({
       const containerRect = container.getBoundingClientRect()
       const blockRect = blockDom.getBoundingClientRect()
 
+      // Left OF the block (20px handle + 4px gap), never overlapping its
+      // text — the donor app padded the editor content instead; Valea's
+      // content column starts flush, so the handle sits in the surrounding
+      // page gutter (px-8 on the main pane keeps it visible).
       handle.style.top = `${blockRect.top - containerRect.top}px`
-      handle.style.left = "2px"
+      handle.style.left = `${blockRect.left - containerRect.left - 24}px`
       handle.style.opacity = "1"
       handle.style.pointerEvents = "auto"
     }

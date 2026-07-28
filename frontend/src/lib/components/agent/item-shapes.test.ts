@@ -10,6 +10,7 @@ import {
   planProgress,
   configOptions,
   configCurrent,
+  configWireId,
   usageFields,
   sessionInfoTitle
 } from './item-shapes';
@@ -163,6 +164,18 @@ describe('configOptions / configCurrent', () => {
   it('configCurrent returns null when unset', () => {
     expect(configCurrent({ id: 'c', type: 'config' })).toBeNull();
     expect(configCurrent({ id: 'c', type: 'config', current: 'plan' })).toBe('plan');
+  });
+
+  // The wire id must be the RAW ACP configId — echoing the prefixed render
+  // id made the adapter reject every composer model/effort/mode change as
+  // `Unknown config option: config-<...>`.
+  it('configWireId prefers item.config_id and never returns the prefixed render id', () => {
+    expect(configWireId({ id: 'config-model', config_id: 'model', type: 'config' })).toBe('model');
+  });
+
+  it('configWireId strips the render prefix as a fallback for items without config_id', () => {
+    expect(configWireId({ id: 'config-effort', type: 'config' })).toBe('effort');
+    expect(configWireId({ id: 'mode', type: 'mode' })).toBe('mode'); // legacy item, no prefix
   });
 });
 

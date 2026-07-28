@@ -44,11 +44,13 @@
   const options = $derived(permissionOptions(item));
 
   const receipt = $derived(
-    outcome === 'allow_once' || outcome.startsWith('allow')
-      ? 'Allowed once'
-      : outcome === 'reject_once' || outcome.startsWith('reject')
-        ? 'Not allowed'
-        : 'Resolved'
+    outcome === 'allow_always'
+      ? 'Allowed always'
+      : outcome.startsWith('allow')
+        ? 'Allowed once'
+        : outcome.startsWith('reject')
+          ? 'Not allowed'
+          : 'Resolved'
   );
 
   function labelFor(kind: string, name: string): string {

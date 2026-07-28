@@ -4,6 +4,7 @@ fn main() {
             "mail_secret_set",
             "mail_secret_get",
             "mail_secret_delete",
+            "open_external",
         ]),
     ))
     .expect("failed to run tauri-build")

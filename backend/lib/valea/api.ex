@@ -19,6 +19,7 @@ defmodule Valea.Api do
 
     resource Valea.Api.ICM do
       rpc_action(:icm_tree, :tree)
+      rpc_action(:icm_list_dir, :list_dir)
       rpc_action(:icm_page, :page)
       rpc_action(:save_icm_page, :save_page)
       rpc_action(:create_icm_page, :create_page)

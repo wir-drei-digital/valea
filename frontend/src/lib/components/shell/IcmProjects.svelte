@@ -25,6 +25,7 @@
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Plus from '@lucide/svelte/icons/plus';
+  import Archive from '@lucide/svelte/icons/archive';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
@@ -52,6 +53,7 @@
   let startError: Record<string, string> = $state({});
   let disabling: Record<string, boolean> = $state({});
   let diagnosing: Record<string, boolean> = $state({});
+  let archiving: Record<string, boolean> = $state({});
   /** The open Diagnose dialog's payload — detailed checks in a modal, never inline in the tree. */
   let doctorModal: {
     name: string;
@@ -105,6 +107,15 @@
     } else {
       startError = { ...startError, [mountKey]: startSessionErrorMessage(result.error) };
     }
+  }
+
+  // Ended sessions only — the backend refuses a live one (`session_live`),
+  // so the row simply doesn't offer the button while `session.live`.
+  async function archiveSession(sessionId: string): Promise<void> {
+    archiving = { ...archiving, [sessionId]: true };
+    const result = await api.archiveAgentSession(sessionId, workspaceStore.generation ?? 0);
+    archiving = { ...archiving, [sessionId]: false };
+    if (result.ok) void recentSessionsStore.refresh();
   }
 
   async function disable(mountKey: string): Promise<void> {
@@ -237,17 +248,38 @@
             New session
           </button>
           {#each group.sessions as session (session.id)}
-            <a
-              href={`/chat?session=${session.id}`}
-              class="text-ink-secondary hover:bg-paper-pill flex items-center gap-1.5 rounded-md px-2 py-[3px] text-[12px] transition-colors"
-            >
-              {#if session.live}
-                <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
-              {:else}
-                <span class="size-1.5 shrink-0" aria-hidden="true"></span>
+            <div class="group/session relative">
+              <a
+                href={`/chat?session=${session.id}`}
+                class="text-ink-secondary hover:bg-paper-pill flex items-center gap-1.5 rounded-md px-2 py-[3px] pr-7 text-[12px] transition-colors"
+              >
+                {#if session.live && session.busy}
+                  <!-- Agent mid-turn: blue pulse instead of the steady green live dot. -->
+                  <span
+                    class="bg-work-dot size-1.5 shrink-0 animate-pulse rounded-full"
+                    role="status"
+                    aria-label="Agent working"
+                  ></span>
+                {:else if session.live}
+                  <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
+                {:else}
+                  <span class="size-1.5 shrink-0" aria-hidden="true"></span>
+                {/if}
+                <span class="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
+              </a>
+              {#if !session.live}
+                <button
+                  type="button"
+                  aria-label={`Archive ${sessionTitle(session)}`}
+                  title="Archive session"
+                  disabled={!!archiving[session.id]}
+                  onclick={() => void archiveSession(session.id)}
+                  class="text-ink-meta hover:bg-paper-card hover:text-ink-heading absolute top-1/2 right-0.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/session:opacity-100 focus-visible:opacity-100"
+                >
+                  <Archive class="size-3" strokeWidth={1.5} />
+                </button>
               {/if}
-              <span class="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
-            </a>
+            </div>
           {/each}
         {/if}
 

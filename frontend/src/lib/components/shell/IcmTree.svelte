@@ -3,6 +3,8 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import IcmTree from './IcmTree.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
+  import { icmStore } from '$lib/stores/icm.svelte';
+  import { treeOpenState } from '$lib/stores/tree-state.svelte';
 
   let {
     nodes,
@@ -20,23 +22,30 @@
     onBeforeMutate?: () => Promise<void>;
   } = $props();
 
-  // Folders default open so the tree "mirrors icm/ exactly" (§7) without extra clicks.
-  let open = $state<Record<string, boolean>>({});
-
-  function isOpen(item: NavTreeItem) {
-    return open[item.href] ?? true;
-  }
-
+  // Folders default CLOSED (file-browser performance pass): the lazy tree
+  // only fetches a folder's listing when it's opened. Expansion state lives
+  // in the shared, localStorage-persisted `treeOpenState` (keyed by href),
+  // so the folders someone works in stay open across routes and reloads.
   function toggle(item: NavTreeItem) {
-    open[item.href] = !isOpen(item);
+    treeOpenState.toggle(item.href);
+    if (treeOpenState.isOpen(item.href) && item.loaded === false) {
+      void icmStore.loadDir(item.mountKey, item.path);
+    }
   }
 
-  // Ancestor folders (current path nested under this folder) get the lighter
-  // nav-active treatment; only the exact page/folder match gets the deeper
-  // tree-active fill (§7: "Tree active row uses the deeper #EEE5CF").
-  function isAncestor(item: NavTreeItem) {
-    return activePath.startsWith(item.href + '/');
-  }
+  // Self-healing loader: a row can be open without a click ever having
+  // fired `loadDir` for it — persisted expansion restored on a fresh
+  // session, or a refetch that dropped a stale loaded-mark (see
+  // `IcmStore.refetch`'s reconcile step). Whenever an open folder shows an
+  // unloaded placeholder, fetch it; `loadDir` de-dupes, so this is a no-op
+  // in the steady state.
+  $effect(() => {
+    for (const node of nodes) {
+      if (node.children && node.loaded === false && treeOpenState.isOpen(node.href)) {
+        void icmStore.loadDir(node.mountKey, node.path);
+      }
+    }
+  });
 </script>
 
 <ul class="flex flex-col gap-0.5">
@@ -48,17 +57,17 @@
             type="button"
             onclick={() => toggle(node)}
             aria-current={activePath === node.href ? 'page' : undefined}
+            aria-expanded={treeOpenState.isOpen(node.href)}
             class={[
               'flex w-full items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-left text-[12.5px] transition-colors hover:bg-paper-pill',
-              activePath === node.href
-                ? 'bg-paper-tree-active text-ink-heading'
-                : isAncestor(node)
-                  ? 'bg-paper-nav-active text-ink-heading'
-                  : 'text-ink-secondary'
+              activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
             ]}
           >
             <ChevronRight
-              class={['size-3 shrink-0 text-ink-meta transition-transform', isOpen(node) ? 'rotate-90' : '']}
+              class={[
+                'size-3 shrink-0 text-ink-meta transition-transform',
+                treeOpenState.isOpen(node.href) ? 'rotate-90' : ''
+              ]}
               strokeWidth={1.5}
             />
             <span class="flex-1 truncate">{node.label}</span>
@@ -75,9 +84,15 @@
             onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
           />
         </div>
-        {#if isOpen(node) && node.children.length}
+        {#if treeOpenState.isOpen(node.href)}
           <div class="ml-[17px] border-l border-paper-chip-border pl-2">
-            <IcmTree nodes={node.children} {activePath} {onBeforeMutate} />
+            {#if node.loaded === false}
+              <p class="text-ink-meta px-2 py-[3px] text-[12px]">Loading…</p>
+            {:else if node.children.length}
+              <IcmTree nodes={node.children} {activePath} {onBeforeMutate} />
+            {:else}
+              <p class="text-ink-meta px-2 py-[3px] text-[12px] italic">Empty</p>
+            {/if}
           </div>
         {/if}
       {:else}

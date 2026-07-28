@@ -496,11 +496,11 @@ export async function harnessDoctorChannel<Fields extends HarnessDoctorFields | 
 }
 
 
-export type ListAgentSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListAgentSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListAgentSessionsResult<
   Fields extends ListAgentSessionsFields | undefined,
-> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListAgentSessionsResult<Fields extends ListAgentSessionsFields | undefined = undefined> = | { success: true; data: InferListAgentSessionsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -565,11 +565,11 @@ export type ListRecentSessionsByIcmInput = {
   limit: number;
 };
 
-export type ListRecentSessionsByIcmFields = UnifiedFieldSelection<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListRecentSessionsByIcmFields = UnifiedFieldSelection<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListRecentSessionsByIcmResult<
   Fields extends ListRecentSessionsByIcmFields | undefined,
-> = InferResult<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListRecentSessionsByIcmResult<Fields extends ListRecentSessionsByIcmFields | undefined = undefined> = | { success: true; data: InferListRecentSessionsByIcmResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -639,11 +639,11 @@ export type ListSessionsInput = {
   cursor?: string | null;
 };
 
-export type ListSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}>[];
+export type ListSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}>[];
 
 export type InferListSessionsResult<
   Fields extends ListSessionsFields | undefined,
-> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "icmMount" | "icmName"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}, Fields>;
+> = InferResult<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}, Fields>;
 
 export type ListSessionsResult<Fields extends ListSessionsFields | undefined = undefined> = | { success: true; data: InferListSessionsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -2328,6 +2328,81 @@ export async function icmEntryReferencesChannel<Fields extends IcmEntryReference
     config.channel,
     {
     action: "icm_entry_references",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type IcmListDirInput = {
+  mountKey: string;
+  path: string;
+  generation: number;
+};
+
+export type IcmListDirFields = UnifiedFieldSelection<{mountKey: string, title: string, entries: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "title" | "entries"}>[];
+
+export type InferIcmListDirResult<
+  Fields extends IcmListDirFields | undefined,
+> = InferResult<{mountKey: string, title: string, entries: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "title" | "entries"}, Fields>;
+
+export type IcmListDirResult<Fields extends IcmListDirFields | undefined = undefined> = | { success: true; data: InferIcmListDirResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmListDir<Fields extends IcmListDirFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: IcmListDirInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<IcmListDirResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "icm_list_dir",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<IcmListDirResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on ICM
+ *
+ * @ashActionType :action
+ */
+export async function icmListDirChannel<Fields extends IcmListDirFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: IcmListDirInput;
+  fields: Fields;
+  resultHandler: (result: IcmListDirResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<IcmListDirResult<Fields>>(
+    config.channel,
+    {
+    action: "icm_list_dir",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

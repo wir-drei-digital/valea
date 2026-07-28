@@ -107,8 +107,36 @@ defmodule ValeaWeb.AgentSessionChannelTest do
     ref = push(socket, "permission", %{"item_id" => perm["id"], "kind" => "allow_once"})
     refute_reply ref, :error
 
-    assert_push "event", %{item: %{"type" => "permission", "resolved" => true}}, 10_000
+    # `outcome` pinned on purpose: without it this assertion also matches a
+    # policy AUTO-deny echo, and the human-answer path silently stops being
+    # tested (exactly how the allow_always bounce hid).
+    assert_push "event",
+                %{item: %{"type" => "permission", "resolved" => true, "outcome" => "allow_once"}},
+                10_000
+
     assert_push "event", %{item: %{"type" => "turn"}}, 10_000
+  end
+
+  test "allow_always answer path — resolves instead of bouncing as invalid_permission_kind", %{
+    workspace: workspace
+  } do
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "permission")
+    assert {:ok, _reply, socket} = join(id)
+
+    push(socket, "prompt", %{"content" => "write"})
+
+    assert_push "event",
+                %{item: %{"type" => "permission", "resolved" => false} = perm},
+                10_000
+
+    ref = push(socket, "permission", %{"item_id" => perm["id"], "kind" => "allow_always"})
+    refute_reply ref, :error
+
+    assert_push "event",
+                %{
+                  item: %{"type" => "permission", "resolved" => true, "outcome" => "allow_always"}
+                },
+                10_000
   end
 
   test "permission with an invalid kind replies error instead of crashing", %{
