@@ -1,6 +1,12 @@
 # Scripted ACP adapter for SessionServer integration tests.
 # Scenarios: happy | titled | permission | permission_risk_tier |
-# permission_read_policy | crash_mid_turn | stderr_noise | hang
+# permission_read_policy | crash_mid_turn | stderr_noise | hang | slow
+#
+# "slow" doubles as the manual browser-testing scenario: a multi-second
+# streaming turn, config options on session/new (echoed refreshed from
+# session/set_config_option, like claude-agent-acp), and a usage_update at
+# turn end — enough surface to drive the composer's working indicator,
+# prompt queue, config chips, and context donut without a real agent.
 #
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
@@ -57,11 +63,56 @@ defmodule FakeAdapter do
   # baseline shape (`%{"cwd" => ..., "mcpServers" => []}`).
   defp handle(%{"method" => "session/new", "id" => id, "params" => params}, ctx) do
     File.write!(Path.join(File.cwd!(), @session_new_echo_file), Jason.encode!(params))
-    reply(id, %{"sessionId" => ctx.session})
+
+    if ctx.scenario == "slow" do
+      reply(id, %{"sessionId" => ctx.session, "configOptions" => slow_config_options(%{})})
+    else
+      reply(id, %{"sessionId" => ctx.session})
+    end
+  end
+
+  # claude-agent-acp returns the refreshed configOptions array as the
+  # RESPONSE to session/set_config_option (no notification) — mirror that,
+  # echoing the chosen value as current for the changed option.
+  defp handle(%{"method" => "session/set_config_option", "id" => id, "params" => params}, ctx) do
+    if ctx.scenario == "slow" do
+      reply(id, %{
+        "configOptions" => slow_config_options(%{params["configId"] => params["value"]})
+      })
+    else
+      reply(id, %{})
+    end
   end
 
   defp handle(%{"method" => "session/prompt", "id" => id} = msg, ctx) do
     case ctx.scenario do
+      "slow" ->
+        update(ctx, %{
+          "sessionUpdate" => "agent_message_chunk",
+          "content" => %{"type" => "text", "text" => "Thinking this through… "}
+        })
+
+        Process.sleep(6_000)
+
+        update(ctx, %{
+          "sessionUpdate" => "agent_message_chunk",
+          "content" => %{
+            "type" => "text",
+            "text" =>
+              "done.\n\nHere is a longer reply with a paragraph of running prose so the " <>
+                "full-width, bubble-less assistant layout is visible at a glance, plus a list:\n\n" <>
+                "- first point\n- second point\n\nAnd a closing line."
+          }
+        })
+
+        update(ctx, %{
+          "sessionUpdate" => "usage_update",
+          "usedTokens" => 82_000,
+          "maxTokens" => 200_000
+        })
+
+        reply(id, %{"stopReason" => "end_turn"})
+
       "titled" ->
         # ACP `session_info_update`: an agent-generated session title pushed
         # at turn end (protocol-level — any ACP agent, not just Claude).
@@ -244,6 +295,29 @@ defmodule FakeAdapter do
 
   defp handle(%{"method" => "session/cancel"}, _ctx), do: :ok
   defp handle(_other, _ctx), do: :ok
+
+  # The "slow" scenario's config surface — three options so chip-order
+  # regressions are visible. Stateless across turns: `overrides` only echoes
+  # the just-changed option's value as current, defaults otherwise.
+  defp slow_config_options(overrides) do
+    [
+      {"model", "Model", [{"sonnet", "Sonnet"}, {"opus", "Opus"}, {"haiku", "Haiku"}]},
+      {"permission-mode", "Permissions",
+       [{"default", "Ask"}, {"acceptEdits", "Accept edits"}, {"bypass", "Bypass"}]},
+      {"effort", "Effort", [{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}]}
+    ]
+    |> Enum.map(fn {id, name, options} ->
+      [{default_value, _} | _] = options
+
+      %{
+        "configId" => id,
+        "name" => name,
+        "value" => Map.get(overrides, id, default_value),
+        "options" =>
+          Enum.map(options, fn {value, label} -> %{"value" => value, "name" => label} end)
+      }
+    end)
+  end
 
   defp reply(id, result), do: emit(%{"jsonrpc" => "2.0", "id" => id, "result" => result})
 

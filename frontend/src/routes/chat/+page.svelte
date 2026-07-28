@@ -21,7 +21,7 @@
   import { SessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import { takeInitialPrompt } from '$lib/stores/initial-prompt';
-  import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel } from '$lib/components/agent';
+  import { Transcript, PlanBar, Composer, DoctorPanel } from '$lib/components/agent';
   import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
 
   const sessionsList = new SessionsListStore(api);
@@ -233,7 +233,14 @@
   // permission mode + model), so those are filtered, not reduced to one.
   const planItem = $derived.by(() => store?.items.findLast((item) => item.type === 'plan'));
   const usageItem = $derived.by(() => store?.items.findLast((item) => item.type === 'usage'));
-  const configItems = $derived.by(() => store?.items.filter((item) => item.type === 'config') ?? []);
+  // Sorted by id, not timeline order: `set_config_option` re-emits config
+  // items (fresh seq), which would otherwise shuffle the chips under the
+  // composer every time an option changes.
+  const configItems = $derived.by(() =>
+    (store?.items.filter((item) => item.type === 'config') ?? []).sort((a, b) =>
+      a.id.localeCompare(b.id)
+    )
+  );
 
   // Which ICM the OPEN session runs in ("in the chat session, it is not
   // clear for which ICM the current session is active"). The summary's own
@@ -307,7 +314,7 @@
     }
   }
 
-  // --- Archive (ended sessions only — the backend refuses a live one) ---
+  // --- Archive (live sessions are stopped first by the backend) ---
 
   let archiving: Record<string, boolean> = $state({});
   let archiveError = $state<string | null>(null);
@@ -319,10 +326,7 @@
     archiving = { ...archiving, [id]: false };
 
     if (!result.ok) {
-      archiveError =
-        result.error === 'session_live'
-          ? 'This session is still running — stop it before archiving.'
-          : 'Could not archive the session. Please try again.';
+      archiveError = 'Could not archive the session. Please try again.';
       return;
     }
 
@@ -404,18 +408,16 @@
                       <span class="text-ink-meta shrink-0 text-[11px]">{relativeTime(session.startedAt)}</span>
                     </span>
                   </a>
-                  {#if !session.live}
-                    <button
-                      type="button"
-                      aria-label={`Archive ${sessionTitle(session)}`}
-                      title="Archive"
-                      disabled={!!archiving[session.id]}
-                      onclick={() => void archiveSession(session.id)}
-                      class="text-ink-meta hover:text-ink-heading hover:bg-paper-card absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100"
-                    >
-                      <Archive class="size-3.5" strokeWidth={1.5} />
-                    </button>
-                  {/if}
+                  <button
+                    type="button"
+                    aria-label={`Archive ${sessionTitle(session)}`}
+                    title={session.live ? 'Stop & archive' : 'Archive'}
+                    disabled={!!archiving[session.id]}
+                    onclick={() => void archiveSession(session.id)}
+                    class="text-ink-meta hover:text-ink-heading hover:bg-paper-card absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100"
+                  >
+                    <Archive class="size-3.5" strokeWidth={1.5} />
+                  </button>
                 </li>
               {/each}
             </ul>
@@ -465,7 +467,7 @@
       <!-- Transcript scrolls; the composer (or the ended/starting row) stays
            docked at the pane's bottom edge, per the cockpit chat screen. -->
       <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
-        {#if openSessionIcmName || ended}
+        {#if openSessionIcmName || selectedId}
           <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
             {#if openSessionIcmName}
               <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
@@ -474,7 +476,8 @@
               </span>
             {/if}
             <span class="min-w-0 flex-1" aria-hidden="true"></span>
-            {#if ended && selectedId}
+            {#if selectedId}
+              <!-- Live sessions archive too — the backend stops them first. -->
               <button
                 type="button"
                 onclick={() => selectedId && void archiveSession(selectedId)}
@@ -482,7 +485,7 @@
                 class="text-ink-meta hover:text-ink-heading flex shrink-0 items-center gap-1 text-[12px] transition-colors"
               >
                 <Archive class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-                {archiving[selectedId] ? 'Archiving…' : 'Archive'}
+                {archiving[selectedId] ? 'Archiving…' : ended ? 'Archive' : 'Stop & archive'}
               </button>
             {/if}
           </div>
@@ -496,8 +499,6 @@
           <Transcript {store} />
         </div>
 
-        <UsageLine item={usageItem} />
-
         {#if starting}
           <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
         {:else}
@@ -506,14 +507,22 @@
           {/if}
           <!-- An ended session keeps its composer: sending resumes it in
                place (same transcript) and delivers the message — the
-               placeholder carries the affordance, no extra button. -->
+               placeholder carries the affordance, no extra button. A LIVE
+               session's send is queue-aware (`store.send`): mid-turn
+               messages wait in the composer's queue until the turn ends. -->
           <Composer
             busy={store.busy || resuming}
             {configItems}
+            {usageItem}
+            queued={store.queued}
+            turnStartedAt={store.turnStartedAt}
             placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
-            onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.prompt(text))}
+            onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
             onStop={() => store?.cancel()}
             onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
+            onEditQueued={(id, text) => store?.updateQueued(id, text)}
+            onDismissQueued={(id) => store?.dismissQueued(id)}
+            onSendQueuedNow={(id) => store?.sendQueuedNow(id)}
           />
         {/if}
       </div>

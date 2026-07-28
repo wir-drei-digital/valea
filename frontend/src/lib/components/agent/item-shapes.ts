@@ -208,6 +208,39 @@ function formatUsageValue(value: unknown): string | undefined {
  * derived totals or percentages are computed here — only fields the adapter
  * sent are shown, per "no invented math".
  */
+export type ContextUsage = { used: number; max: number; fraction: number };
+
+/**
+ * The composer's context donut needs an explicit used/max pair. The `usage`
+ * item has no fixed schema on our side (see `usageFields`), so this probes
+ * the field names ACP-ish adapters actually send — camel and snake variants
+ * of used/max tokens plus a context-window max — and returns undefined when
+ * no such pair exists. Deliberately no fallback arithmetic over unrelated
+ * counters (e.g. input+output tokens): a wrong donut is worse than none.
+ */
+export function contextUsage(item: AcpItemLike | undefined): ContextUsage | undefined {
+  if (!item) return undefined;
+  const used = firstCount(item, ['usedTokens', 'used_tokens', 'tokensUsed', 'used']);
+  const max = firstCount(item, [
+    'maxTokens',
+    'max_tokens',
+    'tokenLimit',
+    'contextWindow',
+    'context_window',
+    'max'
+  ]);
+  if (used === undefined || max === undefined || max <= 0) return undefined;
+  return { used, max, fraction: Math.min(used / max, 1) };
+}
+
+function firstCount(item: AcpItemLike, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  }
+  return undefined;
+}
+
 export function usageFields(item: AcpItemLike | undefined): UsageField[] {
   if (!item) return [];
   return Object.entries(item).flatMap(([key, value]): UsageField[] => {

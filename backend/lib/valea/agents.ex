@@ -173,21 +173,22 @@ defmodule Valea.Agents do
   end
 
   @doc """
-  Archives an ENDED session: moves its transcript from `logs/sessions/`
-  into `logs/sessions/archived/` — a plain file move, file-first and
+  Archives a session: moves its transcript from `logs/sessions/` into
+  `logs/sessions/archived/` — a plain file move, file-first and
   hand-reversible. Archived transcripts disappear from every listing and
   from `attach_or_replay/1` (all of them scan only `logs/sessions/*.jsonl`;
   the `archived/` entry fails the `.jsonl` filename filter).
 
-  A LIVE session refuses with `{:error, :session_live}` — its
-  `SessionServer` owns the transcript file (appends, plus the sanctioned
-  line-1 title rewrite) while running, so the file must never move under
-  it. `{:error, :not_found}` when no transcript matches. The id becomes a
+  A LIVE session is stopped first: its `SessionServer` owns the transcript
+  file (appends, plus the sanctioned line-1 title rewrite) while running,
+  so the server is shut down synchronously — `terminate/2` kills the
+  adapter subprocess — before the file moves (`stop_live_server/1`).
+  `{:error, :not_found}` when no transcript matches. The id becomes a
   filename component, so it is guarded with a `Path.basename/1` round-trip
   — a traversal-shaped id can never resolve outside `logs/sessions/`.
   """
   @spec archive_session(String.t()) ::
-          :ok | {:error, :no_workspace | :not_found | :session_live | File.posix()}
+          :ok | {:error, :no_workspace | :not_found | File.posix()}
   def archive_session(id) when is_binary(id) do
     with {:ok, %{path: workspace}} <- Manager.current() do
       path = transcript_path(workspace, id)
@@ -199,10 +200,8 @@ defmodule Valea.Agents do
         not File.regular?(path) ->
           {:error, :not_found}
 
-        Registry.lookup(Valea.Agents.SessionRegistry, id) != [] ->
-          {:error, :session_live}
-
         true ->
+          stop_live_server(id)
           dest_dir = Path.join(sessions_dir(workspace), "archived")
           File.mkdir_p!(dest_dir)
 
@@ -215,6 +214,25 @@ defmodule Valea.Agents do
               {:error, reason}
           end
       end
+    end
+  end
+
+  # Archiving a live session stops it first — the `SessionServer` appends to
+  # the transcript while alive, so the file must never move under it.
+  # `GenServer.stop/3` is synchronous: it returns after `terminate/2` ran
+  # (which kills the adapter subprocess via `ProcessRuntime.stop/1`). The
+  # catch absorbs the race where the server exits between lookup and stop.
+  defp stop_live_server(id) do
+    case Registry.lookup(Valea.Agents.SessionRegistry, id) do
+      [{pid, _}] ->
+        try do
+          GenServer.stop(pid, :normal, 10_000)
+        catch
+          :exit, _ -> :ok
+        end
+
+      [] ->
+        :ok
     end
   end
 

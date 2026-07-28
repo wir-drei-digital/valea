@@ -1,5 +1,7 @@
 <script lang="ts">
-  // Chat bubble for one `message` item (docs/DESIGN_SYSTEM.md §9).
+  // One `message` item (docs/DESIGN_SYSTEM.md §9): user messages are
+  // right-aligned green bubbles; assistant messages render bubble-less at
+  // full container width.
   //
   // SECURITY: `text` is agent- or user-authored content. {@html} is
   // FORBIDDEN here and in every other component under agent/. Assistant
@@ -25,9 +27,9 @@
       {text}
     </div>
   {:else}
-    <div
-      class="border-paper-border bg-paper-card shadow-card max-w-[78%] min-w-0 self-start rounded-tl-[14px] rounded-tr-[14px] rounded-br-[14px] rounded-bl-[4px] border px-4 py-3 text-[13.5px] leading-[1.55] text-ink-body"
-    >
+    <!-- Assistant replies read as the page's own prose — full container
+         width, no bubble chrome; only USER messages keep the bubble. -->
+    <div class="w-full min-w-0 self-stretch text-[13.5px] leading-[1.55] text-ink-body">
       <MarkdownBlocks {tokens} />
     </div>
   {/if}

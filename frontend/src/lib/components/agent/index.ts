@@ -4,7 +4,6 @@ export { default as ThoughtItem } from './ThoughtItem.svelte';
 export { default as ToolCallCard } from './ToolCallCard.svelte';
 export { default as PermissionCard } from './PermissionCard.svelte';
 export { default as PlanBar } from './PlanBar.svelte';
-export { default as UsageLine } from './UsageLine.svelte';
 export { default as ConfigChip } from './ConfigChip.svelte';
 export { default as Composer } from './Composer.svelte';
 export { default as DoctorPanel } from './DoctorPanel.svelte';

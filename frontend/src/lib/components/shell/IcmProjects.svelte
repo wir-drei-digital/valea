@@ -109,8 +109,8 @@
     }
   }
 
-  // Ended sessions only — the backend refuses a live one (`session_live`),
-  // so the row simply doesn't offer the button while `session.live`.
+  // Live sessions too: the backend stops a running session first, then
+  // archives (`Valea.Agents.archive_session/1`).
   async function archiveSession(sessionId: string): Promise<void> {
     archiving = { ...archiving, [sessionId]: true };
     const result = await api.archiveAgentSession(sessionId, workspaceStore.generation ?? 0);
@@ -184,7 +184,7 @@
             type="button"
             onclick={() => void goto(`/knowledge?icm=${encodeURIComponent(group.mountKey)}`)}
             aria-label={`Open files of ${group.name}`}
-            class="text-ink-meta hover:bg-paper-card hover:text-ink-heading shrink-0 rounded-md p-0.5 opacity-0 transition-opacity group-hover/icm:opacity-100 group-focus-within/icm:opacity-100 focus-visible:opacity-100"
+            class="text-ink-meta hover:bg-paper-card hover:text-ink-heading shrink-0 rounded-md p-0.5 transition-colors"
           >
             <FolderOpen class="size-3.5" strokeWidth={1.5} />
           </button>
@@ -198,7 +198,7 @@
               type="button"
               {...props}
               aria-label={`Actions for ${group.name}`}
-              class="text-ink-meta hover:bg-paper-card hover:text-ink-heading absolute top-1/2 right-0.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-colors group-hover/icm:opacity-100 group-focus-within/icm:opacity-100 focus-visible:opacity-100 data-[state=open]:bg-paper-card data-[state=open]:opacity-100"
+              class="text-ink-meta hover:bg-paper-card hover:text-ink-heading absolute top-1/2 right-0.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md transition-colors data-[state=open]:bg-paper-card"
             >
               <Ellipsis class="size-3.5" strokeWidth={1.5} />
             </button>
@@ -238,15 +238,6 @@
         {#if group.degraded}
           <p class="text-warn-ink px-2 py-1 text-[11px]">{degradedChipLabel(group)}</p>
         {:else}
-          <button
-            type="button"
-            onclick={() => void startSession(group.mountKey)}
-            disabled={!!starting[group.mountKey]}
-            class="text-ink-meta hover:text-ink-heading flex items-center gap-1.5 px-2 py-1 text-left text-[12px]"
-          >
-            <Plus class="size-3" strokeWidth={1.5} aria-hidden="true" />
-            New session
-          </button>
           {#each group.sessions as session (session.id)}
             <div class="group/session relative">
               <a
@@ -267,20 +258,29 @@
                 {/if}
                 <span class="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
               </a>
-              {#if !session.live}
-                <button
-                  type="button"
-                  aria-label={`Archive ${sessionTitle(session)}`}
-                  title="Archive session"
-                  disabled={!!archiving[session.id]}
-                  onclick={() => void archiveSession(session.id)}
-                  class="text-ink-meta hover:bg-paper-card hover:text-ink-heading absolute top-1/2 right-0.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/session:opacity-100 focus-visible:opacity-100"
-                >
-                  <Archive class="size-3" strokeWidth={1.5} />
-                </button>
-              {/if}
+              <button
+                type="button"
+                aria-label={`Archive ${sessionTitle(session)}`}
+                title={session.live ? 'Stop & archive session' : 'Archive session'}
+                disabled={!!archiving[session.id]}
+                onclick={() => void archiveSession(session.id)}
+                class="text-ink-meta hover:bg-paper-card hover:text-ink-heading absolute top-1/2 right-0.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/session:opacity-100 focus-visible:opacity-100"
+              >
+                <Archive class="size-3" strokeWidth={1.5} />
+              </button>
             </div>
           {/each}
+          <!-- Last on purpose: the sessions read top-down by recency, and the
+               "start another" affordance closes the list. -->
+          <button
+            type="button"
+            onclick={() => void startSession(group.mountKey)}
+            disabled={!!starting[group.mountKey]}
+            class="text-ink-meta hover:text-ink-heading flex items-center gap-1.5 px-2 py-1 text-left text-[12px]"
+          >
+            <Plus class="size-3" strokeWidth={1.5} aria-hidden="true" />
+            New session
+          </button>
         {/if}
 
         {#if startError[group.mountKey]}

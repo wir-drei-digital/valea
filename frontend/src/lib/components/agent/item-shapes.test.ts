@@ -12,6 +12,7 @@ import {
   configCurrent,
   configWireId,
   usageFields,
+  contextUsage,
   sessionInfoTitle
 } from './item-shapes';
 
@@ -203,6 +204,36 @@ describe('usageFields', () => {
   it('never invents a derived field — only echoes what the item carries', () => {
     const fields = usageFields({ id: 'usage', type: 'usage', inputTokens: 10 });
     expect(fields).toEqual([{ label: 'Input tokens', value: '10' }]);
+  });
+});
+
+describe('contextUsage', () => {
+  it('derives used/max/fraction from an explicit camelCase pair', () => {
+    expect(contextUsage({ id: 'usage', type: 'usage', usedTokens: 50_000, maxTokens: 200_000 })).toEqual({
+      used: 50_000,
+      max: 200_000,
+      fraction: 0.25
+    });
+  });
+
+  it('accepts snake_case and contextWindow as the max', () => {
+    expect(
+      contextUsage({ id: 'usage', type: 'usage', used_tokens: 30, context_window: 100 })?.fraction
+    ).toBe(0.3);
+    expect(
+      contextUsage({ id: 'usage', type: 'usage', usedTokens: 10, contextWindow: 100 })?.fraction
+    ).toBe(0.1);
+  });
+
+  it('is undefined without an explicit used/max pair — no invented math over other counters', () => {
+    expect(contextUsage(undefined)).toBeUndefined();
+    expect(contextUsage({ id: 'usage', type: 'usage', inputTokens: 10, outputTokens: 5 })).toBeUndefined();
+    expect(contextUsage({ id: 'usage', type: 'usage', usedTokens: 10 })).toBeUndefined();
+    expect(contextUsage({ id: 'usage', type: 'usage', usedTokens: 10, maxTokens: 0 })).toBeUndefined();
+  });
+
+  it('clamps the fraction at 1', () => {
+    expect(contextUsage({ id: 'usage', type: 'usage', usedTokens: 300, maxTokens: 100 })?.fraction).toBe(1);
   });
 });
 
