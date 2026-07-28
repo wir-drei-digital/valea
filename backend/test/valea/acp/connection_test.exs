@@ -527,7 +527,7 @@ defmodule Valea.Acp.ConnectionTest do
            }
 
     # Now that options were seen, set_config_option uses the config wire method.
-    {_s, [cfg_frame]} = Connection.set_config_option(state, "model", "opus")
+    {state, [cfg_frame]} = Connection.set_config_option(state, "model", "opus")
     decoded = Jason.decode!(cfg_frame)
     assert decoded["method"] == "session/set_config_option"
 
@@ -536,6 +536,55 @@ defmodule Valea.Acp.ConnectionTest do
              "configId" => "model",
              "value" => "opus"
            }
+
+    # The RESPONSE carries the refreshed configOptions (claude-agent-acp
+    # returns them instead of pushing a config_option_update) — they must
+    # re-emit as config items so the composer chip shows the new value.
+    {_state, items, _replies, _effects} =
+      Connection.handle_bytes(
+        state,
+        frame(%{
+          "jsonrpc" => "2.0",
+          "id" => decoded["id"],
+          "result" => %{
+            "configOptions" => [
+              %{
+                "configId" => "model",
+                "name" => "Model",
+                "value" => "opus",
+                "options" => [%{"id" => "sonnet"}, %{"id" => "opus"}]
+              }
+            ]
+          }
+        })
+      )
+
+    assert [%{"id" => "config-model", "config_id" => "model", "current" => "opus"}] =
+             items
+  end
+
+  test "a set_config_option response WITHOUT configOptions emits nothing (adapters that return {})" do
+    state = connected_state()
+
+    {state, [item], _, _} =
+      Connection.handle_bytes(
+        state,
+        update("config_option_update", %{
+          "configId" => "model",
+          "name" => "Model",
+          "value" => "sonnet"
+        })
+      )
+
+    assert item["config_id"] == "model"
+
+    {state, [cfg_frame]} = Connection.set_config_option(state, "model", "opus")
+    id = Jason.decode!(cfg_frame)["id"]
+
+    {_state, items, _replies, _effects} =
+      Connection.handle_bytes(state, frame(%{"jsonrpc" => "2.0", "id" => id, "result" => %{}}))
+
+    assert items == []
   end
 
   # === 11. Garbage / buffer cap ===

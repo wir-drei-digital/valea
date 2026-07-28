@@ -392,6 +392,17 @@ defmodule Valea.Acp.Connection do
     {state, [item], [], [{:turn, stop}]}
   end
 
+  # `session/set_config_option`'s RESPONSE carries the refreshed
+  # configOptions — claude-agent-acp returns the full array here instead of
+  # pushing a `config_option_update` notification (that notification only
+  # fires on the adapter's own internal changes, e.g. plan-mode exit). Left
+  # to the catch-all below, the change lands agent-side but the composer
+  # chips keep their stale `current` forever. Re-emit as config items: ids
+  # are stable (`config-<id>`), so the client upserts them in place.
+  defp handle_response(state, :set_config_option, result) do
+    {state, config_items(result), [], []}
+  end
+
   defp handle_response(state, _tag, _result), do: {state, [], [], []}
 
   defp ready_from_load(state, result) do
