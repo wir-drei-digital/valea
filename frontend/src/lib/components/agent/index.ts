@@ -7,5 +7,6 @@ export { default as PlanBar } from './PlanBar.svelte';
 export { default as UsageLine } from './UsageLine.svelte';
 export { default as ConfigChip } from './ConfigChip.svelte';
 export { default as Composer } from './Composer.svelte';
+export { default as SessionHeader } from './SessionHeader.svelte';
 export { default as DoctorPanel } from './DoctorPanel.svelte';
 export { default as HarnessSettingsModal } from './HarnessSettingsModal.svelte';

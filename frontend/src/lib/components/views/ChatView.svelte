@@ -1,0 +1,442 @@
+<script lang="ts">
+  // One agent session, as a mountable VIEW (side-panes pass): everything the
+  // chat route's main pane used to do inline — join the session's channel,
+  // stream its transcript, keep the sidebar's session rows honest, resume an
+  // ended session in place, archive it — driven by a `PaneDescriptor` prop
+  // rather than by the URL. That is the whole point of the extraction: the
+  // same component renders as `/chat`'s primary view AND inside a side pane
+  // next to a file (Task 8), so it must never read `page.url` itself, and
+  // must never `goto` — hosts decide what a navigation means (see
+  // `PaneContext`).
+  //
+  // LIFECYCLE: this component joins EXACTLY ONE channel — the per-session
+  // `agent_session:<id>` topic, via `AgentSessionStore`. It must never join
+  // `workspace:events`: there is one join for that topic in the whole app
+  // (the root layout's `wireIcmEvents`), and a second one races it (Phoenix
+  // delivers a push only to the channel object whose `join_ref` matches).
+  // The store effect below is keyed on the SESSION ID alone for the same
+  // family of reasons — an unrelated URL change (e.g. opening a side pane,
+  // `?pane=`) must not tear down and rejoin a live session's channel.
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api/client';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { mountsStore } from '$lib/stores/mounts.svelte';
+  import { icmStore } from '$lib/stores/icm.svelte';
+  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { sessionsListStore } from '$lib/stores/sessions-list.svelte';
+  import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
+  import { takeInitialPrompt, setInitialPrompt } from '$lib/stores/initial-prompt';
+  import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel, SessionHeader } from '$lib/components/agent';
+  import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
+  import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
+  import type { PaneContext } from '$lib/panes/context';
+
+  let {
+    descriptor,
+    context
+  }: {
+    descriptor: ChatPaneDescriptor | ChatNewPaneDescriptor;
+    context: PaneContext;
+  } = $props();
+
+  // The ONE key the store lifecycle is allowed to depend on. Deliberately a
+  // primitive: `descriptor` is an object literal at most call sites (a fresh
+  // identity on every host re-render), while this derived only propagates
+  // when the id actually changes.
+  const sessionId = $derived(descriptor.kind === 'chat' ? descriptor.sessionId : null);
+
+  // The host may have nowhere to put a file — in that case the header keeps
+  // its plain, static folder line (no popover), and the tree never loads.
+  const openFile = $derived(context.openFile);
+
+  let store: AgentSessionStore | null = $state(null);
+
+  $effect(() => {
+    const id = sessionId;
+    if (!id) {
+      store = null;
+      return;
+    }
+    // `takeInitialPrompt` consumes the one-shot handoff (`initial-prompt.ts`)
+    // stashed by a session entry point (e.g. Knowledge's "Start a session
+    // with this page", or this view's own new-session mode below) right
+    // before the descriptor became `chat:<id>` — the store fires it as the
+    // first user turn once its channel join succeeds. A plain sessions-list
+    // click or a reload finds nothing pending, which is safe.
+    const session = new AgentSessionStore(id, { initialPrompt: takeInitialPrompt(id) });
+    store = session;
+    return () => {
+      session.dispose();
+    };
+  });
+
+  onMount(() => {
+    // The flat list backs `summary` below (which ICM this session runs in).
+    // Only fetched when nothing has loaded it yet — the chat route's list
+    // pane, the sidebar, or another mounted ChatView may already have.
+    if (!sessionsListStore.loaded) void sessionsListStore.refresh();
+  });
+
+  // Task 9.3's KNOWN GAP, closed here (frontend-only, sanctioned — see the
+  // brief): there is no workspace-level "a session's status changed"
+  // broadcast (`recent-sessions.svelte.ts`'s `wireRecentSessionsEvents` doc
+  // comment explains why — `SessionServer`'s status push only rides the
+  // per-session `agent_session:<id>` topic this view joins, never the
+  // shared `workspace:events` join `recentSessionsStore` listens on).
+  // So: observe the OPEN session's own `status` here (the one place with a
+  // live per-session subscription) and refresh the sidebar's project groups
+  // whenever it actually TRANSITIONS — an ended/failed/exited session
+  // elsewhere would otherwise show as live in the sidebar until some
+  // unrelated `mounts_changed` push happened to refresh it. Deliberately
+  // only-on-transition, not on every render: switching `store` to a
+  // DIFFERENT (or no) session resets tracking without firing — that
+  // session's own creation/selection already triggered whatever refresh it
+  // needed (`IcmProjects.svelte`'s `startSession` refreshes right after
+  // `createAgentSession` succeeds), so re-observing its starting status here
+  // would be a redundant, not a missing, refresh.
+  let statusEffectStore: AgentSessionStore | null = null;
+  let previousStatus: string | null = null;
+
+  $effect(() => {
+    const current = store;
+    const status = current?.status ?? null;
+
+    if (current !== statusEffectStore) {
+      statusEffectStore = current;
+      previousStatus = status;
+      return;
+    }
+
+    if (status !== previousStatus) {
+      previousStatus = status;
+      void recentSessionsStore.refresh();
+    }
+  });
+
+  // Same pattern as the status effect above, for the session's TITLE: the
+  // agent pushes its own session title over ACP (`session_info` item,
+  // protocol-level — any ACP agent), and the backend persists it into the
+  // transcript meta every session listing reads. A transition in the OPEN
+  // session's live title is the one signal this view can observe, so it
+  // re-fetches both the flat session list and the sidebar's project groups.
+  // Only-on-transition, and only when a real title appeared — switching to a
+  // session that already has one resets tracking without firing (its list
+  // rows are already correct), and a title-less `session_info` upsert
+  // (undefined) never triggers a refresh.
+  const liveTitle = $derived.by(() => (store ? sessionInfoTitle(store.items) : undefined));
+
+  let titleEffectStore: AgentSessionStore | null = null;
+  let previousTitle: string | undefined = undefined;
+
+  $effect(() => {
+    const current = store;
+    const title = liveTitle;
+
+    if (current !== titleEffectStore) {
+      titleEffectStore = current;
+      previousTitle = title;
+      return;
+    }
+
+    if (title !== previousTitle) {
+      previousTitle = title;
+      if (title) {
+        void sessionsListStore.refresh();
+        void recentSessionsStore.refresh();
+      }
+    }
+  });
+
+  // Dock singletons (see Transcript.svelte's doc comment) — derived from the
+  // same `store.items` the transcript itself reads. `plan`/`usage` items are
+  // updated in place by the backend (same id re-upserted), so the latest one
+  // by seq order is the live one; `config` items are a flat set (e.g.
+  // permission mode + model), so those are filtered, not reduced to one.
+  const planItem = $derived.by(() => store?.items.findLast((item) => item.type === 'plan'));
+  const usageItem = $derived.by(() => store?.items.findLast((item) => item.type === 'usage'));
+  const configItems = $derived.by(() => store?.items.filter((item) => item.type === 'config') ?? []);
+
+  // --- Which ICM this session runs in ---
+  //
+  // ("in the chat session, it is not clear for which ICM the current session
+  // is active".) The summary's own `icmName`/`icmMount` (session/v1
+  // metadata, threaded through `trim_summary/1`) is authoritative; the
+  // recent-sessions groups are both a fallback while the flat list is still
+  // loading (a freshly created session reaches this view right after
+  // `sessionsListStore.refresh()`, so the gap is brief) and the second
+  // source of the same rows.
+  const summary = $derived.by(() => {
+    if (!sessionId) return undefined;
+    return (
+      sessionsListStore.sessions.find((s) => s.id === sessionId) ??
+      recentSessionsStore.groups.flatMap((g) => g.sessions).find((s) => s.id === sessionId)
+    );
+  });
+
+  const openMountKey = $derived.by(() => {
+    if (descriptor.kind === 'chat-new') return descriptor.mountKey;
+    if (summary?.icmMount) return summary.icmMount;
+    return (
+      recentSessionsStore.groups.find((g) => g.sessions.some((s) => s.id === sessionId))?.mountKey ?? null
+    );
+  });
+
+  const openIcmName = $derived.by(() => {
+    // New-session mode has no session row to read a name off yet — the mount
+    // catalog is the only source (`MountSummary.name` is the ICM's display
+    // name; `mountKey` is the stable config key).
+    if (descriptor.kind === 'chat-new') {
+      const key = descriptor.mountKey;
+      return mountsStore.mounts.find((m) => m.mountKey === key)?.name ?? null;
+    }
+    if (summary?.icmName) return summary.icmName;
+    return (
+      recentSessionsStore.groups.find((g) => g.sessions.some((s) => s.id === sessionId))?.icmName ?? null
+    );
+  });
+
+  // Safety net for the header's popover file tree, which reads
+  // `icmStore.groups`: every shell already refetches that store on mount
+  // (`AppFrame`, Today's inline shell), so this normally never fires. Three
+  // guards, each load-bearing:
+  //  - no `openFile` → no popover renders → nothing to load;
+  //  - `!icmStore.loaded` → the shell's own cold-load refetch is still in
+  //    flight, and firing a second full refetch alongside it would double
+  //    every `list_icms`/`icm_list_dir` call on every cold load;
+  //  - once per mount key → `refetch()` REASSIGNS `groups`, this effect's own
+  //    dependency, so a mount that never appears in it (disabled, degraded —
+  //    `refetch` filters those out) would otherwise refetch in a tight loop.
+  // Deeper folders lazy-load on expand through `IcmTree`'s own `loadDir`.
+  let treeRequestedFor: string | null = null;
+
+  $effect(() => {
+    if (!openFile) return;
+    if (!icmStore.loaded) return;
+    const key = openMountKey;
+    if (!key || treeRequestedFor === key) return;
+    if (icmStore.groups.some((g) => g.mount === key)) return;
+    treeRequestedFor = key;
+    void icmStore.refetch();
+  });
+
+  const ended = $derived.by(
+    () =>
+      store !== null &&
+      (store.status === 'ended' || store.status === 'exited' || store.status === 'failed')
+  );
+  const starting = $derived.by(
+    () => store !== null && (store.status === 'connecting' || store.status === 'starting')
+  );
+  // Defensive only: harness_unavailable surfaces synchronously at session
+  // creation (see the route's `startSession` and `createAndPrompt` below), so
+  // a joined session cannot currently reach this state — kept as a guard in
+  // case that resolution ever moves post-join.
+  const sessionDoctor = $derived.by(
+    () => store !== null && store.status === 'failed' && store.error === 'harness_unavailable'
+  );
+
+  // --- Same-transcript resume: sending into an ENDED session revives it
+  // in place (same id, same transcript, same URL) and then delivers the
+  // prompt — "continue", never a confusing new session. The RPC only
+  // returns ok once the revived server is registered, so the immediate
+  // prompt push routes to it (the channel re-checks the Registry).
+
+  let resuming = $state(false);
+  let resumeError = $state<string | null>(null);
+
+  async function resumeAndPrompt(text: string): Promise<void> {
+    const id = sessionId;
+    const session = store;
+    if (!id || !session || resuming) return;
+    resuming = true;
+    resumeError = null;
+    const result = await api.resumeAgentSession(id, workspaceStore.generation ?? 0);
+    resuming = false;
+    if (!result.ok) {
+      resumeError = resumeErrorMessage(result.error);
+      return;
+    }
+    session.prompt(text);
+    void sessionsListStore.refresh();
+    void recentSessionsStore.refresh();
+  }
+
+  function resumeErrorMessage(code: string): string {
+    switch (code) {
+      case 'workspace_changed':
+        return 'Your workspace changed. Reopen it and try again.';
+      case 'icm_unavailable':
+        return "This session's project isn't available. Enable it in the sidebar and try again.";
+      case 'harness_unavailable':
+        return "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks.";
+      case 'not_found':
+        return 'This session is no longer on disk.';
+      default:
+        return 'Could not continue the session. Please try again.';
+    }
+  }
+
+  // --- Archive the OPEN session (ended only — the backend refuses a live
+  // one). Where to go afterwards is the HOST's call (`onArchived`): the chat
+  // route navigates back to its empty state, a side pane closes itself.
+
+  let archiving = $state(false);
+  let archiveError = $state<string | null>(null);
+
+  async function archiveOpenSession(): Promise<void> {
+    const id = sessionId;
+    if (!id || archiving) return;
+    archiveError = null;
+    archiving = true;
+    const result = await api.archiveAgentSession(id, workspaceStore.generation ?? 0);
+    archiving = false;
+
+    if (!result.ok) {
+      archiveError =
+        result.error === 'session_live'
+          ? 'This session is still running — stop it before archiving.'
+          : 'Could not archive the session. Please try again.';
+      return;
+    }
+
+    void sessionsListStore.refresh();
+    void recentSessionsStore.refresh();
+    context.onArchived?.();
+  }
+
+  // --- New-session mode (`chat-new`): no store, no channel — the session
+  // doesn't exist until the first message is sent. Creating it stashes that
+  // message as the session's initial prompt and hands the id back to the
+  // host, which re-points this view at `chat:<id>`; the store effect above
+  // then joins and fires the prompt on join, exactly like every other entry
+  // point ("Start a session with this page").
+
+  let creating = $state(false);
+  let createError = $state<string | null>(null);
+
+  async function createAndPrompt(text: string): Promise<void> {
+    if (descriptor.kind !== 'chat-new' || creating) return;
+    creating = true;
+    createError = null;
+    const result = await api.createAgentSession(descriptor.mountKey, workspaceStore.generation ?? 0);
+    creating = false;
+    if (!result.ok) {
+      createError =
+        result.error === 'harness_unavailable'
+          ? "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks."
+          : 'The session could not be started. Please try again.';
+      return;
+    }
+    const data = result.data as { id: string };
+    setInitialPrompt(data.id, text);
+    void sessionsListStore.refresh();
+    void recentSessionsStore.refresh();
+    context.sessionCreated?.(data.id);
+  }
+
+  // --- Stick-to-bottom auto-scroll while a reply streams in ---
+  //
+  // `pinned` tracks whether the user is (near) the bottom; any timeline
+  // change scrolls back down ONLY while pinned, so reading older content
+  // mid-stream is never yanked away. Deliberately a plain variable, not
+  // $state — the effect must re-run on `store.items` changes, never on
+  // scroll-position changes.
+  let scroller = $state<HTMLDivElement | null>(null);
+  let pinned = true;
+
+  function onTranscriptScroll(): void {
+    const el = scroller;
+    if (!el) return;
+    pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  }
+
+  $effect(() => {
+    void store?.items;
+    const el = scroller;
+    if (!el || !pinned) return;
+    el.scrollTop = el.scrollHeight;
+  });
+
+  // Opening a different session always starts pinned at the newest content.
+  $effect(() => {
+    void sessionId;
+    pinned = true;
+  });
+</script>
+
+{#if descriptor.kind === 'chat-new'}
+  <!-- Same column geometry as a live session, so promoting the created
+       session in place doesn't shift the composer. -->
+  <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
+    <SessionHeader
+      icmName={openIcmName}
+      mountKey={openMountKey}
+      ended={false}
+      archiving={false}
+      onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
+    />
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <p class="text-ink-meta px-4 py-5 text-[13px]">
+        {openIcmName ? `New session in ${openIcmName}.` : 'New session.'} Send a message to start it.
+      </p>
+    </div>
+    {#if createError}
+      <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{createError}</p>
+    {/if}
+    <Composer
+      busy={creating}
+      configItems={[]}
+      onSend={(text) => void createAndPrompt(text)}
+      onStop={() => {}}
+      onSetConfig={() => {}}
+    />
+  </div>
+{:else if sessionDoctor}
+  <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
+    <DoctorPanel />
+  </div>
+{:else if store}
+  <!-- Transcript scrolls; the composer (or the ended/starting row) stays
+       docked at the pane's bottom edge, per the cockpit chat screen. -->
+  <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
+    <SessionHeader
+      icmName={openIcmName}
+      mountKey={openMountKey}
+      {ended}
+      {archiving}
+      onArchive={() => void archiveOpenSession()}
+      onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
+    />
+    {#if archiveError}
+      <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>
+    {/if}
+    <PlanBar item={planItem} />
+
+    <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
+      <Transcript {store} />
+    </div>
+
+    <UsageLine item={usageItem} />
+
+    {#if starting}
+      <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
+    {:else}
+      {#if resumeError}
+        <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{resumeError}</p>
+      {/if}
+      <!-- An ended session keeps its composer: sending resumes it in
+           place (same transcript) and delivers the message — the
+           placeholder carries the affordance, no extra button. -->
+      <Composer
+        busy={store.busy || resuming}
+        {configItems}
+        placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
+        onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.prompt(text))}
+        onStop={() => store?.cancel()}
+        onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
+      />
+    {/if}
+  </div>
+{:else}
+  <p class="text-ink-meta px-8 py-8 text-[13px]">Loading…</p>
+{/if}

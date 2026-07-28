@@ -10,7 +10,6 @@
   import { AppFrame, ListPane, EmptyState } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import MessageSquare from '@lucide/svelte/icons/message-square';
-  import Folder from '@lucide/svelte/icons/folder';
   import Archive from '@lucide/svelte/icons/archive';
   import { groupAllSessions } from '$lib/components/shell/icm-projects';
   import { api } from '$lib/api/client';
@@ -18,16 +17,20 @@
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { resolveIcmSelection } from '$lib/shell/icm-route';
-  import { SessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
-  import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
-  import { takeInitialPrompt } from '$lib/stores/initial-prompt';
-  import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel } from '$lib/components/agent';
-  import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
+  import { sessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
+  import { DoctorPanel } from '$lib/components/agent';
+  import ChatView from '$lib/components/views/ChatView.svelte';
 
-  const sessionsList = new SessionsListStore(api);
+  // The open transcript lives in `ChatView` (side-panes pass) — everything
+  // below is the ROUTE's own business: which session is selected (`?session=`),
+  // the optional all-sessions list pane (`?all=1`), starting a session, and
+  // the doctor fallback. The flat session list is the MODULE SINGLETON now
+  // (it used to be a route-local `new SessionsListStore(api)`), so the list
+  // pane here and the `ChatView`(s) mounted by this route — or, from Task 8,
+  // by a side pane — all read and refresh ONE list.
 
   onMount(() => {
-    void sessionsList.refresh();
+    void sessionsListStore.refresh();
     // `mountsStore` has no other consumer before this page unless Knowledge
     // was already visited this session (it's a shared singleton — see
     // `mounts.svelte.ts`) — `startSession` needs `mounts` populated to pick
@@ -60,7 +63,7 @@
   // by default the chat route renders WITHOUT a list pane, since the main
   // nav's project groups already carry the recent sessions.
   const showAllPane = $derived(page.url.searchParams.get('all') === '1');
-  const allGroups = $derived(groupAllSessions(sessionsList.sessions));
+  const allGroups = $derived(groupAllSessions(sessionsListStore.sessions));
 
   /** Keeps ?all=1 sticky across in-pane navigation. */
   function sessionHref(id: string): string {
@@ -77,95 +80,13 @@
   let doctorOverride = $state(false);
   let startError = $state<string | null>(null);
 
-  let store: AgentSessionStore | null = $state(null);
-
+  // A fresh selection clears the doctor override — a new session was created,
+  // or the user picked a different one from the list. Stays here (not in
+  // `ChatView`): the override replaces whatever the MAIN PANE would render,
+  // selected session or not, so it's the route's state, not a view's.
   $effect(() => {
-    const id = selectedId;
+    void selectedId;
     doctorOverride = false;
-    if (!id) {
-      store = null;
-      return;
-    }
-    // `takeInitialPrompt` consumes the one-shot handoff (`initial-prompt.ts`)
-    // stashed by a session entry point (e.g. Knowledge's "Start a session
-    // with this page") right before it navigated here — the store fires it
-    // as the first user turn once its channel join succeeds. A plain
-    // sessions-list click or a reload finds nothing pending, which is safe.
-    const session = new AgentSessionStore(id, { initialPrompt: takeInitialPrompt(id) });
-    store = session;
-    return () => {
-      session.dispose();
-    };
-  });
-
-  // Task 9.3's KNOWN GAP, closed here (frontend-only, sanctioned — see the
-  // brief): there is no workspace-level "a session's status changed"
-  // broadcast (`recent-sessions.svelte.ts`'s `wireRecentSessionsEvents` doc
-  // comment explains why — `SessionServer`'s status push only rides the
-  // per-session `agent_session:<id>` topic this page already joins, never
-  // the shared `workspace:events` join `recentSessionsStore` listens on).
-  // So: observe the OPEN session's own `status` here (the one place this
-  // page already has a live per-session subscription) and refresh the
-  // sidebar's project groups whenever it actually TRANSITIONS — an ended/
-  // failed/exited session elsewhere would otherwise show as live in the
-  // sidebar until some unrelated `mounts_changed` push happened to refresh
-  // it. Deliberately only-on-transition, not on every render: switching
-  // `store` to a DIFFERENT (or no) session resets tracking without firing —
-  // that session's own creation/selection already triggered whatever
-  // refresh it needed (`IcmProjects.svelte`'s `startSession` refreshes
-  // right after `createAgentSession` succeeds), so re-observing its
-  // starting status here would be a redundant, not a missing, refresh.
-  let statusEffectStore: AgentSessionStore | null = null;
-  let previousStatus: string | null = null;
-
-  $effect(() => {
-    const current = store;
-    const status = current?.status ?? null;
-
-    if (current !== statusEffectStore) {
-      statusEffectStore = current;
-      previousStatus = status;
-      return;
-    }
-
-    if (status !== previousStatus) {
-      previousStatus = status;
-      void recentSessionsStore.refresh();
-    }
-  });
-
-  // Same pattern as the status effect above, for the session's TITLE: the
-  // agent pushes its own session title over ACP (`session_info` item,
-  // protocol-level — any ACP agent), and the backend persists it into the
-  // transcript meta every session listing reads. A transition in the OPEN
-  // session's live title is the one signal this page can observe, so it
-  // re-fetches both its own list pane and the sidebar's project groups.
-  // Only-on-transition, and only when a real title appeared — switching to a
-  // session that already has one resets tracking without firing (its list
-  // rows are already correct), and a title-less `session_info` upsert
-  // (undefined) never triggers a refresh.
-  const liveTitle = $derived.by(() => (store ? sessionInfoTitle(store.items) : undefined));
-
-  let titleEffectStore: AgentSessionStore | null = null;
-  let previousTitle: string | undefined = undefined;
-
-  $effect(() => {
-    const current = store;
-    const title = liveTitle;
-
-    if (current !== titleEffectStore) {
-      titleEffectStore = current;
-      previousTitle = title;
-      return;
-    }
-
-    if (title !== previousTitle) {
-      previousTitle = title;
-      if (title) {
-        void sessionsList.refresh();
-        void recentSessionsStore.refresh();
-      }
-    }
   });
 
   async function startSession(): Promise<void> {
@@ -179,7 +100,7 @@
     if (result.ok) {
       const data = result.data as { id: string };
       doctorOverride = false;
-      await sessionsList.refresh();
+      await sessionsListStore.refresh();
       void goto(`/chat?session=${data.id}`);
     } else if (result.error === 'harness_unavailable') {
       doctorOverride = true;
@@ -226,88 +147,11 @@
     return rtf.format(Math.round(deltaSeconds / 86400), 'day');
   }
 
-  // Dock singletons (see Transcript.svelte's doc comment) — derived from the
-  // same `store.items` the transcript itself reads. `plan`/`usage` items are
-  // updated in place by the backend (same id re-upserted), so the latest one
-  // by seq order is the live one; `config` items are a flat set (e.g.
-  // permission mode + model), so those are filtered, not reduced to one.
-  const planItem = $derived.by(() => store?.items.findLast((item) => item.type === 'plan'));
-  const usageItem = $derived.by(() => store?.items.findLast((item) => item.type === 'usage'));
-  const configItems = $derived.by(() => store?.items.filter((item) => item.type === 'config') ?? []);
-
-  // Which ICM the OPEN session runs in ("in the chat session, it is not
-  // clear for which ICM the current session is active"). The summary's own
-  // `icmName` (session/v1 metadata, threaded through `trim_summary/1`) is
-  // authoritative; the recent-sessions groups are the fallback while the
-  // flat list is still loading (a freshly created session reaches this page
-  // right after `sessionsList.refresh()`, so the gap is brief).
-  const openSessionIcmName = $derived.by(() => {
-    if (!selectedId) return null;
-    const summary = sessionsList.sessions.find((s) => s.id === selectedId);
-    if (summary?.icmName) return summary.icmName;
-    for (const group of recentSessionsStore.groups) {
-      if (group.sessions.some((s) => s.id === selectedId)) return group.icmName;
-    }
-    return null;
-  });
-
-  const ended = $derived.by(
-    () =>
-      store !== null &&
-      (store.status === 'ended' || store.status === 'exited' || store.status === 'failed')
-  );
-  const starting = $derived.by(
-    () => store !== null && (store.status === 'connecting' || store.status === 'starting')
-  );
-  // Defensive only: harness_unavailable surfaces synchronously at session
-  // creation (see startSession), so a joined session cannot currently reach
-  // this state — kept as a guard in case that resolution ever moves post-join.
-  const sessionDoctor = $derived.by(
-    () => store !== null && store.status === 'failed' && store.error === 'harness_unavailable'
-  );
-
-  // --- Same-transcript resume: sending into an ENDED session revives it
-  // in place (same id, same transcript, same URL) and then delivers the
-  // prompt — "continue", never a confusing new session. The RPC only
-  // returns ok once the revived server is registered, so the immediate
-  // prompt push routes to it (the channel re-checks the Registry).
-
-  let resuming = $state(false);
-  let resumeError = $state<string | null>(null);
-
-  async function resumeAndPrompt(text: string): Promise<void> {
-    const id = selectedId;
-    const session = store;
-    if (!id || !session || resuming) return;
-    resuming = true;
-    resumeError = null;
-    const result = await api.resumeAgentSession(id, workspaceStore.generation ?? 0);
-    resuming = false;
-    if (!result.ok) {
-      resumeError = resumeErrorMessage(result.error);
-      return;
-    }
-    session.prompt(text);
-    void sessionsList.refresh();
-    void recentSessionsStore.refresh();
-  }
-
-  function resumeErrorMessage(code: string): string {
-    switch (code) {
-      case 'workspace_changed':
-        return 'Your workspace changed. Reopen it and try again.';
-      case 'icm_unavailable':
-        return "This session's project isn't available. Enable it in the sidebar and try again.";
-      case 'harness_unavailable':
-        return "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks.";
-      case 'not_found':
-        return 'This session is no longer on disk.';
-      default:
-        return 'Could not continue the session. Please try again.';
-    }
-  }
-
-  // --- Archive (ended sessions only — the backend refuses a live one) ---
+  // --- Archive from a LIST ROW (ended sessions only — the backend refuses a
+  // live one). Archiving the session that's currently OPEN is `ChatView`'s
+  // own affordance (its header) with its own in-flight/error state; this
+  // path is the all-sessions pane's per-row button, which can archive any
+  // session, including the open one — hence the navigation below.
 
   let archiving: Record<string, boolean> = $state({});
   let archiveError = $state<string | null>(null);
@@ -326,41 +170,17 @@
       return;
     }
 
-    void sessionsList.refresh();
+    void sessionsListStore.refresh();
     void recentSessionsStore.refresh();
     if (selectedId === id) {
       void goto(showAllPane ? '/chat?all=1' : '/chat');
     }
   }
 
-  // --- Stick-to-bottom auto-scroll while a reply streams in ---
-  //
-  // `pinned` tracks whether the user is (near) the bottom; any timeline
-  // change scrolls back down ONLY while pinned, so reading older content
-  // mid-stream is never yanked away. Deliberately a plain variable, not
-  // $state — the effect must re-run on `store.items` changes, never on
-  // scroll-position changes.
-  let scroller = $state<HTMLDivElement | null>(null);
-  let pinned = true;
-
-  function onTranscriptScroll(): void {
-    const el = scroller;
-    if (!el) return;
-    pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  /** Where the main pane goes once `ChatView` archives the session it has open. */
+  function afterArchive(): void {
+    void goto(showAllPane ? '/chat?all=1' : '/chat');
   }
-
-  $effect(() => {
-    void store?.items;
-    const el = scroller;
-    if (!el || !pinned) return;
-    el.scrollTop = el.scrollHeight;
-  });
-
-  // Opening a different session always starts pinned at the newest content.
-  $effect(() => {
-    void selectedId;
-    pinned = true;
-  });
 </script>
 
 <!-- The all-sessions pane (sidebar "Show all", `?all=1`): EVERY session,
@@ -457,68 +277,11 @@
           {/snippet}
         </EmptyState>
       </div>
-    {:else if sessionDoctor}
-      <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
-        <DoctorPanel />
-      </div>
-    {:else if store}
-      <!-- Transcript scrolls; the composer (or the ended/starting row) stays
-           docked at the pane's bottom edge, per the cockpit chat screen. -->
-      <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
-        {#if openSessionIcmName || ended}
-          <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
-            {#if openSessionIcmName}
-              <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-              <span class="text-ink-meta text-[12px]">
-                Working in <span class="text-ink-secondary font-medium">{openSessionIcmName}</span>
-              </span>
-            {/if}
-            <span class="min-w-0 flex-1" aria-hidden="true"></span>
-            {#if ended && selectedId}
-              <button
-                type="button"
-                onclick={() => selectedId && void archiveSession(selectedId)}
-                disabled={!!archiving[selectedId]}
-                class="text-ink-meta hover:text-ink-heading flex shrink-0 items-center gap-1 text-[12px] transition-colors"
-              >
-                <Archive class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-                {archiving[selectedId] ? 'Archiving…' : 'Archive'}
-              </button>
-            {/if}
-          </div>
-          {#if archiveError && !showAllPane}
-            <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>
-          {/if}
-        {/if}
-        <PlanBar item={planItem} />
-
-        <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
-          <Transcript {store} />
-        </div>
-
-        <UsageLine item={usageItem} />
-
-        {#if starting}
-          <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
-        {:else}
-          {#if resumeError}
-            <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{resumeError}</p>
-          {/if}
-          <!-- An ended session keeps its composer: sending resumes it in
-               place (same transcript) and delivers the message — the
-               placeholder carries the affordance, no extra button. -->
-          <Composer
-            busy={store.busy || resuming}
-            {configItems}
-            placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
-            onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.prompt(text))}
-            onStop={() => store?.cancel()}
-            onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
-          />
-        {/if}
-      </div>
     {:else}
-      <p class="text-ink-meta px-8 py-8 text-[13px]">Loading…</p>
+      <ChatView
+        descriptor={{ kind: 'chat', sessionId: selectedId }}
+        context={{ placement: 'primary', onArchived: afterArchive }}
+      />
     {/if}
   {/snippet}
 </AppFrame>
