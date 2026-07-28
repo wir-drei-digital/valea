@@ -654,6 +654,83 @@ defmodule Valea.Acp.ConnectionTest do
 
     assert info == %{"id" => "session_info", "type" => "session_info", "title" => "My Session"}
   end
+
+  # === Tool-call locations (side-panes pass) ===
+
+  test "tool_call relays locations; cwd-contained paths gain relPath" do
+    state = connected_state()
+
+    {_state, items, _replies, _effects} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{
+          "toolCallId" => "t-loc",
+          "title" => "Read notes.md",
+          "kind" => "read",
+          "status" => "in_progress",
+          "locations" => [
+            %{"path" => "/ws/notes/notes.md", "line" => 12},
+            %{"path" => "/etc/passwd"},
+            %{"path" => "already/relative.md"},
+            %{"path" => ""},
+            %{"nope" => true}
+          ]
+        })
+      )
+
+    assert [%{"locations" => locs}] = items
+
+    assert locs == [
+             %{"path" => "/ws/notes/notes.md", "relPath" => "notes/notes.md", "line" => 12},
+             %{"path" => "/etc/passwd"},
+             %{"path" => "already/relative.md", "relPath" => "already/relative.md"}
+           ]
+  end
+
+  test "location-less tool_call_update preserves earlier locations" do
+    state = connected_state()
+
+    {state, _items, _replies, _effects} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{
+          "toolCallId" => "t-keep",
+          "status" => "in_progress",
+          "locations" => [%{"path" => "/ws/a.md"}]
+        })
+      )
+
+    {_state, items, _replies, _effects} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call_update", %{"toolCallId" => "t-keep", "status" => "completed"})
+      )
+
+    assert [
+             %{
+               "status" => "completed",
+               "locations" => [%{"path" => "/ws/a.md", "relPath" => "a.md"}]
+             }
+           ] =
+             items
+  end
+
+  test "empty or malformed locations list sets no locations key" do
+    state = connected_state()
+
+    {_state, items, _replies, _effects} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{
+          "toolCallId" => "t-none",
+          "status" => "in_progress",
+          "locations" => []
+        })
+      )
+
+    assert [item] = items
+    refute Map.has_key?(item, "locations")
+  end
 end
 
 # Task 1.3: the launch map's two optional Phase-5 fields —

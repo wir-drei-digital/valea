@@ -654,6 +654,7 @@ defmodule Valea.Acp.Connection do
       |> merge_present(u, "kind")
       |> merge_present(u, "status")
       |> put_tool_content(u["content"])
+      |> put_tool_locations(u["locations"], state.launch.cwd)
 
     # Once a tool reaches a terminal status, drop it from the working set AFTER
     # emitting the final item. The timeline holds the canonical copy by id; a
@@ -789,6 +790,52 @@ defmodule Valea.Acp.Connection do
   end
 
   defp put_tool_content(item, _content), do: item
+
+  # Relay ACP `toolCall.locations` (file paths a tool touched) onto the tool
+  # item so the frontend can offer "open this file" affordances (side-panes
+  # pass). Only set when THIS update carries a non-empty list — a later
+  # location-less update must not erase them (same rule as "diff"). Each
+  # entry keeps the raw "path" and gains "relPath" when the file lies inside
+  # the session's cwd (the ICM root): already-relative paths are taken as
+  # cwd-relative verbatim; absolute ones relativize via the case-folded
+  # `Valea.Paths` helpers — never `Path.relative_to/2` (see Paths moduledoc).
+  defp put_tool_locations(item, locations, cwd) when is_list(locations) do
+    rendered =
+      for loc <- locations,
+          is_map(loc),
+          path = loc["path"],
+          is_binary(path),
+          path != "" do
+        %{"path" => path}
+        |> put_location_line(loc["line"])
+        |> put_location_rel(path, cwd)
+      end
+
+    if rendered == [], do: item, else: Map.put(item, "locations", rendered)
+  end
+
+  defp put_tool_locations(item, _locations, _cwd), do: item
+
+  defp put_location_line(entry, line) when is_integer(line), do: Map.put(entry, "line", line)
+  defp put_location_line(entry, _line), do: entry
+
+  defp put_location_rel(entry, path, cwd) when is_binary(cwd) do
+    cond do
+      not Valea.Paths.absolute?(path) ->
+        Map.put(entry, "relPath", path)
+
+      Valea.Paths.ancestor?(cwd, path) ->
+        case Valea.Paths.relative_to(path, cwd) do
+          "." -> entry
+          rel -> Map.put(entry, "relPath", rel)
+        end
+
+      true ->
+        entry
+    end
+  end
+
+  defp put_location_rel(entry, _path, _cwd), do: entry
 
   # Bound accumulated tool output to @max_tool_output bytes, keeping the tail
   # (most recent output) behind a leading truncation marker.
