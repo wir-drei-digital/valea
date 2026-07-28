@@ -6,6 +6,7 @@ import {
   isRejectKind,
   toolDiff,
   diffLines,
+  toolLocations,
   planEntries,
   planProgress,
   configOptions,
@@ -81,6 +82,34 @@ describe('toolDiff / diffLines', () => {
     expect(diffLines('a\nb')).toEqual(['a', 'b']);
     expect(diffLines(undefined)).toEqual([]);
     expect(diffLines('')).toEqual([]);
+  });
+});
+
+describe('toolLocations', () => {
+  it('returns typed locations, keeping relPath/line only when valid', () => {
+    const item = {
+      id: 't1',
+      type: 'tool',
+      locations: [
+        { path: '/ws/notes/a.md', relPath: 'notes/a.md', line: 12 },
+        { path: '/etc/passwd' },
+        { path: '/ws/x.md', relPath: '', line: 'nope' },
+        { path: '' },
+        { relPath: 'orphan.md' },
+        null,
+        'junk'
+      ]
+    };
+    expect(toolLocations(item)).toEqual([
+      { path: '/ws/notes/a.md', relPath: 'notes/a.md', line: 12 },
+      { path: '/etc/passwd', relPath: undefined, line: undefined },
+      { path: '/ws/x.md', relPath: undefined, line: undefined }
+    ]);
+  });
+
+  it('returns [] when locations is absent or not an array', () => {
+    expect(toolLocations({ id: 't', type: 'tool' })).toEqual([]);
+    expect(toolLocations({ id: 't', type: 'tool', locations: 'x' })).toEqual([]);
   });
 });
 

@@ -10,6 +10,7 @@
  *
  * Field shapes are sourced from the emitting Elixir code, not guessed:
  *  - tool diff/output: `Valea.Acp.Connection.put_tool_content/2`
+ *  - tool locations: `Connection.put_tool_locations/3`
  *  - permission options/resolution: `Connection.request_permission
  *    dispatch_incoming/2` clause + `Connection.answer_permission/3`
  *  - plan entries: `Connection.plan_entries/1`
@@ -85,6 +86,33 @@ export function toolDiff(item: AcpItemLike): ToolDiff | undefined {
 export function diffLines(text: string | undefined): string[] {
   if (!text) return [];
   return text.replace(/\n$/, '').split('\n');
+}
+
+export type ToolLocation = { path: string; relPath?: string; line?: number };
+
+/**
+ * `item.locations` as relayed by `Connection.put_tool_locations/3`:
+ * `[{path, relPath?, line?}]`. `relPath` (ICM-root-relative) is present only
+ * when the file lies inside the session's cwd — it is what file-open
+ * affordances key off; entries without it render as plain text.
+ */
+export function toolLocations(item: AcpItemLike): ToolLocation[] {
+  const raw = item.locations;
+  if (!Array.isArray(raw)) return [];
+
+  return raw.flatMap((l): ToolLocation[] => {
+    if (!l || typeof l !== 'object') return [];
+    const rec = l as Record<string, unknown>;
+    const path = rec.path;
+    if (typeof path !== 'string' || path.length === 0) return [];
+    return [
+      {
+        path,
+        relPath: asPresentString(rec.relPath),
+        line: typeof rec.line === 'number' ? rec.line : undefined
+      }
+    ];
+  });
 }
 
 export type PlanEntry = { text: string; status: string };
