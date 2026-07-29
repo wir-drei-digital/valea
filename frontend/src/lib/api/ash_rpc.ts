@@ -5443,6 +5443,83 @@ export async function setupMailAccountChannel<Fields extends SetupMailAccountFie
 }
 
 
+export type WriteMailDraftInput = {
+  account: string;
+  name?: string | null;
+  content: string;
+  baseHash?: string | null;
+  generation: number;
+};
+
+export type WriteMailDraftFields = UnifiedFieldSelection<{name: string, saved: boolean, __type: "TypedMap", __primitiveFields: "name" | "saved"}>[];
+
+export type InferWriteMailDraftResult<
+  Fields extends WriteMailDraftFields | undefined,
+> = InferResult<{name: string, saved: boolean, __type: "TypedMap", __primitiveFields: "name" | "saved"}, Fields>;
+
+export type WriteMailDraftResult<Fields extends WriteMailDraftFields | undefined = undefined> = | { success: true; data: InferWriteMailDraftResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function writeMailDraft<Fields extends WriteMailDraftFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: WriteMailDraftInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<WriteMailDraftResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "write_mail_draft",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<WriteMailDraftResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function writeMailDraftChannel<Fields extends WriteMailDraftFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: WriteMailDraftInput;
+  fields: Fields;
+  resultHandler: (result: WriteMailDraftResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<WriteMailDraftResult<Fields>>(
+    config.channel,
+    {
+    action: "write_mail_draft",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type DismissSkillsOfferInput = {
   mountKey: string;
   skillId: string;

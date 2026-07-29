@@ -75,6 +75,7 @@ defmodule Valea.Api do
       rpc_action(:push_draft_to_mailbox, :push_draft_to_mailbox)
       rpc_action(:list_mail_drafts, :list_mail_drafts)
       rpc_action(:get_mail_draft, :get_mail_draft)
+      rpc_action(:write_mail_draft, :write_mail_draft)
       rpc_action(:revise_mail_draft, :revise_mail_draft)
       rpc_action(:get_mail_draft_review, :get_mail_draft_review)
       rpc_action(:send_draft, :send_draft)

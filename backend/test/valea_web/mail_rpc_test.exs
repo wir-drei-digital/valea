@@ -2037,6 +2037,308 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
+  # -- write_mail_draft (spec E §Drafting & push) ---------------------------------
+
+  describe "write_mail_draft" do
+    @write_md """
+    ---
+    to: [alex@example.com]
+    subject: "Re: Kickoff"
+    status: draft
+    ---
+    Hello Alex.
+    """
+
+    defp write_draft_rpc(input, generation) do
+      rpc(
+        "write_mail_draft",
+        Map.merge(%{"account" => "mara", "generation" => generation}, input),
+        ["name", "saved"]
+      )
+    end
+
+    defp drafts_path(workspace, name),
+      do: Path.join([workspace, "sources", "mail", "mara", "drafts", name])
+
+    test "creates a draft under a minted name and returns it", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      assert %{"success" => true, "data" => %{"name" => name, "saved" => true}} =
+               write_draft_rpc(
+                 %{"name" => nil, "content" => @write_md, "baseHash" => nil},
+                 generation
+               )
+
+      # `YYYYMMDDTHHMMSS-<subject-slug>.md` — the subject slug is taken from
+      # the PARSED draft ("Re: Kickoff"), and the `.md` suffix makes the name
+      # usable verbatim by every other draft RPC.
+      assert name =~ ~r/^\d{8}T\d{6}-re-kickoff\.md$/
+
+      # BYTE-for-byte, trailing newline included: anything the RPC layer
+      # trimmed would stop the file hashing to what the caller wrote, and the
+      # CAS on the next save would fail against bytes nobody edited.
+      assert File.read!(drafts_path(workspace, name)) == @write_md
+
+      # It is a real draft to the rest of the surface immediately.
+      assert %{"success" => true, "data" => %{"content" => @write_md}} =
+               rpc("get_mail_draft", %{"account" => "mara", "draftName" => name}, ["content"])
+
+      # A second create with the SAME subject in the same second must not
+      # clobber the first — it gets a numeric suffix.
+      assert %{"success" => true, "data" => %{"name" => second}} =
+               write_draft_rpc(
+                 %{"name" => nil, "content" => @write_md, "baseHash" => nil},
+                 generation
+               )
+
+      assert second != name
+      assert File.exists?(drafts_path(workspace, name))
+    end
+
+    test "a subject with nothing sluggable falls back to the literal draft", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      content = String.replace(@write_md, ~s(subject: "Re: Kickoff"), ~s(subject: "!!! ???"))
+
+      assert %{"success" => true, "data" => %{"name" => name}} =
+               write_draft_rpc(
+                 %{"name" => nil, "content" => content, "baseHash" => nil},
+                 generation
+               )
+
+      assert name =~ ~r/^\d{8}T\d{6}-draft\.md$/
+    end
+
+    test "updates an existing draft when base_hash matches, refuses when it is stale", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+      write_rpc_draft!(workspace, "mara", "reply.md", @write_md)
+
+      edited = String.replace(@write_md, "Hello Alex.", "Hello Alex, one more thing.")
+      base = Valea.Mail.DraftFile.content_hash(@write_md)
+
+      assert %{"success" => true, "data" => %{"name" => "reply.md", "saved" => true}} =
+               write_draft_rpc(
+                 %{"name" => "reply.md", "content" => edited, "baseHash" => base},
+                 generation
+               )
+
+      assert File.read!(drafts_path(workspace, "reply.md")) == edited
+
+      # The SAME base hash is now stale — an agent (or the user's other
+      # window) has moved the file on, and this write would discard that.
+      assert %{"success" => false, "errors" => [%{"type" => "content_changed"}]} =
+               write_draft_rpc(
+                 %{"name" => "reply.md", "content" => @write_md, "baseHash" => base},
+                 generation
+               )
+
+      assert File.read!(drafts_path(workspace, "reply.md")) == edited
+
+      # `base_hash: nil` means CREATE — never a blind overwrite of a draft
+      # that is already there.
+      assert %{"success" => false, "errors" => [%{"type" => "content_changed"}]} =
+               write_draft_rpc(
+                 %{"name" => "reply.md", "content" => @write_md, "baseHash" => nil},
+                 generation
+               )
+
+      assert File.read!(drafts_path(workspace, "reply.md")) == edited
+    end
+
+    test "refuses content the draft grammar rejects, writing nothing", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      bad = [
+        # no frontmatter block at all
+        "Just a body.\n",
+        # no recipient
+        "---\nsubject: \"Hi\"\n---\nBody.\n",
+        # a field the grammar does not know (the sending identity is
+        # config-owned — a draft may not set `from`)
+        "---\nto: [a@example.com]\nfrom: spoof@example.com\n---\nBody.\n"
+      ]
+
+      for content <- bad do
+        assert %{"success" => false, "errors" => [%{"type" => "invalid_draft"}]} =
+                 write_draft_rpc(
+                   %{"name" => nil, "content" => content, "baseHash" => nil},
+                   generation
+                 )
+      end
+
+      # Nothing landed — not the draft, not a `.md.tmp`, not even the
+      # directory the write would have created on its way.
+      assert File.ls(Path.join([workspace, "sources", "mail", "mara", "drafts"])) in [
+               {:error, :enoent},
+               {:ok, []}
+             ]
+    end
+
+    test "refuses empty content as a grammar failure, not a missing argument", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => [%{"type" => "invalid_draft"}]} =
+               write_draft_rpc(%{"name" => nil, "content" => "", "baseHash" => nil}, generation)
+    end
+
+    test "refuses traversal/separator names and never writes through a symlink", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      for bad <- ["../escape.md", "a/b.md", "..\\x.md", ".md", "no-extension"] do
+        assert %{"success" => false, "errors" => [%{"type" => "invalid_draft_name"}]} =
+                 write_draft_rpc(
+                   %{"name" => bad, "content" => @write_md, "baseHash" => nil},
+                   generation
+                 )
+      end
+
+      refute File.exists?(Path.join(workspace, "escape.md"))
+
+      # A grammar-clean name whose ENTRY is a symlink out of the drafts dir is
+      # refused by containment (`Paths.resolve_real/2`) — the target keeps its
+      # bytes, and the write does not follow the link.
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+      outside = Path.join(workspace, "planted.md")
+      File.write!(outside, "sensitive target content")
+      File.ln_s!(outside, Path.join(drafts_dir, "link.md"))
+
+      assert %{"success" => false, "errors" => [%{"type" => "link_unsafe"}]} =
+               write_draft_rpc(
+                 %{"name" => "link.md", "content" => @write_md, "baseHash" => nil},
+                 generation
+               )
+
+      assert File.read!(outside) == "sensitive target content"
+    end
+
+    test "refuses a draft the ledger says is mid-flight", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      # `draft_with_ops!` writes `reply.md` and plants the ledger row; the
+      # projection this refusal keys off is the SAME one the listing renders.
+      draft =
+        draft_with_ops!(workspace, generation, @write_md, [
+          {"send", "transmitted", %{inserted_at: "2026-07-26T10:00:00.000000Z"}}
+        ])
+
+      assert draft["status_display"] == "sending"
+
+      assert %{"success" => false, "errors" => [%{"type" => "draft_busy"}]} =
+               write_draft_rpc(
+                 %{
+                   "name" => "reply.md",
+                   "content" => String.replace(@write_md, "Hello Alex.", "Edited mid-send."),
+                   "baseHash" => Valea.Mail.DraftFile.content_hash(@write_md)
+                 },
+                 generation
+               )
+
+      # The bytes the in-flight send is bound to are untouched.
+      assert File.read!(drafts_path(workspace, "reply.md")) == @write_md
+    end
+
+    test "refuses a draft the ledger says was already sent", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      # `sent` is a non-`draft` ledger state too, and the completed op names
+      # THIS revision — the pen may not rewrite the bytes underneath it. (An
+      # agent editing through its mount still can; that is what the
+      # `earlier_revision_sent` display exists for.)
+      hash = Valea.Mail.DraftFile.content_hash(@write_md)
+
+      draft =
+        draft_with_ops!(workspace, generation, @write_md, [
+          {"send", "complete", %{inserted_at: "2026-07-26T10:00:00.000000Z", content_hash: hash}}
+        ])
+
+      assert draft["status_display"] == "sent"
+
+      assert %{"success" => false, "errors" => [%{"type" => "draft_busy"}]} =
+               write_draft_rpc(
+                 %{
+                   "name" => "reply.md",
+                   "content" => String.replace(@write_md, "Hello Alex.", "Edited after send."),
+                   "baseHash" => hash
+                 },
+                 generation
+               )
+
+      assert File.read!(drafts_path(workspace, "reply.md")) == @write_md
+    end
+
+    test "refuses an unknown account rather than littering an unconfigured tree", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => [%{"type" => "not_found"}]} =
+               rpc(
+                 "write_mail_draft",
+                 %{
+                   "account" => "ghost",
+                   "name" => nil,
+                   "content" => @write_md,
+                   "baseHash" => nil,
+                   "generation" => generation
+                 },
+                 ["name", "saved"]
+               )
+
+      refute File.exists?(Path.join([workspace, "sources", "mail", "ghost"]))
+    end
+
+    test "rejects a malformed slug and a stale generation", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      assert %{"success" => false, "errors" => [%{"type" => "invalid_slug"}]} =
+               rpc(
+                 "write_mail_draft",
+                 %{
+                   "account" => "../x",
+                   "name" => nil,
+                   "content" => @write_md,
+                   "baseHash" => nil,
+                   "generation" => generation
+                 },
+                 ["name", "saved"]
+               )
+
+      assert %{"success" => false, "errors" => [%{"type" => "workspace_changed"}]} =
+               write_draft_rpc(
+                 %{"name" => nil, "content" => @write_md, "baseHash" => nil},
+                 generation + 1
+               )
+    end
+  end
+
   # -- revise_mail_draft (spec G §Request changes) --------------------------------
 
   describe "revise_mail_draft" do

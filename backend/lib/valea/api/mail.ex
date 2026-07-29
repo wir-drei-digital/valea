@@ -956,6 +956,79 @@ defmodule Valea.Api.Mail do
         end
       end
     end
+
+    action :write_mail_draft, :map do
+      # `saved` is a top-level boolean, so it goes back under a STRING key
+      # (the falsy-map-field rule from the moduledoc) — as does `name`, which
+      # travels with it.
+      constraints fields: [
+                    name: [type: :string, allow_nil?: false],
+                    saved: [type: :boolean, allow_nil?: false]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+      # `nil` MINTS a name (`mint_draft_name/3`) — the create case. Otherwise
+      # a bare `.md` basename, same grammar as `get_mail_draft`'s.
+      argument :name, :string, allow_nil?: true
+      # VERBATIM bytes: `Ash.Type.String` trims and nils-out the empty string
+      # by default, which would silently drop a draft's trailing newline (and
+      # any deliberate leading blank line) — the file would then no longer
+      # hash to what the caller wrote, breaking the very CAS this action is
+      # built on. Emptiness is refused a line later by the grammar gate, with
+      # a coherent `invalid_draft` instead of a bare "is required".
+      argument :content, :string,
+        allow_nil?: false,
+        constraints: [trim?: false, allow_empty?: true]
+
+      # The revision this write is based on: the sha256 hex
+      # (`DraftFile.content_hash/1`) of the bytes the caller last read. `nil`
+      # means "create" — accepted only when nothing is at that name, so a
+      # blind overwrite of an existing draft is never possible.
+      argument :base_hash, :string, allow_nil?: true
+      argument :generation, :integer, allow_nil?: false
+
+      # THE human's pen for draft files (spec E §Drafting & push): the one way
+      # the composer UI puts bytes under `sources/mail/<account>/drafts/`.
+      # Everything downstream — the ledger, push, the review snapshot, the
+      # hash-bound send — reads those bytes and is untouched by this action;
+      # what this owns is the four refusals that keep them trustworthy:
+      #
+      #   1. the content must PARSE (`DraftFile.parse_and_validate/1`, the same
+      #      grammar composition serializes from) — an unparseable draft is
+      #      refused, never stored;
+      #   2. the name must stay inside the account's own drafts dir
+      #      (`validate_draft_name/1` + `Paths.resolve_real/2`);
+      #   3. the draft must be in plain `draft` state by the LEDGER's reckoning
+      #      — the same projection `list_mail_drafts` renders — so nothing can
+      #      rewrite a file mid-push/send, or under a completed send whose
+      #      revision the ledger still names;
+      #   4. the write is compare-and-swap on `base_hash`, so an edit made
+      #      against bytes an agent has since replaced is refused
+      #      (`content_changed`) rather than silently clobbering them.
+      #
+      # The write itself is temp + rename, so the `mail_draft` watcher push
+      # (which fires on the `.md` rename, never on the `.md.tmp`) refreshes
+      # every panel with complete bytes.
+      run fn input, _ctx ->
+        %{account: slug, content: content, generation: generation} = input.arguments
+        base_hash = input.arguments[:base_hash]
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <- validate_slug(slug),
+             :ok <- ensure_configured_account(root, slug),
+             {:ok, parsed} <- validate_draft_content(content),
+             {:ok, name} <- draft_write_name(root, slug, input.arguments[:name], parsed),
+             {:ok, path} <- contained_draft_path(root, slug, name),
+             :ok <- ensure_draft_writable(root, slug, name),
+             :ok <- check_draft_cas(path, base_hash),
+             :ok <- write_draft_atomic(path, content) do
+          {:ok, %{"name" => name, "saved" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
   end
 
   @doc false
@@ -1391,6 +1464,184 @@ defmodule Valea.Api.Mail do
       {:error, :invalid_draft_name}
     end
   end
+
+  # -- write_mail_draft (spec E §Drafting & push) ------------------------------
+
+  # A subject slug is capped here, not at the whole name: the timestamp prefix
+  # is fixed-width, so this is what bounds the minted basename.
+  @draft_slug_max 40
+
+  # The grammar gate. A draft that does not parse is REFUSED, never stored —
+  # the file this action writes is exactly the file the push/send flows compose
+  # from, so admitting bytes they would later choke on would only move the
+  # failure to the moment the human clicks Send. The parsed result is also what
+  # mints a name, so the subject slug can never be taken from a field that
+  # failed validation.
+  defp validate_draft_content(content) do
+    case DraftFile.parse_and_validate(content) do
+      {:ok, parsed} -> {:ok, parsed}
+      {:error, _reason} -> {:error, :invalid_draft}
+    end
+  end
+
+  # A caller-supplied name is validated exactly like `get_mail_draft`'s;
+  # `nil` mints one.
+  defp draft_write_name(_root, _slug, name, _parsed) when is_binary(name) do
+    with :ok <- validate_draft_name(name), do: {:ok, name}
+  end
+
+  defp draft_write_name(root, slug, nil, parsed), do: {:ok, mint_draft_name(root, slug, parsed)}
+
+  # `YYYYMMDDTHHMMSS-<subject-slug>.md`, UTC. The `.md` suffix is part of the
+  # NAME everywhere on this surface — it is what `get_mail_draft`,
+  # `push_draft_to_mailbox` and `send_draft` take, and what
+  # `list_mail_drafts` reports — so the minted name carries it too.
+  defp mint_draft_name(root, slug, parsed) do
+    stamp = Calendar.strftime(DateTime.utc_now(), "%Y%m%dT%H%M%S")
+    unique_draft_name(root, slug, stamp <> "-" <> subject_slug(parsed))
+  end
+
+  # ASCII-only by construction: every run of non-alphanumerics (a colon, a
+  # space, an umlaut) collapses to one `-`, so the slug can never grow a path
+  # separator, a dot segment, or a byte the name grammar would reject.
+  defp subject_slug(%{subject: subject}) when is_binary(subject) do
+    slug =
+      subject
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "-")
+      |> String.slice(0, @draft_slug_max)
+      |> String.trim("-")
+
+    if slug == "", do: "draft", else: slug
+  end
+
+  defp subject_slug(_other), do: "draft"
+
+  # Two drafts minted in the same second (or one subject written twice) get a
+  # numeric suffix — a minted name NEVER lands on an existing entry, since the
+  # caller that supplied no name cannot have meant to overwrite anything.
+  defp unique_draft_name(root, slug, base) do
+    dir = drafts_dir(root, slug)
+
+    0..99
+    |> Stream.map(fn
+      0 -> base <> ".md"
+      n -> "#{base}-#{n + 1}.md"
+    end)
+    |> Enum.find(&(not draft_entry_exists?(dir, &1)))
+    |> case do
+      nil -> "#{base}-#{System.unique_integer([:positive])}.md"
+      name -> name
+    end
+  end
+
+  # `lstat`, not `stat`: a DANGLING symlink at the minted name is still an
+  # entry a rename would replace, so it counts as taken.
+  defp draft_entry_exists?(dir, name), do: match?({:ok, _stat}, File.lstat(Path.join(dir, name)))
+
+  # Writing creates directories, so — unlike the read paths — a grammar-valid
+  # slug is not enough: an unconfigured account would get a stray
+  # `sources/mail/<slug>/drafts/` tree holding a draft `list_mail_drafts`
+  # (which enumerates CONFIGURED accounts) would never show. Same roster the
+  # listing walks, so "writable account" and "listed account" cannot drift.
+  defp ensure_configured_account(root, slug) do
+    if slug in valid_account_slugs(root), do: :ok, else: {:error, :not_found}
+  end
+
+  # Containment, exactly as the executor does it
+  # (`Valea.Mail.OpsExecutor.resolve_draft_path/2`): `Paths.resolve_real/2`
+  # refuses a name whose entry resolves outside the account's own drafts dir,
+  # and the path handed back is the LITERAL `drafts/<name>` — never the
+  # symlink-followed one — so the rename below replaces the ENTRY rather than
+  # writing through it.
+  defp contained_draft_path(root, slug, name) do
+    dir = drafts_dir(root, slug)
+
+    case Paths.resolve_real(name, dir) do
+      {:ok, _resolved} -> {:ok, Path.join(dir, name)}
+      {:error, _reason} -> {:error, :link_unsafe}
+    end
+  end
+
+  # The ledger's verdict on this draft, from the SAME projection
+  # `list_mail_drafts` renders (`draft_display/4`) — one state machine, not
+  # two. The pen may only rewrite a file in plain `draft` state: never one
+  # mid-push/send (`pushing`/`sending`/`send_review`/`needs_review`, where the
+  # bytes are claimed and hash-bound), and never one displaying `sent`, whose
+  # ledger op still names this exact revision.
+  defp ensure_draft_writable(root, slug, name) do
+    {parsed, raw_hash} = read_and_parse_draft(root, slug, name)
+
+    case draft_display(slug, name, parsed, raw_hash) do
+      {"draft", _notice, _pushed?, _op_id} -> :ok
+      _busy -> {:error, :draft_busy}
+    end
+  end
+
+  # Compare-and-swap on the EXACT bytes on disk, under
+  # `DraftFile.content_hash/1` — the same encoding `get_mail_draft`'s caller
+  # hashes and the push binds to. `base_hash: nil` means "create", and is
+  # accepted ONLY when nothing is at that name: a blind overwrite of an
+  # existing draft would silently discard whatever an agent (or the human's
+  # other window) put there in the meantime.
+  defp check_draft_cas(path, base_hash) do
+    case read_draft_bytes_nofollow(path) do
+      {:ok, bytes} ->
+        if is_binary(base_hash) and base_hash == DraftFile.content_hash(bytes),
+          do: :ok,
+          else: {:error, :content_changed}
+
+      :absent ->
+        # A `base_hash` naming a revision that is no longer there is stale in
+        # exactly the sense the CAS exists to catch (deleted or renamed under
+        # the caller) — refused rather than quietly resurrected.
+        if is_nil(base_hash), do: :ok, else: {:error, :content_changed}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Same no-follow posture as every other draft read here: only a REGULAR file
+  # with a SINGLE link is hashed, so a planted symlink or hard link can neither
+  # supply the CAS basis nor be silently replaced.
+  defp read_draft_bytes_nofollow(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, links: 1}} ->
+        case File.read(path) do
+          {:ok, bytes} -> {:ok, bytes}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, _link_or_special} ->
+        {:error, :link_unsafe}
+
+      {:error, :enoent} ->
+        :absent
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Temp + rename in the SAME directory (`Valea.Mail.Settings.atomic_write!`'s
+  # discipline): a reader — the push snapshot, the review read, the watcher's
+  # refresh — sees either the old bytes or the new ones, never a half-written
+  # draft. The temp name ends `.md.tmp`, which neither `list_mail_drafts`
+  # (`.md` only) nor the watcher's `classify_sources/2` (`.md` only) picks up,
+  # so no ghost row and no spurious push.
+  defp write_draft_atomic(path, content) do
+    File.mkdir_p!(Path.dirname(path))
+    tmp = path <> ".tmp"
+    File.write!(tmp, content)
+    File.rename!(tmp, path)
+    :ok
+  rescue
+    error in File.Error -> {:error, error.reason}
+    error in File.RenameError -> {:error, error.reason}
+  end
+
+  defp drafts_dir(root, account), do: Path.join([root, "sources", "mail", account, "drafts"])
 
   # -- revise_mail_draft (spec G §Request changes) -----------------------------
 

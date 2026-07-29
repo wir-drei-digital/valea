@@ -101,6 +101,8 @@ import {
   listMailDraftsChannel,
   getMailDraft as httpGetMailDraft,
   getMailDraftChannel,
+  writeMailDraft as httpWriteMailDraft,
+  writeMailDraftChannel,
   getMailDraftReview as httpGetMailDraftReview,
   getMailDraftReviewChannel,
   sendDraft as httpSendDraft,
@@ -209,6 +211,7 @@ import type {
   PushDraftToMailboxFields,
   ListMailDraftsFields,
   GetMailDraftFields,
+  WriteMailDraftFields,
   GetMailDraftReviewFields,
   SendDraftFields,
   ResolveSendReviewFields,
@@ -556,6 +559,7 @@ const pushDraftToMailboxFields: PushDraftToMailboxFields = ['state'];
 // owns normalizing entries, same raw-delivery split as `mailStatusFields`.
 const listMailDraftsFields: ListMailDraftsFields = ['drafts'];
 const getMailDraftFields: GetMailDraftFields = ['content', 'path'];
+const writeMailDraftFields: WriteMailDraftFields = ['name', 'saved'];
 // The review snapshot's TYPED fields arrive camelCased; its three nested
 // maps (`recipients`/`threading`/`identity`) are unconstrained passthroughs
 // keeping `OpsExecutor.review_snapshot/2`'s snake keys, normalized by
@@ -985,6 +989,21 @@ function callGetMailDraftChannel(
 ) {
   return wrapChannelCall((handlers) =>
     getMailDraftChannel({ channel, input, fields: getMailDraftFields, ...handlers })
+  );
+}
+
+function callWriteMailDraftChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: {
+    account: string;
+    name: string | null;
+    content: string;
+    baseHash: string | null;
+    generation: number;
+  }
+) {
+  return wrapChannelCall((handlers) =>
+    writeMailDraftChannel({ channel, input, fields: writeMailDraftFields, ...handlers })
   );
 }
 
@@ -2108,6 +2127,29 @@ export const api = {
     runRpc(
       (channel) => callGetMailDraftChannel(channel, { account, draftName }),
       () => httpGetMailDraft(withAuth({ input: { account, draftName }, fields: getMailDraftFields }))
+    ),
+
+  // THE human's pen for draft files — the only way the composer puts bytes
+  // under an account's `drafts/`. `name: null` mints one
+  // (`YYYYMMDDTHHMMSS-<subject-slug>.md`) and returns it. `baseHash` is the
+  // sha256 hex of the bytes this edit started from (what `getMailDraft`
+  // returned): compare-and-swap, so an edit made against bytes an agent has
+  // since replaced fails `content_changed` instead of clobbering them. Pass
+  // `null` ONLY to create — an existing draft with no base hash is refused
+  // for the same reason.
+  writeMailDraft: (
+    account: string,
+    name: string | null,
+    content: string,
+    baseHash: string | null,
+    generation: number
+  ) =>
+    runRpc(
+      (channel) => callWriteMailDraftChannel(channel, { account, name, content, baseHash, generation }),
+      () =>
+        httpWriteMailDraft(
+          withAuth({ input: { account, name, content, baseHash, generation }, fields: writeMailDraftFields })
+        )
     ),
 
   // -- send (spec G). THE atomic review snapshot behind the confirm modal:
