@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   MailStore,
   mailStore,
+  MAIL_PAGE_SIZE,
   normalizeMailAccountStatus,
   normalizeMailDraft,
   normalizeMailDraftReview,
@@ -280,7 +281,7 @@ describe('MailStore.refreshStatus', () => {
     expect(store.selectedAccount).toBe('mara');
     expect(store.selectedFolder).toBe('INBOX');
     expect(listMailFolders).toHaveBeenCalledWith('mara');
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
   });
 
   it('skips invalid and unconfigured entries when defaulting the selection', async () => {
@@ -352,7 +353,7 @@ describe('MailStore.selectAccount', () => {
     expect(store.selectedFolder).toBe('INBOX');
     expect(store.selected).toBeNull();
     expect(listMailFolders).toHaveBeenCalledWith('zoe');
-    expect(listMailMessages).toHaveBeenCalledWith('zoe', 'INBOX');
+    expect(listMailMessages).toHaveBeenCalledWith('zoe', 'INBOX', { limit: MAIL_PAGE_SIZE });
   });
 
   // The switch must not leave the OLD account's folders/messages on screen
@@ -427,7 +428,7 @@ describe('MailStore folders + messages', () => {
     await store.selectFolder('Archive');
 
     expect(store.selectedFolder).toBe('Archive');
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'Archive');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'Archive', { limit: MAIL_PAGE_SIZE });
   });
 
   it('refreshMessages leaves messages untouched on failure', async () => {
@@ -446,6 +447,319 @@ describe('MailStore folders + messages', () => {
     await store.refreshMessages();
 
     expect(store.messages).toEqual(messages);
+  });
+});
+
+/**
+ * Descending ISO timestamps, one minute apart. `mail_messages.date` is a
+ * plain STRING column the backend both sorts and cursors on lexicographically
+ * (`date < ^before` in `Valea.Mail.Store.list_messages/4`), so a fixture only
+ * has to keep the strings ordered — no parsing happens on either side.
+ */
+function isoAt(index: number): string {
+  return new Date(Date.UTC(2026, 6, 29, 12, 0, 0) - index * 60_000).toISOString();
+}
+
+/** `count` index rows, newest first, starting `offset` minutes back. */
+function rows(count: number, offset = 0): Record<string, any>[] {
+  return Array.from({ length: count }, (_v, i) => ({ msgId: `m${offset + i}`, date: isoAt(offset + i) }));
+}
+
+/**
+ * `list_mail_messages` over one folder, faithful to the action it stands in
+ * for: newest-first, at most `limit` rows, everything STRICTLY older than
+ * `before`. Pagination is only worth asserting against a fake that actually
+ * paginates — `all` is read on every call, so a test can mutate it to stage
+ * arrivals and deletions between refetches.
+ */
+function pagedFolder(all: Record<string, any>[]) {
+  return vi.fn(async (_account: string, _folder: string, opts: { limit?: number; before?: string } = {}) => {
+    const behind = opts.before ? all.filter((row) => row.date < opts.before!) : all;
+    return { ok: true, data: { messages: behind.slice(0, opts.limit ?? MAIL_PAGE_SIZE) } } as MessagesResult;
+  });
+}
+
+/**
+ * A full page one, then nothing: once `state.stalled` flips, every refetch
+ * hangs forever, so whatever the store reports afterwards is unambiguously
+ * its pre-response state (the device `selectAccount`'s synchronous-clear test
+ * above uses).
+ */
+function stalledPageOne() {
+  const state = { stalled: false };
+  const listMailMessages = vi.fn(async () =>
+    state.stalled
+      ? new Promise<MessagesResult>(() => {})
+      : ({ ok: true, data: { messages: rows(MAIL_PAGE_SIZE) } } as MessagesResult)
+  );
+  return { state, listMailMessages };
+}
+
+describe('MailStore pagination', () => {
+  it('appends the page behind the oldest loaded message until the folder runs out', async () => {
+    const all = rows(MAIL_PAGE_SIZE * 2 + 30);
+    const listMailMessages = pagedFolder(all);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE);
+    expect(store.lastPageFull).toBe(true);
+
+    await store.loadOlder();
+
+    // The cursor is the oldest loaded row's own `date`, handed back verbatim.
+    expect(listMailMessages).toHaveBeenLastCalledWith('mara', 'INBOX', {
+      limit: MAIL_PAGE_SIZE,
+      before: all[MAIL_PAGE_SIZE - 1].date
+    });
+    expect(store.messages.map((m) => m.msgId)).toEqual(all.slice(0, MAIL_PAGE_SIZE * 2).map((r) => r.msgId));
+    expect(store.lastPageFull).toBe(true);
+
+    await store.loadOlder();
+
+    // A short page is the end of the folder — the row stops offering itself.
+    expect(store.messages.map((m) => m.msgId)).toEqual(all.map((r) => r.msgId));
+    expect(store.lastPageFull).toBe(false);
+  });
+
+  it('never asks for an older page when the last one came back short', async () => {
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: rows(12) } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    await store.loadOlder();
+
+    expect(store.lastPageFull).toBe(false);
+    expect(listMailMessages).not.toHaveBeenCalled();
+  });
+
+  it('dedupes an older page that overlaps what is already loaded', async () => {
+    const first = rows(MAIL_PAGE_SIZE);
+    // A row re-indexed between the two reads can come back on BOTH pages
+    // (the cursor is a date, and dates are not unique) — appending it twice
+    // would give the list two rows with the same `msgId` key.
+    const older = [first[MAIL_PAGE_SIZE - 1], ...rows(5, MAIL_PAGE_SIZE)];
+    let call = 0;
+    const listMailMessages = vi.fn(
+      async () => ({ ok: true, data: { messages: call++ === 0 ? first : older } }) as MessagesResult
+    );
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+
+    await store.loadOlder();
+
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 5);
+    expect(store.messages.filter((m) => m.msgId === first[MAIL_PAGE_SIZE - 1].msgId)).toHaveLength(1);
+  });
+
+  // The two tests below turn on the cursor being dropped the instant the
+  // selection changes, not when the new page lands: in that window the list
+  // on screen is still the previous one's, and a "Load older" click would
+  // page a mailbox nobody is reading from a cursor that means nothing in it.
+  it('drops the cursor synchronously on a folder switch, before the new page lands', async () => {
+    const { state, listMailMessages } = stalledPageOne();
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    expect(store.lastPageFull).toBe(true);
+
+    state.stalled = true;
+    void store.selectFolder('Archive');
+
+    expect(store.lastPageFull).toBe(false);
+    listMailMessages.mockClear();
+    await store.loadOlder();
+    expect(listMailMessages).not.toHaveBeenCalled();
+  });
+
+  it('drops the cursor synchronously on an account switch, before the new page lands', async () => {
+    const { state, listMailMessages } = stalledPageOne();
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    expect(store.lastPageFull).toBe(true);
+
+    state.stalled = true;
+    void store.selectAccount('zoe');
+
+    expect(store.lastPageFull).toBe(false);
+    listMailMessages.mockClear();
+    await store.loadOlder();
+    expect(listMailMessages).not.toHaveBeenCalled();
+  });
+
+  it('clears the pagination state when the selection vanishes with the account', async () => {
+    let accounts: Record<string, any>[] = [rawMara, rawZoe];
+    const store = new MailStore(
+      fakeApi({
+        mailStatus: async () => ({ ok: true, data: { accounts } }) as StatusResult,
+        listMailMessages: async () => ({ ok: true, data: { messages: rows(MAIL_PAGE_SIZE) } }) as MessagesResult
+      }) as never
+    );
+    await store.refreshStatus();
+    expect(store.lastPageFull).toBe(true);
+
+    accounts = [];
+    await store.refreshStatus();
+
+    // No "Load older" row under an emptied list.
+    expect(store.selectedAccount).toBeNull();
+    expect(store.messages).toEqual([]);
+    expect(store.lastPageFull).toBe(false);
+  });
+
+  // The cursor is a DATE, so an undated row can never be reached through it:
+  // asking `before` anything would return the same page forever. Such a page
+  // reads as the end of the folder instead.
+  it('stops paginating a page whose rows carry no date', async () => {
+    const undated = Array.from({ length: MAIL_PAGE_SIZE }, (_v, i) => ({ msgId: `u${i}`, date: null }));
+    const listMailMessages = vi.fn(async () => ({ ok: true, data: { messages: undated } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE);
+    expect(store.lastPageFull).toBe(false);
+    await store.loadOlder();
+    expect(listMailMessages).not.toHaveBeenCalled();
+  });
+
+  // Folders keep independent date ranges, and `selectFolder` deliberately
+  // leaves the old rows on screen while the new page loads — so a merge that
+  // didn't reset first would keep every INBOX row "older" than Archive's
+  // newest page and splice one folder's mail into the other's list.
+  it('never splices the previous folder’s rows into the new folder’s first page', async () => {
+    const inbox = rows(MAIL_PAGE_SIZE, 500);
+    const archive = rows(MAIL_PAGE_SIZE);
+    const listMailMessages = vi.fn(
+      async (_account: string, folder: string) =>
+        ({ ok: true, data: { messages: folder === 'INBOX' ? inbox : archive } }) as MessagesResult
+    );
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+
+    await store.selectFolder('Archive');
+
+    expect(store.messages.map((m) => m.msgId)).toEqual(archive.map((r) => r.msgId));
+    // And the cursor now belongs to Archive, not to the INBOX page it replaced.
+    await store.loadOlder();
+    expect(listMailMessages).toHaveBeenLastCalledWith('mara', 'Archive', {
+      limit: MAIL_PAGE_SIZE,
+      before: archive[MAIL_PAGE_SIZE - 1].date
+    });
+  });
+
+  it('re-reads only the NEWEST page on a live refetch, keeping the appended older pages', async () => {
+    const all = rows(MAIL_PAGE_SIZE * 2);
+    const listMailMessages = pagedFolder(all);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    await store.loadOlder();
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE * 2);
+
+    // One message arrives at the top and one inside the newest page is
+    // deleted — both land, and the older page stays loaded underneath.
+    all.unshift({ msgId: 'brand-new', date: isoAt(-1) });
+    all.splice(
+      all.findIndex((row) => row.msgId === 'm3'),
+      1
+    );
+    store.handleMailMessage({ account: 'mara', path: 'sources/mail/mara/views/messages/m.md' });
+    await flush();
+
+    expect(store.messages[0].msgId).toBe('brand-new');
+    expect(store.messages.map((m) => m.msgId)).not.toContain('m3');
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE * 2);
+    expect(store.messages[store.messages.length - 1].msgId).toBe('m199');
+    // The cursor survived the refetch: the next page comes from behind the
+    // TAIL, not from behind page one (which would re-read loaded rows
+    // forever and never advance).
+    await store.loadOlder();
+    expect(listMailMessages).toHaveBeenLastCalledWith('mara', 'INBOX', {
+      limit: MAIL_PAGE_SIZE,
+      before: isoAt(MAIL_PAGE_SIZE * 2 - 1)
+    });
+  });
+
+  // `lastPageFull` describes the OLDEST loaded page, not the last one
+  // fetched: a live refetch re-reads page ONE, which says nothing about
+  // what's behind a tail already known to be the end of the folder.
+  it('keeps the end-of-folder verdict while the newest page keeps refreshing', async () => {
+    const all = rows(MAIL_PAGE_SIZE + 20);
+    const listMailMessages = pagedFolder(all);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    await store.loadOlder();
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 20);
+    expect(store.lastPageFull).toBe(false);
+
+    store.handleMailMessage({ account: 'mara', path: 'sources/mail/mara/views/messages/m.md' });
+    await flush();
+
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 20);
+    expect(store.lastPageFull).toBe(false);
+  });
+
+  it('drops the appended pages when the newest page comes back short', async () => {
+    const all = rows(MAIL_PAGE_SIZE + 50);
+    const listMailMessages = pagedFolder(all);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    await store.loadOlder();
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 50);
+
+    // A short page one IS the whole folder (the limit is ours, explicitly) —
+    // everything held from an older page is gone from the mailbox.
+    all.splice(20, all.length);
+    store.handleMailMessage({ account: 'mara', path: 'sources/mail/mara/views/messages/m.md' });
+    await flush();
+
+    expect(store.messages).toHaveLength(20);
+    expect(store.lastPageFull).toBe(false);
+  });
+
+  it('discards an older page that lands after the folder changed', async () => {
+    const inbox = rows(MAIL_PAGE_SIZE);
+    const archive = rows(3, 500);
+    let release: (result: MessagesResult) => void = () => {};
+    const listMailMessages = vi.fn(
+      async (_account: string, folder: string, opts: { before?: string } = {}) =>
+        opts.before
+          ? new Promise<MessagesResult>((resolve) => (release = resolve))
+          : ({ ok: true, data: { messages: folder === 'INBOX' ? inbox : archive } } as MessagesResult)
+    );
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+
+    void store.loadOlder();
+    await store.selectFolder('Archive');
+    release({ ok: true, data: { messages: rows(MAIL_PAGE_SIZE, MAIL_PAGE_SIZE) } } as MessagesResult);
+    await flush();
+
+    expect(store.messages.map((m) => m.msgId)).toEqual(archive.map((r) => r.msgId));
+  });
+
+  it('flags the in-flight load and ignores a second click while it runs', async () => {
+    let release: (result: MessagesResult) => void = () => {};
+    const listMailMessages = vi.fn(
+      async (_account: string, _folder: string, opts: { before?: string } = {}) =>
+        opts.before
+          ? new Promise<MessagesResult>((resolve) => (release = resolve))
+          : ({ ok: true, data: { messages: rows(MAIL_PAGE_SIZE) } } as MessagesResult)
+    );
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    void store.loadOlder();
+    expect(store.loadingOlder).toBe(true);
+    void store.loadOlder();
+    expect(listMailMessages).toHaveBeenCalledTimes(1);
+
+    release({ ok: true, data: { messages: rows(5, MAIL_PAGE_SIZE) } } as MessagesResult);
+    await flush();
+
+    expect(store.loadingOlder).toBe(false);
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 5);
   });
 });
 
@@ -556,7 +870,7 @@ describe('MailStore push handlers (account filtering)', () => {
 
     store.handleMailStatus(pushFor(rawMara));
     await flush();
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
   });
 
   it('handleMailStatus notifies onMailStatus listeners for every account', async () => {
@@ -584,7 +898,7 @@ describe('MailStore push handlers (account filtering)', () => {
 
     store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1 });
     await flush();
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
   });
 
   it('handleMailMessage refetches only for the selected account', async () => {
@@ -599,7 +913,7 @@ describe('MailStore push handlers (account filtering)', () => {
 
     store.handleMailMessage({ account: 'mara', path: 'sources/mail/mara/views/messages/m.md' });
     await flush();
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
   });
 
   it('handleMailDraft refetches the drafts list for ANY account', async () => {
@@ -757,7 +1071,7 @@ describe('MailStore.applyOps', () => {
 
     expect(applyMailOps).toHaveBeenCalledWith('mara', [op], 7);
     expect(results).toEqual([{ op: 0, result: 'accepted', reason: null }]);
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX');
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
   });
 
   it('synthesizes per-op rejections when the RPC itself fails', async () => {

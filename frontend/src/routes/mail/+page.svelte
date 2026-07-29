@@ -277,10 +277,28 @@
           {/if}
         </div>
         <MessageList messages={visibleMessages} {selectedId} account={mailStore.selectedAccount ?? ''} />
+        <!-- The filtered-empty note and the "Load older" row are exclusive:
+             under a note explaining that the filter hid everything, a "Load
+             older" button reads as the way to get those messages back, which
+             it is not (it fetches an older page, which the same filter then
+             hides too). The store's own guards make the row a no-op when
+             there's nothing behind the oldest loaded message. -->
         {#if visibleMessages.length === 0 && mailStore.messages.length > 0}
           <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
             No {readFilter} messages in this folder.
           </p>
+        {:else if mailStore.lastPageFull}
+          <div class="flex justify-center px-3.5 py-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={mailStore.loadingOlder}
+              onclick={() => void mailStore.loadOlder()}
+            >
+              {mailStore.loadingOlder ? 'Loading…' : 'Load older'}
+            </Button>
+          </div>
         {/if}
       {/snippet}
       {#snippet footer()}

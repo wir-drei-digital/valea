@@ -35,6 +35,15 @@ type MailApi = Pick<
 const INBOX_FOLDER = 'INBOX';
 
 /**
+ * How many rows one `list_mail_messages` call asks for. Passed EXPLICITLY on
+ * every call rather than left to the action's own identical default, because
+ * pagination reads the page size back out of the response: a page that comes
+ * back SHORT is the end of the folder, and only a full one can have anything
+ * behind it.
+ */
+export const MAIL_PAGE_SIZE = 100;
+
+/**
  * One account's app-facing status — camelCased/typed from the raw per-account
  * entry of `mail_status`'s `accounts` list (and, identically shaped minus
  * `valid`/`reason`, the `mail_status` channel push — see `MailStatusPush`'s
@@ -315,8 +324,11 @@ export function normalizeMailDraftReview(raw: Record<string, unknown>): MailDraf
 
 /**
  * Live view of the configured mail accounts: the per-account status list,
- * the selected account's folder list, the selected folder's message list,
- * and the currently open message's detail.
+ * the selected account's folder list, the selected folder's message list
+ * (paginated — `loadOlder` appends the page behind the oldest loaded row,
+ * and the live refetches re-read only the NEWEST page; see
+ * `refreshMessages` for the compromise that buys), and the currently open
+ * message's detail.
  *
  * `handleMailStatus`/`handleMailSync`/`handleMailMessage`/`handleMailDraft`
  * are plain public methods, not wired to a channel by this store itself —
@@ -344,8 +356,33 @@ export class MailStore {
    * yet" signal.
    */
   loading = $state(false);
+  /**
+   * Whether the OLDEST loaded page came back full — i.e. there may be older
+   * messages behind it, and the list's "Load older" row has something to ask
+   * for. False whenever the loaded rows yield no usable cursor (see
+   * `#trackPagination`).
+   */
+  lastPageFull = $state(false);
+  /** In-flight flag for `loadOlder()` — the "Load older" row disables on it. */
+  loadingOlder = $state(false);
 
   #api: MailApi;
+
+  /**
+   * `list_mail_messages`' `before` cursor: the `date` of the oldest loaded
+   * row, handed back VERBATIM. The backend filters `date < before` against
+   * the same plain-string column it sorts on (`Valea.Mail.Store.list_messages/4`),
+   * so the value round-trips without either side parsing it. `null` before
+   * the first page lands, and whenever the loaded rows carry no date at all —
+   * an undated message can't be reached through a date cursor, so pagination
+   * stops there rather than re-reading the same page forever.
+   *
+   * Strictly-less is the backend's comparison, not a choice made here: a
+   * message sharing the cursor's exact timestamp is skipped by the page
+   * behind it. Nothing on this side can widen that without changing the
+   * action.
+   */
+  #oldestCursor: string | null = null;
 
   /**
    * `mail_status` push subscribers beyond this store's own refetch reaction
@@ -402,6 +439,7 @@ export class MailStore {
     this.selected = null;
     this.folders = [];
     this.messages = [];
+    this.#resetPagination();
     await Promise.all([this.refreshFolders(), this.refreshMessages()]);
   }
 
@@ -419,25 +457,116 @@ export class MailStore {
     this.folders = data.folders ?? [];
   }
 
-  /** Switches the message list to `name` within the selected account. */
+  /** Switches the message list to `name` within the selected account — a folder switch starts over at page one. */
   async selectFolder(name: string): Promise<void> {
     this.selectedFolder = name;
+    this.#resetPagination();
     await this.refreshMessages();
   }
 
-  /** Lists the selected folder of the selected account — a no-op that clears `messages` when no account is known yet. */
+  /**
+   * Lists the selected folder of the selected account — a no-op that clears
+   * `messages` when no account is known yet.
+   *
+   * This is also the LIVE path (every `mail_status`/`mail_sync`/`mail_message`
+   * push lands here), so it re-fetches the NEWEST page only and merges it
+   * over what's loaded: the fresh page replaces the head of the list
+   * wholesale — new arrivals, deletions and flag changes inside it all show
+   * up — while everything OLDER than that page (whatever `loadOlder`
+   * appended) is kept as-is.
+   *
+   * That compromise is deliberate. Re-fetching every loaded page on every
+   * push costs one RPC per page per sync tick; replacing the list with page
+   * one alone would collapse a reader who had paged back through months of
+   * mail down to the newest hundred, mid-scroll. The price is that an
+   * appended older page doesn't refresh until the folder is re-entered — a
+   * message deleted down there stays on screen that long, which is the
+   * cheapest of the three wrong things.
+   *
+   * A SHORT page needs no merge: it means the folder holds fewer than
+   * `MAIL_PAGE_SIZE` messages in total, so anything still held from an
+   * earlier page is gone from the mailbox and must go from the list too.
+   */
   async refreshMessages(): Promise<void> {
     const account = this.selectedAccount;
     if (!account) {
       this.messages = [];
+      this.#resetPagination();
       return;
     }
 
-    const result = await this.#api.listMailMessages(account, this.selectedFolder ?? INBOX_FOLDER);
+    const result = await this.#api.listMailMessages(account, this.selectedFolder ?? INBOX_FOLDER, {
+      limit: MAIL_PAGE_SIZE
+    });
     if (!result.ok) return;
 
     const data = result.data as { messages?: MailMessageSummary[] };
-    this.messages = data.messages ?? [];
+    const page = data.messages ?? [];
+    const pageFull = page.length >= MAIL_PAGE_SIZE;
+    // Nothing to merge over before the first page of THIS folder has landed
+    // (`#resetPagination` nulls the cursor on every switch) — without that
+    // guard the previous folder's rows would splice into this one's list.
+    const keepOlder = pageFull && this.#oldestCursor !== null;
+    this.messages = keepOlder ? mergeNewestPage(page, this.messages) : page;
+    // On the merge path the oldest loaded page is the kept TAIL's last one,
+    // which this fetch says nothing about — carry its fullness forward.
+    this.#trackPagination(keepOlder ? this.lastPageFull : pageFull);
+  }
+
+  /**
+   * Appends the page of messages BEHIND the oldest loaded one — the list's
+   * "Load older" row. A no-op unless the oldest loaded page came back full
+   * (a short page is the end of the folder, and asking again would only
+   * re-read what's already on screen) and while a call is already in flight.
+   *
+   * The account/folder are captured before the call and re-checked after it:
+   * a switch landing mid-flight makes this response belong to a folder the
+   * user is no longer reading, and appending it would splice one folder's
+   * messages into another's list. The switch's own refetch has replaced the
+   * list by then, so dropping the response costs nothing — including its
+   * clearing of `loadingOlder`, which `#resetPagination` has already done
+   * for the list now on screen (and which a newer call may now own).
+   */
+  async loadOlder(): Promise<void> {
+    const account = this.selectedAccount;
+    const folder = this.selectedFolder ?? INBOX_FOLDER;
+    const before = this.#oldestCursor;
+    if (!account || !before || !this.lastPageFull || this.loadingOlder) return;
+
+    this.loadingOlder = true;
+    const result = await this.#api.listMailMessages(account, folder, { limit: MAIL_PAGE_SIZE, before });
+    if (account !== this.selectedAccount || folder !== (this.selectedFolder ?? INBOX_FOLDER)) return;
+    this.loadingOlder = false;
+    if (!result.ok) return;
+
+    const data = result.data as { messages?: MailMessageSummary[] };
+    const page = data.messages ?? [];
+    const known = new Set(this.messages.map((message) => message.msgId));
+    this.messages = [...this.messages, ...page.filter((message) => !known.has(message.msgId))];
+    this.#trackPagination(page.length >= MAIL_PAGE_SIZE);
+  }
+
+  /**
+   * Re-derives the `before` cursor from the loaded list — its oldest dated
+   * row, whichever page that came from — and records whether the page behind
+   * it is worth asking for. A list with no dated row at all can't be paged
+   * past, so it reads as the end of the folder regardless of `oldestPageFull`.
+   */
+  #trackPagination(oldestPageFull: boolean): void {
+    this.#oldestCursor = oldestDate(this.messages);
+    this.lastPageFull = oldestPageFull && this.#oldestCursor !== null;
+  }
+
+  /**
+   * Drops the pagination state — every account/folder switch starts at page
+   * one. Clearing `loadingOlder` alongside it re-enables the row for the
+   * folder now on screen; the call still in flight for the previous one
+   * discards its own response (see `loadOlder`).
+   */
+  #resetPagination(): void {
+    this.#oldestCursor = null;
+    this.lastPageFull = false;
+    this.loadingOlder = false;
   }
 
   /** Loads one message's full detail (frontmatter + body) from the selected account by its indexed `msgId`. */
@@ -685,6 +814,7 @@ export class MailStore {
     this.selectedAccount = first ? first.account : null;
     this.selectedFolder = INBOX_FOLDER;
     this.selected = null;
+    this.#resetPagination();
     if (this.selectedAccount) {
       await Promise.all([this.refreshFolders(), this.refreshMessages()]);
     } else {
@@ -692,6 +822,44 @@ export class MailStore {
       this.messages = [];
     }
   }
+}
+
+/**
+ * The newest page merged over the previously loaded list (see
+ * `refreshMessages`): every row of `page` verbatim, then the loaded rows
+ * STRICTLY older than the page's oldest dated row — the same `date < before`
+ * window the backend paginates on, so the kept tail is exactly what
+ * `loadOlder` fetched behind that page.
+ *
+ * Rows inside the page's own window are dropped rather than kept-when-absent:
+ * a message missing from the fresh page is missing because it was deleted or
+ * moved out of the folder, and keeping it would pin it to the list until the
+ * folder is re-entered. Undated rows are dropped for the same reason — they
+ * only ever arrive on the newest page (nothing older than a cursor can be
+ * undated), so the fresh page is their whole truth. `msgId` dedupe covers a
+ * row that drifted across the boundary as new mail shifted the window down.
+ */
+function mergeNewestPage(page: MailMessageSummary[], loaded: MailMessageSummary[]): MailMessageSummary[] {
+  const cursor = oldestDate(page);
+  if (cursor === null) return page;
+
+  const fresh = new Set(page.map((message) => message.msgId));
+  const older = loaded.filter(
+    (message) => message.date !== null && message.date < cursor && !fresh.has(message.msgId)
+  );
+  return [...page, ...older];
+}
+
+/**
+ * The `date` of the last DATED row of a newest-first list — the `before`
+ * cursor for the page behind it, or `null` when nothing in it carries one.
+ */
+function oldestDate(messages: MailMessageSummary[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const date = messages[index].date;
+    if (date) return date;
+  }
+  return null;
 }
 
 export const mailStore = new MailStore(api);
