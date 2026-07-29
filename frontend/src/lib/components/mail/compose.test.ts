@@ -7,6 +7,8 @@ import {
   formatAddressList,
   formatMailbox,
   forwardSubject,
+  hasDraftContent,
+  loadDraftFields,
   parseAddressList,
   parseDraftFields,
   quoteBody,
@@ -204,6 +206,72 @@ describe('parseDraftFields', () => {
       ok: true,
       fields: { to: ['a@x.com'], cc: [], bcc: [], subject: '', inReplyTo: null, body: '' }
     });
+  });
+});
+
+describe('loadDraftFields', () => {
+  // The draft an agent actually leaves behind: unquoted scalars, a block
+  // sequence, an engine-stamped `status:` line (`DraftFile.stamp_status/2`
+  // writes one and it survives a failed send returning the draft to `draft`),
+  // and a key order of its own.
+  const agentWritten =
+    '---\n' +
+    'subject: Kickoff notes\n' +
+    'to:\n' +
+    '  - alex@example.com\n' +
+    '  - bo@example.com\n' +
+    'status: draft\n' +
+    'in_reply_to: 2026-07-15-alex-4f2a91c3\n' +
+    '---\n' +
+    'Here is the draft you asked for.\n';
+
+  it('parses an agent-written draft AND gives it a clean baseline', () => {
+    const loaded = loadDraftFields(agentWritten);
+
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.fields).toEqual({
+      to: ['alex@example.com', 'bo@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Kickoff notes',
+      inReplyTo: '2026-07-15-alex-4f2a91c3',
+      body: 'Here is the draft you asked for.\n'
+    });
+
+    // THE point: the baseline is this module's rendering, not the disk bytes.
+    // Comparing an untouched buffer against the file would report "unsaved
+    // changes" for every draft not written in exactly this style — which is
+    // most of them, since the composer drops the engine-owned `status:` line
+    // and quotes what YAML lets you leave bare.
+    expect(loaded.baseline).not.toBe(agentWritten);
+    expect(loaded.baseline).toBe(draftContent(loaded.fields));
+    expect(loaded.baseline).not.toContain('status:');
+  });
+
+  it('leaves its own rendering byte-identical, so a saved draft reopens clean', () => {
+    const content = draftContent(
+      fields({ to: ['a@x.com'], subject: 'Hi', body: 'Body.\n' })
+    );
+    const loaded = loadDraftFields(content);
+
+    expect(loaded.ok && loaded.baseline).toBe(content);
+  });
+
+  it('keeps the raw bytes as the baseline for frontmatter it refuses', () => {
+    const raw = '---\nto: [a@x.com]\nfrom: mallory@evil.example\n---\nHi';
+    expect(loadDraftFields(raw)).toEqual({ ok: false, reason: 'unsupported', baseline: raw });
+  });
+});
+
+describe('hasDraftContent', () => {
+  it('is the "would the user mind losing this?" test for a draft with no file yet', () => {
+    expect(hasDraftContent(emptyDraftFields())).toBe(false);
+    expect(hasDraftContent(fields({ subject: '   ' }))).toBe(false);
+    // Carried, never typed: a prefill emptied back out is nothing to keep.
+    expect(hasDraftContent(fields({ inReplyTo: '2026-07-15-alex-4f2a91c3' }))).toBe(false);
+    expect(hasDraftContent(fields({ to: ['a@x.com'] }))).toBe(true);
+    expect(hasDraftContent(fields({ body: 'hi' }))).toBe(true);
   });
 });
 
@@ -473,11 +541,22 @@ describe('compose prefill handoff', () => {
     expect(takeComposePrefill('mara')).toBeNull();
   });
 
-  it('never lands a prefill in another account’s composer', () => {
-    setComposePrefill('mara', fields({ to: ['a@x.com'] }));
+  it('never lands a prefill in another account’s composer, and leaves it for the one it named', () => {
+    const prefill = fields({ to: ['a@x.com'] });
+    setComposePrefill('mara', prefill);
 
     expect(takeComposePrefill('zoe')).toBeNull();
-    // …and it is dropped rather than left waiting for the account it named.
+    // Left where it is, deliberately: the unmount this stash also serves IS an
+    // account switch, so dropping it as the other account's composer mounts
+    // would lose exactly the buffer it just rescued.
+    expect(takeComposePrefill('mara')).toEqual(prefill);
     expect(takeComposePrefill('mara')).toBeNull();
+  });
+
+  it('holds one slot — a newer stash replaces an older one', () => {
+    setComposePrefill('mara', fields({ subject: 'first' }));
+    setComposePrefill('mara', fields({ subject: 'second' }));
+
+    expect(takeComposePrefill('mara')?.subject).toBe('second');
   });
 });

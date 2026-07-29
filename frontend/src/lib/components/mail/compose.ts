@@ -62,6 +62,22 @@ export function emptyDraftFields(): DraftFields {
   return { to: [], cc: [], bcc: [], subject: '', inReplyTo: null, body: '' };
 }
 
+/**
+ * Whether a buffer holds anything a user would mind losing — the "is a
+ * not-yet-created draft dirty?" question, for which there is no saved
+ * revision to compare against. `inReplyTo` deliberately does not count: it is
+ * carried, never typed, so a prefill reduced back to nothing is nothing.
+ */
+export function hasDraftContent(fields: DraftFields): boolean {
+  return (
+    fields.to.length > 0 ||
+    fields.cc.length > 0 ||
+    fields.bcc.length > 0 ||
+    fields.subject.trim() !== '' ||
+    fields.body.trim() !== ''
+  );
+}
+
 // -- rendering ----------------------------------------------------------------
 
 /**
@@ -366,6 +382,40 @@ export function parseDraftFields(content: string): DraftParse {
   };
 }
 
+/**
+ * One draft file, as an editor needs it: the parsed fields (or the refusal)
+ * AND the **baseline** its unsaved-changes comparison must use.
+ *
+ * The baseline is `draftContent(fields)`, NOT the bytes on disk, and the
+ * difference is the whole point of this function. Draft files are mostly
+ * agent-written: `to: [a@x.com]` unquoted, a block sequence, another key
+ * order, a `status:` line the engine stamped (`DraftFile.stamp_status/2`
+ * leaves one behind after a failed send returns the draft to `draft` — the
+ * exact state the composer offers to edit). All of those parse cleanly and
+ * re-render to something byte-DIFFERENT, so comparing the buffer against the
+ * disk bytes would open every such draft already "dirty": Save armed, an
+ * unsaved-changes warning, and a leave dialog claiming work would be lost
+ * when nothing was typed.
+ *
+ * Comparing against this module's own rendering asks the question the editor
+ * actually means — "has the user changed anything?" — and re-rendering a
+ * draft with no edits is a no-op the user never sees. The CAS is unaffected:
+ * `base_hash` is bound to the DISK bytes by the caller, which is what
+ * `write_mail_draft` compares against.
+ *
+ * A refused draft keeps the raw bytes as its baseline: it opens read-only, so
+ * nothing can make it dirty either way.
+ */
+export type LoadedDraft =
+  | { ok: true; fields: DraftFields; baseline: string }
+  | { ok: false; reason: DraftParseRefusal; baseline: string };
+
+export function loadDraftFields(content: string): LoadedDraft {
+  const parsed = parseDraftFields(content);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason, baseline: content };
+  return { ok: true, fields: parsed.fields, baseline: draftContent(parsed.fields) };
+}
+
 // -- the recipient text fields ------------------------------------------------
 
 /**
@@ -649,14 +699,23 @@ export function saveErrorMessage(code: string): string {
 }
 
 /**
- * One-shot handoff of a prefill from the read pane's Reply/Reply-all/Forward
- * to the composer — `stores/initial-prompt.ts`'s pattern, and its reasoning:
- * module-level state survives SPA navigation, intentionally does NOT survive a
- * reload (a reloaded `?compose=new` is simply an empty composer, which is
- * safe), and a quoted message body never touches the URL.
+ * One-shot handoff of composer fields — `stores/initial-prompt.ts`'s pattern,
+ * and its reasoning: module-level state survives SPA navigation, intentionally
+ * does NOT survive a reload (a reloaded `?compose=new` is simply an empty
+ * composer, which is safe), and a quoted message body never touches the URL.
  *
- * Account-keyed: a prefill composed against one mailbox must not land in
- * another's composer if the user switches accounts on the way.
+ * Two producers, both handing over fields that exist only in memory:
+ *
+ *   * the read pane's Reply/Reply-all/Forward, before navigating;
+ *   * `ComposeView`'s unmount flush, for a buffer that has no draft FILE yet
+ *     (`?compose=new`) — stashing it costs nothing and mints nothing, where
+ *     saving it would create a draft the user never asked to exist.
+ *
+ * Account-keyed, and a mismatch takes NOTHING and leaves the stash alone: the
+ * unmount this exists for is an account switch, and dropping the buffer as the
+ * other account's composer mounts would lose exactly what was just rescued.
+ * One slot — a newer stash replaces an older one, and everything dies on
+ * reload.
  */
 let pendingPrefill: { account: string; fields: DraftFields } | null = null;
 
@@ -664,9 +723,10 @@ export function setComposePrefill(account: string, fields: DraftFields): void {
   pendingPrefill = { account, fields };
 }
 
-/** Takes the pending prefill for `account` — once. Anything stashed is dropped either way. */
+/** Takes the pending prefill for `account` — once. Another account's stash is left where it is. */
 export function takeComposePrefill(account: string): DraftFields | null {
-  const pending = pendingPrefill;
+  if (pendingPrefill?.account !== account) return null;
+  const { fields } = pendingPrefill;
   pendingPrefill = null;
-  return pending && pending.account === account ? pending.fields : null;
+  return fields;
 }

@@ -23,6 +23,7 @@
   //   * every save carries the hash of the revision it started from, so an
   //     edit made against bytes an agent has since replaced comes back
   //     `content_changed` instead of clobbering them.
+  import { onDestroy } from 'svelte';
   import { beforeNavigate, goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -44,9 +45,11 @@
     draftContent,
     emptyDraftFields,
     formatAddressList,
+    hasDraftContent,
+    loadDraftFields,
     parseAddressList,
-    parseDraftFields,
     saveErrorMessage,
+    setComposePrefill,
     takeComposePrefill,
     type DraftFields
   } from './compose';
@@ -114,18 +117,34 @@
   // Unsaved-changes guard: `beforeNavigate` cancels synchronously (the only
   // way to stop a SvelteKit navigation) and the dialog then decides.
   let pendingNav = $state<URL | null>(null);
-  let leaving = false;
+  /**
+   * The user answered "Discard and leave" for THIS buffer: the navigation it
+   * resumes must not be intercepted again, and the unmount that follows must
+   * not flush away what was just discarded on purpose.
+   *
+   * Reset by `resetForm` — i.e. whenever a load starts — because the composer
+   * is NOT guaranteed to unmount on that navigation: `?compose=<name>` →
+   * `?compose=new` keeps this very instance mounted (the route's `{#if
+   * composeParam}` stays true), and a flag left set there would disarm the
+   * guard for every later buffer.
+   */
+  let discarded = false;
 
   const generation = $derived(workspaceStore.generation ?? 0);
 
-  const fields = $derived<DraftFields>({
-    to: parseAddressList(toText),
-    cc: parseAddressList(ccText),
-    bcc: parseAddressList(bccText),
-    subject,
-    inReplyTo,
-    body
-  });
+  /** The form, as draft fields. A plain function so `onDestroy` can call it too. */
+  function currentFields(): DraftFields {
+    return {
+      to: parseAddressList(toText),
+      cc: parseAddressList(ccText),
+      bcc: parseAddressList(bccText),
+      subject,
+      inReplyTo,
+      body
+    };
+  }
+
+  const fields = $derived(currentFields());
   const content = $derived(draftContent(fields));
 
   /** The draft's row in the workspace-wide list — where its LEDGER-derived state lives. */
@@ -155,11 +174,19 @@
 
   const busy = $derived(saving || reviewing || pushing);
   const dirty = $derived(
-    !readOnly &&
-      (savedContent === null
-        ? toText.trim() !== '' || ccText.trim() !== '' || bccText.trim() !== '' || subject.trim() !== '' || body.trim() !== ''
-        : content !== savedContent)
+    !readOnly && (savedContent === null ? hasDraftContent(fields) : content !== savedContent)
   );
+
+  /**
+   * `!readOnly`, mirrored out of reactive state for `onDestroy`. Teardown is
+   * no place to be pulling on another module's signals — `readOnly` depends on
+   * `mailStore.drafts` — and this is the one input the flush needs that isn't
+   * plain local state.
+   */
+  let flushable = false;
+  $effect(() => {
+    flushable = !readOnly;
+  });
 
   function applyFields(next: DraftFields): void {
     toText = formatAddressList(next.to);
@@ -172,6 +199,7 @@
 
   function resetForm(): void {
     applyFields(emptyDraftFields());
+    discarded = false;
     baseHash = null;
     savedContent = null;
     unsupportedRaw = null;
@@ -204,13 +232,16 @@
     const hash = await sha256Hex(bytes);
     if (seq !== loadSeq) return;
 
-    const parsed = parseDraftFields(bytes);
-    if (parsed.ok) applyFields(parsed.fields);
+    const loaded = loadDraftFields(bytes);
+    if (loaded.ok) applyFields(loaded.fields);
     else unsupportedRaw = bytes;
 
     name = target;
+    // The CAS binds to the DISK bytes; the dirty comparison binds to this
+    // module's rendering of them (`loadDraftFields` — an agent-written draft
+    // is rarely byte-identical to it, and must still open clean).
     baseHash = hash;
-    savedContent = bytes;
+    savedContent = loaded.baseline;
     phase = 'ready';
     // The row carries the ledger state this editor gates on.
     void mailStore.refreshDrafts();
@@ -225,8 +256,9 @@
     name = target;
 
     if (target === null) {
-      // A prefill stashed by the read pane's Reply/Reply-all/Forward, taken
-      // exactly once — a reload of `?compose=new` is simply an empty composer.
+      // The stashed fields — the read pane's Reply/Reply-all/Forward, or this
+      // composer's own unmount flush — taken exactly once. A RELOAD of
+      // `?compose=new` is simply an empty composer, which is safe.
       const prefill = takeComposePrefill(acct);
       if (prefill) applyFields(prefill);
       phase = 'ready';
@@ -334,7 +366,7 @@
   // parks the target and the dialog below decides. A full-page unload
   // (`nav.to === null`) is deliberately not fought over.
   beforeNavigate((nav) => {
-    if (!dirty || leaving || !nav.to) return;
+    if (!dirty || discarded || !nav.to) return;
     const url = nav.to.url;
     const sameComposer =
       url.pathname === '/mail' && url.searchParams.get('compose') === (draftName ?? 'new');
@@ -347,9 +379,52 @@
     const target = pendingNav;
     pendingNav = null;
     if (!target) return;
-    leaving = true;
+    discarded = true;
     void goto(target.toString());
   }
+
+  /**
+   * The other half of the leave contract (`MarkdownPageView`'s pairing): a
+   * component can be unmounted WITHOUT a navigation, and `beforeNavigate`
+   * never fires for that. This composer has such a path — a `mail_status`
+   * push can move `mailStore.selectedAccount` (`#ensureSelection`), and the
+   * route then swaps this view for its "Loading…" branch with the URL
+   * untouched.
+   *
+   * So: every leave the user MEDIATED goes through the dialog above (which is
+   * why a discard is honoured here rather than undone), and every unmount
+   * nobody was asked about lands here instead of losing the buffer. What
+   * "flush" means differs by whether a file exists yet:
+   *
+   *   * an existing draft is SAVED, best-effort and fire-and-forget. The file
+   *     is already there, the user already committed to it, and the write is
+   *     CAS-bound — a base hash the disk has moved past is refused, so this
+   *     can never clobber an agent's edit, and it transmits nothing.
+   *   * a `?compose=new` buffer is STASHED in memory instead. Saving it would
+   *     mint a draft file (and a Drafts row, and a `mail_draft` push) out of
+   *     an unmount the user never asked for — a side effect that outlives the
+   *     session, from an event they did not cause. The stash costs nothing,
+   *     creates nothing, and the next `?compose=new` for this account picks
+   *     it straight back up.
+   *
+   * Everything is read from plain local state (`currentFields`), not from the
+   * `$derived`s above, so nothing here depends on reactive graph behaviour
+   * during teardown.
+   */
+  onDestroy(() => {
+    if (!flushable || discarded) return;
+
+    const pending = currentFields();
+    const pendingContent = draftContent(pending);
+    const wasDirty = savedContent === null ? hasDraftContent(pending) : pendingContent !== savedContent;
+    if (!wasDirty) return;
+
+    if (name === null) {
+      setComposePrefill(account, pending);
+      return;
+    }
+    void mailStore.saveDraft(account, name, pendingContent, baseHash, workspaceStore.generation ?? 0);
+  });
 </script>
 
 <div class="flex flex-col gap-5 py-8">
