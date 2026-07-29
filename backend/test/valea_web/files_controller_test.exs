@@ -784,6 +784,46 @@ defmodule ValeaWeb.FilesControllerTest do
            |> response(404) == ""
   end
 
+  # This one pins `contain_for_serve/2`'s FIRST containment call, and it is
+  # the only test that does. The symlink is the `attachments` DIRECTORY
+  # ITSELF, not a file inside it, which is what makes the two calls disagree:
+  # `Valea.Paths.resolve_real/2` physically walks its BASE first
+  # (`resolve_base/2`, resolving that base's own symlinks), so the second
+  # call — whose base IS `views/attachments` — resolves its boundary to the
+  # outside directory and then happily finds the file under it. Only the
+  # first call, based on the mount root, sees the escape.
+  #
+  # Without this, deleting that call as a redundant-looking double-check
+  # leaves the whole suite green while making any file a control-token
+  # holder names servable from anywhere on the filesystem.
+  test "a symlinked mail attachments DIRECTORY cannot escape the mount", %{workspace: ws} do
+    mount_key = mount_mail!(ws, "mara")
+    root = Path.join([ws, "sources", "mail", "mara"])
+
+    outside_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-mail-outside-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(outside_dir)
+    File.write!(Path.join(outside_dir, "secret.txt"), "should never be served")
+    File.write!(Path.join(outside_dir, "secret.png"), "should never be served either")
+
+    File.mkdir_p!(Path.join(root, "views"))
+    File.ln_s!(outside_dir, Path.join([root, "views", "attachments"]))
+
+    # Tokened, so this is pinned on CONTAINMENT rather than passing for the
+    # trivial reason that a mail mount needs a credential at all. Both
+    # halves of the extension split, so neither content-type path is a way
+    # through.
+    for path <- ["views/attachments/secret.txt", "views/attachments/secret.png"] do
+      assert raw_conn()
+             |> get("/files/raw", %{"mount_key" => mount_key, "path" => path})
+             |> response(404) == ""
+    end
+  end
+
   # Serving out of a mail mount must not make one WRITABLE: `resolve_mount/2`
   # (upload's arity) hard-codes the rejection, so no credential admits an
   # upload into a mailbox.

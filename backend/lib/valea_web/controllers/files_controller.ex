@@ -435,12 +435,23 @@ defmodule ValeaWeb.FilesController do
   # Where a mount's servable subtree starts. An ICM mount is servable whole
   # (the Knowledge viewers read arbitrary mount files); a mail mount is
   # servable ONLY under `views/attachments/`, and gets containment TWICE to
-  # say so: once against the mount root — the gate every mount passes, which
-  # a symlinked `attachments` directory pointing out of the mailbox would
-  # fail — and once against the attachments directory itself, which is what
-  # rules out the message views, drafts, ledger and sidecars sitting beside
-  # it. Both calls return the same lexical path, so the second's is the one
-  # that matters and either one's rejection is the whole request's.
+  # say so. NEITHER call is redundant, and the first one is the load-bearing
+  # one — do not "simplify" it away:
+  #
+  #   * against the MOUNT ROOT: the only check that catches an `attachments`
+  #     directory which is ITSELF a symlink out of the mailbox.
+  #     `Valea.Paths.resolve_real/2` physically walks its BASE first
+  #     (`resolve_base/2`), so the second call — based on `views/attachments`
+  #     — would resolve its own boundary to wherever that link points and
+  #     then find the file happily under it. Dropping this call serves any
+  #     path on the filesystem to a control-token holder; the test named
+  #     "a symlinked mail attachments DIRECTORY cannot escape the mount" is
+  #     what stands between that and a green suite.
+  #   * against the ATTACHMENTS DIRECTORY: what rules out the message views,
+  #     drafts, ledger and sidecars sitting beside it inside the mailbox.
+  #
+  # Both return the same lexical path, so either one's rejection is the
+  # whole request's.
   defp contain_for_serve(%{kind: :mail, root: root}, path) do
     with {:ok, _abs} <- contain(root, path) do
       contain(root, path, Path.join(root, Views.attachments_mount_rel_dir()))
