@@ -14,7 +14,7 @@
   // whole queue/workflow subsystem. Task 11 replaces it with "Start a
   // session about this message" — same exact-read-grant + one-shot opening
   // prompt pattern as Knowledge's "Start a session with this page"
-  // (`EntryMenu.svelte`'s `startSessionWithPage`), just keyed off
+  // (`EntryMenu.svelte`'s `startSessionWithEntry`), just keyed off
   // `message.path` and `contextDoc` swapped for `input` (a workspace
   // locator, not an ICM one — mail messages live outside any ICM's tree).
   import Paperclip from '@lucide/svelte/icons/paperclip';

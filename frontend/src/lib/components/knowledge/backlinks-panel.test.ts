@@ -41,6 +41,11 @@ describe('impactLine', () => {
   it('pluralizes a page count greater than 1', () => {
     expect(impactLine(2)).toBe('Also updates 2 pages that read this page.');
   });
+
+  it('names a file target a file, while the referencing side stays pages', () => {
+    expect(impactLine(1, 'file')).toBe('Also updates 1 page that reads this file.');
+    expect(impactLine(2, 'file')).toBe('Also updates 2 pages that read this file.');
+  });
 });
 
 describe('deleteImpactLine', () => {
@@ -54,5 +59,12 @@ describe('deleteImpactLine', () => {
 
   it('pluralizes a page count greater than 1', () => {
     expect(deleteImpactLine(2)).toBe('2 pages reference this page and will lose the link.');
+  });
+
+  it('names a file target a file', () => {
+    expect(deleteImpactLine(1, 'file')).toBe('1 page references this file and will lose the link.');
+    expect(deleteImpactLine(2, 'file')).toBe(
+      '2 pages reference this file and will lose the link.'
+    );
   });
 });

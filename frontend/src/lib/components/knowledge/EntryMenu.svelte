@@ -1,10 +1,16 @@
 <script lang="ts">
   // Overflow (⋯) menu for a single tree/list row — Rename / Delete. Self
   // contained: owns its own dropdown state and mounts the two dialogs, so
-  // callers just drop `<EntryMenu {path} {name} {isFolder} />` next to a row
+  // callers just drop `<EntryMenu {path} {name} {kind} />` next to a row
   // (as a SIBLING of the row's link/button, never nested inside it — an
   // interactive control inside an <a> is invalid HTML and breaks the row's
   // own click target).
+  //
+  // Every `kind` gets Rename and Delete — including a non-.md `file`, whose
+  // backend rename now preserves the extension it was given rather than
+  // coercing `.md` (`Valea.ICM.rename_target_name/3`). Kind changes the
+  // WORDS (see `entry-kind.ts`) and one gate: the session action needs a
+  // single file to hand the agent, so folders don't get it.
   //
   // Hover-revealed via the parent's `group` class, but never hidden from
   // keyboard focus (`group-focus-within` / `focus-visible` / open-state all
@@ -22,20 +28,21 @@
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
-  import { setInitialPrompt, pageSessionPrompt } from '$lib/stores/initial-prompt';
+  import { setInitialPrompt, pageSessionPrompt, fileSessionPrompt } from '$lib/stores/initial-prompt';
+  import { startSessionLabel, type EntryKind } from './entry-kind';
 
   let {
     mountKey,
     path,
     name,
-    isFolder,
+    kind,
     class: className = '',
     onBeforeMutate
   }: {
     mountKey: string;
     path: string;
     name: string;
-    isFolder: boolean;
+    kind: EntryKind;
     class?: string;
     /**
      * Forwarded to RenameDialog/DeleteDialog. Only passed by callers for the
@@ -52,16 +59,23 @@
   let sessionError = $state<string | null>(null);
 
   /**
-   * "Start a session with this page" (Spec D §B) — page rows only. Mints a
-   * session pre-loaded with this page as a `context_doc` grant (Task 9's
-   * `api.createAgentSession` `opts.contextDoc`), stashes the opening prompt
-   * under the new session id (`initial-prompt.ts`'s one-shot handoff — the
-   * chat route takes it and `AgentSessionStore` fires it as the first user
-   * turn on join), and navigates there. Same refresh-then-navigate order as
+   * "Start a session with this page/file" (Spec D §B) — leaf rows of either
+   * kind, never folders. Mints a session pre-loaded with this entry as a
+   * `context_doc` grant (Task 9's `api.createAgentSession`
+   * `opts.contextDoc`), stashes the opening prompt under the new session id
+   * (`initial-prompt.ts`'s one-shot handoff — the chat route takes it and
+   * `AgentSessionStore` fires it as the first user turn on join), and
+   * navigates there. Same refresh-then-navigate order as
    * `IcmProjects.svelte`'s `startSession`, so the sidebar's recent-sessions
    * list is current by the time the chat route's own list renders.
+   *
+   * Non-.md files ride the identical path (Task 10 audit): the backend
+   * resolves a `context_doc` locator through `Valea.Icm.Locator.resolve/2`
+   * and accepts any `File.regular?/1` result — no `.md` gate anywhere — and
+   * the read grant is the mount root, not a `*.md` glob. Only the prompt's
+   * wording forks.
    */
-  async function startSessionWithPage() {
+  async function startSessionWithEntry() {
     sessionError = null;
     const icmId = mountsStore.mounts.find((m) => m.mountKey === mountKey)?.id;
     if (!icmId) {
@@ -76,7 +90,7 @@
       return;
     }
     const data = result.data as { id: string };
-    setInitialPrompt(data.id, pageSessionPrompt(path));
+    setInitialPrompt(data.id, kind === 'file' ? fileSessionPrompt(path) : pageSessionPrompt(path));
     await recentSessionsStore.refresh();
     void goto(`/chat?session=${data.id}`);
   }
@@ -100,10 +114,10 @@
     {/snippet}
   </DropdownMenu.Trigger>
   <DropdownMenu.Content align="end">
-    {#if !isFolder}
-      <DropdownMenu.Item onSelect={() => void startSessionWithPage()}>
+    {#if kind !== 'folder'}
+      <DropdownMenu.Item onSelect={() => void startSessionWithEntry()}>
         <MessageSquarePlus class="size-3.5" strokeWidth={1.5} />
-        Start a session with this page
+        {startSessionLabel(kind)}
       </DropdownMenu.Item>
     {/if}
     <DropdownMenu.Item onSelect={() => (renameOpen = true)}>
@@ -121,5 +135,5 @@
   <p role="alert" class="text-warn-ink text-[12.5px]">{sessionError}</p>
 {/if}
 
-<RenameDialog {mountKey} {path} currentName={name} {isFolder} bind:open={renameOpen} {onBeforeMutate} />
-<DeleteDialog {mountKey} {path} {name} {isFolder} bind:open={deleteOpen} {onBeforeMutate} />
+<RenameDialog {mountKey} {path} currentName={name} {kind} bind:open={renameOpen} {onBeforeMutate} />
+<DeleteDialog {mountKey} {path} {name} {kind} bind:open={deleteOpen} {onBeforeMutate} />

@@ -76,8 +76,8 @@ describe('icmToNav', () => {
   // `isFile` — NOT `ext` — is what marks a leaf as a non-.md file. An
   // extension-less regular file (LICENSE, Makefile, a dotfile) arrives with
   // `ext: ''` from `Path.extname/1`, so any truthiness check on `ext` would
-  // misclassify it as a page and hand it the page-shaped EntryMenu
-  // (rename would append `.md`). See IcmTree's leaf branch.
+  // misclassify it as a page and hand the EntryMenu `kind='page'`, whose
+  // rename appends `.md` (`LICENSE-2.md`). See IcmTree's leaf branch.
   it('marks every file leaf with isFile, including extension-less ones', () => {
     const nodes: IcmNode[] = [
       { name: 'Founder', path: 'Founder.md', mountKey: 'primary', type: 'page', uri: 'u' },

@@ -31,12 +31,17 @@ export function groupReferences(refs: RawReferences): GroupedReferences {
  * `BacklinksPanel`'s own summary) — singular/plural, `null` when no page
  * reads this entry (nothing to say, so callers render nothing rather than
  * an empty sentence).
+ *
+ * `target` names what is BEING renamed/deleted — a `.md` page by default,
+ * `'file'` when the row is a non-.md file leaf (an embedded image, a PDF).
+ * The referencing side is always pages either way: only a page can hold a
+ * link.
  */
-export function impactLine(pageCount: number): string | null {
+export function impactLine(pageCount: number, target: 'page' | 'file' = 'page'): string | null {
   if (pageCount === 0) return null;
 
   const verb = pageCount === 1 ? 'reads' : 'read';
-  return `Also updates ${pageCount} ${pageCount === 1 ? 'page' : 'pages'} that ${verb} this page.`;
+  return `Also updates ${pageCount} ${pageCount === 1 ? 'page' : 'pages'} that ${verb} this ${target}.`;
 }
 
 /**
@@ -46,11 +51,15 @@ export function impactLine(pageCount: number): string | null {
  * structure, but conveys that deletion BREAKS the reference rather than
  * maintaining it.
  *
- * Returns `null` when the count is zero (nothing to say).
+ * Returns `null` when the count is zero (nothing to say). `target` names
+ * what is being deleted, exactly as in `impactLine`.
  */
-export function deleteImpactLine(pageCount: number): string | null {
+export function deleteImpactLine(
+  pageCount: number,
+  target: 'page' | 'file' = 'page'
+): string | null {
   if (pageCount === 0) return null;
 
   const verb = pageCount === 1 ? 'references' : 'reference';
-  return `${pageCount} ${pageCount === 1 ? 'page' : 'pages'} ${verb} this page and will lose the link.`;
+  return `${pageCount} ${pageCount === 1 ? 'page' : 'pages'} ${verb} this ${target} and will lose the link.`;
 }

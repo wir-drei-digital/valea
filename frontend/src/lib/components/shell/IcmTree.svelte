@@ -101,7 +101,7 @@
               mountKey={node.mountKey}
               path={node.path}
               name={node.label}
-              isFolder={true}
+              kind="folder"
               class="absolute top-1/2 right-0.5 -translate-y-1/2"
               onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
             />
@@ -142,10 +142,7 @@
               href={node.href + linkSearch}
               aria-current={activePath === node.href ? 'page' : undefined}
               class={[
-                'flex items-center gap-1 rounded-md py-[3px] pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
-                // Right padding reserves room for the EntryMenu — only the
-                // rows that actually get one need it (see below).
-                node.isFile ? 'pr-2' : 'pr-9',
+                'flex items-center gap-1 rounded-md py-[3px] pl-2 pr-9 text-[12.5px] transition-colors hover:bg-paper-pill',
                 activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
               ]}
             >
@@ -160,28 +157,22 @@
                 </span>
               {/if}
             </a>
-            <!-- No EntryMenu on a non-.md file leaf. Rename/delete/start-a-
-                 session are all `.md`-page-shaped on the backend:
-                 `rename_target_name/2` runs `ensure_md_extension/1` for
-                 anything that isn't a folder, so renaming `brochure.pdf`
-                 would write `brochure.pdf.md` to disk and reclassify the
-                 file as a page (`icm.ex:737`). File rows became reachable
-                 here only in the side-panes pass (`icmToNav` emits file
-                 leaves now); before that they had no menu at all, so
-                 withholding it keeps the capability surface exactly as it
-                 was. A separate task extends those operations to plain
-                 files. Gated on `isFile`, never on `ext` — an
-                 extension-less file (LICENSE, Makefile) has `ext: ''`. -->
-            {#if !node.isFile}
-              <EntryMenu
-                mountKey={node.mountKey}
-                path={node.path}
-                name={node.label}
-                isFolder={false}
-                class="absolute top-1/2 right-0.5 -translate-y-1/2"
-                onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
-              />
-            {/if}
+            <!-- Both leaf kinds get the menu (Task 10): the backend rename
+                 now preserves a non-.md file's own extension instead of
+                 coercing `.md`, and delete never had a `.md` assumption to
+                 begin with. `isFile` — never `ext` — is the file/page test:
+                 an extension-less file (LICENSE, Makefile) has `ext: ''`.
+                 `node.label` is what the dialogs pre-fill, and it is
+                 already kind-correct (the backend's tree sends a file's
+                 FULL basename, a page's title without `.md`). -->
+            <EntryMenu
+              mountKey={node.mountKey}
+              path={node.path}
+              name={node.label}
+              kind={node.isFile ? 'file' : 'page'}
+              class="absolute top-1/2 right-0.5 -translate-y-1/2"
+              onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
+            />
           {/if}
         </div>
       {/if}

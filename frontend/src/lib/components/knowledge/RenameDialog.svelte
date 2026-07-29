@@ -1,11 +1,19 @@
 <script lang="ts">
-  // Rename dialog for a page or folder. Pages get a reference-impact check
-  // before the confirm button is usable (`icmEntryReferences` is a per-page
-  // lookup — see the backend note in DeleteDialog); folders skip that fetch
+  // Rename dialog for a page, a non-.md file, or a folder. Leaf rows of
+  // either kind get a reference-impact check before the confirm button is
+  // usable (`icmEntryReferences` is a per-target lookup — see the backend
+  // note in DeleteDialog — and it resolves an embedded image or PDF exactly
+  // like a page: `Valea.ICM.Backlinks` confirms Link/Image AST
+  // destinations, which were never `.md`-only); folders skip that fetch
   // entirely and show a fixed caution line instead, since the backend's
-  // reference search resolves a single exact target path (AST-confirmed
-  // page links only — see `Valea.ICM.Backlinks`), not a real folder-scoped
-  // query.
+  // reference search resolves a single exact target path, not a real
+  // folder-scoped query.
+  //
+  // `currentName` is the row's own label, so a file leaf pre-fills its FULL
+  // basename (`brochure.pdf`) while a page pre-fills its title without the
+  // extension — matching what the backend does with the submitted name
+  // (`Valea.ICM.rename_target_name/3`: `.md` ensured for a page, taken as
+  // typed for anything else).
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -17,19 +25,20 @@
   import { hrefWithPane } from '$lib/panes/pane-route';
   import { withBeforeMutate } from './before-mutate';
   import { groupReferences, impactLine, type PageRef } from './backlinks-panel';
+  import { referenceNoun, type EntryKind } from './entry-kind';
 
   let {
     mountKey,
     path,
     currentName,
-    isFolder,
+    kind,
     open = $bindable(false),
     onBeforeMutate
   }: {
     mountKey: string;
     path: string;
     currentName: string;
-    isFolder: boolean;
+    kind: EntryKind;
     open?: boolean;
     /**
      * Awaited before the rename API call fires. Passed by the route when
@@ -47,7 +56,10 @@
   let referencePages = $state<PageRef[]>([]);
   let inputRef = $state<HTMLInputElement | null>(null);
 
-  const impact = $derived(impactLine(referencePages.length));
+  // Only the folder/not-folder split gates behavior here (the reference
+  // fetch); `kind` beyond that just picks the noun in the impact line.
+  const isFolder = $derived(kind === 'folder');
+  const impact = $derived(impactLine(referencePages.length, referenceNoun(kind)));
 
   $effect(() => {
     if (open) {

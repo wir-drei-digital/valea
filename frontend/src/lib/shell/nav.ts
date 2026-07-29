@@ -62,7 +62,9 @@ export type NavTreeItem = {
   /**
    * `true` on non-.md file leaves and nothing else — the discriminator for
    * anything that must treat files differently from pages. `IcmTree` uses
-   * it to withhold the `.md`-page-shaped `EntryMenu` from file rows.
+   * it to pick the row's format badge and the `EntryMenu`'s `kind`
+   * (`'file'` vs `'page'`), which decides the menu's wording and whether
+   * the backend rename ensures a `.md` extension.
    */
   isFile?: boolean;
 };

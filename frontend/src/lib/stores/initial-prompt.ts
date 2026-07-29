@@ -27,3 +27,21 @@ export function pageSessionPrompt(relativePath: string): string {
     `If it's reference material, give me a short summary and wait for my direction.`
   ].join(' ');
 }
+
+/**
+ * Same handoff for a NON-.md file leaf (a PDF, an image, a CSV, a
+ * LICENSE) — reachable from the tree's row menu since Task 10. Deliberately
+ * not `pageSessionPrompt`'s wording: "follow it" presumes a document
+ * written as instructions, which a scanned invoice or a logo is not, so
+ * this one opens by asking what the file contains and only then offers the
+ * execute-it branch. The grant side is identical (`context_doc` validates
+ * any regular file inside the ICM and the read root is the mount, not
+ * `*.md`), so nothing but the words changes.
+ */
+export function fileSessionPrompt(relativePath: string): string {
+  return [
+    `Read \`${relativePath}\` and tell me what's in it.`,
+    `If it describes a procedure or workflow, execute it step by step. I'll approve any file changes through the permission gate as you go.`,
+    `Otherwise, give me a short summary and wait for my direction.`
+  ].join(' ');
+}
