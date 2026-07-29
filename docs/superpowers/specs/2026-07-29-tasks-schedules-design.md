@@ -1,11 +1,13 @@
 # Tasks & Schedules — Per-ICM Ledgers, Internal Scheduler
 
 **Date:** 2026-07-29
-**Status:** Approved (design); Codex adversarial rounds 1–2 folded
+**Status:** Approved (design); Codex adversarial rounds 1–3 folded
 (2026-07-29: every code-grounded claim verified against source; round 1
-~20 findings, round 2 verified the folds and added 14 findings against the
-new machinery — each folded as a design change or explicitly accepted
-below). Pending implementation plan.
+~20 findings, round 2 verified the folds + 14 findings on the new
+machinery, round 3 verified those folds + 3 majors and 2 precision
+blockers — one settled by official-doc verification of harness permission
+precedence — each folded as a design change or explicitly accepted below).
+Pending implementation plan.
 
 ## Goal
 
@@ -234,7 +236,9 @@ record, not a weaker session.
 id" disposition) — array order never decides what runs, so a reorder can
 never silently swap payloads. Each parsed entry gets a stable disposition
 (`executable | paused | not_executable(reason)`) exposed through the RPCs
-so every row is attributable and repairable.
+so every row is attributable and repairable. While an entry is
+non-executable its elapsed slots are consumed silently (Firing rule
+step 6), so repairing it never back-fires the slots it missed.
 
 Tasks have no execution semantics and stay on the lenient regime; the UI
 adds **repair affordances** for the degenerate cases (assign an id to an
@@ -278,17 +282,20 @@ Completed (`done`/`dropped`) tasks are archived by Valea — appended to
   scheduler process on workspace activation and once per day thereafter.
 - **Crash-safe ordering:** append to the archive first, prune the ledger
   second, both through the per-ICM writer. Each archive line carries a
-  generated **archival event id** (UUID) plus the entry snapshot and a
-  snapshot content hash — task `id`/`updated_at` are optional-and-mutable
-  and therefore never the identity. **Prune is snapshot-conditional:** an
-  entry is removed from the ledger only if its current content still
-  hashes to the archived snapshot; an entry edited or reopened between
-  append and prune stays in the ledger (the archive line remains as
-  history of the completed state it captured). A crash between the two
-  steps re-converges on the next sweep; duplicate archive lines dedupe by
-  event id on read. A partial trailing line (crash mid-append) is
-  tolerated and ignored by readers; the next append repairs by starting on
-  a fresh line.
+  generated event id (UUID, provenance only) plus the entry snapshot and a
+  **snapshot content hash — the hash is the identity**: task
+  `id`/`updated_at` are optional-and-mutable and never identify anything,
+  and a crash between append and prune means the next sweep may append
+  the same snapshot again under a fresh event id — readers dedupe by
+  snapshot hash, so re-appends are harmless. (Corner, stated: genuinely
+  distinct archivals of byte-identical content collapse on read — same
+  fact, acceptable.) **Prune is snapshot-conditional:** an entry is
+  removed from the ledger only if its current content still hashes to the
+  archived snapshot; an entry edited or reopened between append and prune
+  stays in the ledger (the archive line remains as history of the
+  completed state it captured). A partial trailing line (crash mid-append)
+  is tolerated and ignored by readers; the next append repairs by starting
+  on a fresh line.
 - Agents are told: set status, never delete — Valea owns archival. The
   archive doubles as greppable "what got done when" history, readable with
   any text tool (it lives in the user-owned ICM tree).
@@ -367,14 +374,19 @@ The mount key is display metadata on records, never the key. Per schedule:
    `skipped: still running` record carrying `coalesced_count`, anchor
    advanced to the latest elapsed slot. One record per skip event, never
    re-emitted every tick, never one-per-slot spam during a long run.
-6. **Paused entries** consume elapsed slots silently — anchor advances,
-   nothing fires, nothing is recorded — so unpausing never back-fires.
+6. **Present-but-not-firing entries consume elapsed slots silently** —
+   anchor advances, nothing fires, nothing is recorded. This uniform rule
+   covers paused entries, `not_executable` entries (invalid cron/tz/
+   payload), and duplicate-id carriers alike: unpausing, repairing a
+   broken entry, or resolving a duplicate never back-fires the slots that
+   passed while it couldn't run.
 7. **Launch-time re-validation:** immediately before firing, re-read the
    file and confirm the entry still exists, is executable, is not paused,
-   and the fingerprint is unchanged; otherwise consume nothing this tick.
-   Pause revocation therefore never depends on the watcher. The guarantee
-   is **snapshot-based**: the fire launches from this final snapshot, and
-   an edit landing in the snapshot-to-spawn window (milliseconds) may miss
+   the fingerprint is unchanged, **and the workspace kill switch is not
+   engaged**; otherwise consume nothing this tick. Pause revocation
+   therefore never depends on the watcher. The guarantee is
+   **snapshot-based**: the fire launches from this final snapshot, and an
+   edit landing in the snapshot-to-spawn window (milliseconds) may miss
    that one fire — stated, not hidden.
 
 ### Catch-up (workspace open, before the first tick)
@@ -438,8 +450,13 @@ The mount key is display metadata on records, never the key. Per schedule:
 - **Failure:** session-spawn or command-spawn errors produce a `failed` run
   record + cockpit notice. No automatic retry — the next slot is the retry.
 - **Global kill switch:** a workspace-level `scheduler_paused` flag
-  (workspace settings, not a file sweep). While set, ticks record nothing
-  and fire nothing; UI shows a banner.
+  (workspace settings, not a file sweep). While set, ticks keep running
+  reconciliation and **consume elapsed slots silently for every entry**
+  (anchors advance — disengaging never back-fires missed slots), but
+  nothing fires and no run records are written; engaging/disengaging is
+  audited; UI shows a banner. The final launch snapshot re-checks the
+  switch (Firing rule step 7), so a switch engaged mid-tick still stops
+  the fire.
 
 ### Consent & containment posture
 
@@ -464,17 +481,27 @@ must be a policy rule, not a tier label:
     `scope.write_roots`) — so the policy rule alone would be
     short-circuited. The renderer therefore also mirrors per-ICM
     **ask** entries for `schedules.json` and **deny** entries for
-    `.valea/**` (settings precedence deny > ask > allow makes the
-    specific rule beat the broad allow; the plan pins the exact rule
-    syntax against the harness's settings semantics).
-- **Candidate extraction must cover move/rename shapes.** Today
-  `extract_paths/1` reads only `file_path`/`path`/`notebook_path`/
-  `filePath`; an item with no extractable candidates already falls to
-  `:ask` (verified — never a vacuous allow), which is the safe floor. The
-  plan enumerates the harness's actual move/rename `rawInput` shapes and
-  extracts BOTH endpoints, so a rename **onto** `schedules.json` reaches
-  the ask tier labeled, and a move **of** `.valea/**` hits the deny —
-  rather than riding the generic unclassifiable ask.
+    `.valea/**`. Precedence is **verified against the official Claude
+    Code permissions docs** (code.claude.com/docs/en/permissions):
+    "Rules are evaluated in order: deny, then ask, then allow … rule
+    specificity doesn't change the order" and "a matching ask rule
+    prompts even when a more specific allow rule also matches the same
+    call"; managed settings follow the same order. The plan still adds a
+    runtime probe test pinning this against the shipped harness version
+    (drift defense); if a future harness ever refutes it, the fallback
+    is a settings-level **deny** on `schedules.json` with registration
+    moving to the UI/hand-edit path — fail closed, feature intact.
+- **Candidate extraction: the move-shape question is closed by
+  enumeration.** The single supported harness (claude-code via
+  claude-agent-acp; `mcpServers` always `[]` by invariant) has **no
+  move/rename file tool** — its file-writing tools are Write/Edit/
+  NotebookEdit, whose `rawInput` path fields are exactly the four names
+  `extract_paths/1` already reads; renames ride Bash (residual risk #6).
+  An item with no extractable candidates already falls to `:ask`
+  (verified — never a vacuous allow), so any future tool emitting
+  move-shaped input lands on that safe floor until extraction is
+  extended; the plan pins this against the shipped claude-agent-acp
+  version.
 - **Opaque shell writes** (`Bash` redirection onto `schedules.json`)
   cannot be path-classified; they fall to the harness/posture ask
   (verified: `Bash` sits in the managed-settings "ask" list) without the
@@ -613,7 +640,8 @@ survive schedule deletion and mount renames.
 | Failure | Behavior |
 |---|---|
 | Malformed `schedules.json` | Fail-safe: no fires from the file; calm UI note; one audit notice per content-hash |
-| Invalid execution field on one entry | That entry `not_executable` with visible reason; never fires; others unaffected |
+| Invalid execution field on one entry | That entry `not_executable` with visible reason; never fires; elapsed slots consumed silently (repair never back-fires); others unaffected |
+| Pause-all engaged | Nothing fires; anchors keep advancing silently; disengage never back-fires; launch snapshot re-checks the switch |
 | Duplicate schedule ids | All carriers excluded from execution, visible reason; order never decides |
 | Malformed `tasks.json` | Calm UI note; ledger treated as empty for display; file untouched |
 | Session/command spawn error | `failed` run record + cockpit notice; no auto-retry |
@@ -652,23 +680,26 @@ risk #4); no ledger lock files (accepted risk #5).
   true/false with monotonic `max` anchor across a backward-jump + restart,
   fingerprint reset on definition change, fingerprint STABLE across
   title/`paused` edits, tombstone on id-vanish + reset on identical
-  recreation, paused-slot silent consumption, launch-time re-validation
-  catches a pause landed mid-tick, run-now gating incl. no anchor
-  advance, pause-all, forward/backward clock jumps); strict-field
+  recreation, silent slot consumption for paused AND non-executable AND
+  duplicate entries (repair/unpause never back-fires), launch-time
+  re-validation catches a pause landed mid-tick AND a mid-tick kill
+  switch, run-now gating incl. no anchor advance, pause-all silent
+  consumption, forward/backward clock jumps); strict-field
   fail-closed matrix (`paused` string, bad tz, bad cron, missing id,
   duplicate ids, escaping `context_doc` → dispositions); leniency
   round-trips incl. unknown-field preservation; per-ICM writer
   serialization + conflict-retry (patch re-applied against changed file;
-  vanished entry → conflict); archive event-id identity, snapshot-
-  conditional prune (reopened entry survives), crash re-convergence,
-  partial-trailing-line tolerance; run records generation-bound across a
+  vanished entry → conflict); archive snapshot-hash identity (crash
+  re-append dedupes on read), snapshot-conditional prune (reopened entry
+  survives), crash re-convergence, partial-trailing-line tolerance; run records generation-bound across a
   simulated switch (shutdown-path `interrupted` exemption pinned); command
   run stopped on workspace close; PermissionPolicy always-ask carve-out
   for `schedules.json` (direct write, move-shape candidates once
   extracted, casefold, empty-candidates→ask floor) + `.valea/**`
-  write-deny + RiskTier stamps + managed-settings mirror rules (ask
-  entries beat write-root allows); briefing materialization
-  write-if-different; RPC generation guards; session-kind filtering.
+  write-deny + RiskTier stamps + managed-settings mirror rules incl. a
+  runtime probe pinning ask-beats-broader-allow precedence against the
+  shipped harness; briefing materialization write-if-different; RPC
+  generation guards; session-kind filtering.
 - Frontend: component tests for both tabs (filters, quick-add, pause,
   dispositions, run history, run-now), cockpit tasks line + notices,
   malformed-file notes, task repair affordances, nav exclusion of
