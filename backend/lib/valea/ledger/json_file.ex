@@ -30,28 +30,41 @@ defmodule Valea.Ledger.JsonFile do
   ## Optimistic concurrency (write)
 
   `write/3` encodes `doc` (pretty JSON + trailing newline, so the file stays
-  a pleasant thing to read and diff), writes a `.tmp` sibling, then re-reads
-  the current file and compares its hash with `expected` (`:absent` matches
-  a file that does not exist — the "materialize it" case). On a match it
-  `File.rename!/2`s the temp file into place: atomic for concurrent readers,
-  and it replaces the directory entry rather than writing *through* a
-  symlink an agent may have planted (same reasoning as
-  `Valea.Mail.AgentsFile`). On a mismatch nothing is written, the temp file
-  is removed, and the caller gets `{:error, :conflict}` — its cue to re-read
-  and re-apply the patch (`Valea.Tasks` does this, bounded to 3 attempts).
+  a pleasant thing to read and diff), writes a **private** temp sibling, then
+  re-reads the current file and compares its hash with `expected` (`:absent`
+  matches a file that does not exist — the "materialize it" case). On a match
+  it renames the temp file into place: atomic for concurrent readers, and it
+  replaces the directory entry rather than writing *through* a symlink an
+  agent may have planted (same reasoning as `Valea.Mail.AgentsFile`). On a
+  mismatch nothing is written, the temp file is removed, and the caller gets
+  `{:error, :conflict}` — its cue to re-read and re-apply the patch
+  (`Valea.Tasks` does this, bounded to 3 attempts).
 
-  The window between that final hash check and the rename is
+  The temp path carries 4 random bytes (`<path>.tmp.<hex>`) precisely so it
+  is private to one `write/3` call. A shared name would be a correctness bug,
+  not a tidiness one: two writers over the same ledger would take turns
+  filling the *same* temp file, and the one whose hash check passed could
+  rename the *other's* bytes into place while being told `:ok`. Randomizing
+  it means a writer can only ever publish what it encoded itself. The trade
+  is litter — a hard crash between the write and the rename leaves a
+  `.tmp.<hex>` sibling behind (harmless, ignored by every reader here, and
+  never renamed over a ledger by anyone), where a fixed name would have been
+  reused. Correctness wins.
+
+  If the temp file has vanished by the time we rename it (a stray cleanup, a
+  foreign process), the result is `{:error, :conflict}`, not a raise: nothing
+  landed, and the caller's retry loop is exactly the right response. Other
+  rename failures are genuine I/O faults and raise, after removing the temp
+  file.
+
+  The window between the final hash check and the rename is
   **accepted residual risk #5** in the spec: a foreign writer landing inside
   it loses its write, and for an open entry that is plain data loss. Valea
   shrinks the window from "an entire UI interaction" to microseconds and
   serializes its own writes through `Valea.Ledger.Writer`; it does not claim
-  to close it, and there are deliberately no lock files.
-
-  The temp path is `path <> ".tmp"`, one per ledger: Valea-side writes are
-  serialized by the Writer and no agent tool writes that name, so the only
-  way to collide is two Valea instances over the same ICM — accepted risk #3
-  (per-workspace runtimes), where the loser is the same lost write risk #5
-  already covers.
+  to close it, and there are deliberately no lock files. What the window can
+  *never* do is publish bytes this call didn't produce, or report `:ok` for a
+  document that isn't the one on disk.
   """
 
   @type read_result ::
@@ -89,24 +102,48 @@ defmodule Valea.Ledger.JsonFile do
   `expected` (`:absent` for "must not exist yet"), via temp + rename.
 
   Returns `{:error, :conflict}` — having written nothing — when the file
-  changed under the caller, whose job is then to re-read and re-apply.
-  Raises only on genuine I/O failure (unwritable directory, encode error):
-  a ledger we cannot write is not something to swallow.
+  changed under the caller (or when our own temp file vanished before the
+  rename), whose job is then to re-read and re-apply. A successful `:ok`
+  means *this* call's bytes are the ones on disk.
+
+  Raises on genuine I/O failure (unwritable directory, encode error, a
+  rename that fails for anything other than a missing temp file): a ledger
+  we cannot write is not something to swallow.
   """
   @spec write(String.t(), map(), binary() | :absent) :: :ok | {:error, :conflict}
   def write(path, doc, expected) when is_binary(path) and is_map(doc) do
     data = Jason.encode!(doc, pretty: true) <> "\n"
-    tmp = path <> ".tmp"
+    tmp = path <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
 
     File.mkdir_p!(Path.dirname(path))
     File.write!(tmp, data)
 
     if current_hash(path) == expected do
-      File.rename!(tmp, path)
-      :ok
+      publish(tmp, path)
     else
       File.rm(tmp)
       {:error, :conflict}
+    end
+  end
+
+  defp publish(tmp, path) do
+    case File.rename(tmp, path) do
+      :ok ->
+        :ok
+
+      # Our private temp file is gone, so nothing was published — the same
+      # situation as a stale hash from the caller's point of view.
+      {:error, :enoent} ->
+        {:error, :conflict}
+
+      {:error, reason} ->
+        File.rm(tmp)
+
+        raise File.RenameError,
+          reason: reason,
+          action: "rename",
+          source: tmp,
+          destination: path
     end
   end
 

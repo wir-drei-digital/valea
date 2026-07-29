@@ -67,7 +67,7 @@ defmodule Valea.Ledger.JsonFileTest do
       raw = File.read!(path)
       assert String.ends_with?(raw, "}\n")
       assert raw =~ "\n  "
-      refute File.exists?(path <> ".tmp")
+      assert Path.wildcard(path <> ".tmp*") == []
     end
 
     test "creates the parent directory", %{dir: dir} do
@@ -105,7 +105,34 @@ defmodule Valea.Ledger.JsonFileTest do
 
       assert JsonFile.write(path, doc, hash) == {:error, :conflict}
       assert File.read!(path) == other
-      refute File.exists?(path <> ".tmp")
+      assert Path.wildcard(path <> ".tmp*") == []
+    end
+
+    # Regression: with a single shared temp path, two writers take turns
+    # filling the SAME file, so the one whose hash check passes can rename
+    # the OTHER's bytes into place — and still be told `:ok`. The temp name
+    # is private per call precisely so `:ok` means "my document is on disk".
+    test "a successful write always publishes its own bytes", %{path: path} do
+      File.write!(path, ~s({"tasks":[]}))
+
+      results =
+        1..40
+        |> Task.async_stream(
+          fn n ->
+            {:ok, %{doc: doc, hash: hash}} = JsonFile.read(path, "tasks")
+            marker = "writer-#{n}"
+            {marker, JsonFile.write(path, Map.put(doc, "marker", marker), hash)}
+          end,
+          max_concurrency: 40,
+          ordered: false
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      published = for {marker, :ok} <- results, do: marker
+
+      assert published != []
+      assert Jason.decode!(File.read!(path))["marker"] in published
+      assert Path.wildcard(path <> ".tmp*") == []
     end
 
     test "the hash returned by read round-trips a write of the same bytes", %{path: path} do

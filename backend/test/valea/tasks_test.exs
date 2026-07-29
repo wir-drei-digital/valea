@@ -133,7 +133,12 @@ defmodule Valea.TasksTest do
       assert read_doc(root)["readme"] == "no list yet"
     end
 
-    test "generated ids do not collide with an existing entry", %{root: root} do
+    # Names what this can actually observe: two draws differ. The
+    # ledger-collision check inside `generate_id/2` is not reachable from
+    # here without injecting the RNG — 3 random bytes make a natural
+    # collision a 1-in-16.7M event, and a duplicate id degrades softly by
+    # spec anyway.
+    test "every create draws its own id", %{root: root} do
       {:ok, a} = Tasks.create(root, %{"title" => "a"})
       {:ok, b} = Tasks.create(root, %{"title" => "b"})
       refute a["id"] == b["id"]
@@ -203,6 +208,10 @@ defmodule Valea.TasksTest do
 
   describe "patch/3" do
     test "merges fields, bumps updated_at, preserves unknown fields", %{root: root} do
+      # Bound once: `days_ago/1` reads the wall clock, so re-calling it across
+      # a second boundary would compare two different strings.
+      stamp = days_ago(3)
+
       write_doc!(root, %{
         "tasks" => [
           %{
@@ -210,8 +219,8 @@ defmodule Valea.TasksTest do
             "title" => "old",
             "status" => "open",
             "custom" => %{"a" => 1},
-            "created_at" => days_ago(3),
-            "updated_at" => days_ago(3)
+            "created_at" => stamp,
+            "updated_at" => stamp
           }
         ]
       })
@@ -221,8 +230,8 @@ defmodule Valea.TasksTest do
       assert entry["title"] == "new"
       assert entry["priority"] == "high"
       assert entry["custom"] == %{"a" => 1}
-      assert entry["created_at"] == days_ago(3)
-      refute entry["updated_at"] == days_ago(3)
+      assert entry["created_at"] == stamp
+      refute entry["updated_at"] == stamp
       assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(entry["updated_at"])
       assert task(root, "t-1") == entry
     end
@@ -424,17 +433,56 @@ defmodule Valea.TasksTest do
       assert task(root, t["id"])["notes"] == "edited mid-archive"
     end
 
-    test "snapshot-conditional prune: reopened task survives", %{root: root} do
+    # The brief's version of this ended with the task in `open` *before* the
+    # second archive call, so nothing was eligible and the assertion held even
+    # with the snapshot condition removed. Reopening has to happen INSIDE the
+    # append-to-prune window to test anything — which is what the seam is for.
+    # (The hook writes the file directly: it runs in the writer process, so
+    # calling `patch/4` from it would deadlock on the writer.)
+    test "prune is snapshot-conditional: a task reopened mid-archive survives", %{root: root} do
       {:ok, t} = Tasks.create(root, %{"title" => "x"})
-      {:ok, _} = Tasks.patch(root, t["id"], %{"status" => "done"})
-      {:ok, %{archived: 1}} = Tasks.archive_done(root)
-      # simulate crash-between: re-add same task as done, then edit before next archive
-      {:ok, t2} = Tasks.create(root, %{"title" => "x"})
-      {:ok, _} = Tasks.patch(root, t2["id"], %{"status" => "done"})
-      # reopened
-      {:ok, _} = Tasks.patch(root, t2["id"], %{"status" => "open"})
-      {:ok, %{archived: 0}} = Tasks.archive_done(root)
-      assert Enum.any?(Tasks.list(root).tasks, &(&1["id"] == t2["id"]))
+      {:ok, done} = Tasks.patch(root, t["id"], %{"status" => "done"})
+
+      hook = fn ->
+        doc = read_doc(root)
+        reopened = Enum.map(doc["tasks"], &Map.merge(&1, %{"status" => "open", "done_at" => nil}))
+        write_doc!(root, Map.put(doc, "tasks", reopened))
+      end
+
+      assert {:ok, %{archived: 1, pruned: 0}} = Tasks.archive_done(root, on_appended: hook)
+
+      assert task(root, t["id"])["status"] == "open"
+      assert [line] = archive_lines(root)
+      assert Jason.decode!(line)["task"] == done
+    end
+
+    # Spec §Archival: a crash between the append and the prune must
+    # re-converge — the entry is still in the ledger, the next sweep re-appends
+    # the same snapshot under a fresh event id, and readers collapse the two.
+    test "a crash between append and prune re-converges on the next archive", %{root: root} do
+      {:ok, t} = Tasks.create(root, %{"title" => "x"})
+      {:ok, done} = Tasks.patch(root, t["id"], %{"status" => "done"})
+
+      assert_raise RuntimeError, "crash", fn ->
+        Tasks.archive_done(root, on_appended: fn -> raise "crash" end)
+      end
+
+      # Append landed, prune never ran.
+      assert [first] = archive_lines(root)
+      assert task(root, t["id"])["status"] == "done"
+
+      assert {:ok, %{archived: 1, pruned: 1}} = Tasks.archive_done(root)
+
+      assert [^first, second] = archive_lines(root)
+      first = Jason.decode!(first)
+      second = Jason.decode!(second)
+      assert first["snapshot_hash"] == second["snapshot_hash"]
+      refute first["archive_event"] == second["archive_event"]
+
+      # Two lines on disk, one fact for readers, empty ledger.
+      assert [entry] = Tasks.archive_entries(root)
+      assert entry["task"] == done
+      assert Tasks.list(root).tasks == []
     end
 
     test "an append starts on a fresh line after a partial trailing line", %{root: root} do
