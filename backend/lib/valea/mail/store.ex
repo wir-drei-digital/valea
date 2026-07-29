@@ -15,10 +15,15 @@ defmodule Valea.Mail.Store do
     * `mail_pending_ops` (`PendingOp`) — the durable ops ledger. NOT pure
       cache like the other three: it is the record of in-flight/at-most-once
       side effects against the remote mailbox (see its moduledoc).
+    * `mail_search` — the FTS5 full-text index, one row per `(account,
+      msg_id)` MESSAGE (not per occurrence). No Ash resource: it is a
+      virtual table, so it is reached through raw parameterized SQL in the
+      "search index" section at the bottom of this module.
 
-  `mail_sync_state`, `mail_uid_map`, and `mail_messages` are pure cache:
-  rebuildable from `sources/mail/` (+ an IMAP resync) — losing `app.sqlite`
-  must never lose data. `mail_pending_ops` is the one exception, by design.
+  `mail_sync_state`, `mail_uid_map`, `mail_messages`, and `mail_search` are
+  pure cache: rebuildable from `sources/mail/` (+ an IMAP resync) — losing
+  `app.sqlite` must never lose data. `mail_pending_ops` is the one
+  exception, by design.
 
   No `AshTypescript` extension — this domain is internal-only, never
   exposed over RPC. The resources under `Valea.Mail.Store.*` stay
@@ -309,6 +314,213 @@ defmodule Valea.Mail.Store do
 
     :ok
   end
+
+  # -- search index (mail_search, FTS5) ----------------------------------------
+
+  # Column ordinals of the `mail_search` virtual table, in declaration order
+  # (`20260729000001_mail_search_index.exs`): 0 account, 1 msg_id,
+  # 2 from_text, 3 subject, 4 body. `snippet/6` addresses a column by
+  # ordinal, so this number and that migration move together.
+  @body_column 4
+
+  # A snippet is a reading aid, not the message: ~16 tokens of body around
+  # the best-matching window, ellipsed on both sides. No highlight markers —
+  # the search UI (task 9) decides its own presentation.
+  @snippet_tokens 16
+
+  # Hard caps on what a single query may ask for. `@max_query_bytes` and
+  # `@max_terms` bound the work one MATCH can demand (a 50k-character
+  # paste, a thousand prefix terms); `@max_limit` bounds the rows a caller
+  # can pull back regardless of what it passes.
+  @max_query_bytes 256
+  @max_terms 16
+  @max_limit 200
+
+  @search_sql """
+  SELECT msg_id, snippet(mail_search, #{@body_column}, '', '', '…', #{@snippet_tokens})
+  FROM mail_search
+  WHERE mail_search MATCH ?1 AND account = ?2
+  ORDER BY rank
+  LIMIT ?3
+  """
+
+  @doc """
+  Up to `limit` full-text hits for `query` within `account`, best match
+  first (FTS5's default `bm25` `rank`), as `%{msg_id:, snippet:}` maps.
+  `snippet` is a body excerpt around the match.
+
+  `query` is USER INPUT and is never FTS5 query syntax: it goes through
+  `match_expression/1` (below), which is the only thing that ever builds
+  the `MATCH` argument. An empty query, one that tokenizes to nothing
+  (`"!!!"`), or one longer than #{@max_query_bytes} bytes short-circuits to
+  `[]` without touching the database. `limit` is clamped to
+  1..#{@max_limit}.
+
+  Rows are deduped by `msg_id` — the writers below keep one row per
+  `(account, msg_id)`, and this is belt-and-braces so a duplicate that
+  somehow survived (an interrupted re-land, see `insert_search_row/3`)
+  never surfaces as the same message twice.
+  """
+  @spec search(String.t(), String.t(), integer()) :: [%{msg_id: String.t(), snippet: String.t()}]
+  def search(account, query, limit \\ 40) when is_binary(account) and is_binary(query) do
+    case match_expression(query) do
+      :none ->
+        []
+
+      {:ok, match} ->
+        %{rows: rows} = Valea.Repo.query!(@search_sql, [match, account, clamp_limit(limit)])
+
+        rows
+        |> Enum.map(fn [msg_id, snippet] -> %{msg_id: msg_id, snippet: snippet} end)
+        |> Enum.uniq_by(& &1.msg_id)
+    end
+  end
+
+  @doc """
+  The ONE place an FTS5 `MATCH` expression is built, and the reason no FTS5
+  query syntax is reachable from user input: `query` is TOKENIZED here (runs
+  of letters/digits, matching what the table's `unicode61` tokenizer indexes)
+  and each token is re-emitted as a double-quoted prefix term — `foo bar`
+  becomes `"foo"* "bar"*`, which FTS5 reads as an implicit AND of two prefix
+  matches.
+
+  Because a token can only ever contain letters and digits, nothing that
+  means something to the FTS5 query parser can survive the transform:
+
+    * boolean/proximity keywords (`OR`, `AND`, `NOT`, `NEAR`) come back out
+      as ordinary quoted terms (`"OR"*` matches the literal word "or");
+    * a column filter (`subject:foo`) splits into `"subject"* "foo"*`;
+    * `-`, `^`, `(`, `)`, `*`, `:` and `"` are all separators, so they are
+      dropped rather than escaped — an unbalanced or embedded quote cannot
+      close the quoting this function opens, because no quote reaches it;
+    * an all-punctuation query yields no tokens at all and returns `:none`.
+
+  `:none` is "there is nothing to search for" — an empty/blank query, a
+  query with no alphanumeric content, or one over #{@max_query_bytes} bytes.
+  At most #{@max_terms} terms are kept.
+  """
+  @spec match_expression(String.t()) :: {:ok, String.t()} | :none
+  def match_expression(query) when is_binary(query) do
+    if byte_size(query) > @max_query_bytes do
+      :none
+    else
+      query
+      |> String.split(~r/[^\p{L}\p{N}]+/u, trim: true)
+      |> Enum.take(@max_terms)
+      |> case do
+        [] -> :none
+        terms -> {:ok, Enum.map_join(terms, " ", &~s["#{&1}"*])}
+      end
+    end
+  end
+
+  def match_expression(_query), do: :none
+
+  # `Kernel.max/2`/`Kernel.min/2` spelled out: `use Ash.Domain` defines
+  # local `max/2`/`min/2` (the aggregate builders), which shadow the
+  # auto-imported Kernel pair inside this module.
+  defp clamp_limit(limit) when is_integer(limit),
+    do: limit |> Kernel.max(1) |> Kernel.min(@max_limit)
+
+  defp clamp_limit(_limit), do: @max_limit
+
+  @doc """
+  Inserts `(account, msg_id)`'s search row WITHOUT first deleting any
+  existing one — for callers that have just established there can't be one:
+  `Valea.Mail.Views.land/4` landing a msg_id that held nothing before, and
+  `Valea.Mail.Index.rebuild/2` re-feeding a just-truncated index.
+
+  The distinction is not micro-optimization. `msg_id` is `UNINDEXED`, so a
+  `DELETE ... WHERE account = ? AND msg_id = ?` is a FULL SCAN of the FTS
+  content (see `replace_search_row/3`) — doing one per landed message would
+  make an initial backfill quadratic in the size of the mailbox. Landing is
+  the one path that runs once per message in the account, so it must not
+  pay for a row it knows isn't there.
+
+  `attrs` is `%{from_text:, subject:, body:}`; a `nil` field stores `""`.
+  """
+  @spec insert_search_row(String.t(), String.t(), map()) :: :ok
+  def insert_search_row(account, msg_id, attrs)
+      when is_binary(account) and is_binary(msg_id) and is_map(attrs) do
+    with_repo(fn ->
+      Valea.Repo.query!(
+        """
+        INSERT INTO mail_search (account, msg_id, from_text, subject, body)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        """,
+        [account, msg_id, text(attrs[:from_text]), text(attrs[:subject]), text(attrs[:body])]
+      )
+    end)
+  end
+
+  @doc """
+  Replaces `(account, msg_id)`'s search row: deletes whatever is stored for
+  that pair, then inserts `attrs`. The general, always-correct upsert — used
+  where a view file is REWRITTEN under a msg_id that may already carry a row.
+
+  Both statements run in one transaction, so an interrupted replace can
+  never leave the message unsearchable or doubly-indexed.
+  """
+  @spec replace_search_row(String.t(), String.t(), map()) :: :ok
+  def replace_search_row(account, msg_id, attrs)
+      when is_binary(account) and is_binary(msg_id) and is_map(attrs) do
+    with_repo(fn ->
+      Valea.Repo.transaction(fn ->
+        delete_search_row!(account, msg_id)
+
+        Valea.Repo.query!(
+          """
+          INSERT INTO mail_search (account, msg_id, from_text, subject, body)
+          VALUES (?1, ?2, ?3, ?4, ?5)
+          """,
+          [account, msg_id, text(attrs[:from_text]), text(attrs[:subject]), text(attrs[:body])]
+        )
+      end)
+    end)
+  end
+
+  @doc """
+  Deletes `(account, msg_id)`'s search row, if any. Called on the FINAL
+  removal of a message (`Valea.Mail.Views.remove_occurrence/4` with
+  `remaining: 0`) — a message that still occurs in another folder keeps its
+  view file and stays searchable.
+  """
+  @spec delete_search_row(String.t(), String.t()) :: :ok
+  def delete_search_row(account, msg_id) when is_binary(account) and is_binary(msg_id) do
+    with_repo(fn -> delete_search_row!(account, msg_id) end)
+  end
+
+  @doc "Deletes every `mail_search` row for `account` — `Valea.Mail.Index.rebuild/2`'s truncate."
+  @spec clear_search_rows(String.t()) :: :ok
+  def clear_search_rows(account) when is_binary(account) do
+    with_repo(fn ->
+      Valea.Repo.query!("DELETE FROM mail_search WHERE account = ?1", [account])
+    end)
+  end
+
+  defp delete_search_row!(account, msg_id) do
+    Valea.Repo.query!("DELETE FROM mail_search WHERE account = ?1 AND msg_id = ?2", [
+      account,
+      msg_id
+    ])
+  end
+
+  # The search index is DERIVED state and its writers sit on the file-first
+  # landing path (`Valea.Mail.Views`), which must keep working when there is
+  # no open workspace database to write to — a straggler land as a workspace
+  # closes, or a pure-filesystem caller (`views_test.exs`) that never starts
+  # a repo. Those write a view file and simply leave the index unfed;
+  # `Valea.Mail.Index.rebuild/2` is the repair path. A repo that IS running
+  # and then fails is NOT swallowed: the `query!` raises, exactly like every
+  # other write in this module.
+  defp with_repo(fun) do
+    if is_pid(Process.whereis(Valea.Repo)), do: fun.()
+    :ok
+  end
+
+  defp text(nil), do: ""
+  defp text(value) when is_binary(value), do: value
+  defp text(value), do: to_string(value)
 
   # -- pending ops ledger ------------------------------------------------------
 

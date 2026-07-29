@@ -67,6 +67,7 @@ defmodule Valea.Api do
       rpc_action(:mail_doctor, :mail_doctor)
       rpc_action(:create_mail_folders, :create_mail_folders)
       rpc_action(:list_mail_messages, :list_mail_messages)
+      rpc_action(:search_mail, :search_mail)
       rpc_action(:list_mail_folders, :list_mail_folders)
       rpc_action(:get_mail_message, :get_mail_message)
       rpc_action(:list_trusted_mail_senders, :list_trusted_mail_senders)

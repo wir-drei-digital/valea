@@ -27,8 +27,9 @@ defmodule Valea.Api.Mail do
     * Every MUTATING action takes a `generation` argument and guards with
       `Valea.Workspace.Manager.check_generation/1` before touching
       anything. Read-only actions (`mail_status`, `list_mail_messages`,
-      `list_mail_folders`, `get_mail_message`) take no `generation`, but
-      still resolve `Manager.current/0` before touching the Engine/Store.
+      `search_mail`, `list_mail_folders`, `get_mail_message`) take no
+      `generation`, but still resolve `Manager.current/0` before touching
+      the Engine/Store.
     * Every action that takes an `account` argument validates its grammar
       FIRST (`Valea.Mail.Settings.valid_slug?/1`, via `validate_slug/1`
       below) — before it is ever interpolated into a filesystem path
@@ -49,6 +50,17 @@ defmodule Valea.Api.Mail do
   so a symlinked view file whose target escapes that directory is rejected
   (`{:error, :outside}`) exactly like a real traversal attempt, never
   followed and read.
+
+  ## `search_mail`'s `query`
+
+  The argument is free text a human typed, and it never becomes FTS5 query
+  syntax. `Valea.Mail.Store.match_expression/1` is the single chokepoint:
+  it tokenizes the string into runs of letters/digits and re-emits each as a
+  double-quoted prefix term, so boolean/proximity keywords (`OR`, `NEAR`),
+  column filters (`subject:foo`), negation (`-foo`), and any embedded or
+  unbalanced `"` are all reduced to ordinary search words rather than
+  escaped — nothing this action passes down can widen, redirect, or break
+  out of the query. See that function's docs.
 
   ## `set_mail_credential`'s `kind`
 
@@ -515,6 +527,70 @@ defmodule Valea.Api.Mail do
             slug
             |> Store.list_messages(folder, limit, before)
             |> Enum.map(&message_summary(slug, &1))
+
+          {:ok, %{messages: messages}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    # Full-text search across ONE account's landed messages — the RPC half
+    # of `mail_search` (the FTS5 index fed by `Valea.Mail.Views`/
+    # `Valea.Mail.Index`). Read-only, so no `generation`; `account` is
+    # slug-validated before any I/O like everywhere else here.
+    #
+    # `messages` is deliberately the SAME per-row shape `list_mail_messages`
+    # returns, plus `snippet` — a hit renders through the same list
+    # components as a folder listing, so the two must not drift.
+    action :search_mail, :map do
+      constraints fields: [
+                    messages: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            msg_id: [type: :string, allow_nil?: false],
+                            from_name: [type: :string, allow_nil?: true],
+                            from_email: [type: :string, allow_nil?: true],
+                            subject: [type: :string, allow_nil?: true],
+                            date: [type: :string, allow_nil?: true],
+                            flags: [type: :string, allow_nil?: true],
+                            has_attachments: [type: :boolean, allow_nil?: false],
+                            uid: [type: :integer, allow_nil?: true],
+                            path: [type: :string, allow_nil?: true],
+                            view_path: [type: :string, allow_nil?: false],
+                            snippet: [type: :string, allow_nil?: true]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+      # `allow_empty?` so a caller that sends the search box's current
+      # contents doesn't get an "argument is required" error the moment the
+      # user clears it — an empty query is a legitimate "nothing to search
+      # for" that comes back as an empty result list (Ash otherwise casts
+      # `""` to `nil`, which `allow_nil?: false` then rejects).
+      argument :query, :string, allow_nil?: false, constraints: [allow_empty?: true]
+      argument :limit, :integer, allow_nil?: true, constraints: [min: 1]
+
+      run fn input, _ctx ->
+        %{account: slug, query: query} = input.arguments
+        limit = input.arguments[:limit] || 40
+
+        with :ok <- validate_slug(slug),
+             {:ok, _ws} <- Manager.current() do
+          # `Store.search/3` owns the whole query path: it transforms the
+          # user string into quoted prefix terms (no FTS5 syntax is ever
+          # reachable from here), short-circuits an empty/oversized query to
+          # `[]`, and clamps `limit`.
+          messages =
+            slug
+            |> Store.search(query, limit)
+            |> Enum.flat_map(&search_hit(slug, &1))
 
           {:ok, %{messages: messages}}
         else
@@ -1263,6 +1339,28 @@ defmodule Valea.Api.Mail do
       :path
     ])
     |> Map.put(:view_path, Views.view_rel_path(account, row.msg_id))
+  end
+
+  # One search hit -> zero or one summary row. `mail_search` is keyed per
+  # MESSAGE while `mail_messages` is keyed per OCCURRENCE, so a hit is
+  # rendered through whichever of its occurrences sorts first by folder
+  # name — an arbitrary but STABLE choice, so repeating a search doesn't
+  # reshuffle which folder/uid a row reports.
+  #
+  # No occurrence at all means the search index is momentarily ahead of the
+  # message index (a view landed whose occurrence row isn't written yet, or
+  # an orphaned view). The hit is DROPPED rather than emitted with a blank
+  # uid/path/flags: every summary field the list UI needs comes from the
+  # occurrence row, so a half-filled row would render as a broken entry.
+  defp search_hit(account, %{msg_id: msg_id, snippet: snippet}) do
+    case Store.message_rows_by_msg_id(account, msg_id) do
+      [] ->
+        []
+
+      rows ->
+        row = Enum.min_by(rows, & &1.folder)
+        [account |> message_summary(row) |> Map.put(:snippet, snippet)]
+    end
   end
 
   defp folder_summary(account, sync_state) do

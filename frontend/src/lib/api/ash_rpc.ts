@@ -5132,6 +5132,81 @@ export async function reviseMailDraftChannel<Fields extends ReviseMailDraftField
 }
 
 
+export type SearchMailInput = {
+  account: string;
+  query: string;
+  limit?: number | null;
+};
+
+export type SearchMailFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, snippet: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "snippet"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferSearchMailResult<
+  Fields extends SearchMailFields | undefined,
+> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, snippet: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "snippet"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type SearchMailResult<Fields extends SearchMailFields | undefined = undefined> = | { success: true; data: InferSearchMailResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function searchMail<Fields extends SearchMailFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SearchMailInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SearchMailResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "search_mail",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SearchMailResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function searchMailChannel<Fields extends SearchMailFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SearchMailInput;
+  fields: Fields;
+  resultHandler: (result: SearchMailResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SearchMailResult<Fields>>(
+    config.channel,
+    {
+    action: "search_mail",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type SendDraftInput = {
   account: string;
   draftName: string;

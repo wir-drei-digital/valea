@@ -48,6 +48,19 @@ defmodule Valea.Mail.Index do
   themselves are also unreadable, just with blank metadata: it undeniably
   exists on disk, and dropping it from the index because cosmetic metadata
   is unavailable would be worse than a row with a few blank fields.
+
+  ## Re-feeding the full-text index
+
+  `mail_search` (the FTS5 index behind `search_mail`) is derived state like
+  everything else here, and this module is its repair path: `rebuild/2`
+  TRUNCATES the account's rows and re-feeds one row per VIEW FILE. That is
+  deliberately a separate pass over `views/messages/*.md` rather than a
+  side effect of the occurrence loop above — a message occurring in three
+  folders has three occurrences but exactly one view, so walking the views
+  gives the "one row per message" shape for free, with no dedupe
+  bookkeeping and no delete-before-insert (the truncate already guaranteed
+  the index is empty for this account). It runs AFTER the occurrence loop
+  so that any view the raw fallback just self-healed is included.
   """
   require Logger
 
@@ -59,9 +72,12 @@ defmodule Valea.Mail.Index do
 
   @doc """
   Rebuilds every sync-state/uid_map/message-index row derivable from
-  `<root>/sources/mail/<account>/maildir/`. Returns the number of
-  occurrences successfully indexed (`{:ok, 0}` when the account has no
-  maildir tree yet — a freshly configured, never-synced account).
+  `<root>/sources/mail/<account>/maildir/`, then truncates and re-feeds the
+  account's `mail_search` rows from its view files. Returns the number of
+  OCCURRENCES successfully indexed (`{:ok, 0}` when the account has no
+  maildir tree yet — a freshly configured, never-synced account; its
+  search rows are cleared all the same, since there is nothing left to
+  find).
   """
   @spec rebuild(String.t(), String.t()) :: {:ok, non_neg_integer()}
   def rebuild(root, account) when is_binary(root) and is_binary(account) do
@@ -75,8 +91,62 @@ defmodule Valea.Mail.Index do
         acc + index_folder(root, account, imap_name, dir_abs, dir_rel)
       end)
 
+    refeed_search(root, account)
+
     {:ok, count}
   end
+
+  # -- search index re-feed ------------------------------------------------------
+
+  # Truncate, then one row per view file (see the moduledoc). A view that
+  # can't be read or parsed is skipped and logged rather than aborting the
+  # pass — one corrupt view must not cost the account its whole search
+  # index, the same posture `index_occurrence/5` holds for one bad
+  # occurrence. A DATABASE failure is deliberately not caught here: it
+  # raises, exactly as it does for the `Store` writes in the occurrence loop
+  # above.
+  defp refeed_search(root, account) do
+    Store.clear_search_rows(account)
+
+    root
+    |> view_files(account)
+    |> Enum.each(&index_view_for_search(account, &1))
+  end
+
+  defp view_files(root, account) do
+    Path.wildcard(Path.join([root, "sources", "mail", account, "views", "messages", "*.md"]))
+  end
+
+  defp index_view_for_search(account, path) do
+    msg_id = Path.basename(path, ".md")
+
+    with {:ok, bytes} <- File.read(path),
+         {:ok, %{frontmatter: fm, body: body}} <- MessageFile.parse(bytes) do
+      # `insert_search_row/3`, not `replace_search_row/3`: `refeed_search/2`
+      # just cleared this account, and one view file means one msg_id, so
+      # there is provably no row to displace.
+      Store.insert_search_row(account, msg_id, %{
+        from_text: from_text(fm["from"]),
+        subject: fm["subject"],
+        body: body
+      })
+    else
+      other ->
+        Logger.warning(
+          "Valea.Mail.Index: skipping search feed for #{account}/#{msg_id}: #{inspect(other)}"
+        )
+
+        :ok
+    end
+  end
+
+  # Same "name and address in one searchable string" shape
+  # `Valea.Mail.Views` feeds on landing — from parsed frontmatter here
+  # (string keys) rather than a `Valea.Mail.Message` struct.
+  defp from_text(%{"name" => name, "email" => email}),
+    do: [name, email] |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join(" ")
+
+  defp from_text(_other), do: ""
 
   # -- .folder-first directory discovery --------------------------------------
 

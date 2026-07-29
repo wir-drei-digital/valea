@@ -857,6 +857,131 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
+  # `search_mail` returns the SAME per-row shape as `list_mail_messages`,
+  # plus `snippet` — the search UI renders hits through the same list
+  # components.
+  @search_fields [
+    %{
+      "messages" => [
+        "msgId",
+        "fromName",
+        "fromEmail",
+        "subject",
+        "date",
+        "flags",
+        "hasAttachments",
+        "uid",
+        "path",
+        "viewPath",
+        "snippet"
+      ]
+    }
+  ]
+
+  describe "search_mail" do
+    setup %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
+
+      plant_message!(
+        workspace,
+        "mara",
+        inbox_abs,
+        1,
+        "Wed, 01 Jul 2026 09:00:00 +0000",
+        "Roadmap"
+      )
+
+      plant_message!(workspace, "mara", inbox_abs, 2, "Thu, 02 Jul 2026 09:00:00 +0000", "Picnic")
+
+      {:ok, 2} = Index.rebuild(workspace, "mara")
+
+      :ok
+    end
+
+    test "returns full summary rows plus a body snippet" do
+      assert %{"success" => true, "data" => %{"messages" => [hit]}} =
+               rpc("search_mail", %{"account" => "mara", "query" => "roadmap"}, @search_fields)
+
+      assert hit["subject"] == "Roadmap"
+      assert hit["fromName"] == "Priya Nair"
+      assert hit["fromEmail"] == "priya@example.com"
+      assert hit["uid"] == 1
+      assert hit["hasAttachments"] == false
+      assert hit["viewPath"] =~ "views/messages/"
+      assert hit["path"] =~ "maildir/INBOX/cur/"
+      assert hit["snippet"] =~ "Roadmap"
+    end
+
+    test "a prefix matches, and limit caps the result set" do
+      assert %{"success" => true, "data" => %{"messages" => [hit]}} =
+               rpc("search_mail", %{"account" => "mara", "query" => "roadm"}, @search_fields)
+
+      assert hit["subject"] == "Roadmap"
+
+      # Both messages carry the sender's address; the limit trims to one.
+      assert %{"success" => true, "data" => %{"messages" => both}} =
+               rpc("search_mail", %{"account" => "mara", "query" => "priya"}, @search_fields)
+
+      assert length(both) == 2
+
+      assert %{"success" => true, "data" => %{"messages" => [_one]}} =
+               rpc(
+                 "search_mail",
+                 %{"account" => "mara", "query" => "priya", "limit" => 1},
+                 @search_fields
+               )
+    end
+
+    test "an empty query returns no rows rather than everything" do
+      assert %{"success" => true, "data" => %{"messages" => []}} =
+               rpc("search_mail", %{"account" => "mara", "query" => ""}, @search_fields)
+
+      assert %{"success" => true, "data" => %{"messages" => []}} =
+               rpc("search_mail", %{"account" => "mara", "query" => "   "}, @search_fields)
+    end
+
+    test "hostile query strings are searched as literal words, never as FTS5 syntax" do
+      # Each of these would broaden, redirect, or syntax-error the query if
+      # any of it reached FTS5; as literal terms every one of them demands a
+      # word no message contains.
+      for query <- [
+            "roadmap OR picnic",
+            "subject:roadmap",
+            ~s[roadmap" OR "picnic],
+            "-roadmap NEAR/2 picnic",
+            "{subject body}:roadmap",
+            String.duplicate("roadmap ", 200)
+          ] do
+        assert %{"success" => true, "data" => %{"messages" => messages}} =
+                 rpc("search_mail", %{"account" => "mara", "query" => query}, @search_fields),
+               "search_mail failed for #{inspect(query)}"
+
+        assert messages == [], "unexpected hits for #{inspect(query)}"
+      end
+
+      # Punctuation is dropped, not escaped and not fatal: an unbalanced
+      # quote is a syntax error to FTS5 but just a separator here, so the
+      # word beside it still searches normally.
+      for query <- [~s["roadmap], ~s[roadmap"], "^roadmap", "roadmap*"] do
+        assert %{"success" => true, "data" => %{"messages" => [hit]}} =
+                 rpc("search_mail", %{"account" => "mara", "query" => query}, @search_fields),
+               "search_mail failed for #{inspect(query)}"
+
+        assert hit["subject"] == "Roadmap"
+      end
+    end
+
+    test "an invalid slug is rejected before any lookup" do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("search_mail", %{"account" => "../x", "query" => "roadmap"}, @search_fields)
+
+      assert inspect(errors) =~ "invalid_slug"
+    end
+  end
+
   describe "list_mail_folders" do
     test "reports each folder's dir/held/backfill_complete/message_count", %{
       workspace: workspace,

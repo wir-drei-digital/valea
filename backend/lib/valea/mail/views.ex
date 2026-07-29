@@ -51,10 +51,35 @@ defmodule Valea.Mail.Views do
   fingerprint (idempotent re-land); a hint that collides with a
   DIFFERENT stored fingerprint falls back to the ordinary resolution
   instead of silently overwriting someone else's view.
+
+  ## Feeding the full-text index
+
+  This module owns two of the three code points where a view file's
+  CONTENT comes into or goes out of existence (`land/4` writes one,
+  `remove_occurrence/4`'s final removal deletes one; `Valea.Mail.Index`'s
+  `rebuild/2` is the third), so it is where `mail_search` — the FTS5 index
+  behind the `search_mail` RPC — is kept in step with disk. Routing every
+  index write through the code that already owns the file is what keeps
+  search from drifting away from what is actually stored.
+
+  Deliberately NOT a feed point: `refresh_folders/5`. It patches
+  `folders:`/`flags:` frontmatter and never touches a single byte of the
+  indexed text (from/subject/body), so re-indexing on a flag change would
+  be pure churn.
+
+  `land/4` feeds ONLY when it actually (re)writes a view. Its two no-op
+  branches — same content already landed, or a regenerated sidecar over an
+  intact view — leave the file byte-identical, so there is nothing new to
+  index. The consequence is that a message whose index write was skipped
+  (no open workspace database at landing time — see
+  `Valea.Mail.Store.insert_search_row/3`) is not healed by re-landing it;
+  `Valea.Mail.Index.rebuild/2` is the repair path, as it is for every other
+  derived table.
   """
 
   alias Valea.Mail.MessageFile
   alias Valea.Mail.Normalizer
+  alias Valea.Mail.Store
 
   # -- land ---------------------------------------------------------------
 
@@ -77,7 +102,13 @@ defmodule Valea.Mail.Views do
     fingerprint = MessageFile.fingerprint(raw)
     msg_id = resolve_id(root, account, message, raw, fingerprint, Map.get(opts, :msg_id_hint))
 
-    case {fingerprint_of(root, account, msg_id), view_ok?(root, account, msg_id)} do
+    # Captured BEFORE anything is written: `{nil, false}` — no fingerprint
+    # sidecar AND no intact view — is the only state that proves nothing was
+    # ever stored under this msg_id, which is what lets the search feed below
+    # skip its delete (see `index_message/4`).
+    stored = {fingerprint_of(root, account, msg_id), view_ok?(root, account, msg_id)}
+
+    case stored do
       {^fingerprint, true} ->
         # Already landed under this id with this exact content, and the
         # view file is actually intact (readable + parseable) — no-op.
@@ -102,10 +133,40 @@ defmodule Valea.Mail.Views do
 
       _no_view_or_different_fingerprint ->
         write_view!(root, account, msg_id, message, fingerprint)
+        index_message(account, msg_id, message, stored == {nil, false})
     end
 
     {:ok, %{msg_id: msg_id, fingerprint: fingerprint, has_attachments: message.attachments != []}}
   end
+
+  # The `mail_search` feed for a view this call just wrote. `body` is
+  # `message.body_text` — byte-for-byte what `write_view!` put after the
+  # frontmatter's closing `---` (see `MessageFile.render/2`), so the indexed
+  # text is exactly the text on disk without reading the file back.
+  #
+  # `fresh?` says this msg_id held nothing before (see `land/4`): no search
+  # row can exist for it, so the row goes in with a plain INSERT rather than
+  # the full-scan delete-then-insert an unconditional upsert would cost on
+  # every message of a first backfill.
+  defp index_message(account, msg_id, message, fresh?) do
+    attrs = %{
+      from_text: from_text(message.from),
+      subject: message.subject,
+      body: message.body_text
+    }
+
+    if fresh?,
+      do: Store.insert_search_row(account, msg_id, attrs),
+      else: Store.replace_search_row(account, msg_id, attrs)
+  end
+
+  # Sender name and address as one searchable string ("Alice Example
+  # alice@example.com"): the tokenizer splits both into words, so a search
+  # for either the person or their domain finds the message.
+  defp from_text(nil), do: ""
+
+  defp from_text(%{name: name, email: email}),
+    do: [name, email] |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join(" ")
 
   # No hint: run the full 8/16/64 collision resolution. A hint is trusted
   # when unclaimed or already matching; otherwise it's discarded in favor
@@ -281,12 +342,19 @@ defmodule Valea.Mail.Views do
   Removes bookkeeping for one occurrence of `msg_id` going away.
   `remaining` is the occurrence count left across every folder AFTER this
   removal (the caller's job — this module has no occurrence table of its
-  own): `0` garbage-collects the shared view, its attachments, and its
-  fingerprint sidecar (a msg_id with nothing left pointing to it can be
-  freely reused for new content, per `land/4`'s idempotency check); any
-  other value keeps the view untouched — other occurrences still need it,
-  and their own `folders:`/`flags:` refresh is a separate
-  `refresh_folders/5` call the caller makes with the updated membership.
+  own): `0` garbage-collects the shared view, its attachments, its
+  fingerprint sidecar, and its `mail_search` row (a msg_id with nothing
+  left pointing to it can be freely reused for new content, per `land/4`'s
+  idempotency check); any other value keeps the view untouched — other
+  occurrences still need it, and their own `folders:`/`flags:` refresh is a
+  separate `refresh_folders/5` call the caller makes with the updated
+  membership.
+
+  The search row goes only on that FINAL removal, for the same reason the
+  view file does: one message has one view and one search row no matter how
+  many folders it occurs in, so losing one occurrence of a three-label
+  Gmail message must leave it fully searchable.
+
   Idempotent: removing an already-absent view is not an error.
   """
   @spec remove_occurrence(String.t(), String.t(), String.t(), non_neg_integer()) :: :ok
@@ -295,6 +363,7 @@ defmodule Valea.Mail.Views do
     File.rm(view_abs_path(root, account, msg_id))
     File.rm_rf(attachments_abs_dir(root, account, msg_id))
     File.rm(fingerprint_sidecar_path(root, account, msg_id))
+    Store.delete_search_row(account, msg_id)
     :ok
   end
 

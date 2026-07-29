@@ -77,6 +77,8 @@ import {
   createMailFoldersChannel,
   listMailMessages as httpListMailMessages,
   listMailMessagesChannel,
+  searchMail as httpSearchMail,
+  searchMailChannel,
   listMailFolders as httpListMailFolders,
   listMailFoldersChannel,
   getMailMessage as httpGetMailMessage,
@@ -199,6 +201,7 @@ import type {
   MailDoctorFields,
   CreateMailFoldersFields,
   ListMailMessagesFields,
+  SearchMailFields,
   ListMailFoldersFields,
   GetMailMessageFields,
   ListTrustedMailSendersFields,
@@ -680,6 +683,28 @@ const listMailMessagesFields = [
   { messages: ['msgId', 'fromName', 'fromEmail', 'subject', 'date', 'flags', 'hasAttachments', 'uid', 'path', 'viewPath'] }
 ] as unknown as ListMailMessagesFields;
 
+// `search_mail` hits are `listMailMessagesFields`' shape plus `snippet` (a
+// body excerpt around the match), so search results render through the same
+// list components as a folder listing. Same `Array<TypedMap>` codegen gap,
+// same cast.
+const searchMailFields = [
+  {
+    messages: [
+      'msgId',
+      'fromName',
+      'fromEmail',
+      'subject',
+      'date',
+      'flags',
+      'hasAttachments',
+      'uid',
+      'path',
+      'viewPath',
+      'snippet'
+    ]
+  }
+] as unknown as SearchMailFields;
+
 // Same `Array<TypedMap>` codegen gap as `listMailMessagesFields` above —
 // `folders` items arrive camelCased (`messageCount`/`backfillComplete`),
 // matching `MailFolder` in `stores/mail.svelte.ts`.
@@ -888,6 +913,15 @@ function callListMailMessagesChannel(
 ) {
   return wrapChannelCall((handlers) =>
     listMailMessagesChannel({ channel, input, fields: listMailMessagesFields, ...handlers })
+  );
+}
+
+function callSearchMailChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; query: string; limit?: number }
+) {
+  return wrapChannelCall((handlers) =>
+    searchMailChannel({ channel, input, fields: searchMailFields, ...handlers })
   );
 }
 
@@ -2024,6 +2058,15 @@ export const api = {
         httpListMailMessages(
           withAuth({ input: { account, folder, ...opts }, fields: listMailMessagesFields })
         )
+    ),
+
+  // Full-text search across one account's landed messages. `query` is plain
+  // text the user typed — the backend turns it into quoted prefix terms, so
+  // nothing here needs (or is able) to escape it.
+  searchMail: (account: string, query: string, opts: { limit?: number } = {}) =>
+    runRpc(
+      (channel) => callSearchMailChannel(channel, { account, query, ...opts }),
+      () => httpSearchMail(withAuth({ input: { account, query, ...opts }, fields: searchMailFields }))
     ),
 
   getMailMessage: (account: string, msgId: string) =>
