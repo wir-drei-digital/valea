@@ -256,7 +256,12 @@ defmodule Valea.Mail.Views do
         entry = %{
           filename: filename,
           path: Path.join(attachments_rel_dir(account, msg_id), filename),
-          bytes: byte_size(attachment.content)
+          bytes: byte_size(attachment.content),
+          # Carried verbatim from the part's `Content-ID` (bracket-stripped by
+          # the normalizer) so `get_mail_message`'s `cid:` resolution can match
+          # an `<img src="cid:X">` against a landed file without re-parsing the
+          # raw message. `nil` for the ordinary attachment that carries none.
+          content_id: Map.get(attachment, :content_id)
         }
 
         {[entry | acc], MapSet.put(used, filename)}

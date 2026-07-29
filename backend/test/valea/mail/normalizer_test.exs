@@ -86,6 +86,78 @@ defmodule Valea.Mail.NormalizerTest do
     end
   end
 
+  describe "normalize/1 — cid_image.eml (Content-ID capture)" do
+    test "captures the inline image's Content-ID with the angle brackets stripped" do
+      {:ok, msg} = Normalizer.normalize(fixture("cid_image.eml"))
+
+      assert [%{filename: "logo.png", content_id: "logo-1@valea.test", content: content}] =
+               msg.attachments
+
+      # A real 1x1 PNG, byte-for-byte off the base64 part.
+      assert <<137, 80, 78, 71, 13, 10, 26, 10, _rest::binary>> = content
+      assert byte_size(content) == 69
+    end
+
+    test "the html part still comes back for rendering, cid references intact" do
+      html = Normalizer.html_body(fixture("cid_image.eml"))
+
+      assert html =~ ~s[src="cid:logo-1@valea.test"]
+      assert html =~ ~s[src="cid:absent@valea.test"]
+    end
+
+    test "an attachment with no Content-ID header lands content_id: nil" do
+      {:ok, msg} = Normalizer.normalize(fixture("base64_attachment.eml"))
+
+      assert [%{filename: "notes.txt", content_id: nil}] = msg.attachments
+    end
+
+    test "a bare (unbracketed) Content-ID is kept verbatim; a lone stray bracket is content" do
+      assert [%{content_id: "bare@valea.test"}] =
+               "bare@valea.test" |> cid_message() |> normalized_attachments()
+
+      assert [%{content_id: "<half@valea.test"}] =
+               "<half@valea.test" |> cid_message() |> normalized_attachments()
+    end
+
+    test "surrounding whitespace is trimmed; a blank Content-ID is nil, not an empty match-all" do
+      assert [%{content_id: "spaced@valea.test"}] =
+               "   spaced@valea.test   " |> cid_message() |> normalized_attachments()
+
+      assert [%{content_id: nil}] = "   " |> cid_message() |> normalized_attachments()
+      assert [%{content_id: nil}] = "<>" |> cid_message() |> normalized_attachments()
+    end
+
+    test "case is preserved — a Content-ID is an addr-spec, not a case-folded token" do
+      assert [%{content_id: "<MixedCase@Valea.Test>"}] =
+               "<<MixedCase@Valea.Test>>" |> cid_message() |> normalized_attachments()
+    end
+
+    defp normalized_attachments(raw) do
+      {:ok, msg} = Normalizer.normalize(raw)
+      msg.attachments
+    end
+
+    defp cid_message(content_id) do
+      "From: Priya Nair <priya@example.com>\r\n" <>
+        "Subject: Inline\r\n" <>
+        "Date: Tue, 14 Jul 2026 08:30:00 +0000\r\n" <>
+        "MIME-Version: 1.0\r\n" <>
+        "Content-Type: multipart/related; boundary=\"BB\"\r\n" <>
+        "\r\n" <>
+        "--BB\r\n" <>
+        "Content-Type: text/html; charset=utf-8\r\n" <>
+        "\r\n" <>
+        "<p>x</p>\r\n" <>
+        "--BB\r\n" <>
+        "Content-Type: image/png; name=\"logo.png\"\r\n" <>
+        "Content-ID: #{content_id}\r\n" <>
+        "Content-Disposition: inline; filename=\"logo.png\"\r\n" <>
+        "\r\n" <>
+        "not-really-a-png\r\n" <>
+        "--BB--\r\n"
+    end
+  end
+
   describe "normalize/1 — evil_filename.eml" do
     test "extracts the raw (unsanitized) attachment filename — sanitizing is MessageFile's job" do
       {:ok, msg} = Normalizer.normalize(fixture("evil_filename.eml"))

@@ -44,7 +44,8 @@ defmodule Valea.Mail.MessageFile do
 
   Every value that ultimately comes from a mail header (subject, from/to
   names and emails, message_id, in_reply_to, references, reply_to,
-  attachment filenames) is rendered through `yaml_string/1`, which:
+  attachment filenames and content_ids) is rendered through
+  `yaml_string/1`, which:
 
     1. scrubs invalid UTF-8 (each bad sequence → U+FFFD, via
        `Valea.Mail.Normalizer.scrub_utf8/1`) so `render/2` structurally
@@ -139,10 +140,12 @@ defmodule Valea.Mail.MessageFile do
   order), then `---`, then `message.body_text` verbatim.
 
   `meta` is `%{msg_id:, account:, folders: [String.t()], flags: String.t(),
-  attachments: [%{filename:, path:, bytes:}]}`. `folders`/`flags`/
-  `attachments` default to `[]`/`""`/`[]` when absent (a fresh landing has
-  no folder membership yet — `Valea.Mail.Views.refresh_folders/5` fills
-  them in once occurrences are known). There is deliberately no
+  attachments: [%{filename:, path:, bytes:, content_id:}]}` (`content_id`
+  optional, rendered `null` when absent — see `render_attachment/1`).
+  `folders`/`flags`/`attachments` default to `[]`/`""`/`[]` when absent (a
+  fresh landing has no folder membership yet —
+  `Valea.Mail.Views.refresh_folders/5` fills them in once occurrences are
+  known). There is deliberately no
   `status`/`uid`/`source`/`source_ref` field — those belonged to the
   retired single-flat-file design; occurrence identity now lives on the
   maildir filename (`Valea.Mail.Maildir.encode_filename/4`) and in
@@ -196,8 +199,15 @@ defmodule Valea.Mail.MessageFile do
   defp render_attachment_list(list),
     do: "[" <> Enum.map_join(list, ", ", &render_attachment/1) <> "]"
 
-  defp render_attachment(%{filename: filename, path: path, bytes: bytes}) do
-    "{ filename: #{yaml_string(filename)}, path: #{yaml_string(path)}, bytes: #{render_int(bytes)} }"
+  # `content_id` is the sender's `Content-ID` header, angle-brackets stripped
+  # (`Valea.Mail.Normalizer`) — `null` for the overwhelming majority of
+  # attachments, which carry none. It is a mail header like any other, so it
+  # goes through `yaml_string/1` exactly like `subject`/`filename` do: a
+  # `Content-ID: <a", id: "b>` cannot terminate the string early, and a
+  # newline in it cannot open a sibling YAML key.
+  defp render_attachment(%{filename: filename, path: path, bytes: bytes} = attachment) do
+    "{ filename: #{yaml_string(filename)}, path: #{yaml_string(path)}, " <>
+      "bytes: #{render_int(bytes)}, content_id: #{yaml_string(Map.get(attachment, :content_id))} }"
   end
 
   defp render_date(nil), do: "null"

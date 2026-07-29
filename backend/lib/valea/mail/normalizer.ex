@@ -21,7 +21,11 @@ defmodule Valea.Mail.Message do
             notes: %{}
 
   @type address :: %{name: String.t() | nil, email: String.t() | nil}
-  @type attachment :: %{filename: String.t(), content: binary()}
+  @type attachment :: %{
+          filename: String.t(),
+          content: binary(),
+          content_id: String.t() | nil
+        }
   @type t :: %__MODULE__{
           message_id: String.t() | nil,
           from: address(),
@@ -614,12 +618,19 @@ defmodule Valea.Mail.Normalizer do
     walk_body(inner, acc)
   end
 
-  defp walk_body({type, subtype, _headers, params, body}, acc) when is_binary(body) do
+  defp walk_body({type, subtype, headers, params, body}, acc) when is_binary(body) do
     case classify_part(type, subtype, params, acc) do
-      :attachment -> %{acc | attachments: acc.attachments ++ [build_attachment(params, body)]}
-      :plain -> capture_text(acc, :plain, body, params)
-      :html -> capture_text(acc, :html, body, params)
-      :skip -> acc
+      :attachment ->
+        %{acc | attachments: acc.attachments ++ [build_attachment(headers, params, body)]}
+
+      :plain ->
+        capture_text(acc, :plain, body, params)
+
+      :html ->
+        capture_text(acc, :html, body, params)
+
+      :skip ->
+        acc
     end
   end
 
@@ -688,13 +699,45 @@ defmodule Valea.Mail.Normalizer do
     Enum.any?(list, fn {k, _v} -> String.downcase(to_string(k)) == key end)
   end
 
-  defp build_attachment(params, body) do
+  defp build_attachment(headers, params, body) do
     filename =
       get_param(Map.get(params, :disposition_params), "filename") ||
         get_param(Map.get(params, :content_type_params), "name") ||
         "attachment"
 
-    %{filename: decode_encoded_words(filename), content: body}
+    %{
+      filename: decode_encoded_words(filename),
+      content: body,
+      content_id: content_id_of(headers)
+    }
+  end
+
+  # `<...>`-wrapped by RFC 2045 §7; the brackets are DELIMITERS, not part of
+  # the id, and RFC 2392 defines the `cid:` URL as exactly the bracket-free
+  # form — so stripping them here is what makes a landed `content_id`
+  # directly comparable to what an `<img src="cid:X">` carries. Only a
+  # fully-wrapped value is unwrapped (a lone stray bracket is content, kept
+  # verbatim), and nothing else about the value is touched: it is an
+  # opaque addr-spec, compared byte-for-byte downstream. The regex has NO
+  # `u` modifier — PCRE runs in 8-bit mode, safe on header bytes that never
+  # went through a charset decode (same reasoning as `@high_byte_re`).
+  @angle_wrapped ~r/\A<(.*)>\z/s
+
+  defp content_id_of(headers) do
+    case header_value(headers, "Content-ID") do
+      nil ->
+        nil
+
+      value ->
+        value |> String.trim() |> strip_angle_brackets() |> presence()
+    end
+  end
+
+  defp strip_angle_brackets(value) do
+    case Regex.run(@angle_wrapped, value) do
+      [_whole, inner] -> inner
+      nil -> value
+    end
   end
 
   defp charset_of(params), do: get_param(Map.get(params, :content_type_params), "charset")

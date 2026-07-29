@@ -57,6 +57,33 @@ defmodule Valea.Mail.ViewsTest do
       assert File.exists?(fingerprint_sidecar(root, "mara", msg_id))
     end
 
+    test "an inline image's content_id reaches the landed attachments frontmatter", %{root: root} do
+      assert {:ok, %{msg_id: msg_id}} = Views.land(root, "mara", fixture("cid_image.eml"))
+
+      {:ok, %{frontmatter: fm}} = MessageFile.parse(File.read!(view_path(root, "mara", msg_id)))
+
+      assert [
+               %{
+                 "filename" => "logo.png",
+                 "content_id" => "logo-1@valea.test",
+                 "bytes" => 69,
+                 "path" => path
+               }
+             ] = fm["attachments"]
+
+      # The frontmatter path is workspace-relative and names the file that was
+      # actually written — the pair `message_html`'s cid resolution walks.
+      assert path == "sources/mail/mara/views/attachments/#{msg_id}/logo.png"
+      assert byte_size(File.read!(Path.join(root, path))) == 69
+    end
+
+    test "an attachment with no Content-ID lands content_id: null", %{root: root} do
+      assert {:ok, %{msg_id: msg_id}} = Views.land(root, "mara", fixture("base64_attachment.eml"))
+
+      {:ok, %{frontmatter: fm}} = MessageFile.parse(File.read!(view_path(root, "mara", msg_id)))
+      assert [%{"filename" => "notes.txt", "content_id" => nil}] = fm["attachments"]
+    end
+
     test "a message with no attachments lands has_attachments: false and no attachments dir", %{
       root: root
     } do

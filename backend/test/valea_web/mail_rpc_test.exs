@@ -8,10 +8,19 @@ defmodule ValeaWeb.MailRpcTest do
   alias Valea.Mail.Account
   alias Valea.Mail.Index
   alias Valea.Mail.Maildir
+  alias Valea.Mail.MessageFile
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.Views
   alias Valea.Workspace.Manager
+
+  @mail_fixtures_dir Path.expand("../fixtures/mail", __DIR__)
+
+  # The 69-byte 1x1 RGBA PNG `cid_image.eml` carries, and the `data:` URI it
+  # must inline to. Tiny on purpose: the caps below are exercised by growing
+  # a LANDED file in the test, never by committing a megabyte fixture.
+  @png_b64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNkYGAAAAAFAAENCi20AAAAAElFTkSuQmCC"
+  @png_data_uri "data:image/png;base64," <> @png_b64
 
   setup do
     dir =
@@ -183,6 +192,62 @@ defmodule ValeaWeb.MailRpcTest do
     filename = Maildir.encode_filename(msg_id, uid, MapSet.new(), ":")
     Maildir.deliver!(folder_abs, filename, raw)
     msg_id
+  end
+
+  defp mail_fixture(name), do: File.read!(Path.join(@mail_fixtures_dir, name))
+
+  defp plant_raw!(root, account, folder_abs, uid, raw) do
+    {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
+    Maildir.deliver!(folder_abs, Maildir.encode_filename(msg_id, uid, MapSet.new(), ":"), raw)
+    msg_id
+  end
+
+  # A `multipart/related` message: one text/html part plus one inline part per
+  # `{content_id, filename}` in `images`, each carrying the 1x1 PNG. `html`
+  # defaults to one `<img src="cid:…">` per image, in order; a test that needs
+  # its own markup (a dangling cid, a hostile one, a repeat) passes it.
+  defp cid_message(images, html \\ nil) do
+    html =
+      html || Enum.map_join(images, "", fn {cid, _f} -> ~s[<img src="cid:#{cid}">] end)
+
+    parts =
+      Enum.map_join(images, "", fn {cid, filename} ->
+        "--RB\r\n" <>
+          "Content-Type: image/png; name=\"#{filename}\"\r\n" <>
+          "Content-ID: <#{cid}>\r\n" <>
+          "Content-Disposition: inline; filename=\"#{filename}\"\r\n" <>
+          "Content-Transfer-Encoding: base64\r\n" <>
+          "\r\n" <> @png_b64 <> "\r\n"
+      end)
+
+    "From: Priya Nair <priya@example.com>\r\n" <>
+      "To: Mara Lindt <mara@example.com>\r\n" <>
+      "Subject: Inline images\r\n" <>
+      "Date: Tue, 14 Jul 2026 08:30:00 +0000\r\n" <>
+      "Message-ID: <cid-rpc-#{System.unique_integer([:positive])}@example.com>\r\n" <>
+      "MIME-Version: 1.0\r\n" <>
+      "Content-Type: multipart/related; boundary=\"RB\"\r\n" <>
+      "\r\n" <>
+      "--RB\r\n" <>
+      "Content-Type: text/html; charset=utf-8\r\n" <>
+      "\r\n" <> html <> "\r\n" <> parts <> "--RB--\r\n"
+  end
+
+  defp attachment_abs(root, account, msg_id, filename),
+    do: Path.join([root, "sources", "mail", account, "views", "attachments", msg_id, filename])
+
+  defp read_message!(msg_id) do
+    assert %{"success" => true, "data" => %{"message" => message}} =
+             rpc("get_mail_message", %{"account" => "mara", "msgId" => msg_id}, ["message"])
+
+    message
+  end
+
+  # Every `src` of the returned html, decoded — the tree the frontend's iframe
+  # would actually see, not a substring of the serialized markup.
+  defp html_srcs(html) do
+    {:ok, doc} = Floki.parse_document(html)
+    doc |> Floki.find("[src]") |> Floki.attribute("src")
   end
 
   # -- mail_status --------------------------------------------------------------
@@ -1703,6 +1768,281 @@ defmodule ValeaWeb.MailRpcTest do
                )
 
       assert inspect(errors) =~ "not_found"
+    end
+  end
+
+  # -- get_mail_message: `cid:` image inlining ---------------------------------
+
+  describe "get_mail_message — cid: images" do
+    setup %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      %{inbox: setup_folder!(maildir_root, "INBOX", "INBOX")}
+    end
+
+    defp land_and_index!(workspace, inbox, raw) do
+      msg_id = plant_raw!(workspace, "mara", inbox, 1, raw)
+      {:ok, _count} = Index.rebuild(workspace, "mara")
+      msg_id
+    end
+
+    # Hand-edit the landed view's `attachments:` line — exactly what a human,
+    # or an agent talked into it by the message it is reading, can do to a
+    # workspace file. `entries` is a list of keyword lists; binary values are
+    # rendered the way `MessageFile.render/2` renders them.
+    defp patch_attachments!(workspace, msg_id, entries) do
+      rendered =
+        Enum.map_join(entries, ", ", fn entry ->
+          fields =
+            Enum.map_join(entry, ", ", fn
+              {key, value} when is_binary(value) ->
+                "#{key}: #{MessageFile.yaml_string(value)}"
+
+              {key, value} ->
+                "#{key}: #{value}"
+            end)
+
+          "{ " <> fields <> " }"
+        end)
+
+      path = Path.join(workspace, Views.view_rel_path("mara", msg_id))
+
+      {:ok, patched} =
+        MessageFile.patch_frontmatter(File.read!(path), %{"attachments" => "[#{rendered}]"})
+
+      File.write!(path, patched)
+    end
+
+    test "the fixture's inline image becomes a data: URI; a dangling cid stays broken",
+         %{workspace: workspace, inbox: inbox} do
+      msg_id = land_and_index!(workspace, inbox, mail_fixture("cid_image.eml"))
+
+      message = read_message!(msg_id)
+
+      assert html_srcs(message["html"]) == [@png_data_uri, "cid:absent@valea.test"]
+
+      # A `data:` image is not remote content, and the unresolved `cid:` is
+      # not either — the remote-content banner must stay down.
+      assert message["external_content"] == false
+    end
+
+    test "the same cid referenced twice inlines at both sites",
+         %{workspace: workspace, inbox: inbox} do
+      raw =
+        cid_message(
+          [{"logo@valea.test", "logo.png"}],
+          ~s[<img src="cid:logo@valea.test"><p>and again</p><img src="cid:logo@valea.test">]
+        )
+
+      msg_id = land_and_index!(workspace, inbox, raw)
+
+      assert html_srcs(read_message!(msg_id)["html"]) == [@png_data_uri, @png_data_uri]
+    end
+
+    test "hostile cid values stay inert: metacharacters match nothing, quotes cannot escape",
+         %{workspace: workspace, inbox: inbox} do
+      raw =
+        cid_message(
+          [{~s[a"b>], "one.png"}, {"logo", "two.png"}],
+          ~s[<img src="cid:a&quot;b&gt;">] <>
+            ~s[<img src="cid:.*">] <>
+            ~s[<img src="cid:lo.o">] <>
+            ~s[<img src="cid:x&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;">] <>
+            ~s[<img src="cid:logo">]
+        )
+
+      msg_id = land_and_index!(workspace, inbox, raw)
+      html = read_message!(msg_id)["html"]
+
+      # A cid carrying `"` and `>` is matched byte-for-byte and inlined; regex
+      # metacharacters match only themselves, so `.*`/`lo.o` resolve to
+      # nothing even though `logo` is right there.
+      assert html_srcs(html) == [
+               @png_data_uri,
+               "cid:.*",
+               "cid:lo.o",
+               ~s[cid:x"><script>alert(1)</script>],
+               @png_data_uri
+             ]
+
+      # The unresolved hostile value is written back ESCAPED — five images,
+      # no script element, nothing spliced out of its attribute.
+      refute html =~ "<script"
+      {:ok, doc} = Floki.parse_document(html)
+      assert length(Floki.find(doc, "img")) == 5
+      assert Floki.find(doc, "script") == []
+    end
+
+    test "only known image extensions inline — .svg and .txt stay broken",
+         %{workspace: workspace, inbox: inbox} do
+      raw =
+        cid_message([
+          {"vec@valea.test", "logo.svg"},
+          {"doc@valea.test", "notes.txt"},
+          {"ok@valea.test", "logo.png"}
+        ])
+
+      msg_id = land_and_index!(workspace, inbox, raw)
+
+      assert html_srcs(read_message!(msg_id)["html"]) == [
+               "cid:vec@valea.test",
+               "cid:doc@valea.test",
+               @png_data_uri
+             ]
+    end
+
+    test "the per-image cap is exact: 1 MB inlines, one byte more stays broken",
+         %{workspace: workspace, inbox: inbox} do
+      raw = cid_message([{"big@valea.test", "big.png"}])
+      msg_id = land_and_index!(workspace, inbox, raw)
+      path = attachment_abs(workspace, "mara", msg_id, "big.png")
+
+      File.write!(path, :binary.copy("x", 1024 * 1024))
+      assert [inlined] = html_srcs(read_message!(msg_id)["html"])
+      assert inlined == "data:image/png;base64," <> Base.encode64(:binary.copy("x", 1024 * 1024))
+
+      File.write!(path, :binary.copy("x", 1024 * 1024 + 1))
+      assert html_srcs(read_message!(msg_id)["html"]) == ["cid:big@valea.test"]
+    end
+
+    test "the 4 MB per-message cap stops inlining, in document order",
+         %{workspace: workspace, inbox: inbox} do
+      images = for i <- 1..5, do: {"img#{i}@valea.test", "img#{i}.png"}
+      msg_id = land_and_index!(workspace, inbox, cid_message(images))
+
+      for {_cid, filename} <- images do
+        File.write!(
+          attachment_abs(workspace, "mara", msg_id, filename),
+          :binary.copy("x", 1_000_000)
+        )
+      end
+
+      srcs = html_srcs(read_message!(msg_id)["html"])
+
+      # 4 x 1_000_000 fits under 4 MB; the fifth would not, so it — and only
+      # it — stays a broken `cid:`.
+      assert length(srcs) == 5
+      assert Enum.all?(Enum.take(srcs, 4), &String.starts_with?(&1, "data:image/png;base64,"))
+      assert Enum.at(srcs, 4) == "cid:img5@valea.test"
+    end
+
+    test "two attachments sharing a Content-ID: the first in frontmatter order wins",
+         %{workspace: workspace, inbox: inbox} do
+      raw =
+        cid_message(
+          [{"dup@valea.test", "one.png"}, {"dup@valea.test", "two.png"}],
+          ~s[<img src="cid:dup@valea.test">]
+        )
+
+      msg_id = land_and_index!(workspace, inbox, raw)
+      File.write!(attachment_abs(workspace, "mara", msg_id, "one.png"), "FIRST")
+      File.write!(attachment_abs(workspace, "mara", msg_id, "two.png"), "SECOND")
+
+      assert html_srcs(read_message!(msg_id)["html"]) ==
+               ["data:image/png;base64," <> Base.encode64("FIRST")]
+    end
+
+    test "a symlink planted at the attachment's name is never followed — inside or outside",
+         %{workspace: workspace, inbox: inbox} do
+      raw = cid_message([{"logo@valea.test", "logo.png"}, {"other@valea.test", "other.png"}])
+      msg_id = land_and_index!(workspace, inbox, raw)
+
+      logo = attachment_abs(workspace, "mara", msg_id, "logo.png")
+      other = attachment_abs(workspace, "mara", msg_id, "other.png")
+
+      # Escaping link: refused by containment.
+      outside = Path.join(workspace, "secret.png")
+      File.write!(outside, "SECRET")
+      File.rm!(logo)
+      File.ln_s!(outside, logo)
+
+      # Contained link: still refused, by the no-follow read.
+      File.write!(other, "NEIGHBOUR")
+      neighbour = attachment_abs(workspace, "mara", msg_id, "neighbour.png")
+      File.rename!(other, neighbour)
+      File.ln_s!(neighbour, other)
+
+      html = read_message!(msg_id)["html"]
+
+      assert html_srcs(html) == ["cid:logo@valea.test", "cid:other@valea.test"]
+      refute html =~ Base.encode64("SECRET")
+      refute html =~ Base.encode64("NEIGHBOUR")
+    end
+
+    test "a hand-edited frontmatter path cannot escape the account's attachments dir",
+         %{workspace: workspace, inbox: inbox} do
+      raw = cid_message([{"logo@valea.test", "logo.png"}])
+      msg_id = land_and_index!(workspace, inbox, raw)
+
+      escaped = Path.join([workspace, "sources", "secret.png"])
+      File.write!(escaped, "SECRET")
+
+      patch_attachments!(workspace, msg_id, [
+        [
+          filename: "logo.png",
+          path: "sources/mail/mara/views/attachments/../../../../secret.png",
+          bytes: 6,
+          content_id: "logo@valea.test"
+        ]
+      ])
+
+      html = read_message!(msg_id)["html"]
+      assert html_srcs(html) == ["cid:logo@valea.test"]
+      refute html =~ Base.encode64("SECRET")
+
+      # An absolute path is not under the account's attachments dir either.
+      patch_attachments!(workspace, msg_id, [
+        [filename: "logo.png", path: escaped, bytes: 6, content_id: "logo@valea.test"]
+      ])
+
+      html = read_message!(msg_id)["html"]
+      assert html_srcs(html) == ["cid:logo@valea.test"]
+      refute html =~ Base.encode64("SECRET")
+    end
+
+    test "a view landed before content_id existed simply does not inline (no backfill)",
+         %{workspace: workspace, inbox: inbox} do
+      raw = cid_message([{"logo@valea.test", "logo.png"}])
+      msg_id = land_and_index!(workspace, inbox, raw)
+
+      patch_attachments!(workspace, msg_id, [
+        [
+          filename: "logo.png",
+          path: "sources/mail/mara/views/attachments/#{msg_id}/logo.png",
+          bytes: 69
+        ]
+      ])
+
+      assert html_srcs(read_message!(msg_id)["html"]) == ["cid:logo@valea.test"]
+    end
+
+    test "a cid-bearing message with no html part reads normally, with html: nil",
+         %{workspace: workspace, inbox: inbox} do
+      raw =
+        "From: Priya Nair <priya@example.com>\r\n" <>
+          "Subject: No html\r\n" <>
+          "Date: Tue, 14 Jul 2026 08:30:00 +0000\r\n" <>
+          "Message-ID: <cid-nohtml@example.com>\r\n" <>
+          "MIME-Version: 1.0\r\n" <>
+          "Content-Type: multipart/related; boundary=\"RB\"\r\n" <>
+          "\r\n" <>
+          "--RB\r\n" <>
+          "Content-Type: text/plain; charset=utf-8\r\n" <>
+          "\r\n" <>
+          "See cid:logo@valea.test\r\n" <>
+          "--RB\r\n" <>
+          "Content-Type: image/png; name=\"logo.png\"\r\n" <>
+          "Content-ID: <logo@valea.test>\r\n" <>
+          "Content-Disposition: inline; filename=\"logo.png\"\r\n" <>
+          "Content-Transfer-Encoding: base64\r\n" <>
+          "\r\n" <> @png_b64 <> "\r\n--RB--\r\n"
+
+      msg_id = land_and_index!(workspace, inbox, raw)
+      message = read_message!(msg_id)
+
+      assert message["html"] == nil
+      assert message["external_content"] == false
+      assert [%{"content_id" => "logo@valea.test"}] = message["frontmatter"]["attachments"]
     end
   end
 

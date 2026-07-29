@@ -51,6 +51,23 @@ defmodule Valea.Api.Mail do
   (`{:error, :outside}`) exactly like a real traversal attempt, never
   followed and read.
 
+  ## `get_mail_message`'s `cid:` image inlining
+
+  The returned `html` has each resolvable `<img src="cid:X">` rewritten to a
+  `data:image/...;base64,...` URI read off the message's own landed
+  attachment file (mail full-client plan, M4 task 12) — so an HTML mail's
+  bundled images render inside the frontend's sandboxed iframe with no
+  network fetch and no CSP widening. Resolution happens HERE, at read time,
+  against the view's `attachments:` frontmatter (`content_id` + `path`), not
+  at land time; see `inline_cid_images/4` for the containment, matching and
+  cap rules. A view landed before `content_id:` existed simply does not
+  inline — there is deliberately no backfill.
+
+  It cannot make the read fail and it cannot change `external_content`: an
+  unresolvable, non-image or over-cap reference keeps its `cid:` src exactly
+  as it arrived (a broken image, as before), and neither `cid:` nor `data:`
+  is remote content.
+
   ## `search_mail`'s `query`
 
   The argument is free text a human typed, and it never becomes FTS5 query
@@ -714,7 +731,7 @@ defmodule Valea.Api.Mail do
           # map, so the legitimate `false` values survive delivery.
           message =
             %{"frontmatter" => frontmatter, "body" => body, "path" => rel_path}
-            |> Map.merge(message_html(root, slug, msg_id))
+            |> Map.merge(message_html(root, slug, msg_id, frontmatter))
             |> Map.put("sender_trusted", Trust.trusted?(root, sender_email(frontmatter)))
 
           {:ok, %{"message" => message}}
@@ -1359,7 +1376,13 @@ defmodule Valea.Api.Mail do
   # account's own maildir (containment check + `Paths.resolve_real/2`), an
   # unreadable file, no text/html part, a sanitize-to-empty — degrades to
   # "no HTML view" rather than failing the read.
-  defp message_html(root, slug, msg_id) do
+  #
+  # `external_content?` is answered on the SANITIZED html, before `cid:`
+  # inlining: inlining only ever turns a `cid:` reference into a `data:` URI,
+  # neither of which is remote content, so the two agree — and asking the
+  # cheaper question keeps two regexes off a payload that may now carry
+  # megabytes of base64.
+  defp message_html(root, slug, msg_id, frontmatter) do
     maildir_rel = Path.join(["sources", "mail", slug, "maildir"])
 
     with [row | _] <- Store.message_rows_by_msg_id(slug, msg_id),
@@ -1371,7 +1394,7 @@ defmodule Valea.Api.Mail do
          html when is_binary(html) <- Normalizer.html_body(raw),
          sanitized when sanitized != "" <- HtmlSanitizer.sanitize(html) do
       %{
-        "html" => sanitized,
+        "html" => inline_cid_images(sanitized, root, slug, frontmatter),
         "external_content" => HtmlSanitizer.external_content?(sanitized)
       }
     else
@@ -1381,6 +1404,208 @@ defmodule Valea.Api.Mail do
     # `Store` reads can raise when the Repo is down mid-close — the plain
     # text view is still perfectly servable without an HTML rendering.
     _ -> %{"html" => nil, "external_content" => false}
+  end
+
+  # -- get_mail_message: `cid:` image inlining -------------------------------
+  #
+  # Mail full-client plan, M4 task 12. An HTML mail body references its own
+  # bundled images by `Content-ID` (`<img src="cid:X">`, RFC 2392); the parts
+  # themselves landed as ordinary attachment FILES at land time, and the
+  # view's `attachments:` frontmatter records each one's `content_id`. This
+  # pass — read-time, never land-time — replaces each resolvable `cid:`
+  # reference with a `data:<mime>;base64,…` URI, which the frontend's
+  # sandboxed iframe renders with no extra CSP grant and no network fetch.
+  #
+  # EVERYTHING here degrades to "leave the `cid:` src exactly as it is",
+  # which renders as a broken image — the same thing the reader saw before
+  # this existed. Nothing about a hostile message can make it fail the read.
+  #
+  # WHAT IS TRUSTED HERE: nothing. Two adversary-influenced inputs meet:
+  #
+  #   1. The sanitized HTML is still ATTACKER-AUTHORED content. It is
+  #      therefore re-parsed with Floki and rewritten as a TREE — the cid is
+  #      compared against a decoded attribute value, and `Floki.raw_html/1`
+  #      re-escapes what it writes back. No regex ever sees the cid (so its
+  #      metacharacters mean nothing) and no string is ever spliced into
+  #      markup (so its quotes and `>` cannot break out of the attribute).
+  #   2. The attachment PATH comes from the view file's frontmatter, and the
+  #      view file is an ordinary workspace file that the human and any agent
+  #      can edit — as is the attachments directory it names. The path is
+  #      treated as fully adversary-controlled: contained with
+  #      `Paths.resolve_real/2` under the account's own attachments dir (the
+  #      same floor `Valea.Mail.Views.attachments_mount_rel_dir/0` confines
+  #      the raw-serve to), and then read no-follow off the LITERAL path, so
+  #      a symlink or hard link planted at the attachment's name can neither
+  #      redirect the read nor smuggle a file in as an image.
+  #
+  # Only known IMAGE extensions are inlined, from a closed map: a landed
+  # attachment carries no stored content-type (the normalizer keeps filename
+  # + bytes + content_id), and the sender's declared one would be a claim we
+  # would then be repeating to the renderer — the same reasoning that makes
+  # `Valea.Mail.DraftMime`'s extension map closed. The set is exactly the
+  # image set `ValeaWeb.FilesController` will serve for these very files, so
+  # the inline rendering and the "open attachment" path cannot disagree about
+  # what something is. `.svg` is deliberately absent (a script-bearing
+  # document), so this can only ever emit a raster `data:image/...` URI.
+  @cid_image_types %{
+    ".png" => "image/png",
+    ".jpg" => "image/jpeg",
+    ".jpeg" => "image/jpeg",
+    ".gif" => "image/gif",
+    ".webp" => "image/webp"
+  }
+
+  # Caps on the SOURCE bytes (the base64 payload is ~4/3 of these). Over
+  # either cap the image simply stays broken rather than the response
+  # growing without bound; the per-image cap is enforced off `lstat`, so an
+  # oversized file is never even read.
+  @max_cid_image_bytes 1024 * 1024
+  @max_cid_message_bytes 4 * 1024 * 1024
+
+  defp inline_cid_images(html, root, slug, frontmatter) do
+    index = cid_index(frontmatter)
+
+    # Old views (landed before `content_id:` existed) index to `%{}` and take
+    # this branch always — cid inlining starts working for newly landed mail
+    # and no backfill is attempted. The substring check keeps every ordinary
+    # HTML mail off the re-parse entirely.
+    if index == %{} or not String.contains?(html, "cid:") do
+      html
+    else
+      rewrite_cids(html, root, slug, index)
+    end
+  end
+
+  # `content_id` => workspace-relative attachment path, for the attachments
+  # that have one. FIRST entry wins a duplicated Content-ID: two attachments
+  # can legally share one (nothing enforces uniqueness on the wire), and
+  # frontmatter order is the message's own part order, so the earlier part is
+  # the one a reader would call "the" image.
+  defp cid_index(frontmatter) do
+    frontmatter
+    |> Map.get("attachments")
+    |> List.wrap()
+    |> Enum.reduce(%{}, fn entry, acc ->
+      case entry do
+        %{"content_id" => cid, "path" => path}
+        when is_binary(cid) and cid != "" and is_binary(path) ->
+          Map.put_new(acc, cid, path)
+
+        _other ->
+          acc
+      end
+    end)
+  end
+
+  defp rewrite_cids(html, root, slug, index) do
+    case Floki.parse_document(html) do
+      {:ok, doc} ->
+        resolved =
+          doc
+          |> Floki.find("[src]")
+          |> Floki.attribute("src")
+          |> Enum.map(&cid_target/1)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.uniq()
+          |> resolve_cid_images(root, slug, index)
+
+        if resolved == %{},
+          do: html,
+          else: doc |> Floki.traverse_and_update(&swap_cid_srcs(&1, resolved)) |> Floki.raw_html()
+
+      _unparseable ->
+        html
+    end
+  rescue
+    _ -> html
+  end
+
+  # The opaque part of a `cid:` URL, or `nil` for anything else. The SCHEME
+  # is matched case-insensitively (RFC 3986 §3.1); what follows is not
+  # touched at all — RFC 2392 makes it the `Content-ID` msg-id verbatim, and
+  # a msg-id's addr-spec is case-SENSITIVE, so `cid:Logo` and `cid:logo` are
+  # different images. Percent-decoding is deliberately not attempted: one
+  # comparison rule, byte-for-byte, is the whole matching contract.
+  defp cid_target(value) when is_binary(value) do
+    case String.split(String.trim(value), ":", parts: 2) do
+      [scheme, rest] -> if String.downcase(scheme) == "cid", do: rest, else: nil
+      _no_scheme -> nil
+    end
+  end
+
+  defp cid_target(_other), do: nil
+
+  # Referenced cids, IN DOCUMENT ORDER, to `data:` URI. Each is read at most
+  # once however many times it is referenced, and spends its bytes against
+  # the per-message budget once. A cid that resolves to nothing (no such
+  # attachment, not an image, escaped/planted path, over either cap) is
+  # simply absent from the result, which leaves its `src` untouched.
+  defp resolve_cid_images(cids, root, slug, index) do
+    attachments_rel = Path.join(["sources", "mail", slug, "views", "attachments"])
+
+    {resolved, _used} =
+      Enum.reduce(cids, {%{}, 0}, fn cid, {acc, used} ->
+        with {:ok, rel_path} <- Map.fetch(index, cid),
+             {:ok, data_uri, size} <- read_cid_image(root, attachments_rel, rel_path, used) do
+          {Map.put(acc, cid, data_uri), used + size}
+        else
+          _ -> {acc, used}
+        end
+      end)
+
+    resolved
+  end
+
+  defp read_cid_image(root, attachments_rel, rel_path, used) do
+    with {:ok, mime} <- cid_image_type(rel_path),
+         true <- Paths.ancestor?(attachments_rel, rel_path),
+         rel = Paths.relative_to(rel_path, attachments_rel),
+         base = Path.join(root, attachments_rel),
+         # Containment on the RESOLVED path, but the read below uses the
+         # LITERAL one — exactly the split `contained_draft_path/3` makes, so
+         # a link inside the directory is refused rather than followed.
+         {:ok, _contained} <- Paths.resolve_real(rel, base),
+         {:ok, bytes} <- read_cid_bytes_nofollow(Path.join(base, rel)),
+         size = byte_size(bytes),
+         true <- size <= @max_cid_image_bytes and used + size <= @max_cid_message_bytes do
+      {:ok, "data:#{mime};base64," <> Base.encode64(bytes), size}
+    else
+      _ -> :error
+    end
+  end
+
+  defp cid_image_type(path),
+    do: Map.fetch(@cid_image_types, path |> Path.extname() |> String.downcase())
+
+  # Same no-follow posture as `read_draft_bytes_nofollow/1`: only a REGULAR
+  # file with a SINGLE link is read, so a planted symlink or hard link at an
+  # attachment's name cannot supply the bytes. The size gate rides on the
+  # same `lstat`, so an over-cap image is never read into memory at all.
+  defp read_cid_bytes_nofollow(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, links: 1, size: size}}
+      when size <= @max_cid_image_bytes ->
+        File.read(path)
+
+      _link_special_or_oversized ->
+        :error
+    end
+  end
+
+  defp swap_cid_srcs({tag, attrs, children}, resolved) do
+    {tag, Enum.map(attrs, &swap_cid_src(&1, resolved)), children}
+  end
+
+  defp swap_cid_srcs(other, _resolved), do: other
+
+  defp swap_cid_src({name, value} = attr, resolved) do
+    with "src" <- String.downcase(name),
+         target when is_binary(target) <- cid_target(value),
+         {:ok, data_uri} <- Map.fetch(resolved, target) do
+      {name, data_uri}
+    else
+      _ -> attr
+    end
   end
 
   defp sender_email(frontmatter) do

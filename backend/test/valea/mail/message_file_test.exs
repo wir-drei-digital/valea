@@ -161,7 +161,12 @@ defmodule Valea.Mail.MessageFileTest do
           folders: [],
           flags: "",
           attachments: [
-            %{filename: "f.txt", path: "sources/mail/mara/views/attachments/x/f.txt", bytes: 12}
+            %{
+              filename: "f.txt",
+              path: "sources/mail/mara/views/attachments/x/f.txt",
+              bytes: 12,
+              content_id: nil
+            }
           ]
         })
 
@@ -173,11 +178,75 @@ defmodule Valea.Mail.MessageFileTest do
       assert rendered =~ "date: null\n"
 
       assert rendered =~
-               "attachments: [{ filename: \"f.txt\", path: \"sources/mail/mara/views/attachments/x/f.txt\", bytes: 12 }]\n"
+               "attachments: [{ filename: \"f.txt\", path: \"sources/mail/mara/views/attachments/x/f.txt\", bytes: 12, content_id: null }]\n"
 
       # notes appear, in order, after attachments and before the closing ---
       assert rendered =~
                ~r/attachments:.*\ncharset_note: "note1"\nnormalizer_note: "note2"\n---\n/s
+    end
+
+    test "an attachment's content_id renders quoted, and parses back verbatim" do
+      rendered = render_with_attachment(content_id: "logo-1@valea.test")
+
+      assert rendered =~ ~s[content_id: "logo-1@valea.test" }]
+
+      assert {:ok, %{frontmatter: %{"attachments" => [entry]}}} = MessageFile.parse(rendered)
+      assert entry["content_id"] == "logo-1@valea.test"
+      assert entry["filename"] == "logo.png"
+      assert entry["path"] == "sources/mail/mara/views/attachments/x/logo.png"
+      assert entry["bytes"] == 69
+    end
+
+    test "an absent content_id renders null and parses back as nil" do
+      rendered = render_with_attachment([])
+
+      assert rendered =~ "content_id: null }"
+      assert {:ok, %{frontmatter: %{"attachments" => [entry]}}} = MessageFile.parse(rendered)
+      assert entry["content_id"] == nil
+    end
+
+    test "a hostile Content-ID cannot break the frontmatter: quotes, newlines, YAML flow syntax" do
+      hostile = ~s[a"b, id: "pwned\n---\nbody\r\ninjected: yes} ] <> <<0x7F>>
+
+      rendered = render_with_attachment(content_id: hostile)
+
+      assert {:ok, %{frontmatter: frontmatter, body: body}} = MessageFile.parse(rendered)
+      assert frontmatter["id"] == "2026-01-01-a-deadbeef"
+      refute Map.has_key?(frontmatter, "injected")
+      assert body == "body\n"
+
+      # Control characters neutralized to spaces; everything else verbatim.
+      assert [%{"content_id" => stored}] = frontmatter["attachments"]
+      assert stored == ~s[a"b, id: "pwned --- body  injected: yes}  ]
+    end
+
+    test "invalid UTF-8 in a Content-ID is scrubbed rather than crashing the render" do
+      rendered = render_with_attachment(content_id: <<"bad-", 0xFF, "-id">>)
+
+      assert String.valid?(rendered)
+      assert {:ok, %{frontmatter: %{"attachments" => [entry]}}} = MessageFile.parse(rendered)
+      assert entry["content_id"] == "bad-�-id"
+    end
+
+    defp render_with_attachment(opts) do
+      attachment =
+        %{
+          filename: "logo.png",
+          path: "sources/mail/mara/views/attachments/x/logo.png",
+          bytes: 69
+        }
+        |> Map.merge(Map.new(Keyword.take(opts, [:content_id])))
+
+      MessageFile.render(
+        %Message{from: %{name: nil, email: "a@example.com"}, body_text: "body\n"},
+        %{
+          msg_id: "2026-01-01-a-deadbeef",
+          account: "mara@example.com",
+          folders: [],
+          flags: "",
+          attachments: [attachment]
+        }
+      )
     end
 
     test "omits notes lines entirely when there are none" do

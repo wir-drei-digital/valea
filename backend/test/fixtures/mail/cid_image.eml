@@ -1,0 +1,20 @@
+From: Priya Nair <priya@example.com>
+To: Mara Lindt <mara@example.com>
+Subject: Inline logo
+Date: Tue, 14 Jul 2026 08:30:00 +0000
+Message-ID: <cid-image-001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="CID-BOUNDARY-1"; type="text/html"
+
+--CID-BOUNDARY-1
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Our logo:</p><img src="cid:logo-1@valea.test" alt="logo"><img src="cid:absent@valea.test" alt="gone"></body></html>
+--CID-BOUNDARY-1
+Content-Type: image/png; name="logo.png"
+Content-ID: <logo-1@valea.test>
+Content-Disposition: inline; filename="logo.png"
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNkYGAAAAAFAAENCi20AAAAAElFTkSuQmCC
+--CID-BOUNDARY-1--
