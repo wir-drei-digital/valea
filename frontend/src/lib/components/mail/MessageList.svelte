@@ -14,6 +14,17 @@
   // Rows carry the `account` they belong to into their href (`messageHref`):
   // a `msgId` only identifies a message WITHIN an account, so an unqualified
   // link resolves against whichever account is selected when it's opened.
+  //
+  // Search hits (`search_mail`) render through this same list rather than a
+  // fork of it: the action returns the identical per-row shape plus
+  // `snippet`, so a row that CARRIES one gets a third line for it under the
+  // subject — the subject stays, because "which message is this" is the
+  // first thing a result has to answer. A folder listing carries no
+  // snippets, so nothing changes there.
+  //
+  // The snippet is mail body text: it renders as plain interpolation
+  // (Svelte-escaped), never `{@html}`, and the backend sends no highlight
+  // markers precisely so that nothing here has to.
   import { fromLabel, subjectLabel, relativeTime, messageHref, messageSeen } from './mail-shapes';
   import type { MailMessageSummary } from '$lib/stores/mail.svelte';
 
@@ -21,7 +32,11 @@
     messages,
     selectedId,
     account
-  }: { messages: MailMessageSummary[]; selectedId: string | null; account: string } = $props();
+  }: {
+    messages: (MailMessageSummary & { snippet?: string })[];
+    selectedId: string | null;
+    account: string;
+  } = $props();
 </script>
 
 <ul class="divide-paper-hairline flex flex-col divide-y">
@@ -46,6 +61,9 @@
           <span class="text-ink-meta shrink-0 text-[11.5px]">{relativeTime(message.date)}</span>
         </span>
         <span class="text-ink-body mt-0.5 block truncate text-[13px]">{subjectLabel(message.subject)}</span>
+        {#if message.snippet}
+          <span class="text-ink-meta mt-0.5 block truncate text-[12px]">{message.snippet}</span>
+        {/if}
       </a>
     </li>
   {/each}

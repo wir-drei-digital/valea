@@ -20,6 +20,7 @@ type MailApi = Pick<
   | 'getMailAccountSettings'
   | 'listMailFolders'
   | 'listMailMessages'
+  | 'searchMail'
   | 'getMailMessage'
   | 'mailSyncNow'
   | 'setMailCredential'
@@ -108,6 +109,18 @@ export type MailMessageSummary = {
   path: string | null;
   viewPath: string;
 };
+
+/**
+ * One row of `search_mail` — deliberately the SAME shape as a
+ * `list_mail_messages` row plus `snippet`, so a hit renders through the same
+ * list component as a folder listing (the backend action pins that
+ * correspondence too; see its comment in `Valea.Api.Mail`).
+ *
+ * `snippet` is body text the backend already truncated (16 tokens) and
+ * carries NO highlight markers. It is mail content, so it renders as plain
+ * text only — never through `{@html}`.
+ */
+export type MailSearchHit = MailMessageSummary & { snippet: string };
 
 /**
  * `get_mail_message`'s result — the parsed message view file, plus the
@@ -340,8 +353,9 @@ export function normalizeMailDraftReview(raw: Record<string, unknown>): MailDraf
  * the selected account's folder list, the selected folder's message list
  * (paginated — `loadOlder` appends the page behind the oldest loaded row,
  * and the live refetches re-read only the NEWEST page; see
- * `refreshMessages` for the compromise that buys), and the currently open
- * message's detail.
+ * `refreshMessages` for the compromise that buys), the currently open
+ * message's detail, and — kept strictly BESIDE the folder list rather than
+ * replacing it — the current search hits (`search`/`clearSearch`).
  *
  * `handleMailStatus`/`handleMailSync`/`handleMailMessage`/`handleMailDraft`
  * are plain public methods, not wired to a channel by this store itself —
@@ -361,6 +375,32 @@ export class MailStore {
   messages: MailMessageSummary[] = $state([]);
   selected: MailMessageDetail | null = $state(null);
   drafts: MailDraft[] = $state([]);
+  /**
+   * The `search_mail` hits currently on screen — a list ENTIRELY separate
+   * from `messages`: search never writes the folder list, and clearing a
+   * search therefore restores it exactly as it was, with no refetch.
+   */
+  searchResults: MailSearchHit[] = $state([]);
+  /**
+   * The (trimmed) query `searchResults` belongs to; `''` whenever no search
+   * is loaded. It is written only when a response is COMMITTED, never when
+   * one is issued, so the route can tell "these results are for what is in
+   * the box" from "a newer query is still on its way" by comparing the two —
+   * that comparison is the whole in-flight signal, which is why there is no
+   * separate `searching` flag.
+   */
+  searchQuery = $state('');
+  /**
+   * Whether the loaded search FAILED rather than came back empty. The two
+   * are the same state otherwise (no query, no hits), and the list pane must
+   * not tell a user "nothing matches" on the strength of a request that
+   * never answered — a claim about their mailbox the app has no basis for.
+   *
+   * The folder refreshes get no equivalent flag and don't need one: a failed
+   * one keeps the rows it already had on screen, so it never states anything
+   * untrue. An empty result list does.
+   */
+  searchFailed = $state(false);
   /**
    * In-flight flag for `select()` (the one async call heavy/slow enough —
    * it reads a whole message file — to warrant a UI spinner). The list
@@ -415,6 +455,18 @@ export class MailStore {
   #selectionEpoch = 0;
 
   /**
+   * Monotonic tag on the newest issued search. Bumped by every `search()`
+   * AND by `clearSearch()`, so a response is committed only while it is
+   * still the one the UI is waiting for: a slow "a" landing after a fast
+   * "ab" is dropped, and so is anything still out when the box is emptied.
+   *
+   * The selection epoch alone can't cover this — two queries against the
+   * same account and folder share an epoch, and out-of-order responses there
+   * are the common case (each keystroke's search is a separate round trip).
+   */
+  #searchToken = 0;
+
+  /**
    * `mail_status` push subscribers beyond this store's own refetch reaction
    * (see `handleMailStatus` below) — `onMailStatus`'s doc comment explains
    * why these exist instead of routes opening their own `channel.on(...)`
@@ -464,6 +516,8 @@ export class MailStore {
    * otherwise the previous account's rows stay on screen for the whole
    * round-trip, under the new account's name — long enough to click a
    * message that belongs to the mailbox the user just switched away from.
+   * Search hits go for exactly the same reason: `search_mail` is scoped to
+   * ONE account, so its results mean nothing under a different one.
    */
   async selectAccount(slug: string): Promise<void> {
     if (slug === this.selectedAccount) return;
@@ -472,6 +526,7 @@ export class MailStore {
     this.selected = null;
     this.folders = [];
     this.messages = [];
+    this.clearSearch();
     this.#resetPagination();
     await Promise.all([this.refreshFolders(), this.refreshMessages()]);
   }
@@ -638,6 +693,61 @@ export class MailStore {
       externalContent: message.external_content === true,
       senderTrusted: message.sender_trusted === true
     };
+  }
+
+  /**
+   * Full-text search across the SELECTED account's landed messages
+   * (`search_mail`). Plain `search`/`clearSearch` with no timer of its own —
+   * the route owns the debounce, so the store stays drivable straight from a
+   * test.
+   *
+   * Nothing here touches `messages`, `lastPageFull`, `loadingOlder` or the
+   * pagination cursor: the folder list is left loaded exactly as it was, and
+   * `clearSearch()` puts it back on screen instantly without a refetch.
+   *
+   * The query needs no sanitizing on this side — `Valea.Mail.Store.match_expression/1`
+   * is the single chokepoint that turns the typed string into quoted prefix
+   * terms, so no FTS5 syntax is reachable from here. A blank/whitespace query
+   * short-circuits without an RPC at all (the backend would answer `[]`
+   * anyway); `limit` is left to the action's own default, which it clamps.
+   *
+   * A response is committed only if it is still both the newest search
+   * (`#searchToken`) and for the selection it was issued against
+   * (`#selectionEpoch` — an account switch mid-flight). A failed RPC commits
+   * an empty result for the query rather than leaving the previous query's
+   * hits under the new text — flagged `searchFailed`, so the pane says the
+   * search didn't run instead of claiming the mailbox holds no match.
+   */
+  async search(query: string): Promise<void> {
+    const account = this.selectedAccount;
+    const trimmed = query.trim();
+    if (!account || trimmed === '') {
+      this.clearSearch();
+      return;
+    }
+
+    const token = ++this.#searchToken;
+    const epoch = this.#selectionEpoch;
+    const result = await this.#api.searchMail(account, trimmed);
+    if (token !== this.#searchToken || epoch !== this.#selectionEpoch) return;
+
+    const data = result.ok ? (result.data as { messages?: Record<string, unknown>[] }) : {};
+    this.searchResults = (data.messages ?? []).map(normalizeMailSearchHit);
+    this.searchFailed = !result.ok;
+    this.searchQuery = trimmed;
+  }
+
+  /**
+   * Drops the search and restores the folder view — instantly, because the
+   * folder list was never disturbed. Also invalidates any search still in
+   * flight, so a response that lands after the box was emptied can't
+   * repopulate a list the user just closed.
+   */
+  clearSearch(): void {
+    this.#searchToken += 1;
+    this.searchResults = [];
+    this.searchFailed = false;
+    this.searchQuery = '';
   }
 
   /** Kicks off a sync pass for `account`. Resolves the error code on failure, `null` on success. */
@@ -938,6 +1048,9 @@ export class MailStore {
     this.selectedAccount = first ? first.account : null;
     this.selectedFolder = INBOX_FOLDER;
     this.selected = null;
+    // Same account-scoping as `selectAccount` — this is the other door the
+    // selection moves through (an account removed from the config).
+    this.clearSearch();
     this.#resetPagination();
     if (this.selectedAccount) {
       await Promise.all([this.refreshFolders(), this.refreshMessages()]);
@@ -946,6 +1059,17 @@ export class MailStore {
       this.messages = [];
     }
   }
+}
+
+/**
+ * One `search_mail` row as the app holds it. The summary fields arrive
+ * camelCased and are carried through as-is (same as `list_mail_messages`
+ * rows, which the store also passes straight through); only `snippet` is
+ * narrowed, because the action declares it `allow_nil?: true` and a `null`
+ * would render as the word "null" in the row's snippet line.
+ */
+function normalizeMailSearchHit(raw: Record<string, unknown>): MailSearchHit {
+  return { ...(raw as unknown as MailMessageSummary), snippet: str(raw.snippet) ?? '' };
 }
 
 /**

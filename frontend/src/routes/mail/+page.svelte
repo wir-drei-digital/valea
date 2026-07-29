@@ -10,7 +10,10 @@
   import { onMount, untrack } from 'svelte';
   import { AppFrame, ListPane, EmptyState, MainColumn, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
   import MailIcon from '@lucide/svelte/icons/mail';
+  import SearchIcon from '@lucide/svelte/icons/search';
+  import X from '@lucide/svelte/icons/x';
   import Settings from '@lucide/svelte/icons/settings';
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
@@ -46,6 +49,9 @@
   onMount(() => {
     void mailStore.refreshStatus();
     void mailStore.refreshDrafts();
+    // A debounce armed as the user leaves the route would otherwise fire a
+    // search into a store nothing is rendering.
+    return () => cancelSearchTimer();
   });
 
   const selectedId = $derived(page.url.searchParams.get('message'));
@@ -169,6 +175,69 @@
 
   const visibleMessages = $derived(filterMessagesByRead(mailStore.messages, readFilter));
 
+  // -- search (`search_mail`) -------------------------------------------------
+  //
+  // The typed text lives HERE, not in the store: the store exposes plain
+  // `search(query)`/`clearSearch()` so it stays drivable from a test, and
+  // this route owns the timer that decides when a keystroke becomes a
+  // request. Results never touch the folder list, so leaving search is a
+  // render switch, not a refetch.
+  const SEARCH_DEBOUNCE_MS = 250;
+
+  let searchInput = $state('');
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const searchTerm = $derived(searchInput.trim());
+  // What's in the box is what decides which list the pane shows — not what
+  // has come back yet. Typing therefore swaps the folder chrome away on the
+  // first keystroke rather than a debounce later.
+  const searchActive = $derived(searchTerm !== '');
+  // "The hits on screen aren't for this text yet" — either the debounce is
+  // still counting down or the request is still out. `searchQuery` is only
+  // written when a response is committed, so the comparison covers both
+  // without a second flag to keep in step (see `MailStore.searchQuery`).
+  const searchBusy = $derived(searchActive && mailStore.searchQuery !== searchTerm);
+
+  function cancelSearchTimer(): void {
+    if (searchTimer === null) return;
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+
+  function onSearchInput(value: string): void {
+    searchInput = value;
+    cancelSearchTimer();
+
+    // Emptying the box is not a search: it restores the folder view at once
+    // (and drops any response still in flight) rather than waiting out a
+    // debounce for a query the backend would answer `[]` to anyway.
+    if (value.trim() === '') {
+      mailStore.clearSearch();
+      return;
+    }
+
+    searchTimer = setTimeout(() => {
+      searchTimer = null;
+      void mailStore.search(value);
+    }, SEARCH_DEBOUNCE_MS);
+  }
+
+  /** Esc in the box and the clear button are the same act: back to the folder list. */
+  function resetSearch(): void {
+    cancelSearchTimer();
+    searchInput = '';
+    mailStore.clearSearch();
+  }
+
+  // A `search_mail` hit belongs to the account it was found in, so switching
+  // accounts empties the box (the store drops the hits themselves —
+  // `selectAccount`); leaving the text behind would label another mailbox's
+  // list with a query nothing had run against it.
+  $effect(() => {
+    void mailStore.selectedAccount;
+    resetSearch();
+  });
+
   // "Sync now" lives in the pane header next to the title; its in-flight
   // and error state belong to the route, and the resulting message is
   // handed to `SyncStatusLine` (the pane footer) for display.
@@ -254,18 +323,49 @@
       {/snippet}
       {#snippet filter()}
         {#if mailStore.selectedAccount}
-          <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-            <FolderPicker />
-            <SegmentedControl
-              label="Read filter"
-              value={readFilter}
-              options={[
-                { value: 'all', label: 'All' },
-                { value: 'unread', label: 'Unread' },
-                { value: 'read', label: 'Read' }
-              ]}
-              onChange={(v) => (readFilter = v as ReadFilter)}
-            />
+          <div class="flex w-full flex-col gap-2">
+            <div class="border-paper-hairline flex items-center gap-1.5 rounded-lg border px-2">
+              <SearchIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+              <Input
+                value={searchInput}
+                oninput={(event) => onSearchInput((event.currentTarget as HTMLInputElement).value)}
+                onkeydown={(event) => {
+                  if (event.key === 'Escape') resetSearch();
+                }}
+                placeholder="Search this mailbox…"
+                aria-label="Search mail"
+                class="h-7 border-none bg-transparent px-0 shadow-none focus-visible:ring-0"
+              />
+              {#if searchInput !== ''}
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  title="Clear search"
+                  onclick={resetSearch}
+                  class="text-ink-meta hover:text-ink-heading shrink-0 rounded-md p-0.5 transition-colors"
+                >
+                  <X class="size-3.5" strokeWidth={1.5} />
+                </button>
+              {/if}
+            </div>
+            <!-- Both of these narrow the FOLDER list, which isn't what's on
+                 screen during a search: a hit can come from any folder, and
+                 a read filter over it would silently hide matches. -->
+            {#if !searchActive}
+              <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+                <FolderPicker />
+                <SegmentedControl
+                  label="Read filter"
+                  value={readFilter}
+                  options={[
+                    { value: 'all', label: 'All' },
+                    { value: 'unread', label: 'Unread' },
+                    { value: 'read', label: 'Read' }
+                  ]}
+                  onChange={(v) => (readFilter = v as ReadFilter)}
+                />
+              </div>
+            {/if}
           </div>
         {/if}
       {/snippet}
@@ -292,29 +392,57 @@
             {/if}
           {/if}
         </div>
-        <MessageList messages={visibleMessages} {selectedId} account={mailStore.selectedAccount ?? ''} />
-        <!-- The filtered-empty note and the "Load older" row are exclusive:
-             under a note explaining that the filter hid everything, a "Load
-             older" button reads as the way to get those messages back, which
-             it is not (it fetches an older page, which the same filter then
-             hides too). The store's own guards make the row a no-op when
-             there's nothing behind the oldest loaded message. -->
-        {#if visibleMessages.length === 0 && mailStore.messages.length > 0}
-          <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
-            No {readFilter} messages in this folder.
-          </p>
-        {:else if mailStore.lastPageFull}
-          <div class="flex justify-center px-3.5 py-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={mailStore.loadingOlder}
-              onclick={() => void mailStore.loadOlder()}
-            >
-              {mailStore.loadingOlder ? 'Loading…' : 'Load older'}
-            </Button>
-          </div>
+        <!-- Search replaces what the list SHOWS, never what it holds: the
+             folder rows stay loaded underneath (`mailStore.messages`), so
+             clearing the box puts them straight back with no refetch.
+             Pagination belongs to the folder listing alone — `search_mail`
+             answers one bounded set, so there is no older page to ask for. -->
+        {#if searchActive}
+          <MessageList
+            messages={mailStore.searchResults}
+            {selectedId}
+            account={mailStore.selectedAccount ?? ''}
+          />
+          {#if mailStore.searchResults.length === 0}
+            <!-- A search that FAILED and one that found nothing look
+                 identical from here (no hits, no query loaded) — so the
+                 failure says so rather than reporting an empty mailbox the
+                 app never actually got an answer about. -->
+            <p class="text-ink-meta px-3.5 py-3 text-[12.5px]" role={mailStore.searchFailed ? 'alert' : undefined}>
+              {#if searchBusy}
+                Searching…
+              {:else if mailStore.searchFailed}
+                The search couldn't be run. Try again.
+              {:else}
+                No messages match “{searchTerm}”.
+              {/if}
+            </p>
+          {/if}
+        {:else}
+          <MessageList messages={visibleMessages} {selectedId} account={mailStore.selectedAccount ?? ''} />
+          <!-- The filtered-empty note and the "Load older" row are exclusive:
+               under a note explaining that the filter hid everything, a "Load
+               older" button reads as the way to get those messages back, which
+               it is not (it fetches an older page, which the same filter then
+               hides too). The store's own guards make the row a no-op when
+               there's nothing behind the oldest loaded message. -->
+          {#if visibleMessages.length === 0 && mailStore.messages.length > 0}
+            <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
+              No {readFilter} messages in this folder.
+            </p>
+          {:else if mailStore.lastPageFull}
+            <div class="flex justify-center px-3.5 py-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={mailStore.loadingOlder}
+                onclick={() => void mailStore.loadOlder()}
+              >
+                {mailStore.loadingOlder ? 'Loading…' : 'Load older'}
+              </Button>
+            </div>
+          {/if}
         {/if}
       {/snippet}
       {#snippet footer()}

@@ -90,6 +90,7 @@ function fakeApi(overrides: {
   mailStatus?: () => Promise<StatusResult>;
   listMailFolders?: (account: string) => Promise<FoldersResult>;
   listMailMessages?: (account: string, folder: string, opts?: object) => Promise<MessagesResult>;
+  searchMail?: (account: string, query: string, opts?: object) => Promise<MessagesResult>;
   getMailMessage?: (account: string, msgId: string) => Promise<DetailResult>;
   mailSyncNow?: (account: string, generation: number) => Promise<SyncResult>;
   setMailCredential?: (
@@ -138,6 +139,7 @@ function fakeApi(overrides: {
       overrides.listMailFolders ?? (async () => ({ ok: true, data: { folders: [] } }) as FoldersResult),
     listMailMessages:
       overrides.listMailMessages ?? (async () => ({ ok: true, data: { messages: [] } }) as MessagesResult),
+    searchMail: overrides.searchMail ?? (async () => ({ ok: true, data: { messages: [] } }) as MessagesResult),
     getMailMessage:
       overrides.getMailMessage ?? (async () => ({ ok: true, data: { message: {} } }) as DetailResult),
     mailSyncNow: overrides.mailSyncNow ?? (async () => ({ ok: true, data: { started: true } }) as SyncResult),
@@ -902,6 +904,242 @@ describe('MailStore pagination', () => {
 
     expect(store.loadingOlder).toBe(false);
     expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 5);
+  });
+});
+
+/** One `search_mail` row: a `list_mail_messages` row plus the backend-truncated `snippet`. */
+function hit(msgId: string, snippet: string | null = '…matched body text…'): Record<string, any> {
+  return { msgId, subject: `Subject ${msgId}`, date: isoAt(0), snippet };
+}
+
+/** A search that never answers until the test releases it, per query. */
+function stalledSearch() {
+  const pending = new Map<string, (result: MessagesResult) => void>();
+  const searchMail = vi.fn(
+    async (_account: string, query: string) =>
+      new Promise<MessagesResult>((resolve) => pending.set(query, resolve))
+  );
+  const release = (query: string, ...rows: Record<string, any>[]) =>
+    pending.get(query)!({ ok: true, data: { messages: rows } } as MessagesResult);
+  return { searchMail, release };
+}
+
+describe('MailStore search', () => {
+  it('loads hits for the selected account and leaves the folder list untouched', async () => {
+    const searchMail = vi.fn(
+      async () => ({ ok: true, data: { messages: [hit('s1'), hit('s2')] } }) as MessagesResult
+    );
+    const listMailMessages = vi.fn(
+      async () => ({ ok: true, data: { messages: rows(MAIL_PAGE_SIZE) } }) as MessagesResult
+    );
+    const store = new MailStore(fakeApi({ searchMail, listMailMessages }) as never);
+    await store.refreshStatus();
+    listMailMessages.mockClear();
+
+    await store.search('  invoice  ');
+
+    // The typed text is trimmed and passed through verbatim otherwise — the
+    // backend owns tokenizing it, and `limit` is left to the action's default.
+    expect(searchMail).toHaveBeenCalledWith('mara', 'invoice');
+    expect(store.searchResults.map((h) => h.msgId)).toEqual(['s1', 's2']);
+    expect(store.searchResults[0].snippet).toBe('…matched body text…');
+    expect(store.searchQuery).toBe('invoice');
+    // Nothing about the folder listing moved: same rows, same pagination
+    // state, and no refetch of it.
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE);
+    expect(store.lastPageFull).toBe(true);
+    expect(store.loadingOlder).toBe(false);
+    expect(listMailMessages).not.toHaveBeenCalled();
+  });
+
+  it('defaults a null snippet to an empty string', async () => {
+    const store = new MailStore(
+      fakeApi({
+        searchMail: async () => ({ ok: true, data: { messages: [hit('s1', null)] } }) as MessagesResult
+      }) as never
+    );
+    await store.refreshStatus();
+
+    await store.search('invoice');
+
+    // `snippet` is `allow_nil?: true` on the action; the row's snippet line
+    // must not render the word "null".
+    expect(store.searchResults[0].snippet).toBe('');
+  });
+
+  it('short-circuits a blank query without an RPC', async () => {
+    const { searchMail } = stalledSearch();
+    const store = new MailStore(fakeApi({ searchMail }) as never);
+    await store.refreshStatus();
+
+    await store.search('');
+    await store.search('   ');
+
+    expect(searchMail).not.toHaveBeenCalled();
+    expect(store.searchResults).toEqual([]);
+    expect(store.searchQuery).toBe('');
+  });
+
+  it('clears loaded hits when the query is emptied, without refetching the folder', async () => {
+    const listMailMessages = vi.fn(
+      async () => ({ ok: true, data: { messages: rows(MAIL_PAGE_SIZE) } }) as MessagesResult
+    );
+    const store = new MailStore(
+      fakeApi({
+        listMailMessages,
+        searchMail: async () => ({ ok: true, data: { messages: [hit('s1')] } }) as MessagesResult
+      }) as never
+    );
+    await store.refreshStatus();
+    await store.search('invoice');
+    listMailMessages.mockClear();
+
+    await store.search('  ');
+
+    expect(store.searchResults).toEqual([]);
+    expect(store.searchQuery).toBe('');
+    // The folder list was never disturbed, so restoring it costs nothing.
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE);
+    expect(listMailMessages).not.toHaveBeenCalled();
+  });
+
+  it('flags a failed search instead of reporting an empty mailbox', async () => {
+    let fails = true;
+    const store = new MailStore(
+      fakeApi({
+        searchMail: async () =>
+          (fails
+            ? { ok: false, error: 'workspace_changed' }
+            : { ok: true, data: { messages: [hit('s1')] } }) as MessagesResult
+      }) as never
+    );
+    await store.refreshStatus();
+
+    await store.search('invoice');
+
+    // The query IS recorded: the route reads `searchQuery === typed text` as
+    // "the answer is in", so leaving it unset would spin "Searching…" forever.
+    expect(store.searchQuery).toBe('invoice');
+    expect(store.searchResults).toEqual([]);
+    expect(store.searchFailed).toBe(true);
+
+    fails = false;
+    await store.search('invoice');
+
+    expect(store.searchFailed).toBe(false);
+    expect(store.searchResults).toHaveLength(1);
+
+    store.clearSearch();
+    expect(store.searchFailed).toBe(false);
+  });
+
+  it('drops an older query whose response lands after a newer one', async () => {
+    const { searchMail, release } = stalledSearch();
+    const store = new MailStore(fakeApi({ searchMail }) as never);
+    await store.refreshStatus();
+
+    void store.search('inv');
+    void store.search('invoice');
+    release('invoice', hit('newer'));
+    await flush();
+    release('inv', hit('older'));
+    await flush();
+
+    expect(store.searchResults.map((h) => h.msgId)).toEqual(['newer']);
+    expect(store.searchQuery).toBe('invoice');
+  });
+
+  it('drops a response that lands after the query was cleared', async () => {
+    const { searchMail, release } = stalledSearch();
+    const store = new MailStore(fakeApi({ searchMail }) as never);
+    await store.refreshStatus();
+
+    void store.search('invoice');
+    store.clearSearch();
+    release('invoice', hit('s1'));
+    await flush();
+
+    expect(store.searchResults).toEqual([]);
+    expect(store.searchQuery).toBe('');
+  });
+
+  it('drops the hits synchronously on an account switch, and the response that follows', async () => {
+    const { searchMail, release } = stalledSearch();
+    const store = new MailStore(fakeApi({ searchMail }) as never);
+    await store.refreshStatus();
+    void store.search('invoice');
+    release('invoice', hit('s1'));
+    await flush();
+    expect(store.searchQuery).toBe('invoice');
+
+    void store.search('later');
+    void store.selectAccount('zoe');
+
+    // Gone before the switch's own fetches even resolve — a hit belongs to
+    // the account it was found in.
+    expect(store.searchResults).toEqual([]);
+    expect(store.searchQuery).toBe('');
+
+    release('later', hit('s1'));
+    await flush();
+
+    expect(store.searchResults).toEqual([]);
+    expect(store.searchQuery).toBe('');
+  });
+
+  // The selection epoch guard, exercised where the token guard can't reach:
+  // a folder switch doesn't clear the search, so only the epoch stands
+  // between a response and a list it no longer belongs to.
+  it('drops a response for a selection that moved while it was out', async () => {
+    const { searchMail, release } = stalledSearch();
+    const store = new MailStore(fakeApi({ searchMail }) as never);
+    await store.refreshStatus();
+
+    void store.search('invoice');
+    await store.selectFolder('Archive');
+    release('invoice', hit('s1'));
+    await flush();
+
+    expect(store.searchResults).toEqual([]);
+    expect(store.searchQuery).toBe('');
+  });
+
+  // `handleMailStatus` fires several times per poll cycle and refetches the
+  // folder list each time. The search must ride through it: `#ensureSelection`
+  // returns early while the account still exists, so neither the loaded hits
+  // nor an in-flight one are invalidated.
+  it('is not disturbed by a mail_status push for the selected account', async () => {
+    const { searchMail, release } = stalledSearch();
+    const store = new MailStore(fakeApi({ searchMail }) as never);
+    await store.refreshStatus();
+
+    void store.search('invoice');
+    store.handleMailStatus(pushFor(rawMara));
+    await flush();
+    release('invoice', hit('s1'));
+    await flush();
+
+    expect(store.searchResults.map((h) => h.msgId)).toEqual(['s1']);
+    expect(store.searchQuery).toBe('invoice');
+
+    store.handleMailStatus(pushFor(rawMara));
+    await flush();
+
+    expect(store.searchResults.map((h) => h.msgId)).toEqual(['s1']);
+    expect(store.searchQuery).toBe('invoice');
+  });
+
+  it('does nothing when no account is selected', async () => {
+    const { searchMail } = stalledSearch();
+    const store = new MailStore(
+      fakeApi({ searchMail, mailStatus: async () => ({ ok: true, data: { accounts: [] } }) }) as never
+    );
+    await store.refreshStatus();
+
+    await store.search('invoice');
+
+    expect(searchMail).not.toHaveBeenCalled();
+    expect(store.searchResults).toEqual([]);
   });
 });
 
