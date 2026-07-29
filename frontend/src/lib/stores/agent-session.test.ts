@@ -251,3 +251,111 @@ describe('AgentSessionStore', () => {
     expect(fake.channel.leave).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AgentSessionStore prompt queue', () => {
+  function runningStore() {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
+    return { fake, store };
+  }
+
+  it('send while idle prompts immediately', () => {
+    const { fake, store } = runningStore();
+
+    store.send('hello');
+
+    expect(fake.pushed).toEqual([{ event: 'prompt', payload: { content: 'hello' } }]);
+    expect(store.queued).toEqual([]);
+    expect(store.busy).toBe(true);
+  });
+
+  it('send while busy queues instead of pushing; the turn end flushes in order', () => {
+    const { fake, store } = runningStore();
+
+    store.send('first');
+    store.send('second');
+    store.send('third');
+
+    // Only the first went over the wire; the rest are held client-side.
+    expect(fake.pushed).toEqual([{ event: 'prompt', payload: { content: 'first' } }]);
+    expect(store.queued.map((m) => m.text)).toEqual(['second', 'third']);
+
+    fake.emit('event', { seq: 1, item: { id: 't1', type: 'turn', stop_reason: 'end_turn' } });
+
+    // Flushed in order; busy is up again (the first flushed prompt's rising edge).
+    expect(fake.pushed.map((p) => (p.payload as { content: string }).content)).toEqual([
+      'first',
+      'second',
+      'third'
+    ]);
+    expect(store.queued).toEqual([]);
+    expect(store.busy).toBe(true);
+  });
+
+  it('queued messages can be edited and dismissed before the flush', () => {
+    const { fake, store } = runningStore();
+
+    store.send('first');
+    store.send('second');
+    store.send('third');
+
+    const [a, b] = store.queued;
+    store.updateQueued(a.id, 'second, revised');
+    store.dismissQueued(b.id);
+
+    fake.emit('event', { seq: 1, item: { id: 't1', type: 'turn', stop_reason: 'end_turn' } });
+
+    expect(fake.pushed.map((p) => (p.payload as { content: string }).content)).toEqual([
+      'first',
+      'second, revised'
+    ]);
+  });
+
+  it('sendQueuedNow cancels the in-flight turn and prompts that one message; the rest stay queued', () => {
+    const { fake, store } = runningStore();
+
+    store.send('first');
+    store.send('second');
+    store.send('third');
+
+    const jumpAhead = store.queued[1];
+    store.sendQueuedNow(jumpAhead.id);
+
+    expect(fake.pushed).toEqual([
+      { event: 'prompt', payload: { content: 'first' } },
+      { event: 'cancel', payload: {} },
+      { event: 'prompt', payload: { content: 'third' } }
+    ]);
+    expect(store.queued.map((m) => m.text)).toEqual(['second']);
+  });
+
+  it('an activity item while idle raises busy (server-side queued turn started without a client push)', () => {
+    const { fake, store } = runningStore();
+    expect(store.busy).toBe(false);
+
+    fake.emit('event', {
+      seq: 1,
+      item: { id: 'm1', type: 'message', role: 'user', text: 'queued upstream' }
+    });
+
+    expect(store.busy).toBe(true);
+    expect(store.turnStartedAt).not.toBeNull();
+  });
+
+  it('turnStartedAt anchors on the busy rising edge and clears on the turn end', () => {
+    const { fake, store } = runningStore();
+    expect(store.turnStartedAt).toBeNull();
+
+    store.prompt('go');
+    const anchored = store.turnStartedAt;
+    expect(anchored).not.toBeNull();
+
+    // Mid-turn items must not re-anchor the timer.
+    fake.emit('event', { seq: 1, item: { id: 'm1', type: 'thought', text: 'hmm' } });
+    expect(store.turnStartedAt).toBe(anchored);
+
+    fake.emit('event', { seq: 2, item: { id: 't1', type: 'turn', stop_reason: 'end_turn' } });
+    expect(store.turnStartedAt).toBeNull();
+  });
+});

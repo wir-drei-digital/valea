@@ -18,9 +18,9 @@
    *    "Authentication required") — invisible before this branch existed,
    *    which read as "I sent a message and nothing happened"
    *  - plan/config/usage/commands/meta/session_info -> NOT rendered here.
-   *    They're dock singletons: T18 renders PlanBar/UsageLine/Composer
-   *    alongside this component, deriving each one's item from the same
-   *    `store.items`.
+   *    They're dock singletons: T18 renders PlanBar/Composer (the latter
+   *    carrying the usage donut) alongside this component, deriving each
+   *    one's item from the same `store.items`.
    *
    * SECURITY: every field below that carries agent- or user-authored text
    * (item.text, and everything MessageItem/ThoughtItem/ToolCallCard/

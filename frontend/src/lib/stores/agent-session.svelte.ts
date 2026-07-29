@@ -12,6 +12,9 @@ export type AcpItem = { seq?: number; id: string; type: string; [k: string]: unk
 
 export type AgentSessionStatus = 'connecting' | 'starting' | 'running' | 'exited' | 'failed' | 'ended';
 
+/** One client-side queued message, editable until it is actually sent. */
+export type QueuedMessage = { id: string; text: string };
+
 type JoinFn = (id: string) => Channel;
 
 /**
@@ -51,11 +54,22 @@ export class AgentSessionStore {
   status: AgentSessionStatus = $state('connecting');
   busy = $state(false);
   error: string | null = $state(null);
+  /**
+   * Messages sent while a turn was in flight (`send/1`), held client-side so
+   * they stay editable/dismissable until the turn ends — then flushed in
+   * order (`#flushQueue`). The first flushed prompt starts the next turn;
+   * the rest ride the server's own prompt queue
+   * (`SessionServer.send_or_queue`), one turn at a time.
+   */
+  queued: QueuedMessage[] = $state([]);
+  /** Epoch ms of the current turn's busy rising edge — drives the composer's turn timer. */
+  turnStartedAt: number | null = $state(null);
 
   #channel: Channel;
   #byId = new Map<string, AcpItem>();
   #cursor = 0;
   #initialPrompt: string | null;
+  #queueCounter = 0;
 
   constructor(id: string, opts: { initialPrompt?: string | null } = {}, join: JoinFn = joinAgentSession) {
     this.#initialPrompt = opts.initialPrompt ?? null;
@@ -81,7 +95,7 @@ export class AgentSessionStore {
         // Seeded AFTER the replay loop above, so it wins over any `busy =
         // false` the loop applied for a completed `turn` item already in the
         // snapshot — see class doc.
-        this.busy = reply.busy ?? false;
+        this.#setBusy(reply.busy ?? false);
         if (reply.status) this.status = reply.status as AgentSessionStatus;
 
         // Fire the handed-off opening prompt (see class doc) exactly once —
@@ -113,12 +127,33 @@ export class AgentSessionStore {
     if (typeof item.seq === 'number') this.#cursor = Math.max(this.#cursor, item.seq);
 
     // The backend emits a `turn` item on every turn completion (success and
-    // error alike) — clearing busy only on that type is sufficient; no other
-    // item type touches it (see AgentSessionStore.prompt for the raising
-    // edge).
-    if (item.type === 'turn') this.busy = false;
+    // error alike) — the busy falling edge, which also flushes the client
+    // queue (below, after the rebuild). The RISING edge has two sources:
+    // `prompt/1`, and any activity item arriving while idle — a server-side
+    // queued prompt (`SessionServer.send_or_queue`) starts its turn without
+    // any client push, so its first echoed item is the only edge we can see.
+    if (item.type === 'turn') this.#setBusy(false);
+    else if (item.type === 'message' || item.type === 'thought' || item.type === 'tool') {
+      this.#setBusy(true);
+    }
 
     this.#rebuild();
+
+    if (item.type === 'turn') this.#flushQueue();
+  }
+
+  /** Single writer for `busy`, so the turn timer's anchor stays in lockstep. */
+  #setBusy(value: boolean): void {
+    if (value && !this.busy) this.turnStartedAt = Date.now();
+    if (!value) this.turnStartedAt = null;
+    this.busy = value;
+  }
+
+  #flushQueue(): void {
+    if (this.queued.length === 0) return;
+    const pending = this.queued;
+    this.queued = [];
+    for (const message of pending) this.prompt(message.text);
   }
 
   #rebuild(): void {
@@ -132,8 +167,43 @@ export class AgentSessionStore {
    * strands.
    */
   prompt(content: string): void {
-    this.busy = true;
+    this.#setBusy(true);
     this.#channel.push('prompt', { content });
+  }
+
+  /**
+   * Queue-aware send — the composer's entry point. While a turn is in
+   * flight the message joins `queued` (editable/dismissable, flushed on
+   * turn end); otherwise it sends immediately.
+   */
+  send(content: string): void {
+    if (this.busy) {
+      this.queued = [...this.queued, { id: `q-${++this.#queueCounter}`, text: content }];
+    } else {
+      this.prompt(content);
+    }
+  }
+
+  updateQueued(id: string, text: string): void {
+    this.queued = this.queued.map((m) => (m.id === id ? { ...m, text } : m));
+  }
+
+  dismissQueued(id: string): void {
+    this.queued = this.queued.filter((m) => m.id !== id);
+  }
+
+  /**
+   * Sends one queued message immediately, disrupting the in-flight turn:
+   * cancel rides ahead of the prompt on the same ordered channel, so the
+   * agent interrupts, then picks this message up (directly, or via the
+   * server's own queue if the cancel is still settling).
+   */
+  sendQueuedNow(id: string): void {
+    const message = this.queued.find((m) => m.id === id);
+    if (!message) return;
+    this.queued = this.queued.filter((m) => m.id !== id);
+    this.cancel();
+    this.prompt(message.text);
   }
 
   cancel(): void {

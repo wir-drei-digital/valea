@@ -26,7 +26,7 @@
   import { sessionsListStore } from '$lib/stores/sessions-list.svelte';
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import { takeInitialPrompt, setInitialPrompt } from '$lib/stores/initial-prompt';
-  import { Transcript, PlanBar, UsageLine, Composer, DoctorPanel, SessionHeader } from '$lib/components/agent';
+  import { Transcript, PlanBar, Composer, DoctorPanel, SessionHeader } from '$lib/components/agent';
   import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
   import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
@@ -154,7 +154,14 @@
   // permission mode + model), so those are filtered, not reduced to one.
   const planItem = $derived.by(() => store?.items.findLast((item) => item.type === 'plan'));
   const usageItem = $derived.by(() => store?.items.findLast((item) => item.type === 'usage'));
-  const configItems = $derived.by(() => store?.items.filter((item) => item.type === 'config') ?? []);
+  // Sorted by id, not timeline order: `set_config_option` re-emits config
+  // items (fresh seq), which would otherwise shuffle the chips under the
+  // composer every time an option changes.
+  const configItems = $derived.by(() =>
+    (store?.items.filter((item) => item.type === 'config') ?? []).sort((a, b) =>
+      a.id.localeCompare(b.id)
+    )
+  );
 
   // --- Which ICM this session runs in ---
   //
@@ -276,9 +283,12 @@
     }
   }
 
-  // --- Archive the OPEN session (ended only — the backend refuses a live
-  // one). Where to go afterwards is the HOST's call (`onArchived`): the chat
-  // route navigates back to its empty state, a side pane closes itself.
+  // --- Archive the OPEN session. Live sessions archive too — the backend
+  // stops a running session first, then archives
+  // (`Valea.Agents.archive_session/1`), so the header offers this whatever
+  // the status is. Where to go afterwards is the HOST's call (`onArchived`):
+  // the chat route navigates back to its empty state, a side pane closes
+  // itself.
 
   let archiving = $state(false);
   let archiveError = $state<string | null>(null);
@@ -292,10 +302,7 @@
     archiving = false;
 
     if (!result.ok) {
-      archiveError =
-        result.error === 'session_live'
-          ? 'This session is still running — stop it before archiving.'
-          : 'Could not archive the session. Please try again.';
+      archiveError = 'Could not archive the session. Please try again.';
       return;
     }
 
@@ -427,8 +434,6 @@
       <Transcript {store} onOpenFile={openToolFile} />
     </div>
 
-    <UsageLine item={usageItem} />
-
     {#if starting}
       <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
     {:else}
@@ -437,14 +442,22 @@
       {/if}
       <!-- An ended session keeps its composer: sending resumes it in
            place (same transcript) and delivers the message — the
-           placeholder carries the affordance, no extra button. -->
+           placeholder carries the affordance, no extra button. A LIVE
+           session's send is queue-aware (`store.send`): mid-turn
+           messages wait in the composer's queue until the turn ends. -->
       <Composer
         busy={store.busy || resuming}
         {configItems}
+        {usageItem}
+        queued={store.queued}
+        turnStartedAt={store.turnStartedAt}
         placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
-        onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.prompt(text))}
+        onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
         onStop={() => store?.cancel()}
         onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
+        onEditQueued={(id, text) => store?.updateQueued(id, text)}
+        onDismissQueued={(id) => store?.dismissQueued(id)}
+        onSendQueuedNow={(id) => store?.sendQueuedNow(id)}
       />
     {/if}
   </div>

@@ -164,11 +164,13 @@
     return rtf.format(Math.round(deltaSeconds / 86400), 'day');
   }
 
-  // --- Archive from a LIST ROW (ended sessions only — the backend refuses a
-  // live one). Archiving the session that's currently OPEN is `ChatView`'s
-  // own affordance (its header) with its own in-flight/error state; this
-  // path is the all-sessions pane's per-row button, which can archive any
-  // session, including the open one — hence the navigation below.
+  // --- Archive from a LIST ROW. Live sessions archive too — the backend
+  // stops a running session first, then archives
+  // (`Valea.Agents.archive_session/1`), so the row offers the button
+  // unconditionally. Archiving the session that's currently OPEN is
+  // `ChatView`'s own affordance (its header) with its own in-flight/error
+  // state; this path is the all-sessions pane's per-row button, which can
+  // archive any session, including the open one — hence the navigation below.
 
   let archiving: Record<string, boolean> = $state({});
   let archiveError = $state<string | null>(null);
@@ -180,10 +182,7 @@
     archiving = { ...archiving, [id]: false };
 
     if (!result.ok) {
-      archiveError =
-        result.error === 'session_live'
-          ? 'This session is still running — stop it before archiving.'
-          : 'Could not archive the session. Please try again.';
+      archiveError = 'Could not archive the session. Please try again.';
       return;
     }
 
@@ -290,18 +289,16 @@
                       <span class="text-ink-meta shrink-0 text-[11px]">{relativeTime(session.startedAt)}</span>
                     </span>
                   </a>
-                  {#if !session.live}
-                    <button
-                      type="button"
-                      aria-label={`Archive ${sessionTitle(session)}`}
-                      title="Archive"
-                      disabled={!!archiving[session.id]}
-                      onclick={() => void archiveSession(session.id)}
-                      class="text-ink-meta hover:text-ink-heading hover:bg-paper-card absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100"
-                    >
-                      <Archive class="size-3.5" strokeWidth={1.5} />
-                    </button>
-                  {/if}
+                  <button
+                    type="button"
+                    aria-label={`Archive ${sessionTitle(session)}`}
+                    title={session.live ? 'Stop & archive' : 'Archive'}
+                    disabled={!!archiving[session.id]}
+                    onclick={() => void archiveSession(session.id)}
+                    class="text-ink-meta hover:text-ink-heading hover:bg-paper-card absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100"
+                  >
+                    <Archive class="size-3.5" strokeWidth={1.5} />
+                  </button>
                 </li>
               {/each}
             </ul>

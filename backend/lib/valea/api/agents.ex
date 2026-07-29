@@ -380,7 +380,7 @@ defmodule Valea.Api.Agents do
       argument :session_id, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
 
-      # Ended sessions only — a live one returns `session_live` (see
+      # Live sessions are stopped first, then archived (see
       # `Valea.Agents.archive_session/1`).
       run fn input, _ctx ->
         with :ok <- Manager.check_generation(input.arguments.generation),

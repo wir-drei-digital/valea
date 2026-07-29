@@ -1,8 +1,8 @@
 <script lang="ts">
   // The chat session's header line (extracted from the chat route,
-  // side-panes pass): which ICM the session works in, an archive affordance
-  // when ended, and — when the host can open files — the folder name becomes
-  // a popover file tree for opening a file beside the chat.
+  // side-panes pass): which ICM the session works in, an archive affordance,
+  // and — when the host can open files — the folder name becomes a popover
+  // file tree for opening a file beside the chat.
   //
   // Presentational: every piece of state (which ICM, whether the session
   // ended, whether an archive call is in flight) arrives as a prop, so the
@@ -10,6 +10,12 @@
   // pane. The popover half only exists when the host actually passes
   // `onOpenFile` — a host with nowhere to put a file renders the plain
   // static folder line the route always had.
+  //
+  // `onArchive` is the "there is an archivable session here" signal (the
+  // route's old `selectedId` gate): a host in new-session mode has no
+  // session yet and passes none. LIVE sessions archive too — the backend
+  // stops a running one first (`Valea.Agents.archive_session/1`) — so
+  // `ended` only picks the LABEL, never whether the button exists.
   import Folder from '@lucide/svelte/icons/folder';
   import Archive from '@lucide/svelte/icons/archive';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -43,7 +49,7 @@
   const canBrowse = $derived(Boolean(onOpenFile && mountKey));
 </script>
 
-{#if icmName || ended}
+{#if icmName || onArchive}
   <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
     {#if icmName}
       {#if canBrowse}
@@ -79,7 +85,7 @@
       {/if}
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
-    {#if ended && onArchive}
+    {#if onArchive}
       <button
         type="button"
         onclick={onArchive}
@@ -87,7 +93,7 @@
         class="text-ink-meta hover:text-ink-heading flex shrink-0 items-center gap-1 text-[12px] transition-colors"
       >
         <Archive class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-        {archiving ? 'Archiving…' : 'Archive'}
+        {archiving ? 'Archiving…' : ended ? 'Archive' : 'Stop & archive'}
       </button>
     {/if}
   </div>

@@ -474,7 +474,7 @@ defmodule ValeaWeb.AgentsRpcTest do
   end
 
   describe "archive_agent_session" do
-    test "archives an ended session out of the listings; refuses a live one; not_found after",
+    test "archives a LIVE session by stopping its server first; not_found after",
          %{generation: generation, icm: icm, workspace: workspace} do
       Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
 
@@ -485,25 +485,19 @@ defmodule ValeaWeb.AgentsRpcTest do
                  ["id"]
                )
 
-      # Live sessions refuse to archive — the SessionServer owns the file.
-      assert %{"success" => false} =
-               rpc(
-                 "archive_agent_session",
-                 %{"sessionId" => id, "generation" => generation},
-                 ["archived"]
-               )
-
-      AgentCase.kill_session(id)
-
-      # Registry removal on process death is asynchronous — wait it out.
-      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
-
+      # Live sessions archive too: the SessionServer owns the transcript, so
+      # `Valea.Agents.archive_session/1` stops it synchronously first, then
+      # moves the file.
       assert %{"success" => true, "data" => %{"archived" => true}} =
                rpc(
                  "archive_agent_session",
                  %{"sessionId" => id, "generation" => generation},
                  ["archived"]
                )
+
+      # The server was stopped (registry cleanup on process death is
+      # asynchronous — wait it out).
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
 
       # Gone from listings; the transcript file moved under archived/.
       assert %{"success" => true, "data" => %{"sessions" => sessions}} =
@@ -526,6 +520,30 @@ defmodule ValeaWeb.AgentsRpcTest do
                  %{"sessionId" => "../secrets", "generation" => generation},
                  ["archived"]
                )
+    end
+
+    test "archives an ENDED session (no live server) the same way",
+         %{generation: generation, icm: icm, workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      assert %{"success" => true, "data" => %{"id" => id}} =
+               rpc(
+                 "create_agent_session",
+                 %{"mountKey" => icm.mount_key, "generation" => generation},
+                 ["id"]
+               )
+
+      AgentCase.kill_session(id)
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
+
+      assert %{"success" => true, "data" => %{"archived" => true}} =
+               rpc(
+                 "archive_agent_session",
+                 %{"sessionId" => id, "generation" => generation},
+                 ["archived"]
+               )
+
+      assert File.regular?(Path.join([workspace, "logs", "sessions", "archived", id <> ".jsonl"]))
     end
   end
 
