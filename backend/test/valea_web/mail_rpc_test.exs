@@ -1969,6 +1969,41 @@ defmodule ValeaWeb.MailRpcTest do
       refute html =~ Base.encode64("NEIGHBOUR")
     end
 
+    # The ANCESTOR case, which the test above does not reach: the final
+    # component is a perfectly ordinary regular file, so `lstat` waves it
+    # through, and containment based on the attachments dir cannot help
+    # because `Valea.Paths.resolve_real/2` physically walks its BASE first —
+    # a symlinked `attachments` (or `views`, or `sources/mail/<slug>`) MOVES
+    # the boundary to wherever the link points, and every file under it then
+    # measures as contained. Only the workspace-root-based call sees it.
+    # Same attack, same directory, same reasoning as
+    # `ValeaWeb.FilesController.contain_for_serve/2` and its
+    # "a symlinked mail attachments DIRECTORY cannot escape the mount" test.
+    test "a symlinked attachments DIRECTORY cannot escape the workspace",
+         %{workspace: workspace, inbox: inbox} do
+      raw = cid_message([{"logo@valea.test", "logo.png"}])
+      msg_id = land_and_index!(workspace, inbox, raw)
+
+      # A plausible-looking tree OUTSIDE the workspace, holding a file at
+      # exactly the name the frontmatter already points at.
+      escape_root =
+        Path.join(Path.dirname(workspace), "escape-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(escape_root, msg_id))
+      File.write!(Path.join([escape_root, msg_id, "logo.png"]), "SECRET")
+
+      attachments_dir = Path.join([workspace, "sources", "mail", "mara", "views", "attachments"])
+      File.rm_rf!(attachments_dir)
+      File.ln_s!(escape_root, attachments_dir)
+
+      # The frontmatter is UNTOUCHED — still the ordinary relative path the
+      # landing wrote. Only the directory beneath it moved.
+      html = read_message!(msg_id)["html"]
+
+      assert html_srcs(html) == ["cid:logo@valea.test"]
+      refute html =~ Base.encode64("SECRET")
+    end
+
     test "a hand-edited frontmatter path cannot escape the account's attachments dir",
          %{workspace: workspace, inbox: inbox} do
       raw = cid_message([{"logo@valea.test", "logo.png"}])

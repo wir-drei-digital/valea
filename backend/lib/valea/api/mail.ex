@@ -1556,15 +1556,35 @@ defmodule Valea.Api.Mail do
     resolved
   end
 
+  # Containment is TWO `Paths.resolve_real/2` calls, exactly as
+  # `ValeaWeb.FilesController.contain_for_serve/2` gates this same directory
+  # for the raw-serve. NEITHER is redundant, and the WORKSPACE-ROOT one is the
+  # load-bearing one — do not "simplify" it away:
+  #
+  #   * against the WORKSPACE ROOT: the only check that catches an ancestor
+  #     DIRECTORY which is itself a symlink out of the workspace
+  #     (`views/attachments`, `views`, `sources/mail/<slug>`, …).
+  #     `resolve_real/2` physically walks its BASE first (`resolve_base/2`),
+  #     so the per-directory call below would resolve its own boundary to
+  #     wherever that link points and then find the file happily under it.
+  #     `File.lstat/1` cannot cover for it either — it only refuses a link at
+  #     the FINAL component, and the kernel follows intermediate ones on the
+  #     way. Dropping this call inlines any image-named file on the host; the
+  #     test named "a symlinked attachments DIRECTORY cannot escape the
+  #     workspace" is what stands between that and a green suite.
+  #   * against the ATTACHMENTS DIRECTORY: what rules out the message views,
+  #     drafts, ledger and sidecars sitting beside it inside the mailbox.
+  #
+  # The READ then uses the LITERAL path, never either call's symlink-followed
+  # answer — the same split `contained_draft_path/3` makes — so a link planted
+  # at the attachment's own name is refused rather than followed.
   defp read_cid_image(root, attachments_rel, rel_path, used) do
     with {:ok, mime} <- cid_image_type(rel_path),
          true <- Paths.ancestor?(attachments_rel, rel_path),
+         {:ok, _under_workspace} <- Paths.resolve_real(rel_path, root),
          rel = Paths.relative_to(rel_path, attachments_rel),
          base = Path.join(root, attachments_rel),
-         # Containment on the RESOLVED path, but the read below uses the
-         # LITERAL one — exactly the split `contained_draft_path/3` makes, so
-         # a link inside the directory is refused rather than followed.
-         {:ok, _contained} <- Paths.resolve_real(rel, base),
+         {:ok, _under_attachments} <- Paths.resolve_real(rel, base),
          {:ok, bytes} <- read_cid_bytes_nofollow(Path.join(base, rel)),
          size = byte_size(bytes),
          true <- size <= @max_cid_image_bytes and used + size <= @max_cid_message_bytes do
