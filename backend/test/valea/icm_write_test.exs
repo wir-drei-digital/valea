@@ -284,6 +284,77 @@ defmodule Valea.ICMWriteTest do
     assert result.updated_pages == []
   end
 
+  # Task 10: rename decides the target's extension from the SOURCE's kind,
+  # not by coercing every non-directory to `.md`. Non-.md file leaves became
+  # reachable from the tree's own row menu in the side-panes pass; before
+  # that, `rename_target_name/2`'s blanket `ensure_md_extension/1` would have
+  # written `brochure.pdf.md` and reclassified the file as a page.
+  test "rename of a non-.md file uses the new name as typed, no .md appended", %{icm: icm} do
+    File.write!(Path.join(icm.root, "Offers/brochure.pdf"), "%PDF-1.4\n")
+
+    assert {:ok, %{path: path, updated_pages: []}} =
+             ICM.rename(icm.mount_key, "Offers/brochure.pdf", "brochure v2.pdf")
+
+    assert path == "Offers/brochure v2.pdf"
+    assert File.regular?(Path.join(icm.root, path))
+    refute File.exists?(Path.join(icm.root, "Offers/brochure.pdf"))
+    refute File.exists?(Path.join(icm.root, "Offers/brochure v2.pdf.md"))
+
+    # Name validation is untouched — a separator is still rejected.
+    assert {:error, :name_invalid} = ICM.rename(icm.mount_key, path, "a/b")
+  end
+
+  test "rename of an extension-less file appends nothing", %{icm: icm} do
+    File.write!(Path.join(icm.root, "LICENSE"), "MIT\n")
+
+    assert {:ok, %{path: "LICENSE-2"}} = ICM.rename(icm.mount_key, "LICENSE", "LICENSE-2")
+    assert File.regular?(Path.join(icm.root, "LICENSE-2"))
+    refute File.exists?(Path.join(icm.root, "LICENSE-2.md"))
+  end
+
+  test "rename of a non-.md file honors a different extension as typed", %{icm: icm} do
+    File.write!(Path.join(icm.root, "a.pdf"), "%PDF-1.4\n")
+
+    assert {:ok, %{path: "a.txt"}} = ICM.rename(icm.mount_key, "a.pdf", "a.txt")
+    assert File.regular?(Path.join(icm.root, "a.txt"))
+    refute File.exists?(Path.join(icm.root, "a.pdf"))
+
+    # ...including typing `.md` on purpose: as-typed means the user can turn a
+    # plain file into a page, exactly as the field reads.
+    assert {:ok, %{path: "a.md"}} = ICM.rename(icm.mount_key, "a.txt", "a.md")
+    assert File.regular?(Path.join(icm.root, "a.md"))
+  end
+
+  test "rename of a .md page still appends .md when the new name omits it", %{icm: icm} do
+    assert {:ok, %{path: "Clients/Lea B.md"}} =
+             ICM.rename(icm.mount_key, "Clients/Lea Brunner.md", "Lea B")
+
+    # ...and typing the extension does not double it.
+    assert {:ok, %{path: "Clients/Lea C.md"}} =
+             ICM.rename(icm.mount_key, "Clients/Lea B.md", "Lea C.md")
+  end
+
+  test "rename of a non-.md file rewrites inbound image references", %{icm: icm} do
+    File.write!(Path.join(icm.root, "Offers/diagram.png"), "PNG")
+
+    File.write!(
+      Path.join(icm.root, "Offers/Discovery Call.md"),
+      "# Discovery Call\n\n![Diagram](diagram.png)\n"
+    )
+
+    assert {:ok, %{path: "Offers/plan.png", updated_pages: ["Offers/Discovery Call.md"]}} =
+             ICM.rename(icm.mount_key, "Offers/diagram.png", "plan.png")
+
+    assert File.read!(Path.join(icm.root, "Offers/Discovery Call.md")) =~ "![Diagram](plan.png)"
+  end
+
+  test "delete removes a non-.md file", %{icm: icm} do
+    File.write!(Path.join(icm.root, "Offers/brochure.pdf"), "%PDF-1.4\n")
+
+    assert {:ok, %{deleted: true}} = ICM.delete(icm.mount_key, "Offers/brochure.pdf")
+    refute File.exists?(Path.join(icm.root, "Offers/brochure.pdf"))
+  end
+
   test "delete a page removes it", %{icm: icm} do
     assert {:ok, %{deleted: true}} = ICM.delete(icm.mount_key, "Clients/Lea Brunner.md")
     refute File.exists?(Path.join(icm.root, "Clients/Lea Brunner.md"))

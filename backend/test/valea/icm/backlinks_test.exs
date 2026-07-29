@@ -57,6 +57,31 @@ defmodule Valea.ICM.BacklinksTest do
     assert Enum.at(links, 0).link_text == "pricing"
   end
 
+  # Task 10: the Rename/Delete dialogs now show a reference-impact line for
+  # non-.md file leaves too. That copy is only honest if a file target
+  # resolves here — it does: SOURCES are `.md` (only a page can hold a
+  # link), but the TARGET is just a path, and an embedded image is a real
+  # MDEx.Image node.
+  test "a non-.md target (an embedded image) resolves its inbound references", %{icm: icm} do
+    File.mkdir_p!(Path.join(icm.root, "Assets"))
+    File.write!(Path.join(icm.root, "Assets/diagram.png"), "PNG")
+
+    File.write!(
+      Path.join(icm.root, "Ref-img.md"),
+      "# Ref-img\n\n![the diagram](Assets/diagram.png)\n"
+    )
+
+    File.write!(
+      Path.join(icm.root, "No-img.md"),
+      "# No-img\n\nAssets/diagram.png in prose only.\n"
+    )
+
+    {:ok, links} = Backlinks.backlinks(icm.mount_key, "Assets/diagram.png")
+
+    assert Enum.map(links, & &1.source_path) == ["Ref-img.md"]
+    assert Enum.at(links, 0).link_text == "the diagram"
+  end
+
   test "absolute destinations resolve too", %{icm: icm} do
     target = "Pricing/Current Pricing.md"
     target_abs = Path.join(icm.root, target)

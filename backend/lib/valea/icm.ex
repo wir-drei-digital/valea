@@ -686,11 +686,17 @@ defmodule Valea.ICM do
   end
 
   @doc """
-  Renames a page or folder in place (same parent, new basename), rewriting
-  every inbound in-content link/image destination — within `mount_key`'s
-  own ICM plus every ICM it directly declares related (see
-  `Valea.ICM.LinkRewrite`'s moduledoc "SCOPE") — that a real Link/Image AST
-  node confirms resolves to the OLD path.
+  Renames a page, a non-`.md` file, or a folder in place (same parent, new
+  basename), rewriting every inbound in-content link/image destination —
+  within `mount_key`'s own ICM plus every ICM it directly declares related
+  (see `Valea.ICM.LinkRewrite`'s moduledoc "SCOPE") — that a real
+  Link/Image AST node confirms resolves to the OLD path. An image or PDF
+  embedded in pages is rewritten exactly like a page is: confirmation runs
+  off the AST destination, which has never been `.md`-only.
+
+  The new basename's extension follows the SOURCE's kind — see
+  `rename_target_name/3`: a page gets `.md` ensured, any other regular
+  file is renamed exactly as typed.
 
   Returns `{:ok, %{path: new_rel_path, updated_pages: [paths]}}` where
   `new_rel_path` is relative to `mount_key`'s root, and `paths` are the
@@ -721,7 +727,7 @@ defmodule Valea.ICM do
          true <- File.exists?(old_abs),
          {:ok, normalized_name} <- normalize_name(new_name),
          is_dir <- File.dir?(old_abs),
-         name_with_ext <- rename_target_name(is_dir, normalized_name),
+         name_with_ext <- rename_target_name(is_dir, old_abs, normalized_name),
          new_rel <- join_rel(parent_of(rel_path), name_with_ext),
          {:ok, new_abs} <- contain(root, new_rel),
          false <- File.exists?(new_abs) do
@@ -733,8 +739,27 @@ defmodule Valea.ICM do
     end
   end
 
-  defp rename_target_name(true, normalized_name), do: normalized_name
-  defp rename_target_name(false, normalized_name), do: ensure_md_extension(normalized_name)
+  # The target's extension is decided by the SOURCE's kind, never coerced
+  # blanket-style: a folder renames verbatim; a `.md` PAGE keeps
+  # `ensure_md_extension/1` (typing "Weekly notes" still writes "Weekly
+  # notes.md", the behavior the rename dialog's page flow is built on); any
+  # OTHER regular file — a PDF, an image, an extension-less LICENSE — takes
+  # the normalized name exactly as typed, so `brochure.pdf` can't become
+  # `brochure.pdf.md` and silently reclassify itself as a page.
+  #
+  # "Is this a page?" is the byte-identical test `build_tree/2` classifies
+  # leaves with (`Path.extname(abs) == ".md"`, case-sensitive — `NOTES.MD`
+  # is a :file leaf there, so it renames as a file here too). Nothing
+  # re-appends a dropped extension: the dialog pre-fills a file leaf with
+  # its FULL basename, so keeping, changing or dropping `.pdf` is the
+  # user's own edit, not something to second-guess.
+  defp rename_target_name(true, _old_abs, normalized_name), do: normalized_name
+
+  defp rename_target_name(false, old_abs, normalized_name) do
+    if Path.extname(old_abs) == ".md",
+      do: ensure_md_extension(normalized_name),
+      else: normalized_name
+  end
 
   defp parent_of(rel_path) do
     case Path.dirname(rel_path) do
@@ -797,7 +822,9 @@ defmodule Valea.ICM do
   end
 
   @doc """
-  Deletes a page or folder (recursively). Never rewrites inbound page
+  Deletes a page, a non-`.md` file, or a folder (recursively) — the
+  regular-file branch below was never `.md`-gated, so a PDF or an image
+  deletes through the same call a page does. Never rewrites inbound page
   links — deleting is a destructive action the user drives directly; stale
   links are left for the user (or a future validation pass) to notice,
   rather than silently rewritten out from under them.
