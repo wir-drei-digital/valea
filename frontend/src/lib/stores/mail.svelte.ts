@@ -385,6 +385,23 @@ export class MailStore {
   #oldestCursor: string | null = null;
 
   /**
+   * Bumped by `#resetPagination` — i.e. exactly when the selection moves and
+   * the loaded list stops meaning anything. Every list read captures it
+   * before its `await` and re-checks it after, and discards its response on a
+   * mismatch.
+   *
+   * A counter, not an `account`/`folder` identity comparison: the pushes that
+   * drive `refreshMessages` are fire-and-forget, so a response can land after
+   * the user has switched folders — and after switching BACK, at which point
+   * an identity check reads as fresh again while the list underneath has been
+   * rebuilt twice. Writing that response would replace the visible list with
+   * another folder's rows AND leave `#oldestCursor` pointing into it, which
+   * is the cross-folder splice `loadOlder`'s guard exists to prevent, entered
+   * through the other door.
+   */
+  #selectionEpoch = 0;
+
+  /**
    * `mail_status` push subscribers beyond this store's own refetch reaction
    * (see `handleMailStatus` below) — `onMailStatus`'s doc comment explains
    * why these exist instead of routes opening their own `channel.on(...)`
@@ -495,10 +512,15 @@ export class MailStore {
       return;
     }
 
+    const epoch = this.#selectionEpoch;
     const result = await this.#api.listMailMessages(account, this.selectedFolder ?? INBOX_FOLDER, {
       limit: MAIL_PAGE_SIZE
     });
-    if (!result.ok) return;
+    // The selection moved while this was in flight (these calls are
+    // fire-and-forget from the push handlers, so a switch easily outruns
+    // one): this page belongs to a list nobody is looking at — see
+    // `#selectionEpoch`.
+    if (epoch !== this.#selectionEpoch || !result.ok) return;
 
     const data = result.data as { messages?: MailMessageSummary[] };
     const page = data.messages ?? [];
@@ -519,13 +541,19 @@ export class MailStore {
    * (a short page is the end of the folder, and asking again would only
    * re-read what's already on screen) and while a call is already in flight.
    *
-   * The account/folder are captured before the call and re-checked after it:
-   * a switch landing mid-flight makes this response belong to a folder the
-   * user is no longer reading, and appending it would splice one folder's
-   * messages into another's list. The switch's own refetch has replaced the
-   * list by then, so dropping the response costs nothing — including its
-   * clearing of `loadingOlder`, which `#resetPagination` has already done
-   * for the list now on screen (and which a newer call may now own).
+   * Two things have to still hold when the response lands, or it belongs to
+   * a list that no longer exists and is dropped: the selection must not have
+   * moved (`#selectionEpoch`), and `#oldestCursor` must still be the very
+   * cursor this call asked with — i.e. the tail it set out to extend is
+   * still the tail. The second covers what the epoch can't see: a live
+   * `refreshMessages` landing SHORT mid-flight rebuilds the list from page
+   * one and drops the tail without any selection change, and appending onto
+   * that would resurrect the rows it just dropped (and re-open a "Load
+   * older" row the folder has no answer for).
+   *
+   * `loadingOlder` is cleared only when the epoch still matches. Past a
+   * switch, `#resetPagination` has already cleared it for the list now on
+   * screen — and a newer call may own it — so a stale response must not.
    */
   async loadOlder(): Promise<void> {
     const account = this.selectedAccount;
@@ -533,11 +561,12 @@ export class MailStore {
     const before = this.#oldestCursor;
     if (!account || !before || !this.lastPageFull || this.loadingOlder) return;
 
+    const epoch = this.#selectionEpoch;
     this.loadingOlder = true;
     const result = await this.#api.listMailMessages(account, folder, { limit: MAIL_PAGE_SIZE, before });
-    if (account !== this.selectedAccount || folder !== (this.selectedFolder ?? INBOX_FOLDER)) return;
-    this.loadingOlder = false;
-    if (!result.ok) return;
+    const switched = epoch !== this.#selectionEpoch;
+    if (!switched) this.loadingOlder = false;
+    if (switched || !result.ok || before !== this.#oldestCursor) return;
 
     const data = result.data as { messages?: MailMessageSummary[] };
     const page = data.messages ?? [];
@@ -559,14 +588,16 @@ export class MailStore {
 
   /**
    * Drops the pagination state — every account/folder switch starts at page
-   * one. Clearing `loadingOlder` alongside it re-enables the row for the
-   * folder now on screen; the call still in flight for the previous one
-   * discards its own response (see `loadOlder`).
+   * one — and invalidates every list read still in flight for the selection
+   * being left behind (`#selectionEpoch`). Clearing `loadingOlder` alongside
+   * it re-enables the row for the folder now on screen; the call still
+   * running for the previous one discards its own response.
    */
   #resetPagination(): void {
     this.#oldestCursor = null;
     this.lastPageFull = false;
     this.loadingOlder = false;
+    this.#selectionEpoch += 1;
   }
 
   /** Loads one message's full detail (frontmatter + body) from the selected account by its indexed `msgId`. */
