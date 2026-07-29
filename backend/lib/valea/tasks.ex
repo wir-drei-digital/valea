@@ -96,6 +96,7 @@ defmodule Valea.Tasks do
       snapshot-conditional prune.
   """
 
+  alias Valea.Ledger.Canonical
   alias Valea.Ledger.JsonFile
   alias Valea.Ledger.Writer
 
@@ -440,32 +441,12 @@ defmodule Valea.Tasks do
   The archive identity of a task snapshot: lowercase hex SHA-256 over a
   key-sorted JSON encoding (recursively — nested objects too), so the hash
   depends on the content and not on map iteration order.
+
+  The canonical form lives in `Valea.Ledger.Canonical`, shared with the
+  schedule execution fingerprint.
   """
   @spec snapshot_hash(map()) :: String.t()
-  def snapshot_hash(task) when is_map(task) do
-    :sha256 |> :crypto.hash(canonical_json(task)) |> Base.encode16(case: :lower)
-  end
-
-  # Jason has no "sort keys" option, so the object layer is emitted here and
-  # the leaves go through `Jason.encode!/1` for escaping and number
-  # formatting. Entries come from `Jason.decode/1`, hence string keys and
-  # plain scalars throughout.
-  defp canonical_json(list) when is_list(list) do
-    ["[", list |> Enum.map(&canonical_json/1) |> Enum.intersperse(","), "]"]
-  end
-
-  defp canonical_json(map) when is_map(map) do
-    inner =
-      map
-      |> Enum.map(fn {key, value} -> {to_string(key), value} end)
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map(fn {key, value} -> [Jason.encode!(key), ":", canonical_json(value)] end)
-      |> Enum.intersperse(",")
-
-    ["{", inner, "}"]
-  end
-
-  defp canonical_json(scalar), do: Jason.encode!(scalar)
+  def snapshot_hash(task) when is_map(task), do: Canonical.hash(task)
 
   # -- shared read/write plumbing ---------------------------------------------
 
