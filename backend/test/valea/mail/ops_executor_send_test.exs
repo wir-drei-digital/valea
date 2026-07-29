@@ -10,6 +10,7 @@ defmodule Valea.Mail.OpsExecutorSendTest do
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.SyncPass
+  alias Valea.Mounts
 
   @raw_a """
   From: Priya Nair <priya@example.com>\r
@@ -224,8 +225,7 @@ defmodule Valea.Mail.OpsExecutorSendTest do
 
   # -- attachment fixtures ------------------------------------------------------
 
-  # A file INSIDE the workspace, at a workspace-relative path — the only kind
-  # a draft may name.
+  # A file INSIDE the workspace, named by the workspace-relative address form.
   defp write_attachment!(root, rel, content) do
     abs = Path.join(root, rel)
     File.mkdir_p!(Path.dirname(abs))
@@ -235,6 +235,44 @@ defmodule Valea.Mail.OpsExecutorSendTest do
 
   defp attachments_draft(paths) do
     draft_body(extra: "attachments: [#{Enum.map_join(paths, ", ", &~s("#{&1}"))}]")
+  end
+
+  # A real, config-truth ICM mount for `Mounts.list/1` to find: an external
+  # folder (a SIBLING of the workspace — `check_boundaries/2` degrades an ICM
+  # rooted INSIDE it) carrying a format-2 manifest, declared in the
+  # workspace's own `icms:` config. Written directly rather than through
+  # `Mounts.mount/2` so the fixture needs no opened workspace and no audit.
+  defp mount_icm!(root, key, opts \\ []) do
+    enabled = Keyword.get(opts, :enabled, true)
+    icm_dir = Path.join(Path.dirname(root), "icm-#{key}")
+    File.mkdir_p!(icm_dir)
+
+    File.write!(
+      Path.join(icm_dir, "icm.yaml"),
+      Mounts.Manifest.render(%{id: Ecto.UUID.generate(), name: key, description: ""})
+    )
+
+    config_dir = Path.join(root, "config")
+    File.mkdir_p!(config_dir)
+
+    File.write!(Path.join(config_dir, "workspace.yaml"), """
+    version: 5
+    id: "#{Ecto.UUID.generate()}"
+    name: "test"
+    icms:
+      #{key}:
+        enabled: #{enabled}
+        path: "#{icm_dir}"
+    """)
+
+    icm_dir
+  end
+
+  defp write_icm_file!(icm_dir, rel, content) do
+    abs = Path.join(icm_dir, rel)
+    File.mkdir_p!(Path.dirname(abs))
+    File.write!(abs, content)
+    abs
   end
 
   defp review!(c, name), do: OpsExecutor.review_snapshot(local_ctx(c), name)
@@ -448,6 +486,142 @@ defmodule Valea.Mail.OpsExecutorSendTest do
                :mimemail.decode(payload, encoding: :none, allow_missing_version: true)
 
       assert content == "%PDF-1.7 fake"
+    end
+  end
+
+  # The `icm:<mount_key>/<path>` address form. ICM mounts live OUTSIDE the
+  # workspace root by construction, so this is the only way the composer's
+  # file picker can name a file the user actually keeps. It rides the SAME
+  # containment discipline as the workspace form — only the base root differs.
+  describe "attachments — the icm: mount form" do
+    test "resolves against the mount root and reviews like any other attachment", %{root: root} do
+      icm = mount_icm!(root, "w3d")
+      write_icm_file!(icm, "Projects/agenda.pdf", "%PDF-1.7 agenda")
+      write_draft!(root, "reply.md", attachments_draft(["icm:w3d/Projects/agenda.pdf"]))
+
+      assert {:ok, review} = review!(ctx(nil, root), "reply.md")
+
+      assert review["attachments"] == [
+               %{
+                 "filename" => "agenda.pdf",
+                 # The ADDRESS as the draft wrote it — the composer's chip and
+                 # the confirm modal both name the file the human chose.
+                 "path" => "icm:w3d/Projects/agenda.pdf",
+                 "bytes" => 15
+               }
+             ]
+    end
+
+    test "both address forms compose into one message", %{root: root} do
+      icm = mount_icm!(root, "w3d")
+      write_icm_file!(icm, "agenda.pdf", "%PDF-1.7 agenda")
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 deck")
+
+      content =
+        write_draft!(
+          root,
+          "reply.md",
+          attachments_draft(["notes/deck.pdf", "icm:w3d/agenda.pdf"])
+        )
+
+      c = ctx(start_model!(), root)
+      {:ok, review} = review!(c, "reply.md")
+
+      assert {:ok, op} =
+               OpsExecutor.prepare_send(
+                 local_ctx(c),
+                 "reply.md",
+                 DraftFile.content_hash(content),
+                 review["review_fingerprint"]
+               )
+
+      assert {"multipart", "mixed", _h, _p, [_body, deck, agenda]} =
+               spool_wire(root, op.id)
+               |> File.read!()
+               |> :mimemail.decode(encoding: :none, allow_missing_version: true)
+
+      assert {"application", "pdf", _, deck_params, "%PDF-1.7 deck"} = deck
+      assert deck_params[:disposition_params] == [{"filename", "deck.pdf"}]
+      assert {"application", "pdf", _, agenda_params, "%PDF-1.7 agenda"} = agenda
+      assert agenda_params[:disposition_params] == [{"filename", "agenda.pdf"}]
+    end
+
+    test "an unknown mount key refuses, naming the entry", %{root: root} do
+      mount_icm!(root, "w3d")
+      write_draft!(root, "reply.md", attachments_draft(["icm:nope/agenda.pdf"]))
+
+      assert {:error, "attachment_mount_unavailable: icm:nope/agenda.pdf"} =
+               review!(ctx(nil, root), "reply.md")
+    end
+
+    # `Valea.ICM`'s own admission rule, deliberately spelled the same way: a
+    # disabled mount is not an address this app honours anywhere else either.
+    test "a disabled mount refuses", %{root: root} do
+      icm = mount_icm!(root, "w3d", enabled: false)
+      write_icm_file!(icm, "agenda.pdf", "%PDF-1.7 agenda")
+      write_draft!(root, "reply.md", attachments_draft(["icm:w3d/agenda.pdf"]))
+
+      assert {:error, "attachment_mount_unavailable: icm:w3d/agenda.pdf"} =
+               review!(ctx(nil, root), "reply.md")
+    end
+
+    test "a missing file inside a real mount refuses as missing, not unavailable", %{root: root} do
+      mount_icm!(root, "w3d")
+      write_draft!(root, "reply.md", attachments_draft(["icm:w3d/gone.pdf"]))
+
+      assert {:error, "attachment_missing: icm:w3d/gone.pdf"} =
+               review!(ctx(nil, root), "reply.md")
+    end
+
+    # The mount form's containment is the workspace form's, with a different
+    # base: a symlink planted INSIDE the ICM pointing anywhere else on disk
+    # resolves outside that mount's own root and is refused there.
+    test "a symlink escaping the mount root is refused as outside", %{root: root} do
+      icm = mount_icm!(root, "w3d")
+      outside = Path.join(Path.dirname(root), "secret.txt")
+      File.write!(outside, "not yours")
+      File.ln_s!(outside, Path.join(icm, "link.txt"))
+
+      write_draft!(root, "reply.md", attachments_draft(["icm:w3d/link.txt"]))
+
+      assert {:error, "attachment_outside: icm:w3d/link.txt"} =
+               review!(ctx(nil, root), "reply.md")
+    end
+
+    test "the fingerprint covers an icm: attachment's bytes too", %{root: root} do
+      icm = mount_icm!(root, "w3d")
+      write_icm_file!(icm, "agenda.pdf", "%PDF-1.7 original")
+      content = write_draft!(root, "reply.md", attachments_draft(["icm:w3d/agenda.pdf"]))
+      c = ctx(nil, root)
+
+      {:ok, review} = review!(c, "reply.md")
+      write_icm_file!(icm, "agenda.pdf", "%PDF-1.7 swapped!")
+
+      assert {:error, "re_review_required"} =
+               OpsExecutor.prepare_send(
+                 local_ctx(c),
+                 "reply.md",
+                 DraftFile.content_hash(content),
+                 review["review_fingerprint"]
+               )
+
+      assert ops_all("drafts/reply.md") == []
+      assert send_calls() == []
+    end
+
+    # The mount form is an ADDITION. With no `icm:` entry in the draft the
+    # resolver never even enumerates mounts, and a workspace with no `icms:`
+    # config at all (every other test in this file) behaves exactly as before.
+    test "a workspace-form draft resolves with no mount config present", %{root: root} do
+      refute File.exists?(Path.join([root, "config", "workspace.yaml"]))
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 deck")
+      write_draft!(root, "reply.md", attachments_draft(["notes/deck.pdf"]))
+
+      assert {:ok, review} = review!(ctx(nil, root), "reply.md")
+
+      assert review["attachments"] == [
+               %{"filename" => "deck.pdf", "path" => "notes/deck.pdf", "bytes" => 13}
+             ]
     end
   end
 

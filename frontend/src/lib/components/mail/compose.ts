@@ -135,43 +135,95 @@ function yamlList(values: string[]): string {
 }
 
 /**
- * A workspace-relative path, by `DraftFile`'s rule and no other: relative
- * (no leading `/`, no `X:` drive form), and no empty, `.` or `..` segment —
- * checked against BOTH separators, because the backend does and a draft file
- * is portable. Control characters are handled by `yamlString` on the way out;
- * they are refused here too, so a path that could never survive validation is
- * never put in the buffer in the first place.
- *
- * The point of mirroring the rule is that a single bad path REFUSES THE WHOLE
- * DRAFT backend-side (`invalid_draft`) — so a forward that hoovered up one
- * malformed frontmatter path would make the message unsendable, with an error
- * naming neither the file nor the fix.
+ * The mount-address scheme — `DraftFile`'s `@icm_scheme`, byte for byte. An
+ * entry starting with it is `icm:<mount_key>/<mount-relative path>`;
+ * anything else is workspace-relative.
  */
-export function isWorkspaceRelativePath(path: string): boolean {
+const ICM_SCHEME = 'icm:';
+
+/**
+ * A relative path, by `DraftFile`'s rule and no other: relative (no leading
+ * `/`, no `X:` drive form), no `~` anywhere (a home expansion to one reader,
+ * an 8.3 short-name alias to another, and an address that means two things is
+ * not an address), and no empty, `.` or `..` segment — checked against BOTH
+ * separators, because the backend does and a draft file is portable. Control
+ * characters are neutralized by `yamlString` on the way out; they are refused
+ * here too, so a path that could never survive validation is never put in the
+ * buffer in the first place.
+ */
+function isRelPath(path: string): boolean {
   if (path.trim() === '') return false;
   // eslint-disable-next-line no-control-regex -- refusing control characters IS the rule
   if (/[\u0000-\u001f\u007f]/.test(path)) return false;
+  if (path.includes('~')) return false;
   if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return false;
   return path
     .split(/[/\\]/)
     .every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
-/** The name a human recognizes an attachment by: its basename, either separator. */
+/**
+ * A WORKSPACE-relative attachment address — the form a forwarded message's
+ * landed attachments already use. Deliberately narrower than
+ * `isAttachmentRef`: the forward prefill must not promote a view file's path
+ * to a mount address by accident.
+ */
+export function isWorkspaceRelativePath(path: string): boolean {
+  return !path.startsWith(ICM_SCHEME) && isRelPath(path);
+}
+
+/**
+ * Either attachment address form (see `DraftFile`'s moduledoc). Mount
+ * EXISTENCE is not checked and cannot be: whether `w3d` names a usable mount
+ * is a question about the world at the moment of send, and the backend asks
+ * it then (`attachment_mount_unavailable`).
+ *
+ * The point of mirroring the shape rule at all is that a single bad address
+ * REFUSES THE WHOLE DRAFT backend-side (`invalid_draft`) — so a forward that
+ * hoovered up one malformed frontmatter path, or a picker that emitted a
+ * mangled address, would make the message unsavable with an error naming
+ * neither the file nor the fix.
+ */
+export function isAttachmentRef(entry: string): boolean {
+  if (!entry.startsWith(ICM_SCHEME)) return isRelPath(entry);
+
+  const rest = entry.slice(ICM_SCHEME.length);
+  const slash = rest.indexOf('/');
+  if (slash <= 0) return false; // no mount key, or no path inside it
+
+  const mountKey = rest.slice(0, slash);
+  if (mountKey === '.' || mountKey === '..') return false;
+  if (mountKey.includes('\\') || mountKey.includes('~')) return false;
+
+  return isRelPath(rest.slice(slash + 1));
+}
+
+/**
+ * The `icm:` address for a file the workspace tree yielded — `IcmTree`'s
+ * `onSelect` hands back exactly the `(mountKey, path)` pair this takes, which
+ * is the app's established addressing (`/files/raw` speaks it too). `null`
+ * when the pair does not make a valid address, so a caller cannot write one.
+ */
+export function icmAttachmentRef(mountKey: string, path: string): string | null {
+  const entry = `${ICM_SCHEME}${mountKey}/${path}`;
+  return isAttachmentRef(entry) ? entry : null;
+}
+
+/** The name a human recognizes an attachment by: its basename — either separator, either form. */
 export function attachmentName(path: string): string {
   const segments = path.split(/[/\\]/);
   return segments[segments.length - 1] || path;
 }
 
 /**
- * `path` appended to `list` — refused when it is not a workspace-relative
- * path, and idempotent, so the same file cannot be attached twice by
+ * `entry` appended to `list` — refused when it is not a valid attachment
+ * address, and idempotent, so the same file cannot be attached twice by
  * clicking twice. (The BACKEND deliberately keeps duplicates a draft file
  * actually lists; this is the picker declining to create one.)
  */
-export function withAttachment(list: string[], path: string): string[] {
-  const trimmed = path.trim();
-  if (!isWorkspaceRelativePath(trimmed) || list.includes(trimmed)) return list;
+export function withAttachment(list: string[], entry: string): string[] {
+  const trimmed = entry.trim();
+  if (!isAttachmentRef(trimmed) || list.includes(trimmed)) return list;
   return [...list, trimmed];
 }
 

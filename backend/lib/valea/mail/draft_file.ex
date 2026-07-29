@@ -49,19 +49,46 @@ defmodule Valea.Mail.DraftFile do
 
   ## Attachments are addresses, not files
 
-  `attachments:` carries workspace-relative paths and this module validates
-  their SHAPE only — relative (`Valea.Paths.classify/1`), no empty/`.`/`..`
-  segment (checked against BOTH separators, so `..\\..\\etc` is refused on
-  every host), no control character. It deliberately touches no filesystem.
+  `attachments:` carries **two** address forms, and nothing else:
+
+      attachments:
+        - sources/mail/mara/views/attachments/2026-07-15-alex-4f2a91c3/deck.pdf
+        - icm:w3d/Projects/Kickoff/agenda.pdf
+
+    * **workspace-relative** — a path under the workspace root. This is what
+      a forwarded message's landed attachments already are.
+    * **`icm:<mount_key>/<path>`** — a path inside a mounted ICM, in the
+      app's established `(mount_key, mount-relative path)` addressing (the
+      same vocabulary `/files/raw` speaks). ICMs live OUTSIDE the workspace
+      root by construction (`Valea.Mounts`), so without this form the
+      composer's file picker could not name a single file the user actually
+      keeps.
+
+  What the two forms share is the invariant: **no arbitrary OS paths**.
+  Everything sendable is a file Valea addresses, contains, and can show the
+  human by name and size before they confirm.
+
+  This module validates SHAPE only, identically for both forms — relative
+  (`Valea.Paths.classify/1`), no empty/`.`/`..` segment (checked against
+  BOTH separators, so `..\\..\\etc` is refused on every host), no `~`
+  anywhere (it is a home-directory expansion to one reader and an 8.3 short
+  name alias to another, and an address that means two things is not an
+  address), no control character. It deliberately touches no filesystem and
+  knows nothing about which mounts exist.
 
   The file itself is resolved at USE time — once per push, once per review,
   once per send — by `Valea.Mail.OpsExecutor`, through
-  `Valea.Paths.resolve_real/2` against the workspace root. A draft is a
-  file an agent may write; the window between "the draft named this path"
-  and "these bytes go out" is exactly where a path can start pointing
-  somewhere else, so containment is re-decided at every use and never
-  cached from a parse. Duplicate paths are kept as written: what the
-  frontmatter lists is what the review lists and what the message carries.
+  `Valea.Paths.resolve_real/2` against the workspace root or that mount's
+  own root. A draft is a file an agent may write; the window between "the
+  draft named this path" and "these bytes go out" is exactly where a path
+  can start pointing somewhere else, so containment is re-decided at every
+  use and never cached from a parse. Duplicate paths are kept as written:
+  what the frontmatter lists is what the review lists and what the message
+  carries.
+
+  `parse_attachment_ref/1` is the ONE decomposition of an entry, used both
+  by this module's validation and by the executor's resolution — so "what is
+  a valid attachment address" is never answered twice.
 
   The outbound headers are always serialized from the PARSED values
   (`Valea.Mail.DraftMime.compose/5` / `compose_send/6`), never the raw
@@ -107,7 +134,19 @@ defmodule Valea.Mail.DraftFile do
   # "O'Brien") don't need quoting.
   @display_specials ["(", ")", "<", ">", "[", "]", ":", ";", "@", "\\", ",", "\""]
 
+  # The mount-form scheme. A workspace-relative path may in principle start
+  # with these five bytes (a directory literally called `icm:w3d`), and the
+  # scheme wins — such a directory is simply not addressable by the workspace
+  # form, which is a cost worth one unambiguous prefix.
+  @icm_scheme "icm:"
+
   @type addr :: %{name: String.t() | nil, email: String.t()}
+
+  @typedoc """
+  A decomposed attachment address: a workspace-relative path, or a mount key
+  plus a mount-relative path.
+  """
+  @type attachment_ref :: {:workspace, String.t()} | {:icm, String.t(), String.t()}
   @type validated :: %{
           to: [addr()],
           cc: [addr()],
@@ -352,10 +391,49 @@ defmodule Valea.Mail.DraftFile do
         {:error, "control character in attachments path"}
 
       true ->
-        case validate_workspace_rel(value) do
-          :ok -> parse_all_attachments(rest, [value | acc])
+        case parse_attachment_ref(value) do
+          {:ok, _ref} -> parse_all_attachments(rest, [value | acc])
           {:error, reason} -> {:error, "attachments: #{reason}"}
         end
+    end
+  end
+
+  @doc """
+  Decomposes ONE attachment entry into the address it names — see the
+  moduledoc for the two forms and the shape rules. Shape only: an `:icm`
+  result says the entry is well-formed, NOT that such a mount exists or is
+  usable. That question belongs to the moment of use
+  (`Valea.Mail.OpsExecutor`), like containment itself.
+  """
+  @spec parse_attachment_ref(String.t()) :: {:ok, attachment_ref()} | {:error, String.t()}
+  def parse_attachment_ref(@icm_scheme <> rest), do: parse_icm_ref(rest)
+
+  def parse_attachment_ref(entry) when is_binary(entry) do
+    with :ok <- validate_rel_path(entry), do: {:ok, {:workspace, entry}}
+  end
+
+  defp parse_icm_ref(rest) do
+    case String.split(rest, "/", parts: 2) do
+      [mount_key, rel] ->
+        with :ok <- validate_mount_key(mount_key),
+             :ok <- validate_rel_path(rel) do
+          {:ok, {:icm, mount_key, rel}}
+        end
+
+      _no_path ->
+        {:error, "#{inspect(@icm_scheme <> rest)} names a mount but no path inside it"}
+    end
+  end
+
+  # Shape only, and deliberately NOT a key grammar: `Valea.Mounts` owns what a
+  # mount key may be, and a second spelling of that rule here could disagree
+  # with it. All this refuses is a "key" that could not be one segment.
+  defp validate_mount_key(key) do
+    cond do
+      key == "" -> {:error, "empty mount key"}
+      key in [".", ".."] -> {:error, "#{inspect(key)} is not a mount key"}
+      String.contains?(key, ["\\", "~"]) -> {:error, "#{inspect(key)} is not a mount key"}
+      true -> :ok
     end
   end
 
@@ -366,13 +444,16 @@ defmodule Valea.Mail.DraftFile do
   # happens not to use. `resolve_real/2` would refuse a traversal at use time
   # anyway; refusing it here means the draft never validates, so the reason
   # the human sees names the frontmatter rather than a file.
-  defp validate_workspace_rel(value) do
+  defp validate_rel_path(value) do
     cond do
       String.trim(value) == "" ->
         {:error, "empty path"}
 
       Paths.classify(value) != :relative ->
-        {:error, "#{inspect(value)} is not workspace-relative"}
+        {:error, "#{inspect(value)} is not a relative path"}
+
+      String.contains?(value, "~") ->
+        {:error, "#{inspect(value)} contains ~"}
 
       Enum.any?(String.split(value, ["/", "\\"]), &(&1 in ["", ".", ".."])) ->
         {:error, "#{inspect(value)} has an empty or dot path segment"}

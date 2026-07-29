@@ -62,6 +62,7 @@ defmodule Valea.Mail.OpsExecutor do
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.Views
+  alias Valea.Mounts
   alias Valea.Paths
 
   @oversize_msg_id "__oversize__"
@@ -506,8 +507,8 @@ defmodule Valea.Mail.OpsExecutor do
     * `{:error, reason}` — a pre-claim failure (bad name, symlink/missing
       file) or a post-claim rejection (`content_changed`, `status_forged`,
       `invalid_draft`, `attachment_missing: …`/`attachment_outside: …`/
-      `attachments_too_large`); a post-claim rejection also terminates the op
-      `rejected`.
+      `attachment_mount_unavailable: …`/`attachments_too_large`); a post-claim
+      rejection also terminates the op `rejected`.
   """
   @spec prepare_push(map(), String.t(), String.t()) ::
           {:ok, map()} | {:duplicate, String.t()} | {:error, String.t()}
@@ -1021,27 +1022,34 @@ defmodule Valea.Mail.OpsExecutor do
 
   # -- attachments ------------------------------------------------------------
   #
-  # THE resolution of a draft's `attachments:` paths into bytes, and the only
-  # one: the push, the review snapshot and the send all come through here, so
-  # what the human reviews and what leaves the machine cannot be judged by two
-  # different rules.
+  # THE resolution of a draft's `attachments:` addresses into bytes, and the
+  # only one: the push, the review snapshot and the send all come through
+  # here, so what the human reviews and what leaves the machine cannot be
+  # judged by two different rules.
   #
-  # Containment is re-decided on every call, against the WORKSPACE ROOT
-  # (`Valea.Paths.resolve_real/2`, symlink-aware): drafts are agent-writable,
-  # so a path that was inside the workspace when the draft was written may not
-  # be by the time it is sent. Beyond containment the stat is the same
-  # no-follow posture the draft file itself gets — a REGULAR file with a
-  # SINGLE link. The link count is not ceremony: `resolve_real/2` follows
-  # symlinks and can prove where they land, but a HARD link inside the
-  # workspace to a file outside it is indistinguishable from the file itself,
-  # and would be a containment bypass no path check can see.
+  # `Valea.Mail.DraftFile` defines the two address forms (workspace-relative,
+  # and `icm:<mount_key>/<path>`); they differ HERE in exactly one place —
+  # `attachment_base/3`, which answers "which root does this resolve
+  # against". Everything after that is one shared containment discipline, so
+  # the mount form rides on the workspace form's guarantees rather than
+  # beside them (and can be removed without touching them).
+  #
+  # Containment is re-decided on every call (`Valea.Paths.resolve_real/2`,
+  # symlink-aware): drafts are agent-writable, so a path that was inside its
+  # root when the draft was written may not be by the time it is sent. Beyond
+  # containment the stat is the same no-follow posture the draft file itself
+  # gets — a REGULAR file with a SINGLE link. The link count is not ceremony:
+  # `resolve_real/2` follows symlinks and can prove where they land, but a
+  # HARD link inside a root to a file outside it is indistinguishable from
+  # the file itself, and would be a bypass no path check can see.
   #
   # Caps are checked from the stat, before a single byte is read, so an
   # oversized draft is refused without loading it into memory.
   defp load_attachments(_ctx, []), do: {:ok, []}
 
-  defp load_attachments(ctx, rel_paths) do
-    with {:ok, statted} <- stat_attachments(ctx, rel_paths, []),
+  defp load_attachments(ctx, entries) do
+    with {:ok, refs} <- parse_attachment_refs(entries, []),
+         {:ok, statted} <- stat_attachments(ctx, refs, icm_mount_roots(ctx, refs), []),
          :ok <- DraftMime.check_caps(Enum.map(statted, & &1.bytes)),
          {:ok, loaded} <- read_attachments(statted, []),
          # Again on what was actually READ, not on what the stat promised: a
@@ -1052,24 +1060,85 @@ defmodule Valea.Mail.OpsExecutor do
     end
   end
 
-  defp stat_attachments(_ctx, [], acc), do: {:ok, Enum.reverse(acc)}
+  defp parse_attachment_refs([], acc), do: {:ok, Enum.reverse(acc)}
 
-  defp stat_attachments(ctx, [rel | rest], acc) do
-    case Paths.resolve_real(rel, ctx.root) do
-      {:ok, abs} ->
-        case File.lstat(abs) do
-          {:ok, %File.Stat{type: :regular, links: 1, size: size}} ->
-            entry = %{path: rel, filename: Path.basename(rel), abs: abs, bytes: size}
-            stat_attachments(ctx, rest, [entry | acc])
+  defp parse_attachment_refs([entry | rest], acc) do
+    case DraftFile.parse_attachment_ref(entry) do
+      {:ok, ref} ->
+        parse_attachment_refs(rest, [{entry, ref} | acc])
 
-          _not_a_plain_file ->
-            {:error, "attachment_missing: #{rel}"}
-        end
-
+      # Unreachable through the normal path — `parse_and_validate/1` already
+      # refused the whole draft over a malformed address — but this module
+      # never trusts a shape it did not check itself.
       {:error, _reason} ->
-        {:error, "attachment_outside: #{rel}"}
+        {:error, "attachment_invalid: #{entry}"}
     end
   end
+
+  # The usable ICM mounts by key, built ONCE per call and only when an `icm:`
+  # address actually needs it: `Mounts.list/1` re-reads the workspace and mail
+  # config, and a draft with three attachments must not pay for it three
+  # times.
+  #
+  # `enabled and degraded == nil and kind == :icm` is `Valea.ICM`'s own
+  # admission rule, deliberately spelled the same way: a disabled, broken or
+  # synthetic mount is not an address this app honours anywhere else either.
+  # (A `mail-*` mount is reachable through the WORKSPACE form, which is where
+  # a landed attachment's path already points.)
+  defp icm_mount_roots(ctx, refs) do
+    if Enum.any?(refs, &match?({_entry, {:icm, _key, _rel}}, &1)) do
+      ctx.root
+      |> Mounts.list()
+      |> Enum.filter(&(&1.kind == :icm and &1.enabled and is_nil(&1.degraded)))
+      |> Map.new(&{&1.name, &1.root})
+    else
+      %{}
+    end
+  end
+
+  defp stat_attachments(_ctx, [], _mount_roots, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp stat_attachments(ctx, [{entry, ref} | rest], mount_roots, acc) do
+    case stat_attachment(ctx, entry, ref, mount_roots) do
+      {:ok, statted} -> stat_attachments(ctx, rest, mount_roots, [statted | acc])
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp stat_attachment(ctx, entry, ref, mount_roots) do
+    with {:ok, base} <- attachment_base(ctx, ref, mount_roots, entry),
+         {:ok, abs} <- contained_attachment(attachment_rel(ref), base, entry),
+         {:ok, size} <- plain_file_size(abs, entry) do
+      {:ok, %{path: entry, filename: Path.basename(attachment_rel(ref)), abs: abs, bytes: size}}
+    end
+  end
+
+  # The ONE place the two address forms differ.
+  defp attachment_base(ctx, {:workspace, _rel}, _mount_roots, _entry), do: {:ok, ctx.root}
+
+  defp attachment_base(_ctx, {:icm, mount_key, _rel}, mount_roots, entry) do
+    case Map.fetch(mount_roots, mount_key) do
+      {:ok, root} -> {:ok, root}
+      :error -> {:error, "attachment_mount_unavailable: #{entry}"}
+    end
+  end
+
+  defp contained_attachment(rel, base, entry) do
+    case Paths.resolve_real(rel, base) do
+      {:ok, abs} -> {:ok, abs}
+      {:error, _reason} -> {:error, "attachment_outside: #{entry}"}
+    end
+  end
+
+  defp plain_file_size(abs, entry) do
+    case File.lstat(abs) do
+      {:ok, %File.Stat{type: :regular, links: 1, size: size}} -> {:ok, size}
+      _not_a_plain_file -> {:error, "attachment_missing: #{entry}"}
+    end
+  end
+
+  defp attachment_rel({:workspace, rel}), do: rel
+  defp attachment_rel({:icm, _mount_key, rel}), do: rel
 
   defp read_attachments([], acc), do: {:ok, Enum.reverse(acc)}
 

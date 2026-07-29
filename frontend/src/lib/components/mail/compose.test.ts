@@ -11,6 +11,8 @@ import {
   formatMailbox,
   forwardSubject,
   hasDraftContent,
+  icmAttachmentRef,
+  isAttachmentRef,
   isWorkspaceRelativePath,
   loadDraftFields,
   parseAddressList,
@@ -668,6 +670,27 @@ describe('attachments — the frontmatter key', () => {
     expect(parsed.ok && parsed.fields).toEqual(original);
   });
 
+  it('round-trips the icm: mount form alongside the workspace form', () => {
+    const original = fields({
+      to: ['a@x.com'],
+      attachments: [DECK, 'icm:w3d/Projects/agenda.pdf']
+    });
+
+    const content = draftContent(original);
+    expect(content).toContain(`attachments: ["${DECK}", "icm:w3d/Projects/agenda.pdf"]`);
+
+    const parsed = parseDraftFields(content);
+    expect(parsed.ok && parsed.fields).toEqual(original);
+  });
+
+  it('reads an agent-written icm: entry left unquoted', () => {
+    const parsed = parseDraftFields(
+      '---\nto: a@x.com\nattachments:\n  - icm:w3d/Projects/agenda.pdf\n---\nBody.\n'
+    );
+
+    expect(parsed.ok && parsed.fields.attachments).toEqual(['icm:w3d/Projects/agenda.pdf']);
+  });
+
   it('reads an agent-written draft: unquoted scalars, a block sequence, a `status:` line', () => {
     const parsed = parseDraftFields(
       '---\nto: a@x.com\nattachments:\n  - notes/deck.pdf\n  - notes/two.png\nstatus: draft\n---\nBody.\n'
@@ -714,16 +737,17 @@ describe('attachments — the frontmatter key', () => {
   });
 });
 
-describe('isWorkspaceRelativePath / withAttachment / withoutAttachment / attachmentName', () => {
-  it('accepts ordinary workspace-relative paths', () => {
-    expect(isWorkspaceRelativePath('notes/deck.pdf')).toBe(true);
-    expect(isWorkspaceRelativePath('a b/c (1).txt')).toBe(true);
-    expect(isWorkspaceRelativePath('deck.pdf')).toBe(true);
+describe('attachment addresses', () => {
+  it('accepts ordinary workspace-relative paths in both predicates', () => {
+    for (const good of ['notes/deck.pdf', 'a b/c (1).txt', 'deck.pdf']) {
+      expect(isWorkspaceRelativePath(good), good).toBe(true);
+      expect(isAttachmentRef(good), good).toBe(true);
+    }
   });
 
-  // `DraftFile`'s rule, mirrored: one bad path refuses the WHOLE draft
+  // `DraftFile`'s rule, mirrored: one bad address refuses the WHOLE draft
   // backend-side, so nothing that would fail there is ever put in the buffer.
-  it('refuses absolute paths, drive forms, traversals and control characters', () => {
+  it('refuses absolute paths, drive forms, traversals, tildes and control characters', () => {
     for (const bad of [
       '',
       '   ',
@@ -735,29 +759,70 @@ describe('isWorkspaceRelativePath / withAttachment / withoutAttachment / attachm
       './deck.pdf',
       'notes//deck.pdf',
       'notes/',
+      '~/deck.pdf',
+      'notes/deck.pdf~',
       'notes/a\nb.pdf',
       'notes/a\u0000b.pdf'
     ]) {
       expect(isWorkspaceRelativePath(bad), bad).toBe(false);
+      expect(isAttachmentRef(bad), bad).toBe(false);
     }
   });
 
-  it('withAttachment appends valid paths, refuses invalid ones, and never duplicates', () => {
+  // The mount form, mirroring `DraftFile.parse_attachment_ref/1`. ICM mounts
+  // live outside the workspace root, so this is the only way the picker can
+  // name a file the user actually keeps.
+  it('accepts the icm: mount form — but only as an attachment ref, not as a workspace path', () => {
+    expect(isAttachmentRef('icm:w3d/Projects/agenda.pdf')).toBe(true);
+    expect(isWorkspaceRelativePath('icm:w3d/Projects/agenda.pdf')).toBe(false);
+  });
+
+  it('refuses an icm: entry with no mount key, no path, or a traversal in either half', () => {
+    for (const bad of [
+      'icm:',
+      'icm:w3d',
+      'icm:w3d/',
+      'icm:/agenda.pdf',
+      'icm:../w3d/agenda.pdf',
+      'icm:~/agenda.pdf',
+      'icm:w\\3d/agenda.pdf',
+      'icm:w3d/../../etc/passwd',
+      'icm:w3d/agenda.pdf~'
+    ]) {
+      expect(isAttachmentRef(bad), bad).toBe(false);
+    }
+  });
+
+  it('icmAttachmentRef builds the address a tree pick becomes, or nothing', () => {
+    expect(icmAttachmentRef('w3d', 'Projects/agenda.pdf')).toBe('icm:w3d/Projects/agenda.pdf');
+    expect(icmAttachmentRef('w3d', '')).toBeNull();
+    expect(icmAttachmentRef('w3d', '../escape.pdf')).toBeNull();
+    expect(icmAttachmentRef('', 'agenda.pdf')).toBeNull();
+  });
+
+  it('withAttachment appends valid addresses of either form, refuses invalid ones, never duplicates', () => {
     expect(withAttachment([], 'notes/deck.pdf')).toEqual(['notes/deck.pdf']);
     expect(withAttachment(['notes/deck.pdf'], '  notes/two.txt ')).toEqual([
       'notes/deck.pdf',
       'notes/two.txt'
     ]);
+    expect(withAttachment(['notes/deck.pdf'], 'icm:w3d/agenda.pdf')).toEqual([
+      'notes/deck.pdf',
+      'icm:w3d/agenda.pdf'
+    ]);
     expect(withAttachment(['notes/deck.pdf'], 'notes/deck.pdf')).toEqual(['notes/deck.pdf']);
+    expect(withAttachment(['icm:w3d/a.pdf'], 'icm:w3d/a.pdf')).toEqual(['icm:w3d/a.pdf']);
     expect(withAttachment([], '../escape.pdf')).toEqual([]);
+    expect(withAttachment([], 'icm:w3d')).toEqual([]);
   });
 
   it('withoutAttachment removes every occurrence', () => {
     expect(withoutAttachment(['a/x.pdf', 'b/y.pdf', 'a/x.pdf'], 'a/x.pdf')).toEqual(['b/y.pdf']);
   });
 
-  it('attachmentName is the basename, either separator', () => {
+  it('attachmentName is the basename, either separator and either form', () => {
     expect(attachmentName('sources/mail/mara/views/attachments/m1/deck.pdf')).toBe('deck.pdf');
+    expect(attachmentName('icm:w3d/Projects/agenda.pdf')).toBe('agenda.pdf');
     expect(attachmentName('deck.pdf')).toBe('deck.pdf');
   });
 });

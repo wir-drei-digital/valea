@@ -29,6 +29,11 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
+  import * as Popover from '$lib/components/ui/popover';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
+  import { IcmTree } from '$lib/components/shell';
+  import { icmStore } from '$lib/stores/icm.svelte';
+  import { icmToNav } from '$lib/shell/nav';
   import { api } from '$lib/api/client';
   import { mailStore, type MailDraftReview } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -43,6 +48,8 @@
     attachmentName,
     composeHref,
     composeValidationError,
+    icmAttachmentRef,
+    withAttachment,
     draftContent,
     emptyDraftFields,
     draftDirty,
@@ -122,6 +129,44 @@
   let raced = $state(false);
 
   let openReview = $state<MailDraftReview | null>(null);
+  let attachOpen = $state(false);
+
+  /**
+   * The workspace file tree, one section per mounted ICM. Mail's own landed
+   * attachments are NOT here and do not need to be: a forward already carries
+   * their workspace-relative paths, and a picker is for files the user chose,
+   * not for re-finding one Valea filed.
+   *
+   * Folders lazy-load through `IcmTree`'s own `loadDir`; the mount ROOT level
+   * is the caller's concern, which is what the effect below covers.
+   */
+  const attachGroups = $derived(
+    icmStore.groups.map((group) => ({
+      mount: group.mount,
+      title: group.title,
+      nodes: icmToNav(group.tree)
+    }))
+  );
+
+  // The composer can be the first thing a session lands on, so the tree may
+  // never have been fetched. Loaded only when the popover actually opens —
+  // `refetch` de-dupes, and an unopened picker should cost nothing.
+  $effect(() => {
+    if (attachOpen && icmStore.groups.length === 0) void icmStore.refetch();
+  });
+
+  /**
+   * A pick becomes an `icm:<mount_key>/<path>` address — the app's own
+   * `(mountKey, path)` addressing, which is what `IcmTree` hands back. The
+   * file is never read here: `get_mail_draft_review` resolves and reads it
+   * backend-side and reports its real size, and that is what the human
+   * confirms against.
+   */
+  function attach(selection: { mountKey: string; path: string }): void {
+    attachOpen = false;
+    const ref = icmAttachmentRef(selection.mountKey, selection.path);
+    if (ref) attachments = withAttachment(attachments, ref);
+  }
 
   // Unsaved-changes guard: `beforeNavigate` cancels synchronously (the only
   // way to stop a SvelteKit navigation) and the dialog then decides.
@@ -542,13 +587,44 @@
           </p>
         </div>
 
-        <!-- Attachments are workspace FILES the draft points at, not uploads:
-             the chip shows the name, the row beneath it the path the backend
-             will resolve, and the sizes come from the review — this view has
-             read nothing. -->
-        {#if attachments.length > 0}
-          <div class="flex flex-col gap-1.5">
+        <!-- Attachments are FILES the draft points at, not uploads: the chip
+             shows the name, the row beside it the address the backend will
+             resolve, and the sizes come from the review — this view has read
+             nothing. -->
+        <div class="flex flex-col gap-1.5">
+          <div class="flex items-center gap-2">
             <p class="text-overline">Attachments</p>
+            <Popover.Root bind:open={attachOpen}>
+              <Popover.Trigger disabled={readOnly || busy}>
+                {#snippet child({ props })}
+                  <Button type="button" variant="ghost" size="sm" {...props}>
+                    <Paperclip class="text-ink-meta size-3.5" strokeWidth={1.5} aria-hidden="true" />
+                    Attach…
+                  </Button>
+                {/snippet}
+              </Popover.Trigger>
+              <Popover.Content align="start" class="max-h-96 w-80 overflow-y-auto p-2">
+                {#if attachGroups.length === 0}
+                  <p class="text-ink-meta px-2 py-1 text-[12px]">
+                    No files are mounted. Add one from Files, then attach it here.
+                  </p>
+                {:else}
+                  {#each attachGroups as group (group.mount)}
+                    <div class="mb-1 flex flex-col gap-0.5">
+                      <p class="text-ink-meta px-2 text-[11px] font-semibold">{group.title}</p>
+                      {#if group.nodes.length}
+                        <IcmTree nodes={group.nodes} onSelect={attach} />
+                      {:else}
+                        <p class="text-ink-meta px-2 py-1 text-[12px] italic">Empty</p>
+                      {/if}
+                    </div>
+                  {/each}
+                {/if}
+              </Popover.Content>
+            </Popover.Root>
+          </div>
+
+          {#if attachments.length > 0}
             <ul class="flex flex-col gap-1">
               {#each attachments as path, index (`${index}:${path}`)}
                 <li
@@ -572,8 +648,8 @@
                 </li>
               {/each}
             </ul>
-          </div>
-        {/if}
+          {/if}
+        </div>
 
         {#if inReplyTo}
           <p class="text-ink-meta text-[11.5px]">
