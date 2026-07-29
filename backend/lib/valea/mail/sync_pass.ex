@@ -57,11 +57,21 @@ defmodule Valea.Mail.SyncPass do
 
   ## Result
 
-  `{:ok, %{new_messages:, errors:, notices:}}` on a completed pass;
-  `{:error, :auth_failed}` / `{:error, :mailbox_replaced}` / `{:error, term}`
-  otherwise. `errors` collects per-message/per-folder failures that did not
-  abort the pass (oversized, a fetch that failed); `notices` carries reset-
-  deferral, restore, and quarantine strings for status.
+  `{:ok, %{new_messages:, new_unread:, errors:, notices:}}` on a completed
+  pass; `{:error, :auth_failed}` / `{:error, :mailbox_replaced}` /
+  `{:error, term}` otherwise. `errors` collects per-message/per-folder failures
+  that did not abort the pass (oversized, a fetch that failed); `notices`
+  carries reset-deferral, restore, and quarantine strings for status.
+
+  `new_unread` is the NOTIFICATION counter (mail full-client plan, M5 task
+  13): how many of this pass's landings were INBOX occurrences whose flags
+  lack `S`. It is a strict subset of `new_messages` — a landing into any
+  other folder (the Sent copy of your own reply, an archive backfill) and an
+  already-read INBOX landing both count as a new message and NOT as new
+  unread mail. Counted at the landing site (`land_uids/7`), which is the one
+  place a message becomes new to this workspace: re-binds after a UIDVALIDITY
+  reset, flag pulls, and damage repair all restore messages that already
+  landed once, and none of them run through it.
 
   ## `readopt_authorized`
 
@@ -86,8 +96,14 @@ defmodule Valea.Mail.SyncPass do
 
   @oversize_msg_id "__oversize__"
 
+  # The one folder whose new mail is worth interrupting a human for. Exact
+  # match, the same spelling `Valea.Mail.Reconcile.detect_replacement/2` and
+  # `Valea.Cockpit` already key on.
+  @inbox_folder "INBOX"
+
   @type result :: %{
           new_messages: non_neg_integer(),
+          new_unread: non_neg_integer(),
           errors: [String.t()],
           notices: [String.t()]
         }
@@ -530,14 +546,33 @@ defmodule Valea.Mail.SyncPass do
     flags_map = fetch_flags_map(ctx, to_land)
 
     Enum.reduce(to_land, {acc, 0}, fn uid, {acc, count} ->
-      case land_uid(acc, ctx, folder, dir_abs, dir_rel, select, uid, Map.get(flags_map, uid, [])) do
-        {acc, true} -> {bump_new_messages(acc), count + 1}
-        {acc, false} -> {acc, count}
+      imap_flags = Map.get(flags_map, uid, [])
+
+      case land_uid(acc, ctx, folder, dir_abs, dir_rel, select, uid, imap_flags) do
+        {acc, true} ->
+          {acc |> bump_new_messages() |> bump_new_unread(folder, imap_flags), count + 1}
+
+        {acc, false} ->
+          {acc, count}
       end
     end)
   end
 
   defp bump_new_messages(acc), do: %{acc | new_messages: acc.new_messages + 1}
+
+  # The notification counter (see moduledoc, §Result). Only a landing INTO
+  # INBOX whose server flags carry no `\Seen` counts — read through the same
+  # `flags_from_imap/1` the delivered maildir name is built from, so the
+  # counter and the file on disk can never disagree about what "unread" meant.
+  defp bump_new_unread(acc, @inbox_folder, imap_flags) do
+    if MapSet.member?(Maildir.flags_from_imap(imap_flags), "S") do
+      acc
+    else
+      %{acc | new_unread: acc.new_unread + 1}
+    end
+  end
+
+  defp bump_new_unread(acc, _folder, _imap_flags), do: acc
 
   defp land_uid(acc, ctx, folder, dir_abs, dir_rel, select, uid, imap_flags) do
     max_bytes = ctx.settings.sync.max_message_bytes
@@ -971,7 +1006,7 @@ defmodule Valea.Mail.SyncPass do
 
   defp maildir_root(root, account), do: Path.join([root, "sources", "mail", account, "maildir"])
 
-  defp empty_result, do: %{new_messages: 0, errors: [], notices: []}
+  defp empty_result, do: %{new_messages: 0, new_unread: 0, errors: [], notices: []}
 
   defp add_error(acc, message), do: %{acc | errors: acc.errors ++ [message]}
   defp add_notice(acc, message), do: %{acc | notices: acc.notices ++ [message]}

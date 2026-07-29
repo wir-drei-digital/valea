@@ -166,13 +166,14 @@ defmodule Valea.Mail.Engine do
   typespecs don't support singleton-string (as opposed to singleton-atom)
   literal types.
 
-  Two fields ride STRING keys — `"smtp_configured"` (boolean) and
+  Three fields ride STRING keys — `"smtp_configured"` (boolean),
   `"smtp_credential"` (`"present"` | `"missing"` | `"n/a"`, the last when the
-  account has no `smtp:` block at all). That is the falsy-map-field rule
+  account has no `smtp:` block at all), and `"notifications"` (boolean, the
+  per-account OS-notification opt-in). That is the falsy-map-field rule
   documented in `Valea.Api.Mail`'s moduledoc: ash_typescript nulls a
-  top-level atom-keyed field whose value is `false`, and `smtp_configured`
-  is `false` for every push-only account. (The atom-keyed fields above
-  predate the rule and reach the RPC through `mail_status`'s own
+  top-level atom-keyed field whose value is `false`, and both booleans are
+  `false` for every account that hasn't opted in. (The atom-keyed fields
+  above predate the rule and reach the RPC through `mail_status`'s own
   stringification, which is why they still work.)
   """
   @type status :: %{
@@ -1536,6 +1537,11 @@ defmodule Valea.Mail.Engine do
 
   defp finish_pass(state, {:ok, result}) do
     new_messages = Map.get(result, :new_messages, 0)
+    # The notification counter (`Valea.Mail.SyncPass`, §Result): newly landed
+    # INBOX occurrences without `S`. Carried through `mail_sync_finished`
+    # ADDITIVELY — every existing consumer keeps reading `new_messages`
+    # unchanged, and only the new-mail notification path reads this one.
+    new_unread = Map.get(result, :new_unread, 0)
     errors = Map.get(result, :errors, [])
     notices = Map.get(result, :notices, [])
 
@@ -1545,7 +1551,8 @@ defmodule Valea.Mail.Engine do
     if state.pass_readopt_authorized, do: Account.clear_readopt!(state.root, state.account)
 
     broadcast_event(
-      {:mail_sync_finished, state.account, %{new_messages: new_messages, errors: errors}}
+      {:mail_sync_finished, state.account,
+       %{new_messages: new_messages, new_unread: new_unread, errors: errors}}
     )
 
     %{
@@ -1564,7 +1571,8 @@ defmodule Valea.Mail.Engine do
     cancel_timer(state.poll_timer)
 
     broadcast_event(
-      {:mail_sync_finished, state.account, %{new_messages: 0, errors: ["authentication failed"]}}
+      {:mail_sync_finished, state.account,
+       %{new_messages: 0, new_unread: 0, errors: ["authentication failed"]}}
     )
 
     %{
@@ -1584,7 +1592,9 @@ defmodule Valea.Mail.Engine do
     message =
       "the server's mailbox no longer matches local history — readopt or purge to continue"
 
-    broadcast_event({:mail_sync_finished, state.account, %{new_messages: 0, errors: [message]}})
+    broadcast_event(
+      {:mail_sync_finished, state.account, %{new_messages: 0, new_unread: 0, errors: [message]}}
+    )
 
     %{
       state
@@ -1604,7 +1614,10 @@ defmodule Valea.Mail.Engine do
   # the built string as defense-in-depth behind the literal-LOGIN fix.
   defp finish_pass(state, {:error, reason}) do
     message = Redact.text("sync failed: #{inspect(reason)}", current_secret(state))
-    broadcast_event({:mail_sync_finished, state.account, %{new_messages: 0, errors: [message]}})
+
+    broadcast_event(
+      {:mail_sync_finished, state.account, %{new_messages: 0, new_unread: 0, errors: [message]}}
+    )
 
     %{
       state
@@ -1699,6 +1712,7 @@ defmodule Valea.Mail.Engine do
       folders: nil
     }
     |> Map.merge(smtp_status(state))
+    |> Map.merge(notification_status(state))
   end
 
   defp build_status(state) do
@@ -1735,6 +1749,7 @@ defmodule Valea.Mail.Engine do
       }
     }
     |> Map.merge(smtp_status(state))
+    |> Map.merge(notification_status(state))
   end
 
   # Whether this account can send at all, and whether its SEND credential is
@@ -1751,6 +1766,15 @@ defmodule Valea.Mail.Engine do
       "smtp_credential" => smtp_credential_status(configured, state.smtp_credential)
     }
   end
+
+  # The per-account OS-notification opt-in (`config/mail.yaml`'s
+  # `notifications:`, default off) — the frontend's gate on raising a
+  # notification for this account's `new_unread`. String key for the same
+  # reason `smtp_configured` has one: it is `false` for every account that
+  # hasn't opted in, and ash_typescript nulls a top-level atom-keyed `false`.
+  defp notification_status(%{settings: nil}), do: %{"notifications" => false}
+
+  defp notification_status(state), do: %{"notifications" => state.settings.notifications == true}
 
   defp smtp_credential_status(false, _credential), do: "n/a"
   defp smtp_credential_status(true, nil), do: "missing"

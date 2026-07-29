@@ -412,6 +412,46 @@ defmodule ValeaWeb.MailRpcTest do
       assert status["smtp_credential"] == "n/a"
     end
 
+    # The M5-task-13 notification opt-in: an ordinary boolean argument that
+    # lands in `config/mail.yaml` and comes back out on the account's status.
+    test "the notifications arg writes the flag and surfaces it on mail_status", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "mara",
+                   "host" => "imap.fastmail.com",
+                   "port" => 993,
+                   "username" => "mara@example.com",
+                   "notifications" => true,
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert {:ok, %{accounts: %{"mara" => account}}} = Settings.load(workspace)
+      assert account.notifications == true
+
+      status = await_engine_active!("mara")
+      assert status["notifications"] == true
+    end
+
+    test "omitting the notifications arg leaves the flag off", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+
+      assert {:ok, %{accounts: %{"mara" => account}}} = Settings.load(workspace)
+      assert account.notifications == false
+
+      status = await_engine_active!("mara")
+      assert status["notifications"] == false
+    end
+
     test "an invalid smtp block is refused without writing anything", %{
       workspace: workspace,
       generation: generation
@@ -1528,8 +1568,9 @@ defmodule ValeaWeb.MailRpcTest do
     } do
       setup_account!(generation, account: "mara", host: "imap.fastmail.com", port: 993)
 
-      assert %{"success" => true, "data" => %{"account" => account}} =
+      assert %{"success" => true, "data" => data} =
                rpc("get_mail_account_settings", %{"account" => "mara"}, [
+                 "notifications",
                  %{
                    "account" => [
                      "host",
@@ -1540,10 +1581,39 @@ defmodule ValeaWeb.MailRpcTest do
                  }
                ])
 
+      account = data["account"]
       assert account["host"] == "imap.fastmail.com"
       assert account["port"] == 993
       assert account["username"] == "mara@example.com"
       assert account["smtp"] == nil
+      # `notifications` is TOP-LEVEL and string-keyed for exactly this
+      # assertion: a `false` under an atom key arrives as `null` (the
+      # falsy-map-field bug), whether at the top level or nested in `account`.
+      assert data["notifications"] == false
+    end
+
+    test "prefills notifications for an account that opted in", %{generation: generation} do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "zoe",
+                   "host" => "imap.example.com",
+                   "port" => 993,
+                   "username" => "zoe@example.com",
+                   "notifications" => true,
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert %{"success" => true, "data" => data} =
+               rpc("get_mail_account_settings", %{"account" => "zoe"}, [
+                 "notifications",
+                 %{"account" => ["host"]}
+               ])
+
+      assert data["notifications"] == true
     end
 
     test "includes the smtp block when configured", %{generation: generation} do

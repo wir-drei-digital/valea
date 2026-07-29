@@ -44,14 +44,27 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
   end
 
   def handle_info({:mail_sync_started, slug}, socket) do
-    push(socket, "mail_sync", %{"phase" => "started", "newMessages" => 0, "account" => slug})
+    push(socket, "mail_sync", %{
+      "phase" => "started",
+      "newMessages" => 0,
+      "newUnread" => 0,
+      "account" => slug
+    })
+
     {:noreply, socket}
   end
 
-  def handle_info({:mail_sync_finished, slug, %{new_messages: new_messages}}, socket) do
+  # `newUnread` is ADDITIVE (mail full-client plan, M5 task 13): the newly
+  # landed INBOX occurrences without `S` this pass, which the frontend's
+  # new-mail notification keys off. `newMessages` keeps its exact previous
+  # meaning and value for every existing consumer. Read with a default so an
+  # event built before the field existed (or by any other broadcaster) still
+  # pushes rather than crashing the channel.
+  def handle_info({:mail_sync_finished, slug, %{new_messages: new_messages} = result}, socket) do
     push(socket, "mail_sync", %{
       "phase" => "finished",
       "newMessages" => new_messages,
+      "newUnread" => Map.get(result, :new_unread, 0),
       "account" => slug
     })
 

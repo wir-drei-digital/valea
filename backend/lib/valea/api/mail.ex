@@ -256,6 +256,16 @@ defmodule Valea.Api.Mail do
       argument :smtp_from, :string, allow_nil?: true
       argument :smtp_from_name, :string, allow_nil?: true
 
+      # The per-account OS-notification opt-in (mail full-client plan, M5
+      # task 13). An ordinary INPUT argument, so it takes an atom key like
+      # every other one — the STRING-key rule binds top-level RETURN fields
+      # that can be `false`, which an argument is not. Omitted (or `false`)
+      # writes `notifications: false`, the default and the whole prior
+      # behaviour: this action re-renders the account entry, so a caller that
+      # doesn't state the flag is stating the default, exactly as it already
+      # is for `folders:`/`sync:`.
+      argument :notifications, :boolean, allow_nil?: true
+
       run fn input, _ctx ->
         %{
           account: slug,
@@ -269,7 +279,8 @@ defmodule Valea.Api.Mail do
           host: host,
           port: port,
           username: username,
-          smtp: smtp_attrs(input.arguments)
+          smtp: smtp_attrs(input.arguments),
+          notifications: input.arguments[:notifications] == true
         }
 
         with :ok <- Manager.check_generation(generation),
@@ -290,7 +301,16 @@ defmodule Valea.Api.Mail do
       # mode (prefill) — passwords never live in `config/mail.yaml`, so
       # nothing here can leak one. `security` is stringified from the
       # settings atom (`:starttls`/`:tls`).
+      #
+      # `notifications` sits at the TOP level, beside `account:` rather than
+      # inside it, and is returned under a STRING key — the falsy-map-field
+      # rule in this module's moduledoc. It is `false` for every account that
+      # hasn't opted in, and a `false` under an atom key arrives as `null`
+      # (verified for this exact nesting in `mail_rpc_test.exs`: the bug is
+      # not confined to the outermost map, so the flag can't ride inside
+      # `account:` the way `host`/`port` do).
       constraints fields: [
+                    notifications: [type: :boolean, allow_nil?: false],
                     account: [
                       type: :map,
                       allow_nil?: false,
@@ -327,7 +347,11 @@ defmodule Valea.Api.Mail do
              {:ok, %{path: root}} <- Manager.current(),
              {:ok, %{accounts: accounts}} <- Settings.load(root),
              %Settings{} = settings <- Map.get(accounts, slug) || {:error, :not_found} do
-          {:ok, %{account: account_settings_payload(settings)}}
+          {:ok,
+           %{
+             "notifications" => settings.notifications == true,
+             account: account_settings_payload(settings)
+           }}
         else
           {:error, {:invalid, _reason}} -> {:error, error_for(:not_found)}
           {:error, reason} -> {:error, error_for(reason)}

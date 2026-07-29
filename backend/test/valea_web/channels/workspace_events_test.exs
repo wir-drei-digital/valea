@@ -168,17 +168,45 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     }
   end
 
-  test "a sync pass start/finish pushes mail_sync with phase + newMessages + account" do
+  test "a sync pass start/finish pushes mail_sync with phase + newMessages + newUnread + account" do
     Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_sync_started, "mara"})
-    assert_push "mail_sync", %{"phase" => "started", "newMessages" => 0, "account" => "mara"}
+
+    assert_push "mail_sync", %{
+      "phase" => "started",
+      "newMessages" => 0,
+      "newUnread" => 0,
+      "account" => "mara"
+    }
 
     Phoenix.PubSub.broadcast(
       Valea.PubSub,
       "mail",
-      {:mail_sync_finished, "mara", %{new_messages: 3, errors: []}}
+      {:mail_sync_finished, "mara", %{new_messages: 3, new_unread: 2, errors: []}}
     )
 
-    assert_push "mail_sync", %{"phase" => "finished", "newMessages" => 3, "account" => "mara"}
+    assert_push "mail_sync", %{
+      "phase" => "finished",
+      "newMessages" => 3,
+      "newUnread" => 2,
+      "account" => "mara"
+    }
+  end
+
+  # `newUnread` is additive: an event built without it (any broadcaster
+  # predating M5 task 13) must still push, with the field at its zero.
+  test "a finished event carrying no new_unread pushes newUnread 0" do
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "mail",
+      {:mail_sync_finished, "mara", %{new_messages: 1, errors: []}}
+    )
+
+    assert_push "mail_sync", %{
+      "phase" => "finished",
+      "newMessages" => 1,
+      "newUnread" => 0,
+      "account" => "mara"
+    }
   end
 
   test "a newly indexed message pushes mail_message with its path + account" do

@@ -372,6 +372,93 @@ defmodule Valea.Mail.SyncPassTest do
   end
 
   # ==========================================================================
+  # new_unread: the notification counter (M5 task 13) — newly LANDED INBOX
+  # occurrences without S, a strict subset of new_messages
+  # ==========================================================================
+
+  describe "new_unread" do
+    test "counts each unread INBOX landing", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+      ModelMailTransport.put_message(name, "INBOX", @raw_b, internal_date: recent_date())
+
+      assert {:ok, %{new_messages: 2, new_unread: 2}} = run(name, root)
+    end
+
+    test "an already-read INBOX landing is a new message but not new unread", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+
+      ModelMailTransport.put_message(name, "INBOX", @raw_a,
+        flags: ["\\Seen"],
+        internal_date: recent_date()
+      )
+
+      ModelMailTransport.put_message(name, "INBOX", @raw_b, internal_date: recent_date())
+
+      assert {:ok, %{new_messages: 2, new_unread: 1}} = run(name, root)
+    end
+
+    test "an unread landing outside INBOX never counts", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_folder(name, "Work")
+      ModelMailTransport.put_message(name, "Work", @raw_a, internal_date: recent_date())
+      ModelMailTransport.put_message(name, "Sent", @raw_b, internal_date: recent_date())
+
+      assert {:ok, %{new_messages: 2, new_unread: 0}} = run(name, root)
+    end
+
+    test "a pass that lands nothing reports zero", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_message(name, "INBOX", @raw_a, internal_date: recent_date())
+
+      assert {:ok, %{new_messages: 1, new_unread: 1}} = run(name, root)
+      # Nothing new on the server: the SAME message must not count twice.
+      assert {:ok, %{new_messages: 0, new_unread: 0}} = run(name, root)
+    end
+
+    test "a later server-side unread flag change is not a landing and never counts", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+
+      uid =
+        ModelMailTransport.put_message(name, "INBOX", @raw_a,
+          flags: ["\\Seen"],
+          internal_date: recent_date()
+        )
+
+      assert {:ok, %{new_messages: 1, new_unread: 0}} = run(name, root)
+
+      # The message is marked unread ON THE SERVER. The flag pull rewrites the
+      # maildir name, but nothing LANDED — new mail is what the counter means.
+      ModelMailTransport.set_flags(name, "INBOX", uid, [])
+      assert {:ok, %{new_messages: 0, new_unread: 0}} = run(name, root)
+      assert [occ] = Store.occurrences("mara", "INBOX")
+      refute MapSet.member?(occ.flags, "S")
+    end
+
+    test "an oversized INBOX message is skipped, so it never counts", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "INBOX")
+      ModelMailTransport.put_message(name, "INBOX", @raw_big, internal_date: recent_date())
+
+      small = %{
+        sync: %{
+          window_days: 90,
+          interval_minutes: 15,
+          max_message_bytes: 200,
+          exclude_folders: []
+        }
+      }
+
+      assert {:ok, %{new_messages: 0, new_unread: 0}} = run(name, root, settings: settings(small))
+    end
+  end
+
+  # ==========================================================================
   # multi-folder membership: same raw in INBOX + Work -> two occurrences, one
   # view
   # ==========================================================================

@@ -299,6 +299,113 @@ defmodule Valea.Mail.SettingsTest do
     assert Map.keys(accounts) == ["two"]
   end
 
+  # -- the per-account notifications flag (M5 task 13) --------------------------
+
+  test "notifications default off: an upsert that doesn't state it round-trips false", %{
+    root: root
+  } do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             })
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert account.notifications == false
+    assert File.read!(Path.join(root, "config/mail.yaml")) =~ "notifications: false"
+  end
+
+  test "notifications: true round-trips through upsert, render, and load", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d",
+               notifications: true
+             })
+
+    assert File.read!(Path.join(root, "config/mail.yaml")) =~ "notifications: true"
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert account.notifications == true
+
+    # And back off again — the flag is not sticky across edits.
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d",
+               notifications: false
+             })
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert account.notifications == false
+  end
+
+  test "a file written before the flag existed loads every account with notifications off", %{
+    root: root
+  } do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      wirdrei:
+        provider: generic
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}, invalid: %{}}} = Settings.load(root)
+    assert account.notifications == false
+  end
+
+  test "a non-boolean notifications: value loads as off rather than invalidating the account", %{
+    root: root
+  } do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      wirdrei:
+        provider: generic
+        notifications: "yes"
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}, invalid: %{}}} = Settings.load(root)
+    assert account.notifications == false
+  end
+
+  test "the flag is per-account: one account's opt-in leaves its sibling alone", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "aaa", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "a@w.d",
+               notifications: true
+             })
+
+    assert :ok =
+             Settings.upsert_account!(root, "bbb", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "b@w.d"
+             })
+
+    assert {:ok, %{accounts: accounts}} = Settings.load(root)
+    assert accounts["aaa"].notifications == true
+    assert accounts["bbb"].notifications == false
+  end
+
   # -- v5: the optional smtp block ---------------------------------------------
 
   defp write_smtp_yaml!(root, smtp_block) do

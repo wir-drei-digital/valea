@@ -31,6 +31,16 @@ defmodule Valea.Mail.Settings do
   rejected outright (header injection). A broken `smtp:` block invalidates
   only ITS account, exactly like a broken `imap:` one.
 
+  ## The per-account `notifications:` flag
+
+  One optional boolean per account (mail full-client plan, M5 task 13),
+  DEFAULT OFF. Additive on top of v5 — a file written before it existed loads
+  every account with `notifications: false`, and is normalized on the next
+  write (`render/1` always emits the key). Anything that isn't literally
+  `true` is `false`: a hand-edited `notifications: "yes"` turns notifications
+  OFF rather than invalidating the account, on the same "an unusable override
+  falls back to the default" posture `folders:`/`sync:` already take.
+
   ## Per-account validity
 
   `load/1` validates every account entry **independently** — one
@@ -93,6 +103,7 @@ defmodule Valea.Mail.Settings do
             provider: :generic,
             imap: %{host: nil, port: @default_port, username: nil},
             smtp: nil,
+            notifications: false,
             folders: @default_folders,
             sync: @default_sync
 
@@ -100,12 +111,20 @@ defmodule Valea.Mail.Settings do
   One account's non-secret settings. `smtp: nil` is a push-only account
   (v4 files, and any v5 account that simply has no `smtp:` block); when
   present, `from` is ALWAYS populated (defaulted to `username` at load).
+
+  `notifications` is the per-account OS-notification opt-in (mail full-client
+  plan, M5 task 13) — DEFAULT OFF, and off for every file written before it
+  existed (a missing or non-boolean `notifications:` key loads as `false`).
+  It gates nothing backend-side: the counter it feeds (`new_unread` on the
+  `mail_sync` push) is computed for every account regardless, and this flag
+  is the frontend's permission to raise a notification for it.
   """
   @type t :: %__MODULE__{
           slug: String.t() | nil,
           provider: :generic | :gmail,
           imap: %{host: String.t() | nil, port: pos_integer(), username: String.t() | nil},
           smtp: smtp() | nil,
+          notifications: boolean(),
           folders: %{drafts: String.t(), sent: String.t(), archive: String.t(), trash: String.t()},
           sync: %{
             window_days: pos_integer(),
@@ -243,6 +262,7 @@ defmodule Valea.Mail.Settings do
           required(:port) => pos_integer(),
           required(:username) => String.t(),
           optional(:smtp) => map() | nil,
+          optional(:notifications) => boolean() | nil,
           optional(:folders) => map() | nil,
           optional(:sync) => map() | nil
         }) :: :ok | {:error, :invalid_slug | :invalid_smtp}
@@ -258,6 +278,10 @@ defmodule Valea.Mail.Settings do
         provider: provider,
         imap: %{host: host, port: port, username: username},
         smtp: smtp,
+        # Absent means OFF, exactly like `folders:`/`sync:` absent means the
+        # provider defaults: this call re-renders the account entry whole, so
+        # a caller that doesn't state the flag is stating the default.
+        notifications: Map.get(attrs, :notifications) == true,
         folders:
           merge_override(default_folders_for(provider), Map.get(attrs, :folders), &is_binary/1),
         sync: merge_sync_override(default_sync_for(provider), Map.get(attrs, :sync))
@@ -461,6 +485,7 @@ defmodule Valea.Mail.Settings do
            provider: provider,
            imap: %{host: host, port: port, username: username},
            smtp: smtp,
+           notifications: Map.get(attrs, "notifications") == true,
            folders:
              merge_yaml(default_folders_for(provider), Map.get(attrs, "folders"), &is_binary/1),
            sync: merge_yaml_sync(default_sync_for(provider), Map.get(attrs, "sync"))
@@ -688,6 +713,7 @@ defmodule Valea.Mail.Settings do
     """
       #{slug}:
         provider: #{a.provider}
+        notifications: #{a.notifications == true}
         imap:
           host: #{yaml_string(a.imap.host)}
           port: #{a.imap.port}
