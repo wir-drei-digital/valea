@@ -1,10 +1,11 @@
 # Tasks & Schedules — Per-ICM Ledgers, Internal Scheduler
 
 **Date:** 2026-07-29
-**Status:** Approved (design); Codex adversarial round 1 folded (2026-07-29:
-all code-grounded claims verified against source, ~20 findings — every one
-folded as a design change or explicitly accepted below). Pending
-implementation plan.
+**Status:** Approved (design); Codex adversarial rounds 1–2 folded
+(2026-07-29: every code-grounded claim verified against source; round 1
+~20 findings, round 2 verified the folds and added 14 findings against the
+new machinery — each folded as a design change or explicitly accepted
+below). Pending implementation plan.
 
 ## Goal
 
@@ -79,6 +80,21 @@ This fills two holes at once:
   4. *Task deletion by agent rewrite* — undetected in v1 (no destructive-
      delta detection). Briefing instructs "set status, never delete";
      archive + transcripts are the safety nets.
+  5. *Final-window lost updates are unrecoverable for open entries* — a
+     whole-file write landing between Valea's last hash check and its
+     rename is silently overwritten; open (non-archived) tasks in that
+     window have no archive or audit copy to recover from. Accepted: the
+     window is microseconds on a human-scale file; POSIX rename offers no
+     true CAS and a lock file in user territory is not acceptable.
+  6. *Opaque shell writes reach the ask untagged* — a `Bash`-kind item has
+     no extractable path candidates, so a shell redirection onto
+     `schedules.json` falls to the generic `:ask` (verified: empty
+     candidates → `:ask`, and the managed-settings posture keeps `Bash` in
+     the harness "ask" list) rather than the labeled schedule-registration
+     ask. Never a silent allow — but the dialog can't say "this registers
+     a schedule". Accepted; the briefing directs agents to edit the
+     ledgers with file tools, and an unattended session parked on the ask
+     still fails closed.
 
 ## Data model
 
@@ -169,8 +185,14 @@ This fills two holes at once:
   *either* fires; otherwise the restricted one governs). Slot
   materialization is defined in UTC instants — see Scheduler runtime.
 - **`paused`** is a file field — a hand edit or agent edit can pause too;
-  the file alone fully describes intent. Takes effect within one tick
-  (≤ 30 s); the UI says so.
+  the file alone fully describes the schedule's *desired* state (runtime
+  anchors and the workspace kill switch live Valea-side). A pause takes
+  effect within one tick (≤ 30 s) for any fire whose pre-launch snapshot
+  follows the write; a pause landing inside the snapshot-to-spawn window
+  (milliseconds) may miss that one fire — the guarantee is snapshot-based,
+  not instantaneous revocation. Slots that elapse while paused are
+  consumed silently (the anchor advances, nothing fires, nothing is
+  recorded), so unpausing never back-fires missed slots.
 - **`catchup`** (default `false`): on workspace open, at most **one**
   coalesced fire if slots passed while Valea was closed (systemd
   `Persistent=true` semantics). With `false`, missed slots are consumed
@@ -178,7 +200,9 @@ This fills two holes at once:
 - **Declaration only.** No run state in the file. Anchors, outcomes, and
   history live Valea-side in the workspace SQLite (see Scheduler runtime
   for the exact state model). This is the "files for facts, Valea for
-  meta" split — and it keeps runtime writes from racing agent/user edits.
+  meta" split — runtime state never touches the files at all (Valea's
+  ledger writes and their separate race window are covered under Write
+  discipline).
 
 ### Leniency contract — lenient display, strict execution
 
@@ -201,6 +225,11 @@ entry **not executable**: it never fires, and the UI shows it with a
 per-entry reason ("invalid cron", "unknown timezone", "`paused` is not a
 boolean" — a malformed *pause attempt* must never yield a running
 schedule). Entries without `id` are not executable and not addressable.
+`context_doc` is validated strictly for containment: it must be a relative
+path that stays inside the ICM root (lexical check at validation,
+`resolve_real` containment at launch — a symlink escape fails the launch);
+a `context_doc` that doesn't exist at launch time produces a `failed` run
+record, not a weaker session.
 **Duplicate schedule ids exclude every carrier from execution** ("duplicate
 id" disposition) — array order never decides what runs, so a reorder can
 never silently swap payloads. Each parsed entry gets a stable disposition
@@ -224,10 +253,11 @@ visible-but-unfixable.
   (the patch targets an entry by id), bounded retries (3); if the target
   entry vanished or contention persists, surface a conflict to the UI
   instead of writing. This shrinks the lost-update window from "an entire
-  UI interaction" to microseconds; the residual race (a writer landing
-  between the final hash check and the rename) is accepted and bounded by
-  the archive and audit trails — POSIX rename offers no true CAS and a
-  lock file in user territory is not acceptable.
+  UI interaction" to microseconds. The residual race (a writer landing
+  between the final hash check and the rename) is **accepted residual
+  risk #5** — for open entries it is plain unrecoverable data loss, and
+  the spec says so rather than claiming the archive bounds it (the archive
+  only ever holds completed entries).
 - Agents use their ordinary file tools; no transactional ceremony is asked
   of them. The briefing instructs read-fresh-then-write-promptly. Torn or
   interim states are tolerated by the leniency contract and self-heal on
@@ -247,10 +277,18 @@ Completed (`done`/`dropped`) tasks are archived by Valea — appended to
 - Auto-archive: tasks `done`/`dropped` for > 14 days, swept by the
   scheduler process on workspace activation and once per day thereafter.
 - **Crash-safe ordering:** append to the archive first, prune the ledger
-  second, both through the per-ICM writer. Archive identity is
-  `(id, updated_at)` — a crash between the two steps re-converges on the
-  next sweep (still-present already-archived entries are re-pruned;
-  duplicate archive lines are deduped by identity on read).
+  second, both through the per-ICM writer. Each archive line carries a
+  generated **archival event id** (UUID) plus the entry snapshot and a
+  snapshot content hash — task `id`/`updated_at` are optional-and-mutable
+  and therefore never the identity. **Prune is snapshot-conditional:** an
+  entry is removed from the ledger only if its current content still
+  hashes to the archived snapshot; an entry edited or reopened between
+  append and prune stays in the ledger (the archive line remains as
+  history of the completed state it captured). A crash between the two
+  steps re-converges on the next sweep; duplicate archive lines dedupe by
+  event id on read. A partial trailing line (crash mid-append) is
+  tolerated and ignored by readers; the next append repairs by starting on
+  a fresh line.
 - Agents are told: set status, never delete — Valea owns archival. The
   archive doubles as greppable "what got done when" history, readable with
   any text tool (it lives in the user-owned ICM tree).
@@ -281,13 +319,23 @@ Keyed by `(icm_id, schedule_id)` where `icm_id` is the ICM's
 `manifest.id` — the persistent identity that survives mount rename/re-add.
 The mount key is display metadata on records, never the key. Per schedule:
 
-- `fingerprint` — SHA-256 of the entry's canonical JSON (key-sorted, full
-  object). Any definition change (cron, payload, timezone, …) changes it.
+- `fingerprint` — SHA-256 over the entry's **execution-relevant fields
+  only**, canonicalized (key-sorted): `cron`, `timezone`, `payload`,
+  `catchup`. Display edits (title, notes, unknown fields) and `paused`
+  toggles deliberately do NOT change it — a title fix seconds before a due
+  slot must not suppress the fire, and pause/unpause must not reset the
+  anchor.
 - `first_seen_at` — UTC instant this fingerprint was first observed.
 - `last_attempted_slot` — UTC instant of the most recent **consumed** slot
-  (fired, skipped, or fast-forwarded). This is the anchor; there is no
-  global tick watermark and nothing that matters lives only in process
-  state.
+  (fired, skipped, fast-forwarded, or consumed-while-paused). This is the
+  anchor; it is **monotonic — it never moves backward** — and there is no
+  global tick watermark: nothing that matters lives only in process state.
+- `deleted_at` — tombstone. Set when a *parseable* file no longer contains
+  the schedule's id (an unreadable file is never treated as deletion —
+  fail-safe). Any reappearance of the id — even byte-identical — resets
+  `first_seen_at`/`last_attempted_slot` to now and clears the tombstone,
+  so delete-recreate never inherits old anchors, exact recreation
+  included.
 - Run records: `(fingerprint, slot, fired_at, trigger
   scheduled|catchup|manual, kind, outcome, duration, session_id |
   output_ref, coalesced_count)`. Records survive schedule deletion.
@@ -297,14 +345,17 @@ The mount key is display metadata on records, never the key. Per schedule:
 1. **Re-read `schedules.json` synchronously** for each enabled ICM —
    strict-validate per entry (dispositions above). No cache on the
    execution path; watcher events only refresh the UI.
-2. **Fingerprint reconciliation:** an entry whose fingerprint differs from
-   the stored one (or is new) resets its state — store the new
-   fingerprint, `first_seen_at = now`, `last_attempted_slot = now`. A
-   definition change or delete-recreate therefore never inherits old
-   anchors, never back-fires old slots, and never catch-up-fires slots
-   from before its own existence. Consequence worth stating: a newly
-   registered schedule first fires at its next *future* slot, never
-   instantly upon registration.
+2. **Fingerprint + tombstone reconciliation:** an entry whose fingerprint
+   differs from the stored one, is new, or reappears after a tombstone
+   resets its state — store the new fingerprint, `first_seen_at = now`,
+   `last_attempted_slot = now`, tombstone cleared. A previously-seen id
+   absent from a *parseable* file sets the tombstone (an unreadable file
+   never does). A definition change or delete-recreate — byte-identical
+   recreation included — therefore never inherits old anchors, never
+   back-fires old slots, and never catch-up-fires slots from before its
+   own existence. Consequence worth stating: a newly registered schedule
+   first fires at its next *future* slot, never instantly upon
+   registration.
 3. **Due test:** materialize the next slot strictly after
    `max(last_attempted_slot, first_seen_at)` as a UTC instant (see slot
    materialization). Due iff that instant ≤ now.
@@ -312,22 +363,33 @@ The mount key is display metadata on records, never the key. Per schedule:
    **once**, recording `coalesced_count`. A forward clock jump of hours or
    days therefore recovers with at most one fire per schedule.
 5. **One run per schedule at a time:** due while the previous run is still
-   live → consume the slot with a single `skipped: still running` record
-   (one record per slot, never re-emitted every tick).
-6. **Launch-time re-validation:** immediately before firing, re-read the
+   live → consume **all** elapsed slots with a single
+   `skipped: still running` record carrying `coalesced_count`, anchor
+   advanced to the latest elapsed slot. One record per skip event, never
+   re-emitted every tick, never one-per-slot spam during a long run.
+6. **Paused entries** consume elapsed slots silently — anchor advances,
+   nothing fires, nothing is recorded — so unpausing never back-fires.
+7. **Launch-time re-validation:** immediately before firing, re-read the
    file and confirm the entry still exists, is executable, is not paused,
    and the fingerprint is unchanged; otherwise consume nothing this tick.
-   Pause revocation therefore never depends on the watcher.
+   Pause revocation therefore never depends on the watcher. The guarantee
+   is **snapshot-based**: the fire launches from this final snapshot, and
+   an edit landing in the snapshot-to-spawn window (milliseconds) may miss
+   that one fire — stated, not hidden.
 
 ### Catch-up (workspace open, before the first tick)
 
-- `catchup: false` (default): fast-forward `last_attempted_slot` to now —
-  missed slots are consumed silently.
+- `catchup: false` (default): fast-forward the anchor —
+  `last_attempted_slot := max(last_attempted_slot, now)` — so missed slots
+  are consumed silently. The `max` keeps the anchor **monotonic**: after a
+  backward clock jump plus restart, the anchor never regresses and
+  already-consumed slots are never re-exposed.
 - `catchup: true`: leave the anchor as persisted; the normal rule then
   produces exactly one coalesced fire for everything missed while closed,
-  recorded with `trigger: catchup`. Fingerprint reconciliation runs
-  *first*, so a schedule edited while Valea was closed gets reset instead
-  of catch-up-firing the old definition.
+  recorded with `trigger: catchup`. Fingerprint/tombstone reconciliation
+  runs *first*, so a schedule edited (or deleted-and-recreated) while
+  Valea was closed gets reset instead of catch-up-firing the old
+  definition.
 
 ### Clocks, zones, DST
 
@@ -349,14 +411,18 @@ The mount key is display metadata on records, never the key. Per schedule:
 ### Run lifecycle & workspace switch
 
 - Every launch and completion is **generation-bound** (the
-  `verified_lifecycle` pattern): run records, outcomes, and notices are
-  written only when the workspace generation at completion matches the one
-  at launch — a run finishing after a switch cannot write into the new
-  workspace's state.
+  `verified_lifecycle` pattern): *asynchronous* run completions write
+  records, outcomes, and notices only when the workspace generation at
+  completion matches the one at launch — a run finishing after a switch
+  cannot write into the new workspace's state. The one deliberate
+  exemption: the **shutdown path itself** records `interrupted`
+  synchronously while stopping runs, under the closing generation, as part
+  of teardown — that write is the terminator acting, not a stale
+  completion racing in later.
 - **Command runs** are owned by a per-run process under the Workspace
   Runtime: on workspace close/switch the subprocess is stopped
   (`SessionServer.terminate` parity via ProcessRuntime) and the run is
-  recorded `interrupted`.
+  recorded `interrupted` on the shutdown path above.
 - **Prompt runs** are ordinary sessions and already die with the workspace
   runtime; the run record is marked `interrupted` on the same path.
 - A schedule deleted while its run is in flight: the run completes (or is
@@ -383,14 +449,36 @@ path reads it — and `PermissionPolicy` auto-allows writes under
 `write_paths`/`write_roots` regardless of session kind. The gate therefore
 must be a policy rule, not a tier label:
 
-- **New PermissionPolicy rule, preceding the write-allow tier:** any
-  write-kind candidate resolving to `schedules.json` at an enabled ICM
-  root falls through to **:ask** even when covered by a write grant — "a
-  broad grant can never buy schedule registration" (same structural slot
-  as the mail/calendar tiers ahead of write-allow). Matching is
-  candidate-based and casefolded like the ICM secrets deny, so writing a
-  tmp file and renaming onto `schedules.json` is caught (the rename's
-  destination candidate), as is `SCHEDULES.JSON`.
+- **The rule is enforced at BOTH layers, like the ICM secrets deny
+  (policy + managedSettings):**
+  - *PermissionPolicy, preceding the write-allow tier:* any write-kind
+    candidate resolving to `schedules.json` at an enabled ICM root falls
+    through to **:ask** even when covered by a write grant — "a broad
+    grant can never buy schedule registration". Matching is
+    candidate-based and casefolded like the ICM secrets deny
+    (`SCHEDULES.JSON` caught).
+  - *Managed-settings mirror:* the settings renderer emits
+    `Write(<icm_root>/**)`-style **allow** rules for write-root grants,
+    which the harness honors without ever consulting Valea's callback
+    (verified: `session_settings.ex` builds the allow list from
+    `scope.write_roots`) — so the policy rule alone would be
+    short-circuited. The renderer therefore also mirrors per-ICM
+    **ask** entries for `schedules.json` and **deny** entries for
+    `.valea/**` (settings precedence deny > ask > allow makes the
+    specific rule beat the broad allow; the plan pins the exact rule
+    syntax against the harness's settings semantics).
+- **Candidate extraction must cover move/rename shapes.** Today
+  `extract_paths/1` reads only `file_path`/`path`/`notebook_path`/
+  `filePath`; an item with no extractable candidates already falls to
+  `:ask` (verified — never a vacuous allow), which is the safe floor. The
+  plan enumerates the harness's actual move/rename `rawInput` shapes and
+  extracts BOTH endpoints, so a rename **onto** `schedules.json` reaches
+  the ask tier labeled, and a move **of** `.valea/**` hits the deny —
+  rather than riding the generic unclassifiable ask.
+- **Opaque shell writes** (`Bash` redirection onto `schedules.json`)
+  cannot be path-classified; they fall to the harness/posture ask
+  (verified: `Bash` sits in the managed-settings "ask" list) without the
+  schedule-registration labeling — accepted residual risk #6.
 - **`.valea/**` is write-denied** for agent sessions (deny, not ask);
   reads ordinary. See `.valea/` section.
 - `RiskTier` additionally classifies `schedules.json` and `.valea/**` as
@@ -450,8 +538,12 @@ Schedules tab:
   run history (fired_at, outcome, duration, trigger, coalesced count,
   transcript link or captured output).
 - Actions: pause/resume + delete (file edits through the backend),
-  **Run now** (debug affordance; identical fire path; recorded as
-  `trigger: manual`).
+  **Run now** (debug affordance; identical fire path incl. launch-time
+  re-validation; recorded as `trigger: manual`; does NOT advance the
+  anchor — it is out-of-band). Run now is allowed for `executable` and
+  `paused` entries (an explicit human click overrides a pause once) and
+  **rejected with the displayed reason** for `not_executable`/duplicate
+  entries — the strict-execution guarantee has no manual bypass.
 - Header: **Pause all** switch + banner while active. Newly
   registered/changed schedules get a subtle highlight.
 
@@ -477,9 +569,11 @@ header. Content:
 - Invariants: mark done, never delete (Valea archives); ids are opaque
   short slugs you generate; never reuse an id; preserve fields you don't
   recognize; no run state in files; schedules fire only while Valea runs;
-  `paused`/`catchup` semantics; one run per schedule at a time; a
-  definition edit resets the schedule's anchor (no catch-up across edits);
-  cron syntax incl. Vixie DOM/DOW rule + DST behavior.
+  `paused`/`catchup` semantics incl. "slots missed while paused are
+  skipped for good — unpausing never back-fires"; one run per schedule at
+  a time; editing cron/payload/timezone resets the schedule's anchor (no
+  catch-up across edits; title edits don't); deleting and recreating an
+  id resets it too; cron syntax incl. Vixie DOM/DOW rule + DST behavior.
 - What to expect: writing `schedules.json` will ask the user for
   permission — that is the consent moment; `.valea/` is not writable by
   agents.
@@ -524,10 +618,13 @@ survive schedule deletion and mount renames.
 | Malformed `tasks.json` | Calm UI note; ledger treated as empty for display; file untouched |
 | Session/command spawn error | `failed` run record + cockpit notice; no auto-retry |
 | Command runaway | Timeout kill (10 min), `timed out` outcome; output capped 256 KiB |
-| Previous run still going | One `skipped: still running` record per slot; anchor advances |
-| App closed over slots | Consumed silently on open unless `catchup: true` (one coalesced catch-up fire) |
+| Previous run still going | One `skipped: still running` record per skip event (coalesced count); anchor advances to latest elapsed slot |
+| App closed over slots | Consumed silently on open (anchor := max(anchor, now)) unless `catchup: true` (one coalesced catch-up fire) |
 | Forward clock jump | Coalesced: at most one fire per schedule |
-| Backward clock jump | Quiet until wall clock re-passes anchors; documented |
+| Backward clock jump | Quiet until wall clock re-passes anchors (monotonic — survives restarts); documented |
+| Schedule id vanishes from a parseable file | Tombstone; any reappearance (even identical) resets anchors |
+| Slots elapse while paused | Consumed silently; unpausing never back-fires |
+| Run now on invalid/duplicate entry | Rejected with the entry's displayed disposition reason |
 | Workspace switch mid-run | Command subprocess stopped, prompt session dies with runtime; run recorded `interrupted`; completion writes generation-bound |
 | Same ICM in two workspaces | Anchors are per-workspace; a slot can fire once per workspace — accepted risk #3 |
 | Schedule deleted mid-run | Run completes; history retained |
@@ -543,27 +640,35 @@ per-day plan files, no multi-assignee or team semantics, no retry policies
 on schedules, no headless-app background daemon, no notification center
 beyond cockpit notices, no workspace-level (non-ICM) schedules — mail/
 calendar engines keep their own loops. No command sandbox and no script
-hash-pinning (accepted risks #1); no cross-workspace scheduler lease
+hash-pinning (accepted risk #1); no cross-workspace scheduler lease
 (accepted risk #3); no destructive-task-delta detection in v1 (accepted
-risk #4).
+risk #4); no ledger lock files (accepted risk #5).
 
 ## Testing
 
 - Backend: cron parser vectors (Vixie DOM/DOW, aliases, DST spring/fall
   materialization); scheduler determinism with injected clock + fake
-  payload runner (fire, coalesce, skip-per-slot, catchup true/false,
-  fingerprint reset on definition change, launch-time re-validation
-  catches a pause landed mid-tick, pause-all, forward/backward clock
-  jumps); strict-field fail-closed matrix (`paused` string, bad tz, bad
-  cron, missing id, duplicate ids → dispositions); leniency round-trips
-  incl. unknown-field preservation; per-ICM writer serialization +
-  conflict-retry (patch re-applied against changed file; vanished entry →
-  conflict); archive append-then-prune crash re-convergence + identity
-  dedupe; run records generation-bound across a simulated switch; command
+  payload runner (fire, coalesce, coalesced still-running skip, catchup
+  true/false with monotonic `max` anchor across a backward-jump + restart,
+  fingerprint reset on definition change, fingerprint STABLE across
+  title/`paused` edits, tombstone on id-vanish + reset on identical
+  recreation, paused-slot silent consumption, launch-time re-validation
+  catches a pause landed mid-tick, run-now gating incl. no anchor
+  advance, pause-all, forward/backward clock jumps); strict-field
+  fail-closed matrix (`paused` string, bad tz, bad cron, missing id,
+  duplicate ids, escaping `context_doc` → dispositions); leniency
+  round-trips incl. unknown-field preservation; per-ICM writer
+  serialization + conflict-retry (patch re-applied against changed file;
+  vanished entry → conflict); archive event-id identity, snapshot-
+  conditional prune (reopened entry survives), crash re-convergence,
+  partial-trailing-line tolerance; run records generation-bound across a
+  simulated switch (shutdown-path `interrupted` exemption pinned); command
   run stopped on workspace close; PermissionPolicy always-ask carve-out
-  for `schedules.json` (direct write, rename-onto, casefold) + `.valea/**`
-  write-deny + RiskTier stamps; briefing materialization write-if-different;
-  RPC generation guards; session-kind filtering.
+  for `schedules.json` (direct write, move-shape candidates once
+  extracted, casefold, empty-candidates→ask floor) + `.valea/**`
+  write-deny + RiskTier stamps + managed-settings mirror rules (ask
+  entries beat write-root allows); briefing materialization
+  write-if-different; RPC generation guards; session-kind filtering.
 - Frontend: component tests for both tabs (filters, quick-add, pause,
   dispositions, run history, run-now), cockpit tasks line + notices,
   malformed-file notes, task repair affordances, nav exclusion of
@@ -579,8 +684,7 @@ risk #4).
 - Nothing fires while Valea is closed — stated in UI copy. The user's
   existing systemd timers remain a valid pattern outside Valea; Valea does
   not try to absorb them.
-- Accepted residual risks #1–#4 enumerated under Decisions.
-- The optimistic-concurrency residual (no true CAS over POSIX rename) is
-  documented under Write discipline.
+- Accepted residual risks #1–#6 enumerated under Decisions (the
+  optimistic-concurrency residual is #5; opaque-shell ask labeling is #6).
 - `today.json` keeps `notes`/`prepared` for now; full retirement is a
   future cleanup once tasks prove out.
