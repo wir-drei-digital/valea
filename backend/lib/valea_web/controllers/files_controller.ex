@@ -2,9 +2,9 @@ defmodule ValeaWeb.FilesController do
   @moduledoc """
   HTTP file-serving surface for page images and the Knowledge file viewers:
   an upload endpoint (token-gated, writes into a mount's `Assets/` folder)
-  and a read-only raw-serve endpoint (token-EXEMPT — an `<img>` tag cannot
-  send headers; this is a 127.0.0.1 listener serving only files local
-  processes could already read).
+  and a read-only raw-serve endpoint whose token gate is PARTIAL — images
+  are exempt, every other format is not. See "The serve route's split
+  credential" below; the router's `:serve` scope carries the short version.
 
   Both actions address content by `(mount_key, ICM-relative path)` — the
   same vocabulary `Valea.ICM` uses (task 4.4 re-key) — never a raw
@@ -17,6 +17,39 @@ defmodule ValeaWeb.FilesController do
   Never trust a lexically-constructed path for filesystem I/O without
   running it back through containment.
 
+  ## The serve route's split credential (side-panes pass)
+
+  `GET /files/raw` is only PARTLY token-exempt, and the split is exactly
+  the shape of the exemption's own justification. The exemption exists
+  because an `<img>` tag cannot send headers — true of `ImageView` and of
+  the editor's inline images, and of nothing else. The viewers added in the
+  side-panes pass CAN carry a credential (`PlainTextView` fetches;
+  `PdfView` hands pdf.js `httpHeaders`), so they do:
+
+    * extension in `@allowed_types` (the image formats) — served
+      token-free. The pre-existing unauthenticated surface, unchanged.
+    * everything else (`.pdf`, and every extension that falls to the text
+      bucket) — requires the `x-valea-token` control token: the same
+      credential, read from the same header and compared with the same
+      `Plug.Crypto.secure_compare/2`, as `ValeaWeb.Plugs.ControlToken`
+      enforces for `/rpc/*` and `/files/upload`.
+
+  Only the FAILURE shape differs from that plug. It answers 401; this
+  route answers its usual empty 404 for everything, so a missing token, a
+  wrong token, a path outside the mount and a file that does not exist are
+  indistinguishable — no oracle for "exists but unauthorized". The check
+  also runs BEFORE any filesystem work, so an unauthorized request cannot
+  learn about a file by how long the 404 took.
+
+  Why this matters on a loopback listener: 127.0.0.1 is not user-scoped.
+  "Only files a local process could already read" is true of the user's
+  OWN processes and imprecise as a blanket claim — every other local
+  account on the machine can reach this port, as can any browser extension
+  holding a `127.0.0.1` host permission (which is not subject to CORS).
+  Those principals could previously pull image-extension files out of a
+  mount and nothing else; keeping the untokened surface at exactly the
+  image formats keeps that true after the widening below.
+
   ## Two allowlists, deliberately different (side-panes pass)
 
   UPLOAD is the narrow one and is UNCHANGED: `@allowed_types` gates on
@@ -25,12 +58,15 @@ defmodule ValeaWeb.FilesController do
   beyond that pair. What Valea is willing to WRITE into a user's ICM stays
   images-only.
 
-  SERVE is gated by CONTAINMENT, not by extension: any regular file that
-  survives `resolve_mount/2` + `contain/2` is served, because the Knowledge
+  SERVE is gated by the credential above and by CONTAINMENT, not by
+  extension: any regular file that survives the token split,
+  `resolve_mount/2` and `contain/2` is served, because the Knowledge
   viewers (pdf.js for `.pdf`, read-only text for everything without a
   dedicated viewer) read arbitrary mount files through this endpoint, and
-  the endpoint's entire authority is already "bytes a local process could
-  read". The extension only picks the `content-type`, and every type it can
+  a token-bearing caller is by definition the app itself, which already
+  reads any mount file it likes through `Valea.ICM`. The extension no
+  longer decides ADMISSION at all; it picks the `content-type`, and every
+  type it can
   pick is a FIXED LITERAL compiled into this module: `@serve_types` (the
   image map plus `application/pdf`) or, for anything else — including no
   extension at all — the fixed `text/plain` + `utf-8`. Nothing
@@ -207,18 +243,22 @@ defmodule ValeaWeb.FilesController do
 
   def serve(conn, _params), do: not_found(conn)
 
-  # The extension is NOT a gate here (it was, while this endpoint only ever
-  # fed `<img>` tags) — `serve_content_type/1` always resolves, so the chain
-  # below is exactly the authority checks: workspace, an enabled non-degraded
-  # ICM mount (mail mounts rejected), both containment layers, and a regular
-  # file. Anything that reaches `send_file/3` is a file inside a mount the
-  # user has enabled.
+  # The extension no longer decides admission by ITSELF (it did, while this
+  # endpoint only ever fed `<img>` tags) — it decides whether a credential is
+  # required, via `authorized?/2`. Everything below it is authority:
+  # workspace, an enabled non-degraded ICM mount (mail mounts rejected), both
+  # containment layers, and a regular file. Anything reaching `send_file/3`
+  # is a file inside a mount the user has enabled, requested either with the
+  # control token or for one of the image formats.
   defp do_serve(conn, mount_key, path) do
-    with {:ok, ws} <- workspace_root(),
+    ext = ext_of(path)
+
+    with true <- authorized?(conn, ext),
+         {:ok, ws} <- workspace_root(),
          {:ok, mount} <- resolve_mount(ws, mount_key),
          {:ok, abs} <- contain(mount.root, path),
          true <- regular_file?(abs) do
-      {content_type, charset} = serve_content_type(ext_of(path))
+      {content_type, charset} = serve_content_type(ext)
 
       conn
       |> put_resp_header("x-content-type-options", "nosniff")
@@ -227,6 +267,31 @@ defmodule ValeaWeb.FilesController do
       |> send_file(200, abs)
     else
       _ -> not_found(conn)
+    end
+  end
+
+  # The credential split (see the moduledoc section of that name). Image
+  # extensions are the `<img>`-shaped surface and stay exempt; everything
+  # else must carry the control token. Deliberately keyed on
+  # `@allowed_types` and not `@serve_types` — `.pdf` is reachable only by
+  # pdf.js, which sends headers, so it belongs on the credentialed side.
+  defp authorized?(conn, ext) do
+    Map.has_key?(@allowed_types, ext) or valid_control_token?(conn)
+  end
+
+  # Same header, same constant-time comparison, same source of truth as
+  # `ValeaWeb.Plugs.ControlToken` — this is that plug's check inlined so the
+  # failure can be this route's opaque 404 instead of the plug's 401, and so
+  # it can apply to only half the surface. `ControlToken.expected/0` raises
+  # when the token is unset, which `serve/2`'s rescue turns into the same
+  # 404: a misconfigured boot fails CLOSED here.
+  defp valid_control_token?(conn) do
+    case get_req_header(conn, "x-valea-token") do
+      [token] when is_binary(token) ->
+        Plug.Crypto.secure_compare(token, ValeaWeb.ControlToken.expected())
+
+      _ ->
+        false
     end
   end
 
@@ -258,9 +323,11 @@ defmodule ValeaWeb.FilesController do
   # posture `Valea.ICM.resolve_mount/1` takes (an editor-authority
   # chokepoint, not a config lookup). Synthetic `kind: :mail` mounts are
   # rejected like its two siblings (`Valea.ICM.resolve_mount/1`,
-  # `Valea.Api.ICM.find_mount`): the `:serve` route is token-exempt, so a
-  # mail mount resolving here would serve mailbox files outside the
-  # permission-policy mail tier entirely.
+  # `Valea.Api.ICM.find_mount`): a mail mount resolving here would serve
+  # mailbox files outside the permission-policy mail tier entirely — true
+  # for a token-BEARING caller as much as for the route's untokened image
+  # half, since the tier is about which surface may read mail at all, not
+  # about who is asking.
   defp resolve_mount(ws, mount_key) do
     case Mounts.mount_by_key(ws, mount_key) do
       %{enabled: true, degraded: nil, kind: :icm} = mount -> {:ok, mount}

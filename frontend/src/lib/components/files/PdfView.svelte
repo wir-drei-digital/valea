@@ -3,7 +3,11 @@
   // `pdfjs-dist` (and its worker asset) is imported LAZILY inside the effect
   // so the ~1 MB library only ships to readers who actually open a PDF —
   // it stays out of the initial bundle for everyone else.
-  import { rawFileUrl } from './raw-url';
+  // pdf.js fetches the bytes itself, so the control token goes to it as
+  // `httpHeaders` rather than on a fetch we make: `/files/raw` exempts only
+  // image extensions, and an unauthenticated `.pdf` request gets the
+  // route's opaque 404 (which surfaces here as the error message below).
+  import { rawFileHeaders, rawFileUrl } from './raw-url';
 
   let { mountKey, path }: { mountKey: string; path: string } = $props();
 
@@ -29,7 +33,7 @@
         const pdfjs = await import('pdfjs-dist');
         const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
         pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
-        const doc = await pdfjs.getDocument({ url }).promise;
+        const doc = await pdfjs.getDocument({ url, httpHeaders: rawFileHeaders() }).promise;
         if (cancelled) return;
         for (let n = 1; n <= doc.numPages; n++) {
           const page = await doc.getPage(n);

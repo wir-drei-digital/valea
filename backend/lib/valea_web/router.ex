@@ -38,9 +38,12 @@ defmodule ValeaWeb.Router do
     post "/upload", FilesController, :upload
   end
 
-  # Deliberately token-EXEMPT — an `<img>` tag cannot send headers, and this
-  # is a 127.0.0.1 listener serving only files local processes could already
-  # read. See `ValeaWeb.FilesController` moduledoc for the containment story.
+  # PARTLY token-exempt, which is why it cannot use `ValeaWeb.Plugs.
+  # ControlToken` as a pipeline plug: the controller performs that same
+  # check itself, for image extensions ONLY it skips it (an `<img>` tag
+  # cannot send headers), and every failure is the route's opaque 404
+  # rather than the plug's 401. See `ValeaWeb.FilesController`'s moduledoc
+  # — "The serve route's split credential" — plus the containment story.
   scope "/files", ValeaWeb do
     pipe_through :api
     get "/raw", FilesController, :serve

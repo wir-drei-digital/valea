@@ -1685,16 +1685,41 @@ Both actions resolve `mount_key` via `Valea.Mounts.mount_by_key/2`
 (requiring ENABLED + non-degraded) and contain the ICM-relative path
 against that mount's own root via the same symlink-aware
 `Valea.Paths.resolve_real/2` containment `Valea.ICM` uses — a symlink
-planted inside a mount's `Assets/` folder is defeated the same way. `GET
-/files/raw` is deliberately TOKEN-EXEMPT — its own unauthenticated
-`/files` scope on the plain `:api` pipeline in `router.ex` — because an
-`<img>` tag cannot send custom headers, and the Phoenix endpoint only
-ever binds loopback (127.0.0.1): the endpoint exposes only files a local
-process could already read. It sets `x-content-type-options: nosniff`
-and `content-disposition: inline`, and always derives `content-type` from
-the allowlisted file EXTENSION — never from anything client-supplied or
-stored — so a mismatched upload can never make the serve path emit an
-attacker-chosen content-type.
+planted inside a mount's `Assets/` folder is defeated the same way.
+
+`GET /files/raw` (its own `/files` scope on the plain `:api` pipeline in
+`router.ex`) has a SPLIT credential, and a serve-side type map distinct
+from the upload allowlist above — both from the side-panes pass, which
+gave the endpoint two new consumers besides `<img>`: pdf.js and a
+read-only text viewer.
+
+- **Credential.** Image extensions stay token-EXEMPT, because an `<img>`
+  tag cannot send custom headers — that exemption is now scoped to
+  exactly the formats that need it (`ImageView`, the editor's inline
+  images). Every other extension requires the `x-valea-token` control
+  token; the controller performs `ValeaWeb.Plugs.ControlToken`'s own
+  check inline (same header, same `Plug.Crypto.secure_compare/2`) so the
+  failure can be this route's opaque empty 404 rather than the plug's
+  401 — a missing token, a wrong token, an escape attempt and a missing
+  file are indistinguishable, and the check runs before any filesystem
+  work. The frontend sends it via `rawFileHeaders()`
+  (`frontend/src/lib/components/files/raw-url.ts`) — `fetch` headers in
+  `PlainTextView`, pdf.js `httpHeaders` in `PdfView`. The endpoint binds
+  loopback only (127.0.0.1), but loopback is NOT user-scoped: other local
+  accounts, and browser extensions holding a `127.0.0.1` host permission
+  (not subject to CORS), can reach it, which is why the untokened surface
+  is held at exactly what it was before the widening.
+- **Admission.** For a request that clears the credential, the extension
+  no longer gates anything: any regular file passing `resolve_mount/2` +
+  `contain/2` is served, since the viewers read arbitrary mount files and
+  a token-bearing caller is the app itself.
+- **Type.** `content-type` still never comes from anything client-supplied
+  or stored — it is a fixed literal from `@serve_types` (the image map
+  plus `application/pdf`) or, for every other extension including none,
+  the fixed `text/plain; charset=utf-8`. So `.svg`, `.html` and `.js` are
+  served as inert text, never as scriptable types, and the standing
+  `x-content-type-options: nosniff` + `content-disposition: inline`
+  headers make the browser honor that.
 
 **The `Assets/` stance.** Writing a pasted image into the external ICM's
 own `Assets/` folder is a deliberate, reviewed exception to "Valea-

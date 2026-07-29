@@ -45,6 +45,12 @@ defmodule ValeaWeb.FilesControllerTest do
 
   defp with_token(conn), do: put_req_header(conn, "x-valea-token", "valea-dev-token")
 
+  # A serve request carrying the control token. Required for every format
+  # OUTSIDE the image allowlist — see the controller moduledoc's
+  # "split credential" section. A bare `build_conn()` is the untokened shape
+  # an `<img>` tag produces, and is what the image tests deliberately use.
+  defp raw_conn, do: build_conn() |> with_token()
+
   # Mounts a real EXTERNAL ICM carrying a `Clients/Julia Steiner.md` page --
   # task 4.4 re-key: `page_path` sent to `/files/upload`/`/files/raw` is now
   # ICM-RELATIVE (never a `mounts/<name>/...` literal, never the ICM's
@@ -287,14 +293,13 @@ defmodule ValeaWeb.FilesControllerTest do
     icm = mount_primary!(ws)
     File.write!(Path.join(icm.root, "app.sqlite"), "not an image")
 
-    conn1 =
-      get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "app.sqlite"})
+    conn1 = get(raw_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "app.sqlite"})
 
     assert response(conn1, 200) == "not an image"
     assert get_resp_header(conn1, "content-type") == ["text/plain; charset=utf-8"]
 
     conn2 =
-      get(build_conn(), "/files/raw", %{
+      get(raw_conn(), "/files/raw", %{
         "mount_key" => icm.mount_key,
         "path" => "Clients/Julia Steiner.md"
       })
@@ -304,15 +309,16 @@ defmodule ValeaWeb.FilesControllerTest do
   end
 
   # The `regular_file?/1` gate is what keeps the widened serve path from
-  # 500-ing on a directory (or on a path that simply isn't there).
+  # 500-ing on a directory (or on a path that simply isn't there). Tokened so
+  # the 404 can only be coming from that gate.
   test "serve 404s a directory and a missing file (404, not 500)", %{workspace: ws} do
     icm = mount_primary!(ws)
 
-    assert build_conn()
+    assert raw_conn()
            |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "Clients"})
            |> response(404)
 
-    assert build_conn()
+    assert raw_conn()
            |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "no-such-file.txt"})
            |> response(404)
   end
@@ -323,7 +329,7 @@ defmodule ValeaWeb.FilesControllerTest do
     File.write!(Path.join(icm.root, "brochure.pdf"), bytes)
 
     conn =
-      get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "brochure.pdf"})
+      get(raw_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "brochure.pdf"})
 
     assert response(conn, 200) == bytes
     assert get_resp_header(conn, "content-type") == ["application/pdf"]
@@ -338,8 +344,7 @@ defmodule ValeaWeb.FilesControllerTest do
     bytes = "notes for the pane\nzweite Zeile — mit Umlauten\n"
     File.write!(Path.join(icm.root, "scratch.txt"), bytes)
 
-    conn =
-      get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "scratch.txt"})
+    conn = get(raw_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "scratch.txt"})
 
     assert response(conn, 200) == bytes
     assert get_resp_header(conn, "content-type") == ["text/plain; charset=utf-8"]
@@ -351,7 +356,7 @@ defmodule ValeaWeb.FilesControllerTest do
     icm = mount_primary!(ws)
     File.write!(Path.join(icm.root, "LICENSE"), "MIT\n")
 
-    conn = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "LICENSE"})
+    conn = get(raw_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "LICENSE"})
 
     assert response(conn, 200) == "MIT\n"
     assert get_resp_header(conn, "content-type") == ["text/plain; charset=utf-8"]
@@ -372,13 +377,13 @@ defmodule ValeaWeb.FilesControllerTest do
 
     File.write!(Path.join(icm.root, "page.html"), "<h1>hi</h1><script>alert(1)</script>")
 
-    svg = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "logo.svg"})
+    svg = get(raw_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "logo.svg"})
     assert response(svg, 200)
     assert get_resp_header(svg, "content-type") == ["text/plain; charset=utf-8"]
     refute get_resp_header(svg, "content-type") |> hd() =~ "svg"
     assert get_resp_header(svg, "x-content-type-options") == ["nosniff"]
 
-    html = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "page.html"})
+    html = get(raw_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "page.html"})
     assert response(html, 200)
     assert get_resp_header(html, "content-type") == ["text/plain; charset=utf-8"]
     refute get_resp_header(html, "content-type") |> hd() =~ "html"
@@ -472,7 +477,10 @@ defmodule ValeaWeb.FilesControllerTest do
            |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => outside_file})
            |> response(404)
 
-    assert build_conn()
+    # Tokened: `/etc/passwd` has no extension, so it is on the credentialed
+    # half of the surface — sending the token keeps this assertion pinned on
+    # CONTAINMENT rather than passing for the trivial reason.
+    assert raw_conn()
            |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "/etc/passwd"})
            |> response(404)
 
@@ -557,11 +565,96 @@ defmodule ValeaWeb.FilesControllerTest do
 
     assert json_response(conn1, 400)
 
-    assert build_conn()
+    # Tokened for the same reason as the absolute-path test above: `.md` is on
+    # the credentialed half, and the assertion is about the MOUNT gate.
+    assert raw_conn()
            |> get("/files/raw", %{
              "mount_key" => icm.mount_key,
              "path" => "Clients/Julia Steiner.md"
            })
            |> response(404)
+  end
+
+  # -- serve: the split credential ----------------------------------------
+
+  # The route's token exemption exists because an `<img>` tag cannot send
+  # headers. That is true of ImageView and the editor's inline images and of
+  # nothing else — `PlainTextView` (fetch) and `PdfView` (pdf.js
+  # `httpHeaders`) can and do send it, so the formats only THEY reach are
+  # gated. Loopback is not user-scoped: other local accounts, and browser
+  # extensions holding a 127.0.0.1 host permission (not subject to CORS),
+  # reach this port too — this is what keeps what they can pull identical to
+  # the pre-side-panes surface.
+  test "serve requires the control token for non-image formats", %{workspace: ws} do
+    icm = mount_primary!(ws)
+    File.write!(Path.join(icm.root, "private.txt"), "private notes")
+    File.write!(Path.join(icm.root, "brochure.pdf"), "%PDF-1.4\n")
+    File.write!(Path.join(icm.root, "LICENSE"), "MIT\n")
+
+    for path <- ["private.txt", "brochure.pdf", "LICENSE", "Clients/Julia Steiner.md"] do
+      # No token at all — same opaque 404 as a missing file, no body.
+      untokened = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => path})
+      assert response(untokened, 404) == ""
+
+      # A wrong token is not a different answer — no oracle separating
+      # "exists but unauthorized" from "not there".
+      wrong =
+        build_conn()
+        |> put_req_header("x-valea-token", "not-the-token")
+        |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => path})
+
+      assert response(wrong, 404) == ""
+
+      # Same request, valid token → the bytes.
+      assert raw_conn()
+             |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => path})
+             |> response(200)
+    end
+  end
+
+  test "the image exemption survives — every image format serves without a token", %{
+    workspace: ws
+  } do
+    icm = mount_primary!(ws)
+
+    # One per entry in the upload allowlist: these are the extensions an
+    # `<img>` src can still reach with no credential, and the set must not
+    # drift from `@allowed_types`.
+    for {name, expected} <- [
+          {"a.png", "image/png"},
+          {"b.jpg", "image/jpeg"},
+          {"c.jpeg", "image/jpeg"},
+          {"d.gif", "image/gif"},
+          {"e.webp", "image/webp"}
+        ] do
+      File.write!(Path.join(icm.root, name), "bytes for #{name}")
+
+      conn = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => name})
+
+      assert response(conn, 200) == "bytes for #{name}"
+      assert get_resp_header(conn, "content-type") == [expected]
+      assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    end
+  end
+
+  # An uppercase extension must not be a way around the credentialed half in
+  # either direction: `ext_of/1` downcases, so `.PNG` is the image (untokened)
+  # bucket and `.TXT` is the tokened one.
+  test "the credential split follows the case-folded extension", %{workspace: ws} do
+    icm = mount_primary!(ws)
+    File.write!(Path.join(icm.root, "SHOUT.PNG"), "png bytes")
+    File.write!(Path.join(icm.root, "SHOUT.TXT"), "txt bytes")
+
+    png = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "SHOUT.PNG"})
+    assert response(png, 200) == "png bytes"
+    assert get_resp_header(png, "content-type") == ["image/png"]
+
+    assert build_conn()
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "SHOUT.TXT"})
+           |> response(404)
+
+    assert raw_conn()
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "SHOUT.TXT"})
+           |> response(200) == "txt bytes"
   end
 end

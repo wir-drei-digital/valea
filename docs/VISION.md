@@ -268,8 +268,9 @@ clearly marked in their design specs until implemented.
    non-corrupting limitations); page templates (a `Templates/` folder per
    mount, `{{title}}`/`{{date}}` substitution); contained image
    upload/serve endpoints (`Assets/<slug>-<hash8>.<ext>`, the serve route
-   deliberately token-exempt since an `<img>` tag can't send headers and
-   the listener is loopback-only); and, on the frontend, a `[[`/`@`
+   token-exempt for image extensions only — since an `<img>` tag can't
+   send headers — and control-token-gated for every other format); and,
+   on the frontend, a `[[`/`@`
    page-link picker inserting standard link marks, a Cmd+K search palette
    with an MRU, link-click navigation with dangling-link decoration and
    create-on-click, a backlinks panel, and page-aware rename/delete impact

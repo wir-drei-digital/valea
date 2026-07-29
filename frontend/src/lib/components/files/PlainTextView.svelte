@@ -3,7 +3,10 @@
   // dedicated viewer is shown as read-only text. Display is capped so
   // opening a huge (or binary) file can't lock up the pane; a fetch failure
   // stays IN the view rather than bubbling out as a broken page.
-  import { rawFileUrl } from './raw-url';
+  // The fetch carries the control token: `/files/raw` only exempts image
+  // extensions (an `<img>` tag can't send headers — this can), so a bare
+  // request for a text file gets the route's opaque 404.
+  import { rawFileHeaders, rawFileUrl } from './raw-url';
 
   let { mountKey, path }: { mountKey: string; path: string } = $props();
 
@@ -22,7 +25,9 @@
     truncated = false;
     void (async () => {
       try {
-        const res = await fetch(rawFileUrl(target.mountKey, target.path));
+        const res = await fetch(rawFileUrl(target.mountKey, target.path), {
+          headers: rawFileHeaders()
+        });
         if (!res.ok) throw new Error(String(res.status));
         const body = await res.text();
         if (cancelled) return;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { rawFileUrl } from './raw-url';
+import { rawFileHeaders, rawFileUrl } from './raw-url';
+import { controlToken } from '$lib/socket';
 
 describe('rawFileUrl', () => {
   it('encodes mount and path as single query params', () => {
@@ -14,5 +15,20 @@ describe('rawFileUrl', () => {
     expect(rawFileUrl('primary', 'Tone & Voice/logo.svg')).toBe(
       '/files/raw?mount_key=primary&path=Tone%20%26%20Voice%2Flogo.svg'
     );
+  });
+
+  it('never puts the control token in the URL — the credential rides a header', () => {
+    expect(rawFileUrl('notes', 'a.pdf')).not.toContain(controlToken());
+    expect(rawFileUrl('notes', 'a.pdf')).not.toContain('token');
+  });
+});
+
+describe('rawFileHeaders', () => {
+  it('carries the control token under the same header name the RPC fallback uses', () => {
+    expect(rawFileHeaders()).toEqual({ 'x-valea-token': controlToken() });
+  });
+
+  it('sends exactly one header — nothing else leaks into a raw-file request', () => {
+    expect(Object.keys(rawFileHeaders())).toEqual(['x-valea-token']);
   });
 });
