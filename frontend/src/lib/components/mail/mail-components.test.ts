@@ -6,6 +6,8 @@ import {
   folderBadge,
   messageSeen,
   filterMessagesByRead,
+  markReadOp,
+  markUnreadOp,
   folderFlagsLine,
   relativeTime,
   fromLabel,
@@ -105,6 +107,40 @@ describe('messageSeen / filterMessagesByRead', () => {
     expect(filterMessagesByRead(messages, 'all')).toEqual(messages);
     expect(filterMessagesByRead(messages, 'unread')).toEqual([unseen, noFlags]);
     expect(filterMessagesByRead(messages, 'read')).toEqual([seen]);
+  });
+});
+
+describe('markReadOp / markUnreadOp', () => {
+  it('adds S to mark read and removes S to mark unread', () => {
+    expect(markReadOp('msg-1', 'INBOX')).toEqual({
+      op: 'flag',
+      msg_id: 'msg-1',
+      folder: 'INBOX',
+      add: ['S'],
+      remove: []
+    });
+    expect(markUnreadOp('msg-1', 'INBOX')).toEqual({
+      op: 'flag',
+      msg_id: 'msg-1',
+      folder: 'INBOX',
+      add: [],
+      remove: ['S']
+    });
+  });
+
+  it('names S and no other flag letter — every other flag survives the op', () => {
+    for (const op of [markReadOp('msg-1', 'INBOX'), markUnreadOp('msg-1', 'INBOX')]) {
+      expect([...op.add, ...op.remove]).toEqual(['S']);
+    }
+  });
+
+  it('carries the folder verbatim, including a namespaced one', () => {
+    expect(markReadOp('msg-1', '[Gmail]/All Mail').folder).toBe('[Gmail]/All Mail');
+    expect(markUnreadOp('msg-1', '[Gmail]/All Mail').folder).toBe('[Gmail]/All Mail');
+  });
+
+  it('writes the same letter `messageSeen` reads — the unread dot and the filters follow from this op', () => {
+    expect(messageSeen({ flags: markReadOp('msg-1', 'INBOX').add.join('') })).toBe(true);
   });
 });
 

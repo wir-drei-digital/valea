@@ -35,6 +35,9 @@
     folderFlagsLine,
     formatBytes,
     formatDateTime,
+    markReadOp,
+    markUnreadOp,
+    messageSeen,
     messageSessionPrompt,
     opResultMessage,
     subjectLabel,
@@ -68,6 +71,13 @@
   let sessionError = $state<string | null>(null);
   let opBusy = $state(false);
   let opError = $state<string | null>(null);
+  /**
+   * In-place override of the fetched `S` (Seen) flag after a mark op —
+   * `null` = follow the frontmatter. `applyOps` refetches the folder and
+   * message LISTS but not the open message's detail, so without this the
+   * read action would keep naming the state from before the click.
+   */
+  let seenOverride = $state<boolean | null>(null);
 
   // -- HTML rendering + the remote-content trust gate ------------------------
   //
@@ -110,6 +120,7 @@
     copiedPath = null;
     sessionError = null;
     opError = null;
+    seenOverride = null;
     viewMode = 'html';
     allowOnce = false;
     trustOverride = null;
@@ -126,13 +137,64 @@
   const flagged = $derived(
     typeof frontmatter.flags === 'string' && frontmatter.flags.includes('F')
   );
+  // Read state, as the mailbox last reported it, and as this pane now knows
+  // it to be (spec E: the maildir `S` letter is the whole read model —
+  // Valea keeps no read-tracking of its own).
+  const fetchedSeen = $derived(
+    messageSeen({ flags: typeof frontmatter.flags === 'string' ? frontmatter.flags : null })
+  );
+  const seen = $derived(seenOverride ?? fetchedSeen);
   const canArchive = $derived(
     msgId !== null && currentFolder !== null && archiveFolder !== null && currentFolder !== archiveFolder
   );
 
-  async function runOp(op: Record<string, unknown>, afterArchive: boolean): Promise<void> {
+  /**
+   * The msg_id the auto-mark has already run for — or that a manual "Mark
+   * unread" has suppressed it for. Deliberately a plain `let`, not `$state`:
+   * the effect below both reads and writes it, and nothing renders from it.
+   * The stored id IS the expiry — a different message can never match it, so
+   * opening one is what lifts a suppression, exactly as intended.
+   */
+  let autoMarkedId: string | null = null;
+
+  // Opening a message marks it read, once. Fire-and-forget by design: a
+  // message the reader is looking at that still counts as unread is a lie
+  // worth correcting, but a rejected correction is not worth an error banner
+  // over something they never asked for — unlike archive/flag/mark below,
+  // which are explicit actions and keep their error surfacing. The id guard
+  // is what makes it once-per-open: `applyOps`' refetches, a folder switch,
+  // or any other re-run of this effect must not fire a second op.
+  $effect(() => {
+    const id = msgId;
+    const folder = currentFolder;
+    if (!id || !folder || fetchedSeen || autoMarkedId === id) return;
+    autoMarkedId = id;
+    void autoMarkRead(id, folder);
+  });
+
+  /**
+   * The auto-mark's own apply path, deliberately NOT `runOp`: this op must
+   * not take the busy flag (it would disable the whole action row for the
+   * duration of every open) and its rejection must stay silent. The `seen`
+   * flip is applied only on acceptance, so a mark that didn't land leaves
+   * the pane telling the truth — still unread, and manually markable. It
+   * also defers to any explicit decision taken while it was in flight (a
+   * "Mark unread" clicked during the round-trip owns the flag, not this).
+   */
+  async function autoMarkRead(id: string, folder: string): Promise<void> {
     const account = mailStore.selectedAccount;
     if (!account) return;
+
+    const results = await mailStore.applyOps(account, [markReadOp(id, folder)], workspaceStore.generation ?? 0);
+    const first = results[0];
+    if (first && opResultMessage(first.result, first.reason) !== null) return;
+    if (seenOverride === null) seenOverride = true;
+  }
+
+  /** Applies one op through the store; resolves `true` when it was accepted (a failure is left on `opError`). */
+  async function runOp(op: Record<string, unknown>, afterArchive: boolean): Promise<boolean> {
+    const account = mailStore.selectedAccount;
+    if (!account) return false;
 
     opBusy = true;
     opError = null;
@@ -143,14 +205,32 @@
     const failure = first ? opResultMessage(first.result, first.reason) : null;
     if (failure) {
       opError = failure;
-      return;
+      return false;
     }
     if (afterArchive) void goto('/mail');
+    return true;
   }
 
   function archive(): void {
     if (!msgId || !currentFolder || !archiveFolder) return;
     void runOp({ op: 'move', msg_id: msgId, from: currentFolder, to: archiveFolder }, true);
+  }
+
+  /**
+   * The explicit read/unread action — same `runOp` path as archive/flag, so
+   * a rejection is reported here rather than swallowed. Marking unread also
+   * parks this message in `autoMarkedId`: without that the auto-mark above
+   * would undo the click the next time anything re-runs its effect.
+   */
+  async function toggleSeen(): Promise<void> {
+    const id = msgId;
+    const folder = currentFolder;
+    if (!id || !folder) return;
+
+    const next = !seen;
+    if (!next) autoMarkedId = id;
+    const op = next ? markReadOp(id, folder) : markUnreadOp(id, folder);
+    if (await runOp(op, false)) seenOverride = next;
   }
 
   function toggleFlag(): void {
@@ -333,6 +413,9 @@
       {#if msgId && currentFolder}
         <Button type="button" variant="ghost" disabled={opBusy} onclick={() => toggleFlag()}>
           {flagged ? 'Unflag' : 'Flag'}
+        </Button>
+        <Button type="button" variant="ghost" disabled={opBusy} onclick={() => void toggleSeen()}>
+          {seen ? 'Mark unread' : 'Mark read'}
         </Button>
       {/if}
     </div>

@@ -86,6 +86,36 @@ export function filterMessagesByRead<T extends { flags?: string | null }>(
 // -- ops actions (MessageView) ----------------------------------------------
 
 /**
+ * A declared `flag` op, exactly as the engine's ops executor takes it:
+ * `add`/`remove` are maildir flag LETTERS, and a letter named in neither is
+ * left exactly as the server has it. Same vocabulary the read pane's
+ * flag/unflag toggle already writes inline for `F`.
+ */
+export type MailFlagOp = {
+  op: 'flag';
+  msg_id: string;
+  folder: string;
+  add: string[];
+  remove: string[];
+};
+
+/**
+ * "Mark read" — adds the maildir `S` (Seen) letter, and ONLY that one, so a
+ * message's `F` (flagged), `A` (answered) and the rest survive the op
+ * untouched. Both the auto-mark on open and the manual action in
+ * `MessageView` go through here, so the two can never disagree about what
+ * "read" writes.
+ */
+export function markReadOp(msgId: string, folder: string): MailFlagOp {
+  return { op: 'flag', msg_id: msgId, folder, add: ['S'], remove: [] };
+}
+
+/** "Mark unread" — clears `S`. The exact inverse of `markReadOp`, and just as narrow. */
+export function markUnreadOp(msgId: string, folder: string): MailFlagOp {
+  return { op: 'flag', msg_id: msgId, folder, add: [], remove: ['S'] };
+}
+
+/**
  * User copy for one `mail_apply_ops` per-op outcome. `accepted`/`complete`
  * count as success (`null` — nothing to show); everything else maps the
  * executor's rejection reasons to calm sentences.
