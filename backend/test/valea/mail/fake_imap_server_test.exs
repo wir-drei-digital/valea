@@ -132,6 +132,100 @@ defmodule Valea.Mail.FakeImapServerTest do
     assert :ok = FakeImapServer.await(server)
   end
 
+  test ~s[an IDLE conversation scripts as plain steps: continuation, unsolicited push, DONE] do
+    script = [
+      {:send, "* OK ready"},
+      {:expect, "A3 IDLE", then: ["+ idling"]},
+      # The server speaking first, a moment later — no step needed for it
+      # beyond `:send` (the sleep only keeps it out of the continuation's
+      # record, so this test can assert on the two separately).
+      {:sleep, 60},
+      {:send, "* 4 EXISTS"},
+      {:expect, "DONE", then: ["A3 OK IDLE terminated"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+    socket = tls_connect!(server.port)
+
+    assert {:ok, "* OK ready\r\n"} = recv(socket, true)
+    :ok = send_line(socket, true, "A3 IDLE")
+    assert {:ok, "+ idling\r\n"} = recv(socket, true)
+    assert {:ok, "* 4 EXISTS\r\n"} = recv(socket, true)
+    :ok = send_line(socket, true, "DONE")
+    assert {:ok, "A3 OK IDLE terminated\r\n"} = recv(socket, true)
+
+    close(socket, true)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "{:sleep, ms} spaces pushes out so they arrive as separate reads" do
+    script = [
+      {:send, "* OK ready"},
+      {:sleep, 60},
+      {:send, "* 1 EXISTS"},
+      {:sleep, 60},
+      {:send, "* 2 EXISTS"}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+    socket = tls_connect!(server.port)
+
+    # Without the sleeps these three lines would be free to coalesce into one
+    # TLS record; with them, each read returns exactly one.
+    assert {:ok, "* OK ready\r\n"} = recv(socket, true)
+    assert {:ok, "* 1 EXISTS\r\n"} = recv(socket, true)
+    assert {:ok, "* 2 EXISTS\r\n"} = recv(socket, true)
+
+    close(socket, true)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "{:send_raw, bytes} sends verbatim — a response can be split across reads" do
+    script = [
+      {:send, "* OK ready"},
+      {:sleep, 60},
+      {:send_raw, "* 3 EXIS"},
+      {:sleep, 60},
+      {:send_raw, "TS\r\n"}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+    socket = tls_connect!(server.port)
+
+    assert {:ok, "* OK ready\r\n"} = recv(socket, true)
+    assert {:ok, "* 3 EXIS"} = recv(socket, true)
+    assert {:ok, "TS\r\n"} = recv(socket, true)
+
+    close(socket, true)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "start_sequence/2 accepts a reconnect on the same port and runs the second script" do
+    first = [
+      {:send, "* OK first"},
+      {:expect, "A1 NOOP", then: ["A1 OK done"]},
+      :close
+    ]
+
+    second = [
+      {:send, "* OK second"},
+      {:expect, "A1 NOOP", then: ["A1 OK done"]}
+    ]
+
+    server = FakeImapServer.start_sequence([first, second], tls: true)
+
+    for expected_greeting <- ["* OK first\r\n", "* OK second\r\n"] do
+      socket = tls_connect!(server.port)
+      assert {:ok, ^expected_greeting} = recv(socket, true)
+      :ok = send_line(socket, true, "A1 NOOP")
+      assert {:ok, "A1 OK done\r\n"} = recv(socket, true)
+      close(socket, true)
+    end
+
+    # Only green once BOTH scripts ran: a client that never reconnects fails.
+    assert :ok = FakeImapServer.await(server)
+  end
+
   defp read_until_closed(socket, tls?, acc \\ "") do
     case recv(socket, tls?) do
       {:ok, data} -> read_until_closed(socket, tls?, acc <> data)

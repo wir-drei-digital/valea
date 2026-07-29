@@ -123,6 +123,21 @@ defmodule FakeMailTransport do
   @impl true
   def logout(conn), do: invoke(conn, :logout, [conn])
 
+  # The IDLE trio is scripted exactly like everything else — a step's `result`
+  # can be a 1-arity function, which is how a test scripts a *sequence* of
+  # awaits (return the events for the first call, `{:ok, [], idle}` after) or
+  # blocks one for a while. `idle` is whatever the script's `:idle_start` step
+  # handed back: opaque here, as the behaviour says.
+  @impl true
+  def idle_start(conn), do: invoke(conn, :idle_start, [conn])
+
+  @impl true
+  def idle_await(conn, idle, timeout_ms),
+    do: invoke(conn, :idle_await, [conn, idle, timeout_ms])
+
+  @impl true
+  def idle_done(conn, idle), do: invoke(conn, :idle_done, [conn, idle])
+
   # -- internal -----------------------------------------------------------
 
   # The "no match" raise must happen in the CALLING (test) process, not

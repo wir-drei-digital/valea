@@ -9,6 +9,22 @@ defmodule FakeImapServer do
   can't make a broken exchange look green. Client lines are read to CRLF
   with a small manual buffer loop; `:expect_literal` reads exactly N raw
   bytes without ever scanning them for structure.
+
+  ## Unsolicited pushes and IDLE (task 14)
+
+  A script is a sequence, not a request/response table, so a server that
+  SPEAKS FIRST needs nothing new: `{:send, line}` pushes bytes whenever the
+  script reaches it, which is how an IDLE conversation is written —
+  `{:expect, ~r/IDLE$/, then: ["+ idling"]}`, then any number of `{:send,
+  "* 3 EXISTS"}`, then `{:expect, "DONE", then: [...]}`.
+
+  Two steps exist for the timing that IDLE testing needs:
+
+    * `{:sleep, ms}` spaces pushes out in TIME, so a burst arrives as
+      separate reads rather than one coalesced TLS record — the only way to
+      test that a client DEBOUNCES rather than merely batches;
+    * `:close` drops the connection mid-script, and `start_sequence/2`
+      accepts the client's RECONNECT with a second script.
   """
 
   @fixtures_dir Path.expand("../fixtures/tls", __DIR__)
@@ -22,9 +38,11 @@ defmodule FakeImapServer do
   @typedoc "One step of a server script, executed in order against one accepted connection."
   @type step ::
           {:send, binary()}
+          | {:send_raw, binary()}
           | {:expect, Regex.t() | binary(), then: [binary()]}
           | {:expect_command, Regex.t() | binary(), then: [binary()]}
           | {:expect_literal, non_neg_integer(), then: [binary()]}
+          | {:sleep, non_neg_integer()}
           | :close
 
   @type server :: %{port: :inet.port_number(), task: pid()}
@@ -40,14 +58,28 @@ defmodule FakeImapServer do
   the same way — only the transport differs.
   """
   @spec start([step()], keyword()) :: server()
-  def start(script, opts \\ []) when is_list(script) do
+  def start(script, opts \\ []) when is_list(script), do: start_sequence([script], opts)
+
+  @doc """
+  Like `start/2`, but accepts N connections IN SEQUENCE — the i-th connection
+  runs `Enum.at(scripts, i)`. Same ephemeral port for all of them, so a client
+  that reconnects to `server.port` lands on the next script.
+
+  This is how a RECONNECT is tested: script one ends in `:close`, script two
+  is the exchange the client must perform on its second connection.
+  `await/2` succeeds only once every script has run to completion, so a client
+  that never comes back is a failure, not a pass.
+  """
+  @spec start_sequence([[step()]], keyword()) :: server()
+  def start_sequence([_ | _] = scripts, opts \\ []) do
     tls? = Keyword.get(opts, :tls, true)
     parent = self()
     {listen_socket, port} = listen(tls?)
 
     pid =
       spawn(fn ->
-        result = accept_and_run(listen_socket, tls?, script)
+        result = accept_and_run_all(listen_socket, tls?, scripts)
+        close(listen_socket, tls?)
         send(parent, {__MODULE__, self(), result})
       end)
 
@@ -102,6 +134,18 @@ defmodule FakeImapServer do
 
   # -- connection lifecycle -------------------------------------------------
 
+  # Stops at the FIRST failing connection: a later script's accept would
+  # otherwise block for the full timeout against a client that already gave up,
+  # burying the real error behind a timeout message.
+  defp accept_and_run_all(listen_socket, tls?, scripts) do
+    Enum.reduce_while(scripts, :ok, fn script, :ok ->
+      case accept_and_run(listen_socket, tls?, script) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
   defp accept_and_run(listen_socket, tls?, script) do
     case accept(listen_socket, tls?) do
       {:ok, socket} ->
@@ -136,6 +180,13 @@ defmodule FakeImapServer do
     run_script(rest, ctx)
   end
 
+  # Bytes verbatim — no CRLF appended. The step that can send HALF a response,
+  # which is how a client's "response split across two reads" path is tested.
+  defp run_script([{:send_raw, bytes} | rest], ctx) do
+    send_bytes(ctx, bytes)
+    run_script(rest, ctx)
+  end
+
   defp run_script([{:expect, matcher, then: reply_lines} | rest], ctx) do
     {line, ctx} = read_line(ctx)
     assert_match!(matcher, line)
@@ -153,6 +204,13 @@ defmodule FakeImapServer do
   defp run_script([{:expect_literal, n, then: reply_lines} | rest], ctx) do
     {_bytes, ctx} = read_exact(ctx, n)
     Enum.each(reply_lines, &send_line(ctx, &1))
+    run_script(rest, ctx)
+  end
+
+  # Spaces the NEXT step out in time — so a burst of pushes arrives as
+  # separate reads on the client rather than one coalesced record.
+  defp run_script([{:sleep, ms} | rest], ctx) do
+    Process.sleep(ms)
     run_script(rest, ctx)
   end
 
@@ -237,8 +295,10 @@ defmodule FakeImapServer do
 
   # -- write ------------------------------------------------------------------
 
-  defp send_line(ctx, line) do
-    case send_data(ctx.socket, ctx.tls?, line <> "\r\n") do
+  defp send_line(ctx, line), do: send_bytes(ctx, line <> "\r\n")
+
+  defp send_bytes(ctx, bytes) do
+    case send_data(ctx.socket, ctx.tls?, bytes) do
       :ok -> :ok
       {:error, reason} -> raise "send to client failed: #{inspect(reason)}"
     end

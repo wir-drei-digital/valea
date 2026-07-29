@@ -22,10 +22,14 @@ defmodule Valea.Mail.ImapClient do
       one would purge every `\\Deleted` message in the mailbox, including
       ones the user's own client marked (grep for the literal string
       `"EXPUNGE"`: the only match is the `"UID", "EXPUNGE"` pair below).
-    * **Connect-per-pass.** No persistent connections, no IDLE. `connect/3`
-      reads the greeting, logs in, then re-queries `CAPABILITY` (some
-      servers advertise a different set once authenticated) — the cached
-      set on `conn` is always the post-login one.
+    * **Connect-per-pass.** Every sync pass, ops batch, push and send opens
+      its own connection and logs out at the end — no connection pool, no
+      long-lived command socket. `connect/3` reads the greeting, logs in,
+      then re-queries `CAPABILITY` (some servers advertise a different set
+      once authenticated) — the cached set on `conn` is always the post-login
+      one. The ONE long-lived exception is `Valea.Mail.IdleWatcher`, which
+      holds a connection open for the sole purpose of IDLE (see the IDLE
+      section below); it issues `EXAMINE` and `IDLE` and nothing else.
     * **TLS is mandatory and verified.** `connect/3` always passes
       `verify: :verify_peer` plus hostname verification and SNI; the only
       thing a caller can override via `opts[:tls_opts]` is which trust
@@ -47,11 +51,24 @@ defmodule Valea.Mail.ImapClient do
       across calls without a new conn ever being returned.
     * No per-call read buffer is threaded through `conn` either — each
       command's response-reading loop keeps its buffer as a purely local
-      variable. This is safe because the protocol here is strictly
-      request/response with no pipelining and no IDLE: the server only
-      ever writes bytes in reaction to the command it just received, so a
-      given call's socket reads can never contain bytes belonging to a
-      future call's response.
+      variable. This is safe because the COMMAND protocol here is strictly
+      request/response with no pipelining: the server only ever writes bytes
+      in reaction to the command it just received, so a given call's socket
+      reads can never contain bytes belonging to a future call's response.
+
+  ## IDLE
+
+  IDLE (RFC 2177) is the one exchange that breaks the assumption above — the
+  server writes unsolicited bytes, and a burst of them can leave a *partial*
+  response in the buffer when a read returns. Rather than give `conn` a
+  mutable read buffer (which would then have to be reasoned about by all
+  twenty other callbacks), the IDLE trio threads an opaque session value:
+  `idle_start/1` returns `%{tag: ..., buffer: ..., pending: ...}`,
+  `idle_await/3` hands back the advanced session, `idle_done/2` consumes it.
+  Residual bytes therefore survive between awaits by construction.
+
+  Nothing here mutates the mailbox: the watcher's connection reaches only
+  `examine/2`, this trio, and `logout/1`.
   """
 
   @behaviour Valea.Mail.Transport
@@ -284,6 +301,156 @@ defmodule Valea.Mail.ImapClient do
     :ok
   end
 
+  # -- IDLE (RFC 2177) -------------------------------------------------------
+
+  @impl true
+  def idle_start(conn) do
+    tag = next_tag(conn)
+
+    case :ssl.send(conn.socket, [tag, " IDLE\r\n"]) do
+      :ok -> await_idle_continuation(conn, tag, "", [])
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl true
+  # Events the IDLE handshake already collected are handed over before the
+  # socket is touched at all — they arrived, so reporting them cannot wait on
+  # a deadline that may be 25 minutes away.
+  def idle_await(_conn, %{pending: [_ | _] = pending} = idle, _timeout_ms),
+    do: {:ok, pending, %{idle | pending: []}}
+
+  def idle_await(conn, idle, timeout_ms) when is_integer(timeout_ms) and timeout_ms >= 0 do
+    collect_idle(conn, idle, now_ms() + timeout_ms)
+  end
+
+  @impl true
+  def idle_done(conn, idle) do
+    # `DONE` is the one client line in IMAP that carries no tag (RFC 2177) —
+    # the IDLE's own tag is what its completion comes back under.
+    case :ssl.send(conn.socket, "DONE\r\n") do
+      :ok -> read_idle_completion(conn, idle.tag, idle.buffer, Enum.reverse(idle.pending))
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Reads through to the server's `+` continuation — the only proof the
+  # connection is genuinely idling. Untagged responses flushed on the way in
+  # are collected into the session's `pending` rather than dropped; a tagged
+  # response under our own tag is the server REFUSING the IDLE (it may, even
+  # while advertising the capability).
+  defp await_idle_continuation(conn, tag, buffer, events) do
+    case read_until_response(conn.socket, conn.recv_timeout, buffer) do
+      {:ok, {:continuation, _text}, rest} ->
+        {:ok, %{tag: tag, buffer: rest, pending: Enum.reverse(events)}}
+
+      {:ok, {:tagged, ^tag, status, text}, _rest} ->
+        {:error, {status, text}}
+
+      {:ok, response, rest} ->
+        await_idle_continuation(conn, tag, rest, prepend_idle_event(response, events))
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Drains every COMPLETE response already buffered before reading more, so a
+  # burst that arrived in one TLS record is reported as one batch. A partial
+  # tail stays in the returned session and is completed by a later recv —
+  # this is the whole reason the session exists.
+  defp collect_idle(conn, idle, deadline) do
+    case pull_idle_events(idle.buffer, []) do
+      {:ok, [_ | _] = events, rest} ->
+        {:ok, events, %{idle | buffer: rest}}
+
+      {:ok, [], rest} ->
+        idle = %{idle | buffer: rest}
+        remaining = deadline - now_ms()
+
+        if remaining <= 0 do
+          {:ok, [], idle}
+        else
+          recv_idle(conn, idle, deadline, remaining)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp recv_idle(conn, idle, deadline, remaining) do
+    case :ssl.recv(conn.socket, 0, remaining) do
+      {:ok, data} -> collect_idle(conn, %{idle | buffer: idle.buffer <> data}, deadline)
+      # A deadline is not a failure: it is how the caller's re-issue timer
+      # surfaces (RFC 2177 asks a client to re-issue IDLE before the server's
+      # own 29-minute cutoff).
+      {:error, :timeout} -> {:ok, [], idle}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp read_idle_completion(conn, tag, buffer, acc) do
+    case read_until_response(conn.socket, conn.recv_timeout, buffer) do
+      {:ok, {:tagged, ^tag, :ok, _text}, _rest} ->
+        {:ok, Enum.reverse(acc)}
+
+      {:ok, {:tagged, ^tag, status, text}, _rest} ->
+        {:error, {status, text}}
+
+      # Untagged lines still arriving after DONE went out — a message can land
+      # in exactly that window, and this is the caller's only notice of it.
+      {:ok, response, rest} ->
+        read_idle_completion(conn, tag, rest, prepend_idle_event(response, acc))
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # A tagged response arriving with no `DONE` sent is the server ending the
+  # IDLE on its own (an idle cutoff, a shutdown): the session is over, so this
+  # is an error rather than an event. Already-collected events are dropped
+  # with it — the caller reconnects, and the poll loop remains the backstop
+  # that makes a missed IDLE event a delay, never a loss.
+  defp pull_idle_events(buffer, acc) do
+    case Wire.pull(buffer) do
+      :incomplete ->
+        {:ok, Enum.reverse(acc), buffer}
+
+      {:ok, {:tagged, _tag, status, text}, _rest} ->
+        {:error, {:idle_terminated, status, text}}
+
+      {:ok, response, rest} ->
+        pull_idle_events(rest, prepend_idle_event(response, acc))
+    end
+  end
+
+  # `Wire` already routes a parenthesized untagged FETCH to its own `:fetch`
+  # response; the regex below catches the other two change notifications (and
+  # a FETCH shape `Wire` didn't claim). Anything else — a `* OK Still here`
+  # keepalive, a `* FLAGS (...)` re-announcement — is `:other`, which the
+  # watcher must not read as mailbox change.
+  @idle_change_re ~r/^(\d+) (EXISTS|EXPUNGE|FETCH)\b/
+
+  defp prepend_idle_event({:untagged, line}, acc), do: [untagged_idle_event(line) | acc]
+  defp prepend_idle_event({:fetch, seq, _attrs}, acc), do: [{:fetch, seq} | acc]
+  defp prepend_idle_event({:continuation, _text}, acc), do: acc
+  # Structurally unreachable (a tagged response is handled by every caller
+  # before it gets here) — dropped rather than mis-reported as a change.
+  defp prepend_idle_event(_other, acc), do: acc
+
+  defp untagged_idle_event(line) do
+    case Regex.run(@idle_change_re, line) do
+      [_, seq, "EXISTS"] -> {:exists, String.to_integer(seq)}
+      [_, seq, "EXPUNGE"] -> {:expunge, String.to_integer(seq)}
+      [_, seq, "FETCH"] -> {:fetch, String.to_integer(seq)}
+      nil -> {:other, line}
+    end
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
   # -- connect helpers -------------------------------------------------------
 
   defp default_tls_opts(host) do
@@ -358,6 +525,7 @@ defmodule Valea.Mail.ImapClient do
   defp capability_wire_name(:move), do: "MOVE"
   defp capability_wire_name(:uidplus), do: "UIDPLUS"
   defp capability_wire_name(:gmail), do: "X-GM-EXT-1"
+  defp capability_wire_name(:idle), do: "IDLE"
 
   # -- COPYUID / APPENDUID response-code parsing -------------------------
   #

@@ -273,6 +273,20 @@ defmodule ModelMailTransport do
   @impl true
   def logout(_conn), do: :ok
 
+  # The model does not model IDLE: `:idle` is never in a default capability
+  # set, so `Valea.Mail.IdleWatcher`'s capability gate stops before it ever
+  # reaches these. They exist to satisfy the behaviour — and a model
+  # deliberately built with `capabilities: [:idle]` gets an honest refusal
+  # rather than a silent fake IDLE that never reports anything.
+  @impl true
+  def idle_start(_conn), do: {:error, :idle_not_modeled}
+
+  @impl true
+  def idle_await(_conn, _idle, _timeout_ms), do: {:error, :idle_not_modeled}
+
+  @impl true
+  def idle_done(_conn, _idle), do: {:error, :idle_not_modeled}
+
   # -- Transport callbacks: fault-eligible ------------------------------------
 
   @impl true

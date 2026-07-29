@@ -690,6 +690,216 @@ defmodule Valea.Mail.ImapClientTest do
     assert :ok = FakeImapServer.await(server)
   end
 
+  # -- IDLE (RFC 2177) ------------------------------------------------------
+  #
+  # Handshake burns A1 (LOGIN) and A2 (CAPABILITY), so an IDLE issued as the
+  # first real command is A3. `supports?(conn, :idle)` reads the same
+  # post-login capability set every other gate does.
+
+  defp idle_handshake_steps do
+    handshake_steps("IMAP4rev1 IDLE") ++
+      [
+        {:expect, ~r/^A3 EXAMINE INBOX$/,
+         then: [
+           "* 3 EXISTS",
+           "* OK [UIDVALIDITY 100] UIDs valid",
+           "A3 OK [READ-ONLY] EXAMINE completed"
+         ]}
+      ]
+  end
+
+  test "supports?(conn, :idle) reflects the IDLE capability" do
+    server = FakeImapServer.start(handshake_steps("IMAP4rev1 IDLE"), tls: true)
+    assert ImapClient.supports?(connect!(server), :idle)
+    assert :ok = FakeImapServer.await(server)
+
+    plain = FakeImapServer.start(handshake_steps("IMAP4rev1 MOVE"), tls: true)
+    refute ImapClient.supports?(connect!(plain), :idle)
+    assert :ok = FakeImapServer.await(plain)
+  end
+
+  test "idle_start waits for the + continuation, and untagged pushes come back as events" do
+    script =
+      idle_handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          {:sleep, 40},
+          {:send, "* 4 EXISTS"}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, %{uidvalidity: 100}} = ImapClient.examine(conn, "INBOX")
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+
+    # EXAMINE's own `* 3 EXISTS` belongs to that command's response, not to the
+    # IDLE — the only event here is the one pushed after the continuation.
+    assert {:ok, [{:exists, 4}], _idle} = ImapClient.idle_await(conn, idle, 2_000)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "EXISTS, EXPUNGE, FETCH and a keepalive OK map to their own event shapes" do
+    script =
+      idle_handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          {:sleep, 40},
+          {:send, "* 9 EXISTS"},
+          {:send, "* 2 EXPUNGE"},
+          {:send, ~s[* 5 FETCH (UID 77 FLAGS (\\Seen))]},
+          {:send, "* OK Still here"}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, _info} = ImapClient.examine(conn, "INBOX")
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+
+    events = drain_events(conn, idle, 4)
+
+    # A `* OK` heartbeat is `:other` — deliberately NOT a change (a server that
+    # sends one every few minutes must not make a client resync every time).
+    assert events == [{:exists, 9}, {:expunge, 2}, {:fetch, 5}, {:other, "OK Still here"}]
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "idle_await returns [] at its deadline, leaving the connection idling" do
+    script =
+      idle_handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          {:sleep, 150},
+          {:send, "* 4 EXISTS"}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, _info} = ImapClient.examine(conn, "INBOX")
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+
+    # An empty list is a deadline, not a failure — and the SAME session then
+    # picks the later push up.
+    assert {:ok, [], idle} = ImapClient.idle_await(conn, idle, 20)
+    assert {:ok, [{:exists, 4}], _idle} = ImapClient.idle_await(conn, idle, 2_000)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "a response split across two reads is reassembled through the threaded session" do
+    script =
+      idle_handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          {:sleep, 40},
+          # One record carrying a complete EXISTS plus HALF an EXPUNGE: the
+          # first await must report the former and keep the fragment.
+          {:send_raw, "* 7 EXISTS\r\n* 2 EXPU"},
+          {:sleep, 60},
+          {:send_raw, "NGE\r\n"}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, _info} = ImapClient.examine(conn, "INBOX")
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+
+    assert {:ok, [{:exists, 7}], idle} = ImapClient.idle_await(conn, idle, 2_000)
+    assert {:ok, [{:expunge, 2}], _idle} = ImapClient.idle_await(conn, idle, 2_000)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "idle_done sends DONE and reports events from inside the handshake window" do
+    script =
+      idle_handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          # A message landing between DONE leaving the client and the tagged
+          # completion: the only notice of it is this reply.
+          {:expect, "DONE", then: ["* 11 EXISTS", "A4 OK IDLE terminated"]},
+          {:expect, "A5 IDLE", then: ["+ idling"]},
+          {:expect, "DONE", then: ["A5 OK IDLE terminated"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, _info} = ImapClient.examine(conn, "INBOX")
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+    assert {:ok, [{:exists, 11}]} = ImapClient.idle_done(conn, idle)
+
+    # Still in the selected state: a re-issue is just another idle_start.
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+    assert {:ok, []} = ImapClient.idle_done(conn, idle)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "an IDLE refused with a tagged NO is an error, not a hang" do
+    script =
+      idle_handshake_steps() ++
+        [{:expect, "A4 IDLE", then: ["A4 NO mailbox is not idleable"]}]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, _info} = ImapClient.examine(conn, "INBOX")
+    assert {:error, {:no, "mailbox is not idleable"}} = ImapClient.idle_start(conn)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "a tagged completion with no DONE sent reports the server ended the IDLE" do
+    script =
+      idle_handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          {:sleep, 40},
+          {:send, "A4 OK IDLE terminated (server cutoff)"}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, _info} = ImapClient.examine(conn, "INBOX")
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+
+    assert {:error, {:idle_terminated, :ok, "IDLE terminated (server cutoff)"}} =
+             ImapClient.idle_await(conn, idle, 2_000)
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "a dropped socket while idling surfaces as an error" do
+    script =
+      idle_handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          {:sleep, 40},
+          :close
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:ok, _info} = ImapClient.examine(conn, "INBOX")
+    assert {:ok, idle} = ImapClient.idle_start(conn)
+    assert {:error, :closed} = ImapClient.idle_await(conn, idle, 2_000)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  # Awaits until `count` events have been collected — the pushes above may
+  # arrive coalesced into one read or spread over several, and either is
+  # correct wire behavior.
+  defp drain_events(conn, idle, count, acc \\ []) do
+    if length(acc) >= count do
+      acc
+    else
+      {:ok, events, idle} = ImapClient.idle_await(conn, idle, 2_000)
+      drain_events(conn, idle, count, acc ++ events)
+    end
+  end
+
   test "a silent server (no reply, no close) causes {:error, :timeout} within the configured recv_timeout" do
     script =
       handshake_steps() ++

@@ -85,11 +85,40 @@ defmodule Valea.Mail.Engine do
   never silently moves the other, and a bad SMTP password can never pause
   the IMAP sync.
 
+  ## IMAP IDLE
+
+  Each Engine owns an anonymous `DynamicSupervisor` (started in `init/1`, so
+  linked to this process and torn down with it) whose only child is this
+  account's `Valea.Mail.IdleWatcher` — a long-lived, INBOX-only IDLE
+  connection that pokes this Engine into a sync pass when the server
+  announces new mail. The watcher is started, stopped and REBUILT off exactly
+  the same gate a pass runs under (`validate_sync/1`): it exists while the
+  account is active, configured, credentialed and not sticky-blocked, and not
+  otherwise. A new IMAP credential rebuilds it (the connection it holds
+  authenticated with the old secret); `auth_failed` and `mailbox_replaced`
+  stop it, and `readopt/1` brings it back.
+
+  The supervisor in between is not ceremony — it is what keeps a dying IDLE
+  connection away from this process, whose in-RAM credential nothing else
+  holds a copy of. For the same reason every supervisor call on that path is
+  guarded (`safe_start_child/2`, `safe_terminate_child/2`): a supervisor that
+  has itself given up must degrade to "no IDLE, still polling", never take
+  the Engine's `handle_call` down with a `:noproc` exit.
+
+  IDLE is an accelerator, never a dependency: the poll timer below runs
+  unchanged whether or not a watcher exists, and `Valea.Mail.IdleWatcher`'s
+  moduledoc explains why every failure there is a latency cost rather than a
+  correctness one. `:mail_idle` (application env, default `true`) is the one
+  switch — the test seam that keeps a second connection out of the way of the
+  suites that script the transport call-for-call. There is no user-facing
+  toggle: IDLE is automatic when the server advertises it.
+
   ## Sync passes
 
   A pass (`Valea.Mail.SyncPass.run/1`) runs in a monitored `Task`, triggered
-  by the poll timer or `sync_now/1` (its only two triggers). At most one
-  runs at a time: the in-flight task's `{pid, ref}` is tracked in
+  by the poll timer, `sync_now/1`, or an IDLE notification (`idle_activity/1`
+  — its only three triggers). At most one runs at a time: the in-flight task's
+  `{pid, ref}` is tracked in
   `state.sync_task`, so a second `sync_now` (or a poll tick) while syncing is
   a no-op that leaves the running pass untouched. Status shows `"syncing"`
   for the duration; the task's result flips it back to `"idle"` (or
@@ -150,6 +179,7 @@ defmodule Valea.Mail.Engine do
   alias Valea.Mail.Account
   alias Valea.Mail.AgentsFile
   alias Valea.Mail.Doctor
+  alias Valea.Mail.IdleWatcher
   alias Valea.Mail.Index
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Redact
@@ -158,6 +188,13 @@ defmodule Valea.Mail.Engine do
 
   @default_interval_minutes 5
   @max_poll_jitter_ms 60_000
+
+  # The two sticky statuses that PAUSE this account's background work until
+  # `set_credential/2` or `readopt/1` clears them: the poll timer is not
+  # re-armed, and no IDLE watcher is kept. Deliberately NOT part of
+  # `validate_sync/1` — an explicit `sync_now/1` past an `auth_failed` is how a
+  # caller retries, and only the automatic triggers back off.
+  @paused_statuses ["auth_failed", "mailbox_replaced"]
 
   @typedoc """
   `credential` is `"present"` or `"missing"`; `state` is one of `"inactive"`,
@@ -263,6 +300,25 @@ defmodule Valea.Mail.Engine do
       pid -> GenServer.call(pid, :sync_now)
     end
   end
+
+  @doc """
+  The IDLE watcher's sync trigger (`Valea.Mail.IdleWatcher`): the server
+  announced INBOX activity, so run a pass if this account currently can.
+
+  A `cast`, unlike `sync_now/1`'s call, and deliberately so — the watcher is
+  a child of this Engine's own supervisor, and the Engine terminates it from
+  inside its own loop; a synchronous trigger would put a call in the one
+  direction that can deadlock against that. Nothing awaits the outcome
+  either: the pass broadcasts its own `mail_sync_started`/`mail_sync_finished`
+  exactly as a polled one does.
+
+  Internally identical to a poll tick — the same `validate_sync/1` gate and
+  the same single-flighting — so a trigger arriving while a pass or an ops
+  batch is in flight is a no-op, and one arriving for an
+  inactive/uncredentialed/blocked account does nothing at all.
+  """
+  @spec idle_activity(pid()) :: :ok
+  def idle_activity(engine) when is_pid(engine), do: GenServer.cast(engine, :idle_activity)
 
   @doc """
   Authorizes exactly one reconciliation pass past a sticky `mailbox_replaced`
@@ -500,6 +556,13 @@ defmodule Valea.Mail.Engine do
     Process.flag(:trap_exit, true)
     Phoenix.PubSub.subscribe(Valea.PubSub, "workspace")
 
+    # The IDLE watcher's supervisor (moduledoc §IMAP IDLE). Anonymous on
+    # purpose — one per Engine, reachable only through this state, so two
+    # accounts (or two workspace generations) can never collide over a name.
+    # Started even for an Engine that will never have a watcher: it costs one
+    # idle process and keeps every later start/stop decision in one place.
+    {:ok, idle_sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
     state = %{
       root: cfg.root,
       generation: cfg.generation,
@@ -539,7 +602,14 @@ defmodule Valea.Mail.Engine do
       ops_current: nil,
       ops_queue: [],
       pass_readopt_authorized: false,
-      notices: []
+      notices: [],
+      # IMAP IDLE (moduledoc §IMAP IDLE): the watcher's supervisor, and the
+      # `{pid, monitor_ref}` of the one watcher under it — `nil` whenever this
+      # account has no watcher, including after one exited on its own (a
+      # server without the IDLE capability), which the monitor is what tells
+      # us.
+      idle_sup: idle_sup,
+      idle_watcher: nil
     }
 
     if Map.get(cfg, :activate, false) do
@@ -562,8 +632,13 @@ defmodule Valea.Mail.Engine do
   def handle_call({:set_credential, secret, :imap}, _from, state) do
     new_state =
       state
+      # REBUILT, not left alone: any watcher already running is holding a
+      # connection it authenticated with the PREVIOUS secret, which a rotation
+      # has to invalidate (moduledoc §IMAP IDLE).
+      |> stop_idle_watcher()
       |> Map.put(:credential, fn -> secret end)
       |> clear_auth_failed()
+      |> sync_idle_watcher()
 
     broadcast_status(new_state)
     {:reply, :ok, new_state}
@@ -697,7 +772,7 @@ defmodule Valea.Mail.Engine do
 
   def handle_call(:readopt, _from, %{status: "mailbox_replaced"} = state) do
     :ok = Account.authorize_readopt!(state.root, state.account)
-    new_state = %{state | status: "idle"} |> schedule_poll()
+    new_state = %{state | status: "idle"} |> schedule_poll() |> sync_idle_watcher()
     broadcast_status(new_state)
     {:reply, :ok, new_state}
   end
@@ -717,6 +792,11 @@ defmodule Valea.Mail.Engine do
     end
   end
 
+  # The IDLE watcher's trigger (`idle_activity/1`) — the poll tick's own gated
+  # path, reached by cast so the watcher never blocks on this loop.
+  @impl true
+  def handle_cast(:idle_activity, state), do: {:noreply, maybe_start_pass(state)}
+
   @impl true
   def handle_info({:workspace_opened, _info, generation}, %{generation: generation} = state) do
     {:noreply, activate(state)}
@@ -728,7 +808,7 @@ defmodule Valea.Mail.Engine do
   # `set_credential/2`/`readopt/1` clears them (see moduledoc §Errors /
   # §mailbox_replaced stickiness).
   def handle_info(:poll, %{status: status} = state)
-      when status in ["auth_failed", "mailbox_replaced"] do
+      when status in @paused_statuses do
     {:noreply, %{state | poll_timer: nil}}
   end
 
@@ -816,6 +896,16 @@ defmodule Valea.Mail.Engine do
       ) do
     maybe_reply(from, abandon_dropped(state, work))
     {:noreply, %{state | ops_current: nil} |> drain_ops()}
+  end
+
+  # The IDLE watcher is gone. Either it stopped `:normal` on its own (the
+  # server doesn't advertise IDLE — a permanent answer, never retried) or its
+  # supervisor gave up on restarting it. Both mean "this account has no
+  # watcher"; clearing the slot is all this Engine does about it. It must NOT
+  # start a replacement here: a normal exit is final by design, and re-racing
+  # a broken one would be the crash loop the supervisor just stopped.
+  def handle_info({:DOWN, ref, :process, pid, _reason}, %{idle_watcher: {pid, ref}} = state) do
+    {:noreply, %{state | idle_watcher: nil}}
   end
 
   # Stale task chatter (already handled/superseded): ignore.
@@ -1389,6 +1479,9 @@ defmodule Valea.Mail.Engine do
           workspace_id: load_workspace_id(state.root)
       }
       |> schedule_poll()
+      # After the credential slots are filled (an env-supplied credential
+      # counts) — the gate reads `credential`, so this must come last.
+      |> sync_idle_watcher()
 
     broadcast_status(new_state)
     new_state
@@ -1468,6 +1561,90 @@ defmodule Valea.Mail.Engine do
           :ok
       end
     end
+  end
+
+  # -- IMAP IDLE watcher ----------------------------------------------------
+
+  # Brings the watcher into line with the account's CURRENT ability to sync
+  # (moduledoc §IMAP IDLE): started when `idle_wanted?/1` says yes and nothing
+  # is running, stopped when it says no and something is. Idempotent, so every
+  # lifecycle edge (activation, credential, auth failure, readopt) can call it
+  # unconditionally.
+  defp sync_idle_watcher(state) do
+    case {idle_wanted?(state), state.idle_watcher} do
+      {true, nil} -> start_idle_watcher(state)
+      {false, {_pid, _ref}} -> stop_idle_watcher(state)
+      _unchanged -> state
+    end
+  end
+
+  # A watcher is wanted exactly when this account's AUTOMATIC triggers are: it
+  # can sync at all (`validate_sync/1`) and its background work isn't paused on
+  # a sticky failure (`@paused_statuses` — the same list the poll tick honors,
+  # since an IDLE trigger would only produce passes that fail the same way).
+  #
+  # `:mail_idle` defaults ON. The switch exists so the suites that script a
+  # transport call-for-call (and the doubles that report every connect to a
+  # probe pid) aren't perturbed by a second, unrelated connection:
+  # `config/test.exs` turns it off, and the IDLE tests turn it back on for
+  # themselves.
+  defp idle_wanted?(state) do
+    Application.get_env(:valea, :mail_idle, true) and validate_sync(state) == :ok and
+      state.status not in @paused_statuses
+  end
+
+  defp start_idle_watcher(state) do
+    args = %{
+      account: state.account,
+      engine: self(),
+      settings: state.settings,
+      transport: state.transport,
+      connect_opts: state.connect_opts,
+      credential: state.credential
+    }
+
+    case safe_start_child(state.idle_sup, {IdleWatcher, args}) do
+      {:ok, pid} -> %{state | idle_watcher: {pid, Process.monitor(pid)}}
+      :error -> %{state | idle_watcher: nil}
+    end
+  end
+
+  defp stop_idle_watcher(%{idle_watcher: nil} = state), do: state
+
+  defp stop_idle_watcher(%{idle_watcher: {pid, ref}} = state) do
+    # Demonitor BEFORE terminating: the `:DOWN` this shutdown produces is one
+    # we caused, and letting it arrive would only re-clear a slot this call
+    # already cleared — while a LATER watcher could have taken the slot in
+    # between, and that stale `:DOWN` would then clear the wrong one.
+    Process.demonitor(ref, [:flush])
+    safe_terminate_child(state.idle_sup, pid)
+    %{state | idle_watcher: nil}
+  end
+
+  # Both supervisor calls are guarded: `DynamicSupervisor` calls are
+  # `GenServer.call`s, and one against a supervisor that has already given up
+  # (its own restart intensity exceeded) EXITS the caller — here, the Engine,
+  # in the middle of a `handle_call`. Losing IDLE must degrade to "still
+  # polling", never take the account down (moduledoc §IMAP IDLE).
+  defp safe_start_child(sup, child_spec) do
+    case DynamicSupervisor.start_child(sup, child_spec) do
+      {:ok, pid} -> {:ok, pid}
+      {:ok, pid, _info} -> {:ok, pid}
+      _other -> :error
+    end
+  rescue
+    _error -> :error
+  catch
+    :exit, _reason -> :error
+  end
+
+  defp safe_terminate_child(sup, pid) do
+    DynamicSupervisor.terminate_child(sup, pid)
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   defp maybe_start_pass(state) do
@@ -1584,6 +1761,9 @@ defmodule Valea.Mail.Engine do
         last_error: "authentication failed",
         pass_readopt_authorized: false
     }
+    # The credential the watcher is holding is the one that just failed: its
+    # own reconnects would hammer the server with the same bad password.
+    |> sync_idle_watcher()
     |> tap_broadcast_status()
   end
 
@@ -1605,6 +1785,9 @@ defmodule Valea.Mail.Engine do
         last_error: message,
         pass_readopt_authorized: false
     }
+    # Sticky-blocked: polling is paused until `readopt/1`, and an IDLE trigger
+    # would only produce passes this Engine refuses to run.
+    |> sync_idle_watcher()
     |> tap_broadcast_status()
   end
 

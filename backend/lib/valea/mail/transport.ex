@@ -14,6 +14,27 @@ defmodule Valea.Mail.Transport do
   already surfaces a failed `LIST` command that way (via `command_error/1`),
   so the callback type now matches what the real implementation actually
   does rather than promising unconditional success.
+
+  ## The IDLE trio (`idle_start/1`, `idle_await/3`, `idle_done/2`)
+
+  ADDITIVE, and the only growth this behaviour has taken since that copy:
+  the spec's §Transport behaviour predates the full-client plan's M5, whose
+  `Valea.Mail.IdleWatcher` needs primitives the connect-per-pass callbacks
+  above cannot express. No existing callback's shape changed.
+
+  They are deliberately *session-threading* rather than stateful: `conn` is
+  immutable and no callback but `connect/3` hands one back, so an IDLE — the
+  one exchange where the server writes bytes nobody asked for, possibly
+  splitting a response across two reads — carries its own opaque `idle()`
+  session value (the pending-response buffer plus whatever the
+  implementation needs to recognize its own tagged completion). Threading it
+  through the caller keeps residual bytes from being silently dropped
+  between awaits without giving `conn` a mutable read buffer that every
+  other callback would then have to reason about.
+
+  Gating is `supports?(conn, :idle)`, never a blind `idle_start/1`: RFC 2177
+  requires the `IDLE` capability, and a server without it must be left on the
+  poll loop rather than probed.
   """
 
   @type conn :: term()
@@ -32,7 +53,36 @@ defmodule Valea.Mail.Transport do
           gm_msgid: String.t() | nil
         }
 
-  @type capability :: :condstore | :qresync | :move | :uidplus | :gmail
+  @type capability :: :condstore | :qresync | :move | :uidplus | :gmail | :idle
+
+  @typedoc """
+  One in-progress IDLE, opaque to callers — created by `idle_start/1`,
+  threaded through `idle_await/3`, consumed by `idle_done/2`. Never inspected
+  or constructed outside the implementation that returned it.
+  """
+  @type idle :: term()
+
+  @typedoc """
+  One untagged response observed while idling, already parsed off the wire by
+  the implementation (the caller never sees IMAP bytes).
+
+  `:exists`, `:expunge` and `:fetch` carry the message SEQUENCE number the
+  server reported — the three untagged responses that mean "this mailbox
+  changed" (a new message, a removed one, a flag change). Sequence numbers
+  are useless to this codebase (every command it issues is UID-based), so
+  they are carried for logging/diagnostics only; the watcher reacts to the
+  event's KIND, then re-syncs by UID like everything else.
+
+  `:other` is any other untagged line, verbatim and uninterpreted — a
+  `* OK Still here` keepalive, a `* FLAGS (...)` re-announcement. It must
+  never be read as mailbox change: a server that sends a periodic untagged OK
+  would otherwise trigger a sync pass on every heartbeat, forever.
+  """
+  @type idle_event ::
+          {:exists, pos_integer()}
+          | {:expunge, pos_integer()}
+          | {:fetch, pos_integer()}
+          | {:other, String.t()}
 
   @callback connect(config, credential :: String.t(), opts :: keyword()) ::
               {:ok, conn} | {:error, term()}
@@ -144,4 +194,50 @@ defmodule Valea.Mail.Transport do
   @callback supports?(conn, capability()) :: boolean()
 
   @callback logout(conn) :: :ok
+
+  @doc """
+  Enters IDLE (RFC 2177) on the CURRENTLY SELECTED folder — the caller must
+  have run `examine/2` (read-only by design: an IDLE connection never needs
+  `select/2`'s write access, and `examine/2` cannot disturb `\\Recent`) first.
+
+  Sends `IDLE` and returns only once the server has answered with its `+`
+  continuation, so `{:ok, idle}` means the connection is genuinely idling. A
+  server that answers the IDLE with a tagged `NO`/`BAD` instead (it can, even
+  while advertising the capability — an over-quota or read-only-mode mailbox)
+  is `{:error, {status, text}}`, not a hang.
+
+  Untagged responses that arrive BEFORE the continuation (a server flushing a
+  pending `EXISTS` as it enters IDLE) are not discarded — they ride in the
+  returned session and come back out of the first `idle_await/3`.
+  """
+  @callback idle_start(conn) :: {:ok, idle()} | {:error, term()}
+
+  @doc """
+  Waits up to `timeout_ms` for untagged activity on an idling connection.
+
+  Returns as soon as at least one complete untagged response has arrived —
+  `{:ok, events, idle}` with the threaded session — or, when the timeout
+  elapses first, `{:ok, [], idle}`. An empty list is therefore a normal
+  deadline, NOT an error: it is how the caller's re-issue timer surfaces.
+
+  `{:error, reason}` is a genuinely dead or hijacked connection: a socket
+  error, or the server terminating the IDLE on its own (a tagged completion
+  arriving with no `DONE` sent). Either way the session is over — the caller
+  must reconnect rather than await again.
+  """
+  @callback idle_await(conn, idle(), timeout_ms :: non_neg_integer()) ::
+              {:ok, [idle_event()], idle()} | {:error, term()}
+
+  @doc """
+  Leaves IDLE: sends `DONE` and reads through the tagged completion.
+
+  Returns the untagged events that arrived inside that handshake window
+  (`{:ok, events}`) — never dropping them. The window is real: a message can
+  land in the microseconds between `DONE` leaving the client and the server's
+  completion, and those events are the caller's only notice of it.
+
+  The connection is left in the selected state, usable for another
+  `idle_start/1` or an ordinary command.
+  """
+  @callback idle_done(conn, idle()) :: {:ok, [idle_event()]} | {:error, term()}
 end

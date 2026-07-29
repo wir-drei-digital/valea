@@ -51,6 +51,14 @@ defmodule Valea.Mail.EngineTest.HangingTransport do
   def supports?(_conn, _capability), do: false
   @impl true
   def logout(_conn), do: :ok
+  # No IDLE: `supports?/2` above is `false`, so the watcher's capability gate
+  # stops before these. They satisfy the behaviour, nothing more.
+  @impl true
+  def idle_start(_conn), do: {:error, :no_idle}
+  @impl true
+  def idle_await(_conn, _idle, _timeout_ms), do: {:error, :no_idle}
+  @impl true
+  def idle_done(_conn, _idle), do: {:error, :no_idle}
 end
 
 # A `Transport` double whose `connect/3` returns an error reason that EMBEDS
@@ -98,6 +106,87 @@ defmodule Valea.Mail.EngineTest.LeakyConnectTransport do
   def append(_conn, _folder, _flags, _rfc822), do: {:ok, %{dest_uid: nil}}
   @impl true
   def supports?(_conn, _capability), do: false
+  @impl true
+  def logout(_conn), do: :ok
+  # No IDLE: `supports?/2` above is `false`, so the watcher's capability gate
+  # stops before these. They satisfy the behaviour, nothing more.
+  @impl true
+  def idle_start(_conn), do: {:error, :no_idle}
+  @impl true
+  def idle_await(_conn, _idle, _timeout_ms), do: {:error, :no_idle}
+  @impl true
+  def idle_done(_conn, _idle), do: {:error, :no_idle}
+end
+
+# A `Transport` double for the IDLE lifecycle tests. `connect/3` announces
+# itself to the probe pid and blocks until released — exactly like
+# `HangingTransport` above — so a test can tell the WATCHER's connection apart
+# from a sync pass's (they run in different processes) and answer each with the
+# result it wants. Once connected the IDLE conversation simply PARKS: it
+# advertises IDLE, accepts the read-only EXAMINE and the IDLE, then sleeps out
+# every await deadline. That is what a quiet mailbox looks like, and it keeps
+# the watcher alive and observable for as long as a lifecycle test needs.
+defmodule Valea.Mail.EngineTest.IdleTransport do
+  @behaviour Valea.Mail.Transport
+
+  @impl true
+  def connect(_config, _credential, _opts) do
+    send(Application.get_env(:valea, :engine_sync_probe), {:connect_called, self()})
+
+    receive do
+      {:release, result} -> result
+    end
+  end
+
+  @impl true
+  def supports?(_conn, :idle), do: true
+  def supports?(_conn, _capability), do: false
+
+  @impl true
+  def examine(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}
+
+  @impl true
+  def idle_start(_conn), do: {:ok, %{}}
+
+  @impl true
+  def idle_await(_conn, idle, timeout_ms) do
+    Process.sleep(timeout_ms)
+    {:ok, [], idle}
+  end
+
+  @impl true
+  def idle_done(_conn, _idle), do: {:ok, []}
+
+  @impl true
+  def capabilities(_conn), do: {:ok, ["IDLE"]}
+  @impl true
+  def list_folders(_conn), do: {:ok, []}
+  @impl true
+  def create_folder(_conn, _folder), do: :ok
+  @impl true
+  def select(_conn, _folder), do: {:ok, %{uidvalidity: 1, uidnext: 1, highestmodseq: nil}}
+  @impl true
+  def uid_search(_conn, _criteria), do: {:ok, []}
+  @impl true
+  def uid_fetch_meta(_conn, _uids), do: {:ok, []}
+  @impl true
+  def uid_fetch_headers(_conn, _uids), do: {:ok, []}
+  @impl true
+  def uid_fetch_full(_conn, _uid), do: {:ok, ""}
+  @impl true
+  def uid_fetch_flags(_conn, _uid_set), do: {:ok, []}
+  @impl true
+  def uid_store_flags(_conn, _uid, _add, _remove, _opts \\ []), do: {:ok, :applied}
+  @impl true
+  def uid_move(_conn, _uid, _folder), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def uid_copy(_conn, _uid, _folder), do: {:ok, %{dest_uid: nil}}
+  @impl true
+  def uid_mark_deleted(_conn, _uid), do: :ok
+  @impl true
+  def uid_expunge(_conn, _uid), do: :ok
+  @impl true
+  def append(_conn, _folder, _flags, _rfc822), do: {:ok, %{dest_uid: nil}}
   @impl true
   def logout(_conn), do: :ok
 end
@@ -1804,5 +1893,224 @@ defmodule Valea.Mail.EngineTest do
 
     assert {:ok, %{state: "rejected", error: "crashed_before_transmit"}} =
              Store.op_by_id(stranded.id)
+  end
+
+  # -- IMAP IDLE lifecycle -----------------------------------------------------
+  #
+  # The watcher's own conversation is covered wire-level in
+  # `idle_watcher_test.exs`; what these tests own is the Engine's half — WHEN a
+  # watcher exists, and what happens to it when the account's ability to sync
+  # changes underneath it. Read off `state.idle_watcher` via `:sys.get_state`
+  # (the idiom this file already uses for `poll_timer`/`sync_task`) rather than
+  # through new production introspection.
+
+  defp idle_watcher(slug) do
+    :sys.get_state(GenServer.whereis(Engine.via(slug))).idle_watcher
+  end
+
+  # `config/test.exs` turns IDLE off for every other suite (a second connection
+  # through a scripted transport would perturb them); these tests turn it back
+  # on and restore the value they found — never `delete_env`, which would leave
+  # the production default ON for whatever runs next.
+  defp enable_idle! do
+    previous = Application.get_env(:valea, :mail_idle)
+    Application.put_env(:valea, :mail_idle, true)
+    on_exit(fn -> restore_idle_env(previous) end)
+  end
+
+  defp restore_idle_env(nil), do: Application.delete_env(:valea, :mail_idle)
+  defp restore_idle_env(previous), do: Application.put_env(:valea, :mail_idle, previous)
+
+  defp probe! do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+  end
+
+  defp idle_engine!(root, generation, slug) do
+    probe!()
+    use_transports!(Valea.Mail.EngineTest.IdleTransport)
+    start_engine!(root, generation, slug)
+    open(root, generation)
+  end
+
+  # Releases the watcher's blocked `connect/3` with a working connection, so it
+  # goes on to park in IDLE.
+  # The generous timeouts on every `{:connect_called, _}` below are deliberate:
+  # the connect happens in ANOTHER process (the watcher, or a pass Task), so
+  # `assert_receive`'s 100ms default would make these tests hostages to
+  # scheduler luck under a loaded suite.
+  defp connect_watcher!(watcher) do
+    assert_receive {:connect_called, ^watcher}, 2_000
+    send(watcher, {:release, {:ok, :idle_conn}})
+  end
+
+  test "an activated account with NO credential gets no watcher at all", %{root: root} do
+    enable_idle!()
+    slug = "mara"
+    idle_engine!(root, 200, slug)
+
+    # `validate_sync/1` is the whole gate: nothing to connect with, nothing to
+    # start. No connection is attempted either.
+    assert Engine.status(slug).state == "idle"
+    assert idle_watcher(slug) == nil
+    refute_received {:connect_called, _pid}
+  end
+
+  test "set_credential starts a watcher, which opens its OWN connection", %{root: root} do
+    enable_idle!()
+    slug = "mara"
+    idle_engine!(root, 201, slug)
+
+    assert :ok = Engine.set_credential(slug, "app-password")
+    assert {watcher, ref} = idle_watcher(slug)
+    assert is_pid(watcher) and is_reference(ref)
+
+    # The connect happens in the WATCHER's process — never in the Engine loop,
+    # and never on a sync pass's connection.
+    assert_receive {:connect_called, connect_pid}, 2_000
+    assert connect_pid == watcher
+    send(watcher, {:release, {:ok, :idle_conn}})
+
+    # Parked in IDLE, still alive, and the Engine still answers instantly.
+    assert Engine.status(slug).state == "idle"
+    assert Process.alive?(watcher)
+  end
+
+  test "IDLE needs no configuration: with :mail_idle unset entirely, a watcher still starts", %{
+    root: root
+  } do
+    previous = Application.get_env(:valea, :mail_idle)
+    Application.delete_env(:valea, :mail_idle)
+    on_exit(fn -> restore_idle_env(previous) end)
+
+    slug = "mara"
+    idle_engine!(root, 202, slug)
+
+    assert :ok = Engine.set_credential(slug, "app-password")
+    assert {watcher, _ref} = idle_watcher(slug)
+    connect_watcher!(watcher)
+  end
+
+  test "rotating the IMAP credential REBUILDS the watcher", %{root: root} do
+    enable_idle!()
+    slug = "mara"
+    idle_engine!(root, 203, slug)
+
+    assert :ok = Engine.set_credential(slug, "old-password")
+    assert {first, _ref} = idle_watcher(slug)
+    connect_watcher!(first)
+
+    # The connection `first` is holding authenticated with the OLD secret, so a
+    # rotation cannot leave it running.
+    assert :ok = Engine.set_credential(slug, "new-password")
+    assert {second, _ref} = idle_watcher(slug)
+    refute second == first
+    wait_until(fn -> not Process.alive?(first) end)
+
+    # The replacement opens its own connection with the new credential.
+    connect_watcher!(second)
+  end
+
+  test "a pass reporting auth_failed stops the watcher; a fresh credential brings it back", %{
+    root: root
+  } do
+    enable_idle!()
+    slug = "mara"
+    idle_engine!(root, 204, slug)
+
+    assert :ok = Engine.set_credential(slug, "app-password")
+    assert {watcher, _ref} = idle_watcher(slug)
+    connect_watcher!(watcher)
+
+    # The pass's connect is a DIFFERENT process (the pass Task), which is how
+    # this test answers the two connections differently.
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, pass_pid}, 2_000
+    refute pass_pid == watcher
+    send(pass_pid, {:release, {:error, :auth_failed}})
+
+    wait_until(fn -> Engine.status(slug).state == "auth_failed" end)
+
+    # The credential the watcher is holding is the one that just failed: its own
+    # reconnects would hammer the server with the same bad password.
+    assert idle_watcher(slug) == nil
+    wait_until(fn -> not Process.alive?(watcher) end)
+
+    assert :ok = Engine.set_credential(slug, "new-password")
+    assert {revived, _ref} = idle_watcher(slug)
+    refute revived == watcher
+    connect_watcher!(revived)
+  end
+
+  test "a pass reporting mailbox_replaced stops the watcher; readopt brings it back", %{
+    root: root
+  } do
+    enable_idle!()
+    slug = "mara"
+    idle_engine!(root, 207, slug)
+
+    assert :ok = Engine.set_credential(slug, "app-password")
+    assert {watcher, _ref} = idle_watcher(slug)
+    connect_watcher!(watcher)
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, pass_pid}, 2_000
+    send(pass_pid, {:release, {:error, :mailbox_replaced}})
+
+    wait_until(fn -> Engine.status(slug).state == "mailbox_replaced" end)
+
+    # Sticky-blocked: polling is paused, and an IDLE trigger could only produce
+    # passes this Engine refuses to run.
+    assert idle_watcher(slug) == nil
+    wait_until(fn -> not Process.alive?(watcher) end)
+
+    assert :ok = Engine.readopt(slug)
+    assert {revived, _ref} = idle_watcher(slug)
+    refute revived == watcher
+    connect_watcher!(revived)
+  end
+
+  test "stopping the engine takes the watcher down with it", %{root: root} do
+    enable_idle!()
+    slug = "mara"
+    idle_engine!(root, 205, slug)
+
+    assert :ok = Engine.set_credential(slug, "app-password")
+    assert {watcher, _ref} = idle_watcher(slug)
+    connect_watcher!(watcher)
+
+    ref = Process.monitor(watcher)
+    stop_supervised!(:engine_mara)
+
+    # Through the link on the Engine-owned supervisor — no explicit teardown
+    # anywhere, which is the point of hanging it off the Engine.
+    assert_receive {:DOWN, ^ref, :process, ^watcher, _reason}, 1_000
+  end
+
+  test "a watcher that stops itself (server without IDLE) clears the slot and is not replaced", %{
+    root: root
+  } do
+    enable_idle!()
+    probe!()
+    # `HangingTransport.supports?/2` is `false` for every capability, so the
+    # watcher's own capability gate takes the clean-exit path.
+    use_transports!(Valea.Mail.EngineTest.HangingTransport)
+
+    slug = "mara"
+    start_engine!(root, 206, slug)
+    open(root, 206)
+
+    assert :ok = Engine.set_credential(slug, "app-password")
+    assert {watcher, _ref} = idle_watcher(slug)
+    connect_watcher!(watcher)
+
+    wait_until(fn -> not Process.alive?(watcher) end)
+    # The monitor is what tells the Engine; nothing re-races a server whose
+    # answer cannot change.
+    wait_until(fn -> idle_watcher(slug) == nil end)
+    refute_receive {:connect_called, _pid}, 100
+
+    # And the account is otherwise untouched — still idle, still polling.
+    assert Engine.status(slug).state == "idle"
   end
 end

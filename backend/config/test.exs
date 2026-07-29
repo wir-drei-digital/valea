@@ -14,6 +14,13 @@ config :valea, ValeaWeb.Endpoint,
 # Print only warnings and errors during test
 config :logger, level: :warning
 
+# IMAP IDLE off by default in test (`Valea.Mail.Engine`, §IMAP IDLE): an
+# Engine that starts a `Valea.Mail.IdleWatcher` opens a SECOND connection
+# through the same injected transport, which would perturb every suite that
+# scripts that transport call-for-call or reports each connect to a probe pid.
+# The tests that exercise IDLE turn it back on for themselves.
+config :valea, mail_idle: false
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 
