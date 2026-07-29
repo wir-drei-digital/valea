@@ -7,6 +7,7 @@ import {
   threadKeyForMessage
 } from '../components/mail/mail-shapes';
 import { inDesktop, keychainGet } from '../keychain';
+import { notifyNewMail } from '../notify';
 import type { MailStatusPush, MailSyncPush, MailMessagePush, MailDraftPush } from '../socket';
 import type { Channel } from 'phoenix';
 
@@ -101,6 +102,15 @@ export type MailAccountStatus = {
   smtpConfigured: boolean;
   /** The SMTP credential slot: `"n/a"` for a push-only account, which is NOT the same as a missing secret. */
   smtpCredential: 'present' | 'missing' | 'n/a';
+  /**
+   * The account's OS-notification opt-in (`config/mail.yaml`'s
+   * `notifications:`, default off). Reaches the store the same way
+   * `smtpConfigured` does — a string-keyed field on the engine's status, on
+   * both the RPC `accounts` array and the `mail_status` push — so
+   * `handleMailSync` can decide whether THIS account's `newUnread` is worth
+   * a notification without a second round trip.
+   */
+  notifications: boolean;
 };
 
 /** One folder of `list_mail_folders` — camelCased per-item typed map (`ListMailFoldersFields` in `api/client.ts`). */
@@ -226,7 +236,8 @@ export function normalizeMailAccountStatus(raw: Record<string, unknown>): MailAc
     notices: strings(raw.notices),
     folders: normalizeFolderNames(raw.folders),
     smtpConfigured: raw.smtp_configured === true,
-    smtpCredential: smtpCredentialState(raw.smtp_credential)
+    smtpCredential: smtpCredentialState(raw.smtp_credential),
+    notifications: raw.notifications === true
   };
 }
 
@@ -1177,11 +1188,31 @@ export class MailStore {
     this.#mailStatusListeners.forEach((listener) => listener(payload));
   }
 
-  /** `mail_sync` push handler — refresh the selected account's lists once its pass finishes. */
+  /**
+   * `mail_sync` push handler — refresh the selected account's lists once its
+   * pass finishes, and raise the new-mail notification.
+   *
+   * The notification is deliberately NOT scoped to the selected account: new
+   * mail arriving in a background mailbox is exactly what it exists to tell
+   * you about, so it runs BEFORE the selected-account filter below. It is
+   * gated on that account's own `notifications` opt-in (default off) and, one
+   * layer down in `notifyNewMail`, on an actually-granted OS permission — an
+   * account whose engine hasn't reported a status yet reads as opted out,
+   * which is the safe direction.
+   */
   handleMailSync(payload: MailSyncPush): void {
-    if (payload.phase !== 'finished' || payload.account !== this.selectedAccount) return;
+    if (payload.phase !== 'finished') return;
+
+    void notifyNewMail(payload.account, payload.newUnread, this.#notificationsEnabled(payload.account));
+
+    if (payload.account !== this.selectedAccount) return;
     void this.refreshFolders();
     void this.refreshMessages();
+  }
+
+  /** This account's `notifications:` opt-in; `false` for an account the store hasn't seen. */
+  #notificationsEnabled(account: string): boolean {
+    return this.accounts.find((a) => a.account === account)?.notifications === true;
   }
 
   /** `mail_message` push handler — a message file changed on disk; only the selected account's list is showing. */

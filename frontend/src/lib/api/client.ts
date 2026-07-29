@@ -589,7 +589,13 @@ const reviseMailDraftFields: ReviseMailDraftFields = ['sessionId', 'routed'];
 // Same `Array<TypedMap>` codegen gap as `listMailMessagesFields` above.
 const mailApplyOpsFields = [{ results: ['op', 'result', 'reason'] }] as unknown as MailApplyOpsFields;
 const setupMailAccountFields: SetupMailAccountFields = ['saved'];
+// `notifications` sits BESIDE `account:`, not inside it: it is a boolean that
+// is `false` for every account that hasn't opted in, and the falsy-map-field
+// bug nulls an atom-keyed `false` at any nesting depth (see
+// `Valea.Api.Mail`'s action comment) — so the backend returns it top-level
+// under a string key.
 const getMailAccountSettingsFields: GetMailAccountSettingsFields = [
+  'notifications',
   { account: ['host', 'port', 'username', { smtp: ['host', 'port', 'security', 'username', 'from', 'fromName'] }] }
 ];
 const mailAutoconfigFields: MailAutoconfigFields = [
@@ -920,6 +926,7 @@ function callSetupMailAccountChannel(
     smtpUsername?: string | null;
     smtpFrom?: string | null;
     smtpFromName?: string | null;
+    notifications?: boolean | null;
   }
 ) {
   return wrapChannelCall((handlers) =>
@@ -2038,13 +2045,19 @@ export const api = {
   // `null` (the default) means a push-only account — byte-for-byte the v4
   // call. An smtp block the backend can't load is REFUSED (`invalid_smtp`)
   // rather than written, so the account keeps syncing over IMAP.
+  //
+  // `notifications` is the per-account OS-notification opt-in. It defaults to
+  // `false` HERE rather than being left off the input: the action re-renders
+  // the account entry whole, so an omitted argument writes the flag off — a
+  // caller that means "keep it on" must say so on every save.
   setupMailAccount: (
     account: string,
     host: string,
     port: number,
     username: string,
     generation: number,
-    smtp: MailSmtpSetup | null = null
+    smtp: MailSmtpSetup | null = null,
+    notifications = false
   ) =>
     runRpc(
       (channel) =>
@@ -2054,12 +2067,21 @@ export const api = {
           port,
           username,
           generation,
+          notifications,
           ...smtpSetupInput(smtp)
         }),
       () =>
         httpSetupMailAccount(
           withAuth({
-            input: { account, host, port, username, generation, ...smtpSetupInput(smtp) },
+            input: {
+              account,
+              host,
+              port,
+              username,
+              generation,
+              notifications,
+              ...smtpSetupInput(smtp)
+            },
             fields: setupMailAccountFields
           })
         )

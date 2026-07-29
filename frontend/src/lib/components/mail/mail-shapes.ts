@@ -947,6 +947,12 @@ export type MailSetupFormInput = {
   generation: number;
   /** The optional SMTP block (spec G). Absent/`null` = a push-only account. */
   smtp?: MailSetupSmtpInput | null;
+  /**
+   * The OS-notification opt-in for this account. Absent = OFF, which is both
+   * the default and what the backend writes for an omitted argument — this
+   * action re-renders the account entry whole, so "not stated" IS "off".
+   */
+  notifications?: boolean;
 };
 
 /**
@@ -1101,7 +1107,8 @@ export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetup
     input.port,
     input.username,
     input.generation,
-    smtpSetupArgs(input.smtp)
+    smtpSetupArgs(input.smtp),
+    input.notifications === true
   );
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
 

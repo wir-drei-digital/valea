@@ -33,6 +33,11 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# New-mail notifications (mail full-client plan, M5 task 13). The SPA drives
+# it entirely through the plugin's own JS API (frontend/src/lib/notify.ts) —
+# there is no `#[tauri::command]` of ours behind it, so the only wiring is the
+# `.plugin(...)` registration in main.rs plus capabilities/notifications.json.
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.9"

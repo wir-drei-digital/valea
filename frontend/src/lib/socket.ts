@@ -126,10 +126,26 @@ export type MailStatusPush = {
   smtp_configured: boolean;
   /** The SEND credential slot: `"n/a"` (not `"missing"`) when there is no `smtp:` block to have a secret for. */
   smtp_credential: 'present' | 'missing' | 'n/a';
+  /** The account's `notifications:` opt-in (`config/mail.yaml`, default off) — the gate on `newUnread` raising an OS notification. */
+  notifications: boolean;
 };
 
-/** `mail_sync` push payload — `{:mail_sync_started, slug}` / `{:mail_sync_finished, slug, ...}`. */
-export type MailSyncPush = { account: string; phase: 'started' | 'finished'; newMessages: number };
+/**
+ * `mail_sync` push payload — `{:mail_sync_started, slug}` /
+ * `{:mail_sync_finished, slug, ...}`.
+ *
+ * `newUnread` is a SUBSET of `newMessages`: the pass's newly landed INBOX
+ * occurrences without `S` (`Valea.Mail.SyncPass`, §Result). It is what the
+ * new-mail notification counts; `newMessages` keeps its own meaning (every
+ * landing, every folder) for the sync line and the status copy. Always `0` on
+ * a `started` push.
+ */
+export type MailSyncPush = {
+  account: string;
+  phase: 'started' | 'finished';
+  newMessages: number;
+  newUnread: number;
+};
 
 /** `mail_message` push payload — one account's message file was created/updated on disk (`SyncPass`). */
 export type MailMessagePush = { account: string; path: string };

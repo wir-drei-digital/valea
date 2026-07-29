@@ -1,0 +1,15 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "notifications",
+	"description": "New-mail OS notifications (mail full-client plan, M5 task 13), granted to the SPA regardless of Local/Remote origin classification — same rationale as mail-keychain.json.",
+	"windows": ["main"],
+	"local": true,
+	"remote": {
+		"urls": ["http://localhost:4817", "http://localhost:4273"]
+	},
+	"permissions": [
+		"notification:allow-is-permission-granted",
+		"notification:allow-request-permission",
+		"notification:allow-notify"
+	]
+}

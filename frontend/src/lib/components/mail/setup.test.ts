@@ -65,19 +65,38 @@ describe('submitMailSetup — browser (dev) path', () => {
     // `account` IS the slug — a real form field validated client-side
     // against `MAIL_SLUG_RE`; the backend re-validates on its side.
     // The sixth argument is the optional v5 SMTP block — `null` for a
-    // push-only account, which is the v4 behaviour verbatim.
+    // push-only account, which is the v4 behaviour verbatim. The seventh is
+    // the notifications opt-in, `false` unless the form says otherwise (the
+    // action re-renders the account entry, so "not stated" IS "off").
     expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
       'work-inbox',
       'imap.example.com',
       993,
       'mara@example.com',
       3,
-      null
+      null,
+      false
     );
     expect(deps.refreshWorkspaceId).not.toHaveBeenCalled();
     expect(deps.keychainSet).not.toHaveBeenCalled();
     expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'hunter2', 3);
     expect(outcome).toEqual({ ok: true, devMode: true });
+  });
+
+  it('forwards the notifications opt-in when the form turned it on', async () => {
+    const deps = makeDeps();
+
+    await submitMailSetup({ ...input, notifications: true }, deps);
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      'work-inbox',
+      'imap.example.com',
+      993,
+      'mara@example.com',
+      3,
+      null,
+      true
+    );
   });
 
   it('rejects an invalid slug before any RPC call', async () => {
@@ -288,7 +307,8 @@ describe('submitMailSetup — with an SMTP block', () => {
         username: 'mara@example.com',
         from: null,
         fromName: 'Mara Vance'
-      }
+      },
+      false
     );
     expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:imap', 'hunter2');
     expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:smtp', 'smtp-only-secret');

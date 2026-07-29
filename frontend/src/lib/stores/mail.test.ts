@@ -12,6 +12,7 @@ import {
 } from './mail.svelte';
 import { sha256Hex } from '../components/mail/mail-shapes';
 import { inDesktop, keychainGet } from '../keychain';
+import { notifyNewMail } from '../notify';
 import type { ApiResult } from '../api/client';
 import type { MailStatusPush } from '../socket';
 import type { Channel } from 'phoenix';
@@ -27,9 +28,16 @@ vi.mock('../keychain', () => ({
   keychainGet: vi.fn(async () => null)
 }));
 
+// The OS-notification seam, mocked at the same boundary: `notify.ts` owns
+// permission + the platform API (its own decision table is unit-tested in
+// notify.test.ts), so what belongs HERE is only WHICH pushes reach it and
+// with what opt-in — drivable without a Notification API or a Tauri bridge.
+vi.mock('../notify', () => ({ notifyNewMail: vi.fn(async () => false) }));
+
 beforeEach(() => {
   vi.mocked(inDesktop).mockReset().mockReturnValue(false);
   vi.mocked(keychainGet).mockReset().mockResolvedValue(null);
+  vi.mocked(notifyNewMail).mockReset().mockResolvedValue(false);
 });
 
 type StatusResult = ApiResult<{ accounts: Record<string, any>[] }>;
@@ -229,8 +237,17 @@ describe('normalizeMailAccountStatus', () => {
       notices: ['one notice'],
       folders: null,
       smtpConfigured: false,
-      smtpCredential: 'n/a'
+      smtpCredential: 'n/a',
+      notifications: false
     } satisfies MailAccountStatus);
+  });
+
+  // Same string-keyed, falsy-map-field position as `smtp_configured` (see
+  // below): off unless the account explicitly opted in, and never inferred.
+  it('maps the string-keyed notifications opt-in, defaulting off', () => {
+    expect(normalizeMailAccountStatus(rawMara).notifications).toBe(false);
+    expect(normalizeMailAccountStatus({ ...rawMara, notifications: true }).notifications).toBe(true);
+    expect(normalizeMailAccountStatus({ ...rawMara, notifications: 'yes' }).notifications).toBe(false);
   });
 
   // `smtp_configured`/`smtp_credential` ride STRING keys on the engine's
@@ -773,7 +790,7 @@ describe('MailStore pagination', () => {
     await store.refreshStatus();
     expect(store.messages.map((m) => m.msgId)).toEqual(inbox.map((r) => r.msgId));
 
-    store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1 });
+    store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1, newUnread: 1 });
     await store.selectFolder('Archive');
     releaseInbox({ ok: true, data: { messages: inbox } } as MessagesResult);
     await flush();
@@ -1612,14 +1629,63 @@ describe('MailStore push handlers (account filtering)', () => {
     await store.refreshStatus();
     listMailMessages.mockClear();
 
-    store.handleMailSync({ account: 'zoe', phase: 'finished', newMessages: 1 });
-    store.handleMailSync({ account: 'mara', phase: 'started', newMessages: 0 });
+    store.handleMailSync({ account: 'zoe', phase: 'finished', newMessages: 1, newUnread: 0 });
+    store.handleMailSync({ account: 'mara', phase: 'started', newMessages: 0, newUnread: 0 });
     await flush();
     expect(listMailMessages).not.toHaveBeenCalled();
 
-    store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1 });
+    store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1, newUnread: 1 });
     await flush();
     expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE, threaded: true });
+  });
+
+  // The notification is NOT scoped to the selected account (background mail
+  // is the whole point) but IS scoped to the account's own opt-in, which the
+  // store reads off the status it already holds.
+  it('handleMailSync notifies for the opted-in account, selected or not', async () => {
+    const store = new MailStore(
+      fakeApi({
+        mailStatus: async () =>
+          ({
+            ok: true,
+            data: { accounts: [rawMara, { ...rawZoe, notifications: true }] }
+          }) as StatusResult
+      }) as never
+    );
+    await store.refreshStatus();
+    expect(store.selectedAccount).toBe('mara');
+    vi.mocked(notifyNewMail).mockClear();
+
+    store.handleMailSync({ account: 'zoe', phase: 'finished', newMessages: 3, newUnread: 2 });
+    expect(notifyNewMail).toHaveBeenCalledWith('zoe', 2, true);
+
+    // The selected account has NOT opted in — the call still happens (one
+    // gate, in `notifyNewMail`), carrying `enabled: false`.
+    store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1, newUnread: 1 });
+    expect(notifyNewMail).toHaveBeenCalledWith('mara', 1, false);
+  });
+
+  it('handleMailSync never notifies for a started push', async () => {
+    const store = new MailStore(
+      fakeApi({
+        mailStatus: async () =>
+          ({ ok: true, data: { accounts: [{ ...rawMara, notifications: true }] } }) as StatusResult
+      }) as never
+    );
+    await store.refreshStatus();
+    vi.mocked(notifyNewMail).mockClear();
+
+    store.handleMailSync({ account: 'mara', phase: 'started', newMessages: 0, newUnread: 0 });
+    expect(notifyNewMail).not.toHaveBeenCalled();
+  });
+
+  it('handleMailSync treats an account the store has never seen as opted out', async () => {
+    const store = new MailStore(fakeApi({}) as never);
+    await store.refreshStatus();
+    vi.mocked(notifyNewMail).mockClear();
+
+    store.handleMailSync({ account: 'ghost', phase: 'finished', newMessages: 1, newUnread: 1 });
+    expect(notifyNewMail).toHaveBeenCalledWith('ghost', 1, false);
   });
 
   it('handleMailMessage refetches only for the selected account', async () => {

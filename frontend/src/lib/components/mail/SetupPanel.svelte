@@ -34,6 +34,7 @@
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
   import { inDesktop, keychainSet } from '$lib/keychain';
+  import { requestNotifyPermission } from '$lib/notify';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import {
@@ -73,6 +74,29 @@
   let smtpFromName = $state('');
   let smtpSecret = $state('');
   let smtpSameAsImap = $state(true);
+
+  // New-mail notifications, opt-in per account (M5 task 13), OFF by default.
+  // The OS permission is requested LAZILY — here, on the first enable, never
+  // on app load. A refusal turns the toggle straight back off and says so:
+  // the switch always reflects what will actually happen, never an intent the
+  // OS has already vetoed.
+  let notificationsEnabled = $state(false);
+  let notificationsDenied = $state(false);
+
+  async function toggleNotifications(wanted: boolean): Promise<void> {
+    notificationsDenied = false;
+    // Follow the DOM first, then correct: the checkbox is one-way bound
+    // (`checked={...}`) so it can be refused, and a state that never LEFT
+    // `false` would leave a refused box visually ticked.
+    notificationsEnabled = wanted;
+    if (!wanted) return;
+
+    const permission = await requestNotifyPermission();
+    if (permission === 'granted') return;
+
+    notificationsEnabled = false;
+    notificationsDenied = true;
+  }
 
   function smtpInput(): MailSetupSmtpInput {
     const port = Number(smtpPortText.trim());
@@ -114,6 +138,8 @@
     smtpFromName = '';
     smtpSecret = '';
     smtpSameAsImap = true;
+    notificationsEnabled = false;
+    notificationsDenied = false;
     error = null;
     editLoadError = false;
     guessNote = null;
@@ -151,6 +177,7 @@
     }
 
     const data = result.data as {
+      notifications: boolean;
       account: {
         host: string;
         port: number;
@@ -168,6 +195,10 @@
     host = data.account.host;
     portText = String(data.account.port);
     username = data.account.username;
+    // Prefilled WITHOUT re-asking the OS: an account already opted in has a
+    // permission from before, and re-prompting on every edit-form open is
+    // exactly what "lazily, on the first enable" rules out.
+    notificationsEnabled = data.notifications === true;
     if (data.account.smtp) {
       smtpEnabled = true;
       smtpHost = data.account.smtp.host;
@@ -302,7 +333,8 @@
         username: username.trim(),
         secret,
         generation,
-        smtp: smtpEnabled ? smtpInput() : null
+        smtp: smtpEnabled ? smtpInput() : null,
+        notifications: notificationsEnabled
       },
       {
         api,
@@ -627,6 +659,31 @@
           disabled={submitting}
           placeholder={editing ? 'Leave blank to keep the stored password' : ''}
         />
+      </div>
+
+      <!-- New-mail notifications, per account (M5 task 13). Off by default;
+           the OS permission is asked for on the first enable, and a refusal
+           snaps the switch back off rather than promising a banner that will
+           never appear. -->
+      <div class="border-paper-hairline flex flex-col gap-2 border-t pt-4">
+        <label class="text-ink-body flex items-center gap-2 text-[13px]">
+          <input
+            type="checkbox"
+            checked={notificationsEnabled}
+            disabled={submitting}
+            onchange={(event) => void toggleNotifications(event.currentTarget.checked)}
+          />
+          Notify me when new mail arrives
+        </label>
+        <p class="text-ink-meta max-w-[420px] text-[11.5px]">
+          One notification per sync, for unread mail landing in this account's inbox.
+        </p>
+        {#if notificationsDenied}
+          <p role="alert" class="text-warn-ink text-[11.5px]">
+            Your system is blocking notifications for Valea. Allow them in your notification
+            settings, then turn this back on.
+          </p>
+        {/if}
       </div>
 
       <!-- Sending is opt-in, per account (spec G §Configuration &

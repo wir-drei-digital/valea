@@ -51,6 +51,13 @@ fn main() {
         // process boots its own.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // New-mail notifications (mail full-client plan, M5 task 13): the SPA
+        // (src/lib/notify.ts) asks for permission lazily, the first time a
+        // user turns the per-account toggle on, and posts one notification per
+        // sync pass that landed unread INBOX mail. Nothing here decides WHEN —
+        // the plugin only provides the OS surface, gated by
+        // capabilities/notifications.json.
+        .plugin(tauri_plugin_notification::init())
         .manage(Backend(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             keychain::mail_secret_set,
