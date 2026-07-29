@@ -3,6 +3,12 @@ import {
   MAIL_SLUG_RE,
   mailSlugValid,
   accountLabel,
+  accountDisplayName,
+  accountInitial,
+  accountColorIndex,
+  inboxCount,
+  accountMeta,
+  replaceDanglingInlineImages,
   folderBadge,
   messageSeen,
   filterMessagesByRead,
@@ -87,6 +93,99 @@ describe('accountLabel', () => {
   it('is the bare slug for a valid account, marked inline for an invalid one', () => {
     expect(accountLabel({ account: 'work', valid: true })).toBe('work');
     expect(accountLabel({ account: 'broken', valid: false })).toBe('broken (invalid)');
+  });
+});
+
+describe('accountDisplayName', () => {
+  it('prefers the IMAP login and falls back to the slug', () => {
+    expect(accountDisplayName({ account: 'mara', username: 'mara@example.com' })).toBe('mara@example.com');
+    expect(accountDisplayName({ account: 'mara', username: null })).toBe('mara');
+  });
+});
+
+describe('accountInitial', () => {
+  it('is the first alphanumeric character, uppercased', () => {
+    expect(accountInitial('mara@example.com')).toBe('M');
+    expect(accountInitial('2nd-account')).toBe('2');
+    expect(accountInitial('"quoted" name')).toBe('Q');
+  });
+
+  it('falls back to "?" when nothing qualifies', () => {
+    expect(accountInitial('')).toBe('?');
+    expect(accountInitial('---')).toBe('?');
+  });
+});
+
+describe('accountColorIndex', () => {
+  it('is deterministic and stays inside the palette', () => {
+    const first = accountColorIndex('mara', 4);
+    expect(accountColorIndex('mara', 4)).toBe(first);
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThan(4);
+    expect(accountColorIndex('', 4)).toBe(0);
+  });
+
+  it('degrades to 0 for a nonsensical palette size', () => {
+    expect(accountColorIndex('mara', 0)).toBe(0);
+  });
+});
+
+describe('inboxCount', () => {
+  it('finds INBOX case-insensitively', () => {
+    expect(
+      inboxCount([
+        { name: 'Archive', messageCount: 3 },
+        { name: 'INBOX', messageCount: 109 }
+      ])
+    ).toBe(109);
+    expect(inboxCount([{ name: 'Inbox', messageCount: 7 }])).toBe(7);
+  });
+
+  it('is null while there is no inbox to count', () => {
+    expect(inboxCount([])).toBeNull();
+    expect(inboxCount([{ name: 'Sent', messageCount: 2 }])).toBeNull();
+  });
+});
+
+describe('accountMeta', () => {
+  it('names the transport, with the count only when this side holds one', () => {
+    expect(accountMeta({ valid: true }, 109)).toBe('IMAP · 109 in inbox');
+    expect(accountMeta({ valid: true }, null)).toBe('IMAP');
+  });
+
+  it('names an invalid config instead of a transport', () => {
+    expect(accountMeta({ valid: false }, 109)).toBe('Invalid configuration');
+  });
+});
+
+describe('replaceDanglingInlineImages', () => {
+  it('replaces a cid: img with a labeled placeholder chip', () => {
+    const out = replaceDanglingInlineImages('<p>Chart:</p><img src="cid:dangling" alt="">');
+    expect(out).not.toContain('<img');
+    expect(out).toContain('class="valea-img-unavailable"');
+    expect(out).toContain('dangling — image unavailable');
+  });
+
+  it('prefers the alt text as the label and escapes it', () => {
+    const out = replaceDanglingInlineImages('<img alt="Q3 &amp; Q4 <chart>" src="cid:x">');
+    expect(out).toContain('Q3 &amp; Q4 &lt;chart&gt; — image unavailable');
+  });
+
+  it('leaves data:/https: images and img-free html alone', () => {
+    const inlined = '<img src="data:image/png;base64,AAAA" alt="ok">';
+    expect(replaceDanglingInlineImages(inlined)).toBe(inlined);
+    const remote = '<img src="https://example.com/pix.png">';
+    expect(replaceDanglingInlineImages(remote)).toBe(remote);
+    expect(replaceDanglingInlineImages('<p>no images</p>')).toBe('<p>no images</p>');
+  });
+
+  it('handles single-quoted and bare attribute values', () => {
+    expect(replaceDanglingInlineImages("<img src='cid:one'>")).toContain('one — image unavailable');
+    expect(replaceDanglingInlineImages('<img src=cid:two>')).toContain('two — image unavailable');
+  });
+
+  it('falls back to a generic label when neither alt nor id carries text', () => {
+    expect(replaceDanglingInlineImages('<img src="cid:">')).toContain('inline image — image unavailable');
   });
 });
 

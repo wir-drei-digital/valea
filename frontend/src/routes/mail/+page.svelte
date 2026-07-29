@@ -11,10 +11,15 @@
   import { AppFrame, ListPane, EmptyState, MainColumn, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import ListChecks from '@lucide/svelte/icons/list-checks';
   import MailIcon from '@lucide/svelte/icons/mail';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import SearchIcon from '@lucide/svelte/icons/search';
-  import X from '@lucide/svelte/icons/x';
   import Settings from '@lucide/svelte/icons/settings';
+  import X from '@lucide/svelte/icons/x';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { setInitialPrompt } from '$lib/stores/initial-prompt';
@@ -238,7 +243,7 @@
     resetSearch();
   });
 
-  // "Sync now" lives in the pane header next to the title; its in-flight
+  // "Sync now" lives in the pane header's overflow menu; its in-flight
   // and error state belong to the route, and the resulting message is
   // handed to `SyncStatusLine` (the pane footer) for display.
   let syncRequesting = $state(false);
@@ -307,24 +312,57 @@
               Compose
             </Button>
           {/if}
-          <Button type="button" variant="outline" size="sm" disabled={syncBusy} onclick={() => void handleSyncNow()}>
-            Sync now
-          </Button>
-          <button
-            type="button"
-            aria-label="Mail settings"
-            title="Mail settings"
-            onclick={() => (showSetup = true)}
-            class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill shrink-0 rounded-md p-1.5 transition-colors"
-          >
-            <Settings class="size-4" strokeWidth={1.5} />
-          </button>
+          <!-- One overflow menu instead of the old scattered controls
+               (Sync-now button, settings icon, Drafts/Clean-up pill row) —
+               the header stays a single calm row. -->
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              {#snippet child({ props })}
+                <button
+                  type="button"
+                  {...props}
+                  aria-label="More mail actions"
+                  title="More mail actions"
+                  class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill data-[state=open]:bg-paper-pill data-[state=open]:text-ink-heading flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
+                >
+                  <Ellipsis class="size-4" strokeWidth={1.5} />
+                </button>
+              {/snippet}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="end" class="w-52">
+              {#if mailStore.selectedAccount}
+                <DropdownMenu.Item onSelect={() => void goto('/mail?drafts=1')}>
+                  <FileText class="size-3.5" strokeWidth={1.5} />
+                  Drafts
+                  {#if draftsCount > 0}
+                    <span class="bg-paper-track text-ink-meta ms-auto rounded-full px-1.5 text-[10.5px] [font-weight:650] tabular-nums">
+                      {draftsCount}
+                    </span>
+                  {/if}
+                </DropdownMenu.Item>
+                <DropdownMenu.Item disabled={cleanupStarting} onSelect={() => void handleCleanup()}>
+                  <ListChecks class="size-3.5" strokeWidth={1.5} />
+                  Clean up inbox
+                </DropdownMenu.Item>
+                <DropdownMenu.Separator />
+                <DropdownMenu.Item disabled={syncBusy} onSelect={() => void handleSyncNow()}>
+                  <RefreshCw class="size-3.5" strokeWidth={1.5} />
+                  {syncBusy ? 'Syncing…' : 'Sync now'}
+                </DropdownMenu.Item>
+              {/if}
+              <DropdownMenu.Item onSelect={() => (showSetup = true)}>
+                <Settings class="size-3.5" strokeWidth={1.5} />
+                Mail settings
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
         </div>
       {/snippet}
       {#snippet filter()}
-        {#if mailStore.selectedAccount}
-          <div class="flex w-full flex-col gap-2">
-            <div class="border-paper-hairline flex items-center gap-1.5 rounded-lg border px-2">
+        <div class="flex w-full flex-col gap-2">
+          <AccountSwitcher onAddAccount={() => (showSetup = true)} />
+          {#if mailStore.selectedAccount}
+            <div class="border-paper-border bg-paper-card flex h-9 items-center gap-1.5 rounded-lg border px-2.5">
               <SearchIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
               <Input
                 value={searchInput}
@@ -334,7 +372,7 @@
                 }}
                 placeholder="Search this mailbox…"
                 aria-label="Search mail"
-                class="h-7 border-none bg-transparent px-0 shadow-none focus-visible:ring-0"
+                class="h-8 border-none bg-transparent px-0 shadow-none focus-visible:ring-0"
               />
               {#if searchInput !== ''}
                 <button
@@ -366,32 +404,13 @@
                 />
               </div>
             {/if}
-          </div>
-        {/if}
-      {/snippet}
-      {#snippet children()}
-        <div class="flex flex-col gap-2 pb-2">
-          <AccountSwitcher />
-          {#if mailStore.selectedAccount}
-            <div class="flex items-center gap-1.5">
-              <Button type="button" variant="ghost" size="sm" onclick={() => void goto('/mail?drafts=1')}>
-                Drafts{draftsCount > 0 ? ` (${draftsCount})` : ''}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={cleanupStarting}
-                onclick={() => void handleCleanup()}
-              >
-                Clean up inbox
-              </Button>
-            </div>
             {#if cleanupError}
               <p class="text-warn-ink text-[12px]" role="alert">{cleanupError}</p>
             {/if}
           {/if}
         </div>
+      {/snippet}
+      {#snippet children()}
         <!-- Search replaces what the list SHOWS, never what it holds: the
              folder rows stay loaded underneath (`mailStore.messages`), so
              clearing the box puts them straight back with no refetch.

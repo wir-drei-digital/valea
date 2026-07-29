@@ -24,7 +24,7 @@
       role="tab"
       aria-selected={value === option.value}
       class={`rounded-full px-3 py-1 text-[12px] whitespace-nowrap transition-colors ${
-        value === option.value ? 'bg-paper-card text-ink-heading' : 'text-ink-meta hover:text-ink-secondary'
+        value === option.value ? 'bg-paper-card text-ink-heading shadow-card' : 'text-ink-meta hover:text-ink-secondary'
       }`}
       onclick={() => onChange(option.value)}
     >

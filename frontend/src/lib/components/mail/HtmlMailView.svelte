@@ -21,6 +21,7 @@
   // `openExternal` (the user's real browser / the desktop's open_external
   // command) — inside the sandbox they would otherwise just dead-end.
   import { openExternal } from '$lib/shell/external-link';
+  import { replaceDanglingInlineImages } from './mail-shapes';
 
   let { html, allowRemote = false }: { html: string; allowRemote?: boolean } = $props();
 
@@ -35,6 +36,12 @@
 
   // White reading surface on purpose, both themes — HTML mail is authored
   // against a light background and inverting it mangles most messages.
+  //
+  // `replaceDanglingInlineImages` swaps every unresolved `cid:` img (its
+  // attachment never landed — see `get_mail_message`'s inlining) for a
+  // labeled `.valea-img-unavailable` chip, styled below in the maildir
+  // palette's literal values: the iframe document can't reach the app's
+  // CSS variables, and the CSP allows no external stylesheet.
   const srcdoc = $derived(
     `<!doctype html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
@@ -42,7 +49,10 @@
       `html{background:#fff}` +
       `body{margin:12px;font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1c1c1c;word-break:break-word}` +
       `img{max-width:100%;height:auto}` +
-      `</style></head><body>${html}</body></html>`
+      `.valea-img-unavailable{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;` +
+      `border:1.5px dashed #d8cfb9;border-radius:8px;background:#fbf8f1;color:#948a75;font-size:12.5px;line-height:1.4}` +
+      `.valea-img-unavailable svg{flex-shrink:0}` +
+      `</style></head><body>${replaceDanglingInlineImages(html)}</body></html>`
   );
 
   function measure(): void {
@@ -81,5 +91,5 @@
   referrerpolicy="no-referrer"
   onload={onLoad}
   style={`height: ${height}px`}
-  class="border-paper-hairline w-full rounded-lg border bg-white"
+  class="border-paper-border w-full rounded-xl border bg-white"
 ></iframe>

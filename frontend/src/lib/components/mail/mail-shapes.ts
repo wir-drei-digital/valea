@@ -44,6 +44,56 @@ export function accountLabel(status: Pick<MailAccountStatus, 'account' | 'valid'
 }
 
 /**
+ * What the switcher shows as the account's identity: the IMAP login when the
+ * engine knows it (it is the address the user recognizes), the slug before
+ * settings have loaded or for an invalid-config entry (whose engine fields
+ * are all degraded — see `MailAccountStatus`).
+ */
+export function accountDisplayName(status: Pick<MailAccountStatus, 'account' | 'username'>): string {
+  return status.username ?? status.account;
+}
+
+/** The avatar letter: the display name's first alphanumeric character, uppercased ("?" when it has none). */
+export function accountInitial(name: string): string {
+  const ch = /[a-z0-9]/i.exec(name)?.[0];
+  return ch ? ch.toUpperCase() : '?';
+}
+
+/**
+ * Stable palette pick for an account's avatar fill, keyed on the SLUG (the
+ * account's permanent id, so the color survives a username edit) and folded
+ * into `[0, paletteSize)`. Deterministic so the switcher button and its
+ * dropdown rows can never disagree about one account's color.
+ */
+export function accountColorIndex(slug: string, paletteSize: number): number {
+  if (paletteSize <= 0) return 0;
+  let hash = 0;
+  for (let i = 0; i < slug.length; i++) hash = (hash * 31 + slug.charCodeAt(i)) >>> 0;
+  return hash % paletteSize;
+}
+
+/**
+ * The INBOX message count from a folder listing, or `null` while the listing
+ * hasn't arrived (or holds no inbox at all) — the switcher's count pill and
+ * dropdown meta simply omit a count they'd otherwise have to invent. Only
+ * ever answerable for the SELECTED account: folders are fetched per account.
+ */
+export function inboxCount(folders: Pick<MailFolder, 'name' | 'messageCount'>[]): number | null {
+  const inbox = folders.find((folder) => folder.name.toUpperCase() === 'INBOX');
+  return inbox ? inbox.messageCount : null;
+}
+
+/**
+ * The switcher dropdown row's meta line. `inbox` is non-null only for the
+ * account whose folders this side holds (the selected one) — other rows name
+ * just the transport rather than a count nothing has fetched.
+ */
+export function accountMeta(status: Pick<MailAccountStatus, 'valid'>, inbox: number | null): string {
+  if (!status.valid) return 'Invalid configuration';
+  return inbox === null ? 'IMAP' : `IMAP · ${inbox} in inbox`;
+}
+
+/**
  * Lowercase-hex sha256 of a UTF-8 string — byte-for-byte the encoding of
  * the backend's `Valea.Mail.DraftFile.content_hash/1`, so the push CAS
  * (`push_draft_to_mailbox`'s `contentHash`) binds to exactly the revision
@@ -845,6 +895,68 @@ export function formatBytes(bytes: number): string {
   }
   const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
   return `${rounded} ${units[unitIndex]}`;
+}
+
+// -- inline images (HtmlMailView) ---------------------------------------------
+
+/**
+ * Replaces every `<img>` still pointing at a `cid:` URL with an inert
+ * "image unavailable" chip. `get_mail_message` rewrites each RESOLVABLE
+ * `cid:` reference to a `data:` URI before the html reaches the client
+ * (`Valea.Api.Mail`), so a `cid:` src that survived is by definition
+ * dangling — its attachment never landed, was over-cap, or isn't an image —
+ * and the browser would render its own broken-image glyph inside the iframe.
+ *
+ * String-level on purpose: the input is the backend-sanitized rendering
+ * (`Valea.Mail.HtmlSanitizer` — tags normalized, attribute values quoted),
+ * and this runs where there may be no DOM (unit tests). The chip's label is
+ * the img's `alt` (entity-decoded, then re-escaped) or the bare content-id,
+ * so the reader learns WHICH image is missing.
+ */
+export function replaceDanglingInlineImages(html: string): string {
+  // Quoted sections are consumed wholesale — a literal `>` inside an alt
+  // text ends the attribute value, never the tag.
+  return html.replace(/<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi, (tag) => {
+    const src = imgAttr(tag, 'src');
+    if (!src || !/^cid:/i.test(src.trim())) return tag;
+
+    const alt = decodeBasicEntities(imgAttr(tag, 'alt') ?? '').trim();
+    const cid = src.trim().replace(/^cid:/i, '');
+    const label = alt || cid || 'inline image';
+    return (
+      `<span class="valea-img-unavailable">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" ` +
+      `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+      `<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/>` +
+      `<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>` +
+      `${escapeHtmlText(label)} — image unavailable</span>`
+    );
+  });
+}
+
+/** One attribute's value off a single `<img …>` tag — quoted (either style) or bare. */
+function imgAttr(tag: string, name: string): string | null {
+  const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
+  if (!match) return null;
+  return match[1] ?? match[2] ?? match[3] ?? '';
+}
+
+/** The five named entities the sanitizer can emit inside an attribute value — enough to avoid double-escaping an alt text. */
+function decodeBasicEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 // -- SyncStatusLine ------------------------------------------------------------

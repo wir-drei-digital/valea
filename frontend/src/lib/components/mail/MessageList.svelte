@@ -47,11 +47,17 @@
   let {
     messages,
     selectedId,
-    account
+    account,
+    density = 'comfortable',
+    showSnippets = true
   }: {
     messages: (MailMessageSummary & { snippet?: string })[];
     selectedId: string | null;
     account: string;
+    /** Row rhythm — `compact` tightens the vertical padding for dense embeddings. */
+    density?: 'comfortable' | 'compact';
+    /** Whether a row that carries a `snippet` renders its snippet line. */
+    showSnippets?: boolean;
   } = $props();
 </script>
 
@@ -62,7 +68,9 @@
     <li>
       <a
         href={messageHref(account, message.msgId)}
-        class="block border-l-[3px] py-3 pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
+        class="block border-l-[3px] pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
+        class:py-3={density === 'comfortable'}
+        class:py-2={density === 'compact'}
         class:border-act={selected}
         class:border-transparent={!selected}
         class:bg-paper-card={selected}
@@ -89,7 +97,7 @@
           </span>
         </span>
         <span class="text-ink-body mt-0.5 block truncate text-[13px]">{subjectLabel(message.subject)}</span>
-        {#if message.snippet}
+        {#if showSnippets && message.snippet}
           <span class="text-ink-meta mt-0.5 block truncate text-[12px]">{message.snippet}</span>
         {/if}
       </a>

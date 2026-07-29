@@ -1,13 +1,15 @@
 <script lang="ts">
   // Read pane for a selected message, per the cockpit mail screen: subject
-  // as the Newsreader page headline, one meta row under it (sender-name
-  // pill · address · date, and the message's workspace file path in mono
-  // right-aligned — the §1 ownership signature), hairline, then the body as
-  // plain preformatted TEXT directly on the reading surface
-  // (`white-space: pre-wrap`, NOT markdown-rendered, NEVER `{@html}` —
-  // untrusted mail content, same inert-interpolation posture elsewhere in
-  // this app), attachment chips, then a closing hairline with a status
-  // affordance underneath.
+  // as the Newsreader page headline beside a compact icon toolbar (reply
+  // actions | mailbox ops | ⋯ overflow), one meta row under it (sender-name
+  // pill · address · date · recipient, with the technical placement — the
+  // workspace file path in mono (§1 ownership signature), folders, flags —
+  // one "Details" toggle away), hairline, then the body: the sanitized HTML
+  // rendering in its sandboxed iframe, or plain preformatted TEXT on a white
+  // reading card (`white-space: pre-wrap`, NOT markdown-rendered, NEVER
+  // `{@html}` — untrusted mail content, same inert-interpolation posture
+  // elsewhere in this app), attachment chips, then a closing hairline with
+  // the reply-only action bar underneath.
   //
   // Spec D deletion wave: the "Run triage" workflow action that used to
   // live in the actions strip below the hairline is gone along with the
@@ -17,14 +19,27 @@
   // (`EntryMenu.svelte`'s `startSessionWithEntry`), just keyed off
   // `message.path` and `contextDoc` swapped for `input` (a workspace
   // locator, not an ICM one — mail messages live outside any ICM's tree).
+  import Archive from '@lucide/svelte/icons/archive';
+  import Check from '@lucide/svelte/icons/check';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Copy from '@lucide/svelte/icons/copy';
+  import Download from '@lucide/svelte/icons/download';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
+  import Flag from '@lucide/svelte/icons/flag';
+  import FolderInput from '@lucide/svelte/icons/folder-input';
+  import ForwardIcon from '@lucide/svelte/icons/forward';
+  import MailIcon from '@lucide/svelte/icons/mail';
+  import MailOpen from '@lucide/svelte/icons/mail-open';
+  import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import Paperclip from '@lucide/svelte/icons/paperclip';
+  import ReplyIcon from '@lucide/svelte/icons/reply';
+  import ReplyAll from '@lucide/svelte/icons/reply-all';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
-  import { SegmentedControl } from '$lib/components/shell';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import HtmlMailView from './HtmlMailView.svelte';
-  import MoveToPopover from './MoveToPopover.svelte';
   import { api } from '$lib/api/client';
   import { rawFileOpenUrl } from '$lib/components/files/raw-url';
   import { prepareExternalOpen } from '$lib/shell/external-link';
@@ -37,7 +52,6 @@
     addressListLabel,
     addressName,
     attachmentsFromFrontmatter,
-    folderFlagsLine,
     formatBytes,
     formatDateTime,
     fromLabel,
@@ -75,8 +89,21 @@
   // Where this message lives + its IMAP flags — the maildir replacement for
   // the deleted review/processed status marker (spec E: occurrences carry
   // `folders`/`flags` frontmatter; Valea adds no workflow state of its own).
-  const placement = $derived(folderFlagsLine(frontmatter));
+  // Collapsed behind the meta row's "Details" toggle together with the
+  // workspace file path (§1's ownership signature — one toggle away, per
+  // "plain language first; technical detail one toggle away").
+  const detailFolders = $derived(
+    Array.isArray(frontmatter.folders)
+      ? frontmatter.folders.filter((f): f is string => typeof f === 'string' && f.length > 0).join(', ')
+      : ''
+  );
+  const detailFlags = $derived(typeof frontmatter.flags === 'string' ? frontmatter.flags.trim() : '');
+  let showDetails = $state(false);
   const attachments = $derived(attachmentsFromFrontmatter(message.frontmatter));
+
+  /** Shared chrome for the header toolbar's 32×32 icon buttons. */
+  const toolbarBtn =
+    'text-ink-secondary hover:bg-paper-pill hover:text-ink-heading flex size-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:pointer-events-none disabled:opacity-50';
 
   let copiedPath: string | null = $state(null);
   /** The attachment whose open is mid-flight — one at a time, and the chip says so. */
@@ -141,6 +168,7 @@
     composing = null;
     opError = null;
     seenOverride = null;
+    showDetails = false;
     viewMode = 'html';
     allowOnce = false;
     trustOverride = null;
@@ -456,7 +484,144 @@
 
 <article class="flex flex-col gap-6">
   <header class="border-paper-hairline flex flex-col gap-2.5 border-b pb-5">
-    <h1 class="font-display text-ink-heading text-[22px] leading-snug font-medium">{subject}</h1>
+    <div class="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+      <h1 class="font-display text-ink-heading min-w-0 flex-1 basis-64 text-[22px] leading-snug font-medium">
+        {subject}
+      </h1>
+      <!-- Compact icon toolbar: answer actions | mailbox ops | overflow.
+           Everything here also lives somewhere honest — Reply and friends in
+           the bottom action bar, the rest behind the ⋯ menu — so icon-only
+           chrome never becomes the sole path to an action's words. -->
+      <div
+        class="border-paper-border bg-paper-panel flex shrink-0 items-center gap-0.5 rounded-lg border p-0.5"
+        role="toolbar"
+        aria-label="Message actions"
+      >
+        <button
+          type="button"
+          class={toolbarBtn}
+          title="Reply"
+          aria-label="Reply"
+          disabled={composing !== null}
+          onclick={() => void startCompose('reply')}
+        >
+          <ReplyIcon class="size-4" strokeWidth={1.5} />
+        </button>
+        <button
+          type="button"
+          class={toolbarBtn}
+          title="Reply all"
+          aria-label="Reply all"
+          disabled={composing !== null}
+          onclick={() => void startCompose('replyAll')}
+        >
+          <ReplyAll class="size-4" strokeWidth={1.5} />
+        </button>
+        <button
+          type="button"
+          class={toolbarBtn}
+          title="Forward"
+          aria-label="Forward"
+          disabled={composing !== null}
+          onclick={() => void startCompose('forward')}
+        >
+          <ForwardIcon class="size-4" strokeWidth={1.5} />
+        </button>
+        {#if canArchive || (msgId && currentFolder)}
+          <div class="bg-paper-chip-border mx-0.5 h-5 w-px" aria-hidden="true"></div>
+        {/if}
+        {#if canArchive}
+          <button
+            type="button"
+            class={toolbarBtn}
+            title="Archive"
+            aria-label="Archive"
+            disabled={opBusy}
+            onclick={() => archive()}
+          >
+            <Archive class="size-4" strokeWidth={1.5} />
+          </button>
+        {/if}
+        {#if msgId && currentFolder}
+          <button
+            type="button"
+            class={toolbarBtn}
+            title={seen ? 'Mark unread' : 'Mark read'}
+            aria-label={seen ? 'Mark unread' : 'Mark read'}
+            disabled={opBusy}
+            onclick={() => void toggleSeen()}
+          >
+            {#if seen}
+              <MailIcon class="size-4" strokeWidth={1.5} />
+            {:else}
+              <MailOpen class="size-4" strokeWidth={1.5} />
+            {/if}
+          </button>
+        {/if}
+        <div class="bg-paper-chip-border mx-0.5 h-5 w-px" aria-hidden="true"></div>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger>
+            {#snippet child({ props })}
+              <button
+                type="button"
+                {...props}
+                class="{toolbarBtn} data-[state=open]:bg-paper-pill data-[state=open]:text-ink-heading"
+                title="More actions"
+                aria-label="More actions"
+              >
+                <Ellipsis class="size-4" strokeWidth={1.5} />
+              </button>
+            {/snippet}
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end" class="w-52">
+            {#if msgId && currentFolder}
+              {#if folderTargets.length > 0}
+                <DropdownMenu.Sub>
+                  <DropdownMenu.SubTrigger disabled={opBusy}>
+                    <FolderInput class="size-3.5" strokeWidth={1.5} />
+                    Move to
+                  </DropdownMenu.SubTrigger>
+                  <DropdownMenu.SubContent class="max-h-80 w-56 overflow-y-auto">
+                    {#each folderTargets as folder (folder.name)}
+                      <DropdownMenu.Item onSelect={() => moveTo(folder.name)}>
+                        <span class="min-w-0 flex-1 truncate">{folder.name}</span>
+                        <span class="text-ink-meta text-[11px] tabular-nums">{folder.messageCount}</span>
+                      </DropdownMenu.Item>
+                    {/each}
+                  </DropdownMenu.SubContent>
+                </DropdownMenu.Sub>
+              {/if}
+              <DropdownMenu.Item disabled={opBusy} onSelect={() => toggleFlag()}>
+                <Flag class="size-3.5" strokeWidth={1.5} />
+                {flagged ? 'Unflag' : 'Flag'}
+              </DropdownMenu.Item>
+            {/if}
+            {#if canTrash}
+              <DropdownMenu.Item variant="destructive" disabled={opBusy} onSelect={() => trash()}>
+                <Trash2 class="size-3.5" strokeWidth={1.5} />
+                Delete
+              </DropdownMenu.Item>
+            {/if}
+            {#if message.html !== null}
+              <DropdownMenu.Separator />
+              <DropdownMenu.Label>View as</DropdownMenu.Label>
+              <DropdownMenu.Item onSelect={() => (viewMode = 'html')}>
+                <span class="flex size-3.5 items-center justify-center" aria-hidden="true">
+                  {#if viewMode === 'html'}<Check class="size-3.5" strokeWidth={2} />{/if}
+                </span>
+                Formatted
+              </DropdownMenu.Item>
+              <DropdownMenu.Item onSelect={() => (viewMode = 'text')}>
+                <span class="flex size-3.5 items-center justify-center" aria-hidden="true">
+                  {#if viewMode === 'text'}<Check class="size-3.5" strokeWidth={2} />{/if}
+                </span>
+                Plain text
+              </DropdownMenu.Item>
+            {/if}
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+      </div>
+    </div>
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
       {#if fromName}
         <span
@@ -466,14 +631,42 @@
         </span>
       {/if}
       <span class="text-ink-secondary min-w-0 truncate text-[12.5px]">{metaLine}</span>
+      {#if to}
+        <span class="text-ink-meta min-w-0 truncate text-[12px]">to {to}</span>
+      {/if}
       <span class="min-w-4 flex-1" aria-hidden="true"></span>
-      <span class="text-ink-meta max-w-full truncate font-mono text-[11px]">{message.path}</span>
+      <button
+        type="button"
+        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] transition-colors"
+        aria-expanded={showDetails}
+        onclick={() => (showDetails = !showDetails)}
+      >
+        Details
+        <ChevronDown
+          class={['size-3 transition-transform', showDetails && 'rotate-180']}
+          strokeWidth={1.5}
+          aria-hidden="true"
+        />
+      </button>
     </div>
-    {#if to}
-      <p class="text-ink-meta text-[12px]">To {to}</p>
+    {#if showDetails}
+      <dl
+        class="border-paper-border bg-paper-panel grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-lg border px-3.5 py-2.5 text-[11.5px]"
+      >
+        <dt class="text-ink-meta">Source path</dt>
+        <dd class="text-ink-secondary min-w-0 font-mono text-[11px] break-all">{message.path}</dd>
+        {#if detailFolders}
+          <dt class="text-ink-meta">Folder</dt>
+          <dd class="text-ink-secondary min-w-0">{detailFolders}</dd>
+        {/if}
+        {#if detailFlags}
+          <dt class="text-ink-meta">Flags</dt>
+          <dd class="text-ink-secondary min-w-0 font-mono text-[11px]">{detailFlags}</dd>
+        {/if}
+      </dl>
     {/if}
-    {#if placement}
-      <p class="text-ink-meta text-[11.5px]">{placement}</p>
+    {#if opError}
+      <p class="text-warn-ink text-[12px]" role="alert">{opError}</p>
     {/if}
   </header>
 
@@ -525,20 +718,6 @@
     </nav>
   {/if}
 
-  {#if message.html !== null}
-    <div class="-mt-2 flex items-center justify-end">
-      <SegmentedControl
-        label="Message view"
-        value={viewMode}
-        options={[
-          { value: 'html', label: 'Formatted' },
-          { value: 'text', label: 'Plain text' }
-        ]}
-        onChange={(v) => (viewMode = v as 'html' | 'text')}
-      />
-    </div>
-  {/if}
-
   {#if showHtml && message.html !== null}
     {#if message.externalContent && !allowRemote}
       <!-- Fail-closed: remote loads (images, tracking pixels) stay blocked
@@ -578,7 +757,11 @@
     {/if}
     <HtmlMailView html={message.html} {allowRemote} />
   {:else}
-    <p class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap">{message.body}</p>
+    <!-- The same white reading card the HTML view's iframe provides, so the
+         two views of one message share a surface. -->
+    <div class="border-paper-border bg-paper-card rounded-xl border px-5 py-4">
+      <p class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap">{message.body}</p>
+    </div>
   {/if}
 
   {#if attachments.length > 0}
@@ -586,37 +769,48 @@
       <p class="text-overline mb-2">Attachments</p>
       <div class="flex flex-wrap items-center gap-1.5">
         {#each attachments as attachment (attachment.path)}
-          <!-- Two buttons, not a button inside a button: OPEN is the chip
-               body (the whole point of a chip), copy-path is the small
-               secondary affordance it used to be all of. -->
+          <!-- The chip body OPENS the attachment (the whole point of a
+               chip); download and copy-path ride along as small icon
+               affordances — the download icon is the same open (the OS
+               browser is where a mail attachment is saved from). -->
           <span
-            class="border-paper-chip-border bg-paper-track text-ink-secondary inline-flex items-center overflow-hidden rounded-full border text-[11.5px]"
+            class="border-paper-border bg-paper-card text-ink-secondary inline-flex items-center gap-0.5 rounded-lg border py-1 pr-1 pl-2.5 text-[12px]"
           >
             <button
               type="button"
-              class="hover:bg-paper-pill inline-flex items-center gap-1.5 py-0.5 pr-1.5 pl-2 transition-colors disabled:opacity-60"
+              class="hover:text-ink-heading inline-flex min-w-0 items-center gap-1.5 transition-colors disabled:opacity-60"
               disabled={openingPath !== null}
               title="Open {attachment.filename}"
               onclick={() => void openAttachment(attachment.path)}
             >
-              <Paperclip class="size-3" aria-hidden="true" strokeWidth={1.5} />
-              {attachment.filename}
-              <span class="text-ink-meta">· {formatBytes(attachment.bytes)}</span>
+              <Paperclip class="text-ink-meta size-3.5 shrink-0" aria-hidden="true" strokeWidth={1.5} />
+              <span class="text-ink-heading max-w-56 truncate font-medium">{attachment.filename}</span>
+              <span class="text-ink-meta shrink-0">{formatBytes(attachment.bytes)}</span>
               {#if openingPath === attachment.path}
-                <span class="text-ink-meta">Opening…</span>
+                <span class="text-ink-meta shrink-0">Opening…</span>
               {/if}
             </button>
             <button
               type="button"
-              class="border-paper-chip-border hover:bg-paper-pill text-ink-meta hover:text-ink-secondary inline-flex items-center gap-1 self-stretch border-l py-0.5 pr-2 pl-1.5 transition-colors"
+              class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading ml-1 flex size-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:pointer-events-none disabled:opacity-50"
+              disabled={openingPath !== null}
+              title="Download {attachment.filename}"
+              aria-label="Download {attachment.filename}"
+              onclick={() => void openAttachment(attachment.path)}
+            >
+              <Download class="size-3.5" aria-hidden="true" strokeWidth={1.5} />
+            </button>
+            <button
+              type="button"
+              class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
               title="Copy path"
               aria-label="Copy the workspace path to {attachment.filename}"
               onclick={() => void copyAttachmentPath(attachment.path)}
             >
               {#if copiedPath === attachment.path}
-                <span class="text-act font-semibold">Copied</span>
+                <Check class="text-act size-3.5" aria-hidden="true" strokeWidth={2} />
               {:else}
-                <Copy class="size-3" aria-hidden="true" strokeWidth={1.5} />
+                <Copy class="size-3.5" aria-hidden="true" strokeWidth={1.5} />
               {/if}
             </button>
           </span>
@@ -629,11 +823,13 @@
   {/if}
 
   <div class="border-paper-hairline flex flex-col gap-2 border-t pt-4">
+    <!-- Reply-only by design: the mailbox ops (archive, move, flag, read
+         state, delete) live in the header toolbar and its ⋯ menu, so this
+         bar can never wrap into the crowded strip it used to become on a
+         narrow pane. The session action keeps its own right-hand corner. -->
     <div class="flex flex-wrap items-center gap-2.5">
-      <!-- Answering the message is the read pane's primary action; the
-           session button keeps its place beside it as one more outline
-           action rather than competing for emphasis. -->
       <Button type="button" disabled={composing !== null} onclick={() => void startCompose('reply')}>
+        <ReplyIcon class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
         {composing === 'reply' ? 'Opening…' : 'Reply'}
       </Button>
       <Button
@@ -655,36 +851,15 @@
       <Button
         type="button"
         variant="outline"
+        class="ms-auto"
         disabled={starting || !message.path}
+        title="Start a session about this message"
         onclick={() => void startSession()}
       >
-        Start a session about this message
+        <MessageSquarePlus class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
+        {starting ? 'Starting…' : 'Start a session'}
       </Button>
-      {#if canArchive}
-        <Button type="button" variant="outline" disabled={opBusy} onclick={() => archive()}>Archive</Button>
-      {/if}
-      {#if msgId && currentFolder}
-        <MoveToPopover targets={folderTargets} disabled={opBusy} onMove={(folder) => moveTo(folder)} />
-        <Button type="button" variant="ghost" disabled={opBusy} onclick={() => toggleFlag()}>
-          {flagged ? 'Unflag' : 'Flag'}
-        </Button>
-        <Button type="button" variant="ghost" disabled={opBusy} onclick={() => void toggleSeen()}>
-          {seen ? 'Mark unread' : 'Mark read'}
-        </Button>
-      {/if}
-      {#if canTrash}
-        <Button
-          type="button"
-          variant="ghost"
-          class="text-warn-ink hover:text-warn-ink"
-          disabled={opBusy}
-          onclick={() => trash()}
-        >
-          Delete
-        </Button>
-      {/if}
     </div>
     {#if sessionError}<p class="text-warn-ink text-[12.5px]" role="alert">{sessionError}</p>{/if}
-    {#if opError}<p class="text-warn-ink text-[12.5px]" role="alert">{opError}</p>{/if}
   </div>
 </article>
