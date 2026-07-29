@@ -228,7 +228,7 @@ export class IcmStore {
   loadDir(mountKey: string, path: string): Promise<void> {
     if (this.#loadedDirs.get(mountKey)?.has(path)) return Promise.resolve();
 
-    const key = `${mountKey} ${path}`;
+    const key = `${mountKey}\0${path}`;
     const inFlight = this.#inFlight.get(key);
     if (inFlight) return inFlight;
 
