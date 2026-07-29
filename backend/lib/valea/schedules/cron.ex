@@ -28,19 +28,24 @@ defmodule Valea.Schedules.Cron do
 
   ## The Vixie day rule
 
-  Day-of-month and day-of-week are OR'd when **both** are restricted, and
-  governed by the restricted one otherwise: `0 0 13 * 5` fires on the 13th
-  *and* on every Friday, `0 0 13 * *` only on the 13th, `0 0 * * 5` only on
-  Fridays. `parse/1` records which side is restricted as `day_rule`
-  (`:any | :dom | :dow | :either`) so matching is a lookup rather than a
-  re-derivation. Restriction is read Vixie's way — off the first character — so
-  `*/2` counts as a star.
+  Day-of-month and day-of-week are **OR'd when both are restricted** and AND'd
+  otherwise: `0 0 13 * 5` fires on the 13th *and* on every Friday, `0 0 13 * *`
+  only on the 13th, `0 0 * * 5` only on Fridays.
+
+  "Restricted" is read Vixie's way — off the **first character** — so `*/2`
+  counts as a star and does not switch the rule to OR. That is a statement about
+  the *rule*, never about the *set*: both sets are always consulted, so
+  `0 0 */2 * *` fires on odd days only, and `0 0 */2 * 5` fires on the odd
+  Fridays (AND), not on every Friday. `parse/1` records the choice as `day_rule`
+  (`:any | :dom | :dow | :either`); only `:either` means OR.
 
   ## Slots are wall-clock, answers are UTC instants
 
   Cron fields describe wall-clock times in the schedule's zone, so `next_slot/3`
-  walks the wall clock minute by minute from the anchor and converts each match
-  to an instant. Two conversions are not one-to-one, and both are pinned:
+  walks **days** in that zone — matching month/day-of-month/day-of-week at day
+  granularity and jumping to the next midnight when a day cannot match — and
+  only then walks that day's `hour`×`minute` slots. Each candidate wall time
+  converts to an instant, and two conversions are not one-to-one:
 
     * **Spring-forward gap** — the wall time does not exist. The slot lands on
       the first instant after the gap (`{:gap, _, just_after}`). Every wall
@@ -49,24 +54,33 @@ defmodule Valea.Schedules.Cron do
       minute.
     * **Fall-back ambiguity** — the wall time happens twice. Only the first
       (earlier UTC offset) occurrence is a slot (`{:ambiguous, first, _}`), so
-      the second pass over that hour never fires.
+      the second pass over that hour never fires. This is also the case that
+      exercises the strictly-after test on a *materialized* instant: anchored
+      inside the repeated hour, the wall clock has not passed 02:30 yet, but
+      02:30's only instant has.
 
   `next_slot/3` is **strictly after** its anchor: an anchor sitting exactly on a
   slot returns the following one. That is what makes the scheduler's
-  "anchor := slot just fired" loop terminate, and it is also what makes both
-  DST rules above self-consistent — an instant already consumed can never come
-  back, whichever wall time produced it.
+  "anchor := slot just fired" loop terminate, and what makes both DST rules
+  above self-consistent — an instant already consumed can never come back,
+  whichever wall time produced it.
 
   ## Bounded search
 
-  The walk is capped at #{366 * 24 * 60} minute steps (a year and a day) and
-  raises past that. The cap is only a backstop, because `parse/1` refuses the
-  one family of expressions that could reach it: a day-of-month-governed
-  expression naming a date no common year has (30 February, 31 April — and
-  29 February, which exists only in leap years and so can sit more than a year
-  out). Every expression that parses matches within the cap: `:dow`/`:either`
-  hit a weekday inside 7 days, `:any` inside a day, and `:dom` has a
-  guaranteed month/day pair.
+  Walking days rather than minutes makes the search cheap enough to be honest
+  about long gaps: `0 0 29 2 *` (29 February — legal standard cron) is a couple
+  of thousand day-checks away, not two million minute-checks. Two guards keep it
+  total:
+
+    * `parse/1` refuses a day-of-month/month pair **no year has** (30 February,
+      31 April) under the AND rule — those would never match at all. February is
+      checked against 29, so the quadrennial case stays executable.
+    * the walk is capped at #{366 * 41} days and raises past it. The cap is a
+      backstop, not a limit anyone should meet: the longest real gap belongs to
+      29 February pinned to a single weekday (`0 0 29 2 */7`), which the
+      Gregorian century rules can stretch to 40 years. An infinite loop inside a
+      scheduler tick is a worse failure than a raise, so the guard stays even
+      though exhausting it now costs microseconds.
   """
 
   @enforce_keys [:minute, :hour, :dom, :month, :dow, :day_rule]
@@ -95,15 +109,15 @@ defmodule Valea.Schedules.Cron do
   # Parsed over 0..7 so `7` is accepted, then folded onto 0.
   @dow 0..7
 
-  @max_steps 366 * 24 * 60
+  @minutes_per_day 24 * 60
+  @max_days 366 * 41
 
   @doc """
   Parses a cron expression (or an alias) into a `t:t/0`.
 
   Takes any term — a `schedules.json` `cron` field is whatever the file holds —
-  and answers `{:error, reason}` for anything that isn't a string in the
-  grammar above. `reason` is a sentence for the user, not an atom for a
-  `case`.
+  and answers `{:error, reason}` for anything that isn't a string in the grammar
+  above. `reason` is a sentence for the user, not an atom for a `case`.
   """
   @spec parse(term()) :: {:ok, t()} | {:error, String.t()}
   def parse(expr) when is_binary(expr) do
@@ -149,8 +163,9 @@ defmodule Valea.Schedules.Cron do
     end
   end
 
-  # Vixie decides "is this field restricted?" on the first character, so a
-  # `*/2` step is still a star and does not switch the day rule to OR.
+  # Vixie decides "is this field restricted?" on the first character, so a `*/2`
+  # step is still a star and does not switch the day rule to OR. It stays a
+  # partial SET either way — see `days_match?/2`.
   defp restricted?(raw), do: not String.starts_with?(String.trim(raw), "*")
 
   defp day_rule(true, true), do: :either
@@ -163,23 +178,26 @@ defmodule Valea.Schedules.Cron do
   defp sunday(7), do: 0
   defp sunday(day), do: day
 
-  # Only a dom-governed expression can name a date that never arrives; with dow
-  # restricted the weekday side always supplies a day. Refusing it here is what
-  # keeps `next_slot/3`'s cap unreachable — and it turns "this never fires" from
-  # a silent mystery into a reason the user can read.
-  defp reachable(%__MODULE__{day_rule: :dom} = cron) do
-    if Enum.any?(cron.month, fn month ->
-         Enum.any?(cron.dom, &(&1 <= Date.days_in_month(Date.new!(2001, month, 1))))
-       end) do
+  # Under OR the weekday side always supplies days, so only the AND rule can name
+  # a date that never arrives. February is checked against 29 — 29 February is
+  # legal cron and fires in leap years — so what stays refused is a date NO year
+  # has (30 February, 31 April). Refusing it here turns "this silently never
+  # fires" into a reason the user can read, and keeps the day cap below from ever
+  # being the thing that reports it.
+  defp reachable(%__MODULE__{day_rule: :either}), do: :ok
+
+  defp reachable(cron) do
+    if Enum.any?(cron.month, fn month -> Enum.any?(cron.dom, &(&1 <= days_in(month))) end) do
       :ok
     else
       {:error,
-       "day-of-month #{list(cron.dom)} never occurs in month #{list(cron.month)} of a " <>
-         "common year (29 February included — it only exists in leap years)"}
+       "day-of-month #{list(cron.dom)} never occurs in month #{list(cron.month)} — " <>
+         "no year has that date"}
     end
   end
 
-  defp reachable(_dow_carries_the_day), do: :ok
+  # 2000 is a leap year, so February answers 29.
+  defp days_in(month), do: Date.days_in_month(Date.new!(2000, month, 1))
 
   defp list(set), do: set |> Enum.sort() |> Enum.join(",")
 
@@ -276,46 +294,92 @@ defmodule Valea.Schedules.Cron do
 
   `zone` is the schedule's wall-clock zone; an unknown one is
   `{:error, :invalid_zone}` (fail closed — a schedule whose zone we cannot
-  resolve has no slots at all). See the moduledoc for the two DST rules and the
-  search bound.
+  resolve has no slots at all). See the moduledoc for the two DST rules, the
+  day-then-minute walk and its cap.
   """
   @spec next_slot(t(), String.t(), DateTime.t()) :: {:ok, DateTime.t()} | {:error, :invalid_zone}
   def next_slot(%__MODULE__{} = cron, zone, %DateTime{} = after_utc) when is_binary(zone) do
     case DateTime.shift_zone(after_utc, zone) do
-      {:ok, local} -> search(cron, zone, after_utc, first_candidate(local), 0)
-      {:error, _unknown_zone} -> {:error, :invalid_zone}
+      {:ok, local} ->
+        {date, from_minute} = start(DateTime.to_naive(local))
+        walk(cron, zone, after_utc, minutes_of_day(cron), date, from_minute, 0)
+
+      {:error, _unknown_zone} ->
+        {:error, :invalid_zone}
     end
   end
 
-  # Slots are minute-aligned, so the first candidate is the minute after the
-  # anchor's — which is exactly what makes the search strictly-after even when
-  # the anchor carries seconds.
-  defp first_candidate(local) do
-    naive = DateTime.to_naive(local)
-
-    %NaiveDateTime{naive | second: 0, microsecond: {0, 0}}
-    |> NaiveDateTime.add(60, :second)
+  # Slots are minute-aligned, so the search starts at the minute AFTER the
+  # anchor's — which is what makes it strictly-after even when the anchor carries
+  # seconds — rolling over to the next day past 23:59.
+  defp start(naive) do
+    case naive.hour * 60 + naive.minute + 1 do
+      minute when minute < @minutes_per_day -> {NaiveDateTime.to_date(naive), minute}
+      _rolled_over -> {naive |> NaiveDateTime.to_date() |> Date.add(1), 0}
+    end
   end
 
-  defp search(_cron, zone, _after_utc, naive, steps) when steps > @max_steps do
-    raise "cron slot search passed #{@max_steps} minute steps (#{zone}, at #{naive}) — " <>
+  # Every minute-of-day this expression fires at, ascending. Day-independent, so
+  # it is built once per call rather than once per day walked.
+  defp minutes_of_day(cron) do
+    for hour <- Enum.sort(cron.hour), minute <- Enum.sort(cron.minute), do: hour * 60 + minute
+  end
+
+  defp walk(_cron, zone, _after_utc, _minutes, date, _from_minute, days) when days > @max_days do
+    raise "cron slot search passed #{@max_days} days (#{zone}, reached #{date}) — " <>
             "parse/1 is supposed to make that unreachable"
   end
 
-  defp search(cron, zone, after_utc, naive, steps) do
-    case candidate(cron, zone, after_utc, naive) do
+  defp walk(cron, zone, after_utc, minutes, date, from_minute, days) do
+    case in_day(cron, zone, after_utc, minutes, date, from_minute) do
       {:ok, at} -> {:ok, at}
       {:error, :invalid_zone} = error -> error
-      :skip -> search(cron, zone, after_utc, NaiveDateTime.add(naive, 60, :second), steps + 1)
+      :none -> walk(cron, zone, after_utc, minutes, Date.add(date, 1), 0, days + 1)
     end
   end
 
-  defp candidate(cron, zone, after_utc, naive) do
-    if matches?(cron, naive), do: materialize(naive, zone, after_utc), else: :skip
+  defp in_day(cron, zone, after_utc, minutes, date, from_minute) do
+    if day_matches?(cron, date),
+      do: first_slot(zone, after_utc, minutes, date, from_minute),
+      else: :none
   end
 
-  defp materialize(naive, zone, after_utc) do
-    case DateTime.from_naive(naive, zone) do
+  # The day matches, so walk its slots in order. `from_minute` only bites on the
+  # first day of a search; every later day starts at midnight.
+  defp first_slot(zone, after_utc, minutes, date, from_minute) do
+    minutes
+    |> Enum.drop_while(&(&1 < from_minute))
+    |> Enum.reduce_while(:none, fn minute, :none ->
+      case materialize(date, minute, zone, after_utc) do
+        {:ok, at} -> {:halt, {:ok, at}}
+        {:error, :invalid_zone} = error -> {:halt, error}
+        :skip -> {:cont, :none}
+      end
+    end)
+  end
+
+  defp day_matches?(cron, date) do
+    MapSet.member?(cron.month, date.month) and days_match?(cron, date)
+  end
+
+  # `day_rule` chooses OR vs AND. It never SKIPS a set: a star-prefixed field is
+  # unrestricted for the *rule* but can still be a partial set (`*/2`), so both
+  # sets are always consulted. With a plain `*` the set is the whole range and
+  # the AND is trivially satisfied.
+  defp days_match?(%__MODULE__{day_rule: :either} = cron, date),
+    do: dom?(cron, date) or dow?(cron, date)
+
+  defp days_match?(cron, date), do: dom?(cron, date) and dow?(cron, date)
+
+  defp dom?(cron, date), do: MapSet.member?(cron.dom, date.day)
+
+  # `Date.day_of_week/1` is 1 (Monday) to 7 (Sunday); cron wants 0 for Sunday.
+  defp dow?(cron, date), do: MapSet.member?(cron.dow, rem(Date.day_of_week(date), 7))
+
+  defp materialize(date, minute_of_day, zone, after_utc) do
+    time = Time.new!(div(minute_of_day, 60), rem(minute_of_day, 60), 0)
+
+    case DateTime.from_naive(NaiveDateTime.new!(date, time), zone) do
       {:ok, at} ->
         strictly_after(at, after_utc)
 
@@ -339,23 +403,4 @@ defmodule Valea.Schedules.Cron do
 
     if DateTime.compare(utc, after_utc) == :gt, do: {:ok, utc}, else: :skip
   end
-
-  defp matches?(cron, naive) do
-    MapSet.member?(cron.minute, naive.minute) and
-      MapSet.member?(cron.hour, naive.hour) and
-      MapSet.member?(cron.month, naive.month) and
-      day_matches?(cron, naive)
-  end
-
-  defp day_matches?(%__MODULE__{day_rule: :any}, _naive), do: true
-  defp day_matches?(%__MODULE__{day_rule: :dom} = cron, naive), do: dom?(cron, naive)
-  defp day_matches?(%__MODULE__{day_rule: :dow} = cron, naive), do: dow?(cron, naive)
-
-  defp day_matches?(%__MODULE__{day_rule: :either} = cron, naive),
-    do: dom?(cron, naive) or dow?(cron, naive)
-
-  defp dom?(cron, naive), do: MapSet.member?(cron.dom, naive.day)
-
-  # `Date.day_of_week/1` is 1 (Monday) to 7 (Sunday); cron wants 0 for Sunday.
-  defp dow?(cron, naive), do: MapSet.member?(cron.dow, rem(Date.day_of_week(naive), 7))
 end

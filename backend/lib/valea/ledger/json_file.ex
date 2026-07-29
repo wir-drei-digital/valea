@@ -12,8 +12,14 @@ defmodule Valea.Ledger.JsonFile do
   `read/2` degrades, never raises: an absent file is `:absent` (the caller
   materializes a skeleton or shows an empty ledger), and anything we cannot
   make sense of — an I/O error, unparseable JSON, a top level that isn't a
-  JSON object — is `{:error, :unreadable}`, which the UI renders as a calm
-  "fix by hand" note. A readable doc yields three things:
+  JSON object — is `{:error, :unreadable, hash}`, which the UI renders as a calm
+  "fix by hand" note.
+
+  The hash rides along on the failure on purpose: the spec dedupes the audit
+  notice for a broken ledger **per content hash** ("one audit notice per
+  content-hash"), so the bytes we could not parse still have to be identifiable.
+  It is `nil` only when there were no bytes to hash — an I/O fault, or a
+  directory where the file should be. A readable doc yields three things:
 
     * `doc` — the decoded document **exactly as read**, unknown top-level
       keys included. Writers patch this map rather than rebuilding it, so
@@ -70,27 +76,28 @@ defmodule Valea.Ledger.JsonFile do
   @type read_result ::
           {:ok, %{doc: map(), entries: [map()], hash: binary()}}
           | :absent
-          | {:error, :unreadable}
+          | {:error, :unreadable, binary() | nil}
 
   @doc """
   Reads `path` as a JSON object and returns `%{doc:, entries:, hash:}` for
   the list under `list_key`. See the moduledoc for the leniency contract —
-  `:absent` for a missing file, `{:error, :unreadable}` for anything we
-  cannot decode into a JSON object.
+  `:absent` for a missing file, `{:error, :unreadable, hash}` for anything we
+  cannot decode into a JSON object (`hash` over the offending bytes, `nil` when
+  there were none to read).
   """
   @spec read(String.t(), String.t()) :: read_result()
   def read(path, list_key) when is_binary(path) and is_binary(list_key) do
     case File.read(path) do
       {:ok, raw} -> decode(raw, list_key)
       {:error, :enoent} -> :absent
-      {:error, _io_error} -> {:error, :unreadable}
+      {:error, _io_error} -> {:error, :unreadable, nil}
     end
   end
 
   defp decode(raw, list_key) do
     case Jason.decode(raw) do
       {:ok, %{} = doc} -> {:ok, %{doc: doc, entries: entries(doc[list_key]), hash: hash(raw)}}
-      _not_a_json_object -> {:error, :unreadable}
+      _not_a_json_object -> {:error, :unreadable, hash(raw)}
     end
   end
 

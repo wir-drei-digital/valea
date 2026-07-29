@@ -59,6 +59,17 @@ defmodule Valea.Schedules.CronTest do
       assert parse!("0 0 * * *").day_rule == :any
       # Vixie reads the restriction off the first character: `*/2` is a star.
       assert parse!("0 0 */2 * 5").day_rule == :dow
+      assert parse!("0 0 */2 * *").day_rule == :any
+    end
+
+    test "a star-prefixed field is unrestricted for the RULE but still a partial set" do
+      assert parse!("0 0 */2 * *").dom ==
+               MapSet.new([1, 3, 5, 7, 9, 11, 13, 15, 17, 19] ++ [21, 23, 25, 27, 29, 31])
+
+      assert parse!("0 0 * * */2").dow == MapSet.new([0, 2, 4, 6])
+      # `*` and `*/1` are the whole range, which is what makes the AND trivial.
+      assert parse!("0 0 */1 * *").dom == parse!("0 0 * * *").dom
+      assert parse!("0 0 * * */1").dow == parse!("0 0 * * *").dow
     end
   end
 
@@ -122,17 +133,25 @@ defmodule Valea.Schedules.CronTest do
       assert {:error, _} = Cron.parse("0,,1 * * * *")
     end
 
-    test "dates that no common year has" do
+    test "dates that NO year has" do
       assert {:error, reason} = Cron.parse("0 0 30 2 *")
       assert reason =~ "never occurs"
-      # 29 February exists only in leap years, so it is refused too.
-      assert {:error, _} = Cron.parse("0 0 29 2 *")
-      assert {:error, _} = Cron.parse("0 0 31 4 *")
 
-      # Reachable again as soon as some pair works, or dow can carry the day.
+      for expr <- ["0 0 31 2 *", "0 0 31 4 *", "0 0 31 6 *", "0 0 31 9 *", "0 0 31 11 *"] do
+        assert {:error, _} = Cron.parse(expr), "#{expr} should be unreachable"
+      end
+
+      # Reachable again as soon as some pair works, or dow can carry the day
+      # under the OR rule.
       assert {:ok, _} = Cron.parse("0 0 31 * *")
       assert {:ok, _} = Cron.parse("0 0 15,30 2 *")
       assert {:ok, _} = Cron.parse("0 0 30 2 5")
+      assert {:ok, _} = Cron.parse("0 0 */31 2 *")
+    end
+
+    test "29 February is legal cron, not an unreachable date" do
+      assert {:ok, _} = Cron.parse("0 0 29 2 *")
+      assert {:ok, _} = Cron.parse("0 0 29 2 */7")
     end
 
     test "a non-string expression" do
@@ -179,6 +198,50 @@ defmodule Valea.Schedules.CronTest do
       assert slot("0 0 13 * 5", "Etc/UTC", "2026-08-01T12:00:00Z") == "2026-08-07T00:00:00Z"
       assert slot("0 0 13 * 5", "Etc/UTC", "2026-08-08T00:00:00Z") == "2026-08-13T00:00:00Z"
       assert slot("0 0 13 * 5", "Etc/UTC", "2026-08-13T00:00:00Z") == "2026-08-14T00:00:00Z"
+    end
+
+    test "a star-prefixed partial set still constrains the day (AND, not skipped)" do
+      # `0 0 */2 * *` is `:any` for the rule and {1,3,5,…} for the set: odd days
+      # only. Anchored on the 1st it must skip the 2nd.
+      assert slot("0 0 */2 * *", "Etc/UTC", "2026-08-01T12:00:00Z") == "2026-08-03T00:00:00Z"
+      # The dom set restarts each month, so the 31st and the 1st are adjacent.
+      assert slot("0 0 */2 * *", "Etc/UTC", "2026-08-31T00:00:00Z") == "2026-09-01T00:00:00Z"
+
+      # dow */2 is {Sun, Tue, Thu, Sat}: Mon -> Tue, Tue -> Thu.
+      assert slot("0 0 * * */2", "Etc/UTC", "2026-08-03T00:00:00Z") == "2026-08-04T00:00:00Z"
+      assert slot("0 0 * * */2", "Etc/UTC", "2026-08-04T00:00:00Z") == "2026-08-06T00:00:00Z"
+    end
+
+    test "odd Fridays: both sets consulted under the AND rule" do
+      # August 2026 Fridays are the 7th, 14th, 21st, 28th. `0 0 */2 * 5` is
+      # `:dow` for the rule, so dom AND dow: only the odd Fridays fire, and the
+      # 14th is skipped.
+      assert slot("0 0 */2 * 5", "Etc/UTC", "2026-08-01T00:00:00Z") == "2026-08-07T00:00:00Z"
+      assert slot("0 0 */2 * 5", "Etc/UTC", "2026-08-07T00:00:00Z") == "2026-08-21T00:00:00Z"
+    end
+
+    test "the 13th on a star-prefixed weekday set (AND across months)" do
+      # dow */2 is {Sun, Tue, Thu, Sat}; 2026-08-13 is a Thursday.
+      assert slot("0 0 13 * */2", "Etc/UTC", "2026-08-01T00:00:00Z") == "2026-08-13T00:00:00Z"
+      # 2026-11-13 is a Friday, so November is skipped for 2026-12-13 (Sunday).
+      assert slot("0 0 13 * */2", "Etc/UTC", "2026-10-13T00:00:00Z") == "2026-12-13T00:00:00Z"
+    end
+
+    test "the AND-degenerate stars fire every day" do
+      assert slot("0 0 */1 * *", "Etc/UTC", "2026-08-01T12:00:00Z") == "2026-08-02T00:00:00Z"
+      assert slot("0 0 * * */1", "Etc/UTC", "2026-08-01T12:00:00Z") == "2026-08-02T00:00:00Z"
+      assert slot("0 0 * * *", "Etc/UTC", "2026-08-01T12:00:00Z") == "2026-08-02T00:00:00Z"
+    end
+
+    test "29 February fires in the next leap year" do
+      assert slot("0 0 29 2 *", "Etc/UTC", "2026-03-01T00:00:00Z") == "2028-02-29T00:00:00Z"
+      assert slot("0 0 29 2 *", "Etc/UTC", "2028-02-29T00:00:00Z") == "2032-02-29T00:00:00Z"
+    end
+
+    test "29 February pinned to one weekday — the longest search there is" do
+      # dow */7 is {Sunday}. The day walk crosses six years for this one; the
+      # bound exists for the century-boundary version of it.
+      assert slot("0 0 29 2 */7", "Etc/UTC", "2026-01-01T00:00:00Z") == "2032-02-29T00:00:00Z"
     end
 
     test "Vixie AND rule: only the restricted field governs" do

@@ -13,15 +13,22 @@ defmodule Valea.Schedules.File do
 
     * `:ok` — the file parsed. `entries` are `Valea.Schedules.Entry` structs in
       file order, each with its own disposition.
-    * `:absent` — no file, no schedules. The ordinary state of a fresh ICM.
+    * `:absent` — no file, no schedules. The ordinary state of a fresh ICM. It
+      also covers a **missing ICM root** (the `enoent` is the same either way),
+      which is why an `:absent` read must never be read as "the schedules were
+      deleted": a root that vanished — an unmounted volume, a moved folder —
+      would otherwise tombstone every schedule in it.
     * `:unreadable` — malformed JSON, a non-object top level, an I/O fault.
       `entries` is empty, so **nothing fires from a file Valea cannot parse**
       (spec: fail-safe). The UI shows one calm note; deletion is never inferred
       from an unreadable file.
 
-  `hash` is the file's content hash from `Valea.Ledger.JsonFile` — the token a
-  writer hands back for optimistic concurrency, and the key the audit notice for
-  an unreadable file is deduped by.
+  `hash` is the file's content hash from `Valea.Ledger.JsonFile`: the token a
+  writer hands back for optimistic concurrency on `:ok`, and on `:unreadable` the
+  hash of the bytes that would not parse — that is what the spec's "one audit
+  notice per content-hash" dedupes on, so a broken file stays quiet until it
+  changes. It is `nil` for `:absent`, and for the I/O faults that produced no
+  bytes at all.
 
   One housekeeping note for callers: a bare `alias Valea.Schedules.File` would
   shadow Elixir's `File` for the rest of that module. Call it qualified, or
@@ -66,8 +73,8 @@ defmodule Valea.Schedules.File do
       :absent ->
         %{status: :absent, entries: [], hash: nil}
 
-      {:error, :unreadable} ->
-        %{status: :unreadable, entries: [], hash: nil}
+      {:error, :unreadable, hash} ->
+        %{status: :unreadable, entries: [], hash: hash}
     end
   end
 

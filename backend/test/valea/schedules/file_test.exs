@@ -20,8 +20,10 @@ defmodule Valea.Schedules.FileTest do
 
   defp write!(root, schedules) when is_list(schedules) do
     doc = %{"readme" => "Schedules for this ICM.", "schedules" => schedules}
-    File.write!(Path.join(root, "schedules.json"), Jason.encode!(doc))
+    write_raw!(root, Jason.encode!(doc))
   end
+
+  defp write_raw!(root, bytes), do: File.write!(@subject.schedules_path(root), bytes)
 
   # The spec's example entry, with `overrides` merged over it. `:absent` as a
   # value removes the field, which is a different test case from a null.
@@ -58,22 +60,50 @@ defmodule Valea.Schedules.FileTest do
   end
 
   describe "load/1 file status" do
+    test "the ledger lives at schedules.json in the ICM root", %{root: root} do
+      assert @subject.schedules_path(root) == Path.join(root, "schedules.json")
+    end
+
     test "an absent file is :absent, not an error", %{root: root} do
       assert @subject.load(root) == %{status: :absent, entries: [], hash: nil}
     end
 
+    test "a vanished ICM root is :absent too, never a deletion", %{root: root} do
+      write!(root, [schedule()])
+      File.rm_rf!(root)
+
+      assert @subject.load(root) == %{status: :absent, entries: [], hash: nil}
+    end
+
     test "a malformed file yields no entries — nothing fires from it", %{root: root} do
-      File.write!(Path.join(root, "schedules.json"), "{not json")
-      assert @subject.load(root) == %{status: :unreadable, entries: [], hash: nil}
+      write_raw!(root, "{not json")
+
+      assert @subject.load(root) == %{
+               status: :unreadable,
+               entries: [],
+               hash: :crypto.hash(:sha256, "{not json")
+             }
+    end
+
+    test "the unreadable hash is the bad bytes', so the notice can dedupe on it",
+         %{root: root} do
+      write_raw!(root, "{not json")
+      assert %{status: :unreadable, hash: first} = @subject.load(root)
+      assert is_binary(first)
+
+      write_raw!(root, "{not json either")
+      assert %{status: :unreadable, hash: second} = @subject.load(root)
+      assert second != first
     end
 
     test "a non-object top level is unreadable", %{root: root} do
-      File.write!(Path.join(root, "schedules.json"), ~s([{"id":"s-1"}]))
-      assert %{status: :unreadable, entries: []} = @subject.load(root)
+      write_raw!(root, ~s([{"id":"s-1"}]))
+      assert %{status: :unreadable, entries: [], hash: hash} = @subject.load(root)
+      assert is_binary(hash)
     end
 
     test "a wrong-typed schedules key reads clean and empty", %{root: root} do
-      File.write!(Path.join(root, "schedules.json"), ~s({"schedules":"nope"}))
+      write_raw!(root, ~s({"schedules":"nope"}))
       assert %{status: :ok, entries: [], hash: hash} = @subject.load(root)
       assert is_binary(hash)
     end
@@ -86,7 +116,7 @@ defmodule Valea.Schedules.FileTest do
 
     test "the hash is the ledger's content hash", %{root: root} do
       write!(root, [schedule()])
-      bytes = File.read!(Path.join(root, "schedules.json"))
+      bytes = File.read!(@subject.schedules_path(root))
 
       assert %{hash: hash} = @subject.load(root)
       assert hash == :crypto.hash(:sha256, bytes)
@@ -280,6 +310,17 @@ defmodule Valea.Schedules.FileTest do
       write!(root, [schedule(%{"id" => "s-dup"}), schedule(%{"id" => "s-dup", "cron" => "nope"})])
 
       assert %{entries: [first, second]} = @subject.load(root)
+      assert first.reason == "duplicate id"
+      assert second.reason == "duplicate id"
+    end
+
+    test "whitespace around an id cannot smuggle a second row past the gate", %{root: root} do
+      write!(root, [schedule(%{"id" => "s-dup"}), schedule(%{"id" => " s-dup "})])
+
+      assert %{entries: [first, second]} = @subject.load(root)
+      # The id is trimmed on accept, so both rows carry the same one.
+      assert first.id == "s-dup"
+      assert second.id == "s-dup"
       assert first.reason == "duplicate id"
       assert second.reason == "duplicate id"
     end

@@ -13,20 +13,36 @@ defmodule Valea.Ledger.JsonFileTest do
   describe "read/2 leniency" do
     test("absent file", %{path: path}, do: assert(JsonFile.read(path, "tasks") == :absent))
 
-    test "malformed json is :unreadable", %{path: path} do
-      File.write!(path, "{not json")
-      assert JsonFile.read(path, "tasks") == {:error, :unreadable}
+    test "malformed json is :unreadable, and carries the hash of the bad bytes", %{path: path} do
+      raw = "{not json"
+      File.write!(path, raw)
+      assert JsonFile.read(path, "tasks") == {:error, :unreadable, :crypto.hash(:sha256, raw)}
     end
 
     test "non-map top level is :unreadable", %{path: path} do
-      File.write!(path, ~s([{"id":"t-1"}]))
-      assert JsonFile.read(path, "tasks") == {:error, :unreadable}
+      raw = ~s([{"id":"t-1"}])
+      File.write!(path, raw)
+      assert JsonFile.read(path, "tasks") == {:error, :unreadable, :crypto.hash(:sha256, raw)}
     end
 
-    test "a directory in the file's place is :unreadable", %{dir: dir} do
+    test "the unreadable hash tracks the content, so a notice can dedupe on it", %{path: path} do
+      File.write!(path, "{not json")
+      assert {:error, :unreadable, first} = JsonFile.read(path, "tasks")
+
+      # Same bytes, same hash: nothing new to tell the user about.
+      File.write!(path, "{not json")
+      assert {:error, :unreadable, ^first} = JsonFile.read(path, "tasks")
+
+      # Still broken, but differently — that is a new notice.
+      File.write!(path, "{not json either")
+      assert {:error, :unreadable, second} = JsonFile.read(path, "tasks")
+      assert second != first
+    end
+
+    test "a directory in the file's place is :unreadable with no hash", %{dir: dir} do
       sub = Path.join(dir, "tasks.json")
       File.mkdir_p!(sub)
-      assert JsonFile.read(sub, "tasks") == {:error, :unreadable}
+      assert JsonFile.read(sub, "tasks") == {:error, :unreadable, nil}
     end
 
     test "missing list key yields no entries but keeps the doc", %{path: path} do

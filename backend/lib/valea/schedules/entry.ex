@@ -31,9 +31,12 @@ defmodule Valea.Schedules.Entry do
   default to `false`, an absent `timezone` to the host zone); a `null` is
   present and wrong-typed, not absent.
 
-  `paused` and `catchup` are also filled in for display straight off the raw
-  value (`=== true`), so a refused row still shows what the file asked for
-  instead of claiming the entry is running.
+  `paused` and `catchup` are filled in for display straight off the raw value
+  (`=== true`), independently of the validation chain, so an entry refused for
+  *another* reason still shows the pause the file asked for. Only a real JSON
+  `true` counts: `"paused": "true"` reads as `false` **and** refuses the entry,
+  with the reason naming the field — the row is stopped and says why, which is
+  the outcome that matters.
 
   ## Fingerprint
 
@@ -269,8 +272,14 @@ defmodule Valea.Schedules.Entry do
 
   # -- lenient display fields -------------------------------------------------
 
+  # Trimmed on accept, so `"s-1 "` and `"s-1"` are the same id and cannot slip
+  # past the duplicate gate as two distinct rows. The struct's `id` is therefore
+  # the addressing key; a writer patching the file has to match it trimmed too.
   defp id(id) when is_binary(id) do
-    if String.trim(id) == "", do: nil, else: id
+    case String.trim(id) do
+      "" -> nil
+      trimmed -> trimmed
+    end
   end
 
   defp id(_missing_or_wrong_typed), do: nil

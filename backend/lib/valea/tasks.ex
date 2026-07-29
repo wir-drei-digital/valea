@@ -130,7 +130,7 @@ defmodule Valea.Tasks do
     case JsonFile.read(tasks_path(icm_root), @list_key) do
       {:ok, %{entries: entries}} -> %{status: :ok, tasks: entries}
       :absent -> %{status: :absent, tasks: []}
-      {:error, :unreadable} -> %{status: :unreadable, tasks: []}
+      {:error, :unreadable, _hash} -> %{status: :unreadable, tasks: []}
     end
   end
 
@@ -461,7 +461,9 @@ defmodule Valea.Tasks do
       :absent ->
         {:ok, %{doc: %{"readme" => @readme, @list_key => []}, entries: [], hash: :absent}}
 
-      {:error, :unreadable} ->
+      # The hash of the unparseable bytes is `Valea.Schedules.File`'s business
+      # (one audit notice per content hash); a task write only needs "no".
+      {:error, :unreadable, _hash} ->
         {:error, :unreadable}
     end
   end
