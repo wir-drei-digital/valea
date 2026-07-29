@@ -134,7 +134,8 @@ defmodule ValeaWeb.MailRpcTest do
 
   # `plant_message!` with an explicit `Message-ID` and, for a reply, the
   # `In-Reply-To`/`References` pair a conforming mailer sends — the headers
-  # `thread_key` is derived from.
+  # `thread_key` is derived from. `flags:` takes maildir flag LETTERS
+  # (`["S"]` = already read); the default is an unread delivery.
   defp plant_threaded!(root, account, folder_abs, uid, opts) do
     threading =
       case Keyword.get(opts, :parent) do
@@ -150,8 +151,10 @@ defmodule ValeaWeb.MailRpcTest do
         threading <>
         "\r\nBody of #{Keyword.fetch!(opts, :subject)}.\r\n"
 
+    flags = opts |> Keyword.get(:flags, []) |> MapSet.new()
+
     {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
-    Maildir.deliver!(folder_abs, Maildir.encode_filename(msg_id, uid, MapSet.new(), ":"), raw)
+    Maildir.deliver!(folder_abs, Maildir.encode_filename(msg_id, uid, flags, ":"), raw)
     msg_id
   end
 
@@ -892,8 +895,10 @@ defmodule ValeaWeb.MailRpcTest do
         "subject",
         "date",
         "uid",
+        "flags",
         "threadKey",
-        "threadCount"
+        "threadCount",
+        "threadUnread"
       ]
     }
   ]
@@ -1004,6 +1009,7 @@ defmodule ValeaWeb.MailRpcTest do
 
       refute Map.has_key?(flat, "threadKey")
       refute Map.has_key?(flat, "threadCount")
+      refute Map.has_key?(flat, "threadUnread")
 
       # `threaded: false` is the same path as omitting it.
       assert %{"success" => true, "data" => %{"messages" => same}} =
@@ -1014,6 +1020,76 @@ defmodule ValeaWeb.MailRpcTest do
                )
 
       assert same == messages
+    end
+
+    test "thread_unread answers for the whole conversation, not the row it rides on", %{
+      workspace: workspace
+    } do
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      archive_abs = setup_folder!(maildir_root, "Archive", "Archive")
+
+      # A conversation whose OLDEST message is unread and whose NEWEST — the
+      # message that will represent it — has been read. The representative's
+      # own `flags` say "read"; the thread is not.
+      plant_threaded!(workspace, "mara", archive_abs, 1,
+        date: "Wed, 01 Jul 2026 09:00:00 +0000",
+        subject: "Budget",
+        message_id: "<budget@example.com>"
+      )
+
+      plant_threaded!(workspace, "mara", archive_abs, 2,
+        date: "Thu, 02 Jul 2026 09:00:00 +0000",
+        subject: "Re: Budget",
+        message_id: "<budget-reply@example.com>",
+        parent: "<budget@example.com>",
+        flags: ["S"]
+      )
+
+      # ...and one where every member has been read.
+      plant_threaded!(workspace, "mara", archive_abs, 3,
+        date: "Thu, 02 Jul 2026 12:00:00 +0000",
+        subject: "Invoice",
+        message_id: "<invoice@example.com>",
+        flags: ["S"]
+      )
+
+      plant_threaded!(workspace, "mara", archive_abs, 4,
+        date: "Thu, 02 Jul 2026 13:00:00 +0000",
+        subject: "Re: Invoice",
+        message_id: "<invoice-reply@example.com>",
+        parent: "<invoice@example.com>",
+        flags: ["S"]
+      )
+
+      {:ok, _} = Index.rebuild(workspace, "mara")
+
+      assert %{"success" => true, "data" => %{"messages" => [invoice, budget]}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "Archive", "threaded" => true},
+                 @threaded_fields
+               )
+
+      assert budget["subject"] == "Re: Budget"
+      assert budget["flags"] == "S"
+      assert budget["threadUnread"] == true
+
+      # A genuine `false` has to survive the wire, not arrive as `null` —
+      # the falsy-map-field bug binds top-level fields, and this is an item
+      # field like `hasAttachments` beside it.
+      assert invoice["subject"] == "Re: Invoice"
+      assert invoice["threadUnread"] == false
+      refute is_nil(invoice["threadUnread"])
+
+      # The setup's INBOX threads were delivered with no flags at all.
+      assert %{"success" => true, "data" => %{"messages" => inbox}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX", "threaded" => true},
+                 @threaded_fields
+               )
+
+      assert Enum.all?(inbox, &(&1["threadUnread"] == true))
     end
 
     test "limit + before page over conversations", %{lunch_id: lunch_id, reply_id: reply_id} do

@@ -286,6 +286,87 @@ defmodule Valea.Mail.ThreadTest do
     end
   end
 
+  # -- the ANY-member unread aggregate ----------------------------------------
+
+  describe "Store.list_threads/4 thread_unread" do
+    test "is true when an OLDER member is unread behind a read newest message" do
+      # The case the representative row cannot describe, and the whole
+      # reason the aggregate exists: `flags` on the returned row is
+      # "reply-2"'s, which IS read.
+      plant_thread!()
+
+      # Re-upsert of the OLDEST member with its Seen flag dropped — same
+      # date, so it stays the oldest and "reply-2" stays the representative.
+      Store.upsert_index_row(
+        row(
+          uid: 1,
+          msg_id: "root",
+          message_id: "<root@x>",
+          date: "2026-01-01T00:00:00Z",
+          flags: ""
+        )
+      )
+
+      assert [conversation, standalone] = Store.list_threads("mara", "INBOX")
+
+      assert conversation.thread_key == "<root@x>"
+      assert conversation.msg_id == "reply-2"
+      assert conversation.flags == "S"
+      assert conversation.thread_unread == true
+
+      # The unrelated single message is untouched by its neighbour's state.
+      assert standalone.thread_unread == false
+    end
+
+    test "is false when every member of the thread is read" do
+      plant_thread!()
+
+      assert [%{thread_count: 3, thread_unread: false} | _] = Store.list_threads("mara", "INBOX")
+    end
+
+    test "follows the representative when the thread is one message" do
+      Store.upsert_index_row(
+        row(uid: 1, msg_id: "read", message_id: "<read@x>", date: "2026-01-01T00:00:00Z")
+      )
+
+      Store.upsert_index_row(
+        row(
+          uid: 2,
+          msg_id: "unread",
+          message_id: "<unread@x>",
+          date: "2026-01-02T00:00:00Z",
+          flags: ""
+        )
+      )
+
+      assert [%{msg_id: "unread", thread_unread: true}, %{msg_id: "read", thread_unread: false}] =
+               Store.list_threads("mara", "INBOX")
+    end
+
+    test "a NULL flags column reads as unread, not as a missing answer" do
+      Store.upsert_index_row(row(uid: 1, msg_id: "m", message_id: "<m@x>", flags: nil))
+
+      # `instr(NULL, 'S')` is NULL, so without the COALESCE the CASE would
+      # fall to its ELSE and call an unflagged message read.
+      assert [%{thread_unread: true}] = Store.list_threads("mara", "INBOX")
+    end
+
+    test "the S test is case-SENSITIVE — a lowercase letter is not Seen" do
+      # SQLite's LIKE is case-insensitive for ASCII; `instr` is not. A flag
+      # string carrying a lowercase 's' must not count as read.
+      Store.upsert_index_row(row(uid: 1, msg_id: "m", message_id: "<m@x>", flags: "s"))
+
+      assert [%{thread_unread: true}] = Store.list_threads("mara", "INBOX")
+    end
+
+    test "comes back as a boolean, not SQLite's integer" do
+      plant_thread!()
+
+      assert [conversation | _] = Store.list_threads("mara", "INBOX")
+      assert is_boolean(conversation.thread_unread)
+    end
+  end
+
   # -- cross-folder thread read ------------------------------------------------
 
   describe "Store.message_rows_by_thread_key/2" do

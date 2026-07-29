@@ -67,21 +67,34 @@ defmodule Valea.Api.Mail do
   `threaded: true` collapses a folder listing by `mail_messages.thread_key`
   (derived at write time — see `Valea.Mail.Normalizer.thread_key/2`): one
   row per conversation, the newest occurrence representing it, carrying
-  `thread_count` (how many of THAT FOLDER's rows it stands for) and the
-  `thread_key` itself. `get_mail_thread` then reads one conversation across
-  every folder it touches.
+  `thread_count` (how many of THAT FOLDER's rows it stands for),
+  `thread_unread` (whether ANY of them is unread) and the `thread_key`
+  itself. `get_mail_thread` then reads one conversation across every folder
+  it touches.
+
+  `thread_unread` is not derivable from the row it rides on: the projected
+  `flags` are the REPRESENTATIVE message's, so a conversation whose newest
+  message has been read but which still holds an older unread reply would
+  read as fully read. The list UI's unread dot is a per-conversation
+  question, so the aggregate is computed where the partition already exists
+  (`Valea.Mail.Store.list_threads/4`) rather than approximated by a client
+  that would otherwise need one `get_mail_thread` per listed row.
 
   The flag is an ordinary input argument, so it takes an atom key like every
   other argument here — the STRING-key rule in the list above binds
   top-level RETURN fields that can legitimately be `false`, which an
-  argument is not.
+  argument is not. `thread_unread` can legitimately be `false` and still
+  takes an atom key: it is a field of an ITEM inside the `messages` array,
+  not a top-level action-return field, and the bug is top-level only —
+  `has_attachments` has ridden that same position as an atom key since
+  before threading (`mail_rpc_test.exs` asserts a `false` one arrives).
 
   Absent (or `false`), `list_mail_messages` behaves exactly as it did before
   threading existed: same rows, same order, same `before` cursor, and a
-  projection with no `thread_key`/`thread_count` keys in it at all. The two
-  extra fields are declared `allow_nil?: true` on the row shape so the
-  threaded and flat listings share one TypeScript type; only the threaded
-  branch ever populates them.
+  projection with none of the three thread keys in it at all. They are
+  declared `allow_nil?: true` on the row shape so the threaded and flat
+  listings share one TypeScript type; only the threaded branch ever
+  populates them.
 
   ## Why `remove_mail_account`/`purge_mail_account_files` clear `mail_search`
 
@@ -551,7 +564,8 @@ defmodule Valea.Api.Mail do
                             path: [type: :string, allow_nil?: true],
                             view_path: [type: :string, allow_nil?: false],
                             thread_key: [type: :string, allow_nil?: true],
-                            thread_count: [type: :integer, allow_nil?: true]
+                            thread_count: [type: :integer, allow_nil?: true],
+                            thread_unread: [type: :boolean, allow_nil?: true]
                           ]
                         ]
                       ]
@@ -1459,13 +1473,16 @@ defmodule Valea.Api.Mail do
   end
 
   # A collapsed conversation row: the representative message's own summary,
-  # plus the key to fetch the rest of the thread with (`get_mail_thread`)
-  # and how many of the folder's rows it stands for.
+  # plus the key to fetch the rest of the thread with (`get_mail_thread`),
+  # how many of the folder's rows it stands for, and whether ANY of those
+  # rows is unread — the one question the representative's own `flags`
+  # cannot answer, and the one a list showing conversations has to.
   defp collapsed_thread_summary(account, row) do
     account
     |> message_summary(row)
     |> Map.put(:thread_key, row.thread_key)
     |> Map.put(:thread_count, row.thread_count)
+    |> Map.put(:thread_unread, row.thread_unread)
   end
 
   # One thread's OCCURRENCE rows -> its MESSAGES, oldest first (a

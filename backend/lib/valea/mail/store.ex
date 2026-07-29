@@ -342,16 +342,30 @@ defmodule Valea.Mail.Store do
   @thread_select Enum.map_join(@thread_columns, ", ", &to_string/1)
 
   # One row per thread_key, the NEWEST occurrence representing it, plus how
-  # many rows it stands for. Two windows over the same partition rather than
-  # one: `COUNT(*) OVER (... ORDER BY ...)` would default to a RUNNING count
-  # (frame = start of partition through the current row), which for the
-  # newest row is always 1.
+  # many rows it stands for and whether ANY of them is unread. Separate
+  # windows over the same partition rather than one: `COUNT(*) OVER (...
+  # ORDER BY ...)` would default to a RUNNING count (frame = start of
+  # partition through the current row), which for the newest row is always 1.
+  #
+  # `thread_unread` is a whole-partition MAX over "this row is unread", i.e.
+  # exactly the ANY the collapsed list row needs: a conversation whose newest
+  # message has been read but which still holds an older unread reply reads
+  # as unread, which is the ONLY thing the representative row's own `flags`
+  # cannot say.
+  #
+  # `instr`, not `LIKE '%S%'`: SQLite's LIKE is case-INSENSITIVE for ASCII,
+  # so a lowercase letter in a flag string would silently count as Seen.
+  # `instr` compares bytes, matching how every other reader of this column
+  # tests it. `COALESCE` because `instr(NULL, 'S')` is NULL, not 0 — a row
+  # with no flags at all is unread.
   @threads_sql """
-  SELECT #{@thread_select}, thread_count
+  SELECT #{@thread_select}, thread_count, thread_unread
   FROM (
     SELECT #{@thread_select},
            ROW_NUMBER() OVER (PARTITION BY thread_key ORDER BY date DESC, uid DESC) AS rn,
-           COUNT(*) OVER (PARTITION BY thread_key) AS thread_count
+           COUNT(*) OVER (PARTITION BY thread_key) AS thread_count,
+           MAX(CASE WHEN instr(COALESCE(flags, ''), 'S') = 0 THEN 1 ELSE 0 END)
+             OVER (PARTITION BY thread_key) AS thread_unread
     FROM mail_messages
     WHERE account = ?1 AND folder = ?2
   )
@@ -371,6 +385,11 @@ defmodule Valea.Mail.Store do
   that just happened in this listing, not the conversation's full extent.
   The same thread may hold more messages in other folders;
   `message_rows_by_thread_key/2` is what answers that question.
+  `thread_unread` is folder-scoped for the same reason: true when ANY of the
+  rows collapsed into this one lacks the maildir `S` flag. It exists because
+  the representative's own `flags` answer a different question — "is the
+  newest message read" — and a list showing one conversation per row has to
+  answer whether there is anything unread IN it.
 
   Raw SQL, like `search/3` above and for the same reason: "the newest row
   per group" is a window function, which has no Ash query-DSL spelling. The
@@ -397,15 +416,17 @@ defmodule Valea.Mail.Store do
   # Raw SQL bypasses Ash's type casting, so SQLite's integer booleans come
   # back as 0/1 — `has_attachments` is declared `:boolean, allow_nil?: false`
   # on the RPC row shape and must not arrive as an integer (or as `nil`, for
-  # a row written before that column had a default).
+  # a row written before that column had a default). `thread_unread` is the
+  # same story: it is a `MAX(CASE ...)` and so arrives as 1/0.
   defp thread_row(values) do
-    {columns, [thread_count]} = Enum.split(values, length(@thread_columns))
+    {columns, [thread_count, thread_unread]} = Enum.split(values, length(@thread_columns))
 
     @thread_columns
     |> Enum.zip(columns)
     |> Map.new()
     |> Map.update!(:has_attachments, &(&1 in [1, true]))
     |> Map.put(:thread_count, thread_count)
+    |> Map.put(:thread_unread, thread_unread in [1, true])
   end
 
   # -- folder reset ------------------------------------------------------------

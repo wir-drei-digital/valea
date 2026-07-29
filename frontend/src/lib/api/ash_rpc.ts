@@ -4184,11 +4184,11 @@ export type ListMailMessagesInput = {
   threaded?: boolean | null;
 };
 
-export type ListMailMessagesFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, threadKey: string | null, threadCount: number | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "threadKey" | "threadCount"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListMailMessagesFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, threadKey: string | null, threadCount: number | null, threadUnread: boolean | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "threadKey" | "threadCount" | "threadUnread"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListMailMessagesResult<
   Fields extends ListMailMessagesFields | undefined,
-> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, threadKey: string | null, threadCount: number | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "threadKey" | "threadCount"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, threadKey: string | null, threadCount: number | null, threadUnread: boolean | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "threadKey" | "threadCount" | "threadUnread"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListMailMessagesResult<Fields extends ListMailMessagesFields | undefined = undefined> = | { success: true; data: InferListMailMessagesResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
