@@ -147,12 +147,31 @@ export function moveTargets<T extends Pick<MailFolder, 'name' | 'held'>>(
 }
 
 /**
- * User copy for one `mail_apply_ops` per-op outcome. `accepted`/`complete`
- * count as success (`null` — nothing to show); everything else maps the
- * executor's rejection reasons to calm sentences.
+ * User copy for one `mail_apply_ops` per-op outcome.
+ *
+ * The vocabulary is `Valea.Mail.OpsExecutor`'s `result/3` — `to_string/1`
+ * over exactly `:ok | :needs_review | :rejected`, the closed set every one
+ * of its call sites emits — plus `Valea.Api.Mail`'s `reject_all_ops/2`,
+ * which synthesizes `"rejected"` for a batch the Engine could not run at
+ * all (no engine, no credential, blocked, inactive). `"ok"` is the ONLY
+ * success: it returns `null`, and nothing else may, because a status this
+ * function can't read is far safer surfaced than silently called a success.
+ *
+ * `needs_review` is deliberately NOT worded as a failure. The op WAS issued
+ * and its outcome is merely unproven (contracts 2/5/6: a destination that
+ * couldn't be confirmed, an `UNCHANGEDSINCE` STORE the server answered
+ * `MODIFIED`, a lost response). Nothing is retried blindly — `recover/1`
+ * reconciles it confirm-first at the top of the next pass and every
+ * subsequent ops batch — so "not confirmed yet" is the honest sentence, and
+ * "rejected" would be a false one.
  */
 export function opResultMessage(result: string, reason: string | null): string | null {
-  if (result === 'accepted' || result === 'complete') return null;
+  if (result === 'ok') return null;
+
+  if (result === 'needs_review') {
+    const detail = reason ? ` (${reason})` : '';
+    return `This action hasn't been confirmed yet${detail}. Valea will settle it with the server on the next pass.`;
+  }
 
   switch (reason) {
     case 'server_changed':

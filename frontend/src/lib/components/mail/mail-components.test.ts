@@ -535,9 +535,24 @@ describe('messageSessionPrompt', () => {
 });
 
 describe('opResultMessage', () => {
-  it('is null for success outcomes', () => {
-    expect(opResultMessage('accepted', null)).toBeNull();
-    expect(opResultMessage('complete', null)).toBeNull();
+  // The executor's per-op vocabulary is `OpsExecutor.result/3` over
+  // `:ok | :needs_review | :rejected` — "ok" is the success token, and
+  // nothing else is. (A live-IMAP gate caught this reading "accepted"/
+  // "complete", which the executor never emits as an op result: every
+  // successful op was reported to the user as a rejection.)
+  it('is null for "ok" — the only success the executor emits', () => {
+    expect(opResultMessage('ok', null)).toBeNull();
+  });
+
+  it('reports needs_review as unconfirmed, never as a rejection', () => {
+    expect(opResultMessage('needs_review', 'destination_unconfirmed')).toBe(
+      "This action hasn't been confirmed yet (destination_unconfirmed). Valea will settle it with the server on the next pass."
+    );
+    expect(opResultMessage('needs_review', 'baseline_moved')).toContain("hasn't been confirmed yet");
+    expect(opResultMessage('needs_review', 'baseline_moved')).not.toContain('rejected');
+    expect(opResultMessage('needs_review', null)).toBe(
+      "This action hasn't been confirmed yet. Valea will settle it with the server on the next pass."
+    );
   });
 
   it('maps known rejection reasons to calm sentences and falls back with the raw reason', () => {
@@ -547,6 +562,12 @@ describe('opResultMessage', () => {
     expect(opResultMessage('rejected', 'no_credential')).toBe('Enter your mailbox password first.');
     expect(opResultMessage('rejected', 'weird_reason')).toBe('The action was rejected (weird_reason).');
     expect(opResultMessage('rejected', null)).toBe('The action was rejected.');
+  });
+
+  it('surfaces an unknown result rather than passing it off as success', () => {
+    // Fail-closed: a status this function can't read must never return null.
+    expect(opResultMessage('accepted', null)).not.toBeNull();
+    expect(opResultMessage('some_future_status', 'why')).toBe('The action was rejected (why).');
   });
 });
 

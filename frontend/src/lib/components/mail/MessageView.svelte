@@ -205,9 +205,22 @@
     if (!account) return;
 
     const results = await mailStore.applyOps(account, [markReadOp(id, folder)], workspaceStore.generation ?? 0);
-    const first = results[0];
-    if (first && opResultMessage(first.result, first.reason) !== null) return;
+    if (opOutcome(results) !== null) return;
     if (seenOverride === null) seenOverride = true;
+  }
+
+  /**
+   * The failure copy for a one-op batch's results, or `null` when the op
+   * came back `"ok"` — the ONE place both apply paths decide what succeeded.
+   * A missing entry is not an acceptance: `mail_apply_ops`' frozen shape
+   * returns exactly one result per op (a batch the Engine couldn't run at
+   * all is still reported per-op), so its absence is an anomaly, and the
+   * unrecognized status falls through to the rejection copy rather than
+   * navigating the reader away from a message nothing confirmed moving.
+   */
+  function opOutcome(results: { result: string; reason: string | null }[]): string | null {
+    const first = results[0];
+    return opResultMessage(first?.result ?? 'missing', first?.reason ?? null);
   }
 
   /** Applies one op through the store; resolves `true` when it was accepted (a failure is left on `opError`). */
@@ -220,8 +233,7 @@
     const results = await mailStore.applyOps(account, [op], workspaceStore.generation ?? 0);
     opBusy = false;
 
-    const first = results[0];
-    const failure = first ? opResultMessage(first.result, first.reason) : null;
+    const failure = opOutcome(results);
     if (failure) {
       opError = failure;
       return false;
