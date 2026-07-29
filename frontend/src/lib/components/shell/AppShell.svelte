@@ -4,10 +4,13 @@
   // Layout grid per DESIGN_SYSTEM §11: sidebar 236 · list pane 250-340 · main
   // flexible (content max 560-660) · rail 290-340.
   //
-  // List pane ships as a fixed 300px column for Phase 1. shadcn-svelte's
-  // Resizable (bits-ui PaneGroup) composes cleanly and is the natural
-  // upgrade path once user-resizable panes are needed, but isn't installed
-  // yet — deferred rather than adding a dependency this task doesn't need.
+  // List pane ships as a fixed 300px column: it is the route's nav, not a
+  // reading surface, so there is nothing to trade width against. Resizing
+  // arrived one column over instead — `PaneHost` splits the MAIN slot with
+  // `paneforge` (a real dependency now, `PaneGroup`/`Pane`/`PaneResizer`,
+  // ratio persisted by `pane-split.ts`), which is where a reader actually
+  // wants to trade one view's width for another's.
+  //
   // The main slot is a bare full-height flex column — the old `mainVariant`
   // prop is gone (side-panes pass). Each route/view now owns its own scroll
   // container and width cap: `MainColumn` (this barrel) is the relocated
