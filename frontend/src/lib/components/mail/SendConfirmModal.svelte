@@ -22,6 +22,7 @@
   import { mailStore, type MailDraftReview } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import {
+    formatBytes,
     sendConfirmSummary,
     sendGateAfterSendFailure,
     sendGateAfterReloadFailure,
@@ -111,6 +112,27 @@
           <li class="text-ink-body text-[12.5px]">{line}</li>
         {/each}
       </ul>
+
+      <!-- The attachments as the BACKEND resolved and read them for this
+           snapshot — name and real size, not the draft's path list. Their
+           content hashes are inside `reviewFingerprint`, so what is listed
+           here is what leaves: a file rewritten after this render comes back
+           `re_review_required` instead of going out unreviewed. -->
+      {#if current.attachments.length > 0}
+        <div class="flex flex-col gap-1">
+          <p class="text-overline">Attachments</p>
+          <ul class="flex flex-col gap-1">
+            {#each current.attachments as attachment, index (`${index}:${attachment.path}`)}
+              <li
+                class="border-paper-chip-border bg-paper-pill text-ink-secondary flex items-center gap-1.5 rounded-md border px-2 py-1 text-[12px]"
+              >
+                <span class="min-w-0 flex-1 truncate">{attachment.filename}</span>
+                <span class="text-ink-meta shrink-0 tabular-nums">{formatBytes(attachment.bytes)}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
 
       <div class="flex flex-col gap-1">
         <p class="text-overline">Message</p>

@@ -30,6 +30,7 @@ import {
   addressLabel,
   addressListLabel,
   addressName,
+  attachmentsFromFrontmatter,
   formatDateTime,
   type RawAddress
 } from './mail-shapes';
@@ -54,12 +55,20 @@ export type DraftFields = {
   subject: string;
   /** A msg_id (`DraftFile`'s shape), never a raw `Message-ID` header — threading resolves backend-side at review time. */
   inReplyTo: string | null;
+  /**
+   * Workspace-relative paths, in the order they become MIME parts.
+   * Addresses, not files: nothing here is read, sized or hashed frontend-side
+   * — `OpsExecutor` resolves each one against the workspace root at review
+   * and at send, and the review snapshot is what tells the human what will
+   * actually leave (name + size, hash-bound).
+   */
+  attachments: string[];
   body: string;
 };
 
 /** A blank composer. A function, not a shared const — the caller mutates its copy. */
 export function emptyDraftFields(): DraftFields {
-  return { to: [], cc: [], bcc: [], subject: '', inReplyTo: null, body: '' };
+  return { to: [], cc: [], bcc: [], subject: '', inReplyTo: null, attachments: [], body: '' };
 }
 
 /**
@@ -74,6 +83,7 @@ export function hasDraftContent(fields: DraftFields): boolean {
     fields.cc.length > 0 ||
     fields.bcc.length > 0 ||
     fields.subject.trim() !== '' ||
+    fields.attachments.length > 0 ||
     fields.body.trim() !== ''
   );
 }
@@ -125,9 +135,59 @@ function yamlList(values: string[]): string {
 }
 
 /**
+ * A workspace-relative path, by `DraftFile`'s rule and no other: relative
+ * (no leading `/`, no `X:` drive form), and no empty, `.` or `..` segment —
+ * checked against BOTH separators, because the backend does and a draft file
+ * is portable. Control characters are handled by `yamlString` on the way out;
+ * they are refused here too, so a path that could never survive validation is
+ * never put in the buffer in the first place.
+ *
+ * The point of mirroring the rule is that a single bad path REFUSES THE WHOLE
+ * DRAFT backend-side (`invalid_draft`) — so a forward that hoovered up one
+ * malformed frontmatter path would make the message unsendable, with an error
+ * naming neither the file nor the fix.
+ */
+export function isWorkspaceRelativePath(path: string): boolean {
+  if (path.trim() === '') return false;
+  // eslint-disable-next-line no-control-regex -- refusing control characters IS the rule
+  if (/[\u0000-\u001f\u007f]/.test(path)) return false;
+  if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return false;
+  return path
+    .split(/[/\\]/)
+    .every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/** The name a human recognizes an attachment by: its basename, either separator. */
+export function attachmentName(path: string): string {
+  const segments = path.split(/[/\\]/);
+  return segments[segments.length - 1] || path;
+}
+
+/**
+ * `path` appended to `list` — refused when it is not a workspace-relative
+ * path, and idempotent, so the same file cannot be attached twice by
+ * clicking twice. (The BACKEND deliberately keeps duplicates a draft file
+ * actually lists; this is the picker declining to create one.)
+ */
+export function withAttachment(list: string[], path: string): string[] {
+  const trimmed = path.trim();
+  if (!isWorkspaceRelativePath(trimmed) || list.includes(trimmed)) return list;
+  return [...list, trimmed];
+}
+
+/** `path` removed from `list` — every occurrence, so a hand-written duplicate detaches in one click. */
+export function withoutAttachment(list: string[], path: string): string[] {
+  return list.filter((entry) => entry !== path);
+}
+
+/**
  * The draft file bytes for `fields` — `DraftFile`'s frontmatter grammar in
- * its own key order (`to`, `cc`, `bcc`, `subject`, `in_reply_to`), the `---`
- * terminator, then the body VERBATIM.
+ * its own key order (`to`, `cc`, `bcc`, `subject`, `in_reply_to`,
+ * `attachments`), the `---` terminator, then the body VERBATIM.
+ *
+ * `attachments:` is omitted entirely when there is none, so a draft with no
+ * attachments renders exactly the bytes this function has always rendered —
+ * nothing about the existing corpus of drafts moves.
  *
  * Two deliberate omissions:
  *
@@ -155,6 +215,9 @@ export function draftContent(fields: DraftFields): string {
 
   const inReplyTo = fields.inReplyTo?.trim();
   if (inReplyTo) lines.push(`in_reply_to: ${yamlString(inReplyTo)}`);
+  if (fields.attachments.length > 0) {
+    lines.push(`attachments: ${yamlList(fields.attachments)}`);
+  }
   lines.push('---');
 
   return `${lines.join('\n')}\n${fields.body}`;
@@ -177,7 +240,15 @@ export type DraftParseRefusal = 'no_frontmatter' | 'unsupported';
 
 export type DraftParse = { ok: true; fields: DraftFields } | { ok: false; reason: DraftParseRefusal };
 
-const ALLOWED_KEYS = new Set(['to', 'cc', 'bcc', 'subject', 'in_reply_to', 'status']);
+const ALLOWED_KEYS = new Set([
+  'to',
+  'cc',
+  'bcc',
+  'subject',
+  'in_reply_to',
+  'attachments',
+  'status'
+]);
 
 /**
  * YAML indicators that change what a plain scalar MEANS when they lead it
@@ -377,6 +448,10 @@ export function parseDraftFields(content: string): DraftParse {
       // `status` is deliberately dropped: it is engine-owned, `draftContent`
       // never writes it, and only a `draft`-state file is editable anyway.
       inReplyTo: inReplyTo === '' ? null : inReplyTo,
+      // Kept verbatim, duplicates and all — `DraftFile` validates these paths
+      // and re-resolves them at every use, and an editor that quietly dropped
+      // one would be detaching a file the user never detached.
+      attachments: asList(found.get('attachments')),
       body
     }
   };
@@ -563,6 +638,23 @@ function attribution(from: Mailbox | null, date: string | null): string {
   return when ? `On ${when}, ${who} wrote:` : `${who} wrote:`;
 }
 
+/**
+ * The forwarded message's own LANDED attachment paths, re-referenced rather
+ * than copied: they are already workspace files
+ * (`sources/mail/<account>/views/attachments/<msg_id>/<file>`, written by
+ * `Valea.Mail.Views`), which is exactly the address a draft's `attachments:`
+ * takes. Forwarding therefore costs no bytes on disk and no upload.
+ *
+ * Filtered through `isWorkspaceRelativePath` even though these paths come
+ * from Valea's own view files: one path this composer cannot vouch for would
+ * refuse the WHOLE draft backend-side, and losing an attachment from a
+ * forward is a smaller failure than a draft that will not save.
+ */
+function forwardAttachments(frontmatter: Record<string, unknown>): string[] {
+  const paths = attachmentsFromFrontmatter(frontmatter).map((entry) => entry.path);
+  return paths.filter(isWorkspaceRelativePath);
+}
+
 const FORWARD_SEPARATOR = '---------- Forwarded message ----------';
 
 function forwardBody(frontmatter: Record<string, unknown>, body: string): string {
@@ -625,6 +717,7 @@ export function replyPrefill(source: ComposeSource, ownAddress: string | null, m
       // A forward starts a new conversation with a new audience; threading it
       // into the original would file it under a thread its recipients cannot see.
       inReplyTo: null,
+      attachments: forwardAttachments(frontmatter),
       body: forwardBody(frontmatter, source.body)
     };
   }
@@ -643,6 +736,10 @@ export function replyPrefill(source: ComposeSource, ownAddress: string | null, m
     bcc: [],
     subject: replySubject(subject),
     inReplyTo: msgId,
+    // A reply carries none: the person you are answering already has their own
+    // files, and re-sending them is noise. Forward is the mode that hands
+    // material on, and it is the only one that re-references it.
+    attachments: [],
     body: `\n\n${attribution(from, date)}\n\n${quoteBody(source.body)}\n`
   };
 }

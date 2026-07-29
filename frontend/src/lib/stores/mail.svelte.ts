@@ -1,6 +1,6 @@
 import { api, type Api } from '../api/client';
 import { workspaceStore } from './workspace.svelte';
-import { sha256Hex } from '../components/mail/mail-shapes';
+import { attachmentsFromFrontmatter, sha256Hex } from '../components/mail/mail-shapes';
 import { inDesktop, keychainGet } from '../keychain';
 import type { MailStatusPush, MailSyncPush, MailMessagePush, MailDraftPush } from '../socket';
 import type { Channel } from 'phoenix';
@@ -280,6 +280,13 @@ export type MailDraftReview = {
     bcc: { name: string | null; email: string }[];
   };
   subject: string;
+  /**
+   * What will actually be attached, as the backend resolved and READ it at
+   * this instant — never the draft's raw path list. Their content hashes are
+   * folded into `reviewFingerprint`, so a file rewritten between this
+   * snapshot and the confirm comes back `re_review_required`.
+   */
+  attachments: { filename: string; path: string; bytes: number }[];
   /** The RESOLVED threading headers, or `null` when this isn't a reply (or the reference isn't mirrored). */
   threading: { inReplyTo: string; references: string[] } | null;
   /** True when an `in_reply_to` could not be resolved — the message will start a NEW thread. */
@@ -313,6 +320,10 @@ export function normalizeMailDraftReview(raw: Record<string, unknown>): MailDraf
       bcc: normalizeAddresses(recipients.bcc)
     },
     subject: str(raw.subject) ?? '',
+    // `review_snapshot/2`'s own `{filename, path, bytes}` maps, narrowed by
+    // the SAME defensive reader the landed-message chips use — one shape,
+    // one parser, whichever side of the mail it is on.
+    attachments: attachmentsFromFrontmatter({ attachments: raw.attachments }),
     threading: inReplyTo ? { inReplyTo, references: strings(threading?.references) } : null,
     threadingWarning: raw.threadingWarning === true,
     identity: {

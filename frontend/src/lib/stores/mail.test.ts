@@ -186,6 +186,7 @@ const rawReview: Record<string, any> = {
     bcc: []
   },
   subject: 'Re: Kickoff',
+  attachments: [{ filename: 'deck.pdf', path: 'notes/deck.pdf', bytes: 2048 }],
   threading: { in_reply_to: '<m1@example.com>', references: ['<m0@example.com>'] },
   threadingWarning: false,
   identity: { from: 'mara@example.com', from_name: 'Mara Vance', account: 'mara' },
@@ -1516,6 +1517,7 @@ describe('MailStore.draftReview', () => {
         bcc: []
       },
       subject: 'Re: Kickoff',
+      attachments: [{ filename: 'deck.pdf', path: 'notes/deck.pdf', bytes: 2048 }],
       threading: { inReplyTo: '<m1@example.com>', references: ['<m0@example.com>'] },
       threadingWarning: false,
       identity: { from: 'mara@example.com', fromName: 'Mara Vance', account: 'mara' },
@@ -1542,6 +1544,7 @@ describe('normalizeMailDraftReview', () => {
       reviewFingerprint: null,
       recipients: { to: [], cc: [], bcc: [] },
       subject: '',
+      attachments: [],
       threading: null,
       threadingWarning: false,
       identity: { from: null, fromName: null, account: '' },

@@ -40,6 +40,7 @@
     sha256Hex
   } from './mail-shapes';
   import {
+    attachmentName,
     composeHref,
     composeValidationError,
     draftContent,
@@ -52,6 +53,7 @@
     saveErrorMessage,
     setComposePrefill,
     takeComposePrefill,
+    withoutAttachment,
     type DraftFields
   } from './compose';
   import SendConfirmModal from './SendConfirmModal.svelte';
@@ -90,6 +92,12 @@
    * headers resolve backend-side at review time.
    */
   let inReplyTo = $state<string | null>(null);
+  /**
+   * Workspace-relative paths, in send order. Addresses only — this composer
+   * never reads, sizes or hashes a file: the review snapshot does that, from
+   * one backend-side read, and is what the human confirms against.
+   */
+  let attachments = $state<string[]>([]);
 
   /** The draft's name once it exists on disk — minted by the first save of a new draft. */
   let name = $state<string | null>(null);
@@ -141,6 +149,7 @@
       bcc: parseAddressList(bccText),
       subject,
       inReplyTo,
+      attachments,
       body
     };
   }
@@ -186,6 +195,7 @@
     subject = next.subject;
     body = next.body;
     inReplyTo = next.inReplyTo;
+    attachments = next.attachments;
   }
 
   function resetForm(): void {
@@ -531,6 +541,39 @@
             Plain text. Your assistant can't send this — you push or send it yourself.
           </p>
         </div>
+
+        <!-- Attachments are workspace FILES the draft points at, not uploads:
+             the chip shows the name, the row beneath it the path the backend
+             will resolve, and the sizes come from the review — this view has
+             read nothing. -->
+        {#if attachments.length > 0}
+          <div class="flex flex-col gap-1.5">
+            <p class="text-overline">Attachments</p>
+            <ul class="flex flex-col gap-1">
+              {#each attachments as path, index (`${index}:${path}`)}
+                <li
+                  class="border-paper-chip-border bg-paper-pill flex items-center gap-1.5 rounded-md border px-2 py-1"
+                >
+                  <span class="text-ink-secondary min-w-0 flex-1 truncate text-[12.5px]">
+                    {attachmentName(path)}
+                  </span>
+                  <span class="text-ink-meta hidden min-w-0 max-w-[45%] truncate font-mono text-[10.5px] sm:block">
+                    {path}
+                  </span>
+                  <button
+                    type="button"
+                    class="text-ink-meta hover:text-warn-ink shrink-0 rounded px-1 text-[11px] transition-colors"
+                    disabled={readOnly || busy}
+                    aria-label="Remove {attachmentName(path)}"
+                    onclick={() => (attachments = withoutAttachment(attachments, path))}
+                  >
+                    Remove
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
 
         {#if inReplyTo}
           <p class="text-ink-meta text-[11.5px]">

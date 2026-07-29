@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  attachmentName,
   composeHref,
   composeValidationError,
   draftContent,
@@ -10,6 +11,7 @@ import {
   formatMailbox,
   forwardSubject,
   hasDraftContent,
+  isWorkspaceRelativePath,
   loadDraftFields,
   parseAddressList,
   parseDraftFields,
@@ -19,6 +21,8 @@ import {
   saveErrorMessage,
   setComposePrefill,
   takeComposePrefill,
+  withAttachment,
+  withoutAttachment,
   type DraftFields
 } from './compose';
 
@@ -170,6 +174,7 @@ describe('parseDraftFields', () => {
         bcc: [],
         subject: "Re: it's time",
         inReplyTo: '2026-07-15-alex-4f2a91c3',
+        attachments: [],
         body: 'Hello.\n'
       }
     });
@@ -206,7 +211,15 @@ describe('parseDraftFields', () => {
     const parsed = parseDraftFields('---\nto: [a@x.com]\ncc:\nsubject:\nin_reply_to: null\n---\n');
     expect(parsed).toEqual({
       ok: true,
-      fields: { to: ['a@x.com'], cc: [], bcc: [], subject: '', inReplyTo: null, body: '' }
+      fields: {
+        to: ['a@x.com'],
+        cc: [],
+        bcc: [],
+        subject: '',
+        inReplyTo: null,
+        attachments: [],
+        body: ''
+      }
     });
   });
 });
@@ -238,6 +251,7 @@ describe('loadDraftFields', () => {
       bcc: [],
       subject: 'Kickoff notes',
       inReplyTo: '2026-07-15-alex-4f2a91c3',
+      attachments: [],
       body: 'Here is the draft you asked for.\n'
     });
 
@@ -550,6 +564,201 @@ describe('replyPrefill — forward', () => {
     const prefill = replyPrefill({ frontmatter: null, body: '' }, null, 'forward');
     expect(prefill.subject).toBe('');
     expect(prefill.to).toEqual([]);
+  });
+
+  // A forward re-REFERENCES the original's landed attachment files — they are
+  // already workspace files at exactly the address `attachments:` takes, so
+  // nothing is copied and nothing is uploaded.
+  it('re-references the original’s landed attachment paths', () => {
+    const prefill = replyPrefill(
+      {
+        frontmatter: messageFrontmatter({
+          attachments: [
+            {
+              filename: 'deck.pdf',
+              path: 'sources/mail/mara/views/attachments/2026-07-15-alex-4f2a91c3/deck.pdf',
+              bytes: 2048
+            },
+            {
+              filename: 'photo.png',
+              path: 'sources/mail/mara/views/attachments/2026-07-15-alex-4f2a91c3/photo.png',
+              bytes: 512
+            }
+          ]
+        }),
+        body: 'original'
+      },
+      'mara@example.com',
+      'forward'
+    );
+
+    expect(prefill.attachments).toEqual([
+      'sources/mail/mara/views/attachments/2026-07-15-alex-4f2a91c3/deck.pdf',
+      'sources/mail/mara/views/attachments/2026-07-15-alex-4f2a91c3/photo.png'
+    ]);
+  });
+
+  it('drops a landed path this composer cannot vouch for, rather than poisoning the draft', () => {
+    const prefill = replyPrefill(
+      {
+        frontmatter: messageFrontmatter({
+          attachments: [
+            { filename: 'ok.pdf', path: 'sources/mail/mara/views/attachments/m1/ok.pdf', bytes: 1 },
+            { filename: 'bad.pdf', path: '/absolute/bad.pdf', bytes: 1 },
+            { filename: 'esc.pdf', path: '../../escape.pdf', bytes: 1 }
+          ]
+        }),
+        body: 'original'
+      },
+      null,
+      'forward'
+    );
+
+    expect(prefill.attachments).toEqual(['sources/mail/mara/views/attachments/m1/ok.pdf']);
+  });
+
+  it('a reply carries none, even off a message that had them', () => {
+    const frontmatter = messageFrontmatter({
+      attachments: [{ filename: 'deck.pdf', path: 'sources/mail/mara/x/deck.pdf', bytes: 1 }]
+    });
+
+    for (const mode of ['reply', 'replyAll'] as const) {
+      expect(replyPrefill({ frontmatter, body: 'hi' }, null, mode).attachments).toEqual([]);
+    }
+  });
+});
+
+describe('attachments — the frontmatter key', () => {
+  const DECK = 'sources/mail/mara/views/attachments/2026-07-15-alex-4f2a91c3/deck.pdf';
+
+  it('renders after in_reply_to, as a flow sequence of quoted scalars', () => {
+    const content = draftContent(
+      fields({ to: ['a@x.com'], inReplyTo: '2026-07-15-alex-4f2a91c3', attachments: [DECK] })
+    );
+
+    expect(content).toBe(
+      '---\n' +
+        'to: ["a@x.com"]\n' +
+        'cc: []\n' +
+        'bcc: []\n' +
+        'subject: ""\n' +
+        'in_reply_to: "2026-07-15-alex-4f2a91c3"\n' +
+        `attachments: ["${DECK}"]\n` +
+        '---\n'
+    );
+  });
+
+  // The whole existing corpus of drafts must render byte-identically, or every
+  // reopen shows up dirty and every agent-written draft looks edited.
+  it('is omitted entirely when there is none', () => {
+    const content = draftContent(fields({ to: ['a@x.com'], subject: 'Hi' }));
+
+    expect(content).toBe('---\nto: ["a@x.com"]\ncc: []\nbcc: []\nsubject: "Hi"\n---\n');
+    expect(content).not.toContain('attachments');
+  });
+
+  it('round-trips through parseDraftFields, order and duplicates intact', () => {
+    const original = fields({
+      to: ['a@x.com'],
+      attachments: [DECK, 'notes/second.txt', DECK]
+    });
+
+    const parsed = parseDraftFields(draftContent(original));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && parsed.fields).toEqual(original);
+  });
+
+  it('reads an agent-written draft: unquoted scalars, a block sequence, a `status:` line', () => {
+    const parsed = parseDraftFields(
+      '---\nto: a@x.com\nattachments:\n  - notes/deck.pdf\n  - notes/two.png\nstatus: draft\n---\nBody.\n'
+    );
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && parsed.fields.attachments).toEqual(['notes/deck.pdf', 'notes/two.png']);
+  });
+
+  it('an empty list parses as none, and re-renders without the key (clean baseline)', () => {
+    const loaded = loadDraftFields('---\nto: [a@x.com]\nattachments: []\n---\nBody.\n');
+
+    expect(loaded.ok).toBe(true);
+    expect(loaded.ok && loaded.fields.attachments).toEqual([]);
+    // The baseline is this module's own rendering, so a draft written with an
+    // empty `attachments:` still opens CLEAN rather than pre-dirtied.
+    expect(loaded.ok && draftDirty(loaded.fields, loaded.baseline)).toBe(false);
+  });
+
+  it('counts as content worth keeping', () => {
+    expect(hasDraftContent(fields({ attachments: [DECK] }))).toBe(true);
+    expect(hasDraftContent(emptyDraftFields())).toBe(false);
+  });
+
+  it('a path carrying newlines cannot forge a sibling key', () => {
+    const content = draftContent(
+      fields({ to: ['a@x.com'], attachments: ['ok.pdf"]\nbcc: [attacker@evil.example]\nx: ["y'] })
+    );
+
+    expect(content.split('\n').filter((line) => line.startsWith('attachments:'))).toHaveLength(1);
+    expect(content.split('\n').filter((line) => line.startsWith('bcc:'))).toEqual(['bcc: []']);
+    expect(content).not.toContain('attacker@evil.example]\n');
+    // ...and it survives the round trip as the one hostile string it is.
+    const parsed = parseDraftFields(content);
+    expect(parsed.ok && parsed.fields.attachments).toEqual([
+      'ok.pdf"] bcc: [attacker@evil.example] x: ["y'
+    ]);
+  });
+
+  it('refuses to open a draft whose frontmatter carries a key it cannot re-render', () => {
+    const loaded = loadDraftFields('---\nto: [a@x.com]\nattachment: notes/deck.pdf\n---\nBody.\n');
+    expect(loaded.ok).toBe(false);
+    expect(!loaded.ok && loaded.reason).toBe('unsupported');
+  });
+});
+
+describe('isWorkspaceRelativePath / withAttachment / withoutAttachment / attachmentName', () => {
+  it('accepts ordinary workspace-relative paths', () => {
+    expect(isWorkspaceRelativePath('notes/deck.pdf')).toBe(true);
+    expect(isWorkspaceRelativePath('a b/c (1).txt')).toBe(true);
+    expect(isWorkspaceRelativePath('deck.pdf')).toBe(true);
+  });
+
+  // `DraftFile`'s rule, mirrored: one bad path refuses the WHOLE draft
+  // backend-side, so nothing that would fail there is ever put in the buffer.
+  it('refuses absolute paths, drive forms, traversals and control characters', () => {
+    for (const bad of [
+      '',
+      '   ',
+      '/etc/passwd',
+      'C:/Windows/notes.txt',
+      '../../etc/passwd',
+      'notes/../../etc/passwd',
+      '..\\..\\secrets',
+      './deck.pdf',
+      'notes//deck.pdf',
+      'notes/',
+      'notes/a\nb.pdf',
+      'notes/a\u0000b.pdf'
+    ]) {
+      expect(isWorkspaceRelativePath(bad), bad).toBe(false);
+    }
+  });
+
+  it('withAttachment appends valid paths, refuses invalid ones, and never duplicates', () => {
+    expect(withAttachment([], 'notes/deck.pdf')).toEqual(['notes/deck.pdf']);
+    expect(withAttachment(['notes/deck.pdf'], '  notes/two.txt ')).toEqual([
+      'notes/deck.pdf',
+      'notes/two.txt'
+    ]);
+    expect(withAttachment(['notes/deck.pdf'], 'notes/deck.pdf')).toEqual(['notes/deck.pdf']);
+    expect(withAttachment([], '../escape.pdf')).toEqual([]);
+  });
+
+  it('withoutAttachment removes every occurrence', () => {
+    expect(withoutAttachment(['a/x.pdf', 'b/y.pdf', 'a/x.pdf'], 'a/x.pdf')).toEqual(['b/y.pdf']);
+  });
+
+  it('attachmentName is the basename, either separator', () => {
+    expect(attachmentName('sources/mail/mara/views/attachments/m1/deck.pdf')).toBe('deck.pdf');
+    expect(attachmentName('deck.pdf')).toBe('deck.pdf');
   });
 });
 

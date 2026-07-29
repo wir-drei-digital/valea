@@ -262,8 +262,34 @@ export function draftNoticeMessage(notice: string | null): string | null {
   }
 }
 
+/**
+ * Copy for the attachment refusals, which are the ONE family of mail error
+ * codes that carries a payload: the executor answers
+ * `attachment_missing: <workspace path>` / `attachment_outside: <path>` so
+ * the human learns WHICH file, and a bare switch would flatten every one of
+ * them into a default sentence naming none. `null` for anything else, so the
+ * two error maps below stay in charge of their own vocabulary.
+ */
+function attachmentErrorMessage(code: string): string | null {
+  if (code === 'attachments_too_large') {
+    return 'The attachments are too large to send — 10 MB per file, 25 MB in total.';
+  }
+  if (code.startsWith('attachment_missing: ')) {
+    const path = code.slice('attachment_missing: '.length);
+    return `Attached file not found: ${path}. Remove it, or put the file back.`;
+  }
+  if (code.startsWith('attachment_outside: ')) {
+    const path = code.slice('attachment_outside: '.length);
+    return `Attached file is outside your workspace: ${path}. Only files in the workspace can be sent.`;
+  }
+  return null;
+}
+
 /** Error copy for a failed push (`push_draft_to_mailbox` / `get_mail_draft` error codes). */
 export function pushErrorMessage(code: string): string {
+  const attachment = attachmentErrorMessage(code);
+  if (attachment) return attachment;
+
   switch (code) {
     case 'content_changed':
       return 'The draft changed since you opened it. Review it again, then push.';
@@ -397,6 +423,9 @@ export function sendGateAfterReloadFailure(gate: SendGate, code: string): SendGa
  * pre-transmit refusals: nothing was sent.
  */
 export function sendErrorMessage(code: string): string {
+  const attachment = attachmentErrorMessage(code);
+  if (attachment) return attachment;
+
   switch (code) {
     case 're_review_required':
       return 'The sending identity or the thread changed while you were reviewing. Reload the review, then confirm again.';
