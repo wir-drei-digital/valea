@@ -788,6 +788,104 @@ defmodule Valea.Acp.ConnectionTest do
              %{"path" => "C:\\Windows\\system32\\drivers\\etc\\hosts"}
            ]
   end
+
+  # --- relPath is a NAVIGATION input (final review C1) ---
+  #
+  # A chat pane's tool chip links `relPath` into a `/knowledge/...` href, and
+  # `new URL(...)` normalizes `..` — so an un-resolved relPath is an agent
+  # -controlled navigation out of the app's route space. These drive the full
+  # frame so the property is pinned where the frontend actually reads it.
+
+  test "an escaping absolute path gets NO relPath (the prefix is not containment)" do
+    state = connected_state()
+
+    {_state, items, _replies, _effects} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{
+          "toolCallId" => "t-escape",
+          "status" => "in_progress",
+          "locations" => [
+            %{"path" => "/ws/icm/../../etc/passwd"},
+            %{"path" => "../../etc/passwd"},
+            %{"path" => "/ws/notes/../a.md"}
+          ]
+        })
+      )
+
+    assert [%{"locations" => locs}] = items
+
+    # The raw string survives in "path" (it is only ever displayed); the first
+    # two escape and lose relPath, the third resolves back INSIDE the cwd and
+    # keeps a `..`-free one.
+    assert locs == [
+             %{"path" => "/ws/icm/../../etc/passwd"},
+             %{"path" => "../../etc/passwd"},
+             %{"path" => "/ws/notes/../a.md", "relPath" => "a.md"}
+           ]
+  end
+
+  # === location_rel/3 — the pure seam ===
+  #
+  # `@tag :windows_only` tests never run on this host (test_helper excludes
+  # them; the Windows lane is workflow_dispatch-only), so the classification
+  # rules are pinned through the explicit-platform seam instead, exactly like
+  # `Valea.Paths`' own Windows tests.
+
+  describe "location_rel/3" do
+    test "unix: resolves before relativizing, floors at the root" do
+      assert Connection.location_rel("/ws/notes/notes.md", "/ws", :unix) ==
+               {:ok, "notes/notes.md"}
+
+      assert Connection.location_rel("already/relative.md", "/ws", :unix) ==
+               {:ok, "already/relative.md"}
+
+      assert Connection.location_rel("./a/./b.md", "/ws", :unix) == {:ok, "a/b.md"}
+      assert Connection.location_rel("/ws/a/../b.md", "/ws", :unix) == {:ok, "b.md"}
+
+      assert Connection.location_rel("/ws/icm/../../etc/passwd", "/ws", :unix) == :none
+      assert Connection.location_rel("../../etc/passwd", "/ws", :unix) == :none
+      assert Connection.location_rel("/etc/passwd", "/ws", :unix) == :none
+      # The cwd itself is not a file to open.
+      assert Connection.location_rel("/ws", "/ws", :unix) == :none
+      assert Connection.location_rel(".", "/ws", :unix) == :none
+      # Sibling-prefix collision (the `ancestor?/3` trailing-slash rule).
+      assert Connection.location_rel("/ws-private/x.md", "/ws", :unix) == :none
+    end
+
+    test "windows: drive-relative and current-drive-rooted paths get no relPath" do
+      # Both used to fall into the `not absolute?` bucket and emit the raw
+      # string as a relPath.
+      assert Connection.location_rel("C:foo", "C:/ws", :windows) == :none
+      assert Connection.location_rel("C:", "C:/ws", :windows) == :none
+      assert Connection.location_rel("/x", "C:/ws", :windows) == :none
+      assert Connection.location_rel("\\\\.\\COM1", "C:/ws", :windows) == :none
+      assert Connection.location_rel("//host", "C:/ws", :windows) == :none
+    end
+
+    test "windows: in-cwd paths still normalize and relativize case-folded" do
+      assert Connection.location_rel("C:\\ws\\notes\\notes.md", "C:/ws", :windows) ==
+               {:ok, "notes/notes.md"}
+
+      assert Connection.location_rel("c:/WS/notes/notes.md", "C:/ws", :windows) ==
+               {:ok, "notes/notes.md"}
+
+      assert Connection.location_rel("notes\\notes.md", "C:/ws", :windows) ==
+               {:ok, "notes/notes.md"}
+
+      assert Connection.location_rel("C:\\ws\\..\\..\\Windows\\win.ini", "C:/ws", :windows) ==
+               :none
+
+      assert Connection.location_rel("C:\\Windows\\win.ini", "C:/ws", :windows) == :none
+    end
+
+    test "a rootless cwd fails closed rather than resolving against nothing" do
+      # `resolve_lexical/3` RAISES on a base with no root; the classify gate
+      # in front of it is what turns that into a quiet :none.
+      assert Connection.location_rel("a.md", "relative/cwd", :unix) == :none
+      assert Connection.location_rel("a.md", "C:ws", :windows) == :none
+    end
+  end
 end
 
 # Task 1.3: the launch map's two optional Phase-5 fields —

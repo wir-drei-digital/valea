@@ -795,10 +795,9 @@ defmodule Valea.Acp.Connection do
   # item so the frontend can offer "open this file" affordances (side-panes
   # pass). Only set when THIS update carries a non-empty list — a later
   # location-less update must not erase them (same rule as "diff"). Each
-  # entry keeps the raw "path" and gains "relPath" when the file lies inside
-  # the session's cwd (the ICM root): already-relative paths are taken as
-  # cwd-relative verbatim; absolute ones relativize via the case-folded
-  # `Valea.Paths` helpers — never `Path.relative_to/2` (see Paths moduledoc).
+  # entry keeps the raw "path" verbatim and gains "relPath" only when
+  # `location_rel/3` proves the path resolves INSIDE the session's cwd (the
+  # ICM root).
   defp put_tool_locations(item, locations, cwd) when is_list(locations) do
     rendered =
       for loc <- locations,
@@ -827,24 +826,70 @@ defmodule Valea.Acp.Connection do
     # in-ICM location would silently lose its relPath. Identity on unix.
     # "path" keeps the agent's ORIGINAL string; only "relPath" is derived from
     # the normalized (forward-slash) form, which is what the frontend joins.
-    p = Valea.Paths.normalize(path)
-
-    cond do
-      not Valea.Paths.absolute?(p) ->
-        Map.put(entry, "relPath", p)
-
-      Valea.Paths.ancestor?(cwd, p) ->
-        case Valea.Paths.relative_to(p, cwd) do
-          "." -> entry
-          rel -> Map.put(entry, "relPath", rel)
-        end
-
-      true ->
-        entry
+    case location_rel(path, cwd) do
+      {:ok, rel} -> Map.put(entry, "relPath", rel)
+      :none -> entry
     end
   end
 
   defp put_location_rel(entry, _path, _cwd), do: entry
+
+  @doc """
+  The mount-relative form of an agent-reported tool-call location, or `:none`
+  when the path does not provably resolve INSIDE `cwd`.
+
+  `relPath` is the one TRUSTED field on a location entry: the frontend joins
+  it into a `/knowledge/...` href and navigates there, so whatever reaches it
+  is agent-controlled routing input. A purely lexical prefix/relativize pair
+  is not enough for that job — `Valea.Paths.relative_to/3` deliberately does
+  NOT collapse `.`/`..` (see its doc), so a raw `/ws/icm/../../etc/passwd`
+  used to answer `ancestor?` true on the string prefix alone and hand back
+  `../../etc/passwd`, which the browser's own URL parser then normalized
+  straight out of the app's route space.
+
+  So the path is RESOLVED first: `resolve_lexical/3` floors `..` against the
+  root, and containment is asked of the RESOLVED form. Three further rules
+  keep it closed:
+
+    * `cwd` must classify `:absolute` — there is no root to floor `..`
+      against otherwise, and `resolve_lexical/3` raises rather than guess;
+    * only `:absolute` and `:relative` paths resolve at all —
+      `:drive_relative` (`C:foo`) and `:invalid` (`/x`, `\\\\.\\…`, bare
+      `//host`) are the ambiguous Windows shapes the `Valea.Paths` moduledoc
+      requires to fail closed, and they used to fall into the relative bucket
+      and emit a relPath verbatim;
+    * a surviving `..` segment is rejected outright. `resolve_lexical/3`
+      cannot leave one behind today; the check is what keeps "no `..` in a
+      relPath" a property of THIS function rather than an inherited
+      implementation detail of that one.
+
+  `platform` is explicit so the Windows classifications are testable on any
+  host — the same pure-seam convention `Valea.Paths` documents for its own
+  functions; `put_location_rel/3` passes the host's.
+  """
+  @spec location_rel(String.t(), String.t(), Valea.Paths.platform()) ::
+          {:ok, String.t()} | :none
+  def location_rel(path, cwd, platform \\ Valea.Paths.host_platform()) do
+    # Normalize BEFORE comparing: the agent reports raw OS paths, so a Windows
+    # agent sends `C:\ws\notes.md` against an already-normalized `C:/ws` cwd,
+    # and `ancestor?/3` only case-folds — it never normalizes. Identity on
+    # unix. The caller keeps the agent's ORIGINAL string in "path"; only
+    # "relPath" is derived from the normalized (forward-slash) form, which is
+    # what the frontend joins.
+    p = Valea.Paths.normalize(path, platform)
+    root = Valea.Paths.normalize(cwd, platform)
+
+    with :absolute <- Valea.Paths.classify(root, platform),
+         kind when kind in [:absolute, :relative] <- Valea.Paths.classify(p, platform),
+         resolved = Valea.Paths.resolve_lexical(p, root, platform),
+         true <- Valea.Paths.ancestor?(root, resolved, platform),
+         rel when rel != "." <- Valea.Paths.relative_to(resolved, root, platform),
+         false <- ".." in String.split(rel, "/") do
+      {:ok, rel}
+    else
+      _ -> :none
+    end
+  end
 
   # Bound accumulated tool output to @max_tool_output bytes, keeping the tail
   # (most recent output) behind a leading truncation marker.
