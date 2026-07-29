@@ -1597,8 +1597,11 @@ defmodule Valea.Api.Mail do
         # the caller) — refused rather than quietly resurrected.
         if is_nil(base_hash), do: :ok, else: {:error, :content_changed}
 
+      # A `link_unsafe` entry keeps its own name; an errno does not (see
+      # `write_failed/1`) — the CAS basis being unreadable is this save
+      # failing, not a fact about the host's filesystem.
       {:error, reason} ->
-        {:error, reason}
+        {:error, write_failed(reason)}
     end
   end
 
@@ -1624,22 +1627,67 @@ defmodule Valea.Api.Mail do
     end
   end
 
-  # Temp + rename in the SAME directory (`Valea.Mail.Settings.atomic_write!`'s
-  # discipline): a reader — the push snapshot, the review read, the watcher's
-  # refresh — sees either the old bytes or the new ones, never a half-written
-  # draft. The temp name ends `.md.tmp`, which neither `list_mail_drafts`
-  # (`.md` only) nor the watcher's `classify_sources/2` (`.md` only) picks up,
-  # so no ghost row and no spurious push.
+  # Temp + rename in the SAME directory: a reader — the push snapshot, the
+  # review read, the watcher's refresh — sees either the old bytes or the new
+  # ones, never a half-written draft. The temp name still ends `.tmp`, which
+  # neither `list_mail_drafts` (`.md` only) nor the watcher's
+  # `classify_sources/2` (`.md` only) picks up, so no ghost row and no
+  # spurious push.
+  #
+  # The temp path is UNIQUE and opened EXCLUSIVELY, and both halves are load-
+  # bearing. `drafts/` is agent-writable — that is the whole premise of the
+  # `earlier_revision_sent` display — so a PREDICTABLE temp name is an entry
+  # an agent can plant ahead of the human's next save: a plain write opens
+  # `O_WRONLY|O_CREAT|O_TRUNC`, which FOLLOWS a symlink, so
+  # `ln -s ~/.ssh/authorized_keys drafts/reply.md.tmp` would have this
+  # function truncate and overwrite that file and then leave the link itself
+  # renamed into place as the draft — an arbitrary write straight through the
+  # containment gate `contained_draft_path/3` only ever applied to the `.md`.
+  # `:exclusive` is `O_EXCL|O_CREAT`, which never follows a symlink and never
+  # truncates, and the unique suffix means there is no name to plant at.
   defp write_draft_atomic(path, content) do
-    File.mkdir_p!(Path.dirname(path))
-    tmp = path <> ".tmp"
-    File.write!(tmp, content)
-    File.rename!(tmp, path)
-    :ok
-  rescue
-    error in File.Error -> {:error, error.reason}
-    error in File.RenameError -> {:error, error.reason}
+    tmp = "#{path}.#{System.unique_integer([:positive])}.tmp"
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         {:ok, written} <-
+           File.open(tmp, [:write, :binary, :exclusive], &IO.binwrite(&1, content)) do
+      rename_draft_into_place(tmp, path, written)
+    else
+      # Nothing of ours is on disk yet: either `mkdir_p` never got there, or
+      # the exclusive create refused — which IS the planted-entry refusal, so
+      # this branch must not go on to delete what it found.
+      {:error, reason} -> {:error, write_failed(reason)}
+    end
   end
+
+  # Past the exclusive create the temp file is OURS, so every failure from
+  # here removes it: the name carries a unique integer and is never reused, so
+  # an orphan would sit under `drafts/` forever — invisible to the listing and
+  # the watcher, but real.
+  defp rename_draft_into_place(tmp, path, :ok) do
+    case File.rename(tmp, path) do
+      :ok -> :ok
+      {:error, reason} -> abandon_draft_write(tmp, reason)
+    end
+  end
+
+  defp rename_draft_into_place(tmp, _path, {:error, reason}),
+    do: abandon_draft_write(tmp, reason)
+
+  defp abandon_draft_write(tmp, reason) do
+    File.rm(tmp)
+    {:error, write_failed(reason)}
+  end
+
+  # ONE stable code for every filesystem failure this action can hit. A raw
+  # errno would reach the client through `error_for/1`'s `to_string/1` clause
+  # as `"eacces"`/`"enospc"`/`"erofs"` — codes no caller maps and no doc
+  # lists, describing the host's filesystem for no one's benefit.
+  # `:link_unsafe` is not a filesystem failure but a refusal this surface
+  # names deliberately (`get_mail_draft` returns it too), so it passes
+  # through.
+  defp write_failed(:link_unsafe), do: :link_unsafe
+  defp write_failed(_errno), do: :write_failed
 
   defp drafts_dir(root, account), do: Path.join([root, "sources", "mail", account, "drafts"])
 

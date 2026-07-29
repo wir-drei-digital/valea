@@ -2234,6 +2234,69 @@ defmodule ValeaWeb.MailRpcTest do
       assert File.read!(outside) == "sensitive target content"
     end
 
+    test "never writes through a symlink planted at the TEMP name", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      # The containment gate covers `<name>.md`, but the temp file is the path
+      # actually opened FIRST — and `drafts/` is agent-writable. A predictable
+      # `<name>.md.tmp` opened `O_TRUNC` follows this link and overwrites the
+      # target (verified: a plain `File.write!` here does clobber it), then
+      # renames the link itself into place as the draft. The exclusive create
+      # on a unique temp name cannot do either.
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+      outside = Path.join(workspace, "secret.txt")
+      File.write!(outside, "sensitive target content")
+      File.ln_s!(outside, Path.join(drafts_dir, "target.md.tmp"))
+
+      assert %{"success" => true, "data" => %{"name" => "target.md", "saved" => true}} =
+               write_draft_rpc(
+                 %{"name" => "target.md", "content" => @write_md, "baseHash" => nil},
+                 generation
+               )
+
+      assert File.read!(outside) == "sensitive target content"
+
+      # What landed is a REGULAR file holding the new bytes — not the planted
+      # link renamed over the draft name.
+      assert %File.Stat{type: :regular} = File.lstat!(drafts_path(workspace, "target.md"))
+      assert File.read!(drafts_path(workspace, "target.md")) == @write_md
+
+      # The only `.tmp` left is the planted one; the write leaked none of its
+      # own (a unique temp name is never reused, so an orphan would be
+      # permanent).
+      assert Enum.filter(File.ls!(drafts_dir), &String.ends_with?(&1, ".tmp")) ==
+               ["target.md.tmp"]
+    end
+
+    test "a filesystem failure comes back as one stable code, never a raw errno", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      # Read-only drafts dir: the temp create fails `:eacces`, which must NOT
+      # reach the client as `"eacces"` — that is a code nothing maps, and it
+      # describes the host's filesystem rather than the save.
+      drafts_dir = Path.join([workspace, "sources", "mail", "mara", "drafts"])
+      File.mkdir_p!(drafts_dir)
+      File.chmod!(drafts_dir, 0o555)
+      on_exit(fn -> File.chmod(drafts_dir, 0o755) end)
+
+      assert %{"success" => false, "errors" => [%{"type" => "write_failed"}]} =
+               write_draft_rpc(
+                 %{"name" => "denied.md", "content" => @write_md, "baseHash" => nil},
+                 generation
+               )
+
+      assert File.ls!(drafts_dir) == []
+    end
+
     test "refuses a draft the ledger says is mid-flight", %{
       workspace: workspace,
       generation: generation
