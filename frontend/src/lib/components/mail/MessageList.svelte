@@ -25,7 +25,23 @@
   // The snippet is mail body text: it renders as plain interpolation
   // (Svelte-escaped), never `{@html}`, and the backend sends no highlight
   // markers precisely so that nothing here has to.
-  import { fromLabel, subjectLabel, relativeTime, messageHref, messageSeen } from './mail-shapes';
+  //
+  // A FOLDER listing arrives collapsed by conversation (Task 11): the row is
+  // the thread's newest message, and a multi-message thread carries a count
+  // badge beside the time. Search hits arrive flat and carry no count, so the
+  // badge simply never renders for them — one component, both listings, the
+  // same additive pattern the snippet line uses. Clicking a collapsed row
+  // opens its newest message; the read pane's strip is where the rest of the
+  // conversation is.
+  import {
+    fromLabel,
+    subjectLabel,
+    relativeTime,
+    listRowKey,
+    messageHref,
+    threadCountBadge,
+    threadUnread
+  } from './mail-shapes';
   import type { MailMessageSummary } from '$lib/stores/mail.svelte';
 
   let {
@@ -40,8 +56,9 @@
 </script>
 
 <ul class="divide-paper-hairline flex flex-col divide-y">
-  {#each messages as message (message.msgId)}
+  {#each messages as message (listRowKey(message))}
     {@const selected = message.msgId === selectedId}
+    {@const threadCount = threadCountBadge(message)}
     <li>
       <a
         href={messageHref(account, message.msgId)}
@@ -52,13 +69,24 @@
       >
         <span class="flex items-baseline justify-between gap-3">
           <span class="flex min-w-0 items-baseline gap-1.5">
-            {#if !messageSeen(message)}
+            {#if threadUnread(message)}
               <span class="bg-act size-1.5 shrink-0 self-center rounded-full" title="Unread" aria-label="Unread"
               ></span>
             {/if}
             <span class="text-ink-heading min-w-0 truncate text-[13.5px] [font-weight:650]">{fromLabel(message)}</span>
           </span>
-          <span class="text-ink-meta shrink-0 text-[11.5px]">{relativeTime(message.date)}</span>
+          <span class="flex shrink-0 items-baseline gap-1.5">
+            {#if threadCount}
+              <span
+                class="bg-paper-track text-ink-meta rounded-full px-1.5 text-[10.5px] [font-weight:650] tabular-nums"
+                title="Conversation: {threadCount} messages in this folder"
+                aria-label="Conversation: {threadCount} messages in this folder"
+              >
+                {threadCount}
+              </span>
+            {/if}
+            <span class="text-ink-meta text-[11.5px]">{relativeTime(message.date)}</span>
+          </span>
         </span>
         <span class="text-ink-body mt-0.5 block truncate text-[13px]">{subjectLabel(message.subject)}</span>
         {#if message.snippet}

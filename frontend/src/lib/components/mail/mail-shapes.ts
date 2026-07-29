@@ -83,6 +83,90 @@ export function filterMessagesByRead<T extends { flags?: string | null }>(
   return messages.filter((message) => messageSeen(message) === (filter === 'read'));
 }
 
+// -- threaded listing (MessageList rows, MessageView strip) -------------------
+//
+// `list_mail_messages(threaded: true)` collapses a folder by `thread_key`:
+// one row per conversation, the NEWEST message representing it, carrying
+// `threadKey` and `threadCount`.
+//
+// THE TYPE TRAP these three helpers exist to contain: the shared row type
+// declares both fields `| null`, but a FLAT listing (search hits, the thread
+// strip itself) omits the keys entirely — at runtime they are `undefined`,
+// not `null`. Every read of them here is a truthiness/`typeof` check, never
+// `=== null`, and every caller goes through these helpers rather than
+// touching the fields directly.
+
+/**
+ * Whether a collapsed thread row shows the unread dot.
+ *
+ * The RULE is "the dot is on when ANY message in the thread is unread". The
+ * DATA a threaded row carries is the representative (newest) message and a
+ * count — `Valea.Mail.Store.list_threads/4` projects one row per thread with
+ * that row's own `flags`, and no thread-level unread aggregate exists on
+ * either side of the wire. So this decides from the only member it can see.
+ *
+ * The visible consequence: a thread whose newest message has been read but
+ * which still holds an older unread reply shows NO dot. Fixing that is a
+ * backend change (an `unread` window aggregate beside `thread_count` in
+ * `@threads_sql`), not something this side can compute — fetching every
+ * listed thread's members to find out would be one RPC per row.
+ *
+ * Not folded into `messageSeen` even though it currently agrees with it:
+ * this is the THREAD rule and that is the MESSAGE rule, and when the
+ * aggregate lands only this one changes.
+ */
+export function threadUnread(row: { flags?: string | null }): boolean {
+  return !messageSeen(row);
+}
+
+/**
+ * The count badge for a collapsed row — `null` for anything that is not a
+ * multi-message thread, which is what keeps a flat listing (no `threadCount`
+ * key at all) and a one-message conversation badge-free.
+ *
+ * The number counts within the LISTED FOLDER only (the backend's own
+ * scoping), so it is deliberately not the same quantity as the read pane's
+ * thread strip length: a conversation whose replies you sent has members in
+ * Sent that this folder's collapse never saw.
+ */
+export function threadCountBadge(row: { threadCount?: number | null }): string | null {
+  const count = row.threadCount;
+  return typeof count === 'number' && count > 1 ? String(count) : null;
+}
+
+/**
+ * What a LIST ROW is, for keying and de-duplication: its conversation when
+ * the listing is threaded, the message itself when it is flat. The two are
+ * namespaced apart so a `thread_key` can never be mistaken for a `msg_id`.
+ *
+ * Load-bearing for the paginated merge, not just for `{#each}`: in a
+ * threaded listing a new reply CHANGES which message represents a thread, so
+ * a merge keyed on `msgId` would keep the tail's now-superseded row beside
+ * the fresh page's new one and show the same conversation twice.
+ */
+export function listRowKey(row: { msgId: string; threadKey?: string | null }): string {
+  return row.threadKey ? `thread:${row.threadKey}` : `message:${row.msgId}`;
+}
+
+/**
+ * The `thread_key` to open the read pane's strip with, found by looking the
+ * open message up among the loaded THREADED rows — the only place the key
+ * is available client-side (a message's own view file carries no thread key,
+ * and `search_mail` hits are flat by design).
+ *
+ * `null` therefore also means "this message is not a representative row of
+ * the loaded folder listing" — a search hit from another folder, or an older
+ * member of some thread. The read pane simply shows no strip for those; see
+ * `MailStore.loadThread`, which keeps an already-loaded strip alive across
+ * jumps between its own members rather than asking this again.
+ */
+export function threadKeyForMessage(
+  msgId: string,
+  rows: readonly { msgId: string; threadKey?: string | null }[]
+): string | null {
+  return rows.find((row) => row.msgId === msgId)?.threadKey || null;
+}
+
 // -- ops actions (MessageView) ----------------------------------------------
 
 /**

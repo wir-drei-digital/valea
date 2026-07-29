@@ -19,6 +19,7 @@
   // locator, not an ICM one — mail messages live outside any ICM's tree).
   import Copy from '@lucide/svelte/icons/copy';
   import Paperclip from '@lucide/svelte/icons/paperclip';
+  import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
   import { SegmentedControl } from '$lib/components/shell';
@@ -39,13 +40,16 @@
     folderFlagsLine,
     formatBytes,
     formatDateTime,
+    fromLabel,
     mailAttachmentTarget,
     markReadOp,
     markUnreadOp,
+    messageHref,
     messageSeen,
     messageSessionPrompt,
     moveTargets,
     opResultMessage,
+    relativeTime,
     subjectLabel,
     trashTarget,
     type RawAddress
@@ -170,6 +174,36 @@
   // `trashTarget` has already ruled out an unconfigured trash and a message
   // that is in it, so only the op's own two ingredients are left to check.
   const canTrash = $derived(msgId !== null && currentFolder !== null && trashFolder !== null);
+
+  // -- thread strip (Task 11) ------------------------------------------------
+  //
+  // The open message's conversation as compact jump rows above the body,
+  // oldest first — `get_mail_thread` reads across FOLDERS, so the Sent copy
+  // of a reply sits in the same strip as the message it answered, and a row
+  // whose folder isn't the one being listed says so.
+  //
+  // Only ever rendered for a real conversation (more than one message):
+  // a strip that jumps nowhere is chrome. Nothing here degrades the read
+  // pane — a thread that failed to load, or a message whose conversation
+  // this side can't name, simply shows no strip (see `MailStore.loadThread`).
+  const threadMessages = $derived(mailStore.threadMessages);
+  const showThread = $derived(threadMessages.length > 1);
+
+  // `mailStore.messages` is a real dependency, not a formality: the strip's
+  // thread key is looked up in the folder listing, and a deep-linked message
+  // can open before that listing lands — so its arrival is a reason to look
+  // again. The repeat runs a push causes are settled inside `loadThread`
+  // without an RPC once the strip holds the open message.
+  //
+  // `untrack` around the call is load-bearing (the same trap the route's
+  // selection effect documents): `loadThread` reads `threadMessages`
+  // synchronously and writes it after its await, so a tracked call would
+  // re-trigger this effect with its own result and fetch in a loop.
+  $effect(() => {
+    const id = msgId;
+    void mailStore.messages;
+    untrack(() => void mailStore.loadThread(id));
+  });
 
   /**
    * The msg_id the auto-mark has already run for — or that a manual "Mark
@@ -442,6 +476,46 @@
       <p class="text-ink-meta text-[11.5px]">{placement}</p>
     {/if}
   </header>
+
+  {#if showThread}
+    {@const account = mailStore.selectedAccount ?? ''}
+    <nav class="border-paper-border bg-paper-card -mt-2 flex flex-col rounded-lg border" aria-label="Conversation">
+      <p class="text-overline border-paper-hairline border-b px-3 py-1.5">
+        Conversation · {threadMessages.length} messages
+      </p>
+      <!-- Capped rather than unbounded: a long thread must not push the
+           message the reader opened off the screen. -->
+      <ul class="divide-paper-hairline max-h-[172px] divide-y overflow-y-auto">
+        {#each threadMessages as entry (entry.msgId)}
+          {@const current = entry.msgId === msgId}
+          <li>
+            <a
+              href={messageHref(account, entry.msgId)}
+              aria-current={current ? 'true' : undefined}
+              class="hover:bg-paper-pill flex items-baseline gap-2 border-l-[3px] px-2.5 py-1.5 transition-colors"
+              class:border-act={current}
+              class:border-transparent={!current}
+              class:bg-paper-pill={current}
+            >
+              {#if !messageSeen(entry)}
+                <span class="bg-act size-1.5 shrink-0 self-center rounded-full" title="Unread" aria-label="Unread"
+                ></span>
+              {/if}
+              <span class="min-w-0 flex-1 truncate text-[12.5px]" class:text-ink-heading={current} class:text-ink-body={!current}>
+                {fromLabel(entry)}
+              </span>
+              {#if entry.folder && entry.folder !== currentFolder}
+                <span class="bg-paper-track text-ink-meta shrink-0 rounded-full px-1.5 text-[10.5px]">
+                  {entry.folder}
+                </span>
+              {/if}
+              <span class="text-ink-meta shrink-0 text-[11px]">{relativeTime(entry.date)}</span>
+            </a>
+          </li>
+        {/each}
+      </ul>
+    </nav>
+  {/if}
 
   {#if message.html !== null}
     <div class="-mt-2 flex items-center justify-end">

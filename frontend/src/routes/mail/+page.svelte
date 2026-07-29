@@ -396,7 +396,13 @@
              folder rows stay loaded underneath (`mailStore.messages`), so
              clearing the box puts them straight back with no refetch.
              Pagination belongs to the folder listing alone — `search_mail`
-             answers one bounded set, so there is no older page to ask for. -->
+             answers one bounded set, so there is no older page to ask for.
+
+             The two lists also differ in SHAPE, which is why one component
+             renders both without a mode flag: folder rows are collapsed by
+             conversation (a count badge on the multi-message ones), search
+             hits are per-message and carry a snippet instead. `MessageList`
+             renders whichever fields a row actually has. -->
         {#if searchActive}
           <MessageList
             messages={mailStore.searchResults}

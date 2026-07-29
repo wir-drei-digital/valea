@@ -1,6 +1,11 @@
 import { api, type Api } from '../api/client';
 import { workspaceStore } from './workspace.svelte';
-import { attachmentsFromFrontmatter, sha256Hex } from '../components/mail/mail-shapes';
+import {
+  attachmentsFromFrontmatter,
+  listRowKey,
+  sha256Hex,
+  threadKeyForMessage
+} from '../components/mail/mail-shapes';
 import { inDesktop, keychainGet } from '../keychain';
 import type { MailStatusPush, MailSyncPush, MailMessagePush, MailDraftPush } from '../socket';
 import type { Channel } from 'phoenix';
@@ -20,6 +25,7 @@ type MailApi = Pick<
   | 'getMailAccountSettings'
   | 'listMailFolders'
   | 'listMailMessages'
+  | 'getMailThread'
   | 'searchMail'
   | 'getMailMessage'
   | 'mailSyncNow'
@@ -45,6 +51,20 @@ const INBOX_FOLDER = 'INBOX';
  * behind it.
  */
 export const MAIL_PAGE_SIZE = 100;
+
+/**
+ * Whether the FOLDER listing collapses by conversation. A constant, not a
+ * setting: threading is how this app lists a mailbox, and the only escape
+ * hatch the UI has is which CALL omits the flag — `search` never passes it,
+ * so a hit is always the message that actually matched rather than the
+ * newest message of its thread (see `MailStore.search`).
+ *
+ * Named rather than inlined so the two folder reads that must agree
+ * (`refreshMessages` and the `loadOlder` page behind it) cannot drift: a page
+ * fetched flat and merged into a threaded list would put a thread's member
+ * beside its own collapsed row.
+ */
+const THREADED_LISTING = true;
 
 /**
  * One account's app-facing status — camelCased/typed from the raw per-account
@@ -96,6 +116,14 @@ export type MailFolder = {
  * One row of `list_mail_messages` — mirrors `listMailMessagesFields` in
  * `api/client.ts`. `flags` is the maildir flag-letter string (e.g. `"S"`
  * for Seen); `viewPath` the derived view's workspace-relative path.
+ *
+ * `threadKey`/`threadCount` are declared OPTIONAL, unlike the generated
+ * `ListMailMessagesFields` type which has them as `string | null` /
+ * `number | null`: only a `threaded: true` listing projects them, and a flat
+ * one (search hits, the thread strip, this action without the flag) omits
+ * the keys outright — so at runtime they are `undefined`, and code that
+ * tested `=== null` would read a flat row as a one-message thread. `?:` is
+ * what makes TypeScript force every reader to handle that.
  */
 export type MailMessageSummary = {
   msgId: string;
@@ -108,7 +136,19 @@ export type MailMessageSummary = {
   uid: number | null;
   path: string | null;
   viewPath: string;
+  /** The conversation this row stands for — THREADED listings only. */
+  threadKey?: string | null;
+  /** How many of THIS FOLDER's messages it stands for — THREADED listings only. */
+  threadCount?: number | null;
 };
+
+/**
+ * One row of `get_mail_thread` — a plain summary plus the `folder` it lives
+ * in, because a conversation spans folders: the Sent copy of your own reply
+ * belongs to the same thread as the message you answered, and the strip
+ * shows both.
+ */
+export type MailThreadMessage = MailMessageSummary & { folder?: string | null };
 
 /**
  * One row of `search_mail` — deliberately the SAME shape as a
@@ -372,8 +412,23 @@ export class MailStore {
   selectedAccount: string | null = $state(null);
   folders: MailFolder[] = $state([]);
   selectedFolder: string | null = $state(INBOX_FOLDER);
+  /**
+   * The selected folder's listing — COLLAPSED BY CONVERSATION
+   * (`THREADED_LISTING`): one row per thread, the newest message
+   * representing it, carrying `threadKey`/`threadCount`.
+   */
   messages: MailMessageSummary[] = $state([]);
   selected: MailMessageDetail | null = $state(null);
+  /**
+   * The open message's whole conversation, oldest first and across every
+   * folder it touches (`get_mail_thread`) — the read pane's jump strip.
+   * Empty whenever no thread is loaded, which includes every message whose
+   * conversation this side can't name (see `loadThread`).
+   *
+   * It can hold MORE messages than the list row's badge counted: the badge
+   * is folder-scoped, this is the thread.
+   */
+  threadMessages: MailThreadMessage[] = $state([]);
   drafts: MailDraft[] = $state([]);
   /**
    * The `search_mail` hits currently on screen — a list ENTIRELY separate
@@ -467,6 +522,29 @@ export class MailStore {
   #searchToken = 0;
 
   /**
+   * Monotonic tag on the newest issued thread-strip fetch, the same device
+   * as `#searchToken` and for the same reason: two messages opened in quick
+   * succession are two `get_mail_thread` calls against ONE selection, so the
+   * epoch cannot tell them apart, and the slower one must not paint its
+   * conversation under the message now open. Bumped by `#clearThread` too,
+   * so a fetch still out when the strip is dropped can't resurrect it.
+   */
+  #threadToken = 0;
+
+  /**
+   * The conversation the strip is showing OR currently fetching — the
+   * de-duplicator for `loadThread`'s effect-driven call site, which re-runs
+   * on every folder refresh (a push, and the auto-mark-read that firing on
+   * open causes) while the first fetch is still out. Without it that second
+   * run finds an empty strip, re-derives the same key and issues the same
+   * request again, cancelling its own first one.
+   *
+   * Cleared whenever the strip is dropped or its fetch failed, so nothing
+   * here can wedge a conversation permanently unfetchable.
+   */
+  #threadKey: string | null = null;
+
+  /**
    * `mail_status` push subscribers beyond this store's own refetch reaction
    * (see `handleMailStatus` below) — `onMailStatus`'s doc comment explains
    * why these exist instead of routes opening their own `channel.on(...)`
@@ -526,6 +604,9 @@ export class MailStore {
     this.selected = null;
     this.folders = [];
     this.messages = [];
+    // A `thread_key` is only meaningful inside the account it was derived
+    // in — the strip goes with the message detail it belongs to.
+    this.#clearThread();
     this.clearSearch();
     this.#resetPagination();
     await Promise.all([this.refreshFolders(), this.refreshMessages()]);
@@ -585,7 +666,8 @@ export class MailStore {
 
     const epoch = this.#selectionEpoch;
     const result = await this.#api.listMailMessages(account, this.selectedFolder ?? INBOX_FOLDER, {
-      limit: MAIL_PAGE_SIZE
+      limit: MAIL_PAGE_SIZE,
+      threaded: THREADED_LISTING
     });
     // The selection moved while this was in flight (these calls are
     // fire-and-forget from the push handlers, so a switch easily outruns
@@ -634,15 +716,23 @@ export class MailStore {
 
     const epoch = this.#selectionEpoch;
     this.loadingOlder = true;
-    const result = await this.#api.listMailMessages(account, folder, { limit: MAIL_PAGE_SIZE, before });
+    const result = await this.#api.listMailMessages(account, folder, {
+      limit: MAIL_PAGE_SIZE,
+      before,
+      threaded: THREADED_LISTING
+    });
     const switched = epoch !== this.#selectionEpoch;
     if (!switched) this.loadingOlder = false;
     if (switched || !result.ok || before !== this.#oldestCursor) return;
 
     const data = result.data as { messages?: MailMessageSummary[] };
     const page = data.messages ?? [];
-    const known = new Set(this.messages.map((message) => message.msgId));
-    this.messages = [...this.messages, ...page.filter((message) => !known.has(message.msgId))];
+    // Keyed on the CONVERSATION in a threaded listing (`listRowKey`), not on
+    // the representative message: the same thread reached by two cursors —
+    // its date moved as a reply landed between the pages — would otherwise
+    // append a second row for it under a different `msgId`.
+    const known = new Set(this.messages.map(listRowKey));
+    this.messages = [...this.messages, ...page.filter((row) => !known.has(listRowKey(row)))];
     this.#trackPagination(page.length >= MAIL_PAGE_SIZE);
   }
 
@@ -696,6 +786,76 @@ export class MailStore {
   }
 
   /**
+   * Loads the read pane's thread strip for the message now open, by its
+   * `msgId`. Three outcomes, in order:
+   *
+   *  1. The loaded strip ALREADY holds this message — keep it, no RPC. This
+   *     is what makes jumping between a conversation's members work at all:
+   *     the strip's own rows are the only way to reach a member that isn't
+   *     the folder's representative (an older reply, or the Sent copy, which
+   *     is not in this folder's listing at all), and re-deriving the key
+   *     from the listing would come up empty for exactly those and drop the
+   *     strip the user is navigating with.
+   *  2. The listing names this message's conversation — fetch it.
+   *  3. Neither — drop the strip. `threadKeyForMessage` explains which
+   *     messages land here (search hits above all); they read fine without
+   *     one, which is why this is silent rather than an error.
+   *
+   * The fetch is issued on a truthy `threadKey` alone, never gated on
+   * `threadCount > 1`: the count is folder-scoped, so a conversation you
+   * replied to shows `1` in the Inbox while `get_mail_thread` returns your
+   * Sent copy alongside it. The STRIP decides it has nothing to show from
+   * what actually came back.
+   *
+   * A failed fetch clears rather than keeps: the previous message's
+   * conversation under this one's body is a worse answer than no strip, and
+   * the read pane itself is unaffected either way.
+   */
+  async loadThread(msgId: string | null): Promise<void> {
+    const account = this.selectedAccount;
+    if (!msgId || !account) {
+      this.#clearThread();
+      return;
+    }
+    if (this.threadMessages.some((message) => message.msgId === msgId)) return;
+
+    const threadKey = threadKeyForMessage(msgId, this.messages);
+    if (!threadKey) {
+      this.#clearThread();
+      return;
+    }
+    // This conversation is already on its way (`#threadKey`) — including the
+    // case where the message now open is a member of it whose row hasn't
+    // arrived yet, which is precisely what the in-flight fetch will answer.
+    if (threadKey === this.#threadKey) return;
+
+    const token = ++this.#threadToken;
+    const epoch = this.#selectionEpoch;
+    this.#threadKey = threadKey;
+    const result = await this.#api.getMailThread(account, threadKey);
+    // A newer message was opened, or the account moved, while this was out —
+    // see `#threadToken` for why both guards are needed.
+    if (token !== this.#threadToken || epoch !== this.#selectionEpoch) return;
+
+    if (!result.ok) {
+      // Nothing is showing this conversation, and nothing is fetching it —
+      // the next open of any of its messages gets another try.
+      this.#clearThread();
+      return;
+    }
+
+    const data = result.data as { messages?: MailThreadMessage[] };
+    this.threadMessages = data.messages ?? [];
+  }
+
+  /** Drops the strip and invalidates any fetch still out for it. */
+  #clearThread(): void {
+    this.#threadToken += 1;
+    this.#threadKey = null;
+    this.threadMessages = [];
+  }
+
+  /**
    * Full-text search across the SELECTED account's landed messages
    * (`search_mail`). Plain `search`/`clearSearch` with no timer of its own —
    * the route owns the debounce, so the store stays drivable straight from a
@@ -704,6 +864,13 @@ export class MailStore {
    * Nothing here touches `messages`, `lastPageFull`, `loadingOlder` or the
    * pagination cursor: the folder list is left loaded exactly as it was, and
    * `clearSearch()` puts it back on screen instantly without a refetch.
+   *
+   * Hits stay FLAT — this is the escape hatch from `THREADED_LISTING`, and
+   * it is simply that `search_mail` is a different action with no `threaded`
+   * argument to pass. That is the right shape for a result: a search answers
+   * "which message matched", and collapsing the answer into "the newest
+   * message of the thread it was in" would show a row that does not contain
+   * the words the user typed. The snippet under it belongs to the match too.
    *
    * The query needs no sanitizing on this side — `Valea.Mail.Store.match_expression/1`
    * is the single chokepoint that turns the typed string into quoted prefix
@@ -1050,6 +1217,7 @@ export class MailStore {
     this.selected = null;
     // Same account-scoping as `selectAccount` — this is the other door the
     // selection moves through (an account removed from the config).
+    this.#clearThread();
     this.clearSearch();
     this.#resetPagination();
     if (this.selectedAccount) {
@@ -1084,16 +1252,23 @@ function normalizeMailSearchHit(raw: Record<string, unknown>): MailSearchHit {
  * moved out of the folder, and keeping it would pin it to the list until the
  * folder is re-entered. Undated rows are dropped for the same reason — they
  * only ever arrive on the newest page (nothing older than a cursor can be
- * undated), so the fresh page is their whole truth. `msgId` dedupe covers a
- * row that drifted across the boundary as new mail shifted the window down.
+ * undated), so the fresh page is their whole truth.
+ *
+ * The dedupe keys on `listRowKey` — the CONVERSATION in a threaded listing.
+ * A `msgId` key was right while a row was a message and is wrong now that it
+ * is a thread: a reply landing in a conversation whose previous newest
+ * message sits down in the kept tail brings that thread onto the fresh page
+ * under a NEW representative id, and a `msgId` comparison would find no
+ * match and leave the superseded row in place — the same conversation
+ * listed twice, once current and once stale.
  */
 function mergeNewestPage(page: MailMessageSummary[], loaded: MailMessageSummary[]): MailMessageSummary[] {
   const cursor = oldestDate(page);
   if (cursor === null) return page;
 
-  const fresh = new Set(page.map((message) => message.msgId));
+  const fresh = new Set(page.map(listRowKey));
   const older = loaded.filter(
-    (message) => message.date !== null && message.date < cursor && !fresh.has(message.msgId)
+    (row) => row.date !== null && row.date < cursor && !fresh.has(listRowKey(row))
   );
   return [...page, ...older];
 }

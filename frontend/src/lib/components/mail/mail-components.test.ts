@@ -6,6 +6,10 @@ import {
   folderBadge,
   messageSeen,
   filterMessagesByRead,
+  threadUnread,
+  threadCountBadge,
+  listRowKey,
+  threadKeyForMessage,
   markReadOp,
   markUnreadOp,
   trashTarget,
@@ -110,6 +114,83 @@ describe('messageSeen / filterMessagesByRead', () => {
     expect(filterMessagesByRead(messages, 'all')).toEqual(messages);
     expect(filterMessagesByRead(messages, 'unread')).toEqual([unseen, noFlags]);
     expect(filterMessagesByRead(messages, 'read')).toEqual([seen]);
+  });
+});
+
+describe('threadUnread', () => {
+  // The RULE is "any member unread"; the DATA is the representative message
+  // (`Valea.Mail.Store.list_threads/4` projects the newest row's own flags
+  // and a count, with no unread aggregate) — so the dot follows the newest
+  // message of the thread, in both directions.
+  it.each([
+    ['unseen representative', { flags: 'F' }, true],
+    ['seen representative', { flags: 'FS' }, false],
+    ['null flags', { flags: null }, true],
+    ['no flags key at all', {}, true]
+  ])('%s', (_label, row, expected) => {
+    expect(threadUnread(row)).toBe(expected);
+  });
+
+  it('cannot see an older unread reply behind a read newest message', () => {
+    // Pinned deliberately: this is the known limitation, not an oversight.
+    // A thread-level aggregate on the listing row is what would change it.
+    const readNewest = { flags: 'S', threadKey: '<t@example.com>', threadCount: 3 };
+    expect(threadUnread(readNewest)).toBe(false);
+  });
+});
+
+describe('threadCountBadge', () => {
+  // The `undefined` cases are the type trap: a FLAT row omits both thread
+  // keys entirely, so anything comparing against `null` would badge them.
+  it.each([
+    ['a flat row (key absent)', {}, null],
+    ['an explicit null count', { threadCount: null }, null],
+    ['a one-message conversation', { threadCount: 1 }, null],
+    ['a zero count', { threadCount: 0 }, null],
+    ['two messages', { threadCount: 2 }, '2'],
+    ['many messages', { threadCount: 148 }, '148']
+  ])('%s', (_label, row, expected) => {
+    expect(threadCountBadge(row)).toBe(expected);
+  });
+});
+
+describe('listRowKey', () => {
+  it('keys a threaded row by its conversation and a flat row by its message', () => {
+    expect(listRowKey({ msgId: 'm1', threadKey: '<t@example.com>' })).toBe('thread:<t@example.com>');
+    expect(listRowKey({ msgId: 'm1' })).toBe('message:m1');
+    expect(listRowKey({ msgId: 'm1', threadKey: null })).toBe('message:m1');
+  });
+
+  it('never lets a thread key collide with a message id', () => {
+    expect(listRowKey({ msgId: 'x', threadKey: 'x' })).not.toBe(listRowKey({ msgId: 'x' }));
+  });
+
+  it('is stable for a conversation whose newest message changed', () => {
+    const before = { msgId: 'm1', threadKey: '<t@example.com>' };
+    const afterReply = { msgId: 'm9', threadKey: '<t@example.com>' };
+    expect(listRowKey(afterReply)).toBe(listRowKey(before));
+  });
+});
+
+describe('threadKeyForMessage', () => {
+  const rows = [
+    { msgId: 'm1', threadKey: '<t1@example.com>' },
+    { msgId: 'm2', threadKey: '<t2@example.com>' },
+    { msgId: 'm3' } // a flat row — no thread key was ever projected
+  ];
+
+  it('finds the conversation of a listed row', () => {
+    expect(threadKeyForMessage('m2', rows)).toBe('<t2@example.com>');
+  });
+
+  it('is null for a message the listing does not hold', () => {
+    expect(threadKeyForMessage('m9', rows)).toBe(null);
+  });
+
+  it('is null for a flat row, an empty key and an empty listing', () => {
+    expect(threadKeyForMessage('m3', rows)).toBe(null);
+    expect(threadKeyForMessage('m4', [{ msgId: 'm4', threadKey: '' }])).toBe(null);
+    expect(threadKeyForMessage('m1', [])).toBe(null);
   });
 });
 

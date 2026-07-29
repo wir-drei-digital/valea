@@ -90,6 +90,7 @@ function fakeApi(overrides: {
   mailStatus?: () => Promise<StatusResult>;
   listMailFolders?: (account: string) => Promise<FoldersResult>;
   listMailMessages?: (account: string, folder: string, opts?: object) => Promise<MessagesResult>;
+  getMailThread?: (account: string, threadKey: string) => Promise<MessagesResult>;
   searchMail?: (account: string, query: string, opts?: object) => Promise<MessagesResult>;
   getMailMessage?: (account: string, msgId: string) => Promise<DetailResult>;
   mailSyncNow?: (account: string, generation: number) => Promise<SyncResult>;
@@ -139,6 +140,8 @@ function fakeApi(overrides: {
       overrides.listMailFolders ?? (async () => ({ ok: true, data: { folders: [] } }) as FoldersResult),
     listMailMessages:
       overrides.listMailMessages ?? (async () => ({ ok: true, data: { messages: [] } }) as MessagesResult),
+    getMailThread:
+      overrides.getMailThread ?? (async () => ({ ok: true, data: { messages: [] } }) as MessagesResult),
     searchMail: overrides.searchMail ?? (async () => ({ ok: true, data: { messages: [] } }) as MessagesResult),
     getMailMessage:
       overrides.getMailMessage ?? (async () => ({ ok: true, data: { message: {} } }) as DetailResult),
@@ -307,7 +310,7 @@ describe('MailStore.refreshStatus', () => {
     expect(store.selectedAccount).toBe('mara');
     expect(store.selectedFolder).toBe('INBOX');
     expect(listMailFolders).toHaveBeenCalledWith('mara');
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE, threaded: true });
   });
 
   it('skips invalid and unconfigured entries when defaulting the selection', async () => {
@@ -379,7 +382,7 @@ describe('MailStore.selectAccount', () => {
     expect(store.selectedFolder).toBe('INBOX');
     expect(store.selected).toBeNull();
     expect(listMailFolders).toHaveBeenCalledWith('zoe');
-    expect(listMailMessages).toHaveBeenCalledWith('zoe', 'INBOX', { limit: MAIL_PAGE_SIZE });
+    expect(listMailMessages).toHaveBeenCalledWith('zoe', 'INBOX', { limit: MAIL_PAGE_SIZE, threaded: true });
   });
 
   // The switch must not leave the OLD account's folders/messages on screen
@@ -454,7 +457,7 @@ describe('MailStore folders + messages', () => {
     await store.selectFolder('Archive');
 
     expect(store.selectedFolder).toBe('Archive');
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'Archive', { limit: MAIL_PAGE_SIZE });
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'Archive', { limit: MAIL_PAGE_SIZE, threaded: true });
   });
 
   it('refreshMessages leaves messages untouched on failure', async () => {
@@ -536,7 +539,8 @@ describe('MailStore pagination', () => {
     // The cursor is the oldest loaded row's own `date`, handed back verbatim.
     expect(listMailMessages).toHaveBeenLastCalledWith('mara', 'INBOX', {
       limit: MAIL_PAGE_SIZE,
-      before: all[MAIL_PAGE_SIZE - 1].date
+      before: all[MAIL_PAGE_SIZE - 1].date,
+      threaded: true
     });
     expect(store.messages.map((m) => m.msgId)).toEqual(all.slice(0, MAIL_PAGE_SIZE * 2).map((r) => r.msgId));
     expect(store.lastPageFull).toBe(true);
@@ -670,7 +674,8 @@ describe('MailStore pagination', () => {
     await store.loadOlder();
     expect(listMailMessages).toHaveBeenLastCalledWith('mara', 'Archive', {
       limit: MAIL_PAGE_SIZE,
-      before: archive[MAIL_PAGE_SIZE - 1].date
+      before: archive[MAIL_PAGE_SIZE - 1].date,
+      threaded: true
     });
   });
 
@@ -702,7 +707,8 @@ describe('MailStore pagination', () => {
     await store.loadOlder();
     expect(listMailMessages).toHaveBeenLastCalledWith('mara', 'INBOX', {
       limit: MAIL_PAGE_SIZE,
-      before: isoAt(MAIL_PAGE_SIZE * 2 - 1)
+      before: isoAt(MAIL_PAGE_SIZE * 2 - 1),
+      threaded: true
     });
   });
 
@@ -776,7 +782,8 @@ describe('MailStore pagination', () => {
     await store.loadOlder();
     expect(listMailMessages).toHaveBeenLastCalledWith('mara', 'Archive', {
       limit: MAIL_PAGE_SIZE,
-      before: archive[MAIL_PAGE_SIZE - 1].date
+      before: archive[MAIL_PAGE_SIZE - 1].date,
+      threaded: true
     });
   });
 
@@ -904,6 +911,298 @@ describe('MailStore pagination', () => {
 
     expect(store.loadingOlder).toBe(false);
     expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 5);
+  });
+});
+
+/**
+ * One row of a THREADED folder listing: the conversation's newest message,
+ * plus the two fields only `threaded: true` projects. `index` doubles as the
+ * date offset, so `threadRow('a', 0)` is newer than `threadRow('b', 1)` —
+ * the same newest-first ordering `rows` builds.
+ */
+function threadRow(key: string, index: number, count = 1, flags: string | null = 'S'): Record<string, any> {
+  return {
+    msgId: `${key}-msg${index}`,
+    date: isoAt(index),
+    flags,
+    threadKey: `<${key}@example.com>`,
+    threadCount: count
+  };
+}
+
+/** One `get_mail_thread` row: a flat summary plus the folder it lives in — NO thread fields. */
+function threadMember(msgId: string, index: number, folder = 'INBOX', flags: string | null = 'S') {
+  return { msgId, date: isoAt(index), flags, folder };
+}
+
+describe('MailStore threaded listing', () => {
+  it('asks for conversations on both folder reads, and never on a search', async () => {
+    const listMailMessages = pagedFolder(rows(MAIL_PAGE_SIZE * 2));
+    const searchMail = vi.fn(async () => ({ ok: true, data: { messages: [hit('s1')] } }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages, searchMail }) as never);
+    await store.refreshStatus();
+
+    await store.loadOlder();
+    await store.search('invoice');
+
+    // Page one and the page behind it must agree: a flat page merged into a
+    // threaded list would sit a thread's member beside its collapsed row.
+    for (const call of listMailMessages.mock.calls) {
+      expect(call[2]).toMatchObject({ threaded: true });
+    }
+    // The escape hatch: `search_mail` takes no `threaded` argument at all, so
+    // a hit stays the message that actually matched.
+    expect(searchMail).toHaveBeenCalledWith('mara', 'invoice');
+  });
+
+  it('replaces a thread whose newest message changed instead of listing it twice', async () => {
+    // Page one is full, so `loadOlder` appends a tail — and the tail is where
+    // the conversation that is about to receive a reply currently sits.
+    const pageOne = Array.from({ length: MAIL_PAGE_SIZE }, (_v, i) => threadRow(`t${i}`, i));
+    const tail = [threadRow('quiet', MAIL_PAGE_SIZE), threadRow('other', MAIL_PAGE_SIZE + 1)];
+    let pages = [pageOne, tail];
+    const listMailMessages = vi.fn(async (_a: string, _f: string, opts: { before?: string } = {}) => ({
+      ok: true,
+      data: { messages: opts.before ? pages[1] : pages[0] }
+    }) as MessagesResult);
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+    await store.loadOlder();
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 2);
+
+    // A reply lands in the "quiet" conversation: it is now the newest thread
+    // in the folder, represented by a DIFFERENT message id, and the row for
+    // its previous newest message is gone from the fresh page.
+    const reply = { ...threadRow('quiet', -1, 2), msgId: 'quiet-reply' };
+    pages = [[reply, ...pageOne.slice(0, MAIL_PAGE_SIZE - 1)], tail];
+    await store.refreshMessages();
+
+    const quiet = store.messages.filter((m) => m.threadKey === '<quiet@example.com>');
+    expect(quiet.map((m) => m.msgId)).toEqual(['quiet-reply']);
+    expect(store.messages.map((m) => m.msgId)).toContain('other-msg101');
+  });
+
+  it('dedupes an older page against the threads already loaded', async () => {
+    const first = Array.from({ length: MAIL_PAGE_SIZE }, (_v, i) => threadRow(`t${i}`, i));
+    // The same conversation comes back on the older page under a newer
+    // representative — a reply landed between the two reads.
+    const overlap = { ...threadRow(`t${MAIL_PAGE_SIZE - 1}`, MAIL_PAGE_SIZE - 1, 3), msgId: 'late-reply' };
+    let call = 0;
+    const listMailMessages = vi.fn(
+      async () =>
+        ({ ok: true, data: { messages: call++ === 0 ? first : [overlap, threadRow('fresh', MAIL_PAGE_SIZE)] } }) as MessagesResult
+    );
+    const store = new MailStore(fakeApi({ listMailMessages }) as never);
+    await store.refreshStatus();
+
+    await store.loadOlder();
+
+    expect(store.messages).toHaveLength(MAIL_PAGE_SIZE + 1);
+    expect(store.messages.filter((m) => m.threadKey === `<t${MAIL_PAGE_SIZE - 1}@example.com>`)).toHaveLength(1);
+  });
+});
+
+describe('MailStore.loadThread', () => {
+  /** A store whose INBOX lists two conversations, one of them with three messages. */
+  async function threadedStore(overrides: Parameters<typeof fakeApi>[0] = {}) {
+    const listMailMessages = vi.fn(
+      async () => ({ ok: true, data: { messages: [threadRow('kickoff', 0, 3), threadRow('lone', 1)] } }) as MessagesResult
+    );
+    const store = new MailStore(fakeApi({ listMailMessages, ...overrides }) as never);
+    await store.refreshStatus();
+    return store;
+  }
+
+  it('loads the open row’s conversation, across folders', async () => {
+    const getMailThread = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          data: {
+            messages: [
+              threadMember('kickoff-msg0', 2),
+              threadMember('my-reply', 1, 'Sent'),
+              threadMember('kickoff-newest', 0)
+            ]
+          }
+        }) as MessagesResult
+    );
+    const store = await threadedStore({ getMailThread });
+
+    await store.loadThread('kickoff-msg0');
+
+    expect(getMailThread).toHaveBeenCalledWith('mara', '<kickoff@example.com>');
+    expect(store.threadMessages.map((m) => m.msgId)).toEqual(['kickoff-msg0', 'my-reply', 'kickoff-newest']);
+    expect(store.threadMessages[1].folder).toBe('Sent');
+  });
+
+  it('fetches a folder-count of one — the rest of the conversation can live elsewhere', async () => {
+    // `thread_count` is scoped to the listed folder, so a conversation whose
+    // replies you sent reads as `1` here while the thread holds two messages.
+    const getMailThread = vi.fn(
+      async () =>
+        ({ ok: true, data: { messages: [threadMember('lone-msg1', 1), threadMember('sent-reply', 0, 'Sent')] } }) as MessagesResult
+    );
+    const store = await threadedStore({ getMailThread });
+
+    await store.loadThread('lone-msg1');
+
+    expect(getMailThread).toHaveBeenCalledWith('mara', '<lone@example.com>');
+    expect(store.threadMessages).toHaveLength(2);
+  });
+
+  it('keeps the loaded strip when jumping to a member the listing doesn’t contain', async () => {
+    const getMailThread = vi.fn(
+      async () =>
+        ({ ok: true, data: { messages: [threadMember('kickoff-msg0', 1), threadMember('my-reply', 0, 'Sent')] } }) as MessagesResult
+    );
+    const store = await threadedStore({ getMailThread });
+    await store.loadThread('kickoff-msg0');
+    getMailThread.mockClear();
+
+    // The Sent copy is in no INBOX row, so re-deriving the key would fail —
+    // and dropping the strip would take away the thing being navigated with.
+    await store.loadThread('my-reply');
+
+    expect(getMailThread).not.toHaveBeenCalled();
+    expect(store.threadMessages).toHaveLength(2);
+  });
+
+  it('drops the strip for a message the listing cannot name a conversation for', async () => {
+    const getMailThread = vi.fn(
+      async () => ({ ok: true, data: { messages: [threadMember('kickoff-msg0', 0)] } }) as MessagesResult
+    );
+    const store = await threadedStore({ getMailThread });
+    await store.loadThread('kickoff-msg0');
+    getMailThread.mockClear();
+
+    // A search hit from another folder: flat row, no thread key anywhere.
+    await store.loadThread('hit-from-search');
+
+    expect(getMailThread).not.toHaveBeenCalled();
+    expect(store.threadMessages).toEqual([]);
+  });
+
+  it('drops the strip when no message is open', async () => {
+    const store = await threadedStore();
+    await store.loadThread('kickoff-msg0');
+
+    await store.loadThread(null);
+
+    expect(store.threadMessages).toEqual([]);
+  });
+
+  it('clears rather than keeping the previous conversation when the fetch fails', async () => {
+    let fails = false;
+    const store = await threadedStore({
+      getMailThread: async () =>
+        (fails
+          ? { ok: false, error: 'workspace_changed' }
+          : { ok: true, data: { messages: [threadMember('kickoff-msg0', 0)] } }) as MessagesResult
+    });
+    await store.loadThread('kickoff-msg0');
+    expect(store.threadMessages).toHaveLength(1);
+
+    fails = true;
+    await store.loadThread('lone-msg1');
+
+    expect(store.threadMessages).toEqual([]);
+  });
+
+  it('does not re-issue a fetch for the conversation already in flight', async () => {
+    let release: (result: MessagesResult) => void = () => {};
+    const getMailThread = vi.fn(async () => new Promise<MessagesResult>((resolve) => (release = resolve)));
+    const store = await threadedStore({ getMailThread });
+
+    // The call site is an effect on the open message AND the folder listing,
+    // and opening a message refreshes that listing (auto-mark-read) while the
+    // first fetch is still out — the second run must not cancel the first.
+    void store.loadThread('kickoff-msg0');
+    void store.loadThread('kickoff-msg0');
+    release({
+      ok: true,
+      data: { messages: [threadMember('kickoff-msg0', 1), threadMember('kickoff-old', 2)] }
+    } as MessagesResult);
+    await flush();
+
+    expect(getMailThread).toHaveBeenCalledTimes(1);
+    expect(store.threadMessages).toHaveLength(2);
+  });
+
+  it('lets the next open retry a conversation whose fetch failed', async () => {
+    let fails = true;
+    const getMailThread = vi.fn(
+      async () =>
+        (fails
+          ? { ok: false, error: 'workspace_changed' }
+          : { ok: true, data: { messages: [threadMember('kickoff-msg0', 1), threadMember('kickoff-old', 2)] } }) as MessagesResult
+    );
+    const store = await threadedStore({ getMailThread });
+    await store.loadThread('kickoff-msg0');
+    expect(store.threadMessages).toEqual([]);
+
+    // The in-flight de-duplicator must not latch a failed conversation as
+    // "already handled" — reopening the same message tries again.
+    fails = false;
+    await store.loadThread('kickoff-msg0');
+
+    expect(getMailThread).toHaveBeenCalledTimes(2);
+    expect(store.threadMessages).toHaveLength(2);
+  });
+
+  it('drops a response that lands after another message was opened', async () => {
+    const pending = new Map<string, (result: MessagesResult) => void>();
+    const getMailThread = vi.fn(
+      async (_account: string, key: string) =>
+        new Promise<MessagesResult>((resolve) => pending.set(key, resolve))
+    );
+    const store = await threadedStore({ getMailThread });
+
+    void store.loadThread('kickoff-msg0');
+    void store.loadThread('lone-msg1');
+    // The newer message answers first; the older one is still out.
+    pending.get('<lone@example.com>')!({
+      ok: true,
+      data: { messages: [threadMember('lone-msg1', 0)] }
+    } as MessagesResult);
+    await flush();
+    pending.get('<kickoff@example.com>')!({
+      ok: true,
+      data: { messages: [threadMember('kickoff-msg0', 1), threadMember('kickoff-old', 2)] }
+    } as MessagesResult);
+    await flush();
+
+    // The epoch can't see this — one selection, two messages — so the token is.
+    expect(store.threadMessages.map((m) => m.msgId)).toEqual(['lone-msg1']);
+  });
+
+  it('drops a response that lands after the account switched', async () => {
+    let release: (result: MessagesResult) => void = () => {};
+    const getMailThread = vi.fn(
+      async () => new Promise<MessagesResult>((resolve) => (release = resolve))
+    );
+    const store = await threadedStore({ getMailThread });
+
+    void store.loadThread('kickoff-msg0');
+    await store.selectAccount('zoe');
+    release({ ok: true, data: { messages: [threadMember('kickoff-msg0', 0)] } } as MessagesResult);
+    await flush();
+
+    // A thread key means nothing outside the account it was derived in.
+    expect(store.threadMessages).toEqual([]);
+  });
+
+  it('drops the strip on an account switch even with nothing in flight', async () => {
+    const store = await threadedStore({
+      getMailThread: async () =>
+        ({ ok: true, data: { messages: [threadMember('kickoff-msg0', 0), threadMember('kickoff-old', 1)] } }) as MessagesResult
+    });
+    await store.loadThread('kickoff-msg0');
+    expect(store.threadMessages).toHaveLength(2);
+
+    await store.selectAccount('zoe');
+
+    expect(store.threadMessages).toEqual([]);
   });
 });
 
@@ -1250,7 +1549,7 @@ describe('MailStore push handlers (account filtering)', () => {
 
     store.handleMailStatus(pushFor(rawMara));
     await flush();
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE, threaded: true });
   });
 
   it('handleMailStatus notifies onMailStatus listeners for every account', async () => {
@@ -1278,7 +1577,7 @@ describe('MailStore push handlers (account filtering)', () => {
 
     store.handleMailSync({ account: 'mara', phase: 'finished', newMessages: 1 });
     await flush();
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE, threaded: true });
   });
 
   it('handleMailMessage refetches only for the selected account', async () => {
@@ -1293,7 +1592,7 @@ describe('MailStore push handlers (account filtering)', () => {
 
     store.handleMailMessage({ account: 'mara', path: 'sources/mail/mara/views/messages/m.md' });
     await flush();
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE, threaded: true });
   });
 
   it('handleMailDraft refetches the drafts list for ANY account', async () => {
@@ -1451,7 +1750,7 @@ describe('MailStore.applyOps', () => {
 
     expect(applyMailOps).toHaveBeenCalledWith('mara', [op], 7);
     expect(results).toEqual([{ op: 0, result: 'accepted', reason: null }]);
-    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE });
+    expect(listMailMessages).toHaveBeenCalledWith('mara', 'INBOX', { limit: MAIL_PAGE_SIZE, threaded: true });
   });
 
   it('synthesizes per-op rejections when the RPC itself fails', async () => {
