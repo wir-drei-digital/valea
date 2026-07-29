@@ -16,8 +16,10 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
-  import { encodePath } from '$lib/shell/nav';
+  import { knowledgeHref } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
+  import { hrefWithPane } from '$lib/panes/pane-route';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { templateGroups } from './template-options';
 
@@ -90,7 +92,12 @@
     const path = (result.data as { path: string }).path;
     open = false;
     if (mode === 'page') {
-      void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`);
+      // Side-panes pass: this navigation moves the PRIMARY view, so it keeps
+      // whatever `?pane=` the current route has open — creating a page from
+      // the button right next to the session picker must not close the
+      // session you just opened beside it (same rule the routes' own tree
+      // links and `openFileAsPrimary` follow).
+      void goto(hrefWithPane(knowledgeHref(mountKey, path), page.url));
     }
   }
 

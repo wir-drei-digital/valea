@@ -7,9 +7,10 @@
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { api } from '$lib/api/client';
-  import { encodePath } from '$lib/shell/nav';
+  import { knowledgeHref } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
+  import { hrefWithPane } from '$lib/panes/pane-route';
   import { withBeforeMutate } from './before-mutate';
   import { groupReferences, deleteImpactLine, type PageRef } from './backlinks-panel';
 
@@ -92,10 +93,14 @@
       // Deleting the entry the reader currently has open (or, for a folder,
       // any page nested under it) leaves the URL pointing at nothing — send
       // them back to the Knowledge root rather than showing a dead page.
-      const encoded = `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
+      // Side-panes pass: `?pane=` rides along, exactly like the route's own
+      // `onVanished` fallback for the same event (the file disappearing out
+      // from under the reader) — the two paths must not disagree about
+      // whether an open session survives.
+      const encoded = knowledgeHref(mountKey, path);
       const current = page.url.pathname;
       if (current === encoded || (isFolder && current.startsWith(`${encoded}/`))) {
-        void goto('/knowledge');
+        void goto(hrefWithPane('/knowledge', page.url));
       }
     } catch (err) {
       error = "Couldn't save your latest changes. Fix that first, then try again.";

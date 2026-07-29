@@ -11,9 +11,10 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
-  import { encodePath } from '$lib/shell/nav';
+  import { knowledgeHref } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
+  import { hrefWithPane } from '$lib/panes/pane-route';
   import { withBeforeMutate } from './before-mutate';
   import { groupReferences, impactLine, type PageRef } from './backlinks-panel';
 
@@ -85,16 +86,19 @@
   // If the renamed entry is (or contains) the page currently open in the
   // main pane, follow it to the new URL rather than leaving the reader on a
   // now-dead path — the watcher will refresh the tree, but it can't fix up
-  // the address bar.
+  // the address bar. Side-panes pass: following the page moves the PRIMARY,
+  // so `?pane=` rides along (`hrefWithPane`) — renaming the page you're
+  // reading must not close the session open beside it.
   function navigateIfOpen(newPath: string): void {
-    const oldEncoded = `/knowledge/${encodeURIComponent(mountKey)}/${encodePath(path)}`;
+    const oldEncoded = knowledgeHref(mountKey, path);
     const current = page.url.pathname;
 
     if (current === oldEncoded) {
-      void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(newPath)}`);
+      void goto(hrefWithPane(knowledgeHref(mountKey, newPath), page.url));
     } else if (isFolder && current.startsWith(`${oldEncoded}/`)) {
+      // `suffix` is sliced off the live pathname, so it is already encoded.
       const suffix = current.slice(oldEncoded.length);
-      void goto(`/knowledge/${encodeURIComponent(mountKey)}/${encodePath(newPath)}${suffix}`);
+      void goto(hrefWithPane(`${knowledgeHref(mountKey, newPath)}${suffix}`, page.url));
     }
   }
 
