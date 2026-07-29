@@ -1,9 +1,10 @@
 defmodule ValeaWeb.FilesController do
   @moduledoc """
-  HTTP file-serving surface for page images: an upload endpoint (token-gated,
-  writes into a mount's `Assets/` folder) and a read-only raw-serve endpoint
-  (token-EXEMPT — an `<img>` tag cannot send headers; this is a 127.0.0.1
-  listener serving only files local processes could already read).
+  HTTP file-serving surface for page images and the Knowledge file viewers:
+  an upload endpoint (token-gated, writes into a mount's `Assets/` folder)
+  and a read-only raw-serve endpoint (token-EXEMPT — an `<img>` tag cannot
+  send headers; this is a 127.0.0.1 listener serving only files local
+  processes could already read).
 
   Both actions address content by `(mount_key, ICM-relative path)` — the
   same vocabulary `Valea.ICM` uses (task 4.4 re-key) — never a raw
@@ -16,11 +17,36 @@ defmodule ValeaWeb.FilesController do
   Never trust a lexically-constructed path for filesystem I/O without
   running it back through containment.
 
-  The image allowlist is extension AND `content_type` — deliberately no
-  SVG (scriptable) and no content sniffing beyond that pair; the serve
-  action always sets `content-type` from the (allowlisted) file EXTENSION,
-  never from anything client-supplied or stored, so a mismatched upload
-  can never cause the serve path to emit an attacker-chosen content-type.
+  ## Two allowlists, deliberately different (side-panes pass)
+
+  UPLOAD is the narrow one and is UNCHANGED: `@allowed_types` gates on
+  extension AND the client-declared `content_type`, and the two must
+  agree — deliberately no SVG (scriptable), no PDF, no content sniffing
+  beyond that pair. What Valea is willing to WRITE into a user's ICM stays
+  images-only.
+
+  SERVE is gated by CONTAINMENT, not by extension: any regular file that
+  survives `resolve_mount/2` + `contain/2` is served, because the Knowledge
+  viewers (pdf.js for `.pdf`, read-only text for everything without a
+  dedicated viewer) read arbitrary mount files through this endpoint, and
+  the endpoint's entire authority is already "bytes a local process could
+  read". The extension only picks the `content-type`, and every type it can
+  pick is a FIXED LITERAL compiled into this module: `@serve_types` (the
+  image map plus `application/pdf`) or, for anything else — including no
+  extension at all — the fixed `text/plain` + `utf-8`. Nothing
+  client-supplied or stored is ever echoed into `content-type`, so a
+  mismatched upload still cannot make the serve path emit an
+  attacker-chosen type, and there is still no sniffing anywhere.
+
+  The scriptable formats are why that fallback is a literal and not a
+  lookup: `.svg`, `.html` and `.js` all land in the `text/plain` bucket,
+  and every response carries `x-content-type-options: nosniff` (plus
+  `content-disposition: inline`), so the browser must honor `text/plain`
+  and none of them can execute as markup or script in Valea's origin. SVG
+  is never served as `image/svg+xml`, exactly as it is never accepted for
+  upload. The corollary of dropping the extension gate is that containment
+  is now the ONLY thing standing between a request and a mount's bytes —
+  treat `contain/2` and `resolve_mount/2` accordingly.
 
   ## The Assets/ stance (locked in review, task 4.4)
 
@@ -58,6 +84,7 @@ defmodule ValeaWeb.FilesController do
   # backstop and is set higher to give this check headroom to run first.
   @max_upload_bytes 10_000_000
 
+  # UPLOAD allowlist — what Valea will write into a user's ICM. Images only.
   @allowed_types %{
     ".png" => "image/png",
     ".jpg" => "image/jpeg",
@@ -65,6 +92,11 @@ defmodule ValeaWeb.FilesController do
     ".gif" => "image/gif",
     ".webp" => "image/webp"
   }
+
+  # SERVE type map — a strict superset of the upload one, read ONLY by
+  # `serve_content_type/1`. Adding a type here widens what `content-type`
+  # the serve path can emit; it does NOT widen what uploads accept.
+  @serve_types Map.merge(@allowed_types, %{".pdf" => "application/pdf"})
 
   # -- POST /files/upload --------------------------------------------------
 
@@ -175,20 +207,39 @@ defmodule ValeaWeb.FilesController do
 
   def serve(conn, _params), do: not_found(conn)
 
+  # The extension is NOT a gate here (it was, while this endpoint only ever
+  # fed `<img>` tags) — `serve_content_type/1` always resolves, so the chain
+  # below is exactly the authority checks: workspace, an enabled non-degraded
+  # ICM mount (mail mounts rejected), both containment layers, and a regular
+  # file. Anything that reaches `send_file/3` is a file inside a mount the
+  # user has enabled.
   defp do_serve(conn, mount_key, path) do
-    with ext <- ext_of(path),
-         {:ok, content_type} <- allowed_ext(ext),
-         {:ok, ws} <- workspace_root(),
+    with {:ok, ws} <- workspace_root(),
          {:ok, mount} <- resolve_mount(ws, mount_key),
          {:ok, abs} <- contain(mount.root, path),
          true <- regular_file?(abs) do
+      {content_type, charset} = serve_content_type(ext_of(path))
+
       conn
       |> put_resp_header("x-content-type-options", "nosniff")
       |> put_resp_header("content-disposition", "inline")
-      |> put_resp_content_type(content_type, nil)
+      |> put_resp_content_type(content_type, charset)
       |> send_file(200, abs)
     else
       _ -> not_found(conn)
+    end
+  end
+
+  # Total by construction: `{content_type, charset}`, both always fixed
+  # literals from this module (see the moduledoc's serve paragraph). The
+  # mapped binary types keep a nil charset — a charset is meaningless on
+  # image/PDF bytes and the existing header test pins its absence — while
+  # the text fallback declares utf-8 so viewers decode consistently instead
+  # of guessing per browser.
+  defp serve_content_type(ext) do
+    case Map.fetch(@serve_types, ext) do
+      {:ok, content_type} -> {content_type, nil}
+      :error -> {"text/plain", "utf-8"}
     end
   end
 
@@ -245,6 +296,9 @@ defmodule ValeaWeb.FilesController do
 
   defp ext_of(name), do: name |> Path.extname() |> String.downcase()
 
+  # UPLOAD-only gate (the serve path resolves a type instead, via
+  # `serve_content_type/1`) — an extension outside `@allowed_types` is a
+  # rejected upload, never a served file's type.
   defp allowed_ext(ext) do
     case Map.fetch(@allowed_types, ext) do
       {:ok, content_type} -> {:ok, content_type}

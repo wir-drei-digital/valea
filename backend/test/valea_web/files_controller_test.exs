@@ -276,22 +276,138 @@ defmodule ValeaWeb.FilesControllerTest do
     assert json_response(conn2, 400)
   end
 
-  test "serve rejects a non-image extension inside a real mount (404, not 500)", %{
+  # Serve is gated by CONTAINMENT, not by extension (side-panes: the pdf.js
+  # and plain-text viewers read arbitrary mount files through this endpoint).
+  # This test used to assert 404 for both of these paths, back when the serve
+  # action reused the image-only UPLOAD allowlist; the replacement pins the
+  # posture that took its place — served, but as an inert fixed type.
+  test "serve returns a non-image regular file inside the mount as inert text/plain", %{
     workspace: ws
   } do
     icm = mount_primary!(ws)
     File.write!(Path.join(icm.root, "app.sqlite"), "not an image")
 
+    conn1 =
+      get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "app.sqlite"})
+
+    assert response(conn1, 200) == "not an image"
+    assert get_resp_header(conn1, "content-type") == ["text/plain; charset=utf-8"]
+
+    conn2 =
+      get(build_conn(), "/files/raw", %{
+        "mount_key" => icm.mount_key,
+        "path" => "Clients/Julia Steiner.md"
+      })
+
+    assert response(conn2, 200) == "# Julia Steiner\n"
+    assert get_resp_header(conn2, "content-type") == ["text/plain; charset=utf-8"]
+  end
+
+  # The `regular_file?/1` gate is what keeps the widened serve path from
+  # 500-ing on a directory (or on a path that simply isn't there).
+  test "serve 404s a directory and a missing file (404, not 500)", %{workspace: ws} do
+    icm = mount_primary!(ws)
+
     assert build_conn()
-           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "app.sqlite"})
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "Clients"})
            |> response(404)
 
     assert build_conn()
-           |> get("/files/raw", %{
-             "mount_key" => icm.mount_key,
-             "path" => "Clients/Julia Steiner.md"
-           })
+           |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "no-such-file.txt"})
            |> response(404)
+  end
+
+  test "serve returns a .pdf as application/pdf with the anti-sniffing headers", %{workspace: ws} do
+    icm = mount_primary!(ws)
+    bytes = "%PDF-1.4\nnot a structurally complete pdf, nothing here parses it\n"
+    File.write!(Path.join(icm.root, "brochure.pdf"), bytes)
+
+    conn =
+      get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "brochure.pdf"})
+
+    assert response(conn, 200) == bytes
+    assert get_resp_header(conn, "content-type") == ["application/pdf"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    assert get_resp_header(conn, "content-disposition") == ["inline"]
+  end
+
+  test "serve returns a .txt as text/plain; charset=utf-8, byte-identical to disk", %{
+    workspace: ws
+  } do
+    icm = mount_primary!(ws)
+    bytes = "notes for the pane\nzweite Zeile — mit Umlauten\n"
+    File.write!(Path.join(icm.root, "scratch.txt"), bytes)
+
+    conn =
+      get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "scratch.txt"})
+
+    assert response(conn, 200) == bytes
+    assert get_resp_header(conn, "content-type") == ["text/plain; charset=utf-8"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    assert get_resp_header(conn, "content-disposition") == ["inline"]
+  end
+
+  test "serve returns an extension-less file as text/plain", %{workspace: ws} do
+    icm = mount_primary!(ws)
+    File.write!(Path.join(icm.root, "LICENSE"), "MIT\n")
+
+    conn = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "LICENSE"})
+
+    assert response(conn, 200) == "MIT\n"
+    assert get_resp_header(conn, "content-type") == ["text/plain; charset=utf-8"]
+  end
+
+  # The scriptable formats are the whole reason the fallback is a FIXED
+  # literal rather than a lookup: with `nosniff`, a browser must honor
+  # `text/plain`, so neither of these can execute in Valea's origin.
+  test "serve never emits a scriptable content-type — .svg and .html are text/plain", %{
+    workspace: ws
+  } do
+    icm = mount_primary!(ws)
+
+    File.write!(
+      Path.join(icm.root, "logo.svg"),
+      "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+    )
+
+    File.write!(Path.join(icm.root, "page.html"), "<h1>hi</h1><script>alert(1)</script>")
+
+    svg = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "logo.svg"})
+    assert response(svg, 200)
+    assert get_resp_header(svg, "content-type") == ["text/plain; charset=utf-8"]
+    refute get_resp_header(svg, "content-type") |> hd() =~ "svg"
+    assert get_resp_header(svg, "x-content-type-options") == ["nosniff"]
+
+    html = get(build_conn(), "/files/raw", %{"mount_key" => icm.mount_key, "path" => "page.html"})
+    assert response(html, 200)
+    assert get_resp_header(html, "content-type") == ["text/plain; charset=utf-8"]
+    refute get_resp_header(html, "content-type") |> hd() =~ "html"
+    assert get_resp_header(html, "x-content-type-options") == ["nosniff"]
+  end
+
+  # The serve widening must not leak into the UPLOAD allowlist: what Valea is
+  # willing to WRITE into a user's ICM stays images-only.
+  test "a .pdf upload is still rejected as unsupported_file_type", %{conn: conn, workspace: ws} do
+    icm = mount_primary!(ws)
+
+    upload = %Plug.Upload{
+      # `write_tmp_png!/1` is just "a tmp file holding these bytes" — the
+      # allowlist keys off `filename`/`content_type`, not the tmp path.
+      path: write_tmp_png!("%PDF-1.4\n"),
+      filename: "doc.pdf",
+      content_type: "application/pdf"
+    }
+
+    conn1 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => icm.mount_key,
+        "page_path" => "Clients/Julia Steiner.md"
+      })
+
+    assert json_response(conn1, 400) == %{"error" => "unsupported_file_type"}
   end
 
   test "serve rejects a symlink inside Assets escaping the mount", %{workspace: ws} do
