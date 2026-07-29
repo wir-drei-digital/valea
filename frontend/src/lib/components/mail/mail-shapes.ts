@@ -74,13 +74,26 @@ export function messageSeen(message: { flags?: string | null }): boolean {
   return (message.flags ?? '').includes('S');
 }
 
-/** The list-pane read filter: `'all'` passes everything through untouched. */
-export function filterMessagesByRead<T extends { flags?: string | null }>(
+/**
+ * The list-pane read filter: `'all'` passes everything through untouched.
+ *
+ * Partitions on `threadUnread` (below), the SAME predicate the row's unread
+ * dot renders from — not on `messageSeen`. The two must not disagree: on a
+ * collapsed row `messageSeen` reads the representative message's flags while
+ * the dot reads the whole conversation, so a thread whose newest message is
+ * read but which still holds an older unread reply would show a dot under
+ * "All", vanish under "Unread" — the tab whose entire purpose is finding it —
+ * and come back, dot and all, under "Read".
+ *
+ * Nothing changes for a FLAT row: `threadUnread` falls back to `!messageSeen`
+ * when there is no aggregate, so search hits partition exactly as before.
+ */
+export function filterMessagesByRead<T extends { flags?: string | null; threadUnread?: boolean | null }>(
   messages: T[],
   filter: ReadFilter
 ): T[] {
   if (filter === 'all') return messages;
-  return messages.filter((message) => messageSeen(message) === (filter === 'read'));
+  return messages.filter((message) => threadUnread(message) === (filter === 'unread'));
 }
 
 // -- threaded listing (MessageList rows, MessageView strip) -------------------

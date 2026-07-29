@@ -115,6 +115,22 @@ describe('messageSeen / filterMessagesByRead', () => {
     expect(filterMessagesByRead(messages, 'unread')).toEqual([unseen, noFlags]);
     expect(filterMessagesByRead(messages, 'read')).toEqual([seen]);
   });
+
+  it('partitions a collapsed thread by the aggregate, agreeing with its dot', () => {
+    // The row the two predicates disagree about: its newest message is read
+    // (`flags: 'S'`, which is all `messageSeen` can see) while the
+    // conversation still holds an older unread reply. It must land in the
+    // same tab the dot promises — under "Unread", the one tab whose whole
+    // purpose is finding it — and it must not show up under "Read".
+    const mixedThread = { flags: 'S', threadKey: '<t@example.com>', threadCount: 3, threadUnread: true };
+    const readThread = { flags: 'S', threadKey: '<u@example.com>', threadCount: 2, threadUnread: false };
+    const messages = [mixedThread, readThread];
+
+    expect(threadUnread(mixedThread)).toBe(true);
+    expect(filterMessagesByRead(messages, 'all')).toEqual(messages);
+    expect(filterMessagesByRead(messages, 'unread')).toEqual([mixedThread]);
+    expect(filterMessagesByRead(messages, 'read')).toEqual([readThread]);
+  });
 });
 
 describe('threadUnread', () => {
