@@ -647,6 +647,53 @@ export function replyPrefill(source: ComposeSource, ownAddress: string | null, m
   };
 }
 
+// -- the leave contract -------------------------------------------------------
+
+/**
+ * Whether a composer buffer differs from what was last written. The saved
+ * baseline is `loadDraftFields`' rendering, never the raw disk bytes (see
+ * there); `null` means the draft has no file yet, so "changed" is simply
+ * "holds anything".
+ *
+ * Shared by the editor's own `dirty` and by `flushAction` below, because a
+ * flush that disagreed with the UI about what counts as unsaved work is
+ * exactly how a buffer gets dropped without anyone noticing.
+ */
+export function draftDirty(fields: DraftFields, savedContent: string | null): boolean {
+  return savedContent === null ? hasDraftContent(fields) : draftContent(fields) !== savedContent;
+}
+
+/**
+ * What to do with a buffer whose editor is going away — the pure half of the
+ * leave contract, so the rule is testable even though its two triggers (an
+ * effect cleanup, an unmount) are not.
+ *
+ * `stash` and `save` are deliberately different answers to the same event:
+ * an existing draft is a file the user already committed to, so it is written
+ * (CAS-bound — a base hash the disk has moved past is refused); a buffer with
+ * no file yet is kept in memory, because minting a draft out of an event the
+ * user did not cause is a side effect that outlives the session.
+ */
+export type FlushAction =
+  | { kind: 'none' }
+  | { kind: 'stash'; fields: DraftFields }
+  | { kind: 'save'; name: string; content: string };
+
+export function flushAction(state: {
+  /** The user answered "Discard and leave" — their decision, not to be undone. */
+  discarded: boolean;
+  /** Locked by the ledger, or frontmatter this editor cannot rewrite: not ours to write. */
+  readOnly: boolean;
+  name: string | null;
+  savedContent: string | null;
+  fields: DraftFields;
+}): FlushAction {
+  if (state.discarded || state.readOnly) return { kind: 'none' };
+  if (!draftDirty(state.fields, state.savedContent)) return { kind: 'none' };
+  if (state.name === null) return { kind: 'stash', fields: state.fields };
+  return { kind: 'save', name: state.name, content: draftContent(state.fields) };
+}
+
 // -- composer plumbing --------------------------------------------------------
 
 /**

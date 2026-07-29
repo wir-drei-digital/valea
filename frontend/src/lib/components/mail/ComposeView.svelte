@@ -17,13 +17,13 @@
   //   * a draft whose LEDGER state is not `draft` (pushing/sending/sent/…)
   //     opens read-only with that state named. `write_mail_draft` would
   //     answer `draft_busy`, and a `sent` one is locked permanently;
-  //   * frontmatter `parseDraftFields` will not claim to understand opens
+  //   * frontmatter `loadDraftFields` will not claim to understand opens
   //     read-only as raw text — the composer rewrites the whole file on save,
   //     so a field it misread would be a field it silently dropped;
   //   * every save carries the hash of the revision it started from, so an
   //     edit made against bytes an agent has since replaced comes back
   //     `content_changed` instead of clobbering them.
-  import { onDestroy } from 'svelte';
+  import { untrack } from 'svelte';
   import { beforeNavigate, goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -44,8 +44,9 @@
     composeValidationError,
     draftContent,
     emptyDraftFields,
+    draftDirty,
+    flushAction,
     formatAddressList,
-    hasDraftContent,
     loadDraftFields,
     parseAddressList,
     saveErrorMessage,
@@ -132,7 +133,7 @@
 
   const generation = $derived(workspaceStore.generation ?? 0);
 
-  /** The form, as draft fields. A plain function so `onDestroy` can call it too. */
+  /** The form, as draft fields. A plain function so the leave flush can call it without touching a `$derived`. */
   function currentFields(): DraftFields {
     return {
       to: parseAddressList(toText),
@@ -173,20 +174,10 @@
   );
 
   const busy = $derived(saving || reviewing || pushing);
-  const dirty = $derived(
-    !readOnly && (savedContent === null ? hasDraftContent(fields) : content !== savedContent)
-  );
-
-  /**
-   * `!readOnly`, mirrored out of reactive state for `onDestroy`. Teardown is
-   * no place to be pulling on another module's signals — `readOnly` depends on
-   * `mailStore.drafts` — and this is the one input the flush needs that isn't
-   * plain local state.
-   */
-  let flushable = false;
-  $effect(() => {
-    flushable = !readOnly;
-  });
+  // One predicate, shared with the leave flush (`flushAction`): an editor and
+  // a flush that disagreed about what counts as unsaved work is precisely how
+  // a buffer gets dropped with nobody noticing.
+  const dirty = $derived(!readOnly && draftDirty(fields, savedContent));
 
   function applyFields(next: DraftFields): void {
     toText = formatAddressList(next.to);
@@ -255,6 +246,16 @@
     resetForm();
     name = target;
 
+    // THE leave contract's other half — see `flushBuffer`. Returned from this
+    // effect rather than `onDestroy` because the composer is not destroyed on
+    // every path that abandons a buffer: an account swap between two valid
+    // accounts only changes the `account` PROP, and this cleanup is what runs
+    // before the re-run below wipes the form. It also runs on unmount, so it
+    // covers the destroy case too. `acct` is this run's captured value, never
+    // the live prop: on the unmount path the prop is ALREADY `null` (that is
+    // what unmounted us), so a teardown-time read would flush into nowhere.
+    const flush = () => flushBuffer(acct);
+
     if (target === null) {
       // The stashed fields — the read pane's Reply/Reply-all/Forward, or this
       // composer's own unmount flush — taken exactly once. A RELOAD of
@@ -262,10 +263,11 @@
       const prefill = takeComposePrefill(acct);
       if (prefill) applyFields(prefill);
       phase = 'ready';
-      return;
+      return flush;
     }
 
     void loadDraft(acct, target, seq);
+    return flush;
   });
 
   /** Writes the draft; resolves its name, or `null` when nothing was written. */
@@ -384,17 +386,28 @@
   }
 
   /**
-   * The other half of the leave contract (`MarkdownPageView`'s pairing): a
-   * component can be unmounted WITHOUT a navigation, and `beforeNavigate`
-   * never fires for that. This composer has such a path — a `mail_status`
-   * push can move `mailStore.selectedAccount` (`#ensureSelection`), and the
-   * route then swaps this view for its "Loading…" branch with the URL
-   * untouched.
+   * The other half of the leave contract (`MarkdownPageView` pairs
+   * `beforeNavigate` with a teardown for the same reason): a buffer can be
+   * abandoned with no navigation at all, and `beforeNavigate` never fires for
+   * that. `mailStore.#ensureSelection` moves `selectedAccount` off a `mail_status`
+   * push, and the route reacts in TWO different ways — neither of which the
+   * user was asked about:
    *
-   * So: every leave the user MEDIATED goes through the dialog above (which is
-   * why a discard is honoured here rather than undone), and every unmount
-   * nobody was asked about lands here instead of losing the buffer. What
-   * "flush" means differs by whether a file exists yet:
+   *   * to another valid account — `ComposeView` stays mounted and only its
+   *     `account` prop changes, so nothing is destroyed at all;
+   *   * to `null` — the route swaps this view for its "Loading…" branch.
+   *
+   * Which is why this is the load `$effect`'s cleanup and not `onDestroy`:
+   * the cleanup runs before the effect's own re-run (i.e. before `resetForm`
+   * wipes the form) AND on unmount, so one function covers both. `acct` is
+   * the account CAPTURED when this buffer was loaded, never the live prop —
+   * on the unmount path the prop has already gone `null` (that is what
+   * unmounted us), and flushing into `null` would stash a buffer nothing can
+   * claim and fire an RPC the backend refuses.
+   *
+   * Every leave the user MEDIATED goes through the dialog above, which is why
+   * a discard is honoured here rather than undone. What "flush" means differs
+   * by whether a file exists yet:
    *
    *   * an existing draft is SAVED, best-effort and fire-and-forget. The file
    *     is already there, the user already committed to it, and the write is
@@ -402,29 +415,36 @@
    *     can never clobber an agent's edit, and it transmits nothing.
    *   * a `?compose=new` buffer is STASHED in memory instead. Saving it would
    *     mint a draft file (and a Drafts row, and a `mail_draft` push) out of
-   *     an unmount the user never asked for — a side effect that outlives the
-   *     session, from an event they did not cause. The stash costs nothing,
-   *     creates nothing, and the next `?compose=new` for this account picks
-   *     it straight back up.
+   *     an event the user never caused — a side effect that outlives the
+   *     session. The stash costs nothing, creates nothing, and the next
+   *     `?compose=new` for that account picks it straight back up.
    *
-   * Everything is read from plain local state (`currentFields`), not from the
-   * `$derived`s above, so nothing here depends on reactive graph behaviour
-   * during teardown.
+   * Everything is read through `untrack` and from plain local state
+   * (`currentFields`, not the `$derived`s above), so a cleanup that runs
+   * mid-teardown neither registers dependencies nor leans on reactive-graph
+   * behaviour.
    */
-  onDestroy(() => {
-    if (!flushable || discarded) return;
+  function flushBuffer(acct: string): void {
+    untrack(() => {
+      // The read-only gate, asked with the CAPTURED account: a draft the
+      // ledger has moved out of `draft` is not this editor's to write.
+      const locked = mailStore.drafts.some(
+        (d) => d.account === acct && d.name === name && d.statusDisplay !== 'draft'
+      );
+      const action = flushAction({
+        discarded,
+        readOnly: locked || unsupportedRaw !== null,
+        name,
+        savedContent,
+        fields: currentFields()
+      });
 
-    const pending = currentFields();
-    const pendingContent = draftContent(pending);
-    const wasDirty = savedContent === null ? hasDraftContent(pending) : pendingContent !== savedContent;
-    if (!wasDirty) return;
-
-    if (name === null) {
-      setComposePrefill(account, pending);
-      return;
-    }
-    void mailStore.saveDraft(account, name, pendingContent, baseHash, workspaceStore.generation ?? 0);
-  });
+      if (action.kind === 'stash') setComposePrefill(acct, action.fields);
+      if (action.kind === 'save') {
+        void mailStore.saveDraft(acct, action.name, action.content, baseHash, workspaceStore.generation ?? 0);
+      }
+    });
+  }
 </script>
 
 <div class="flex flex-col gap-5 py-8">

@@ -3,7 +3,9 @@ import {
   composeHref,
   composeValidationError,
   draftContent,
+  draftDirty,
   emptyDraftFields,
+  flushAction,
   formatAddressList,
   formatMailbox,
   forwardSubject,
@@ -272,6 +274,56 @@ describe('hasDraftContent', () => {
     expect(hasDraftContent(fields({ inReplyTo: '2026-07-15-alex-4f2a91c3' }))).toBe(false);
     expect(hasDraftContent(fields({ to: ['a@x.com'] }))).toBe(true);
     expect(hasDraftContent(fields({ body: 'hi' }))).toBe(true);
+  });
+});
+
+describe('draftDirty', () => {
+  const saved = draftContent(fields({ to: ['a@x.com'], subject: 'Hi', body: 'Body.' }));
+
+  it('compares against the saved baseline, and against "anything at all" before there is one', () => {
+    expect(draftDirty(fields({ to: ['a@x.com'], subject: 'Hi', body: 'Body.' }), saved)).toBe(false);
+    expect(draftDirty(fields({ to: ['a@x.com'], subject: 'Hi', body: 'Body!' }), saved)).toBe(true);
+    expect(draftDirty(emptyDraftFields(), null)).toBe(false);
+    expect(draftDirty(fields({ body: 'typed' }), null)).toBe(true);
+  });
+});
+
+describe('flushAction', () => {
+  const savedBaseline = draftContent(fields({ to: ['a@x.com'], body: 'On disk.' }));
+  const edited = fields({ to: ['a@x.com'], body: 'Edited.' });
+
+  const state = (overrides: Partial<Parameters<typeof flushAction>[0]> = {}) => ({
+    discarded: false,
+    readOnly: false,
+    name: 'reply.md' as string | null,
+    savedContent: savedBaseline as string | null,
+    fields: edited,
+    ...overrides
+  });
+
+  it('saves an edited draft that already has a file — CAS-bound, so it cannot clobber', () => {
+    expect(flushAction(state())).toEqual({
+      kind: 'save',
+      name: 'reply.md',
+      content: draftContent(edited)
+    });
+  });
+
+  it('stashes a buffer with no file yet rather than minting a draft nobody asked for', () => {
+    expect(flushAction(state({ name: null, savedContent: null }))).toEqual({ kind: 'stash', fields: edited });
+  });
+
+  it('does nothing for a discarded, read-only, clean, or empty buffer', () => {
+    // The user said "Discard and leave" — the flush must not undo that.
+    expect(flushAction(state({ discarded: true }))).toEqual({ kind: 'none' });
+    // Locked by the ledger, or frontmatter this editor cannot rewrite.
+    expect(flushAction(state({ readOnly: true }))).toEqual({ kind: 'none' });
+    expect(
+      flushAction(state({ fields: fields({ to: ['a@x.com'], body: 'On disk.' }) }))
+    ).toEqual({ kind: 'none' });
+    expect(flushAction(state({ name: null, savedContent: null, fields: emptyDraftFields() }))).toEqual({
+      kind: 'none'
+    });
   });
 });
 
