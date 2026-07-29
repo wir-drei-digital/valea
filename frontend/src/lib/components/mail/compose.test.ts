@@ -1,0 +1,483 @@
+import { describe, it, expect } from 'vitest';
+import {
+  composeHref,
+  composeValidationError,
+  draftContent,
+  emptyDraftFields,
+  formatAddressList,
+  formatMailbox,
+  forwardSubject,
+  parseAddressList,
+  parseDraftFields,
+  quoteBody,
+  replyPrefill,
+  replySubject,
+  saveErrorMessage,
+  setComposePrefill,
+  takeComposePrefill,
+  type DraftFields
+} from './compose';
+
+/** A landed message view's frontmatter, exactly as `Valea.Mail.MessageFile.render/2` writes it. */
+function messageFrontmatter(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: '2026-07-15-alex-4f2a91c3',
+    message_id: '<m1@example.com>',
+    account: 'mara',
+    folders: ['INBOX'],
+    flags: 'S',
+    from: { name: 'Alex Kim', email: 'alex@example.com' },
+    to: [
+      { name: 'Mara Vance', email: 'mara@example.com' },
+      { name: null, email: 'bo@example.com' }
+    ],
+    subject: 'Kickoff',
+    date: null,
+    in_reply_to: null,
+    references: [],
+    reply_to: null,
+    attachments: [],
+    ...overrides
+  };
+}
+
+function fields(overrides: Partial<DraftFields> = {}): DraftFields {
+  return { ...emptyDraftFields(), ...overrides };
+}
+
+describe('draftContent', () => {
+  it('renders DraftFile frontmatter in its own key order, body verbatim', () => {
+    const content = draftContent(
+      fields({
+        to: ['alex@example.com'],
+        cc: ['Bo <bo@example.com>'],
+        subject: 'Re: Kickoff',
+        inReplyTo: '2026-07-15-alex-4f2a91c3',
+        body: 'Hello Alex.\n\n--\nMara'
+      })
+    );
+
+    expect(content).toBe(
+      '---\n' +
+        'to: ["alex@example.com"]\n' +
+        'cc: ["Bo <bo@example.com>"]\n' +
+        'bcc: []\n' +
+        'subject: "Re: Kickoff"\n' +
+        'in_reply_to: "2026-07-15-alex-4f2a91c3"\n' +
+        '---\n' +
+        'Hello Alex.\n\n--\nMara'
+    );
+  });
+
+  it('omits in_reply_to when there is none, and never writes status or from', () => {
+    const content = draftContent(fields({ to: ['a@x.com'], subject: 'Hi' }));
+
+    expect(content).toBe('---\nto: ["a@x.com"]\ncc: []\nbcc: []\nsubject: "Hi"\n---\n');
+    expect(content).not.toContain('in_reply_to');
+    // `status:` is engine-owned and `from:` does not exist in the grammar —
+    // writing either would be the composer asserting something it cannot know.
+    expect(content).not.toContain('status:');
+    expect(content).not.toContain('from:');
+  });
+
+  it('a body containing --- stays body (the FIRST terminator ends the block)', () => {
+    const content = draftContent(fields({ to: ['a@x.com'], body: 'above\n---\nbelow' }));
+    const parsed = parseDraftFields(content);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && parsed.fields.body).toBe('above\n---\nbelow');
+  });
+});
+
+describe('draftContent — frontmatter injection safety', () => {
+  it('a subject carrying newlines cannot forge a sibling key', () => {
+    const content = draftContent(
+      fields({ to: ['a@x.com'], subject: 'Hi\nbcc: [attacker@evil.example]\nsubject: owned' })
+    );
+
+    // One `subject:` line, one `bcc:` line — the injected text is inside the
+    // quoted scalar with its newlines neutralized to spaces.
+    expect(content.split('\n').filter((line) => line.startsWith('subject:'))).toHaveLength(1);
+    expect(content.split('\n').filter((line) => line.startsWith('bcc:'))).toEqual(['bcc: []']);
+    expect(content).toContain('subject: "Hi bcc: [attacker@evil.example] subject: owned"');
+  });
+
+  it('a subject carrying quotes and backslashes cannot close the scalar early', () => {
+    const content = draftContent(fields({ to: ['a@x.com'], subject: 'say "hi"\\ now' }));
+
+    expect(content).toContain('subject: "say \\"hi\\"\\\\ now"');
+    const parsed = parseDraftFields(content);
+    expect(parsed.ok && parsed.fields.subject).toBe('say "hi"\\ now');
+  });
+
+  it('a recipient carrying a newline cannot escape its flow sequence', () => {
+    const content = draftContent(fields({ to: ['a@x.com\nbcc: [attacker@evil.example]'] }));
+
+    expect(content.split('\n').filter((line) => line.startsWith('to:'))).toHaveLength(1);
+    expect(content).toContain('to: ["a@x.com bcc: [attacker@evil.example]"]');
+    // Not that it would be a valid mailbox — but the point is the shape:
+    // the whole hostile string stays one quoted item of one key's value.
+    expect(content.split('\n').filter((line) => line.startsWith('bcc:'))).toEqual(['bcc: []']);
+  });
+
+  it('a CR or NUL in a subject is neutralized, not escaped (DraftFile rejects the decoded control char)', () => {
+    const content = draftContent(fields({ to: ['a@x.com'], subject: 'a\rb\u0000c' }));
+
+    expect(content).toContain('subject: "a b c"');
+    expect(content).not.toContain('\\r');
+    expect(/[\r\u0000]/.test(content)).toBe(false);
+  });
+});
+
+describe('parseDraftFields', () => {
+  it('round-trips its own rendering', () => {
+    const original = fields({
+      to: ['alex@example.com', '"Public, John Q." <j@x.com>'],
+      cc: ['bo@example.com'],
+      bcc: ['secret@example.com'],
+      subject: 'Re: Kickoff',
+      inReplyTo: '2026-07-15-alex-4f2a91c3',
+      body: 'Body text.\n'
+    });
+
+    const parsed = parseDraftFields(draftContent(original));
+    expect(parsed).toEqual({ ok: true, fields: original });
+  });
+
+  it('reads the shapes an agent-written draft actually uses', () => {
+    const parsed = parseDraftFields(
+      '---\n' +
+        'to: [alex@example.com, Bo <bo@example.com>]\n' +
+        'cc:\n' +
+        '  - carol@example.com\n' +
+        'bcc: []\n' +
+        "subject: 'Re: it''s time'\n" +
+        'in_reply_to: 2026-07-15-alex-4f2a91c3\n' +
+        'status: draft\n' +
+        '---\n' +
+        'Hello.\n'
+    );
+
+    expect(parsed).toEqual({
+      ok: true,
+      fields: {
+        to: ['alex@example.com', 'Bo <bo@example.com>'],
+        cc: ['carol@example.com'],
+        bcc: [],
+        subject: "Re: it's time",
+        inReplyTo: '2026-07-15-alex-4f2a91c3',
+        body: 'Hello.\n'
+      }
+    });
+  });
+
+  it('treats a bare string recipient as a one-element list (DraftFile.coerce_list)', () => {
+    const parsed = parseDraftFields('---\nto: alex@example.com\n---\nHi');
+    expect(parsed.ok && parsed.fields.to).toEqual(['alex@example.com']);
+  });
+
+  it('refuses frontmatter it cannot reproduce rather than dropping a field', () => {
+    const cases = [
+      ['unknown key', '---\nto: [a@x.com]\nfrom: mallory@evil.example\n---\nHi'],
+      ['duplicate key', '---\nto: [a@x.com]\nto: [b@x.com]\n---\nHi'],
+      ['a comment', '---\n# written by an agent\nto: [a@x.com]\n---\nHi'],
+      ['a nested mapping', '---\nto: [a@x.com]\nsubject: Re: hi\n---\nHi'],
+      ['an anchor', '---\nto: [a@x.com]\nsubject: &anchor hi\n---\nHi'],
+      ['a block scalar', '---\nto: [a@x.com]\nsubject: |\n---\nHi'],
+      ['an unterminated quote', '---\nto: ["a@x.com]\n---\nHi'],
+      ['an unknown escape', '---\nto: [a@x.com]\nsubject: "a\\nb"\n---\nHi']
+    ] as const;
+
+    for (const [label, content] of cases) {
+      expect({ label, ...parseDraftFields(content) }).toEqual({ label, ok: false, reason: 'unsupported' });
+    }
+  });
+
+  it('refuses a file with no frontmatter block', () => {
+    expect(parseDraftFields('Just a body.')).toEqual({ ok: false, reason: 'no_frontmatter' });
+    expect(parseDraftFields('---\nto: [a@x.com]\n')).toEqual({ ok: false, reason: 'no_frontmatter' });
+  });
+
+  it('reads an empty/absent value as an empty field', () => {
+    const parsed = parseDraftFields('---\nto: [a@x.com]\ncc:\nsubject:\nin_reply_to: null\n---\n');
+    expect(parsed).toEqual({
+      ok: true,
+      fields: { to: ['a@x.com'], cc: [], bcc: [], subject: '', inReplyTo: null, body: '' }
+    });
+  });
+});
+
+describe('parseAddressList / formatAddressList / formatMailbox', () => {
+  it('splits on commas, semicolons and newlines, dropping blanks', () => {
+    expect(parseAddressList(' a@x.com, b@x.com;\nc@x.com , ')).toEqual(['a@x.com', 'b@x.com', 'c@x.com']);
+    expect(parseAddressList('   ')).toEqual([]);
+  });
+
+  it('does not split inside a quoted display name', () => {
+    expect(parseAddressList('"Public, John Q." <j@x.com>, b@x.com')).toEqual([
+      '"Public, John Q." <j@x.com>',
+      'b@x.com'
+    ]);
+  });
+
+  it('round-trips through the single-line field rendering', () => {
+    const list = ['"Public, John Q." <j@x.com>', 'b@x.com'];
+    expect(parseAddressList(formatAddressList(list))).toEqual(list);
+  });
+
+  it('quotes a display name only when RFC 5322 requires it', () => {
+    expect(formatMailbox({ name: null, email: 'a@x.com' })).toBe('a@x.com');
+    expect(formatMailbox({ name: 'Alex Kim', email: 'a@x.com' })).toBe('Alex Kim <a@x.com>');
+    expect(formatMailbox({ name: "John Q. O'Brien", email: 'j@x.com' })).toBe("John Q. O'Brien <j@x.com>");
+    expect(formatMailbox({ name: 'Public, John Q.', email: 'j@x.com' })).toBe('"Public, John Q." <j@x.com>');
+    expect(formatMailbox({ name: 'say "hi"', email: 'j@x.com' })).toBe('"say \\"hi\\"" <j@x.com>');
+    expect(formatMailbox({ name: 'Nobody', email: '' })).toBe('');
+  });
+});
+
+describe('replySubject / forwardSubject', () => {
+  it('prefixes once, whatever case or spacing the original used', () => {
+    expect(replySubject('Kickoff')).toBe('Re: Kickoff');
+    expect(replySubject('Re: Kickoff')).toBe('Re: Kickoff');
+    expect(replySubject('re: Kickoff')).toBe('re: Kickoff');
+    expect(replySubject('RE : Kickoff')).toBe('RE : Kickoff');
+    expect(replySubject(replySubject('Kickoff'))).toBe('Re: Kickoff');
+    // A forward being replied to is still a new reply.
+    expect(replySubject('Fwd: Kickoff')).toBe('Re: Fwd: Kickoff');
+  });
+
+  it('accepts Fw:/Fwd:/Forward: as already forwarded', () => {
+    expect(forwardSubject('Kickoff')).toBe('Fwd: Kickoff');
+    expect(forwardSubject('Fwd: Kickoff')).toBe('Fwd: Kickoff');
+    expect(forwardSubject('FW: Kickoff')).toBe('FW: Kickoff');
+    expect(forwardSubject('Forward: Kickoff')).toBe('Forward: Kickoff');
+    expect(forwardSubject(forwardSubject('Kickoff'))).toBe('Fwd: Kickoff');
+    expect(forwardSubject('Re: Kickoff')).toBe('Fwd: Re: Kickoff');
+  });
+
+  it('leaves a blank subject blank rather than writing a bare prefix', () => {
+    expect(replySubject('')).toBe('');
+    expect(replySubject('   ')).toBe('');
+    expect(forwardSubject('')).toBe('');
+  });
+});
+
+describe('quoteBody', () => {
+  it('prefixes every line, quotes blank lines bare, and drops the trailing blanks', () => {
+    expect(quoteBody('one\n\ntwo\r\nthree\n\n\n')).toBe('> one\n>\n> two\n> three');
+    expect(quoteBody('')).toBe('');
+    expect(quoteBody('   \n')).toBe('');
+  });
+});
+
+describe('replyPrefill — reply', () => {
+  it('addresses the sender, prefixes the subject, threads on the msg_id and quotes the body', () => {
+    const prefill = replyPrefill(
+      { frontmatter: messageFrontmatter(), body: 'Can you review this?\n' },
+      'mara@example.com',
+      'reply'
+    );
+
+    expect(prefill.to).toEqual(['Alex Kim <alex@example.com>']);
+    expect(prefill.cc).toEqual([]);
+    expect(prefill.bcc).toEqual([]);
+    expect(prefill.subject).toBe('Re: Kickoff');
+    expect(prefill.inReplyTo).toBe('2026-07-15-alex-4f2a91c3');
+    expect(prefill.body).toBe('\n\nAlex Kim <alex@example.com> wrote:\n\n> Can you review this?\n');
+  });
+
+  it('prefers reply_to over from when the message named one', () => {
+    const prefill = replyPrefill(
+      {
+        frontmatter: messageFrontmatter({ reply_to: { name: null, email: 'list@example.com' } }),
+        body: ''
+      },
+      'mara@example.com',
+      'reply'
+    );
+
+    expect(prefill.to).toEqual(['list@example.com']);
+  });
+
+  it('names the date in the attribution line when the message has one', () => {
+    const prefill = replyPrefill(
+      { frontmatter: messageFrontmatter({ date: '2026-07-15T09:30:00Z' }), body: 'hi' },
+      null,
+      'reply'
+    );
+
+    expect(prefill.body).toMatch(/^\n\nOn .+, Alex Kim <alex@example\.com> wrote:\n\n> hi\n$/);
+  });
+
+  it('drops a threading hint that is not a msg_id rather than poisoning the draft', () => {
+    const prefill = replyPrefill(
+      { frontmatter: messageFrontmatter({ id: '<raw-message-id@example.com>' }), body: '' },
+      null,
+      'reply'
+    );
+
+    expect(prefill.inReplyTo).toBeNull();
+  });
+});
+
+describe('replyPrefill — reply-all', () => {
+  it('keeps the sender in To, the rest in Cc, minus the account address', () => {
+    const prefill = replyPrefill(
+      { frontmatter: messageFrontmatter(), body: 'hi' },
+      'MARA@example.com',
+      'replyAll'
+    );
+
+    // `mara@example.com` was in `to:` and is gone — case-insensitively.
+    expect(prefill.to).toEqual(['Alex Kim <alex@example.com>']);
+    expect(prefill.cc).toEqual(['bo@example.com']);
+  });
+
+  it('de-dups across To and Cc, first occurrence wins', () => {
+    const prefill = replyPrefill(
+      {
+        frontmatter: messageFrontmatter({
+          to: [
+            { name: 'Alex (work)', email: 'ALEX@example.com' },
+            { name: null, email: 'bo@example.com' },
+            { name: null, email: 'bo@example.com' }
+          ]
+        }),
+        body: 'hi'
+      },
+      'mara@example.com',
+      'replyAll'
+    );
+
+    expect(prefill.to).toEqual(['Alex Kim <alex@example.com>']);
+    expect(prefill.cc).toEqual(['bo@example.com']);
+  });
+
+  it('still addresses someone when replying to a message you sent yourself', () => {
+    const own = 'mara@example.com';
+    const prefill = replyPrefill(
+      {
+        frontmatter: messageFrontmatter({
+          from: { name: 'Mara Vance', email: own },
+          to: [{ name: null, email: own }]
+        }),
+        body: 'note to self'
+      },
+      own,
+      'replyAll'
+    );
+
+    expect(prefill.to).toEqual(['Mara Vance <mara@example.com>']);
+    expect(prefill.cc).toEqual([]);
+  });
+
+  it('promotes the first remaining recipient when the sender is the account itself', () => {
+    const prefill = replyPrefill(
+      {
+        frontmatter: messageFrontmatter({ from: { name: 'Mara Vance', email: 'mara@example.com' } }),
+        body: 'hi'
+      },
+      'mara@example.com',
+      'replyAll'
+    );
+
+    expect(prefill.to).toEqual(['bo@example.com']);
+    expect(prefill.cc).toEqual([]);
+  });
+
+  it('keeps every recipient when no account address is known', () => {
+    const prefill = replyPrefill({ frontmatter: messageFrontmatter(), body: 'hi' }, null, 'replyAll');
+
+    expect(prefill.to).toEqual(['Alex Kim <alex@example.com>']);
+    expect(prefill.cc).toEqual(['Mara Vance <mara@example.com>', 'bo@example.com']);
+  });
+});
+
+describe('replyPrefill — forward', () => {
+  it('addresses nobody, does not thread, and carries the original unquoted under a separator', () => {
+    const prefill = replyPrefill(
+      { frontmatter: messageFrontmatter(), body: 'The original text.\n' },
+      'mara@example.com',
+      'forward'
+    );
+
+    expect(prefill.to).toEqual([]);
+    expect(prefill.cc).toEqual([]);
+    expect(prefill.subject).toBe('Fwd: Kickoff');
+    expect(prefill.inReplyTo).toBeNull();
+    expect(prefill.body).toBe(
+      '\n\n---------- Forwarded message ----------\n' +
+        'From: Alex Kim <alex@example.com>\n' +
+        'Subject: Kickoff\n' +
+        'To: Mara Vance <mara@example.com>, bo@example.com\n' +
+        '\n' +
+        'The original text.\n'
+    );
+    expect(prefill.body).not.toContain('> ');
+  });
+
+  it('omits header lines the message does not have', () => {
+    const prefill = replyPrefill(
+      { frontmatter: { from: { name: null, email: 'a@x.com' } }, body: 'body' },
+      null,
+      'forward'
+    );
+
+    expect(prefill.body).toBe('\n\n---------- Forwarded message ----------\nFrom: a@x.com\n\nbody\n');
+  });
+
+  it('survives a message with no frontmatter at all', () => {
+    const prefill = replyPrefill({ frontmatter: null, body: '' }, null, 'forward');
+    expect(prefill.subject).toBe('');
+    expect(prefill.to).toEqual([]);
+  });
+});
+
+describe('composeHref', () => {
+  it('account-qualifies both targets', () => {
+    expect(composeHref('mara', null)).toBe('/mail?account=mara&compose=new');
+    // Draft names carry their `.md` everywhere on this RPC surface
+    // (`list_mail_drafts`/`get_mail_draft`/`write_mail_draft`), so the link does too.
+    expect(composeHref('mara', '20260715T090000-re-kickoff.md')).toBe(
+      '/mail?account=mara&compose=20260715T090000-re-kickoff.md'
+    );
+    expect(composeHref(null, null)).toBe('/mail?compose=new');
+  });
+});
+
+describe('composeValidationError', () => {
+  it('requires a recipient and nothing else', () => {
+    expect(composeValidationError(emptyDraftFields())).toBe('Add at least one address in To.');
+    // No subject and no body is a legitimate (if terse) draft — `DraftFile`
+    // allows both, so the composer does not invent a rule it doesn't have.
+    expect(composeValidationError(fields({ to: ['a@x.com'] }))).toBeNull();
+  });
+});
+
+describe('saveErrorMessage', () => {
+  it('explains what to do about a CAS conflict and a locked draft', () => {
+    expect(saveErrorMessage('content_changed')).toContain('Reload');
+    expect(saveErrorMessage('draft_busy')).toContain('already been sent');
+    expect(saveErrorMessage('invalid_draft')).toContain('addresses');
+    expect(saveErrorMessage('write_failed')).toContain("couldn't be written");
+    expect(saveErrorMessage('nonsense_code')).toBe('Could not save the draft. Please try again.');
+  });
+});
+
+describe('compose prefill handoff', () => {
+  it('hands the prefill over exactly once', () => {
+    const prefill = fields({ to: ['a@x.com'] });
+    setComposePrefill('mara', prefill);
+
+    expect(takeComposePrefill('mara')).toEqual(prefill);
+    expect(takeComposePrefill('mara')).toBeNull();
+  });
+
+  it('never lands a prefill in another account’s composer', () => {
+    setComposePrefill('mara', fields({ to: ['a@x.com'] }));
+
+    expect(takeComposePrefill('zoe')).toBeNull();
+    // …and it is dropped rather than left waiting for the account it named.
+    expect(takeComposePrefill('mara')).toBeNull();
+  });
+});

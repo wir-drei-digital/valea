@@ -50,6 +50,7 @@
     trashTarget,
     type RawAddress
   } from './mail-shapes';
+  import { composeHref, replyPrefill, setComposePrefill, type ComposeMode } from './compose';
   import type { MailMessageDetail } from '$lib/stores/mail.svelte';
 
   let { message }: { message: MailMessageDetail } = $props();
@@ -79,6 +80,8 @@
   let attachmentError = $state<string | null>(null);
   let starting = $state(false);
   let sessionError = $state<string | null>(null);
+  /** Which of Reply/Reply-all/Forward is resolving the account's own address, if any. */
+  let composing = $state<ComposeMode | null>(null);
   let opBusy = $state(false);
   let opError = $state<string | null>(null);
   /**
@@ -131,6 +134,7 @@
     openingPath = null;
     attachmentError = null;
     sessionError = null;
+    composing = null;
     opError = null;
     seenOverride = null;
     viewMode = 'html';
@@ -344,6 +348,32 @@
   }
 
   /**
+   * Reply / Reply-all / Forward — the composer's entry points off an open
+   * message. The prefill (recipients, `Re:`/`Fwd:` subject, threading hint,
+   * quoted or forwarded body) is computed by `compose.ts` and handed over
+   * IN MEMORY: a quoted message body has no business in a URL, so this
+   * follows `initial-prompt.ts`'s one-shot stash rather than query params.
+   *
+   * The one thing this awaits is the account's own address — reply-all's
+   * whole job is to take the user back out of the recipient list, and the
+   * sending identity (`smtp.from`) is the only address that can honestly do
+   * that. `mailStore.ownAddress` caches it per account; a failed lookup
+   * resolves `null`, which prefills one address too many rather than
+   * dropping someone.
+   */
+  async function startCompose(mode: ComposeMode): Promise<void> {
+    const account = mailStore.selectedAccount;
+    if (!account || composing) return;
+
+    composing = mode;
+    const own = await mailStore.ownAddress(account);
+    composing = null;
+
+    setComposePrefill(account, replyPrefill({ frontmatter: message.frontmatter, body: message.body }, own, mode));
+    void goto(composeHref(account, null));
+  }
+
+  /**
    * "Start a session about this message" (Spec D §B/§E) — mints a session
    * granted read access to exactly this message file (`opts.input`, a
    * workspace locator — mail messages live under `sources/mail/`, outside
@@ -518,7 +548,34 @@
 
   <div class="border-paper-hairline flex flex-col gap-2 border-t pt-4">
     <div class="flex flex-wrap items-center gap-2.5">
-      <Button type="button" disabled={starting || !message.path} onclick={() => void startSession()}>
+      <!-- Answering the message is the read pane's primary action; the
+           session button keeps its place beside it as one more outline
+           action rather than competing for emphasis. -->
+      <Button type="button" disabled={composing !== null} onclick={() => void startCompose('reply')}>
+        {composing === 'reply' ? 'Opening…' : 'Reply'}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        disabled={composing !== null}
+        onclick={() => void startCompose('replyAll')}
+      >
+        {composing === 'replyAll' ? 'Opening…' : 'Reply all'}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        disabled={composing !== null}
+        onclick={() => void startCompose('forward')}
+      >
+        {composing === 'forward' ? 'Opening…' : 'Forward'}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        disabled={starting || !message.path}
+        onclick={() => void startSession()}
+      >
         Start a session about this message
       </Button>
       {#if canArchive}

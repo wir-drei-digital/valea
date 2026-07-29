@@ -37,6 +37,7 @@
     reviseErrorMessage,
     NO_HOST_ICM_MESSAGE
   } from './mail-shapes';
+  import { composeHref } from './compose';
   import SendConfirmModal from './SendConfirmModal.svelte';
 
   const BADGE_TONE_CLASS: Record<string, string> = {
@@ -265,6 +266,20 @@
                 onclick={() => void push(draft.account, draft.name)}
               >
                 {pushingKey === key ? 'Pushing…' : 'Push to Drafts'}
+              </Button>
+            {/if}
+            <!-- Edit it yourself, in the composer. Offered on exactly the
+                 state `write_mail_draft` accepts — anything else would open an
+                 editor whose Save is guaranteed to come back `draft_busy`. -->
+            {#if draft.statusDisplay === 'draft'}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onclick={() => void goto(composeHref(draft.account, draft.name))}
+              >
+                Edit
               </Button>
             {/if}
             {#if canReviseDraft(draft)}

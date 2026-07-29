@@ -41,6 +41,10 @@ type CredentialResult = ApiResult<{ accepted: boolean }>;
 type OpsResult = ApiResult<{ results: { op: number; result: string; reason: string | null }[] }>;
 type DraftsResult = ApiResult<{ drafts: Record<string, any>[] }>;
 type DraftContentResult = ApiResult<{ content: string; path: string }>;
+type WriteDraftResult = ApiResult<{ name: string; saved: boolean }>;
+type AccountSettingsResult = ApiResult<{
+  account: { host: string; port: number; username: string; smtp: Record<string, any> | null };
+}>;
 type PushResult = ApiResult<{ state: string }>;
 type ReviewResult = ApiResult<Record<string, any>>;
 type SendResult = ApiResult<{ state: string }>;
@@ -97,6 +101,14 @@ function fakeApi(overrides: {
   applyMailOps?: (account: string, ops: Record<string, unknown>[], generation: number) => Promise<OpsResult>;
   listMailDrafts?: () => Promise<DraftsResult>;
   getMailDraft?: (account: string, draftName: string) => Promise<DraftContentResult>;
+  writeMailDraft?: (
+    account: string,
+    name: string | null,
+    content: string,
+    baseHash: string | null,
+    generation: number
+  ) => Promise<WriteDraftResult>;
+  getMailAccountSettings?: (account: string) => Promise<AccountSettingsResult>;
   pushDraftToMailbox?: (
     account: string,
     draftName: string,
@@ -137,6 +149,17 @@ function fakeApi(overrides: {
     getMailDraft:
       overrides.getMailDraft ??
       (async () => ({ ok: true, data: { content: '', path: '' } }) as DraftContentResult),
+    writeMailDraft:
+      overrides.writeMailDraft ??
+      (async (_account: string, name: string | null) =>
+        ({ ok: true, data: { name: name ?? 'minted', saved: true } }) as WriteDraftResult),
+    getMailAccountSettings:
+      overrides.getMailAccountSettings ??
+      (async () =>
+        ({
+          ok: true,
+          data: { account: { host: 'imap.example.com', port: 993, username: 'login', smtp: null } }
+        }) as AccountSettingsResult),
     pushDraftToMailbox:
       overrides.pushDraftToMailbox ?? (async () => ({ ok: true, data: { state: 'pushing' } }) as PushResult),
     getMailDraftReview:
@@ -1336,6 +1359,142 @@ describe('MailStore.pushDraft', () => {
 
     expect(outcome).toEqual({ error: 'content_changed' });
     expect(listMailDrafts).toHaveBeenCalled();
+  });
+});
+
+describe('MailStore.saveDraft', () => {
+  it('creates with a null base hash, then hands back the minted name and the hash of what landed', async () => {
+    const content = '---\nto: ["a@b.c"]\ncc: []\nbcc: []\nsubject: "S"\n---\nBody.';
+    const writeMailDraft = vi.fn(
+      async () => ({ ok: true, data: { name: '20260729T150000-s.md', saved: true } }) as WriteDraftResult
+    );
+    const getMailDraft = vi.fn(
+      async () => ({ ok: true, data: { content, path: 'sources/mail/mara/drafts/x.md' } }) as DraftContentResult
+    );
+    const store = new MailStore(fakeApi({ writeMailDraft, getMailDraft }) as never);
+
+    const outcome = await store.saveDraft('mara', null, content, null, 7);
+
+    expect(writeMailDraft).toHaveBeenCalledWith('mara', null, content, null, 7);
+    // The read-back is what the NEXT save's CAS is bound to — not the bytes
+    // this client believes it just wrote.
+    expect(getMailDraft).toHaveBeenCalledWith('mara', '20260729T150000-s.md');
+    expect(outcome).toEqual({ name: '20260729T150000-s.md', hash: await sha256Hex(content), content });
+  });
+
+  it('reports the bytes on disk when another writer got in between', async () => {
+    const written = '---\nto: ["a@b.c"]\ncc: []\nbcc: []\nsubject: "mine"\n---\nMine.';
+    const onDisk = '---\nto: ["a@b.c"]\ncc: []\nbcc: []\nsubject: "theirs"\n---\nTheirs.';
+    const store = new MailStore(
+      fakeApi({
+        writeMailDraft: async () => ({ ok: true, data: { name: 'reply.md', saved: true } }),
+        getMailDraft: async () => ({ ok: true, data: { content: onDisk, path: 'p' } })
+      }) as never
+    );
+
+    const outcome = await store.saveDraft('mara', 'reply.md', written, 'a'.repeat(64), 7);
+
+    expect(outcome).toEqual({ name: 'reply.md', hash: await sha256Hex(onDisk), content: onDisk });
+  });
+
+  it('falls back to hashing what it wrote when the read-back fails — the save DID happen', async () => {
+    const content = '---\nto: ["a@b.c"]\ncc: []\nbcc: []\nsubject: "S"\n---\nBody.';
+    const store = new MailStore(
+      fakeApi({
+        writeMailDraft: async () => ({ ok: true, data: { name: 'reply.md', saved: true } }),
+        getMailDraft: async () => ({ ok: false, error: 'not_found' })
+      }) as never
+    );
+
+    const outcome = await store.saveDraft('mara', 'reply.md', content, 'a'.repeat(64), 7);
+
+    expect(outcome).toEqual({ name: 'reply.md', hash: await sha256Hex(content), content });
+  });
+
+  it('surfaces a refused write verbatim and never reads back', async () => {
+    const getMailDraft = vi.fn(async () => ({ ok: true, data: { content: '', path: '' } }) as DraftContentResult);
+    const store = new MailStore(
+      fakeApi({ writeMailDraft: async () => ({ ok: false, error: 'content_changed' }), getMailDraft }) as never
+    );
+
+    expect(await store.saveDraft('mara', 'reply.md', 'x', 'stale', 7)).toEqual({ error: 'content_changed' });
+    expect(getMailDraft).not.toHaveBeenCalled();
+  });
+
+  it('refetches the drafts list so the row (and its ledger state) follows the write', async () => {
+    const listMailDrafts = vi.fn(async () => ({ ok: true, data: { drafts: [] } }) as DraftsResult);
+    const store = new MailStore(fakeApi({ listMailDrafts }) as never);
+
+    await store.saveDraft('mara', 'reply.md', 'x', 'a'.repeat(64), 7);
+    await flush();
+
+    expect(listMailDrafts).toHaveBeenCalled();
+  });
+});
+
+describe('MailStore.ownAddress', () => {
+  const settings = (smtp: Record<string, any> | null): AccountSettingsResult =>
+    ({
+      ok: true,
+      data: { account: { host: 'imap.example.com', port: 993, username: 'login@example.com', smtp } }
+    }) as AccountSettingsResult;
+
+  it('prefers the configured sending identity over the IMAP login', async () => {
+    const store = new MailStore(
+      fakeApi({ getMailAccountSettings: async () => settings({ from: 'mara@example.com' }) }) as never
+    );
+
+    expect(await store.ownAddress('mara')).toBe('mara@example.com');
+  });
+
+  it('falls back to the IMAP login for a push-only account with no smtp block', async () => {
+    const store = new MailStore(fakeApi({ getMailAccountSettings: async () => settings(null) }) as never);
+
+    expect(await store.ownAddress('mara')).toBe('login@example.com');
+  });
+
+  it('is null when neither is an address — a bare mailbox login is not one', async () => {
+    // Dovecot/Cyrus/local mailboxes log in as `mara`, not `mara@…`. Returning
+    // that would be a value reply-all could never match against a recipient.
+    const store = new MailStore(
+      fakeApi({
+        getMailAccountSettings: async () =>
+          ({
+            ok: true,
+            data: { account: { host: 'localhost', port: 3993, username: 'mara', smtp: null } }
+          }) as AccountSettingsResult
+      }) as never
+    );
+
+    expect(await store.ownAddress('mara')).toBeNull();
+  });
+
+  it('caches per account, and a mail_status push drops that account’s entry only', async () => {
+    const getMailAccountSettings = vi.fn(async (account: string) =>
+      settings({ from: `${account}@example.com` })
+    );
+    const store = new MailStore(fakeApi({ getMailAccountSettings }) as never);
+
+    await store.ownAddress('mara');
+    await store.ownAddress('mara');
+    await store.ownAddress('zoe');
+    expect(getMailAccountSettings).toHaveBeenCalledTimes(2);
+
+    // A settings reload is the one thing that can move `smtp.from`, and it
+    // always broadcasts a status push.
+    store.handleMailStatus(pushFor(rawMara));
+    await store.ownAddress('mara');
+    await store.ownAddress('zoe');
+    expect(getMailAccountSettings).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not cache a failed read', async () => {
+    const getMailAccountSettings = vi.fn(async () => ({ ok: false, error: 'not_found' }) as AccountSettingsResult);
+    const store = new MailStore(fakeApi({ getMailAccountSettings }) as never);
+
+    expect(await store.ownAddress('mara')).toBeNull();
+    expect(await store.ownAddress('mara')).toBeNull();
+    expect(getMailAccountSettings).toHaveBeenCalledTimes(2);
   });
 });
 

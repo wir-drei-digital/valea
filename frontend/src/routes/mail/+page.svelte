@@ -24,7 +24,9 @@
   } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { composeHref } from '$lib/components/mail/compose';
   import AccountSwitcher from '$lib/components/mail/AccountSwitcher.svelte';
+  import ComposeView from '$lib/components/mail/ComposeView.svelte';
   import DraftsPanel from '$lib/components/mail/DraftsPanel.svelte';
   import FolderPicker from '$lib/components/mail/FolderPicker.svelte';
   import MessageList from '$lib/components/mail/MessageList.svelte';
@@ -51,6 +53,11 @@
   // unique within its account, so a deep link names both.
   const selectedAccountParam = $derived(page.url.searchParams.get('account'));
   const draftsRequested = $derived(page.url.searchParams.get('drafts') === '1');
+  // The composer's route state, `?drafts=1`'s sibling: `new` for a fresh
+  // draft, any other value names the draft file to reopen. It takes the main
+  // pane ahead of both the drafts panel and an open message — writing is what
+  // the user asked for last.
+  const composeParam = $derived(page.url.searchParams.get('compose'));
 
   // Accounts & settings live in a MODAL over the mail view (the calendar
   // route's Sources pattern) — `?setup=1` deep-links it open (the /sources
@@ -222,6 +229,15 @@
     <ListPane title="Mail">
       {#snippet action()}
         <div class="flex items-center gap-1">
+          {#if mailStore.selectedAccount}
+            <Button
+              type="button"
+              size="sm"
+              onclick={() => void goto(composeHref(mailStore.selectedAccount, null))}
+            >
+              Compose
+            </Button>
+          {/if}
           <Button type="button" variant="outline" size="sm" disabled={syncBusy} onclick={() => void handleSyncNow()}>
             Sync now
           </Button>
@@ -309,7 +325,26 @@
 
   {#snippet main()}
     <MainColumn>
-      {#if draftsRequested}
+      {#if composeParam}
+        {#if mailStore.selectedAccount}
+          <ComposeView
+            account={mailStore.selectedAccount}
+            draftName={composeParam === 'new' ? null : composeParam}
+          />
+        {:else if mailStore.accounts.length === 0}
+          <EmptyState
+            icon={MailIcon}
+            title="No mailbox connected yet."
+            body="Connect a mailbox before writing mail — Valea sends only from an account you've set up."
+          >
+            {#snippet actions()}
+              <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
+            {/snippet}
+          </EmptyState>
+        {:else}
+          <p class="text-ink-meta text-[13px]">Loading…</p>
+        {/if}
+      {:else if draftsRequested}
         <DraftsPanel />
       {:else if !selectedId}
         {#if mailStore.accounts.length === 0}

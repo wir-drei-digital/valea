@@ -17,6 +17,7 @@ import type { Channel } from 'phoenix';
 type MailApi = Pick<
   Api,
   | 'mailStatus'
+  | 'getMailAccountSettings'
   | 'listMailFolders'
   | 'listMailMessages'
   | 'getMailMessage'
@@ -25,6 +26,7 @@ type MailApi = Pick<
   | 'applyMailOps'
   | 'listMailDrafts'
   | 'getMailDraft'
+  | 'writeMailDraft'
   | 'pushDraftToMailbox'
   | 'getMailDraftReview'
   | 'sendDraft'
@@ -409,6 +411,9 @@ export class MailStore {
    */
   #mailStatusListeners = new Set<(payload: MailStatusPush) => void>();
 
+  /** Resolved sending identities by slug (`ownAddress`) — invalidated per account on every `mail_status` push. */
+  #ownAddresses = new Map<string, string | null>();
+
   constructor(api: MailApi) {
     this.#api = api;
   }
@@ -663,6 +668,79 @@ export class MailStore {
   }
 
   /**
+   * The composer's pen (`write_mail_draft`) plus the read-back its CAS needs.
+   *
+   * `name: null` mints one (`YYYYMMDDTHHMMSS-<subject-slug>`), and `baseHash`
+   * must name the revision this edit started from — `null` ONLY when
+   * creating, since a blind overwrite of an existing draft would discard
+   * whatever an agent put there in the meantime.
+   *
+   * The write response deliberately carries no hash, so this re-reads the
+   * draft: the next save must compare against the bytes actually on disk, not
+   * against what this client believes it just wrote. When that read fails the
+   * SAVE still succeeded — the bytes are byte-exact what was sent (the action
+   * does not trim), so hashing them locally is the honest fallback and beats
+   * reporting a failure that did not happen.
+   *
+   * The returned `content` is what the disk holds. A caller that finds it
+   * differs from what it sent has been raced by another writer between the
+   * write and the read — rare, but the composer says so rather than pretending
+   * its buffer is authoritative.
+   */
+  async saveDraft(
+    account: string,
+    name: string | null,
+    content: string,
+    baseHash: string | null,
+    generation: number
+  ): Promise<{ name: string; hash: string; content: string } | { error: string }> {
+    const written = await this.#api.writeMailDraft(account, name, content, baseHash, generation);
+    if (!written.ok) return { error: written.error };
+
+    const saved = (written.data as { name?: string }).name ?? name;
+    if (!saved) return { error: 'write_failed' };
+
+    void this.refreshDrafts();
+    const fetched = await this.#api.getMailDraft(account, saved);
+    const bytes = fetched.ok ? (fetched.data as { content: string }).content : content;
+    return { name: saved, hash: await sha256Hex(bytes), content: bytes };
+  }
+
+  /**
+   * The account's own EMAIL ADDRESS — `smtp.from` (the config-owned sending
+   * identity a draft can never override), falling back to the IMAP login,
+   * which for most providers is the address too.
+   *
+   * `null` whenever neither is address-shaped: a push-only account can log in
+   * as `mara` (dovecot, Cyrus, any local mailbox), and a bare login is not an
+   * address — matching it against a recipient could only ever be a false
+   * negative, so it is not returned at all rather than passed off as one.
+   *
+   * Only reply-all needs this, and only to take the user back out of the
+   * recipient list. `null` therefore means "remove nobody", which prefills
+   * one address too many — visible and deletable — instead of guessing wrong
+   * and dropping someone. Cached per slug; `handleMailStatus` drops the entry
+   * whenever an account's config is re-read, which is exactly when
+   * `smtp.from` can have changed.
+   */
+  async ownAddress(account: string): Promise<string | null> {
+    const cached = this.#ownAddresses.get(account);
+    if (cached !== undefined) return cached;
+
+    const result = await this.#api.getMailAccountSettings(account);
+    // A failed read is NOT cached: the next reply should get another chance.
+    if (!result.ok) return null;
+
+    const data = result.data as {
+      account?: { username?: string | null; smtp?: { from?: string | null } | null } | null;
+    };
+    const candidate = data.account?.smtp?.from?.trim() || data.account?.username?.trim() || '';
+    const resolved = candidate.includes('@') ? candidate : null;
+    this.#ownAddresses.set(account, resolved);
+    return resolved;
+  }
+
+  /**
    * Push-to-Drafts — one of the two outbound actions, both user-only
    * (`sendDraft` is the other; spec G §Invariant rewrite: Valea transmits
    * mail only on an explicit human action, hash-bound to the exact draft the
@@ -769,6 +847,10 @@ export class MailStore {
    */
   handleMailStatus(payload: MailStatusPush): void {
     const status = normalizeMailAccountStatus(payload);
+    // A push follows every settings reload, which is the one thing that can
+    // move `smtp.from` — drop the cached identity rather than reply-all'ing
+    // against an address the account no longer sends as.
+    this.#ownAddresses.delete(status.account);
     const index = this.accounts.findIndex((a) => a.account === status.account);
     if (index >= 0) {
       this.accounts[index] = status;
