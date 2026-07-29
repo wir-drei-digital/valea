@@ -8,6 +8,8 @@ import {
   filterMessagesByRead,
   markReadOp,
   markUnreadOp,
+  trashTarget,
+  moveTargets,
   folderFlagsLine,
   relativeTime,
   fromLabel,
@@ -141,6 +143,45 @@ describe('markReadOp / markUnreadOp', () => {
 
   it('writes the same letter `messageSeen` reads — the unread dot and the filters follow from this op', () => {
     expect(messageSeen({ flags: markReadOp('msg-1', 'INBOX').add.join('') })).toBe(true);
+  });
+});
+
+describe('trashTarget', () => {
+  it("is the ACCOUNT'S configured trash folder, never a hardcoded 'Trash'", () => {
+    expect(trashTarget({ folders: { trash: '[Gmail]/Trash', archive: '[Gmail]/All Mail' } }, 'INBOX')).toBe(
+      '[Gmail]/Trash'
+    );
+  });
+
+  it('is null in the trash folder itself — that move would be onto itself', () => {
+    expect(trashTarget({ folders: { trash: '[Gmail]/Trash' } }, '[Gmail]/Trash')).toBeNull();
+  });
+
+  it('is null when no trash folder is configured (or no status has loaded yet)', () => {
+    expect(trashTarget({ folders: { archive: 'Archive' } }, 'INBOX')).toBeNull();
+    expect(trashTarget({ folders: { trash: '' } }, 'INBOX')).toBeNull();
+    expect(trashTarget({ folders: null }, 'INBOX')).toBeNull();
+    expect(trashTarget(null, 'INBOX')).toBeNull();
+  });
+});
+
+describe('moveTargets', () => {
+  const inbox = { name: 'INBOX', held: false, messageCount: 12 };
+  const archive = { name: 'Archive', held: false, messageCount: 340 };
+  const stale = { name: 'Old Project', held: true, messageCount: 8 };
+  const folders = [inbox, archive, stale];
+
+  it('drops the folder the message is already in — a self-move is a no-op', () => {
+    expect(moveTargets(folders, 'INBOX')).toEqual([archive]);
+  });
+
+  it('never offers a held folder, whichever folder is open', () => {
+    expect(moveTargets(folders, 'Archive')).toEqual([inbox]);
+    expect(moveTargets([stale], 'INBOX')).toEqual([]);
+  });
+
+  it('passes rows through whole and in store order (the popover renders their counts)', () => {
+    expect(moveTargets(folders, null)).toEqual([inbox, archive]);
   });
 });
 

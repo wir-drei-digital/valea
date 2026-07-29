@@ -116,6 +116,37 @@ export function markUnreadOp(msgId: string, folder: string): MailFlagOp {
 }
 
 /**
+ * Where "Delete" moves a message: the account's CONFIGURED trash folder
+ * (Gmail: `"[Gmail]/Trash"`, never a hardcoded `"Trash"`), read from the same
+ * `folders` map the archive action composes from. `null` — no Delete offered
+ * — when the account has no trash configured, or when the message is already
+ * in it: that move would only be a move onto itself, and there is nothing
+ * further to offer from there (Valea never expunges).
+ */
+export function trashTarget(
+  status: Pick<MailAccountStatus, 'folders'> | null | undefined,
+  currentFolder: string | null
+): string | null {
+  const trash = status?.folders?.trash ?? null;
+  if (!trash || trash === currentFolder) return null;
+  return trash;
+}
+
+/**
+ * The folders "Move to…" may offer for a message sitting in `currentFolder`:
+ * every mirrored folder except that one (a self-move is a no-op) and except
+ * HELD folders — the engine has stopped syncing those (spec E §folder
+ * lifecycle), so filing a message into one would move it somewhere Valea no
+ * longer keeps in step with the server.
+ */
+export function moveTargets<T extends Pick<MailFolder, 'name' | 'held'>>(
+  folders: T[],
+  currentFolder: string | null
+): T[] {
+  return folders.filter((folder) => !folder.held && folder.name !== currentFolder);
+}
+
+/**
  * User copy for one `mail_apply_ops` per-op outcome. `accepted`/`complete`
  * count as success (`null` — nothing to show); everything else maps the
  * executor's rejection reasons to calm sentences.

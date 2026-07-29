@@ -22,6 +22,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { SegmentedControl } from '$lib/components/shell';
   import HtmlMailView from './HtmlMailView.svelte';
+  import MoveToPopover from './MoveToPopover.svelte';
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
@@ -39,8 +40,10 @@
     markUnreadOp,
     messageSeen,
     messageSessionPrompt,
+    moveTargets,
     opResultMessage,
     subjectLabel,
+    trashTarget,
     type RawAddress
   } from './mail-shapes';
   import type { MailMessageDetail } from '$lib/stores/mail.svelte';
@@ -128,12 +131,16 @@
   });
 
   // Ops context: the message's indexed id is its frontmatter `id`; the
-  // source folder is the list the user opened it from; the archive
-  // destination is the ACCOUNT'S configured name (Gmail: "[Gmail]/All
-  // Mail"), never a hardcoded "Archive".
+  // source folder is the list the user opened it from; the archive and trash
+  // destinations are the ACCOUNT'S configured names (Gmail: "[Gmail]/All
+  // Mail", "[Gmail]/Trash"), never hardcoded "Archive"/"Trash".
   const msgId = $derived(typeof frontmatter.id === 'string' ? frontmatter.id : null);
   const currentFolder = $derived(mailStore.selectedFolder);
   const archiveFolder = $derived(mailStore.selectedStatus?.folders?.archive ?? null);
+  const trashFolder = $derived(trashTarget(mailStore.selectedStatus, currentFolder));
+  // Everywhere else this message could be filed by hand — the mirrored
+  // folders minus this one and the held ones.
+  const folderTargets = $derived(moveTargets(mailStore.folders, currentFolder));
   const flagged = $derived(
     typeof frontmatter.flags === 'string' && frontmatter.flags.includes('F')
   );
@@ -147,6 +154,9 @@
   const canArchive = $derived(
     msgId !== null && currentFolder !== null && archiveFolder !== null && currentFolder !== archiveFolder
   );
+  // `trashTarget` has already ruled out an unconfigured trash and a message
+  // that is in it, so only the op's own two ingredients are left to check.
+  const canTrash = $derived(msgId !== null && currentFolder !== null && trashFolder !== null);
 
   /**
    * The msg_id the auto-mark has already run for — or that a manual "Mark
@@ -214,6 +224,23 @@
   function archive(): void {
     if (!msgId || !currentFolder || !archiveFolder) return;
     void runOp({ op: 'move', msg_id: msgId, from: currentFolder, to: archiveFolder }, true);
+  }
+
+  /**
+   * "Delete" — a move into the account's trash folder, and nothing more.
+   * Deliberately unconfirmed: Valea never expunges, so this destroys
+   * nothing; the message is one "Move to…" away from wherever it was, from
+   * here or from any other mail client.
+   */
+  function trash(): void {
+    if (!msgId || !currentFolder || !trashFolder) return;
+    void runOp({ op: 'move', msg_id: msgId, from: currentFolder, to: trashFolder }, true);
+  }
+
+  /** "Move to…" — the same op as archive/delete, with the picked folder as its destination. */
+  function moveTo(folder: string): void {
+    if (!msgId || !currentFolder) return;
+    void runOp({ op: 'move', msg_id: msgId, from: currentFolder, to: folder }, true);
   }
 
   /**
@@ -411,11 +438,23 @@
         <Button type="button" variant="outline" disabled={opBusy} onclick={() => archive()}>Archive</Button>
       {/if}
       {#if msgId && currentFolder}
+        <MoveToPopover targets={folderTargets} disabled={opBusy} onMove={(folder) => moveTo(folder)} />
         <Button type="button" variant="ghost" disabled={opBusy} onclick={() => toggleFlag()}>
           {flagged ? 'Unflag' : 'Flag'}
         </Button>
         <Button type="button" variant="ghost" disabled={opBusy} onclick={() => void toggleSeen()}>
           {seen ? 'Mark unread' : 'Mark read'}
+        </Button>
+      {/if}
+      {#if canTrash}
+        <Button
+          type="button"
+          variant="ghost"
+          class="text-warn-ink hover:text-warn-ink"
+          disabled={opBusy}
+          onclick={() => trash()}
+        >
+          Delete
         </Button>
       {/if}
     </div>
