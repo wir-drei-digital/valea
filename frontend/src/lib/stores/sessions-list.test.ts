@@ -28,3 +28,39 @@ describe('SessionsListStore.refresh', () => {
     expect(store.sessions).toEqual([]);
   });
 });
+
+// Final review, I3. This store was route-local (disposed when `/chat`
+// unmounted) until Task 7 promoted it to a shared singleton, at which point
+// a workspace switch could leave the previous workspace's sessions on
+// screen. `handleWorkspaceEvent` calling this is pinned in `icm.test.ts`.
+describe('SessionsListStore.reset', () => {
+  it('clears back to cold-start shape', async () => {
+    const store = new SessionsListStore({
+      listAgentSessions: async () =>
+        ({
+          ok: true,
+          data: { sessions: [{ id: 's1', kind: 'chat', status: 'running', live: true }] }
+        }) as ApiResult<any>
+    });
+
+    await store.refresh();
+    expect(store.loaded).toBe(true);
+
+    store.reset();
+
+    expect(store.sessions).toEqual([]);
+    expect(store.loaded).toBe(false);
+  });
+
+  it('is idempotent on an untouched store', () => {
+    const store = new SessionsListStore({
+      listAgentSessions: async () => ({ ok: true, data: { sessions: [] } }) as ApiResult<any>
+    });
+
+    store.reset();
+    store.reset();
+
+    expect(store.sessions).toEqual([]);
+    expect(store.loaded).toBe(false);
+  });
+});

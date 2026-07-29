@@ -44,6 +44,24 @@ export class SessionsListStore {
     this.sessions = data.sessions ?? [];
     this.loaded = true;
   }
+
+  /**
+   * Clears back to cold-start shape (empty `sessions`, `loaded` false) —
+   * final review, I3: called from `handleWorkspaceEvent` in `icm.svelte.ts`
+   * alongside its three peers, on every workspace event (close, open, or
+   * switch), so the previous workspace's sessions are never mistaken for
+   * the new one's. Mirrors `RecentSessionsStore.reset()` exactly.
+   *
+   * Needed once this store stopped being route-local: it used to be a
+   * `new SessionsListStore(api)` inside `/chat`, disposed on unmount, so a
+   * workspace switch could not outlive it. As a shared singleton (read by
+   * the all-sessions pane and every `ChatView`) a user sitting on
+   * `/chat?all=1` through a switch would otherwise keep the old list.
+   */
+  reset(): void {
+    this.sessions = [];
+    this.loaded = false;
+  }
 }
 
 export const sessionsListStore = new SessionsListStore(api);

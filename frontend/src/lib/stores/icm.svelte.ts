@@ -6,6 +6,7 @@ import { wireMailEvents } from './mail.svelte';
 import { wireCalendarEvents } from './calendar.svelte';
 import { mountsStore, wireMountsEvents } from './mounts.svelte';
 import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
+import { sessionsListStore } from './sessions-list.svelte';
 
 type IcmApi = Pick<Api, 'icmListDir' | 'listIcms'>;
 
@@ -442,21 +443,32 @@ let icmEventsWired = false;
  * connection, which nothing in this test suite stands up.
  *
  * The store owns its own coherence: on every workspace change (close, open,
- * or switch), the previous workspace's tree/catalog/session-groups are no
- * longer valid, so all three are dropped before anything else runs. When the
- * new workspace is open, immediately refetch/refresh so `loaded` reflects
- * the NEW data rather than sitting on the stale one — and see the
- * "CARRY-FORWARD (acceptance fix wave...)" paragraph on `wireIcmEvents`
- * below for exactly why `payload.generation` (not `workspaceStore.generation`)
- * is what gets threaded into that refetch/refresh.
+ * or switch), the previous workspace's tree/catalog/session-groups/flat
+ * session list are no longer valid, so all four are dropped before anything
+ * else runs. When the new workspace is open, immediately refetch/refresh so
+ * `loaded` reflects the NEW data rather than sitting on the stale one — and
+ * see the "CARRY-FORWARD (acceptance fix wave...)" paragraph on
+ * `wireIcmEvents` below for exactly why `payload.generation` (not
+ * `workspaceStore.generation`) is what gets threaded into that
+ * refetch/refresh.
+ *
+ * `sessionsListStore` is refreshed here rather than left cleared for the
+ * same reason it is reset at all: a live switch does NOT remount the route
+ * (the layout keeps rendering `children` throughout), so `/chat`'s own
+ * `onMount` fetch will not run again — a reader sitting on `?all=1` would
+ * be left staring at a permanent "No sessions yet." It takes no
+ * `generation` (`list_agent_sessions` is a plain read, same as
+ * `recentSessionsStore.refresh`).
  */
 export function handleWorkspaceEvent(payload: WorkspaceEventPayload): void {
   icmStore.reset();
   recentSessionsStore.reset();
   mountsStore.reset();
+  sessionsListStore.reset();
   if (payload.open) {
     void icmStore.refetch(payload.generation);
     refreshSidebarProjectStores(payload.generation);
+    void sessionsListStore.refresh();
   }
 }
 

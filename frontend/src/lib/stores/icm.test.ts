@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { normalizeIcmNode, IcmStore, refreshSidebarProjectStores, handleWorkspaceEvent, icmStore } from './icm.svelte';
 import { mountsStore } from './mounts.svelte';
 import { recentSessionsStore } from './recent-sessions.svelte';
+import { sessionsListStore } from './sessions-list.svelte';
 import { workspaceStore } from './workspace.svelte';
 import type { IcmNode } from '../shell/nav';
 import type { ApiResult } from '../api/client';
@@ -626,29 +627,39 @@ describe('refreshSidebarProjectStores', () => {
 // tests simulate the exact ordering: `workspaceStore.generation` still holds
 // the OLD (outgoing) value when the push arrives with the NEW (incoming) one.
 describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', () => {
-  it('resets all three sidebar stores unconditionally on a close push, without refetching/refreshing any of them', () => {
+  it('resets all four workspace-scoped stores unconditionally on a close push, without refetching/refreshing any of them', () => {
     const icmReset = vi.spyOn(icmStore, 'reset');
     const mountsReset = vi.spyOn(mountsStore, 'reset');
     const recentReset = vi.spyOn(recentSessionsStore, 'reset');
+    const listReset = vi.spyOn(sessionsListStore, 'reset');
     const icmRefetch = vi.spyOn(icmStore, 'refetch').mockResolvedValue(undefined);
     const mountsRefresh = vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
     const recentRefresh = vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
+    const listRefresh = vi.spyOn(sessionsListStore, 'refresh').mockResolvedValue(undefined);
 
     handleWorkspaceEvent({ open: false });
 
     expect(icmReset).toHaveBeenCalledTimes(1);
     expect(mountsReset).toHaveBeenCalledTimes(1);
     expect(recentReset).toHaveBeenCalledTimes(1);
+    // Final review, I3: `sessionsListStore` became a shared singleton in
+    // Task 7 (it used to be route-local and disposed on unmount), so it has
+    // to be dropped here with its peers or `/chat?all=1` keeps showing the
+    // PREVIOUS workspace's sessions across a switch.
+    expect(listReset).toHaveBeenCalledTimes(1);
     expect(icmRefetch).not.toHaveBeenCalled();
     expect(mountsRefresh).not.toHaveBeenCalled();
     expect(recentRefresh).not.toHaveBeenCalled();
+    expect(listRefresh).not.toHaveBeenCalled();
 
     icmReset.mockRestore();
     mountsReset.mockRestore();
     recentReset.mockRestore();
+    listReset.mockRestore();
     icmRefetch.mockRestore();
     mountsRefresh.mockRestore();
     recentRefresh.mockRestore();
+    listRefresh.mockRestore();
   });
 
   it("on an open push, threads the PUSH'S OWN generation into icmStore.refetch and mountsStore.refresh — not workspaceStore's stale one", () => {
@@ -656,25 +667,34 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     const icmReset = vi.spyOn(icmStore, 'reset');
     const mountsReset = vi.spyOn(mountsStore, 'reset');
     const recentReset = vi.spyOn(recentSessionsStore, 'reset');
+    const listReset = vi.spyOn(sessionsListStore, 'reset');
     const icmRefetch = vi.spyOn(icmStore, 'refetch').mockResolvedValue(undefined);
     const mountsRefresh = vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
     const recentRefresh = vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
+    const listRefresh = vi.spyOn(sessionsListStore, 'refresh').mockResolvedValue(undefined);
 
     handleWorkspaceEvent({ open: true, generation: 7, name: 'Consulting', path: '/ws/consulting' });
 
     expect(icmReset).toHaveBeenCalledTimes(1);
     expect(mountsReset).toHaveBeenCalledTimes(1);
     expect(recentReset).toHaveBeenCalledTimes(1);
+    expect(listReset).toHaveBeenCalledTimes(1);
     expect(icmRefetch).toHaveBeenCalledWith(7);
     expect(mountsRefresh).toHaveBeenCalledWith(7);
     expect(recentRefresh).toHaveBeenCalledTimes(1); // no generation argument — see refreshSidebarProjectStores' doc comment
+    // Refreshed, not just cleared: a live switch never remounts `/chat`, so
+    // its own `onMount` fetch will not run again (final review, I3).
+    expect(listRefresh).toHaveBeenCalledTimes(1);
+    expect(listRefresh).toHaveBeenCalledWith(); // plain read, no generation
 
     icmReset.mockRestore();
     mountsReset.mockRestore();
     recentReset.mockRestore();
+    listReset.mockRestore();
     icmRefetch.mockRestore();
     mountsRefresh.mockRestore();
     recentRefresh.mockRestore();
+    listRefresh.mockRestore();
     workspaceStore.generation = null;
   });
 
@@ -682,6 +702,7 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     const icmRefetch = vi.spyOn(icmStore, 'refetch').mockResolvedValue(undefined);
     const mountsRefresh = vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
     const recentRefresh = vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
+    const listRefresh = vi.spyOn(sessionsListStore, 'refresh').mockResolvedValue(undefined);
 
     // Defensive case only — the backend always sends `generation` on an
     // `open: true` push (`WorkspaceEventsChannel.handle_info/2`).
@@ -693,5 +714,6 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     icmRefetch.mockRestore();
     mountsRefresh.mockRestore();
     recentRefresh.mockRestore();
+    listRefresh.mockRestore();
   });
 });

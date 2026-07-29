@@ -8,7 +8,15 @@ describe('fileLeafKind', () => {
     expect(fileLeafKind('.jpeg')).toBe('image');
     expect(fileLeafKind('.gif')).toBe('image');
     expect(fileLeafKind('.webp')).toBe('image');
-    expect(fileLeafKind('.svg')).toBe('image');
+  });
+
+  // Final review, I1: `.svg` used to land here, so `FileView` mounted the
+  // token-free `<img>` viewer for it — but `/files/raw` exempts only the
+  // extensions above, so the request 404'd and the pane showed a broken
+  // image glyph with no explanation. It belongs to the tokened text viewer,
+  // which is also the only way it renders inertly (`text/plain` + nosniff).
+  it('does NOT treat .svg as an image — it is served as inert text', () => {
+    expect(fileLeafKind('.svg')).toBe('other');
   });
 
   it('maps .pdf to "pdf"', () => {

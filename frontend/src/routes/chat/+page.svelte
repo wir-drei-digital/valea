@@ -21,7 +21,13 @@
   import { DoctorPanel } from '$lib/components/agent';
   import ChatView from '$lib/components/views/ChatView.svelte';
   import PaneHost from '$lib/components/panes/PaneHost.svelte';
-  import { parsePaneParam, withPaneParam, promoteHref, type PaneDescriptor } from '$lib/panes/pane-route';
+  import {
+    parsePaneParam,
+    withPaneParam,
+    hrefWithPane,
+    promoteHref,
+    type PaneDescriptor
+  } from '$lib/panes/pane-route';
 
   // The open transcript lives in `ChatView` (side-panes pass) — everything
   // below is the ROUTE's own business: which session is selected (`?session=`),
@@ -67,9 +73,18 @@
   const showAllPane = $derived(page.url.searchParams.get('all') === '1');
   const allGroups = $derived(groupAllSessions(sessionsListStore.sessions));
 
-  /** Keeps ?all=1 sticky across in-pane navigation. */
+  /**
+   * Keeps `?all=1` AND `?pane=` sticky across in-pane navigation.
+   *
+   * The pane half is final review, I4: both knowledge routes already carry
+   * the pane through every in-route navigation (tree links, all three
+   * dialogs, `onVanished`, the last-opened restore), and the feature's whole
+   * intent is that the pane STAYS while you move within a route — switching
+   * sessions from the all-sessions list is exactly such a move. This builds
+   * an href for a link; the three imperative `goto`s below do the same.
+   */
   function sessionHref(id: string): string {
-    return showAllPane ? `/chat?all=1&session=${id}` : `/chat?session=${id}`;
+    return hrefWithPane(showAllPane ? `/chat?all=1&session=${id}` : `/chat?session=${id}`, page.url);
   }
 
   // True whenever the most recent "start a session" attempt (from either the
@@ -103,7 +118,7 @@
       const data = result.data as { id: string };
       doctorOverride = false;
       await sessionsListStore.refresh();
-      void goto(`/chat?session=${data.id}`);
+      void goto(hrefWithPane(`/chat?session=${data.id}`, page.url));
     } else if (result.error === 'harness_unavailable') {
       doctorOverride = true;
     } else {
@@ -175,13 +190,18 @@
     void sessionsListStore.refresh();
     void recentSessionsStore.refresh();
     if (selectedId === id) {
-      void goto(showAllPane ? '/chat?all=1' : '/chat');
+      void goto(hrefWithPane(showAllPane ? '/chat?all=1' : '/chat', page.url));
     }
   }
 
-  /** Where the main pane goes once `ChatView` archives the session it has open. */
+  /**
+   * Where the main pane goes once `ChatView` archives the session it has
+   * open. Deselects the session but KEEPS the side pane (final review, I4)
+   * — archiving is an in-route move, and whatever file is open beside the
+   * transcript is unaffected by it.
+   */
   function afterArchive(): void {
-    void goto(showAllPane ? '/chat?all=1' : '/chat');
+    void goto(hrefWithPane(showAllPane ? '/chat?all=1' : '/chat', page.url));
   }
 
   // --- Side pane (`?pane=`) ---
@@ -212,8 +232,12 @@
   // typed message alive: the composer clears on send, and the view hands the
   // created id back expecting its host to re-point it at `chat:<id>` so the
   // stashed prompt actually fires.
+  // `replaceState` so Back doesn't step through the dead composer state
+  // (final review, I5 — both knowledge routes already pass it on this same
+  // `chat-new` → `chat:<id>` rewrite).
   function replacePaneWithSession(id: string): void {
     void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
+      replaceState: true,
       keepFocus: true,
       noScroll: true
     });
