@@ -217,6 +217,42 @@ defmodule Valea.Agents do
     end
   end
 
+  @doc """
+  Deletes a session permanently: removes its transcript from
+  `logs/sessions/` — unlike `archive_session/1` there is no archived copy
+  and no way back, which is why the UI collects an explicit confirmation
+  before calling this. A LIVE session is stopped first, exactly like the
+  archive path (`stop_live_server/1`); the same `Path.basename/1` traversal
+  guard applies.
+  """
+  @spec delete_session(String.t()) ::
+          :ok | {:error, :no_workspace | :not_found | File.posix()}
+  def delete_session(id) when is_binary(id) do
+    with {:ok, %{path: workspace}} <- Manager.current() do
+      path = transcript_path(workspace, id)
+
+      cond do
+        Path.basename(path) != id <> ".jsonl" ->
+          {:error, :not_found}
+
+        not File.regular?(path) ->
+          {:error, :not_found}
+
+        true ->
+          stop_live_server(id)
+
+          case File.rm(path) do
+            :ok ->
+              Valea.Audit.append("session_deleted", %{"session_id" => id})
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+      end
+    end
+  end
+
   # Archiving a live session stops it first — the `SessionServer` appends to
   # the transcript while alive, so the file must never move under it.
   # `GenServer.stop/3` is synchronous: it returns after `terminate/2` ran

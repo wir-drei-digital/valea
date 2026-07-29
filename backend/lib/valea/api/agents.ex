@@ -391,6 +391,25 @@ defmodule Valea.Api.Agents do
         end
       end
     end
+
+    action :delete_agent_session, :map do
+      constraints fields: [deleted: [type: :boolean, allow_nil?: false]]
+
+      argument :session_id, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # Permanent — no archived copy remains (see `Valea.Agents.delete_session/1`;
+      # the UI collects an explicit confirmation before calling this). Live
+      # sessions are stopped first, exactly like the archive path.
+      run fn input, _ctx ->
+        with :ok <- Manager.check_generation(input.arguments.generation),
+             :ok <- Valea.Agents.delete_session(input.arguments.session_id) do
+          {:ok, %{"deleted" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
   end
 
   # Best-effort re-grant of the original `input` locator on resume: a

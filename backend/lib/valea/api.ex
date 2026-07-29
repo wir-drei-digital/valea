@@ -46,6 +46,7 @@ defmodule Valea.Api do
       rpc_action(:harness_config, :harness_config)
       rpc_action(:set_harness_command, :set_harness_command)
       rpc_action(:archive_agent_session, :archive_agent_session)
+      rpc_action(:delete_agent_session, :delete_agent_session)
     end
 
     resource Valea.Api.Audit do
@@ -55,6 +56,8 @@ defmodule Valea.Api do
     resource Valea.Api.Mail do
       rpc_action(:mail_status, :mail_status)
       rpc_action(:setup_mail_account, :setup_mail_account)
+      rpc_action(:get_mail_account_settings, :get_mail_account_settings)
+      rpc_action(:mail_autoconfig, :mail_autoconfig)
       rpc_action(:remove_mail_account, :remove_mail_account)
       rpc_action(:purge_mail_account_files, :purge_mail_account_files)
       rpc_action(:readopt_mail_account, :readopt_mail_account)
@@ -66,6 +69,8 @@ defmodule Valea.Api do
       rpc_action(:list_mail_messages, :list_mail_messages)
       rpc_action(:list_mail_folders, :list_mail_folders)
       rpc_action(:get_mail_message, :get_mail_message)
+      rpc_action(:list_trusted_mail_senders, :list_trusted_mail_senders)
+      rpc_action(:set_mail_sender_trust, :set_mail_sender_trust)
       rpc_action(:mail_apply_ops, :mail_apply_ops)
       rpc_action(:push_draft_to_mailbox, :push_draft_to_mailbox)
       rpc_action(:list_mail_drafts, :list_mail_drafts)

@@ -159,13 +159,53 @@ defmodule Valea.Cockpit do
   end
 
   defp mail_summary_entry(slug, status) do
+    {unread_count, unread} = unread_inbox(slug)
+
     %{
       "account" => slug,
       "configured" => true,
       "state" => status.state,
       "pending_ops" => status.pending_ops,
-      "notices" => status.notices
+      "notices" => status.notices,
+      "unread_count" => unread_count,
+      "unread" => unread
     }
+  end
+
+  # The account's newest unread INBOX messages ("new emails by account" on
+  # Today): unread = no maildir `S` (Seen) flag, over the newest
+  # `@unread_window` indexed rows — a recency window, not a full-mailbox
+  # count, which is the honest scope for a cockpit line. Own rescue, NOT
+  # `mail_summary/0`'s: a dead Repo mid-close must degrade one account's
+  # unread list to empty, never drop the whole account entry (the "Repo is
+  # down but the Engine is still registered" case `cockpit_test.exs` pins).
+  @unread_window 100
+  @unread_shown 5
+
+  defp unread_inbox(slug) do
+    unread =
+      slug
+      |> Valea.Mail.Store.list_messages("INBOX", @unread_window)
+      |> Enum.reject(fn row -> String.contains?(row.flags || "", "S") end)
+
+    shown =
+      unread
+      |> Enum.take(@unread_shown)
+      |> Enum.map(fn row ->
+        %{
+          "msg_id" => row.msg_id,
+          "from_name" => row.from_name,
+          "from_email" => row.from_email,
+          "subject" => row.subject,
+          "date" => row.date
+        }
+      end)
+
+    {length(unread), shown}
+  rescue
+    _ -> {0, []}
+  catch
+    :exit, _ -> {0, []}
   end
 
   # The Today calendar line, through the SAME query path as

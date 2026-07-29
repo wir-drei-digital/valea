@@ -249,13 +249,16 @@ export type ContextUsage = { used: number; max: number; fraction: number };
 export function contextUsage(item: AcpItemLike | undefined): ContextUsage | undefined {
   if (!item) return undefined;
   const used = firstCount(item, ['usedTokens', 'used_tokens', 'tokensUsed', 'used']);
+  // `size` is what claude-agent-acp actually sends (`{used, size}` — its
+  // usage_update pairs the used tokens with the model's context window size).
   const max = firstCount(item, [
     'maxTokens',
     'max_tokens',
     'tokenLimit',
     'contextWindow',
     'context_window',
-    'max'
+    'max',
+    'size'
   ]);
   if (used === undefined || max === undefined || max <= 0) return undefined;
   return { used, max, fraction: Math.min(used / max, 1) };
@@ -272,7 +275,7 @@ function firstCount(item: AcpItemLike, keys: string[]): number | undefined {
 export function usageFields(item: AcpItemLike | undefined): UsageField[] {
   if (!item) return [];
   return Object.entries(item).flatMap(([key, value]): UsageField[] => {
-    if (key === 'id' || key === 'type') return [];
+    if (key === 'id' || key === 'type' || key === 'seq') return [];
     const formatted = formatUsageValue(value);
     return formatted === undefined ? [] : [{ label: labelFor(key), value: formatted }];
   });

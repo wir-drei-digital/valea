@@ -61,7 +61,7 @@
 {:else}
   <article class="mx-auto flex w-full max-w-[596px] flex-col gap-3">
     <header class="flex flex-col gap-1.5">
-      <p class="text-overline">{path.split('/').slice(-2, -1)[0] ?? 'Files'}</p>
+      <p class="text-overline">Files</p>
       <p class="text-ink-meta font-mono text-[11.5px]">{path}</p>
     </header>
     {#if format === 'image'}

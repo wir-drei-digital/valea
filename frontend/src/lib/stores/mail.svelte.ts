@@ -98,11 +98,19 @@ export type MailMessageSummary = {
   viewPath: string;
 };
 
-/** `get_mail_message`'s result — the parsed message view file. */
+/**
+ * `get_mail_message`'s result — the parsed message view file, plus the
+ * sanitized HTML rendering (`null` when the message has no usable
+ * text/html part) and the remote-content trust gate the read pane's banner
+ * keys off (`Valea.Mail.Trust`).
+ */
 export type MailMessageDetail = {
   frontmatter: Record<string, unknown> | null;
   body: string;
   path: string;
+  html: string | null;
+  externalContent: boolean;
+  senderTrusted: boolean;
 };
 
 function str(v: unknown): string | null {
@@ -447,7 +455,12 @@ export class MailStore {
     this.selected = {
       frontmatter: (message.frontmatter as Record<string, unknown> | undefined) ?? null,
       body: message.body as string,
-      path: message.path as string
+      path: message.path as string,
+      // String snake keys — the `message` map is an unconstrained
+      // passthrough (see `Valea.Api.Mail`'s falsy-map-field note).
+      html: typeof message.html === 'string' && message.html !== '' ? message.html : null,
+      externalContent: message.external_content === true,
+      senderTrusted: message.sender_trusted === true
     };
   }
 

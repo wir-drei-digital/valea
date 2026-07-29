@@ -11,13 +11,17 @@
   // `onOpenFile` — a host with nowhere to put a file renders the plain
   // static folder line the route always had.
   //
-  // `onArchive` is the "there is an archivable session here" signal (the
-  // route's old `selectedId` gate): a host in new-session mode has no
-  // session yet and passes none. LIVE sessions archive too — the backend
-  // stops a running one first (`Valea.Agents.archive_session/1`) — so
-  // `ended` only picks the LABEL, never whether the button exists.
+  // `onArchive` is the "there is a session here" signal (the route's old
+  // `selectedId` gate): a host in new-session mode has no session yet and
+  // passes none. Both session actions live behind one ellipsis popover:
+  // Archive (LIVE sessions archive too — the backend stops a running one
+  // first, `Valea.Agents.archive_session/1` — so `ended` only picks the
+  // LABEL) and Delete, which is permanent and therefore swaps to an inline
+  // confirm row before `onDelete` ever fires.
   import Folder from '@lucide/svelte/icons/folder';
   import Archive from '@lucide/svelte/icons/archive';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import * as Popover from '$lib/components/ui/popover';
   import { IcmTree } from '$lib/components/shell';
@@ -29,18 +33,30 @@
     mountKey,
     ended,
     archiving,
+    deleting = false,
     onArchive,
+    onDelete,
     onOpenFile
   }: {
     icmName: string | null;
     mountKey: string | null;
     ended: boolean;
     archiving: boolean;
+    deleting?: boolean;
     onArchive?: () => void;
+    onDelete?: () => void;
     onOpenFile?: (sel: { mountKey: string; path: string }) => void;
   } = $props();
 
   let treeOpen = $state(false);
+  let menuOpen = $state(false);
+  // Delete is irreversible — the menu item arms a confirm row instead of
+  // firing directly; closing the popover always disarms it.
+  let confirmingDelete = $state(false);
+
+  $effect(() => {
+    if (!menuOpen) confirmingDelete = false;
+  });
   // `icmStore.groups` is keyed by `mount` (the stable mount key) — the same
   // key sessions carry as `icmMount`. Folders inside the popover lazy-load
   // through `IcmTree`'s own `loadDir` calls; the mount's ROOT level is the
@@ -49,7 +65,7 @@
   const canBrowse = $derived(Boolean(onOpenFile && mountKey));
 </script>
 
-{#if icmName || onArchive}
+{#if icmName || onArchive || onDelete}
   <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
     {#if icmName}
       {#if canBrowse}
@@ -85,16 +101,69 @@
       {/if}
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
-    {#if onArchive}
-      <button
-        type="button"
-        onclick={onArchive}
-        disabled={archiving}
-        class="text-ink-meta hover:text-ink-heading flex shrink-0 items-center gap-1 text-[12px] transition-colors"
-      >
-        <Archive class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-        {archiving ? 'Archiving…' : ended ? 'Archive' : 'Stop & archive'}
-      </button>
+    {#if onArchive || onDelete}
+      <Popover.Root bind:open={menuOpen}>
+        <Popover.Trigger
+          aria-label="Session actions"
+          title="More"
+          class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading data-[state=open]:bg-paper-pill flex size-6 shrink-0 items-center justify-center rounded-md transition-colors"
+        >
+          <Ellipsis class="size-4" strokeWidth={1.5} aria-hidden="true" />
+        </Popover.Trigger>
+        <Popover.Content align="end" class="w-56 p-1">
+          {#if onArchive}
+            <button
+              type="button"
+              disabled={archiving}
+              onclick={() => {
+                menuOpen = false;
+                onArchive();
+              }}
+              class="text-ink-secondary hover:bg-paper-pill hover:text-ink-heading flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] transition-colors disabled:opacity-50"
+            >
+              <Archive class="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+              {archiving ? 'Archiving…' : ended ? 'Archive' : 'Stop & archive'}
+            </button>
+          {/if}
+          {#if onDelete}
+            {#if confirmingDelete}
+              <div class="flex flex-col gap-1.5 px-2 py-1.5">
+                <p class="text-ink-body text-[12px]">Delete this session permanently? There is no archived copy.</p>
+                <div class="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={deleting}
+                    onclick={() => {
+                      menuOpen = false;
+                      onDelete();
+                    }}
+                    class="text-warn-ink border-paper-border hover:bg-paper-pill rounded-md border px-2 py-1 text-[12px] font-medium transition-colors disabled:opacity-50"
+                  >
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => (confirmingDelete = false)}
+                    class="text-ink-meta hover:text-ink-heading rounded-md px-2 py-1 text-[12px] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            {:else}
+              <button
+                type="button"
+                disabled={deleting}
+                onclick={() => (confirmingDelete = true)}
+                class="text-warn-ink hover:bg-paper-pill flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] transition-colors disabled:opacity-50"
+              >
+                <Trash2 class="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                {ended ? 'Delete…' : 'Stop & delete…'}
+              </button>
+            {/if}
+          {/if}
+        </Popover.Content>
+      </Popover.Root>
     {/if}
   </div>
 {/if}

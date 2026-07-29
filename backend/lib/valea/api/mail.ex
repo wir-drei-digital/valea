@@ -113,9 +113,13 @@ defmodule Valea.Api.Mail do
   alias Valea.Agents.SessionServer
   alias Valea.Api.Error
   alias Valea.Mail.Account
+  alias Valea.Mail.Autoconfig
   alias Valea.Mail.DraftFile
   alias Valea.Mail.Engine
+  alias Valea.Mail.HtmlSanitizer
   alias Valea.Mail.MessageFile
+  alias Valea.Mail.Normalizer
+  alias Valea.Mail.Trust
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Reconcile
   alias Valea.Mail.Settings
@@ -192,6 +196,97 @@ defmodule Valea.Api.Mail do
           {:ok, %{"saved" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :get_mail_account_settings, :map do
+      # The non-secret config of one account, for the settings form's EDIT
+      # mode (prefill) — passwords never live in `config/mail.yaml`, so
+      # nothing here can leak one. `security` is stringified from the
+      # settings atom (`:starttls`/`:tls`).
+      constraints fields: [
+                    account: [
+                      type: :map,
+                      allow_nil?: false,
+                      constraints: [
+                        fields: [
+                          host: [type: :string, allow_nil?: false],
+                          port: [type: :integer, allow_nil?: false],
+                          username: [type: :string, allow_nil?: false],
+                          smtp: [
+                            type: :map,
+                            allow_nil?: true,
+                            constraints: [
+                              fields: [
+                                host: [type: :string, allow_nil?: false],
+                                port: [type: :integer, allow_nil?: false],
+                                security: [type: :string, allow_nil?: false],
+                                username: [type: :string, allow_nil?: false],
+                                from: [type: :string, allow_nil?: true],
+                                from_name: [type: :string, allow_nil?: true]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug} = input.arguments
+
+        with :ok <- validate_slug(slug),
+             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, %{accounts: accounts}} <- Settings.load(root),
+             %Settings{} = settings <- Map.get(accounts, slug) || {:error, :not_found} do
+          {:ok, %{account: account_settings_payload(settings)}}
+        else
+          {:error, {:invalid, _reason}} -> {:error, error_for(:not_found)}
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :mail_autoconfig, :map do
+      # Settings discovery for the setup form (`Valea.Mail.Autoconfig`):
+      # short-timeout ISPDB/DNS probing, best-effort — an all-nil answer just
+      # leaves the form manual. No generation guard: this reads no workspace
+      # state and writes nothing.
+      constraints fields: [
+                    imap: [
+                      type: :map,
+                      allow_nil?: true,
+                      constraints: [
+                        fields: [
+                          host: [type: :string, allow_nil?: false],
+                          port: [type: :integer, allow_nil?: false],
+                          security: [type: :string, allow_nil?: false]
+                        ]
+                      ]
+                    ],
+                    smtp: [
+                      type: :map,
+                      allow_nil?: true,
+                      constraints: [
+                        fields: [
+                          host: [type: :string, allow_nil?: false],
+                          port: [type: :integer, allow_nil?: false],
+                          security: [type: :string, allow_nil?: false]
+                        ]
+                      ]
+                    ],
+                    source: [type: :string, allow_nil?: true]
+                  ]
+
+      argument :email, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        case Autoconfig.discover(input.arguments.email) do
+          {:ok, result} -> {:ok, result}
+          {:error, :invalid_email} -> {:error, Error.new("invalid_email")}
         end
       end
     end
@@ -480,8 +575,51 @@ defmodule Valea.Api.Mail do
              {:ok, %{frontmatter: frontmatter, body: body}} <- MessageFile.parse(bytes) do
           rel_path = Views.view_rel_path(slug, msg_id)
 
-          {:ok,
-           %{"message" => %{"frontmatter" => frontmatter, "body" => body, "path" => rel_path}}}
+          # HTML rendering (sanitized; nil when the message has no usable
+          # text/html part) + the trust gate the frontend's remote-content
+          # banner keys off. String keys inside the unconstrained `message`
+          # map, so the legitimate `false` values survive delivery.
+          message =
+            %{"frontmatter" => frontmatter, "body" => body, "path" => rel_path}
+            |> Map.merge(message_html(root, slug, msg_id))
+            |> Map.put("sender_trusted", Trust.trusted?(root, sender_email(frontmatter)))
+
+          {:ok, %{"message" => message}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :list_trusted_mail_senders, :map do
+      constraints fields: [senders: [type: {:array, :string}, allow_nil?: false]]
+
+      run fn _input, _ctx ->
+        with {:ok, %{path: root}} <- Manager.current() do
+          {:ok, %{senders: Trust.list(root)}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :set_mail_sender_trust, :map do
+      # `"trusted"` echoes the new state under a STRING key — it is
+      # legitimately `false` on an untrust (the falsy-map-field rule from
+      # the moduledoc).
+      constraints fields: [trusted: [type: :boolean, allow_nil?: false]]
+
+      argument :email, :string, allow_nil?: false
+      argument :trusted, :boolean, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{email: email, trusted: trusted, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             :ok <- Trust.set_trusted(root, email, trusted) do
+          {:ok, %{"trusted" => trusted}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -943,6 +1081,70 @@ defmodule Valea.Api.Mail do
   end
 
   # -- mail_status --------------------------------------------------------------
+
+  # -- get_mail_message: HTML rendering + trust ------------------------------
+
+  # The sanitized text/html rendering of a message, from its raw maildir
+  # occurrence bytes (the view file only ever stores the flattened text).
+  # Best-effort throughout: any miss — no index row, a path outside the
+  # account's own maildir (containment check + `Paths.resolve_real/2`), an
+  # unreadable file, no text/html part, a sanitize-to-empty — degrades to
+  # "no HTML view" rather than failing the read.
+  defp message_html(root, slug, msg_id) do
+    maildir_rel = Path.join(["sources", "mail", slug, "maildir"])
+
+    with [row | _] <- Store.message_rows_by_msg_id(slug, msg_id),
+         path when is_binary(path) <- row.path,
+         true <- Paths.ancestor?(maildir_rel, path),
+         rel = Paths.relative_to(path, maildir_rel),
+         {:ok, resolved} <- Paths.resolve_real(rel, Path.join(root, maildir_rel)),
+         {:ok, raw} <- File.read(resolved),
+         html when is_binary(html) <- Normalizer.html_body(raw),
+         sanitized when sanitized != "" <- HtmlSanitizer.sanitize(html) do
+      %{
+        "html" => sanitized,
+        "external_content" => HtmlSanitizer.external_content?(sanitized)
+      }
+    else
+      _ -> %{"html" => nil, "external_content" => false}
+    end
+  rescue
+    # `Store` reads can raise when the Repo is down mid-close — the plain
+    # text view is still perfectly servable without an HTML rendering.
+    _ -> %{"html" => nil, "external_content" => false}
+  end
+
+  defp sender_email(frontmatter) do
+    case frontmatter do
+      %{"from" => %{"email" => email}} when is_binary(email) -> email
+      _ -> nil
+    end
+  end
+
+  # The settings-form prefill payload: non-secret connection config only
+  # (passwords live in the OS keychain / Engine memory, never in
+  # `config/mail.yaml`, so there is nothing secret here to withhold).
+  defp account_settings_payload(%Settings{imap: imap, smtp: smtp}) do
+    %{
+      host: imap.host,
+      port: imap.port,
+      username: imap.username,
+      smtp: smtp_settings_payload(smtp)
+    }
+  end
+
+  defp smtp_settings_payload(nil), do: nil
+
+  defp smtp_settings_payload(smtp) do
+    %{
+      host: smtp.host,
+      port: smtp.port,
+      security: to_string(smtp.security),
+      username: smtp.username,
+      from: smtp.from,
+      from_name: smtp.from_name
+    }
+  end
 
   defp mail_status_accounts(root) do
     invalid =

@@ -36,6 +36,23 @@ defmodule Valea.Mail.NormalizerTest do
     end
   end
 
+  describe "html_body/1" do
+    test "returns the decoded text/html part verbatim (raw — sanitizing is the caller's job)" do
+      html = Normalizer.html_body(fixture("html_only.eml"))
+      assert html =~ "<p>Hello <b>Mara</b></p>"
+      assert html =~ "<script>evil()</script>"
+    end
+
+    test "finds the html alternative inside a nested multipart" do
+      assert Normalizer.html_body(fixture("nested_multipart.eml")) =~ "HTML version"
+    end
+
+    test "nil for a message with no text/html part, and for unparseable bytes" do
+      assert Normalizer.html_body(fixture("plain.eml")) == nil
+      assert Normalizer.html_body(<<0xFF, 0xFE, 0x00>>) == nil
+    end
+  end
+
   describe "normalize/1 — nested_multipart.eml" do
     test "picks the first text/plain depth-first (ignoring the html alt) and collects the attachment" do
       {:ok, msg} = Normalizer.normalize(fixture("nested_multipart.eml"))

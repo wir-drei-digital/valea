@@ -205,6 +205,49 @@
           {/if}
         {/if}
 
+        {#if today.mail.some((m) => m.configured && m.unread.length > 0)}
+          <!-- New emails by account — the unread INBOX window each account's
+               cockpit entry carries; rows deep-link into /mail. -->
+          <section class="mt-8">
+            <p class="text-overline mb-2">New mail</p>
+            <div class="flex flex-col gap-4">
+              {#each today.mail.filter((m) => m.configured && m.unread.length > 0) as mail (mail.account)}
+                <div>
+                  <p class="text-ink-meta text-[12px]">
+                    {mail.account}
+                    <span class="tabular-nums">
+                      · {mail.unreadCount} unread{mail.unreadCount > mail.unread.length ? `, newest ${mail.unread.length}` : ''}
+                    </span>
+                  </p>
+                  <ul class="mt-1 flex flex-col">
+                    {#each mail.unread as message (message.msgId)}
+                      <li>
+                        <a
+                          href={`/mail?account=${encodeURIComponent(mail.account)}&message=${encodeURIComponent(message.msgId)}`}
+                          class="hover:bg-paper-pill flex items-baseline gap-2 rounded-md py-1.5 pr-2 transition-colors"
+                        >
+                          <span class="bg-act size-1.5 shrink-0 self-center rounded-full" aria-hidden="true"></span>
+                          <span class="text-ink-heading shrink-0 text-[13px] font-medium">
+                            {message.fromName ?? message.fromEmail ?? '(unknown sender)'}
+                          </span>
+                          <span class="text-ink-body min-w-0 flex-1 truncate text-[13px]">
+                            {message.subject ?? '(no subject)'}
+                          </span>
+                          {#if message.date}
+                            <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">
+                              {formatTimestamp(message.date)}
+                            </span>
+                          {/if}
+                        </a>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/each}
+            </div>
+          </section>
+        {/if}
+
         {#if today.sections.length === 0}
           <div class="border-paper-border bg-paper-card mt-8 rounded-xl border p-5">
             <p class="text-ink-body text-[13.5px] leading-relaxed">

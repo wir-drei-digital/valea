@@ -92,6 +92,22 @@ defmodule Valea.Api.Cockpit do
                             notices: [
                               type: {:array, :string},
                               allow_nil?: false
+                            ],
+                            unread_count: [type: :integer, allow_nil?: false],
+                            unread: [
+                              type: {:array, :map},
+                              allow_nil?: false,
+                              constraints: [
+                                items: [
+                                  fields: [
+                                    msg_id: [type: :string, allow_nil?: false],
+                                    from_name: [type: :string, allow_nil?: true],
+                                    from_email: [type: :string, allow_nil?: true],
+                                    subject: [type: :string, allow_nil?: true],
+                                    date: [type: :string, allow_nil?: true]
+                                  ]
+                                ]
+                              ]
                             ]
                           ]
                         ]

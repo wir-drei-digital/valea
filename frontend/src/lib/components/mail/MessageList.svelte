@@ -14,7 +14,7 @@
   // Rows carry the `account` they belong to into their href (`messageHref`):
   // a `msgId` only identifies a message WITHIN an account, so an unqualified
   // link resolves against whichever account is selected when it's opened.
-  import { fromLabel, subjectLabel, relativeTime, messageHref } from './mail-shapes';
+  import { fromLabel, subjectLabel, relativeTime, messageHref, messageSeen } from './mail-shapes';
   import type { MailMessageSummary } from '$lib/stores/mail.svelte';
 
   let {
@@ -36,7 +36,13 @@
         class:bg-paper-card={selected}
       >
         <span class="flex items-baseline justify-between gap-3">
-          <span class="text-ink-heading min-w-0 truncate text-[13.5px] [font-weight:650]">{fromLabel(message)}</span>
+          <span class="flex min-w-0 items-baseline gap-1.5">
+            {#if !messageSeen(message)}
+              <span class="bg-act size-1.5 shrink-0 self-center rounded-full" title="Unread" aria-label="Unread"
+              ></span>
+            {/if}
+            <span class="text-ink-heading min-w-0 truncate text-[13.5px] [font-weight:650]">{fromLabel(message)}</span>
+          </span>
           <span class="text-ink-meta shrink-0 text-[11.5px]">{relativeTime(message.date)}</span>
         </span>
         <span class="text-ink-body mt-0.5 block truncate text-[13px]">{subjectLabel(message.subject)}</span>

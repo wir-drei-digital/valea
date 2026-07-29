@@ -105,10 +105,12 @@ defmodule FakeAdapter do
           }
         })
 
+        # `used`/`size` — byte-for-byte the pair claude-agent-acp actually
+        # sends, so the composer's donut is exercised on the real shape.
         update(ctx, %{
           "sessionUpdate" => "usage_update",
-          "usedTokens" => 82_000,
-          "maxTokens" => 200_000
+          "used" => 82_000,
+          "size" => 200_000
         })
 
         reply(id, %{"stopReason" => "end_turn"})
@@ -296,15 +298,18 @@ defmodule FakeAdapter do
   defp handle(%{"method" => "session/cancel"}, _ctx), do: :ok
   defp handle(_other, _ctx), do: :ok
 
-  # The "slow" scenario's config surface — three options so chip-order
-  # regressions are visible. Stateless across turns: `overrides` only echoes
-  # the just-changed option's value as current, defaults otherwise.
+  # The "slow" scenario's config surface — three visible options so
+  # chip-order regressions are visible, plus an "agent" option (the id
+  # claude-agent-acp's AGENT_CONFIG_ID uses) that the composer must HIDE.
+  # Stateless across turns: `overrides` only echoes the just-changed
+  # option's value as current, defaults otherwise.
   defp slow_config_options(overrides) do
     [
       {"model", "Model", [{"sonnet", "Sonnet"}, {"opus", "Opus"}, {"haiku", "Haiku"}]},
       {"permission-mode", "Permissions",
        [{"default", "Ask"}, {"acceptEdits", "Accept edits"}, {"bypass", "Bypass"}]},
-      {"effort", "Effort", [{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}]}
+      {"effort", "Effort", [{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}]},
+      {"agent", "Agent", [{"main", "Main"}, {"reviewer", "Reviewer"}]}
     ]
     |> Enum.map(fn {id, name, options} ->
       [{default_value, _} | _] = options

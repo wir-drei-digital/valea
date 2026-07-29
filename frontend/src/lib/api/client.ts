@@ -55,12 +55,18 @@ import {
   setHarnessCommandChannel,
   archiveAgentSession as httpArchiveAgentSession,
   archiveAgentSessionChannel,
+  deleteAgentSession as httpDeleteAgentSession,
+  deleteAgentSessionChannel,
   listAuditEntries as httpListAuditEntries,
   listAuditEntriesChannel,
   mailStatus as httpMailStatus,
   mailStatusChannel,
   setupMailAccount as httpSetupMailAccount,
   setupMailAccountChannel,
+  getMailAccountSettings as httpGetMailAccountSettings,
+  getMailAccountSettingsChannel,
+  mailAutoconfig as httpMailAutoconfig,
+  mailAutoconfigChannel,
   setMailCredential as httpSetMailCredential,
   setMailCredentialChannel,
   mailSyncNow as httpMailSyncNow,
@@ -75,6 +81,10 @@ import {
   listMailFoldersChannel,
   getMailMessage as httpGetMailMessage,
   getMailMessageChannel,
+  listTrustedMailSenders as httpListTrustedMailSenders,
+  listTrustedMailSendersChannel,
+  setMailSenderTrust as httpSetMailSenderTrust,
+  setMailSenderTrustChannel,
   removeMailAccount as httpRemoveMailAccount,
   removeMailAccountChannel,
   purgeMailAccountFiles as httpPurgeMailAccountFiles,
@@ -176,9 +186,12 @@ import type {
   HarnessConfigFields,
   SetHarnessCommandFields,
   ArchiveAgentSessionFields,
+  DeleteAgentSessionFields,
   ListAuditEntriesFields,
   MailStatusFields,
   SetupMailAccountFields,
+  GetMailAccountSettingsFields,
+  MailAutoconfigFields,
   SetMailCredentialFields,
   MailSyncNowFields,
   MailDoctorFields,
@@ -186,6 +199,8 @@ import type {
   ListMailMessagesFields,
   ListMailFoldersFields,
   GetMailMessageFields,
+  ListTrustedMailSendersFields,
+  SetMailSenderTrustFields,
   RemoveMailAccountFields,
   PurgeMailAccountFilesFields,
   ReadoptMailAccountFields,
@@ -479,6 +494,7 @@ const harnessDoctorFields = [
 const harnessConfigFields: HarnessConfigFields = ['command', 'approved', 'isDefault', 'defaultCommand'];
 const setHarnessCommandFields: SetHarnessCommandFields = ['command', 'approved', 'isDefault', 'defaultCommand'];
 const archiveAgentSessionFields: ArchiveAgentSessionFields = ['archived'];
+const deleteAgentSessionFields: DeleteAgentSessionFields = ['deleted'];
 
 // Cockpit (Spec D §C rewrite — see `Valea.Api.Cockpit`'s moduledoc). Same
 // anonymous-embedded-map-array codegen gap as `icmEntryReferencesFields`
@@ -499,7 +515,17 @@ const cockpitTodayFields = [
       { openLoops: ['title', 'source'] }
     ]
   },
-  { mail: ['account', 'configured', 'state', 'pendingOps', 'notices'] },
+  {
+    mail: [
+      'account',
+      'configured',
+      'state',
+      'pendingOps',
+      'notices',
+      'unreadCount',
+      { unread: ['msgId', 'fromName', 'fromEmail', 'subject', 'date'] }
+    ]
+  },
   { calendar: ['eventsToday', { next: ['time', 'title'] }] },
   { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] }
 ] as unknown as CockpitTodayFields;
@@ -552,6 +578,14 @@ const reviseMailDraftFields: ReviseMailDraftFields = ['sessionId', 'routed'];
 // Same `Array<TypedMap>` codegen gap as `listMailMessagesFields` above.
 const mailApplyOpsFields = [{ results: ['op', 'result', 'reason'] }] as unknown as MailApplyOpsFields;
 const setupMailAccountFields: SetupMailAccountFields = ['saved'];
+const getMailAccountSettingsFields: GetMailAccountSettingsFields = [
+  { account: ['host', 'port', 'username', { smtp: ['host', 'port', 'security', 'username', 'from', 'fromName'] }] }
+];
+const mailAutoconfigFields: MailAutoconfigFields = [
+  { imap: ['host', 'port', 'security'] },
+  { smtp: ['host', 'port', 'security'] },
+  'source'
+];
 const setMailCredentialFields: SetMailCredentialFields = ['accepted'];
 const mailSyncNowFields: MailSyncNowFields = ['started'];
 const mailDoctorFields: MailDoctorFields = ['ok', 'checks'];
@@ -559,6 +593,8 @@ const createMailFoldersFields: CreateMailFoldersFields = ['created'];
 // `inbox` (whether the message was legacy-inbox-only) is gone — the
 // account-scoped `get_mail_message` only ever reads a real indexed view now.
 const getMailMessageFields: GetMailMessageFields = ['message'];
+const listTrustedMailSendersFields: ListTrustedMailSendersFields = ['senders'];
+const setMailSenderTrustFields: SetMailSenderTrustFields = ['trusted'];
 
 // Icms (task 3.4, `Valea.Api.Icms` — the C9 id/mount-key based replacement
 // for `Valea.Api.Mounts`, kept registered until Phase 11). Same anonymous-
@@ -718,6 +754,15 @@ function callArchiveAgentSessionChannel(
   );
 }
 
+function callDeleteAgentSessionChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { sessionId: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    deleteAgentSessionChannel({ channel, input, fields: deleteAgentSessionFields, ...handlers })
+  );
+}
+
 function callListAuditEntriesChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: { limit: number }
@@ -759,6 +804,24 @@ function smtpSetupInput(smtp: MailSmtpSetup | null) {
     smtpFrom: smtp.from ?? null,
     smtpFromName: smtp.fromName ?? null
   };
+}
+
+function callGetMailAccountSettingsChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string }
+) {
+  return wrapChannelCall((handlers) =>
+    getMailAccountSettingsChannel({ channel, input, fields: getMailAccountSettingsFields, ...handlers })
+  );
+}
+
+function callMailAutoconfigChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { email: string }
+) {
+  return wrapChannelCall((handlers) =>
+    mailAutoconfigChannel({ channel, input, fields: mailAutoconfigFields, ...handlers })
+  );
 }
 
 function callSetupMailAccountChannel(
@@ -829,6 +892,21 @@ function callGetMailMessageChannel(
 ) {
   return wrapChannelCall((handlers) =>
     getMailMessageChannel({ channel, input, fields: getMailMessageFields, ...handlers })
+  );
+}
+
+function callListTrustedMailSendersChannel(channel: NonNullable<ReturnType<typeof channelAvailable>>) {
+  return wrapChannelCall((handlers) =>
+    listTrustedMailSendersChannel({ channel, fields: listTrustedMailSendersFields, ...handlers })
+  );
+}
+
+function callSetMailSenderTrustChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { email: string; trusted: boolean; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setMailSenderTrustChannel({ channel, input, fields: setMailSenderTrustFields, ...handlers })
   );
 }
 
@@ -1766,6 +1844,15 @@ export const api = {
         )
     ),
 
+  deleteAgentSession: (sessionId: string, generation: number) =>
+    runRpc(
+      (channel) => callDeleteAgentSessionChannel(channel, { sessionId, generation }),
+      () =>
+        httpDeleteAgentSession(
+          withAuth({ input: { sessionId, generation }, fields: deleteAgentSessionFields })
+        )
+    ),
+
   listAuditEntries: (limit: number) =>
     runRpc(
       (channel) => callListAuditEntriesChannel(channel, { limit }),
@@ -1821,6 +1908,26 @@ export const api = {
         )
     ),
 
+  // The non-secret connection config of one account (host/port/username +
+  // smtp block), for the settings form's edit-mode prefill.
+  getMailAccountSettings: (account: string) =>
+    runRpc(
+      (channel) => callGetMailAccountSettingsChannel(channel, { account }),
+      () =>
+        httpGetMailAccountSettings(
+          withAuth({ input: { account }, fields: getMailAccountSettingsFields })
+        )
+    ),
+
+  // Best-effort IMAP/SMTP discovery from an email address's domain
+  // (`Valea.Mail.Autoconfig`: ISPDB / provider autoconfig / MX / SRV /
+  // heuristic). `imap`/`smtp` are null when nothing was found.
+  mailAutoconfig: (email: string) =>
+    runRpc(
+      (channel) => callMailAutoconfigChannel(channel, { email }),
+      () => httpMailAutoconfig(withAuth({ input: { email }, fields: mailAutoconfigFields }))
+    ),
+
   // `kind` selects WHICH credential slot the secret fills — omitted means
   // `imap`, exactly what this call has always meant. The two are separate
   // keychain entries and separate RAM-only closures per Engine; an SMTP auth
@@ -1874,6 +1981,23 @@ export const api = {
     runRpc(
       (channel) => callListMailFoldersChannel(channel, { account }),
       () => httpListMailFolders(withAuth({ input: { account }, fields: listMailFoldersFields }))
+    ),
+
+  // The trusted-senders list behind HTML mail's remote-content gate
+  // (`Valea.Mail.Trust`) — workspace-scoped, file-first
+  // (config/mail-trusted-senders.json).
+  listTrustedMailSenders: () =>
+    runRpc(callListTrustedMailSendersChannel, () =>
+      httpListTrustedMailSenders(withAuth({ fields: listTrustedMailSendersFields }))
+    ),
+
+  setMailSenderTrust: (email: string, trusted: boolean, generation: number) =>
+    runRpc(
+      (channel) => callSetMailSenderTrustChannel(channel, { email, trusted, generation }),
+      () =>
+        httpSetMailSenderTrust(
+          withAuth({ input: { email, trusted, generation }, fields: setMailSenderTrustFields })
+        )
     ),
 
   removeMailAccount: (account: string, generation: number) =>

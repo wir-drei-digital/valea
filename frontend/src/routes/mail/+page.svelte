@@ -8,18 +8,25 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { onMount, untrack } from 'svelte';
-  import { AppFrame, ListPane, EmptyState, MainColumn } from '$lib/components/shell';
+  import { AppFrame, ListPane, EmptyState, MainColumn, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import MailIcon from '@lucide/svelte/icons/mail';
+  import Settings from '@lucide/svelte/icons/settings';
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { setInitialPrompt } from '$lib/stores/initial-prompt';
-  import { cleanupPrompt, syncNowErrorMessage, targetAccount } from '$lib/components/mail/mail-shapes';
+  import {
+    cleanupPrompt,
+    filterMessagesByRead,
+    syncNowErrorMessage,
+    targetAccount,
+    type ReadFilter
+  } from '$lib/components/mail/mail-shapes';
   import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import AccountSwitcher from '$lib/components/mail/AccountSwitcher.svelte';
   import DraftsPanel from '$lib/components/mail/DraftsPanel.svelte';
-  import FolderList from '$lib/components/mail/FolderList.svelte';
+  import FolderPicker from '$lib/components/mail/FolderPicker.svelte';
   import MessageList from '$lib/components/mail/MessageList.svelte';
   import SyncStatusLine from '$lib/components/mail/SyncStatusLine.svelte';
   import MessageView from '$lib/components/mail/MessageView.svelte';
@@ -141,6 +148,20 @@
   // not — it belongs to the account being read.
   const draftsCount = $derived(mailStore.selectedDrafts.length);
 
+  // Read/unread filter over the selected folder's list — pure client-side
+  // narrowing of what's already fetched (`messageSeen`: the maildir `S`
+  // flag), reset to "all" whenever the folder or account changes so a
+  // filtered-empty view can't masquerade as an empty folder.
+  let readFilter = $state<ReadFilter>('all');
+
+  $effect(() => {
+    void mailStore.selectedAccount;
+    void mailStore.selectedFolder;
+    readFilter = 'all';
+  });
+
+  const visibleMessages = $derived(filterMessagesByRead(mailStore.messages, readFilter));
+
   // "Sync now" lives in the pane header next to the title; its in-flight
   // and error state belong to the route, and the resulting message is
   // handed to `SyncStatusLine` (the pane footer) for display.
@@ -200,14 +221,41 @@
   {#snippet list()}
     <ListPane title="Mail">
       {#snippet action()}
-        <Button type="button" variant="outline" size="sm" disabled={syncBusy} onclick={() => void handleSyncNow()}>
-          Sync now
-        </Button>
+        <div class="flex items-center gap-1">
+          <Button type="button" variant="outline" size="sm" disabled={syncBusy} onclick={() => void handleSyncNow()}>
+            Sync now
+          </Button>
+          <button
+            type="button"
+            aria-label="Mail settings"
+            title="Mail settings"
+            onclick={() => (showSetup = true)}
+            class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill shrink-0 rounded-md p-1.5 transition-colors"
+          >
+            <Settings class="size-4" strokeWidth={1.5} />
+          </button>
+        </div>
+      {/snippet}
+      {#snippet filter()}
+        {#if mailStore.selectedAccount}
+          <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+            <FolderPicker />
+            <SegmentedControl
+              label="Read filter"
+              value={readFilter}
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'unread', label: 'Unread' },
+                { value: 'read', label: 'Read' }
+              ]}
+              onChange={(v) => (readFilter = v as ReadFilter)}
+            />
+          </div>
+        {/if}
       {/snippet}
       {#snippet children()}
         <div class="flex flex-col gap-2 pb-2">
           <AccountSwitcher />
-          <FolderList />
           {#if mailStore.selectedAccount}
             <div class="flex items-center gap-1.5">
               <Button type="button" variant="ghost" size="sm" onclick={() => void goto('/mail?drafts=1')}>
@@ -228,14 +276,15 @@
             {/if}
           {/if}
         </div>
-        <MessageList messages={mailStore.messages} {selectedId} account={mailStore.selectedAccount ?? ''} />
+        <MessageList messages={visibleMessages} {selectedId} account={mailStore.selectedAccount ?? ''} />
+        {#if visibleMessages.length === 0 && mailStore.messages.length > 0}
+          <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
+            No {readFilter} messages in this folder.
+          </p>
+        {/if}
       {/snippet}
       {#snippet footer()}
-        <SyncStatusLine
-          status={mailStore.selectedStatus}
-          requestError={syncRequestError}
-          onSettings={() => (showSetup = true)}
-        />
+        <SyncStatusLine status={mailStore.selectedStatus} requestError={syncRequestError} />
       {/snippet}
     </ListPane>
   {/snippet}

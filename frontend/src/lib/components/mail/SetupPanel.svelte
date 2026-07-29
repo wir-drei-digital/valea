@@ -1,11 +1,23 @@
 <script lang="ts">
   // Mail account management (mail design spec E §Account setup + doctor /
   // §Credentials): the configured-account list with per-account maintenance
-  // (doctor, held-folder discard, re-adopt/purge recovery, remove), plus
-  // the add-account form. Rendered from `routes/mail/+page.svelte` inside
-  // the settings DIALOG (the calendar route's Sources pattern; `?setup=1`
-  // deep-links it open) — this component owns its own heading/copy, the
-  // dialog only supplies the modal chrome.
+  // (edit, doctor, held-folder discard, re-adopt/purge recovery, remove),
+  // plus the add-account form. Rendered from `routes/mail/+page.svelte`
+  // inside the settings DIALOG (the calendar route's Sources pattern;
+  // `?setup=1` deep-links it open) — this component owns its own
+  // heading/copy, the dialog only supplies the modal chrome.
+  //
+  // The connection form has three modes:
+  //  - CLOSED (the default once any account exists) — just the list and an
+  //    "Add account" button; the form only appears on demand.
+  //  - ADD — the empty form. The username field drives best-effort
+  //    autodiscovery (`mail_autoconfig`): on blur of an email-looking
+  //    username with the host still blank, the backend probes
+  //    ISPDB/DNS and prefills host/port (and the SMTP block when that
+  //    checkbox is on) — every guessed field stays editable.
+  //  - EDIT — the same form prefilled from `get_mail_account_settings`
+  //    (non-secret config only), slug fixed. Blank password fields mean
+  //    "keep the stored credential" (`submitMailSetup` skips those slots).
   //
   // Submit flow is `submitMailSetup` (`mail-shapes.ts`) — this component
   // only wires it to the real `api`, `keychain.ts`, and `mailStore`. The
@@ -35,6 +47,11 @@
     accountRecovery
   } from './mail-shapes';
   import MailDoctorPanel from './MailDoctorPanel.svelte';
+
+  type FormMode = 'closed' | 'add' | 'edit';
+
+  let formMode = $state<FormMode>('closed');
+  let editingSlug: string | null = $state(null);
 
   let account = $state('');
   let host = $state('');
@@ -75,12 +92,165 @@
   let error: string | null = $state(null);
   let submitted = $state(false);
   let devModeNote = $state(false);
+  let editLoadError = $state(false);
+
+  // The add form is only the DEFAULT view while no account exists yet —
+  // once accounts are listed it collapses behind the "Add account" button.
+  const formVisible = $derived(formMode !== 'closed' || mailStore.accounts.length === 0);
+  const editing = $derived(formMode === 'edit');
+
+  function resetForm(): void {
+    account = '';
+    host = '';
+    portText = '993';
+    username = '';
+    secret = '';
+    smtpEnabled = false;
+    smtpHost = '';
+    smtpPortText = '587';
+    smtpSecurity = '';
+    smtpUsername = '';
+    smtpFrom = '';
+    smtpFromName = '';
+    smtpSecret = '';
+    smtpSameAsImap = true;
+    error = null;
+    editLoadError = false;
+    guessNote = null;
+    lastGuess = null;
+  }
+
+  function openAdd(): void {
+    resetForm();
+    submitted = false;
+    editingSlug = null;
+    formMode = 'add';
+  }
+
+  function closeForm(): void {
+    resetForm();
+    submitted = false;
+    editingSlug = null;
+    formMode = 'closed';
+  }
+
+  async function openEdit(slug: string): Promise<void> {
+    resetForm();
+    submitted = false;
+    editingSlug = slug;
+    formMode = 'edit';
+    account = slug;
+
+    const result = await api.getMailAccountSettings(slug);
+    // A slower response for a row the user has already navigated away from
+    // (closed the form, opened another edit) must not repopulate the form.
+    if (formMode !== 'edit' || editingSlug !== slug) return;
+    if (!result.ok) {
+      editLoadError = true;
+      return;
+    }
+
+    const data = result.data as {
+      account: {
+        host: string;
+        port: number;
+        username: string;
+        smtp: {
+          host: string;
+          port: number;
+          security: string;
+          username: string;
+          from: string | null;
+          fromName: string | null;
+        } | null;
+      };
+    };
+    host = data.account.host;
+    portText = String(data.account.port);
+    username = data.account.username;
+    if (data.account.smtp) {
+      smtpEnabled = true;
+      smtpHost = data.account.smtp.host;
+      smtpPortText = String(data.account.smtp.port);
+      smtpSecurity = data.account.smtp.security === 'tls' ? 'tls' : 'starttls';
+      smtpUsername = data.account.smtp.username;
+      smtpFrom = data.account.smtp.from ?? '';
+      smtpFromName = data.account.smtp.fromName ?? '';
+      // Editing must never silently overwrite the stored SMTP secret with
+      // the (blank) IMAP one — both fields start blank = both kept.
+      smtpSameAsImap = false;
+    }
+  }
+
+  // -- autodiscovery (add mode) ---------------------------------------------
+
+  type GuessedServer = { host: string; port: number; security: string };
+  let guessing = $state(false);
+  let guessNote = $state<string | null>(null);
+  let lastGuess = $state<{ imap: GuessedServer | null; smtp: GuessedServer | null } | null>(null);
+
+  /**
+   * On username blur: if it looks like an address and the host is still
+   * blank, ask the backend to guess (`mail_autoconfig`). Fills only fields
+   * the user hasn't typed; also suggests an account id from the domain when
+   * that is still blank. Best-effort — failures stay silent, the form just
+   * remains manual.
+   */
+  async function guessFromUsername(): Promise<void> {
+    const email = username.trim();
+    if (formMode === 'edit' || guessing) return;
+    if (!email.includes('@') || host.trim() !== '') return;
+
+    guessing = true;
+    try {
+      const result = await api.mailAutoconfig(email);
+      if (!result.ok) return;
+      const data = result.data as {
+        imap: GuessedServer | null;
+        smtp: GuessedServer | null;
+        source: string | null;
+      };
+      if (!data.imap) return;
+
+      lastGuess = { imap: data.imap, smtp: data.smtp };
+      if (host.trim() === '') {
+        host = data.imap.host;
+        portText = String(data.imap.port);
+      }
+      applySmtpGuess();
+      if (account.trim() === '') {
+        const domain = email.split('@')[1] ?? '';
+        const suggestion = domain.split('.')[0]?.toLowerCase().replace(/[^a-z0-9-]/g, '') ?? '';
+        if (mailSlugValid(suggestion)) account = suggestion;
+      }
+      guessNote = `Server settings guessed from ${email.split('@')[1]} — check them before connecting.`;
+    } finally {
+      guessing = false;
+    }
+  }
+
+  /**
+   * Applies a cached SMTP guess once the send checkbox is on and the SMTP
+   * host is still blank; also seeds the SMTP username from the IMAP one
+   * (they match for virtually every provider — still editable).
+   */
+  function applySmtpGuess(): void {
+    if (!smtpEnabled) return;
+    if (smtpUsername.trim() === '' && !editing) smtpUsername = username.trim();
+    const smtp = lastGuess?.smtp;
+    if (!smtp || smtpHost.trim() !== '') return;
+    smtpHost = smtp.host;
+    smtpPortText = String(smtp.port);
+    smtpSecurity = smtp.security === 'tls' ? 'tls' : smtp.security === 'starttls' ? 'starttls' : '';
+  }
 
   // Which account row has its doctor open, and which maintenance action is
   // collecting a typed confirmation. A structured value, not a joined
   // string key — IMAP folder names may contain any separator character.
   // One open confirmation at a time keeps the list scannable.
-  type PendingConfirm = { kind: 'purge' | 'readopt'; account: string } | { kind: 'discard'; account: string; folder: string };
+  type PendingConfirm =
+    | { kind: 'purge' | 'readopt'; account: string }
+    | { kind: 'discard'; account: string; folder: string };
   let doctorFor: string | null = $state(null);
   let confirm: PendingConfirm | null = $state(null);
   let confirmText = $state('');
@@ -90,18 +260,29 @@
   const generation = $derived(workspaceStore.generation ?? 0);
 
   function validate(): string | null {
-    if (!mailSlugValid(account.trim())) {
+    if (!editing && !mailSlugValid(account.trim())) {
       return 'Account id must be lowercase letters, digits, and dashes (up to 32 characters).';
     }
     if (!host.trim()) return 'Enter the mail server host.';
     const port = Number(portText);
     if (!Number.isFinite(port) || port <= 0) return 'Enter a valid port.';
     if (!username.trim()) return 'Enter the mailbox username.';
-    if (!secret) return 'Enter the mailbox password.';
+    // Edit mode: blank = keep the stored password.
+    if (!editing && !secret) return 'Enter the mailbox password.';
     // `setup_mail_account` answers a reason-free `invalid_smtp`, so
     // everything checkable is checked here first (see `smtpFormError`).
-    if (smtpEnabled) return smtpFormError(smtpInput());
+    if (smtpEnabled) return smtpFormError(smtpInput(), editing ? 'edit' : 'add');
     return null;
+  }
+
+  function submitErrorMessage(code: string): string {
+    // Editing the server host or username collides with the on-disk store
+    // identity (`Valea.Mail.Account.verify/3`) — the generic setup wording
+    // ("a different account owns this folder") reads backwards here.
+    if (editing && code === 'identity_mismatch') {
+      return 'Changing the host or username would point this account at a different mailbox. Remove the account and add it fresh instead (its local files stay until you purge them).';
+    }
+    return mailSetupErrorMessage(code);
   }
 
   async function handleSubmit(): Promise<void> {
@@ -115,7 +296,7 @@
     submitting = true;
     const outcome = await submitMailSetup(
       {
-        account: account.trim(),
+        account: editing ? (editingSlug ?? account.trim()) : account.trim(),
         host: host.trim(),
         port: Number(portText),
         username: username.trim(),
@@ -140,13 +321,18 @@
     smtpSecret = '';
 
     if (!outcome.ok) {
-      error = mailSetupErrorMessage(outcome.error);
+      error = submitErrorMessage(outcome.error);
       return;
     }
 
+    void mailStore.refreshStatus();
+    if (editing) {
+      // Edits return to the list — the row itself is the confirmation.
+      closeForm();
+      return;
+    }
     devModeNote = outcome.devMode;
     submitted = true;
-    void mailStore.refreshStatus();
   }
 
   function beginConfirm(pending: PendingConfirm): void {
@@ -190,6 +376,28 @@
     await runAction(() => api.removeMailAccount(slug, generation));
   }
 
+  // -- trusted senders (HTML mail's remote-content gate) ----------------------
+  //
+  // The workspace-wide list behind "Always trust <sender>" in the read pane
+  // (`Valea.Mail.Trust`) — surfaced here so a trust decision can be
+  // reviewed and revoked. Loaded once when this panel opens.
+  let trustedSenders = $state<string[]>([]);
+  let trustBusy = $state<string | null>(null);
+
+  $effect(() => {
+    void (async () => {
+      const result = await api.listTrustedMailSenders();
+      if (result.ok) trustedSenders = (result.data as { senders: string[] }).senders;
+    })();
+  });
+
+  async function untrust(email: string): Promise<void> {
+    trustBusy = email;
+    const result = await api.setMailSenderTrust(email, false, generation);
+    trustBusy = null;
+    if (result.ok) trustedSenders = trustedSenders.filter((s) => s !== email);
+  }
+
   // A recovery state (`accountRecovery`, computed once per row below) swaps
   // the row's normal affordances for explanatory copy + its own CTAs
   // (spec E §safety invariants: fail-closed, user-decided states). That
@@ -213,6 +421,9 @@
             <span class="text-ink-meta text-[12px]">{mailStateLabel(status.state)}</span>
             <span class="min-w-2 flex-1" aria-hidden="true"></span>
             {#if status.valid && !recovery}
+              <Button type="button" variant="ghost" size="sm" onclick={() => void openEdit(status.account)}>
+                Edit
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -327,7 +538,18 @@
       {/each}
     </ul>
 
-    <h2 class="font-display text-ink-heading mt-6 text-[17px]">Add another account</h2>
+    {#if !formVisible}
+      <div class="mt-3">
+        <Button type="button" variant="outline" size="sm" onclick={() => openAdd()}>Add account</Button>
+      </div>
+    {:else}
+      <div class="mt-6 flex items-center gap-2">
+        <h2 class="font-display text-ink-heading text-[17px]">
+          {editing ? `Edit ${editingSlug}` : 'Add another account'}
+        </h2>
+        <Button type="button" variant="ghost" size="sm" onclick={() => closeForm()}>Cancel</Button>
+      </div>
+    {/if}
   {:else}
     <h1 class="font-display text-ink-heading text-[21px]">Connect your mailbox</h1>
   {/if}
@@ -340,21 +562,48 @@
           Dev mode: the password is held in memory only and never persisted.
         </p>
       {/if}
-      <Button type="button" variant="outline" size="sm" onclick={() => ((submitted = false), (account = ''))}>
-        Add another
-      </Button>
+      <Button type="button" variant="outline" size="sm" onclick={() => openAdd()}>Add another</Button>
     </div>
-  {:else}
-    <p class="text-ink-body max-w-[480px] text-[13.5px]">
-      Valea mirrors your mailbox over IMAP with TLS. Your password is handed off once and never written into the
-      workspace.
-    </p>
+  {:else if formVisible}
+    {#if editing}
+      {#if editLoadError}
+        <p class="text-warn-ink text-[12.5px]" role="alert">
+          Could not load this account's settings. Close and try again.
+        </p>
+      {/if}
+      <p class="text-ink-body max-w-[480px] text-[13.5px]">
+        Change the server settings for this account. Leave the password fields blank to keep the stored ones.
+      </p>
+    {:else}
+      <p class="text-ink-body max-w-[480px] text-[13.5px]">
+        Valea mirrors your mailbox over IMAP with TLS. Your password is handed off once and never written into the
+        workspace. Start with your email address as the username — the server settings are guessed for you.
+      </p>
+    {/if}
 
     <div class="flex w-full max-w-md flex-col gap-4">
       <div class="flex flex-col gap-1.5">
+        <Label for="mail-setup-username">Username</Label>
+        <Input
+          id="mail-setup-username"
+          bind:value={username}
+          disabled={submitting}
+          placeholder="you@example.com"
+          onblur={() => void guessFromUsername()}
+        />
+        {#if guessing}
+          <p class="text-ink-meta text-[11.5px]">Looking up server settings…</p>
+        {:else if guessNote}
+          <p class="text-suggest-ink text-[11.5px]">{guessNote}</p>
+        {/if}
+      </div>
+
+      <div class="flex flex-col gap-1.5">
         <Label for="mail-setup-account">Account id</Label>
-        <Input id="mail-setup-account" bind:value={account} disabled={submitting} placeholder="work" />
-        <p class="text-ink-meta text-[11.5px]">Lowercase letters, digits, and dashes. Names the folder under sources/mail/</p>
+        <Input id="mail-setup-account" bind:value={account} disabled={submitting || editing} placeholder="work" />
+        {#if !editing}
+          <p class="text-ink-meta text-[11.5px]">Lowercase letters, digits, and dashes. Names the folder under sources/mail/</p>
+        {/if}
       </div>
 
       <div class="flex flex-col gap-1.5">
@@ -369,11 +618,6 @@
       </div>
 
       <div class="flex flex-col gap-1.5">
-        <Label for="mail-setup-username">Username</Label>
-        <Input id="mail-setup-username" bind:value={username} disabled={submitting} placeholder="you@example.com" />
-      </div>
-
-      <div class="flex flex-col gap-1.5">
         <Label for="mail-setup-password">Password</Label>
         <Input
           id="mail-setup-password"
@@ -381,6 +625,7 @@
           autocomplete="off"
           bind:value={secret}
           disabled={submitting}
+          placeholder={editing ? 'Leave blank to keep the stored password' : ''}
         />
       </div>
 
@@ -389,7 +634,12 @@
            can place drafts in your mailbox but has no transport to send. -->
       <div class="border-paper-hairline flex flex-col gap-3 border-t pt-4">
         <label class="text-ink-body flex items-center gap-2 text-[13px]">
-          <input type="checkbox" bind:checked={smtpEnabled} disabled={submitting} />
+          <input
+            type="checkbox"
+            bind:checked={smtpEnabled}
+            disabled={submitting}
+            onchange={() => applySmtpGuess()}
+          />
           Also let me send from this account
         </label>
 
@@ -429,7 +679,7 @@
               id="mail-smtp-username"
               bind:value={smtpUsername}
               disabled={submitting}
-              placeholder="you@example.com"
+              placeholder={username.trim() || 'you@example.com'}
             />
           </div>
 
@@ -472,6 +722,7 @@
                 autocomplete="off"
                 bind:value={smtpSecret}
                 disabled={submitting}
+                placeholder={editing ? 'Leave blank to keep the stored password' : ''}
               />
             </div>
           {/if}
@@ -484,9 +735,34 @@
 
       <div>
         <Button type="button" onclick={() => void handleSubmit()} disabled={submitting}>
-          {submitting ? 'Connecting…' : 'Connect mailbox'}
+          {submitting ? (editing ? 'Saving…' : 'Connecting…') : editing ? 'Save changes' : 'Connect mailbox'}
         </Button>
       </div>
+    </div>
+  {/if}
+
+  {#if trustedSenders.length > 0}
+    <div class="border-paper-hairline mt-6 w-full max-w-xl border-t pt-4">
+      <h2 class="font-display text-ink-heading text-[17px]">Trusted senders</h2>
+      <p class="text-ink-meta mt-1 max-w-[480px] text-[12px]">
+        Messages from these addresses load remote images automatically.
+      </p>
+      <ul class="mt-2 flex flex-col">
+        {#each trustedSenders as sender (sender)}
+          <li class="flex items-center justify-between gap-2 py-0.5">
+            <span class="text-ink-secondary min-w-0 truncate text-[12.5px]">{sender}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={trustBusy === sender}
+              onclick={() => void untrust(sender)}
+            >
+              Remove
+            </Button>
+          </li>
+        {/each}
+      </ul>
     </div>
   {/if}
 </div>

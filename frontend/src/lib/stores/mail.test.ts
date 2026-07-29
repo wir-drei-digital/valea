@@ -335,7 +335,14 @@ describe('MailStore.selectAccount', () => {
     const store = new MailStore(fakeApi({ listMailFolders, listMailMessages }) as never);
     await store.refreshStatus();
     await store.selectFolder('Archive');
-    store.selected = { frontmatter: null, body: 'x', path: 'p' };
+    store.selected = {
+      frontmatter: null,
+      body: 'x',
+      path: 'p',
+      html: null,
+      externalContent: false,
+      senderTrusted: false
+    };
     listMailFolders.mockClear();
     listMailMessages.mockClear();
 
@@ -455,9 +462,32 @@ describe('MailStore.select', () => {
     expect(store.selected).toEqual({
       frontmatter: { subject: 'Hi' },
       body: 'Body text',
-      path: 'sources/mail/mara/views/messages/m1.md'
+      path: 'sources/mail/mara/views/messages/m1.md',
+      html: null,
+      externalContent: false,
+      senderTrusted: false
     });
     expect(store.loading).toBe(false);
+  });
+
+  it('normalizes the html/trust fields off their string snake keys', async () => {
+    const message = {
+      frontmatter: {},
+      body: 'b',
+      path: 'p',
+      html: '<p>Hi</p>',
+      external_content: true,
+      sender_trusted: true
+    };
+    const getMailMessage = vi.fn(async () => ({ ok: true, data: { message } }) as DetailResult);
+    const store = new MailStore(fakeApi({ getMailMessage }) as never);
+    await store.refreshStatus();
+
+    await store.select('m1');
+
+    expect(store.selected?.html).toBe('<p>Hi</p>');
+    expect(store.selected?.externalContent).toBe(true);
+    expect(store.selected?.senderTrusted).toBe(true);
   });
 
   it('no-ops without a selected account', async () => {

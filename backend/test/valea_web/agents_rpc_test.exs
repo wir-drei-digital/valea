@@ -547,6 +547,76 @@ defmodule ValeaWeb.AgentsRpcTest do
     end
   end
 
+  describe "delete_agent_session" do
+    test "deletes a LIVE session by stopping its server first; permanent, no archived copy",
+         %{generation: generation, icm: icm, workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      assert %{"success" => true, "data" => %{"id" => id}} =
+               rpc(
+                 "create_agent_session",
+                 %{"mountKey" => icm.mount_key, "generation" => generation},
+                 ["id"]
+               )
+
+      assert %{"success" => true, "data" => %{"deleted" => true}} =
+               rpc(
+                 "delete_agent_session",
+                 %{"sessionId" => id, "generation" => generation},
+                 ["deleted"]
+               )
+
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
+
+      # Gone from listings, gone from disk entirely — including archived/.
+      assert %{"success" => true, "data" => %{"sessions" => sessions}} =
+               rpc("list_agent_sessions", %{}, [%{"sessions" => ["id"]}])
+
+      refute Enum.any?(sessions, &(&1["id"] == id))
+      refute File.exists?(Path.join([workspace, "logs", "sessions", id <> ".jsonl"]))
+      refute File.exists?(Path.join([workspace, "logs", "sessions", "archived", id <> ".jsonl"]))
+
+      # Deleting again (or a traversal-shaped id) is not_found.
+      assert %{"success" => false} =
+               rpc(
+                 "delete_agent_session",
+                 %{"sessionId" => id, "generation" => generation},
+                 ["deleted"]
+               )
+
+      assert %{"success" => false} =
+               rpc(
+                 "delete_agent_session",
+                 %{"sessionId" => "../secrets", "generation" => generation},
+                 ["deleted"]
+               )
+    end
+
+    test "deletes an ENDED session (no live server) the same way",
+         %{generation: generation, icm: icm, workspace: workspace} do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      assert %{"success" => true, "data" => %{"id" => id}} =
+               rpc(
+                 "create_agent_session",
+                 %{"mountKey" => icm.mount_key, "generation" => generation},
+                 ["id"]
+               )
+
+      AgentCase.kill_session(id)
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
+
+      assert %{"success" => true, "data" => %{"deleted" => true}} =
+               rpc(
+                 "delete_agent_session",
+                 %{"sessionId" => id, "generation" => generation},
+                 ["deleted"]
+               )
+
+      refute File.exists?(Path.join([workspace, "logs", "sessions", id <> ".jsonl"]))
+    end
+  end
+
   defp wait_until(fun, tries \\ 50) do
     cond do
       fun.() ->

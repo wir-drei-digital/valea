@@ -4,6 +4,8 @@ import {
   mailSlugValid,
   accountLabel,
   folderBadge,
+  messageSeen,
+  filterMessagesByRead,
   folderFlagsLine,
   relativeTime,
   fromLabel,
@@ -83,6 +85,26 @@ describe('folderBadge', () => {
   it('badges held folders and nothing else', () => {
     expect(folderBadge({ held: true })).toBe('held');
     expect(folderBadge({ held: false })).toBeNull();
+  });
+});
+
+describe('messageSeen / filterMessagesByRead', () => {
+  const seen = { flags: 'FS' };
+  const unseen = { flags: 'F' };
+  const noFlags = { flags: null };
+
+  it('reads the maildir S flag; absent/null flags mean unread', () => {
+    expect(messageSeen(seen)).toBe(true);
+    expect(messageSeen(unseen)).toBe(false);
+    expect(messageSeen(noFlags)).toBe(false);
+    expect(messageSeen({})).toBe(false);
+  });
+
+  it("'all' passes everything; 'unread'/'read' partition on the S flag", () => {
+    const messages = [seen, unseen, noFlags];
+    expect(filterMessagesByRead(messages, 'all')).toEqual(messages);
+    expect(filterMessagesByRead(messages, 'unread')).toEqual([unseen, noFlags]);
+    expect(filterMessagesByRead(messages, 'read')).toEqual([seen]);
   });
 });
 

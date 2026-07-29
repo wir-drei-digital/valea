@@ -91,6 +91,73 @@ describe('submitMailSetup — browser (dev) path', () => {
   });
 });
 
+describe('submitMailSetup — edit mode (blank secrets keep stored credentials)', () => {
+  it('a blank IMAP secret skips the keychain write and the credential hand-off entirely', async () => {
+    const deps = makeDeps({ inDesktop: vi.fn(() => true) });
+
+    const outcome = await submitMailSetup({ ...input, secret: '' }, deps);
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledTimes(1);
+    expect(deps.refreshWorkspaceId).not.toHaveBeenCalled();
+    expect(deps.keychainSet).not.toHaveBeenCalled();
+    expect(deps.api.setMailCredential).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ ok: true, devMode: false });
+  });
+
+  it('a typed SMTP secret still lands while the blank IMAP one is kept', async () => {
+    const deps = makeDeps({ inDesktop: vi.fn(() => true) });
+
+    const outcome = await submitMailSetup(
+      {
+        ...input,
+        secret: '',
+        smtp: {
+          host: 'smtp.example.com',
+          port: 587,
+          security: 'starttls',
+          username: 'mara@example.com',
+          from: '',
+          fromName: '',
+          secret: 'smtp-only-secret',
+          sameAsImap: false
+        }
+      },
+      deps
+    );
+
+    expect(deps.keychainSet).toHaveBeenCalledTimes(1);
+    expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:smtp', 'smtp-only-secret');
+    expect(deps.api.setMailCredential).toHaveBeenCalledTimes(1);
+    expect(deps.api.setMailCredential).toHaveBeenCalledWith('work-inbox', 'smtp-only-secret', 3, 'smtp');
+    expect(outcome).toEqual({ ok: true, devMode: false });
+  });
+
+  it('"same as IMAP" with a blank IMAP secret keeps BOTH slots', async () => {
+    const deps = makeDeps({ inDesktop: vi.fn(() => true) });
+
+    await submitMailSetup(
+      {
+        ...input,
+        secret: '',
+        smtp: {
+          host: 'smtp.example.com',
+          port: 587,
+          security: 'starttls',
+          username: 'mara@example.com',
+          from: '',
+          fromName: '',
+          secret: '',
+          sameAsImap: true
+        }
+      },
+      deps
+    );
+
+    expect(deps.keychainSet).not.toHaveBeenCalled();
+    expect(deps.api.setMailCredential).not.toHaveBeenCalled();
+  });
+});
+
 describe('submitMailSetup — desktop path', () => {
   it('refreshes the workspace id and stashes the secret in the keychain before handing it to setMailCredential, in order', async () => {
     const order: string[] = [];
@@ -358,6 +425,10 @@ describe('smtpFormError', () => {
   it('requires a password unless the IMAP one is being copied', () => {
     expect(smtpFormError({ ...valid, secret: '' })).toBe('Enter the SMTP password.');
     expect(smtpFormError({ ...valid, secret: '', sameAsImap: true })).toBeNull();
+  });
+
+  it("edit mode allows a blank password — it means 'keep the stored one'", () => {
+    expect(smtpFormError({ ...valid, secret: '' }, 'edit')).toBeNull();
   });
 });
 

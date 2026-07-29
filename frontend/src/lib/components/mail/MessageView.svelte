@@ -20,6 +20,8 @@
   import Paperclip from '@lucide/svelte/icons/paperclip';
   import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
+  import { SegmentedControl } from '$lib/components/shell';
+  import HtmlMailView from './HtmlMailView.svelte';
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
@@ -67,14 +69,51 @@
   let opBusy = $state(false);
   let opError = $state<string | null>(null);
 
+  // -- HTML rendering + the remote-content trust gate ------------------------
+  //
+  // `message.html` is the backend-sanitized rendering; it shows inside
+  // `HtmlMailView`'s sandboxed iframe. Remote content (images, tracking
+  // pixels) loads only for a trusted sender (`message.senderTrusted`,
+  // overridable in place by the banner's trust/untrust actions) or after a
+  // one-time "Load once" — everything else is CSP-blocked in the iframe.
+  let viewMode = $state<'html' | 'text'>('html');
+  let allowOnce = $state(false);
+  /** In-place override after a trust/untrust RPC — `null` = follow the fetched flag. */
+  let trustOverride = $state<boolean | null>(null);
+  let trustBusy = $state(false);
+  let trustError = $state<string | null>(null);
+
+  const trusted = $derived(trustOverride ?? message.senderTrusted);
+  const allowRemote = $derived(trusted || allowOnce);
+  const showHtml = $derived(message.html !== null && viewMode === 'html');
+
+  async function setTrust(trust: boolean): Promise<void> {
+    if (!fromEmail || trustBusy) return;
+    trustBusy = true;
+    trustError = null;
+    const result = await api.setMailSenderTrust(fromEmail, trust, workspaceStore.generation ?? 0);
+    trustBusy = false;
+    if (!result.ok) {
+      trustError = 'Could not update the trusted senders list.';
+      return;
+    }
+    trustOverride = trust;
+    if (!trust) allowOnce = false;
+  }
+
   // A different message was opened — drop this session's local "just
-  // copied a path" affordance and any stale session-start/op error so none
-  // bleeds into the newly-selected message's view.
+  // copied a path" affordance, any stale session-start/op error, and the
+  // per-message trust/view state so none bleeds into the newly-selected
+  // message's view.
   $effect(() => {
     void message.path;
     copiedPath = null;
     sessionError = null;
     opError = null;
+    viewMode = 'html';
+    allowOnce = false;
+    trustOverride = null;
+    trustError = null;
   });
 
   // Ops context: the message's indexed id is its frontmatter `id`; the
@@ -205,7 +244,61 @@
     {/if}
   </header>
 
-  <p class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap">{message.body}</p>
+  {#if message.html !== null}
+    <div class="-mt-2 flex items-center justify-end">
+      <SegmentedControl
+        label="Message view"
+        value={viewMode}
+        options={[
+          { value: 'html', label: 'Formatted' },
+          { value: 'text', label: 'Plain text' }
+        ]}
+        onChange={(v) => (viewMode = v as 'html' | 'text')}
+      />
+    </div>
+  {/if}
+
+  {#if showHtml && message.html !== null}
+    {#if message.externalContent && !allowRemote}
+      <!-- Fail-closed: remote loads (images, tracking pixels) stay blocked
+           until the reader explicitly allows them — once, or by trusting
+           the sender from here on. -->
+      <div
+        class="border-paper-border bg-paper-card flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3.5 py-2.5"
+        role="note"
+      >
+        <p class="text-ink-body min-w-0 flex-1 text-[12.5px]">
+          Remote images are hidden to protect your privacy.
+        </p>
+        <div class="flex shrink-0 items-center gap-1.5">
+          <Button type="button" variant="outline" size="sm" onclick={() => (allowOnce = true)}>Load once</Button>
+          {#if fromEmail}
+            <Button type="button" variant="ghost" size="sm" disabled={trustBusy} onclick={() => void setTrust(true)}>
+              Always trust {fromEmail}
+            </Button>
+          {/if}
+        </div>
+      </div>
+    {:else if message.externalContent && trusted && fromEmail}
+      <p class="text-ink-meta text-[11.5px]">
+        Remote content loads — {fromEmail} is trusted.
+        <button
+          type="button"
+          class="hover:text-ink-heading underline decoration-dotted underline-offset-2 transition-colors"
+          disabled={trustBusy}
+          onclick={() => void setTrust(false)}
+        >
+          Stop trusting
+        </button>
+      </p>
+    {/if}
+    {#if trustError}
+      <p class="text-warn-ink text-[12px]" role="alert">{trustError}</p>
+    {/if}
+    <HtmlMailView html={message.html} {allowRemote} />
+  {:else}
+    <p class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap">{message.body}</p>
+  {/if}
 
   {#if attachments.length > 0}
     <div>

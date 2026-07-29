@@ -182,6 +182,34 @@ defmodule Valea.Mail.Normalizer do
     }
   end
 
+  @doc """
+  The first `text/html` part of `rfc822`, charset-decoded to UTF-8 — `nil`
+  when the message carries none, or when MIME parsing fails (the caller then
+  simply has no HTML rendering to offer; the stored plain-text view is
+  already the fallback). Runs the SAME walk and charset pipeline as
+  `normalize/1`'s body selection, so what this returns is exactly the HTML
+  that `html_to_text/1` flattened into the view file's body.
+
+  The returned HTML is RAW mail content — callers rendering it must
+  sanitize it first (`Valea.Mail.HtmlSanitizer`) and confine it (the
+  frontend's sandboxed iframe); this function makes no safety promise.
+  """
+  @spec html_body(binary()) :: String.t() | nil
+  def html_body(rfc822) when is_binary(rfc822) do
+    case try_decode(rfc822) do
+      {:ok, mime} ->
+        walked = walk_body(mime, %{plain: nil, html: nil, attachments: [], note: nil})
+        walked.html
+
+      {:error, _reason} ->
+        nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
   # -- mimemail decode (never lets an mimemail raise escape) -----------------
 
   defp try_decode(rfc822) do

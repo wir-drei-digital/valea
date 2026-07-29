@@ -23,6 +23,14 @@ export type RecentSession = {
   status: string;
   live: boolean;
 };
+/** One unread-INBOX row of a mail account's cockpit entry ("new emails by account"). */
+export type MailUnreadMessage = {
+  msgId: string;
+  fromName: string | null;
+  fromEmail: string | null;
+  subject: string | null;
+  date: string | null;
+};
 /** One configured account's cockpit line (`Valea.Cockpit.mail_summary/0` — per-account since the mail-as-maildir rework). */
 export type MailAccountSummary = {
   account: string;
@@ -30,6 +38,9 @@ export type MailAccountSummary = {
   state: string;
   pendingOps: number;
   notices: string[];
+  /** Unread INBOX messages within the cockpit's recency window (newest first, capped backend-side). */
+  unread: MailUnreadMessage[];
+  unreadCount: number;
 };
 /** The cockpit calendar line (`Valea.Cockpit.calendar_summary/0`, Spec F) — `null` when the subsystem has nothing to say. */
 export type CalendarSummary = {
@@ -101,13 +112,32 @@ export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToda
       .map(normalizeSection),
     mail: (Array.isArray(mail) ? mail : [])
       .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
-      .map((m) => ({
-        account: str(m.account) ?? '',
-        configured: m.configured === true,
-        state: str(m.state) ?? '',
-        pendingOps: num(pick(m, 'pending_ops', 'pendingOps')),
-        notices: (Array.isArray(m.notices) ? m.notices : []).filter((n): n is string => typeof n === 'string')
-      })),
+      .map((m) => {
+        const unread = pick(m, 'unread', 'unread');
+        return {
+          account: str(m.account) ?? '',
+          configured: m.configured === true,
+          state: str(m.state) ?? '',
+          pendingOps: num(pick(m, 'pending_ops', 'pendingOps')),
+          notices: (Array.isArray(m.notices) ? m.notices : []).filter((n): n is string => typeof n === 'string'),
+          unreadCount: num(pick(m, 'unread_count', 'unreadCount')),
+          unread: (Array.isArray(unread) ? unread : [])
+            .filter((u): u is Record<string, unknown> => typeof u === 'object' && u !== null)
+            .flatMap((u) => {
+              const msgId = str(pick(u, 'msg_id', 'msgId'));
+              if (!msgId) return [];
+              return [
+                {
+                  msgId,
+                  fromName: str(pick(u, 'from_name', 'fromName')),
+                  fromEmail: str(pick(u, 'from_email', 'fromEmail')),
+                  subject: str(u.subject),
+                  date: str(u.date)
+                }
+              ];
+            })
+        };
+      }),
     recentSessions: (Array.isArray(recent) ? recent : [])
       .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
       .map((s) => ({

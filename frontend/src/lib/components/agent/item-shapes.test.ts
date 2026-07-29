@@ -214,6 +214,12 @@ describe('usageFields', () => {
     expect(usageFields(undefined)).toEqual([]);
   });
 
+  it('drops the transport seq alongside id/type', () => {
+    expect(usageFields({ id: 'usage', type: 'usage', seq: 12, used: 5 })).toEqual([
+      { label: 'Used', value: '5' }
+    ]);
+  });
+
   it('renders every present field, dropping id/type, formatting numbers and titling keys', () => {
     const fields = usageFields({
       id: 'usage',
@@ -263,6 +269,14 @@ describe('contextUsage', () => {
 
   it('clamps the fraction at 1', () => {
     expect(contextUsage({ id: 'usage', type: 'usage', usedTokens: 300, maxTokens: 100 })?.fraction).toBe(1);
+  });
+
+  it("accepts claude-agent-acp's real {used, size} pair", () => {
+    expect(contextUsage({ id: 'usage', type: 'usage', used: 82_000, size: 200_000 })).toEqual({
+      used: 82_000,
+      max: 200_000,
+      fraction: 0.41
+    });
   });
 });
 

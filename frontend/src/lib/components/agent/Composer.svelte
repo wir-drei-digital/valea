@@ -146,6 +146,11 @@
     }
   }
 
+  // The "agent" selector (claude-agent-acp's AGENT_CONFIG_ID) is hidden by
+  // product decision: switching subagents mid-session isn't a Valea
+  // affordance, and the chip only added noise under the composer.
+  const visibleConfigItems = $derived(configItems.filter((item) => configWireId(item) !== 'agent'));
+
   // --- Context donut (right end of the options row) ---
 
   const usage = $derived(contextUsage(usageItem));
@@ -276,48 +281,45 @@
     </div>
   </div>
 
-  {#if configItems.length > 0 || usageItem}
+  {#if visibleConfigItems.length > 0 || usage}
     <div class="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1">
-      {#each configItems as item (item.id)}
+      {#each visibleConfigItems as item (item.id)}
         <!-- configWireId, NOT item.id: the render id is `config-`-prefixed
              for timeline uniqueness and the adapter rejects it as an
              unknown option (see item-shapes.ts). -->
         <ConfigChip {item} onSelect={(value) => onSetConfig(configWireId(item), value)} />
       {/each}
-      {#if usageItem}
+      {#if usage}
+        <!-- Donut only, never a text fallback: an item without a usable
+             used/max pair renders nothing here (a wrong or noisy indicator
+             is worse than none). -->
         <span
           class="text-ink-meta ml-auto flex items-center gap-1"
           title={usageTitle}
-          aria-label={usage ? `Context ${Math.round(usage.fraction * 100)}% used` : 'Usage'}
+          aria-label={`Context ${Math.round(usage.fraction * 100)}% used`}
         >
-          {#if usage}
-            <svg viewBox="0 0 20 20" class="size-4 -rotate-90" aria-hidden="true">
-              <circle
-                cx="10"
-                cy="10"
-                r="8"
-                fill="none"
-                stroke-width="3.5"
-                class="stroke-paper-chip-border"
-              />
-              <circle
-                cx="10"
-                cy="10"
-                r="8"
-                fill="none"
-                stroke-width="3.5"
-                pathLength="100"
-                stroke-dasharray="{Math.max(usage.fraction * 100, 2)} 100"
-                stroke-linecap="round"
-                class={usage.fraction > 0.8 ? 'stroke-warn-ink' : 'stroke-act'}
-              />
-            </svg>
-            <span class="text-[11px] tabular-nums">{Math.round(usage.fraction * 100)}%</span>
-          {:else}
-            <!-- No explicit used/max pair on the item — fall back to the
-                 fields it does carry, compact, in the donut's slot. -->
-            <span class="max-w-[40ch] truncate text-[11px]">{usageTitle}</span>
-          {/if}
+          <svg viewBox="0 0 20 20" class="size-4 -rotate-90" aria-hidden="true">
+            <circle
+              cx="10"
+              cy="10"
+              r="8"
+              fill="none"
+              stroke-width="3.5"
+              class="stroke-paper-chip-border"
+            />
+            <circle
+              cx="10"
+              cy="10"
+              r="8"
+              fill="none"
+              stroke-width="3.5"
+              pathLength="100"
+              stroke-dasharray="{Math.max(usage.fraction * 100, 2)} 100"
+              stroke-linecap="round"
+              class={usage.fraction > 0.8 ? 'stroke-warn-ink' : 'stroke-act'}
+            />
+          </svg>
+          <span class="text-[11px] tabular-nums">{Math.round(usage.fraction * 100)}%</span>
         </span>
       {/if}
     </div>

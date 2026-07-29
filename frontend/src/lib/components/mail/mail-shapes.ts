@@ -1,6 +1,6 @@
 /**
  * Pure, unit-testable helpers for the `/mail` route's components
- * (`AccountSwitcher`, `FolderList`, `MessageList`, `MessageView`,
+ * (`AccountSwitcher`, `FolderPicker`, `MessageList`, `MessageView`,
  * `SyncStatusLine`, `SetupPanel`, `MailDoctorPanel`) — same "no component
  * render harness; extract the logic instead" convention as
  * `components/audit/sentence.ts` and `components/agent/item-shapes.ts`.
@@ -24,7 +24,7 @@
 import type { MailAccountStatus, MailDraft, MailDraftReview, MailFolder } from '$lib/stores/mail.svelte';
 import type { Api, MailSmtpSetup } from '$lib/api/client';
 
-// -- account/folder chrome (AccountSwitcher / FolderList) -------------------
+// -- account/folder chrome (AccountSwitcher / FolderPicker) -------------------
 
 /**
  * The account slug grammar, mirrored client-side from
@@ -56,9 +56,31 @@ export async function sha256Hex(content: string): Promise<string> {
     .join('');
 }
 
-/** Badge text for a folder row (`FolderList`): `"held"` for a held folder (spec E §folder lifecycle), nothing otherwise. */
+/** Badge text for a folder row (`FolderPicker`): `"held"` for a held folder (spec E §folder lifecycle), nothing otherwise. */
 export function folderBadge(folder: Pick<MailFolder, 'held'>): string | null {
   return folder.held ? 'held' : null;
+}
+
+// -- read/unread filter (MessageList) ----------------------------------------
+
+export type ReadFilter = 'all' | 'unread' | 'read';
+
+/**
+ * Whether a message has been read — the maildir `S` (Seen) flag letter on
+ * the summary's flag string (spec E: flags are IMAP's, not Valea's; there
+ * is no separate read-tracking state to consult).
+ */
+export function messageSeen(message: { flags?: string | null }): boolean {
+  return (message.flags ?? '').includes('S');
+}
+
+/** The list-pane read filter: `'all'` passes everything through untouched. */
+export function filterMessagesByRead<T extends { flags?: string | null }>(
+  messages: T[],
+  filter: ReadFilter
+): T[] {
+  if (filter === 'all') return messages;
+  return messages.filter((message) => messageSeen(message) === (filter === 'read'));
 }
 
 // -- ops actions (MessageView) ----------------------------------------------
@@ -750,7 +772,7 @@ export const MAIL_ADDR_RE =
  * the display name. Returns the message to show, or `null` when nothing is
  * wrong. Not a substitute for the backend check — a pre-emption of it.
  */
-export function smtpFormError(smtp: MailSetupSmtpInput): string | null {
+export function smtpFormError(smtp: MailSetupSmtpInput, mode: 'add' | 'edit' = 'add'): string | null {
   const host = smtp.host.trim();
   const username = smtp.username.trim();
   const from = smtp.from.trim();
@@ -777,7 +799,9 @@ export function smtpFormError(smtp: MailSetupSmtpInput): string | null {
     return 'From must be a single email address, like you@example.com.';
   }
   if (/[\r\n\0]/.test(smtp.fromName)) return 'The display name cannot contain line breaks.';
-  if (!smtp.sameAsImap && !smtp.secret) return 'Enter the SMTP password.';
+  // Edit mode: a blank password means "keep the stored one", so only a NEW
+  // account requires it typed here.
+  if (mode === 'add' && !smtp.sameAsImap && !smtp.secret) return 'Enter the SMTP password.';
 
   return null;
 }
@@ -858,19 +882,27 @@ export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetup
   );
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
 
-  const smtpSecret = input.smtp ? (input.smtp.sameAsImap ? input.secret : input.smtp.secret) : null;
+  // A blank secret means "keep the stored credential" (the settings form's
+  // EDIT mode — the add form requires one before ever calling this). Each
+  // slot is independent: `''` skips that slot's keychain write AND its
+  // `set_mail_credential` hand-off, leaving whatever the Engine holds.
+  const imapSecret = input.secret === '' ? null : input.secret;
+  const smtpTyped = input.smtp ? (input.smtp.sameAsImap ? input.secret : input.smtp.secret) : '';
+  const smtpSecret = smtpTyped === '' ? null : smtpTyped;
   const desktop = deps.inDesktop();
 
-  if (desktop) {
+  if (desktop && (imapSecret !== null || smtpSecret !== null)) {
     const workspaceId = await deps.refreshWorkspaceId();
     if (workspaceId) {
-      await deps.keychainSet(workspaceId, `${slug}:imap`, input.secret);
+      if (imapSecret !== null) await deps.keychainSet(workspaceId, `${slug}:imap`, imapSecret);
       if (smtpSecret !== null) await deps.keychainSet(workspaceId, `${slug}:smtp`, smtpSecret);
     }
   }
 
-  const credResult = await deps.api.setMailCredential(slug, input.secret, input.generation);
-  if (!credResult.ok) return { ok: false, error: credResult.error };
+  if (imapSecret !== null) {
+    const credResult = await deps.api.setMailCredential(slug, imapSecret, input.generation);
+    if (!credResult.ok) return { ok: false, error: credResult.error };
+  }
 
   if (smtpSecret !== null) {
     const smtpResult = await deps.api.setMailCredential(slug, smtpSecret, input.generation, 'smtp');

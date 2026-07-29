@@ -311,6 +311,32 @@
     context.onArchived?.();
   }
 
+  // --- Delete the OPEN session — permanent (no archived copy), so the
+  // header collects an explicit confirmation before calling this. Live
+  // sessions are stopped first backend-side, same as archive. Afterwards
+  // the session is gone exactly like an archived one from the host's
+  // perspective, so the same `onArchived` navigation applies.
+
+  let deleting = $state(false);
+
+  async function deleteOpenSession(): Promise<void> {
+    const id = sessionId;
+    if (!id || deleting) return;
+    archiveError = null;
+    deleting = true;
+    const result = await api.deleteAgentSession(id, workspaceStore.generation ?? 0);
+    deleting = false;
+
+    if (!result.ok) {
+      archiveError = 'Could not delete the session. Please try again.';
+      return;
+    }
+
+    void sessionsListStore.refresh();
+    void recentSessionsStore.refresh();
+    context.onArchived?.();
+  }
+
   // --- New-session mode (`chat-new`): no store, no channel — the session
   // doesn't exist until the first message is sent. Creating it stashes that
   // message as the session's initial prompt and hands the id back to the
@@ -422,7 +448,9 @@
       mountKey={openMountKey}
       {ended}
       {archiving}
+      {deleting}
       onArchive={() => void archiveOpenSession()}
+      onDelete={() => void deleteOpenSession()}
       onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
     />
     {#if archiveError}

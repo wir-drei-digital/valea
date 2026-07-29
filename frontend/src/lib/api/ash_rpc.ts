@@ -366,6 +366,80 @@ export async function createAgentSessionChannel<Fields extends CreateAgentSessio
 }
 
 
+export type DeleteAgentSessionInput = {
+  sessionId: string;
+  generation: number;
+};
+
+export type DeleteAgentSessionFields = UnifiedFieldSelection<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}>[];
+
+export type InferDeleteAgentSessionResult<
+  Fields extends DeleteAgentSessionFields | undefined,
+> = InferResult<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}, Fields>;
+
+export type DeleteAgentSessionResult<Fields extends DeleteAgentSessionFields | undefined = undefined> = | { success: true; data: InferDeleteAgentSessionResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function deleteAgentSession<Fields extends DeleteAgentSessionFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DeleteAgentSessionInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DeleteAgentSessionResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "delete_agent_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DeleteAgentSessionResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Agents
+ *
+ * @ashActionType :action
+ */
+export async function deleteAgentSessionChannel<Fields extends DeleteAgentSessionFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DeleteAgentSessionInput;
+  fields: Fields;
+  resultHandler: (result: DeleteAgentSessionResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DeleteAgentSessionResult<Fields>>(
+    config.channel,
+    {
+    action: "delete_agent_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type HarnessConfigFields = UnifiedFieldSelection<{command: Array<string>, approved: boolean, isDefault: boolean, defaultCommand: Array<string>, __type: "TypedMap", __primitiveFields: "command" | "approved" | "isDefault" | "defaultCommand"}>[];
 
 export type InferHarnessConfigResult<
@@ -1898,11 +1972,11 @@ export async function updateValeaEventChannel<Fields extends UpdateValeaEventFie
 }
 
 
-export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferCockpitTodayResult<
   Fields extends CockpitTodayFields | undefined,
-> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type CockpitTodayResult<Fields extends CockpitTodayFields | undefined = undefined> = | { success: true; data: InferCockpitTodayResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -3595,6 +3669,79 @@ export async function discardHeldFolderChannel<Fields extends DiscardHeldFolderF
 }
 
 
+export type GetMailAccountSettingsInput = {
+  account: string;
+};
+
+export type GetMailAccountSettingsFields = UnifiedFieldSelection<{account: {host: string, port: number, username: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username"}, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferGetMailAccountSettingsResult<
+  Fields extends GetMailAccountSettingsFields | undefined,
+> = InferResult<{account: {host: string, port: number, username: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username"}, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type GetMailAccountSettingsResult<Fields extends GetMailAccountSettingsFields | undefined = undefined> = | { success: true; data: InferGetMailAccountSettingsResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailAccountSettings<Fields extends GetMailAccountSettingsFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GetMailAccountSettingsInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GetMailAccountSettingsResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "get_mail_account_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GetMailAccountSettingsResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailAccountSettingsChannel<Fields extends GetMailAccountSettingsFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GetMailAccountSettingsInput;
+  fields: Fields;
+  resultHandler: (result: GetMailAccountSettingsResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GetMailAccountSettingsResult<Fields>>(
+    config.channel,
+    {
+    action: "get_mail_account_settings",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type GetMailDraftInput = {
   account: string;
   draftName: string;
@@ -4031,6 +4178,71 @@ export async function listMailMessagesChannel<Fields extends ListMailMessagesFie
 }
 
 
+export type ListTrustedMailSendersFields = UnifiedFieldSelection<{senders: Array<string>, __type: "TypedMap", __primitiveFields: "senders"}>[];
+
+export type InferListTrustedMailSendersResult<
+  Fields extends ListTrustedMailSendersFields | undefined,
+> = InferResult<{senders: Array<string>, __type: "TypedMap", __primitiveFields: "senders"}, Fields>;
+
+export type ListTrustedMailSendersResult<Fields extends ListTrustedMailSendersFields | undefined = undefined> = | { success: true; data: InferListTrustedMailSendersResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listTrustedMailSenders<Fields extends ListTrustedMailSendersFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListTrustedMailSendersResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_trusted_mail_senders",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListTrustedMailSendersResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function listTrustedMailSendersChannel<Fields extends ListTrustedMailSendersFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  fields: Fields;
+  resultHandler: (result: ListTrustedMailSendersResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListTrustedMailSendersResult<Fields>>(
+    config.channel,
+    {
+    action: "list_trusted_mail_senders",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type MailApplyOpsInput = {
   account: string;
   ops: Array<Record<string, any>>;
@@ -4096,6 +4308,79 @@ export async function mailApplyOpsChannel<Fields extends MailApplyOpsFields | un
     config.channel,
     {
     action: "mail_apply_ops",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MailAutoconfigInput = {
+  email: string;
+};
+
+export type MailAutoconfigFields = UnifiedFieldSelection<{imap: {host: string, port: number, security: string, __type: "TypedMap", __primitiveFields: "host" | "port" | "security"} | null, smtp: {host: string, port: number, security: string, __type: "TypedMap", __primitiveFields: "host" | "port" | "security"} | null, source: string | null, __type: "TypedMap", __primitiveFields: "source"}>[];
+
+export type InferMailAutoconfigResult<
+  Fields extends MailAutoconfigFields | undefined,
+> = InferResult<{imap: {host: string, port: number, security: string, __type: "TypedMap", __primitiveFields: "host" | "port" | "security"} | null, smtp: {host: string, port: number, security: string, __type: "TypedMap", __primitiveFields: "host" | "port" | "security"} | null, source: string | null, __type: "TypedMap", __primitiveFields: "source"}, Fields>;
+
+export type MailAutoconfigResult<Fields extends MailAutoconfigFields | undefined = undefined> = | { success: true; data: InferMailAutoconfigResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailAutoconfig<Fields extends MailAutoconfigFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MailAutoconfigInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MailAutoconfigResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mail_autoconfig",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MailAutoconfigResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function mailAutoconfigChannel<Fields extends MailAutoconfigFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: MailAutoconfigInput;
+  fields: Fields;
+  resultHandler: (result: MailAutoconfigResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MailAutoconfigResult<Fields>>(
+    config.channel,
+    {
+    action: "mail_autoconfig",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
@@ -4990,6 +5275,81 @@ export async function setMailCredentialChannel<Fields extends SetMailCredentialF
     config.channel,
     {
     action: "set_mail_credential",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetMailSenderTrustInput = {
+  email: string;
+  trusted: boolean;
+  generation: number;
+};
+
+export type SetMailSenderTrustFields = UnifiedFieldSelection<{trusted: boolean, __type: "TypedMap", __primitiveFields: "trusted"}>[];
+
+export type InferSetMailSenderTrustResult<
+  Fields extends SetMailSenderTrustFields | undefined,
+> = InferResult<{trusted: boolean, __type: "TypedMap", __primitiveFields: "trusted"}, Fields>;
+
+export type SetMailSenderTrustResult<Fields extends SetMailSenderTrustFields | undefined = undefined> = | { success: true; data: InferSetMailSenderTrustResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function setMailSenderTrust<Fields extends SetMailSenderTrustFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetMailSenderTrustInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetMailSenderTrustResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_mail_sender_trust",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetMailSenderTrustResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function setMailSenderTrustChannel<Fields extends SetMailSenderTrustFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetMailSenderTrustInput;
+  fields: Fields;
+  resultHandler: (result: SetMailSenderTrustResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetMailSenderTrustResult<Fields>>(
+    config.channel,
+    {
+    action: "set_mail_sender_trust",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

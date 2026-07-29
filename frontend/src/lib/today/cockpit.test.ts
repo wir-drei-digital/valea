@@ -38,7 +38,15 @@ describe('normalizeCockpitToday', () => {
     expect(section.openLoops).toEqual([{ title: 'Send proposal', source: 'mail' }]);
 
     expect(today.mail).toEqual([
-      { account: 'work', configured: true, state: 'idle', pendingOps: 2, notices: ['held folder'] }
+      {
+        account: 'work',
+        configured: true,
+        state: 'idle',
+        pendingOps: 2,
+        notices: ['held folder'],
+        unread: [],
+        unreadCount: 0
+      }
     ]);
 
     expect(today.recentSessions).toHaveLength(1);
@@ -73,7 +81,15 @@ describe('normalizeCockpitToday', () => {
     expect(today.sections[0].mountKey).toBe('primary');
     expect(today.sections[0].icmName).toBe('Studio');
     expect(today.mail).toEqual([
-      { account: 'zoe', configured: false, state: 'inactive', pendingOps: 1, notices: [] }
+      {
+        account: 'zoe',
+        configured: false,
+        state: 'inactive',
+        pendingOps: 1,
+        notices: [],
+        unread: [],
+        unreadCount: 0
+      }
     ]);
     expect(today.recentSessions[0].live).toBe(true);
   });
@@ -112,7 +128,7 @@ describe('normalizeCockpitToday', () => {
     // `Number.isFinite` guard — degrades to 0 like every other wrong-typed
     // field in this normalizer, rather than propagating NaN into the UI.
     expect(today.mail).toEqual([
-      { account: '', configured: false, state: '', pendingOps: 0, notices: ['ok'] }
+      { account: '', configured: false, state: '', pendingOps: 0, notices: ['ok'], unread: [], unreadCount: 0 }
     ]);
     expect(today.recentSessions).toEqual([]);
   });
@@ -157,15 +173,31 @@ describe('normalizeCockpitToday', () => {
 
 describe('mailSummaryLine', () => {
   it('formats one account as "slug: state · N pending"', () => {
-    expect(mailSummaryLine({ account: 'work', configured: true, state: 'idle', pendingOps: 2, notices: [] })).toBe(
-      'work: idle · 2 pending'
-    );
+    expect(
+      mailSummaryLine({
+        account: 'work',
+        configured: true,
+        state: 'idle',
+        pendingOps: 2,
+        notices: [],
+        unread: [],
+        unreadCount: 0
+      })
+    ).toBe('work: idle · 2 pending');
   });
 
   it('formats zero pending plainly', () => {
-    expect(mailSummaryLine({ account: 'zoe', configured: true, state: 'syncing', pendingOps: 0, notices: [] })).toBe(
-      'zoe: syncing · 0 pending'
-    );
+    expect(
+      mailSummaryLine({
+        account: 'zoe',
+        configured: true,
+        state: 'syncing',
+        pendingOps: 0,
+        notices: [],
+        unread: [],
+        unreadCount: 0
+      })
+    ).toBe('zoe: syncing · 0 pending');
   });
 });
 

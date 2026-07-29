@@ -214,7 +214,9 @@ defmodule Valea.CockpitTest do
                  "configured" => true,
                  "state" => "idle",
                  "pending_ops" => 0,
-                 "notices" => []
+                 "notices" => [],
+                 "unread" => [],
+                 "unread_count" => 0
                }
              ]
     end

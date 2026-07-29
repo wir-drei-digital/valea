@@ -131,6 +131,33 @@ defmodule ValeaWeb.MailRpcTest do
     msg_id
   end
 
+  defp plant_html_message!(root, account, folder_abs, uid) do
+    raw =
+      "From: Priya Nair <priya@example.com>\r\n" <>
+        "To: Mara Lindt <mara@example.com>\r\n" <>
+        "Subject: Formatted update\r\n" <>
+        "Date: Fri, 10 Jul 2026 09:15:00 +0000\r\n" <>
+        "Message-ID: <html-rpc-#{System.unique_integer([:positive])}@example.com>\r\n" <>
+        "MIME-Version: 1.0\r\n" <>
+        "Content-Type: multipart/alternative; boundary=\"BB\"\r\n" <>
+        "\r\n" <>
+        "--BB\r\n" <>
+        "Content-Type: text/plain; charset=utf-8\r\n" <>
+        "\r\n" <>
+        "Plain version.\r\n" <>
+        "--BB\r\n" <>
+        "Content-Type: text/html; charset=utf-8\r\n" <>
+        "\r\n" <>
+        "<p>Hello <b>Mara</b></p><img src=\"https://tracker.example/p.gif\">" <>
+        "<script>evil()</script>\r\n" <>
+        "--BB--\r\n"
+
+    {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
+    filename = Maildir.encode_filename(msg_id, uid, MapSet.new(), ":")
+    Maildir.deliver!(folder_abs, filename, raw)
+    msg_id
+  end
+
   # -- mail_status --------------------------------------------------------------
 
   describe "mail_status" do
@@ -856,6 +883,91 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
+  # -- get_mail_account_settings / mail_autoconfig ------------------------------
+
+  describe "get_mail_account_settings" do
+    test "returns the non-secret config for the edit form; smtp null without a block", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara", host: "imap.fastmail.com", port: 993)
+
+      assert %{"success" => true, "data" => %{"account" => account}} =
+               rpc("get_mail_account_settings", %{"account" => "mara"}, [
+                 %{
+                   "account" => [
+                     "host",
+                     "port",
+                     "username",
+                     %{"smtp" => ["host", "port", "security", "username", "from", "fromName"]}
+                   ]
+                 }
+               ])
+
+      assert account["host"] == "imap.fastmail.com"
+      assert account["port"] == 993
+      assert account["username"] == "mara@example.com"
+      assert account["smtp"] == nil
+    end
+
+    test "includes the smtp block when configured", %{generation: generation} do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "zoe",
+                   "host" => "imap.example.com",
+                   "port" => 993,
+                   "username" => "zoe@example.com",
+                   "generation" => generation,
+                   "smtpHost" => "smtp.example.com",
+                   "smtpPort" => 587,
+                   "smtpUsername" => "zoe@example.com"
+                 },
+                 ["saved"]
+               )
+
+      assert %{"success" => true, "data" => %{"account" => account}} =
+               rpc("get_mail_account_settings", %{"account" => "zoe"}, [
+                 %{
+                   "account" => [
+                     "host",
+                     "port",
+                     "username",
+                     %{"smtp" => ["host", "port", "security", "username", "from", "fromName"]}
+                   ]
+                 }
+               ])
+
+      assert account["smtp"]["host"] == "smtp.example.com"
+      assert account["smtp"]["port"] == 587
+      assert account["smtp"]["security"] == "starttls"
+      assert account["smtp"]["username"] == "zoe@example.com"
+    end
+
+    test "unknown slug is not_found; bad grammar is invalid_slug" do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("get_mail_account_settings", %{"account" => "ghost"}, [
+                 %{"account" => ["host"]}
+               ])
+
+      assert inspect(errors) =~ "not_found"
+
+      assert %{"success" => false, "errors" => errors2} =
+               rpc("get_mail_account_settings", %{"account" => "../x"}, [%{"account" => ["host"]}])
+
+      assert inspect(errors2) =~ "invalid_slug"
+    end
+  end
+
+  describe "mail_autoconfig" do
+    test "an address without a usable domain is invalid_email" do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("mail_autoconfig", %{"email" => "nope"}, ["source"])
+
+      assert inspect(errors) =~ "invalid_email"
+    end
+  end
+
   # -- get_mail_message --------------------------------------------------------
 
   describe "get_mail_message" do
@@ -886,6 +998,90 @@ defmodule ValeaWeb.MailRpcTest do
       assert message["path"] == Views.view_rel_path("mara", msg_id)
       assert message["frontmatter"]["id"] == msg_id
       assert message["body"] =~ "Body of Hello."
+    end
+
+    test "an HTML message returns the sanitized rendering + external-content flag; trust flows through",
+         %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
+      msg_id = plant_html_message!(workspace, "mara", inbox_abs, 7)
+      {:ok, 1} = Index.rebuild(workspace, "mara")
+
+      assert %{"success" => true, "data" => %{"message" => message}} =
+               rpc("get_mail_message", %{"account" => "mara", "msgId" => msg_id}, ["message"])
+
+      assert message["html"] =~ "<p>Hello <b>Mara</b></p>"
+      refute message["html"] =~ "<script"
+      assert message["external_content"] == true
+      assert message["sender_trusted"] == false
+
+      # Trust the sender -> the same read now reports trusted; the list RPC
+      # reflects it; untrust reverts.
+      assert %{"success" => true, "data" => %{"trusted" => true}} =
+               rpc(
+                 "set_mail_sender_trust",
+                 %{"email" => "priya@example.com", "trusted" => true, "generation" => generation},
+                 ["trusted"]
+               )
+
+      assert %{"success" => true, "data" => %{"message" => %{"sender_trusted" => true}}} =
+               rpc("get_mail_message", %{"account" => "mara", "msgId" => msg_id}, ["message"])
+
+      assert %{"success" => true, "data" => %{"senders" => ["priya@example.com"]}} =
+               rpc("list_trusted_mail_senders", %{}, ["senders"])
+
+      assert %{"success" => true} =
+               rpc(
+                 "set_mail_sender_trust",
+                 %{
+                   "email" => "priya@example.com",
+                   "trusted" => false,
+                   "generation" => generation
+                 },
+                 ["trusted"]
+               )
+
+      assert %{"success" => true, "data" => %{"senders" => []}} =
+               rpc("list_trusted_mail_senders", %{}, ["senders"])
+    end
+
+    test "a plain-text message reports no html and no external content",
+         %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
+
+      msg_id =
+        plant_message!(
+          workspace,
+          "mara",
+          inbox_abs,
+          1,
+          "Wed, 01 Jul 2026 09:00:00 +0000",
+          "Plain"
+        )
+
+      {:ok, 1} = Index.rebuild(workspace, "mara")
+
+      assert %{"success" => true, "data" => %{"message" => message}} =
+               rpc("get_mail_message", %{"account" => "mara", "msgId" => msg_id}, ["message"])
+
+      assert message["html"] == nil
+      assert message["external_content"] == false
+    end
+
+    test "set_mail_sender_trust refuses an invalid address", %{generation: generation} do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "set_mail_sender_trust",
+                 %{"email" => "not-an-address", "trusted" => true, "generation" => generation},
+                 ["trusted"]
+               )
+
+      assert inspect(errors) =~ "invalid_email"
     end
 
     test "a msg_id containing a path traversal segment is rejected before any file I/O" do

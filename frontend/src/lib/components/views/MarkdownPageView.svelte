@@ -67,12 +67,10 @@
 
   const targetKey = $derived(`${mountKey}/${path}`);
 
-  // Overline above the page title — the parent folder the page lives in
-  // (the memory screen's kind line), or the section root for top-level pages.
-  const parentLabel = $derived.by(() => {
-    const segments = path.split('/').filter(Boolean);
-    return segments.length > 1 ? segments[segments.length - 2] : 'Files';
-  });
+  // Overline above the page title — a constant section label; the mono path
+  // line right under it already names the parent folder, so repeating it
+  // here read as a second, shifting title.
+  const parentLabel = 'Files';
 
   // Dangling-link set (Task C9) — resolved page-kind link targets on THIS
   // page that don't exist on disk. Recomputed below on load/reload (the
