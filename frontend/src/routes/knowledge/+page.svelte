@@ -27,6 +27,16 @@
   } from '$lib/components/knowledge/mount-sections';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
+  import SessionPickerPopover from '$lib/components/knowledge/SessionPickerPopover.svelte';
+  import PaneHost from '$lib/components/panes/PaneHost.svelte';
+  import {
+    parsePaneParam,
+    paneLinkSearch,
+    hrefWithPane,
+    withPaneParam,
+    promoteHref,
+    type PaneDescriptor
+  } from '$lib/panes/pane-route';
   import MountFromElsewhereDialog from '$lib/components/knowledge/MountFromElsewhereDialog.svelte';
   import MountsDoctorPanel from '$lib/components/knowledge/MountsDoctorPanel.svelte';
   import UnmountDialog from '$lib/components/knowledge/UnmountDialog.svelte';
@@ -54,6 +64,62 @@
   const treeNav = $derived(icmToNav(selectedGroup?.tree ?? []));
 
   const classification = $derived(classifyMounts(mountsStore.mounts));
+
+  // --- Side pane (`?pane=`) — the reverse combo ---
+  //
+  // Same contract as the page route next door (see its comment): the URL owns
+  // what's open beside the index, `parsePaneParam` fails closed, and the
+  // primary descriptor is `null` because this route shows no single file — a
+  // chat pane beside the index is still perfectly valid.
+  const paneDescriptor = $derived(parsePaneParam(page.url.searchParams.get('pane')));
+
+  // Suffix for this pane's tree links (`IcmTree`'s `linkSearch`) — opening a
+  // file from the index keeps whatever session is open beside it.
+  const paneSearch = $derived(paneLinkSearch(page.url));
+
+  function openSessionPane(id: string): void {
+    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
+      keepFocus: true,
+      noScroll: true
+    });
+  }
+
+  function openNewSessionPane(mountKey: string): void {
+    void goto(withPaneParam(page.url, { kind: 'chat-new', mountKey }), {
+      keepFocus: true,
+      noScroll: true
+    });
+  }
+
+  function closePane(): void {
+    void goto(withPaneParam(page.url, null), { keepFocus: true, noScroll: true });
+  }
+
+  /** "Open as full view" — the pane's subject becomes a route of its own. */
+  function promotePane(d: PaneDescriptor): void {
+    void goto(promoteHref(d));
+  }
+
+  /** A chat pane opening a file navigates the PRIMARY — here that means leaving the index for the page route, pane intact. */
+  function openFileAsPrimary(sel: { mountKey: string; path: string }): void {
+    void goto(hrefWithPane(knowledgeHref(sel.mountKey, sel.path), page.url), {
+      keepFocus: true,
+      noScroll: true
+    });
+  }
+
+  /**
+   * The `chat-new` pane created its session — re-point the pane at
+   * `chat:<id>` so the remounted view fires the message that was just typed.
+   * `replaceState` so Back doesn't step through the dead composer state.
+   */
+  function paneSessionCreated(id: string): void {
+    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
+      replaceState: true,
+      keepFocus: true,
+      noScroll: true
+    });
+  }
 
   // Task 9.4: no `?icm=` yet, but a mount resolved anyway (the "default to
   // first enabled" branch of `resolveIcmSelection`) — reflect that choice
@@ -95,7 +161,9 @@
       // who already navigated away must not be yanked back.
       if (page.url.pathname !== '/knowledge') return;
       if (resolveIcmSelection(page.url.searchParams.get('icm'), enabledMountKeys) !== mount) return;
-      void goto(knowledgeHref(mount, last.path), { replaceState: true });
+      // Pane-preserving (side-panes pass): reloading a `/knowledge?pane=chat:…`
+      // split must not drop the session on the way to the restored page.
+      void goto(hrefWithPane(knowledgeHref(mount, last.path), page.url), { replaceState: true });
     });
   });
 
@@ -163,7 +231,16 @@
       {#snippet action()}
         {#if selectedMountKey}
           {@const mountKey = selectedMountKey}
-          <NewEntryButton onNew={(mode) => openNew(mountKey, '', mode)} />
+          <div class="flex items-center gap-1">
+            <!-- Same header slot as the page route's picker — the one place
+                 that exists in every knowledge route state. -->
+            <SessionPickerPopover
+              {mountKey}
+              onOpenSession={openSessionPane}
+              onNewSession={() => openNewSessionPane(mountKey)}
+            />
+            <NewEntryButton onNew={(mode) => openNew(mountKey, '', mode)} />
+          </div>
         {/if}
       {/snippet}
       {#snippet children()}
@@ -197,7 +274,7 @@
                sit below it are gone — a PDF or image row opens in
                `FileView` like any other entry. -->
           <div class="px-1 pb-1">
-            <IcmTree nodes={treeNav} activePath={page.url.pathname} />
+            <IcmTree nodes={treeNav} activePath={page.url.pathname} linkSearch={paneSearch} />
           </div>
         {:else}
           <p class="text-ink-meta px-3 py-4 text-[12.5px]">No ICM is mounted yet.</p>
@@ -308,53 +385,71 @@
   {/snippet}
 
   {#snippet main()}
-    <MainColumn>
-      <!-- Fix wave 1 (A2-T9): a declare-stage reference-adoption failure
-           outlives the onboarding screen (see PendingAdoptError's doc comment
-           in stores/mounts.svelte.ts) — surfaced HERE, the first mounts-shaped
-           surface a fresh workspace lands on, as a prominent dismissible
-           banner. Rendered above BOTH main-pane states (header and doctor)
-           so toggling the doctor can't hide it. -->
-      {#if mountsStore.pendingAdoptError}
-        <div
-          role="alert"
-          class="bg-warn-tint text-warn-ink mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3"
-        >
-          <TriangleAlert class="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-          <p class="min-w-0 flex-1 text-[13px] leading-relaxed">
-            {adoptFailureBannerText(mountsStore.pendingAdoptError)}
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            class="shrink-0"
-            onclick={() => mountsStore.clearPendingAdoptError()}
-          >
-            Dismiss
-          </Button>
-        </div>
-      {/if}
+    <!-- `MainColumn` sits INSIDE the primary snippet (never around
+         `PaneHost`) — see the page route's identical note: the host keeps its
+         primary mounted across pane open/close, and only stays that way if
+         nothing conditional wraps it. -->
+    <PaneHost
+      pane={paneDescriptor}
+      paneContext={{
+        placement: 'pane',
+        openFile: openFileAsPrimary,
+        sessionCreated: paneSessionCreated,
+        onArchived: closePane
+      }}
+      onClose={closePane}
+      onPromote={promotePane}
+    >
+      {#snippet primary()}
+        <MainColumn>
+          <!-- Fix wave 1 (A2-T9): a declare-stage reference-adoption failure
+               outlives the onboarding screen (see PendingAdoptError's doc comment
+               in stores/mounts.svelte.ts) — surfaced HERE, the first mounts-shaped
+               surface a fresh workspace lands on, as a prominent dismissible
+               banner. Rendered above BOTH main-pane states (header and doctor)
+               so toggling the doctor can't hide it. -->
+          {#if mountsStore.pendingAdoptError}
+            <div
+              role="alert"
+              class="bg-warn-tint text-warn-ink mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3"
+            >
+              <TriangleAlert class="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+              <p class="min-w-0 flex-1 text-[13px] leading-relaxed">
+                {adoptFailureBannerText(mountsStore.pendingAdoptError)}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="shrink-0"
+                onclick={() => mountsStore.clearPendingAdoptError()}
+              >
+                Dismiss
+              </Button>
+            </div>
+          {/if}
 
-      {#if doctorOpen}
-        <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
-          <button
-            type="button"
-            onclick={() => (doctorOpen = false)}
-            class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
-          >
-            <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-            Back to Files
-          </button>
-          <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
-        </div>
-      {:else}
-        <PageHeader
-          title="Files"
-          subtitle="Your business memory. Every page is a plain Markdown file in your workspace."
-        />
-      {/if}
-    </MainColumn>
+          {#if doctorOpen}
+            <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
+              <button
+                type="button"
+                onclick={() => (doctorOpen = false)}
+                class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
+              >
+                <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
+                Back to Files
+              </button>
+              <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
+            </div>
+          {:else}
+            <PageHeader
+              title="Files"
+              subtitle="Your business memory. Every page is a plain Markdown file in your workspace."
+            />
+          {/if}
+        </MainColumn>
+      {/snippet}
+    </PaneHost>
   {/snippet}
 </AppFrame>
 

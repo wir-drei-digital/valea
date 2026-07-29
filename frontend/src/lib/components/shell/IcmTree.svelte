@@ -10,11 +10,23 @@
   let {
     nodes,
     activePath = '',
+    linkSearch = '',
     onBeforeMutate,
     onSelect
   }: {
     nodes: NavTreeItem[];
     activePath?: string;
+    /**
+     * Query string appended to every leaf link's `href` (side-panes pass —
+     * e.g. `?pane=chat:<id>`): browsing the tree with a chat pane open keeps
+     * the pane, instead of every file click silently closing it. Appended to
+     * the RENDERED href only — `node.href` itself stays the bare path, so
+     * `activePath` comparisons and `treeOpenState`'s per-href keys are
+     * unaffected (a pane opening/closing must not collapse the tree).
+     * `knowledgeHref` never carries a query of its own, so a plain `?…`
+     * suffix is safe.
+     */
+    linkSearch?: string;
     /**
      * Flushes the currently open page's pending edit before a rename/delete
      * mutate call fires (see route + before-mutate.ts). Only ever wired to
@@ -100,7 +112,7 @@
             {#if node.loaded === false}
               <p class="text-ink-meta px-2 py-[3px] text-[12px]">Loading…</p>
             {:else if node.children.length}
-              <IcmTree nodes={node.children} {activePath} {onBeforeMutate} {onSelect} />
+              <IcmTree nodes={node.children} {activePath} {linkSearch} {onBeforeMutate} {onSelect} />
             {:else}
               <p class="text-ink-meta px-2 py-[3px] text-[12px] italic">Empty</p>
             {/if}
@@ -127,7 +139,7 @@
             </button>
           {:else}
             <a
-              href={node.href}
+              href={node.href + linkSearch}
               aria-current={activePath === node.href ? 'page' : undefined}
               class={[
                 'flex items-center gap-1 rounded-md py-[3px] pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',

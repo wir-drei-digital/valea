@@ -88,6 +88,35 @@ export function withPaneParam(url: URL, d: PaneDescriptor | null): string {
   return next.pathname + next.search;
 }
 
+/**
+ * The `?pane=…` query string to append to a SIBLING link's href — the
+ * knowledge tree's file rows (`IcmTree`'s `linkSearch`), so browsing files
+ * with a chat pane open keeps the pane instead of silently closing it.
+ * `''` when nothing valid is open.
+ *
+ * Rebuilt from the PARSED descriptor rather than copied raw: a garbage
+ * `?pane=` in the current URL is dropped instead of propagated onto every
+ * row. Safe to concatenate — `knowledgeHref` never carries a query of its own.
+ */
+export function paneLinkSearch(url: URL): string {
+  const d = parsePaneParam(url.searchParams.get('pane'));
+  return d ? `?pane=${encodeURIComponent(serializePaneParam(d))}` : '';
+}
+
+/**
+ * `href` carrying the pane `url` currently has open — for a route-level
+ * navigation that must KEEP the side pane: a chat pane opening a file in the
+ * primary, or the knowledge index's last-opened restore. `href`'s own query
+ * (e.g. `?icm=`) survives; an invalid `?pane=` is dropped, same as
+ * `paneLinkSearch`.
+ */
+export function hrefWithPane(href: string, url: URL): string {
+  const next = new URL(href, url.origin);
+  const d = parsePaneParam(url.searchParams.get('pane'));
+  if (d) next.searchParams.set('pane', serializePaneParam(d));
+  return next.pathname + next.search;
+}
+
 /** Pane-chrome title. Kept static/pure (no store lookups) — the view inside the pane carries its own richer header. */
 export function paneTitle(d: PaneDescriptor): string {
   switch (d.kind) {

@@ -15,6 +15,16 @@
   import FileView from '$lib/components/views/FileView.svelte';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
+  import SessionPickerPopover from '$lib/components/knowledge/SessionPickerPopover.svelte';
+  import PaneHost from '$lib/components/panes/PaneHost.svelte';
+  import {
+    parsePaneParam,
+    paneLinkSearch,
+    hrefWithPane,
+    withPaneParam,
+    promoteHref,
+    type PaneDescriptor
+  } from '$lib/panes/pane-route';
 
   let newEntryMode: 'page' | 'folder' = $state('page');
   let newEntryOpen = $state(false);
@@ -133,55 +143,160 @@
   async function flushBeforeMutate(): Promise<void> {
     await fileViewRef?.flushPending();
   }
+
+  // --- Side pane (`?pane=`) — the reverse combo ---
+  //
+  // A chat session opens BESIDE the file you're reading (the session picker
+  // in the list-pane header), mirroring `/chat`'s file panes. Same contract
+  // as there: the URL is the one source of truth, so a split is linkable and
+  // survives reload; `parsePaneParam` fails closed; `PaneHost` additionally
+  // drops a pane duplicating the primary. Every navigation keeps focus and
+  // scroll — opening a session must not blur the editor or jump the page.
+  const paneDescriptor = $derived(parsePaneParam(page.url.searchParams.get('pane')));
+  const primaryDescriptor = $derived<PaneDescriptor | null>(
+    decodedPath ? { kind: 'file', mountKey, path: decodedPath } : null
+  );
+
+  // Suffix for the list-pane tree's own links (see `IcmTree`'s `linkSearch`):
+  // browsing files with a chat pane open keeps the pane.
+  const paneSearch = $derived(paneLinkSearch(page.url));
+
+  function openSessionPane(id: string): void {
+    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
+      keepFocus: true,
+      noScroll: true
+    });
+  }
+
+  function openNewSessionPane(): void {
+    void goto(withPaneParam(page.url, { kind: 'chat-new', mountKey }), {
+      keepFocus: true,
+      noScroll: true
+    });
+  }
+
+  function closePane(): void {
+    void goto(withPaneParam(page.url, null), { keepFocus: true, noScroll: true });
+  }
+
+  /** "Open as full view" — the pane's subject becomes a route of its own. */
+  function promotePane(d: PaneDescriptor): void {
+    void goto(promoteHref(d));
+  }
+
+  /**
+   * A chat pane opening a file navigates the PRIMARY (the pane stays) — the
+   * mirror image of `/chat`, where the same click opens a side pane. Tool
+   * chips and the session header's tree both land here.
+   */
+  function openFileAsPrimary(sel: { mountKey: string; path: string }): void {
+    void goto(hrefWithPane(knowledgeHref(sel.mountKey, sel.path), page.url), { keepFocus: true, noScroll: true });
+  }
+
+  /**
+   * The `chat-new` pane created its session — re-point the pane at
+   * `chat:<id>` so the remounted view fires the message that was just typed
+   * (`ChatView` stashes it via `setInitialPrompt` and hands the id back).
+   * `replaceState` so Back doesn't step through the dead composer state.
+   */
+  function paneSessionCreated(id: string): void {
+    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
+      replaceState: true,
+      keepFocus: true,
+      noScroll: true
+    });
+  }
 </script>
 
 <AppFrame onBeforeMutateActive={flushBeforeMutate}>
   {#snippet list()}
     <ListPane title={listContext.title}>
       {#snippet action()}
-        <NewEntryButton onNew={openNew} />
+        <div class="flex items-center gap-1">
+          <!-- The one header slot every knowledge route state has (file,
+               folder, index) — see the task brief's note on why the picker
+               lives here rather than in `PageHeader`. -->
+          {#if mountKey}
+            <SessionPickerPopover {mountKey} onOpenSession={openSessionPane} onNewSession={openNewSessionPane} />
+          {/if}
+          <NewEntryButton onNew={openNew} />
+        </div>
       {/snippet}
       {#snippet children()}
         <div class="px-1 pt-1">
-          <IcmTree nodes={treeNav} activePath={page.url.pathname} onBeforeMutate={flushBeforeMutate} />
+          <IcmTree
+            nodes={treeNav}
+            activePath={page.url.pathname}
+            linkSearch={paneSearch}
+            onBeforeMutate={flushBeforeMutate}
+          />
         </div>
       {/snippet}
     </ListPane>
   {/snippet}
 
   {#snippet main()}
-    <!-- `wide` (file-browser pass): the editor container spans the full
-         main pane so TABLES can grow to it; every other section (and every
-         editor text block, via tiptap.css's `.page-editor` per-block caps)
-         re-caps itself to the classic 596px prose column — the same content
-         width the default prose column produces (660px minus its px-8). -->
-    <MainColumn wide>
-      {#if node?.type === 'folder'}
-        <div class="mx-auto w-full max-w-[596px]">
-          <PageHeader title={node.name} subtitle="Pick a page from the list to read it." />
-        </div>
-      {:else if node || hasExtension}
-        <!-- File routes render off `FileView`'s own fetch (kicked off
-             optimistically for any path with an extension, see
-             `hasExtension`) — never gated on the lazy tree. -->
-        <FileView
-          bind:this={fileViewRef}
-          {mountKey}
-          path={decodedPath}
-          onVanished={() => void goto('/knowledge')}
-        />
-      {:else if !icmStore.loaded || !ensureSettled}
-        <!-- Lazy tree still ensuring this path's ancestors — a missing node
-             is "still loading" here, NOT "doesn't exist". -->
-        <div class="mx-auto flex w-full max-w-[596px] flex-col gap-3" data-testid="knowledge-loading-skeleton">
-          <Skeleton class="h-6 w-1/3" />
-          <Skeleton class="h-4 w-2/3" />
-          <Skeleton class="h-4 w-1/2" />
-        </div>
-      {:else}
-        <p class="mx-auto w-full max-w-[596px] text-ink-body text-[13.5px]">This page doesn't exist anymore.</p>
-      {/if}
-    </MainColumn>
+    <!-- `MainColumn` sits INSIDE the primary snippet, never around
+         `PaneHost`: the host keeps its primary pane mounted across pane
+         open/close (see its own comment), and wrapping it in something that
+         flips with pane state would hand back the teardown that structure
+         exists to prevent — here that would mean losing the open editor's
+         unsaved keystrokes. -->
+    <PaneHost
+      {primaryDescriptor}
+      pane={paneDescriptor}
+      paneContext={{
+        placement: 'pane',
+        openFile: openFileAsPrimary,
+        sessionCreated: paneSessionCreated,
+        onArchived: closePane
+      }}
+      onClose={closePane}
+      onPromote={promotePane}
+    >
+      {#snippet primary()}
+        <!-- `wide` (file-browser pass): the editor container spans the full
+             main pane so TABLES can grow to it; every other section (and every
+             editor text block, via tiptap.css's `.page-editor` per-block caps)
+             re-caps itself to the classic 596px prose column — the same content
+             width the default prose column produces (660px minus its px-8). -->
+        <MainColumn wide>
+          {#if node?.type === 'folder'}
+            <div class="mx-auto w-full max-w-[596px]">
+              <PageHeader title={node.name} subtitle="Pick a page from the list to read it." />
+            </div>
+          {:else if node || hasExtension}
+            <!-- File routes render off `FileView`'s own fetch (kicked off
+                 optimistically for any path with an extension, see
+                 `hasExtension`) — never gated on the lazy tree. -->
+            <!-- The file vanished under us (deleted/renamed — possibly BY the
+                 session in the side pane): fall back to the index, keeping
+                 whatever is open beside it. -->
+            <FileView
+              bind:this={fileViewRef}
+              {mountKey}
+              path={decodedPath}
+              onVanished={() => void goto(hrefWithPane('/knowledge', page.url))}
+            />
+          {:else if !icmStore.loaded || !ensureSettled}
+            <!-- Lazy tree still ensuring this path's ancestors — a missing node
+                 is "still loading" here, NOT "doesn't exist". -->
+            <div
+              class="mx-auto flex w-full max-w-[596px] flex-col gap-3"
+              data-testid="knowledge-loading-skeleton"
+            >
+              <Skeleton class="h-6 w-1/3" />
+              <Skeleton class="h-4 w-2/3" />
+              <Skeleton class="h-4 w-1/2" />
+            </div>
+          {:else}
+            <p class="mx-auto w-full max-w-[596px] text-ink-body text-[13.5px]">
+              This page doesn't exist anymore.
+            </p>
+          {/if}
+        </MainColumn>
+      {/snippet}
+    </PaneHost>
   {/snippet}
 </AppFrame>
 

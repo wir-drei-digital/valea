@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  hrefWithPane,
+  paneLinkSearch,
   panesEqual,
   paneTitle,
   parsePaneParam,
@@ -66,6 +68,35 @@ describe('withPaneParam', () => {
     const cleared = withPaneParam(url2, null);
     expect(new URLSearchParams(cleared.split('?')[1] ?? '').get('pane')).toBeNull();
     expect(new URLSearchParams(cleared.split('?')[1] ?? '').get('session')).toBe('abc');
+  });
+});
+
+describe('paneLinkSearch', () => {
+  it('round-trips through a link href, encoding included', () => {
+    const url = new URL(`http://localhost/knowledge/notes/a.md?${new URLSearchParams({ pane: serializePaneParam(file) })}`);
+    const search = paneLinkSearch(url);
+    const linked = new URL(`http://localhost/knowledge/notes/b.md${search}`);
+    expect(parsePaneParam(linked.searchParams.get('pane'))).toEqual(file);
+  });
+
+  it('is empty for an absent or invalid pane param', () => {
+    expect(paneLinkSearch(new URL('http://localhost/knowledge/notes/a.md'))).toBe('');
+    expect(paneLinkSearch(new URL('http://localhost/knowledge/notes/a.md?pane=bogus:x'))).toBe('');
+  });
+});
+
+describe('hrefWithPane', () => {
+  it("carries the open pane onto another route's href, keeping that href's own query", () => {
+    const url = new URL(`http://localhost/knowledge?icm=notes&${new URLSearchParams({ pane: serializePaneParam(chat) })}`);
+    const next = new URL(`http://localhost${hrefWithPane('/knowledge/notes/a.md?raw=1', url)}`);
+    expect(next.pathname).toBe('/knowledge/notes/a.md');
+    expect(next.searchParams.get('raw')).toBe('1');
+    expect(parsePaneParam(next.searchParams.get('pane'))).toEqual(chat);
+  });
+
+  it('adds nothing when no valid pane is open', () => {
+    expect(hrefWithPane('/knowledge', new URL('http://localhost/knowledge/notes/a.md'))).toBe('/knowledge');
+    expect(hrefWithPane('/knowledge', new URL('http://localhost/k?pane=bogus:x'))).toBe('/knowledge');
   });
 });
 
