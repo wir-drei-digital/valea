@@ -21,6 +21,7 @@ import {
   addressListLabel,
   formatDateTime,
   attachmentsFromFrontmatter,
+  mailAttachmentTarget,
   formatBytes,
   mailStateLabel,
   mailMaintenanceErrorMessage,
@@ -360,6 +361,40 @@ describe('attachmentsFromFrontmatter', () => {
     expect(attachmentsFromFrontmatter(null)).toEqual([]);
     expect(attachmentsFromFrontmatter({})).toEqual([]);
     expect(attachmentsFromFrontmatter({ attachments: 'nope' })).toEqual([]);
+  });
+});
+
+describe('mailAttachmentTarget', () => {
+  it('re-addresses a workspace path as (mail mount key, mount-relative path)', () => {
+    expect(mailAttachmentTarget('sources/mail/mara/views/attachments/m1/contract.pdf')).toEqual({
+      mountKey: 'mail-mara',
+      path: 'views/attachments/m1/contract.pdf'
+    });
+  });
+
+  it('keeps every segment after the mount root, including a filename with slashes-worth of dots', () => {
+    expect(mailAttachmentTarget('sources/mail/work-acct/views/attachments/m1/a/b/report.final.pdf')).toEqual({
+      mountKey: 'mail-work-acct',
+      path: 'views/attachments/m1/a/b/report.final.pdf'
+    });
+  });
+
+  it('refuses anything that is not an attachment under an account mailbox', () => {
+    // The message view, the drafts, the sidecars — real neighbours of the
+    // attachments dir, and none of them addressable as an attachment.
+    expect(mailAttachmentTarget('sources/mail/mara/views/messages/m1.md')).toBeNull();
+    expect(mailAttachmentTarget('sources/mail/mara/drafts/d1.md')).toBeNull();
+    expect(mailAttachmentTarget('sources/calendar/valea/events/e1.md')).toBeNull();
+    // Attachment-shaped but truncated: no msg_id/filename left to name.
+    expect(mailAttachmentTarget('sources/mail/mara/views/attachments/m1')).toBeNull();
+  });
+
+  it('refuses traversal and empty segments rather than passing them to the backend', () => {
+    expect(mailAttachmentTarget('sources/mail/mara/views/attachments/../../messages/m1.md')).toBeNull();
+    expect(mailAttachmentTarget('sources/mail/../../etc/views/attachments/m1/x.pdf')).toBeNull();
+    expect(mailAttachmentTarget('sources/mail//views/attachments/m1/x.pdf')).toBeNull();
+    expect(mailAttachmentTarget('/sources/mail/mara/views/attachments/m1/x.pdf')).toBeNull();
+    expect(mailAttachmentTarget('')).toBeNull();
   });
 });
 

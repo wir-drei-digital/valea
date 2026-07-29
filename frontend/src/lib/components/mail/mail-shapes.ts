@@ -656,6 +656,34 @@ export function attachmentsFromFrontmatter(
   });
 }
 
+/**
+ * Re-addresses an attachment's WORKSPACE-relative frontmatter path
+ * (`sources/mail/<account>/views/attachments/<msg_id>/<file>`) into the
+ * `(mount_key, mount-relative path)` pair `/files/raw` speaks — the account's
+ * synthetic `mail-<account>` mount is rooted at `sources/mail/<account>`, so
+ * the first three segments are exactly what the mount key already names.
+ *
+ * Validated SEGMENT-WISE rather than by prefix-stripping, so the shape is
+ * checked rather than assumed: anything that isn't literally a
+ * `views/attachments/<msg_id>/<file>` under some account — a relative
+ * escape, an empty segment, a path from some other source — returns `null`
+ * and the caller offers no open action at all. The backend re-derives all of
+ * this and re-contains it (`ValeaWeb.FilesController`); this is addressing,
+ * never authority.
+ */
+export function mailAttachmentTarget(path: string): { mountKey: string; path: string } | null {
+  const segments = path.split('/');
+  // sources / mail / <account> / views / attachments / <msg_id> / <file>
+  if (segments.length < 7) return null;
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null;
+
+  const [sources, mail, account, views, attachments] = segments;
+  if (sources !== 'sources' || mail !== 'mail' || views !== 'views') return null;
+  if (attachments !== 'attachments') return null;
+
+  return { mountKey: `mail-${account}`, path: segments.slice(3).join('/') };
+}
+
 /** Human-readable size: whole bytes under 1KB, one decimal below 10 units, whole numbers from 10 up — never throws on bad input. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';

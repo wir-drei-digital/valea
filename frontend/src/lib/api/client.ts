@@ -1540,6 +1540,41 @@ async function uploadImage(
   return { ok: true, data: { path: data.path, relFromPage: data.rel_from_page } };
 }
 
+/**
+ * Mints a one-file, short-lived `ticket` for `(mountKey, path)` — the
+ * credential a `/files/raw` request can carry when it CANNOT send the
+ * `x-valea-token` header, i.e. when the fetch is performed by a new browser
+ * tab or by the OS browser rather than by this page (see
+ * `rawFileOpenUrl`, and `ValeaWeb.FilesController`'s "Tickets" moduledoc
+ * section for why that is a narrower grant than the header it replaces).
+ *
+ * Plain HTTP for the same reason as `uploadImage` above — `POST
+ * /files/ticket` is not an Ash RPC action — and carrying the same header,
+ * which is the gate: a ticket is only obtainable BY the token holder.
+ */
+async function fileTicket(mountKey: string, path: string): Promise<ApiResult<string>> {
+  let response: Response;
+  try {
+    response = await fetch('/files/ticket', {
+      method: 'POST',
+      body: JSON.stringify({ mount_key: mountKey, path }),
+      headers: { 'content-type': 'application/json', 'x-valea-token': controlToken() }
+    });
+  } catch {
+    return { ok: false, error: 'network_error' };
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  const ticket =
+    payload && typeof payload === 'object' ? (payload as Record<string, unknown>).ticket : null;
+
+  if (!response.ok || typeof ticket !== 'string' || ticket === '') {
+    return { ok: false, error: 'ticket_failed' };
+  }
+
+  return { ok: true, data: ticket };
+}
+
 export const api = {
   // id-based (C9, Phase 2) — `getWorkspace`'s payload now carries `id`
   // instead of `path` (see `Valea.Api.Workspace`'s moduledoc); no caller
@@ -2353,7 +2388,9 @@ export const api = {
 
   // Images (Task C7). Plain HTTP, not Ash RPC — see `uploadImage`'s own doc
   // comment above.
-  uploadImage
+  uploadImage,
+  // Raw-file open tickets (mail M1 task 4). Plain HTTP too, same reason.
+  fileTicket
 };
 
 export type Api = typeof api;

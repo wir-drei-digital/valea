@@ -14,10 +14,11 @@ defmodule ValeaWeb.Router do
     plug ValeaWeb.Plugs.ControlToken
   end
 
-  # Image upload shares the RPC surface's token gate — mirrors the `:rpc`
-  # pipeline (named separately since it lives in its own `/files` scope,
-  # not `/rpc`).
-  pipeline :files_upload do
+  # The FULLY token-gated half of `/files` — image upload and raw-serve
+  # ticket minting. Mirrors the `:rpc` pipeline (named separately since it
+  # lives in its own `/files` scope, not `/rpc`), and is the reason a ticket
+  # is never a way IN: you need the control token to get one.
+  pipeline :files_control do
     plug :accepts, ["json"]
     plug ValeaWeb.Plugs.ControlToken
   end
@@ -34,16 +35,19 @@ defmodule ValeaWeb.Router do
   end
 
   scope "/files", ValeaWeb do
-    pipe_through :files_upload
+    pipe_through :files_control
     post "/upload", FilesController, :upload
+    post "/ticket", FilesController, :ticket
   end
 
   # PARTLY token-exempt, which is why it cannot use `ValeaWeb.Plugs.
   # ControlToken` as a pipeline plug: the controller performs that same
   # check itself, for image extensions ONLY it skips it (an `<img>` tag
-  # cannot send headers), and every failure is the route's opaque 404
-  # rather than the plug's 401. See `ValeaWeb.FilesController`'s moduledoc
-  # — "The serve route's split credential" — plus the containment story.
+  # cannot send headers), it additionally accepts a `?ticket=` minted above
+  # (for a new tab / the OS browser, which cannot send headers either), and
+  # every failure is the route's opaque 404 rather than the plug's 401. See
+  # `ValeaWeb.FilesController`'s moduledoc — "The serve route's split
+  # credential" and "Tickets" — plus the containment story.
   scope "/files", ValeaWeb do
     pipe_through :api
     get "/raw", FilesController, :serve

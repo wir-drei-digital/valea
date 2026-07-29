@@ -6,11 +6,11 @@ defmodule ValeaWeb.FilesController do
   are exempt, every other format is not. See "The serve route's split
   credential" below; the router's `:serve` scope carries the short version.
 
-  Both actions address content by `(mount_key, ICM-relative path)` — the
+  Both actions address content by `(mount_key, mount-relative path)` — the
   same vocabulary `Valea.ICM` uses (task 4.4 re-key) — never a raw
-  workspace-relative or bare absolute path. `resolve_mount/2` looks
+  workspace-relative or bare absolute path. `resolve_mount/3` looks
   `mount_key` up via `Valea.Mounts.mount_by_key/2` and requires it to be
-  ENABLED and non-degraded; `contain/2` then re-expands the relative path
+  ENABLED and non-degraded; `contain/3` then re-expands the relative path
   against THAT mount's own root and re-checks it via
   `Valea.Paths.resolve_real/2` (symlink-aware containment — a symlink
   planted inside the mount can't smuggle either action outside its root).
@@ -27,19 +27,61 @@ defmodule ValeaWeb.FilesController do
   `PdfView` hands pdf.js `httpHeaders`), so they do:
 
     * extension in `@allowed_types` (the image formats) — served
-      token-free. The pre-existing unauthenticated surface, unchanged.
+      token-free, and ONLY out of an `:icm` mount. The pre-existing
+      unauthenticated surface, unchanged.
     * everything else (`.pdf`, and every extension that falls to the text
-      bucket) — requires the `x-valea-token` control token: the same
-      credential, read from the same header and compared with the same
-      `Plug.Crypto.secure_compare/2`, as `ValeaWeb.Plugs.ControlToken`
-      enforces for `/rpc/*` and `/files/upload`.
+      bucket) — requires a CREDENTIAL: either the `x-valea-token` control
+      token (the same credential, read from the same header and compared
+      with the same `Plug.Crypto.secure_compare/2`, as
+      `ValeaWeb.Plugs.ControlToken` enforces for `/rpc/*` and
+      `/files/upload`) or a `ticket` (see below).
 
   Only the FAILURE shape differs from that plug. It answers 401; this
   route answers its usual empty 404 for everything, so a missing token, a
   wrong token, a path outside the mount and a file that does not exist are
   indistinguishable — no oracle for "exists but unauthorized". The check
-  also runs BEFORE any filesystem work, so an unauthorized request cannot
-  learn about a file by how long the 404 took.
+  also runs BEFORE any filesystem work (ticket verification is pure
+  crypto over the query params), so an unauthorized request cannot learn
+  about a file by how long the 404 took.
+
+  ## Tickets — a credential for a request that cannot send headers (mail pass)
+
+  `POST /files/ticket` (control-token gated, same pipeline as
+  `/files/upload`) mints a `Phoenix.Token` signed over the exact
+  `{mount_key, path}` pair being asked for, and `GET /files/raw` accepts
+  `?ticket=` in place of the header. It exists because a raw URL handed
+  to a NEW TAB or to the OS browser (`openExternal` — the mail
+  attachment-chip open) cannot carry a header, exactly the situation the
+  calendar feed's own `?token=` solves for subscription fetchers.
+
+  A ticket is not a widening of the unauthenticated surface: minting one
+  requires the control token, and a token-bearing caller could already
+  read the same bytes through the header. What it grants is deliberately
+  the NARROWEST thing that makes the open work — ONE `{mount_key, path}`
+  pair (a ticket for another file simply fails the `^mount_key`/`^path`
+  match), for `@ticket_max_age` seconds, with no ambient authority of any
+  kind. `secret_key_base` is the signing key, so a ticket cannot be
+  forged without it and cannot be turned back into the control token.
+
+  ## Mail attachments (mail full-client M1 task 4)
+
+  Synthetic `kind: :mail` mounts were, and outside this one carve-out
+  still are, rejected outright (see `resolve_mount/3`). The carve-out:
+  a CREDENTIALED request may serve out of a mail mount, and only from its
+  `views/attachments/` subtree (`Valea.Mail.Views.attachments_mount_rel_dir/0`
+  — the layout lives there, not here). Everything else under
+  `sources/mail/<slug>` — the message views, the drafts, the ops ledger,
+  the `.fingerprints` sidecars, the index — stays unreachable through
+  this route.
+
+  Both halves of that sentence carry weight. CREDENTIALED, because the
+  image exemption must not follow: a `.png` attachment served token-free
+  would put the user's mail within reach of every other local account and
+  every `127.0.0.1`-permitted browser extension, which is precisely the
+  reach the exemption is scoped to avoid. And ATTACHMENTS ONLY, because
+  the reason to reach into a mailbox from an HTTP file route at all is
+  the one file the human just clicked — an attachment they are already
+  reading the message of — not the mailbox.
 
   Why this matters on a loopback listener: 127.0.0.1 is not user-scoped.
   "Only files a local process could already read" is true of the user's
@@ -111,6 +153,7 @@ defmodule ValeaWeb.FilesController do
   """
   use Phoenix.Controller, formats: [:json]
 
+  alias Valea.Mail.Views
   alias Valea.Mounts
   alias Valea.Paths
   alias Valea.Workspace.Manager
@@ -133,6 +176,14 @@ defmodule ValeaWeb.FilesController do
   # `serve_content_type/1`. Adding a type here widens what `content-type`
   # the serve path can emit; it does NOT widen what uploads accept.
   @serve_types Map.merge(@allowed_types, %{".pdf" => "application/pdf"})
+
+  # Ticket signing (see the moduledoc's "Tickets" section). The salt is a
+  # fixed domain separator; the max age is a click's worth of time — long
+  # enough for a cold OS browser to launch and fetch, short enough that a
+  # ticket left behind in browser history is dead by the time anyone reads
+  # it there.
+  @ticket_salt "valea:files-raw-ticket"
+  @ticket_max_age 120
 
   # -- POST /files/upload --------------------------------------------------
 
@@ -232,11 +283,27 @@ defmodule ValeaWeb.FilesController do
   defp check_content_type(content_type, content_type), do: :ok
   defp check_content_type(_actual, _expected), do: {:error, :bad_type}
 
+  # -- POST /files/ticket ---------------------------------------------------
+
+  # Deliberately does NO authority work of its own — no workspace, no mount
+  # lookup, no containment, no existence check. A ticket is a SIGNATURE over
+  # what was asked for, not a promise that it can be served: `serve/2`
+  # re-runs every gate on redemption, so validating here would only
+  # duplicate that (and hand an oracle to a caller who, holding the control
+  # token, could simply ask `/files/raw` directly). The control-token
+  # pipeline on this route is the whole gate.
+  def ticket(conn, %{"mount_key" => mount_key, "path" => path})
+      when is_binary(mount_key) and is_binary(path) do
+    json(conn, %{"ticket" => Phoenix.Token.sign(conn, @ticket_salt, {mount_key, path})})
+  end
+
+  def ticket(conn, _params), do: bad_request(conn, "invalid_ticket_params")
+
   # -- GET /files/raw -------------------------------------------------------
 
-  def serve(conn, %{"mount_key" => mount_key, "path" => path})
+  def serve(conn, %{"mount_key" => mount_key, "path" => path} = params)
       when is_binary(mount_key) and is_binary(path) do
-    do_serve(conn, mount_key, path)
+    do_serve(conn, params, mount_key, path)
   rescue
     _ -> not_found(conn)
   end
@@ -245,18 +312,25 @@ defmodule ValeaWeb.FilesController do
 
   # The extension no longer decides admission by ITSELF (it did, while this
   # endpoint only ever fed `<img>` tags) — it decides whether a credential is
-  # required, via `authorized?/2`. Everything below it is authority:
-  # workspace, an enabled non-degraded ICM mount (mail mounts rejected), both
-  # containment layers, and a regular file. Anything reaching `send_file/3`
-  # is a file inside a mount the user has enabled, requested either with the
-  # control token or for one of the image formats.
-  defp do_serve(conn, mount_key, path) do
+  # required. Everything below that is authority: workspace, an enabled
+  # non-degraded mount (an ICM one, or — credentialed only — a mail one),
+  # both containment layers, and a regular file. Anything reaching
+  # `send_file/3` is a file inside a mount the user has enabled, requested
+  # either with a credential or for one of the image formats.
+  #
+  # `credentialed?` is computed FIRST and threaded onward rather than
+  # re-derived: it is what keeps the credential decision ahead of every
+  # filesystem touch (the moduledoc's no-timing-oracle property), and it is
+  # the same fact `resolve_mount/3` needs to decide whether a mail mount may
+  # resolve at all.
+  defp do_serve(conn, params, mount_key, path) do
     ext = ext_of(path)
+    credentialed? = credentialed?(conn, params, mount_key, path)
 
-    with true <- authorized?(conn, ext),
+    with true <- credentialed? or Map.has_key?(@allowed_types, ext),
          {:ok, ws} <- workspace_root(),
-         {:ok, mount} <- resolve_mount(ws, mount_key),
-         {:ok, abs} <- contain(mount.root, path),
+         {:ok, mount} <- resolve_mount(ws, mount_key, credentialed?),
+         {:ok, abs} <- contain_for_serve(mount, path),
          true <- regular_file?(abs) do
       {content_type, charset} = serve_content_type(ext)
 
@@ -270,13 +344,12 @@ defmodule ValeaWeb.FilesController do
     end
   end
 
-  # The credential split (see the moduledoc section of that name). Image
-  # extensions are the `<img>`-shaped surface and stay exempt; everything
-  # else must carry the control token. Deliberately keyed on
-  # `@allowed_types` and not `@serve_types` — `.pdf` is reachable only by
-  # pdf.js, which sends headers, so it belongs on the credentialed side.
-  defp authorized?(conn, ext) do
-    Map.has_key?(@allowed_types, ext) or valid_control_token?(conn)
+  # The two credentials this route accepts, in the order they cost: the
+  # header token (a comparison) then a ticket (a signature verification).
+  # Either one means "a caller that already holds the control token asked
+  # for this", which is what every gate downstream is entitled to assume.
+  defp credentialed?(conn, params, mount_key, path) do
+    valid_control_token?(conn) or valid_ticket?(conn, params, mount_key, path)
   end
 
   # Same header, same constant-time comparison, same source of truth as
@@ -294,6 +367,22 @@ defmodule ValeaWeb.FilesController do
         false
     end
   end
+
+  # A `?ticket=` is honored ONLY for the exact pair it was signed over —
+  # the pins do the work: a ticket minted for one file cannot be replayed
+  # against another, so this stays a per-file capability rather than a
+  # second, weaker way to hold the control token. Age is bounded by
+  # `Phoenix.Token`'s own `max_age`, and the signature by
+  # `secret_key_base`; anything malformed, expired, forged or for a
+  # different pair lands in the same `false` as no ticket at all.
+  defp valid_ticket?(conn, %{"ticket" => ticket}, mount_key, path) when is_binary(ticket) do
+    case Phoenix.Token.verify(conn, @ticket_salt, ticket, max_age: @ticket_max_age) do
+      {:ok, {^mount_key, ^path}} -> true
+      _otherwise -> false
+    end
+  end
+
+  defp valid_ticket?(_conn, _params, _mount_key, _path), do: false
 
   # Total by construction: `{content_type, charset}`, both always fixed
   # literals from this module (see the moduledoc's serve paragraph). The
@@ -318,39 +407,73 @@ defmodule ValeaWeb.FilesController do
   # -- shared containment (mirrors `Valea.ICM`'s `resolve_mount/1` +
   # `contain/2`) ------------------------------------------------------------
 
-  # `mount_key` must name a currently ENABLED, non-degraded ICM mount — a
+  # `mount_key` must name a currently ENABLED, non-degraded mount — a
   # disabled/degraded/unknown mount key is folded into one error, same
   # posture `Valea.ICM.resolve_mount/1` takes (an editor-authority
-  # chokepoint, not a config lookup). Synthetic `kind: :mail` mounts are
-  # rejected like its two siblings (`Valea.ICM.resolve_mount/1`,
-  # `Valea.Api.ICM.find_mount`): a mail mount resolving here would serve
-  # mailbox files outside the permission-policy mail tier entirely — true
-  # for a token-BEARING caller as much as for the route's untokened image
-  # half, since the tier is about which surface may read mail at all, not
-  # about who is asking.
-  defp resolve_mount(ws, mount_key) do
+  # chokepoint, not a config lookup).
+  #
+  # `allow_mail?` is the ONE carve-out from the blanket rejection its two
+  # siblings (`Valea.ICM.resolve_mount/1`, `Valea.Api.ICM.find_mount`) still
+  # apply to synthetic `kind: :mail` mounts, and it is false everywhere but
+  # a CREDENTIALED serve. Upload never passes it — `resolve_mount/2` hard-
+  # codes `false`, so what Valea will WRITE stays ICM-only no matter what
+  # credential the writer holds — and neither does the route's untokened
+  # image half, which is what keeps a `.png` attachment out of reach of the
+  # other principals on the loopback listener. `contain_for_serve/2` then
+  # narrows a mail mount to attachments; this only decides that a mail mount
+  # may resolve at all.
+  defp resolve_mount(ws, mount_key), do: resolve_mount(ws, mount_key, false)
+
+  defp resolve_mount(ws, mount_key, allow_mail?) do
     case Mounts.mount_by_key(ws, mount_key) do
       %{enabled: true, degraded: nil, kind: :icm} = mount -> {:ok, mount}
+      %{enabled: true, degraded: nil, kind: :mail} = mount when allow_mail? -> {:ok, mount}
       _ -> {:error, :invalid_mount_key}
     end
   end
 
+  # Where a mount's servable subtree starts. An ICM mount is servable whole
+  # (the Knowledge viewers read arbitrary mount files); a mail mount is
+  # servable ONLY under `views/attachments/`, and gets containment TWICE to
+  # say so: once against the mount root — the gate every mount passes, which
+  # a symlinked `attachments` directory pointing out of the mailbox would
+  # fail — and once against the attachments directory itself, which is what
+  # rules out the message views, drafts, ledger and sidecars sitting beside
+  # it. Both calls return the same lexical path, so the second's is the one
+  # that matters and either one's rejection is the whole request's.
+  defp contain_for_serve(%{kind: :mail, root: root}, path) do
+    with {:ok, _abs} <- contain(root, path) do
+      contain(root, path, Path.join(root, Views.attachments_mount_rel_dir()))
+    end
+  end
+
+  defp contain_for_serve(%{root: root}, path), do: contain(root, path)
+
   # Containment has two layers, both required: LEXICAL (the `..`-collapsed
-  # expansion of `rel_path` against `root` must fall STRICTLY under `root` as
-  # a string — the root itself is not a servable file) and REAL (`Valea.Paths.resolve_real/2` walks the path the way
+  # expansion of `rel_path` against `root` must fall STRICTLY under
+  # `boundary` as a string — the boundary itself is not a servable file) and
+  # REAL (`Valea.Paths.resolve_real/2` walks the path the way
   # the OS would, so a symlink planted inside the mount can't smuggle
   # authority to somewhere else entirely). Returns the LEXICAL absolute
   # path on success — every caller does I/O on the path named, exactly as
   # requested; `resolve_real/2` here is a gate, not a rewrite.
-  defp contain(root, rel_path) do
+  #
+  # `boundary` defaults to `root` and is only ever narrowed (never widened)
+  # by a caller: `rel_path` stays relative to the MOUNT root in every case —
+  # one addressing vocabulary, per the moduledoc — while both layers can be
+  # asked to hold against a subtree of it instead. See `contain_for_serve/2`.
+  defp contain(root, rel_path), do: contain(root, rel_path, root)
+
+  defp contain(root, rel_path, boundary) do
     # Normalized at construction: `Path.expand/2` is host-native and OTP's
     # win32 `filename` functions DOWNCASE the drive letter, while `root` is
     # already in `Paths` vocabulary (UPPERCASE drive). Without this the
     # strict-child guard below can never be false on Windows.
     abs = Paths.normalize(Path.expand(rel_path, root))
+    limit = Paths.normalize(boundary)
 
-    if Paths.ancestor?(root, abs) and not Paths.same_path?(abs, root) do
-      case Paths.resolve_real(abs, root) do
+    if Paths.ancestor?(limit, abs) and not Paths.same_path?(abs, limit) do
+      case Paths.resolve_real(abs, limit) do
         {:ok, _real} -> {:ok, abs}
         {:error, _reason} -> {:error, :outside_mount}
       end

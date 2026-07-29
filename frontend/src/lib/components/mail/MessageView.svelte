@@ -17,6 +17,7 @@
   // (`EntryMenu.svelte`'s `startSessionWithEntry`), just keyed off
   // `message.path` and `contextDoc` swapped for `input` (a workspace
   // locator, not an ICM one — mail messages live outside any ICM's tree).
+  import Copy from '@lucide/svelte/icons/copy';
   import Paperclip from '@lucide/svelte/icons/paperclip';
   import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -24,6 +25,8 @@
   import HtmlMailView from './HtmlMailView.svelte';
   import MoveToPopover from './MoveToPopover.svelte';
   import { api } from '$lib/api/client';
+  import { rawFileOpenUrl } from '$lib/components/files/raw-url';
+  import { prepareExternalOpen } from '$lib/shell/external-link';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -36,6 +39,7 @@
     folderFlagsLine,
     formatBytes,
     formatDateTime,
+    mailAttachmentTarget,
     markReadOp,
     markUnreadOp,
     messageSeen,
@@ -70,6 +74,9 @@
   const attachments = $derived(attachmentsFromFrontmatter(message.frontmatter));
 
   let copiedPath: string | null = $state(null);
+  /** The attachment whose open is mid-flight — one at a time, and the chip says so. */
+  let openingPath: string | null = $state(null);
+  let attachmentError = $state<string | null>(null);
   let starting = $state(false);
   let sessionError = $state<string | null>(null);
   let opBusy = $state(false);
@@ -121,6 +128,8 @@
   $effect(() => {
     void message.path;
     copiedPath = null;
+    openingPath = null;
+    attachmentError = null;
     sessionError = null;
     opError = null;
     seenOverride = null;
@@ -268,6 +277,47 @@
     void runOp(op, false);
   }
 
+  /**
+   * Chip click = OPEN the attachment — a new tab in the browser, the OS
+   * browser on desktop, both via `prepareExternalOpen`.
+   *
+   * The URL is `/files/raw` addressed by the account's synthetic
+   * `mail-<account>` mount (`mailAttachmentTarget` re-addresses the
+   * frontmatter's workspace-relative path; the backend confines a mail mount
+   * to `views/attachments/` and re-contains it there). It carries a
+   * short-lived one-file `ticket` rather than the control-token header,
+   * because the fetch is made by a tab or by another process entirely and
+   * neither can send headers — see `api.fileTicket`.
+   *
+   * `prepareExternalOpen()` runs FIRST, while the click is still on the
+   * stack, so the browser tab is reserved before the ticket round-trip a
+   * popup blocker would otherwise judge us for.
+   */
+  async function openAttachment(path: string): Promise<void> {
+    if (openingPath !== null) return;
+
+    const target = mailAttachmentTarget(path);
+    if (!target) {
+      attachmentError = 'This attachment is not where the mailbox stores attachments.';
+      return;
+    }
+
+    const finishOpen = prepareExternalOpen();
+    openingPath = path;
+    attachmentError = null;
+
+    const result = await api.fileTicket(target.mountKey, target.path);
+    openingPath = null;
+
+    if (!result.ok) {
+      attachmentError = 'Could not open the attachment.';
+      finishOpen(null);
+      return;
+    }
+
+    finishOpen(rawFileOpenUrl(target.mountKey, target.path, result.data, window.location.origin));
+  }
+
   async function copyAttachmentPath(path: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(path);
@@ -412,20 +462,45 @@
       <p class="text-overline mb-2">Attachments</p>
       <div class="flex flex-wrap items-center gap-1.5">
         {#each attachments as attachment (attachment.path)}
-          <button
-            type="button"
-            class="border-paper-chip-border bg-paper-track text-ink-secondary hover:bg-paper-pill inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11.5px] transition-colors"
-            onclick={() => void copyAttachmentPath(attachment.path)}
+          <!-- Two buttons, not a button inside a button: OPEN is the chip
+               body (the whole point of a chip), copy-path is the small
+               secondary affordance it used to be all of. -->
+          <span
+            class="border-paper-chip-border bg-paper-track text-ink-secondary inline-flex items-center overflow-hidden rounded-full border text-[11.5px]"
           >
-            <Paperclip class="size-3" aria-hidden="true" strokeWidth={1.5} />
-            {attachment.filename}
-            <span class="text-ink-meta">· {formatBytes(attachment.bytes)}</span>
-            {#if copiedPath === attachment.path}
-              <span class="text-act font-semibold">Copied</span>
-            {/if}
-          </button>
+            <button
+              type="button"
+              class="hover:bg-paper-pill inline-flex items-center gap-1.5 py-0.5 pr-1.5 pl-2 transition-colors disabled:opacity-60"
+              disabled={openingPath !== null}
+              title="Open {attachment.filename}"
+              onclick={() => void openAttachment(attachment.path)}
+            >
+              <Paperclip class="size-3" aria-hidden="true" strokeWidth={1.5} />
+              {attachment.filename}
+              <span class="text-ink-meta">· {formatBytes(attachment.bytes)}</span>
+              {#if openingPath === attachment.path}
+                <span class="text-ink-meta">Opening…</span>
+              {/if}
+            </button>
+            <button
+              type="button"
+              class="border-paper-chip-border hover:bg-paper-pill text-ink-meta hover:text-ink-secondary inline-flex items-center gap-1 self-stretch border-l py-0.5 pr-2 pl-1.5 transition-colors"
+              title="Copy path"
+              aria-label="Copy the workspace path to {attachment.filename}"
+              onclick={() => void copyAttachmentPath(attachment.path)}
+            >
+              {#if copiedPath === attachment.path}
+                <span class="text-act font-semibold">Copied</span>
+              {:else}
+                <Copy class="size-3" aria-hidden="true" strokeWidth={1.5} />
+              {/if}
+            </button>
+          </span>
         {/each}
       </div>
+      {#if attachmentError}
+        <p class="text-warn-ink mt-2 text-[12px]" role="alert">{attachmentError}</p>
+      {/if}
     </div>
   {/if}
 

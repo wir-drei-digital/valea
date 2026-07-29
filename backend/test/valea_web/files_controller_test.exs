@@ -63,6 +63,47 @@ defmodule ValeaWeb.FilesControllerTest do
     )
   end
 
+  # A valid `config/mail.yaml` account — which is the whole trigger for
+  # `Valea.Mounts.list/1` appending the synthetic `mail-<slug>` mount rooted
+  # at `<ws>/sources/mail/<slug>` (see `Valea.Mounts.MailMountsTest`).
+  # Returns the mount key.
+  defp mount_mail!(workspace, slug) do
+    path = Path.join(workspace, "config/mail.yaml")
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, """
+    version: 4
+    accounts:
+      #{slug}:
+        imap:
+          host: imap.fastmail.com
+          port: 993
+          username: #{slug}@example.com
+    """)
+
+    "mail-" <> slug
+  end
+
+  # Lands bytes where `Valea.Mail.Views` lands a real attachment, and returns
+  # the MOUNT-relative path `/files/raw` addresses it by (the frontmatter's
+  # own path minus the `sources/mail/<slug>/` the mount root already names).
+  defp write_attachment!(workspace, slug, msg_id, filename, bytes) do
+    dir = Path.join([workspace, "sources", "mail", slug, "views", "attachments", msg_id])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, filename), bytes)
+    Path.join(["views", "attachments", msg_id, filename])
+  end
+
+  defp mint_ticket!(mount_key, path) do
+    conn =
+      build_conn()
+      |> with_token()
+      |> post("/files/ticket", %{"mount_key" => mount_key, "path" => path})
+
+    %{"ticket" => ticket} = json_response(conn, 200)
+    ticket
+  end
+
   test "upload lands in Assets and serve returns it", %{conn: conn, workspace: ws} do
     icm = mount_primary!(ws)
 
@@ -656,5 +697,255 @@ defmodule ValeaWeb.FilesControllerTest do
     assert raw_conn()
            |> get("/files/raw", %{"mount_key" => icm.mount_key, "path" => "SHOUT.TXT"})
            |> response(200) == "txt bytes"
+  end
+
+  # -- serve: mail attachments (mail full-client M1 task 4) ----------------
+
+  # THE VERIFICATION this task turned on: before the carve-out below, a mail
+  # attachment was not servable at ALL — `resolve_mount/3`'s ICM-only clause
+  # 404s every `mail-<slug>` key. It is servable now, and only under a
+  # credential: the image exemption deliberately does NOT follow it into a
+  # mailbox, or a `.png` attachment would be readable by every other local
+  # account and every 127.0.0.1-permitted browser extension on this listener.
+  test "a mail attachment serves with the control token and 404s without one", %{workspace: ws} do
+    mount_key = mount_mail!(ws, "mara")
+    pdf = write_attachment!(ws, "mara", "msg-1", "invoice.pdf", "%PDF-1.4\n")
+    png = write_attachment!(ws, "mara", "msg-1", "shot.png", "png bytes")
+
+    assert raw_conn()
+           |> get("/files/raw", %{"mount_key" => mount_key, "path" => pdf})
+           |> response(200) == "%PDF-1.4\n"
+
+    tokened_png = get(raw_conn(), "/files/raw", %{"mount_key" => mount_key, "path" => png})
+    assert response(tokened_png, 200) == "png bytes"
+    assert get_resp_header(tokened_png, "content-type") == ["image/png"]
+
+    # The image half stops at the mount boundary: no token, no attachment,
+    # whatever the extension.
+    for path <- [pdf, png] do
+      assert build_conn()
+             |> get("/files/raw", %{"mount_key" => mount_key, "path" => path})
+             |> response(404) == ""
+    end
+  end
+
+  # The carve-out is `views/attachments/` and nothing else — the rest of a
+  # mailbox (message views, drafts, the ops ledger, the `.fingerprints`
+  # sidecars) stays unreachable through this route even for a token-bearing
+  # caller, which is what keeps this an attachment route rather than a
+  # mailbox one.
+  test "the rest of a mail mount is unreachable even with the control token", %{workspace: ws} do
+    mount_key = mount_mail!(ws, "mara")
+    root = Path.join([ws, "sources", "mail", "mara"])
+
+    File.mkdir_p!(Path.join([root, "views", "messages"]))
+    File.write!(Path.join([root, "views", "messages", "msg-1.md"]), "---\nsubject: secret\n---\n")
+    File.mkdir_p!(Path.join([root, "views", ".fingerprints"]))
+    File.write!(Path.join([root, "views", ".fingerprints", "msg-1"]), "fingerprint")
+    File.mkdir_p!(Path.join(root, "drafts"))
+    File.write!(Path.join([root, "drafts", "d1.md"]), "draft body")
+
+    for path <- ["views/messages/msg-1.md", "views/.fingerprints/msg-1", "drafts/d1.md"] do
+      assert raw_conn()
+             |> get("/files/raw", %{"mount_key" => mount_key, "path" => path})
+             |> response(404) == ""
+    end
+
+    # …and `..` out of the attachments directory is the same 404 — the
+    # boundary is enforced on the COLLAPSED path, not on how it was spelled.
+    assert raw_conn()
+           |> get("/files/raw", %{
+             "mount_key" => mount_key,
+             "path" => "views/attachments/msg-1/../../messages/msg-1.md"
+           })
+           |> response(404) == ""
+  end
+
+  test "a symlink inside a mail attachments dir cannot reach the rest of the mailbox", %{
+    workspace: ws
+  } do
+    mount_key = mount_mail!(ws, "mara")
+    root = Path.join([ws, "sources", "mail", "mara"])
+    write_attachment!(ws, "mara", "msg-1", "real.pdf", "%PDF-1.4\n")
+
+    File.mkdir_p!(Path.join([root, "views", "messages"]))
+    File.write!(Path.join([root, "views", "messages", "msg-1.md"]), "secret view")
+
+    File.ln_s!(
+      Path.join([root, "views", "messages", "msg-1.md"]),
+      Path.join([root, "views", "attachments", "msg-1", "escape.md"])
+    )
+
+    assert raw_conn()
+           |> get("/files/raw", %{
+             "mount_key" => mount_key,
+             "path" => "views/attachments/msg-1/escape.md"
+           })
+           |> response(404) == ""
+  end
+
+  # Serving out of a mail mount must not make one WRITABLE: `resolve_mount/2`
+  # (upload's arity) hard-codes the rejection, so no credential admits an
+  # upload into a mailbox.
+  test "upload still refuses a mail mount", %{conn: conn, workspace: ws} do
+    mount_key = mount_mail!(ws, "mara")
+    upload = %Plug.Upload{path: write_tmp_png!(), filename: "x.png", content_type: "image/png"}
+
+    conn1 =
+      conn
+      |> with_token()
+      |> post("/files/upload", %{
+        "file" => upload,
+        "mount_key" => mount_key,
+        "page_path" => "views/attachments/msg-1/x.png"
+      })
+
+    assert json_response(conn1, 400) == %{"error" => "invalid_page_path"}
+  end
+
+  # -- serve: tickets ------------------------------------------------------
+
+  # The reason tickets exist: a raw URL opened in a NEW TAB or handed to the
+  # OS browser (the mail attachment chip) cannot send `x-valea-token`. A
+  # ticket rides the query string instead and is redeemed with no headers at
+  # all — the same arrangement as the calendar feed's `?token=`.
+  test "a minted ticket serves a mail attachment with no headers at all", %{workspace: ws} do
+    mount_key = mount_mail!(ws, "mara")
+    pdf = write_attachment!(ws, "mara", "msg-1", "invoice.pdf", "%PDF-1.4\n")
+
+    ticket = mint_ticket!(mount_key, pdf)
+
+    conn =
+      get(build_conn(), "/files/raw", %{
+        "mount_key" => mount_key,
+        "path" => pdf,
+        "ticket" => ticket
+      })
+
+    assert response(conn, 200) == "%PDF-1.4\n"
+    assert get_resp_header(conn, "content-type") == ["application/pdf"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+  end
+
+  # A ticket is a per-FILE capability, not a spare control token: it is
+  # signed over the exact pair it was minted for, so it cannot be replayed
+  # against another path, another mount, or a mailbox file outside
+  # attachments.
+  test "a ticket is bound to the exact pair it was minted for", %{workspace: ws} do
+    icm = mount_primary!(ws)
+    mount_key = mount_mail!(ws, "mara")
+    pdf = write_attachment!(ws, "mara", "msg-1", "invoice.pdf", "%PDF-1.4\n")
+    other = write_attachment!(ws, "mara", "msg-2", "other.pdf", "other bytes")
+    File.write!(Path.join(icm.root, "private.txt"), "private notes")
+
+    ticket = mint_ticket!(mount_key, pdf)
+
+    # Same ticket, different path — refused.
+    assert build_conn()
+           |> get("/files/raw", %{
+             "mount_key" => mount_key,
+             "path" => other,
+             "ticket" => ticket
+           })
+           |> response(404) == ""
+
+    # Same ticket, different mount — refused.
+    assert build_conn()
+           |> get("/files/raw", %{
+             "mount_key" => icm.mount_key,
+             "path" => "private.txt",
+             "ticket" => ticket
+           })
+           |> response(404) == ""
+
+    # Garbage and empty tickets are the same 404, never a crash.
+    for bogus <- ["", "not-a-ticket", ticket <> "x"] do
+      assert build_conn()
+             |> get("/files/raw", %{
+               "mount_key" => mount_key,
+               "path" => pdf,
+               "ticket" => bogus
+             })
+             |> response(404) == ""
+    end
+  end
+
+  test "a ticket expires", %{workspace: ws} do
+    mount_key = mount_mail!(ws, "mara")
+    pdf = write_attachment!(ws, "mara", "msg-1", "invoice.pdf", "%PDF-1.4\n")
+
+    stale =
+      Phoenix.Token.sign(ValeaWeb.Endpoint, "valea:files-raw-ticket", {mount_key, pdf},
+        signed_at: System.system_time(:second) - 10_000
+      )
+
+    assert build_conn()
+           |> get("/files/raw", %{"mount_key" => mount_key, "path" => pdf, "ticket" => stale})
+           |> response(404) == ""
+  end
+
+  # Minting is the gate. Without the control token there is no way to get a
+  # ticket, which is what keeps the ticket from widening the unauthenticated
+  # surface — the pipeline's 401, not the serve route's 404, because this
+  # half of `/files` is the plug-gated one.
+  test "minting a ticket requires the control token", %{workspace: ws} do
+    mount_key = mount_mail!(ws, "mara")
+    pdf = write_attachment!(ws, "mara", "msg-1", "invoice.pdf", "%PDF-1.4\n")
+
+    assert build_conn()
+           |> post("/files/ticket", %{"mount_key" => mount_key, "path" => pdf})
+           |> response(401)
+
+    assert build_conn()
+           |> with_token()
+           |> post("/files/ticket", %{"mount_key" => mount_key})
+           |> json_response(400) == %{"error" => "invalid_ticket_params"}
+  end
+
+  # A ticket is a general alternative credential, not a mail-only one — it
+  # reaches the same tokened half of the ICM surface `PlainTextView` and
+  # `PdfView` use their header for. It still grants no more than the token
+  # holder who minted it already had.
+  test "a ticket also serves the credentialed half of an ICM mount", %{workspace: ws} do
+    icm = mount_primary!(ws)
+    File.write!(Path.join(icm.root, "private.txt"), "private notes")
+
+    ticket = mint_ticket!(icm.mount_key, "private.txt")
+
+    assert build_conn()
+           |> get("/files/raw", %{
+             "mount_key" => icm.mount_key,
+             "path" => "private.txt",
+             "ticket" => ticket
+           })
+           |> response(200) == "private notes"
+  end
+
+  # Containment outranks the ticket: a signed pair naming a path outside the
+  # mount is still refused, so minting can stay the dumb signature it is.
+  test "a ticket never substitutes for containment", %{workspace: ws} do
+    icm = mount_primary!(ws)
+
+    outside_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "valea-ticket-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(outside_dir)
+    outside_file = Path.join(outside_dir, "secret.txt")
+    File.write!(outside_file, "should never be served")
+
+    for path <- [outside_file, "../../secrets/x.txt"] do
+      ticket = mint_ticket!(icm.mount_key, path)
+
+      assert build_conn()
+             |> get("/files/raw", %{
+               "mount_key" => icm.mount_key,
+               "path" => path,
+               "ticket" => ticket
+             })
+             |> response(404) == ""
+    end
   end
 end

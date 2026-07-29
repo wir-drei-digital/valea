@@ -311,6 +311,20 @@ defmodule Valea.Mail.Views do
     Path.join(["sources", "mail", account, "views", "messages", "#{msg_id}.md"])
   end
 
+  @doc """
+  `views/attachments` — the attachments directory relative to an ACCOUNT'S
+  MOUNT ROOT (`sources/mail/<account>`, `Valea.Mounts`' synthetic
+  `mail-<slug>` mount), rather than to the workspace root like
+  `view_rel_path/2`.
+
+  Exposed for `ValeaWeb.FilesController`, which confines a mail mount's
+  raw-serve to exactly this subtree (M1 task 4): the layout belongs to this
+  module, so the controller asks rather than re-spelling it and silently
+  drifting if the view tree is ever reshaped.
+  """
+  @spec attachments_mount_rel_dir() :: String.t()
+  def attachments_mount_rel_dir, do: Path.join("views", "attachments")
+
   # -- paths ----------------------------------------------------------------
 
   defp views_dir(account), do: Path.join(["sources", "mail", account, "views"])
