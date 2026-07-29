@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Source of truth for the app icon set: the Valea mark
+       (frontend/src/lib/components/shell/Logo.svelte) with colors hardcoded
+       from layout.css (act green #2f5d48, paper card #fffefa). Circle
+       diameter 880 on a 1024 canvas: ~7% transparent margin so the round
+       icon sits comfortably beside macOS squircles in the Dock.
+
+       Regenerate everything in this folder with:
+         cd desktop && bun run tauri icon <1024px png of this file>
+       (Rasterize with a real SVG renderer, e.g. resvg — ImageMagick's
+       built-in one flattens the bezier leaves and drops the stem stroke.)
+
+       The web favicon (frontend/static/favicon.png) is this same mark
+       full-bleed: drop the translate/scale padding, i.e. scale(32). -->
+  <g transform="translate(72,72) scale(27.5)">
+    <circle cx="16" cy="16" r="16" fill="#2f5d48"/>
+    <path d="M15.4 25.5 C 15.6 20.5, 16.4 14.5, 19 9" fill="none" stroke="#fffefa" stroke-width="1.7" stroke-linecap="round"/>
+    <path d="M15.9 18.9 C 12 18.7, 9.5 16.2, 8.9 12.1 C 13 12.3, 15.7 15, 15.9 18.9 Z" fill="#fffefa"/>
+    <path d="M17.4 13.3 C 21.2 13.4, 23.7 11, 24.2 7 C 20.2 7.1, 17.6 9.6, 17.4 13.3 Z" fill="#fffefa"/>
+  </g>
+</svg>
