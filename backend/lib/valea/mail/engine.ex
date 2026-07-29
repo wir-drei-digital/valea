@@ -170,11 +170,12 @@ defmodule Valea.Mail.Engine do
   `"smtp_credential"` (`"present"` | `"missing"` | `"n/a"`, the last when the
   account has no `smtp:` block at all), and `"notifications"` (boolean, the
   per-account OS-notification opt-in). That is the falsy-map-field rule
-  documented in `Valea.Api.Mail`'s moduledoc: ash_typescript nulls a
-  top-level atom-keyed field whose value is `false`, and both booleans are
-  `false` for every account that hasn't opted in. (The atom-keyed fields
-  above predate the rule and reach the RPC through `mail_status`'s own
-  stringification, which is why they still work.)
+  documented in `Valea.Api.Mail`'s moduledoc: ash_typescript nulls an
+  atom-keyed field whose value is `false` — at ANY depth in a typed map, not
+  only the outermost one — and both booleans are `false` for every account
+  that hasn't opted in. (The atom-keyed fields above predate the rule and
+  reach the RPC through `mail_status`'s own stringification, which is why
+  they still work.)
   """
   @type status :: %{
           :account => String.t(),

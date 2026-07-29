@@ -18,12 +18,27 @@ defmodule Valea.Api.Mail do
       `get_mail_message`'s `message`) — string keys, no camelCase
       translation, same typed-vs-unconstrained split as `Valea.Api.ICM`'s
       moduledoc.
-    * The SAME top-level generic-action boolean/falsy-map-field bug
-      previously documented in the deleted `Valea.Api.Queue`'s moduledoc
-      (ash_typescript 0.17.3 nulls a top-level atom-keyed field whose value
-      is `false`): every action here that can genuinely return `false` at
-      the top level uses a STRING key for that field (`saved`, `removed`,
-      `purged`, `readopted`, `discarded`, `accepted`, `started`, `ok`).
+    * The SAME generic-action boolean/falsy-map-field bug previously
+      documented in the deleted `Valea.Api.Queue`'s moduledoc
+      (ash_typescript 0.17.3 nulls an atom-keyed field whose value is
+      `false`): every action here that can genuinely return `false` uses a
+      STRING key for that field (`saved`, `removed`, `purged`, `readopted`,
+      `discarded`, `accepted`, `started`, `ok`, `notifications`).
+
+      The bug is NOT confined to the outermost map, whatever the earlier
+      "top-level" wording of this rule suggested. A field of a NESTED typed
+      map is nulled identically: `get_mail_account_settings` proved it — a
+      `notifications: [type: :boolean]` declared INSIDE its `account:` map
+      came back `null` for every account that hadn't opted in, which is why
+      that flag now rides BESIDE `account:` under a string key instead
+      (pinned by `mail_rpc_test.exs`). Treat "declared in a typed map, can
+      be `false`" as needing a string key, at ANY depth.
+
+      The one verified exception is an ITEM of an `{:array, :map}` (a
+      `constraints: [items: [fields: ...]]` row): `has_attachments` and
+      `thread_unread` carry a real `false` through the RPC under atom keys,
+      which `mail_rpc_test.exs`'s `list_mail_messages` pagination test
+      asserts directly. Do not generalize that exception to anything else.
     * Every MUTATING action takes a `generation` argument and guards with
       `Valea.Workspace.Manager.check_generation/1` before touching
       anything. Read-only actions (`mail_status`, `list_mail_messages`,
@@ -98,13 +113,15 @@ defmodule Valea.Api.Mail do
   that would otherwise need one `get_mail_thread` per listed row.
 
   The flag is an ordinary input argument, so it takes an atom key like every
-  other argument here — the STRING-key rule in the list above binds
-  top-level RETURN fields that can legitimately be `false`, which an
-  argument is not. `thread_unread` can legitimately be `false` and still
-  takes an atom key: it is a field of an ITEM inside the `messages` array,
-  not a top-level action-return field, and the bug is top-level only —
+  other argument here — the STRING-key rule in the list above binds RETURN
+  fields that can legitimately be `false`, which an argument is not.
+  `thread_unread` can legitimately be `false` and still takes an atom key:
+  it is a field of an ITEM inside the `messages` array, which is the rule's
+  one verified exception (see the bullet above — the exception is the array
+  ITEM position specifically, NOT "anything below the top level").
   `has_attachments` has ridden that same position as an atom key since
-  before threading (`mail_rpc_test.exs` asserts a `false` one arrives).
+  before threading, and `mail_rpc_test.exs`'s `list_mail_messages`
+  pagination test asserts a `false` one arrives.
 
   Absent (or `false`), `list_mail_messages` behaves exactly as it did before
   threading existed: same rows, same order, same `before` cursor, and a
@@ -302,13 +319,12 @@ defmodule Valea.Api.Mail do
       # nothing here can leak one. `security` is stringified from the
       # settings atom (`:starttls`/`:tls`).
       #
-      # `notifications` sits at the TOP level, beside `account:` rather than
-      # inside it, and is returned under a STRING key — the falsy-map-field
-      # rule in this module's moduledoc. It is `false` for every account that
-      # hasn't opted in, and a `false` under an atom key arrives as `null`
-      # (verified for this exact nesting in `mail_rpc_test.exs`: the bug is
-      # not confined to the outermost map, so the flag can't ride inside
-      # `account:` the way `host`/`port` do).
+      # `notifications` sits beside `account:` rather than inside it, under a
+      # STRING key — the falsy-map-field rule in this module's moduledoc,
+      # which this action is the evidence for: it is `false` for every
+      # account that hasn't opted in, and declaring it inside `account:`
+      # returned `null` instead. Moving it back in there is a silent
+      # regression; `mail_rpc_test.exs` pins the `false`.
       constraints fields: [
                     notifications: [type: :boolean, allow_nil?: false],
                     account: [

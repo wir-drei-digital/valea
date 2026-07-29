@@ -960,6 +960,12 @@ defmodule ValeaWeb.MailRpcTest do
       assert Enum.map(page1, & &1["subject"]) == ["Three", "Two"]
       assert Enum.all?(page1, &(&1["viewPath"] =~ "views/messages/"))
 
+      # The falsy-map-field rule's ONE verified exception (this module's
+      # moduledoc cites this line): an atom-keyed boolean on an ITEM of an
+      # `{:array, :map}` survives as a real `false` rather than being nulled,
+      # which is why `has_attachments`/`thread_unread` don't need string keys.
+      assert Enum.map(page1, & &1["hasAttachments"]) == [false, false]
+
       oldest_date = List.last(page1)["date"]
 
       assert %{"success" => true, "data" => %{"messages" => page2}} =
