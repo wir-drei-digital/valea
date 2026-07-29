@@ -62,6 +62,28 @@ defmodule Valea.Api.Mail do
   escaped — nothing this action passes down can widen, redirect, or break
   out of the query. See that function's docs.
 
+  ## Why `remove_mail_account`/`purge_mail_account_files` clear `mail_search`
+
+  `mail_search` is the first thing this app persists MESSAGE BODY TEXT into
+  `app.sqlite`. That makes the account-teardown actions load-bearing in a way
+  they weren't when the leftover cache held only metadata:
+
+    * `purge_mail_account_files` deletes `sources/mail/<slug>` — after which
+      the search index would be the LAST remaining copy of those bodies, and
+      `search_mail` on the purged slug would still answer with body snippets.
+      "Purge my mail files" is a promise a user reads literally, so the rows
+      go with the files.
+    * `remove_mail_account` leaves the files alone (purge is the separate,
+      confirmation-gated action) but drops the account from `config/mail.yaml`
+      — so its rows become cache for an account that no longer exists, still
+      reachable by slug through `search_mail`. They are cleared too, and
+      nothing is lost by it: the view files on disk are the source of truth,
+      and re-adding the account re-activates its Engine, whose `do_activate`
+      runs `Valea.Mail.Index.rebuild/2` and re-feeds every row.
+
+  Neither clears `mail_messages`/`mail_uid_map`/`mail_sync_state`; that
+  metadata-cache gap predates the search index and is tracked separately.
+
   ## `set_mail_credential`'s `kind`
 
   `kind` selects which of the account's TWO credential slots the secret
@@ -317,6 +339,7 @@ defmodule Valea.Api.Mail do
              :ok <- validate_slug(slug),
              :ok <- Settings.remove_account!(root, slug) do
           :ok = MailSupervisor.reload_settings_all(root)
+          :ok = Store.clear_search_rows(slug)
           {:ok, %{"removed" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -341,6 +364,7 @@ defmodule Valea.Api.Mail do
              :ok <- ensure_purge_allowed(slug),
              {:ok, target} <- Paths.resolve_real(slug, Path.join([root, "sources", "mail"])) do
           File.rm_rf!(target)
+          :ok = Store.clear_search_rows(slug)
           {:ok, %{"purged" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}

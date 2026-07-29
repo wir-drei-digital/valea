@@ -9,6 +9,7 @@ defmodule ValeaWeb.MailRpcTest do
   alias Valea.Mail.Index
   alias Valea.Mail.Maildir
   alias Valea.Mail.Settings
+  alias Valea.Mail.Store
   alias Valea.Mail.Views
   alias Valea.Workspace.Manager
 
@@ -979,6 +980,88 @@ defmodule ValeaWeb.MailRpcTest do
                rpc("search_mail", %{"account" => "../x", "query" => "roadmap"}, @search_fields)
 
       assert inspect(errors) =~ "invalid_slug"
+    end
+  end
+
+  # `mail_search` is the one table that persists message BODY TEXT, so the
+  # two teardown actions have to take its rows with them — a purged account
+  # whose files are gone must not still answer `search_mail` with body
+  # snippets. (Its own describe rather than a case inside `search_mail`
+  # above: both actions need a fully-activated-then-removed engine.)
+  describe "account teardown clears the search index" do
+    setup %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+      await_engine_active!("mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
+
+      plant_message!(
+        workspace,
+        "mara",
+        inbox_abs,
+        1,
+        "Wed, 01 Jul 2026 09:00:00 +0000",
+        "Roadmap"
+      )
+
+      {:ok, 1} = Index.rebuild(workspace, "mara")
+
+      assert [_hit] = Store.search("mara", "roadmap")
+
+      :ok
+    end
+
+    test "remove_mail_account drops the rows even though the files stay", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc("remove_mail_account", %{"account" => "mara", "generation" => generation}, [
+                 "removed"
+               ])
+
+      assert Store.search("mara", "roadmap") == []
+
+      assert %{"success" => true, "data" => %{"messages" => []}} =
+               rpc("search_mail", %{"account" => "mara", "query" => "roadmap"}, @search_fields)
+
+      # Removal is not a purge: the view files — the source of truth a
+      # re-added account rebuilds its index from — are untouched.
+      assert File.exists?(Path.join([workspace, "sources", "mail", "mara", "views"]))
+    end
+
+    test "purge_mail_account_files drops the rows with the files", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc("remove_mail_account", %{"account" => "mara", "generation" => generation}, [
+                 "removed"
+               ])
+
+      # Re-feed from the surviving view files, so this test exercises PURGE
+      # clearing the index rather than inheriting an index the removal
+      # already emptied. (This is also the real state a straggler engine
+      # activation would leave behind between the two actions.)
+      {:ok, 1} = Index.rebuild(workspace, "mara")
+      assert [_hit] = Store.search("mara", "roadmap")
+
+      assert %{"success" => true, "data" => %{"purged" => true}} =
+               rpc(
+                 "purge_mail_account_files",
+                 %{"account" => "mara", "confirmation" => "mara", "generation" => generation},
+                 ["purged"]
+               )
+
+      refute File.exists?(Path.join([workspace, "sources", "mail", "mara"]))
+
+      # The body text is gone from app.sqlite too — the files were the last
+      # other copy.
+      assert Store.search("mara", "roadmap") == []
+
+      assert %{"success" => true, "data" => %{"messages" => []}} =
+               rpc("search_mail", %{"account" => "mara", "query" => "roadmap"}, @search_fields)
     end
   end
 
