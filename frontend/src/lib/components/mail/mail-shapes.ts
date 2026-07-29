@@ -87,35 +87,37 @@ export function filterMessagesByRead<T extends { flags?: string | null }>(
 //
 // `list_mail_messages(threaded: true)` collapses a folder by `thread_key`:
 // one row per conversation, the NEWEST message representing it, carrying
-// `threadKey` and `threadCount`.
+// `threadKey`, `threadCount` and `threadUnread`.
 //
-// THE TYPE TRAP these three helpers exist to contain: the shared row type
-// declares both fields `| null`, but a FLAT listing (search hits, the thread
+// THE TYPE TRAP these helpers exist to contain: the shared row type declares
+// all three fields `| null`, but a FLAT listing (search hits, the thread
 // strip itself) omits the keys entirely — at runtime they are `undefined`,
 // not `null`. Every read of them here is a truthiness/`typeof` check, never
 // `=== null`, and every caller goes through these helpers rather than
 // touching the fields directly.
 
 /**
- * Whether a collapsed thread row shows the unread dot.
+ * Whether a list row shows the unread dot: true when ANY message it stands
+ * for is unread.
  *
- * The RULE is "the dot is on when ANY message in the thread is unread". The
- * DATA a threaded row carries is the representative (newest) message and a
- * count — `Valea.Mail.Store.list_threads/4` projects one row per thread with
- * that row's own `flags`, and no thread-level unread aggregate exists on
- * either side of the wire. So this decides from the only member it can see.
+ * On a THREADED row that is `threadUnread`, a whole-partition window
+ * aggregate the backend computes beside `threadCount`
+ * (`Valea.Mail.Store.list_threads/4`). It cannot be derived here: the row's
+ * `flags` are the REPRESENTATIVE (newest) message's, so a conversation whose
+ * newest message has been read but which still holds an older unread reply
+ * is precisely the case they misreport — and answering it client-side would
+ * cost one `get_mail_thread` per listed row.
  *
- * The visible consequence: a thread whose newest message has been read but
- * which still holds an older unread reply shows NO dot. Fixing that is a
- * backend change (an `unread` window aggregate beside `thread_count` in
- * `@threads_sql`), not something this side can compute — fetching every
- * listed thread's members to find out would be one RPC per row.
+ * A FLAT row (a search hit, a thread-strip entry) carries no aggregate, and
+ * the fall-back to its own `S` flag is the correct answer rather than a
+ * degraded one: such a row stands for exactly one message, so "any member
+ * unread" and "this message is unread" are the same question.
  *
- * Not folded into `messageSeen` even though it currently agrees with it:
- * this is the THREAD rule and that is the MESSAGE rule, and when the
- * aggregate lands only this one changes.
+ * `typeof === 'boolean'`, not truthiness: `false` is a meaningful value here
+ * — "every member read" — and must not be mistaken for the absent key.
  */
-export function threadUnread(row: { flags?: string | null }): boolean {
+export function threadUnread(row: { flags?: string | null; threadUnread?: boolean | null }): boolean {
+  if (typeof row.threadUnread === 'boolean') return row.threadUnread;
   return !messageSeen(row);
 }
 

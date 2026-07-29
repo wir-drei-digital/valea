@@ -497,7 +497,15 @@
               class:border-transparent={!current}
               class:bg-paper-pill={current}
             >
-              {#if !messageSeen(entry)}
+              <!-- The CURRENT row reads its dot from this pane's own `seen`,
+                   never from the fetched strip row: opening a message
+                   auto-marks it read (and "Mark unread" flips it back), and
+                   neither refetches the strip — it is deliberately kept
+                   across the jumps it exists for. Without this, the message
+                   you are reading shows a read header above an unread dot
+                   for itself, indefinitely. Every OTHER row is the strip's
+                   own flags, which nothing in this pane has moved. -->
+              {#if current ? !seen : !messageSeen(entry)}
                 <span class="bg-act size-1.5 shrink-0 self-center rounded-full" title="Unread" aria-label="Unread"
                 ></span>
               {/if}

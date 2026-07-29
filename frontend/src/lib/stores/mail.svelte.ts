@@ -117,13 +117,14 @@ export type MailFolder = {
  * `api/client.ts`. `flags` is the maildir flag-letter string (e.g. `"S"`
  * for Seen); `viewPath` the derived view's workspace-relative path.
  *
- * `threadKey`/`threadCount` are declared OPTIONAL, unlike the generated
+ * The three thread fields are declared OPTIONAL, unlike the generated
  * `ListMailMessagesFields` type which has them as `string | null` /
- * `number | null`: only a `threaded: true` listing projects them, and a flat
- * one (search hits, the thread strip, this action without the flag) omits
- * the keys outright — so at runtime they are `undefined`, and code that
- * tested `=== null` would read a flat row as a one-message thread. `?:` is
- * what makes TypeScript force every reader to handle that.
+ * `number | null` / `boolean | null`: only a `threaded: true` listing
+ * projects them, and a flat one (search hits, the thread strip, this action
+ * without the flag) omits the keys outright — so at runtime they are
+ * `undefined`, and code that tested `=== null` would read a flat row as a
+ * one-message thread. `?:` is what makes TypeScript force every reader to
+ * handle that.
  */
 export type MailMessageSummary = {
   msgId: string;
@@ -140,6 +141,14 @@ export type MailMessageSummary = {
   threadKey?: string | null;
   /** How many of THIS FOLDER's messages it stands for — THREADED listings only. */
   threadCount?: number | null;
+  /**
+   * Whether ANY of the messages it stands for is unread — THREADED listings
+   * only. A backend window aggregate (`Valea.Mail.Store.list_threads/4`),
+   * because `flags` above are the REPRESENTATIVE message's: a conversation
+   * whose newest message was read but which still holds an older unread
+   * reply is exactly what those flags cannot describe.
+   */
+  threadUnread?: boolean | null;
 };
 
 /**
@@ -539,8 +548,14 @@ export class MailStore {
    * run finds an empty strip, re-derives the same key and issues the same
    * request again, cancelling its own first one.
    *
-   * Cleared whenever the strip is dropped or its fetch failed, so nothing
-   * here can wedge a conversation permanently unfetchable.
+   * Cleared whenever the strip is dropped, its fetch failed, OR its response
+   * was discarded as stale — the last one matters because a fetch whose
+   * answer is thrown away leaves nobody showing that conversation and nobody
+   * fetching it. Holding the key past that point would make every later
+   * `loadThread` for it early-return, wedging the strip empty for the rest
+   * of the session (`selectFolder` bumps the epoch without clearing the
+   * strip, and `FolderPicker` has no same-folder guard, so re-clicking the
+   * open folder mid-fetch is enough to hit it).
    */
   #threadKey: string | null = null;
 
@@ -833,9 +848,15 @@ export class MailStore {
     const epoch = this.#selectionEpoch;
     this.#threadKey = threadKey;
     const result = await this.#api.getMailThread(account, threadKey);
-    // A newer message was opened, or the account moved, while this was out —
+    // A newer message was opened, or the selection moved, while this was out —
     // see `#threadToken` for why both guards are needed.
-    if (token !== this.#threadToken || epoch !== this.#selectionEpoch) return;
+    if (token !== this.#threadToken || epoch !== this.#selectionEpoch) {
+      // Release the reservation, but only if it is still THIS fetch's: a
+      // newer `loadThread` may already own the slot, and clearing it there
+      // would let its own effect re-run re-issue the request it just made.
+      if (this.#threadKey === threadKey) this.#threadKey = null;
+      return;
+    }
 
     if (!result.ok) {
       // Nothing is showing this conversation, and nothing is fetching it —

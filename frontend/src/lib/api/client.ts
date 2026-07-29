@@ -687,12 +687,14 @@ const listMailMessagesFields = [
 ] as unknown as ListMailMessagesFields;
 
 // `list_mail_messages(threaded: true)` rows are `listMailMessagesFields`'
-// shape plus `threadKey` (the conversation to open with `getMailThread`) and
-// `threadCount` (how many of the folder's messages the row stands for). A
-// SEPARATE literal rather than two extra names on the flat one: the backend
-// omits both keys entirely from an unthreaded listing, so asking for them
-// there would only promise a caller something that never arrives. Same
-// `Array<TypedMap>` codegen gap, same cast.
+// shape plus `threadKey` (the conversation to open with `getMailThread`),
+// `threadCount` (how many of the folder's messages the row stands for) and
+// `threadUnread` (whether ANY of them is unread — the row's own `flags` are
+// the newest message's and cannot answer that). A SEPARATE literal rather
+// than three extra names on the flat one: the backend omits all three keys
+// entirely from an unthreaded listing, so asking for them there would only
+// promise a caller something that never arrives. Same `Array<TypedMap>`
+// codegen gap, same cast.
 const listMailThreadsFields = [
   {
     messages: [
@@ -707,7 +709,8 @@ const listMailThreadsFields = [
       'path',
       'viewPath',
       'threadKey',
-      'threadCount'
+      'threadCount',
+      'threadUnread'
     ]
   }
 ] as unknown as ListMailMessagesFields;

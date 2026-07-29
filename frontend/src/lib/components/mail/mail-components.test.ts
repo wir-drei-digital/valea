@@ -118,24 +118,35 @@ describe('messageSeen / filterMessagesByRead', () => {
 });
 
 describe('threadUnread', () => {
-  // The RULE is "any member unread"; the DATA is the representative message
-  // (`Valea.Mail.Store.list_threads/4` projects the newest row's own flags
-  // and a count, with no unread aggregate) — so the dot follows the newest
-  // message of the thread, in both directions.
+  // A THREADED row answers from the backend's ANY-member aggregate, which
+  // OVERRIDES the representative's own flags in both directions — that is
+  // the whole point of having it.
   it.each([
-    ['unseen representative', { flags: 'F' }, true],
-    ['seen representative', { flags: 'FS' }, false],
-    ['null flags', { flags: null }, true],
-    ['no flags key at all', {}, true]
-  ])('%s', (_label, row, expected) => {
+    ['read newest message, unread reply behind it', { flags: 'S', threadUnread: true }, true],
+    ['unread newest message, aggregate agrees', { flags: '', threadUnread: true }, true],
+    ['every member read', { flags: 'S', threadUnread: false }, false],
+    ['unread-looking flags the aggregate contradicts', { flags: 'F', threadUnread: false }, false]
+  ])('threaded: %s', (_label, row, expected) => {
     expect(threadUnread(row)).toBe(expected);
   });
 
-  it('cannot see an older unread reply behind a read newest message', () => {
-    // Pinned deliberately: this is the known limitation, not an oversight.
-    // A thread-level aggregate on the listing row is what would change it.
-    const readNewest = { flags: 'S', threadKey: '<t@example.com>', threadCount: 3 };
-    expect(threadUnread(readNewest)).toBe(false);
+  // A FLAT row (search hit, thread-strip entry) stands for exactly one
+  // message, so its own `S` flag IS the any-member answer.
+  it.each([
+    ['unseen', { flags: 'F' }, true],
+    ['seen', { flags: 'FS' }, false],
+    ['null flags', { flags: null }, true],
+    ['no flags key at all', {}, true],
+    ['explicit null aggregate falls back to the flags', { flags: 'S', threadUnread: null }, false]
+  ])('flat: %s', (_label, row, expected) => {
+    expect(threadUnread(row)).toBe(expected);
+  });
+
+  it('treats a false aggregate as an answer, not as an absent key', () => {
+    // The trap this helper exists for: truthiness would send `false`
+    // (every member read) down the flat fall-back, which for a row whose
+    // representative happens to look unread would light the dot anyway.
+    expect(threadUnread({ flags: '', threadUnread: false })).toBe(false);
   });
 });
 

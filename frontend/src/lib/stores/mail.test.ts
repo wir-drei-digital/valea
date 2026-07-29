@@ -916,17 +916,26 @@ describe('MailStore pagination', () => {
 
 /**
  * One row of a THREADED folder listing: the conversation's newest message,
- * plus the two fields only `threaded: true` projects. `index` doubles as the
- * date offset, so `threadRow('a', 0)` is newer than `threadRow('b', 1)` —
- * the same newest-first ordering `rows` builds.
+ * plus the three fields only `threaded: true` projects. `index` doubles as
+ * the date offset, so `threadRow('a', 0)` is newer than `threadRow('b', 1)` —
+ * the same newest-first ordering `rows` builds. `threadUnread` defaults to
+ * agreeing with `flags` (the common case); the interesting case where it
+ * disagrees is the helper's own table in `mail-components.test.ts`.
  */
-function threadRow(key: string, index: number, count = 1, flags: string | null = 'S'): Record<string, any> {
+function threadRow(
+  key: string,
+  index: number,
+  count = 1,
+  flags: string | null = 'S',
+  threadUnread = !(flags ?? '').includes('S')
+): Record<string, any> {
   return {
     msgId: `${key}-msg${index}`,
     date: isoAt(index),
     flags,
     threadKey: `<${key}@example.com>`,
-    threadCount: count
+    threadCount: count,
+    threadUnread
   };
 }
 
@@ -1174,6 +1183,39 @@ describe('MailStore.loadThread', () => {
 
     // The epoch can't see this — one selection, two messages — so the token is.
     expect(store.threadMessages.map((m) => m.msgId)).toEqual(['lone-msg1']);
+  });
+
+  it('does not wedge the conversation when a folder switch drops its response', async () => {
+    // `selectFolder` bumps the selection epoch WITHOUT clearing the strip
+    // (the open message doesn't change), and `FolderPicker` has no
+    // same-folder guard — so re-clicking the open folder mid-fetch is enough
+    // to have a response discarded. The in-flight reservation has to be
+    // released with it, or every later open of that conversation returns
+    // early against a strip that is empty.
+    const pending: ((result: MessagesResult) => void)[] = [];
+    const getMailThread = vi.fn(
+      async () => new Promise<MessagesResult>((resolve) => pending.push(resolve))
+    );
+    const store = await threadedStore({ getMailThread });
+
+    void store.loadThread('kickoff-msg0');
+    await store.selectFolder('INBOX');
+    pending[0]({ ok: true, data: { messages: [threadMember('kickoff-msg0', 0)] } } as MessagesResult);
+    await flush();
+    expect(store.threadMessages).toEqual([]);
+
+    // The folder listing is back, the same message is still open — the next
+    // pass must actually fetch again.
+    void store.loadThread('kickoff-msg0');
+    await flush();
+    pending[1]({
+      ok: true,
+      data: { messages: [threadMember('kickoff-msg0', 1), threadMember('kickoff-old', 2)] }
+    } as MessagesResult);
+    await flush();
+
+    expect(getMailThread).toHaveBeenCalledTimes(2);
+    expect(store.threadMessages).toHaveLength(2);
   });
 
   it('drops a response that lands after the account switched', async () => {
