@@ -718,6 +718,7 @@ defmodule Valea.Api.Mail do
                     content_hash: [type: :string, allow_nil?: false],
                     recipients: [type: :map, allow_nil?: false],
                     subject: [type: :string, allow_nil?: false],
+                    attachments: [type: {:array, :map}, allow_nil?: false],
                     threading: [type: :map, allow_nil?: true],
                     threading_warning: [type: :boolean, allow_nil?: false],
                     identity: [type: :map, allow_nil?: false],
@@ -731,10 +732,15 @@ defmodule Valea.Api.Mail do
       # THE atomic review snapshot behind the send confirm modal (spec G §RPC
       # surface). ONE no-follow read inside the account's Engine call, under
       # the same captured settings `send_draft` will be checked against:
-      # everything the human sees — recipients, subject, threading, sending
-      # identity — and BOTH tokens they confirm with (`content_hash`,
-      # `review_fingerprint`) come out of that single buffer. Read-only: it
-      # claims nothing and touches no network.
+      # everything the human sees — recipients, subject, attachments,
+      # threading, sending identity — and BOTH tokens they confirm with
+      # (`content_hash`, `review_fingerprint`) come out of that single buffer.
+      # Read-only: it claims nothing and touches no network.
+      #
+      # `attachments` is `[{filename, path, bytes}]`, resolved and read at
+      # this instant; their CONTENT hashes ride `review_fingerprint`, so a
+      # file rewritten between this call and the confirm comes back
+      # `re_review_required` rather than going out unreviewed.
       run fn input, _ctx ->
         %{account: slug, draft_name: draft_name} = input.arguments
 

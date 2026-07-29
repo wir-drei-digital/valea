@@ -569,6 +569,7 @@ const getMailDraftReviewFields: GetMailDraftReviewFields = [
   'contentHash',
   'recipients',
   'subject',
+  'attachments',
   'threading',
   'threadingWarning',
   'identity',

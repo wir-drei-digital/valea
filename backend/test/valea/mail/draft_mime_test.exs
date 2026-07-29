@@ -13,6 +13,7 @@ defmodule Valea.Mail.DraftMimeTest do
       bcc: [],
       subject: "Re: Inquiry",
       in_reply_to: nil,
+      attachments: [],
       status: "draft",
       body: "Hello Priya,\n\nThanks for reaching out — happy to help! Grüße.\n"
     }
@@ -282,6 +283,207 @@ defmodule Valea.Mail.DraftMimeTest do
       assert body == "Hello Priya,\n\nThanks for reaching out — happy to help! Grüße.\n"
     end
   end
+
+  describe "attachments" do
+    defp attachment(filename, content), do: %{filename: filename, content: content}
+
+    # `:mimemail.decode/2` is the round-trip authority here: an assertion on
+    # the bytes we happen to emit would pass for a message no client can read.
+    defp decode(rfc822),
+      do: :mimemail.decode(rfc822, encoding: :none, allow_missing_version: true)
+
+    test "no attachments composes the same single text/plain entity as before" do
+      assert {:ok, rfc822} =
+               DraftMime.compose(validated(), threading(), @message_id, "m@x.co", [])
+
+      assert {:ok, same} = DraftMime.compose(validated(), threading(), @message_id, "m@x.co")
+      refute rfc822 =~ "multipart/mixed"
+      assert {"text", "plain", _headers, _params, _body} = decode(rfc822)
+      # ...and the 4-arity call is the same message, so an attachment-less
+      # draft is untouched end to end.
+      assert header_line(rfc822, "Content-Type") == header_line(same, "Content-Type")
+    end
+
+    test "attachments make it multipart/mixed: body part first, one part per file" do
+      attachments = [
+        attachment("deck.pdf", "%PDF-1.7 fake"),
+        attachment("notes.txt", "plain notes\n")
+      ]
+
+      assert {:ok, rfc822} =
+               DraftMime.compose(validated(), threading(), @message_id, "m@x.co", attachments)
+
+      assert unfold(rfc822) =~ "Content-Type: multipart/mixed"
+      assert unfold(rfc822) =~ "To: Priya Nair <priya@example.com>"
+
+      assert {"multipart", "mixed", _headers, _params, parts} = decode(rfc822)
+      assert [body_part, pdf_part, txt_part] = parts
+
+      assert {"text", "plain", _, _, body} = body_part
+      assert body == "Hello Priya,\n\nThanks for reaching out — happy to help! Grüße.\n"
+
+      assert {"application", "pdf", _, pdf_params, "%PDF-1.7 fake"} = pdf_part
+      assert pdf_params[:disposition] == "attachment"
+      assert pdf_params[:disposition_params] == [{"filename", "deck.pdf"}]
+
+      assert {"text", "plain", _, txt_params, "plain notes\n"} = txt_part
+      assert txt_params[:disposition] == "attachment"
+      assert txt_params[:disposition_params] == [{"filename", "notes.txt"}]
+    end
+
+    test "binary content survives the base64 round trip byte for byte" do
+      bytes = :crypto.strong_rand_bytes(2048)
+
+      assert {:ok, rfc822} =
+               DraftMime.compose(validated(), threading(), @message_id, "m@x.co", [
+                 attachment("blob.bin", bytes)
+               ])
+
+      assert rfc822 =~ "Content-Transfer-Encoding: base64"
+      assert {"multipart", "mixed", _, _, [_body, part]} = decode(rfc822)
+      assert {"application", "octet-stream", _, _, ^bytes} = part
+    end
+
+    # `mimemail` emits a non-ASCII filename as RFC 2231 `filename*`
+    # (`UTF-8''`-prefixed, percent-encoded) rather than as raw bytes — which
+    # is the interoperable form, and the reason nothing here has to sanitize
+    # the name itself. Asserted through the decode so the claim is about what
+    # a receiving client parses, then percent-decoded back to prove the name
+    # survived.
+    test "a non-ASCII filename rides RFC 2231 and decodes back to itself" do
+      assert {:ok, rfc822} =
+               DraftMime.compose(validated(), threading(), @message_id, "m@x.co", [
+                 attachment("Grüße.txt", "hi")
+               ])
+
+      assert {"multipart", "mixed", _, _, [_body, part]} = decode(rfc822)
+      assert {"text", "plain", _, params, "hi"} = part
+      assert [{"filename*", "UTF-8''" <> encoded}] = params[:disposition_params]
+      assert URI.decode(encoded) == "Grüße.txt"
+    end
+
+    # The boundary is derived from the Message-ID, so two encodings of one
+    # message agree — which is what keeps `compose_send/6`'s wire and record
+    # byte-identical when there is no Bcc to drop.
+    test "compose_send: wire == record with attachments and no bcc" do
+      attachments = [attachment("deck.pdf", "%PDF-1.7 fake")]
+
+      assert {:ok, %{wire: wire, record: record}} =
+               DraftMime.compose_send(
+                 validated(),
+                 threading(),
+                 @send_id,
+                 "mara@example.com",
+                 nil,
+                 attachments
+               )
+
+      assert wire == record
+      assert unfold(wire) =~ "Content-Type: multipart/mixed"
+    end
+
+    test "compose_send: the bcc variants differ only by the Bcc header, attachments and all" do
+      v = validated(%{bcc: [%{name: nil, email: "hidden@example.com"}]})
+      attachments = [attachment("deck.pdf", "%PDF-1.7 fake")]
+
+      assert {:ok, %{wire: wire, record: record}} =
+               DraftMime.compose_send(
+                 v,
+                 threading(),
+                 @send_id,
+                 "mara@example.com",
+                 nil,
+                 attachments
+               )
+
+      refute unfold(wire) =~ "Bcc:"
+      assert unfold(record) =~ "Bcc: hidden@example.com"
+      assert header_line(wire, "Content-Type") == header_line(record, "Content-Type")
+
+      assert {"multipart", "mixed", _, _, [_body, {_, _, _, _, content}]} = decode(wire)
+      assert content == "%PDF-1.7 fake"
+    end
+
+    test "composition is deterministic for the same inputs" do
+      attachments = [attachment("deck.pdf", "%PDF-1.7 fake")]
+
+      assert {:ok, first} =
+               DraftMime.compose(validated(), threading(), @message_id, "m@x.co", attachments)
+
+      assert {:ok, second} =
+               DraftMime.compose(validated(), threading(), @message_id, "m@x.co", attachments)
+
+      # Only the Date header is clock-derived; strip it and the rest — the
+      # boundary included — must match exactly.
+      assert without_date(first) == without_date(second)
+    end
+
+    test "different messages get different boundaries" do
+      attachments = [attachment("deck.pdf", "x")]
+
+      assert {:ok, a} =
+               DraftMime.compose(validated(), threading(), @message_id, "m@x.co", attachments)
+
+      assert {:ok, b} =
+               DraftMime.compose(validated(), threading(), @send_id, "m@x.co", attachments)
+
+      refute header_line(a, "Content-Type") == header_line(b, "Content-Type")
+    end
+  end
+
+  describe "content_type/1" do
+    test "maps known extensions, case-insensitively" do
+      assert DraftMime.content_type("deck.pdf") == {"application", "pdf"}
+      assert DraftMime.content_type("DECK.PDF") == {"application", "pdf"}
+      assert DraftMime.content_type("shot.JPEG") == {"image", "jpeg"}
+      assert DraftMime.content_type("notes.md") == {"text", "markdown"}
+    end
+
+    test "falls back to application/octet-stream for anything else" do
+      for name <- ["thing.xyz", "Makefile", "archive.tar.zst", ".gitignore", "trailing."] do
+        assert DraftMime.content_type(name) == {"application", "octet-stream"}
+      end
+    end
+
+    # SVG is a script-bearing document; typing it as an image invites a
+    # receiving client to render it as one.
+    test "svg is deliberately not in the map" do
+      assert DraftMime.content_type("logo.svg") == {"application", "octet-stream"}
+    end
+  end
+
+  describe "check_caps/1" do
+    test "accepts an empty list and anything under both caps" do
+      assert DraftMime.check_caps([]) == :ok
+      assert DraftMime.check_caps([1, 2, 3]) == :ok
+      assert DraftMime.check_caps([DraftMime.max_attachment_bytes()]) == :ok
+    end
+
+    test "refuses one file over the per-file cap" do
+      assert DraftMime.check_caps([DraftMime.max_attachment_bytes() + 1]) ==
+               {:error, "attachments_too_large"}
+    end
+
+    test "refuses a set over the total cap even when every file fits" do
+      per_file = DraftMime.max_attachment_bytes()
+      count = div(DraftMime.max_total_attachment_bytes(), per_file) + 1
+
+      assert DraftMime.check_caps(List.duplicate(per_file, count)) ==
+               {:error, "attachments_too_large"}
+    end
+
+    test "accepts a set exactly on the total cap" do
+      total = DraftMime.max_total_attachment_bytes()
+      half_a_file = div(DraftMime.max_attachment_bytes(), 2)
+      sizes = List.duplicate(half_a_file, div(total, half_a_file))
+
+      assert Enum.sum(sizes) == total
+      assert DraftMime.check_caps(sizes) == :ok
+    end
+  end
+
+  defp without_date(rfc822),
+    do: rfc822 |> String.split("\r\n") |> Enum.reject(&String.starts_with?(&1, "Date:"))
 
   defp header_line(rfc822, name) do
     rfc822

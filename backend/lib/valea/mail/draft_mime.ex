@@ -9,7 +9,7 @@ defmodule Valea.Mail.DraftMime do
   structurally impossible, the outbound headers are a pure function of
   vetted values, never of raw frontmatter text.
 
-  Spec G adds the SEND side on the same foundation: `compose_send/5` builds
+  Spec G adds the SEND side on the same foundation: `compose_send/6` builds
   ONE header list and serializes it twice — the *wire* message the SMTP
   server receives (no `Bcc` header) and the *record* message filed in the
   user's Sent folder (with it) — plus the SMTP envelope that actually
@@ -31,6 +31,31 @@ defmodule Valea.Mail.DraftMime do
   CANONICAL bytes rather than its raw ones — see it and
   `Valea.Mail.DraftFile.canonical_send_bytes/1` for why the send identity
   must survive the engine's own status stamps.
+
+  ## Attachments
+
+  With no attachments a message is exactly what it always was — a single
+  `text/plain` entity, byte for byte. With attachments it becomes
+  `multipart/mixed`: the same `text/plain` body as the first part, then one
+  `base64`, `Content-Disposition: attachment` part per file.
+
+  Two rules live here rather than at any call site:
+
+    * **Content-Type by extension, from a CLOSED map** (`content_type/1`).
+      Nothing is sniffed from the bytes and nothing is taken from the file's
+      own claims — an unknown extension is `application/octet-stream`, which
+      is the honest answer and the one that cannot be talked into
+      `text/html`.
+    * **Caps** (`check_caps/1`): 10 MB per file, 25 MB in total. Enforced at
+      REVIEW and at PUSH — i.e. before anything is claimed, spooled or
+      transmitted — and refused with the single code `attachments_too_large`.
+
+  The multipart boundary is DERIVED from the `Message-ID`
+  (`boundary_for/1`), never generated randomly. `compose_send/6`'s promise
+  that wire and record are byte-identical when there is no `Bcc` rests on
+  the two encodings being the same function of the same inputs, and
+  `mimemail`'s own boundary generator is random per call — two encodings of
+  one message would disagree on every part separator.
 
   ## Body & headers
 
@@ -54,19 +79,74 @@ defmodule Valea.Mail.DraftMime do
   # host, so it is a safe, obviously-synthetic sender of last resort.
   @from_fallback "valea@valea.invalid"
 
+  @max_attachment_bytes 10 * 1024 * 1024
+  @max_total_attachment_bytes 25 * 1024 * 1024
+
+  # The CLOSED extension → Content-Type map (see the moduledoc). Everything
+  # not listed is `application/octet-stream`: a mail client that guesses a
+  # type for an unrecognized file is a mail client that can be talked into
+  # announcing `text/html` for something the sender never looked at.
+  # `.svg` is deliberately ABSENT — SVG is a script-bearing document, and an
+  # `image/svg+xml` label invites a receiving client to render it as one.
+  @content_types %{
+    ".pdf" => {"application", "pdf"},
+    ".png" => {"image", "png"},
+    ".jpg" => {"image", "jpeg"},
+    ".jpeg" => {"image", "jpeg"},
+    ".gif" => {"image", "gif"},
+    ".webp" => {"image", "webp"},
+    ".heic" => {"image", "heic"},
+    ".txt" => {"text", "plain"},
+    ".md" => {"text", "markdown"},
+    ".csv" => {"text", "csv"},
+    ".ics" => {"text", "calendar"},
+    ".json" => {"application", "json"},
+    ".yaml" => {"application", "yaml"},
+    ".yml" => {"application", "yaml"},
+    ".zip" => {"application", "zip"},
+    ".doc" => {"application", "msword"},
+    ".docx" => {"application", "vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    ".xls" => {"application", "vnd.ms-excel"},
+    ".xlsx" => {"application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    ".ppt" => {"application", "vnd.ms-powerpoint"},
+    ".pptx" => {"application", "vnd.openxmlformats-officedocument.presentationml.presentation"},
+    ".odt" => {"application", "vnd.oasis.opendocument.text"},
+    ".ods" => {"application", "vnd.oasis.opendocument.spreadsheet"},
+    ".odp" => {"application", "vnd.oasis.opendocument.presentation"},
+    ".rtf" => {"application", "rtf"},
+    ".mp3" => {"audio", "mpeg"},
+    ".wav" => {"audio", "wav"},
+    ".m4a" => {"audio", "mp4"},
+    ".mp4" => {"video", "mp4"},
+    ".mov" => {"video", "quicktime"}
+  }
+
+  @octet_stream {"application", "octet-stream"}
+
   @type threading :: %{in_reply_to: String.t() | nil, references: [String.t()]}
+
+  @typedoc "One attachment, as composition needs it: the name the recipient sees and the bytes."
+  @type attachment :: %{filename: String.t(), content: binary()}
 
   @doc """
   Composes the RFC822 draft from `validated` (the map
   `Valea.Mail.DraftFile.parse_and_validate/1` returns), `threading` (the
-  resolved `In-Reply-To`/`References`), the deterministic `message_id`, and
-  the account `from` address. Always `{:ok, binary}` — every input is
-  already vetted, so composition is total.
+  resolved `In-Reply-To`/`References`), the deterministic `message_id`, the
+  account `from` address, and the already-read `attachments` (the CALLER
+  resolves and contains those paths — see `Valea.Mail.OpsExecutor`). Always
+  `{:ok, binary}` — every input is already vetted, so composition is total.
   """
-  @spec compose(DraftFile.validated(), threading(), String.t(), String.t() | nil) ::
+  @spec compose(
+          DraftFile.validated(),
+          threading(),
+          String.t(),
+          String.t() | nil,
+          [attachment()]
+        ) ::
           {:ok, binary()}
-  def compose(validated, threading, message_id, from)
-      when is_map(validated) and is_map(threading) and is_binary(message_id) do
+  def compose(validated, threading, message_id, from, attachments \\ [])
+      when is_map(validated) and is_map(threading) and is_binary(message_id) and
+             is_list(attachments) do
     headers =
       [
         {"From", from_address(from)},
@@ -82,7 +162,7 @@ defmodule Valea.Mail.DraftMime do
       ]
       |> Enum.reject(&is_nil/1)
 
-    {:ok, encode(headers, validated.body)}
+    {:ok, encode(headers, validated.body, attachments, message_id)}
   end
 
   @doc """
@@ -111,12 +191,14 @@ defmodule Valea.Mail.DraftMime do
           threading(),
           String.t(),
           String.t(),
-          String.t() | nil
+          String.t() | nil,
+          [attachment()]
         ) ::
           {:ok,
            %{wire: binary(), record: binary(), envelope: Valea.Mail.SmtpTransport.envelope()}}
-  def compose_send(validated, threading, message_id, from, from_name \\ nil)
-      when is_map(validated) and is_map(threading) and is_binary(message_id) do
+  def compose_send(validated, threading, message_id, from, from_name \\ nil, attachments \\ [])
+      when is_map(validated) and is_map(threading) and is_binary(message_id) and
+             is_list(attachments) do
     from_addr = from_address(from)
 
     headers =
@@ -138,8 +220,8 @@ defmodule Valea.Mail.DraftMime do
 
     {:ok,
      %{
-       wire: encode(wire_headers, validated.body),
-       record: encode(headers, validated.body),
+       wire: encode(wire_headers, validated.body, attachments, message_id),
+       record: encode(headers, validated.body, attachments, message_id),
        envelope: %{from: from_addr, rcpt: rcpt(validated)}
      }}
   end
@@ -178,18 +260,98 @@ defmodule Valea.Mail.DraftMime do
 
   # -- encoding ----------------------------------------------------------------
 
-  # The ONE serialization both `compose/4` and `compose_send/5` go through:
-  # `text/plain; charset=utf-8`, quoted-printable, inline. Deterministic for
-  # a given header list and body — which is what lets `compose_send/5`'s two
-  # variants be byte-identical when there is no Bcc to drop.
-  defp encode(headers, body) do
-    params = %{
+  # The ONE serialization both `compose/5` and `compose_send/6` go through.
+  # Deterministic for a given header list, body and attachment list — which
+  # is what lets `compose_send/6`'s two variants be byte-identical when there
+  # is no Bcc to drop, attachments or not.
+  #
+  # No attachments: `text/plain; charset=utf-8`, quoted-printable, inline —
+  # the exact single-entity message this composed before attachments existed,
+  # unchanged byte for byte.
+  defp encode(headers, body, [], _message_id) do
+    :mimemail.encode({"text", "plain", headers, text_params(), body})
+  end
+
+  # Attachments: `multipart/mixed`, body first, then one part per file. The
+  # boundary is derived from the Message-ID rather than generated, so this
+  # stays a pure function of its inputs (see the moduledoc).
+  defp encode(headers, body, attachments, message_id) do
+    parts =
+      [{"text", "plain", [], text_params(), body} | Enum.map(attachments, &attachment_part/1)]
+
+    params = %{content_type_params: [{"boundary", boundary_for(message_id)}]}
+
+    :mimemail.encode({"multipart", "mixed", headers, params, parts})
+  end
+
+  defp text_params do
+    %{
       content_type_params: [{"charset", "utf-8"}],
       disposition: "inline",
       transfer_encoding: "quoted-printable"
     }
+  end
 
-    :mimemail.encode({"text", "plain", headers, params, body})
+  # `name` (Content-Type) and `filename` (Content-Disposition) both carry the
+  # filename because receiving clients disagree about which one they honour;
+  # `mimemail` RFC 2231-encodes either when it is not plain ASCII. base64 is
+  # unconditional — an attachment is opaque bytes here, and quoted-printable
+  # would corrupt anything that is not text.
+  defp attachment_part(%{filename: filename, content: content}) do
+    {type, subtype} = content_type(filename)
+
+    params = %{
+      content_type_params: [{"name", filename}],
+      disposition: "attachment",
+      disposition_params: [{"filename", filename}],
+      transfer_encoding: "base64"
+    }
+
+    {type, subtype, [], params, content}
+  end
+
+  # A boundary can never appear inside the parts it separates, so it is built
+  # from a digest rather than from anything the message carries: 16 hex
+  # characters behind a fixed label, in the `----=_` shape conventional
+  # enough that a broken client's boundary heuristics see what they expect.
+  defp boundary_for(message_id), do: "----=_valea_" <> message_digest(message_id)
+
+  @doc """
+  The `{type, subtype}` for `filename`'s extension, from the closed map in
+  this module (see the moduledoc) — `{"application", "octet-stream"}` for
+  everything not listed, including a file with no extension at all. Case is
+  folded, so `DECK.PDF` types the same as `deck.pdf`.
+  """
+  @spec content_type(String.t()) :: {String.t(), String.t()}
+  def content_type(filename) when is_binary(filename) do
+    ext = filename |> Path.extname() |> String.downcase()
+    Map.get(@content_types, ext, @octet_stream)
+  end
+
+  @doc "The per-file attachment cap in bytes (10 MB)."
+  @spec max_attachment_bytes() :: pos_integer()
+  def max_attachment_bytes, do: @max_attachment_bytes
+
+  @doc "The whole-draft attachment cap in bytes (25 MB)."
+  @spec max_total_attachment_bytes() :: pos_integer()
+  def max_total_attachment_bytes, do: @max_total_attachment_bytes
+
+  @doc """
+  Enforces both caps over a list of attachment SIZES in bytes:
+  #{@max_attachment_bytes} per file and #{@max_total_attachment_bytes} in
+  total. `{:error, "attachments_too_large"}` names neither which cap nor
+  which file — the composer already shows every attachment's size next to
+  the limits, and one code is one thing for a caller to map.
+
+  Sizes, not contents, so the callers can refuse an oversized draft from a
+  `stat` without ever reading the bytes into memory.
+  """
+  @spec check_caps([non_neg_integer()]) :: :ok | {:error, String.t()}
+  def check_caps(sizes) when is_list(sizes) do
+    if Enum.any?(sizes, &(&1 > @max_attachment_bytes)) or
+         Enum.sum(sizes) > @max_total_attachment_bytes,
+       do: {:error, "attachments_too_large"},
+       else: :ok
   end
 
   # -- envelope ------------------------------------------------------------------

@@ -15,6 +15,7 @@ defmodule Valea.Mail.DraftFile do
       bcc: []
       subject: "Re: Kickoff"
       in_reply_to: 2026-07-15-alex-4f2a91c3   # msg_id, optional
+      attachments: [sources/mail/mara/views/attachments/…/deck.pdf]
       status: draft                            # engine-owned, see below
       ---
       Body in markdown; composed as text/plain.
@@ -27,7 +28,7 @@ defmodule Valea.Mail.DraftFile do
   `parse_and_validate/1` is strict:
 
     * unknown frontmatter fields reject (allowed:
-      `to`/`cc`/`bcc`/`subject`/`in_reply_to`/`status`);
+      `to`/`cc`/`bcc`/`subject`/`in_reply_to`/`attachments`/`status`);
     * `status` is one of the six engine-owned stamps — `draft` |
       `pushing` | `pushed` | `sending` | `send_review` | `sent` — or
       absent (defaults `draft`); any OTHER value rejects. All six parse
@@ -42,10 +43,28 @@ defmodule Valea.Mail.DraftFile do
     * `to`/`cc`/`bcc` are parsed with an RFC 5322 mailbox parser
       (`parse_mailbox/1`: name-addr + addr-spec, quoted display names; no
       groups, no route addrs) — at least one `to`;
-    * `in_reply_to`, when present, must match the msg_id shape.
+    * `in_reply_to`, when present, must match the msg_id shape;
+    * `attachments`, when present, is a list of **workspace-relative**
+      paths (see below).
+
+  ## Attachments are addresses, not files
+
+  `attachments:` carries workspace-relative paths and this module validates
+  their SHAPE only — relative (`Valea.Paths.classify/1`), no empty/`.`/`..`
+  segment (checked against BOTH separators, so `..\\..\\etc` is refused on
+  every host), no control character. It deliberately touches no filesystem.
+
+  The file itself is resolved at USE time — once per push, once per review,
+  once per send — by `Valea.Mail.OpsExecutor`, through
+  `Valea.Paths.resolve_real/2` against the workspace root. A draft is a
+  file an agent may write; the window between "the draft named this path"
+  and "these bytes go out" is exactly where a path can start pointing
+  somewhere else, so containment is re-decided at every use and never
+  cached from a parse. Duplicate paths are kept as written: what the
+  frontmatter lists is what the review lists and what the message carries.
 
   The outbound headers are always serialized from the PARSED values
-  (`Valea.Mail.DraftMime.compose/4` / `compose_send/5`), never the raw
+  (`Valea.Mail.DraftMime.compose/5` / `compose_send/6`), never the raw
   frontmatter strings.
 
   ## Two hashes: content vs. canonical
@@ -61,7 +80,9 @@ defmodule Valea.Mail.DraftFile do
   Send again.
   """
 
-  @allowed_keys ~w(to cc bcc subject in_reply_to status)
+  alias Valea.Paths
+
+  @allowed_keys ~w(to cc bcc subject in_reply_to status attachments)
   @statuses ~w(draft pushing pushed sending send_review sent)
   @msg_id_re ~r/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+-[0-9a-f]{8,64}$/
 
@@ -93,6 +114,7 @@ defmodule Valea.Mail.DraftFile do
           bcc: [addr()],
           subject: String.t(),
           in_reply_to: String.t() | nil,
+          attachments: [String.t()],
           status: String.t(),
           body: String.t()
         }
@@ -172,7 +194,8 @@ defmodule Valea.Mail.DraftFile do
          {:ok, cc} <- validate_addr_list(map, "cc", false),
          {:ok, bcc} <- validate_addr_list(map, "bcc", false),
          {:ok, subject} <- validate_subject(map),
-         {:ok, in_reply_to} <- validate_in_reply_to(map) do
+         {:ok, in_reply_to} <- validate_in_reply_to(map),
+         {:ok, attachments} <- validate_attachments(map) do
       {:ok,
        %{
          to: to,
@@ -180,6 +203,7 @@ defmodule Valea.Mail.DraftFile do
          bcc: bcc,
          subject: subject,
          in_reply_to: in_reply_to,
+         attachments: attachments,
          status: status,
          body: body
        }}
@@ -306,6 +330,55 @@ defmodule Valea.Mail.DraftFile do
 
       _other ->
         {:error, "in_reply_to must be a string"}
+    end
+  end
+
+  # -- attachments --------------------------------------------------------------
+
+  defp validate_attachments(map) do
+    with {:ok, values} <- coerce_list(map, "attachments") do
+      parse_all_attachments(values, [])
+    end
+  end
+
+  defp parse_all_attachments([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp parse_all_attachments([value | rest], acc) do
+    cond do
+      not is_binary(value) ->
+        {:error, "attachments entries must be strings"}
+
+      has_control?(value) ->
+        {:error, "control character in attachments path"}
+
+      true ->
+        case validate_workspace_rel(value) do
+          :ok -> parse_all_attachments(rest, [value | acc])
+          {:error, reason} -> {:error, "attachments: #{reason}"}
+        end
+    end
+  end
+
+  # Shape only — see the moduledoc. `classify/1` is the host-aware
+  # absoluteness decision (a bare `C:` form is not "relative" on Windows just
+  # because it lacks a leading slash), and the segment scan splits on BOTH
+  # separators so a `..` traversal cannot hide behind the separator the host
+  # happens not to use. `resolve_real/2` would refuse a traversal at use time
+  # anyway; refusing it here means the draft never validates, so the reason
+  # the human sees names the frontmatter rather than a file.
+  defp validate_workspace_rel(value) do
+    cond do
+      String.trim(value) == "" ->
+        {:error, "empty path"}
+
+      Paths.classify(value) != :relative ->
+        {:error, "#{inspect(value)} is not workspace-relative"}
+
+      Enum.any?(String.split(value, ["/", "\\"]), &(&1 in ["", ".", ".."])) ->
+        {:error, "#{inspect(value)} has an empty or dot path segment"}
+
+      true ->
+        :ok
     end
   end
 

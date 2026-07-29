@@ -5,6 +5,7 @@ defmodule Valea.Mail.OpsExecutorSendTest do
   use ExUnit.Case, async: false
 
   alias Valea.Mail.DraftFile
+  alias Valea.Mail.DraftMime
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
@@ -220,6 +221,237 @@ defmodule Valea.Mail.OpsExecutorSendTest do
         connect_opts: [name: name]
       })
   end
+
+  # -- attachment fixtures ------------------------------------------------------
+
+  # A file INSIDE the workspace, at a workspace-relative path — the only kind
+  # a draft may name.
+  defp write_attachment!(root, rel, content) do
+    abs = Path.join(root, rel)
+    File.mkdir_p!(Path.dirname(abs))
+    File.write!(abs, content)
+    abs
+  end
+
+  defp attachments_draft(paths) do
+    draft_body(extra: "attachments: [#{Enum.map_join(paths, ", ", &~s("#{&1}"))}]")
+  end
+
+  defp review!(c, name), do: OpsExecutor.review_snapshot(local_ctx(c), name)
+
+  # ==========================================================================
+  # attachments — resolution, containment, caps, and the fingerprint binding
+  # ==========================================================================
+
+  describe "attachments" do
+    test "the review snapshot lists filename, workspace path and size per attachment", %{
+      root: root
+    } do
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 fake")
+      write_attachment!(root, "notes/photo.png", "PNGDATA")
+      write_draft!(root, "reply.md", attachments_draft(["notes/deck.pdf", "notes/photo.png"]))
+      c = ctx(nil, root)
+
+      assert {:ok, review} = review!(c, "reply.md")
+
+      assert review["attachments"] == [
+               %{"filename" => "deck.pdf", "path" => "notes/deck.pdf", "bytes" => 13},
+               %{"filename" => "photo.png", "path" => "notes/photo.png", "bytes" => 7}
+             ]
+    end
+
+    test "a draft with no attachments reviews with an empty list", %{root: root} do
+      write_draft!(root, "reply.md", draft_body())
+      assert {:ok, review} = review!(ctx(nil, root), "reply.md")
+      assert review["attachments"] == []
+    end
+
+    test "a missing attachment refuses the review and the send, claiming nothing", %{root: root} do
+      content = write_draft!(root, "reply.md", attachments_draft(["notes/gone.pdf"]))
+      c = ctx(nil, root)
+
+      assert {:error, "attachment_missing: notes/gone.pdf"} = review!(c, "reply.md")
+
+      assert {:error, "attachment_missing: notes/gone.pdf"} =
+               OpsExecutor.prepare_send(
+                 local_ctx(c),
+                 "reply.md",
+                 DraftFile.content_hash(content),
+                 fingerprint(settings())
+               )
+
+      assert ops_all("drafts/reply.md") == []
+      assert read_draft_status(root, "reply.md") == "draft"
+      assert send_calls() == []
+    end
+
+    test "a directory named as an attachment is refused like a missing file", %{root: root} do
+      File.mkdir_p!(Path.join(root, "notes/folder"))
+      write_draft!(root, "reply.md", attachments_draft(["notes/folder"]))
+
+      assert {:error, "attachment_missing: notes/folder"} = review!(ctx(nil, root), "reply.md")
+    end
+
+    # Containment is decided by `Paths.resolve_real/2` against the WORKSPACE
+    # ROOT, symlinks resolved: an in-workspace entry pointing outside is not a
+    # file this workspace owns, whatever the frontmatter calls it.
+    test "a symlink out of the workspace is refused as outside", %{root: root} do
+      outside = Path.join(Path.dirname(root), "secret.txt")
+      File.write!(outside, "not yours")
+      File.mkdir_p!(Path.join(root, "notes"))
+      File.ln_s!(outside, Path.join(root, "notes/link.txt"))
+
+      write_draft!(root, "reply.md", attachments_draft(["notes/link.txt"]))
+
+      assert {:error, "attachment_outside: notes/link.txt"} = review!(ctx(nil, root), "reply.md")
+    end
+
+    test "a file over the per-file cap refuses with attachments_too_large", %{root: root} do
+      oversize = :binary.copy(<<0>>, DraftMime.max_attachment_bytes() + 1)
+      write_attachment!(root, "notes/huge.bin", oversize)
+      content = write_draft!(root, "reply.md", attachments_draft(["notes/huge.bin"]))
+      c = ctx(nil, root)
+
+      assert {:error, "attachments_too_large"} = review!(c, "reply.md")
+
+      assert {:error, "attachments_too_large"} =
+               OpsExecutor.prepare_send(
+                 local_ctx(c),
+                 "reply.md",
+                 DraftFile.content_hash(content),
+                 fingerprint(settings())
+               )
+
+      assert ops_all("drafts/reply.md") == []
+    end
+
+    test "the composed wire message actually carries the attachment", %{root: root} do
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 fake")
+      content = write_draft!(root, "reply.md", attachments_draft(["notes/deck.pdf"]))
+      c = ctx(start_model!(), root)
+
+      {:ok, review} = review!(c, "reply.md")
+
+      assert {:ok, op} =
+               OpsExecutor.prepare_send(
+                 local_ctx(c),
+                 "reply.md",
+                 DraftFile.content_hash(content),
+                 review["review_fingerprint"]
+               )
+
+      wire = File.read!(spool_wire(root, op.id))
+      assert wire =~ "multipart/mixed"
+
+      assert {"multipart", "mixed", _headers, _params, [_body, part]} =
+               :mimemail.decode(wire, encoding: :none, allow_missing_version: true)
+
+      assert {"application", "pdf", _, params, "%PDF-1.7 fake"} = part
+      assert params[:disposition_params] == [{"filename", "deck.pdf"}]
+
+      manifest = read_manifest(root, op.id)
+
+      assert [%{"path" => "notes/deck.pdf", "filename" => "deck.pdf", "bytes" => 13}] =
+               manifest["attachments"]
+    end
+
+    # THE binding the review promises: the draft file's own hash cannot see an
+    # attachment change (the draft names the file, it does not carry it), so
+    # the attachment CONTENT hashes ride the review fingerprint instead.
+    # Rewriting the file between review and confirm must refuse the send.
+    test "rewriting an attachment between review and send forces a re-review", %{root: root} do
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 original")
+      content = write_draft!(root, "reply.md", attachments_draft(["notes/deck.pdf"]))
+      c = ctx(nil, root)
+
+      {:ok, review} = review!(c, "reply.md")
+
+      # Same length, so even a size-only comparison would not notice.
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 swapped!")
+
+      assert DraftFile.content_hash(content) ==
+               DraftFile.content_hash(File.read!(draft_abs(root)))
+
+      assert {:error, "re_review_required"} =
+               OpsExecutor.prepare_send(
+                 local_ctx(c),
+                 "reply.md",
+                 DraftFile.content_hash(content),
+                 review["review_fingerprint"]
+               )
+
+      assert ops_all("drafts/reply.md") == []
+      assert send_calls() == []
+    end
+
+    test "a fresh review of the rewritten attachment sends again", %{root: root} do
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 original")
+      content = write_draft!(root, "reply.md", attachments_draft(["notes/deck.pdf"]))
+      c = ctx(start_model!(), root)
+
+      {:ok, stale} = review!(c, "reply.md")
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 swapped!")
+      {:ok, fresh} = review!(c, "reply.md")
+
+      refute fresh["review_fingerprint"] == stale["review_fingerprint"]
+
+      assert {:ok, _op} =
+               OpsExecutor.prepare_send(
+                 local_ctx(c),
+                 "reply.md",
+                 DraftFile.content_hash(content),
+                 fresh["review_fingerprint"]
+               )
+    end
+
+    test "renaming an attachment moves the fingerprint even with identical bytes", %{root: root} do
+      write_attachment!(root, "notes/a.pdf", "same bytes")
+      write_attachment!(root, "notes/b.pdf", "same bytes")
+      c = ctx(nil, root)
+
+      write_draft!(root, "reply.md", attachments_draft(["notes/a.pdf"]))
+      {:ok, first} = review!(c, "reply.md")
+
+      write_draft!(root, "reply.md", attachments_draft(["notes/b.pdf"]))
+      {:ok, second} = review!(c, "reply.md")
+
+      refute first["review_fingerprint"] == second["review_fingerprint"]
+    end
+
+    test "a push refuses a draft whose attachment is missing and rejects its op", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "Drafts")
+      content = write_draft!(root, "reply.md", attachments_draft(["notes/gone.pdf"]))
+      c = ctx(name, root)
+
+      assert {:error, "attachment_missing: notes/gone.pdf"} =
+               OpsExecutor.prepare_push(local_ctx(c), "reply.md", DraftFile.content_hash(content))
+
+      assert [%{state: "rejected"}] = ops_all("drafts/reply.md")
+      assert read_draft_status(root, "reply.md") == "draft"
+    end
+
+    test "a push composes the attachment into the appended draft", %{root: root} do
+      name = start_model!()
+      ModelMailTransport.put_folder(name, "Drafts")
+      write_attachment!(root, "notes/deck.pdf", "%PDF-1.7 fake")
+      content = write_draft!(root, "reply.md", attachments_draft(["notes/deck.pdf"]))
+      c = ctx(name, root)
+
+      assert {:ok, op} =
+               OpsExecutor.prepare_push(local_ctx(c), "reply.md", DraftFile.content_hash(content))
+
+      payload = File.read!(Path.join([root, "sources", "mail", "mara", "spool", "#{op.id}.eml"]))
+      assert payload =~ "multipart/mixed"
+
+      assert {"multipart", "mixed", _h, _p, [_body, {"application", "pdf", _, _, content}]} =
+               :mimemail.decode(payload, encoding: :none, allow_missing_version: true)
+
+      assert content == "%PDF-1.7 fake"
+    end
+  end
+
+  defp draft_abs(root), do: Path.join(drafts_dir(root), "reply.md")
 
   # ==========================================================================
   # prepare_send — claim + snapshot + fingerprint + compose + spool

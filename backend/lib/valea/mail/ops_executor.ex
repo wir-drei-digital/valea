@@ -505,7 +505,8 @@ defmodule Valea.Mail.OpsExecutor do
       draft; its display state is returned, no second op created.
     * `{:error, reason}` — a pre-claim failure (bad name, symlink/missing
       file) or a post-claim rejection (`content_changed`, `status_forged`,
-      `invalid_draft`); a post-claim rejection also terminates the op
+      `invalid_draft`, `attachment_missing: …`/`attachment_outside: …`/
+      `attachments_too_large`); a post-claim rejection also terminates the op
       `rejected`.
   """
   @spec prepare_push(map(), String.t(), String.t()) ::
@@ -590,12 +591,16 @@ defmodule Valea.Mail.OpsExecutor do
             reject_push(op_row, "invalid_draft: #{reason}")
 
           {:ok, parsed} ->
-            case corroborate_status(ctx, op_row, parsed) do
-              :ok ->
-                compose_and_spool(ctx, op_row, draft_name, content_hash, parsed, path)
-
-              {:error, reason} ->
-                reject_push(op_row, reason)
+            with :ok <- corroborate_status(ctx, op_row, parsed),
+                 # Same gate the review applies, at the same point in the
+                 # ordering: a draft whose attachments are missing, escaped or
+                 # over the caps is refused BEFORE anything is composed or
+                 # spooled — the claimed op terminates `rejected` and the draft
+                 # is left exactly as it was.
+                 {:ok, attachments} <- load_attachments(ctx, parsed.attachments) do
+              compose_and_spool(ctx, op_row, draft_name, content_hash, parsed, path, attachments)
+            else
+              {:error, reason} -> reject_push(op_row, reason)
             end
         end
     end
@@ -622,10 +627,13 @@ defmodule Valea.Mail.OpsExecutor do
     |> Enum.any?(&(&1.id != exclude_id))
   end
 
-  defp compose_and_spool(ctx, op_row, draft_name, content_hash, parsed, path) do
+  defp compose_and_spool(ctx, op_row, draft_name, content_hash, parsed, path, attachments) do
     {threading, notice} = resolve_threading(ctx, parsed.in_reply_to)
     from = draft_from(ctx)
-    {:ok, rfc822} = DraftMime.compose(parsed, threading, op_row.message_id, from)
+
+    {:ok, rfc822} =
+      DraftMime.compose(parsed, threading, op_row.message_id, from, attachments)
+
     payload_sha = sha256_hex(rfc822)
 
     write_spool_payload!(ctx, op_row.id, rfc822)
@@ -1011,6 +1019,85 @@ defmodule Valea.Mail.OpsExecutor do
     end
   end
 
+  # -- attachments ------------------------------------------------------------
+  #
+  # THE resolution of a draft's `attachments:` paths into bytes, and the only
+  # one: the push, the review snapshot and the send all come through here, so
+  # what the human reviews and what leaves the machine cannot be judged by two
+  # different rules.
+  #
+  # Containment is re-decided on every call, against the WORKSPACE ROOT
+  # (`Valea.Paths.resolve_real/2`, symlink-aware): drafts are agent-writable,
+  # so a path that was inside the workspace when the draft was written may not
+  # be by the time it is sent. Beyond containment the stat is the same
+  # no-follow posture the draft file itself gets — a REGULAR file with a
+  # SINGLE link. The link count is not ceremony: `resolve_real/2` follows
+  # symlinks and can prove where they land, but a HARD link inside the
+  # workspace to a file outside it is indistinguishable from the file itself,
+  # and would be a containment bypass no path check can see.
+  #
+  # Caps are checked from the stat, before a single byte is read, so an
+  # oversized draft is refused without loading it into memory.
+  defp load_attachments(_ctx, []), do: {:ok, []}
+
+  defp load_attachments(ctx, rel_paths) do
+    with {:ok, statted} <- stat_attachments(ctx, rel_paths, []),
+         :ok <- DraftMime.check_caps(Enum.map(statted, & &1.bytes)),
+         {:ok, loaded} <- read_attachments(statted, []),
+         # Again on what was actually READ, not on what the stat promised: a
+         # file that grew between the two is over the cap it was measured
+         # under, and `bytes` must describe the bytes the message carries.
+         :ok <- DraftMime.check_caps(Enum.map(loaded, & &1.bytes)) do
+      {:ok, loaded}
+    end
+  end
+
+  defp stat_attachments(_ctx, [], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp stat_attachments(ctx, [rel | rest], acc) do
+    case Paths.resolve_real(rel, ctx.root) do
+      {:ok, abs} ->
+        case File.lstat(abs) do
+          {:ok, %File.Stat{type: :regular, links: 1, size: size}} ->
+            entry = %{path: rel, filename: Path.basename(rel), abs: abs, bytes: size}
+            stat_attachments(ctx, rest, [entry | acc])
+
+          _not_a_plain_file ->
+            {:error, "attachment_missing: #{rel}"}
+        end
+
+      {:error, _reason} ->
+        {:error, "attachment_outside: #{rel}"}
+    end
+  end
+
+  defp read_attachments([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp read_attachments([entry | rest], acc) do
+    case File.read(entry.abs) do
+      {:ok, content} ->
+        loaded =
+          entry
+          |> Map.delete(:abs)
+          |> Map.merge(%{
+            content: content,
+            bytes: byte_size(content),
+            sha256: sha256_hex(content)
+          })
+
+        read_attachments(rest, [loaded | acc])
+
+      {:error, _reason} ->
+        {:error, "attachment_missing: #{entry.path}"}
+    end
+  end
+
+  # What the review snapshot lists — filename, workspace path and size, never
+  # the bytes. The human confirms a NAME and a SIZE; the content hash they are
+  # bound to rides `review_fingerprint/3`, not this.
+  defp attachment_map(%{filename: filename, path: path, bytes: bytes}),
+    do: %{"filename" => filename, "path" => path, "bytes" => bytes}
+
   # `in_reply_to` msg_id → threading headers from the referenced message's raw
   # canonical file (a direct win of keeping RFC822). Absent/unmirrored/no
   # Message-ID → compose without threading, with a panel notice.
@@ -1166,25 +1253,39 @@ defmodule Valea.Mail.OpsExecutor do
 
   @doc """
   The review fingerprint: an opaque hash over everything that decides HOW,
-  AS WHOM, and INTO WHICH THREAD this account transmits — the account's SMTP
-  send config (`Valea.Mail.Settings.smtp_fingerprint/1`'s frozen input
-  string) joined to the review's RESOLVED threading.
+  AS WHOM, INTO WHICH THREAD and WITH WHAT FILES this account transmits —
+  the account's SMTP send config (`Valea.Mail.Settings.smtp_fingerprint/1`'s
+  frozen input string), the review's RESOLVED threading, and the CONTENT
+  HASH of every attachment as it was read for the review.
 
   `send_draft` carries the value the human's review modal was rendered from;
-  a re-derivation that no longer matches means the sending identity or the
-  thread the message would join has drifted since (a settings hot-reload has
-  no generation bump, and the referenced message can be deleted server-side),
-  so the send is refused rather than transmitted under terms nobody
-  reviewed. `nil` for a push-only account, exactly where `smtp_fingerprint/1`
-  is `nil`.
-  """
-  @spec review_fingerprint(Settings.t(), DraftMime.threading() | nil) :: String.t() | nil
-  def review_fingerprint(%{smtp: nil}, _threading), do: nil
+  a re-derivation that no longer matches means the sending identity, the
+  thread the message would join, or an attachment's bytes have drifted since
+  (a settings hot-reload has no generation bump, the referenced message can
+  be deleted server-side, and an attachment is an ordinary file anything on
+  the machine can rewrite), so the send is refused rather than transmitted
+  under terms nobody reviewed. `nil` for a push-only account, exactly where
+  `smtp_fingerprint/1` is `nil`.
 
-  def review_fingerprint(%{smtp: smtp}, threading) do
+  Attachments are in here rather than in `content_hash` because that hash is
+  the DRAFT FILE's, and the draft file names its attachments without
+  carrying them — editing `deck.pdf` moves no byte of the draft. Without
+  this term the confirm modal's "deck.pdf · 2.1 MB" would be a claim about a
+  file the send never re-checks.
+  """
+  @spec review_fingerprint(Settings.t(), DraftMime.threading() | nil, [map()]) ::
+          String.t() | nil
+  def review_fingerprint(settings, threading, attachments \\ [])
+
+  def review_fingerprint(%{smtp: nil}, _threading, _attachments), do: nil
+
+  def review_fingerprint(%{smtp: smtp}, threading, attachments) do
     :sha256
     |> :crypto.hash(
-      Settings.fingerprint_input(smtp) <> "\nthreading\n" <> canonical_threading(threading)
+      Settings.fingerprint_input(smtp) <>
+        "\nthreading\n" <>
+        canonical_threading(threading) <>
+        "\nattachments\n" <> canonical_attachments(attachments)
     )
     |> Base.encode16(case: :lower)
   end
@@ -1197,24 +1298,39 @@ defmodule Valea.Mail.OpsExecutor do
   defp canonical_threading(%{in_reply_to: in_reply_to, references: references}),
     do: in_reply_to <> "\n" <> Enum.join(references || [], "\n")
 
+  # Order-SENSITIVE (the parts are ordered in the message) and path-bearing
+  # (a renamed file is a different attachment to the recipient, whatever its
+  # bytes). "none" for the empty list, for the same non-collision reason as
+  # the threading term above.
+  defp canonical_attachments([]), do: "none"
+
+  defp canonical_attachments(attachments),
+    do: Enum.map_join(attachments, "\n", fn a -> a.path <> " " <> a.sha256 end)
+
   @doc """
   THE review snapshot (spec G §RPC surface, `get_mail_draft_review`): ONE
   no-follow read of the draft, and everything the confirm modal renders comes
   out of that one buffer — the parsed recipient set, the subject, the resolved
-  threading (or its absence plus the warning), the config-owned sending
-  identity, the review fingerprint, and the `content_hash` OF THAT SAME
-  BUFFER.
+  threading (or its absence plus the warning), the attachment list, the
+  config-owned sending identity, the review fingerprint, and the
+  `content_hash` OF THAT SAME BUFFER.
 
   Nothing the human sees may come from a different read than the hashes they
   confirm, which is why this is one function and not a composition of the
   listing's parse plus a separate hash.
+
+  An attachment that cannot be resolved, read, or fitted under the caps
+  REFUSES the whole review with its own reason: a confirm step that hid a
+  file it could not produce would be offering the human a send that is
+  already known to fail — and the failure would land after the claim.
   """
   @spec review_snapshot(map(), String.t()) :: {:ok, map()} | {:error, String.t()}
   def review_snapshot(ctx, draft_name) when is_binary(draft_name) do
     with :ok <- validate_draft_name(draft_name),
          {:ok, path} <- resolve_draft_path(ctx, draft_name),
          {:ok, buffer} <- read_draft_nofollow(path),
-         {:ok, validated} <- validate_send_draft(buffer) do
+         {:ok, validated} <- validate_send_draft(buffer),
+         {:ok, attachments} <- load_attachments(ctx, validated.attachments) do
       {threading, notice} = resolve_threading(ctx, validated.in_reply_to)
 
       {:ok,
@@ -1227,10 +1343,11 @@ defmodule Valea.Mail.OpsExecutor do
            "bcc" => Enum.map(validated.bcc, &addr_map/1)
          },
          "subject" => validated.subject,
+         "attachments" => Enum.map(attachments, &attachment_map/1),
          "threading" => threading_map(threading),
          "threading_warning" => notice != nil,
          "identity" => identity_map(ctx),
-         "review_fingerprint" => review_fingerprint(ctx.settings, threading),
+         "review_fingerprint" => review_fingerprint(ctx.settings, threading, attachments),
          "smtp_configured" => Settings.smtp_configured?(ctx.settings)
        }}
     end
@@ -1265,6 +1382,8 @@ defmodule Valea.Mail.OpsExecutor do
 
     1. basename → containment → no-follow read → `content_hash` verify →
        `parse_and_validate` → status anti-forgery → size guard.
+    1a. attachments resolved, contained and read (`load_attachments/2`) —
+       still pre-claim, and their content hashes feed step 3.
     2. threading resolved from the referenced message's canonical file.
     3. review fingerprint re-derived and compared (`re_review_required`).
     4. atomic claim on the widened `(account, origin)` index — a push or a
@@ -1288,13 +1407,15 @@ defmodule Valea.Mail.OpsExecutor do
          {:ok, validated} <- validate_send_draft(buffer),
          :ok <- corroborate_send_status(ctx, draft_name, validated),
          :ok <- check_send_size(ctx, buffer),
+         {:ok, attachments} <- load_attachments(ctx, validated.attachments),
          {threading, notice} <- resolve_threading(ctx, validated.in_reply_to),
-         :ok <- check_review_fingerprint(ctx, threading, review_fingerprint) do
+         :ok <- check_review_fingerprint(ctx, threading, attachments, review_fingerprint) do
       claim_send(ctx, %{
         draft_name: draft_name,
         content_hash: content_hash,
         buffer: buffer,
         validated: validated,
+        attachments: attachments,
         threading: threading,
         notice: notice,
         path: path
@@ -1343,8 +1464,8 @@ defmodule Valea.Mail.OpsExecutor do
       else: :ok
   end
 
-  defp check_review_fingerprint(ctx, threading, claimed) do
-    if review_fingerprint(ctx.settings, threading) == claimed,
+  defp check_review_fingerprint(ctx, threading, attachments, claimed) do
+    if review_fingerprint(ctx.settings, threading, attachments) == claimed,
       do: :ok,
       else: {:error, "re_review_required"}
   end
@@ -1401,7 +1522,8 @@ defmodule Valea.Mail.OpsExecutor do
         snapshot.threading,
         op_row.message_id,
         smtp.from,
-        smtp.from_name
+        smtp.from_name,
+        snapshot.attachments
       )
 
     wire_sha = sha256_hex(wire)
@@ -1419,7 +1541,17 @@ defmodule Valea.Mail.OpsExecutor do
       "msg_id" => snapshot.draft_name,
       "content_hash" => snapshot.content_hash,
       "canonical_hash" => snapshot.canonical_hash,
-      "review_fingerprint" => review_fingerprint(ctx.settings, snapshot.threading),
+      "review_fingerprint" =>
+        review_fingerprint(ctx.settings, snapshot.threading, snapshot.attachments),
+      # The attachment set as it was READ for this op — path, size and content
+      # hash, never the bytes (those are already in the spooled payloads). It
+      # is the record of what the human's confirmed fingerprint was computed
+      # over, which is the only thing that can answer "what actually went out"
+      # after the file on disk has moved on.
+      "attachments" =>
+        Enum.map(snapshot.attachments, fn a ->
+          %{"path" => a.path, "filename" => a.filename, "bytes" => a.bytes, "sha256" => a.sha256}
+        end),
       "wire_sha256" => wire_sha,
       "record_sha256" => record_sha,
       "envelope" => %{"from" => envelope.from, "rcpt" => envelope.rcpt},

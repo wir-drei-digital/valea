@@ -3821,11 +3821,11 @@ export type GetMailDraftReviewInput = {
   draftName: string;
 };
 
-export type GetMailDraftReviewFields = UnifiedFieldSelection<{content: string, contentHash: string, recipients: Record<string, any>, subject: string, threading: Record<string, any> | null, threadingWarning: boolean, identity: Record<string, any>, reviewFingerprint: string | null, smtpConfigured: boolean, __type: "TypedMap", __primitiveFields: "content" | "contentHash" | "recipients" | "subject" | "threading" | "threadingWarning" | "identity" | "reviewFingerprint" | "smtpConfigured"}>[];
+export type GetMailDraftReviewFields = UnifiedFieldSelection<{content: string, contentHash: string, recipients: Record<string, any>, subject: string, attachments: Array<Record<string, any>>, threading: Record<string, any> | null, threadingWarning: boolean, identity: Record<string, any>, reviewFingerprint: string | null, smtpConfigured: boolean, __type: "TypedMap", __primitiveFields: "content" | "contentHash" | "recipients" | "subject" | "attachments" | "threading" | "threadingWarning" | "identity" | "reviewFingerprint" | "smtpConfigured"}>[];
 
 export type InferGetMailDraftReviewResult<
   Fields extends GetMailDraftReviewFields | undefined,
-> = InferResult<{content: string, contentHash: string, recipients: Record<string, any>, subject: string, threading: Record<string, any> | null, threadingWarning: boolean, identity: Record<string, any>, reviewFingerprint: string | null, smtpConfigured: boolean, __type: "TypedMap", __primitiveFields: "content" | "contentHash" | "recipients" | "subject" | "threading" | "threadingWarning" | "identity" | "reviewFingerprint" | "smtpConfigured"}, Fields>;
+> = InferResult<{content: string, contentHash: string, recipients: Record<string, any>, subject: string, attachments: Array<Record<string, any>>, threading: Record<string, any> | null, threadingWarning: boolean, identity: Record<string, any>, reviewFingerprint: string | null, smtpConfigured: boolean, __type: "TypedMap", __primitiveFields: "content" | "contentHash" | "recipients" | "subject" | "attachments" | "threading" | "threadingWarning" | "identity" | "reviewFingerprint" | "smtpConfigured"}, Fields>;
 
 export type GetMailDraftReviewResult<Fields extends GetMailDraftReviewFields | undefined = undefined> = | { success: true; data: InferGetMailDraftReviewResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
