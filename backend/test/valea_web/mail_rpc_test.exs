@@ -132,6 +132,29 @@ defmodule ValeaWeb.MailRpcTest do
     msg_id
   end
 
+  # `plant_message!` with an explicit `Message-ID` and, for a reply, the
+  # `In-Reply-To`/`References` pair a conforming mailer sends — the headers
+  # `thread_key` is derived from.
+  defp plant_threaded!(root, account, folder_abs, uid, opts) do
+    threading =
+      case Keyword.get(opts, :parent) do
+        nil -> ""
+        parent -> "In-Reply-To: #{parent}\r\nReferences: #{parent}\r\n"
+      end
+
+    raw =
+      "From: Priya Nair <priya@example.com>\r\n" <>
+        "Subject: #{Keyword.fetch!(opts, :subject)}\r\n" <>
+        "Date: #{Keyword.fetch!(opts, :date)}\r\n" <>
+        "Message-ID: #{Keyword.fetch!(opts, :message_id)}\r\n" <>
+        threading <>
+        "\r\nBody of #{Keyword.fetch!(opts, :subject)}.\r\n"
+
+    {:ok, %{msg_id: msg_id}} = Views.land(root, account, raw)
+    Maildir.deliver!(folder_abs, Maildir.encode_filename(msg_id, uid, MapSet.new(), ":"), raw)
+    msg_id
+  end
+
   defp plant_html_message!(root, account, folder_abs, uid) do
     raw =
       "From: Priya Nair <priya@example.com>\r\n" <>
@@ -852,6 +875,271 @@ defmodule ValeaWeb.MailRpcTest do
                  "list_mail_messages",
                  %{"account" => "../x", "folder" => "INBOX"},
                  @messages_fields
+               )
+
+      assert inspect(errors) =~ "invalid_slug"
+    end
+  end
+
+  # -- threading (list_mail_messages threaded: true / get_mail_thread) -----------
+
+  # The flat shape plus the two fields only a collapsed conversation row
+  # carries.
+  @threaded_fields [
+    %{
+      "messages" => [
+        "msgId",
+        "subject",
+        "date",
+        "uid",
+        "threadKey",
+        "threadCount"
+      ]
+    }
+  ]
+
+  # `get_mail_thread` rows are the flat shape plus `folder` — a thread spans
+  # folders, so each message says where it lives.
+  @thread_fields [
+    %{
+      "messages" => [
+        "msgId",
+        "fromName",
+        "fromEmail",
+        "subject",
+        "date",
+        "flags",
+        "hasAttachments",
+        "uid",
+        "path",
+        "viewPath",
+        "folder"
+      ]
+    }
+  ]
+
+  describe "list_mail_messages threaded" do
+    setup %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
+
+      root =
+        plant_threaded!(workspace, "mara", inbox_abs, 1,
+          date: "Wed, 01 Jul 2026 09:00:00 +0000",
+          subject: "Roadmap",
+          message_id: "<root@example.com>"
+        )
+
+      reply =
+        plant_threaded!(workspace, "mara", inbox_abs, 2,
+          date: "Thu, 02 Jul 2026 09:00:00 +0000",
+          subject: "Re: Roadmap",
+          message_id: "<reply@example.com>",
+          parent: "<root@example.com>"
+        )
+
+      lunch =
+        plant_threaded!(workspace, "mara", inbox_abs, 3,
+          date: "Thu, 02 Jul 2026 12:00:00 +0000",
+          subject: "Lunch",
+          message_id: "<lunch@example.com>"
+        )
+
+      {:ok, 3} = Index.rebuild(workspace, "mara")
+
+      %{root_id: root, reply_id: reply, lunch_id: lunch, inbox_abs: inbox_abs}
+    end
+
+    test "collapses the folder by thread, newest first, with a per-thread count", %{
+      reply_id: reply_id,
+      lunch_id: lunch_id
+    } do
+      assert %{"success" => true, "data" => %{"messages" => [lunch, conversation]}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX", "threaded" => true},
+                 @threaded_fields
+               )
+
+      assert lunch["msgId"] == lunch_id
+      assert lunch["threadKey"] == "<lunch@example.com>"
+      assert lunch["threadCount"] == 1
+
+      # The newest message of the thread represents it.
+      assert conversation["msgId"] == reply_id
+      assert conversation["subject"] == "Re: Roadmap"
+      assert conversation["threadKey"] == "<root@example.com>"
+      assert conversation["threadCount"] == 2
+    end
+
+    test "without the flag the listing is flat — every occurrence, unchanged", %{
+      root_id: root_id,
+      reply_id: reply_id,
+      lunch_id: lunch_id
+    } do
+      assert %{"success" => true, "data" => %{"messages" => messages}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX"},
+                 @messages_fields
+               )
+
+      assert Enum.map(messages, & &1["msgId"]) == [lunch_id, reply_id, root_id]
+
+      # The flat projection is exactly what it was before threading existed.
+      assert messages |> hd() |> Map.keys() |> Enum.sort() ==
+               ~w(date flags fromEmail fromName hasAttachments msgId path subject uid viewPath)
+
+      # ...and asking for the thread fields cannot widen it: they are not in
+      # the flat rows at all, so a caller that forgets the flag gets the old
+      # payload rather than a row with two null columns bolted on.
+      assert %{"success" => true, "data" => %{"messages" => [flat | _]}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX"},
+                 @threaded_fields
+               )
+
+      refute Map.has_key?(flat, "threadKey")
+      refute Map.has_key?(flat, "threadCount")
+
+      # `threaded: false` is the same path as omitting it.
+      assert %{"success" => true, "data" => %{"messages" => same}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX", "threaded" => false},
+                 @messages_fields
+               )
+
+      assert same == messages
+    end
+
+    test "limit + before page over conversations", %{lunch_id: lunch_id, reply_id: reply_id} do
+      assert %{"success" => true, "data" => %{"messages" => [first]}} =
+               rpc(
+                 "list_mail_messages",
+                 %{"account" => "mara", "folder" => "INBOX", "threaded" => true, "limit" => 1},
+                 @threaded_fields
+               )
+
+      assert first["msgId"] == lunch_id
+
+      assert %{"success" => true, "data" => %{"messages" => [second]}} =
+               rpc(
+                 "list_mail_messages",
+                 %{
+                   "account" => "mara",
+                   "folder" => "INBOX",
+                   "threaded" => true,
+                   "limit" => 1,
+                   "before" => first["date"]
+                 },
+                 @threaded_fields
+               )
+
+      assert second["msgId"] == reply_id
+    end
+  end
+
+  describe "get_mail_thread" do
+    setup %{workspace: workspace, generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      maildir_root = Path.join([workspace, "sources", "mail", "mara", "maildir"])
+      inbox_abs = setup_folder!(maildir_root, "INBOX", "INBOX")
+      archive_abs = setup_folder!(maildir_root, "Archive", "Archive")
+
+      root =
+        plant_threaded!(workspace, "mara", archive_abs, 5,
+          date: "Wed, 01 Jul 2026 09:00:00 +0000",
+          subject: "Roadmap",
+          message_id: "<root@example.com>"
+        )
+
+      reply =
+        plant_threaded!(workspace, "mara", inbox_abs, 2,
+          date: "Thu, 02 Jul 2026 09:00:00 +0000",
+          subject: "Re: Roadmap",
+          message_id: "<reply@example.com>",
+          parent: "<root@example.com>"
+        )
+
+      plant_threaded!(workspace, "mara", inbox_abs, 3,
+        date: "Thu, 02 Jul 2026 12:00:00 +0000",
+        subject: "Lunch",
+        message_id: "<lunch@example.com>"
+      )
+
+      {:ok, 3} = Index.rebuild(workspace, "mara")
+
+      %{root_id: root, reply_id: reply, inbox_abs: inbox_abs}
+    end
+
+    test "returns the whole conversation across folders, oldest first", %{
+      root_id: root_id,
+      reply_id: reply_id
+    } do
+      assert %{"success" => true, "data" => %{"messages" => [first, second]}} =
+               rpc(
+                 "get_mail_thread",
+                 %{"account" => "mara", "thread_key" => "<root@example.com>"},
+                 @thread_fields
+               )
+
+      assert first["msgId"] == root_id
+      assert first["subject"] == "Roadmap"
+      assert first["folder"] == "Archive"
+      assert first["fromEmail"] == "priya@example.com"
+      assert first["hasAttachments"] == false
+      assert first["viewPath"] =~ "views/messages/"
+
+      assert second["msgId"] == reply_id
+      assert second["folder"] == "INBOX"
+    end
+
+    test "a message occurring in two folders is ONE entry in the thread", %{root_id: root_id} do
+      # The same message, a second occurrence — the INBOX copy of a message
+      # already filed in Archive.
+      Store.upsert_index_row(%{
+        account: "mara",
+        folder: "INBOX",
+        uid: 77,
+        msg_id: root_id,
+        message_id: "<root@example.com>",
+        subject: "Roadmap",
+        date: "2026-07-01T09:00:00Z",
+        path: Path.join(["sources", "mail", "mara", "maildir", "INBOX", "cur", "x"])
+      })
+
+      assert %{"success" => true, "data" => %{"messages" => messages}} =
+               rpc(
+                 "get_mail_thread",
+                 %{"account" => "mara", "thread_key" => "<root@example.com>"},
+                 @thread_fields
+               )
+
+      assert Enum.count(messages, &(&1["msgId"] == root_id)) == 1
+      # Rendered through whichever occurrence sorts first by folder.
+      assert Enum.find(messages, &(&1["msgId"] == root_id))["folder"] == "Archive"
+    end
+
+    test "an unknown thread key is an empty list, not an error" do
+      assert %{"success" => true, "data" => %{"messages" => []}} =
+               rpc(
+                 "get_mail_thread",
+                 %{"account" => "mara", "thread_key" => "<nobody@example.com>"},
+                 @thread_fields
+               )
+    end
+
+    test "an invalid slug is rejected before any lookup" do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "get_mail_thread",
+                 %{"account" => "../x", "thread_key" => "<root@example.com>"},
+                 @thread_fields
                )
 
       assert inspect(errors) =~ "invalid_slug"

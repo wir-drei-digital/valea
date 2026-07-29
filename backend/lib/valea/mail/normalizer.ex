@@ -210,6 +210,74 @@ defmodule Valea.Mail.Normalizer do
     _kind, _reason -> nil
   end
 
+  # -- thread key (JWZ-lite) -------------------------------------------------
+
+  # RFC 5322 `msg-id` as it actually arrives on the wire: an angle-bracketed
+  # run of bytes containing neither whitespace nor another bracket. Bounded
+  # at the RFC 5322 line limit so a pathological header can't mint an
+  # unbounded key. NO `u` modifier — PCRE runs in 8-bit mode, so this is
+  # safe on header-derived bytes that never went through a charset decode
+  # (same reasoning as `@high_byte_re` above).
+  @msg_id_token ~r/<[^<>\s]{1,998}>/
+
+  @doc """
+  The conversation key for one message: `References` head → `In-Reply-To` →
+  `Message-ID` → `msg_id`, the first of those that yields a well-formed
+  `<...>` id winning (mail full-client plan, M3 task 10). A message with
+  none of the three threading headers therefore threads alone under its own
+  `msg_id`, and a reply threads under whatever its `References` head names —
+  which is the thread ROOT, since every conforming mailer appends to that
+  list rather than prepending.
+
+  `headers` is any map carrying (some of) `:references` (a list of ids or
+  the space-joined string `Valea.Mail.Store` stores), `:in_reply_to` and
+  `:message_id` — a `Valea.Mail.Message` struct, a parsed frontmatter map
+  with atom keys, or an index-row attrs map all qualify. Absent keys are
+  simply skipped.
+
+  ## Defensive parsing
+
+  Real `References` headers are folded across lines, carry several ids, and
+  contain malformed entries. This takes the FIRST entry that matches the
+  `<...>` grammar, skipping anything that doesn't — a broken mailer's junk
+  token at the head of the list must not cost the message its thread, and
+  the first *valid* id is still the best available root. Only when the
+  whole header yields no valid id at all does the derivation fall through
+  to `In-Reply-To` (and then `Message-ID`, then `msg_id`).
+
+  The grammar deliberately requires the angle brackets, and the returned key
+  keeps them verbatim: the key is then literally a substring of the header
+  it came from (nothing to un-transform when debugging), and it is
+  distinguishable at a glance from the bracket-free `msg_id` last resort.
+  The trade-off is that a mailer emitting bare, unbracketed ids threads its
+  messages alone; that is accepted rather than admitting a second, looser
+  grammar whose keys could not be compared against the strict one.
+
+  Returns `nil` only when there is no usable id anywhere AND `msg_id` is
+  itself `nil`/blank — a row the write paths never produce.
+  """
+  @spec thread_key(map(), String.t() | nil) :: String.t() | nil
+  def thread_key(headers, msg_id) when is_map(headers) do
+    first_msg_id(Map.get(headers, :references)) ||
+      first_msg_id(Map.get(headers, :in_reply_to)) ||
+      first_msg_id(Map.get(headers, :message_id)) ||
+      presence(msg_id)
+  end
+
+  defp first_msg_id(nil), do: nil
+
+  defp first_msg_id(list) when is_list(list),
+    do: list |> Enum.filter(&is_binary/1) |> Enum.join(" ") |> first_msg_id()
+
+  defp first_msg_id(value) when is_binary(value) do
+    case Regex.run(@msg_id_token, value) do
+      [token] -> scrub_utf8(token)
+      nil -> nil
+    end
+  end
+
+  defp first_msg_id(_other), do: nil
+
   # -- mimemail decode (never lets an mimemail raise escape) -----------------
 
   defp try_decode(rfc822) do

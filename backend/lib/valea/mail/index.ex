@@ -49,6 +49,19 @@ defmodule Valea.Mail.Index do
   exists on disk, and dropping it from the index because cosmetic metadata
   is unavailable would be worse than a row with a few blank fields.
 
+  ## Thread keys, and why this module is their backfill
+
+  `mail_messages.thread_key` (M3 task 10) is derived at the single write
+  chokepoint `Valea.Mail.Store.upsert_index_row/1`, so every occurrence this
+  module re-indexes gets its key recomputed from the view's
+  `references`/`in_reply_to`/`message_id` for free. That is the entire
+  migration story for the column: `20260729000002_mail_thread_keys.exs` adds
+  it empty, `Valea.Mail.Engine`'s `do_activate/1` calls `rebuild/2` on EVERY
+  activation, and every configured account activates when its workspace
+  opens — so an existing store's rows are filled in the first time the
+  workspace is opened after the migration, with no data migration to write
+  and no second implementation of the derivation to keep in step.
+
   ## Re-feeding the full-text index
 
   `mail_search` (the FTS5 index behind `search_mail`) is derived state like

@@ -83,6 +83,8 @@ import {
   listMailFoldersChannel,
   getMailMessage as httpGetMailMessage,
   getMailMessageChannel,
+  getMailThread as httpGetMailThread,
+  getMailThreadChannel,
   listTrustedMailSenders as httpListTrustedMailSenders,
   listTrustedMailSendersChannel,
   setMailSenderTrust as httpSetMailSenderTrust,
@@ -204,6 +206,7 @@ import type {
   SearchMailFields,
   ListMailFoldersFields,
   GetMailMessageFields,
+  GetMailThreadFields,
   ListTrustedMailSendersFields,
   SetMailSenderTrustFields,
   RemoveMailAccountFields,
@@ -683,6 +686,52 @@ const listMailMessagesFields = [
   { messages: ['msgId', 'fromName', 'fromEmail', 'subject', 'date', 'flags', 'hasAttachments', 'uid', 'path', 'viewPath'] }
 ] as unknown as ListMailMessagesFields;
 
+// `list_mail_messages(threaded: true)` rows are `listMailMessagesFields`'
+// shape plus `threadKey` (the conversation to open with `getMailThread`) and
+// `threadCount` (how many of the folder's messages the row stands for). A
+// SEPARATE literal rather than two extra names on the flat one: the backend
+// omits both keys entirely from an unthreaded listing, so asking for them
+// there would only promise a caller something that never arrives. Same
+// `Array<TypedMap>` codegen gap, same cast.
+const listMailThreadsFields = [
+  {
+    messages: [
+      'msgId',
+      'fromName',
+      'fromEmail',
+      'subject',
+      'date',
+      'flags',
+      'hasAttachments',
+      'uid',
+      'path',
+      'viewPath',
+      'threadKey',
+      'threadCount'
+    ]
+  }
+] as unknown as ListMailMessagesFields;
+
+// `get_mail_thread` rows are the flat shape plus `folder` — one conversation
+// spans folders, so each message says where it lives. Same codegen gap.
+const getMailThreadFields = [
+  {
+    messages: [
+      'msgId',
+      'fromName',
+      'fromEmail',
+      'subject',
+      'date',
+      'flags',
+      'hasAttachments',
+      'uid',
+      'path',
+      'viewPath',
+      'folder'
+    ]
+  }
+] as unknown as GetMailThreadFields;
+
 // `search_mail` hits are `listMailMessagesFields`' shape plus `snippet` (a
 // body excerpt around the match), so search results render through the same
 // list components as a folder listing. Same `Array<TypedMap>` codegen gap,
@@ -907,12 +956,28 @@ function callCreateMailFoldersChannel(
   );
 }
 
+// The field selection follows the `threaded` flag, exactly as the HTTP path
+// below does: a collapsed listing carries two fields a flat one does not.
 function callListMailMessagesChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { account: string; folder: string; limit?: number; before?: string }
+  input: { account: string; folder: string; limit?: number; before?: string; threaded?: boolean }
 ) {
   return wrapChannelCall((handlers) =>
-    listMailMessagesChannel({ channel, input, fields: listMailMessagesFields, ...handlers })
+    listMailMessagesChannel({
+      channel,
+      input,
+      fields: input.threaded ? listMailThreadsFields : listMailMessagesFields,
+      ...handlers
+    })
+  );
+}
+
+function callGetMailThreadChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; threadKey: string }
+) {
+  return wrapChannelCall((handlers) =>
+    getMailThreadChannel({ channel, input, fields: getMailThreadFields, ...handlers })
   );
 }
 
@@ -2051,13 +2116,33 @@ export const api = {
       () => httpCreateMailFolders(withAuth({ input: { account, generation }, fields: createMailFoldersFields }))
     ),
 
-  listMailMessages: (account: string, folder: string, opts: { limit?: number; before?: string } = {}) =>
+  // `threaded: true` collapses the folder by conversation — one row per
+  // thread, the newest message representing it, carrying `threadKey` and
+  // `threadCount`. Omitted (the default) it is the flat per-message listing,
+  // byte-for-byte as before: the backend leaves the two thread fields out of
+  // those rows entirely.
+  listMailMessages: (
+    account: string,
+    folder: string,
+    opts: { limit?: number; before?: string; threaded?: boolean } = {}
+  ) =>
     runRpc(
       (channel) => callListMailMessagesChannel(channel, { account, folder, ...opts }),
       () =>
         httpListMailMessages(
-          withAuth({ input: { account, folder, ...opts }, fields: listMailMessagesFields })
+          withAuth({
+            input: { account, folder, ...opts },
+            fields: opts.threaded ? listMailThreadsFields : listMailMessagesFields
+          })
         )
+    ),
+
+  // One conversation, oldest message first, across every folder it touches.
+  // `threadKey` comes from a `listMailMessages(..., { threaded: true })` row.
+  getMailThread: (account: string, threadKey: string) =>
+    runRpc(
+      (channel) => callGetMailThreadChannel(channel, { account, threadKey }),
+      () => httpGetMailThread(withAuth({ input: { account, threadKey }, fields: getMailThreadFields }))
     ),
 
   // Full-text search across one account's landed messages. `query` is plain

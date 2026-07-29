@@ -42,7 +42,8 @@ defmodule Valea.Mail.Store.MessageIndex do
         :has_attachments,
         :path,
         :in_reply_to,
-        :references
+        :references,
+        :thread_key
       ]
 
       upsert? true
@@ -58,7 +59,8 @@ defmodule Valea.Mail.Store.MessageIndex do
         :has_attachments,
         :path,
         :in_reply_to,
-        :references
+        :references,
+        :thread_key
       ]
     end
 
@@ -82,5 +84,10 @@ defmodule Valea.Mail.Store.MessageIndex do
     attribute :path, :string, public?: true
     attribute :in_reply_to, :string, public?: true
     attribute :references, :string, public?: true
+
+    # Derived from the three above (+ `msg_id`) by
+    # `Valea.Mail.Normalizer.thread_key/2`, at the single write chokepoint
+    # `Valea.Mail.Store.upsert_index_row/1` — never supplied by a caller.
+    attribute :thread_key, :string, public?: true
   end
 end

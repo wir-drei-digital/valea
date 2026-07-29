@@ -70,6 +70,7 @@ defmodule Valea.Api do
       rpc_action(:search_mail, :search_mail)
       rpc_action(:list_mail_folders, :list_mail_folders)
       rpc_action(:get_mail_message, :get_mail_message)
+      rpc_action(:get_mail_thread, :get_mail_thread)
       rpc_action(:list_trusted_mail_senders, :list_trusted_mail_senders)
       rpc_action(:set_mail_sender_trust, :set_mail_sender_trust)
       rpc_action(:mail_apply_ops, :mail_apply_ops)

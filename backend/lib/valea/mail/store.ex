@@ -11,7 +11,11 @@ defmodule Valea.Mail.Store do
       (which `msg_id` a `UID` resolves to, and the flags last synced).
     * `mail_messages` (`MessageIndex`) — per-`(account, folder, uid)`
       OCCURRENCE row (the same `msg_id` can legitimately appear in more
-      than one folder; see that resource's moduledoc).
+      than one folder; see that resource's moduledoc). Its `thread_key`
+      column is derived, at the `upsert_index_row/1` chokepoint, by
+      `Valea.Mail.Normalizer.thread_key/2`; `list_threads/4` collapses a
+      folder by it and `message_rows_by_thread_key/2` reads one
+      conversation across folders.
     * `mail_pending_ops` (`PendingOp`) — the durable ops ledger. NOT pure
       cache like the other three: it is the record of in-flight/at-most-once
       side effects against the remote mailbox (see its moduledoc).
@@ -55,6 +59,7 @@ defmodule Valea.Mail.Store do
 
   require Ash.Query
 
+  alias Valea.Mail.Normalizer
   alias Valea.Mail.Store.MessageIndex
   alias Valea.Mail.Store.PendingOp
   alias Valea.Mail.Store.SyncState
@@ -215,11 +220,28 @@ defmodule Valea.Mail.Store do
 
   # -- index rows (mail_messages occurrences) ---------------------------------
 
-  @doc "Upserts a `mail_messages` occurrence row from `attrs` (must include `account`, `folder`, `uid`)."
+  @doc """
+  Upserts a `mail_messages` occurrence row from `attrs` (must include
+  `account`, `folder`, `uid`).
+
+  `thread_key` is DERIVED here, from the `references`/`in_reply_to`/
+  `message_id`/`msg_id` already in `attrs`
+  (`Valea.Mail.Normalizer.thread_key/2`), and any `thread_key` a caller
+  passes is overwritten. This function is the single chokepoint every write
+  path funnels through — `Valea.Mail.SyncPass`'s landing,
+  `Valea.Mail.OpsExecutor`'s move/append bookkeeping,
+  `Valea.Mail.Reconcile`'s UID re-bind, and `Valea.Mail.Index.rebuild/2`'s
+  full re-index — so deriving here is what makes it structurally impossible
+  for one of them to write a row without a thread key, or for two of them to
+  disagree about how one is computed.
+  """
   @spec upsert_index_row(map()) :: :ok
   def upsert_index_row(attrs) do
     MessageIndex
-    |> Ash.Changeset.for_create(:upsert, attrs)
+    |> Ash.Changeset.for_create(
+      :upsert,
+      Map.put(attrs, :thread_key, Normalizer.thread_key(attrs, attrs[:msg_id]))
+    )
     |> Ash.create!()
 
     :ok
@@ -272,6 +294,22 @@ defmodule Valea.Mail.Store do
     |> Enum.map(&index_row_map/1)
   end
 
+  @doc """
+  Every `mail_messages` row for `account` in the conversation `thread_key`,
+  across every folder — the whole thread as it exists locally, which is what
+  `get_mail_thread` renders. Unordered, exactly like its sibling
+  `message_rows_by_msg_id/2`: these are OCCURRENCE rows, and the caller must
+  collapse them to messages before it can meaningfully order them.
+  """
+  @spec message_rows_by_thread_key(String.t(), String.t()) :: [map()]
+  def message_rows_by_thread_key(account, thread_key)
+      when is_binary(account) and is_binary(thread_key) do
+    MessageIndex
+    |> Ash.Query.filter(account == ^account and thread_key == ^thread_key)
+    |> Ash.read!()
+    |> Enum.map(&index_row_map/1)
+  end
+
   defp index_row_map(row) do
     %{
       account: row.account,
@@ -287,8 +325,87 @@ defmodule Valea.Mail.Store do
       has_attachments: row.has_attachments,
       path: row.path,
       in_reply_to: row.in_reply_to,
-      references: row.references
+      references: row.references,
+      thread_key: row.thread_key
     }
+  end
+
+  # -- threaded listing (mail_messages collapsed by thread_key) ----------------
+
+  # The columns `list_threads/4` projects, in the order the SELECT and
+  # `thread_row/1` both read them. Deliberately NOT `SELECT *`: `references`
+  # is a SQL keyword that would need quoting, and nothing downstream of a
+  # listing wants it.
+  @thread_columns ~w(msg_id message_id from_name from_email subject date flags
+                     has_attachments uid path thread_key)a
+
+  @thread_select Enum.map_join(@thread_columns, ", ", &to_string/1)
+
+  # One row per thread_key, the NEWEST occurrence representing it, plus how
+  # many rows it stands for. Two windows over the same partition rather than
+  # one: `COUNT(*) OVER (... ORDER BY ...)` would default to a RUNNING count
+  # (frame = start of partition through the current row), which for the
+  # newest row is always 1.
+  @threads_sql """
+  SELECT #{@thread_select}, thread_count
+  FROM (
+    SELECT #{@thread_select},
+           ROW_NUMBER() OVER (PARTITION BY thread_key ORDER BY date DESC, uid DESC) AS rn,
+           COUNT(*) OVER (PARTITION BY thread_key) AS thread_count
+    FROM mail_messages
+    WHERE account = ?1 AND folder = ?2
+  )
+  WHERE rn = 1
+  """
+
+  @doc """
+  Up to `limit` CONVERSATIONS in `(account, folder)`, newest first: the
+  newest occurrence row of each distinct `thread_key`, carrying
+  `thread_count` — how many of the folder's rows that one row stands for.
+  Same arguments, same ordering and same `before` cursor semantics as
+  `list_messages/4`, so a threaded listing pages exactly like a flat one;
+  the cursor compares against the REPRESENTATIVE row's date, since that is
+  what the previous page actually showed.
+
+  `thread_count` counts within THIS folder only — it describes the collapse
+  that just happened in this listing, not the conversation's full extent.
+  The same thread may hold more messages in other folders;
+  `message_rows_by_thread_key/2` is what answers that question.
+
+  Raw SQL, like `search/3` above and for the same reason: "the newest row
+  per group" is a window function, which has no Ash query-DSL spelling. The
+  alternative — reading the folder's rows and collapsing them in Elixir —
+  would mean loading an entire backfilled mailbox to render one page.
+  `account`/`folder`/`before`/`limit` are all bound parameters; nothing is
+  interpolated.
+  """
+  @spec list_threads(String.t(), String.t(), pos_integer(), String.t() | nil) :: [map()]
+  def list_threads(account, folder, limit \\ 100, before \\ nil)
+      when is_binary(account) and is_binary(folder) do
+    {where, params} =
+      case before do
+        nil -> {"", [account, folder, limit]}
+        before -> {" AND date < ?4", [account, folder, limit, before]}
+      end
+
+    sql = @threads_sql <> where <> "\nORDER BY date DESC, uid DESC\nLIMIT ?3"
+
+    %{rows: rows} = Valea.Repo.query!(sql, params)
+    Enum.map(rows, &thread_row/1)
+  end
+
+  # Raw SQL bypasses Ash's type casting, so SQLite's integer booleans come
+  # back as 0/1 — `has_attachments` is declared `:boolean, allow_nil?: false`
+  # on the RPC row shape and must not arrive as an integer (or as `nil`, for
+  # a row written before that column had a default).
+  defp thread_row(values) do
+    {columns, [thread_count]} = Enum.split(values, length(@thread_columns))
+
+    @thread_columns
+    |> Enum.zip(columns)
+    |> Map.new()
+    |> Map.update!(:has_attachments, &(&1 in [1, true]))
+    |> Map.put(:thread_count, thread_count)
   end
 
   # -- folder reset ------------------------------------------------------------

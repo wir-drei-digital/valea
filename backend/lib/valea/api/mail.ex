@@ -62,6 +62,27 @@ defmodule Valea.Api.Mail do
   escaped — nothing this action passes down can widen, redirect, or break
   out of the query. See that function's docs.
 
+  ## `list_mail_messages`' `threaded` argument, and `get_mail_thread`
+
+  `threaded: true` collapses a folder listing by `mail_messages.thread_key`
+  (derived at write time — see `Valea.Mail.Normalizer.thread_key/2`): one
+  row per conversation, the newest occurrence representing it, carrying
+  `thread_count` (how many of THAT FOLDER's rows it stands for) and the
+  `thread_key` itself. `get_mail_thread` then reads one conversation across
+  every folder it touches.
+
+  The flag is an ordinary input argument, so it takes an atom key like every
+  other argument here — the STRING-key rule in the list above binds
+  top-level RETURN fields that can legitimately be `false`, which an
+  argument is not.
+
+  Absent (or `false`), `list_mail_messages` behaves exactly as it did before
+  threading existed: same rows, same order, same `before` cursor, and a
+  projection with no `thread_key`/`thread_count` keys in it at all. The two
+  extra fields are declared `allow_nil?: true` on the row shape so the
+  threaded and flat listings share one TypeScript type; only the threaded
+  branch ever populates them.
+
   ## Why `remove_mail_account`/`purge_mail_account_files` clear `mail_search`
 
   `mail_search` is the first thing this app persists MESSAGE BODY TEXT into
@@ -528,7 +549,9 @@ defmodule Valea.Api.Mail do
                             has_attachments: [type: :boolean, allow_nil?: false],
                             uid: [type: :integer, allow_nil?: true],
                             path: [type: :string, allow_nil?: true],
-                            view_path: [type: :string, allow_nil?: false]
+                            view_path: [type: :string, allow_nil?: false],
+                            thread_key: [type: :string, allow_nil?: true],
+                            thread_count: [type: :integer, allow_nil?: true]
                           ]
                         ]
                       ]
@@ -539,6 +562,7 @@ defmodule Valea.Api.Mail do
       argument :folder, :string, allow_nil?: false
       argument :limit, :integer, allow_nil?: true, constraints: [min: 1]
       argument :before, :string, allow_nil?: true
+      argument :threaded, :boolean, allow_nil?: true
 
       run fn input, _ctx ->
         %{account: slug, folder: folder} = input.arguments
@@ -547,12 +571,7 @@ defmodule Valea.Api.Mail do
 
         with :ok <- validate_slug(slug),
              {:ok, _ws} <- Manager.current() do
-          messages =
-            slug
-            |> Store.list_messages(folder, limit, before)
-            |> Enum.map(&message_summary(slug, &1))
-
-          {:ok, %{messages: messages}}
+          {:ok, %{messages: folder_messages(slug, folder, limit, before, input.arguments)}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -685,6 +704,63 @@ defmodule Valea.Api.Mail do
             |> Map.put("sender_trusted", Trust.trusted?(root, sender_email(frontmatter)))
 
           {:ok, %{"message" => message}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    # One conversation, across every folder it touches — the read half of
+    # `thread_key` (`list_mail_messages(threaded: true)` is the write-facing
+    # half, returning the key each collapsed row was minted under).
+    # Read-only, so no `generation`; `account` is slug-validated before any
+    # I/O like everywhere else here. `thread_key` needs no validation of its
+    # own: it is an opaque grouping value that only ever reaches a bound SQL
+    # parameter — it is never interpolated, never a path segment, and an
+    # unknown one simply matches no rows.
+    #
+    # `messages` is the SAME per-row shape `list_mail_messages` returns, plus
+    # `folder` (a thread spans folders, so each message says where it is);
+    # a thread renders through the same list components as a folder listing.
+    action :get_mail_thread, :map do
+      constraints fields: [
+                    messages: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            msg_id: [type: :string, allow_nil?: false],
+                            from_name: [type: :string, allow_nil?: true],
+                            from_email: [type: :string, allow_nil?: true],
+                            subject: [type: :string, allow_nil?: true],
+                            date: [type: :string, allow_nil?: true],
+                            flags: [type: :string, allow_nil?: true],
+                            has_attachments: [type: :boolean, allow_nil?: false],
+                            uid: [type: :integer, allow_nil?: true],
+                            path: [type: :string, allow_nil?: true],
+                            view_path: [type: :string, allow_nil?: false],
+                            folder: [type: :string, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :account, :string, allow_nil?: false
+      argument :thread_key, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug, thread_key: thread_key} = input.arguments
+
+        with :ok <- validate_slug(slug),
+             {:ok, _ws} <- Manager.current() do
+          messages =
+            slug
+            |> Store.message_rows_by_thread_key(thread_key)
+            |> thread_summaries(slug)
+
+          {:ok, %{messages: messages}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -1363,6 +1439,51 @@ defmodule Valea.Api.Mail do
       :path
     ])
     |> Map.put(:view_path, Views.view_rel_path(account, row.msg_id))
+  end
+
+  # `threaded: true` collapses the folder by `thread_key`; anything else —
+  # `false`, `nil`, the argument absent entirely — is the flat listing,
+  # projected byte-for-byte as it was before threading existed (no
+  # `thread_key`/`thread_count` keys at all, so a caller that doesn't ask
+  # for conversations cannot tell this action ever learned about them).
+  defp folder_messages(account, folder, limit, before, %{threaded: true}) do
+    account
+    |> Store.list_threads(folder, limit, before)
+    |> Enum.map(&collapsed_thread_summary(account, &1))
+  end
+
+  defp folder_messages(account, folder, limit, before, _arguments) do
+    account
+    |> Store.list_messages(folder, limit, before)
+    |> Enum.map(&message_summary(account, &1))
+  end
+
+  # A collapsed conversation row: the representative message's own summary,
+  # plus the key to fetch the rest of the thread with (`get_mail_thread`)
+  # and how many of the folder's rows it stands for.
+  defp collapsed_thread_summary(account, row) do
+    account
+    |> message_summary(row)
+    |> Map.put(:thread_key, row.thread_key)
+    |> Map.put(:thread_count, row.thread_count)
+  end
+
+  # One thread's OCCURRENCE rows -> its MESSAGES, oldest first (a
+  # conversation reads forward, unlike the newest-first folder listings).
+  #
+  # A message occurring in three folders is one entry, rendered through
+  # whichever occurrence sorts first by folder — the same arbitrary but
+  # STABLE rule `search_hit/2` uses, so the same thread never reshuffles
+  # which folder/uid its rows report between two reads. Messages with no
+  # parseable `Date` header sort first, where they least disturb the
+  # reading order; `folder`/`msg_id` break any remaining tie so the order
+  # is total.
+  defp thread_summaries(rows, account) do
+    rows
+    |> Enum.group_by(& &1.msg_id)
+    |> Enum.map(fn {_msg_id, occurrences} -> Enum.min_by(occurrences, & &1.folder) end)
+    |> Enum.sort_by(&{&1.date || "", &1.folder, &1.msg_id})
+    |> Enum.map(&(account |> message_summary(&1) |> Map.put(:folder, &1.folder)))
   end
 
   # One search hit -> zero or one summary row. `mail_search` is keyed per

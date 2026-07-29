@@ -3964,6 +3964,80 @@ export async function getMailMessageChannel<Fields extends GetMailMessageFields 
 }
 
 
+export type GetMailThreadInput = {
+  account: string;
+  threadKey: string;
+};
+
+export type GetMailThreadFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, folder: string, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "folder"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferGetMailThreadResult<
+  Fields extends GetMailThreadFields | undefined,
+> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, folder: string, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "folder"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type GetMailThreadResult<Fields extends GetMailThreadFields | undefined = undefined> = | { success: true; data: InferGetMailThreadResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailThread<Fields extends GetMailThreadFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GetMailThreadInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GetMailThreadResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "get_mail_thread",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GetMailThreadResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function getMailThreadChannel<Fields extends GetMailThreadFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GetMailThreadInput;
+  fields: Fields;
+  resultHandler: (result: GetMailThreadResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GetMailThreadResult<Fields>>(
+    config.channel,
+    {
+    action: "get_mail_thread",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type ListMailDraftsFields = UnifiedFieldSelection<{drafts: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "drafts"}>[];
 
 export type InferListMailDraftsResult<
@@ -4107,13 +4181,14 @@ export type ListMailMessagesInput = {
   folder: string;
   limit?: number | null;
   before?: string | null;
+  threaded?: boolean | null;
 };
 
-export type ListMailMessagesFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListMailMessagesFields = UnifiedFieldSelection<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, threadKey: string | null, threadCount: number | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "threadKey" | "threadCount"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListMailMessagesResult<
   Fields extends ListMailMessagesFields | undefined,
-> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{messages: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, flags: string | null, hasAttachments: boolean, uid: number | null, path: string | null, viewPath: string, threadKey: string | null, threadCount: number | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date" | "flags" | "hasAttachments" | "uid" | "path" | "viewPath" | "threadKey" | "threadCount"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListMailMessagesResult<Fields extends ListMailMessagesFields | undefined = undefined> = | { success: true; data: InferListMailMessagesResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
