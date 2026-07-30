@@ -600,9 +600,12 @@ const setupMailAccountFields: SetupMailAccountFields = ['saved'];
 // bug nulls an atom-keyed `false` at any nesting depth (see
 // `Valea.Api.Mail`'s action comment) — so the backend returns it top-level
 // under a string key.
+// `auth` is selected for the same reason every other field here is: the edit
+// form has to send the account's WHOLE entry back on save (M6 task 15), and a
+// mode it never read is a mode it would silently rewrite to `password`.
 const getMailAccountSettingsFields: GetMailAccountSettingsFields = [
   'notifications',
-  { account: ['host', 'port', 'username', { smtp: ['host', 'port', 'security', 'username', 'from', 'fromName'] }] }
+  { account: ['host', 'port', 'username', 'auth', { smtp: ['host', 'port', 'security', 'username', 'from', 'fromName'] }] }
 ];
 const mailAutoconfigFields: MailAutoconfigFields = [
   { imap: ['host', 'port', 'security'] },
@@ -884,6 +887,17 @@ function callMailStatusChannel(channel: NonNullable<ReturnType<typeof channelAva
  * which the backend turns back into its own default (port 587, `from`
  * defaulting to `username`).
  */
+/**
+ * One account's SASL mode (mail full-client plan, M6 task 15) — the closed
+ * vocabulary `Valea.Mail.Settings`' `auth:` key takes, mirrored here because
+ * `setup_mail_account` re-renders the account entry WHOLE: a save that omits
+ * the mode writes `password`, so an edit of an `oauth2` account has to send it
+ * back or the engine would start offering that account's access token as a
+ * LOGIN password. Anything outside these two is refused backend-side
+ * (`invalid_auth`), never defaulted.
+ */
+export type MailAuthMode = 'password' | 'oauth2';
+
 export type MailSmtpSetup = {
   host?: string | null;
   port?: number | null;
@@ -939,6 +953,7 @@ function callSetupMailAccountChannel(
     smtpFrom?: string | null;
     smtpFromName?: string | null;
     notifications?: boolean | null;
+    auth?: MailAuthMode | null;
   }
 ) {
   return wrapChannelCall((handlers) =>
@@ -2080,6 +2095,13 @@ export const api = {
   // `false` HERE rather than being left off the input: the action re-renders
   // the account entry whole, so an omitted argument writes the flag off — a
   // caller that means "keep it on" must say so on every save.
+  //
+  // `auth` (M6 task 15) is the same contract with a sharper edge: it defaults
+  // to `'password'`, so an EDIT of an `oauth2` account that doesn't pass its
+  // mode back rewrites the account as a password account — and the next IMAP
+  // connect would then put the access token in the LOGIN password field. Every
+  // caller that saves an existing account must carry the mode through (see
+  // `submitMailSetup`).
   setupMailAccount: (
     account: string,
     host: string,
@@ -2087,7 +2109,8 @@ export const api = {
     username: string,
     generation: number,
     smtp: MailSmtpSetup | null = null,
-    notifications = false
+    notifications = false,
+    auth: MailAuthMode = 'password'
   ) =>
     runRpc(
       (channel) =>
@@ -2098,6 +2121,7 @@ export const api = {
           username,
           generation,
           notifications,
+          auth,
           ...smtpSetupInput(smtp)
         }),
       () =>
@@ -2110,6 +2134,7 @@ export const api = {
               username,
               generation,
               notifications,
+              auth,
               ...smtpSetupInput(smtp)
             },
             fields: setupMailAccountFields

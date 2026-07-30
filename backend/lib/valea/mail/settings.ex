@@ -612,12 +612,17 @@ defmodule Valea.Mail.Settings do
   # `auth: oath2` typo invalidates the account instead of quietly authenticating
   # with a password — which, for an account whose credential slots hold an
   # access token, would put that token in the LOGIN command.
+  # `Map.fetch/2`, not `Map.get/2` (same distinction `fetch_port/1` draws): an
+  # ABSENT key is the back-compat default, while a key that is PRESENT and
+  # empty (`auth:` / `auth: ~`, both `nil` out of YamlElixir) is a hand-edit
+  # that says nothing usable — and this is the one field that must not read
+  # "nothing usable" as `password`.
   defp fetch_auth(attrs) do
-    case Map.get(attrs, "auth") do
-      nil -> {:ok, :password}
-      "password" -> {:ok, :password}
-      "oauth2" -> {:ok, :oauth2}
-      other -> {:error, ~s[auth must be "password" or "oauth2", got #{inspect(other)}]}
+    case Map.fetch(attrs, "auth") do
+      {:ok, "password"} -> {:ok, :password}
+      {:ok, "oauth2"} -> {:ok, :oauth2}
+      {:ok, other} -> {:error, ~s[auth must be "password" or "oauth2", got #{inspect(other)}]}
+      :error -> {:ok, :password}
     end
   end
 

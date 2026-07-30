@@ -7,6 +7,7 @@ import {
   foldersCheckFailed,
   createFoldersAndRecheck,
   createFoldersErrorMessage,
+  mailAuthMode,
   accountRecovery,
   isCorruptAccountMeta,
   CORRUPT_ACCOUNT_META_ERROR,
@@ -67,7 +68,8 @@ describe('submitMailSetup — browser (dev) path', () => {
     // The sixth argument is the optional v5 SMTP block — `null` for a
     // push-only account, which is the v4 behaviour verbatim. The seventh is
     // the notifications opt-in, `false` unless the form says otherwise (the
-    // action re-renders the account entry, so "not stated" IS "off").
+    // action re-renders the account entry, so "not stated" IS "off"), and the
+    // eighth is the SASL mode, on the same rule.
     expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
       'work-inbox',
       'imap.example.com',
@@ -75,7 +77,8 @@ describe('submitMailSetup — browser (dev) path', () => {
       'mara@example.com',
       3,
       null,
-      false
+      false,
+      'password'
     );
     expect(deps.refreshWorkspaceId).not.toHaveBeenCalled();
     expect(deps.keychainSet).not.toHaveBeenCalled();
@@ -95,7 +98,8 @@ describe('submitMailSetup — browser (dev) path', () => {
       'mara@example.com',
       3,
       null,
-      true
+      true,
+      'password'
     );
   });
 
@@ -174,6 +178,68 @@ describe('submitMailSetup — edit mode (blank secrets keep stored credentials)'
 
     expect(deps.keychainSet).not.toHaveBeenCalled();
     expect(deps.api.setMailCredential).not.toHaveBeenCalled();
+  });
+});
+
+// The SASL mode (M6 task 15) is the one prefilled field with a SECURITY
+// consequence if it fails to round-trip: `setup_mail_account` re-renders the
+// account entry whole, so an edit that doesn't send `oauth2` back rewrites the
+// account as a password account — and the engine then offers that account's
+// OAuth2 access token as a LOGIN password / `AUTH PLAIN` secret. These pin both
+// halves of the trip at the pure-.ts level (the component only assigns between
+// them, which `bun run check` types).
+describe('the auth mode round trip', () => {
+  it('mailAuthMode narrows the RPC string, defaulting anything unrecognized to password', () => {
+    expect(mailAuthMode('oauth2')).toBe('oauth2');
+    expect(mailAuthMode('password')).toBe('password');
+    expect(mailAuthMode(null)).toBe('password');
+    expect(mailAuthMode(undefined)).toBe('password');
+    expect(mailAuthMode('OAUTH2')).toBe('password');
+  });
+
+  it('an edit of an oauth2 account sends its mode BACK, never downgrading it', async () => {
+    const deps = makeDeps({ inDesktop: vi.fn(() => true) });
+
+    // Exactly the shape `get_mail_account_settings` returns for the edit form's
+    // prefill — the mode included, which is why `getMailAccountSettingsFields`
+    // has to select it.
+    const stored = { account: { host: 'imap.example.com', port: 993, username: 'mara@example.com', auth: 'oauth2' } };
+
+    // ...and exactly the save that used to lose it: only a sibling field
+    // changed, both secrets left blank ("keep the stored ones").
+    const outcome = await submitMailSetup(
+      { ...input, secret: '', notifications: true, auth: mailAuthMode(stored.account.auth) },
+      deps
+    );
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      'work-inbox',
+      'imap.example.com',
+      993,
+      'mara@example.com',
+      3,
+      null,
+      true,
+      'oauth2'
+    );
+    expect(outcome).toEqual({ ok: true, devMode: false });
+  });
+
+  it('a form that states no mode saves password — the backend default, unchanged', async () => {
+    const deps = makeDeps();
+
+    await submitMailSetup(input, deps);
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+      false,
+      'password'
+    );
   });
 });
 
@@ -308,7 +374,8 @@ describe('submitMailSetup — with an SMTP block', () => {
         from: null,
         fromName: 'Mara Vance'
       },
-      false
+      false,
+      'password'
     );
     expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:imap', 'hunter2');
     expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:smtp', 'smtp-only-secret');

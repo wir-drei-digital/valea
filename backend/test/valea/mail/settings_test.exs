@@ -535,6 +535,33 @@ defmodule Valea.Mail.SettingsTest do
     assert invalid["broken"] =~ "auth"
   end
 
+  test "a PRESENT but empty auth: invalidates too — only an ABSENT key means password", %{
+    root: root
+  } do
+    # `auth:` and `auth: ~` both parse to `nil`, which is exactly the value a
+    # `Map.get/2` lookup could not tell from an absent key — and reading it as
+    # `password` is the degradation this field forbids.
+    for empty <- ["auth:", "auth: ~"] do
+      write_yaml!(root, """
+      version: 5
+      accounts:
+        broken:
+          provider: generic
+          #{empty}
+          imap:
+            host: "mail.example.com"
+            port: 993
+            username: "d@w.d"
+      safety:
+        never_expunge: true
+        outbound: human_send_and_push
+      """)
+
+      assert {:ok, %{accounts: %{}, invalid: invalid}} = Settings.load(root)
+      assert invalid["broken"] =~ "auth"
+    end
+  end
+
   test "imap_config/1 and smtp_config/1 carry the mode to the transports", %{root: root} do
     assert :ok =
              Settings.upsert_account!(root, "wirdrei", %{

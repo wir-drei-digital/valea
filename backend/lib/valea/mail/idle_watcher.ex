@@ -22,10 +22,10 @@ defmodule Valea.Mail.IdleWatcher do
   The Engine starts one of these under a `DynamicSupervisor` it owns (see
   `Valea.Mail.Engine`, §IMAP IDLE) whenever the account passes the same gate a
   sync pass does — active, configured, credentialed, not sticky-blocked — and
-  terminates it when that stops being true (`auth_failed`, `mailbox_replaced`)
-  or when a new credential arrives (the watcher is REBUILT, since the
-  connection it is holding authenticated with the old secret). The Engine
-  dying takes the whole thing down through the supervisor's link.
+  terminates it when that stops being true (`auth_failed`, `reauth_required`,
+  `mailbox_replaced`) or when a new credential arrives (the watcher is REBUILT,
+  since the connection it is holding authenticated with the old secret). The
+  Engine dying takes the whole thing down through the supervisor's link.
 
   The intervening supervisor is the point: a watcher that crashes must not
   reach the Engine, whose in-RAM credential nothing else holds a copy of. Its

@@ -39,7 +39,7 @@
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
-  import { api } from '$lib/api/client';
+  import { api, type MailAuthMode } from '$lib/api/client';
   import { inDesktop, keychainSet } from '$lib/keychain';
   import { requestNotifyPermission } from '$lib/notify';
   import { mailStore } from '$lib/stores/mail.svelte';
@@ -49,6 +49,7 @@
     mailAccessErrorMessage,
     mailSetupErrorMessage,
     mailMaintenanceErrorMessage,
+    mailAuthMode,
     mailStateLabel,
     mailSlugValid,
     smtpFormError,
@@ -82,6 +83,14 @@
   let smtpFromName = $state('');
   let smtpSecret = $state('');
   let smtpSameAsImap = $state(true);
+
+  // The account's SASL mode (M6 task 15). NOT an editable field — there is no
+  // control for it in this form yet (task 16 owns the sign-in flow); it exists
+  // purely to be READ in edit mode and handed straight back on save. Without
+  // that round trip, saving any other change to an oauth2 account would
+  // rewrite it as a password account and the engine would start offering its
+  // access token as a LOGIN password.
+  let authMode = $state<MailAuthMode>('password');
 
   // New-mail notifications, opt-in per account (M5 task 13), OFF by default.
   // The OS permission is requested LAZILY — here, on the first enable, never
@@ -146,6 +155,7 @@
     smtpFromName = '';
     smtpSecret = '';
     smtpSameAsImap = true;
+    authMode = 'password';
     notificationsEnabled = false;
     notificationsDenied = false;
     error = null;
@@ -190,6 +200,7 @@
         host: string;
         port: number;
         username: string;
+        auth: string;
         smtp: {
           host: string;
           port: number;
@@ -203,6 +214,8 @@
     host = data.account.host;
     portText = String(data.account.port);
     username = data.account.username;
+    // Read back so `handleSubmit` can return it unchanged — see `authMode`.
+    authMode = mailAuthMode(data.account.auth);
     // Prefilled WITHOUT re-asking the OS: an account already opted in has a
     // permission from before, and re-prompting on every edit-form open is
     // exactly what "lazily, on the first enable" rules out.
@@ -342,7 +355,8 @@
         secret,
         generation,
         smtp: smtpEnabled ? smtpInput() : null,
-        notifications: notificationsEnabled
+        notifications: notificationsEnabled,
+        auth: authMode
       },
       {
         api,

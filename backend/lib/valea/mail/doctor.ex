@@ -24,14 +24,19 @@ defmodule Valea.Mail.Doctor do
        login), 5s timeout. Gated on 1 + 2.
     5. `tls_ok` + `login_ok` + `folders` + `move_capability` — derived from
        ONE `ctx.transport.connect/3` call, gated on 4:
-       * `tls_ok` is `"ok"` whenever the connect got far enough to attempt
-         LOGIN (i.e. it returned `{:ok, _}` or specifically
-         `{:error, :auth_failed}`); any other connect error means the
-         client never got a working transport layer, so `tls_ok` is
+       * `tls_ok` is `"ok"` whenever the connect got far enough to
+         AUTHENTICATE (i.e. it returned `{:ok, _}` or specifically
+         `{:error, :auth_failed}` / `{:error, :reauth_required}` — the
+         credential is only ever offered over the TLS layer, so either
+         rejection proves the layer came up); any other connect error means
+         the client never got a working transport layer, so `tls_ok` is
          `"failed"` and `login_ok`/`folders`/`move_capability` are
          `"unknown"` (the login was never attempted).
-       * `login_ok` is `"ok"` on `{:ok, conn}`, `"failed"` on
-         `{:error, :auth_failed}` (gated on `tls_ok`).
+       * `login_ok` is `"ok"` on `{:ok, conn}` and `"failed"` on either
+         rejection — `{:error, :auth_failed}` (a refused password) or
+         `{:error, :reauth_required}` (a refused OAuth2 token, M6 task 15,
+         whose remedy is a reconnect rather than a re-typed password) — and
+         is gated on `tls_ok`.
        * `folders` (`ctx.transport.list_folders/1`) and `move_capability`
          (`ctx.transport.capabilities/1`) are siblings computed off the
          same live `conn` once `login_ok` is `"ok"` — one's result never

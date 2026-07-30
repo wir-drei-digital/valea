@@ -23,7 +23,7 @@
  */
 
 import type { MailAccountStatus, MailDraft, MailDraftReview, MailFolder } from '$lib/stores/mail.svelte';
-import type { Api, MailSmtpSetup } from '$lib/api/client';
+import type { Api, MailAuthMode, MailSmtpSetup } from '$lib/api/client';
 
 // -- account/folder chrome (AccountSwitcher / FolderPicker) -------------------
 
@@ -1106,6 +1106,16 @@ export type MailSetupFormInput = {
    * action re-renders the account entry whole, so "not stated" IS "off".
    */
   notifications?: boolean;
+  /**
+   * The account's SASL mode (M6 task 15). Absent = `'password'`, on the same
+   * whole-entry rule as `notifications` above — but with a consequence that
+   * rule doesn't have elsewhere: an EDIT of an `'oauth2'` account that omits
+   * this saves it as a password account, and the engine then offers that
+   * account's OAuth2 access token as a LOGIN password / `AUTH PLAIN` secret.
+   * Any caller prefilling an existing account MUST read the stored mode
+   * (`get_mail_account_settings`' `account.auth`) and pass it back here.
+   */
+  auth?: MailAuthMode;
 };
 
 /**
@@ -1188,6 +1198,21 @@ export function smtpFormError(smtp: MailSetupSmtpInput, mode: 'add' | 'edit' = '
   return null;
 }
 
+/**
+ * `get_mail_account_settings`' `account.auth` string narrowed to the form's
+ * mode — the READ half of the round trip `MailSetupFormInput.auth` completes.
+ *
+ * A plain string arrives from the RPC and only two values exist backend-side
+ * (`Valea.Mail.Settings`' `auth:`), so anything else can only be a shape this
+ * build predates; `'password'` is the conservative read (it is what the backend
+ * itself defaults an absent key to). The narrowing lives here, not inline in
+ * `SetupPanel.svelte`, so the round trip is testable without a component
+ * harness.
+ */
+export function mailAuthMode(value: string | null | undefined): MailAuthMode {
+  return value === 'oauth2' ? 'oauth2' : 'password';
+}
+
 /** The wire shape of the optional smtp block — blank fields become `null` ("not supplied"), never `""`. */
 function smtpSetupArgs(smtp: MailSetupSmtpInput | null | undefined): MailSmtpSetup | null {
   if (!smtp) return null;
@@ -1261,7 +1286,11 @@ export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetup
     input.username,
     input.generation,
     smtpSetupArgs(input.smtp),
-    input.notifications === true
+    input.notifications === true,
+    // Carried through verbatim, never defaulted here: the action rewrites the
+    // whole account entry, so this is what keeps an edit from downgrading an
+    // oauth2 account to a password one (M6 task 15).
+    input.auth ?? 'password'
   );
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
 
