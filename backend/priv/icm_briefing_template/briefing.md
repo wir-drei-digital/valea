@@ -16,9 +16,9 @@ and no RPC for you here: **the file is the interface.**
 Valea owns the *meta* layer only: run history, archival, audit, the UI. It
 never puts run state in the files.
 
-`today.json` (if this ICM has one) keeps `notes` and `prepared` only. It no
-longer carries `open_loops` — open work belongs in `tasks.json`, where the
-user can see, filter and complete it.
+`today.json` (if this ICM has one) keeps `updated_at`, `notes` and
+`prepared` only. It no longer carries `open_loops` — open work belongs in
+`tasks.json`, where the user can see, filter and complete it.
 
 ## How to edit these files
 
@@ -127,8 +127,10 @@ shows it in the UI.
 }
 ```
 
-- `command`: non-empty string, required. Resolved like a terminal would
-  (absolute, ICM-root-relative, or via PATH).
+- `command`: non-empty string, required. Resolved like a terminal would: an
+  absolute path as given; a path *containing a separator* against this ICM's
+  root; a **bare name** (no separator) on `PATH` only — so a script sitting
+  in this ICM's root is `./sync.py`, never `sync.py`.
 - `args`: list of plain strings (default `[]`). **Never a shell string** —
   there is no shell, no interpolation, no pipes and no redirection. Put a
   pipeline in a script and call the script.
@@ -152,6 +154,12 @@ year field, backwards ranges (`30-10`), and a bare `5/10` step with no `*`
 or range in front of the `/`. Anything refused makes the entry
 non-executable with a visible reason — it never quietly fires at the wrong
 time.
+
+Also refused, at validation: a day-of-month/month pair **no year has** —
+`0 0 31 4 *` (April has 30 days), 30 or 31 February. Such an entry would
+never match anything, so it is rejected out loud instead of sitting there
+looking scheduled. `0 0 29 2 *` is fine: 29 February is legal cron and
+fires in leap years.
 
 **The Vixie day rule.** Day-of-month and day-of-week are **OR'd when both
 are restricted**, AND'd otherwise:
@@ -192,7 +200,10 @@ must never leave a schedule running.
 - **Mark done, never delete.** Set `status` to `"done"` or `"dropped"`;
   Valea archives completed entries to `.valea/task-archive.jsonl` and prunes
   them from the ledger. Deleting an entry yourself destroys history nothing
-  can recover.
+  can recover. A completed entry leaves the ledger when the user clears
+  done, or automatically about 14 days after its `done_at` (`updated_at`
+  when there is no `done_at`); either way it lives on in
+  `.valea/task-archive.jsonl`.
 - **Ids are opaque short slugs you generate. Never reuse one**, in either
   file — Valea's run history and archive are keyed off them.
 - **Preserve fields you don't recognize.** Round-trip unknown keys.

@@ -542,9 +542,14 @@ must be a policy rule, not a tier label:
   gate. External writers: accepted risk #2.
 - Command payloads execute outside any session posture with the user's
   full authority and no sandbox — the containment contract is exactly:
-  exec-style spawn, allowlisted env, ICM-root cwd, timeout, output cap,
-  always-ask registration, per-fire audit with the full command line, and
-  the accepted-drift decision (risk #1).
+  exec-style spawn, **a minimal env merged over the environment the backend
+  inherited** (*implementation reconciliation (Task 4): this line said
+  "allowlisted env", which overclaims — `Valea.Agents.Env.minimal/0` is what
+  Valea contributes on top of the inherited environment, not a sealed
+  allowlist, and `command_run.ex` says so; env scrubbing was never part of
+  the containment story and would not be a sandbox if it were*), ICM-root
+  cwd, timeout, output cap, always-ask registration, per-fire audit with the
+  full command line, and the accepted-drift decision (risk #1).
 - Scheduled *sessions* have identical PermissionPolicy posture to
   user-started sessions in the same ICM. A parked ask-gate surfaces as a
   `waiting` run + cockpit notice — approval happens in the normal
@@ -652,8 +657,14 @@ can render calm malformed notes and per-entry reasons.
 
 Audited: every fire/skip/completion/failure (with fingerprint, trigger,
 session id or output ref — command fires record the full command line),
-watcher-observed `schedules.json` changes (diff summary — agent
-registrations belong in the log), UI task mutations, archive sweeps,
+the scheduler's own reconciliation verdict — one
+`schedule_registered_changed` per entry that registered, changed,
+reappeared or was deleted within a tick, so agent registrations land in the
+log (*implementation reconciliation (Task 4): the spec said "watcher-observed
+`schedules.json` changes (diff summary)"; the scheduler already computes that
+diff against stored fingerprints and tombstones in order to reset anchors, so
+the audit is derived from the authority that acts on it rather than from a
+best-effort watcher that can miss an edit*), UI task mutations, archive sweeps,
 pause/resume incl. Pause-all. Deliberately not audited: agent edits to
 `tasks.json` (transcript territory; accepted risk #4 covers destructive
 rewrites). Run-history rows are keyed by `(icm_id, schedule_id)` and
@@ -682,7 +693,7 @@ survive schedule deletion and mount renames.
 | Schedule deleted mid-run | Run completes; history retained |
 | Definition edited (fingerprint change) | Anchor reset to observation time; no catch-up across the edit |
 | Duplicate task ids | First wins for addressing (tasks are inert); calm note |
-| Valea write conflict (file changed under a patch) | Re-read + re-apply, 3 retries; entry gone → conflict surfaced, nothing written |
+| Valea write conflict (file changed under a patch) | Re-read + re-apply, 3 retries; entry gone → `{:error, :not_found}`, nothing written either way (*implementation reconciliation (Task 1): this row said "conflict surfaced"; the distinct atom is strictly more informative — see §Testing*) |
 
 ## Non-goals
 

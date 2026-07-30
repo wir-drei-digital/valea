@@ -18,9 +18,10 @@ defmodule Valea.Ledger.Writer do
   Reads never come here — `Valea.Tasks.list/1` and friends read the file
   directly, so the cockpit and the UI cannot be blocked by a write.
 
-  Lifecycle: a plain GenServer registered under its module name, started by
-  `Valea.Workspace.Runtime` and therefore dying with a workspace switch like
-  every other runtime child. Mutation APIs that route through here require
+  Lifecycle: a plain GenServer registered under its module name, started as
+  the first child of `Valea.Schedules.Supervisor` (itself a
+  `Valea.Workspace.Runtime` child) and therefore dying with a workspace
+  switch like every other runtime process. Mutation APIs that route through here require
   an open workspace; without one the `GenServer.call/3` exits, loudly, which
   is the honest outcome for "asked Valea to write a file with no workspace
   open".

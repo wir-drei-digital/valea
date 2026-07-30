@@ -80,9 +80,13 @@ defmodule Valea.Schedules.Scheduler do
 
   Each enabled ICM mount that appears in a tick also gets
   `Valea.ICM.Briefing.materialize!/1` — `.valea/briefing.md`, the contract the
-  agent reads (spec §"Materialized briefing"). Write-if-different, so the steady
-  state costs one read and a compare per mount per tick, and the file always
-  matches the app version enforcing the grammar it describes. It is keyed off
+  agent reads (spec §"Materialized briefing"). Attempted once per mount root per
+  scheduler lifetime — `briefed` short-circuits on `:ok`, so a steady-state tick
+  costs nothing here at all — and the write itself is write-if-different, so the
+  file always matches the app version enforcing the grammar it describes without
+  churning mtimes. The flip side of the short-circuit: a briefing edited by hand
+  is repaired on the next workspace activation, or on the first tick after its
+  mount is enabled, not on the next tick. It is keyed off
   the mount's ROOT rather than `state.booted`: that set is only stamped once a
   `schedules.json` has been read, and a fresh ICM has no such file — exactly the
   ICM that most needs the contract. Failures degrade (log + one audit per root)

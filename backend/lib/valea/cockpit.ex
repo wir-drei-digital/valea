@@ -55,9 +55,12 @@ defmodule Valea.Cockpit do
       `%{"due_today", "overdue", "in_progress", "top" => [%{"id", "title",
       "due", "today", "priority"}]}` — or `nil` when `tasks.json` cannot be
       parsed
-    - "schedule_notices": across every enabled ICM, the last 24 h of schedule
-      notices, newest first — `%{"kind" => "waiting" | "failed" |
-      "registered", "mount_key", "schedule_id", "title", "at"}`; no captured
+    - "schedule_notices": workspace-wide, the last 24 h of schedule notices,
+      newest first — `%{"kind" => "waiting" | "failed" |
+      "registered", "mount_key", "schedule_id", "title", "at"}`. The query is
+      NOT scoped to the enabled mounts: a run from a since-disabled mount is
+      still surfaced, attributed via the row's own recorded `mount_key`; the
+      enabled mounts only supply the live title/mount-key index. No captured
       output rides here
     - "mail": a LIST, one entry per running `Valea.Mail.Engine` (i.e. one
       per valid account) — `%{"account", "configured" => true, "state",
