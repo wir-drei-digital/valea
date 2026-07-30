@@ -159,18 +159,49 @@ defmodule Valea.Git.Repo do
   @doc """
   Stages everything and commits. "Nothing to commit" is `:ok`, not an error:
   a sync pass over an unchanged ICM is a success with no commit in it.
+
+  That case is decided by an EXIT CODE, never by reading git's prose. `git
+  commit` with an empty index exits 1, so before this was exit-code-driven the
+  only thing separating "nothing to do" from a real failure was the English
+  substring "nothing to commit" — which a German-locale host renders "nichts
+  zu committen", turning every sync pass over an unchanged ICM into a
+  permanent bogus error. `Valea.Git.Cli.git_env/0` now also pins `LC_ALL=C`,
+  so the substring check below survives as a belt-and-braces fallback rather
+  than as the mechanism.
   """
   @spec commit_all(String.t(), String.t(), module()) ::
           :ok | {:error, {:commit_failed, String.t()}}
   def commit_all(root, message, cli) do
-    with {:ok, %{exit: 0}} <- cli.run(root, ["add", "-A"], []),
-         {:ok, %{exit: exit, output: out}} <- cli.run(root, ["commit", "-m", message], []) do
-      if exit == 0 or out =~ "nothing to commit" or out =~ "nothing added to commit",
-        do: :ok,
-        else: {:error, {:commit_failed, out}}
-    else
+    case cli.run(root, ["add", "-A"], []) do
+      {:ok, %{exit: 0}} -> commit_staged(root, message, cli)
       {:ok, %{output: out}} -> {:error, {:commit_failed, out}}
       {:error, reason} -> {:error, {:commit_failed, inspect(reason)}}
+    end
+  end
+
+  # `diff --cached --quiet` exits 0 when the index matches HEAD and 1 when it
+  # does not — including against an unborn HEAD, where it compares with the
+  # empty tree. Unmerged paths count as a difference, so a conflicted repo
+  # still reaches `git commit` and still fails there, as it must.
+  defp commit_staged(root, message, cli) do
+    case cli.run(root, ["diff", "--cached", "--quiet"], []) do
+      {:ok, %{exit: 0}} -> :ok
+      _staged_or_unknown -> do_commit(root, message, cli)
+    end
+  end
+
+  defp do_commit(root, message, cli) do
+    case cli.run(root, ["commit", "-m", message], []) do
+      {:ok, %{exit: 0}} ->
+        :ok
+
+      {:ok, %{output: out}} ->
+        if out =~ "nothing to commit" or out =~ "nothing added to commit",
+          do: :ok,
+          else: {:error, {:commit_failed, out}}
+
+      {:error, reason} ->
+        {:error, {:commit_failed, inspect(reason)}}
     end
   end
 

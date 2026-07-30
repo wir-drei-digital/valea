@@ -165,12 +165,29 @@ defmodule Valea.Git.Cli do
 
   defp cap(out), do: out
 
-  # `Valea.Agents.Env.minimal/0` returns a MAP, and the adapter merges it into
-  # the environment the backend inherited — so this adds the no-prompt rule
-  # without taking away the user's git configuration (HOME, and with it
-  # ~/.gitconfig and their credential helper, is what makes a real push work).
-  defp git_env do
+  @doc """
+  The environment Valea contributes to every git child. Public so it can be
+  asserted on directly — what it pins is a correctness property, not a detail.
+
+  `Valea.Agents.Env.minimal/0` returns a MAP, and the adapter merges it into
+  the environment the backend inherited — so this adds rules without taking
+  away the user's git configuration (HOME, and with it ~/.gitconfig and their
+  credential helper, is what makes a real push work).
+
+    * `GIT_TERMINAL_PROMPT=0` — git must never wait for a human who isn't
+      there.
+    * `LC_ALL=C` — git's PROSE is translated, and callers classify outcomes by
+      reading it (`Valea.Git.Repo`'s nothing-to-commit fallback, its
+      `[rejected]` push check). `Env.minimal/0`'s allowlist passes LANG /
+      LC_ALL / LC_CTYPE straight through, so without this pin a German-locale
+      host would get "nichts zu committen" and every such match would silently
+      stop working. `LC_ALL` overrides both `LANG` and every other `LC_*`,
+      inherited ones included, so one key is the whole fix.
+  """
+  @spec git_env() :: %{String.t() => String.t()}
+  def git_env do
     Valea.Agents.Env.minimal()
     |> Map.put("GIT_TERMINAL_PROMPT", "0")
+    |> Map.put("LC_ALL", "C")
   end
 end

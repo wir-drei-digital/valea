@@ -63,7 +63,11 @@ defmodule Valea.Git.RepoTest do
   test "commit_all / ff_merge / push round-trip", %{fx: fx} do
     File.write!(Path.join(fx.work, "note.md"), "hello")
     assert :ok = Repo.commit_all(fx.work, "valea sync: test", Cli)
+    assert {:ok, %{local_sha: committed}} = Repo.read_state(fx.work, Cli)
+    # Nothing staged: `:ok` with no commit made. Decided by `diff --cached`'s
+    # exit code, so it holds on a host whose git speaks German.
     assert :ok = Repo.commit_all(fx.work, "valea sync: empty", Cli)
+    assert {:ok, %{local_sha: ^committed}} = Repo.read_state(fx.work, Cli)
     assert :ok = Repo.push(fx.work, Cli)
     GitFixtures.advance_remote!(fx)
     assert :ok = Repo.fetch(fx.work, Cli)
