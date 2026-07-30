@@ -148,22 +148,36 @@ defmodule Valea.Cockpit do
 
   # -- the tasks line (tasks+schedules spec §UI surfaces → Cockpit) ------------
 
-  # Counts + the top 3 off the ICM's `tasks.json`. `nil` for an UNREADABLE
-  # ledger — the FE's calm "fix by hand" note — and a zeroed line for an absent
-  # or empty one, which is the difference between "nothing to do" and "I cannot
-  # read your file". Never raises: a task line is not worth a failed cockpit.
   defp with_tasks(section, mount) do
-    Map.put(section, "tasks", tasks_line(mount))
+    Map.put(section, "tasks", tasks_line(mount.root, host_zone()))
   end
 
-  defp tasks_line(mount) do
-    case Valea.Tasks.list(mount.root) do
+  @doc """
+  The ICM's task line: `%{"due_today", "overdue", "in_progress", "top"}` off
+  `tasks.json` at `icm_root`, with `zone` deciding what "today" means.
+
+  `nil` for an UNREADABLE ledger — the FE's calm "fix by hand" note — and a
+  zeroed line for an absent or empty one, which is the difference between
+  "nothing to do" and "I cannot read your file". Never raises: a task line is
+  not worth a failed cockpit.
+
+  Public and zone-PARAMETERIZED on purpose (the `Valea.Api.Calendar.
+  events_in_range/4` precedent): "due today" is a wall-clock question, and a
+  test that computed its expectations from the same host zone the
+  implementation reads could never catch a UTC-vs-host boundary bug on a UTC
+  CI box. `today/0` passes `Valea.Calendar.Engine.host_zone/0` — the SAME zone
+  source the calendar line uses — and the boundary itself is pinned directly
+  against a zone whose local date differs from the UTC one.
+  """
+  @spec tasks_line(String.t(), String.t()) :: map() | nil
+  def tasks_line(icm_root, zone) when is_binary(icm_root) and is_binary(zone) do
+    case Valea.Tasks.list(icm_root) do
       %{status: :unreadable} ->
         nil
 
       %{tasks: tasks} ->
         open = Enum.reject(tasks, &(&1["status"] in @completed))
-        today = host_today()
+        today = local_today(zone)
 
         %{
           "due_today" => Enum.count(open, &(due_date(&1) == today)),
@@ -234,11 +248,13 @@ defmodule Valea.Cockpit do
     end
   end
 
-  # "Today" is a wall-clock question, so it resolves through the SAME zone
-  # source the calendar line uses. A zone the tz database cannot resolve
-  # degrades to the UTC date rather than dropping the whole line.
-  defp host_today do
-    case DateTime.now(Valea.Calendar.Engine.host_zone()) do
+  # The SAME zone source the calendar line uses (`calendar_summary/0`).
+  defp host_zone, do: Valea.Calendar.Engine.host_zone()
+
+  # A zone the tz database cannot resolve degrades to the UTC date rather than
+  # dropping the whole line.
+  defp local_today(zone) do
+    case DateTime.now(zone) do
       {:ok, local} -> DateTime.to_date(local)
       {:error, _unknown_zone} -> Date.utc_today()
     end
@@ -272,14 +288,24 @@ defmodule Valea.Cockpit do
   defp notices_for(mounts) do
     since = DateTime.utc_now() |> DateTime.add(-@notice_window, :second)
     %{failed: failed, registered: registered} = Valea.Schedules.Store.notices_since(since)
-    index = schedule_index(mounts)
+    index = %{schedules: schedule_index(mounts), mounts: mount_index(mounts)}
 
     (Enum.map(Valea.Schedules.Runs.waiting_since(since), &{"waiting", &1, &1.fired_at}) ++
        Enum.map(failed, &{"failed", &1, &1.fired_at}) ++
-       Enum.map(registered, &{"registered", &1, &1.first_seen_at}))
+       Enum.map(live_registrations(registered), &{"registered", &1, &1.first_seen_at}))
     |> Enum.map(fn {kind, row, at} -> notice(kind, row, at, index) end)
     |> Enum.sort_by(& &1["at"], :desc)
     |> Enum.take(@notice_cap)
+  end
+
+  # A TOMBSTONED state (`deleted_at` set) keeps its `first_seen_at`, so a
+  # schedule registered and then deleted inside the window would otherwise
+  # announce itself as newly registered after it was already gone. The store
+  # deliberately keeps tombstones (the reconciler needs them, and a
+  # reappearance resets the anchors off exactly that row) and leaves this
+  # filtering to the UI — `Valea.Schedules.Store.get_state/2` says so.
+  defp live_registrations(registered) do
+    Enum.filter(registered, &is_nil(&1.deleted_at))
   end
 
   # `(icm_id, schedule_id)` -> `%{mount_key, title}`. Run records carry their
@@ -295,12 +321,26 @@ defmodule Valea.Cockpit do
     end
   end
 
+  # `icm_id` -> mount key, the fallback attribution for a row whose schedule is
+  # no longer in the file (deleted, or in a file that stopped parsing): the ICM
+  # is still mounted and still the right place to send the user, so an
+  # unattributable notice is never the honest answer.
+  defp mount_index(mounts), do: Map.new(mounts, &{&1.manifest.id, &1.name})
+
+  # Attribution order: the live file (current title AND current mount key) →
+  # the ICM id (a schedule that has since vanished from a mounted ICM) → the
+  # row's own recorded `mount_key`, which only run records carry and which is
+  # the last resort for an ICM that is no longer mounted at all.
   defp notice(kind, row, at, index) do
-    known = Map.get(index, {row.icm_id, row.schedule_id})
+    known = Map.get(index.schedules, {row.icm_id, row.schedule_id})
+
+    mount_key =
+      (known && known.mount_key) || Map.get(index.mounts, row.icm_id) ||
+        Map.get(row, :mount_key)
 
     %{
       "kind" => kind,
-      "mount_key" => (known && known.mount_key) || Map.get(row, :mount_key),
+      "mount_key" => mount_key,
       "schedule_id" => row.schedule_id,
       "title" => (known && known.title) || row.schedule_id,
       "at" => Valea.Schedules.Runs.iso(at)
@@ -323,10 +363,18 @@ defmodule Valea.Cockpit do
   # where it short-circuits to `{:ok, []}` before touching the filesystem —
   # so there is no error/raise shape here to degrade from (unlike
   # `live_mail_summary/0`, which genuinely can hit a dead Repo).
+  #
+  # Scheduled runs are EXCLUDED, with no toggle (tasks+schedules spec
+  # §Scheduled-session visibility). Today's recent list is five slots wide and
+  # the cap applies AFTER the filter, so one hourly schedule would otherwise
+  # own the whole list within five hours and push every real conversation off
+  # it. The Schedules tab's run history is where scheduled runs live; the nav
+  # feed has a debug toggle for them, Today deliberately does not.
   defp recent_sessions do
     {:ok, sessions} = Valea.Agents.list_sessions()
 
     sessions
+    |> Enum.reject(&(&1["kind"] == "scheduled"))
     |> Enum.sort_by(&(&1["started_at"] || ""), :desc)
     |> Enum.take(5)
     |> Enum.map(&Map.take(&1, ["id", "title", "started_at", "status", "live"]))

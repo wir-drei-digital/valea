@@ -292,11 +292,23 @@ defmodule Valea.Api.Tasks do
       {:error, error_for(:workspace_changed)}
   end
 
+  @doc false
   # Central error mapping — the `Valea.Api.Icms.error_for/1` vocabulary.
   # `:not_found` (unknown task id), `:conflict` (a foreign writer kept winning
   # the optimistic race) and `:unreadable` (a ledger Valea will not clobber)
   # already stringify to the codes the frontend renders.
-  defp error_for(:no_workspace), do: Error.new("workspace_not_open")
-  defp error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
-  defp error_for(reason), do: Error.new(inspect(reason))
+  #
+  # Public (`@doc false`) like `Valea.Api.Agents.error_for/1` and
+  # `Valea.Api.Calendar.error_for/1`, for one specific reason: `:conflict` is
+  # the one code no test can drive through an action. It needs a foreign writer
+  # to land inside the microseconds between `Valea.Tasks`' read and its write,
+  # three times over, and the only hook for that is `Valea.Tasks.patch/4`'s
+  # `:before_write` seam — which the RPC deliberately does not thread (a
+  # test-only argument has no business on the wire). The BEHAVIOR is pinned in
+  # `Valea.TasksTest` ("persistent contention is :conflict with nothing
+  # written"); what this exposes is the mapping from that atom to the code the
+  # frontend switches on.
+  def error_for(:no_workspace), do: Error.new("workspace_not_open")
+  def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
+  def error_for(reason), do: Error.new(inspect(reason))
 end

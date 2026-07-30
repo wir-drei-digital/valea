@@ -32,7 +32,7 @@ defmodule Valea.AgentsTest do
     %{ws: ws.path, generation: Manager.generation(), zebra: zebra, alpha: alpha}
   end
 
-  defp write_transcript!(workspace, id, mount_key, started_at) do
+  defp write_transcript!(workspace, id, mount_key, started_at, kind \\ "chat") do
     dir = Path.join([workspace, "logs", "sessions"])
     File.mkdir_p!(dir)
 
@@ -46,7 +46,7 @@ defmodule Valea.AgentsTest do
       "icm_id" => "icm-fixture",
       "icm_name" => "Fixture",
       "icm_root" => "/tmp/fixture",
-      "kind" => "chat",
+      "kind" => kind,
       "workflow" => nil,
       "run_id" => nil,
       "title" => "Test",
@@ -136,6 +136,27 @@ defmodule Valea.AgentsTest do
       Manager.close()
       assert Agents.list_recent_sessions_by_icm(5) == []
     end
+
+    # The scheduled-run filter runs BEFORE `Enum.take(limit)`, and this is the
+    # test that pins it: with the two NEWEST sessions scheduled, filtering after
+    # the take would return an EMPTY group (or a short one) while `limit` was
+    # spent on rows the caller asked not to see. `limit` means "limit the rows I
+    # get", not "limit the rows you looked at".
+    test "the scheduled filter runs before the limit — a full group of chat sessions",
+         %{ws: ws, alpha: alpha} do
+      write_transcript!(ws, "chat-old", alpha.mount_key, iso(1))
+      write_transcript!(ws, "chat-new", alpha.mount_key, iso(2))
+      write_transcript!(ws, "sched-1", alpha.mount_key, iso(3), "scheduled")
+      write_transcript!(ws, "sched-2", alpha.mount_key, iso(4), "scheduled")
+
+      assert [%{sessions: sessions}] = Agents.list_recent_sessions_by_icm(2)
+      assert Enum.map(sessions, & &1.id) == ["chat-new", "chat-old"]
+
+      assert [%{sessions: all}] =
+               Agents.list_recent_sessions_by_icm(2, include_scheduled: true)
+
+      assert Enum.map(all, & &1.id) == ["sched-2", "sched-1"]
+    end
   end
 
   describe "list_sessions_for/3" do
@@ -181,6 +202,42 @@ defmodule Valea.AgentsTest do
     test "%{sessions: [], next_cursor: nil} when no workspace is open" do
       Manager.close()
       assert Agents.list_sessions_for("anything", nil) == %{sessions: [], next_cursor: nil}
+    end
+
+    # The same before-vs-after question as the grouped feed, with paging's
+    # sharper failure mode: filtering AFTER `Enum.split/2` returns a SHORT page
+    # AND derives `next_cursor` from a row the caller never saw — so the next
+    # call resumes from a filtered-out id and the sessions between them are
+    # skipped for good. Interleaved kinds with page_size 2: a full page of two
+    # chat rows, and a cursor that resolves to the remainder.
+    test "the scheduled filter runs before the page split — full pages, cursor stays resolvable",
+         %{ws: ws, alpha: alpha} do
+      write_transcript!(ws, "chat-1", alpha.mount_key, iso(1))
+      write_transcript!(ws, "chat-2", alpha.mount_key, iso(2))
+      write_transcript!(ws, "sched-3", alpha.mount_key, iso(3), "scheduled")
+      write_transcript!(ws, "chat-4", alpha.mount_key, iso(4))
+      write_transcript!(ws, "sched-5", alpha.mount_key, iso(5), "scheduled")
+
+      assert %{sessions: page1, next_cursor: cursor} =
+               Agents.list_sessions_for(alpha.mount_key, nil, page_size: 2)
+
+      assert Enum.map(page1, & &1.id) == ["chat-4", "chat-2"]
+      assert cursor == "chat-2"
+
+      assert %{sessions: page2, next_cursor: nil} =
+               Agents.list_sessions_for(alpha.mount_key, cursor, page_size: 2)
+
+      assert Enum.map(page2, & &1.id) == ["chat-1"]
+
+      # And with the toggle on, the same traversal sees every kind.
+      assert %{sessions: all, next_cursor: all_cursor} =
+               Agents.list_sessions_for(alpha.mount_key, nil,
+                 page_size: 2,
+                 include_scheduled: true
+               )
+
+      assert Enum.map(all, & &1.id) == ["sched-5", "chat-4"]
+      assert all_cursor == "chat-4"
     end
 
     defp fetch_page(mount_key, cursor) do

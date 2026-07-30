@@ -121,9 +121,11 @@ defmodule Valea.CockpitTest do
   # INDEPENDENT of `today.json`, so its failures degrade on their own (the
   # `mail_summary/0` posture: a broken task ledger never kills the section).
   describe "today/0 tasks line" do
-    # Host-zone dates, through the SAME zone source the calendar line uses:
-    # "due today" is a wall-clock question, and a UTC-vs-host boundary is
-    # exactly the bug this pins wherever the suite runs.
+    # Host-zone dates, through the SAME zone source the calendar line uses.
+    # NOTE these expectations are computed from the same zone the
+    # implementation reads, so on a UTC box they cannot fail a UTC-vs-host
+    # boundary bug — that is what the zone-parameterized test in the
+    # "tasks_line/2 zone boundary" describe below is for.
     defp host_today do
       {:ok, local} = DateTime.now(Valea.Calendar.Engine.host_zone())
       DateTime.to_date(local)
@@ -227,6 +229,100 @@ defmodule Valea.CockpitTest do
       {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
       assert section["ok"] == false
       assert section["tasks"]["in_progress"] == 1
+    end
+  end
+
+  # `tasks_line/2` takes the zone as an ARGUMENT precisely so this can be
+  # pinned: a test that derived its expected dates from the same
+  # `Engine.host_zone/0` the implementation reads would agree with a
+  # `Date.utc_today/0` implementation on every UTC machine — i.e. it could not
+  # fail the bug it exists to catch.
+  describe "tasks_line/2 zone boundary" do
+    # At EVERY instant one of these two extremes disagrees with the UTC date:
+    # UTC+14 is already tomorrow from 10:00 UTC onward, and UTC-12 is still
+    # yesterday until 12:00 UTC. So there is always a witness zone, whatever
+    # time CI runs.
+    defp witness_zone do
+      utc = Date.utc_today()
+
+      [{"Pacific/Kiritimati", :ahead}, {"Etc/GMT+12", :behind}]
+      |> Enum.find_value(fn {zone, direction} ->
+        {:ok, local} = DateTime.now(zone)
+        if DateTime.to_date(local) != utc, do: {zone, direction, DateTime.to_date(local)}
+      end)
+    end
+
+    test "the boundary follows the zone it is given, not UTC" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+
+      # One task due on the UTC calendar date.
+      File.write!(
+        Path.join(icm.root, "tasks.json"),
+        Jason.encode!(%{
+          "tasks" => [
+            %{
+              "id" => "t-1",
+              "title" => "due on the UTC date",
+              "status" => "open",
+              "due" => Date.to_iso8601(Date.utc_today())
+            }
+          ]
+        })
+      )
+
+      # In UTC it is due today, and therefore not overdue.
+      assert %{"due_today" => 1, "overdue" => 0} = Valea.Cockpit.tasks_line(icm.root, "Etc/UTC")
+
+      # In a zone whose local date is NOT the UTC date, the same instant and the
+      # same file must answer differently — ahead of UTC the task is already
+      # overdue, behind UTC it is still in the future.
+      {zone, direction, _local_date} = witness_zone()
+      line = Valea.Cockpit.tasks_line(icm.root, zone)
+
+      assert line["due_today"] == 0,
+             "#{zone} (#{direction}) must not count a UTC-dated task as due today"
+
+      case direction do
+        :ahead -> assert line["overdue"] == 1
+        :behind -> assert line["overdue"] == 0
+      end
+    end
+
+    test "an unknown zone degrades to the UTC date rather than dropping the line" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+
+      File.write!(
+        Path.join(icm.root, "tasks.json"),
+        Jason.encode!(%{
+          "tasks" => [
+            %{"id" => "t-1", "status" => "open", "due" => Date.to_iso8601(Date.utc_today())}
+          ]
+        })
+      )
+
+      assert %{"due_today" => 1} = Valea.Cockpit.tasks_line(icm.root, "Mars/Olympus_Mons")
+    end
+
+    test "today/0 computes the line through the host zone" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+      File.write!(Path.join(icm.root, "today.json"), ~s({"notes": "n"}))
+
+      File.write!(
+        Path.join(icm.root, "tasks.json"),
+        Jason.encode!(%{
+          "tasks" => [
+            %{"id" => "t-1", "status" => "open", "due" => Date.to_iso8601(Date.utc_today())}
+          ]
+        })
+      )
+
+      {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
+
+      assert section["tasks"] ==
+               Valea.Cockpit.tasks_line(icm.root, Valea.Calendar.Engine.host_zone())
     end
   end
 
@@ -360,6 +456,87 @@ defmodule Valea.CockpitTest do
       # a persisted outcome (the `running_runs/1` literal-match contract).
       assert [%{outcome: "running"}] = Store.running_runs(icm_id: icm.id)
     end
+
+    # A tombstoned state keeps its `first_seen_at`, so a schedule registered and
+    # deleted inside the window would announce itself as "newly registered"
+    # after it was already gone. The store keeps tombstones on purpose (the
+    # reconciler resets anchors off exactly that row) and leaves the filtering
+    # to the UI.
+    test "a tombstoned registration is not a notice" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+      write_schedules!(icm, [])
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      :ok =
+        Store.put_state(icm.id, "s-live", %{fingerprint: "fp", first_seen_at: now})
+
+      :ok =
+        Store.put_state(icm.id, "s-tombstoned", %{
+          fingerprint: "fp",
+          first_seen_at: now,
+          deleted_at: now
+        })
+
+      {:ok, %{"schedule_notices" => notices}} = Valea.Cockpit.today()
+
+      assert notice(notices, "s-live")["kind"] == "registered"
+      assert notice(notices, "s-tombstoned") == nil
+    end
+
+    # `schedule_state` rows carry no `mount_key` (only run records do), so a
+    # registration whose schedule is no longer in the file has to be attributed
+    # through its `icm_id` — an unattributable notice would give the user
+    # nowhere to click.
+    test "a registration for a schedule missing from the file still resolves its mount" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+      # File parses, and does NOT contain the schedule the state row names.
+      write_schedules!(icm, [])
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      :ok = Store.put_state(icm.id, "s-vanished", %{fingerprint: "fp", first_seen_at: now})
+
+      {:ok, %{"schedule_notices" => notices}} = Valea.Cockpit.today()
+      found = notice(notices, "s-vanished")
+
+      assert found["kind"] == "registered"
+      assert found["mount_key"] == icm.mount_key
+      # No title to be had — the id is the honest label for a definition that
+      # is not in the file any more.
+      assert found["title"] == "s-vanished"
+    end
+
+    test "the feed is capped, newest first" do
+      ws = AgentCase.open_workspace!()
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+      write_schedules!(icm, [])
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      for i <- 1..25 do
+        {:ok, _run} =
+          Store.record_run(%{
+            icm_id: icm.id,
+            schedule_id: "s-noisy-#{String.pad_leading(Integer.to_string(i), 2, "0")}",
+            fingerprint: "fp",
+            slot: DateTime.add(now, -i * 60, :second),
+            fired_at: DateTime.add(now, -i * 60, :second),
+            trigger: "scheduled",
+            kind: "command",
+            outcome: "failed",
+            mount_key: icm.mount_key
+          })
+      end
+
+      {:ok, %{"schedule_notices" => notices}} = Valea.Cockpit.today()
+
+      assert length(notices) == 20
+      # Newest first, so the oldest five are the ones dropped.
+      assert Enum.map(notices, & &1["schedule_id"]) |> List.first() == "s-noisy-01"
+      assert notice(notices, "s-noisy-21") == nil
+    end
   end
 
   describe "today/0 recent_sessions" do
@@ -367,13 +544,14 @@ defmodule Valea.CockpitTest do
     # to only the fields `Valea.Agents.session_summary/1` actually reads for
     # this cap/order/trim contract — a real session-launch fixture (the
     # `AgentCase.start_session/3` harness path) is unnecessary weight here.
-    defp write_session_meta!(workspace, id, started_at) do
+    defp write_session_meta!(workspace, id, started_at, kind \\ "chat") do
       dir = Path.join([workspace, "logs", "sessions"])
       File.mkdir_p!(dir)
 
       meta = %{
         "schema" => "session/v1",
         "id" => id,
+        "kind" => kind,
         "title" => "Test session #{id}",
         "started_at" => started_at
       }
@@ -404,6 +582,22 @@ defmodule Valea.CockpitTest do
 
       assert Map.keys(List.first(recent)) |> Enum.sort() ==
                ["id", "live", "started_at", "status", "title"]
+    end
+
+    # Spec §Scheduled-session visibility. The cap is 5 and it applies AFTER the
+    # filter, which is the whole point: an hourly schedule would otherwise own
+    # every slot within five hours (the fixture below is exactly that shape —
+    # the six NEWEST sessions are scheduled runs).
+    test "scheduled runs never appear, and never consume a slot" do
+      ws = AgentCase.open_workspace!()
+
+      for i <- 1..5, do: write_session_meta!(ws.path, "chat-#{i}", iso(i))
+      for i <- 6..11, do: write_session_meta!(ws.path, "sched-#{i}", iso(i), "scheduled")
+
+      {:ok, %{"recent_sessions" => recent}} = Valea.Cockpit.today()
+
+      assert length(recent) == 5
+      assert Enum.all?(recent, &String.starts_with?(&1["id"], "chat-"))
     end
   end
 

@@ -224,6 +224,20 @@ defmodule Valea.Api.TasksTest do
       refute "task_updated" in audit_types()
     end
 
+    # The conflict PATH cannot be driven through the action: it needs a foreign
+    # writer inside the microseconds between `Valea.Tasks`' read and its write,
+    # three times, and the only hook for that is `patch/4`'s `:before_write`
+    # seam, which this RPC deliberately does not thread. `Valea.TasksTest`
+    # pins the behavior ("persistent contention is :conflict with nothing
+    # written"); what is left to pin HERE is that the atom reaches the frontend
+    # as the code it switches on, rather than as an `inspect/1` blob or a 500.
+    test "the ledger's conflict atom maps to the shared conflict code" do
+      assert %Valea.Api.Error{code: "conflict"} = ApiTasks.error_for(:conflict)
+      assert %Valea.Api.Error{code: "unreadable"} = ApiTasks.error_for(:unreadable)
+      assert %Valea.Api.Error{code: "not_found"} = ApiTasks.error_for(:not_found)
+      assert %Valea.Api.Error{code: "workspace_not_open"} = ApiTasks.error_for(:no_workspace)
+    end
+
     test "the caller cannot forge id/created_by through a patch", %{
       icm: icm,
       key: key,

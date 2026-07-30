@@ -5904,11 +5904,11 @@ export type CreateScheduleInput = {
   generation: number;
 };
 
-export type CreateScheduleFields = UnifiedFieldSelection<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}>[];
+export type CreateScheduleFields = UnifiedFieldSelection<{schedule: Record<string, any>, disposition: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "schedule" | "disposition" | "reason"}>[];
 
 export type InferCreateScheduleResult<
   Fields extends CreateScheduleFields | undefined,
-> = InferResult<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}, Fields>;
+> = InferResult<{schedule: Record<string, any>, disposition: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "schedule" | "disposition" | "reason"}, Fields>;
 
 export type CreateScheduleResult<Fields extends CreateScheduleFields | undefined = undefined> = | { success: true; data: InferCreateScheduleResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -6128,11 +6128,11 @@ export type MutateScheduleInput = {
   generation: number;
 };
 
-export type MutateScheduleFields = UnifiedFieldSelection<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}>[];
+export type MutateScheduleFields = UnifiedFieldSelection<{schedule: Record<string, any>, disposition: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "schedule" | "disposition" | "reason"}>[];
 
 export type InferMutateScheduleResult<
   Fields extends MutateScheduleFields | undefined,
-> = InferResult<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}, Fields>;
+> = InferResult<{schedule: Record<string, any>, disposition: string | null, reason: string | null, __type: "TypedMap", __primitiveFields: "schedule" | "disposition" | "reason"}, Fields>;
 
 export type MutateScheduleResult<Fields extends MutateScheduleFields | undefined = undefined> = | { success: true; data: InferMutateScheduleResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }

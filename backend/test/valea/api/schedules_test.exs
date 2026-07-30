@@ -225,6 +225,56 @@ defmodule Valea.Api.SchedulesTest do
       assert entry["action"] == "create"
     end
 
+    # The write is lenient by design (the file is the user's), so the reply has
+    # to say what the entry's disposition NOW is — a composer that just saved a
+    # broken cron must be able to show "saved, will not fire: invalid cron"
+    # without a second round trip or its own copy of the validation rules.
+    test "an accepted-but-invalid schedule comes back flagged not_executable", %{
+      icm: icm,
+      key: key,
+      generation: generation
+    } do
+      assert {:ok, payload} =
+               run(:create_schedule, %{
+                 mount_key: key,
+                 fields: %{
+                   "title" => "Broken",
+                   "cron" => "30 25 * * *",
+                   "payload" => %{"kind" => "prompt", "prompt" => "go"}
+                 },
+                 generation: generation
+               })
+
+      assert payload["disposition"] == "not_executable"
+      assert payload["reason"] =~ "invalid cron"
+      # ...and it DID land in the file: leniency, not refusal.
+      assert [%{"cron" => "30 25 * * *"}] = read_schedules(icm)["schedules"]
+    end
+
+    test "a valid write comes back executable, and a pause comes back paused", %{
+      icm: icm,
+      key: key,
+      generation: generation
+    } do
+      write_schedules!(icm, [prompt_entry()])
+
+      assert {:ok, %{"disposition" => "paused", "reason" => nil}} =
+               run(:mutate_schedule, %{
+                 mount_key: key,
+                 schedule_id: "s-brief",
+                 patch: %{"paused" => true},
+                 generation: generation
+               })
+
+      assert {:ok, %{"disposition" => "executable"}} =
+               run(:mutate_schedule, %{
+                 mount_key: key,
+                 schedule_id: "s-brief",
+                 patch: %{"paused" => false},
+                 generation: generation
+               })
+    end
+
     test "mutate patches by TRIMMED id and preserves unknown fields", %{
       icm: icm,
       key: key,
@@ -577,6 +627,21 @@ defmodule Valea.Api.SchedulesTest do
 
       assert %Valea.Api.Error{code: "workspace_changed"} = error.errors |> hd()
     end
+  end
+
+  # Same reasoning as `Valea.Api.TasksTest`'s mapping test: `:conflict` needs a
+  # foreign writer inside the optimistic window (staged only through
+  # `Valea.Schedules.Edit`'s `:before_write` seam, which the RPC does not
+  # thread), and `{:config_unreadable, _}` needs a `workspace.yaml` that parses
+  # for the generation guard and then refuses the write.
+  test "the ledger and config error atoms map to the shared vocabulary" do
+    assert %Valea.Api.Error{code: "conflict"} = ApiSchedules.error_for(:conflict)
+    assert %Valea.Api.Error{code: "unreadable"} = ApiSchedules.error_for(:unreadable)
+    assert %Valea.Api.Error{code: "duplicate_id"} = ApiSchedules.error_for(:duplicate_id)
+    assert %Valea.Api.Error{code: "workspace_not_open"} = ApiSchedules.error_for(:no_workspace)
+
+    assert %Valea.Api.Error{code: "config_unreadable"} =
+             ApiSchedules.error_for({:config_unreadable, :bad_yaml})
   end
 
   test "a ledger edit with the writer gone is workspace_not_open, not a crash", %{

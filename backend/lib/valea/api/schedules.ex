@@ -49,6 +49,13 @@ defmodule Valea.Api.Schedules do
   calm malformed-file note; an unreadable file yields NO entries, because
   nothing fires from a file Valea cannot parse.
 
+  `create_schedule`/`mutate_schedule` answer with the same `disposition` +
+  `reason` beside the written entry. Writes are deliberately lenient — the file
+  is the user's, and an invalid entry lands and shows up non-executable rather
+  than being refused — so the composer needs to hear "saved, and it will not
+  fire: invalid cron" in the SAME reply, without re-implementing the strict
+  validation only the backend may own.
+
   ## The kill switch is TRI-state
 
   `scheduler_paused` is `"on" | "off" | "unreadable"` — never a boolean.
@@ -87,6 +94,15 @@ defmodule Valea.Api.Schedules do
     schedules: [type: {:array, :map}, allow_nil?: false]
   ]
 
+  # The write actions' shared shape: the entry AS WRITTEN (unconstrained — it
+  # round-trips the user's own fields) plus the disposition it now has.
+  # `disposition` is nullable only for the vanishing race below.
+  @edit_result_fields [
+    schedule: [type: :map, allow_nil?: false],
+    disposition: [type: :string, allow_nil?: true],
+    reason: [type: :string, allow_nil?: true]
+  ]
+
   actions do
     action :list_schedules, :map do
       constraints fields: [
@@ -111,8 +127,14 @@ defmodule Valea.Api.Schedules do
       end
     end
 
+    # The write is LENIENT (the file is the user's; an invalid entry lands and
+    # shows up non-executable), so the response carries the entry's freshly
+    # read-back `disposition`/`reason` beside it: a composer that just saved
+    # "30 25 * * *" can say "not executable: invalid cron" without a second
+    # round trip, and without the UI having to re-implement the strict
+    # validation it must never own.
     action :create_schedule, :map do
-      constraints fields: [schedule: [type: :map, allow_nil?: false]]
+      constraints fields: @edit_result_fields
 
       argument :mount_key, :string, allow_nil?: false
       argument :fields, :map, allow_nil?: false
@@ -125,14 +147,14 @@ defmodule Valea.Api.Schedules do
           with {:ok, mount} <- icm_mount(ws, mount_key),
                {:ok, entry} <- Edit.create(mount.root, user_fields(fields, "user")) do
             audit(mount_key, entry["id"], "create")
-            {:ok, %{"schedule" => entry}}
+            {:ok, edit_result(mount, entry)}
           end
         end)
       end
     end
 
     action :mutate_schedule, :map do
-      constraints fields: [schedule: [type: :map, allow_nil?: false]]
+      constraints fields: @edit_result_fields
 
       argument :mount_key, :string, allow_nil?: false
       argument :schedule_id, :string, allow_nil?: false
@@ -147,7 +169,7 @@ defmodule Valea.Api.Schedules do
           with {:ok, mount} <- icm_mount(ws, mount_key),
                {:ok, entry} <- Edit.patch(mount.root, id, user_fields(patch, nil)) do
             audit(mount_key, id, "mutate")
-            {:ok, %{"schedule" => entry}}
+            {:ok, edit_result(mount, entry)}
           end
         end)
       end
@@ -288,6 +310,31 @@ defmodule Valea.Api.Schedules do
     }
   end
 
+  # The written entry plus its disposition, read back through
+  # `Valea.Schedules.File.load/1` rather than `Entry.build/1` alone: the
+  # duplicate-id pass is FILE-WIDE (an entry is only a duplicate relative to its
+  # siblings), and dispositioning has exactly one owner. The extra read is one
+  # file per write, on a human-paced action.
+  #
+  # `nil`/`nil` if the id is no longer in the file by the time it is re-read —
+  # a foreign writer deleted it in the microseconds since. Nothing to say about
+  # an entry that is gone, and inventing a disposition for it would be worse.
+  defp edit_result(mount, entry) do
+    id = entry["id"]
+
+    found =
+      mount.root
+      |> SchedulesFile.load()
+      |> Map.fetch!(:entries)
+      |> Enum.find(&(is_binary(id) and &1.id == String.trim(id)))
+
+    %{
+      "schedule" => entry,
+      "disposition" => found && to_string(found.disposition),
+      "reason" => found && found.reason
+    }
+  end
+
   defp payload_kind(%{payload: %{kind: kind}}), do: to_string(kind)
 
   # Lenient display fallback for an entry refused BEFORE payload validation.
@@ -409,8 +456,15 @@ defmodule Valea.Api.Schedules do
   # `{:config_unreadable, _}` from a `config/workspace.yaml` that will not
   # parse becomes `config_unreadable` (the pause toggle's own failure: Valea
   # refuses to rewrite a config it cannot read).
-  defp error_for(:no_workspace), do: Error.new("workspace_not_open")
-  defp error_for({:config_unreadable, _reason}), do: Error.new("config_unreadable")
-  defp error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
-  defp error_for(reason), do: Error.new(inspect(reason))
+  # Public (`@doc false`) for the same reason as `Valea.Api.Tasks.error_for/1`:
+  # `:conflict` cannot be driven through an action (it needs a foreign writer
+  # inside the optimistic window, which only `Valea.Schedules.Edit`'s
+  # `:before_write` seam can stage — see `Valea.Schedules.EditTest`), and
+  # `{:config_unreadable, _}` needs a `workspace.yaml` that parses for the
+  # generation guard and then fails for the write.
+  @doc false
+  def error_for(:no_workspace), do: Error.new("workspace_not_open")
+  def error_for({:config_unreadable, _reason}), do: Error.new("config_unreadable")
+  def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
+  def error_for(reason), do: Error.new(inspect(reason))
 end
