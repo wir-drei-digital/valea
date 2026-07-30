@@ -181,7 +181,12 @@ defmodule Valea.Agents.SessionServer do
             known_message_ids: (resume && resume.known_message_ids) || MapSet.new(),
             client_version: version(),
             additional_roots: scope.additional_roots,
-            managed_settings: scope.managed_settings
+            managed_settings: scope.managed_settings,
+            # The context.md text — appended to the agent's system prompt
+            # (`Connection.put_system_prompt/2`); the on-disk file is only
+            # the user-inspectable record. `Map.get`: scopes built by older
+            # test fixtures may not carry the key.
+            system_prompt_append: Map.get(scope, :system_prompt_append)
           })
 
         Enum.each(frames, &ProcessRuntime.write(handle, &1))

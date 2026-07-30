@@ -11,6 +11,10 @@ defmodule Valea.Harness do
   configure the adapter subprocess. `managed_settings` is an in-memory
   permission-posture JSON string (never written to disk) or `nil` for a
   harness that doesn't support a managed-settings channel.
+  `system_prompt_append` is the session-context text to append to the
+  agent's system prompt (or `nil`) — the harness may also materialize the
+  same text as a file for the user's inspection, but injection is the
+  delivery path.
   """
   alias Valea.Agents.CommandSpec
 

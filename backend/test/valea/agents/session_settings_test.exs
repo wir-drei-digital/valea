@@ -110,16 +110,6 @@ defmodule Valea.Agents.SessionSettingsTest do
     assert md =~ "CONTEXT.md"
   end
 
-  # The tasks/schedules-contract pointer rides context.md because it is the
-  # one Valea-authored instruction surface EXISTING ICMs get — their
-  # AGENTS.md/CLAUDE.md is user prose Valea never rewrites.
-  test "context.md points at the per-root tasks/schedules contract" do
-    md = SessionSettings.context(scope(%{}))
-    assert md =~ ".valea/briefing.md"
-    assert md =~ "tasks.json"
-    assert md =~ "schedules.json"
-  end
-
   # Task 14 (mail-maildir spec §"Mount & containment"): the managedSettings
   # mirror of PermissionPolicy's mail deny tier. Globs are case-SENSITIVE
   # here — the authoritative, casefolded enforcement is PermissionPolicy's
@@ -209,9 +199,41 @@ defmodule Valea.Agents.SessionSettingsTest do
       refute md =~ "— entrypoint\n"
     end
 
-    test "context.md points the agent at the mail root's AGENTS.md briefing" do
+    # Context is injected as system prompt, so the mail contract lives
+    # INLINE in the mount's line — guaranteed-present before the agent's
+    # first action — with AGENTS.md kept as the full-grammar reference.
+    test "context.md carries the mail contract inline, AGENTS.md as the full grammar" do
       md = SessionSettings.context(mail_scope())
-      assert md =~ "read its AGENTS.md before acting"
+      assert md =~ "ops/pending/"
+      assert md =~ "move, flag"
+      assert md =~ "drafts/"
+      assert md =~ "never modify maildir/"
+      assert md =~ "AGENTS.md"
+    end
+
+    # Awareness vs access: every session NAMES the configured accounts
+    # (asked about mail, the agent should answer, not guess), while the
+    # mailboxes themselves stay opt-in per session.
+    test "context.md names every configured account and which are in scope" do
+      md = SessionSettings.context(mail_scope())
+      assert md =~ "Mail accounts on this workspace: mara, work."
+      assert md =~ "In this session's scope: mara"
+      assert md =~ "any other account's mailbox is unreadable"
+    end
+
+    test "context.md explains the opt-in when accounts exist but none is in scope" do
+      md =
+        SessionSettings.context(
+          scope(%{mail_roots_all: ["/ws/sources/mail/mara"], mail_roots_in_scope: []})
+        )
+
+      assert md =~ "Mail accounts on this workspace: mara."
+      assert md =~ "None is in this session's scope"
+      assert md =~ "CONTEXT.md lists a mail-<slug>"
+    end
+
+    test "context.md says nothing about mail when no account is configured" do
+      refute SessionSettings.context(scope(%{})) =~ "Mail accounts"
     end
   end
 

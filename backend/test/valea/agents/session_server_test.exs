@@ -377,6 +377,14 @@ defmodule Valea.Agents.SessionServerTest do
     assert params["cwd"] == icm.root
     assert related.root in (params["additionalDirectories"] || [])
     assert is_binary(get_in(params, ["_meta", "claudeCode", "options", "managedSettings"]))
+
+    # The session-context injection reaches the ADAPTER, end to end: the
+    # same text materialized as context.md rides `_meta.systemPrompt.append`
+    # (the adapter locks type/preset and hands `append` to the SDK).
+    appended = get_in(params, ["_meta", "systemPrompt", "append"])
+    assert is_binary(appended)
+    assert appended =~ "Session context (Valea-managed)"
+    assert appended =~ icm.mount_key
   end
 
   test "a relative Read resolves against the ICM cwd and is allowed; a workspace source path is :ask",

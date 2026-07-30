@@ -419,16 +419,16 @@ defmodule Valea.Acp.Connection do
   # mcpServers: []. resume/load require a conversation id and the matching
   # runtime-advertised capability; otherwise degrade to a fresh session/new.
   #
-  # `additional_roots`/`managed_settings` are optional Phase-5 fields on the
-  # launch map (see docs/notes/acp-launch-contract.md). Gated: absent on
-  # every session today, so `base` — and therefore every branch below —
-  # stays byte-for-byte `%{"cwd" => ..., "mcpServers" => []}` until
-  # SessionScope starts supplying them.
+  # `additional_roots`/`managed_settings`/`system_prompt_append` are optional
+  # fields on the launch map (see docs/notes/acp-launch-contract.md), each
+  # gated on presence — a launch map without them keeps `base` at the bare
+  # `%{"cwd" => ..., "mcpServers" => []}`.
   defp open_session_frames(%{launch: launch} = state, caps) do
     base =
       %{"cwd" => launch.cwd, "mcpServers" => []}
       |> put_additional_directories(launch)
       |> put_managed_settings(launch)
+      |> put_system_prompt(launch)
 
     cond do
       (launch.mode in [:resume, :load] and launch.conversation_id) && caps.resume? ->
@@ -469,11 +469,35 @@ defmodule Valea.Acp.Connection do
   defp put_managed_settings(base, launch) do
     case Map.get(launch, :managed_settings) do
       json when is_binary(json) ->
-        Map.put(base, "_meta", %{"claudeCode" => %{"options" => %{"managedSettings" => json}}})
+        put_meta(base, "claudeCode", %{"options" => %{"managedSettings" => json}})
 
       _ ->
         base
     end
+  end
+
+  # The session-context bootstrap (`SessionSettings.context/1` — the same
+  # text the harness materializes as context.md) rides the adapter's
+  # `_meta.systemPrompt` channel: an OBJECT there is forwarded to the SDK
+  # locked to `{type: "preset", preset: "claude_code", ...}`, so `append`
+  # ADDS to Claude Code's own system prompt rather than replacing it (see
+  # the contract note's "System prompt append" section). Gated: only added
+  # when the launch map carries non-empty text.
+  defp put_system_prompt(base, launch) do
+    case Map.get(launch, :system_prompt_append) do
+      text when is_binary(text) and text != "" ->
+        put_meta(base, "systemPrompt", %{"append" => text})
+
+      _ ->
+        base
+    end
+  end
+
+  # `_meta` accumulates across the put_* helpers above — merged at the top
+  # level so `claudeCode` (SDK options) and `systemPrompt` coexist on one
+  # frame instead of the last write clobbering the map.
+  defp put_meta(base, key, value) do
+    Map.update(base, "_meta", %{key => value}, &Map.put(&1, key, value))
   end
 
   defp has_config?(result) do

@@ -67,6 +67,8 @@ defmodule Valea.Agents.SessionScopeTest do
     assert File.exists?(context_path)
     refute File.exists?(Path.join([ws, "runtime", "sessions", "s1", "settings.json"]))
     assert is_binary(scope.managed_settings)
+    # The context text folds into the scope for system-prompt injection.
+    assert scope.system_prompt_append == File.read!(context_path)
   end
 
   test "a stale generation is rejected before any lookup", %{

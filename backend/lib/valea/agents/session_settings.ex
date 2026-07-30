@@ -179,13 +179,16 @@ defmodule Valea.Agents.SessionSettings do
     |> Enum.sort()
   end
 
-  # `context.md` also carries the ONE tasks/schedules-contract pointer that
-  # reaches EXISTING ICMs: their `AGENTS.md`/`CLAUDE.md` is user-owned prose
-  # Valea never rewrites (only the new-ICM template seeds a pointer there),
-  # while this file is Valea's own, regenerated per session — so it names
-  # `.valea/briefing.md` for every ICM, old or new, and always matches the
-  # running app. Phrased per-root on purpose: it covers related ICMs without
-  # per-entry noise.
+  # The session bootstrap map. Delivered by INJECTION — the harness returns
+  # this text as `system_prompt_append` and `Valea.Acp.Connection` sends it
+  # through the adapter's `_meta.systemPrompt` append channel — and ALSO
+  # materialized as context.md, the user-inspectable record of what was
+  # injected. Injection is why the mail contract below is spelled out
+  # inline: the appended system prompt is the one surface every session is
+  # guaranteed to see, including sessions on EXISTING ICMs whose
+  # `AGENTS.md`/`CLAUDE.md` is user-owned prose Valea never rewrites.
+  # (The `.valea/briefing.md` pointer for tasks/schedules returns with that
+  # feature — plan 2026-07-29-tasks-schedules Task 7 Step 5.)
   @spec context(map()) :: String.t()
   def context(scope) do
     related =
@@ -200,21 +203,56 @@ defmodule Valea.Agents.SessionSettings do
 
     Primary ICM: #{scope.primary_icm.mount_key} — #{scope.primary_icm.root}
     Your working directory IS this ICM's root. Relative paths resolve here.
-    Tasks & schedules: each enabled ICM keeps its task ledger (tasks.json) and
-    schedule registry (schedules.json) at its root — contract in that root's
-    .valea/briefing.md.
 
     Related ICMs available to this session (read their entrypoint only when your
     routing calls for it; they do not load automatically):
     #{related}
+    #{mail_accounts_paragraph(scope)}
     """
+  end
+
+  # Every session learns WHICH mail accounts exist, even when none is in
+  # scope: an agent asked about mail should name the mailboxes and the way
+  # a session gets access, not guess. ACCESS stays opt-in — out-of-scope
+  # `sources/mail` is denied, not asked (PermissionPolicy's mail tier) —
+  # and the working contract rides each in-scope mount's own line above.
+  defp mail_accounts_paragraph(scope) do
+    case Map.get(scope, :mail_roots_all, []) do
+      [] ->
+        ""
+
+      roots ->
+        in_scope = MapSet.new(Map.get(scope, :mail_roots_in_scope, []))
+        names = Enum.map_join(roots, ", ", &Path.basename/1)
+
+        access =
+          case Enum.filter(roots, &MapSet.member?(in_scope, &1)) do
+            [] ->
+              "None is in this session's scope — sources/mail is unreadable from here. " <>
+                "The user opts a session into an account from Mail (message/cleanup sessions), " <>
+                "or the primary ICM's CONTEXT.md lists a mail-<slug> related entry."
+
+            scoped ->
+              "In this session's scope: #{Enum.map_join(scoped, ", ", &Path.basename/1)} " <>
+                "(see its mount line above); any other account's mailbox is unreadable from here."
+          end
+
+        "\nMail accounts on this workspace: #{names}. #{access}\n"
+    end
   end
 
   # A synthetic mount (mail — Task 14; calendar — Spec F Task 5) has no
   # entrypoint/manifest — its line names the mount and the narrowed write
-  # surface instead of an entrypoint.
+  # surface instead of an entrypoint. The mail line carries the working
+  # contract INLINE (not just an AGENTS.md pointer): context is injected as
+  # system prompt, so these invariants are guaranteed-present before the
+  # agent's first action; the root's AGENTS.md keeps the full grammar.
   defp related_line(%{kind: :mail} = r) do
-    "- #{r.mount_key} (#{r.root}) — mail account mount; read its AGENTS.md before acting; writable only under ops/pending/ and drafts/"
+    "- #{r.mount_key} (#{r.root}) — mail account mount. Read messages under views/; " <>
+      "act on the mailbox ONLY by writing YAML ops files into ops/pending/ (vocabulary: move, flag); " <>
+      "write reply drafts under drafts/; never modify maildir/ directly. " <>
+      "You cannot send mail — only the user sends, after reading a draft. " <>
+      "Full grammar (views format, ops schema, draft frontmatter): this root's AGENTS.md."
   end
 
   defp related_line(%{kind: :calendar} = r) do

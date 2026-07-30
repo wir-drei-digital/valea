@@ -221,6 +221,11 @@ defmodule Valea.Harnesses.ClaudeCodeTest do
       assert directives.context_path == scope.managed_context
       assert File.exists?(directives.context_path)
 
+      # The injected copy IS the materialized file's content — the file is
+      # the user-inspectable record of what `system_prompt_append` delivers.
+      assert directives.system_prompt_append == File.read!(directives.context_path)
+      assert directives.system_prompt_append =~ "Session context (Valea-managed)"
+
       assert Enum.any?(scope.related_icms, fn r -> r.root in directives.additional_roots end)
 
       posture = Jason.decode!(directives.managed_settings)

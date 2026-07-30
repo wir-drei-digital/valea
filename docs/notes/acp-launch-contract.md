@@ -504,6 +504,40 @@ task except for the file→in-memory posture swap this note locks in. See
 alternatives" for why the file-based version of that posture is not the
 path forward for ICMs specifically.
 
+### System prompt append (session context injection)
+
+The session bootstrap map (`SessionSettings.context/1`, also materialized
+as `context.md` under `runtime/sessions/<id>/` as the user-inspectable
+record) is DELIVERED via the adapter's native `_meta.systemPrompt` channel
+on `session/new`: an object there is forwarded to the SDK with type/preset
+locked —
+
+```js
+// acp-agent.js (createSession)
+let systemPrompt = { type: "preset", preset: "claude_code" };
+if (params._meta?.systemPrompt) {
+    const customPrompt = params._meta.systemPrompt;
+    if (typeof customPrompt === "string") {
+        systemPrompt = customPrompt;                 // <- REPLACES; never use
+    } else if (typeof customPrompt === "object" && ...) {
+        // "Forward all preset options (append, excludeDynamicSections, and
+        //  anything the SDK adds later) while locking type/preset."
+        systemPrompt = { ...customPrompt, type: "preset", preset: "claude_code" };
+    }
+}
+```
+
+— so Valea sends `_meta.systemPrompt = {"append": <context text>}`
+(`Valea.Acp.Connection.put_system_prompt/2`), which ADDS to Claude Code's
+own system prompt rather than replacing it. The string form (wholesale
+replacement of the preset) is deliberately never used. `_meta` carries this
+alongside `claudeCode.options.managedSettings` — the two keys are merged
+into one `_meta` map, not last-write-wins.
+
+Before this channel was wired, `context.md` was a write-only artifact: the
+file sits under `runtime/sessions/`, outside the session cwd and every
+additional directory, so no agent ever read it.
+
 ### Instruction isolation
 
 Per spec §C7's fourth bullet ("related additional directories must not

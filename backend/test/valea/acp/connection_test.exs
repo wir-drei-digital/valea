@@ -949,4 +949,45 @@ defmodule Valea.Acp.ConnectionLaunchTest do
     assert get_in(frame, ["params", "_meta", "claudeCode", "options", "managedSettings"]) =~
              "Write"
   end
+
+  # The session-context bootstrap rides `_meta.systemPrompt` as an OBJECT —
+  # the adapter locks it to `{type: "preset", preset: "claude_code", ...}`
+  # so `append` ADDS to Claude Code's system prompt rather than replacing
+  # it. Placed beside managedSettings deliberately: `_meta` must carry BOTH
+  # keys on one frame (the merge in `put_meta/3`), or whichever helper runs
+  # last would silently clobber the other.
+  test "session/new appends the session context to the system prompt, alongside managedSettings" do
+    frame =
+      session_new_frame(%{
+        cwd: "/icms/coaching",
+        mode: :new,
+        conversation_id: nil,
+        known_message_ids: MapSet.new(),
+        client_version: "test",
+        managed_settings: ~s|{"permissions":{"ask":["Write"]}}|,
+        system_prompt_append: "# Session context (Valea-managed)\n\nPrimary ICM: coaching"
+      })
+
+    assert get_in(frame, ["params", "_meta", "systemPrompt", "append"]) =~
+             "Session context (Valea-managed)"
+
+    assert get_in(frame, ["params", "_meta", "claudeCode", "options", "managedSettings"]) =~
+             "Write"
+  end
+
+  test "a nil or empty system_prompt_append adds no _meta.systemPrompt" do
+    for absent <- [nil, ""] do
+      frame =
+        session_new_frame(%{
+          cwd: "/icms/coaching",
+          mode: :new,
+          conversation_id: nil,
+          known_message_ids: MapSet.new(),
+          client_version: "test",
+          system_prompt_append: absent
+        })
+
+      refute get_in(frame, ["params", "_meta", "systemPrompt"])
+    end
+  end
 end

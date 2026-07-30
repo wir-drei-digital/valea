@@ -44,6 +44,13 @@ defmodule Valea.Harnesses.ClaudeCode do
   # (`_meta.claudeCode.options.managedSettings`), never written to disk or
   # into the ICM. `PermissionPolicy` on the ACP `request_permission`
   # callback authoritatively answers the `ask`s the posture produces.
+  #
+  # `system_prompt_append` is the context.md TEXT itself: the on-disk file is
+  # the user-inspectable record, but delivery is this in-memory copy — the
+  # adapter appends it to Claude Code's system prompt via `_meta.systemPrompt`
+  # (see `Valea.Acp.Connection.put_system_prompt/2`). The file alone was
+  # write-only chrome: it sits under runtime/sessions/, outside the agent's
+  # cwd and every additional root, so nothing would ever read it.
   @impl true
   def launch(scope, _session_dir) do
     SessionSettings.materialize!(scope)
@@ -54,6 +61,7 @@ defmodule Valea.Harnesses.ClaudeCode do
        additional_roots: related_and_input_roots(scope),
        context_path: scope.managed_context,
        managed_settings: Jason.encode!(SessionSettings.content(scope)),
+       system_prompt_append: SessionSettings.context(scope),
        env: Env.minimal(),
        argv_extra: []
      }}

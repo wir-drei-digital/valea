@@ -28,9 +28,10 @@ defmodule Valea.Agents.SessionScope do
        materializes `context.md` under
        `<workspace>/runtime/sessions/<session_id>/` and computes the
        in-memory managed-settings posture; its launch directives are folded
-       into the returned scope (`managed_settings`, `additional_roots`,
-       `env`, `argv_extra`) so a later phase's process spawn never needs to
-       re-derive them.
+       into the returned scope (`managed_settings`, `system_prompt_append`
+       — the context.md text, delivered via the adapter's system-prompt
+       append channel — `additional_roots`, `env`, `argv_extra`) so a later
+       phase's process spawn never needs to re-derive them.
 
   Read/write grants (`read_paths`, `write_paths`, `write_roots`) are taken
   EXACTLY as given by the caller — a workflow run's validated, per-input
@@ -182,6 +183,7 @@ defmodule Valea.Agents.SessionScope do
 
     scope
     |> Map.put(:managed_settings, launch.managed_settings)
+    |> Map.put(:system_prompt_append, launch.system_prompt_append)
     |> Map.put(:additional_roots, launch.additional_roots)
     |> Map.put(:env, launch.env)
     |> Map.put(:argv_extra, launch.argv_extra)

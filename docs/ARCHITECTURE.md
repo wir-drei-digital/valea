@@ -340,7 +340,11 @@ tried to widen anything, though Valea's own posture never includes one for
 that reason); `materialize!/1` writes only `context.md` (the session
 bootstrap: primary/related ICM map — Spec D §A deleted the
 `@workflow_contract` block this used to also inject for a workflow session)
-under `<workspace>/runtime/sessions/<id>/`, never a settings file. This is what
+under `<workspace>/runtime/sessions/<id>/`, never a settings file. The
+file is the user-inspectable RECORD; delivery is in-memory — the same text
+travels as `system_prompt_append` and is appended to the agent's system
+prompt via the adapter's `_meta.systemPrompt` channel
+(`Valea.Acp.Connection.put_system_prompt/2`). This is what
 makes Valea's ACP permission callback *reachable* — the posture forces
 writes/Bash to fall through to `ask` before the callback is ever consulted,
 closing the gap a bare callback with no upstream posture would leave open
@@ -712,10 +716,13 @@ target. Sessions opt in per account: bare-string `mail-<slug>` entries in
 mail rules → escaped → ask/allow): anything under `sources/mail` NOT in
 scope is **denied, never asked** (casefold+NFC, segment-bounded); within
 an in-scope mount, writes only under `ops/pending/` + `drafts/`, `spool/`
-unreadable, everything else read-only. The session `context.md` line for
-a mail mount points the agent at the account root's `AGENTS.md`
-briefing, which documents the views format, the closed ops vocabulary,
-and the draft grammar in the agent's own terms. The managedSettings mirror repeats
+unreadable, everything else read-only. The session context (injected into
+the agent's system prompt, and mirrored as `context.md`) carries the mail
+mount's working contract INLINE — views/ to read, YAML ops files into
+`ops/pending/` (move, flag), drafts under `drafts/`, never touch
+`maildir/`, no sending — with the account root's `AGENTS.md` briefing as
+the full grammar (views format, ops schema, draft frontmatter) in the
+agent's own terms. The managedSettings mirror repeats
 the same rules as defense-in-depth; the launch surface carries no RPC
 endpoint or control token (agent RPC isolation is test-asserted).
 
@@ -1214,8 +1221,9 @@ is always the primary ICM's root, never the workspace root or a
 caller-supplied path; (6) the harness adapter
 (`Valea.Harnesses.ClaudeCode.launch/2`) materializes `context.md` and
 computes the managed-settings posture, folding its directives
-(`managed_settings`, `additional_roots`, `env`, `argv_extra`) into the
-returned scope. Read/write grants (`read_paths`, `write_paths`,
+(`managed_settings`, `system_prompt_append` — the context.md text, appended
+to the agent's system prompt at launch — `additional_roots`, `env`,
+`argv_extra`) into the returned scope. Read/write grants (`read_paths`, `write_paths`,
 `write_roots`) are taken exactly as the caller supplies them — a workflow
 run's validated, per-input grants, or `[]` for a plain chat session; this
 module never widens them.
