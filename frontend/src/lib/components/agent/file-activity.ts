@@ -35,7 +35,7 @@ export type FileActivity = {
  * without one. Known accepted miss while enabled: creating an EMPTY file (no
  * `newText`) shows `edited`.
  */
-export const CREATED_INFERENCE_ENABLED = true;
+export const CREATED_INFERENCE_ENABLED: boolean = true;
 
 /** Splits on `/` AND `\` — outside-mount paths arrive verbatim from the agent (Windows included). */
 export function splitPathName(p: string): { name: string; dir: string } {
@@ -109,8 +109,9 @@ export function deriveFileActivity(items: AcpItemLike[]): FileActivity[] {
   const touch = (key: string, path: string, relPath: string | undefined, index: number): Accum => {
     const existing = byKey.get(key);
     if (existing) {
+      // Key is `relPath ?? path`, so a re-touch always carries the same
+      // relPath as the first — only chronology can change.
       existing.lastIndex = index;
-      if (existing.relPath === undefined && relPath !== undefined) existing.relPath = relPath;
       return existing;
     }
     const created: Accum = {
@@ -183,3 +184,38 @@ export function deriveFileActivity(items: AcpItemLike[]): FileActivity[] {
       return y.lastIndex - x.lastIndex;
     });
 }
+
+/** Auto-open fires only on the 0 -> >0 transition of the derived count (attach included). */
+export function shouldAutoOpen(prevCount: number, count: number, closedByUser: boolean): boolean {
+  return !closedByUser && prevCount === 0 && count > 0;
+}
+
+const MAX_CLOSED_REMEMBERED = 50;
+
+/**
+ * Per-session "the user closed the rail" memory — in-memory only (a fresh
+ * app launch starts over, deliberately), capped so an arbitrarily long run
+ * can't grow it unboundedly. Insertion-ordered Set gives FIFO eviction.
+ */
+export class ClosedRailMemory {
+  #ids = new Set<string>();
+
+  isClosed(id: string): boolean {
+    return this.#ids.has(id);
+  }
+
+  close(id: string): void {
+    this.#ids.delete(id);
+    this.#ids.add(id);
+    if (this.#ids.size > MAX_CLOSED_REMEMBERED) {
+      const oldest = this.#ids.values().next().value;
+      if (oldest !== undefined) this.#ids.delete(oldest);
+    }
+  }
+
+  reopen(id: string): void {
+    this.#ids.delete(id);
+  }
+}
+
+export const closedRailMemory = new ClosedRailMemory();
