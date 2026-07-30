@@ -190,3 +190,38 @@ export function diagnosisSummary(data: { ok: boolean; checks: Array<{ status?: s
         : `${needsAttention} checks need attention.`
   };
 }
+
+/** The one git offer that exists today (git-sync spec §Implementation amendments 6). */
+export const VALEA_GITIGNORE_OFFER = 'valea_gitignore';
+
+/**
+ * Does this ICM's row earn the ".valea/ → .gitignore" card? Two conditions,
+ * both from state already on screen:
+ *
+ *  - the engine says this repo does NOT ignore `.valea` — and `null` there
+ *    means "not asked" (an `off`-mode ICM, a folder that is no repo, a repo
+ *    git could not answer for), which is never an offer;
+ *  - the user has not waved this offer away for this mount, which is durable
+ *    backend state (`MountSummary.gitOffersDismissed`), not a session flag.
+ *
+ * A `false` survives even when the ignore LINE is already present: git reads
+ * a tracked `.valea` as not-ignored, and that repo still needs the untracking
+ * half the card performs.
+ */
+export function offersValeaGitignore(
+  repo: { valeaIgnored: boolean | null } | null,
+  mount: Pick<MountSummary, 'gitOffersDismissed'> | undefined
+): boolean {
+  if (!repo || repo.valeaIgnored !== false) return false;
+  return !(mount?.gitOffersDismissed ?? []).includes(VALEA_GITIGNORE_OFFER);
+}
+
+/**
+ * What clicking the ICM row's git icon does. A repo that needs a human opens
+ * the panel (where the resolve handoff lives); anything else just runs a
+ * pass. The icon is one control with two meanings, and this is where the
+ * meaning is decided.
+ */
+export function gitIconAction(signal: { attention: boolean }): 'open-panel' | 'sync-now' {
+  return signal.attention ? 'open-panel' : 'sync-now';
+}

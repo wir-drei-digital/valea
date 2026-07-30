@@ -320,6 +320,8 @@ defmodule ValeaWeb.WorkspaceEventsTest do
            last_sync_at: "2026-07-30T09:00:00Z",
            last_error: nil,
            conflict_session_id: nil,
+           valea_ignored: true,
+           valea_tracked: false,
            block_fingerprint: nil
          },
          "alpha" => %{
@@ -337,6 +339,8 @@ defmodule ValeaWeb.WorkspaceEventsTest do
            last_sync_at: nil,
            last_error: nil,
            conflict_session_id: nil,
+           valea_ignored: false,
+           valea_tracked: true,
            block_fingerprint: 12_345
          }
        }}
@@ -360,7 +364,9 @@ defmodule ValeaWeb.WorkspaceEventsTest do
                  "remote_sha" => "ccc",
                  "last_sync_at" => nil,
                  "last_error" => nil,
-                 "conflict_session_id" => nil
+                 "conflict_session_id" => nil,
+                 "valea_ignored" => false,
+                 "valea_tracked" => true
                },
                %{
                  "mount_key" => "zeta",
@@ -376,7 +382,9 @@ defmodule ValeaWeb.WorkspaceEventsTest do
                  "remote_sha" => "aaa",
                  "last_sync_at" => "2026-07-30T09:00:00Z",
                  "last_error" => nil,
-                 "conflict_session_id" => nil
+                 "conflict_session_id" => nil,
+                 "valea_ignored" => true,
+                 "valea_tracked" => false
                }
              ]
            }

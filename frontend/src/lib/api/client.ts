@@ -149,6 +149,10 @@ import {
   setIcmGitSyncChannel,
   startGitConflictSession as httpStartGitConflictSession,
   startGitConflictSessionChannel,
+  addValeaGitignore as httpAddValeaGitignore,
+  addValeaGitignoreChannel,
+  dismissGitOffer as httpDismissGitOffer,
+  dismissGitOfferChannel,
   calendarStatus as httpCalendarStatus,
   calendarStatusChannel,
   setupCalendarSource as httpSetupCalendarSource,
@@ -277,6 +281,8 @@ import type {
   GitSyncNowFields,
   SetIcmGitSyncFields,
   StartGitConflictSessionFields,
+  AddValeaGitignoreFields,
+  DismissGitOfferFields,
   ListIcmMailAccessFields,
   SetIcmMailAccessFields,
   CalendarStatusFields,
@@ -737,7 +743,21 @@ const setMailSenderTrustFields: SetMailSenderTrustFields = ['trusted'];
 // `Array<Record<string, any>>` passthrough, not a nested `TypedMap`, so it
 // hits no gap either — mirrors `mailDoctorFields`).
 const listIcmsFields = [
-  { icms: ['mountKey', 'id', 'name', 'description', 'root', 'enabled', 'degraded'] }
+  {
+    icms: [
+      'mountKey',
+      'id',
+      'name',
+      'description',
+      'root',
+      'enabled',
+      'degraded',
+      // The one-time git offers this mount has waved away — read by the
+      // sidebar's `.valea/` gitignore card, which lives beside the mount row
+      // and would otherwise need an RPC per ICM to learn the same thing.
+      'gitOffersDismissed'
+    ]
+  }
 ] as unknown as ListIcmsFields;
 const mountIcmFields: MountIcmFields = ['mountKey', 'id'];
 // `adopt_icm` (Task 12/13) — mints the identity file and mounts by
@@ -776,6 +796,10 @@ const gitStatusFields: GitStatusFields = ['repos'];
 const gitSyncNowFields: GitSyncNowFields = ['started'];
 const setIcmGitSyncFields: SetIcmGitSyncFields = ['saved'];
 const startGitConflictSessionFields: StartGitConflictSessionFields = ['sessionId', 'routed'];
+// The ".valea/ → .gitignore" offer's two actions — plain top-level booleans,
+// no codegen gap, so no cast.
+const addValeaGitignoreFields: AddValeaGitignoreFields = ['saved', 'untracked'];
+const dismissGitOfferFields: DismissGitOfferFields = ['saved'];
 
 // Skills (ICM skills design spec §Frontend, Task 9 — `Valea.Api.Skills`).
 // `listSkills` selects the full per-row shape plus the top-level `dismissed`
@@ -1637,6 +1661,24 @@ function callSetIcmGitSyncChannel(
 ) {
   return wrapChannelCall((handlers) =>
     setIcmGitSyncChannel({ channel, input, fields: setIcmGitSyncFields, ...handlers })
+  );
+}
+
+function callAddValeaGitignoreChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    addValeaGitignoreChannel({ channel, input, fields: addValeaGitignoreFields, ...handlers })
+  );
+}
+
+function callDismissGitOfferChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; offerId: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    dismissGitOfferChannel({ channel, input, fields: dismissGitOfferFields, ...handlers })
   );
 }
 
@@ -3021,6 +3063,28 @@ export const api = {
     runRpc(
       (channel) => callSetIcmGitSyncChannel(channel, { mountKey, sync, generation }),
       () => httpSetIcmGitSync(withAuth({ input: { mountKey, sync, generation }, fields: setIcmGitSyncFields }))
+    ),
+
+  // The ".valea/ → .gitignore" offer (git-sync spec §Implementation
+  // amendments 6). CONSENT actions, both of them: `addValeaGitignore` is the
+  // only place Valea writes into a user's repository, and it is reachable
+  // only from the card the user clicked.
+  addValeaGitignore: (mountKey: string, generation: number) =>
+    runRpc(
+      (channel) => callAddValeaGitignoreChannel(channel, { mountKey, generation }),
+      () =>
+        httpAddValeaGitignore(
+          withAuth({ input: { mountKey, generation }, fields: addValeaGitignoreFields })
+        )
+    ),
+
+  dismissGitOffer: (mountKey: string, offerId: string, generation: number) =>
+    runRpc(
+      (channel) => callDismissGitOfferChannel(channel, { mountKey, offerId, generation }),
+      () =>
+        httpDismissGitOffer(
+          withAuth({ input: { mountKey, offerId, generation }, fields: dismissGitOfferFields })
+        )
     ),
 
   // Double-click-safe by construction: the backend CLAIMS the conflict slot

@@ -5,8 +5,10 @@ import {
   gitAttentionText,
   gitErrorMessage,
   gitStateLabel,
+  gitStatusLine,
   normalizeGitRepoRows,
-  normalizeGitRepoStatus
+  normalizeGitRepoStatus,
+  SYNC_SPINNER_TIMEOUT_MS
 } from './git.svelte';
 import { workspaceStore } from './workspace.svelte';
 
@@ -32,6 +34,8 @@ function fakeApi(overrides: Record<string, unknown> = {}) {
     gitSyncNow: ok({ started: true }),
     setIcmGitSync: ok({ saved: true }),
     startGitConflictSession: ok({ sessionId: 'sess-1', routed: 'new' }),
+    addValeaGitignore: ok({ saved: true, untracked: false }),
+    dismissGitOffer: ok({ saved: true }),
     ...(overrides as Record<string, (...args: unknown[]) => Promise<unknown>>)
   };
 
@@ -57,6 +61,8 @@ function repoRow(partial: Record<string, unknown> = {}): Record<string, unknown>
     last_sync_at: '2026-07-30T08:00:00Z',
     last_error: null,
     conflict_session_id: null,
+    valea_ignored: true,
+    valea_tracked: false,
     ...partial
   };
 }
@@ -81,8 +87,30 @@ describe('normalizeGitRepoStatus', () => {
       remoteSha: 'aaa111',
       lastSyncAt: '2026-07-30T08:00:00Z',
       lastError: null,
-      conflictSessionId: 'sess-9'
+      conflictSessionId: 'sess-9',
+      valeaIgnored: true,
+      valeaTracked: false
     });
+  });
+
+  // Tri-state on purpose: the backend sends `null` for a row it did not ask
+  // (an `off`-mode ICM, a non-repo), and only a real `false` earns the
+  // ".valea/ → .gitignore" offer.
+  it('keeps the .valea facts tri-state — a missing one is null, never false', () => {
+    expect(normalizeGitRepoStatus(repoRow({ valea_ignored: false, valea_tracked: true }))).toMatchObject({
+      valeaIgnored: false,
+      valeaTracked: true
+    });
+
+    const unasked = normalizeGitRepoStatus(
+      repoRow({ valea_ignored: undefined, valea_tracked: undefined })
+    );
+    expect(unasked).toMatchObject({ valeaIgnored: null, valeaTracked: null });
+
+    // Camel spelling is tolerated here too (the `pick()` dual-read stance).
+    expect(
+      normalizeGitRepoStatus({ ...repoRow({ valea_ignored: undefined }), valeaIgnored: false })
+    ).toMatchObject({ valeaIgnored: false });
   });
 
   it('tolerates a camelCased row (the `pick()` dual-read stance of today/cockpit.ts)', () => {
@@ -395,6 +423,146 @@ describe('GitStore.byMountKey / attention', () => {
   });
 });
 
+describe('gitStatusLine', () => {
+  it('reads as one line, with the state leading only when it is worth saying', () => {
+    const ok = normalizeGitRepoStatus(repoRow({ ahead: 1, behind: 2, dirty: true }))!;
+    expect(gitStatusLine(ok)).toBe('main · 1 ahead / 2 behind · uncommitted changes');
+
+    const level = normalizeGitRepoStatus(repoRow())!;
+    expect(gitStatusLine(level)).toBe('main');
+
+    const held = normalizeGitRepoStatus(repoRow({ state: 'diverged', ahead: 1, behind: 2 }))!;
+    expect(gitStatusLine(held)).toBe('Diverged · main · 1 ahead / 2 behind');
+
+    // Nothing git could answer — an empty line, not a string of separators.
+    const blank = normalizeGitRepoStatus(repoRow({ state: 'ok', branch: null }))!;
+    expect(gitStatusLine(blank)).toBe('');
+  });
+});
+
+describe('GitStore.gitRowSignal', () => {
+  function signalFor(partial: Record<string, unknown>) {
+    const store = new GitStore(fakeApi().api);
+    store.handleGitStatus({ repos: [repoRow(partial)] });
+    return store.gitRowSignal('workspace');
+  }
+
+  it('says nothing at all for a mount with no row', () => {
+    const store = new GitStore(fakeApi().api);
+    expect(store.gitRowSignal('nothing-here')).toEqual({
+      present: false,
+      visible: false,
+      ahead: 0,
+      behind: 0,
+      dirty: false,
+      attention: false,
+      spinning: false
+    });
+  });
+
+  it('is present but invisible for a level, clean, unheld repo', () => {
+    expect(signalFor({})).toMatchObject({ present: true, visible: false, attention: false });
+  });
+
+  it('becomes visible for ahead, behind, dirty — separately and together', () => {
+    expect(signalFor({ ahead: 1 })).toMatchObject({ visible: true, ahead: 1, behind: 0 });
+    expect(signalFor({ behind: 3 })).toMatchObject({ visible: true, ahead: 0, behind: 3 });
+    expect(signalFor({ dirty: true })).toMatchObject({ visible: true, dirty: true });
+    expect(signalFor({ ahead: 2, behind: 3, dirty: true })).toMatchObject({
+      visible: true,
+      ahead: 2,
+      behind: 3,
+      dirty: true
+    });
+  });
+
+  it('flags attention for exactly the three agent-actionable holds', () => {
+    const states = [
+      'ok',
+      'syncing',
+      'diverged',
+      'blocked_local',
+      'merge_in_progress',
+      'error',
+      'off',
+      'detached',
+      'no_upstream',
+      'unsupported'
+    ];
+    const attention = states.filter((state) => signalFor({ state }).attention);
+
+    expect(attention).toEqual(['diverged', 'blocked_local', 'merge_in_progress']);
+    // A hold is always visible, even with nothing ahead, behind or dirty.
+    expect(signalFor({ state: 'diverged' })).toMatchObject({ visible: true, attention: true });
+    // And a non-hold that is otherwise quiet stays quiet.
+    expect(signalFor({ state: 'error' })).toMatchObject({ visible: false, attention: false });
+  });
+});
+
+describe('GitStore.syncNow — the click spinner', () => {
+  it('spins on the click and stops when a pass installs rows', async () => {
+    const { api } = fakeApi();
+    const store = new GitStore(api);
+    store.handleGitStatus({ repos: [repoRow()] });
+
+    const inFlight = store.syncNow('workspace', 7);
+    expect(store.gitRowSignal('workspace').spinning).toBe(true);
+    await inFlight;
+    expect(store.gitRowSignal('workspace').spinning).toBe(true);
+
+    store.handleGitStatus({ repos: [repoRow({ ahead: 1 })] });
+
+    expect(store.gitRowSignal('workspace').spinning).toBe(false);
+  });
+
+  it('an EMPTY payload installs nothing, so it does not stop the spinner', async () => {
+    const { api } = fakeApi();
+    const store = new GitStore(api);
+    await store.syncNow('workspace', 7);
+
+    store.handleGitStatus({ repos: [] });
+
+    expect(store.gitRowSignal('workspace').spinning).toBe(true);
+  });
+
+  it('stops on a failed request — nothing was started', async () => {
+    const { api } = fakeApi({ gitSyncNow: async () => ({ ok: false, error: 'workspace_not_open' }) });
+    const store = new GitStore(api);
+
+    expect(await store.syncNow('workspace', 7)).toBe('No workspace is open.');
+    expect(store.gitRowSignal('workspace').spinning).toBe(false);
+  });
+
+  // The engine never emits a `syncing` state, so nothing on the wire is
+  // guaranteed to arrive — the timeout is what stops an icon spinning forever
+  // when a workspace closes under the click.
+  it('gives up after the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const { api } = fakeApi();
+      const store = new GitStore(api);
+      await store.syncNow('workspace', 7);
+      expect(store.gitRowSignal('workspace').spinning).toBe(true);
+
+      vi.advanceTimersByTime(SYNC_SPINNER_TIMEOUT_MS + 1);
+
+      expect(store.gitRowSignal('workspace').spinning).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a reset drops the spinner with everything else', async () => {
+    const { api } = fakeApi();
+    const store = new GitStore(api);
+    await store.syncNow('workspace', 7);
+
+    store.reset();
+
+    expect(store.gitRowSignal('workspace').spinning).toBe(false);
+  });
+});
+
 describe('GitStore actions', () => {
   it('syncNow answers null on success and a rendered message on failure', async () => {
     const { api, calls } = fakeApi();
@@ -537,6 +705,50 @@ describe('GitStore.setMode — the optimistic mode overlay', () => {
     await store.setMode('workspace', 'full', 7);
 
     expect(store.byMountKey('workspace')?.mode).toBe('off');
+  });
+});
+
+// The ".valea/ → .gitignore" card's two buttons. Both are consent actions —
+// the write is the only place Valea edits a user's repository, and the
+// dismissal is durable — so both are asserted down to their arguments.
+describe('GitStore — the .valea gitignore offer', () => {
+  it('writes the line and re-reads the rows, so the card retires', async () => {
+    const { api, calls } = fakeApi();
+    const store = new GitStore(api);
+
+    expect(await store.addValeaGitignore('workspace', 7)).toBeNull();
+
+    expect(calls.map((c) => c.fn)).toEqual(['addValeaGitignore', 'gitStatus']);
+    expect(calls[0].args).toEqual(['workspace', 7]);
+    expect(calls[1].args).toEqual([7]);
+  });
+
+  it('renders a failure and does NOT re-read — nothing changed', async () => {
+    const { api, calls } = fakeApi({
+      addValeaGitignore: async () => ({ ok: false, error: 'This ICM is not a git repository.' })
+    });
+
+    expect(await new GitStore(api).addValeaGitignore('workspace', 7)).toBe(
+      'This ICM is not a git repository.'
+    );
+    expect(calls.map((c) => c.fn)).toEqual(['addValeaGitignore']);
+  });
+
+  it('dismisses by offer id, with no refresh of its own', async () => {
+    const { api, calls } = fakeApi();
+
+    expect(await new GitStore(api).dismissGitOffer('workspace', 'valea_gitignore', 7)).toBeNull();
+    expect(calls).toEqual([{ fn: 'dismissGitOffer', args: ['workspace', 'valea_gitignore', 7] }]);
+  });
+
+  it('renders a dismissal failure through the shared vocabulary', async () => {
+    const { api } = fakeApi({
+      dismissGitOffer: async () => ({ ok: false, error: 'workspace_changed' })
+    });
+
+    expect(await new GitStore(api).dismissGitOffer('workspace', 'valea_gitignore', 7)).toBe(
+      'Your workspace changed. Reopen it and try again.'
+    );
   });
 });
 

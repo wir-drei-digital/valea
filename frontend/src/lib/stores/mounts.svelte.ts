@@ -34,6 +34,15 @@ export type MountSummary = {
   root: string;
   enabled: boolean;
   degraded: string | null;
+  /**
+   * One-time git offers the user waved away for this mount (today: only
+   * `"valea_gitignore"`). Durable backend state on the `icms:` entry, so a
+   * "Not now" survives a restart; the card reads it from here rather than
+   * asking per ICM. Defaulted to `[]` on read — an older payload without the
+   * key must not make every card think it was dismissed (or crash on
+   * `.includes`).
+   */
+  gitOffersDismissed: string[];
 };
 
 /**
@@ -122,7 +131,10 @@ export class MountsStore {
     if (!result.ok) return;
 
     const data = result.data as { icms?: MountSummary[] };
-    this.mounts = data.icms ?? [];
+    this.mounts = (data.icms ?? []).map((icm) => ({
+      ...icm,
+      gitOffersDismissed: Array.isArray(icm.gitOffersDismissed) ? icm.gitOffersDismissed : []
+    }));
     this.loaded = true;
   }
 

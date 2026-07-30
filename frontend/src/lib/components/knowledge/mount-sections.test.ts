@@ -37,7 +37,8 @@ const primarySummary: MountSummary = {
   description: 'The default mount',
   root: '/Users/dev/workspace/mounts/primary',
   enabled: true,
-  degraded: null
+  degraded: null,
+  gitOffersDismissed: []
 };
 const clientsSummary: MountSummary = {
   mountKey: 'clients',
@@ -46,7 +47,8 @@ const clientsSummary: MountSummary = {
   description: 'Client-facing docs',
   root: '/Users/dev/workspace/mounts/clients',
   enabled: true,
-  degraded: null
+  degraded: null,
+  gitOffersDismissed: []
 };
 
 describe('buildMountsDisplay', () => {
@@ -113,7 +115,8 @@ describe('classifyMounts', () => {
     description: 'Old client work',
     root: '/Users/dev/workspace/mounts/archive',
     enabled: false,
-    degraded: null
+    degraded: null,
+    gitOffersDismissed: []
   };
   const degradedButEnabled: MountSummary = {
     mountKey: 'broken',
@@ -122,7 +125,8 @@ describe('classifyMounts', () => {
     description: '',
     root: '/Users/dev/workspace/mounts/broken',
     enabled: true,
-    degraded: 'icm.yaml is missing'
+    degraded: 'icm.yaml is missing',
+    gitOffersDismissed: []
   };
   const degradedAndDisabled: MountSummary = {
     mountKey: 'broken2',
@@ -131,7 +135,8 @@ describe('classifyMounts', () => {
     description: '',
     root: '/Users/dev/workspace/mounts/broken2',
     enabled: false,
-    degraded: 'invalid mount directory name'
+    degraded: 'invalid mount directory name',
+    gitOffersDismissed: []
   };
 
   it('buckets an enabled, non-degraded mount as active', () => {

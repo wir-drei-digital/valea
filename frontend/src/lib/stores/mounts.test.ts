@@ -66,7 +66,29 @@ describe('MountsStore.refresh', () => {
     await store.refresh();
 
     expect(store.loaded).toBe(true);
-    expect(store.mounts).toEqual(rawIcms);
+    // A payload without `gitOffersDismissed` defaults to `[]` rather than
+    // reaching the offer card as `undefined`.
+    expect(store.mounts).toEqual(rawIcms.map((icm) => ({ ...icm, gitOffersDismissed: [] })));
+  });
+
+  it('keeps the dismissed git offers the backend sent', async () => {
+    const icms = [
+      {
+        mountKey: 'primary',
+        id: '11111111-1111-1111-1111-111111111111',
+        name: 'Primary',
+        description: '',
+        root: '/ws/primary',
+        enabled: true,
+        degraded: null,
+        gitOffersDismissed: ['valea_gitignore']
+      }
+    ];
+    const store = new MountsStore(fakeApi({ listIcms: async () => ({ ok: true, data: { icms } }) }) as never);
+
+    await store.refresh();
+
+    expect(store.mounts[0].gitOffersDismissed).toEqual(['valea_gitignore']);
   });
 
   it('leaves mounts/loaded untouched on failure', async () => {
@@ -140,7 +162,7 @@ describe('MountsStore.refresh', () => {
     const fixedStore = new MountsStore(fakeApi({ listIcms }) as never);
     await fixedStore.refresh(CURRENT_GENERATION); // explicit — the event's own generation
     expect(fixedStore.loaded).toBe(true);
-    expect(fixedStore.mounts).toEqual(rawIcms);
+    expect(fixedStore.mounts).toEqual(rawIcms.map((icm) => ({ ...icm, gitOffersDismissed: [] })));
 
     workspaceStore.generation = null;
   });

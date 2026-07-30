@@ -15,9 +15,17 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { degradedChipLabel } from '$lib/components/knowledge/mount-sections';
   import type { AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
-  import { orderGroups, isGroupExpanded, diagnosisSummary } from './icm-projects';
+  import {
+    orderGroups,
+    isGroupExpanded,
+    diagnosisSummary,
+    offersValeaGitignore,
+    gitIconAction
+  } from './icm-projects';
   import { skillsOfferStore } from '$lib/stores/skills-offer.svelte';
   import SkillsOfferCard from './SkillsOfferCard.svelte';
+  import GitIgnoreOfferCard from './GitIgnoreOfferCard.svelte';
+  import { gitStatusLine, type GitRepoStatus } from '$lib/stores/git.svelte';
   import {
     normalizeMountsDoctorChecks,
     type MountsDoctorCheck
@@ -55,6 +63,7 @@
   let starting: Record<string, boolean> = $state({});
   let startError: Record<string, string> = $state({});
   let disabling: Record<string, boolean> = $state({});
+  let gitError: Record<string, string> = $state({});
   let diagnosing: Record<string, boolean> = $state({});
   let archiving: Record<string, boolean> = $state({});
   /**
@@ -94,6 +103,36 @@
       default:
         return 'The session could not be started. Please try again.';
     }
+  }
+
+  // The row's git icon does the thing the row's state calls for: a repo that
+  // needs a human opens the panel where the resolve handoff lives, anything
+  // else just runs a pass. Never both, and never a menu — the icon IS the
+  // affordance.
+  async function gitIconClick(mountKey: string, name: string): Promise<void> {
+    if (gitIconAction(gitStore.gitRowSignal(mountKey)) === 'open-panel') {
+      gitModal = { mountKey, name };
+      return;
+    }
+
+    gitError = { ...gitError, [mountKey]: '' };
+    const failure = await gitStore.syncNow(mountKey, workspaceStore.generation ?? 0);
+    if (failure) gitError = { ...gitError, [mountKey]: failure };
+  }
+
+  // The whole state in one line, for the icon's tooltip and its aria-label —
+  // the icon itself can only carry two counts and a dot.
+  function gitTooltip(mountKey: string): string {
+    const repo = gitStore.byMountKey(mountKey);
+    const line = repo ? gitStatusLine(repo) : '';
+    return line ? `Git sync — ${line}` : 'Git sync';
+  }
+
+  /** The repo row to offer the ".valea/ → .gitignore" card for, or `null` (`offersValeaGitignore` owns the rule). */
+  function gitIgnoreOffer(mountKey: string): GitRepoStatus | null {
+    const repo = gitStore.byMountKey(mountKey);
+    const mount = mountsStore.mounts.find((m) => m.mountKey === mountKey);
+    return offersValeaGitignore(repo, mount) ? repo : null;
   }
 
   // The kebab's "New session" is deliberately the SAME handler as the row's
@@ -161,6 +200,7 @@
 <div class="flex flex-col gap-0.5">
   {#each groups as group (group.mountKey)}
     {@const expanded = isGroupExpanded(group, activeMountKey, collapsed)}
+    {@const git = gitStore.gitRowSignal(group.mountKey)}
     <div class="group/icm relative">
       <div class="flex items-center gap-1 rounded-md py-[3px] pr-9 pl-2">
         <button
@@ -183,17 +223,45 @@
         >
           {group.name}
         </a>
-        {#if gitStore.attention(group.mountKey)}
-          <!-- Git sync needs a human (diverged / blocked by local edits /
-               unfinished merge). Deliberately a quiet dot, not a second
-               triangle: the degraded triangle below means "this ICM is
-               broken", and a repo waiting to be merged is not that. -->
-          <span
-            class="bg-warn-ink size-1.5 shrink-0 rounded-full"
-            role="img"
-            title="Git sync needs attention"
-            aria-label="Git sync needs attention"
-          ></span>
+        {#if git.present}
+          <!-- One icon for the whole git story of this ICM: state (amber only
+               when a human is needed — diverged / blocked by local edits /
+               unfinished merge), work in either direction, an uncommitted
+               tree. Deliberately NOT a second triangle: the degraded triangle
+               below means "this ICM is broken", and a repo waiting to be
+               merged is not that.
+
+               Quiet by default — a level, clean repo reveals its icon on
+               hover, like the row's other secondary actions. -->
+          <button
+            type="button"
+            onclick={() => void gitIconClick(group.mountKey, group.name)}
+            title={gitTooltip(group.mountKey)}
+            aria-label={gitTooltip(group.mountKey)}
+            class={[
+              'hover:bg-paper-card flex shrink-0 items-center gap-0.5 rounded-md p-0.5 transition-opacity',
+              git.attention ? 'text-warn-ink' : 'text-ink-meta',
+              git.visible ? '' : 'opacity-0 group-hover/icm:opacity-100 focus-visible:opacity-100'
+            ]}
+          >
+            <GitBranch
+              class={['size-3.5', git.spinning ? 'animate-spin' : '']}
+              strokeWidth={1.5}
+              aria-hidden="true"
+            />
+            {#if git.dirty}
+              <span
+                class={['size-1 shrink-0 rounded-full', git.attention ? 'bg-warn-ink' : 'bg-ink-meta']}
+                aria-hidden="true"
+              ></span>
+            {/if}
+            {#if git.ahead > 0}
+              <span class="text-[10px] tabular-nums" aria-hidden="true">↑{git.ahead}</span>
+            {/if}
+            {#if git.behind > 0}
+              <span class="text-[10px] tabular-nums" aria-hidden="true">↓{git.behind}</span>
+            {/if}
+          </button>
         {/if}
         {#if group.degraded}
           <TriangleAlert class="text-warn-ink size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
@@ -316,12 +384,20 @@
         {#if startError[group.mountKey]}
           <p class="text-warn-ink px-2 py-0.5 text-[11px]" role="alert">{startError[group.mountKey]}</p>
         {/if}
+        {#if gitError[group.mountKey]}
+          <p class="text-warn-ink px-2 py-0.5 text-[11px]" role="alert">{gitError[group.mountKey]}</p>
+        {/if}
       </div>
     {/if}
 
     {@const offer = skillsOfferStore.offerUnder(group.mountKey)}
     {#if offer}
       <SkillsOfferCard {offer} mountName={group.name} />
+    {/if}
+
+    {@const gitOffer = gitIgnoreOffer(group.mountKey)}
+    {#if gitOffer}
+      <GitIgnoreOfferCard repo={gitOffer} />
     {/if}
   {/each}
 

@@ -9,7 +9,15 @@ import type { Channel } from 'phoenix';
  * convention as `MailStore`/`CalendarStore`, so tests inject a fake without
  * implementing every wrapped call.
  */
-type GitApi = Pick<Api, 'gitStatus' | 'gitSyncNow' | 'setIcmGitSync' | 'startGitConflictSession'>;
+type GitApi = Pick<
+  Api,
+  | 'gitStatus'
+  | 'gitSyncNow'
+  | 'setIcmGitSync'
+  | 'startGitConflictSession'
+  | 'addValeaGitignore'
+  | 'dismissGitOffer'
+>;
 
 /**
  * One repo's app-facing sync status — camelCased/typed from the raw
@@ -45,6 +53,14 @@ export type GitRepoStatus = {
   lastError: string | null;
   /** The resolution session already recorded for this conflict — the "Open session" case. */
   conflictSessionId: string | null;
+  /**
+   * Is Valea's own `.valea/` folder ignored / tracked in this repo?
+   * `null` is "not asked" — a row for a repo the engine leaves alone
+   * (`mode: 'off'`), or one git could not answer for — and is deliberately
+   * NOT the same as `false`: only a `false` earns the offer card.
+   */
+  valeaIgnored: boolean | null;
+  valeaTracked: boolean | null;
 };
 
 /**
@@ -59,8 +75,21 @@ export type GitRepoStatus = {
  */
 export const GIT_ATTENTION_STATES = ['diverged', 'blocked_local', 'merge_in_progress'] as const;
 
+/**
+ * How long a click-started sync may spin without a pass reporting back. A
+ * backstop, not a schedule: passes normally land in well under a second, but
+ * an engine that went away (workspace closed under the click, a fetch wedged
+ * on a credential prompt) must not leave an icon spinning forever.
+ */
+export const SYNC_SPINNER_TIMEOUT_MS = 30_000;
+
 function str(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
+}
+
+/** Tri-state: anything that isn't a real boolean is "not asked", never "no". */
+function bool(v: unknown): boolean | null {
+  return typeof v === 'boolean' ? v : null;
 }
 
 /** Non-numeric raw input degrades to 0 rather than propagating `NaN` (same stance as `today/cockpit.ts`). */
@@ -103,7 +132,9 @@ export function normalizeGitRepoStatus(raw: unknown): GitRepoStatus | null {
     remoteSha: str(pick(rec, 'remote_sha', 'remoteSha')),
     lastSyncAt: str(pick(rec, 'last_sync_at', 'lastSyncAt')),
     lastError: str(pick(rec, 'last_error', 'lastError')),
-    conflictSessionId: str(pick(rec, 'conflict_session_id', 'conflictSessionId'))
+    conflictSessionId: str(pick(rec, 'conflict_session_id', 'conflictSessionId')),
+    valeaIgnored: bool(pick(rec, 'valea_ignored', 'valeaIgnored')),
+    valeaTracked: bool(pick(rec, 'valea_tracked', 'valeaTracked'))
   };
 }
 
@@ -165,6 +196,47 @@ export function gitAttentionText(repo: GitRepoStatus): string {
       return `${name}: ${repo.reason ?? repo.state}`;
   }
 }
+
+/**
+ * One repo's whole state as a single line — `main · 1 ahead / 2 behind ·
+ * uncommitted changes` — for the ICM row's icon tooltip and aria-label.
+ *
+ * The state LABEL leads only when it is worth saying: an `ok` repo's headline
+ * is its branch, while a held or failed one has to name what happened before
+ * the details. Built here rather than exported from `GitSyncModal.svelte`,
+ * whose version of this line is markup (four conditional `<span>`s) and not
+ * a string anything else could reuse.
+ */
+export function gitStatusLine(repo: GitRepoStatus): string {
+  const parts: string[] = [];
+  if (repo.state !== 'ok') parts.push(gitStateLabel(repo.state));
+  if (repo.branch) parts.push(repo.branch);
+  if (repo.ahead > 0 || repo.behind > 0) parts.push(`${repo.ahead} ahead / ${repo.behind} behind`);
+  if (repo.dirty) parts.push('uncommitted changes');
+  return parts.join(' · ');
+}
+
+/**
+ * What the ICM row's git icon has to render, derived from one repo row.
+ *
+ * `visible` is the quiet-unless-it-matters rule made explicit: a repo that is
+ * level, clean and unheld shows nothing until the row is hovered. Everything
+ * else — a hold, work to push, work to pull, an uncommitted tree — earns ink
+ * of its own.
+ */
+export type GitRowSignal = {
+  /** There is a row at all for this mount — the icon renders only then. */
+  present: boolean;
+  /** Worth showing without a hover. */
+  visible: boolean;
+  ahead: number;
+  behind: number;
+  dirty: boolean;
+  /** One of the three agent-actionable holds — the icon opens the panel instead of syncing. */
+  attention: boolean;
+  /** A sync this client asked for, not a state the engine reports (it never emits one). */
+  spinning: boolean;
+};
 
 /**
  * What to show the user for a failed git RPC.
@@ -241,6 +313,21 @@ export class GitStore {
    */
   #pendingModes: Record<string, { mode: string; replaced: string }> = $state({});
 
+  /**
+   * Mounts whose icon is spinning because THIS client asked for a pass.
+   *
+   * Entirely client-side, and it has to be: the engine publishes one row per
+   * pass and never emits a `syncing` state, so there is no wire signal for
+   * "a pass is running" to render. A spin therefore means "your click was
+   * accepted", and it ends the moment a pass installs rows (any pass — one
+   * pass covers every mount) or, failing that, after
+   * `SYNC_SPINNER_TIMEOUT_MS`, so a workspace that goes quiet cannot leave an
+   * icon spinning forever.
+   */
+  #syncing: Record<string, boolean> = $state({});
+  /** Not `$state`: timer handles are bookkeeping, nothing renders them. */
+  #syncTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
   #api: GitApi;
   #readToken: object = {};
   #pushInstalls = 0;
@@ -277,6 +364,40 @@ export class GitStore {
   }
 
   /**
+   * Everything the ICM row's git icon renders from, in one derivation — so
+   * "when is it shown", "what colour" and "what does clicking do" are one
+   * decision rather than three conditions spread across a template.
+   */
+  gitRowSignal(mountKey: string): GitRowSignal {
+    const repo = this.byMountKey(mountKey);
+    const spinning = this.#syncing[mountKey] === true;
+
+    if (!repo) {
+      return {
+        present: false,
+        visible: false,
+        ahead: 0,
+        behind: 0,
+        dirty: false,
+        attention: false,
+        spinning
+      };
+    }
+
+    const attention = (GIT_ATTENTION_STATES as readonly string[]).includes(repo.state);
+
+    return {
+      present: true,
+      visible: attention || repo.ahead > 0 || repo.behind > 0 || repo.dirty,
+      ahead: repo.ahead,
+      behind: repo.behind,
+      dirty: repo.dirty,
+      attention,
+      spinning
+    };
+  }
+
+  /**
    * Drops every row and every pending mode — the workspace they described is
    * closing or being switched away from — and invalidates any read still in
    * flight, so the outgoing workspace's reply cannot land after the reset.
@@ -285,6 +406,9 @@ export class GitStore {
     this.#rows = [];
     this.#pendingModes = {};
     this.#readToken = {};
+    for (const key of Object.keys(this.#syncTimers)) clearTimeout(this.#syncTimers[key]);
+    this.#syncTimers = {};
+    this.#syncing = {};
   }
 
   async refresh(generation?: number): Promise<void> {
@@ -335,6 +459,9 @@ export class GitStore {
     const sorted = [...rows].sort((a, b) => a.mountKey.localeCompare(b.mountKey));
     this.#rows = sorted;
     this.#reconcilePendingModes(sorted);
+    // Fresh rows are the only honest answer to "is it still syncing?" — the
+    // pass that produced them is over.
+    for (const row of sorted) this.#stopSpin(row.mountKey);
     return true;
   }
 
@@ -361,8 +488,39 @@ export class GitStore {
    * arrives later as a `git_status` push.
    */
   async syncNow(mountKey: string, generation: number): Promise<string | null> {
+    // Before the await, not after: the spin is feedback for the CLICK, and a
+    // pass can finish (and clear it) while this call is still out.
+    this.#startSpin(mountKey);
     const result = await this.#api.gitSyncNow(mountKey, generation);
-    return result.ok ? null : gitErrorMessage(result.error);
+    if (result.ok) return null;
+
+    this.#stopSpin(mountKey);
+    return gitErrorMessage(result.error);
+  }
+
+  #startSpin(mountKey: string): void {
+    this.#clearTimer(mountKey);
+    this.#syncing = { ...this.#syncing, [mountKey]: true };
+    this.#syncTimers[mountKey] = setTimeout(
+      () => this.#stopSpin(mountKey),
+      SYNC_SPINNER_TIMEOUT_MS
+    );
+  }
+
+  #stopSpin(mountKey: string): void {
+    this.#clearTimer(mountKey);
+    if (this.#syncing[mountKey] !== true) return;
+
+    const next = { ...this.#syncing };
+    delete next[mountKey];
+    this.#syncing = next;
+  }
+
+  #clearTimer(mountKey: string): void {
+    const timer = this.#syncTimers[mountKey];
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    delete this.#syncTimers[mountKey];
   }
 
   /**
@@ -384,6 +542,38 @@ export class GitStore {
     if (!result.ok) return gitErrorMessage(result.error);
     this.#pendingModes = { ...this.#pendingModes, [mountKey]: { mode, replaced } };
     return null;
+  }
+
+  /**
+   * The ".valea/ → .gitignore" offer's consent action: writes the line (and
+   * untracks the folder if git already had it), then re-reads the rows so the
+   * card retires without waiting for the next push. Answers `null` on
+   * success, a rendered message otherwise.
+   *
+   * Here rather than in the card because every other git RPC is here — one
+   * place that knows how a git failure is worded, and one place a test can
+   * reach without a component harness.
+   */
+  async addValeaGitignore(mountKey: string, generation: number): Promise<string | null> {
+    const result = await this.#api.addValeaGitignore(mountKey, generation);
+    if (!result.ok) return gitErrorMessage(result.error);
+
+    await this.refresh(generation);
+    return null;
+  }
+
+  /**
+   * "Not now" — durable, per mount. No refresh: the dismissal lives on the
+   * mount's config entry, and the backend's `{:mounts_changed}` broadcast is
+   * what brings the mounts store (which the card reads) back in step.
+   */
+  async dismissGitOffer(
+    mountKey: string,
+    offerId: string,
+    generation: number
+  ): Promise<string | null> {
+    const result = await this.#api.dismissGitOffer(mountKey, offerId, generation);
+    return result.ok ? null : gitErrorMessage(result.error);
   }
 
   /**

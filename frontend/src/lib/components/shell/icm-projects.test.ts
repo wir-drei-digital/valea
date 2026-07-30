@@ -4,6 +4,8 @@ import {
   groupAllSessions,
   isGroupExpanded,
   diagnosisSummary,
+  offersValeaGitignore,
+  gitIconAction,
   NAV_SESSIONS_TOTAL
 } from './icm-projects';
 import type { MountSummary } from '$lib/stores/mounts.svelte';
@@ -19,6 +21,7 @@ function mount(overrides: Partial<MountSummary> = {}): MountSummary {
     root: '/ws/primary',
     enabled: true,
     degraded: null,
+    gitOffersDismissed: [],
     ...overrides
   };
 }
@@ -209,5 +212,46 @@ describe('diagnosisSummary', () => {
       ok: false,
       summary: '1 check needs attention.'
     });
+  });
+});
+
+describe('offersValeaGitignore', () => {
+  it('offers only for a repo that says .valea is NOT ignored', () => {
+    expect(offersValeaGitignore({ valeaIgnored: false }, mount())).toBe(true);
+    expect(offersValeaGitignore({ valeaIgnored: true }, mount())).toBe(false);
+  });
+
+  // `null` is "not asked" — an `off`-mode ICM, a plain folder, a repo git
+  // could not answer for. None of those are a suggestion.
+  it('never offers for a row that was not asked, or for no row at all', () => {
+    expect(offersValeaGitignore({ valeaIgnored: null }, mount())).toBe(false);
+    expect(offersValeaGitignore(null, mount())).toBe(false);
+  });
+
+  it('stays quiet once the user has waved it away for this mount', () => {
+    expect(
+      offersValeaGitignore({ valeaIgnored: false }, mount({ gitOffersDismissed: ['valea_gitignore'] }))
+    ).toBe(false);
+
+    // Someone else's dismissal (a future offer id) does not silence this one.
+    expect(
+      offersValeaGitignore({ valeaIgnored: false }, mount({ gitOffersDismissed: ['something-else'] }))
+    ).toBe(true);
+  });
+
+  it('survives a mount it cannot find, or a payload with no list at all', () => {
+    expect(offersValeaGitignore({ valeaIgnored: false }, undefined)).toBe(true);
+    expect(
+      offersValeaGitignore({ valeaIgnored: false }, {
+        gitOffersDismissed: undefined
+      } as unknown as MountSummary)
+    ).toBe(true);
+  });
+});
+
+describe('gitIconAction', () => {
+  it('opens the panel for a repo that needs a human, and syncs otherwise', () => {
+    expect(gitIconAction({ attention: true })).toBe('open-panel');
+    expect(gitIconAction({ attention: false })).toBe('sync-now');
   });
 });
