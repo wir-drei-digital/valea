@@ -28,6 +28,10 @@ defmodule Valea.Workspace.Runtime do
       # launches in the window either way; the ordering is documentation, not the
       # mechanism.
       {Valea.Schedules.Supervisor, %{root: root, generation: gen}},
+      # Inert until `{:workspace_opened, _, gen}` matches (mail's gating): a
+      # Runtime that starts before the Manager finishes opening must not run a
+      # pass — let alone a COMMIT — against a workspace that isn't current yet.
+      {Valea.Git.Engine, %{root: root, generation: gen}},
       {DynamicSupervisor, name: Valea.Agents.SessionSupervisor, strategy: :one_for_one}
     ]
 
