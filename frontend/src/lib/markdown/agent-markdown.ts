@@ -90,6 +90,10 @@ export function codespanFilePath(text: string): string | undefined {
  * auto-open candidate set. Walks the lexed token tree through every inline
  * container (emphasis, links, list items, table cells) but never descends
  * into fenced `code` blocks; codespan text is decoded before detection.
+ * The walk descends into `link` subtrees even though the renderer suppresses
+ * interactive codespans inside links — deliberate: the extra candidate can
+ * only suppress auto-open (count > 1) or itself pass the existence gate,
+ * never open something that was made unclickable for safety reasons.
  */
 export function messageFilePaths(text: string): string[] {
   if (!text) return [];

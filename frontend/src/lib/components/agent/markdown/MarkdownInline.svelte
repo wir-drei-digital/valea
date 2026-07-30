@@ -81,7 +81,7 @@
       <button
         type="button"
         onclick={() => onOpenFile?.(codePath)}
-        aria-label={`Open ${codePath}`}
+        aria-label={`Open ${codeText}`}
         class="bg-paper-track hover:bg-paper-pill text-ink-body decoration-paper-button-border cursor-pointer rounded px-1 py-0.5 text-left font-mono text-[12px] underline underline-offset-2 transition-colors hover:decoration-ink-secondary"
         >{codeText}</button
       >

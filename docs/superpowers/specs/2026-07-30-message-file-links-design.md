@@ -115,10 +115,14 @@ while auto-open must never fire from history — its baseline is the count of
     wires from its own `paneDescriptor`; per the context contract views
     tolerate absent callbacks — an absent one means "unknown", and
     auto-open conservatively does not fire;
-  - `icmPathsExist(["<mountKey>/<relPath>"])` returns `exists: true`
-    (server-side containment; non-mount paths are simply `false` — the
-    mount-prefixed single-string format is the same one
-    `MarkdownPageView`'s dangling-link check already sends);
+  - `icmPathsExist(["<MountSummary.root>/<relPath>"])` returns
+    `exists: true` — `icm_paths_exist` attributes each path by ABSOLUTE
+    mount-root prefix (`Valea.Api.ICM.find_mount/2` matches the path
+    string as given, before any workspace anchoring), so the payload must
+    be the mount's resolved root joined with the relPath; non-mount paths
+    are simply `false`. (`MarkdownPageView`'s dangling-link check sends
+    mount-relative paths to this RPC — a pre-existing defect, tracked
+    separately.)
   - stale guard: capture the store reference and turn-item count before the
     `await`, re-check both after it resolves, drop the result on any change
     (same captured-before-await shape as `MarkdownPageView.refreshDangling`

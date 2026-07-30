@@ -486,12 +486,14 @@
   // drops the result.
   //
   // The existence check needs the mount's ABSOLUTE root, not its key:
-  // `icm_paths_exist` attributes each path by prefix against the mount roots
-  // (`Valea.Api.ICM`'s `find_mount/2`), and post-A2 every ICM root lives
-  // OUTSIDE the workspace — so a `<mountKey>/<relPath>` join attributes to
-  // nothing and reports `exists: false` for even a real file (verified
-  // against the RPC). `MountSummary.root` is that resolved path; the catalog
-  // not being loaded yet simply means no auto-open for that turn.
+  // `Valea.Api.ICM`'s `find_mount/2` prefix-matches the path string AS GIVEN
+  // against the mount roots (backend/lib/valea/api/icm.ex:458-479) — that
+  // match runs BEFORE `target_abs/2` (icm.ex:492-496) anchors a relative path
+  // to the workspace. So a `<mountKey>/<relPath>` join attributes to no mount
+  // at all — regardless of where the roots live — and reports `exists: false`
+  // for even a real file (verified against the RPC). `MountSummary.root` is
+  // that resolved path; the catalog not being loaded yet simply means no
+  // auto-open for that turn.
   const openMountRoot = $derived.by(() => {
     const key = openMountKey;
     if (!key) return null;

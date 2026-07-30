@@ -56,6 +56,15 @@ describe('latestTurnAutoOpenPath', () => {
     expect(latestTurnAutoOpenPath(items)).toBe('b.md');
   });
 
+  it('stops at the previous turn — a message-less turn never adopts its message', () => {
+    const items = [
+      assistant('m1', 'old `a.md`'),
+      turn('t1', 'end_turn', 2),
+      turn('t2', 'end_turn', 6)
+    ];
+    expect(latestTurnAutoOpenPath(items)).toBeUndefined();
+  });
+
   it('returns undefined when the turn has no assistant message, or no turns exist', () => {
     expect(latestTurnAutoOpenPath([user('hello'), turn('t1', 'end_turn', 2)])).toBeUndefined();
     expect(latestTurnAutoOpenPath([assistant('m1', '`a.md`')])).toBeUndefined();

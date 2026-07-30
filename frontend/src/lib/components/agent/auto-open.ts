@@ -24,7 +24,9 @@ export function turnCount(items: AcpItemLike[]): number {
  * with `end_turn` (error/cancel turns carry other values); and (c) its
  * nearest preceding `message` item is an ASSISTANT message whose prose
  * names exactly one distinct candidate path (`messageFilePaths`). URLs are
- * never candidates — external navigation stays a deliberate click.
+ * never candidates — external navigation stays a deliberate click. The
+ * backward scan stops at the PREVIOUS turn item, so a message-less turn
+ * yields nothing rather than adopting the prior turn's message.
  */
 export function latestTurnAutoOpenPath(items: AcpItemLike[]): string | undefined {
   let turnIndex = -1;
@@ -40,6 +42,7 @@ export function latestTurnAutoOpenPath(items: AcpItemLike[]): string | undefined
   if (asString(turn.stop_reason) !== 'end_turn') return undefined;
   for (let i = turnIndex - 1; i >= 0; i--) {
     const item = items[i];
+    if (item.type === 'turn') return undefined;
     if (item.type !== 'message') continue;
     if (asString(item.role) !== 'assistant') return undefined;
     const paths = messageFilePaths(asString(item.text));
