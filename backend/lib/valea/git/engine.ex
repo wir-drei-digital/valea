@@ -91,6 +91,25 @@ defmodule Valea.Git.Engine do
   that the situation may have changed, and it is the only thing that overrides
   a backoff.
 
+  ## One resolution session per repo
+
+  A held repo gets AT MOST one resolution session, and the reservation is
+  made here rather than by the caller: `claim_conflict_session/2` (a call)
+  reserves the slot BEFORE the caller spends hundreds of milliseconds
+  resolving a scope and handshaking an agent subprocess, and
+  `record_conflict_session/2` (a cast) confirms it afterwards. Two "resolve"
+  clicks — a double-click, two tabs, two windows — therefore serialize on
+  this loop and exactly one of them starts an agent; the other is told which
+  session to join. Doing it the other way round (claim after start) would let
+  both callers read an empty slot and point two agents with write scope at
+  the same conflicted working tree.
+
+  A slot is held against something that can be observed to be gone: a pending
+  claim against its CALLER (monitored — a caller that dies mid-start releases
+  it), a confirmed one against the SESSION (`SessionServer.running?/1`). An
+  id that is neither is a dead reference and the next caller takes it over,
+  so a killed session can never make a repo permanently unresolvable.
+
   ## Seams
 
     * `:git_cli` — the Cli module, pinned at `init/1` (default
@@ -236,10 +255,57 @@ defmodule Valea.Git.Engine do
   end
 
   @doc """
-  Remembers which session is working on `mount_key`'s conflict, so a second
-  "resolve" click joins that session instead of starting a rival one. A cast:
-  the caller has already started the session, and this must not be able to
-  fail it.
+  CLAIMS `mount_key`'s conflict for a session that is about to start, before
+  a single process is spawned. `:ok` when the claim is this caller's,
+  `{:error, {:already_claimed, id}}` when someone got there first.
+
+  This is what makes "resolve" safe to double-click. Starting a session takes
+  hundreds of milliseconds (scope resolution, then an agent subprocess
+  handshake), and `record_conflict_session/2` only lands at the END of it —
+  so two clicks, or two tabs, would both read `conflict_session_id: nil`,
+  both start an agent, and both point them at the same conflicted working
+  tree with write scope. The decision is therefore made HERE, in the one
+  process that serializes everything about this repo, before the expensive
+  part rather than after it.
+
+  A claim is held against the CLAIMING PROCESS: it is monitored, so a caller
+  that dies between claiming and starting releases it automatically. A claim
+  whose session has since started (`record_conflict_session/2`) is no longer
+  a claim, it is a session, and liveness is what governs it from then on. A
+  recorded id whose session is gone is NOT a claim either — the next caller
+  takes it over rather than being told to join a dead one.
+  """
+  @spec claim_conflict_session(String.t(), String.t()) ::
+          :ok | {:error, {:already_claimed, String.t()} | :not_found | :not_running}
+  def claim_conflict_session(mount_key, session_id) do
+    case Process.whereis(__MODULE__) do
+      nil -> {:error, :not_running}
+      pid -> GenServer.call(pid, {:claim_conflict_session, mount_key, session_id})
+    end
+  end
+
+  @doc """
+  Gives back a claim whose session never started. Synchronous ON PURPOSE: a
+  user whose session failed to start will click again, and a cast could still
+  be in flight then — the retry would be told to join a session that does not
+  exist and never will. Never fails the caller (the claim is already lost if
+  the Engine is gone).
+  """
+  @spec release_conflict_session(String.t(), String.t()) :: :ok
+  def release_conflict_session(mount_key, session_id) do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> GenServer.call(pid, {:release_conflict_session, mount_key, session_id})
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
+  @doc """
+  Confirms `mount_key`'s claim as a live session, so a second "resolve" click
+  joins it instead of starting a rival one. A cast: the caller has already
+  started the session, and this must not be able to fail it — the claim
+  (`claim_conflict_session/2`) is what actually reserved the slot.
   """
   @spec record_conflict_session(String.t(), String.t()) :: :ok
   def record_conflict_session(mount_key, session_id),
@@ -270,6 +336,11 @@ defmodule Valea.Git.Engine do
       # Mount keys a `sync_now/1` has demanded and no pass has served yet —
       # consumed by the next pass to start (see `handle_call({:sync_now, _})`).
       forced: MapSet.new(),
+      # `mount_key => %{session_id, pid, ref}` — conflict slots reserved by a
+      # caller whose session has not finished starting yet
+      # (`claim_conflict_session/2`). Monitored, so a caller that dies in that
+      # window gives its claim back.
+      claims: %{},
       poll_timer: nil,
       commit_timer: nil,
       sync_task: nil,
@@ -318,10 +389,46 @@ defmodule Valea.Git.Engine do
     end
   end
 
-  @impl true
-  def handle_cast({:record_conflict_session, key, session_id}, state) do
+  # The whole point of the claim is that this decision happens in ONE place,
+  # under this loop's serialization, BEFORE the caller spends hundreds of
+  # milliseconds spawning an agent. Everything a rival caller could observe
+  # about the slot — a pending claim, a live session — is decided here in a
+  # single message.
+  def handle_call({:claim_conflict_session, key, session_id}, {caller, _tag}, state) do
     case Map.get(state.repos, key) do
       nil ->
+        {:reply, {:error, :not_found}, state}
+
+      %{conflict_session_id: ^session_id} ->
+        # Idempotent: the same caller re-claiming what it already holds.
+        {:reply, :ok, claim(state, key, session_id, caller)}
+
+      %{conflict_session_id: held} when is_binary(held) ->
+        if taken?(state, key, held),
+          do: {:reply, {:error, {:already_claimed, held}}, state},
+          else: {:reply, :ok, claim(state, key, session_id, caller)}
+
+      _unclaimed ->
+        {:reply, :ok, claim(state, key, session_id, caller)}
+    end
+  end
+
+  def handle_call({:release_conflict_session, key, session_id}, _from, state),
+    do: {:reply, :ok, release(state, key, session_id)}
+
+  @impl true
+  def handle_cast({:record_conflict_session, key, session_id}, state) do
+    # The claim becomes a session: drop the process monitor, because from
+    # here on the SESSION's liveness — not the caller's — is what says
+    # whether the slot is still taken.
+    state = forget_claim(state, key, session_id)
+
+    case Map.get(state.repos, key) do
+      nil ->
+        {:noreply, state}
+
+      %{conflict_session_id: ^session_id} ->
+        # Already carried by the claim — no row change, so no broadcast.
         {:noreply, state}
 
       row ->
@@ -383,6 +490,18 @@ defmodule Valea.Git.Engine do
     {:noreply, %{state | sync_task: nil} |> drain_pending()}
   end
 
+  # A claimant died between claiming a conflict slot and starting its session
+  # (the RPC process crashed, the socket went away). The slot goes back, or
+  # the row would keep pointing at a session that will never exist and the
+  # next "resolve" click would be told to join it. Placed AFTER the pass
+  # task's own `:DOWN` clause, which head-matches `sync_task`.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    case Enum.find(state.claims, fn {_key, claim} -> claim.ref == ref end) do
+      {key, claim} -> {:noreply, release(state, key, claim.session_id)}
+      nil -> {:noreply, state}
+    end
+  end
+
   # The linked task's ordinary exit — the monitor above is what this Engine
   # actually keys on, so the `{:EXIT, _, _}` is deliberately a no-op.
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
@@ -403,6 +522,7 @@ defmodule Valea.Git.Engine do
   defp deactivate(state) do
     cancel_timer(state.poll_timer)
     cancel_timer(state.commit_timer)
+    Enum.each(state.claims, fn {_key, claim} -> Process.demonitor(claim.ref, [:flush]) end)
 
     %{
       state
@@ -410,10 +530,88 @@ defmodule Valea.Git.Engine do
         repos: %{},
         retry: %{},
         forced: MapSet.new(),
+        claims: %{},
         poll_timer: nil,
         commit_timer: nil,
         pending_sync: false
     }
+  end
+
+  # -- conflict slots ----------------------------------------------------------
+
+  # Is `id` still somebody's? Either a claim whose caller is still alive and
+  # still starting the session, or a session that actually is running. A
+  # recorded id that is neither is a DEAD REFERENCE — the caller asking is
+  # allowed to take it over, which is what keeps a crashed or killed
+  # resolution session from making the repo unresolvable forever.
+  defp taken?(state, key, id) do
+    case Map.get(state.claims, key) do
+      %{session_id: ^id, pid: pid} -> Process.alive?(pid)
+      _not_a_pending_claim -> SessionServer.running?(id)
+    end
+  end
+
+  # Records the reservation on the row (so every consumer sees the slot as
+  # taken immediately) AND monitors the claimant (so a caller that dies
+  # mid-start gives it back).
+  defp claim(state, key, session_id, caller) do
+    state = demonitor_claim(state, key)
+    ref = Process.monitor(caller)
+    claims = Map.put(state.claims, key, %{session_id: session_id, pid: caller, ref: ref})
+
+    case Map.get(state.repos, key) do
+      %{conflict_session_id: ^session_id} ->
+        %{state | claims: claims}
+
+      row ->
+        repos = Map.put(state.repos, key, %{row | conflict_session_id: session_id})
+        broadcast(repos)
+        %{state | claims: claims, repos: repos}
+    end
+  end
+
+  # Gives the slot back: the claim goes, and the row's reference goes with it
+  # — but only if the row still names THIS session, so a release arriving
+  # after someone else legitimately took the slot cannot steal it.
+  defp release(state, key, session_id) do
+    state = forget_claim(state, key, session_id)
+
+    case Map.get(state.repos, key) do
+      %{conflict_session_id: ^session_id} = row ->
+        repos = Map.put(state.repos, key, %{row | conflict_session_id: nil})
+        broadcast(repos)
+        %{state | repos: repos}
+
+      _other_or_absent ->
+        state
+    end
+  end
+
+  # Drops the pending claim for `session_id` (if it is still the one held),
+  # leaving the row alone: used when the claim has become a real session.
+  defp forget_claim(state, key, session_id) do
+    case Map.get(state.claims, key) do
+      %{session_id: ^session_id} -> demonitor_claim(state, key)
+      _other_or_absent -> state
+    end
+  end
+
+  defp demonitor_claim(state, key) do
+    case Map.pop(state.claims, key) do
+      {nil, _claims} ->
+        state
+
+      {claim, claims} ->
+        Process.demonitor(claim.ref, [:flush])
+        %{state | claims: claims}
+    end
+  end
+
+  defp pending_claim?(claims, key, id) do
+    case Map.get(claims, key) do
+      %{session_id: ^id, pid: pid} -> Process.alive?(pid)
+      _other_or_absent -> false
+    end
   end
 
   # -- pass lifecycle ----------------------------------------------------------
@@ -455,7 +653,7 @@ defmodule Valea.Git.Engine do
     statuses =
       statuses
       |> restore_recorded_sessions(state.repos)
-      |> forget_dead_sessions()
+      |> forget_dead_sessions(state.claims)
 
     broadcast(statuses)
     probe(statuses)
@@ -491,22 +689,30 @@ defmodule Valea.Git.Engine do
 
   # A recorded session that is no longer running is a dead reference: the row
   # must offer "resolve" again rather than "open the session that fixed this".
-  # `attach/1` is the liveness question the rest of the app asks, and it is
-  # asked HERE, in the loop, because it is a call into another GenServer.
-  defp forget_dead_sessions(statuses) do
+  #
+  # `SessionServer.running?/1`, NOT `attach/1`. Attaching answers the same
+  # yes/no by copying the session's entire render-item timeline back into
+  # this loop — on every pass, for every recorded session. Worse, it is a
+  # `GenServer.call` on a 5 s default: a resolution session busy mid-turn
+  # could miss it, the `catch :exit` would read that as dead, the id would be
+  # wiped, and the next click would start a RIVAL agent over the same
+  # conflicted tree. `running?/1` is a Registry lookup plus `Process.alive?/1`
+  # — no call, no timeout, nothing to time out.
+  #
+  # A PENDING CLAIM is treated as live even though no session exists yet:
+  # that id belongs to a caller that is still starting one, and blanking it
+  # here would re-open the very double-start window
+  # `claim_conflict_session/2` exists to close.
+  defp forget_dead_sessions(statuses, claims) do
     Map.new(statuses, fn
       {key, %{conflict_session_id: id} = row} when is_binary(id) ->
-        if session_running?(id), do: {key, row}, else: {key, %{row | conflict_session_id: nil}}
+        if pending_claim?(claims, key, id) or SessionServer.running?(id),
+          do: {key, row},
+          else: {key, %{row | conflict_session_id: nil}}
 
       {key, row} ->
         {key, row}
     end)
-  end
-
-  defp session_running?(id) do
-    match?({:ok, _reply}, SessionServer.attach(id))
-  catch
-    :exit, _reason -> false
   end
 
   # -- the pass itself (runs in the task) --------------------------------------

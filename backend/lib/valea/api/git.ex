@@ -146,12 +146,39 @@ defmodule Valea.Api.Git do
 
   defp route(key, generation, handoff), do: start_conflict_session(key, generation, handoff)
 
+  # RESERVE the repo's conflict slot before spending a single millisecond on
+  # starting anything. Resolving a scope and handshaking an agent subprocess
+  # takes hundreds of milliseconds, and a double-click (or a second tab) lands
+  # squarely inside that window: without the claim, both callers would read an
+  # empty slot and point two agents with write scope at the same conflicted
+  # working tree. The claim is decided inside the Engine's own loop, so the
+  # race is closed for every caller, not just for a UI that remembers to
+  # disable its button.
+  #
+  # Losing the claim is not an error — it is the answer the user wanted:
+  # "take me to the session that is already on this". The winner may still be
+  # mid-handshake, so that session's transcript can be a beat behind the
+  # navigation; joining a session that is starting is right either way, and
+  # far better than a rival agent.
+  defp start_conflict_session(key, generation, handoff) do
+    id = Valea.Agents.generate_session_id()
+
+    case engine_call(fn -> Engine.claim_conflict_session(key, id) end) do
+      :ok ->
+        start_claimed_session(key, generation, id, handoff)
+
+      {:error, {:already_claimed, existing}} ->
+        {:ok, %{"session_id" => existing, "routed" => "existing"}}
+
+      {:error, reason} ->
+        {:error, error_for(reason)}
+    end
+  end
+
   # The session runs INSIDE the ICM whose repo is stuck — the working tree it
   # has to reason about is that ICM's own content, and the scope it gets is
   # the ordinary chat scope for that mount, with no extra grants.
-  defp start_conflict_session(key, generation, %{briefing: briefing, icm_name: icm_name}) do
-    id = Valea.Agents.generate_session_id()
-
+  defp start_claimed_session(key, generation, id, %{briefing: briefing, icm_name: icm_name}) do
     with {:ok, scope} <-
            Valea.Agents.SessionScope.resolve(%{
              kind: "chat",
@@ -172,9 +199,10 @@ defmodule Valea.Api.Git do
              context_doc: nil,
              input: nil
            }) do
-      # A cast, so a dead engine (workspace closing under the click) cannot
-      # fail a session that has already started. The cost of losing it is one
-      # extra session next click, not a broken one now.
+      # Confirms the claim as a live session. A cast, so a dead engine
+      # (workspace closing under the click) cannot fail a session that has
+      # already started — the CLAIM is what reserved the slot, so nothing is
+      # racing on this.
       Engine.record_conflict_session(key, id)
 
       Valea.Audit.append("session_started", %{
@@ -192,13 +220,22 @@ defmodule Valea.Api.Git do
       # `:harness_unavailable`) can be turned into an error the frontend can
       # read — an unmapped `{:error, atom}` reaches ash_typescript as a bare
       # "unknown_error" with the reason discarded.
-      {:error, reason} -> {:error, error_for(reason)}
+      {:error, reason} -> abandon(key, id, reason)
       # `start_session/1` answering with an id that is not the one we
       # generated cannot happen (we pass `:id`), but a `WithClauseError`
       # raised out of an RPC action would be a far worse way to find that
       # out than an error the caller can read.
-      other -> {:error, error_for(other)}
+      other -> abandon(key, id, other)
     end
+  end
+
+  # A claim whose session never started must go back SYNCHRONOUSLY, before
+  # this error reaches the user: they will click again, and a retry that
+  # found its own abandoned claim still standing would be told to join a
+  # session that does not exist and never will.
+  defp abandon(key, id, reason) do
+    engine_call(fn -> Engine.release_conflict_session(key, id) end)
+    {:error, error_for(reason)}
   end
 
   # -- guards ---------------------------------------------------------------------

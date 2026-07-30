@@ -557,6 +557,111 @@ defmodule Valea.Git.EngineTest do
     assert Engine.statuses()[key].conflict_session_id == "sess-live"
   end
 
+  # -- conflict slots ----------------------------------------------------------
+
+  # The reservation that makes "resolve" safe to double-click: the decision
+  # lives in this loop, so it is settled before any caller spends the hundreds
+  # of milliseconds a session start costs.
+  test "a claim reserves the conflict slot, and a rival caller is told whose it is", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+
+    start_engine!(ws)
+    await_pass!()
+    GitFixtures.diverge!(fx)
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+
+    assert :ok = Engine.claim_conflict_session(key, "sess-a")
+    # Visible immediately — the button must stop offering "resolve" before
+    # the session it refers to has even started.
+    assert Engine.statuses()[key].conflict_session_id == "sess-a"
+
+    assert Engine.claim_conflict_session(key, "sess-b") ==
+             {:error, {:already_claimed, "sess-a"}}
+
+    # Re-claiming what you already hold is not a conflict with yourself.
+    assert :ok = Engine.claim_conflict_session(key, "sess-a")
+
+    assert :ok = Engine.release_conflict_session(key, "sess-a")
+    assert Engine.statuses()[key].conflict_session_id == nil
+    assert :ok = Engine.claim_conflict_session(key, "sess-b")
+
+    assert Engine.claim_conflict_session("no-such-mount", "sess-x") == {:error, :not_found}
+  end
+
+  test "a claimant that dies before starting its session gives the slot back", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+
+    start_engine!(ws)
+    await_pass!()
+    GitFixtures.diverge!(fx)
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+
+    parent = self()
+
+    claimant =
+      spawn(fn ->
+        send(parent, {:claimed, Engine.claim_conflict_session(key, "sess-orphan")})
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert_receive {:claimed, :ok}, 5_000
+    assert Engine.statuses()[key].conflict_session_id == "sess-orphan"
+
+    send(claimant, :stop)
+
+    # Nothing else would ever clear it: no session was started, so no
+    # liveness check has anything to find, and the repo would offer to open a
+    # session that does not exist forever.
+    assert eventually(fn -> Engine.statuses()[key].conflict_session_id == nil end)
+  end
+
+  test "a recorded session that is gone can be claimed over", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+
+    start_engine!(ws)
+    await_pass!()
+    GitFixtures.diverge!(fx)
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+
+    # No process behind it — the resolution session crashed, or the workspace
+    # was reopened. A repo whose slot could not be reclaimed would be
+    # permanently unresolvable.
+    :ok = Engine.record_conflict_session(key, "sess-gone")
+    assert Engine.statuses()[key].conflict_session_id == "sess-gone"
+
+    assert :ok = Engine.claim_conflict_session(key, "sess-fresh")
+    assert Engine.statuses()[key].conflict_session_id == "sess-fresh"
+  end
+
+  test "a pass keeps a PENDING claim, and drops a recorded session that is gone", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+
+    start_engine!(ws)
+    await_pass!()
+    GitFixtures.diverge!(fx)
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+
+    # A claim whose session is still starting has no `SessionServer` to find.
+    # Blanking it in the post-pass sweep would re-open the double-start
+    # window the claim exists to close.
+    assert :ok = Engine.claim_conflict_session(key, "sess-starting")
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].conflict_session_id == "sess-starting"
+
+    # A RECORDED one is governed by its session's liveness, and that session
+    # is gone.
+    :ok = Engine.record_conflict_session(key, "sess-dead")
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].conflict_session_id == nil
+  end
+
   test "off, no_upstream and unsupported rows", %{ws: ws, base: base, fx: fx} do
     solo = lone_repo!(base, "solo")
     linked = linked_worktree_icm!(base, "linked")

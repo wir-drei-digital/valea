@@ -295,6 +295,51 @@ defmodule ValeaWeb.GitRpcTest do
              end)
     end
 
+    # The regression this pins: `conflict_handoff` is serialized by the
+    # Engine, but starting a session is not — scope resolution plus an agent
+    # handshake is hundreds of milliseconds during which a second click (or a
+    # second tab) used to read the same empty slot and spawn a RIVAL agent
+    # with write scope over the same conflicted working tree. The claim is
+    # taken inside the Engine before any of that, so exactly one caller wins
+    # no matter what the UI does.
+    test "two simultaneous clicks produce ONE session, never two rival agents", %{
+      generation: generation,
+      key: key,
+      fx: fx
+    } do
+      Valea.App.Config.set_harness_command(AgentCase.fake_cmd("happy"))
+
+      GitFixtures.diverge!(fx)
+      sync!(key, "diverged")
+
+      results =
+        [1, 2]
+        |> Enum.map(fn _click ->
+          Task.async(fn ->
+            rpc(
+              "start_git_conflict_session",
+              %{"mountKey" => key, "generation" => generation},
+              ["sessionId", "routed"]
+            )
+          end)
+        end)
+        |> Task.await_many(60_000)
+
+      ids =
+        Enum.map(results, fn %{"success" => true, "data" => %{"sessionId" => id}} -> id end)
+
+      on_exit(fn -> Enum.each(Enum.uniq(ids), &AgentCase.kill_session/1) end)
+
+      assert Enum.uniq(ids) |> length() == 1, "rival sessions started: #{inspect(ids)}"
+
+      assert results |> Enum.map(& &1["data"]["routed"]) |> Enum.sort() == ["existing", "new"]
+
+      # And only ONE agent session exists for this ICM.
+      assert {:ok, sessions} = Valea.Agents.list_sessions()
+      conflict_sessions = Enum.filter(sessions, &(&1["icm_mount"] == key))
+      assert length(conflict_sessions) == 1
+    end
+
     # The session start happens in the action's BODY, past the `with` chain
     # that maps every other failure — so it needs its own mapping, or the
     # reason is discarded on the way out and the panel says "unknown error"
