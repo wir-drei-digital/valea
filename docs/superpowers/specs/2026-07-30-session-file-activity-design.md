@@ -200,19 +200,24 @@ Rows:
   long app run can't grow it unboundedly — once closed, that session won't
   reopen the rail this app run (including on later touches). Deliberately not
   persisted: a fresh app launch starts from default behavior.
-- When the rail is closed and the count is > 0, `SessionHeader` shows a
-  "Files · N" toggle to reopen it. No activity ⇒ no toggle, no rail, zero
-  footprint. The open/close decision lives in `ChatView` (it owns both header
-  and rail); the auto-open predicate is a pure helper in `file-activity.ts`.
+- When the rail is closed and the count is > 0 — and only where the rail
+  could actually show (primary placement, ≥860px view width) — `SessionHeader`
+  shows a "Files · N" toggle to reopen it. A chat side pane or a squeezed
+  primary shows no pill: an affordance whose target cannot appear would be a
+  dead end. No activity ⇒ no toggle, no rail, zero footprint. The open/close
+  decision lives in `ChatView` (it owns both header and rail); the auto-open
+  predicate is a pure helper in `file-activity.ts`.
 
 ### Accessibility
 
 Rows follow `ToolCallCard`'s precedent: the expand toggle and the open icon
 are **separate sibling buttons** (never nested interactive controls — the row
-container is a plain div). The toggle carries `aria-expanded` and an
-`aria-label` naming the file; the open icon gets its own label ("Open
-<name>"). Badges are text, never color-only. Focus order: toggle, then open
-icon, row by row.
+container is a plain div). The toggle carries `aria-expanded`, and takes its
+accessible name from its visible text children (name, dir, meta, badge) — no
+`aria-label`, deliberately: a label would MASK that text for screen readers,
+dropping the badge and the "no longer exists" note. The open icon, having no
+text, gets its own label ("Open <name>"). Badges are text, never color-only.
+Focus order: toggle, then open icon, row by row.
 
 ### Tone
 
@@ -229,6 +234,19 @@ and plain-language notes only. Mono diff detail appears only after an expand.
   the rail itself never blocks on the tree.
 - Renames/deletes performed via shell commands are not attributed (documented
   v1 limitation; surfaced only via the "no longer exists" note).
+- Paths the ICM tree never lists — dot-prefixed segments and the root
+  `icm.yaml` (`Valea.ICM.shallow_entries/3`) — are skipped entirely:
+  `ensurePathLoaded` answers a definitive `'missing'` for them even when they
+  exist, so unlistable means unknowable, not gone.
+- The check is CACHE-bound in the creation direction: a just-created file is
+  absent from the loaded tree until the debounced `icm_changed` refetch
+  (~200ms) reassigns `icmStore.groups`. `ChatView` absorbs that with a settle
+  delay before checking, so the watcher-on path never flashes a false note.
+  Residual limitation: when ICM file watching is DISABLED (`Valea.ICM.Watcher`
+  — FS backend unavailable at open; the workspace still opens, "tree refreshes
+  on navigation only") no push ever arrives, so a created file's row can claim
+  "no longer exists" until a manual tree refresh. Deletions can never go wrong
+  that way — with no refetch the row simply shows no note.
 
 ## Testing
 
@@ -240,12 +258,16 @@ and plain-language notes only. Mono diff detail appears only after an expand.
   seq-less snapshot items; failed/running exclusion; outside-mount rows incl.
   backslash-path name derivation; sort order; auto-open predicate incl.
   attach-as-transition; existence-note mapping over `EnsurePathResult`
-  (`found`/`missing`/`unavailable` — only `missing` notes).
+  (`found`/`missing`/`unavailable` — only `missing` notes) plus every skip:
+  reads, outside-mount rows, `deleted` badges, and unlistable paths
+  (dot-prefixed segment, root `icm.yaml` — a NESTED `icm.yaml` is still
+  checked).
 - Backend: no changes, no tests.
 - Manual acceptance: live touch auto-opens the rail; close stays closed for
   that session; "Files · N" reopens; expand shows stacked diffs; ↗ opens the
   file side pane next to the rail; reopened past session shows its record;
-  chat-as-side-pane never shows the rail; narrow window hides it.
+  chat-as-side-pane never shows the rail (nor the header pill); narrow window
+  hides both.
 
 ## Decisions log
 

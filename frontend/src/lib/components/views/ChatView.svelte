@@ -26,8 +26,21 @@
   import { sessionsListStore } from '$lib/stores/sessions-list.svelte';
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import { takeInitialPrompt, setInitialPrompt } from '$lib/stores/initial-prompt';
-  import { Transcript, PlanBar, Composer, DoctorPanel, SessionHeader } from '$lib/components/agent';
+  import {
+    Transcript,
+    PlanBar,
+    Composer,
+    DoctorPanel,
+    SessionHeader,
+    FileActivityRail
+  } from '$lib/components/agent';
   import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
+  import {
+    checkExistence,
+    closedRailMemory,
+    deriveFileActivity,
+    shouldAutoOpen
+  } from '$lib/components/agent/file-activity';
   import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
 
@@ -406,6 +419,111 @@
     if (!key || !open) return undefined;
     return (relPath: string) => open({ mountKey: key, path: relPath });
   });
+
+  // --- File-activity rail (spec: 2026-07-30-session-file-activity-design) ---
+  //
+  // Aggregation is a plain derived over the same items the transcript reads.
+  // Auto-open fires only on the derived count's 0 -> >0 transition (attach
+  // included), and never for a session the user closed the rail on
+  // (`closedRailMemory`, this app run only). Rendering is additionally gated
+  // on primary placement and container width >= 860px — the rail yields to a
+  // squeezed layout (e.g. an open side pane at PaneHost's 30% minimums).
+  const fileActivities = $derived.by(() => (store ? deriveFileActivity(store.items) : []));
+
+  let railOpen = $state(false);
+  let railCountStore: AgentSessionStore | null = null;
+  let previousFileCount = 0;
+
+  $effect(() => {
+    const current = store;
+    const count = fileActivities.length;
+    if (current !== railCountStore) {
+      // New (or no) session: reset tracking, then let the 0 -> count check
+      // below run against THIS session's own baseline.
+      railCountStore = current;
+      previousFileCount = 0;
+      railOpen = false;
+    }
+    const id = sessionId;
+    if (
+      id !== null &&
+      !railOpen &&
+      shouldAutoOpen(previousFileCount, count, closedRailMemory.isClosed(id))
+    ) {
+      railOpen = true;
+    }
+    previousFileCount = count;
+  });
+
+  function closeRail(): void {
+    railOpen = false;
+    if (sessionId !== null) closedRailMemory.close(sessionId);
+  }
+
+  function reopenRail(): void {
+    railOpen = true;
+    if (sessionId !== null) closedRailMemory.reopen(sessionId);
+  }
+
+  let viewWidth = $state(0);
+  const showRail = $derived(
+    railOpen && context.placement === 'primary' && viewWidth >= 860 && fileActivities.length > 0
+  );
+
+  // Existence notes: reality-check changed rows against the mount tree via
+  // `ensurePathLoaded` — ONLY its definitive 'missing' marks a row (store
+  // issue-#2 contract). Re-runs are scoped to: changed-row-SET changes (the
+  // `changedRelPaths` key — the `fileActivities` read below happens AFTER an
+  // `await`, which Svelte does not track, so a mere diff/index mutation on an
+  // already-listed row doesn't re-trigger), a `groups` REASSIGNMENT (which is
+  // how every `icm_changed` refetch lands), the open mount, rail visibility,
+  // and the effect's own first run on mount. Deliberately NOT the
+  // `onIcmChanged` listener: that fires BEFORE the refetch settles, so a
+  // tick-based recheck would walk the stale tree through `loadDir`'s
+  // loaded-dir cache and miss a deletion permanently (Codex review finding).
+  // Reading `groups` cannot loop this effect: `ensurePathLoaded`'s own lazy
+  // loads GRAFT into existing nodes without reassigning the array, and the
+  // effect reads nothing deeper than the array reference.
+  // The run token invalidates pending resolutions on EVERY re-run —
+  // including the not-applicable branch, so a stale async result can never
+  // land after the rail closed or the mount changed.
+  let missingKeys = $state<ReadonlySet<string>>(new Set());
+  let existenceRun = 0;
+
+  const changedRelPaths = $derived(
+    fileActivities
+      .filter((r) => r.kindBadge !== 'read' && r.relPath !== undefined)
+      .map((r) => r.key)
+      .join('\n')
+  );
+
+  $effect(() => {
+    void changedRelPaths;
+    void icmStore.groups;
+    const key = openMountKey;
+    const token = ++existenceRun;
+    if (!showRail || !key) {
+      missingKeys = new Set();
+      return;
+    }
+    void (async () => {
+      // Settle: a just-created file is invisible to the CACHED tree until the
+      // debounced icm_changed refetch (~200ms) reassigns `groups` and re-runs
+      // this effect. Checking immediately would flash a false "no longer
+      // exists" on every file the session creates. The run token discards
+      // this pass if anything re-triggered meanwhile.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      if (token !== existenceRun) return;
+      // Read AFTER the await (untracked, so it isn't an effect dependency) —
+      // still the CURRENT activities, since a `$derived` recomputes on read.
+      const rows = fileActivities;
+      const missing = await checkExistence(rows, async (relPath) => {
+        const result = await icmStore.ensurePathLoaded(key, relPath);
+        return result.status;
+      });
+      if (token === existenceRun) missingKeys = missing;
+    })();
+  });
 </script>
 
 {#if descriptor.kind === 'chat-new'}
@@ -442,50 +560,68 @@
 {:else if store}
   <!-- Transcript scrolls; the composer (or the ended/starting row) stays
        docked at the pane's bottom edge, per the cockpit chat screen. -->
-  <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
-    <SessionHeader
-      icmName={openIcmName}
-      mountKey={openMountKey}
-      {ended}
-      {archiving}
-      {deleting}
-      onArchive={() => void archiveOpenSession()}
-      onDelete={() => void deleteOpenSession()}
-      onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
-    />
-    {#if archiveError}
-      <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>
-    {/if}
-    <PlanBar item={planItem} />
-
-    <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
-      <Transcript {store} onOpenFile={openToolFile} />
-    </div>
-
-    {#if starting}
-      <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
-    {:else}
-      {#if resumeError}
-        <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{resumeError}</p>
+  <div bind:clientWidth={viewWidth} class="flex min-h-0 w-full flex-1">
+    <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
+      <!-- The "Files · N" pill renders only where the rail could actually
+           show (primary placement, >= 860px): elsewhere clicking it would set
+           railOpen, hide the pill, and surface no rail — an inert affordance
+           that deletes itself. -->
+      <SessionHeader
+        icmName={openIcmName}
+        mountKey={openMountKey}
+        {ended}
+        {archiving}
+        {deleting}
+        onArchive={() => void archiveOpenSession()}
+        onDelete={() => void deleteOpenSession()}
+        onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
+        filesCount={fileActivities.length}
+        onShowFiles={!railOpen && context.placement === 'primary' && viewWidth >= 860
+          ? reopenRail
+          : undefined}
+      />
+      {#if archiveError}
+        <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>
       {/if}
-      <!-- An ended session keeps its composer: sending resumes it in
-           place (same transcript) and delivers the message — the
-           placeholder carries the affordance, no extra button. A LIVE
-           session's send is queue-aware (`store.send`): mid-turn
-           messages wait in the composer's queue until the turn ends. -->
-      <Composer
-        busy={store.busy || resuming}
-        {configItems}
-        {usageItem}
-        queued={store.queued}
-        turnStartedAt={store.turnStartedAt}
-        placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
-        onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
-        onStop={() => store?.cancel()}
-        onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
-        onEditQueued={(id, text) => store?.updateQueued(id, text)}
-        onDismissQueued={(id) => store?.dismissQueued(id)}
-        onSendQueuedNow={(id) => store?.sendQueuedNow(id)}
+      <PlanBar item={planItem} />
+
+      <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
+        <Transcript {store} onOpenFile={openToolFile} />
+      </div>
+
+      {#if starting}
+        <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
+      {:else}
+        {#if resumeError}
+          <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{resumeError}</p>
+        {/if}
+        <!-- An ended session keeps its composer: sending resumes it in
+             place (same transcript) and delivers the message — the
+             placeholder carries the affordance, no extra button. A LIVE
+             session's send is queue-aware (`store.send`): mid-turn
+             messages wait in the composer's queue until the turn ends. -->
+        <Composer
+          busy={store.busy || resuming}
+          {configItems}
+          {usageItem}
+          queued={store.queued}
+          turnStartedAt={store.turnStartedAt}
+          placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
+          onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
+          onStop={() => store?.cancel()}
+          onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
+          onEditQueued={(id, text) => store?.updateQueued(id, text)}
+          onDismissQueued={(id) => store?.dismissQueued(id)}
+          onSendQueuedNow={(id) => store?.sendQueuedNow(id)}
+        />
+      {/if}
+    </div>
+    {#if showRail}
+      <FileActivityRail
+        activities={fileActivities}
+        {missingKeys}
+        onOpenFile={openToolFile}
+        onClose={closeRail}
       />
     {/if}
   </div>
