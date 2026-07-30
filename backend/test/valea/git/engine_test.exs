@@ -11,8 +11,34 @@ defmodule Valea.Git.EngineTest.RecordingCli do
       _absent -> :ok
     end
 
+    # `:git_cli_delay_ms` stretches a pass over a known window, so a test can
+    # land a cast on the Engine WHILE its pass task is still running. Applied
+    # to the state read every pass begins with.
+    delay = Application.get_env(:valea, :git_cli_delay_ms, 0)
+    if delay > 0 and match?(["status" | _], args), do: Process.sleep(delay)
+
     Valea.Git.Cli.run(repo_root, args, opts)
   end
+end
+
+# A process sitting exactly where a real agent session would, so
+# `Valea.Agents.SessionServer.attach/1` — the Engine's liveness question about
+# a recorded conflict session — answers "running" without a whole ACP session.
+defmodule Valea.Git.EngineTest.FakeSession do
+  use GenServer
+
+  def start_link(id) do
+    GenServer.start_link(__MODULE__, :ok,
+      name: {:via, Registry, {Valea.Agents.SessionRegistry, id, nil}}
+    )
+  end
+
+  @impl true
+  def init(:ok), do: {:ok, %{}}
+
+  @impl true
+  def handle_call(:attach, _from, state),
+    do: {:reply, {:ok, %{items: [], cursor: 0, busy: false, status: "running"}}, state}
 end
 
 defmodule Valea.Git.EngineTest do
@@ -21,6 +47,7 @@ defmodule Valea.Git.EngineTest do
   use ExUnit.Case, async: false
 
   alias Valea.Git.Engine
+  alias Valea.Git.EngineTest.FakeSession
   alias Valea.Git.EngineTest.RecordingCli
   alias Valea.Mounts
   alias Valea.Mounts.Manifest
@@ -160,6 +187,10 @@ defmodule Valea.Git.EngineTest do
     assert row.branch == "main"
     assert row.ahead == 0 and row.behind == 0 and row.dirty == false
     assert is_binary(row.last_sync_at)
+    # The notice identity Tasks 4/5 key on: level with the remote means the
+    # two shas are the same one.
+    assert is_binary(row.local_sha)
+    assert row.local_sha == row.remote_sha
     assert Engine.statuses() == statuses
 
     # A closed workspace forgets everything it knew.
@@ -219,6 +250,9 @@ defmodule Valea.Git.EngineTest do
     statuses = await_pass!()
 
     assert %{state: "diverged", ahead: 1, behind: 1} = statuses[key]
+    assert statuses[key].local_sha == head(fx.work)
+    assert statuses[key].remote_sha == bare_head(fx.bare)
+    assert statuses[key].local_sha != statuses[key].remote_sha
 
     work_before = head(fx.work)
     remote_before = bare_head(fx.bare)
@@ -271,6 +305,122 @@ defmodule Valea.Git.EngineTest do
     assert bare_head(fx.bare) == remote_before
   end
 
+  # A rebase stopped at a conflict has NO current branch. Classified on
+  # `branch` first this reads `detached`, which is not conflict-class, and the
+  # repo can never be handed to a resolution session.
+  test "a conflicted rebase reads as merge_in_progress and can be handed off", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    GitFixtures.rebase_conflict!(fx)
+    work_before = head(fx.work)
+    remote_before = bare_head(fx.bare)
+
+    start_engine!(ws)
+    statuses = await_pass!()
+
+    assert statuses[key].branch == nil, "fixture must leave HEAD detached mid-rebase"
+    assert statuses[key].state == "merge_in_progress"
+    assert head(fx.work) == work_before
+    assert bare_head(fx.bare) == remote_before
+
+    assert {:ok, %{briefing: briefing}} = Engine.conflict_handoff(key)
+    assert briefing =~ "a merge/rebase was left unfinished"
+    assert briefing =~ "branch detached"
+    assert briefing =~ "clash.md"
+  end
+
+  test "blocked_local is held on later passes and self-heals", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    Application.put_env(:valea, :git_cli, RecordingCli)
+    Application.put_env(:valea, :git_cli_probe, self())
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :git_cli)
+      Application.delete_env(:valea, :git_cli_probe)
+    end)
+
+    start_engine!(ws)
+    await_pass!()
+
+    GitFixtures.advance_remote!(fx, "seed.md", "remote seed")
+    File.write!(Path.join(fx.work, "seed.md"), "local uncommitted")
+
+    # Discovered the only way it can be: a fast-forward git refused.
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "blocked_local"
+
+    work_before = head(fx.work)
+    remote_before = bare_head(fx.bare)
+    flush_git_runs()
+
+    # From here on it is HELD — derived locally, so no fetch and no merge run
+    # under whoever is resolving it.
+    assert :ok = Engine.sync_now(key)
+    held = await_pass!()
+
+    assert held[key].state == "blocked_local"
+    refute_received {:git_run, ["fetch" | _]}
+    refute_received {:git_run, ["merge" | _]}
+    refute_received {:git_run, ["push" | _]}
+    assert head(fx.work) == work_before
+    assert bare_head(fx.bare) == remote_before
+    assert File.read!(Path.join(fx.work, "seed.md")) == "local uncommitted"
+
+    # The user puts the file back the way it was; the hold clears itself.
+    File.write!(Path.join(fx.work, "seed.md"), "seed")
+    assert :ok = Engine.sync_now(key)
+    healed = await_pass!()
+
+    assert %{state: "ok", behind: 0, dirty: false} = healed[key]
+    assert head(fx.work) == bare_head(fx.bare)
+  end
+
+  test "a flush with nothing to commit does not start a pass", %{ws: ws, key: key} do
+    Application.put_env(:valea, :git_commit_quiet_ms, 50)
+    on_exit(fn -> Application.delete_env(:valea, :git_commit_quiet_ms) end)
+
+    assert :ok = Mounts.set_git_sync(ws, key, "full")
+    start_engine!(ws)
+    assert await_pass!()[key].state == "ok"
+
+    # Exactly what a pass's own fetch looks like to the ICM watcher: a write
+    # under the ICM (`.git/FETCH_HEAD`) with nothing of the user's in it. If
+    # this started a pass, the pass would fetch, and the Engine would trigger
+    # itself every debounce window for as long as the workspace is open.
+    Phoenix.PubSub.broadcast(Valea.PubSub, "icm", {:icm_changed})
+    refute_receive {:git_pass_finished, _}, 1_000
+  end
+
+  test "a conflict session recorded mid-pass survives the pass landing", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    Application.put_env(:valea, :git_cli, RecordingCli)
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :git_cli)
+      Application.delete_env(:valea, :git_cli_delay_ms)
+    end)
+
+    start_engine!(ws)
+    await_pass!()
+
+    GitFixtures.diverge!(fx)
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+
+    start_supervised!({FakeSession, "sess-live"})
+
+    # Every state read now takes ~400ms, so the cast below lands while the pass
+    # task is still running — its snapshot was taken before the id existed.
+    Application.put_env(:valea, :git_cli_delay_ms, 400)
+    assert :ok = Engine.sync_now(key)
+    :ok = Engine.record_conflict_session(key, "sess-live")
+
+    statuses = await_pass!()
+
+    assert statuses[key].state == "diverged"
+    assert statuses[key].conflict_session_id == "sess-live"
+    assert Engine.statuses()[key].conflict_session_id == "sess-live"
+  end
+
   test "off, no_upstream and unsupported rows", %{ws: ws, base: base, fx: fx} do
     solo = lone_repo!(base, "solo")
     linked = linked_worktree_icm!(base, "linked")
@@ -298,12 +448,22 @@ defmodule Valea.Git.EngineTest do
     start_engine!(ws)
     await_pass!()
 
+    # Local facts worth keeping: a commit the remote has not seen, and an
+    # uncommitted edit on top of it.
+    GitFixtures.advance_local!(fx)
+    File.write!(Path.join(fx.work, "scratch.md"), "wip")
+
     File.rm_rf!(fx.bare)
     assert :ok = Engine.sync_now(key)
     errored = await_pass!()
 
     assert errored[key].state == "error"
     assert is_binary(errored[key].last_error)
+
+    # An unreachable remote says nothing about the working tree — the row still
+    # knows what this repo IS.
+    assert %{branch: "main", ahead: 1, behind: 0, dirty: true} = errored[key]
+    assert errored[key].local_sha == head(fx.work)
 
     # A POLL-driven pass while the backoff window is open reports the same
     # error and never touches the network.
@@ -314,6 +474,7 @@ defmodule Valea.Git.EngineTest do
     refute_received {:git_run, ["fetch" | _]}
     assert backed_off[key].state == "error"
     assert backed_off[key].last_error == errored[key].last_error
+    assert %{branch: "main", ahead: 1, dirty: true} = backed_off[key]
 
     # An explicit sync_now is the user overriding the backoff.
     flush_git_runs()

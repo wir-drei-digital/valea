@@ -108,4 +108,23 @@ defmodule GitFixtures do
 
     :ok
   end
+
+  @doc """
+  Leave `work` mid-REBASE with conflict markers. Same shape as `conflict!/1`
+  with one difference that is the entire point: a rebase replays commits onto
+  the upstream, so while it is stopped at a conflict HEAD is DETACHED — there
+  is no current branch to read. A classifier that asks "is there a branch?"
+  before "is a merge/rebase running?" calls this repo `detached` and never
+  offers to resolve it.
+  """
+  def rebase_conflict!(%{work: work} = fx) do
+    write_commit!(work, "clash.md", "local version", "local clash")
+    advance_remote!(fx, "clash.md", "remote version")
+    git!(work, ["fetch", "origin"])
+
+    {_out, _code} =
+      System.cmd("git", ["-C", work, "rebase", "origin/main"], env: @env, stderr_to_stdout: true)
+
+    :ok
+  end
 end

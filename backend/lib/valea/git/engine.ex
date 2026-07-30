@@ -7,13 +7,23 @@ defmodule Valea.Git.Engine do
 
   A repo whose local and remote histories have both moved (`diverged`), whose
   fast-forward is blocked by uncommitted edits (`blocked_local`), or that was
-  left mid-merge (`merge_in_progress`) is HELD: the pass reads its state
-  locally and does nothing else. No fetch, no commit, no push — not even the
-  "harmless" ones. A fetch cannot lose data, but a status row that keeps
-  changing under a user who is trying to reason about a conflict can, and the
-  moment Valea is allowed one network call on a held repo the next reader of
-  this file has to argue about which one. So: held repos get local reads only,
-  until a human (or a resolution session, `conflict_handoff/1`) converges them.
+  left mid-merge or mid-rebase (`merge_in_progress`) is HELD: the pass reads
+  its state locally and does nothing else. No fetch, no commit, no push — not
+  even the "harmless" ones. A fetch cannot lose data, but a status row that
+  keeps changing under a user who is trying to reason about a conflict can,
+  and the moment Valea is allowed one network call on a held repo the next
+  reader of this file has to argue about which one. So: held repos get local
+  reads only, until a human (or a resolution session, `conflict_handoff/1`)
+  converges them.
+
+  Every held state is derived by `local_class/1` from ONE local read — the
+  same function `conflict_handoff/1` re-derives with, so the pass and the
+  handoff can never disagree about whether a repo is in conflict. That
+  includes `blocked_local`, which git has no marker for: it is "behind, with a
+  dirty tree", and deriving it locally is what stops a blocked repo from being
+  re-fetched and re-merged on every pass underneath the session resolving it.
+  It also self-heals — the moment the tree is clean, the repo is no longer
+  held and the next pass fast-forwards.
 
   Valea's four sanctioned mutations live in `Valea.Git.Repo` and are the only
   ones reachable from here: `commit_all`, `fetch`, `ff_merge`, `push`. There is
@@ -35,7 +45,11 @@ defmodule Valea.Git.Engine do
   Passes are triggered by: activation, the poll timer, `sync_now/1`,
   `{:mounts_changed}` (eligibility or mode may have changed), and — in `full`
   mode only — a debounced `{:icm_changed}`, which is what turns "the user
-  stopped typing" into a commit.
+  stopped typing" into a commit. That last one flushes through a LOCAL probe
+  (`committable_work?/1`): a fetch writes `.git/FETCH_HEAD`, which the ICM
+  watcher reports as a change under the ICM, so a flush that started a pass
+  unconditionally would make the Engine trigger itself every debounce window
+  forever.
 
   ## Activation gating
 
@@ -98,6 +112,13 @@ defmodule Valea.Git.Engine do
           ahead: non_neg_integer(),
           behind: non_neg_integer(),
           dirty: boolean(),
+          # The pair that gives a notice its identity: `{mount_key, local_sha,
+          # remote_sha}` is what tells "the same conflict, still there" from "a
+          # new one" for a consumer that has already shown this row once. `nil`
+          # wherever git could not answer (no upstream, unborn HEAD, a repo
+          # never read because its mode is `off`).
+          local_sha: String.t() | nil,
+          remote_sha: String.t() | nil,
           last_sync_at: String.t() | nil,
           last_error: String.t() | nil,
           conflict_session_id: String.t() | nil
@@ -268,8 +289,21 @@ defmodule Valea.Git.Engine do
   # editing a page would commit it a dozen times mid-thought.
   def handle_info({:icm_changed}, state), do: {:noreply, arm_commit_timer(state)}
 
-  def handle_info(:commit_flush, state),
-    do: {:noreply, %{state | commit_timer: nil} |> start_pass_unless_busy()}
+  # The debounce fires — but a flush only becomes a PASS if there is actually
+  # something local to commit. Without that check the Engine feeds itself
+  # forever: a pass fetches, the fetch rewrites `.git/FETCH_HEAD`, the ICM
+  # watcher sees a write under the ICM and broadcasts `{:icm_changed}`, that
+  # re-arms this timer, and the flush starts another pass with another fetch —
+  # a permanent every-two-minutes network loop on a repo nobody touched. The
+  # probe is LOCAL ONLY (`Repo.read_state/2`, no network), which is what makes
+  # it safe to run here rather than in a pass.
+  def handle_info(:commit_flush, state) do
+    state = %{state | commit_timer: nil}
+
+    if committable_work?(state),
+      do: {:noreply, start_pass_unless_busy(state)},
+      else: {:noreply, state}
+  end
 
   # A mount was added/removed/enabled, or its sync mode changed: the set of
   # rows this Engine owns may be different now.
@@ -357,7 +391,11 @@ defmodule Valea.Git.Engine do
     do: %{state | sync_task: nil, pending_sync: false}
 
   defp finish_pass(state, {statuses, retry}) do
-    statuses = forget_dead_sessions(statuses)
+    statuses =
+      statuses
+      |> restore_recorded_sessions(state.repos)
+      |> forget_dead_sessions()
+
     broadcast(statuses)
     probe(statuses)
 
@@ -367,6 +405,28 @@ defmodule Valea.Git.Engine do
 
   defp drain_pending(%{pending_sync: true} = state), do: start_pass(state)
   defp drain_pending(state), do: state
+
+  # A `record_conflict_session/2` cast can land WHILE a pass is running, and
+  # the pass's snapshot was taken before it — storing that snapshot verbatim
+  # would drop the id, the row's button would revert to "resolve", and the next
+  # click would start a RIVAL session against the same working tree. For a row
+  # that is still conflict-class, the server's own view therefore wins over the
+  # task's.
+  defp restore_recorded_sessions(statuses, previous) do
+    Map.new(statuses, fn
+      {key, %{state: state, conflict_session_id: nil} = row} when state in @conflict_states ->
+        case previous do
+          %{^key => %{conflict_session_id: id}} when is_binary(id) ->
+            {key, %{row | conflict_session_id: id}}
+
+          _none_recorded ->
+            {key, row}
+        end
+
+      {key, row} ->
+        {key, row}
+    end)
+  end
 
   # A recorded session that is no longer running is a dead reference: the row
   # must offer "resolve" again rather than "open the session that fixed this".
@@ -461,6 +521,8 @@ defmodule Valea.Git.Engine do
       ahead: 0,
       behind: 0,
       dirty: false,
+      local_sha: nil,
+      remote_sha: nil,
       # Carried: `last_sync_at` means "when this repo was last CONVERGED",
       # which a failed or held pass does not change.
       last_sync_at: previous && previous.last_sync_at,
@@ -482,28 +544,42 @@ defmodule Valea.Git.Engine do
     end
   end
 
-  # The order here is the spec's: an observe-only repo (no branch, no
-  # upstream) is named before an unfinished merge, and both before divergence.
-  #
-  # Every branch but the last is HELD or observe-only, and every one of them
-  # carries `retry_entry` through untouched: only an actual network attempt is
-  # allowed to move the backoff ledger, in either direction.
+  # Everything `local_class/1` can name is HELD or observe-only, and every one
+  # of those carries `retry_entry` through untouched: only an actual network
+  # attempt is allowed to move the backoff ledger, in either direction. `"ok"`
+  # is the ONLY answer that earns a fetch.
   defp classify(root, base, previous, cfg, cli, retry_entry, now, st) do
+    case local_class(st) do
+      "ok" -> converge(root, base, previous, cfg, cli, retry_entry, now, st)
+      held -> {observed(base, st, held), retry_entry}
+    end
+  end
+
+  # What a repo IS, from a purely LOCAL read — the single classifier behind both
+  # the pass and `conflict_handoff/1`. They MUST agree: a row the pass calls
+  # `detached` that the handoff would call `merge_in_progress` is a conflict no
+  # button can open, so the two derivations are one function rather than two
+  # `cond`s that drifted.
+  #
+  # Order is load-bearing:
+  #
+  #   * an unfinished merge/rebase comes FIRST, because a conflicted rebase
+  #     also has a detached HEAD — classified on `branch` first, every
+  #     rebase-in-progress would read `detached`, which is not conflict-class,
+  #     and the resolution session could never be handed off;
+  #   * `blocked_local` is derived locally (`behind` + a dirty tree) rather
+  #     than only from a fast-forward git refused, so a blocked repo is held on
+  #     every LATER pass instead of re-fetching and re-merging under a session
+  #     that is trying to resolve it. It self-heals: the moment the tree is
+  #     clean, this returns `"ok"` and the next pass fast-forwards.
+  defp local_class(st) do
     cond do
-      st.branch == nil ->
-        {observed(base, st, "detached"), retry_entry}
-
-      st.upstream == nil ->
-        {observed(base, st, "no_upstream"), retry_entry}
-
-      st.in_progress != nil or st.conflicted ->
-        {observed(base, st, "merge_in_progress"), retry_entry}
-
-      st.ahead > 0 and st.behind > 0 ->
-        {observed(base, st, "diverged"), retry_entry}
-
-      true ->
-        converge(root, base, previous, cfg, cli, retry_entry, now, st)
+      st.in_progress != nil or st.conflicted -> "merge_in_progress"
+      st.branch == nil -> "detached"
+      st.upstream == nil -> "no_upstream"
+      st.ahead > 0 and st.behind > 0 -> "diverged"
+      st.behind > 0 and st.dirty -> "blocked_local"
+      true -> "ok"
     end
   end
 
@@ -511,41 +587,41 @@ defmodule Valea.Git.Engine do
   # remote — unless a backoff window says the remote is not answering.
   defp converge(root, base, previous, cfg, cli, retry_entry, now, st) do
     case maybe_commit(root, base, cfg, cli, st) do
-      {:ok, base} -> fetch_phase(root, base, previous, cfg, cli, retry_entry, now)
+      {:ok, base} -> fetch_phase(root, base, previous, cfg, cli, retry_entry, now, st)
       {:error, row} -> {row, retry_entry}
     end
   end
 
-  defp maybe_commit(root, base, %{sync: :full}, cli, %{dirty: true}) do
+  defp maybe_commit(root, base, %{sync: :full}, cli, %{dirty: true} = st) do
     message =
       "valea sync: " <>
         (DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601())
 
     case Repo.commit_all(root, message, cli) do
       :ok -> {:ok, base}
-      {:error, {:commit_failed, out}} -> {:error, error_row(base, out)}
+      {:error, {:commit_failed, out}} -> {:error, errored(base, st, out)}
     end
   end
 
   defp maybe_commit(_root, base, _cfg, _cli, _st), do: {:ok, base}
 
-  defp fetch_phase(root, base, previous, cfg, cli, retry_entry, now) do
+  defp fetch_phase(root, base, previous, cfg, cli, retry_entry, now, st) do
     if gated?(retry_entry, now) do
       # The remote is still in its penalty box: report what it reported last
       # time, over freshly-read local facts, and touch no network.
-      {%{base | state: "error", last_error: previous && previous.last_error}, retry_entry}
+      {%{observed(base, st, "error") | last_error: previous && previous.last_error}, retry_entry}
     else
       case Repo.fetch(root, cli) do
-        :ok -> after_fetch(root, base, cfg, cli)
-        {:error, {:fetch_failed, out}} -> {error_row(base, out), bump(retry_entry, now)}
+        :ok -> after_fetch(root, base, cfg, cli, st)
+        {:error, {:fetch_failed, out}} -> {errored(base, st, out), bump(retry_entry, now)}
       end
     end
   end
 
-  defp after_fetch(root, base, cfg, cli) do
+  defp after_fetch(root, base, cfg, cli, before) do
     case Repo.read_state(root, cli) do
       {:error, reason} ->
-        {error_row(base, reason), nil}
+        {errored(base, before, reason), nil}
 
       {:ok, st} ->
         cond do
@@ -593,7 +669,7 @@ defmodule Valea.Git.Engine do
           else: {%{observed(base, st, "error") | last_error: describe(out)}, nil}
 
       {:error, {:push_failed, out}} ->
-        {error_row(base, out), nil}
+        {errored(base, st, out), nil}
     end
   end
 
@@ -616,13 +692,23 @@ defmodule Valea.Git.Engine do
         branch: st.branch,
         ahead: st.ahead,
         behind: st.behind,
-        dirty: st.dirty
+        dirty: st.dirty,
+        local_sha: st.local_sha,
+        remote_sha: st.remote_sha
     })
   end
 
   defp succeeded(base, st) do
     %{observed(base, st, "ok") | last_sync_at: now_iso()}
   end
+
+  # An error is a thing that happened TO a repo, not a replacement for knowing
+  # anything about it: wherever the state read succeeded, the row keeps the
+  # branch, the counts, the dirty flag and the shas it just observed. Only a
+  # failure to read the repo AT ALL (`error_row/2`) leaves them blank, because
+  # then there is nothing true to put there.
+  defp errored(base, st, message),
+    do: %{observed(base, st, "error") | last_error: describe(message)}
 
   defp error_row(base, message), do: %{base | state: "error", last_error: describe(message)}
 
@@ -676,27 +762,15 @@ defmodule Valea.Git.Engine do
         {:reply, {:error, :no_conflict}, put_row(state, error_row(row, reason))}
 
       {:ok, st} ->
-        live = live_state(st)
+        # The SAME classifier the pass uses, so a row that says
+        # `merge_in_progress` can never meet a handoff that disagrees.
+        live = local_class(st)
 
         if live in @conflict_states do
           {:reply, {:ok, brief(mount, row, cfg, st, live, state.cli)}, state}
         else
           {:reply, {:error, :no_conflict}, put_row(state, observed(row, st, live))}
         end
-    end
-  end
-
-  # The conflict class re-derived from a LIVE read. `blocked_local` has no
-  # git-visible marker of its own — it is what "behind, with local edits in
-  # the way" looks like — so it is reconstructed from exactly that.
-  defp live_state(st) do
-    cond do
-      st.in_progress != nil or st.conflicted -> "merge_in_progress"
-      st.branch == nil -> "detached"
-      st.upstream == nil -> "no_upstream"
-      st.ahead > 0 and st.behind > 0 -> "diverged"
-      st.behind > 0 and st.dirty -> "blocked_local"
-      true -> "ok"
     end
   end
 
@@ -760,6 +834,27 @@ defmodule Valea.Git.Engine do
 
   defp commit_quiet_ms,
     do: Application.get_env(:valea, :git_commit_quiet_ms, @commit_quiet_default_ms)
+
+  # Is there a `full`-mode repo with uncommitted work that a pass could
+  # actually commit? Local reads only. A HELD repo answers no: its dirty tree
+  # is exactly what a resolution session is working on, and a pass would only
+  # re-report the same hold.
+  defp committable_work?(state) do
+    state.root
+    |> eligible_mounts()
+    |> Enum.any?(fn mount ->
+      Mounts.git_config(state.root, mount.name).sync == :full and
+        Repo.detect(mount.root) == :repo and
+        dirty_and_free?(mount.root, state.cli)
+    end)
+  end
+
+  defp dirty_and_free?(root, cli) do
+    case Repo.read_state(root, cli) do
+      {:ok, %{dirty: true} = st} -> local_class(st) == "ok"
+      _clean_or_unreadable -> false
+    end
+  end
 
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(ref), do: Process.cancel_timer(ref)
