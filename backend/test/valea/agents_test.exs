@@ -305,6 +305,48 @@ defmodule Valea.AgentsTest do
       assert {:ok, %{id: ^id}} = Agents.resume_session(%{id: id, scope: scope, meta: meta})
     end
 
+    test "a resumed session's reply is a NEW item, not a rewrite of the pre-resume one",
+         %{ws: ws, generation: generation, alpha: alpha} do
+      {:ok, %{id: id}} = start_session(ws, "happy", %{mount_key: alpha.mount_key})
+      Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+      :ok = Valea.Agents.SessionServer.prompt(id, "before")
+      assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+      {:ok, %{items: before_items}} = Agents.attach_or_replay(id)
+
+      kill_session(id)
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
+
+      {:ok, meta} = Agents.session_meta(id)
+
+      {:ok, scope} =
+        Valea.Agents.SessionScope.resolve(%{
+          kind: "chat",
+          mount_key: meta["icm_mount"],
+          generation: generation,
+          session_id: id
+        })
+
+      assert {:ok, %{id: ^id}} = Agents.resume_session(%{id: id, scope: scope, meta: meta})
+      on_exit(fn -> kill_session(id) end)
+
+      Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+      wait_until(fn -> match?({:ok, %{status: "running"}}, Agents.attach_or_replay(id)) end)
+      :ok = Valea.Agents.SessionServer.prompt(id, "after")
+      assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+
+      {:ok, %{items: after_items}} = Agents.attach_or_replay(id)
+
+      assistant = fn items ->
+        Enum.filter(items, &(&1["type"] == "message" and &1["role"] == "assistant"))
+      end
+
+      # The revived run restarts its turn counter while the transcript keeps
+      # the history, so a reply that reused an id would land back in the OLD
+      # bubble near the top of the transcript instead of appending below.
+      assert length(assistant.(after_items)) == length(assistant.(before_items)) + 1
+    end
+
     # The registry value is what "is a session already working on this file?"
     # is answered from (`list_running_session_inputs/0`). A resume that
     # dropped it would silently break that correlation for exactly the

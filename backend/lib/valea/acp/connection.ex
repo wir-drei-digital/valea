@@ -59,10 +59,35 @@ defmodule Valea.Acp.Connection do
             # continuation chunks — only a NON-consecutive repeat of an older
             # id is a duplicate.
             active_message_id: nil,
+            # Chronology bookkeeping for the CURRENT turn (all three reset by
+            # start_turn/2). Agent prose and tool calls interleave — "let me
+            # read this" / tool / "it says X" — so a message may not simply
+            # accumulate for the whole turn: the two halves belong on either
+            # side of the tool card, and one item can only sit in one place.
+            #
+            #   * `open_streams` — "message"/"thought" => the item id currently
+            #     accumulating, absent once closed. A stream closes the moment
+            #     another item takes a position (see place_item/2), so the next
+            #     chunk opens a NEW item that sorts after it.
+            #   * `segment` — monotonic within the turn; mints those ids
+            #     (`msg-<turn>-<segment>`).
+            #   * `turn_positions` — conversational ids already placed this
+            #     turn, so an item's own later UPDATES (a tool_call_update, a
+            #     permission resolution) are not mistaken for a new position
+            #     and don't fragment prose streaming alongside them.
+            open_streams: %{},
+            segment: 0,
+            turn_positions: MapSet.new(),
             # True once the agent has advertised session config options (via the
             # session response result or a config_option_update). Selects the
             # set_config_option wire method vs the deprecated set_mode fallback.
             has_config_options?: false
+
+  # Item types that take a POSITION in the conversation (what the transcript
+  # renders in order). Everything else an update can produce — plan, usage,
+  # config, mode, commands, session_info — is a dock singleton the client
+  # renders outside the timeline, so it must never break a prose stream.
+  @conversational_types ~w(message thought tool permission error)
 
   @type t :: %__MODULE__{}
 
@@ -76,7 +101,15 @@ defmodule Valea.Acp.Connection do
 
   @spec new(map()) :: {t(), [binary()]}
   def new(launch) do
-    state = %__MODULE__{launch: launch}
+    # Turn numbering CONTINUES past a resumed transcript's history rather than
+    # restarting at 0. Every per-turn id carries the turn number, and the
+    # SessionServer merges its timeline BY ID across the revival — so a reused
+    # `msg-1-0` would rewrite the pre-resume reply in place, near the top of
+    # the transcript, instead of appending the new one below it. The resume
+    # watermark (`resume.seq`, the last seq of the history) is >= every turn
+    # number the earlier runs reached, since each of their turns wrote at
+    # least one item, so seeding from it keeps every run's ids disjoint.
+    state = %__MODULE__{launch: launch, turn: Map.get(launch, :resume_seq, 0)}
 
     {state, frame} =
       request(
@@ -98,12 +131,15 @@ defmodule Valea.Acp.Connection do
   def handle_bytes(state, bytes) do
     {lines, buf} = split_lines(state.buf <> bytes)
     {state, overflow_items} = cap_buf(%{state | buf: buf})
+    state = place_items(state, overflow_items)
 
     Enum.reduce(lines, {state, overflow_items, [], []}, fn line, {st, items, replies, effects} ->
       case Jason.decode(line) do
         {:ok, msg} ->
           {st, i, r, e} = dispatch(st, msg)
-          {st, items ++ i, replies ++ r, effects ++ e}
+          # Placement runs AFTER the frame that produced these items, so it
+          # only ever affects what the NEXT frame accumulates into.
+          {place_items(st, i), items ++ i, replies ++ r, effects ++ e}
 
         {:error, _} ->
           # Malformed frame: skip, never crash the session. Log it so framing
@@ -133,6 +169,72 @@ defmodule Valea.Acp.Connection do
 
   defp cap_buf(state), do: {state, []}
 
+  # --- conversation chronology ---
+
+  # Record each emitted item's place in the turn. The FIRST time a
+  # conversational id is seen it occupies a new slot in the conversation, which
+  # closes every open prose stream except its own — so prose resuming after it
+  # starts a fresh item that sorts after it, instead of flowing back into a
+  # bubble that was placed earlier. Repeat appearances of an id (a
+  # tool_call_update, a permission resolution) are the SAME slot being revised
+  # and change nothing.
+  defp place_items(state, items), do: Enum.reduce(items, state, &place_item(&2, &1))
+
+  defp place_item(state, %{"id" => id, "type" => type})
+       when type in @conversational_types do
+    if MapSet.member?(state.turn_positions, id) do
+      state
+    else
+      state = close_streams_except(state, id)
+      %{state | turn_positions: MapSet.put(state.turn_positions, id)}
+    end
+  end
+
+  defp place_item(state, _item), do: state
+
+  # Closed accumulators can never take another chunk (ids are minted once and
+  # never reused), so they leave the reducer working set with the stream.
+  defp close_streams_except(state, keep_id) do
+    closed = state.open_streams |> Map.values() |> Enum.reject(&(&1 == keep_id))
+
+    %{
+      state
+      | open_streams: Map.filter(state.open_streams, fn {_kind, id} -> id == keep_id end),
+        reduce: Map.drop(state.reduce, closed)
+    }
+  end
+
+  # The id the given prose stream is accumulating into, opening a new one (next
+  # segment of this turn) when it is closed.
+  defp open_stream(state, kind, prefix) do
+    case Map.fetch(state.open_streams, kind) do
+      {:ok, id} ->
+        {state, id}
+
+      :error ->
+        id = "#{prefix}-#{state.turn}-#{state.segment}"
+
+        {%{
+           state
+           | segment: state.segment + 1,
+             open_streams: Map.put(state.open_streams, kind, id)
+         }, id}
+    end
+  end
+
+  # Begin turn `turn`: nothing streams across a turn boundary, and the leaving
+  # turn's still-open accumulators drop out of the reducer working set.
+  defp start_turn(state, turn) do
+    %{
+      state
+      | turn: turn,
+        segment: 0,
+        open_streams: %{},
+        turn_positions: MapSet.new(),
+        reduce: Map.drop(state.reduce, Map.values(state.open_streams))
+    }
+  end
+
   # --- outbound client->agent operations ---
 
   @spec prompt(t(), String.t() | [map()]) :: {t(), [map()], [binary()]}
@@ -140,17 +242,13 @@ defmodule Valea.Acp.Connection do
     blocks = to_blocks(content)
     turn = state.turn + 1
     # Drop the prior turn's accumulated conversational entries (bounded growth):
-    # msg-/thought-/user- of the turn we're leaving. Tool entries are pruned on
-    # completion in reduce_update/3. A live prompt starts a fresh turn, so reset
-    # the replay turn-boundary flag too.
-    reduce =
-      Map.drop(state.reduce, [
-        "msg-#{state.turn}",
-        "thought-#{state.turn}",
-        "user-#{state.turn}"
-      ])
+    # the user echo of the turn we're leaving, plus — via start_turn/2 — any
+    # prose stream still open. Tool entries are pruned on completion in
+    # reduce_update/3. A live prompt starts a fresh turn, so reset the replay
+    # turn-boundary flag too.
+    reduce = Map.drop(state.reduce, ["user-#{state.turn}"])
 
-    state = %{state | turn: turn, reduce: reduce, turn_seen_response: false}
+    state = start_turn(%{state | reduce: reduce, turn_seen_response: false}, turn)
 
     {state, frame} =
       request(
@@ -630,9 +728,8 @@ defmodule Valea.Acp.Connection do
 
       {:keep, state} ->
         state = mark_agent_output(state)
-
-        {state, item} =
-          accumulate(state, "msg-#{state.turn}", "message", %{"role" => "assistant"}, text(u))
+        {state, id} = open_stream(state, "message", "msg")
+        {state, item} = accumulate(state, id, "message", %{"role" => "assistant"}, text(u))
 
         {state, put_message_id(item, u)}
     end
@@ -640,7 +737,8 @@ defmodule Valea.Acp.Connection do
 
   defp reduce_update(state, u, "agent_thought_chunk") do
     state = mark_agent_output(state)
-    accumulate(state, "thought-#{state.turn}", "thought", %{}, text(u))
+    {state, id} = open_stream(state, "thought", "thought")
+    accumulate(state, id, "thought", %{}, text(u))
   end
 
   defp reduce_update(state, u, "user_message_chunk") do
@@ -655,7 +753,7 @@ defmodule Valea.Acp.Connection do
         # per turn. Consecutive user chunks stay in one turn.
         state =
           if state.turn_seen_response do
-            %{state | turn: state.turn + 1, turn_seen_response: false}
+            start_turn(%{state | turn_seen_response: false}, state.turn + 1)
           else
             state
           end

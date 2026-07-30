@@ -87,6 +87,32 @@ defmodule Valea.Agents.SessionServerTest do
     assert length(rest) >= 3
   end
 
+  test "interleaved prose and tool calls keep conversation order", %{root: root} do
+    {:ok, %{id: id}} = start_session(root, "interleaved")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    :ok = Valea.Agents.SessionServer.prompt(id, "hi")
+    assert_receive {:session_event, _, %{"type" => "turn"}}, 10_000
+
+    {:ok, %{items: items}} = Valea.Agents.SessionServer.attach(id)
+
+    conversation =
+      Enum.flat_map(items, fn
+        %{"type" => "message", "role" => "assistant", "text" => text} -> [{:said, text}]
+        %{"type" => "tool", "title" => title} -> [{:tool, title}]
+        _ -> []
+      end)
+
+    # The narration BEFORE the tool stays above its card, and the narration
+    # after it is its own bubble below — including the part streamed while
+    # the tool was still running, which belongs with what followed it.
+    assert conversation == [
+             {:said, "Let me read it."},
+             {:tool, "Read CONTEXT.md"},
+             {:said, "Reading it now."}
+           ]
+  end
+
   test "transcript line 1 (session/v1) snapshots workspace + ICM identity", %{
     root: root,
     ws: ws,

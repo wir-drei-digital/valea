@@ -109,6 +109,44 @@ describe('AgentSessionStore', () => {
     expect(store.items.map((i) => i.text)).toEqual(['hi', 'yo']);
   });
 
+  it('an in-place update keeps an item at its FIRST-seen position', () => {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
+
+    // A tool announced BEFORE the agent speaks, completing AFTER it — the
+    // shape every long-running tool produces. The completion update must not
+    // relocate the card below the message that came out while it ran.
+    fake.emit('event', { seq: 1, item: { id: 'tool-a', type: 'tool', status: 'in_progress' } });
+    fake.emit('event', { seq: 2, item: { id: 'msg-1', type: 'message', text: 'working on it' } });
+    fake.emit('event', { seq: 3, item: { id: 'tool-a', type: 'tool', status: 'completed' } });
+
+    expect(store.items.map((i) => i.id)).toEqual(['tool-a', 'msg-1']);
+  });
+
+  it('live items append after snapshot items, which keep their replay order', () => {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s1', {}, () => fake.channel);
+
+    // Snapshot items carry no per-item seq (see the store's class doc); their
+    // order IS the backend timeline order and must survive verbatim.
+    fake.resolveJoinOk({
+      items: [
+        { id: 'a', type: 'message', text: 'first' },
+        { id: 'b', type: 'tool' }
+      ],
+      cursor: 7,
+      busy: false,
+      status: 'running'
+    });
+
+    fake.emit('event', { seq: 8, item: { id: 'c', type: 'message', text: 'live' } });
+    // …and an update to a SNAPSHOT item leaves it where the replay put it.
+    fake.emit('event', { seq: 9, item: { id: 'b', type: 'tool', status: 'completed' } });
+
+    expect(store.items.map((i) => i.id)).toEqual(['a', 'b', 'c']);
+  });
+
   it('pushes a provided initial prompt as the first user turn once the join succeeds', () => {
     const fake = fakeChannel();
     new AgentSessionStore('s1', { initialPrompt: 'Read `notes.md` and follow it.' }, () => fake.channel);

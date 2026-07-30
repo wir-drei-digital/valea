@@ -67,6 +67,17 @@ export class AgentSessionStore {
 
   #channel: Channel;
   #byId = new Map<string, AcpItem>();
+  /**
+   * id -> the seq the item FIRST arrived at, which is its position in the
+   * conversation. Items are upserted in place (a tool call announced, then
+   * completed; a message accumulating chunks), and every such update carries
+   * a fresh, higher seq — so ordering on the LATEST seq would drag an item
+   * down the timeline every time it changed, dropping a long-running tool's
+   * card below whatever the agent said while it ran. Snapshot items carry no
+   * seq at all (see class doc) and record 0, which keeps them ahead of every
+   * live push in their replayed (backend timeline) order.
+   */
+  #firstSeq = new Map<string, number>();
   #cursor = 0;
   #initialPrompt: string | null;
   #queueCounter = 0;
@@ -123,6 +134,7 @@ export class AgentSessionStore {
   #upsert(item: AcpItem): void {
     if (typeof item.seq === 'number' && item.seq <= this.#cursor && this.#byId.has(item.id)) return;
 
+    if (!this.#firstSeq.has(item.id)) this.#firstSeq.set(item.id, item.seq ?? 0);
     this.#byId.set(item.id, item);
     if (typeof item.seq === 'number') this.#cursor = Math.max(this.#cursor, item.seq);
 
@@ -156,8 +168,17 @@ export class AgentSessionStore {
     for (const message of pending) this.prompt(message.text);
   }
 
+  /**
+   * Conversation order is FIRST-arrival order (`#firstSeq`), which is exactly
+   * the order the backend's own timeline holds items in (`SessionServer`'s
+   * `upsert/2` keeps an updated item in its original slot). The sort is
+   * stable, so the seq-less snapshot items — all 0 — keep their replayed
+   * order among themselves.
+   */
   #rebuild(): void {
-    this.items = [...this.#byId.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    this.items = [...this.#byId.values()].sort(
+      (a, b) => (this.#firstSeq.get(a.id) ?? 0) - (this.#firstSeq.get(b.id) ?? 0)
+    );
   }
 
   /**

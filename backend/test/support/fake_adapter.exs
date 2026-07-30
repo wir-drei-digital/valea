@@ -1,5 +1,5 @@
 # Scripted ACP adapter for SessionServer integration tests.
-# Scenarios: happy | titled | permission | permission_risk_tier |
+# Scenarios: happy | titled | interleaved | permission | permission_risk_tier |
 # permission_read_policy | crash_mid_turn | stderr_noise | hang | slow
 #
 # "slow" doubles as the manual browser-testing scenario: a multi-second
@@ -213,6 +213,43 @@ defmodule FakeAdapter do
           "sessionUpdate" => "agent_message_chunk",
           "content" => %{"type" => "text", "text" => "ok"}
         })
+
+        reply(id, %{"stopReason" => "end_turn"})
+
+      "interleaved" ->
+        # The shape every real turn has: the agent narrates, calls a tool,
+        # narrates again. The two prose halves belong on either side of the
+        # tool card, so they must NOT reduce to one item — and `tool-1`'s
+        # completion, landing after the second half started, must not push
+        # its card below that prose. `slow` without the sleeps.
+        say = fn text ->
+          update(ctx, %{
+            "sessionUpdate" => "agent_message_chunk",
+            "content" => %{"type" => "text", "text" => text}
+          })
+        end
+
+        say.("Let me read it.")
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call",
+          "toolCallId" => "tool-1",
+          "title" => "Read CONTEXT.md",
+          "kind" => "read",
+          "status" => "in_progress"
+        })
+
+        say.("Reading")
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call_update",
+          "toolCallId" => "tool-1",
+          "status" => "completed"
+        })
+
+        # Continues the SAME bubble: the completion above revised a card that
+        # was already placed, it did not open a new slot in the conversation.
+        say.(" it now.")
 
         reply(id, %{"stopReason" => "end_turn"})
 

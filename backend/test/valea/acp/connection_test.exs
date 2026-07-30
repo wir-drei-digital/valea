@@ -311,8 +311,113 @@ defmodule Valea.Acp.ConnectionTest do
       )
 
     assert i1["type"] == "message" and i1["text"] == "Hel"
-    assert i1["id"] == "msg-0"
+    assert i1["id"] == "msg-0-0"
     assert i2["id"] == i1["id"] and i2["text"] == "Hello"
+  end
+
+  test "a tool call between two agent chunks splits them into SEPARATE message items" do
+    state = connected_state()
+
+    say = fn text ->
+      update("agent_message_chunk", %{"content" => %{"type" => "text", "text" => text}})
+    end
+
+    {state, [pre], _, _} = Connection.handle_bytes(state, say.("Let me read the file."))
+
+    {state, [_tool], _, _} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{"toolCallId" => "tc1", "title" => "Read x.md", "kind" => "read"})
+      )
+
+    {_state, [post], _, _} = Connection.handle_bytes(state, say.("The file says X."))
+
+    # Two bubbles, in the order they were spoken — the pre-tool one keeps its
+    # own text and the post-tool one is a NEW item that sorts after the tool
+    # card. Accumulating both into one item is what put the whole reply on the
+    # wrong side of the tool call.
+    assert pre["id"] == "msg-0-0" and pre["text"] == "Let me read the file."
+    assert post["id"] == "msg-0-1" and post["text"] == "The file says X."
+  end
+
+  test "a tool_call_update does NOT split a message — it takes no new timeline position" do
+    state = connected_state()
+
+    say = fn text ->
+      update("agent_message_chunk", %{"content" => %{"type" => "text", "text" => text}})
+    end
+
+    {state, [_tool], _, _} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{"toolCallId" => "tc1", "title" => "Read x.md", "kind" => "read"})
+      )
+
+    {state, [first], _, _} = Connection.handle_bytes(state, say.("Reading"))
+
+    # A long-running tool reports progress WHILE the agent streams prose. The
+    # card is already placed, so this must not fragment the bubble mid-sentence.
+    {state, [_], _, _} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call_update", %{"toolCallId" => "tc1", "status" => "completed"})
+      )
+
+    {_state, [second], _, _} = Connection.handle_bytes(state, say.(" it now."))
+
+    assert second["id"] == first["id"]
+    assert second["text"] == "Reading it now."
+  end
+
+  test "segment ids are scoped to the turn — a later turn never reuses an earlier turn's item id" do
+    state = connected_state()
+
+    say = fn text ->
+      update("agent_message_chunk", %{"content" => %{"type" => "text", "text" => text}})
+    end
+
+    {state, _, _} = Connection.prompt(state, "one")
+    {state, [t1_pre], _, _} = Connection.handle_bytes(state, say.("First turn."))
+
+    {state, [_tool], _, _} =
+      Connection.handle_bytes(
+        state,
+        update("tool_call", %{"toolCallId" => "tc1", "title" => "Read", "kind" => "read"})
+      )
+
+    {state, [t1_post], _, _} = Connection.handle_bytes(state, say.("Still first."))
+
+    {state, _, _} = Connection.prompt(state, "two")
+    {_state, [t2], _, _} = Connection.handle_bytes(state, say.("Second turn."))
+
+    ids = [t1_pre["id"], t1_post["id"], t2["id"]]
+    assert ids == Enum.uniq(ids)
+    assert t2["id"] == "msg-2-0"
+    # Nothing streams across the boundary: the new turn's first chunk opens a
+    # fresh item rather than appending to the one the last turn left open.
+    assert t2["text"] == "Second turn."
+  end
+
+  test "a thought between two agent chunks splits them (and the thought keeps its own id)" do
+    state = connected_state()
+
+    say = fn kind, text ->
+      update(kind, %{"content" => %{"type" => "text", "text" => text}})
+    end
+
+    {state, [pre], _, _} = Connection.handle_bytes(state, say.("agent_message_chunk", "First."))
+
+    {state, [th1], _, _} = Connection.handle_bytes(state, say.("agent_thought_chunk", "Hmm"))
+    # A thought's OWN continuation chunks stay in the thought — only another
+    # item type taking a position closes it.
+    {state, [th2], _, _} = Connection.handle_bytes(state, say.("agent_thought_chunk", "mm…"))
+
+    {_state, [post], _, _} =
+      Connection.handle_bytes(state, say.("agent_message_chunk", "Second."))
+
+    assert th2["id"] == th1["id"] and th2["text"] == "Hmmmm…"
+    assert pre["text"] == "First."
+    assert post["id"] != pre["id"] and post["text"] == "Second."
   end
 
   # === 7. Tool merge + output cap ===

@@ -179,6 +179,10 @@ defmodule Valea.Agents.SessionServer do
             mode: if(resume && resume.conversation_id, do: :resume, else: :new),
             conversation_id: resume && resume.conversation_id,
             known_message_ids: (resume && resume.known_message_ids) || MapSet.new(),
+            # Where this run's turn numbering (and so its item ids) starts, so
+            # it cannot collide with the history the timeline below carries —
+            # see `Connection.new/1`.
+            resume_seq: (resume && resume.seq) || 0,
             client_version: version(),
             additional_roots: scope.additional_roots,
             managed_settings: scope.managed_settings,
