@@ -222,6 +222,23 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     }
   end
 
+  # The one push in this channel that carries a SECRET — and the one whose key
+  # spelling nothing else would catch. The frontend's `persistMailOauthToken`
+  # type-guards `payload.refreshToken` and returns `false` on anything else, so
+  # a drift here fails SILENTLY: the sign-in still succeeds, the token simply
+  # never reaches the OS keychain and the next restart resupplies nothing.
+  # Pinned by whole-payload equality, like the two pushes below.
+  test "a fresh (or provider-rotated) refresh token pushes mail_oauth with account + refreshToken" do
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "mail",
+      {:mail_oauth_token, "mara", "1//rotated-refresh-token"}
+    )
+
+    assert_push "mail_oauth", payload
+    assert payload == %{"account" => "mara", "refreshToken" => "1//rotated-refresh-token"}
+  end
+
   test "a changed draft file pushes mail_draft with only its account" do
     Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_draft_changed, "mara"})
 

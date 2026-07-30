@@ -899,6 +899,7 @@ defmodule Valea.Mail.Engine do
       |> Map.put(:credential, fn -> secret end)
       |> bump_credential_epoch()
       |> clear_auth_failure()
+      |> rearm_stopped_poll()
       |> sync_idle_watcher()
 
     broadcast_status(new_state)
@@ -922,6 +923,7 @@ defmodule Valea.Mail.Engine do
       |> Map.merge(%{oauth_refresh: fn -> secret end, oauth_token: nil})
       |> bump_credential_epoch()
       |> clear_auth_failure()
+      |> rearm_stopped_poll()
       |> sync_idle_watcher()
 
     broadcast_status(new_state)
@@ -2530,6 +2532,30 @@ defmodule Valea.Mail.Engine do
   end
 
   defp clear_auth_failure(state), do: state
+
+  # The poll backstop's SECOND re-arm, for the account that is already "idle"
+  # by the time the fresh credential lands and so has nothing for
+  # `clear_auth_failure/1` above to clear.
+  #
+  # `park_reauth_required/1` cancels the timer WITHOUT touching `sync_task` (a
+  # pass may still be in flight), and that pass can then finish `:ok` — it
+  # authenticated before the refresh token was revoked, so its connection is
+  # still good — which puts the status back to "idle" and leaves the account
+  # timerless: un-parked, running, and never polling again until a restart.
+  # This closes that hole from the one side that always follows it, the new
+  # sign-in.
+  #
+  # Deliberately narrow: only an ACTIVE, un-paused, timerless account arms
+  # here. `active` keeps an inert or not-yet-activated Engine (which
+  # `activate/1` arms on its own) from starting a clock it has no use for, and
+  # `@paused_statuses` keeps a sticky park sticky. `schedule_poll/1` cancels
+  # before arming in any case, so the ordinary path — a timer already ticking,
+  # or the one `clear_auth_failure/1` just armed — cannot double-arm.
+  defp rearm_stopped_poll(%{active: true, poll_timer: nil, status: status} = state)
+       when status not in @paused_statuses,
+       do: schedule_poll(state)
+
+  defp rearm_stopped_poll(state), do: state
 
   # -- poll timer -----------------------------------------------------------
 

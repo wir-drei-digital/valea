@@ -2552,6 +2552,61 @@ defmodule Valea.Mail.EngineTest do
     assert %{poll_timer: nil, sync_task: nil} = :sys.get_state(engine)
   end
 
+  test "a sign-in re-arms polling after a park was un-parked by a pass that finished OK", %{
+    root: root
+  } do
+    # The dead-backstop sequence (M6 task 16 review). `park_reauth_required/1`
+    # cancels the poll timer without touching `sync_task` — a pass may be in
+    # flight — and that pass can then SUCCEED, because it authenticated before
+    # the refresh token was revoked and its connection is still good.
+    # `finish_pass/2`'s ok-clause puts the status back to "idle" and re-arms
+    # nothing, so the account ends up un-parked AND timerless, with
+    # `set_credential/3`'s `clear_auth_failure/1` finding nothing to clear.
+    # Before `rearm_stopped_poll/1` that account never polled again until the
+    # app restarted.
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    # Deliberately short-lived: the PASS mints its token from this stub, and
+    # every later mint has to go back to the endpoint (the cache sits inside
+    # `@token_skew_ms` of expiry) — which is what lets the revocation below
+    # land while the pass is still connected on the token it already has.
+    stub_token_endpoint!(token_reply(%{"expires_in" => 30}))
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 324, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, task_pid}, 2_000
+
+    # The provider revokes the refresh token mid-pass: the next mint comes back
+    # `invalid_grant`, which parks the account right here.
+    stub_token_endpoint!({:ok, 400, Jason.encode!(%{"error" => "invalid_grant"})})
+    assert Engine.mint_access_token(engine) == ""
+    assert Engine.status(slug).state == "reauth_required"
+    assert :sys.get_state(engine).poll_timer == nil
+
+    # The in-flight pass finishes fine on its already-authenticated connection,
+    # which un-parks the account — and leaves it with no timer at all.
+    send(task_pid, {:release, {:ok, :conn}})
+    # `errors: []` is the point: this is `finish_pass/2`'s OK clause, not one
+    # of the failure clauses that pause or re-arm on their own.
+    assert_receive {:mail_sync_finished, ^slug, %{errors: []}}, 2_000
+    assert Engine.status(slug).state == "idle"
+    assert :sys.get_state(engine).poll_timer == nil
+
+    # The user signs in again. THIS is where the backstop has to come back:
+    # the account is "idle", so nothing else in `set_credential/3` would.
+    stub_token_endpoint!(token_reply(%{}))
+    assert :ok = Engine.set_credential(slug, "refresh-2", :oauth)
+    assert Engine.status(slug).state == "idle"
+    assert :sys.get_state(engine).poll_timer != nil
+  end
+
   test "an authoritative auth failure is STILL sticky (the guard is not a blanket pardon)", %{
     root: root
   } do
