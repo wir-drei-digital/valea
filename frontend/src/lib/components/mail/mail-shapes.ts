@@ -1531,13 +1531,45 @@ export function mailMaintenanceErrorMessage(code: string): string {
  */
 const MAIL_KEYCHAIN_SLOTS = ['imap', 'smtp', 'oauth'] as const;
 
+/**
+ * The workspace UUID mail keychain entries are keyed under, resolved
+ * ROW-FIRST with the workspace store as the floor.
+ *
+ * The rows are preferred because they are the write-key of record: it is the
+ * Engine's own `workspace_id` (read from `config/workspace.yaml` at
+ * activation) that `resupplyCredentials` reads back with, so a delete keyed
+ * off the same value can never miss.
+ *
+ * But a row does not always have one. `mail_status` returns TWO shapes
+ * (`Valea.Api.Mail`): engine-backed rows carry `workspace_id`, while an
+ * INVALID-CONFIG row — no Engine to report it — carries only
+ * account/valid/state/reason/root, which `normalizeMailAccountStatus` maps to
+ * `workspaceId: null`. A workspace whose ONLY mail account stopped parsing
+ * (hand-edited `mail.yaml`, a block that broke across an upgrade) therefore
+ * has no row carrying the id at all — and that is exactly the account people
+ * remove, with credentials that WERE written back when it still parsed.
+ * Transiently the same holds before a sole Engine has activated.
+ *
+ * `workspaceStore.id` is not a second namespace: it is the same
+ * `config/workspace.yaml` id, from the place that does not disappear when the
+ * account rows do (the calendar store keys its keychain entries off it
+ * directly).
+ */
+export function mailKeychainWorkspaceId(
+  accounts: Pick<MailAccountStatus, 'workspaceId'>[],
+  storeWorkspaceId: string | null
+): string | null {
+  return accounts.find((a) => a.workspaceId)?.workspaceId ?? storeWorkspaceId ?? null;
+}
+
 export type MailRemovalDeps = {
   api: Pick<Api, 'removeMailAccount'>;
   inDesktop: () => boolean;
   /**
-   * The workspace UUID the entries are keyed under — the same value
-   * `resupplyCredentials` reads off the account rows. Called BEFORE the RPC;
-   * see the ordering note below for why that is not an optimization.
+   * The workspace UUID the entries are keyed under — see
+   * `mailKeychainWorkspaceId`, which is how the caller resolves it. Called
+   * BEFORE the RPC; see the ordering note below for why that is not an
+   * optimization.
    */
   workspaceId: () => string | null;
   keychainDelete: (workspaceId: string, username: string) => Promise<void>;
@@ -1557,9 +1589,12 @@ export type MailRemovalDeps = {
  * resupply guard) but still real.
  *
  * TWO ordering rules, both load-bearing:
- *  - The workspace id is read BEFORE the RPC. It comes from the account
- *    rows, and removing the LAST account empties that list — read
- *    afterwards it would be `null` exactly when there is cleanup to do.
+ *  - The workspace id is read BEFORE the RPC. Its best source is the account
+ *    rows (`mailKeychainWorkspaceId`), and removing the LAST account empties
+ *    that list — read afterwards, the row carrying the exact write-key is
+ *    already gone and the resolution silently drops to the store floor (or to
+ *    `null`, if the workspace closed under us) exactly when there is cleanup
+ *    to do.
  *  - The deletes run only AFTER the backend confirms the removal. A refused
  *    removal (stale generation, account still running) leaves the account
  *    configured, and stripping the credentials from an account that still

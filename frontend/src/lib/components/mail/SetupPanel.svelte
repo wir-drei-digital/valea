@@ -70,6 +70,7 @@
     needsMailSignIn,
     smtpFormError,
     startMailSignIn,
+    mailKeychainWorkspaceId,
     removeMailAccountAndForget,
     type MailSetupSmtpInput,
     accountRecovery
@@ -563,15 +564,16 @@
    * Removal also forgets the account's keychain entries — see
    * `removeMailAccountAndForget`, which owns the ordering (workspace id read
    * before the RPC, deletes only after it succeeds) and keeps the keychain
-   * best-effort. The `workspaceId` closure reads it the same way
-   * `submitMailSetup`'s does, off whichever account row carries it.
+   * best-effort. The id itself is resolved row-first with the workspace store
+   * as the floor (`mailKeychainWorkspaceId`) — an invalid-config row carries
+   * no `workspaceId`, and that is the row people remove.
    */
   async function remove(slug: string): Promise<void> {
     await runAction(() =>
       removeMailAccountAndForget(slug, generation, {
         api,
         inDesktop,
-        workspaceId: () => mailStore.accounts.find((a) => a.workspaceId)?.workspaceId ?? null,
+        workspaceId: () => mailKeychainWorkspaceId(mailStore.accounts, workspaceStore.id),
         keychainDelete
       })
     );

@@ -16,6 +16,7 @@ import {
   startMailSignIn,
   accountRecovery,
   isCorruptAccountMeta,
+  mailKeychainWorkspaceId,
   removeMailAccountAndForget,
   CORRUPT_ACCOUNT_META_ERROR,
   type MailRemovalDeps,
@@ -1020,5 +1021,47 @@ describe('removeMailAccountAndForget', () => {
 
     expect(result).toEqual({ ok: true, data: { removed: true } });
     expect(deps.keychainDelete).not.toHaveBeenCalled();
+  });
+
+  // The INVALID-CONFIG case end to end, wired the way `SetupPanel` wires it:
+  // no row carries a workspace id, so without the store floor every delete
+  // would be skipped silently — on the one account people actually remove.
+  it('still deletes the slots when no account row carries a workspace id', async () => {
+    const rows = [{ workspaceId: null }, { workspaceId: null }];
+    const deps = makeRemovalDeps({
+      workspaceId: () => mailKeychainWorkspaceId(rows, 'ws-store')
+    });
+
+    await removeMailAccountAndForget('broken', 3, deps);
+
+    expect(deps.keychainDelete).toHaveBeenCalledWith('ws-store', 'broken:imap');
+    expect(deps.keychainDelete).toHaveBeenCalledWith('ws-store', 'broken:smtp');
+    expect(deps.keychainDelete).toHaveBeenCalledWith('ws-store', 'broken:oauth');
+    expect(deps.keychainDelete).toHaveBeenCalledTimes(3);
+  });
+});
+
+// `mail_status` returns two row shapes — engine-backed rows carry a
+// `workspace_id`, invalid-config rows do not (`Valea.Api.Mail`) — so the
+// keychain key cannot come from the rows alone.
+describe('mailKeychainWorkspaceId', () => {
+  it('prefers the row value — the Engine wrote the entries under exactly that id', () => {
+    expect(mailKeychainWorkspaceId([{ workspaceId: 'ws-row' }], 'ws-store')).toBe('ws-row');
+  });
+
+  it('skips rows that carry none and takes the first that does', () => {
+    expect(
+      mailKeychainWorkspaceId([{ workspaceId: null }, { workspaceId: 'ws-row' }], 'ws-store')
+    ).toBe('ws-row');
+  });
+
+  it('falls back to the workspace store when NO row carries one (invalid_config, or pre-activation)', () => {
+    expect(mailKeychainWorkspaceId([{ workspaceId: null }], 'ws-store')).toBe('ws-store');
+    expect(mailKeychainWorkspaceId([], 'ws-store')).toBe('ws-store');
+  });
+
+  it('is null only when neither source has one (no workspace open)', () => {
+    expect(mailKeychainWorkspaceId([{ workspaceId: null }], null)).toBeNull();
+    expect(mailKeychainWorkspaceId([], null)).toBeNull();
   });
 });
