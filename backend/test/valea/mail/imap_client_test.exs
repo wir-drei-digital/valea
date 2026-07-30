@@ -294,6 +294,53 @@ defmodule Valea.Mail.ImapClientTest do
     assert :ok = FakeImapServer.await(server)
   end
 
+  # The definite-nonexistence vocabulary (see `Valea.Mail.Transport.select/2`).
+  # `{:error, {:no_such_mailbox, folder}}` is the ONE named select/examine
+  # failure, and callers read it as proof the mailbox holds nothing — so the
+  # bar is a machine-readable response code naming nonexistence, never prose.
+  test "select/examine report {:no_such_mailbox, folder} on NO [NONEXISTENT] and NO [TRYCREATE]" do
+    script =
+      handshake_steps() ++
+        [
+          {:expect, ~r/^A3 EXAMINE "Sent"$/,
+           then: ["A3 NO [NONEXISTENT] Mailbox doesn't exist: Sent (0.001 + 0.000 secs)."]},
+          {:expect, ~r/^A4 SELECT "Sent"$/, then: ["A4 NO [TRYCREATE] No such mailbox"]},
+          # The code is an IMAP atom — case-insensitive on the wire.
+          {:expect, ~r/^A5 EXAMINE "Sent"$/, then: ["A5 NO [Nonexistent] gone"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:error, {:no_such_mailbox, "Sent"}} = ImapClient.examine(conn, "Sent")
+    assert {:error, {:no_such_mailbox, "Sent"}} = ImapClient.select(conn, "Sent")
+    assert {:error, {:no_such_mailbox, "Sent"}} = ImapClient.examine(conn, "Sent")
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "every other select/examine refusal stays opaque — prose, other codes, and BAD" do
+    script =
+      handshake_steps() ++
+        [
+          # Same prose, no response code: could be an ACL or an offline store.
+          {:expect, ~r/^A3 EXAMINE "Sent"$/, then: ["A3 NO Mailbox doesn't exist: Sent"]},
+          {:expect, ~r/^A4 EXAMINE "Sent"$/, then: ["A4 NO [SERVERBUG] internal error"]},
+          {:expect, ~r/^A5 EXAMINE "Sent"$/, then: ["A5 BAD [NONEXISTENT] syntax error"]}
+        ]
+
+    server = FakeImapServer.start(script, tls: true)
+    conn = connect!(server)
+
+    assert {:error, {:no, "Mailbox doesn't exist: Sent"}} = ImapClient.examine(conn, "Sent")
+    assert {:error, {:no, "[SERVERBUG] internal error"}} = ImapClient.examine(conn, "Sent")
+    # Not even the right code rescues a BAD: that is a protocol complaint,
+    # not a statement about the mailbox.
+    assert {:error, {:bad, "[NONEXISTENT] syntax error"}} = ImapClient.examine(conn, "Sent")
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
   test "uid_search parses a SEARCH result line" do
     script =
       handshake_steps() ++

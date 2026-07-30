@@ -172,7 +172,7 @@ defmodule Valea.Mail.ImapClient do
   def select(conn, folder) do
     case send_command(conn, ["SELECT", folder]) do
       {:ok, :ok, _text, untagged} -> {:ok, parse_select(untagged)}
-      other -> command_error(other)
+      other -> open_mailbox_error(other, folder)
     end
   end
 
@@ -180,7 +180,7 @@ defmodule Valea.Mail.ImapClient do
   def examine(conn, folder) do
     case send_command(conn, ["EXAMINE", folder]) do
       {:ok, :ok, _text, untagged} -> {:ok, parse_select(untagged)}
-      other -> command_error(other)
+      other -> open_mailbox_error(other, folder)
     end
   end
 
@@ -927,6 +927,37 @@ defmodule Valea.Mail.ImapClient do
 
   defp command_error({:ok, status, text, _untagged}), do: {:error, {status, text}}
   defp command_error({:error, reason}), do: {:error, reason}
+
+  # The DEFINITE-nonexistence vocabulary for SELECT/EXAMINE (see
+  # `Valea.Mail.Transport`'s `select/2` docs for the contract this
+  # implements, and why it is drawn this tight).
+  #
+  # A tagged `NO` whose text leads with one of these machine-readable
+  # response codes is the server ANSWERING "that mailbox is not there":
+  #
+  #   * `NONEXISTENT` (RFC 5530) — what Dovecot 2.3 sends for
+  #     "Mailbox doesn't exist";
+  #   * `TRYCREATE` (RFC 3501 §6.3.11) — the older "create it first" hint,
+  #     which likewise asserts the mailbox's absence.
+  #
+  # Nothing else qualifies. A bare `NO` with no code carries only prose (and
+  # a prose sniff would misread an over-quota or ACL refusal as absence); a
+  # `BAD`, a timeout and a dropped socket say nothing about the mailbox at
+  # all. All of those keep their opaque `command_error/1` shape and stay
+  # ambiguous to every caller.
+  @nonexistent_codes ~w(NONEXISTENT TRYCREATE)
+
+  defp open_mailbox_error(response, folder) do
+    case command_error(response) do
+      {:error, {:no, text}} = error ->
+        if Wire.response_code(text) in @nonexistent_codes,
+          do: {:error, {:no_such_mailbox, folder}},
+          else: error
+
+      error ->
+        error
+    end
+  end
 
   # Reads responses off `socket` until the one tagged `tag` arrives,
   # returning its status/text plus every response read before it. `buffer`

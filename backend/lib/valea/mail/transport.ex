@@ -113,7 +113,33 @@ defmodule Valea.Mail.Transport do
   @callback capabilities(conn) :: {:ok, [String.t()]}
   @callback list_folders(conn) :: {:ok, [String.t()]} | {:error, term()}
   @callback create_folder(conn, String.t()) :: :ok | {:error, term()}
-  @callback select(conn, String.t()) :: {:ok, select_info()} | {:error, term()}
+
+  @doc """
+  Opens `folder` for reading and writing.
+
+  ## The one named failure: `{:error, {:no_such_mailbox, folder}}`
+
+  Every other failure reason is opaque, but this one is part of the
+  contract, because callers discriminate on it: it is the server DEFINITELY
+  ANSWERING "there is no such mailbox", as opposed to the mailbox's contents
+  being merely unknown right now. The distinction is load-bearing for
+  `Valea.Mail.OpsExecutor`'s search-first idempotency guards — an
+  unanswerable question can never be read as "not present" (it would
+  duplicate an append), while a mailbox the server says does not exist
+  provably holds nothing.
+
+  So the bar is deliberately HIGH, and an implementation must report this
+  reason only on a definite answer. `Valea.Mail.ImapClient` draws it at a
+  tagged `NO` carrying a machine-readable response code that names
+  nonexistence — `[NONEXISTENT]` (RFC 5530) or `[TRYCREATE]` (RFC 3501
+  §6.3.11) — and NOTHING else: a bare `NO` with no response code, a `BAD`, a
+  timeout, a dropped connection and every transport failure stay opaque.
+  When in doubt, an implementation reports an opaque reason; the cost of
+  that is one deferred retry, whereas a wrong `:no_such_mailbox` risks a
+  duplicated message.
+  """
+  @callback select(conn, String.t()) ::
+              {:ok, select_info()} | {:error, {:no_such_mailbox, String.t()}} | {:error, term()}
   @callback uid_search(conn, String.t()) :: {:ok, [pos_integer()]} | {:error, term()}
   @callback uid_fetch_meta(conn, [pos_integer()]) ::
               {:ok, [%{uid: pos_integer(), size: non_neg_integer()}]} | {:error, term()}
@@ -211,8 +237,12 @@ defmodule Valea.Mail.Transport do
   Read-only `EXAMINE` (never `SELECT`) — required by the ops executor
   (Task 13) for write-through destination watermarks and Gmail membership
   proofs; never alters `\\Recent` or any other server state.
+
+  Reports `{:error, {:no_such_mailbox, folder}}` under exactly the same
+  definite-answer rule as `select/2` — see its docs.
   """
-  @callback examine(conn, String.t()) :: {:ok, select_info()} | {:error, term()}
+  @callback examine(conn, String.t()) ::
+              {:ok, select_info()} | {:error, {:no_such_mailbox, String.t()}} | {:error, term()}
 
   @doc "Whether the connected server advertises `capability`."
   @callback supports?(conn, capability()) :: boolean()

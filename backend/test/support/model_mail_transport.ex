@@ -324,6 +324,13 @@ defmodule ModelMailTransport do
           info = %{uidvalidity: f.uidvalidity, uidnext: f.uidnext, highestmodseq: f.modseq}
           {{:ok, info}, %{state | selected: folder}}
 
+        # `Valea.Mail.Transport.select/2`'s one NAMED failure: the DEFINITE
+        # "there is no such mailbox" that callers may read as proof the folder
+        # holds nothing. This model can always answer it definitely (it owns
+        # the folder table); `ImapClient` only does so for a tagged `NO`
+        # carrying `[NONEXISTENT]`/`[TRYCREATE]`. An injected fault, by
+        # contrast, is opaque `{:error, _}` — exactly as an unanswerable
+        # question must be.
         :error ->
           {{:error, {:no_such_mailbox, folder}}, %{state | selected: nil}}
       end

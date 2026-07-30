@@ -133,6 +133,42 @@ defmodule Valea.Mail.Imap.Wire do
     Enum.reverse([[lead, "\r\n"] | acc])
   end
 
+  @doc """
+  The machine-readable RESPONSE CODE leading a tagged response's `text`, or
+  `nil` when there isn't one.
+
+  RFC 3501 §7.1: a status response's text MAY begin with a bracketed code
+  (`[NONEXISTENT]`, `[TRYCREATE]`, `[ALREADYEXISTS]`, `[BADCHARSET (UTF-8)]`)
+  whose first atom is the code's NAME — the part a program is allowed to act
+  on, as opposed to the human-readable prose that follows. Only that name is
+  returned, upcased (IMAP atoms are case-insensitive); any arguments inside
+  the brackets are dropped.
+
+  Deliberately total and conservative: text that does not START with `[`, or
+  whose bracket never closes, is `nil` — never a guess. A caller that
+  discriminates on a code must treat `nil` as "the server said nothing
+  machine-readable", not as any particular code.
+
+  `"[NONEXISTENT] Mailbox doesn't exist: Sent"` is `"NONEXISTENT"`;
+  `"Mailbox doesn't exist"` (Dovecot's prose without a code) is `nil`.
+  """
+  @spec response_code(binary()) :: binary() | nil
+  def response_code(<<"[", rest::binary>>) do
+    case :binary.match(rest, "]") do
+      {idx, _len} ->
+        rest
+        |> binary_part(0, idx)
+        |> String.split(" ", parts: 2)
+        |> hd()
+        |> String.upcase()
+
+      :nomatch ->
+        nil
+    end
+  end
+
+  def response_code(text) when is_binary(text), do: nil
+
   defp space_join(tokens), do: Enum.intersperse(tokens, " ")
 
   defp run_prefix([]), do: []
