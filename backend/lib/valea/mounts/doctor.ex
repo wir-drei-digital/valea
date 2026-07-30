@@ -92,7 +92,12 @@ defmodule Valea.Mounts.Doctor do
   — reports `"failed"` (a stale/transient miss; reopen the workspace).
 
   `git_sync` (ICM git sync design spec, §Doctor) reports whether this
-  mount's own root can be synced, and how. `Valea.Git.Repo.detect/1`
+  mount's own root can be synced, and how. A DISABLED mount is `"unknown"`
+  for the same reason `watcher_live` is (intentionally off, nothing to
+  fix), and so is a DEGRADED one: the sync engine only considers
+  `enabled`, non-degraded ICM mounts, so any verdict for those two would
+  be a defect the user cannot act on — the real problem is whichever
+  sibling check is already failing. `Valea.Git.Repo.detect/1`
   answers the first half WITHOUT shelling out, so a workspace of ordinary
   folders costs nothing: a mount that is not a repository is `"ok"` ("not
   applicable" — most ICMs are plain folders, and nothing here nudges the
@@ -154,6 +159,8 @@ defmodule Valea.Mounts.Doctor do
   @watcher_unavailable_detail "File watching is unavailable on this system — the tree refreshes on navigation instead."
   @watcher_stale_remedy "If this mount was just enabled, give the watcher a moment to catch " <>
                           "up; otherwise reopen the workspace."
+  @git_disabled_detail "not checked — this mount is disabled."
+  @git_degraded_detail "not checked — this mount is degraded, so nothing is syncing it."
   @git_unsupported_remedy "Mount the repository root directly, or leave git sync off."
   @git_missing_binary_remedy "Install git or launch Valea from an environment where git is on PATH."
   @git_detached_remedy "Check out a branch in this repository."
@@ -482,10 +489,27 @@ defmodule Valea.Mounts.Doctor do
 
   # -- 2f. git_sync ---------------------------------------------------------------
 
+  # Short-circuits BEFORE any probe for a mount the sync engine will never
+  # touch — it filters `kind: :icm, enabled: true, degraded: nil`, so a
+  # disabled or degraded mount is not merely unsynced, it is out of scope.
+  # Reporting a real verdict for one would be a defect the user cannot act
+  # on: "branch main has no upstream" with a remedy that still wouldn't make
+  # it sync, flipping `ok: false` for an ICM that is off (or already failing
+  # a sibling check) by intent. Same posture — and, for the disabled case,
+  # the same copy — as `watcher_live_check/1`'s own disabled branch; it also
+  # saves spawning a handful of git subprocesses per pass.
   defp git_sync_check(workspace, mount) do
     id = check_id(mount, "git_sync")
     label = "#{mount.name}: git sync"
 
+    cond do
+      not mount.enabled -> unknown(id, label, @git_disabled_detail)
+      mount.degraded != nil -> unknown(id, label, @git_degraded_detail)
+      true -> git_detect_check(id, label, workspace, mount)
+    end
+  end
+
+  defp git_detect_check(id, label, workspace, mount) do
     case Valea.Git.Repo.detect(mount.root) do
       :none ->
         ok(id, label, "not a git repository — git sync not applicable.")

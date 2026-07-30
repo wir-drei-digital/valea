@@ -796,13 +796,58 @@ defmodule Valea.Mounts.DoctorTest do
 
   # -- git_sync -------------------------------------------------------------------
 
+  # `git_sync` reports a real verdict only for a mount the sync engine
+  # would actually consider (enabled, not degraded), so every fixture below
+  # that expects a verdict has to be a HEALTHY ICM — a bare directory with
+  # no icm.yaml is degraded, and would short-circuit to "not checked".
+  defp git_icm!(dir) do
+    write_manifest!(dir, %{id: Ecto.UUID.generate(), name: "Repo", description: ""})
+    dir
+  end
+
   # `Valea.Git.Repo.detect/1` is filesystem-only, so the "not a repository"
   # and "unsupported layout" verdicts need no git binary at all — only the
-  # state-reading branches below do.
+  # state-reading branches below do. Neither do the disabled/degraded
+  # short-circuits, which is the point of them: no probe, no subprocess.
   describe "run/1 — git_sync (no git binary needed)" do
+    test "a DISABLED git-repo mount is unknown — not checked, never probed" do
+      root = tmp_dir!("vmounts-doctor")
+      ext = git_icm!(tmp_dir!("vmounts-doctor-ext"))
+      File.mkdir_p!(Path.join(ext, ".git"))
+
+      write_icms!(root, [{"outside", ext, [enabled: false]}])
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:outside")
+      assert check["status"] == "unknown"
+      assert check["detail"] == "not checked — this mount is disabled."
+      assert check["remedy"] == nil
+      # Same wording the sibling check uses for the same situation.
+      assert check["detail"] == find(checks, "watcher_live:outside")["detail"]
+    end
+
+    test "a DEGRADED git-repo mount is unknown — the engine skips it either way" do
+      root = tmp_dir!("vmounts-doctor")
+      # No icm.yaml -> Mounts.list/1 degrades it (manifest_format2 fails).
+      ext = tmp_dir!("vmounts-doctor-ext")
+      File.mkdir_p!(Path.join(ext, ".git"))
+
+      write_icms!(root, [{"outside", ext, []}])
+
+      {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
+
+      assert find(checks, "manifest_format2:outside")["status"] == "failed"
+
+      check = find(checks, "git_sync:outside")
+      assert check["status"] == "unknown"
+      assert check["detail"] == "not checked — this mount is degraded, so nothing is syncing it."
+      assert check["remedy"] == nil
+    end
+
     test "a mount that is not a git repository is ok — not applicable" do
       root = tmp_dir!("vmounts-doctor")
-      ext = tmp_dir!("vmounts-doctor-ext")
+      ext = git_icm!(tmp_dir!("vmounts-doctor-ext"))
 
       write_icms!(root, [{"outside", ext, []}])
 
@@ -816,7 +861,7 @@ defmodule Valea.Mounts.DoctorTest do
 
     test "a .git FILE at the mount root fails with the worktree/submodule reason" do
       root = tmp_dir!("vmounts-doctor")
-      ext = tmp_dir!("vmounts-doctor-ext")
+      ext = git_icm!(tmp_dir!("vmounts-doctor-ext"))
       File.write!(Path.join(ext, ".git"), "gitdir: /elsewhere\n")
 
       write_icms!(root, [{"outside", ext, []}])
@@ -843,7 +888,7 @@ defmodule Valea.Mounts.DoctorTest do
 
     test "a repo with an upstream reports branch, upstream and the configured mode", %{fx: fx} do
       root = tmp_dir!("vmounts-doctor")
-      write_icms!(root, [{"repo", fx.work, []}])
+      write_icms!(root, [{"repo", git_icm!(fx.work), []}])
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
@@ -862,7 +907,7 @@ defmodule Valea.Mounts.DoctorTest do
 
     test "sync off short-circuits to ok without reading state", %{fx: fx} do
       root = tmp_dir!("vmounts-doctor")
-      write_icms!(root, [{"repo", fx.work, []}])
+      write_icms!(root, [{"repo", git_icm!(fx.work), []}])
       assert :ok = Valea.Mounts.set_git_sync(root, "repo", "off")
 
       {:ok, %{checks: checks}} = Doctor.run(root)
@@ -882,7 +927,7 @@ defmodule Valea.Mounts.DoctorTest do
       GitFixtures.write_commit!(lone, "a.md", "a", "a")
 
       root = tmp_dir!("vmounts-doctor")
-      write_icms!(root, [{"lone", lone, []}])
+      write_icms!(root, [{"lone", git_icm!(lone), []}])
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
@@ -901,7 +946,7 @@ defmodule Valea.Mounts.DoctorTest do
       on_exit(fn -> Application.delete_env(:valea, :git_cli) end)
 
       root = tmp_dir!("vmounts-doctor")
-      ext = tmp_dir!("vmounts-doctor-ext")
+      ext = git_icm!(tmp_dir!("vmounts-doctor-ext"))
       File.mkdir_p!(Path.join(ext, ".git"))
 
       write_icms!(root, [{"repo", ext, []}])
@@ -918,7 +963,7 @@ defmodule Valea.Mounts.DoctorTest do
       GitFixtures.git!(fx.work, ["checkout", "--detach", "HEAD"])
 
       root = tmp_dir!("vmounts-doctor")
-      write_icms!(root, [{"repo", fx.work, []}])
+      write_icms!(root, [{"repo", git_icm!(fx.work), []}])
 
       {:ok, %{checks: checks}} = Doctor.run(root)
 
