@@ -7,6 +7,7 @@ import { wireCalendarEvents } from './calendar.svelte';
 import { mountsStore, wireMountsEvents } from './mounts.svelte';
 import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
 import { sessionsListStore } from './sessions-list.svelte';
+import { tasksStore } from '../tasks/store.svelte';
 
 type IcmApi = Pick<Api, 'icmListDir' | 'listIcms'>;
 
@@ -465,10 +466,18 @@ export function handleWorkspaceEvent(payload: WorkspaceEventPayload): void {
   recentSessionsStore.reset();
   mountsStore.reset();
   sessionsListStore.reset();
+  // `tasksStore` joins for exactly the reason `sessionsListStore` did: a live
+  // switch never remounts the route, so a reader sitting on `/tasks` would keep
+  // the PREVIOUS workspace's ledgers on screen (and its `loaded` flag would stop
+  // the route's own `onMount` fetch from ever running again). The refresh takes
+  // the PUSH'S generation — `workspaceStore.generation` is stale here, and every
+  // ledger read is generation-guarded.
+  tasksStore.reset();
   if (payload.open) {
     void icmStore.refetch(payload.generation);
     refreshSidebarProjectStores(payload.generation);
     void sessionsListStore.refresh();
+    void tasksStore.refresh(payload.generation);
   }
 }
 

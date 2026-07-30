@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { icmToNav, encodePath, flattenMountGroups, type IcmNode } from './nav';
+import { icmToNav, encodePath, flattenMountGroups, mainNav, type IcmNode } from './nav';
 
 const tree: IcmNode[] = [
   {
@@ -101,6 +101,18 @@ describe('icmToNav', () => {
     const nav = icmToNav(nodes);
     expect(nav[0].href).toBe('/knowledge/primary/A.md');
     expect(nav[1].href).toBe('/knowledge/clients/B.md');
+  });
+});
+
+// tasks+schedules spec §UI surfaces: the Tasks nav item returns, in the daily
+// group between Today and Mail.
+describe('mainNav', () => {
+  it('places Tasks between Today and Mail in the daily group', () => {
+    const [daily] = mainNav();
+    expect(daily.items.map((item) => item.id)).toEqual(['today', 'tasks', 'mail', 'calendar', 'chat']);
+    const tasks = daily.items.find((item) => item.id === 'tasks');
+    expect(tasks).toMatchObject({ label: 'Tasks', href: '/tasks' });
+    expect(tasks?.icon).toBeTruthy();
   });
 });
 

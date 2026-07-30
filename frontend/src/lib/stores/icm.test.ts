@@ -4,6 +4,7 @@ import { mountsStore } from './mounts.svelte';
 import { recentSessionsStore } from './recent-sessions.svelte';
 import { sessionsListStore } from './sessions-list.svelte';
 import { workspaceStore } from './workspace.svelte';
+import { tasksStore } from '../tasks/store.svelte';
 import type { IcmNode } from '../shell/nav';
 import type { ApiResult } from '../api/client';
 
@@ -636,9 +637,11 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     const mountsRefresh = vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
     const recentRefresh = vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
     const listRefresh = vi.spyOn(sessionsListStore, 'refresh').mockResolvedValue(undefined);
+    const tasksRefresh = vi.spyOn(tasksStore, 'refresh').mockResolvedValue(undefined);
 
     handleWorkspaceEvent({ open: false });
 
+    expect(tasksRefresh).not.toHaveBeenCalled();
     expect(icmReset).toHaveBeenCalledTimes(1);
     expect(mountsReset).toHaveBeenCalledTimes(1);
     expect(recentReset).toHaveBeenCalledTimes(1);
@@ -660,6 +663,7 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     mountsRefresh.mockRestore();
     recentRefresh.mockRestore();
     listRefresh.mockRestore();
+    tasksRefresh.mockRestore();
   });
 
   it("on an open push, threads the PUSH'S OWN generation into icmStore.refetch and mountsStore.refresh — not workspaceStore's stale one", () => {
@@ -672,6 +676,7 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     const mountsRefresh = vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
     const recentRefresh = vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
     const listRefresh = vi.spyOn(sessionsListStore, 'refresh').mockResolvedValue(undefined);
+    const tasksRefresh = vi.spyOn(tasksStore, 'refresh').mockResolvedValue(undefined);
 
     handleWorkspaceEvent({ open: true, generation: 7, name: 'Consulting', path: '/ws/consulting' });
 
@@ -695,6 +700,7 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     mountsRefresh.mockRestore();
     recentRefresh.mockRestore();
     listRefresh.mockRestore();
+    tasksRefresh.mockRestore();
     workspaceStore.generation = null;
   });
 
@@ -703,6 +709,7 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
     const mountsRefresh = vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
     const recentRefresh = vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
     const listRefresh = vi.spyOn(sessionsListStore, 'refresh').mockResolvedValue(undefined);
+    const tasksRefresh = vi.spyOn(tasksStore, 'refresh').mockResolvedValue(undefined);
 
     // Defensive case only — the backend always sends `generation` on an
     // `open: true` push (`WorkspaceEventsChannel.handle_info/2`).
@@ -710,10 +717,37 @@ describe('handleWorkspaceEvent (LIVE SWITCH — generation-coherent refresh)', (
 
     expect(icmRefetch).toHaveBeenCalledWith(undefined);
     expect(mountsRefresh).toHaveBeenCalledWith(undefined);
+    expect(tasksRefresh).toHaveBeenCalledWith(undefined);
 
     icmRefetch.mockRestore();
     mountsRefresh.mockRestore();
     recentRefresh.mockRestore();
     listRefresh.mockRestore();
+    tasksRefresh.mockRestore();
+  });
+
+  // tasks+schedules Task 8: `tasksStore` joins the reset set for the same reason
+  // `sessionsListStore` did — a live switch never remounts `/tasks`, so a reader
+  // sitting there would keep the previous workspace's ledgers (and `loaded`
+  // would stop the route's own `onMount` fetch from running again). Its refresh
+  // takes the PUSH's generation, because every ledger read is generation-guarded
+  // and `workspaceStore.generation` is stale at this call site.
+  it('resets tasksStore on every push and refreshes it with the push’s own generation when open', () => {
+    const tasksReset = vi.spyOn(tasksStore, 'reset');
+    const tasksRefresh = vi.spyOn(tasksStore, 'refresh').mockResolvedValue(undefined);
+    vi.spyOn(icmStore, 'refetch').mockResolvedValue(undefined);
+    vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
+    vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
+    vi.spyOn(sessionsListStore, 'refresh').mockResolvedValue(undefined);
+
+    handleWorkspaceEvent({ open: false });
+    expect(tasksReset).toHaveBeenCalledTimes(1);
+    expect(tasksRefresh).not.toHaveBeenCalled();
+
+    handleWorkspaceEvent({ open: true, generation: 9, name: 'Consulting', path: '/ws/consulting' });
+    expect(tasksReset).toHaveBeenCalledTimes(2);
+    expect(tasksRefresh).toHaveBeenCalledWith(9);
+
+    vi.restoreAllMocks();
   });
 });

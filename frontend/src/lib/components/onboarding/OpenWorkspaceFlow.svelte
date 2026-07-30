@@ -278,12 +278,18 @@
       {:else if inspection.adoptable}
         <!-- Task 13 (Spec D §D4): the adopt-a-folder consent step — `path`
              isn't a Valea ICM yet, but IS a plain folder Valea could adopt.
-             Copy is EXACT per the brief; the ONLY file this writes is the
-             identity file the copy names. -->
+             The ONE file this STEP writes is the identity file the copy names.
+             The briefing sentence is the tasks+schedules spec's §Discovery
+             requirement: an adopted folder's own AGENTS.md/CLAUDE.md is
+             user-owned prose Valea never rewrites, so the adopt copy is where
+             the materialized contract file gets mentioned — and it keeps the
+             page honest about what appears in the folder later. -->
         <div class="flex flex-col gap-2.5">
           <p class="text-ink-body text-[13px]">
             This folder isn't a Valea ICM yet. Add a small identity file (icm.yaml) so Valea can
-            recognize this folder. That's the only file Valea will write.
+            recognize this folder — that's the only file this step writes. Once it's active, Valea
+            also keeps a contract file for agents at .valea/briefing.md, describing the tasks.json
+            and schedules.json files they may write.
           </p>
           <div class="flex flex-col gap-1.5">
             <Label for="adopt-name">Name</Label>

@@ -16,11 +16,12 @@
     normalizeCockpitToday,
     calendarSummaryLine,
     mailSummaryLine,
-    type CockpitToday,
-    type TodaySection
+    scheduleNoticeHref,
+    scheduleNoticeText,
+    tasksSummaryLine,
+    type CockpitToday
   } from '$lib/today/cockpit';
   import { mostRecentMountKey } from '$lib/today/quick-session';
-  import OpenLoops from '$lib/components/today/OpenLoops.svelte';
   import { Composer } from '$lib/components/agent';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -98,17 +99,6 @@
       hour: '2-digit',
       minute: '2-digit'
     });
-  }
-
-  // `OpenLoops.svelte`'s item shape is the narrower `{title: string; source:
-  // string}` — `TodaySection.openLoops` is nullable in both fields
-  // (`today.json` is agent-authored and lenient, see `Valea.Cockpit`'s
-  // moduledoc). A null-title loop has nothing to show, so it's dropped
-  // rather than rendered blank; a null source degrades to an empty string.
-  function openLoopItems(section: TodaySection): { title: string; source: string }[] {
-    return section.openLoops
-      .filter((loop): loop is { title: string; source: string | null } => loop.title !== null)
-      .map((loop) => ({ title: loop.title, source: loop.source ?? '' }));
   }
 
   // Quick composer: start a session in the most recently used ICM straight
@@ -255,7 +245,9 @@
               Today renders a
               <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">today.json</code>
               file from the root of each project. Your agent keeps it up to date with prepared
-              work, open loops, and notes. Ask your agent to maintain one; the starter project's
+              work and notes; what needs doing lives in
+              <a href="/tasks" class="underline">Tasks</a>. Ask your agent to maintain one; the
+              starter project's
               <code class="bg-paper-track rounded px-1 py-0.5 text-[12.5px]">AGENTS.md</code> documents the
               shape.
             </p>
@@ -304,15 +296,89 @@
                     </ul>
                   {/if}
 
-                  {#if openLoopItems(section).length > 0}
-                    <div class="mt-3">
-                      <OpenLoops loops={openLoopItems(section)} />
-                    </div>
-                  {/if}
+                {/if}
+
+                <!-- The tasks line (tasks+schedules spec §Cockpit) — it
+                     REPLACED the `open_loops` array agents used to hand-
+                     maintain in `today.json`. Rendered OUTSIDE the `ok` branch
+                     above on purpose: it reads a DIFFERENT file, so a broken
+                     `today.json` never hides real tasks (and vice versa —
+                     `tasks: null` is the unreadable-ledger case). The full
+                     view is `/tasks`; this is counts plus the top three. -->
+                {#if section.tasks === null}
+                  <p class="text-ink-meta mt-2 text-[13px]">
+                    tasks.json is unreadable — fix by hand or ask the agent
+                  </p>
+                {:else if tasksSummaryLine(section.tasks)}
+                  <div class="mt-3">
+                    <a
+                      href="/tasks"
+                      class="text-ink-secondary hover:text-ink-heading text-[12.5px] tabular-nums hover:underline"
+                    >
+                      {tasksSummaryLine(section.tasks)}
+                    </a>
+                    {#if section.tasks.top.length > 0}
+                      <ul class="divide-paper-hairline mt-1 flex flex-col divide-y">
+                        {#each section.tasks.top as item, i (item.id ?? i)}
+                          <li class="flex items-baseline gap-2.5 py-2">
+                            <span
+                              class="border-paper-button-border bg-paper-card size-[13px] shrink-0 self-center rounded-[4px] border"
+                              aria-hidden="true"
+                            ></span>
+                            <a href="/tasks" class="text-ink-body min-w-0 flex-1 text-[13.5px] hover:underline">
+                              {item.title ?? '(untitled)'}
+                            </a>
+                            {#if item.today}
+                              <span class="text-act shrink-0 text-[11.5px]">focus</span>
+                            {/if}
+                            {#if item.due}
+                              <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">{item.due}</span>
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </div>
                 {/if}
               </section>
             {/each}
           </div>
+        {/if}
+
+        {#if today.scheduleNotices.length > 0}
+          <!-- Notices ONLY for schedules (tasks+schedules spec §Cockpit): a
+               parked run, a failed run, a newly registered schedule. No "next
+               run" line here — that lives on the Schedules tab, which is also
+               where each notice points (the run history under the schedule is
+               the access path to a scheduled session's transcript, and the
+               notice payload carries no session id). -->
+          <section class="mt-8">
+            <p class="text-overline mb-2">Schedules</p>
+            <ul class="flex flex-col">
+              {#each today.scheduleNotices as notice, i (`${notice.mountKey ?? ''}/${notice.scheduleId}/${notice.kind}/${i}`)}
+                <li>
+                  <a
+                    href={scheduleNoticeHref(notice)}
+                    class="hover:bg-paper-pill flex items-baseline gap-2 rounded-md py-1.5 pr-2 transition-colors"
+                  >
+                    <span
+                      class={[
+                        'size-1.5 shrink-0 self-center rounded-full',
+                        notice.kind === 'failed' ? 'bg-warn-ink' : 'bg-act'
+                      ]}
+                      aria-hidden="true"
+                    ></span>
+                    <span class="text-ink-body min-w-0 flex-1 text-[13px]">{scheduleNoticeText(notice)}</span>
+                    {#if notice.at}
+                      <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">
+                        {formatTimestamp(notice.at)}
+                      </span>
+                    {/if}
+                  </a>
+                </li>
+              {/each}
+            </ul>
+          </section>
         {/if}
 
         {#if today.recentSessions.length > 0}

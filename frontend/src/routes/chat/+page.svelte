@@ -71,7 +71,11 @@
   // by default the chat route renders WITHOUT a list pane, since the main
   // nav's project groups already carry the recent sessions.
   const showAllPane = $derived(page.url.searchParams.get('all') === '1');
-  const allGroups = $derived(groupAllSessions(sessionsListStore.sessions));
+  // `visibleSessions`, not `sessions`: scheduled runs stay out of this pane
+  // unless its own toggle asks for them (see `SessionsListStore` for why the
+  // flat list itself must stay unfiltered — it's also the open transcript's
+  // title index).
+  const allGroups = $derived(groupAllSessions(sessionsListStore.visibleSessions));
 
   /**
    * Keeps `?all=1` AND `?pane=` sticky across in-pane navigation.
@@ -260,8 +264,31 @@
       </Button>
     {/snippet}
     {#snippet children()}
+      <!-- "include scheduled runs" (tasks+schedules spec §Scheduled-session
+           visibility): scheduled runs are hidden by default — they're reached
+           through the run history under their schedule, and one hourly
+           schedule would otherwise own this list. The toggle also re-fetches
+           the NAV feed with `include_scheduled: true`, which is filtered
+           backend-side before its per-group limit; this flat list is filtered
+           client-side on purpose (see `SessionsListStore.visibleSessions`). -->
+      <label class="text-ink-meta flex items-center gap-2 px-3.5 py-2 text-[11.5px]">
+        <input
+          type="checkbox"
+          checked={sessionsListStore.includeScheduled}
+          onchange={(event) => {
+            sessionsListStore.includeScheduled = event.currentTarget.checked;
+            void recentSessionsStore.refresh(sessionsListStore.includeScheduled);
+          }}
+        />
+        Include scheduled runs{sessionsListStore.scheduledCount > 0
+          ? ` (${sessionsListStore.scheduledCount})`
+          : ''}
+      </label>
+
       {#if allGroups.length === 0}
-        <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">No sessions yet.</p>
+        <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
+          {sessionsListStore.sessions.length === 0 ? 'No sessions yet.' : 'No chat sessions yet.'}
+        </p>
       {:else}
         {#each allGroups as group (group.mountKey)}
           <section class="pb-1">

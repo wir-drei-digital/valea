@@ -74,7 +74,21 @@ describe('RecentSessionsStore.refresh', () => {
 
     await store.refresh();
 
-    expect(listRecentSessionsByIcm).toHaveBeenCalledWith(NAV_SESSIONS_TOTAL + 1);
+    expect(listRecentSessionsByIcm).toHaveBeenCalledWith(NAV_SESSIONS_TOTAL + 1, false);
+  });
+
+  // tasks+schedules spec §Scheduled-session visibility: the nav feed excludes
+  // `kind: "scheduled"` runs by default, and the filter runs BACKEND-side before
+  // the per-group limit — so the flag has to reach the RPC, not a local filter.
+  it('asks the RPC to exclude scheduled runs by default, and to include them when told', async () => {
+    const listRecentSessionsByIcm = vi.fn(async () => ({ ok: true, data: { groups: [] } }) as RecentResult);
+    const store = new RecentSessionsStore(fakeApi({ listRecentSessionsByIcm }));
+
+    await store.refresh();
+    expect(listRecentSessionsByIcm).toHaveBeenLastCalledWith(NAV_SESSIONS_TOTAL + 1, false);
+
+    await store.refresh(true);
+    expect(listRecentSessionsByIcm).toHaveBeenLastCalledWith(NAV_SESSIONS_TOTAL + 1, true);
   });
 });
 

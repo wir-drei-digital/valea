@@ -64,3 +64,40 @@ describe('SessionsListStore.reset', () => {
     expect(store.loaded).toBe(false);
   });
 });
+
+// tasks+schedules spec §Scheduled-session visibility: the all-sessions pane
+// hides `kind: "scheduled"` runs behind its own toggle. The FLAT list stays
+// unfiltered on purpose — it is also the open transcript's title index, and a
+// scheduled run reached from its schedule's run history is exactly such a
+// transcript (see `visibleSessions`' doc comment).
+describe('SessionsListStore.visibleSessions', () => {
+  const raw = [
+    { id: 's1', kind: 'chat', status: 'ended', live: false },
+    { id: 's2', kind: 'scheduled', status: 'ended', live: false },
+    { id: 's3', status: 'ended', live: false }
+  ];
+
+  async function loaded() {
+    const store = new SessionsListStore({
+      listAgentSessions: async () => ({ ok: true, data: { sessions: raw } }) as ApiResult<any>
+    });
+    await store.refresh();
+    return store;
+  }
+
+  it('hides scheduled runs by default, keeping every other kind (including none)', async () => {
+    const store = await loaded();
+
+    expect(store.includeScheduled).toBe(false);
+    expect(store.visibleSessions.map((s) => s.id)).toEqual(['s1', 's3']);
+    // The raw list — the title index — still has the scheduled run.
+    expect(store.sessions.map((s) => s.id)).toEqual(['s1', 's2', 's3']);
+    expect(store.scheduledCount).toBe(1);
+  });
+
+  it('reveals them when the toggle is on', async () => {
+    const store = await loaded();
+    store.includeScheduled = true;
+    expect(store.visibleSessions.map((s) => s.id)).toEqual(['s1', 's2', 's3']);
+  });
+});

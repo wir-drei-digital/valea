@@ -5,6 +5,7 @@ import Calendar from '@lucide/svelte/icons/calendar';
 import MessageSquare from '@lucide/svelte/icons/message-square';
 import Plug from '@lucide/svelte/icons/plug';
 import ListChecks from '@lucide/svelte/icons/list-checks';
+import ListTodo from '@lucide/svelte/icons/list-todo';
 
 export type IcmNode = {
   name: string;
@@ -75,6 +76,10 @@ export function mainNav(): NavSection[] {
       label: null,
       items: [
         { id: 'today', label: 'Today', href: '/', icon: Inbox },
+        // tasks+schedules spec §UI surfaces: "Tasks nav item returns" — one
+        // route, two tabs (Tasks | Schedules), sitting with the daily group
+        // between Today and Mail because that is the order the day is worked.
+        { id: 'tasks', label: 'Tasks', href: '/tasks', icon: ListTodo },
         { id: 'mail', label: 'Mail', href: '/mail', icon: Mail },
         { id: 'calendar', label: 'Calendar', href: '/calendar', icon: Calendar },
         { id: 'chat', label: 'Chat', href: '/chat', icon: MessageSquare }

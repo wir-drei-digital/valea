@@ -59,8 +59,14 @@ export class RecentSessionsStore {
    * own default) so this store's contract doesn't silently drift if that
    * wrapper's default ever changes.
    */
-  async refresh(): Promise<void> {
-    const result = await this.#api.listRecentSessionsByIcm(NAV_SESSIONS_TOTAL + 1);
+  async refresh(includeScheduled = false): Promise<void> {
+    // `includeScheduled` (tasks+schedules spec §Scheduled-session visibility) —
+    // the nav feed EXCLUDES `kind: "scheduled"` runs by default, filtered
+    // backend-side BEFORE the per-group limit so `limit` keeps meaning "limit
+    // real chat sessions" and the store never fetch-then-hides. The
+    // all-sessions pane's toggle is what passes `true`; every other caller
+    // (`wireIcmEvents`, `wireRecentSessionsEvents`, `IcmProjects`) leaves it off.
+    const result = await this.#api.listRecentSessionsByIcm(NAV_SESSIONS_TOTAL + 1, includeScheduled);
     if (!result.ok) return;
 
     const data = result.data as { groups?: RecentSessionGroup[] };

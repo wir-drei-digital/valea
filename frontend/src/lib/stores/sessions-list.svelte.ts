@@ -29,6 +29,13 @@ export type AgentSessionSummary = {
 export class SessionsListStore {
   sessions: AgentSessionSummary[] = $state([]);
   loaded = $state(false);
+  /**
+   * The all-sessions pane's "include scheduled runs" toggle (tasks+schedules
+   * spec §Scheduled-session visibility). Default off: scheduled runs are reached
+   * through the run history under their schedule, and one hourly schedule would
+   * otherwise own this list.
+   */
+  includeScheduled = $state(false);
 
   #api: SessionsListApi;
 
@@ -43,6 +50,38 @@ export class SessionsListStore {
     const data = result.data as { sessions?: AgentSessionSummary[] };
     this.sessions = data.sessions ?? [];
     this.loaded = true;
+  }
+
+  /**
+   * What the all-sessions pane renders — `sessions` minus scheduled runs unless
+   * `includeScheduled` is set.
+   *
+   * The filter is CLIENT-side here, unlike the nav feed's (which passes
+   * `include_scheduled` to `list_recent_sessions_by_icm` and is filtered
+   * backend-side before its per-group limit). Two reasons, both about this
+   * particular list:
+   *
+   *   1. `list_agent_sessions` — the flat, workspace-wide listing this store
+   *      reads — carries no such argument, and it must not: it doubles as the
+   *      TITLE INDEX for whatever transcript is open (`ChatView` looks the open
+   *      session up in `sessions`), and a scheduled run reached from its
+   *      schedule's run history is exactly such a transcript. Filtering it at
+   *      the source would blank that title.
+   *   2. There is no `limit` on this list, so hiding a row costs nothing —
+   *      the spec's "never fetch-then-hide" rule exists because a limit applied
+   *      before filtering would let scheduled runs eat the nav feed's slots.
+   *
+   * A summary with no `kind` is NOT scheduled — same rule as
+   * `Valea.Agents.reject_scheduled/2`: name the one kind excluded, leave every
+   * other transcript visible.
+   */
+  get visibleSessions(): AgentSessionSummary[] {
+    return this.includeScheduled ? this.sessions : this.sessions.filter((s) => s.kind !== 'scheduled');
+  }
+
+  /** How many scheduled runs the toggle would reveal — the checkbox's own count. */
+  get scheduledCount(): number {
+    return this.sessions.filter((s) => s.kind === 'scheduled').length;
   }
 
   /**
