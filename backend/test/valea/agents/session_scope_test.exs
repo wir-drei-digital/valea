@@ -193,6 +193,60 @@ defmodule Valea.Agents.SessionScopeTest do
     assert scope.write_roots == [write_root]
   end
 
+  # Tasks/schedules spec §"Consent & containment posture": "Scheduled
+  # *sessions* have identical PermissionPolicy posture to user-started
+  # sessions in the same ICM." `kind` is metadata — a scheduled fire
+  # (`Valea.Schedules.Runner.Live.start_prompt/3` resolves with
+  # `kind: "scheduled"`) gets no extra grants, no widened roots, and the same
+  # managedSettings JSON as an otherwise identical chat resolve. This test
+  # pins that contract so no future kind-keyed branch can quietly relax it.
+  test "a scheduled scope carries exactly the grants of an identical chat scope", %{
+    ws: ws,
+    home: home,
+    generation: generation
+  } do
+    mounted_primary!(ws, home)
+
+    resolve = fn kind, session_id ->
+      assert {:ok, scope} =
+               SessionScope.resolve(%{
+                 kind: kind,
+                 mount_key: "coaching",
+                 generation: generation,
+                 session_id: session_id
+               })
+
+      scope
+    end
+
+    chat = resolve.("chat", "sk-chat")
+    scheduled = resolve.("scheduled", "sk-sched")
+
+    assert scheduled.kind == "scheduled"
+
+    # Everything the permission posture is built from is identical — the
+    # session-id-keyed context path is the only legitimate difference.
+    for key <- [
+          :cwd,
+          :read_paths,
+          :write_paths,
+          :write_roots,
+          :additional_roots,
+          :related_icms,
+          :mail_roots_all,
+          :mail_roots_in_scope,
+          :calendar_in_scope,
+          :managed_settings,
+          :env,
+          :argv_extra
+        ] do
+      assert Map.fetch!(scheduled, key) == Map.fetch!(chat, key),
+             "expected #{key} to match the chat scope"
+    end
+
+    refute scheduled.managed_context == chat.managed_context
+  end
+
   # -- Task 14: mail mounts in scope (spec §"Mount & containment") ----------
 
   defp write_mail_yaml!(ws) do

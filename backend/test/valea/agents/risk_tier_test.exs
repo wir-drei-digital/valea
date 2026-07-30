@@ -52,4 +52,29 @@ defmodule Valea.Agents.RiskTierTest do
   test "a file merely named .claude-something stays medium" do
     assert RiskTier.classify(Locator.icm(@icm_id, "notes/.claude-ideas.md")) == "medium"
   end
+
+  # Tasks/schedules spec §"Consent & containment posture": the tier is dialog
+  # copy for the human deciding on the ask — the gate itself is
+  # PermissionPolicy. Root `schedules.json` (schedule registration) and
+  # anything under `.valea/` (Valea's briefing + task archive) are "high";
+  # `tasks.json` is ordinary ICM content.
+  test "root schedules.json is high; a nested one is not special" do
+    assert RiskTier.classify(Locator.icm(@icm_id, "schedules.json")) == "high"
+    assert RiskTier.classify(Locator.icm(@icm_id, "sub/schedules.json")) == "medium"
+    assert RiskTier.classify(Locator.icm(@icm_id, "clients/kita/schedules.json")) == "medium"
+  end
+
+  test ".valea paths classify high at any depth" do
+    assert RiskTier.classify(Locator.icm(@icm_id, ".valea/briefing.md")) == "high"
+    assert RiskTier.classify(Locator.icm(@icm_id, ".valea/task-archive.jsonl")) == "high"
+    assert RiskTier.classify(Locator.icm(@icm_id, "clients/.valea/briefing.md")) == "high"
+  end
+
+  test "a file merely named .valea-something stays medium" do
+    assert RiskTier.classify(Locator.icm(@icm_id, "notes/.valea-ideas.md")) == "medium"
+  end
+
+  test "tasks.json stays medium — the ledger is not gated, only registration is" do
+    assert RiskTier.classify(Locator.icm(@icm_id, "tasks.json")) == "medium"
+  end
 end

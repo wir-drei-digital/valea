@@ -61,10 +61,44 @@ defmodule Valea.Agents.SessionSettings do
         for pattern <- patterns, op <- ["Read", "Edit", "Write"], do: "#{op}(#{pattern})"
       end)
 
+    # Tasks/schedules Task 5 (spec §"Consent & containment posture") — the
+    # managedSettings mirror of PermissionPolicy's two tasks/schedules tiers,
+    # per ICM root. It is NOT optional defense-in-depth here: the allow list
+    # this same function emits from `scope.write_roots` is honored by the
+    # harness WITHOUT ever consulting Valea's `request_permission` callback,
+    # so the policy rule alone would be short-circuited for a write-granted
+    # session.
+    #
+    # An `ask` entry can therefore override a broader `Write(<root>/**)`
+    # allow: precedence is VERIFIED against the official Claude Code
+    # permissions docs (code.claude.com/docs/en/permissions) — "Rules are
+    # evaluated in order: deny, then ask, then allow … rule specificity
+    # doesn't change the order", and "a matching ask rule prompts even when a
+    # more specific allow rule also matches the same call"; managed settings
+    # follow the same deny > ask > allow order. If a future harness version
+    # ever refutes that, the spec's fallback is a settings-level DENY on
+    # `schedules.json` with registration moving to the UI/hand-edit path —
+    # fail closed, feature intact.
+    #
+    # `.valea/**` is write-denied only (Read is deliberately absent — the
+    # briefing exists to be read). Like the other mirrors these globs are
+    # case-SENSITIVE; the authoritative, casefolded gate is the policy.
+    schedule_asks =
+      Enum.flat_map(icm_roots, fn root ->
+        ["Write(#{root}/schedules.json)", "Edit(#{root}/schedules.json)"]
+      end)
+
+    valea_denies =
+      Enum.flat_map(icm_roots, fn root ->
+        for op <- ["Write", "Edit"], do: "#{op}(#{root}/.valea/**)"
+      end)
+
     %{
       "permissions" => %{
-        "deny" => deny ++ secret_denies ++ mail_denies(scope) ++ calendar_denies(scope),
-        "ask" => ["Write", "Edit", "Bash"],
+        "deny" =>
+          deny ++
+            secret_denies ++ valea_denies ++ mail_denies(scope) ++ calendar_denies(scope),
+        "ask" => ["Write", "Edit", "Bash"] ++ schedule_asks,
         "allow" => read_root_allows ++ input_allows ++ write_path_allows ++ write_root_allows
       }
     }

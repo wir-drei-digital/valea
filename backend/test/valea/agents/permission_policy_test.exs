@@ -48,6 +48,11 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
   defp item_for("read", path), do: read(path)
   defp item_for("write", path), do: write(path)
 
+  # Every kind in the policy's `@write_kinds` as one item shape — the tool
+  # name is immaterial to the path-based tiers, only `kind` is.
+  defp write_kind(kind, path),
+    do: %{"rawInput" => %{"file_path" => path}, "toolName" => "Write", "kind" => kind}
+
   test "relative read resolves against the primary ICM cwd, not the workspace", %{ctx: ctx} do
     # resolves under cwd == icm
     assert {:allow, _} = P.decide(read("AGENTS.md"), ctx)
@@ -655,6 +660,141 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
     } do
       assert {:allow, _} = P.decide(read(Path.join(icm, "AGENTS.md")), in_scope)
       assert :ask = P.decide(write(Path.join(icm, "Pricing/x.md")), in_scope)
+    end
+  end
+
+  # Tasks/schedules spec §"Consent & containment posture" + §"`.valea/` —
+  # Valea's namespace inside the ICM" (Task 5): two tiers keyed off
+  # `ctx.icm_roots`, both deliberately ahead of the write-ALLOW tier.
+  #
+  #   1. `.valea/` write-DENY (deny, not ask): the materialized briefing is
+  #      an instruction surface and `task-archive.jsonl` is Valea's ledger,
+  #      so no agent write lands under `<icm_root>/.valea/` — a broad grant
+  #      can never buy it back. Reads stay ordinary.
+  #   2. `schedules.json` always-ASK: a write-kind candidate naming an ICM
+  #      ROOT's `schedules.json` falls through to `:ask` EVEN when covered
+  #      by `write_paths`/`write_roots` — "a broad grant can never buy
+  #      schedule registration". Root-level only: `tasks.json` and a nested
+  #      `sub/schedules.json` stay ordinary files.
+  #
+  # Precedence: denied tool -> protected -> icm_secret -> VALEA DIR -> mail
+  # -> calendar -> escaped -> SCHEDULES ASK -> ask/allow.
+  describe "tasks/schedules consent tiers" do
+    @all_write_kinds ["write", "edit", "delete", "move"]
+
+    setup %{ctx: ctx, icm: icm, rel: rel} do
+      for d <- [Path.join(icm, ".valea"), Path.join(icm, "sub"), Path.join(rel, ".valea")],
+          do: File.mkdir_p!(d)
+
+      File.write!(Path.join(icm, "schedules.json"), "{}")
+      File.write!(Path.join(icm, "tasks.json"), "{}")
+      File.write!(Path.join(icm, "sub/schedules.json"), "{}")
+      File.write!(Path.join(rel, "schedules.json"), "{}")
+
+      # `icm` is the only ICM root here; `rel` stays a granted read_root that
+      # is NOT an ICM root, so the "non-ICM roots unaffected" cases are real.
+      ctx = Map.put(ctx, :icm_roots, [icm])
+      %{ctx: ctx, granted: %{ctx | write_roots: [icm, rel]}}
+    end
+
+    test "schedules.json write asks even under a covering write_root grant", %{
+      granted: granted,
+      icm: icm
+    } do
+      item = %{
+        "kind" => "write",
+        "toolName" => "Write",
+        "rawInput" => %{"file_path" => Path.join(icm, "schedules.json")}
+      }
+
+      assert P.decide(item, granted) == :ask
+    end
+
+    test "a case-variant SCHEDULES.JSON asks under the same grant", %{
+      granted: granted,
+      icm: icm
+    } do
+      assert :ask = P.decide(write(Path.join(icm, "SCHEDULES.JSON")), granted)
+      assert :ask = P.decide(write(Path.join(icm, "Schedules.Json")), granted)
+    end
+
+    test "every write kind asks — granted or not", %{ctx: ctx, granted: granted, icm: icm} do
+      target = Path.join(icm, "schedules.json")
+
+      for kind <- @all_write_kinds do
+        assert :ask = P.decide(write_kind(kind, target), ctx), "expected ask for #{kind}"
+        assert :ask = P.decide(write_kind(kind, target), granted), "expected ask for #{kind}"
+      end
+    end
+
+    test "reading schedules.json is an ordinary allowed read", %{ctx: ctx, icm: icm} do
+      assert {:allow, "allow_once"} = P.decide(read(Path.join(icm, "schedules.json")), ctx)
+    end
+
+    # Control: the ledger is NOT gated — only schedule REGISTRATION is.
+    test "tasks.json under the same grant still allows", %{granted: granted, icm: icm} do
+      assert {:allow, "allow_once"} = P.decide(write(Path.join(icm, "tasks.json")), granted)
+    end
+
+    # Root-only rule (spec: "at an enabled ICM root") — a nested copy is an
+    # ordinary file the grant covers.
+    test "a nested sub/schedules.json is not special", %{granted: granted, icm: icm} do
+      assert {:allow, "allow_once"} =
+               P.decide(write(Path.join(icm, "sub/schedules.json")), granted)
+    end
+
+    test ".valea writes are denied for every write kind — even with a broad grant", %{
+      ctx: ctx,
+      granted: granted,
+      icm: icm
+    } do
+      for rel_path <- [".valea/briefing.md", ".valea/task-archive.jsonl", ".valea/anything/x"] do
+        target = Path.join(icm, rel_path)
+
+        for kind <- @all_write_kinds do
+          assert {:deny, "reject_once"} = P.decide(write_kind(kind, target), ctx),
+                 "expected deny for ungranted #{kind} to #{rel_path}"
+
+          assert {:deny, "reject_once"} = P.decide(write_kind(kind, target), granted),
+                 "expected deny for granted #{kind} to #{rel_path}"
+        end
+      end
+    end
+
+    test "a case-variant .VALEA write is denied too", %{granted: granted, icm: icm} do
+      assert {:deny, "reject_once"} =
+               P.decide(write(Path.join(icm, ".VALEA/briefing.md")), granted)
+    end
+
+    test ".valea reads stay ordinary allowed reads", %{ctx: ctx, icm: icm} do
+      File.write!(Path.join(icm, ".valea/briefing.md"), "contract")
+      assert {:allow, "allow_once"} = P.decide(read(Path.join(icm, ".valea/briefing.md")), ctx)
+    end
+
+    # `rel` is a granted read_root/write_root but NOT an `icm_root`: neither
+    # tier is scoped to it, so both files keep their ordinary behavior.
+    test "the same names outside every icm_root are unaffected", %{granted: granted, rel: rel} do
+      assert {:allow, "allow_once"} = P.decide(write(Path.join(rel, "schedules.json")), granted)
+
+      assert {:allow, "allow_once"} =
+               P.decide(write(Path.join(rel, ".valea/briefing.md")), granted)
+    end
+
+    # Regression pin (spec §"Opaque shell writes"): a `Bash` redirection onto
+    # schedules.json yields no extractable candidate, so it lands on the
+    # empty-candidates floor — `:ask`, never a vacuous allow.
+    test "an item with no extractable candidates still asks", %{granted: granted} do
+      bash = %{
+        "kind" => "write",
+        "toolName" => "Bash",
+        "rawInput" => %{"command" => "echo '{}' > schedules.json"}
+      }
+
+      assert :ask = P.decide(bash, granted)
+    end
+
+    test "the ICM-secrets deny still wins inside .valea", %{granted: granted, icm: icm} do
+      assert {:deny, "reject_once"} = P.decide(read(Path.join(icm, ".valea/.env")), granted)
     end
   end
 end

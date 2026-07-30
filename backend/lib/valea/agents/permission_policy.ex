@@ -50,6 +50,9 @@ defmodule Valea.Agents.PermissionPolicy do
        `<workspace_root>/app.sqlite*`).
     3. **Deny** (ICM secrets, Spec D §D5) if any candidate names secret
        material inside an `icm_root`.
+    3b. **Deny** (`.valea/` writes, tasks/schedules Task 5 — see "Tasks &
+       schedules rules" below) if a WRITE-kind candidate is `<icm_root>/.valea`
+       or anything beneath it. Reads stay ordinary.
     4. **Deny** (mail rules, Task 14 — see "Mail rules" below) if any
        candidate violates the mail tier: unmounted mail territory, an
        in-scope `spool/` read, or an in-scope write outside
@@ -67,6 +70,9 @@ defmodule Valea.Agents.PermissionPolicy do
        so it falls through to `:ask` (step 8) rather than being denied; only
        territory outside the whole recognized universe is treated as a
        symlink-escape-style deny.
+    5b. **Ask** (schedule registration, tasks/schedules Task 5 — see "Tasks &
+       schedules rules" below) if a WRITE-kind candidate is exactly
+       `<icm_root>/schedules.json`, EVEN when a write grant covers it.
     6. **Allow read** if `kind` is a read kind and EVERY candidate resolves
        inside some `read_root` (or is a root instruction file — see below).
     7. **Allow write** if `kind` is a write kind and every candidate is in
@@ -118,11 +124,41 @@ defmodule Valea.Agents.PermissionPolicy do
   Calendar matching shares the mail tier's `casefold/1`/
   `casefold_under_root?/2` helpers verbatim (extracted, not duplicated).
 
-  Mail and calendar matching are the only tiers that casefold EXPLICITLY, on
-  BOTH sides (`casefold/1`: NFC-normalize, then `String.downcase/1`), on every
-  platform: APFS is case- and normalization-insensitive, so `sources/MAIL/…`
-  or an NFD-variant spelling names the same mailbox and must hit the same
-  deny. The global `split_under_root?/2` every other tier uses casefolds
+  ## Tasks & schedules rules (Task 5)
+
+  Tasks/schedules spec §"Consent & containment posture" + §"`.valea/` —
+  Valea's namespace inside the ICM". Both tiers are keyed off `icm_roots` — the same ctx list the ICM-secrets
+  deny uses — and both are candidate-based and casefolded (the shared
+  `casefold/1`/`casefold_under_root?/2` helpers).
+
+    * **`.valea/` is write-denied** (deny, not ask): `<icm_root>/.valea` and
+      everything beneath it. `.valea/briefing.md` is a materialized
+      INSTRUCTION surface and `.valea/task-archive.jsonl` is Valea's own
+      ledger, so an agent write there could rewrite its future instructions
+      or forge history. Like every deny it precedes the write-allow tier, so
+      a broad `write_roots` grant over the ICM can never buy it back. Reads
+      stay ordinary — the briefing exists to be read.
+    * **`<icm_root>/schedules.json` always asks** on write kinds, even when
+      `write_paths`/`write_roots` cover it. This tier sits AFTER every deny
+      tier (a deny still wins) and deliberately BEFORE BOTH allow tiers:
+      registering a schedule is a standing grant of future unattended
+      execution, so it is always a live human decision — "a broad grant can
+      never buy schedule registration". The match is an exact casefolded
+      equality against the ROOT join (spec: "at an enabled ICM root"), so a
+      nested `sub/schedules.json` is ordinary content, and `tasks.json` — the
+      ledger agents are expected to maintain — is untouched by this tier.
+
+  Neither tier can be reached by a `Bash` redirection (no extractable
+  candidate); those land on the ordinary empty-candidates `:ask` floor, and
+  `Bash` itself is in the managed-settings "ask" list — accepted residual
+  risk, spec §"Opaque shell writes".
+
+  Mail, calendar and the two tasks/schedules tiers are the only tiers that
+  casefold EXPLICITLY, on BOTH sides (`casefold/1`: NFC-normalize, then
+  `String.downcase/1`), on every platform: APFS is case- and
+  normalization-insensitive, so `sources/MAIL/…`, `.VALEA/briefing.md` or an
+  NFD-variant spelling names the same file and must hit the same rule. The
+  global `split_under_root?/2` the other tiers use casefolds
   nothing of its own — but it is no longer unconditionally byte-exact either:
   it delegates to `Valea.Paths.ancestor?/3`, which compares case-folded on
   WINDOWS (NTFS default) and exact on unix, and never NFC-normalizes on
@@ -203,6 +239,9 @@ defmodule Valea.Agents.PermissionPolicy do
       Enum.any?(resolved, &split_icm_secret?(&1, icm_roots)) ->
         {:deny, "reject_once"}
 
+      kind in @write_kinds and Enum.any?(resolved, &split_valea_dir?(&1, icm_roots)) ->
+        {:deny, "reject_once"}
+
       Enum.any?(resolved, &mail_denied?(&1, kind, mail_territory, mail_in_scope)) ->
         {:deny, "reject_once"}
 
@@ -214,6 +253,14 @@ defmodule Valea.Agents.PermissionPolicy do
         &split_escaped?(&1, workspace_root, read_roots, write_paths, write_roots)
       ) ->
         {:deny, "reject_once"}
+
+      # Tasks/schedules §"Consent & containment posture": schedule
+      # REGISTRATION is always a human decision. Deliberately placed here —
+      # after every deny tier (a deny still wins) but BEFORE BOTH allow
+      # tiers — so a broad grant can never buy schedule registration. Reads
+      # are untouched: only write kinds are gated.
+      kind in @write_kinds and Enum.any?(resolved, &split_schedules_file?(&1, icm_roots)) ->
+        :ask
 
       paths == [] ->
         :ask
@@ -299,6 +346,36 @@ defmodule Valea.Agents.PermissionPolicy do
   end
 
   defp split_icm_secret?(_resolved, _icm_roots), do: false
+
+  # -- tasks/schedules rules (Task 5) — see the moduledoc's "Tasks &
+  # schedules rules" section -----------------------------------------------
+
+  # `<icm_root>/.valea` and everything beneath it: write-DENIED, casefolded
+  # and segment-boundary (the shared mail/calendar `casefold/1` +
+  # `casefold_under_root?/2` helpers, so `.VALEA/` on APFS hits the same
+  # deny). The dir itself matches too (`ancestor?/2` counts the root),
+  # so a `delete`/`move` aimed at `.valea` is denied, not just at files
+  # inside it. Root-level `.valea` only, per spec — a nested
+  # `clients/.valea/` is ordinary ICM content (`RiskTier` still stamps it
+  # "high" for the dialog, which is a label, not a gate).
+  defp split_valea_dir?({:ok, abs}, icm_roots) do
+    cf = casefold(abs)
+    Enum.any?(icm_roots, &casefold_under_root?(cf, casefold(Path.join(&1, ".valea"))))
+  end
+
+  defp split_valea_dir?(_resolved, _icm_roots), do: false
+
+  # EXACTLY `<icm_root>/schedules.json` — the root-level registry file, never
+  # a nested `sub/schedules.json` (spec: "at an enabled ICM root"), so the
+  # test is an exact casefolded equality against the root join rather than a
+  # basename match. Casefolded for the same reason the secrets deny is:
+  # `SCHEDULES.JSON` names the same file on APFS.
+  defp split_schedules_file?({:ok, abs}, icm_roots) do
+    cf = casefold(abs)
+    Enum.any?(icm_roots, &(cf == casefold(Path.join(&1, "schedules.json"))))
+  end
+
+  defp split_schedules_file?(_resolved, _icm_roots), do: false
 
   @doc false
   # Public only so the managedSettings mirror's tests can assert the same
@@ -402,11 +479,11 @@ defmodule Valea.Agents.PermissionPolicy do
 
   defp write_kind?(kind), do: kind in @write_kinds
 
-  # Casefold for mail AND calendar comparisons ONLY: NFC-normalize (APFS
-  # is normalization-insensitive — NFD and NFC spellings name the same
-  # file), then downcase (APFS is case-insensitive). Applied to BOTH sides
-  # of every mail/calendar membership check. Invalid UTF-8 falls back to
-  # the raw binary — downcase alone still applies.
+  # Casefold for the mail, calendar and tasks/schedules comparisons ONLY:
+  # NFC-normalize (APFS is normalization-insensitive — NFD and NFC spellings
+  # name the same file), then downcase (APFS is case-insensitive). Applied to
+  # BOTH sides of every such membership/equality check. Invalid UTF-8 falls
+  # back to the raw binary — downcase alone still applies.
   defp casefold(path) do
     case :unicode.characters_to_nfc_binary(path) do
       nfc when is_binary(nfc) -> String.downcase(nfc)

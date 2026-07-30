@@ -88,6 +88,39 @@ defmodule Valea.Agents.SessionSettingsTest do
     end
   end
 
+  # Tasks/schedules spec §"Consent & containment posture" — the
+  # managedSettings half of the Task 5 tiers, per ICM root (primary AND
+  # related). It exists because this same function emits
+  # `Write(<root>/**)` ALLOW rules for write-root grants, which the harness
+  # honors without ever consulting Valea's callback: the policy rule alone
+  # would be short-circuited. Precedence (verified against
+  # code.claude.com/docs/en/permissions): deny > ask > allow, specificity
+  # never reorders them — so an `ask` on schedules.json still prompts under
+  # a broader allow, and the `.valea/**` deny wins outright.
+  test "asks per-ICM-root for schedules.json and denies .valea writes" do
+    perms = SessionSettings.content(scope(%{}))["permissions"]
+
+    for root <- ["/icms/coaching", "/icms/legal"] do
+      for op <- ["Write", "Edit"] do
+        ask = "#{op}(#{root}/schedules.json)"
+        assert ask in perms["ask"], "expected ask to include #{ask}"
+
+        deny = "#{op}(#{root}/.valea/**)"
+        assert deny in perms["deny"], "expected deny to include #{deny}"
+      end
+
+      # Reads under `.valea/` stay ordinary (the briefing is meant to be
+      # read), and the ledger itself is never gated — only registration is.
+      refute "Read(#{root}/.valea/**)" in perms["deny"]
+      refute Enum.any?(perms["ask"], &String.contains?(&1, "tasks.json"))
+      refute Enum.any?(perms["deny"], &String.contains?(&1, "tasks.json"))
+    end
+
+    # The blanket kind-level asks stay first — nothing replaced them.
+    assert "Write" in perms["ask"]
+    assert "Edit" in perms["ask"]
+  end
+
   test "grants exact task input reads and exact workflow write paths/roots" do
     perms =
       SessionSettings.content(

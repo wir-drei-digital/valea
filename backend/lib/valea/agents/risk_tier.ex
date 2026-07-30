@@ -5,7 +5,12 @@ defmodule Valea.Agents.RiskTier do
   `CONTEXT.md` by basename at ANY depth (real ICMs route with nested
   CONTEXT.md files), plus the root `icm.yaml` identity file, plus anything
   under a `.claude/` directory at any depth (skills and harness config
-  change future agent behavior — ICM skills design spec, §Risk tier).
+  change future agent behavior — ICM skills design spec, §Risk tier), plus
+  the ROOT `schedules.json` (registering a schedule grants future unattended
+  execution) and anything under a `.valea/` directory at any depth (Valea's
+  materialized briefing — an instruction surface — and its task archive) —
+  tasks/schedules spec §"Consent & containment posture". `tasks.json` stays
+  "medium": the ledger is exactly what agents are asked to maintain.
   Everything else in an ICM is "medium"; non-ICM locators carry no tier.
 
   Classification works DIRECTLY off the locator's own `path` — which is
@@ -34,13 +39,17 @@ defmodule Valea.Agents.RiskTier do
   `CONTEXT.md` by basename at ANY depth (real ICMs route with nested
   CONTEXT.md files), plus the root `icm.yaml` identity file, plus anything
   under a `.claude/` directory at any depth (skills and harness config
-  change future agent behavior — ICM skills design spec, §Risk tier).
+  change future agent behavior — ICM skills design spec, §Risk tier), plus
+  the root `schedules.json` and anything under a `.valea/` directory at any
+  depth (tasks/schedules spec §"Consent & containment posture").
   Everything else in an ICM is "medium"; non-ICM locators carry no tier.
   """
   @spec classify(map()) :: String.t() | nil
   def classify(%{"kind" => "icm", "path" => path}) when is_binary(path) do
+    segments = Path.split(path)
+
     if Path.basename(path) in @behavior_basenames or path == "icm.yaml" or
-         ".claude" in Path.split(path) do
+         ".claude" in segments or ".valea" in segments or root_schedules?(segments) do
       "high"
     else
       "medium"
@@ -48,4 +57,13 @@ defmodule Valea.Agents.RiskTier do
   end
 
   def classify(_locator), do: nil
+
+  # Locator paths are ICM-RELATIVE by construction, so the registry file at
+  # the ICM root is exactly one segment — a basename test alone would also
+  # stamp a nested `clients/kita/schedules.json`, which the spec keeps
+  # ordinary ("at an enabled ICM root", matching PermissionPolicy's
+  # root-exact ask tier). `tasks.json` is deliberately absent: the ledger is
+  # what agents are asked to maintain.
+  defp root_schedules?([only]), do: String.downcase(only) == "schedules.json"
+  defp root_schedules?(_segments), do: false
 end
