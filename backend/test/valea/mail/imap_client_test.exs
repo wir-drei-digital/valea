@@ -173,6 +173,25 @@ defmodule Valea.Mail.ImapClientTest do
     assert :ok = FakeImapServer.await(server)
   end
 
+  test "oauth2: a server that drops the connection mid-SASL is NOT reported as :reauth_required" do
+    # A dropped socket is not a refused token: reporting one as the other would
+    # send the user through an OAuth re-consent over a network blip — and, worse,
+    # park the account in a sticky state a fresh token cannot clear.
+    script = [
+      {:send, "* OK ready"},
+      {:expect, @xoauth2_line, then: ["+ " <> @xoauth2_error]},
+      :close
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:error, reason} =
+             ImapClient.connect(oauth2_config(server), "ya29.TOKEN", connect_opts())
+
+    refute reason == :reauth_required
+    assert :ok = FakeImapServer.await(server)
+  end
+
   test "oauth2: untagged chatter inside the exchange is read past, not mistaken for a result" do
     script = [
       {:send, "* OK ready"},

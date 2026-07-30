@@ -258,6 +258,31 @@ defmodule Valea.Mail.SmtpClientTest do
     refute Enum.any?(log, &match?("MAIL FROM" <> _, &1))
   end
 
+  test "oauth2: a server that drops the connection mid-SASL is NOT :reauth_required" do
+    # Same reasoning as the IMAP side: a dropped socket must not be dressed up
+    # as a refused token. Both are pre-354, so both stay provably unsent.
+    server =
+      FakeSmtpServer.start([
+        :implicit_tls,
+        {:greet, "220 smtp.test ESMTP"},
+        {:expect, "EHLO", "250-smtp.test\r\n250 AUTH XOAUTH2"},
+        {:expect, @auth_xoauth2, "334 " <> @xoauth2_error},
+        :close
+      ])
+
+    assert {:error, reason} =
+             SmtpClient.send(
+               oauth2_config(server, :tls),
+               "ya29.TOKEN",
+               envelope(),
+               @message,
+               opts()
+             )
+
+    refute match?({:reauth_required, _}, reason)
+    FakeSmtpServer.await(server)
+  end
+
   test "oauth2 never falls back: a server without XOAUTH2 gets no AUTH at all" do
     # The one failure this exists to prevent: offering the ACCESS TOKEN as an
     # AUTH PLAIN password because the server happened to advertise PLAIN.
