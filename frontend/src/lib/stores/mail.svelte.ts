@@ -91,6 +91,13 @@ export type MailAccountStatus = {
    * `'password'`, the conservative read.
    */
   auth: 'password' | 'oauth2';
+  /**
+   * The account's on-disk mail store (`<ws>/sources/mail/<slug>`, absolute)
+   * — the ownership signature the settings card shows. On both the RPC
+   * accounts array and the status push; `null` only for payloads predating
+   * the field.
+   */
+  root: string | null;
   state: string;
   lastSyncAt: string | null;
   lastError: string | null;
@@ -236,6 +243,7 @@ export function normalizeMailAccountStatus(raw: Record<string, unknown>): MailAc
     configured: raw.configured === true,
     credential: raw.credential === 'present' ? 'present' : 'missing',
     auth: raw.auth === 'oauth2' ? 'oauth2' : 'password',
+    root: str(raw.root),
     state: str(raw.state) ?? 'inactive',
     lastSyncAt: str(raw.last_sync_at),
     lastError: str(raw.last_error),

@@ -1820,9 +1820,18 @@ defmodule Valea.Api.Mail do
         status |> stringify() |> Map.put("valid", true)
       end)
 
+    # `root` mirrors the engine status field of the same name — an
+    # invalid-config entry has no Engine to report it, but its store
+    # location is still a fact of the workspace layout.
     invalid_entries =
       Enum.map(invalid, fn {slug, reason} ->
-        %{"account" => slug, "valid" => false, "state" => "invalid_config", "reason" => reason}
+        %{
+          "account" => slug,
+          "valid" => false,
+          "state" => "invalid_config",
+          "reason" => reason,
+          "root" => Path.join([root, "sources", "mail", slug])
+        }
       end)
 
     (valid_entries ++ invalid_entries) |> Enum.sort_by(& &1["account"])

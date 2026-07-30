@@ -190,6 +190,17 @@ describe('replaceDanglingInlineImages', () => {
   });
 });
 
+describe('normalizeMailAccountStatus root', () => {
+  it('carries the on-disk mail store path, null when a payload predates the field', () => {
+    const withRoot = normalizeMailAccountStatus({
+      account: 'mara',
+      root: '/ws/sources/mail/mara'
+    });
+    expect(withRoot.root).toBe('/ws/sources/mail/mara');
+    expect(normalizeMailAccountStatus({ account: 'mara' }).root).toBeNull();
+  });
+});
+
 describe('mailAccessErrorMessage', () => {
   it('names the manual escape hatch for an unsupported CONTEXT.md', () => {
     const msg = mailAccessErrorMessage('context_unsupported', 'mara');

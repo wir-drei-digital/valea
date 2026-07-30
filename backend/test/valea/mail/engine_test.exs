@@ -597,6 +597,8 @@ defmodule Valea.Mail.EngineTest do
     assert_receive {:mail_status_changed, "mara", status}
     assert status.credential == "present"
     assert Engine.status("mara").credential == "present"
+    # The status names the account's on-disk store — settings-card display.
+    assert status.root == Path.join([root, "sources", "mail", "mara"])
   end
 
   test "env fallback: VALEA_MAIL_PASSWORD_<SLUG> is picked up at activation when unset previously",

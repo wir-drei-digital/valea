@@ -530,7 +530,7 @@
 <!-- Mail accounts & settings — a modal over the mail view (same pattern as
      the calendar route's Sources dialog; SetupPanel owns its own heading). -->
 <Dialog.Root bind:open={showSetup}>
-  <Dialog.Content class="max-h-[85vh] overflow-y-auto sm:max-w-xl">
+  <Dialog.Content class="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
     <SetupPanel />
   </Dialog.Content>
 </Dialog.Root>

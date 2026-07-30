@@ -115,6 +115,8 @@ export type MailStatusPush = {
   credential: string;
   /** The account's SASL mode (`'password'` | `'oauth2'`) — which keychain slot its secret lives in, and what "missing" means. */
   auth: string;
+  /** The account's on-disk mail store (`<ws>/sources/mail/<slug>`, absolute). */
+  root: string;
   state: string;
   last_sync_at: string | null;
   last_error: string | null;

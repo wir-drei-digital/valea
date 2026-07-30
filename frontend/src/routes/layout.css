@@ -149,6 +149,15 @@
     font-size: 13.5px;
     line-height: 1.5;
   }
+
+  /* Native scroll containers (pre/code blocks, modal overflow, tables) get
+     thin, paper-tinted bars — the ScrollArea component draws its own; this
+     covers everything the UA would otherwise render fat and gray. Browsers
+     without scrollbar-width support simply keep their default. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--paper-chip-border) transparent;
+  }
 }
 
 @utility text-overline {

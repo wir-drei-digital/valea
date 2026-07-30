@@ -649,7 +649,11 @@
   // C1) — so both arms stay unit-tested without a render harness.
 </script>
 
-<div class="flex flex-col items-start gap-3">
+<!-- `min-w-0` is load-bearing: as a grid item of Dialog.Content, this div's
+     automatic minimum width would otherwise be min-content — and the account
+     card's unbreakable mono path line would push the whole MODAL into
+     horizontal scroll instead of scrolling inside its own block. -->
+<div class="flex w-full min-w-0 flex-col items-start gap-3">
   {#if submitted}
     <Dialog.Header>
       <Dialog.Title class="font-display text-ink-heading text-[19px]">
@@ -676,7 +680,7 @@
       <Dialog.Title class="font-display text-ink-heading text-[19px]">Mail accounts</Dialog.Title>
     </Dialog.Header>
 
-    <ul class="flex w-full max-w-xl flex-col gap-3">
+    <ul class="flex w-full flex-col gap-3">
       {#each mailStore.accounts as status (status.account)}
         {@const recovery = accountRecovery(status)}
         <li class="border-paper-border bg-paper-card rounded-xl border px-4 py-3">
@@ -718,6 +722,15 @@
 
           {#if status.username}
             <p class="text-ink-meta mt-0.5 text-[12px]">{status.username}</p>
+          {/if}
+
+          {#if status.root}
+            <!-- The §1 ownership signature: where this mailbox lives on disk,
+                 in mono — plain files the user can open, back up, or take.
+                 A scrollable block, not a truncating line: these paths are
+                 long and the point is being able to read (and copy) them. -->
+            <pre
+              class="border-paper-hairline bg-paper-surface text-ink-meta mt-1.5 w-full overflow-x-auto rounded-md border px-2.5 py-1.5 font-mono text-[11px] whitespace-pre">{status.root}</pre>
           {/if}
 
           {#if signInError && signInError.account === status.account}
@@ -852,7 +865,7 @@
     </div>
 
     {#if trustedSenders.length > 0}
-      <div class="border-paper-hairline mt-6 w-full max-w-xl border-t pt-4">
+      <div class="border-paper-hairline mt-6 w-full border-t pt-4">
         <h2 class="font-display text-ink-heading text-[17px]">Trusted senders</h2>
         <p class="text-ink-meta mt-1 max-w-[480px] text-[12px]">
           Messages from these addresses load remote images automatically.

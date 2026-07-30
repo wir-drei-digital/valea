@@ -325,6 +325,10 @@ defmodule Valea.Mail.Engine do
           :configured => boolean(),
           :credential => String.t(),
           :auth => String.t(),
+          # The account's on-disk mail store (`<ws>/sources/mail/<slug>`) —
+          # the ownership signature the settings card shows; absolute,
+          # because the frontend is deliberately workspace-path-blind.
+          :root => String.t(),
           :state => String.t(),
           :last_sync_at => String.t() | nil,
           :last_error => String.t() | nil,
@@ -2580,6 +2584,7 @@ defmodule Valea.Mail.Engine do
       configured: false,
       credential: if(credential_present?(state), do: "present", else: "missing"),
       auth: to_string(account_auth(state)),
+      root: account_dir(state),
       state: state.status,
       last_sync_at: state.last_sync_at,
       last_error: state.last_error,
@@ -2604,6 +2609,7 @@ defmodule Valea.Mail.Engine do
       configured: true,
       credential: if(credential_present?(state), do: "present", else: "missing"),
       auth: to_string(account_auth(state)),
+      root: account_dir(state),
       state: state.status,
       last_sync_at: state.last_sync_at,
       last_error: state.last_error,
@@ -2632,6 +2638,11 @@ defmodule Valea.Mail.Engine do
     |> Map.merge(smtp_status(state))
     |> Map.merge(notification_status(state))
   end
+
+  # The account's mail store on disk — the same `sources/mail/<slug>` join
+  # every store/view module makes (`Valea.Mail.Account.account_path/2` et
+  # al.), absolute off the workspace root this Engine was activated with.
+  defp account_dir(state), do: Path.join([state.root, "sources", "mail", state.account])
 
   # Whether this account can send at all, and whether its SEND credential is
   # in RAM — `"n/a"` (not `"missing"`) for a push-only account, which has no
