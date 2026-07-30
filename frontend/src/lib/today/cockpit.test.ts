@@ -343,3 +343,45 @@ describe('schedule notices', () => {
     }
   });
 });
+
+// ICM git sync: the cockpit's `git` block is a THIRD delivery of
+// `Valea.Git.Engine.public_rows/1`'s rows (the RPC and the `git_status` push
+// are the other two), so the normalizer is the store's — this only pins that
+// the payload key is read and the rows survive the trip.
+describe('git block', () => {
+  it('normalizes the snake_case rows the engine publishes', () => {
+    const today = normalizeCockpitToday({
+      git: [
+        {
+          mount_key: 'workspace',
+          icm_name: 'workspace',
+          mode: 'full',
+          state: 'diverged',
+          reason: null,
+          branch: 'main',
+          ahead: 1,
+          behind: 2,
+          dirty: false,
+          local_sha: 'aaa',
+          remote_sha: 'bbb',
+          last_sync_at: '2026-07-30T08:00:00Z',
+          last_error: null,
+          conflict_session_id: null
+        }
+      ]
+    });
+
+    expect(today.git).toHaveLength(1);
+    expect(today.git[0]).toMatchObject({
+      mountKey: 'workspace',
+      state: 'diverged',
+      ahead: 1,
+      behind: 2,
+      lastSyncAt: '2026-07-30T08:00:00Z'
+    });
+  });
+
+  it('is an empty list when the payload has no git block at all', () => {
+    expect(normalizeCockpitToday({}).git).toEqual([]);
+  });
+});

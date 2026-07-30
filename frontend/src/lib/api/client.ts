@@ -141,6 +141,14 @@ import {
   unmountIcmChannel,
   icmDoctor as httpIcmDoctor,
   icmDoctorChannel,
+  gitStatus as httpGitStatus,
+  gitStatusChannel,
+  gitSyncNow as httpGitSyncNow,
+  gitSyncNowChannel,
+  setIcmGitSync as httpSetIcmGitSync,
+  setIcmGitSyncChannel,
+  startGitConflictSession as httpStartGitConflictSession,
+  startGitConflictSessionChannel,
   calendarStatus as httpCalendarStatus,
   calendarStatusChannel,
   setupCalendarSource as httpSetupCalendarSource,
@@ -265,6 +273,10 @@ import type {
   SetIcmEnabledFields,
   UnmountIcmFields,
   IcmDoctorFields,
+  GitStatusFields,
+  GitSyncNowFields,
+  SetIcmGitSyncFields,
+  StartGitConflictSessionFields,
   ListIcmMailAccessFields,
   SetIcmMailAccessFields,
   CalendarStatusFields,
@@ -601,7 +613,12 @@ const cockpitTodayFields = [
   { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] },
   // Schedule notices ride the same payload (parked / failed / newly
   // registered, last 24 h, no captured output).
-  { scheduleNotices: ['kind', 'mountKey', 'scheduleId', 'title', 'at'] }
+  { scheduleNotices: ['kind', 'mountKey', 'scheduleId', 'title', 'at'] },
+  // Git rows (ICM git sync spec §UI) — the SAME `Engine.public_rows/1` rows
+  // the `git_status` RPC and the `git_status` push carry, so this is an
+  // UNTYPED primitive field name, not a nested selection: the array items
+  // keep their snake_case keys and `stores/git.svelte.ts` normalizes them.
+  'git'
 ] as unknown as CockpitTodayFields;
 
 // Mail (Task 10 rework — account-scoped RPC surface, mail-as-maildir design
@@ -744,6 +761,21 @@ const setIcmMailAccessFields: SetIcmMailAccessFields = ['saved', 'accounts'];
 // small identity file into it — see `IcmInspection.adoptable`'s doc comment
 // in onboarding-path.ts.
 const inspectIcmFields: InspectIcmFields = ['ok', 'name', 'description', 'reason', 'adoptable'];
+
+// Git sync (ICM git sync spec — `Valea.Api.Git`). `repos` is an
+// UNCONSTRAINED `Array<Record<string, any>>` passthrough carrying the exact
+// snake_case rows `Valea.Git.Engine.public_rows/1` builds — the same
+// raw-delivery split as `mailStatusFields`/`calendarStatusFields`, with
+// `stores/git.svelte.ts`'s `normalizeGitRepoStatus` owning the camelCase
+// narrowing. The other three return plain top-level fields.
+//
+// `startGitConflictSession`'s `sessionId` is a TYPED field (the action
+// declares `session_id` under `constraints fields:`), so it arrives
+// camelCased like every typed field — unlike the rows inside `repos`.
+const gitStatusFields: GitStatusFields = ['repos'];
+const gitSyncNowFields: GitSyncNowFields = ['started'];
+const setIcmGitSyncFields: SetIcmGitSyncFields = ['saved'];
+const startGitConflictSessionFields: StartGitConflictSessionFields = ['sessionId', 'routed'];
 
 // Skills (ICM skills design spec §Frontend, Task 9 — `Valea.Api.Skills`).
 // `listSkills` selects the full per-row shape plus the top-level `dismissed`
@@ -1578,6 +1610,47 @@ function callIcmDoctorChannel(
 ) {
   return wrapChannelCall((handlers) =>
     icmDoctorChannel({ channel, input, fields: icmDoctorFields, ...handlers })
+  );
+}
+
+function callGitStatusChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    gitStatusChannel({ channel, input, fields: gitStatusFields, ...handlers })
+  );
+}
+
+function callGitSyncNowChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    gitSyncNowChannel({ channel, input, fields: gitSyncNowFields, ...handlers })
+  );
+}
+
+function callSetIcmGitSyncChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; sync: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setIcmGitSyncChannel({ channel, input, fields: setIcmGitSyncFields, ...handlers })
+  );
+}
+
+function callStartGitConflictSessionChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    startGitConflictSessionChannel({
+      channel,
+      input,
+      fields: startGitConflictSessionFields,
+      ...handlers
+    })
   );
 }
 
@@ -2917,6 +2990,50 @@ export const api = {
     runRpc(
       (channel) => callIcmDoctorChannel(channel, { mountKey, generation }),
       () => httpIcmDoctor(withAuth({ input: { mountKey, generation }, fields: icmDoctorFields }))
+    ),
+
+  // -- git sync (ICM git sync spec — `Valea.Api.Git`). `gitStatus` delivers
+  // its `repos` array RAW (snake_case rows from `Engine.public_rows/1`);
+  // `stores/git.svelte.ts` owns normalizing them, same raw-delivery split as
+  // `mailStatus`/`calendarStatus`.
+  //
+  // Every one of these is generation-guarded backend-side, INCLUDING the
+  // read: rows describe the repos of ONE workspace, and answering a stale
+  // caller with the new workspace's repos is the one wrong answer available.
+  //
+  // Errors here carry HUMAN SENTENCES in `type`/`message` (see
+  // `Valea.Api.Git`'s `error_for/1`), not machine codes — callers render
+  // `result.error` through `gitErrorMessage` and never branch on the prose.
+
+  gitStatus: (generation: number) =>
+    runRpc(
+      (channel) => callGitStatusChannel(channel, { generation }),
+      () => httpGitStatus(withAuth({ input: { generation }, fields: gitStatusFields }))
+    ),
+
+  gitSyncNow: (mountKey: string, generation: number) =>
+    runRpc(
+      (channel) => callGitSyncNowChannel(channel, { mountKey, generation }),
+      () => httpGitSyncNow(withAuth({ input: { mountKey, generation }, fields: gitSyncNowFields }))
+    ),
+
+  setIcmGitSync: (mountKey: string, sync: string, generation: number) =>
+    runRpc(
+      (channel) => callSetIcmGitSyncChannel(channel, { mountKey, sync, generation }),
+      () => httpSetIcmGitSync(withAuth({ input: { mountKey, sync, generation }, fields: setIcmGitSyncFields }))
+    ),
+
+  // Double-click-safe by construction: the backend CLAIMS the conflict slot
+  // before spawning anything, so a concurrent second click is routed to the
+  // first click's session (`routed: "existing"`) rather than starting a
+  // rival resolver. The UI still disables its button while this is in flight.
+  startGitConflictSession: (mountKey: string, generation: number) =>
+    runRpc(
+      (channel) => callStartGitConflictSessionChannel(channel, { mountKey, generation }),
+      () =>
+        httpStartGitConflictSession(
+          withAuth({ input: { mountKey, generation }, fields: startGitConflictSessionFields })
+        )
     ),
 
   // Skills (ICM skills design spec §Frontend, Task 9 — `Valea.Api.Skills`).

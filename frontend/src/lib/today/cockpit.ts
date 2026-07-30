@@ -5,6 +5,8 @@
  * accepts BOTH snake_case and camelCase keys, same defensive stance the
  * previous revision took toward the generic-action map boundary.
  */
+import { normalizeGitRepoRows, type GitRepoStatus } from '../stores/git.svelte';
+
 export type TodayPrepared = { title: string | null; summary: string | null; page: string | null };
 /** One of the tasks line's top items — ordered today-flag first, then due, then priority, backend-side. */
 export type TodayTopTask = {
@@ -91,6 +93,16 @@ export type CockpitToday = {
   calendar: CalendarSummary | null;
   recentSessions: RecentSession[];
   scheduleNotices: ScheduleNotice[];
+  /**
+   * Every git-capable ICM's sync row (ICM git sync spec §UI) — the SAME
+   * `Valea.Git.Engine.public_rows/1` rows the `git_status` RPC and push
+   * carry, so `stores/git.svelte.ts` owns both the type and the normalizer
+   * and this block is just a third delivery of them. Today feeds these into
+   * `gitStore` rather than rendering them directly: the store is what applies
+   * the busy-engine keep-on-empty policy, and one source of truth is what
+   * stops the Today rows and the sidebar badge from disagreeing.
+   */
+  git: GitRepoStatus[];
 };
 
 function str(v: unknown): string | null {
@@ -200,6 +212,7 @@ export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToda
   return {
     calendar: normalizeCalendarSummary(pick(raw, 'calendar', 'calendar')),
     scheduleNotices: normalizeScheduleNotices(pick(raw, 'schedule_notices', 'scheduleNotices')),
+    git: normalizeGitRepoRows(pick(raw, 'git', 'git')),
     sections: (Array.isArray(sections) ? sections : [])
       .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
       .map(normalizeSection),

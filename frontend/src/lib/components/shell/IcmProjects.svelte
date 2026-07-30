@@ -9,6 +9,7 @@
   // decision beyond "how does a row read" lives there, unit-tested.
   import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
+  import { gitStore } from '$lib/stores/git.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -23,6 +24,7 @@
   } from '$lib/components/knowledge/mount-sections';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
+  import GitSyncModal from './GitSyncModal.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Plus from '@lucide/svelte/icons/plus';
   import Archive from '@lucide/svelte/icons/archive';
@@ -32,6 +34,7 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import PowerOff from '@lucide/svelte/icons/power-off';
   import Stethoscope from '@lucide/svelte/icons/stethoscope';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
 
   let {
     /**
@@ -54,6 +57,12 @@
   let disabling: Record<string, boolean> = $state({});
   let diagnosing: Record<string, boolean> = $state({});
   let archiving: Record<string, boolean> = $state({});
+  /**
+   * The ICM whose Git sync panel is open, or `null`. One modal instance for
+   * the whole list (not one per row): only ever one can be open, and the
+   * panel reads its repo out of `gitStore` by key anyway.
+   */
+  let gitModal: { mountKey: string; name: string } | null = $state(null);
   /** The open Diagnose dialog's payload — detailed checks in a modal, never inline in the tree. */
   let doctorModal: {
     name: string;
@@ -174,6 +183,18 @@
         >
           {group.name}
         </a>
+        {#if gitStore.attention(group.mountKey)}
+          <!-- Git sync needs a human (diverged / blocked by local edits /
+               unfinished merge). Deliberately a quiet dot, not a second
+               triangle: the degraded triangle below means "this ICM is
+               broken", and a repo waiting to be merged is not that. -->
+          <span
+            class="bg-warn-ink size-1.5 shrink-0 rounded-full"
+            role="img"
+            title="Git sync needs attention"
+            aria-label="Git sync needs attention"
+          ></span>
+        {/if}
         {#if group.degraded}
           <TriangleAlert class="text-warn-ink size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
         {:else}
@@ -218,6 +239,15 @@
             <FolderOpen class="size-3.5" strokeWidth={1.5} />
             Open files
           </DropdownMenu.Item>
+          <!-- Only for ICMs the git engine actually has a row for — a plain
+               folder has nothing to configure here, and an item that opens a
+               panel saying "no git status" is worse than no item. -->
+          {#if gitStore.byMountKey(group.mountKey)}
+            <DropdownMenu.Item onSelect={() => (gitModal = { mountKey: group.mountKey, name: group.name })}>
+              <GitBranch class="size-3.5" strokeWidth={1.5} />
+              Git sync…
+            </DropdownMenu.Item>
+          {/if}
           <DropdownMenu.Item
             disabled={!!diagnosing[group.mountKey]}
             onSelect={() => void diagnose(group.mountKey, group.name)}
@@ -303,6 +333,19 @@
     </a>
   {/if}
 </div>
+
+<!-- Per-ICM git sync settings (ICM git sync spec §UI). Rendered once for the
+     whole list; `gitModal` names which ICM it is showing. -->
+{#if gitModal}
+  <GitSyncModal
+    open={true}
+    mountKey={gitModal.mountKey}
+    name={gitModal.name}
+    onOpenChange={(next) => {
+      if (!next) gitModal = null;
+    }}
+  />
+{/if}
 
 <!-- Diagnose result — a modal with the full gated checks, never inline in
      the project tree (same ✓/✕/○ vocabulary as the calendar setup panel;

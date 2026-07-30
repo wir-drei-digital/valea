@@ -4,6 +4,7 @@ import { workspaceStore } from './workspace.svelte';
 import { joinWorkspaceEvents, type WorkspaceEventPayload } from '../socket';
 import { wireMailEvents } from './mail.svelte';
 import { wireCalendarEvents } from './calendar.svelte';
+import { gitStore, wireGitEvents } from './git.svelte';
 import { mountsStore, wireMountsEvents } from './mounts.svelte';
 import { recentSessionsStore, wireRecentSessionsEvents } from './recent-sessions.svelte';
 import { sessionsListStore } from './sessions-list.svelte';
@@ -505,6 +506,13 @@ export const icmStore = new IcmStore(api);
 export function refreshSidebarProjectStores(generation?: number): void {
   void mountsStore.refresh(generation);
   void recentSessionsStore.refresh();
+  // Git sync rows join for the same reason: `IcmProjects.svelte` renders an
+  // attention dot from them, so they are sidebar data too. Generation-guarded
+  // like `mountsStore.refresh`, so it takes the same explicit argument — and
+  // this is the ONLY thing that populates the rows on a cold load: the
+  // `git_status` push only fires when the engine finishes a pass, which can be
+  // minutes away.
+  void gitStore.refresh(generation);
 }
 
 let icmEventsWired = false;
@@ -546,6 +554,11 @@ export function handleWorkspaceEvent(payload: WorkspaceEventPayload): void {
   // the PUSH'S generation — `workspaceStore.generation` is stale here, and every
   // ledger read is generation-guarded.
   tasksStore.reset();
+  // The git rows describe the OUTGOING workspace's repos. `GitStore` keeps
+  // its rows on an empty payload (the busy-engine caveat — see `applyRows`),
+  // so this explicit reset is the one thing that can clear them when the new
+  // workspace has no git ICMs at all.
+  gitStore.reset();
   if (payload.open) {
     void icmStore.refetch(payload.generation);
     refreshSidebarProjectStores(payload.generation);
@@ -673,6 +686,7 @@ export function wireIcmEvents(onWorkspace?: (payload: WorkspaceEventPayload) => 
 
   wireMailEvents(channel);
   wireCalendarEvents(channel);
+  wireGitEvents(channel);
   wireMountsEvents(channel);
   wireRecentSessionsEvents(channel);
 }

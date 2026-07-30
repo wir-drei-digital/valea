@@ -205,6 +205,26 @@ export type CalendarStatusPush = {
 /** `calendar_synced` push payload — Spec F pins this wire shape SNAKE_CASE (`event_count`). */
 export type CalendarSyncedPush = { source: string; event_count: number };
 
+/**
+ * `git_status` push payload (`ValeaWeb.WorkspaceEventsChannel`'s
+ * `{:git_status_changed, statuses}` clause) — EVERY git-capable repo of the
+ * open workspace in one message, not one row per push: the engine derives
+ * the whole map in a pass and broadcasts it whole.
+ *
+ * Rows are `Valea.Git.Engine.public_rows/1`'s output, deliberately left
+ * `Record<string, unknown>` here: same channel-builds-it-itself situation as
+ * `MailStatusPush`/`CalendarStatusPush` (no ash_typescript camelCasing — the
+ * keys stay `mount_key`, `last_sync_at`, `conflict_session_id`, …), and
+ * `stores/git.svelte.ts`'s `normalizeGitRepoStatus` is the one place that
+ * narrows them into `GitRepoStatus`.
+ *
+ * BUSY-ENGINE CAVEAT (ledgered): `repos` can arrive EMPTY for a moment while
+ * the engine is mid-pass, even though repos exist. `GitStore` therefore
+ * treats an empty payload as "nothing new to say" rather than "no repos" —
+ * see its `applyRows`.
+ */
+export type GitStatusPush = { repos: Record<string, unknown>[] };
+
 export function joinWorkspaceEvents(handlers: {
   onWorkspace?: (payload: WorkspaceEventPayload) => void;
   onIcmChanged?: () => void;

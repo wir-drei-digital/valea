@@ -5,6 +5,12 @@
   import { api } from '$lib/api/client';
   import { AppShell, MainColumn, Sidebar } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
+  import {
+    gitStore,
+    gitAttentionText,
+    resolveGitConflict,
+    type GitRepoStatus
+  } from '$lib/stores/git.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -55,6 +61,15 @@
     const result = await api.cockpitToday();
     if (result.ok) {
       today = normalizeCockpitToday(result.data as Record<string, any>);
+      // The cockpit's git rows are the same rows `gitStore` holds, and this
+      // page fetches them anyway — hand them over rather than render a second
+      // copy. The store applies the busy-engine keep-on-empty policy, and it
+      // is what the sidebar badge reads too, so the two can never disagree.
+      //
+      // `$state.snapshot`: PLAIN rows, not this page's `$state` proxies — two
+      // stores holding the same proxied objects is the identity-comparison
+      // trap `CalendarStore.#fetchToken` documents.
+      gitStore.applyRows($state.snapshot(today.git) as GitRepoStatus[]);
     } else if (loading) {
       // Only the initial mount-time load surfaces a failure state; a failed
       // background refresh keeps showing the last good payload instead of
@@ -117,6 +132,36 @@
       quickTarget
     );
   });
+
+  // Git attention rows (ICM git sync spec §UI). Read straight off `gitStore`
+  // — NOT off `today.git` — so an engine push updates this section without a
+  // cockpit round trip, and so a momentarily empty payload can't blank it
+  // (the store's keep-on-empty policy). `refresh()` above keeps the store fed
+  // from the cockpit payload; `refreshSidebarProjectStores` and the
+  // `git_status` push are the other two feeds.
+  const gitAttention = $derived(gitStore.attentionRepos);
+  /** The mount whose handoff is in flight — every Resolve button is disabled while one runs. */
+  let resolving = $state<string | null>(null);
+  let resolveError = $state<Record<string, string>>({});
+
+  async function resolveConflict(repo: GitRepoStatus): Promise<void> {
+    if (resolving) return;
+    resolving = repo.mountKey;
+    resolveError = { ...resolveError, [repo.mountKey]: '' };
+    try {
+      const outcome = await resolveGitConflict(repo, workspaceStore.generation ?? 0);
+      if (outcome.ok) {
+        void goto(`/chat?session=${outcome.sessionId}`);
+      } else {
+        // The message is the backend's own sentence (git errors carry no
+        // machine codes); the store already refreshed the rows, so a conflict
+        // that just cleared takes its row with it.
+        resolveError = { ...resolveError, [repo.mountKey]: outcome.error };
+      }
+    } finally {
+      resolving = null;
+    }
+  }
 
   let quickBusy = $state(false);
   let quickError = $state<string | null>(null);
@@ -375,6 +420,43 @@
                       </span>
                     {/if}
                   </a>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+
+        {#if gitAttention.length > 0}
+          <!-- Git attention rows (ICM git sync spec §Conflict notices): ONLY
+               the three agent-actionable states (diverged, blocked by local
+               edits, unfinished merge). Fetch/push/auth failures are
+               deliberately absent — those are `error`, which is doctor
+               material, not something to interrupt anyone with. Each row's
+               button hands the repo to an agent in one click; once a
+               resolution session exists it re-reads "Open session", so a
+               second resolver never gets started by accident. -->
+          <section class="mt-8">
+            <p class="text-overline mb-2">Git</p>
+            <ul class="flex flex-col">
+              {#each gitAttention as repo (repo.mountKey)}
+                <li class="py-1.5 pr-2">
+                  <div class="flex items-center gap-2">
+                    <span class="bg-warn-ink size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
+                    <span class="text-ink-body min-w-0 flex-1 text-[13px]">{gitAttentionText(repo)}</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={resolving !== null}
+                      onclick={() => void resolveConflict(repo)}
+                    >
+                      {repo.conflictSessionId ? 'Open session' : 'Resolve with agent'}
+                    </Button>
+                  </div>
+                  {#if resolveError[repo.mountKey]}
+                    <p class="text-warn-ink mt-1 ml-3.5 text-[12px]" role="alert">
+                      {resolveError[repo.mountKey]}
+                    </p>
+                  {/if}
                 </li>
               {/each}
             </ul>

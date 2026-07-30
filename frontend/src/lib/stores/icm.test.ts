@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { normalizeIcmNode, IcmStore, refreshSidebarProjectStores, handleWorkspaceEvent, icmStore } from './icm.svelte';
+import { gitStore } from './git.svelte';
 import { mountsStore } from './mounts.svelte';
 import { recentSessionsStore } from './recent-sessions.svelte';
 import { sessionsListStore } from './sessions-list.svelte';
@@ -7,6 +8,15 @@ import { workspaceStore } from './workspace.svelte';
 import { tasksStore } from '../tasks/store.svelte';
 import type { IcmNode } from '../shell/nav';
 import type { ApiResult } from '../api/client';
+
+// `refreshSidebarProjectStores` refreshes `gitStore` too (ICM git sync), and
+// the singleton store is bound to the REAL `api` — left unstubbed it would
+// open a socket from a unit test. Stubbed for every test in this file, the
+// same way each test already stubs `mountsStore.refresh`; the tests that care
+// re-spy it locally.
+beforeEach(() => {
+  vi.spyOn(gitStore, 'refresh').mockResolvedValue(undefined);
+});
 
 describe('normalizeIcmNode', () => {
   it('normalizes snake_case page_count from the wire, stamping mountKey', () => {
@@ -749,6 +759,22 @@ describe('refreshSidebarProjectStores', () => {
 
     mountsRefresh.mockRestore();
     recentRefresh.mockRestore();
+  });
+
+  // ICM git sync: the sidebar row's attention dot reads `gitStore`, so the git
+  // rows are sidebar data and ride the same cold-load/live-switch refresh.
+  // Generation-guarded backend-side (even the read), hence the explicit
+  // argument — same as mountsStore.
+  it('refreshes gitStore with the same explicit generation', () => {
+    vi.spyOn(mountsStore, 'refresh').mockResolvedValue(undefined);
+    vi.spyOn(recentSessionsStore, 'refresh').mockResolvedValue(undefined);
+    const gitRefresh = vi.spyOn(gitStore, 'refresh').mockResolvedValue(undefined);
+
+    refreshSidebarProjectStores(7);
+
+    expect(gitRefresh).toHaveBeenCalledWith(7);
+
+    vi.restoreAllMocks();
   });
 });
 
