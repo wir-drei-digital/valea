@@ -70,6 +70,9 @@ defmodule Valea.Schedules.Store do
   # purpose — see the `Run` moduledoc.
   @notice_outcomes ["waiting", "failed"]
 
+  # The in-flight outcome, matched by exact equality like every other token.
+  @running_outcome "running"
+
   @state_keys [
     :icm_id,
     :schedule_id,
@@ -265,6 +268,42 @@ defmodule Valea.Schedules.Store do
     |> Ash.read!()
     |> Enum.map(&run_map/1)
   end
+
+  @doc """
+  Every run still recorded `"running"`, newest `fired_at` first — optionally
+  narrowed by `icm_id:` and `schedule_id:`.
+
+  Not expressible as `runs/3` with a limit, and the difference is load-bearing
+  twice over. `runs(icm_id, schedule_id, 1)` answers "the newest event", and a
+  `"skipped: still running"` record IS a newer event than the run it is about —
+  so the newest row of a long-running schedule is a skip, not the run:
+
+    * **liveness** ("is a run of this schedule still going?") asked of the newest
+      row alone reads `false` the moment one skip lands, and the scheduler
+      launches a SECOND concurrent run at the next slot, then again at every
+      slot after that;
+    * **convergence** (marking runs `interrupted` after a crash or a workspace
+      close) never sees the stale `"running"` row hiding behind a newer skip.
+
+  Both need "the newest RUNNING-shaped row", which is what this answers. Unbounded
+  by design: the set is naturally tiny (at most one live run per schedule, plus
+  whatever a crash left behind), and a limit would reintroduce exactly the
+  hiding-behind-newer-rows bug it exists to fix.
+  """
+  @spec running_runs(keyword()) :: [map()]
+  def running_runs(filters \\ []) do
+    Run
+    |> Ash.Query.filter(outcome == ^@running_outcome)
+    |> narrow(:icm_id, filters[:icm_id])
+    |> narrow(:schedule_id, filters[:schedule_id])
+    |> Ash.Query.sort(fired_at: :desc, id: :desc)
+    |> Ash.read!()
+    |> Enum.map(&run_map/1)
+  end
+
+  defp narrow(query, _field, nil), do: query
+  defp narrow(query, :icm_id, value), do: Ash.Query.filter(query, icm_id == ^value)
+  defp narrow(query, :schedule_id, value), do: Ash.Query.filter(query, schedule_id == ^value)
 
   @doc """
   The cockpit's notice feed since `utc`, across every ICM and schedule:

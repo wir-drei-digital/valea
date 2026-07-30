@@ -10,10 +10,11 @@ defmodule Valea.Schedules.Scheduler do
   The tick is a pure function of `schedules.json` (re-read every time, never
   cached) and the persisted state in `Valea.Schedules.Store` (fingerprints,
   anchors, tombstones, run records). Process state holds only the injected
-  clock/runner/mount seams, the last unreadable-file hash per ICM (notice
-  dedupe), and the last sweep date — all of it reconstructible, none of it
-  load-bearing. A crash or a restart therefore cannot lose a slot, double-fire
-  one, or resurrect one that was already consumed.
+  clock/runner/mount seams, which mounts have had their first pass, the last
+  unreadable-file hash per ICM (notice dedupe), and the last sweep date — all of
+  it reconstructible, none of it load-bearing. A crash or a restart therefore
+  cannot lose a slot, double-fire one, or resurrect one that was already
+  consumed.
 
   ## The firing rule, in the order it runs (spec §Firing rule steps 1–7)
 
@@ -51,13 +52,21 @@ defmodule Valea.Schedules.Scheduler do
   candidate)`, so a backward clock jump or a restart can never regress one and
   re-expose consumed slots.
 
-  ## Catch-up, on the first tick
+  ## Catch-up, on each MOUNT's first pass
 
   Reconciliation runs first (so a definition edited while Valea was closed is
   reset, not caught up). Then `catchup: false` (the default) fast-forwards the
   anchor to `max(anchor, now)` — missed slots consumed silently — while
   `catchup: true` leaves it, and the ordinary due test produces exactly one
   coalesced fire recorded with `trigger: "catchup"`.
+
+  Per MOUNT, not per process: an ICM whose `schedules.json` was unreadable, or
+  whose mount was missing entirely, on the very first tick has not had its first
+  pass and is not marked as having had one. It gets the full treatment — stale-run
+  convergence and catch-up — on the first tick that can actually read it.
+  Otherwise repairing that file (or plugging that volume back in) would let the
+  ordinary due test back-fire one coalesced run for every slot that passed while
+  Valea could not see the schedule at all.
 
   The first tick runs from `handle_continue/2` rather than a timer: it must
   happen before any `tick_now/0`/`run_now/2` call this process might receive,
@@ -66,22 +75,28 @@ defmodule Valea.Schedules.Scheduler do
   ## Generation binding
 
   Every store write goes through `bound_write/2`, which re-checks the workspace
-  generation first (`Valea.Workspace.Manager.check_generation/1`) — a run
+  generation first (`Valea.Workspace.Manager.check_generation/2`) — a run
   completing after a workspace switch cannot write into the new workspace's
   state. The tick itself is gated the same way. The ONE exemption is
-  `terminate/2`, which marks still-`running` command runs `interrupted` under
-  the *closing* generation: that write is the terminator acting, not a stale
+  `terminate/2`, which marks still-`running` runs `interrupted` under the
+  *closing* generation: that write is the terminator acting, not a stale
   completion racing in (spec §Run lifecycle & workspace switch).
 
-  Two honest limits on that shutdown write. It is **best-effort**: on a
-  workspace close the Manager terminates the Repo BEFORE the Runtime, so by the
-  time this process is asked to stop, the database is usually already gone. The
-  reliable path is therefore the *boot* pass, which marks any command run still
-  recorded `running` as `interrupted` on the first tick — nothing can be live in
-  a Registry that was created seconds ago. Prompt runs are left `running` on
-  purpose: their completion is observed lazily by the run-history query joining
-  live session status (Task 6), which is also where a session parked on a
-  permission ask becomes a `waiting` notice.
+  One honest limit on that shutdown write: it is **best-effort**. On a workspace
+  close the Manager terminates the Repo BEFORE the Runtime, so by the time this
+  process is asked to stop, the database is usually already gone. The reliable
+  path is each mount's first pass, which marks every run still recorded
+  `running` — command AND prompt — as `interrupted` unless the runner reports it
+  actually live. Liveness decides rather than "the scheduler just started",
+  because `Valea.Schedules.Supervisor` is `:one_for_one`: a crashed scheduler is
+  replaced while the run Registry and its `CommandRun` children keep going, and
+  assuming otherwise would both destroy a live run's record and clear the way
+  for a second concurrent run.
+
+  A prompt run's ordinary COMPLETION is still observed lazily — the run-history
+  query joins live session status (Task 6), which is also where a session parked
+  on a permission ask becomes a `waiting` notice. This module only converges
+  rows whose session is provably gone.
 
   ## Test seams
 
@@ -144,6 +159,15 @@ defmodule Valea.Schedules.Scheduler do
   ICM, while a run of the schedule is already live, and while the workspace
   kill switch is engaged — "everything is off" has to mean it.
 
+  It goes through the same launch path a scheduled fire does, step 7's
+  launch-time re-validation included (with `:paused` allowed) — so an edit,
+  a pause or a delete landing between the list read and the spawn stops a manual
+  run exactly as it stops a scheduled one.
+
+  `:internal_error` is the catch-all for a surprise (a raise, an exit): it used
+  to be reported as `:not_found`, which told the UI a lie about a schedule that
+  is right there in the file.
+
   Records a run with `trigger: "manual"` and **does not touch the anchor**: a
   manual run consumes no slot, so the next scheduled fire lands exactly where
   it would have.
@@ -155,7 +179,8 @@ defmodule Valea.Schedules.Scheduler do
              | :not_executable
              | :already_running
              | :scheduler_paused
-             | :workspace_changed}
+             | :workspace_changed
+             | :internal_error}
   def run_now(icm_id, schedule_id) when is_binary(icm_id) and is_binary(schedule_id) do
     GenServer.call(__MODULE__, {:run_now, icm_id, schedule_id}, 120_000)
   end
@@ -184,8 +209,14 @@ defmodule Valea.Schedules.Scheduler do
       mounts_fun: Map.get(cfg, :mounts_fun) || fn -> {:ok, Valea.Mounts.enabled(cfg.root)} end,
       generation_fun: Map.get(cfg, :generation_fun) || (&default_generation_check/1),
       before_launch: Map.get(cfg, :before_launch),
-      boot: true,
+      # Per-ICM, not one global "have I booted yet" flag. A mount whose file was
+      # unreadable — or whose mount was missing entirely — on the first tick has
+      # NOT had its first pass, and must still get one (catch-up included) when it
+      # becomes readable, or the repair back-fires a coalesced run for every slot
+      # that passed meanwhile.
+      booted: MapSet.new(),
       notices: %{},
+      config_notice: false,
       last_sweep_date: nil
     }
 
@@ -219,9 +250,16 @@ defmodule Valea.Schedules.Scheduler do
     # The spec's one exemption from generation binding: the terminator records
     # `interrupted` synchronously, under the closing generation. Best-effort —
     # see the moduledoc: the Repo is usually already down on a workspace close,
-    # and the boot pass is what makes this converge.
-    Enum.each(live_command_keys(), fn {icm_id, schedule_id} ->
-      interrupt_running_run(icm_id, schedule_id)
+    # and each mount's first pass is what makes this converge.
+    #
+    # EVERY still-`running` row, both kinds and every ICM: prompt sessions and
+    # command subprocesses all die with the Runtime this process is part of, so
+    # by the time it stops, none of them is going to report anything. Reading
+    # `Store.running_runs/1` rather than the run Registry is what makes prompt
+    # rows converge too, and what stops a newer `skipped: still running` record
+    # from hiding the row that needs the write.
+    Enum.each(Store.running_runs(), fn run ->
+      Store.update_run(run.id, %{outcome: @interrupted})
     end)
 
     :ok
@@ -274,10 +312,10 @@ defmodule Valea.Schedules.Scheduler do
   # Broad rescue/catch on purpose, mirroring `Valea.Cockpit.mail_summary/0`: a
   # tick landing in a workspace-close window touches a Repo that is going away,
   # and "some dependency of the read is down" must degrade to a skipped tick
-  # rather than crash the scheduler (whose restart would then re-run the boot
-  # pass against the same dying workspace). `boot` deliberately stays set on a
-  # failed tick, so a first tick that could not complete retries its catch-up
-  # instead of silently skipping it.
+  # rather than crash the scheduler (whose restart would then re-run the first
+  # pass against the same dying workspace). A mount is marked booted only after
+  # its own pass COMPLETED, so a tick that died half-way retries the catch-up it
+  # did not finish instead of silently skipping it.
   defp tick(state) do
     clear_stale()
     now = now(state)
@@ -286,9 +324,9 @@ defmodule Valea.Schedules.Scheduler do
       mounts = icm_mounts(state)
 
       state
+      |> note_config()
       |> tick_mounts(mounts, now)
       |> sweep_if_due(mounts, now)
-      |> Map.put(:boot, false)
     else
       state
     end
@@ -308,6 +346,7 @@ defmodule Valea.Schedules.Scheduler do
 
   defp tick_mount(state, mount, now) do
     icm_id = mount.manifest.id
+    first? = not MapSet.member?(state.booted, icm_id)
 
     case SchedulesFile.load(mount.root) do
       %{status: :ok, entries: entries} ->
@@ -316,9 +355,12 @@ defmodule Valea.Schedules.Scheduler do
         state
         |> clear_notice(icm_id)
         |> reconcile(mount, icm_id, entries, now)
-        |> boot_pass(mount, icm_id, entries, now)
-        |> process_entries(mount, icm_id, entries, now)
+        |> first_pass(first?, icm_id, entries, now)
+        |> process_entries(mount, icm_id, entries, now, first?)
+        |> mark_booted(icm_id)
 
+      # Neither branch marks the mount booted: nothing was reconciled, so its
+      # first pass is still owed (see `state.booted`).
       %{status: :unreadable, hash: hash} ->
         note_unreadable(state, mount, icm_id, hash)
 
@@ -326,6 +368,8 @@ defmodule Valea.Schedules.Scheduler do
         clear_notice(state, icm_id)
     end
   end
+
+  defp mark_booted(state, icm_id), do: %{state | booted: MapSet.put(state.booted, icm_id)}
 
   # Entries with no id are not addressable — nothing can name them in an RPC,
   # nothing can key their state — so they are excluded from every pass; they
@@ -400,20 +444,12 @@ defmodule Valea.Schedules.Scheduler do
     })
   end
 
-  # -- the boot pass: stale runs + catch-up ------------------------------------
+  # -- a mount's first pass: stale runs + catch-up -----------------------------
 
-  defp boot_pass(%{boot: false} = state, _mount, _icm_id, _entries, _now), do: state
+  defp first_pass(state, false, _icm_id, _entries, _now), do: state
 
-  defp boot_pass(state, _mount, icm_id, entries, now) do
-    # Any command run still recorded `running` predates this workspace session
-    # (the Registry is seconds old and empty), so it was interrupted by whatever
-    # ended that session. Covers tombstoned schedules too, which is why it
-    # walks stored state rather than the file's entries.
-    Enum.each(Store.states_for(icm_id), fn row ->
-      if command_run_pending?(icm_id, row.schedule_id) do
-        bound_write(state, fn -> interrupt_running_run(icm_id, row.schedule_id) end)
-      end
-    end)
+  defp first_pass(state, true, icm_id, entries, now) do
+    converge_stale_runs(state, icm_id)
 
     # Spec §Catch-up: `false` fast-forwards (silently consuming what passed
     # while closed), `true` leaves the anchor for the ordinary due test to
@@ -428,80 +464,112 @@ defmodule Valea.Schedules.Scheduler do
     state
   end
 
-  defp command_run_pending?(icm_id, schedule_id) do
-    match?([%{outcome: @running, kind: "command"}], Store.runs(icm_id, schedule_id, 1))
+  # Every run still recorded `running` for this ICM whose run is NOT actually
+  # live is marked `interrupted` — the convergence the shutdown path cannot be
+  # relied on for (the Repo goes down before the Runtime on a workspace close).
+  #
+  # Liveness decides, not "the scheduler just started": `Valea.Schedules.
+  # Supervisor` is `:one_for_one`, so a scheduler crash leaves the run Registry
+  # and every `CommandRun` under it running. Assuming a fresh scheduler means a
+  # fresh world would mark those legitimately live runs `interrupted` and then
+  # accept a second concurrent run at the next slot.
+  #
+  # `Store.running_runs/1` rather than the newest row per schedule: a
+  # `skipped: still running` record is newer than the run it describes, and a
+  # stale `running` row hiding behind one would never converge.
+  defp converge_stale_runs(state, icm_id) do
+    Enum.each(Store.running_runs(icm_id: icm_id), fn run ->
+      unless run_live?(state, run) do
+        bound_write(state, fn -> Store.update_run(run.id, %{outcome: @interrupted}) end)
+      end
+    end)
   end
 
-  defp interrupt_running_run(icm_id, schedule_id) do
-    case Store.runs(icm_id, schedule_id, 1) do
-      [%{outcome: @running, id: run_id}] -> Store.update_run(run_id, %{outcome: @interrupted})
-      _no_pending_run -> :ok
-    end
+  defp run_live?(state, run) do
+    state.runner.live?(run.icm_id, run.schedule_id, run_kind(run), run)
   end
+
+  # A row's own recorded kind, since the schedule's current definition may have
+  # changed kind (or be gone) since the run started. An unrecognised kind is
+  # treated as a prompt, whose liveness check is the one that fails closed for a
+  # row with no live session.
+  defp run_kind(%{kind: "command"}), do: :command
+  defp run_kind(_prompt_or_unknown), do: :prompt
 
   # -- steps 3–7: per entry ----------------------------------------------------
 
-  defp process_entries(state, mount, icm_id, entries, now) do
-    paused_all? = kill_switch?(state)
+  # One map instead of eight positional arguments: everything the per-entry
+  # chain needs that is not the entry itself. `first?` is this MOUNT's first
+  # pass (the catch-up label), `paused_all?` the kill switch read once per mount
+  # pass, `advance?` whether a fire consumes its slot — false only for a manual
+  # run, which must leave the cadence exactly where it was.
+  defp fire_ctx(mount, icm_id, now, opts) do
+    %{
+      mount: mount,
+      icm_id: icm_id,
+      now: now,
+      first?: Keyword.get(opts, :first?, false),
+      paused_all?: Keyword.get(opts, :paused_all?, false),
+      advance?: Keyword.get(opts, :advance?, true)
+    }
+  end
 
-    Enum.each(entries, fn entry ->
-      process_entry(state, mount, icm_id, entry, now, paused_all?)
-    end)
+  defp process_entries(state, mount, icm_id, entries, now, first?) do
+    ctx =
+      fire_ctx(mount, icm_id, now,
+        first?: first?,
+        paused_all?: kill_switch?(state),
+        advance?: true
+      )
+
+    Enum.each(entries, fn entry -> process_entry(state, ctx, entry) end)
 
     state
   end
 
-  defp process_entry(state, mount, icm_id, entry, now, paused_all?) do
-    case Store.get_state(icm_id, entry.id) do
+  defp process_entry(state, ctx, entry) do
+    case Store.get_state(ctx.icm_id, entry.id) do
       nil ->
         # Only reachable when reconciliation's write was refused (stale
         # generation) — there is no anchor to reason from, so do nothing.
         :ok
 
       row ->
-        due(state, mount, icm_id, entry, row, now, paused_all?)
+        due(state, ctx, entry, row)
     end
   end
 
   # A state row with NO anchors at all — not something this module writes, but a
   # future writer (an RPC seeding a row) could. Adopt `now` rather than treating
   # the epoch as the anchor and firing every slot since 1970.
-  defp due(
-         state,
-         _mount,
-         icm_id,
-         entry,
-         %{last_attempted_slot: nil, first_seen_at: nil} = row,
-         now,
-         _paused_all?
-       ) do
-    advance(state, icm_id, entry.id, row, now)
+  defp due(state, ctx, entry, %{last_attempted_slot: nil, first_seen_at: nil} = row) do
+    advance(state, ctx.icm_id, entry.id, row, ctx.now)
   end
 
   # An entry with no parseable cron has no slots to walk, so "consume the
   # elapsed slots" degenerates to "consume the elapsed time": the anchor
   # advances to now, and repairing the cron (a fingerprint change, hence a
   # reset anyway) never back-fires.
-  defp due(state, _mount, icm_id, %Entry{cron: nil} = entry, row, now, _paused_all?) do
-    advance(state, icm_id, entry.id, row, now)
+  defp due(state, ctx, %Entry{cron: nil} = entry, row) do
+    advance(state, ctx.icm_id, entry.id, row, ctx.now)
   end
 
-  defp due(state, mount, icm_id, entry, row, now, paused_all?) do
-    case elapsed_slots(entry, row, now) do
+  defp due(state, ctx, entry, row) do
+    case elapsed_slots(entry, row, ctx.now) do
       {0, _latest} ->
         :ok
 
       {count, latest} ->
         cond do
-          entry.disposition != :executable or paused_all? ->
-            advance(state, icm_id, entry.id, row, latest)
+          entry.disposition != :executable or ctx.paused_all? ->
+            advance(state, ctx.icm_id, entry.id, row, latest)
 
-          live?(state, icm_id, entry) ->
-            record_skip(state, mount, icm_id, entry, count, latest, now)
-            advance(state, icm_id, entry.id, row, latest)
+          live?(state, ctx.icm_id, entry) ->
+            record_skip(state, ctx, entry, count, latest)
+            advance(state, ctx.icm_id, entry.id, row, latest)
 
           true ->
-            launch(state, mount, icm_id, entry, row, count, latest, now)
+            launch(state, ctx, entry, row, count, latest)
         end
     end
   end
@@ -536,14 +604,16 @@ defmodule Valea.Schedules.Scheduler do
 
   # -- step 7 + launch ---------------------------------------------------------
 
-  defp launch(state, mount, icm_id, entry, row, count, latest, now) do
-    trigger = if state.boot and entry.catchup, do: "catchup", else: "scheduled"
+  defp launch(state, ctx, entry, row, count, latest) do
+    # `catchup` labels the fire produced by this MOUNT's first pass — the one
+    # covering slots missed while the workspace was closed (or while this mount
+    # was unreadable or unmounted). Keyed off that mount's own first pass, not a
+    # global "is this the very first tick" flag.
+    trigger = if ctx.first? and entry.catchup, do: "catchup", else: "scheduled"
 
-    run_before_launch(state)
-
-    case revalidate(state, mount, entry) do
+    case revalidate(state, ctx.mount, entry, [:executable]) do
       {:ok, fresh} ->
-        fire(state, mount, icm_id, fresh, row, count, latest, now, trigger, advance: true)
+        fire(state, ctx, fresh, row, count, latest, trigger)
 
       :stop ->
         # Consume NOTHING this tick — not even the anchor. The next tick
@@ -553,47 +623,54 @@ defmodule Valea.Schedules.Scheduler do
   end
 
   # Test-only hook: the window the spec calls snapshot-to-spawn, made
-  # addressable so a test can land a pause/edit/kill-switch inside it.
+  # addressable so a test can land a pause/edit/kill-switch inside it. Lives in
+  # `revalidate/4` rather than at one call site, so it covers every path that
+  # can reach a spawn — the manual one included.
   defp run_before_launch(%{before_launch: hook}) when is_function(hook, 0), do: hook.()
   defp run_before_launch(_no_hook), do: :ok
 
-  defp revalidate(state, mount, entry) do
-    expected = entry.fingerprint
+  # Firing rule step 7, and the ONLY path to a spawn — a manual run goes through
+  # it too, with `:paused` allowed (the spec's identical fire path; a human
+  # asking for a paused schedule is an override, an expired snapshot is not).
+  # The fresh entry is what launches: the guarantee is snapshot-based.
+  defp revalidate(state, mount, entry, allowed) do
+    run_before_launch(state)
 
     with false <- kill_switch?(state),
          %{status: :ok, entries: entries} <- SchedulesFile.load(mount.root),
-         %Entry{disposition: :executable, fingerprint: ^expected} = fresh <-
-           Enum.find(entries, &(&1.id == entry.id)) do
+         %Entry{} = fresh <- Enum.find(entries, &(&1.id == entry.id)),
+         true <- fresh.disposition in allowed,
+         true <- fresh.fingerprint == entry.fingerprint do
       {:ok, fresh}
     else
-      _gone_or_changed_or_paused -> :stop
+      _gone_or_changed_or_paused_or_switched -> :stop
     end
   end
 
   # The lifecycle the store documents: record BEFORE the spawn (so a crash in
   # the spawn window still leaves evidence a fire happened), attach the session
   # after, and only then advance the anchor.
-  defp fire(state, mount, icm_id, entry, row, count, latest, now, trigger, opts) do
+  defp fire(state, ctx, entry, row, count, latest, trigger) do
     kind = Atom.to_string(entry.payload.kind)
 
     attrs = %{
-      icm_id: icm_id,
+      icm_id: ctx.icm_id,
       schedule_id: entry.id,
       fingerprint: entry.fingerprint,
       slot: latest,
-      fired_at: now,
+      fired_at: ctx.now,
       trigger: trigger,
       kind: kind,
       outcome: @running,
       coalesced_count: count,
-      mount_key: mount.name
+      mount_key: ctx.mount.name
     }
 
     case bound_write(state, fn -> Store.record_run(attrs) end) do
       {:ok, run_id} ->
-        meta = meta(state, mount, icm_id, entry, latest, trigger, count, run_id)
-        result = start_run(state, mount, entry, meta)
-        settle(state, mount, icm_id, entry, row, latest, run_id, result, kind, trigger, opts)
+        meta = meta(state, ctx, entry, latest, trigger, count, run_id)
+        result = start_run(state, ctx.mount, entry, meta)
+        settle(state, ctx, entry, row, latest, run_id, result, kind, trigger)
 
       :refused ->
         {:error, :workspace_changed}
@@ -616,7 +693,7 @@ defmodule Valea.Schedules.Scheduler do
     :exit, reason -> {:error, inspect(reason)}
   end
 
-  defp settle(state, mount, icm_id, entry, row, latest, run_id, result, kind, trigger, opts) do
+  defp settle(state, ctx, entry, row, latest, run_id, result, kind, trigger) do
     case result do
       {:ok, handle} ->
         if is_binary(handle) do
@@ -624,8 +701,8 @@ defmodule Valea.Schedules.Scheduler do
         end
 
         audit("schedule_fired", %{
-          "mount_key" => mount.name,
-          "icm_id" => icm_id,
+          "mount_key" => ctx.mount.name,
+          "icm_id" => ctx.icm_id,
           "schedule_id" => entry.id,
           "fingerprint" => entry.fingerprint,
           "trigger" => trigger,
@@ -635,7 +712,7 @@ defmodule Valea.Schedules.Scheduler do
           "command" => command_line(entry)
         })
 
-        if opts[:advance], do: advance(state, icm_id, entry.id, row, latest)
+        advance_if(state, ctx, entry, row, latest)
         {:ok, run_id}
 
       {:error, reason} ->
@@ -648,8 +725,8 @@ defmodule Valea.Schedules.Scheduler do
         end)
 
         audit("schedule_run_failed", %{
-          "mount_key" => mount.name,
-          "icm_id" => icm_id,
+          "mount_key" => ctx.mount.name,
+          "icm_id" => ctx.icm_id,
           "schedule_id" => entry.id,
           "fingerprint" => entry.fingerprint,
           "trigger" => trigger,
@@ -659,30 +736,35 @@ defmodule Valea.Schedules.Scheduler do
 
         # The slot is spent either way — the spec's no-auto-retry rule ("the
         # next slot is the retry").
-        if opts[:advance], do: advance(state, icm_id, entry.id, row, latest)
+        advance_if(state, ctx, entry, row, latest)
         {:error, reason}
     end
   end
 
-  defp record_skip(state, mount, icm_id, entry, count, latest, now) do
+  defp advance_if(state, %{advance?: true} = ctx, entry, row, latest),
+    do: advance(state, ctx.icm_id, entry.id, row, latest)
+
+  defp advance_if(_state, _manual_ctx, _entry, _row, _latest), do: :ok
+
+  defp record_skip(state, ctx, entry, count, latest) do
     bound_write(state, fn ->
       Store.record_run(%{
-        icm_id: icm_id,
+        icm_id: ctx.icm_id,
         schedule_id: entry.id,
         fingerprint: entry.fingerprint,
         slot: latest,
-        fired_at: now,
+        fired_at: ctx.now,
         trigger: "scheduled",
         kind: Atom.to_string(entry.payload.kind),
         outcome: @skipped,
         coalesced_count: count,
-        mount_key: mount.name
+        mount_key: ctx.mount.name
       })
     end)
 
     audit("schedule_skipped", %{
-      "mount_key" => mount.name,
-      "icm_id" => icm_id,
+      "mount_key" => ctx.mount.name,
+      "icm_id" => ctx.icm_id,
       "schedule_id" => entry.id,
       "fingerprint" => entry.fingerprint,
       "trigger" => "scheduled",
@@ -690,11 +772,11 @@ defmodule Valea.Schedules.Scheduler do
     })
   end
 
-  defp meta(state, mount, icm_id, entry, slot, trigger, count, run_id) do
+  defp meta(state, ctx, entry, slot, trigger, count, run_id) do
     %{
-      icm_id: icm_id,
-      icm_name: mount.manifest.name,
-      mount_key: mount.name,
+      icm_id: ctx.icm_id,
+      icm_name: ctx.mount.manifest.name,
+      mount_key: ctx.mount.name,
       schedule_id: entry.id,
       fingerprint: entry.fingerprint,
       slot: slot,
@@ -725,18 +807,39 @@ defmodule Valea.Schedules.Scheduler do
          {:ok, mount} <- find_mount(state, icm_id),
          {:ok, entry} <- find_entry(mount, schedule_id),
          :ok <- runnable(entry),
-         :ok <- not_live(state, icm_id, entry) do
-      # Same launch path, minus the anchor: a manual run consumes no slot.
-      fire(state, mount, icm_id, entry, nil, 1, now, now, "manual", advance: false)
+         :ok <- not_live(state, icm_id, entry),
+         {:ok, fresh} <- revalidate_manual(state, mount, entry) do
+      # The identical fire path — step 7's re-validation included — minus the
+      # anchor: a manual run consumes no slot.
+      fire(
+        state,
+        fire_ctx(mount, icm_id, now, advance?: false),
+        fresh,
+        nil,
+        1,
+        now,
+        "manual"
+      )
     end
   rescue
     error ->
       Logger.warning("run_now degraded: #{Exception.message(error)}")
-      {:error, :not_found}
+      {:error, :internal_error}
   catch
     :exit, reason ->
       Logger.warning("run_now degraded: #{inspect(reason)}")
-      {:error, :not_found}
+      {:error, :internal_error}
+  end
+
+  # A manual run re-validates like a scheduled one, with `:paused` allowed. The
+  # snapshot can still move between the two reads (an edit, a delete, a pause
+  # landing in those microseconds); `:not_executable` is the honest answer for
+  # all of them — the caller re-reads the list, which then shows why.
+  defp revalidate_manual(state, mount, entry) do
+    case revalidate(state, mount, entry, [:executable, :paused]) do
+      {:ok, fresh} -> {:ok, fresh}
+      :stop -> {:error, :not_executable}
+    end
   end
 
   defp find_mount(state, icm_id) do
@@ -774,12 +877,14 @@ defmodule Valea.Schedules.Scheduler do
 
   # -- liveness ----------------------------------------------------------------
 
+  # The newest RUNNING-shaped row, never merely the newest row. A
+  # `skipped: still running` record is NEWER than the run it is about, so asking
+  # `runs(icm_id, id, 1)` reads "not live" from the first skip onwards — and the
+  # scheduler then launches a SECOND concurrent run at that slot, and another at
+  # every slot after it, for as long as the first run lives. See
+  # `Valea.Schedules.Store.running_runs/1`.
   defp live?(state, icm_id, entry) do
-    last =
-      case Store.runs(icm_id, entry.id, 1) do
-        [run] -> run
-        [] -> nil
-      end
+    last = Store.running_runs(icm_id: icm_id, schedule_id: entry.id) |> List.first()
 
     state.runner.live?(icm_id, entry.id, entry.payload.kind, last)
   end
@@ -899,6 +1004,28 @@ defmodule Valea.Schedules.Scheduler do
 
   defp clear_notice(state, icm_id), do: %{state | notices: Map.delete(state.notices, icm_id)}
 
+  # The kill switch fails CLOSED on a `config/workspace.yaml` that exists but
+  # will not parse (`Valea.Mounts.scheduler_pause_state/1`) — nothing fires while
+  # nobody can read whether the user asked for a pause. Silence would be the
+  # wrong shape of safe, so it is audited: once per transition into the
+  # unreadable state, not once per tick.
+  defp note_config(state) do
+    case {Valea.Mounts.scheduler_pause_state(state.root), state.config_notice} do
+      {:unreadable, false} ->
+        audit("scheduler_config_unreadable", %{"root" => state.root})
+        %{state | config_notice: true}
+
+      {:unreadable, true} ->
+        state
+
+      {_readable, true} ->
+        %{state | config_notice: false}
+
+      {_readable, false} ->
+        state
+    end
+  end
+
   defp audit(type, fields), do: Valea.Audit.append(type, fields)
 
   # Daily auto-archive (spec §Archival) — once on the first tick, then whenever
@@ -920,12 +1047,6 @@ defmodule Valea.Schedules.Scheduler do
     error -> Logger.warning("task sweep degraded (#{mount.name}): #{Exception.message(error)}")
   catch
     :exit, reason -> Logger.warning("task sweep degraded (#{mount.name}): #{inspect(reason)}")
-  end
-
-  defp live_command_keys do
-    Registry.select(Valea.Schedules.RunRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
-  catch
-    _kind, _reason -> []
   end
 
   defp iso(nil), do: nil

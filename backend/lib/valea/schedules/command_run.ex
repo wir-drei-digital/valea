@@ -223,9 +223,23 @@ defmodule Valea.Schedules.CommandRun do
     duration = System.monotonic_time(:millisecond) - state.started_ms
     output = with_detail(state.output, detail)
 
-    send(state.owner, {:run_finished, state.meta.run_id, outcome, duration, output})
+    send(report_to(state), {:run_finished, state.meta.run_id, outcome, duration, output})
 
     {:stop, :normal, %{state | reported: true}}
+  end
+
+  # The REGISTERED scheduler, not the pid that started this run — those differ
+  # after a scheduler crash. `Valea.Schedules.Supervisor` is `:one_for_one`, so a
+  # crashed scheduler is replaced while this process and its subprocess keep
+  # running; a captured pid would then be a corpse, `send/2` to it would
+  # silently succeed, and the outcome would vanish (leaving a `running` row for
+  # the next boot pass to mark `interrupted` — evidence destroyed for no reason).
+  #
+  # Falls back to the owner when no scheduler is registered, which is how a
+  # runner started outside the supervision tree (the command-run tests) gets its
+  # report.
+  defp report_to(state) do
+    Process.whereis(Valea.Schedules.Scheduler) || state.owner
   end
 
   defp with_detail(output, nil), do: output

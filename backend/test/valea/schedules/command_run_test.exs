@@ -133,6 +133,46 @@ defmodule Valea.Schedules.CommandRunTest do
     assert_receive {:run_finished, "run-1", _outcome, _duration, _output}, 5_000
   end
 
+  # Spec §Testing names this one: "command run stopped on workspace close". The
+  # run process going away must take its subprocess with it — erlexec would
+  # otherwise leave an orphan running against the ICM with nobody watching.
+  @tag :unix_only
+  test "terminating the run stops the subprocess", ctx do
+    script =
+      PlatformFixtures.script!(
+        ctx.icm,
+        "slow",
+        "sleep 30\n",
+        "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n"
+      )
+
+    {:ok, pid} = start_run(ctx, Path.basename(script))
+    os_pid = :sys.get_state(pid).handle.os_pid
+    assert alive?(os_pid)
+
+    GenServer.stop(pid)
+
+    assert await_dead(os_pid), "subprocess #{os_pid} outlived its run process"
+  end
+
+  @tag :unix_only
+  test "the run supervisor going down stops the subprocess too", ctx do
+    script =
+      PlatformFixtures.script!(
+        ctx.icm,
+        "slow",
+        "sleep 30\n",
+        "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n"
+      )
+
+    {:ok, pid} = start_run(ctx, Path.basename(script))
+    os_pid = :sys.get_state(pid).handle.os_pid
+
+    stop_supervised!(Valea.Schedules.RunSupervisor)
+
+    assert await_dead(os_pid), "subprocess #{os_pid} outlived the run supervisor"
+  end
+
   # Prompt liveness is read off the SESSION registry (never the Manager, never a
   # flag the scheduler keeps): a live registration means the run is still going.
   describe "live?/4 for prompt runs" do
@@ -173,6 +213,21 @@ defmodule Valea.Schedules.CommandRunTest do
   end
 
   # -- helpers -----------------------------------------------------------------
+
+  # `kill -0` probes for existence without signalling. The kill itself is
+  # asynchronous (erlexec's `kill_timeout`), hence the bounded wait.
+  defp alive?(os_pid) do
+    {_out, status} = System.cmd("kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    status == 0
+  end
+
+  defp await_dead(os_pid, attempts \\ 200) do
+    cond do
+      not alive?(os_pid) -> true
+      attempts > 0 -> Process.sleep(25) && await_dead(os_pid, attempts - 1)
+      true -> false
+    end
+  end
 
   defp start_run(ctx, command, opts \\ []) do
     args =

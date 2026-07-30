@@ -491,6 +491,51 @@ defmodule Valea.Schedules.StoreTest do
 
   # -- notices -----------------------------------------------------------------
 
+  describe "running_runs/1" do
+    test "finds the newest RUNNING row even when a newer record hides it" do
+      {:ok, running} = Store.record_run(run_attrs(%{outcome: "running", session_id: "sess-1"}))
+
+      {:ok, _skip} =
+        Store.record_run(
+          run_attrs(%{
+            outcome: "skipped: still running",
+            fired_at: at("2026-07-30T08:30:00Z")
+          })
+        )
+
+      # `runs/3` answers "the newest EVENT", which is the skip — the distinction
+      # liveness and interrupted-convergence both depend on.
+      assert [%{outcome: "skipped: still running"} | _] = Store.runs(@icm, "s-morning", 5)
+      assert [%{id: ^running, session_id: "sess-1"}] = Store.running_runs()
+    end
+
+    test "narrows by icm and schedule, newest first, and ignores finished runs" do
+      {:ok, older} = Store.record_run(run_attrs(%{outcome: "running"}))
+
+      {:ok, newer} =
+        Store.record_run(run_attrs(%{outcome: "running", fired_at: at("2026-07-30T09:00:00Z")}))
+
+      {:ok, other_schedule} =
+        Store.record_run(run_attrs(%{schedule_id: "s-nightly", outcome: "running"}))
+
+      {:ok, other_icm} = Store.record_run(run_attrs(%{icm_id: @other_icm, outcome: "running"}))
+      {:ok, _done} = Store.record_run(run_attrs(%{outcome: "completed"}))
+
+      assert Store.running_runs(icm_id: @icm, schedule_id: "s-morning")
+             |> Enum.map(& &1.id) == [newer, older]
+
+      assert Store.running_runs(icm_id: @icm) |> Enum.map(& &1.id) |> Enum.sort() ==
+               Enum.sort([newer, older, other_schedule])
+
+      assert other_icm in (Store.running_runs() |> Enum.map(& &1.id))
+    end
+
+    test "answers with an empty list when nothing is in flight" do
+      {:ok, _done} = Store.record_run(run_attrs(%{outcome: "completed"}))
+      assert Store.running_runs() == []
+    end
+  end
+
   describe "notices_since/1" do
     test "is empty on an empty store" do
       assert Store.notices_since(at("2026-07-30T00:00:00Z")) == %{

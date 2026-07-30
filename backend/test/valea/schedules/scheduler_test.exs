@@ -11,10 +11,19 @@ defmodule Valea.Schedules.SchedulerTest do
   @generation 7
 
   # The determinism harness: a runner that records what it was asked to launch
-  # instead of launching it, and answers liveness off state the test sets
-  # explicitly. Liveness is a runner concern precisely so the scheduler never
-  # needs to inspect process state (production derives it from the Registry and
-  # `Valea.Agents.list_sessions/0`; this derives it from an Agent).
+  # instead of launching it. Liveness is a runner concern precisely so the
+  # scheduler never needs to inspect process state.
+  #
+  # It answers `live?/4` the way `Runner.Live` does, and that is deliberate. An
+  # earlier version keyed liveness off `{icm_id, schedule_id}` and ignored
+  # `last_run` entirely — which masked a real bug: the scheduler was handing it
+  # the newest run row, and a `skipped: still running` record is NEWER than the
+  # run it describes, so from the second skip onwards production read "not live"
+  # and launched a second concurrent session. A fake that ignores the argument
+  # under test cannot fail the test that matters. So: a prompt run is live iff
+  # `last_run` is a running-shaped row whose SESSION the test still holds open,
+  # and a launched session is registered as live automatically (a started
+  # session is live until something ends it).
   defmodule FakeRunner do
     @moduledoc false
     @behaviour Valea.Schedules.Runner
@@ -24,26 +33,64 @@ defmodule Valea.Schedules.SchedulerTest do
     def child_spec(test), do: %{id: @agent, start: {__MODULE__, :start_link, [test]}}
 
     def start_link(test) do
-      Agent.start_link(fn -> %{test: test, live: %{}, fail: nil} end, name: @agent)
+      Agent.start_link(
+        fn ->
+          %{test: test, sessions: MapSet.new(), commands: MapSet.new(), fail: nil, seq: 0}
+        end,
+        name: @agent
+      )
     end
 
-    def set_live(icm_id, schedule_id, live?) do
-      Agent.update(@agent, fn s -> %{s | live: Map.put(s.live, {icm_id, schedule_id}, live?)} end)
+    @doc "Ends a live prompt session, as an agent finishing its turn would."
+    def end_session(session_id) do
+      Agent.update(@agent, &%{&1 | sessions: MapSet.delete(&1.sessions, session_id)})
+    end
+
+    @doc "Marks a session live without a launch — for a pre-seeded run row."
+    def mark_session_live(session_id) do
+      Agent.update(@agent, &%{&1 | sessions: MapSet.put(&1.sessions, session_id)})
+    end
+
+    @doc "Ends a live command run (the `CommandRun` process going away)."
+    def end_command(icm_id, schedule_id) do
+      Agent.update(@agent, &%{&1 | commands: MapSet.delete(&1.commands, {icm_id, schedule_id})})
     end
 
     def fail(reason), do: Agent.update(@agent, fn s -> %{s | fail: reason} end)
 
     @impl true
     def start_prompt(_mount, entry, meta) do
-      launch(entry, meta, {:ok, "sess-" <> meta.schedule_id})
+      session_id = "sess-#{meta.schedule_id}-#{next_seq()}"
+      Agent.update(@agent, &%{&1 | sessions: MapSet.put(&1.sessions, session_id)})
+      launch(entry, meta, {:ok, session_id})
     end
 
     @impl true
-    def start_command(_mount, entry, meta, _owner), do: launch(entry, meta, {:ok, self()})
+    def start_command(_mount, entry, meta, _owner) do
+      Agent.update(
+        @agent,
+        &%{&1 | commands: MapSet.put(&1.commands, {meta.icm_id, meta.schedule_id})}
+      )
+
+      launch(entry, meta, {:ok, self()})
+    end
 
     @impl true
-    def live?(icm_id, schedule_id, _kind, _last_run) do
-      Agent.get(@agent, &Map.get(&1.live, {icm_id, schedule_id}, false))
+    def live?(_icm_id, _schedule_id, :prompt, %{outcome: "running", session_id: session_id})
+        when is_binary(session_id) do
+      Agent.get(@agent, &MapSet.member?(&1.sessions, session_id))
+    end
+
+    @impl true
+    def live?(_icm_id, _schedule_id, :prompt, _no_running_run), do: false
+
+    @impl true
+    def live?(icm_id, schedule_id, :command, _last_run) do
+      Agent.get(@agent, &MapSet.member?(&1.commands, {icm_id, schedule_id}))
+    end
+
+    defp next_seq do
+      Agent.get_and_update(@agent, fn s -> {s.seq + 1, %{s | seq: s.seq + 1}} end)
     end
 
     defp launch(entry, meta, ok) do
@@ -114,7 +161,7 @@ defmodule Valea.Schedules.SchedulerTest do
     assert [run] = runs()
     assert run.outcome == "running"
     assert run.kind == "prompt"
-    assert run.session_id == "sess-s1"
+    assert run.session_id =~ ~r/^sess-s1-\d+$/
     assert run.trigger == "scheduled"
     assert run.coalesced_count == 1
     assert run.slot == at("2026-07-30T09:00:00Z")
@@ -143,20 +190,70 @@ defmodule Valea.Schedules.SchedulerTest do
        ctx do
     write_schedules(ctx, [entry_raw()])
     start_scheduler(ctx)
-    FakeRunner.set_live(@icm_id, "s1", true)
+
+    tick(ctx, "2026-07-30T09:00:00Z")
+    assert_received {:fired, "s1", _meta}
 
     tick(ctx, "2026-07-30T11:05:00Z")
 
     refute_received {:fired, _, _}
-    assert [skip] = runs()
+    assert [skip, _running] = runs()
     assert skip.outcome == "skipped: still running"
-    assert skip.coalesced_count == 3
+    assert skip.coalesced_count == 2
     assert skip.slot == at("2026-07-30T11:00:00Z")
     assert state().last_attempted_slot == at("2026-07-30T11:00:00Z")
 
     # Same clock, still live: no elapsed slots, so nothing new is recorded.
     :ok = Scheduler.tick_now()
-    assert length(runs()) == 1
+    assert length(runs()) == 2
+  end
+
+  test "a skip record never hides the live run: further slots keep skipping, never launch a second run",
+       ctx do
+    write_schedules(ctx, [entry_raw()])
+    start_scheduler(ctx)
+
+    tick(ctx, "2026-07-30T09:00:00Z")
+    assert_received {:fired, "s1", _meta}
+    assert [%{outcome: "running", session_id: session}] = runs()
+
+    # First skip: now the NEWEST row for this schedule is the skip, not the run.
+    tick(ctx, "2026-07-30T10:00:00Z")
+    refute_received {:fired, _, _}
+
+    # The slot that used to break it. Liveness read off the newest row alone sees
+    # a skip (outcome "skipped: still running", no session) and answers "not
+    # live", so a SECOND session launches here — and again at every later slot.
+    tick(ctx, "2026-07-30T11:00:00Z")
+    refute_received {:fired, _, _}
+    tick(ctx, "2026-07-30T12:00:00Z")
+    refute_received {:fired, _, _}
+
+    outcomes = runs() |> Enum.map(& &1.outcome) |> Enum.frequencies()
+    assert outcomes == %{"running" => 1, "skipped: still running" => 3}
+
+    # And when the session really ends, the next slot fires again — exactly once.
+    FakeRunner.end_session(session)
+    tick(ctx, "2026-07-30T13:00:00Z")
+    assert_received {:fired, "s1", %{coalesced_count: 1}}
+    refute_received {:fired, _, _}
+  end
+
+  test "a live COMMAND run is derived from the run registry, not from the newest row", ctx do
+    raw = entry_raw(%{"payload" => %{"kind" => "command", "command" => "echo", "args" => ["hi"]}})
+    write_schedules(ctx, [raw])
+    start_scheduler(ctx)
+
+    tick(ctx, "2026-07-30T09:00:00Z")
+    assert_received {:fired, "s1", _meta}
+
+    tick(ctx, "2026-07-30T10:00:00Z")
+    tick(ctx, "2026-07-30T11:00:00Z")
+    refute_received {:fired, _, _}
+
+    FakeRunner.end_command(@icm_id, "s1")
+    tick(ctx, "2026-07-30T12:00:00Z")
+    assert_received {:fired, "s1", _meta}
   end
 
   # -- 4. silent slot consumption ----------------------------------------------
@@ -441,7 +538,8 @@ defmodule Valea.Schedules.SchedulerTest do
     assert_received {:fired, "s1", meta}
     assert meta.trigger == "manual"
     assert meta.coalesced_count == 1
-    assert [%{id: ^run_id, trigger: "manual", outcome: "running", session_id: "sess-s1"}] = runs()
+    assert [%{id: ^run_id, trigger: "manual", outcome: "running", session_id: session}] = runs()
+    assert session =~ ~r/^sess-s1-\d+$/
     assert state().last_attempted_slot == at("2026-07-30T08:15:00Z")
   end
 
@@ -467,8 +565,12 @@ defmodule Valea.Schedules.SchedulerTest do
     assert {:error, :not_executable} = Scheduler.run_now(@icm_id, "dup")
     assert {:error, :not_found} = Scheduler.run_now(@icm_id, "nope")
     assert {:error, :not_found} = Scheduler.run_now("other-icm", "s1")
+    refute_received {:fired, _, _}
 
-    FakeRunner.set_live(@icm_id, "s1", true)
+    # A live run blocks a manual one — with the run made live the honest way, by
+    # running it.
+    assert {:ok, _run_id} = Scheduler.run_now(@icm_id, "s1")
+    assert_received {:fired, "s1", _meta}
     assert {:error, :already_running} = Scheduler.run_now(@icm_id, "s1")
     refute_received {:fired, _, _}
   end
@@ -487,13 +589,191 @@ defmodule Valea.Schedules.SchedulerTest do
     tick(ctx, "2026-07-30T09:00:00Z")
     assert %{"schedule_id" => "s1", "trigger" => "scheduled"} = audit("schedule_fired")
 
-    FakeRunner.set_live(@icm_id, "s1", true)
+    # The session started above is still live, so the next slot skips.
     tick(ctx, "2026-07-30T10:00:00Z")
     assert %{"schedule_id" => "s1"} = audit("schedule_skipped")
 
     write_schedules(ctx, [])
     tick(ctx, "2026-07-30T10:01:00Z")
     assert %{"change" => "deleted"} = audit("schedule_registered_changed")
+  end
+
+  # -- convergence of runs left behind (crash, workspace close) ----------------
+
+  test "a stale running row converges to interrupted even when a newer skip record hides it",
+       ctx do
+    write_schedules(ctx, [entry_raw()])
+    seed_state("s1", entry_raw(), "2026-07-30T04:00:00Z", "2026-07-30T06:00:00Z")
+
+    # What a killed workspace leaves behind: a command run recorded `running`,
+    # and a later skip event on top of it. Reading only the newest row (a skip)
+    # never sees the row that needs converging.
+    {:ok, stale} =
+      Store.record_run(%{
+        icm_id: @icm_id,
+        schedule_id: "s1",
+        kind: "command",
+        outcome: "running",
+        fired_at: at("2026-07-30T07:00:00Z"),
+        slot: at("2026-07-30T07:00:00Z"),
+        trigger: "scheduled",
+        mount_key: "work"
+      })
+
+    {:ok, _skip} =
+      Store.record_run(%{
+        icm_id: @icm_id,
+        schedule_id: "s1",
+        kind: "command",
+        outcome: "skipped: still running",
+        fired_at: at("2026-07-30T08:00:00Z"),
+        slot: at("2026-07-30T08:00:00Z"),
+        trigger: "scheduled",
+        mount_key: "work"
+      })
+
+    start_scheduler(ctx)
+
+    assert %{outcome: "interrupted"} = Enum.find(runs(), &(&1.id == stale))
+  end
+
+  test "a stale running PROMPT row converges when its session is gone, and is left alone when it is not",
+       ctx do
+    write_schedules(ctx, [entry_raw(), entry_raw(%{"id" => "s2"})])
+
+    {:ok, dead} = seed_running_prompt("s1", "ghost-session")
+    {:ok, alive} = seed_running_prompt("s2", "held-session")
+    FakeRunner.mark_session_live("held-session")
+
+    start_scheduler(ctx)
+
+    assert %{outcome: "interrupted"} = Enum.find(runs("s1"), &(&1.id == dead))
+    assert %{outcome: "running"} = Enum.find(runs("s2"), &(&1.id == alive))
+  end
+
+  test "terminate marks every still-running row interrupted, prompt runs included", ctx do
+    write_schedules(ctx, [entry_raw(), entry_raw(%{"id" => "s2"})])
+    start_scheduler(ctx)
+
+    tick(ctx, "2026-07-30T09:00:00Z")
+    assert [%{outcome: "running"}] = runs()
+    assert [%{outcome: "running"}] = runs("s2")
+
+    stop_supervised!(Scheduler)
+
+    assert [%{outcome: "interrupted"}] = runs()
+    assert [%{outcome: "interrupted"}] = runs("s2")
+  end
+
+  # -- a mount's first pass is per MOUNT, not per process ----------------------
+
+  test "a file unreadable at boot still gets its catch-up when repaired — no back-fire", ctx do
+    seed_state("s1", entry_raw(), "2026-07-30T04:00:00Z", "2026-07-30T06:00:00Z")
+    File.write!(schedules_path(ctx), "{ not json")
+
+    start_scheduler(ctx)
+    assert state().last_attempted_slot == at("2026-07-30T06:00:00Z")
+
+    # Repaired three hours later: this is the mount's FIRST readable pass, so
+    # `catchup: false` fast-forwards. Treating "the process already ticked" as
+    # "this mount already caught up" would instead walk 07:00..11:00 and fire.
+    write_schedules(ctx, [entry_raw()])
+    tick(ctx, "2026-07-30T11:05:00Z")
+
+    refute_received {:fired, _, _}
+    assert runs() == []
+    assert state().last_attempted_slot == at("2026-07-30T11:05:00Z")
+  end
+
+  test "a mount absent at boot still gets its catch-up when it appears — no back-fire", ctx do
+    seed_state("s1", entry_raw(), "2026-07-30T04:00:00Z", "2026-07-30T06:00:00Z")
+    write_schedules(ctx, [entry_raw()])
+
+    mounted = start_supervised!(Supervisor.child_spec({Agent, fn -> false end}, id: :mounted))
+
+    start_scheduler(ctx,
+      mounts_fun: fn ->
+        if Agent.get(mounted, & &1), do: {:ok, [mount(ctx)]}, else: {:ok, []}
+      end
+    )
+
+    assert state().last_attempted_slot == at("2026-07-30T06:00:00Z")
+
+    Agent.update(mounted, fn _ -> true end)
+    tick(ctx, "2026-07-30T11:05:00Z")
+
+    refute_received {:fired, _, _}
+    assert state().last_attempted_slot == at("2026-07-30T11:05:00Z")
+  end
+
+  test "catchup true still fires on the mount's first READABLE pass, labelled catchup", ctx do
+    raw = entry_raw(%{"catchup" => true})
+    seed_state("s1", raw, "2026-07-30T06:00:00Z", "2026-07-30T08:00:00Z")
+    File.write!(schedules_path(ctx), "{ not json")
+
+    start_scheduler(ctx)
+    refute_received {:fired, _, _}
+
+    write_schedules(ctx, [raw])
+    tick(ctx, "2026-07-30T11:05:00Z")
+
+    assert_received {:fired, "s1", %{trigger: "catchup", coalesced_count: 3}}
+  end
+
+  # -- the kill switch fails closed --------------------------------------------
+
+  test "an unparseable workspace.yaml pauses everything and audits once", ctx do
+    write_schedules(ctx, [entry_raw()])
+    start_scheduler(ctx)
+
+    File.write!(Path.join(ctx.ws, "config/workspace.yaml"), "icms: [oops\n  bad: :\n")
+    tick(ctx, "2026-07-30T11:05:00Z")
+
+    refute_received {:fired, _, _}
+    assert runs() == []
+    assert state().last_attempted_slot == at("2026-07-30T11:00:00Z")
+    assert count_audits("scheduler_config_unreadable") == 1
+
+    tick(ctx, "2026-07-30T11:06:00Z")
+    assert count_audits("scheduler_config_unreadable") == 1
+
+    # Repaired: firing resumes, and the missed slots stay consumed.
+    File.write!(Path.join(ctx.ws, "config/workspace.yaml"), "version: 5\nname: Test\n")
+    tick(ctx, "2026-07-30T12:00:00Z")
+    assert_received {:fired, "s1", %{coalesced_count: 1}}
+  end
+
+  # -- run_now goes through step 7 ---------------------------------------------
+
+  test "run_now re-validates: a definition edited inside the launch window fires nothing", ctx do
+    write_schedules(ctx, [entry_raw()])
+
+    start_scheduler(ctx,
+      before_launch: fn -> write_schedules(ctx, [entry_raw(%{"cron" => "*/5 * * * *"})]) end
+    )
+
+    assert {:error, :not_executable} = Scheduler.run_now(@icm_id, "s1")
+    refute_received {:fired, _, _}
+    assert runs() == []
+  end
+
+  test "run_now re-validates: an entry deleted inside the launch window fires nothing", ctx do
+    write_schedules(ctx, [entry_raw()])
+    start_scheduler(ctx, before_launch: fn -> write_schedules(ctx, []) end)
+
+    assert {:error, :not_executable} = Scheduler.run_now(@icm_id, "s1")
+    refute_received {:fired, _, _}
+    assert runs() == []
+  end
+
+  test "run_now refuses while the kill switch is engaged", ctx do
+    write_schedules(ctx, [entry_raw()])
+    start_scheduler(ctx)
+    :ok = Valea.Mounts.set_scheduler_paused(ctx.ws, true)
+
+    assert {:error, :scheduler_paused} = Scheduler.run_now(@icm_id, "s1")
+    refute_received {:fired, _, _}
+    assert runs() == []
   end
 
   # -- spawn failures, generation binding, sweeps ------------------------------
@@ -697,6 +977,21 @@ defmodule Valea.Schedules.SchedulerTest do
       fingerprint: Entry.fingerprint(raw),
       first_seen_at: at(first_seen),
       last_attempted_slot: at(anchor)
+    })
+  end
+
+  # A run row left behind by a previous workspace session.
+  defp seed_running_prompt(schedule_id, session_id) do
+    Store.record_run(%{
+      icm_id: @icm_id,
+      schedule_id: schedule_id,
+      kind: "prompt",
+      outcome: "running",
+      session_id: session_id,
+      fired_at: at("2026-07-30T07:00:00Z"),
+      slot: at("2026-07-30T07:00:00Z"),
+      trigger: "scheduled",
+      mount_key: "work"
     })
   end
 

@@ -401,6 +401,31 @@ defmodule Valea.Mounts.MutationTest do
       File.write!(path, File.read!(path) <> "scheduler_paused: \"true\"\n")
 
       refute Mounts.scheduler_paused?(ws)
+      assert Mounts.scheduler_pause_state(ws) == :off
+    end
+
+    # Fail CLOSED. This is the control that stops unattended prompts and
+    # unsandboxed commands; a half-written config must not be able to start them.
+    test "a config that exists but will not parse reads as PAUSED", %{ws: ws} do
+      File.write!(Path.join(ws, "config/workspace.yaml"), "icms: [oops\n  bad: :\n")
+
+      assert Mounts.scheduler_pause_state(ws) == :unreadable
+      assert Mounts.scheduler_paused?(ws)
+    end
+
+    test "a config that is merely absent is NOT paused", %{ws: ws} do
+      File.rm!(Path.join(ws, "config/workspace.yaml"))
+
+      assert Mounts.scheduler_pause_state(ws) == :off
+      refute Mounts.scheduler_paused?(ws)
+    end
+
+    test "an unreadable config also refuses the write rather than overwriting it", %{ws: ws} do
+      path = Path.join(ws, "config/workspace.yaml")
+      File.write!(path, "icms: [oops\n  bad: :\n")
+
+      assert {:error, {:config_unreadable, _reason}} = Mounts.set_scheduler_paused(ws, true)
+      assert File.read!(path) =~ "oops"
     end
 
     test "survives an icms: mutation, and preserves icms: itself", %{ws: ws, home: home} do

@@ -116,21 +116,18 @@ defmodule Valea.Schedules.Runner.Live do
   alias Valea.Schedules.RunRegistry
   alias Valea.Schedules.RunSupervisor
 
+  # How long the scope resolution may take before the fire is treated as a
+  # spawn failure. Generous for the work involved (two Manager calls plus a
+  # mount listing), short enough that a workspace close is never held up.
+  @scope_timeout_ms 2_000
+
   @impl true
   def start_prompt(_mount, entry, meta) do
     id = Valea.Agents.generate_session_id()
     workspace = meta.workspace_root
 
     with {:ok, context_doc} <- context_doc(entry, meta, workspace),
-         {:ok, scope} <-
-           SessionScope.resolve(%{
-             kind: "scheduled",
-             mount_key: meta.mount_key,
-             generation: meta.generation,
-             session_id: id,
-             read_paths: [],
-             include_mounts: []
-           }),
+         {:ok, scope} <- resolve_scope(meta, id),
          {:ok, %{id: id}} <-
            Valea.Agents.start_session(%{
              id: id,
@@ -138,13 +135,46 @@ defmodule Valea.Schedules.Runner.Live do
              title: title(entry, meta),
              scope: scope,
              run: nil,
-             initial_prompt: preamble(entry, meta) <> "\n\n" <> entry.payload.prompt,
+             initial_prompt: initial_prompt(entry, meta),
              on_turn_end: nil,
              context_doc: context_doc,
              input: nil,
              include_mounts: []
            }) do
       {:ok, id}
+    end
+  end
+
+  # `SessionScope.resolve/1` calls `Valea.Workspace.Manager` twice
+  # (`check_generation`, `current`) on its default 5 s leash — and this runs
+  # INSIDE the scheduler process, which is a Runtime child, so a close landing
+  # here meets the deadlock the scheduler's own 500 ms leash exists to break
+  # (Manager waits on the Runtime, the Runtime waits on the scheduler, the
+  # scheduler waits on the Manager). Running it in a Task bounds the wait
+  # without touching shared code: a timeout becomes an ordinary spawn failure,
+  # so the fire lands as a `failed` run record with the reason in `output` and
+  # the next slot is the retry.
+  #
+  # `Task.yield/2` reports a crashed task as `{:exit, reason}` rather than
+  # taking the scheduler down with it (the scheduler traps exits, and its
+  # catch-all `handle_info/2` drops the stray `{:EXIT, …}`).
+  defp resolve_scope(meta, session_id) do
+    task =
+      Task.async(fn ->
+        SessionScope.resolve(%{
+          kind: "scheduled",
+          mount_key: meta.mount_key,
+          generation: meta.generation,
+          session_id: session_id,
+          read_paths: [],
+          include_mounts: []
+        })
+      end)
+
+    case Task.yield(task, @scope_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, {:scope_failed, reason}}
+      nil -> {:error, :scope_timeout}
     end
   end
 
@@ -195,12 +225,41 @@ defmodule Valea.Schedules.Runner.Live do
 
   # -- prompt composition ------------------------------------------------------
 
-  # Verbatim from the spec (§Run lifecycle → Prompt fires). Changing a word
-  # here changes what every scheduled session is told about its own situation.
-  defp preamble(entry, meta) do
-    # {meta.icm_name}. ) <>
-    ~s(Scheduled run "#{entry.title}" (#{meta.schedule_id}) in ("You are running unattended; if you get blocked, record what's needed in " <>
-                                                                  "tasks.json and end the session.")
+  @doc """
+  The composed initial prompt for a scheduled session: the fixed preamble, a
+  blank line, then the schedule's own prompt **verbatim**.
+
+  Public and pure so it can be pinned by a test that reads like the spec
+  paragraph it implements. It used to be private, and the sigil that built it
+  was silently broken: a `~s(…)` closes at the first unescaped `)`, which the
+  preamble itself contains (it wraps the schedule id in parentheses), so the
+  remainder of the line parsed as `binary in binary` and EVERY prompt fire died
+  with a `Protocol.UndefinedError`, recorded as a `failed` run with the
+  protocol error in `output`. Plain double-quoted concatenation, no sigil: this
+  string contains both parentheses and quotes, and the only formatting worth
+  having here is the kind that cannot swallow them.
+  """
+  @spec initial_prompt(Entry.t(), map()) :: String.t()
+  def initial_prompt(entry, meta), do: preamble(entry, meta) <> "\n\n" <> entry.payload.prompt
+
+  @doc """
+  The preamble, verbatim from the spec (§Run lifecycle & workspace switch →
+  Prompt fires):
+
+  > Scheduled run "<title>" (<schedule_id>) in <icm_name>. You are running
+  > unattended; if you get blocked, record what's needed in tasks.json and end
+  > the session.
+
+  It exists because a scheduled session has nobody to ask: it names the
+  schedule and its ICM, and tells the agent to record blockers in `tasks.json`
+  and end rather than sit on a question no human will read. Changing a word
+  changes what every scheduled session is told about its own situation.
+  """
+  @spec preamble(Entry.t(), map()) :: String.t()
+  def preamble(entry, meta) do
+    "Scheduled run \"#{entry.title}\" (#{meta.schedule_id}) in #{meta.icm_name}. " <>
+      "You are running unattended; if you get blocked, record what's needed in " <>
+      "tasks.json and end the session."
   end
 
   # `<schedule title> — <date>`, the date being the slot's WALL-CLOCK date in

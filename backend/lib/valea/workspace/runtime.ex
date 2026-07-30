@@ -17,12 +17,16 @@ defmodule Valea.Workspace.Runtime do
       {Valea.Audit, %{root: root, generation: gen}},
       {Valea.Mail.Supervisor, %{root: root, generation: gen}},
       {Valea.Calendar.Supervisor, %{root: root, generation: gen}},
-      # Listed BEFORE the session supervisor a scheduled prompt fire needs,
-      # which is safe because the scheduler's first tick cannot outrun the
-      # open: it runs from `handle_continue` (after `init/1` returns), and its
-      # first two acts — the generation check and the mount listing — are
-      # `Valea.Workspace.Manager` calls that queue behind the in-flight
-      # `open` and therefore only answer once every Runtime child is up.
+      # Listed BEFORE the session supervisor a scheduled prompt fire needs, and
+      # safe either way. The scheduler's first tick runs from `handle_continue`
+      # (after every child's `init/1` has returned) and starts with a generation
+      # check — a `Valea.Workspace.Manager` call that queues behind the
+      # in-flight `open` and so cannot answer `:ok` until the whole Runtime,
+      # session supervisor included, is up. If that check times out instead (it
+      # is on a 500 ms leash), the tick is refused wholesale and no mount is
+      # marked as having had its first pass, so the next tick redoes it. Nothing
+      # launches in the window either way; the ordering is documentation, not the
+      # mechanism.
       {Valea.Schedules.Supervisor, %{root: root, generation: gen}},
       {DynamicSupervisor, name: Valea.Agents.SessionSupervisor, strategy: :one_for_one}
     ]

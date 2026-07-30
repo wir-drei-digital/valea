@@ -578,20 +578,39 @@ defmodule Valea.Mounts do
   `config/workspace.yaml`, not a per-mount flag: it stops every schedule in
   the workspace at once.
 
-  Only a real YAML `true` engages it. Anything else — absent, `"true"` the
-  string, a missing or unparseable config — reads as *not paused*, the same
-  posture every other read in this module takes (`read_workspace_config/1`
-  degrades to `%{}`). The alternative, "an unreadable config pauses the
-  scheduler", would let a transient YAML fault silently stop every schedule;
-  the file's own contents are the pause the user asked for, and a broken
-  config surfaces through workspace doctoring, not through schedules quietly
-  not running.
+  Only a real YAML `true` engages it: `"true"` the string does not, and neither
+  does any other value. See `scheduler_pause_state/1` for the third answer this
+  boolean folds away — an unreadable config reads as PAUSED, because this is the
+  safety control and the one thing it must never do is fail open.
   """
   @spec scheduler_paused?(workspace :: String.t()) :: boolean()
   def scheduler_paused?(workspace) when is_binary(workspace) do
-    case read_workspace_config(workspace) do
-      {:ok, %{"scheduler_paused" => true}} -> true
-      {:ok, _absent_or_other} -> false
+    scheduler_pause_state(workspace) != :off
+  end
+
+  @doc """
+  The kill switch with its three real answers: `:on`, `:off`, or `:unreadable`.
+
+  `:unreadable` means `config/workspace.yaml` EXISTS but does not parse (or is
+  not a mapping) — so nobody can say whether the user asked for a pause. That
+  case is **fail-CLOSED**: `scheduler_paused?/1` reports paused, and the
+  scheduler surfaces one audit notice rather than deciding for itself that a
+  config it cannot read means "carry on firing". Every other read in this module
+  degrades an unparseable config to `%{}`, and for listings that is right — the
+  worst case is a mount temporarily missing from a list. This is the control that
+  stops unattended prompts and unsandboxed commands from running, and a
+  half-written YAML file must not be able to start them.
+
+  A config that is simply ABSENT is `:off`, not `:unreadable`: there is no
+  document to have been corrupted, and a workspace with no config has never had
+  a pause set.
+  """
+  @spec scheduler_pause_state(workspace :: String.t()) :: :on | :off | :unreadable
+  def scheduler_pause_state(workspace) when is_binary(workspace) do
+    case read_workspace_config_for_write(workspace) do
+      {:ok, %{"scheduler_paused" => true}} -> :on
+      {:ok, _absent_or_other} -> :off
+      {:error, {:config_unreadable, _reason}} -> :unreadable
     end
   end
 
