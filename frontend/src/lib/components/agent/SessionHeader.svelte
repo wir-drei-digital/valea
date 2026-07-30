@@ -18,6 +18,11 @@
   // first, `Valea.Agents.archive_session/1` — so `ended` only picks the
   // LABEL) and Delete, which is permanent and therefore swaps to an inline
   // confirm row before `onDelete` ever fires.
+  //
+  // `onShowFiles` is the same shape of signal for the file-activity rail: the
+  // host passes it only while the rail is CLOSED, so the "Files · N" pill is
+  // purely a reopen affordance and never competes with a rail already on
+  // screen. `filesCount > 0` keeps it off a session that touched nothing.
   import Folder from '@lucide/svelte/icons/folder';
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -36,7 +41,9 @@
     deleting = false,
     onArchive,
     onDelete,
-    onOpenFile
+    onOpenFile,
+    filesCount = 0,
+    onShowFiles
   }: {
     icmName: string | null;
     mountKey: string | null;
@@ -46,6 +53,8 @@
     onArchive?: () => void;
     onDelete?: () => void;
     onOpenFile?: (sel: { mountKey: string; path: string }) => void;
+    filesCount?: number;
+    onShowFiles?: () => void;
   } = $props();
 
   let treeOpen = $state(false);
@@ -101,6 +110,15 @@
       {/if}
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
+    {#if onShowFiles && filesCount > 0}
+      <button
+        type="button"
+        onclick={onShowFiles}
+        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading rounded-md px-1.5 py-0.5 text-[11.5px] transition-colors"
+      >
+        Files · {filesCount}
+      </button>
+    {/if}
     {#if onArchive || onDelete}
       <Popover.Root bind:open={menuOpen}>
         <Popover.Trigger
