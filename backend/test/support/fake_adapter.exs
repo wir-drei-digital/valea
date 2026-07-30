@@ -125,6 +125,30 @@ defmodule FakeAdapter do
           ]
         })
 
+        # A PARTIAL read, titled the way the real adapter titles one:
+        # "<Verb> <path> (<from> - <to>)", against a path deep enough that
+        # the chip has to truncate. Covers both compact-row behaviours —
+        # the line span folding into the chip's `:line` suffix, and the
+        # directory head ellipsizing while the basename stays whole.
+        deep = "research/2026/q3/competitive-analysis/vendor-notes/long-form-summary.md"
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call",
+          "toolCallId" => "tool-read-2",
+          "title" => "Read #{deep} (88 - 93)",
+          "kind" => "read",
+          "status" => "in_progress",
+          "locations" => [%{"path" => Path.join(cwd, deep), "line" => 88}]
+        })
+
+        Process.sleep(800)
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call_update",
+          "toolCallId" => "tool-read-2",
+          "status" => "completed"
+        })
+
         update(ctx, %{
           "sessionUpdate" => "tool_call",
           "toolCallId" => "tool-edit-1",

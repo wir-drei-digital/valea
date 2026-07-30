@@ -7,6 +7,7 @@
   import PlainTextView from '$lib/components/files/PlainTextView.svelte';
   import PdfView from '$lib/components/files/PdfView.svelte';
   import ImageView from '$lib/components/files/ImageView.svelte';
+  import CsvView from '$lib/components/files/CsvView.svelte';
   import { fileLeafKind } from '$lib/components/knowledge/file-leaf';
 
   let {
@@ -35,11 +36,12 @@
   // doesn't change here. `fileLeafKind` buckets the rest into
   // image/pdf/other — the same mapping the file-leaf ROWS already use, so a
   // row's icon and the viewer it opens can never disagree.
-  const format = $derived.by((): 'md' | 'image' | 'pdf' | 'text' => {
+  const format = $derived.by((): 'md' | 'image' | 'pdf' | 'csv' | 'text' => {
     if (path.endsWith('.md')) return 'md';
     const kind = fileLeafKind(ext);
     if (kind === 'image') return 'image';
     if (kind === 'pdf') return 'pdf';
+    if (kind === 'csv') return 'csv';
     return 'text';
   });
 
@@ -59,17 +61,31 @@
 {#if format === 'md'}
   <MarkdownPageView bind:this={mdRef} {mountKey} {path} {onVanished} />
 {:else}
-  <article class="mx-auto flex w-full max-w-[596px] flex-col gap-3">
-    <header class="flex flex-col gap-1.5">
+  <!-- The reading column is carried BLOCK BY BLOCK, not by the article, so a
+       format that needs the pane's real width can opt out of it — the same
+       shape `MarkdownPageView` uses for its editor. A CSV table takes the
+       full container: columns are the content, and squeezing them into a
+       596px prose measure only adds horizontal scrolling. -->
+  <article class="flex w-full flex-col gap-3">
+    <!-- The header shares its block's width, so it lines up with whatever is
+         below it — the reading column for a document, the pane's full width
+         for a table. -->
+    <header class={['flex w-full flex-col gap-1.5', format === 'csv' ? '' : 'mx-auto max-w-[596px]']}>
       <p class="text-overline">Files</p>
       <p class="text-ink-meta font-mono text-[11.5px]">{path}</p>
     </header>
-    {#if format === 'image'}
-      <ImageView {mountKey} {path} />
-    {:else if format === 'pdf'}
-      <PdfView {mountKey} {path} />
+    {#if format === 'csv'}
+      <CsvView {mountKey} {path} />
     {:else}
-      <PlainTextView {mountKey} {path} />
+      <div class="mx-auto w-full max-w-[596px]">
+        {#if format === 'image'}
+          <ImageView {mountKey} {path} />
+        {:else if format === 'pdf'}
+          <PdfView {mountKey} {path} />
+        {:else}
+          <PlainTextView {mountKey} {path} />
+        {/if}
+      </div>
     {/if}
   </article>
 {/if}

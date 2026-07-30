@@ -26,6 +26,7 @@
     toolDiff,
     diffLines,
     toolLocations,
+    locationLabel,
     compactToolAction
   } from './item-shapes';
 
@@ -87,25 +88,36 @@
     </span>
   {/snippet}
 
+  <!-- A chip never wraps and never widens its row: it shrinks, ellipsizing
+       the DIRECTORY head while the basename (`tail`, shrink-0) stays whole —
+       a chip you can still identify at any width. `title` carries the full
+       path, so the hover tooltip shows what the truncation hid. -->
   {#snippet locationChip(loc: ToolLocation)}
+    {@const label = locationLabel(loc, compactAction?.range)}
     {#if loc.relPath && onOpenFile}
       {@const relPath = loc.relPath}
       <button
         type="button"
         onclick={() => onOpenFile?.(relPath)}
-        class="border-paper-chip-border hover:bg-paper-pill text-ink-secondary rounded-md border px-1.5 py-0.5 font-mono text-[11px] transition-colors"
+        title={label.full}
+        class="border-paper-chip-border hover:bg-paper-pill text-ink-secondary flex min-w-0 max-w-full items-center overflow-hidden rounded-md border px-1.5 py-0.5 font-mono text-[11px] whitespace-nowrap transition-colors"
       >
-        {relPath}{loc.line !== undefined ? `:${loc.line}` : ''}
+        {#if label.head}<span class="truncate">{label.head}</span>{/if}
+        <span class="max-w-full shrink-0 truncate">{label.tail}</span>
       </button>
     {:else}
-      <span class="text-ink-meta font-mono text-[11px]">{loc.relPath ?? loc.path}</span>
+      <span title={label.full} class="text-ink-meta min-w-0 max-w-full truncate font-mono text-[11px]"
+        >{label.full}</span
+      >
     {/if}
   {/snippet}
 
   {#if compactAction}
     <!-- Title only restates verb + location: one row, action and path each shown once.
-         The row is a div (not a button) because the chips are buttons themselves. -->
-    <div class="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
+         The row is a div (not a button) because the chips are buttons themselves.
+         No wrapping: verb and status hold their size and the chip absorbs the
+         squeeze, so a deep path costs an ellipsis instead of a second line. -->
+    <div class="flex w-full items-center gap-x-2 px-3 py-2">
       <button
         type="button"
         onclick={() => (expanded = !expanded)}
@@ -113,12 +125,12 @@
         aria-expanded={hasBody ? expanded : undefined}
         aria-label={title}
         class={[
-          '-mx-1 -my-0.5 flex items-center gap-2 rounded-md px-1 py-0.5 text-left',
+          '-mx-1 -my-0.5 flex shrink-0 items-center gap-2 rounded-md px-1 py-0.5 text-left',
           hasBody ? 'hover:bg-paper-pill cursor-pointer' : 'cursor-default'
         ]}
       >
         {@render chevron()}
-        <span class="font-mono text-[10.5px] font-bold tracking-[0.05em] text-ink-meta uppercase">{compactAction}</span>
+        <span class="font-mono text-[10.5px] font-bold tracking-[0.05em] text-ink-meta uppercase">{compactAction.verb}</span>
       </button>
       {#each locations as loc (loc.relPath ?? loc.path)}
         {@render locationChip(loc)}

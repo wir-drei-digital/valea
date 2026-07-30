@@ -18,8 +18,6 @@
   // family of reasons — an unrelated URL change (e.g. opening a side pane,
   // `?pane=`) must not tear down and rejoin a live session's channel.
   import { onMount, tick } from 'svelte';
-  import { slide } from 'svelte/transition';
-  import { quartOut } from 'svelte/easing';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -552,12 +550,6 @@
   const railCanShow = $derived(context.placement === 'primary' && viewWidth >= 860);
   const showRail = $derived(railOpen && railCanShow && fileActivities.length > 0);
 
-  // Read once: a live preference switch mid-session is rare enough that the
-  // next mount picking it up is fine, and a static read keeps the transition
-  // params out of the reactive graph.
-  const reduceMotion =
-    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
   // Existence notes: reality-check changed rows against the mount tree via
   // `ensurePathLoaded` — ONLY its definitive 'missing' marks a row (store
   // issue-#2 contract). Re-runs are scoped to: changed-row-SET changes (the
@@ -735,14 +727,10 @@
       </div>
     </div>
     {#if showRail}
-      <!-- The slide softens the ~150px transcript shift the rail's mount used
-           to cause mid-read (critique P2). Width IS the point here, so the
-           layout-property animation is deliberate; reduced-motion collapses
-           it to an instant swap. -->
-      <div
-        transition:slide={{ axis: 'x', duration: reduceMotion ? 0 : 200, easing: quartOut }}
-        class="flex min-h-0 shrink-0"
-      >
+      <!-- The rail appears and disappears instantly: it is opened and closed
+           by direct user action, where an animated width reads as lag on a
+           surface you are already looking at. -->
+      <div class="flex min-h-0 shrink-0">
         <FileActivityRail
           activities={fileActivities}
           {missingKeys}

@@ -141,16 +141,16 @@
   // rendered an empty pane. New entries created from the pane header land in
   // this listed folder (`path`), which for page routes is the parent — not
   // the page's own path.
-  const listContext = $derived.by((): { title: string; path: string; entries: IcmNode[] } => {
+  const listContext = $derived.by((): { path: string; entries: IcmNode[] } => {
     if (node?.type === 'folder') {
-      return { title: node.name, path: node.path, entries: node.children ?? [] };
+      return { path: node.path, entries: node.children ?? [] };
     }
     const parentDir = parentPath(decodedPath);
     const parent = parentDir ? findIcmNode(mountTree, parentDir) : undefined;
     if (parent?.type === 'folder') {
-      return { title: parent.name, path: parent.path, entries: parent.children ?? [] };
+      return { path: parent.path, entries: parent.children ?? [] };
     }
-    return { title: 'Files', path: '', entries: mountTree };
+    return { path: '', entries: mountTree };
   });
 
   /**
@@ -238,7 +238,11 @@
 
 <AppFrame onBeforeMutateActive={flushBeforeMutate}>
   {#snippet list()}
-    <ListPane title={listContext.title}>
+    <!-- Always "Files", never the open folder's name: the pane is the file
+         NAVIGATOR, and a header that renamed itself per folder read as a
+         second, competing title beside the open document's own. Where you
+         are is what the tree's selection shows. -->
+    <ListPane title="Files">
       {#snippet action()}
         <div class="flex items-center gap-1">
           <!-- The one header slot every knowledge route state has (file,

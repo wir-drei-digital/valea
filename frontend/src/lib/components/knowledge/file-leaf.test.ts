@@ -23,6 +23,11 @@ describe('fileLeafKind', () => {
     expect(fileLeafKind('.pdf')).toBe('pdf');
   });
 
+  it('maps .csv to "csv" — and no other separated-values ext', () => {
+    expect(fileLeafKind('.csv')).toBe('csv');
+    expect(fileLeafKind('.tsv')).toBe('other');
+  });
+
   it('maps anything else (or a missing ext) to "other"', () => {
     expect(fileLeafKind('.docx')).toBe('other');
     expect(fileLeafKind('.zip')).toBe('other');

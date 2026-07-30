@@ -115,12 +115,47 @@ export function toolLocations(item: AcpItemLike): ToolLocation[] {
   });
 }
 
+export type LocationLabel = { full: string; head: string; tail: string };
+
 /**
- * The action verb of a redundant file-tool title, or undefined. "Read
- * CONTEXT.md" next to a `CONTEXT.md` location chip says everything twice, so
+ * A location chip's label, split so the chip can hold ONE line and ellipsize
+ * the part that matters least. `tail` is the basename (plus `:line`) — the
+ * file's identity, always rendered whole; `head` is the leading directories,
+ * which the chip truncates when the row runs out of room. `full` is what the
+ * hover tooltip carries, so nothing the truncation hides is unreachable.
+ * A label with no basename to protect (no `/`, or a trailing one) is all
+ * tail — there is nothing to trim off the front.
+ *
+ * `range` is the line span the TITLE carried (`compactToolAction`): a
+ * location reports only where the read started, so folding the span into
+ * the chip's `:line` suffix is what lets the compact row state it once
+ * instead of trailing a redundant "(88 - 93)" beside `…:88`.
+ */
+export function locationLabel(loc: ToolLocation, range?: LineRange): LocationLabel {
+  const spans = range !== undefined && (loc.line === undefined || loc.line === range.from);
+  const lines = spans ? `:${range.from}-${range.to}` : loc.line !== undefined ? `:${loc.line}` : '';
+  const full = `${loc.relPath ?? loc.path}${lines}`;
+  const cut = full.lastIndexOf('/') + 1;
+  if (cut === 0 || cut === full.length) return { full, head: '', tail: full };
+  return { full, head: full.slice(0, cut), tail: full.slice(cut) };
+}
+
+export type LineRange = { from: number; to: number };
+export type CompactToolAction = { verb: string; range?: LineRange };
+
+/**
+ * The action of a redundant file-tool title, or undefined. "Read CONTEXT.md"
+ * next to a `CONTEXT.md` location chip says everything twice, so
  * `ToolCallCard` collapses to a compact header (verb + chips, no title) when
- * the title is exactly one word followed by a path some location already
- * shows — equal to, or basename-suffix of, the location's path/relPath.
+ * the title is one word followed by a path some location already shows —
+ * equal to, or basename-suffix of, the location's path/relPath.
+ *
+ * A partial read titles itself "Read <path> (88 - 93)". That trailing span
+ * is REAL information (the location only knows where the read started), so
+ * it is parsed out and returned as `range` for the chip to fold into its
+ * `:line` suffix — rather than blocking the match, which used to drop these
+ * calls into the full layout where the filename then appeared twice.
+ *
  * Only `read`/`edit` kinds qualify: their titles are adapter-derived
  * "<Verb> <path>" strings (the verb survives, so Write — which ACP files
  * under kind "edit" — still reads WRITE, not EDIT). Execute/search titles
@@ -130,11 +165,11 @@ export function compactToolAction(
   kind: string,
   title: string,
   locations: ToolLocation[]
-): string | undefined {
+): CompactToolAction | undefined {
   if (kind !== 'read' && kind !== 'edit') return undefined;
-  const match = /^([A-Za-z]+) (\S+)$/.exec(title);
+  const match = /^([A-Za-z]+) (\S+)(?: \((\d+) *- *(\d+)\))?$/.exec(title);
   if (!match) return undefined;
-  const [, verb, rest] = match;
+  const [, verb, rest, from, to] = match;
   const covered = locations.some(
     (loc) =>
       rest === loc.path ||
@@ -142,7 +177,10 @@ export function compactToolAction(
       loc.path.endsWith(`/${rest}`) ||
       (loc.relPath !== undefined && loc.relPath.endsWith(`/${rest}`))
   );
-  return covered ? verb : undefined;
+  if (!covered) return undefined;
+  return from !== undefined
+    ? { verb, range: { from: Number(from), to: Number(to) } }
+    : { verb };
 }
 
 export type PlanEntry = { text: string; status: string };

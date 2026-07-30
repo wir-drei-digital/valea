@@ -340,17 +340,34 @@ fn build_main_window(app: &tauri::AppHandle, token: &str) -> tauri::Result<()> {
 
     let script = format!("window.__VALEA_CONTROL_TOKEN = \"{token}\";");
 
+    let nav_app = app.clone();
     let window = WebviewWindowBuilder::from_config(app, &config)?
         .initialization_script(script)
-        .on_navigation(|url| {
+        .on_navigation(move |url| {
             // Pin the webview to the loopback origin so the init-script token
             // can never reach a remote page. Allow only the backend origin
             // (4817) and the Vite dev origin (4273); non-http(s) schemes
             // (tauri:, about:, blob:, data:) are webview internals, left alone.
             match url.scheme() {
                 "http" | "https" => {
-                    matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"))
-                        && matches!(url.port(), Some(4817) | Some(4273))
+                    let loopback = matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"))
+                        && matches!(url.port(), Some(4817) | Some(4273));
+                    if !loopback {
+                        // Off-loopback means a link that leaves the app, so
+                        // send it where it belongs — the user's browser —
+                        // instead of only refusing it. This handler is the
+                        // LAST line for a click the SPA didn't already route
+                        // through `open_external`, and it fires for SUBFRAME
+                        // navigations too (wry hands every WKNavigationAction
+                        // here, main frame or not). That is what an HTML mail
+                        // body's links depend on: the frontend intercepts them
+                        // by reaching into the sandboxed iframe, which works
+                        // in Chromium and not in this webview — so without
+                        // this, clicking a link in a mail did nothing at all.
+                        // The navigation itself stays cancelled either way.
+                        let _ = links::open_url(&nav_app, url.as_str());
+                    }
+                    loopback
                 }
                 _ => true,
             }
