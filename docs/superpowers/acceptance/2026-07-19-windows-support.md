@@ -28,6 +28,19 @@ and don't let a green summary hide a step that never executed because an
 earlier one failed. Everything here is a first execution: none of this
 code has ever been compiled or run on Windows.
 
+> **Status note (2026-07-30, v0.1.0 tag run of `release.yml`, run
+> 30502156054):** the Windows release lane got further than the bring-up
+> lane has ever been dispatched. `just package-backend` succeeded natively
+> — CI1's harvest facts (a)–(c) all held implicitly (the Justfile `cp`,
+> the `unzip` zig fetch, and the NIF compiles would each have failed the
+> step otherwise) — and the full desktop crate compiled (CI1b's three
+> firsts, green; only a deprecation warning in `links.rs`). The run then
+> failed in WiX `light.exe` building an MSI nobody ships — fixed by
+> pinning `bundle.targets` to `["nsis"]` in `tauri.windows.conf.json` —
+> so the NSIS bundle itself is still unproven. The **test-suite gates
+> (CI2–CI4) have still never run**; the boxes below stay unchecked until
+> the bring-up dispatch itself is read step by step.
+
 - [ ] **CI1 · T1 survey harvest.** From the "Build SPA + Burrito sidecar
       (+ spawn shim)" step's log, confirm three things the packaging path
       assumes:

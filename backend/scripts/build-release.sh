@@ -7,11 +7,15 @@ cd "$(dirname "$0")/.."
 RELEASE="${1:-valea}"
 export MIX_ENV=prod
 
-# Burrito 1.5.x requires EXACTLY zig 0.15.2 (it hard-exits on any other
-# version and its vendored build.zig uses pre-0.16 std.Build APIs). The repo
-# toolchain ships zig 0.16.0 for other purposes, so for the desktop sidecar we
-# fetch a pinned, isolated zig 0.15.2 into a cache dir and put it first on PATH.
-# This only kicks in when wrapping the Burrito target.
+# Burrito requires an EXACT zig version (it hard-exits on any other). Burrito
+# 1.6.x pins zig 0.16.0 — do not fall back to the 1.5.x/zig 0.15.2 pair: zig
+# 0.15.2's build runner fails to link libSystem against the macOS 26 SDK
+# (undefined _abort/__availability_version_check/... on both local Tahoe
+# machines and the macos-26 release runners). We fetch the pinned zig into an
+# isolated cache dir and put it first on PATH; this only kicks in when
+# wrapping the Burrito target. Keep ZIG_VERSION below, the `{:burrito, ...}`
+# constraint in mix.exs, and the zig cache keys in .github/workflows/ in
+# lockstep.
 if [ "$RELEASE" = "valea_desktop" ]; then
   # Pin Burrito to the single target matching this host (overridable by an
   # explicit BURRITO_TARGET). Without this, a multi-target config would make
@@ -32,7 +36,7 @@ if [ "$RELEASE" = "valea_desktop" ]; then
   fi
   echo "Burrito target: $BURRITO_TARGET"
 
-  ZIG_VERSION="0.15.2"
+  ZIG_VERSION="0.16.0"
   if ! command -v zig >/dev/null 2>&1 || [ "$(zig version 2>/dev/null)" != "$ZIG_VERSION" ]; then
     case "$(uname -m)" in
       arm64 | aarch64) ZIG_ARCH="aarch64" ;;

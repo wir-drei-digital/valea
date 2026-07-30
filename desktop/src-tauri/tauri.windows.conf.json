@@ -1,5 +1,6 @@
 {
   "bundle": {
+    "targets": ["nsis"],
     "externalBin": ["binaries/valea-server", "binaries/valea-spawn"]
   }
 }

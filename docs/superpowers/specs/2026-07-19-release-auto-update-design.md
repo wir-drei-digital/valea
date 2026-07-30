@@ -76,8 +76,9 @@ Decisions and their reasons:
 - Toolchain per job: `.tool-versions` is the single version truth —
   `setup-beam` reads it on Linux; macOS (unsupported by `setup-beam`)
   installs via asdf with the whole `~/.asdf` cached, compiling OTP once per
-  version bump. Bun via `setup-bun`, Rust stable + `rust-cache`, zig 0.15.2
-  auto-provisioned by the existing `build-release.sh` (cached).
+  version bump. Bun via `setup-bun`, Rust stable + `rust-cache`, Burrito's
+  pinned zig (0.16.0 as of burrito 1.6) auto-provisioned by the existing
+  `build-release.sh` (cached).
 
 ## Update artifacts & signing
 

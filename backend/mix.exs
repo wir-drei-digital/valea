@@ -89,7 +89,11 @@ defmodule Valea.MixProject do
       {:codepagex, "~> 0.1"},
       {:igniter, "~> 0.6", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:burrito, "~> 1.0", runtime: false}
+      # >= 1.6: the 1.5.x line pins zig 0.15.2, whose build runner can't link
+      # libSystem against the macOS 26 SDK (release CI + local packaging both
+      # fail); 1.6.0 moves the pin to zig 0.16.0, which scripts/build-release.sh
+      # fetches. Keep this constraint and that script's ZIG_VERSION in lockstep.
+      {:burrito, "~> 1.6", runtime: false}
     ] ++ platform_deps()
   end
 

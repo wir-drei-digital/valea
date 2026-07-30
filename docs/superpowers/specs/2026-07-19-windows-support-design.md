@@ -91,7 +91,8 @@ crash with a clear message, not a mystery downstream.
 cpu: :x86_64]` to the `valea_desktop` targets;
 `include_executables_for: [:unix, :windows]`. `build-release.sh` gains a
 `Windows_NT`/`MINGW*` host mapping (CI runs it under Git Bash) and fetches
-the zig 0.15.2 **.zip** (Windows has no `.tar.xz`); the Justfile
+the pinned-zig **.zip** (Windows has no `.tar.xz`; version pinned in
+`build-release.sh`, 0.16.0 as of burrito 1.6); the Justfile
 `package-backend` recipe maps the host to `windows_x64` and copies
 `burrito_out/valea_desktop_windows_x64.exe` →
 `binaries/valea-server-x86_64-pc-windows-msvc.exe`. (Exact Burrito output

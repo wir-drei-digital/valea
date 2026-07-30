@@ -106,12 +106,26 @@ agent runtime's Job-Object process supervisor, `tauri.windows.conf.json`'s
 second `externalBin`). What follows is what is *different* about the
 Windows product.
 
+### NSIS only — no MSI
+
+`tauri.windows.conf.json` pins `bundle.targets` to `["nsis"]`, overriding
+the base config's `"all"`. Without the pin, Tauri builds the WiX/MSI
+bundle first on Windows — an artifact nothing here ships (the release
+assets and the updater flow are NSIS-only) and one that actually broke
+the v0.1.0 run: WiX `light.exe` failed on `windows-latest` before the
+NSIS step was ever reached. If an MSI is ever wanted (e.g. for managed
+enterprise installs), that WiX failure has to be debugged first — extend
+the targets list rather than reverting to `"all"`.
+
 ### Pending gates — read before tagging a Windows release
 
-Everything below was written and unit-tested on macOS; **no native Windows
-CI run has happened yet** (the branch has no remote while it's being
-built). Dispatch `.github/workflows/windows-bringup.yml` from the branch
-and work through the "Batched CI gates" list in
+Everything below was written and unit-tested on macOS. The v0.1.0 release
+run was the first native Windows CI compile — the Burrito sidecar, the
+`valea-spawn` shim, and the full desktop crate (all the `cfg(windows)`
+Rust) built cleanly on `windows-latest` — but **the gating test suites
+have still never run on Windows**. Dispatch
+`.github/workflows/windows-bringup.yml` from the branch and work through
+the "Batched CI gates" list in
 [the acceptance doc](superpowers/acceptance/2026-07-19-windows-support.md)
 first — the bring-up lane is what runs the gating *suites* (paths,
 containment, the full backend suite, the `valea-spawn` cargo tests);
