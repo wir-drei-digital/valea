@@ -458,7 +458,14 @@ defmodule Valea.Mail.ThreadTest do
       # Down (drops the index, then the column), then up again — the state a
       # long-lived workspace database is in when this migration first runs:
       # `mail_messages` full of rows that predate the column.
-      migrate(:down, step: 1)
+      #
+      # Targeted at THIS migration's version rather than `step: 1`, which means
+      # "the newest migration" and therefore silently rolls back somebody else's
+      # work the moment a later migration lands (a `step: 1` here rolled back
+      # `20260730000001_create_schedule_tables` instead, and the expected raise
+      # never came). `to:` walks down to and including this version — later
+      # migrations included, which `migrate(:up, all: true)` then re-applies.
+      migrate(:down, to: 20_260_729_000_002)
 
       assert Valea.Repo.query!("SELECT count(*) FROM mail_messages", []).rows == [[4]]
 
