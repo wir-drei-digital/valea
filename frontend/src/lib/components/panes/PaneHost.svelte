@@ -89,8 +89,12 @@
       minSize={30}
       class="bg-paper-panel flex min-h-0 min-w-0 flex-col"
     >
-      <div class="border-paper-hairline flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
-        <span class="text-ink-secondary min-w-0 flex-1 truncate text-[12px] font-medium">
+      <!-- Same vertical band as the chat header and the Context rail header
+           (pt-3 + 24px content row + pb-2), so all three border-b lines read
+           as one continuous rule across the pane. size-8/-my-1.5 buttons:
+           ≥32px hit targets without growing the band. -->
+      <div class="border-paper-hairline flex shrink-0 items-center gap-2 border-b px-3 pt-3 pb-2">
+        <span class="text-ink-secondary min-w-0 flex-1 truncate text-[12px] leading-6 font-medium">
           {paneTitle(active)}
         </span>
         <button
@@ -98,7 +102,7 @@
           title="Open as full view"
           aria-label="Open as full view"
           onclick={() => onPromote(active)}
-          class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill flex size-6 items-center justify-center rounded-md transition-colors"
+          class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
         >
           <Maximize2 class="size-3.5" strokeWidth={1.5} />
         </button>
@@ -107,7 +111,7 @@
           title="Close pane"
           aria-label="Close pane"
           onclick={onClose}
-          class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill flex size-6 items-center justify-center rounded-md transition-colors"
+          class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
         >
           <X class="size-3.5" strokeWidth={1.5} />
         </button>
