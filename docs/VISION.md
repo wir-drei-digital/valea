@@ -136,17 +136,26 @@ back.
 
 ## The daily loop we're building toward
 
-*(as of Spec D: unattended overnight work is future scope — a deterministic
-script contract, not an agent pipeline, per the "unattended work is
-deterministic scripts, not agent pipelines" design principle. Today's
-mechanism for step 1 below is a human- or script-triggered agent session
-started with a document + input, per "The agent interprets your prose"
-above — not a Valea-scheduled "workflow run".)*
+*(Step 1 has a real unattended mechanism as of tasks & schedules: each ICM
+carries a `schedules.json` registry Valea executes while it runs — either a
+**scheduled agent session** (an ordinary session; identical ask-gate
+posture, no extra grants, nothing about being scheduled weakens it) or a
+**scheduled command** (an exec-style spawn of the user's own script — the
+deterministic-step half of the "unattended work is deterministic scripts,
+not agent pipelines" principle). Three limits, all deliberate and all
+stated in the UI: schedules fire **only while Valea is running** — nothing
+happens while the app is closed; an agent that wants to register one has to
+get the write to `schedules.json` approved live, every time, because that
+write **is** the consent moment and no broad grant can buy it; and every
+schedule is individually pausable behind a workspace-wide kill switch. A
+human-started session pointed at a document + input remains the other,
+equally normal way to reach step 1 — this is a registry Valea runs, not a
+"workflow run" format.)*
 
 1. Overnight/morning: the admin streams (the mirrored inboxes, upcoming
-   sessions) get worked — today by a session someone starts pointed at the
-   right document and input, eventually by a scheduled deterministic step —
-   producing drafts, briefs, and suggestions, each with sources and
+   sessions) get worked — by a session someone starts pointed at the right
+   document and input, or by a registered schedule Valea fires while it is
+   open — producing drafts, briefs, and suggestions, each with sources and
    reasoning.
 2. Morning cockpit: "Good morning, Mara. Two sessions today, one new inquiry,
    one overdue invoice. I prepared three things overnight — nothing has been
@@ -165,8 +174,9 @@ above — not a Valea-scheduled "workflow run".)*
 
 No full email client replacement (rules engines, full search), no
 unattended email sending (every transmission is a human click on a
-reviewed draft — no agent send path, no send queues, no scheduling, no
-automated retry), no CalDAV writes, no browser automation, no
+reviewed draft — no agent send path, no send queues, no *send*
+scheduling, no automated retry; the schedule registry has no path to the
+wire), no CalDAV writes, no browser automation, no
 bookkeeping integration, no visual workflow builder, no multi-agent
 orchestration UI, no cloud sync, no mobile app, no team collaboration, no
 plugin marketplace, no external booking links.

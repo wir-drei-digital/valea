@@ -473,7 +473,10 @@ the `/rpc` origin/CSRF gap carried forward from the foundation review.
 
 All workspace-bound processes now live under one `Valea.Workspace.Runtime`
 supervisor (`:one_for_one`): `Valea.ICM.Watcher`, `Valea.Audit`,
-`Valea.Mail.Supervisor` (one `Valea.Mail.Engine` per valid account), and
+`Valea.Mail.Supervisor` (one `Valea.Mail.Engine` per valid account),
+`Valea.Calendar.Supervisor`, `Valea.Schedules.Supervisor` (the ledger
+writer, the command-run registry/supervisor, and the scheduler — see
+[Tasks & schedules](#tasks--schedules) below), and
 `Valea.Agents.SessionSupervisor` (a
 `DynamicSupervisor` — every live agent session is its child, so it dies with
 the workspace). There is no more one-shot queue-recovery `Task` — that
@@ -1454,7 +1457,10 @@ The cockpit renders files instead of Valea-generated content. Contract:
 `today.json` at an ICM's root (tree-visible; not dot-prefixed), lenient
 schema, all fields optional, unknown fields ignored — `updated_at`,
 `prepared: [{title, summary, page}]` (`page` an ICM-relative path rendered
-as a Knowledge link), `open_loops: [{title, source}]`, `notes`.
+as a Knowledge link), `notes`. (`open_loops` was **retired** by the
+tasks+schedules feature — open work lives in the ICM's own `tasks.json`,
+and the cockpit section carries a tasks line instead; see [Tasks &
+schedules](#tasks--schedules) below.)
 `Valea.Cockpit.today/0` (`backend/lib/valea/cockpit.ex`) merges `today.json`
 across every enabled ICM (`Valea.Mounts.enabled/0` order, each section
 provenance-labeled with the ICM name) with live state Valea itself owns:
@@ -1551,6 +1557,416 @@ high. UI: a Skills section in the agent settings modal
 dismissible offer card under the ICM's sidebar group at the
 mount/create/adopt moment (dismissals persist per skill id in the
 `icms:` entry's `skills_offers_dismissed` list).
+
+## Tasks & schedules
+
+*(spec: [Tasks & Schedules — Per-ICM Ledgers, Internal
+Scheduler](superpowers/specs/2026-07-29-tasks-schedules-design.md))*
+
+A native task concept and a native scheduling concept, both as plain JSON
+files in the ICM root — agent-writable, hand-editable, portable, usable
+without Valea. Valea parses, renders and (for schedules) *executes* them,
+and owns only the meta layer: anchors, run history, archival, audit, UI.
+Agents get no RPC, no MCP tool and no skill for either: **the file is the
+API**, taught through a materialized briefing.
+
+### File contracts
+
+- **`tasks.json`** (ICM root, tree-visible) — `{"readme", "tasks": [...]}`.
+  Entry fields: `id` (convention `t-` + 6 lowercase hex), `title`, `notes`,
+  `status` (`open | in_progress | done | dropped`), `assignee`
+  (`user | agent`), `due` (`YYYY-MM-DD`), `today` (bool focus flag),
+  `priority` (`high | medium | low`), `source` (freeform provenance
+  locator), `created_by`, `created_at`, `updated_at`, `done_at`. Tasks are
+  **inert** — nothing here executes; agent-assigned tasks are *pulled* by a
+  session, never auto-run. Duplicate ids degrade softly (first occurrence
+  wins for addressing) with a calm note.
+- **`schedules.json`** (ICM root) — `{"readme", "schedules": [...]}`. Entry:
+  `id`, `title`, `cron` (5-field, plus `@hourly/@daily/@weekly/@monthly`),
+  `timezone` (IANA, defaults to the host zone via
+  `Valea.Calendar.Engine.host_zone/0`), `payload`, `paused`, `catchup`,
+  `created_by`, `created_at`. Two payload kinds:
+  `{"kind": "prompt", "prompt", "context_doc"}` (starts an ordinary session
+  in this ICM) and `{"kind": "command", "command", "args"}` (exec-style
+  spawn, never a shell string). **Declaration only** — no run state ever
+  goes in the file.
+- **`.valea/`** — Valea's namespace inside the user's ICM: `briefing.md`
+  (the materialized contract, below) and `task-archive.jsonl` (append-only
+  archive). Agent sessions cannot write anywhere under it; reads are
+  ordinary.
+
+`backend/lib/valea/tasks.ex` owns the task ledger (read + mutate +
+archive), `backend/lib/valea/schedules/file.ex` the schedules read side and
+`.../schedules/edit.ex` its mutation half, over the shared
+`Valea.Ledger.{JsonFile,Canonical,Writer}` trio.
+
+### Leniency — lenient display, strict execution
+
+Two regimes, split on purpose (`backend/lib/valea/schedules/entry.ex`):
+
+- **Display fields are lenient**, `today.json`-style. Missing file → empty
+  ledger; malformed JSON → the file is treated as absent *for execution*
+  (**nothing fires from an unparseable `schedules.json`** — fail-safe) with
+  a calm per-ICM note and one audit notice per content hash; wrong-typed
+  display fields degrade (`title` → `"untitled"`, `created_by` → `nil`).
+  **Unknown fields are preserved on every Valea write** — top-level keys,
+  unknown entry fields, even non-map junk members of the array round-trip.
+- **Execution-control fields are strict and fail closed, per entry**: `id`,
+  `cron`, `timezone` (when present), `payload` (shape *and* kind), `paused`
+  and `catchup` (real JSON booleans — `"paused": "true"` is refused, because
+  a malformed *pause attempt* must never leave a schedule running).
+  `context_doc` is checked lexically for containment here (relative, no
+  `..`) and again at launch (`resolve_real` + existence, else a `failed`
+  run). Every parsed entry carries a **disposition** —
+  `executable | paused | not_executable` with a per-row `reason` sentence —
+  surfaced through the RPCs so nothing is visible-but-unfixable.
+  **Duplicate ids exclude every carrier** ("duplicate id"), so array order
+  can never decide what runs.
+
+### Write discipline and archival
+
+- All Valea-side ledger mutations serialize through **`Valea.Ledger.Writer`**
+  (`backend/lib/valea/ledger/writer.ex`) — a GenServer under
+  `Valea.Schedules.Supervisor`, so UI clicks, RPCs and the archive sweep
+  never interleave. Implemented as **one writer for the open workspace**
+  rather than the spec's per-ICM minimum: strictly stronger serialization,
+  and ledger writes are human-paced and file-local. Reads never go through
+  it.
+- Each mutation is an entry-level read-patch-write with **optimistic
+  concurrency** against the file's content hash, re-applied on mismatch,
+  bounded to 3 attempts before `{:error, :conflict}`; the write itself is
+  tmp + rename. An entry that vanished under a patch answers
+  `{:error, :not_found}` and writes nothing.
+- Completed (`done`/`dropped`) entries are archived **append-first,
+  prune-second** in one writer turn. Each archive line is
+  `{archive_event (UUID, provenance only), archived_at, snapshot_hash,
+  task}` — **the snapshot hash is the identity** (key-sorted canonical JSON,
+  `Valea.Ledger.Canonical`), so a crash between append and prune is harmless:
+  the next sweep re-appends and readers dedupe. The prune is
+  **snapshot-conditional** — an entry edited or reopened in the window stays
+  in the ledger. A partial trailing line is tolerated and the next append
+  starts on a fresh one. Two triggers: the UI's "Clear done", and the
+  scheduler's daily sweep of entries completed more than 14 days ago
+  (`Valea.Tasks.sweep/2`, `done_at` falling back to `updated_at`; unknown age
+  is never old age).
+- Agents use ordinary file tools and are outside this discipline by design;
+  the hash check is what defends against them. Changes ride the existing
+  `icm_changed` watcher **for UI refresh only** — the watcher is never on the
+  execution path.
+
+### Scheduler runtime
+
+`Valea.Schedules.Scheduler` (`backend/lib/valea/schedules/scheduler.ex`) —
+one GenServer per workspace, ticking every 30 s, started under
+`Valea.Schedules.Supervisor` inside `Valea.Workspace.Runtime` (child order:
+`Ledger.Writer` → `RunRegistry` → `RunSupervisor` → `Scheduler` last, so on
+shutdown the scheduler stops first while the Registry is still readable).
+It dies and restarts with a workspace switch like the mail and calendar
+engines.
+
+**Nothing that matters lives in the process.** A tick is a pure function of
+`schedules.json` (re-read every time, never cached) and the persisted state
+below; process state holds only the injected seams, which mounts have had a
+first pass, the last unreadable-file hash per ICM, and the last sweep date.
+
+**Persisted state — two tables in the workspace SQLite**
+(`backend/priv/repo/migrations/20260730000001_create_schedule_tables.exs`,
+Ash domain `Valea.Schedules.Store`). Neither is cache; nothing rebuilds
+them. Both are keyed by `(icm_id, schedule_id)` where `icm_id` is the ICM's
+`manifest.id` — the identity that survives a mount rename or re-add; the
+mount key is display metadata only.
+
+- **`schedule_state`** — composite primary key `(icm_id, schedule_id)`
+  (which *is* the upsert's conflict target — SQLite implements a non-INTEGER
+  PK as a unique index), plus `fingerprint`, `first_seen_at`,
+  `last_attempted_slot`, `deleted_at`. The **fingerprint** is SHA-256 over
+  the canonicalized execution-relevant fields *only* — `catchup`, `cron`,
+  `payload`, `timezone` — so a title edit or a pause toggle never resets the
+  anchor. `last_attempted_slot` is the **anchor** and is **monotonic**: every
+  write goes through `max(stored, candidate)`. `deleted_at` is the
+  **tombstone**, set when a *parseable* file no longer carries the id (an
+  unreadable file never infers deletion); any reappearance — byte-identical
+  included — resets the anchors and clears it in one merge-over-stored
+  upsert (`put_state/3`: an explicit `nil` clears, an omitted key preserves).
+- **`schedule_runs`** — one row per fire/skip event: `id` (UUID),
+  `icm_id`, `schedule_id`, `fingerprint`, `slot`, `fired_at` (NOT NULL — it
+  is both the history ordering key and the notice window bound), `trigger`
+  (`scheduled | catchup | manual`), `kind`, `outcome`, `duration_ms`,
+  `session_id`, `output`, `coalesced_count`, `mount_key`. Deliberately **no
+  foreign key** to `schedule_state`: run records outlive the schedule they
+  came from and survive tombstones and mount renames. Index:
+  `(icm_id, schedule_id, fired_at)`.
+
+**The firing rule**, per tick: (1) re-read each enabled ICM's file
+synchronously; (2) reconcile fingerprints and tombstones — new,
+fingerprint-changed or reappeared entries reset to
+`first_seen_at = last_attempted_slot = now`, so a newly registered schedule
+first fires at its next *future* slot and no edit or delete-recreate ever
+inherits old anchors; (3) due iff the first slot strictly after
+`max(last_attempted_slot, first_seen_at)` is `<= now`; (4) **coalesce** —
+every elapsed slot is consumed, the fire happens once with a
+`coalesced_count`; (5) due while the previous run is live consumes all
+elapsed slots with **one** `skipped: still running` record; (6)
+present-but-not-firing entries (paused, `not_executable`, duplicate-id
+carriers, and everything while the kill switch is engaged) **consume their
+slots silently** — so unpausing, repairing or lifting the switch never
+back-fires; (7) **launch-time re-validation** re-reads the file immediately
+before the spawn (entry still present, still executable, same fingerprint,
+kill switch still off) or the tick consumes nothing. The guarantee is
+snapshot-based: an edit landing inside the snapshot-to-spawn window
+(milliseconds) may miss that one fire.
+
+**Catch-up** runs on each *mount's* first pass, after reconciliation: with
+`catchup: false` (the default) the anchor fast-forwards to `max(anchor,
+now)`; with `true` the ordinary due test produces exactly one coalesced fire
+recorded `trigger: "catchup"`. Per mount, not per process — an ICM whose
+file was unreadable or whose volume was missing on the first tick has not
+had its pass and gets the full treatment when it becomes readable.
+
+**Cron** (`backend/lib/valea/schedules/cron.ex`) is hand-rolled and
+deterministic: 5 fields plus the four aliases, **Vixie DOM/DOW semantics**
+(both day fields restricted → a match in *either* fires), no names/`L`/`W`/
+`#`/seconds/year. Slots are wall-clock in the schedule's zone, materialized
+to UTC instants: a spring-forward gap fires at the first valid instant
+after it, a fall-back repeat only at its first occurrence. Forward clock
+jumps are bounded by coalescing; backward jumps are quiet until wall clock
+re-passes the anchors.
+
+**Run lifecycle.** The run record is written *before* the spawn (so a crash
+in the window still leaves evidence) and advanced afterwards. Every store
+write is **generation-bound** — a completion landing after a workspace switch
+cannot write into the new workspace's state. The one exemption is
+`terminate/2`, which marks still-`running` rows `interrupted` under the
+closing generation; that write is best-effort (the Repo usually goes down
+before the Runtime), so the reliable convergence is each mount's first pass,
+which marks every `running` row `interrupted` unless the runner reports it
+genuinely live. `Valea.Schedules.Runner.Live` is the production seam
+(`start_prompt/3`, `start_command/4`, `live?/4`); the determinism suite
+substitutes a fake, which is why the scheduler's rules are testable without
+starting a session or a subprocess.
+
+- **Prompt fires** are ordinary agent sessions with `kind: "scheduled"` —
+  metadata only, **posture identical** to a human session. The initial
+  prompt is a fixed preamble (`Runner.Live.preamble/2`, verbatim from the
+  spec: *"Scheduled run … You are running unattended; if you get blocked,
+  record what's needed in tasks.json and end the session."*) plus the
+  schedule's prompt. Session title `<schedule title> — <slot's wall-clock
+  date in the schedule's zone>`.
+- **Command fires** are `Valea.Schedules.CommandRun` processes under
+  `Valea.Schedules.RunSupervisor`, registered in
+  `Valea.Schedules.RunRegistry` under `{icm_id, schedule_id}` — which makes
+  one-run-at-a-time *observable* rather than remembered. The containment
+  contract in full: exec-style spawn (no shell, no interpolation),
+  terminal-style executable resolution (absolute / ICM-root-relative /
+  `PATH`), cwd = the ICM root, `Valea.Agents.Env.minimal/0`, a 10-minute
+  timeout (`timed out`, process group killed), output capped at **256 KiB**
+  with an `[output capped]` marker, and the full command line in the audit.
+  **There is no sandbox** — a command runs with the user's full authority,
+  which is exactly why registration is always-ask.
+- **Outcome tokens are exact-equality contracts**: `running`, `completed`,
+  `failed`, `timed out`, `interrupted`, `skipped: still running`. Detail
+  never rides the token — it goes in `output`. **`waiting` is never stored**:
+  a scheduled session parked on a permission ask stays `running` (so
+  one-run-at-a-time and the convergence pass still see it) and `waiting` is
+  projected at read time by `Valea.Schedules.Runs` from live session state.
+- **Global kill switch** — a top-level `scheduler_paused:` key in
+  `config/workspace.yaml` (`Valea.Mounts.scheduler_pause_state/1`), read
+  **tri-state**: `:on | :off | :unreadable`. A config that exists but does
+  not parse is `:unreadable` and **fails closed** (nothing fires, one audit
+  notice per transition) — a half-written YAML file must not be able to
+  start unattended prompts and unsandboxed commands. An *absent* config is
+  `:off`. While engaged, ticks keep reconciling and consuming slots silently;
+  step 7 re-checks the switch, so one engaged mid-tick still stops the fire.
+
+### Consent and containment
+
+Two tiers in `Valea.Agents.PermissionPolicy.decide/2`
+(`backend/lib/valea/agents/permission_policy.ex`), both keyed off
+`ctx.icm_roots` and both casefolded (NFC + downcase, every platform):
+
+- **`<icm_root>/.valea` and everything beneath it is write-DENIED** (deny,
+  not ask; step 3b, before the write-allow tier, so a broad grant cannot buy
+  it back). Read kinds are exempt — the briefing exists to be read; an
+  unrecognized or missing `kind` is denied, matching the mail/calendar
+  fail-closed posture.
+- **Exactly `<icm_root>/schedules.json` always ASKS on write kinds** (step
+  5b), even when `write_paths`/`write_roots` cover it: registering a schedule
+  is a standing grant of future unattended execution, so it is always a live
+  human decision. Root-exact — a nested `sub/schedules.json` is ordinary
+  content, and `tasks.json` is untouched.
+
+**The ask tier's position is the invariant**, and it is pinned by test:
+`icm_roots` deliberately includes the in-scope mail/calendar roots, so
+`<mail_root>/schedules.json` is simultaneously an exact ask match *and* a
+mail-tier deny — deny has to win. Both tiers test **two spellings** of every
+candidate (symlink-resolved *and* lexically expanded against `cwd`), so a
+symlink planted at `.valea` or at `schedules.json` cannot slip the tier into
+the write-allow tier. A `Bash` redirection has no extractable path candidate
+and lands on the generic empty-candidates `:ask` floor — never a silent
+allow, but the dialog cannot say "this registers a schedule" (accepted
+residual risk; the briefing directs agents to use file tools).
+
+`Valea.Agents.SessionSettings.content/1` mirrors both tiers into
+`managedSettings` (`Write`+`Edit`, both the plain `/abs` and the
+filesystem-anchored `//abs` glob spelling). **Honest status: that mirror is
+best-effort defense-in-depth and very likely inert under the pinned
+adapter** — `managedSettings` is filtered restrictive-only (so the `allow`
+array never lands, and there is no allow for an `ask` to out-rank), the
+adapter routes every tool call to Valea's `canUseTool` callback anyway, and
+`Write(<path>)` rules are accepted-but-never-consulted (path-scoped file
+checks are `Edit`/`Read` only — hence the `Edit` twins). **The enforcing
+layer is `PermissionPolicy` on the ACP `request_permission` callback.** The
+runtime probe that settles this empirically is mandated in the live
+acceptance checklist
+([2026-07-29-tasks-schedules.md](superpowers/acceptance/2026-07-29-tasks-schedules.md)
+§B); the fail-closed fallback, if the callback ever stops covering it, is a
+settings-level **deny** with registration moving to the UI/hand-edit path.
+
+`Valea.Agents.RiskTier.classify/1` additionally stamps the root
+`schedules.json` and anything under a `.valea/` directory at any depth as
+`"high"` — dialog copy for the human deciding, never an access decision.
+User-created schedules (UI RPC) and hand edits are the user acting and carry
+no gate; a *scheduled* session that tries to write `schedules.json` parks on
+the same ask and fires nothing — self-perpetuation fails closed.
+
+### The materialized briefing
+
+`Valea.ICM.Briefing.materialize!/1` (`backend/lib/valea/icm/briefing.ex`)
+writes `.valea/briefing.md` from the shipped template
+(`backend/priv/icm_briefing_template/briefing.md`) — the
+`Valea.Mail.AgentsFile` pattern with one simplification:
+there is nothing to interpolate, so every ICM gets byte-identical bytes.
+Write-if-different, tmp + rename (so it never writes *through* a planted
+symlink), hung off each mount's appearance in a scheduler tick — keyed on
+the mount ROOT rather than the booted set, because a fresh ICM has no
+`schedules.json` and is exactly the ICM that most needs the contract. A root
+that cannot take the write costs a log line and one audit entry
+(`briefing_unwritable`), never a tick. It documents both file grammars, the
+strictness split, the cron dialect incl. the Vixie rule and DST, the
+invariants (mark done never delete; ids are opaque and never reused; no run
+state in files; nothing fires while Valea is closed; pause/catchup
+semantics; what resets an anchor), the consent expectations, and a worked
+before/after example.
+
+Discovery is three-layered: the `readme` field in each JSON file points at
+the briefing; `backend/priv/icm_template/{AGENTS.md,CONTEXT.md}` seed a
+pointer for *new* ICMs; and — the surface that reaches **existing** ICMs,
+whose prose Valea never rewrites — `Valea.Agents.SessionSettings.context/1`
+puts one pointer line in every session's Valea-authored `context.md`.
+
+### Scheduled-session visibility
+
+Session kind `"scheduled"` beside Spec D's `"chat"`.
+`Valea.Agents.list_recent_sessions_by_icm/2` (the nav feed) and
+`list_sessions_for/3` (a group's "Show all…" paging) both take
+`include_scheduled:` (default `false`) and filter **backend-side, before the
+per-group limit and before the cursor split** — so the nav store never
+fetches-then-hides, `limit` keeps meaning "limit chat sessions", and an
+excluded run never consumes a page slot. A summary with no `kind` at all is
+not scheduled; the filter names the one kind it excludes. (The workspace-wide
+`list_sessions/0` identity listing is deliberately untouched.)
+The primary access path is the **run history** under each schedule row —
+prompt runs link to `/chat?session=<id>`, command runs show their captured
+output inline. Cockpit notices keep parked and failed runs from being
+invisible.
+
+### RPC surface and cockpit
+
+`Valea.Api.Tasks` — `list_tasks`, `create_task`, `mutate_task`,
+`archive_done`. `Valea.Api.Schedules` — `list_schedules`, `create_schedule`,
+`mutate_schedule`, `delete_schedule`, `run_schedule_now`,
+`schedule_run_history`, `set_scheduler_paused`. **UI-plane only; agents have
+no RPC path at all.** Every action guards `check_generation/1` first (reads
+included), string keys throughout (task fields like `"today": false` are
+legitimately falsy), `fields`/`patch` are unconstrained `:map`s whose keys
+are the file's own snake_case names, and identity/timestamps
+(`id`/`created_at`/`created_by`/…) are stripped from caller input. List RPCs
+return per-ICM parse status *and* per-entry dispositions. Schedule writes
+are deliberately **lenient** — an invalid entry lands and reports its own
+freshly read-back `disposition`/`reason` in the same reply — while
+`mutate_schedule`/`delete_schedule` refuse a duplicate id outright
+(`:duplicate_id`) rather than letting array order decide. `run_schedule_now`
+takes the identical fire path incl. step 7, is allowed for `executable`
+*and* `paused` entries, is refused for `not_executable`/duplicate ones, and
+**does not advance the anchor**.
+
+`Valea.Cockpit.today/0` gained a per-ICM **tasks line** — `due_today`,
+`overdue`, `in_progress` and the top 3 (today-flag, then due, then priority)
+— computed for every section including one whose `today.json` is broken,
+because the two files are independent; a malformed `tasks.json` yields
+`"tasks" => nil` (the calm note) without touching the section's `"ok"`. It
+replaced `open_loops`, which is gone from the section entirely. Top-level
+`"schedule_notices"` carries the last 24 h of `waiting`/`failed`/`registered`
+events across every enabled ICM (capped at 20, newest first, no captured
+output); tombstoned registrations are filtered out, and a notice for a
+schedule that has since vanished still resolves a mount key so the link
+works.
+
+Audited: every fire/skip/completion/failure (fingerprint, trigger, session
+id, and for commands the full command line); every schedule
+registration/change/reappearance/deletion — detected by the scheduler's own
+reconciliation pass rather than by the watcher, so an agent's registration
+lands in the log whether or not the watcher was up; UI task and schedule
+mutations; pause-all; `schedules.json` unreadability (once per content
+hash); an unwritable briefing; and an unreadable workspace config (once per
+transition). Deliberately **not** audited: agent edits to `tasks.json` —
+that is transcript territory.
+
+### Frontend
+
+- Route `frontend/src/routes/tasks/+page.svelte` — one page, two tabs, with
+  the tab in the URL (`/tasks?tab=schedules`, `replaceState` so it is
+  linkable without a history entry). Per-tab load/failure states.
+- `frontend/src/lib/tasks/store.svelte.ts` (`tasksStore`) is the single
+  ledger store — both lists, the tri-state `schedulerPaused`, per-list
+  loaded/failed flags, and every mutation, each generation-guarded.
+  `frontend/src/lib/tasks/filters.ts` owns the Today filter and the row
+  ordering; `frontend/src/lib/tasks/cadence.ts` is a table-driven cron
+  **humanizer** (`30 7 * * 1-5` → "weekdays 07:30") that falls back to the
+  raw expression rather than guessing.
+- `frontend/src/lib/components/tasks/` — `TasksTab`/`QuickAdd`/`TaskRow`/
+  `TaskEditor` and `SchedulesTab`/`ScheduleRow`/`RunHistory`, plus the two
+  pure shape modules. Repair affordances are real: an id-less entry offers
+  "Copy into a proper task", and the editor normalizes an unknown status.
+- Nav (`frontend/src/lib/shell/nav.ts`) carries a **Tasks** item again;
+  the sessions "Show all" pane carries an "Include scheduled runs" checkbox
+  whose state lives in the two session stores (survives navigation and a
+  workspace switch, not a reload — there is no persisted key).
+- Honest limitation copy is in the UI, not only in the docs: *"Schedules
+  fire only while Valea is running — nothing happens while the app is
+  closed."*
+
+### Known limitations (accepted, implemented state)
+
+- **Nothing fires while Valea is closed.** Stated in the UI. The user's own
+  systemd/launchd timers remain a valid pattern outside Valea; Valea does not
+  try to absorb them.
+- **`schedule_runs` has no retention or prune policy** — nothing deletes run
+  records, so the table grows without bound over a workspace's lifetime.
+  Rows are small and a schedule produces at most one event per slot, but
+  ownership of a prune is genuinely unassigned today.
+- **Cockpit schedule notices span disabled mounts.**
+  `Store.notices_since/1` queries every state and run row in the workspace,
+  with no mount filter; only the *label* lookup is built from enabled mounts.
+  A schedule in a mount that was disabled inside the 24 h window can still
+  produce a notice (attributed via the run row's own recorded `mount_key`).
+- **The same ICM mounted in two workspaces double-fires.** Anchors are
+  per-workspace, so one cron slot can fire once per workspace — around a
+  switch, or with two app instances. Accepted; there is no cross-workspace
+  lease.
+- **Final-window lost updates are unrecoverable for open entries.** A
+  foreign whole-file write landing between Valea's last hash check and its
+  rename is silently overwritten; POSIX rename offers no true CAS and a lock
+  file in user territory was rejected. The archive only ever holds completed
+  entries, so it does not bound this.
+- **Command content drift is not detected.** An approved command
+  schedule's target script can change later through ordinarily-granted
+  writes, and the next unattended fire runs the new content. No hash-pinning;
+  the mitigations are always-ask registration, per-fire audit with the full
+  command line, and pause/kill-switch.
+- **Destructive task rewrites by an agent are undetected in v1.** The
+  briefing says "set status, never delete"; the archive and transcripts are
+  the safety nets.
 
 ## Knowledge & editor depth (Spec C)
 
@@ -1815,7 +2231,7 @@ UI follows the "paper & ink, with a green pen for approval" design system: [docs
 - `AppShell.svelte` — the four-column grid shell (Sidebar · optional ListPane · Main · optional Rail); pages compose inside it. Layout only: the main slot is a bare full-height flex column with no width cap and no scroll container of its own, so each route owns its own scrolling and measure (`MainColumn`, or a column pinning chrome to the pane's bottom edge like chat's composer). That variant-freedom is what lets any view render in any pane — see [Side panes](#side-panes) below.
 - `AppFrame.svelte` — outer frame/chrome wrapper around `AppShell`.
 - `MainColumn.svelte` — the scrolling main-slot column with the §11 prose measure (centered 660px, or `wide` for the full pane width with just the gutter — page-editor routes, which re-cap per block via `tiptap.css`). Formerly `AppShell`'s `mainVariant="prose"|"prose-wide"` prop, relocated to the route layer.
-- `Sidebar.svelte` — left nav column: the daily group (Today, Mail, Calendar, Chat), the Projects section (`IcmProjects.svelte`), and a Workspace utility group (Sources, Audit log). The file browser (route `/knowledge`, titled "Files" in the UI) is reached through each project's own row rather than a global nav item. A Tasks nav item existed as a stub and was dropped (2026-07-26) until the feature actually exists.
+- `Sidebar.svelte` — left nav column: the daily group (Today, Tasks, Mail, Calendar, Chat), the Projects section (`IcmProjects.svelte`), and a Workspace utility group (Sources, Audit log). The file browser (route `/knowledge`, titled "Files" in the UI) is reached through each project's own row rather than a global nav item. The Tasks item was dropped as a stub (2026-07-26) and returned for real with [Tasks & schedules](#tasks--schedules) above.
 - `SidebarItem.svelte` — single sidebar row/link.
 - `Rail.svelte` — optional right-hand rail column.
 - `ListPane.svelte` — optional second column for list-over-detail views (e.g. Knowledge's folder/page list).
@@ -1831,7 +2247,8 @@ UI follows the "paper & ink, with a green pen for approval" design system: [docs
 Related, not under `shell/` but part of the same top-level chrome:
 
 - `frontend/src/lib/components/onboarding/` — `Onboarding.svelte` (root two-card + trust bar screen, rendered by `+layout.svelte` when `workspaceStore.state === 'none'`), `CreateWorkspaceDialog.svelte`, `OpenWorkspaceFlow.svelte`, `WhatsInAWorkspace.svelte`, `TrustBar.svelte`.
-- `frontend/src/lib/components/today/` — `OpenLoops.svelte` (plain checklist rows over the `today.json`-sourced `open_loops`; the checkbox is visual only, no interactive control yet), the sole surviving component of the pre-Spec-D Today cockpit. Prepared items and the mail summary line are now rendered directly inline in `frontend/src/routes/+page.svelte` itself (the `today.json` rewrite, Spec D §C) rather than through a dedicated per-item card component — see "Today = a file the agent maintains" above.
+- `frontend/src/lib/components/today/` — **gone**. `OpenLoops.svelte` was its last survivor and the tasks+schedules feature deleted it with `open_loops` itself. Every Today surface — prepared items, the mail summary line, the tasks line, and the schedule notices — is now rendered inline in `frontend/src/routes/+page.svelte`, over the shapes `frontend/src/lib/today/cockpit.ts` normalizes; see "Today = a file the agent maintains" and [Tasks & schedules](#tasks--schedules) above.
+- `frontend/src/lib/components/tasks/` — the `/tasks` route's two tabs and their rows/dialogs (`TasksTab`, `QuickAdd`, `TaskRow`, `TaskEditor`, `SchedulesTab`, `ScheduleRow`, `RunHistory`, plus the pure `task-shapes.ts`/`schedule-shapes.ts`).
 - `frontend/src/lib/components/ui/` — shadcn-svelte primitives (button, dialog, input, label, badge, separator, skeleton, scroll-area, tooltip).
 
 ### Side panes
@@ -1898,3 +2315,4 @@ App-version truth for the updater: `desktop/src-tauri/tauri.conf.json`.
 - [2026-07-26-icm-skills-design.md](superpowers/specs/2026-07-26-icm-skills-design.md) — **Shipped** (see [ICM skills](#icm-skills) above): ICM skills (vendored install, consent, settings) — consent-gated install of repo-vendored agent skills into a user-owned ICM's `.claude/skills/`; pinned snapshots + `catalog.yaml` in `backend/priv/skills/` with no runtime fetching; `.provenance.yaml`-derived per-mount state; staged tmp+rename installs with `resolve_real/2` containment; generation-guarded, control-token-gated list/install/update/uninstall/dismiss; a Skills section in agent settings and a one-time dismissible mount-moment offer card.
 - [2026-07-26-mail-smtp-send-design.md](superpowers/specs/2026-07-26-mail-smtp-send-design.md) — **Shipped** (Spec G — see [Mail](#mail-spec-e--mail-as-maildir-spec-g--human-only-send) and [Send](#send-spec-g) above): human-only SMTP send — Spec E's "there is no SMTP" invariant rewritten to *Valea transmits mail only on an explicit human action, hash-bound to the exact draft, sending identity, and threading the human reviewed; agents have no path to send; no code path retransmits*. Settings v5 (optional per-account `smtp` block, separate SMTP keychain entry, `outbound: human_send_and_push`), a hand-written tri-state `SmtpClient` on `:ssl`/`:gen_tcp` (the `354` boundary; `:unknown` never retried), the `send` ledger op kind with settings-pinned claim/snapshot/compose, wire/record dual compose, `send_review` + human resolution, network-free send classification at Engine activation, the kind-aware ordered display projection, the draft iteration loop (live `mail_draft` events + Request-changes routing into a session via `initial_prompt`), and the multi-account hardening pass (account-qualified selection, WAL + `busy_timeout`, per-account poll jitter). Live-acceptance checklist: `docs/superpowers/acceptance/2026-07-26-mail-smtp-send.md`.
 - [2026-07-28-side-panes-design.md](superpowers/specs/2026-07-28-side-panes-design.md) — **Shipped** (see [Side panes](#side-panes) above): one side pane beside a route's primary view, addressed entirely by a `?pane=` URL param (linkable, reload-surviving, Back-closable) — a `paneforge` split with a persisted ratio (`PaneHost`), a kind→component registry over placement-agnostic views (`ChatView`, `FileView`), and a `PaneContext` callback seam that makes `/chat` and `/knowledge` mirror images of the same click. Adds file viewers for the non-`.md` formats (text/PDF/image), clickable file leaves in `IcmTree` plus a session-header file popover, ACP `toolCall.locations` relayed as clickable chips with a containment-checked `relPath`, rename/delete for non-`.md` files, and the `/files/raw` credential split (image extensions token-exempt for `<img>`; everything else needs the control token, served from a fixed type map with `nosniff`).
+- [2026-07-29-tasks-schedules-design.md](superpowers/specs/2026-07-29-tasks-schedules-design.md) — **Shipped** (see [Tasks & schedules](#tasks--schedules) above): a native task concept and a native scheduling concept as two plain JSON files per ICM root (`tasks.json`, `schedules.json`) plus Valea's own `.valea/` namespace (materialized `briefing.md`, append-only `task-archive.jsonl`). Lenient display / strict execution with a per-entry disposition; one-writer optimistic-concurrency ledger writes with snapshot-hash-identified, append-first archival; a per-workspace 30 s scheduler over `schedule_state`/`schedule_runs` (fingerprints, monotonic anchors, tombstones, coalescing, catch-up, one-run-at-a-time, launch-time re-validation, tri-state kill switch) with a hand-rolled Vixie-semantics cron; prompt fires as `kind: "scheduled"` sessions at unchanged posture and command fires as timeout-bounded, output-capped exec spawns with no sandbox; consent as a `PermissionPolicy` always-ask on the root `schedules.json` plus a `.valea/**` write-deny (managed-settings mirror best-effort, very likely inert — the ACP callback enforces); the `/tasks` route's two tabs, the cockpit tasks line replacing `open_loops`, schedule notices, and backend-side scheduled-session filtering. Live-acceptance checklist: [docs/superpowers/acceptance/2026-07-29-tasks-schedules.md](superpowers/acceptance/2026-07-29-tasks-schedules.md).

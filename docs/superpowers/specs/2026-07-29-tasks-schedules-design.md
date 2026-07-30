@@ -713,7 +713,10 @@ risk #4); no ledger lock files (accepted risk #5).
   duplicate ids, escaping `context_doc` → dispositions); leniency
   round-trips incl. unknown-field preservation; per-ICM writer
   serialization + conflict-retry (patch re-applied against changed file;
-  vanished entry → conflict); archive snapshot-hash identity (crash
+  vanished entry → **`{:error, :not_found}`** — *implementation
+  reconciliation (Task 1, ruled acceptable): this line said "conflict"; the
+  distinct atom is strictly more informative and nothing is written either
+  way*); archive snapshot-hash identity (crash
   re-append dedupes on read), snapshot-conditional prune (reopened entry
   survives), crash re-convergence, partial-trailing-line tolerance; run records generation-bound across a
   simulated switch (shutdown-path `interrupted` exemption pinned); command

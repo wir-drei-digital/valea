@@ -74,8 +74,9 @@ Known browser-mode limits (do not report as bugs):
       link affordance.
 - [ ] C5 Image upload into a page: renders inline; file lands under the
       ICM; serve endpoint contained (URL is workspace-scoped).
-- [ ] C6 today.json: hand-write one in an ICM root (prepared/open loops) →
-      Today renders the section.
+- [ ] C6 today.json: hand-write one in an ICM root (`updated_at`, `notes`,
+      `prepared`) → Today renders the section. There is no `open_loops`
+      field anymore — open work is `tasks.json` (leg H).
 
 ## D — Agent sessions
 
@@ -144,6 +145,102 @@ Known browser-mode limits (do not report as bugs):
       (warnings triaged).
 - [ ] G4 The served-feed + files endpoints reject requests without their
       tokens (spot-check with curl).
+
+## H — Tasks & schedules
+
+Needs one enabled ICM. `ICM` below = that ICM's root on disk. Timing-real
+legs (a schedule actually firing on its slot, catch-up across a restart, a
+command run's output) are acceptance-only —
+`docs/superpowers/acceptance/2026-07-29-tasks-schedules.md`; this leg is the
+UI, the file round-trip, and the copy.
+
+- [ ] H1 Quick-add: `/tasks` (Tasks tab) → type a title, Add → the row
+      appears AND `ICM/tasks.json` now exists on disk with a `readme`, a
+      `tasks` array, and the entry (`id` `t-`+6 hex, `status: "open"`,
+      `created_by: "user"`). Add a second one → the file is patched, the
+      first entry and `readme` untouched. The ICM picker only renders with
+      2+ ICMs and defaults to the MRU project.
+- [ ] H2 Hand-edit round-trip: with `/tasks` open, edit `ICM/tasks.json` in
+      an editor — change a title, add an entry carrying an unknown field
+      (`"mood": "grim"`) → the list updates without reload (`icm_changed`
+      watcher). Complete that row in the UI, reopen the file → the unknown
+      field survived the write.
+- [ ] H3 Task editor round-trip: click a row → dialog with Title, Notes,
+      Due, Focus today, Priority, Assignee, Status. Save is disabled until
+      something changes; save → only the changed keys are written and
+      `updated_at` moves. Marking Done stamps `done_at`; reopening clears
+      it. Then hand-write `"due": "sometime next week"` on an entry → the
+      ROW shows `due sometime next week (not a date)` in italics, the
+      editor's date field is blank, and saving an unrelated field does NOT
+      overwrite the unparseable `due`.
+- [ ] H4 Degenerate entries: hand-write an entry with no `id` and one with
+      `"status": "waiting"` → the id-less row shows the "no id" note plus
+      "Copy into a proper task" (which creates a proper copy and leaves the
+      original alone); the unknown status renders verbatim, sorts last, and
+      the editor offers it as `waiting (unknown)` with the normalize hint.
+      Two entries sharing an id → the calm duplicate note, first one wins.
+- [ ] H5 Malformed ledger: hand-break `ICM/tasks.json` (trailing comma) →
+      `/tasks` shows `tasks.json is unreadable — fix by hand or ask the
+      agent` for that ICM, the other ICMs still render, and Today's tasks
+      line shows the same note instead of counts. Fix the file → both
+      recover. The file is never rewritten while broken.
+- [ ] H6 Archive sweep: mark two tasks done → "Clear done" on the ICM →
+      rows leave the ledger AND `ICM/.valea/task-archive.jsonl` gains one
+      JSON line each (`archive_event`, `archived_at`, `snapshot_hash`,
+      `task`). "Clear done everywhere" does it across ICMs. Re-run with
+      nothing done → no-op, no empty line appended.
+- [ ] H7 Deep link + tabs: `/tasks?tab=schedules` opens the Schedules tab
+      directly; switching to Tasks DROPS the param (no history entry, Back
+      leaves the page rather than toggling tabs); reload holds the tab.
+- [ ] H8 Schedule composer + disposition: New schedule → cron
+      `30 7 * * 1-5` shows the live "weekdays 07:30" preview; save → row
+      appears, `ICM/schedules.json` written. Then save one with cron
+      `30 25 * * *` → the reply itself says `Saved — but it will not fire:
+      invalid cron: …` and the row reads `Not executable: invalid cron: …`.
+      Hand-write `"paused": "true"` (the STRING) on a third entry → that
+      row is ``Not executable: `paused` is not a boolean`` — never a
+      running schedule. Give two entries the same `id` → both read
+      `duplicate id`, and pause/delete on either is refused.
+- [ ] H9 Pause + Run now: toggle Pause on a row → the row reads Paused AND
+      `"paused": true` is in the file (hand-edit it back to `false` → the
+      UI follows). "Run now" is offered for executable AND paused rows,
+      disabled for `not_executable` ones with the entry's own reason as its
+      tooltip. Fire a `prompt` schedule with Run now → confirmation reads
+      `Fired now — this run does not shift the schedule.`, the row's run
+      history gains a `run now` entry, and its **Open transcript** link
+      opens the session at `/chat?session=<id>` (needs `claude` on PATH; if
+      absent, verify the run records `failed` with the reason in output).
+- [ ] H10 Scheduled sessions stay out of the way: after H9, the sidebar's
+      recent sessions and `/chat?all=1` do NOT list the scheduled run;
+      ticking **Include scheduled runs** reveals it (with the count in the
+      label). The checkbox survives navigating away and back, and a
+      workspace switch; it resets on a full page reload (no persisted key —
+      by design, not a bug).
+- [ ] H11 Pause all + the tri-state: engage **Pause all** → banner `All
+      schedules are paused. Nothing fires until you resume — slots that
+      pass meanwhile are skipped for good.` and `scheduler_paused: true` in
+      the workspace's `config/workspace.yaml`; Run now is refused while it
+      is on. Resume → banner gone. Then hand-break that YAML → the banner
+      switches to the WARN variant, `Scheduling paused: workspace config
+      unreadable. Fix config/workspace.yaml by hand — nothing fires until
+      it parses.`, and the switch is DISABLED (Valea refuses to rewrite a
+      config it cannot read). Fix the file → back to normal.
+- [ ] H12 Agent registration is ask-gated (needs `claude` on PATH): start a
+      session in the ICM and ask the agent to add a task and then register a
+      schedule. Expected: the `tasks.json` write is an ordinary write; the
+      `schedules.json` write raises the **permission dialog** even though
+      the session has a write grant over the ICM, and the dialog carries the
+      high-risk banner. Approve → the row appears on the Schedules tab with
+      a `from agent` badge and a `new` highlight, and Today grows a
+      **Schedules** notice `<title> was registered` linking to
+      `/tasks?tab=schedules`. Also ask it to write `.valea/briefing.md` →
+      **denied outright**, not asked. (Which layer caught the ask is the
+      acceptance doc's §B probe, not this leg.)
+- [ ] H13 Briefing materialization: `ICM/.valea/briefing.md` exists after
+      the workspace opens, matches
+      `backend/priv/icm_briefing_template/briefing.md` byte for byte, and is
+      restored on the next activation after you hand-edit it. A brand-new
+      ICM with no `tasks.json`/`schedules.json` at all still gets one.
 
 ## Wrap-up
 
