@@ -12,7 +12,12 @@
   //
   // A11y (ToolCallCard precedent): the expand toggle and the open icon are
   // separate SIBLING buttons — the row container is a plain div, never a
-  // nested-interactive control.
+  // nested-interactive control. The toggle deliberately carries NO aria-label:
+  // an aria-label would OVERRIDE its descendant text, so a screen reader would
+  // hear only the filename and lose the dir, edit count, "no longer exists"
+  // note, and the badge — the badge text is the non-color carrier of
+  // read-vs-changed, so masking it breaks information parity. All children are
+  // plain text, so the computed name already reads the whole row.
   import X from '@lucide/svelte/icons/x';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
@@ -54,12 +59,11 @@
   <div class="border-paper-hairline flex items-center gap-2 border-b px-3 py-2">
     <span class="text-ink-heading text-[12.5px] font-medium">Files</span>
     <span class="text-ink-meta text-[11.5px]">{activities.length}</span>
-    <span class="min-w-0 flex-1" aria-hidden="true"></span>
     <button
       type="button"
       onclick={onClose}
       aria-label="Close files panel"
-      class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading flex size-5 items-center justify-center rounded-md transition-colors"
+      class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading ml-auto flex size-5 shrink-0 items-center justify-center rounded-md transition-colors"
     >
       <X class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
     </button>
@@ -76,7 +80,6 @@
             onclick={() => toggle(row.key)}
             disabled={!expandable}
             aria-expanded={expandable ? expanded : undefined}
-            aria-label={row.name}
             class={[
               'flex min-w-0 flex-1 items-start gap-1.5 rounded-md px-1 py-0.5 text-left',
               expandable ? 'hover:bg-paper-pill cursor-pointer' : 'cursor-default'
@@ -96,10 +99,12 @@
               {#if row.dir}
                 <span class="text-ink-meta block truncate font-mono text-[10.5px]">{row.dir}</span>
               {/if}
-              <span class="text-ink-meta flex flex-wrap gap-x-2 text-[10.5px]">
-                {#if row.edits.length > 1}<span>{row.edits.length} edits</span>{/if}
-                {#if missingKeys.has(row.key)}<span class="italic">no longer exists</span>{/if}
-              </span>
+              {#if row.edits.length > 1 || missingKeys.has(row.key)}
+                <span class="text-ink-meta flex flex-wrap gap-x-2 text-[10.5px]">
+                  {#if row.edits.length > 1}<span>{row.edits.length} edits</span>{/if}
+                  {#if missingKeys.has(row.key)}<span class="italic">no longer exists</span>{/if}
+                </span>
+              {/if}
             </span>
             <span
               class={[
@@ -116,7 +121,7 @@
               type="button"
               onclick={() => onOpenFile?.(relPath)}
               aria-label={`Open ${row.name}`}
-              title="Open file"
+              title={`Open ${row.name}`}
               class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md transition-colors"
             >
               <ArrowUpRight class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
@@ -127,7 +132,14 @@
         {#if expanded}
           <div class="flex flex-col gap-1 pb-1.5">
             {#each row.edits as edit, i (i)}
-              {#if edit.diff}
+              <!-- A truthy `diff` proves nothing: `toolDiff` returns an object
+                   whenever the call carried a diff map, even with oldText AND
+                   newText both absent (a path-only diff, or creating an empty
+                   file). Rendering that would expand the row into an EMPTY
+                   DiffBlock, which reads as broken — so the text check, not
+                   just the object check, decides. Same guard as ToolCallCard's
+                   `hasDiff`. -->
+              {#if edit.diff && (edit.diff.oldText || edit.diff.newText)}
                 {@const d = lineDiff(edit.diff.oldText ?? '', edit.diff.newText ?? '')}
                 <DiffBlock rows={d.rows} truncated={d.truncated} />
               {:else}
