@@ -131,7 +131,7 @@
           <Popover.Trigger
             class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 data-[state=open]:bg-paper-pill -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
           >
-            Files · {filesCount}
+            Context · {filesCount}
           </Popover.Trigger>
           <Popover.Content align="end" class="w-[316px] p-2">
             {@render filesPanel()}
@@ -147,7 +147,7 @@
           onclick={onShowFiles}
           class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
         >
-          Files · {filesCount}
+          Context · {filesCount}
         </button>
       {/if}
     {/if}

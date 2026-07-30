@@ -560,9 +560,10 @@
 {/snippet}
 
 {#if descriptor.kind === 'chat-new'}
-  <!-- Same column geometry as a live session, so promoting the created
-       session in place doesn't shift the composer. -->
-  <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
+  <!-- Same geometry as a live session — full-width header band, centered
+       660px body/composer — so promoting the created session in place
+       doesn't shift the composer. -->
+  <div class="flex min-h-0 w-full flex-1 flex-col pt-3">
     <SessionHeader
       icmName={openIcmName}
       mountKey={openMountKey}
@@ -571,20 +572,22 @@
       onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
     />
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <p class="text-ink-meta px-4 py-5 text-[13px]">
+      <p class="text-ink-meta mx-auto w-full max-w-[660px] px-8 py-5 text-[13px]">
         {openIcmName ? `New session in ${openIcmName}.` : 'New session.'} Send a message to start it.
       </p>
     </div>
-    {#if createError}
-      <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{createError}</p>
-    {/if}
-    <Composer
-      busy={creating}
-      configItems={[]}
-      onSend={(text) => void createAndPrompt(text)}
-      onStop={() => {}}
-      onSetConfig={() => {}}
-    />
+    <div class="mx-auto w-full max-w-[660px] px-4">
+      {#if createError}
+        <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{createError}</p>
+      {/if}
+      <Composer
+        busy={creating}
+        configItems={[]}
+        onSend={(text) => void createAndPrompt(text)}
+        onStop={() => {}}
+        onSetConfig={() => {}}
+      />
+    </div>
   </div>
 {:else if sessionDoctor}
   <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
@@ -594,8 +597,12 @@
   <!-- Transcript scrolls; the composer (or the ended/starting row) stays
        docked at the pane's bottom edge, per the cockpit chat screen. -->
   <div bind:clientWidth={viewWidth} class="flex min-h-0 w-full flex-1">
-    <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
-      <!-- The "Files · N" pill renders only where the rail could actually
+    <!-- Full-width column: the header band and its border span the whole
+         chat area, and the transcript's scrollbar sits at the pane's right
+         edge — while the message stream and composer stay centered at 660px
+         inside their own wrappers. -->
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col pt-3">
+      <!-- The "Context · N" pill renders only where the rail could actually
            show (primary placement, >= 860px): elsewhere clicking it would set
            railOpen, hide the pill, and surface no rail — an inert affordance
            that deletes itself. -->
@@ -613,40 +620,48 @@
         filesPanel={!railCanShow ? filesPopover : undefined}
       />
       {#if archiveError}
-        <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>
+        <p class="text-warn-ink mx-auto w-full max-w-[660px] px-8 pt-1 text-[11.5px]" role="alert">
+          {archiveError}
+        </p>
       {/if}
-      <PlanBar item={planItem} />
-
-      <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
-        <Transcript {store} onOpenFile={openToolFile} />
+      <div class="mx-auto w-full max-w-[660px] px-4">
+        <PlanBar item={planItem} />
       </div>
 
-      {#if starting}
-        <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
-      {:else}
-        {#if resumeError}
-          <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{resumeError}</p>
+      <div bind:this={scroller} onscroll={onTranscriptScroll} class="min-h-0 flex-1 overflow-y-auto">
+        <div class="mx-auto w-full max-w-[660px] px-4">
+          <Transcript {store} onOpenFile={openToolFile} />
+        </div>
+      </div>
+
+      <div class="mx-auto w-full max-w-[660px] px-4">
+        {#if starting}
+          <p class="text-ink-meta px-4 py-4 text-[12.5px]">Starting…</p>
+        {:else}
+          {#if resumeError}
+            <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{resumeError}</p>
+          {/if}
+          <!-- An ended session keeps its composer: sending resumes it in
+               place (same transcript) and delivers the message — the
+               placeholder carries the affordance, no extra button. A LIVE
+               session's send is queue-aware (`store.send`): mid-turn
+               messages wait in the composer's queue until the turn ends. -->
+          <Composer
+            busy={store.busy || resuming}
+            {configItems}
+            {usageItem}
+            queued={store.queued}
+            turnStartedAt={store.turnStartedAt}
+            placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
+            onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
+            onStop={() => store?.cancel()}
+            onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
+            onEditQueued={(id, text) => store?.updateQueued(id, text)}
+            onDismissQueued={(id) => store?.dismissQueued(id)}
+            onSendQueuedNow={(id) => store?.sendQueuedNow(id)}
+          />
         {/if}
-        <!-- An ended session keeps its composer: sending resumes it in
-             place (same transcript) and delivers the message — the
-             placeholder carries the affordance, no extra button. A LIVE
-             session's send is queue-aware (`store.send`): mid-turn
-             messages wait in the composer's queue until the turn ends. -->
-        <Composer
-          busy={store.busy || resuming}
-          {configItems}
-          {usageItem}
-          queued={store.queued}
-          turnStartedAt={store.turnStartedAt}
-          placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
-          onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
-          onStop={() => store?.cancel()}
-          onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
-          onEditQueued={(id, text) => store?.updateQueued(id, text)}
-          onDismissQueued={(id) => store?.dismissQueued(id)}
-          onSendQueuedNow={(id) => store?.sendQueuedNow(id)}
-        />
-      {/if}
+      </div>
     </div>
     {#if showRail}
       <!-- The slide softens the ~150px transcript shift the rail's mount used

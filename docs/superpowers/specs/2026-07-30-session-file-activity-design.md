@@ -17,7 +17,7 @@ Ships in this iteration, end to end:
    only), one row per file with a badge (`Read` / `Edited` / `Created` /
    `Deleted` / `Renamed`), expandable per-edit diffs, and an open-in-pane icon.
 2. **Auto-open on first file touch**, per-session close memory, and a
-   "Files · N" reopen toggle in `SessionHeader`.
+   "Context · N" reopen toggle in `SessionHeader`.
 3. **Pure-frontend aggregation** over the session store's existing tool items —
    no backend changes.
 
@@ -202,7 +202,7 @@ Rows:
   persisted: a fresh app launch starts from default behavior.
 - When the rail is closed and the count is > 0 — and only where the rail
   could actually show (primary placement, ≥860px view width) — `SessionHeader`
-  shows a "Files · N" toggle to reopen it. A chat side pane or a squeezed
+  shows a "Context · N" toggle to reopen it. A chat side pane or a squeezed
   primary shows no pill: an affordance whose target cannot appear would be a
   dead end. No activity ⇒ no toggle, no rail, zero footprint. The open/close
   decision lives in `ChatView` (it owns both header and rail); the auto-open
@@ -264,7 +264,7 @@ and plain-language notes only. Mono diff detail appears only after an expand.
   checked).
 - Backend: no changes, no tests.
 - Manual acceptance: live touch auto-opens the rail; close stays closed for
-  that session; "Files · N" reopens; expand shows stacked diffs; ↗ opens the
+  that session; "Context · N" reopens; expand shows stacked diffs; ↗ opens the
   file side pane next to the rail; reopened past session shows its record;
   chat-as-side-pane never shows the rail (nor the header pill); narrow window
   hides both.
@@ -287,6 +287,17 @@ and plain-language notes only. Mono diff detail appears only after an expand.
   (with verified fallback), and the live-tree "no longer exists" cross-check.
   Full shell-level attribution deferred to a future backend session file
   journal.
+- **Renamed "Files" → "Context" (2026-07-30 UI pass):** the rail header, the
+  reopen pill, and the panel labels all say "Context · N" — the point of the
+  surface is that these files are part of the session's context, and the old
+  label undersold that. Internal identifiers (`filesCount`, `FileActivity`,
+  ids) deliberately keep the files vocabulary — they describe the data, not
+  the label.
+- **Full-width chat container (2026-07-30 UI pass):** the session header and
+  its border span the whole chat area and the transcript scrollbar sits at
+  the pane's right edge, while the message stream and composer stay centered
+  at 660px in their own wrappers; the rail header's vertical band matches the
+  chat header's, so the two border-b lines read as one continuous rule.
 - **Codex review folded in (2026-07-30):** timeline-index ordering replaces
   `seq` (snapshot items carry none); one-diff-per-call fidelity stated;
   deterministic diff↔row attribution; `move` direction claims dropped;

@@ -107,13 +107,22 @@
       ? 'border-paper-hairline bg-paper-panel w-[300px] shrink-0 border-l'
       : 'max-h-96 w-[300px]'
   ]}
-  aria-label="Files this session touched"
+  aria-label="Context files this session read or changed"
 >
-  <div class="border-paper-hairline flex items-center gap-2 border-b px-3 py-2">
+  <!-- Rail variant matches the chat header's vertical band exactly (the
+       host column's pt-3 + content + pb-2), so the two border-b lines read
+       as one continuous rule across the pane. min-h-6 pins the content row
+       to the same 24px the chat header's controls set. -->
+  <div
+    class={[
+      'border-paper-hairline flex items-center gap-2 border-b px-3',
+      variant === 'rail' ? 'pt-3 pb-2' : 'py-2'
+    ]}
+  >
     <!-- h2: gives screen-reader rotor users a landmark inside the aside.
-         One string, matching the header pill's "Files · N" exactly. -->
-    <h2 class="text-ink-heading text-[12.5px] font-medium">
-      Files · <span class="text-ink-meta font-normal">{activities.length}</span>
+         One string, matching the header pill's "Context · N" exactly. -->
+    <h2 class="text-ink-heading flex min-h-6 items-center text-[12.5px] font-medium">
+      Context · <span class="text-ink-meta font-normal">&nbsp;{activities.length}</span>
     </h2>
     {#if variant === 'rail' && onClose}
       <!-- size-8 with negative margin: a ≥32px hit target (product floor)
@@ -121,7 +130,7 @@
       <button
         type="button"
         onclick={onClose}
-        aria-label="Close files panel"
+        aria-label="Close context panel"
         class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1.5 ml-auto flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
       >
         <X class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
