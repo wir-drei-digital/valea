@@ -89,11 +89,15 @@ Bundles are currently **ad-hoc signed**: auto-updates work (the updater
 verifies our minisign signature and its downloads carry no quarantine
 attribute), but a first-time DMG downloaded in a browser hits Gatekeeper
 (right-click → Open). When distribution beyond us matters: get an Apple
-Developer ID Application cert, then add the secrets the workflow already
-passes through — `APPLE_CERTIFICATE` (base64 .p12),
-`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and for
-notarization `APPLE_ID` + `APPLE_PASSWORD` (app-specific) +
-`APPLE_TEAM_ID`. No workflow changes needed.
+Developer ID Application cert, then add the secrets — `APPLE_CERTIFICATE`
+(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+and for notarization `APPLE_ID` + `APPLE_PASSWORD` (app-specific) +
+`APPLE_TEAM_ID`. No workflow changes needed: the "Enable Apple signing
+when secrets exist" step in `release.yml` forwards each variable to the
+bundler only once it has a value. (It exists because the naive
+passthrough broke the build — GitHub renders unset secrets as empty
+strings, which the bundler treats as a signing request and dies importing
+an empty certificate.)
 
 ## Windows
 

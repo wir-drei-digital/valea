@@ -150,21 +150,41 @@ jobs:
           BURRITO_TARGET: ${{ matrix.burrito_target }}
         run: just package-backend
 
-      - name: Build bundles${{ startsWith(github.ref, 'refs/tags/') && ' and upload to draft release' || '' }}
-        uses: tauri-apps/tauri-action@v0
+      # Apple Developer ID signing + notarization (docs/RELEASING.md "macOS
+      # signing"). The variables MUST NOT reach the bundler while the secrets
+      # are unset: GitHub renders a missing secret as an empty string, which
+      # still counts as "set" — the bundler then tries to `security import`
+      # nothing and fails the build (run 30506274800). So this step forwards
+      # to $GITHUB_ENV only the ones with values, and the bundler stays on
+      # ad-hoc signing until the secrets exist. No workflow edit needed when
+      # they do.
+      - name: Enable Apple signing when secrets exist (macOS)
+        if: runner.os == 'macOS'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Apple Developer ID signing + notarization — inert until the
-          # secrets exist (docs/RELEASING.md "macOS signing"); ad-hoc signed
-          # bundles until then.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+                     APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!var}" ]; then
+              {
+                echo "${var}<<VALEA_SECRET_EOF"
+                printf '%s\n' "${!var}"
+                echo "VALEA_SECRET_EOF"
+              } >> "$GITHUB_ENV"
+            fi
+          done
+
+      - name: Build bundles${{ startsWith(github.ref, 'refs/tags/') && ' and upload to draft release' || '' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: desktop
           # Empty on workflow_dispatch → build only, no release touched.
