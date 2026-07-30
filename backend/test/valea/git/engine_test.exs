@@ -328,6 +328,67 @@ defmodule Valea.Git.EngineTest do
     assert briefing =~ "clash.md"
   end
 
+  # The failure mode that makes a "behind and dirty ⇒ blocked" guess unusable:
+  # anything can move `behind` (a terminal `git fetch`, another tool, the
+  # resolution session itself), and almost no dirt actually blocks a
+  # fast-forward. Guessing here would hold the repo forever — held repos never
+  # fetch, so `behind` could never fall again.
+  test "an external fetch plus dirt that clobbers nothing still fast-forwards", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    start_engine!(ws)
+    await_pass!()
+
+    GitFixtures.advance_remote!(fx, "remote.md", "remote change")
+    # Someone outside Valea fetched: `behind` is already non-zero when the pass
+    # starts, with no ff refusal ever having happened.
+    GitFixtures.git!(fx.work, ["fetch", "origin"])
+
+    # Dirt the incoming commit does not touch, plus an untracked file.
+    File.write!(Path.join(fx.work, "seed.md"), "local notes")
+    File.write!(Path.join(fx.work, "editor.tmp"), "junk")
+
+    assert :ok = Engine.sync_now(key)
+    statuses = await_pass!()
+
+    assert %{state: "ok", behind: 0, ahead: 0} = statuses[key]
+    assert head(fx.work) == bare_head(fx.bare)
+    # The remote's work arrived and the user's edits are untouched.
+    assert File.read!(Path.join(fx.work, "remote.md")) == "remote change"
+    assert File.read!(Path.join(fx.work, "seed.md")) == "local notes"
+    assert File.read!(Path.join(fx.work, "editor.tmp")) == "junk"
+    assert statuses[key].dirty == true
+  end
+
+  test "full mode commits the user's work even when the repo is behind", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    assert :ok = Mounts.set_git_sync(ws, key, "full")
+    start_engine!(ws)
+    await_pass!()
+
+    GitFixtures.advance_remote!(fx, "seed.md", "remote seed")
+    GitFixtures.git!(fx.work, ["fetch", "origin"])
+    File.write!(Path.join(fx.work, "seed.md"), "the user's work")
+
+    remote_before = bare_head(fx.bare)
+
+    assert :ok = Engine.sync_now(key)
+    statuses = await_pass!()
+
+    # Full mode's contract: the work becomes a COMMIT rather than sitting
+    # uncommitted behind a hold.
+    assert String.starts_with?(subject(fx.work, "HEAD"), "valea sync: ")
+    assert File.read!(Path.join(fx.work, "seed.md")) == "the user's work"
+
+    # And the result is the self-limiting hold, not a merge Valea authored.
+    assert %{state: "diverged", ahead: 1, behind: 1, dirty: false} = statuses[key]
+    assert bare_head(fx.bare) == remote_before
+
+    # Held from here on, like any other divergence.
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+    assert bare_head(fx.bare) == remote_before
+  end
+
   test "blocked_local is held on later passes and self-heals", ctx do
     %{ws: ws, fx: fx, key: key} = ctx
     Application.put_env(:valea, :git_cli, RecordingCli)
@@ -364,6 +425,12 @@ defmodule Valea.Git.EngineTest do
     assert head(fx.work) == work_before
     assert bare_head(fx.bare) == remote_before
     assert File.read!(Path.join(fx.work, "seed.md")) == "local uncommitted"
+
+    # A held row is still handoff-able: the handoff re-derives with the row's
+    # own state, so it agrees with the pass instead of calling this "ok".
+    assert {:ok, %{briefing: briefing}} = Engine.conflict_handoff(key)
+    assert briefing =~ "uncommitted local edits block the fast-forward"
+    assert briefing =~ "seed.md"
 
     # The user puts the file back the way it was; the hold clears itself.
     File.write!(Path.join(fx.work, "seed.md"), "seed")

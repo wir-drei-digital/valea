@@ -16,14 +16,27 @@ defmodule Valea.Git.Engine do
   reads only, until a human (or a resolution session, `conflict_handoff/1`)
   converges them.
 
-  Every held state is derived by `local_class/1` from ONE local read — the
-  same function `conflict_handoff/1` re-derives with, so the pass and the
-  handoff can never disagree about whether a repo is in conflict. That
-  includes `blocked_local`, which git has no marker for: it is "behind, with a
-  dirty tree", and deriving it locally is what stops a blocked repo from being
-  re-fetched and re-merged on every pass underneath the session resolving it.
-  It also self-heals — the moment the tree is clean, the repo is no longer
-  held and the next pass fast-forwards.
+  Every held state is derived by `local_class/3` from ONE local read — the
+  same function `conflict_handoff/1` re-derives with, fed the same inputs, so
+  the pass and the handoff can never disagree about whether a repo is in
+  conflict.
+
+  `blocked_local` is the exception git has no marker for, and it is LEARNED
+  rather than guessed: only a `merge --ff-only` that git actually refused
+  enters it, and `local_class/3` then holds that verdict while the repo is
+  still behind with a dirty tree. It is deliberately not inferred from "behind
+  and dirty", because most dirt blocks nothing — an untracked editor file, an
+  edit to a file the incoming commit never touches — and git fast-forwards
+  straight past it. A repo held on that guess would be held forever: held
+  repos never fetch, so `behind` could never fall and the remote's work would
+  never arrive. It self-heals — a clean tree (or dirt that turns out not to
+  clobber) classifies `ok`, and the next pass fast-forwards.
+
+  `blocked_local` exists in `pull` mode only. In `full` mode the answer to a
+  dirty tree is to commit it, which converts the situation into a divergence:
+  held, self-limiting, and with the user's work preserved as a commit instead
+  of sitting uncommitted behind a hold that would suspend full mode's whole
+  contract.
 
   Valea's four sanctioned mutations live in `Valea.Git.Repo` and are the only
   ones reachable from here: `commit_all`, `fetch`, `ff_merge`, `push`. There is
@@ -544,12 +557,12 @@ defmodule Valea.Git.Engine do
     end
   end
 
-  # Everything `local_class/1` can name is HELD or observe-only, and every one
+  # Everything `local_class/3` can name is HELD or observe-only, and every one
   # of those carries `retry_entry` through untouched: only an actual network
   # attempt is allowed to move the backoff ledger, in either direction. `"ok"`
   # is the ONLY answer that earns a fetch.
   defp classify(root, base, previous, cfg, cli, retry_entry, now, st) do
-    case local_class(st) do
+    case local_class(st, cfg.sync, previous && previous.state) do
       "ok" -> converge(root, base, previous, cfg, cli, retry_entry, now, st)
       held -> {observed(base, st, held), retry_entry}
     end
@@ -561,27 +574,42 @@ defmodule Valea.Git.Engine do
   # button can open, so the two derivations are one function rather than two
   # `cond`s that drifted.
   #
-  # Order is load-bearing:
-  #
-  #   * an unfinished merge/rebase comes FIRST, because a conflicted rebase
-  #     also has a detached HEAD — classified on `branch` first, every
-  #     rebase-in-progress would read `detached`, which is not conflict-class,
-  #     and the resolution session could never be handed off;
-  #   * `blocked_local` is derived locally (`behind` + a dirty tree) rather
-  #     than only from a fast-forward git refused, so a blocked repo is held on
-  #     every LATER pass instead of re-fetching and re-merging under a session
-  #     that is trying to resolve it. It self-heals: the moment the tree is
-  #     clean, this returns `"ok"` and the next pass fast-forwards.
-  defp local_class(st) do
+  # An unfinished merge/rebase comes FIRST, because a conflicted rebase also has
+  # a detached HEAD — classified on `branch` first, every rebase-in-progress
+  # would read `detached`, which is not conflict-class, and the resolution
+  # session could never be handed off.
+  defp local_class(st, mode, previous_state) do
     cond do
       st.in_progress != nil or st.conflicted -> "merge_in_progress"
       st.branch == nil -> "detached"
       st.upstream == nil -> "no_upstream"
       st.ahead > 0 and st.behind > 0 -> "diverged"
-      st.behind > 0 and st.dirty -> "blocked_local"
+      still_blocked?(st, mode, previous_state) -> "blocked_local"
       true -> "ok"
     end
   end
+
+  # `blocked_local` is the one state git has no marker for, so it is LEARNED —
+  # from a `merge --ff-only` git actually refused (`fast_forward/5`) — and only
+  # then held here. It is deliberately NOT inferred from "behind with a dirty
+  # tree": most dirt blocks nothing (an untracked `.DS_Store`, an edit to a file
+  # the incoming commit never touches), git fast-forwards straight past it, and
+  # a repo held on that guess would be held FOREVER — held repos do not fetch,
+  # so `behind` could never fall back to zero and the remote's work would never
+  # arrive. This clause only keeps a repo that already hit a real refusal, for
+  # as long as it is still behind with a dirty tree; a clean tree (or dirt that
+  # turns out not to clobber) falls through to `"ok"` and the next pass
+  # fast-forwards.
+  #
+  # Never in `full` mode: there the answer to a dirty tree is to COMMIT it (see
+  # `maybe_commit/5`), which turns the situation into a divergence — held, and
+  # with the user's work preserved as a commit rather than sitting uncommitted
+  # behind a hold that suspends full mode's entire contract.
+  defp still_blocked?(_st, :full, _previous_state), do: false
+
+  defp still_blocked?(st, _mode, "blocked_local"), do: st.behind > 0 and st.dirty
+
+  defp still_blocked?(_st, _mode, _previous_state), do: false
 
   # Not held: commit what the user wrote (full mode only), then talk to the
   # remote — unless a backoff window says the remote is not answering.
@@ -626,14 +654,17 @@ defmodule Valea.Git.Engine do
       {:ok, st} ->
         cond do
           st.ahead > 0 and st.behind > 0 -> {observed(base, st, "diverged"), nil}
-          st.behind > 0 and st.ahead == 0 -> fast_forward(root, base, cli, st)
+          st.behind > 0 and st.ahead == 0 -> fast_forward(root, base, cli, st, cfg.sync)
           st.ahead > 0 and cfg.sync == :full -> push(root, base, cli, st)
           true -> {succeeded(base, st), nil}
         end
     end
   end
 
-  defp fast_forward(root, base, cli, st) do
+  # The ONLY place `blocked_local` is entered: git looked at this exact working
+  # tree and refused to fast-forward over it. Everything else is `local_class/3`
+  # holding that verdict until the tree stops blocking.
+  defp fast_forward(root, base, cli, st, mode) do
     case Repo.ff_merge(root, cli) do
       :ok ->
         {succeeded(base, refresh(root, cli, st)), nil}
@@ -641,12 +672,23 @@ defmodule Valea.Git.Engine do
       {:error, {:ff_failed, out}} ->
         st = refresh(root, cli, st)
 
-        if st.ahead > 0 and st.behind > 0 do
-          {observed(base, st, "diverged"), nil}
-        else
-          # The remote moved and something local is in the way — the working
-          # tree is left EXACTLY as it was, which is the point.
-          {%{observed(base, st, "blocked_local") | last_error: describe(out)}, nil}
+        cond do
+          st.ahead > 0 and st.behind > 0 ->
+            {observed(base, st, "diverged"), nil}
+
+          # `full` mode has no `blocked_local`: it commits dirty trees, so a
+          # refusal here is not "the user has uncommitted work" but something
+          # `git add -A` could not take (an ignored file the merge would
+          # clobber, a permissions problem). That is an error, and it says so
+          # in git's own words rather than borrowing a state whose remedy —
+          # "commit or revert your edits" — does not apply.
+          mode == :full ->
+            {errored(base, st, out), nil}
+
+          true ->
+            # The remote moved and something local is in the way — the working
+            # tree is left EXACTLY as it was, which is the point.
+            {%{observed(base, st, "blocked_local") | last_error: describe(out)}, nil}
         end
     end
   end
@@ -762,9 +804,12 @@ defmodule Valea.Git.Engine do
         {:reply, {:error, :no_conflict}, put_row(state, error_row(row, reason))}
 
       {:ok, st} ->
-        # The SAME classifier the pass uses, so a row that says
-        # `merge_in_progress` can never meet a handoff that disagrees.
-        live = local_class(st)
+        # The SAME classifier the pass uses, fed the SAME inputs — the row's
+        # own state is what a pass would have seen as `previous`, so a repo
+        # holding at `blocked_local` re-derives as `blocked_local` here rather
+        # than as `ok`, and a row that says `merge_in_progress` can never meet
+        # a handoff that disagrees.
+        live = local_class(st, cfg.sync, row.state)
 
         if live in @conflict_states do
           {:reply, {:ok, brief(mount, row, cfg, st, live, state.cli)}, state}
@@ -849,9 +894,14 @@ defmodule Valea.Git.Engine do
     end)
   end
 
+  # Only reached for a `full`-mode mount, so the mode is known. A behind + dirty
+  # repo answers YES here — that is exactly the commit the user is waiting for —
+  # and the loop still terminates: the pass commits, which makes the repo
+  # diverged, which is held, which is no longer `"ok"`; and the tree is clean
+  # afterwards either way.
   defp dirty_and_free?(root, cli) do
     case Repo.read_state(root, cli) do
-      {:ok, %{dirty: true} = st} -> local_class(st) == "ok"
+      {:ok, %{dirty: true} = st} -> local_class(st, :full, nil) == "ok"
       _clean_or_unreadable -> false
     end
   end
