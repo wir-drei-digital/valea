@@ -18,17 +18,21 @@
 
 ---
 
-### Task 1: Detection helpers `codespanFilePath` / `messageFilePaths`
+### Task 1: Clickable codespans — detection helpers + renderer
 
 **Files:**
 - Modify: `frontend/src/lib/markdown/agent-markdown.ts`
 - Test: `frontend/src/lib/markdown/agent-markdown.test.ts`
+- Modify: `frontend/src/lib/components/agent/markdown/MarkdownInline.svelte`
+- Modify: `frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte`
+- Modify: `frontend/src/lib/components/agent/MessageItem.svelte`
+- Modify: `frontend/src/lib/components/agent/Transcript.svelte:59-61`
 
 **Interfaces:**
-- Consumes: existing `lexAgentMarkdown`, `unescapeMarked`, `Token` from the same module.
-- Produces: `codespanFilePath(text: string): string | undefined` (input: DECODED codespan text; returns the openable relPath, `:NN` line suffix stripped) and `messageFilePaths(text: string): string[]` (input: full raw message markdown; returns distinct candidate relPaths). Tasks 2 and 3 import both by these exact names.
+- Consumes: existing `lexAgentMarkdown`, `unescapeMarked`, `safeLinkHref`, `Token` from `agent-markdown.ts`; `Transcript`'s existing `onOpenFile` prop.
+- Produces: `codespanFilePath(text: string): string | undefined` (input: DECODED codespan text; returns the openable relPath, `:NN` line suffix stripped) and `messageFilePaths(text: string): string[]` (input: full raw message markdown; returns distinct candidate relPaths) — Task 2 imports both by these exact names. Also: `onOpenFile?: (relPath: string) => void` prop on `MessageItem`, `MarkdownBlocks`, `MarkdownInline`; `linked?: boolean` prop on `MarkdownInline` (internal guard).
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing helper tests**
 
 Append to `frontend/src/lib/markdown/agent-markdown.test.ts` (add `codespanFilePath, messageFilePaths` to the existing import from `'./agent-markdown'`):
 
@@ -93,12 +97,10 @@ describe('messageFilePaths', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
-
 Run: `cd frontend && npx vitest run src/lib/markdown/agent-markdown.test.ts`
 Expected: FAIL — `codespanFilePath` / `messageFilePaths` not exported.
 
-- [ ] **Step 3: Implement the helpers**
+- [ ] **Step 2: Implement the helpers, tests go green**
 
 Append to `frontend/src/lib/markdown/agent-markdown.ts`:
 
@@ -174,37 +176,10 @@ export function messageFilePaths(text: string): string[] {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
 Run: `cd frontend && npx vitest run src/lib/markdown/agent-markdown.test.ts`
 Expected: PASS (all new + existing).
 
-- [ ] **Step 5: Gates and commit**
-
-Run: `cd frontend && npm run check && npx vitest run` — 0 errors, all green.
-
-```bash
-git add frontend/src/lib/markdown/agent-markdown.ts frontend/src/lib/markdown/agent-markdown.test.ts
-git commit -m "feat(chat): path/URL detection helpers for agent message codespans
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
-```
-
----
-
-### Task 2: Clickable codespans in the message renderer
-
-**Files:**
-- Modify: `frontend/src/lib/components/agent/markdown/MarkdownInline.svelte`
-- Modify: `frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte`
-- Modify: `frontend/src/lib/components/agent/MessageItem.svelte`
-- Modify: `frontend/src/lib/components/agent/Transcript.svelte:59-61`
-
-**Interfaces:**
-- Consumes: `codespanFilePath`, `safeLinkHref`, `unescapeMarked` from `$lib/markdown/agent-markdown` (Task 1).
-- Produces: `onOpenFile?: (relPath: string) => void` prop on `MessageItem`, `MarkdownBlocks`, `MarkdownInline`; `linked?: boolean` prop on `MarkdownInline` (internal guard). `Transcript` forwards its existing `onOpenFile` to assistant `MessageItem`s.
-
-- [ ] **Step 1: MarkdownInline — props and codespan branch**
+- [ ] **Step 3: MarkdownInline — props and codespan branch**
 
 In `MarkdownInline.svelte`, change the imports and props:
 
@@ -262,9 +237,9 @@ Then update every `<MarkdownInline tokens={...} />` self-recursion in this file 
 
 Also extend the component's header comment: codespans now earn a link (safeLinkHref-vetted, so http(s) AND mailto) or a file-open button (`codespanFilePath`); both render text via plain interpolation, and `linked` prevents interactive elements inside `<a>`.
 
-- [ ] **Step 2: MarkdownBlocks — forward the prop**
+- [ ] **Step 4: Thread the prop — MarkdownBlocks, MessageItem, Transcript**
 
-Add to props:
+`MarkdownBlocks.svelte` props:
 
 ```ts
 let {
@@ -277,9 +252,9 @@ let {
 } = $props();
 ```
 
-Add `{onOpenFile}` to ALL descendants in the template: the five `<MarkdownInline tokens={...} />` sites (paragraph, heading, table header cell, table body cell, loose text) and the three `<MarkdownBlocks tokens={...} />` self-recursions (ordered list item, unordered list item, blockquote). Fenced `code` blocks stay as-is.
+Add `{onOpenFile}` to ALL descendants in its template: the five `<MarkdownInline tokens={...} />` sites (paragraph, heading, table header cell, table body cell, loose text) and the three `<MarkdownBlocks tokens={...} />` self-recursions (ordered list item, unordered list item, blockquote). Fenced `code` blocks stay as-is.
 
-- [ ] **Step 3: MessageItem — accept and forward**
+`MessageItem.svelte` props:
 
 ```ts
 let {
@@ -296,9 +271,7 @@ let {
 
 Assistant branch: `<MarkdownBlocks {tokens} {onOpenFile} />`. User branch unchanged (plain text).
 
-- [ ] **Step 4: Transcript — wire assistant messages**
-
-Change line 61's assistant branch to:
+`Transcript.svelte` line 61's assistant branch becomes:
 
 ```svelte
 <MessageItem role="assistant" text={asString(item.text)} {onOpenFile} />
@@ -311,25 +284,28 @@ Change line 61's assistant branch to:
 Run: `cd frontend && npm run check && npx vitest run` — 0 errors, all green.
 
 ```bash
-git add frontend/src/lib/components/agent/markdown/MarkdownInline.svelte frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte frontend/src/lib/components/agent/MessageItem.svelte frontend/src/lib/components/agent/Transcript.svelte
-git commit -m "feat(chat): clickable file paths and URLs in agent message codespans
+git add frontend/src/lib/markdown/agent-markdown.ts frontend/src/lib/markdown/agent-markdown.test.ts frontend/src/lib/components/agent/markdown/MarkdownInline.svelte frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte frontend/src/lib/components/agent/MessageItem.svelte frontend/src/lib/components/agent/Transcript.svelte
+git commit -m "feat(chat): clickable file paths and URLs in agent message prose
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 3: Auto-open candidate module
+### Task 2: Auto-open — candidate module + wiring
 
 **Files:**
 - Create: `frontend/src/lib/components/agent/auto-open.ts`
 - Test: `frontend/src/lib/components/agent/auto-open.test.ts`
+- Modify: `frontend/src/lib/panes/context.ts`
+- Modify: `frontend/src/routes/chat/+page.svelte:397` (the primary `ChatView`'s `context={{...}}`)
+- Modify: `frontend/src/lib/components/views/ChatView.svelte` (new effect after the file-activity rail block, ~line 458)
 
 **Interfaces:**
-- Consumes: `AcpItemLike`, `asString` from `./item-shapes`; `messageFilePaths` from `$lib/markdown/agent-markdown` (Task 1).
-- Produces: `turnCount(items: AcpItemLike[]): number` and `latestTurnAutoOpenPath(items: AcpItemLike[]): string | undefined`. Task 4 imports both by these exact names from `$lib/components/agent/auto-open`.
+- Consumes: `AcpItemLike`, `asString` from `./item-shapes`; `messageFilePaths` from `$lib/markdown/agent-markdown` (Task 1); existing `api.icmPathsExist`, `openToolFile`, `openMountKey`, `context`, `store` in ChatView.
+- Produces: `turnCount(items: AcpItemLike[]): number` and `latestTurnAutoOpenPath(items: AcpItemLike[]): string | undefined` from `$lib/components/agent/auto-open`; `hasOpenPane?: () => boolean` on `PaneContext` (optional; absent = unknown = auto-open disabled).
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing module tests**
 
 Create `frontend/src/lib/components/agent/auto-open.test.ts`:
 
@@ -399,12 +375,10 @@ describe('latestTurnAutoOpenPath', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
-
 Run: `cd frontend && npx vitest run src/lib/components/agent/auto-open.test.ts`
 Expected: FAIL — module `./auto-open` does not exist.
 
-- [ ] **Step 3: Implement the module**
+- [ ] **Step 2: Implement the module, tests go green**
 
 Create `frontend/src/lib/components/agent/auto-open.ts`:
 
@@ -460,36 +434,10 @@ export function latestTurnAutoOpenPath(items: AcpItemLike[]): string | undefined
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
 Run: `cd frontend && npx vitest run src/lib/components/agent/auto-open.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Gates and commit**
-
-Run: `cd frontend && npm run check && npx vitest run` — 0 errors, all green.
-
-```bash
-git add frontend/src/lib/components/agent/auto-open.ts frontend/src/lib/components/agent/auto-open.test.ts
-git commit -m "feat(chat): pure auto-open candidate selection over session items
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
-```
-
----
-
-### Task 4: Wire auto-open — PaneContext, /chat route, ChatView effect
-
-**Files:**
-- Modify: `frontend/src/lib/panes/context.ts`
-- Modify: `frontend/src/routes/chat/+page.svelte:397` (the primary `ChatView`'s `context={{...}}`)
-- Modify: `frontend/src/lib/components/views/ChatView.svelte` (new effect after the file-activity rail block, ~line 458)
-
-**Interfaces:**
-- Consumes: `turnCount`, `latestTurnAutoOpenPath` from `$lib/components/agent/auto-open` (Task 3); existing `api.icmPathsExist`, `openToolFile`, `openMountKey`, `context`, `store` in ChatView.
-- Produces: `hasOpenPane?: () => boolean` on `PaneContext` (optional; absent = unknown = auto-open disabled).
-
-- [ ] **Step 1: PaneContext gains `hasOpenPane`**
+- [ ] **Step 3: PaneContext gains `hasOpenPane`, /chat route wires it**
 
 In `frontend/src/lib/panes/context.ts`, add to the `PaneContext` type after `openFile`:
 
@@ -502,8 +450,6 @@ In `frontend/src/lib/panes/context.ts`, add to the `PaneContext` type after `ope
    */
   hasOpenPane?: () => boolean;
 ```
-
-- [ ] **Step 2: /chat route wires it**
 
 In `frontend/src/routes/chat/+page.svelte`, the primary ChatView (currently `context={{ placement: 'primary', openFile: openFilePane, onArchived: afterArchive }}`) becomes:
 
@@ -518,7 +464,7 @@ context={{
 
 (`paneDescriptor` already exists in this file, derived from `?pane=`. No other host changes — pane-hosted ChatViews are excluded by the placement guard anyway.)
 
-- [ ] **Step 3: ChatView auto-open effect**
+- [ ] **Step 4: ChatView auto-open effect**
 
 In `ChatView.svelte`, add imports:
 
@@ -586,12 +532,12 @@ async function verifyAndAutoOpen(
 
 (`api` is already imported in ChatView; `openToolFile` and `openMountKey` already exist. The `seq` gate inside `latestTurnAutoOpenPath` is the second history guard — a reopened session's snapshot turns carry no `seq`.)
 
-- [ ] **Step 4: Gates and commit**
+- [ ] **Step 5: Gates and commit**
 
 Run: `cd frontend && npm run check && npx vitest run` — 0 errors, all green.
 
 ```bash
-git add frontend/src/lib/panes/context.ts frontend/src/routes/chat/+page.svelte frontend/src/lib/components/views/ChatView.svelte
+git add frontend/src/lib/components/agent/auto-open.ts frontend/src/lib/components/agent/auto-open.test.ts frontend/src/lib/panes/context.ts frontend/src/routes/chat/+page.svelte frontend/src/lib/components/views/ChatView.svelte
 git commit -m "feat(chat): auto-open the single file a completed reply names
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -599,14 +545,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Fake-adapter rig + manual browser verification
+### Task 3: Fake-adapter rig + manual browser verification
 
 **Files:**
 - Modify: `backend/test/support/fake_adapter.exs` (the `slow` scenario's closing `agent_message_chunk`)
 - Temp (NOT committed): `/private/tmp/claude-501/-Users-daniel-Development-valea/5a15bea4-0971-419d-8875-54e428e3ad85/scratchpad/valea-app-dir/config.json`
 
 **Interfaces:**
-- Consumes: everything from Tasks 1-4; the `vt-backend`/`vt-frontend` launch entries in `.claude/launch.json`; the seeded app dir above (Second ICM contains a real `CONTEXT.md`).
+- Consumes: everything from Tasks 1-2; the `vt-backend`/`vt-frontend` launch entries in `.claude/launch.json`; the seeded app dir above (Second ICM contains a real `CONTEXT.md`).
 - Produces: a `slow` run whose final message names exactly one in-mount path + one URL.
 
 - [ ] **Step 1: Give the `slow` reply one path and one URL**
@@ -648,19 +594,17 @@ In the temp app-dir `config.json`, set:
 Start `vt-backend` then `vt-frontend` via preview_start. CAUTION: preview_start caches launch configs by name within a session — if either name was already started this session with a DIFFERENT launch.json content, use a fresh config name (the vt-* entries themselves need no edits for this task). In the app (port 4374), start a NEW session in Second ICM (no pane open), send any prompt, and verify in order:
 
 1. While streaming: nothing auto-opens.
-2. After the ~4s of tool calls + final chunk + turn end: the file pane AUTO-OPENS `second-icm/CONTEXT.md` (URL gains `?pane=file%3Asecond-icm%2FCONTEXT.md`).
+2. After the scripted tool calls + final chunk + turn end: the file pane AUTO-OPENS `second-icm/CONTEXT.md` (URL gains `?pane=file%3Asecond-icm%2FCONTEXT.md`).
 3. The message shows `CONTEXT.md` as a styled, clickable codespan (close the pane, click it — pane reopens) and `https://valea.example.com/docs` as an underlined link.
 4. Reload the session URL (attach snapshot replay): NO auto-open fires.
 5. Open some file pane manually, send another prompt: turn ends WITHOUT replacing the open pane.
 6. read_console_messages shows no errors.
 
-- [ ] **Step 4: Restore the rig and gates**
+- [ ] **Step 4: Restore the rig, gates, and commit**
 
 Restore the app-dir `config.json` `harness_command` to `["claude-agent-acp"]`; stop both preview servers.
 
 Run: `cd frontend && npm run check && npx vitest run` (green), and `cd backend && mix format --check-formatted test/support/fake_adapter.exs`.
-
-- [ ] **Step 5: Commit**
 
 ```bash
 git add backend/test/support/fake_adapter.exs
