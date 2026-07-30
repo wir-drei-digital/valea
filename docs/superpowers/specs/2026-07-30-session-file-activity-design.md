@@ -200,10 +200,13 @@ Rows:
   long app run can't grow it unboundedly — once closed, that session won't
   reopen the rail this app run (including on later touches). Deliberately not
   persisted: a fresh app launch starts from default behavior.
-- When the rail is closed and the count is > 0, `SessionHeader` shows a
-  "Files · N" toggle to reopen it. No activity ⇒ no toggle, no rail, zero
-  footprint. The open/close decision lives in `ChatView` (it owns both header
-  and rail); the auto-open predicate is a pure helper in `file-activity.ts`.
+- When the rail is closed and the count is > 0 — and only where the rail
+  could actually show (primary placement, ≥860px view width) — `SessionHeader`
+  shows a "Files · N" toggle to reopen it. A chat side pane or a squeezed
+  primary shows no pill: an affordance whose target cannot appear would be a
+  dead end. No activity ⇒ no toggle, no rail, zero footprint. The open/close
+  decision lives in `ChatView` (it owns both header and rail); the auto-open
+  predicate is a pure helper in `file-activity.ts`.
 
 ### Accessibility
 
@@ -263,7 +266,8 @@ and plain-language notes only. Mono diff detail appears only after an expand.
 - Manual acceptance: live touch auto-opens the rail; close stays closed for
   that session; "Files · N" reopens; expand shows stacked diffs; ↗ opens the
   file side pane next to the rail; reopened past session shows its record;
-  chat-as-side-pane never shows the rail; narrow window hides it.
+  chat-as-side-pane never shows the rail (nor the header pill); narrow window
+  hides both.
 
 ## Decisions log
 
