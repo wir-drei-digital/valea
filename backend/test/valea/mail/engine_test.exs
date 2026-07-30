@@ -191,6 +191,17 @@ defmodule Valea.Mail.EngineTest.IdleTransport do
   def logout(_conn), do: :ok
 end
 
+# A `Transport` double that reports the CREDENTIAL it was handed to the probe
+# pid and then refuses the connection. It is how a test sees what a worker's
+# zero-arity credential closure actually resolved to at the `connect/3`
+# boundary — for an oauth2 account, the engine-minted access token.
+defmodule Valea.Mail.EngineTest.CredentialProbeTransport do
+  def connect(_config, credential, _opts) do
+    send(Application.get_env(:valea, :engine_sync_probe), {:connect_credential, credential})
+    {:error, :closed}
+  end
+end
+
 # A transport whose `connect/3` RAISES — standing in for any unexpected raise
 # inside the push Task (`OpsExecutor.execute_append/2`'s cross-account op-id
 # guard raises exactly the same way, one call further in). Deliberately NOT a
@@ -2160,5 +2171,523 @@ defmodule Valea.Mail.EngineTest do
 
     # And the account is otherwise untouched — still idle, still polling.
     assert Engine.status(slug).state == "idle"
+  end
+
+  # -- OAuth2: authorization flow, minting, single-flight (M6 task 16) --------
+
+  @oauth_client "valea-test.apps.googleusercontent.com"
+
+  defp oauth_settings(slug, overrides \\ %{}) do
+    settings(
+      slug,
+      Map.merge(
+        %{
+          provider: :gmail,
+          auth: :oauth2,
+          oauth_client_id: @oauth_client,
+          imap: %{host: "imap.gmail.com", port: 993, username: "#{slug}@gmail.com"}
+        },
+        overrides
+      )
+    )
+  end
+
+  defp start_oauth_engine!(root, generation, slug, overrides \\ %{}) do
+    start_engine!(root, generation, slug, settings: oauth_settings(slug, overrides))
+    open(root, generation)
+    GenServer.whereis(Engine.via(slug))
+  end
+
+  # Scripts the token endpoint. `reply` is either a literal answer or
+  # `{:block, probe}`, in which case the fake POST announces itself and waits —
+  # which is what lets a test observe a refresh WHILE it is in flight.
+  defp stub_token_endpoint!(reply) do
+    probe = self()
+
+    Application.put_env(:valea, :mail_oauth_http_post, fn _url, body ->
+      send(probe, {:token_post, self(), IO.iodata_to_binary(body)})
+
+      case reply do
+        :block -> receive do: ({:release, answer} -> answer)
+        answer -> answer
+      end
+    end)
+
+    on_exit(fn -> Application.delete_env(:valea, :mail_oauth_http_post) end)
+  end
+
+  defp token_reply(fields) do
+    {:ok, 200,
+     Jason.encode!(Map.merge(%{"access_token" => "at-1", "expires_in" => 3600}, fields))}
+  end
+
+  test "an oauth2 account with no refresh token has NO credential, and cannot sync", %{root: root} do
+    slug = "mara"
+    start_oauth_engine!(root, 300, slug)
+
+    status = Engine.status(slug)
+    assert status.auth == "oauth2"
+    assert status.credential == "missing"
+    assert Engine.sync_now(slug) == {:error, :no_credential}
+
+    # The PASSWORD slot is not this account's credential: filling it changes
+    # nothing about whether it can sync.
+    assert :ok = Engine.set_credential(slug, "a-password")
+    assert Engine.status(slug).credential == "missing"
+    assert Engine.sync_now(slug) == {:error, :no_credential}
+
+    # The oauth slot is.
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+    assert Engine.status(slug).credential == "present"
+  end
+
+  test "a password account still reports auth: password", %{root: root} do
+    start_engine!(root, 301, "mara")
+    open(root, 301)
+    assert Engine.status("mara").auth == "password"
+  end
+
+  test "the credential closure handed to a pass resolves to the MINTED access token", %{
+    root: root
+  } do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.CredentialProbeTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.MINTED"}))
+
+    slug = "mara"
+    start_oauth_engine!(root, 302, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+
+    assert :ok = Engine.sync_now(slug)
+
+    # The whole point of the closure contract: the worker asked for a secret at
+    # its connect boundary and got a token the Engine minted for it, with
+    # nothing in `SyncPass` aware that a refresh happened.
+    assert_receive {:connect_credential, "ya29.MINTED"}, 2_000
+    assert_receive {:token_post, _pid, body}
+    params = URI.decode_query(body)
+    assert params["grant_type"] == "refresh_token"
+    assert params["refresh_token"] == "refresh-1"
+    assert params["client_id"] == @oauth_client
+  end
+
+  test "N concurrent token requests produce exactly ONE refresh, and every caller is served", %{
+    root: root
+  } do
+    stub_token_endpoint!(:block)
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 303, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+
+    callers = for _ <- 1..6, do: Task.async(fn -> Engine.mint_access_token(engine) end)
+
+    assert_receive {:token_post, poster, _body}, 2_000
+    # THE single-flight assertion: five more callers arrived behind the first
+    # and none of them started a second token request.
+    refute_receive {:token_post, _pid, _body}, 200
+
+    send(poster, {:release, token_reply(%{"access_token" => "ya29.ONE"})})
+
+    assert Enum.map(callers, &Task.await(&1, 2_000)) == List.duplicate("ya29.ONE", 6)
+    # ...and still only one.
+    refute_receive {:token_post, _pid, _body}, 100
+  end
+
+  test "a cached token is reused until it nears expiry, then re-minted", %{root: root} do
+    # 30s of life is inside the 60s refresh skew, so this token is never
+    # handed out at all — a session opened with it could outlive it.
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.SHORT", "expires_in" => 30}))
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 304, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+
+    assert Engine.mint_access_token(engine) == "ya29.SHORT"
+    assert_receive {:token_post, _pid, _body}
+    assert Engine.mint_access_token(engine) == "ya29.SHORT"
+    assert_receive {:token_post, _pid, _body}
+
+    # A long-lived one is cached: the second mint costs no request.
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.LONG"}))
+    assert :ok = Engine.set_credential(slug, "refresh-2", :oauth)
+    assert Engine.mint_access_token(engine) == "ya29.LONG"
+    assert_receive {:token_post, _pid, _body}
+    assert Engine.mint_access_token(engine) == "ya29.LONG"
+    refute_receive {:token_post, _pid, _body}, 100
+  end
+
+  test "a new refresh token drops the cached access token minted from the old one", %{root: root} do
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.FIRST"}))
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 305, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+    assert Engine.mint_access_token(engine) == "ya29.FIRST"
+    assert_receive {:token_post, _pid, _first_body}
+
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.SECOND"}))
+    assert :ok = Engine.set_credential(slug, "refresh-2", :oauth)
+
+    assert Engine.mint_access_token(engine) == "ya29.SECOND"
+    assert_receive {:token_post, _pid, body}
+    assert URI.decode_query(body)["refresh_token"] == "refresh-2"
+  end
+
+  test "invalid_grant clears the cache AND the refresh token, and parks reauth_required", %{
+    root: root
+  } do
+    stub_token_endpoint!({:ok, 400, Jason.encode!(%{"error" => "invalid_grant"})})
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 306, slug)
+    assert :ok = Engine.set_credential(slug, "revoked-refresh", :oauth)
+    assert Engine.status(slug).credential == "present"
+
+    # The contract holds even here: the caller gets a binary, not a raise.
+    assert Engine.mint_access_token(engine) == ""
+
+    status = Engine.status(slug)
+    assert status.state == "reauth_required"
+    assert status.last_error == "sign-in expired"
+    assert status.credential == "missing"
+
+    state = :sys.get_state(engine)
+    assert state.oauth_refresh == nil
+    assert state.oauth_token == nil
+    assert state.poll_timer == nil
+
+    # Sticky, exactly like a refused password...
+    send(engine, :poll)
+    assert %{poll_timer: nil} = :sys.get_state(engine)
+
+    # ...and a new sign-in clears it.
+    stub_token_endpoint!(token_reply(%{}))
+    assert :ok = Engine.set_credential(slug, "fresh-refresh", :oauth)
+    assert Engine.status(slug).state == "idle"
+    assert :sys.get_state(engine).poll_timer != nil
+  end
+
+  test "a TRANSIENT token failure keeps the refresh token and never parks the account", %{
+    root: root
+  } do
+    stub_token_endpoint!(:error)
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 307, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+
+    assert Engine.mint_access_token(engine) == ""
+
+    status = Engine.status(slug)
+    # The token endpoint being unreachable says NOTHING about the sign-in.
+    assert status.state == "idle"
+    assert status.credential == "present"
+    assert :sys.get_state(engine).oauth_refresh != nil
+  end
+
+  test "a ROTATED refresh token replaces the stored one and is pushed for the keychain", %{
+    root: root
+  } do
+    stub_token_endpoint!(token_reply(%{"refresh_token" => "rotated-refresh"}))
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    slug = "mara"
+
+    engine =
+      start_oauth_engine!(root, 308, slug, %{
+        provider: :microsoft,
+        imap: %{host: "outlook.office365.com", port: 993, username: "mara@contoso.com"}
+      })
+
+    assert :ok = Engine.set_credential(slug, "original-refresh", :oauth)
+    assert Engine.mint_access_token(engine) == "at-1"
+
+    # Without this push the keychain keeps a token Microsoft has already
+    # invalidated, and the next restart resupplies a dead one.
+    assert_receive {:mail_oauth_token, ^slug, "rotated-refresh"}
+    assert :sys.get_state(engine).oauth_refresh.() == "rotated-refresh"
+  end
+
+  test "store_oauth_refresh_token stores AND pushes; a plain resupply only stores", %{root: root} do
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 309, slug)
+
+    assert :ok = Engine.store_oauth_refresh_token(slug, "authorized-refresh")
+    assert_receive {:mail_oauth_token, ^slug, "authorized-refresh"}
+    assert :sys.get_state(engine).oauth_refresh.() == "authorized-refresh"
+
+    # The restart path hands back what the keychain already holds — there is
+    # nothing new for the client to persist.
+    assert :ok = Engine.set_credential(slug, "resupplied-refresh", :oauth)
+    refute_receive {:mail_oauth_token, _slug, _token}, 100
+    assert :sys.get_state(engine).oauth_refresh.() == "resupplied-refresh"
+  end
+
+  test "no secret reaches last_error or the log when a token-bearing connect fails", %{root: root} do
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.LeakyConnectTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.LEAKY-TOKEN-VALUE"}))
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    slug = "mara"
+    start_oauth_engine!(root, 310, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-secret-value", :oauth)
+
+    log =
+      capture_log(fn ->
+        assert :ok = Engine.sync_now(slug)
+        assert_receive {:mail_sync_finished, ^slug, %{errors: [error]}}, 2_000
+        refute error =~ "ya29.LEAKY-TOKEN-VALUE"
+        refute error =~ "refresh-secret-value"
+      end)
+
+    refute log =~ "ya29.LEAKY-TOKEN-VALUE"
+    refute log =~ "refresh-secret-value"
+    status = Engine.status(slug)
+    refute status.last_error =~ "ya29.LEAKY-TOKEN-VALUE"
+  end
+
+  # -- the spans-tasks hazard: a stale pass must not park a fresh credential ---
+
+  test "an auth failure from a pass whose credential was REPLACED mid-flight does not go sticky",
+       %{root: root} do
+    # The hazard (task 15 review, spans-tasks): `set_credential/3` cannot clear
+    # a failure that hasn't happened yet, so before the credential epoch this
+    # sequence left the account sticky `auth_failed` WITH the fresh secret
+    # already in its slot, and nothing re-armed until another
+    # `set_credential/3`. Engine-minted tokens make it routine.
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 311, "mara")
+    open(root, 311)
+    :ok = Engine.set_credential("mara", "stale-password")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now("mara")
+    assert_receive {:connect_called, task_pid}
+
+    # The user re-types their password while the doomed pass is still running.
+    assert :ok = Engine.set_credential("mara", "fresh-password")
+
+    send(task_pid, {:release, {:error, :auth_failed}})
+    assert_receive {:mail_sync_finished, "mara", %{errors: ["authentication failed"]}}
+
+    status = Engine.status("mara")
+    # Reported, not acted on: the verdict was about the OLD password.
+    assert status.last_error == "authentication failed"
+    assert status.state == "idle"
+    assert status.credential == "present"
+
+    # And polling is armed, so the fresh password is actually tried.
+    assert :sys.get_state(GenServer.whereis(Engine.via("mara"))).poll_timer != nil
+  end
+
+  test "a reauth_required from a pass that ran on an UNMINTABLE token does not go sticky", %{
+    root: root
+  } do
+    # The oauth2 shape of the same hazard: the token endpoint was briefly
+    # unreachable, so the pass connected with `""` and the server refused it.
+    # That refusal is about an empty string this Engine never stood behind.
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+    stub_token_endpoint!(:error)
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 312, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, task_pid}, 2_000
+    send(task_pid, {:release, {:error, :reauth_required}})
+
+    assert_receive {:mail_sync_finished, ^slug, %{errors: ["sign-in expired"]}}
+
+    status = Engine.status(slug)
+    assert status.state == "idle"
+    assert status.credential == "present"
+    assert :sys.get_state(engine).poll_timer != nil
+  end
+
+  test "an invalid_grant park is NOT undone by the stale pass it caused", %{root: root} do
+    # `invalid_grant` parks the account directly, mid-pass; the pass then fails
+    # auth with the `""` it was handed and its epoch is stale. The stale
+    # classification must leave the park alone rather than reset it to idle.
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+    stub_token_endpoint!({:ok, 400, Jason.encode!(%{"error" => "invalid_grant"})})
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 313, slug)
+    assert :ok = Engine.set_credential(slug, "revoked", :oauth)
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, task_pid}, 2_000
+    send(task_pid, {:release, {:error, :reauth_required}})
+
+    assert_receive {:mail_sync_finished, ^slug, %{errors: ["sign-in expired"]}}
+
+    assert Engine.status(slug).state == "reauth_required"
+    assert %{poll_timer: nil, sync_task: nil} = :sys.get_state(engine)
+  end
+
+  test "an authoritative auth failure is STILL sticky (the guard is not a blanket pardon)", %{
+    root: root
+  } do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+    stub_token_endpoint!(token_reply(%{}))
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 314, slug)
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, task_pid}, 2_000
+    # Nothing touched the credential: a successfully minted token was refused,
+    # which means the sign-in really is no good.
+    send(task_pid, {:release, {:error, :reauth_required}})
+
+    assert_receive {:mail_sync_finished, ^slug, %{errors: ["sign-in expired"]}}
+    assert Engine.status(slug).state == "reauth_required"
+    assert %{poll_timer: nil} = :sys.get_state(engine)
+  end
+
+  # -- start_oauth / claim_oauth_flow ------------------------------------------
+
+  test "start_oauth mints a consent URL and parks exactly one pending flow", %{root: root} do
+    slug = "mara"
+    engine = start_oauth_engine!(root, 315, slug)
+
+    assert {:ok, url} = Engine.start_oauth(slug)
+    assert String.starts_with?(url, "https://accounts.google.com/o/oauth2/v2/auth?")
+
+    query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+    assert query["client_id"] == @oauth_client
+    assert query["redirect_uri"] == "http://127.0.0.1:4002/oauth/callback"
+    assert query["code_challenge_method"] == "S256"
+    assert query["login_hint"] == "mara@gmail.com"
+
+    pending = :sys.get_state(engine).oauth_pending
+    assert pending.state == query["state"]
+    # The CHALLENGE travels; the verifier stays here.
+    assert Valea.Mail.OAuth.challenge_for(pending.verifier) == query["code_challenge"]
+    refute String.contains?(url, pending.verifier)
+
+    # A second start replaces the first rather than adding a second live state.
+    assert {:ok, _second} = Engine.start_oauth(slug)
+    replaced = :sys.get_state(engine).oauth_pending
+    refute replaced.state == pending.state
+    assert Engine.claim_oauth_flow(pending.state) == {:error, :no_flow}
+  end
+
+  test "start_oauth refuses an account that is not an oauth2 account", %{root: root} do
+    start_engine!(root, 316, "mara")
+    open(root, 316)
+    assert Engine.start_oauth("mara") == {:error, :not_oauth}
+  end
+
+  test "start_oauth refuses a host with no provider preset", %{root: root} do
+    slug = "mara"
+
+    start_oauth_engine!(root, 317, slug, %{
+      provider: :generic,
+      oauth_client_id: nil,
+      imap: %{host: "imap.fastmail.com", port: 993, username: "mara@fastmail.com"}
+    })
+
+    assert Engine.start_oauth(slug) == {:error, :oauth_unsupported}
+  end
+
+  test "start_oauth refuses when no client id is configured anywhere", %{root: root} do
+    previous = Application.get_env(:valea, :mail_oauth)
+    Application.put_env(:valea, :mail_oauth, gmail: [client_id: nil])
+    on_exit(fn -> Application.put_env(:valea, :mail_oauth, previous) end)
+
+    slug = "mara"
+    start_oauth_engine!(root, 318, slug, %{oauth_client_id: nil})
+    assert Engine.start_oauth(slug) == {:error, :oauth_not_configured}
+  end
+
+  test "start_oauth on an unknown slug is :not_found" do
+    assert Engine.start_oauth("nobody") == {:error, :not_found}
+  end
+
+  test "a claimed flow is single-use, and a mismatched state finds nothing", %{root: root} do
+    slug = "mara"
+    engine = start_oauth_engine!(root, 319, slug)
+    assert {:ok, _url} = Engine.start_oauth(slug)
+    state_token = :sys.get_state(engine).oauth_pending.state
+
+    assert Engine.claim_oauth_flow("not-the-state") == {:error, :no_flow}
+    # A miss leaves the flow intact — a guess must not be able to burn it.
+    assert :sys.get_state(engine).oauth_pending != nil
+
+    assert {:ok, flow} = Engine.claim_oauth_flow(state_token)
+    assert flow.account == slug
+    assert flow.provider == :gmail
+    assert flow.client_id == @oauth_client
+    assert flow.redirect_uri == "http://127.0.0.1:4002/oauth/callback"
+    assert is_binary(flow.verifier)
+    # The state token does not travel onward with the flow.
+    refute Map.has_key?(flow, :state)
+
+    # Replayed: consumed.
+    assert Engine.claim_oauth_flow(state_token) == {:error, :no_flow}
+    assert :sys.get_state(engine).oauth_pending == nil
+  end
+
+  test "an expired flow is refused AND consumed", %{root: root} do
+    slug = "mara"
+    engine = start_oauth_engine!(root, 320, slug)
+    assert {:ok, _url} = Engine.start_oauth(slug)
+
+    # Age the pending flow past its TTL rather than waiting ten minutes for it.
+    # `oauth_pending`'s shape is documented in `Engine.init/1`. Relative to
+    # `System.monotonic_time/1`, whose zero point is arbitrary (and negative on
+    # a fresh BEAM) — a literal `-1` would still be in the future.
+    :sys.replace_state(engine, fn state ->
+      aged = System.monotonic_time(:millisecond) - 1
+      %{state | oauth_pending: %{state.oauth_pending | expires_at: aged}}
+    end)
+
+    state_token = :sys.get_state(engine).oauth_pending.state
+    assert Engine.claim_oauth_flow(state_token) == {:error, :expired}
+    assert :sys.get_state(engine).oauth_pending == nil
+  end
+
+  test "a state token is redeemable only against the account that minted it", %{root: root} do
+    mara = start_oauth_engine!(root, 321, "mara")
+
+    start_engine!(root, 321, "other", settings: oauth_settings("other"))
+    other = GenServer.whereis(Engine.via("other"))
+
+    assert {:ok, _url} = Engine.start_oauth("mara")
+    assert {:ok, _url} = Engine.start_oauth("other")
+
+    mara_state = :sys.get_state(mara).oauth_pending.state
+    other_state = :sys.get_state(other).oauth_pending.state
+
+    assert {:ok, %{account: "mara"}} = Engine.claim_oauth_flow(mara_state)
+    # The other account's flow is untouched by its sibling's redemption.
+    assert :sys.get_state(other).oauth_pending != nil
+    assert {:ok, %{account: "other"}} = Engine.claim_oauth_flow(other_state)
   end
 end

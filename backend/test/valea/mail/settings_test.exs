@@ -912,4 +912,216 @@ defmodule Valea.Mail.SettingsTest do
     System.delete_env("VALEA_MAIL_SMTP_PASSWORD_GHOST_ACCT")
     assert Settings.smtp_env_credential("ghost-acct") == nil
   end
+
+  # -- M6 task 16: provider detection + the oauth_client_id override ----------
+
+  test "detect_provider/1 knows Gmail, the three Microsoft hosts, and nothing else" do
+    for host <- ["imap.gmail.com", "IMAP.GMAIL.COM", "imap.googlemail.com"] do
+      assert Settings.detect_provider(host) == :gmail
+    end
+
+    for host <- [
+          "outlook.office365.com",
+          "Outlook.Office365.COM",
+          "outlook.office.com",
+          "imap-mail.outlook.com"
+        ] do
+      assert Settings.detect_provider(host) == :microsoft
+    end
+
+    for host <- ["imap.fastmail.com", "mail.example.com", "outlook.example.com", ""] do
+      assert Settings.detect_provider(host) == :generic
+    end
+
+    assert Settings.detect_provider(nil) == :generic
+  end
+
+  test "a new Microsoft account gets Exchange's folder names, not the generic ones", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "work", %{
+               host: "outlook.office365.com",
+               port: 993,
+               username: "mara@contoso.com"
+             })
+
+    {:ok, %{accounts: %{"work" => account}}} = Settings.load(root)
+
+    assert account.provider == :microsoft
+    # "Sent"/"Trash" do not exist on Exchange: with the generic defaults every
+    # archive/trash op would file into folders Valea had created itself beside
+    # the real ones.
+    assert account.folders == %{
+             drafts: "Drafts",
+             sent: "Sent Items",
+             archive: "Archive",
+             trash: "Deleted Items"
+           }
+
+    # Nothing to exclude — Exchange has no virtual mirror folders.
+    assert account.sync.exclude_folders == []
+    assert Settings.microsoft_folders().trash == "Deleted Items"
+  end
+
+  test "an explicit folders override still wins over the Microsoft defaults", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "work", %{
+               host: "outlook.office365.com",
+               port: 993,
+               username: "mara@contoso.com",
+               folders: %{sent: "Gesendete Elemente"}
+             })
+
+    {:ok, %{accounts: %{"work" => account}}} = Settings.load(root)
+    assert account.folders.sent == "Gesendete Elemente"
+    assert account.folders.trash == "Deleted Items"
+  end
+
+  test "oauth_client_id round-trips through upsert and load, and is rendered only when set", %{
+    root: root
+  } do
+    assert :ok =
+             Settings.upsert_account!(root, "mara", %{
+               host: "imap.gmail.com",
+               port: 993,
+               username: "mara@gmail.com",
+               auth: :oauth2,
+               oauth_client_id: "123-abc.apps.googleusercontent.com"
+             })
+
+    {:ok, %{accounts: %{"mara" => account}}} = Settings.load(root)
+    assert account.oauth_client_id == "123-abc.apps.googleusercontent.com"
+    assert account.auth == :oauth2
+
+    bytes = File.read!(Path.join(root, "config/mail.yaml"))
+    assert bytes =~ ~s(oauth_client_id: "123-abc.apps.googleusercontent.com")
+
+    # Re-rendering an account that has one keeps it (the load→render round trip
+    # a `remove_account!` of a SIBLING performs).
+    assert :ok =
+             Settings.upsert_account!(root, "other", %{
+               host: "imap.fastmail.com",
+               port: 993,
+               username: "o@example.com"
+             })
+
+    {:ok, %{accounts: accounts}} = Settings.load(root)
+    assert accounts["mara"].oauth_client_id == "123-abc.apps.googleusercontent.com"
+    # ...and an account without one emits no key at all, so a file for a
+    # password account is byte-identical to what it was before this key existed.
+    assert accounts["other"].oauth_client_id == nil
+
+    refute File.read!(Path.join(root, "config/mail.yaml")) =~ "\n    oauth_client_id: \"\"\n"
+  end
+
+  test "an omitted oauth_client_id on upsert means NO override (the whole-entry rule)", %{
+    root: root
+  } do
+    assert :ok =
+             Settings.upsert_account!(root, "mara", %{
+               host: "imap.gmail.com",
+               port: 993,
+               username: "mara@gmail.com",
+               auth: :oauth2,
+               oauth_client_id: "first-id"
+             })
+
+    assert :ok =
+             Settings.upsert_account!(root, "mara", %{
+               host: "imap.gmail.com",
+               port: 993,
+               username: "mara@gmail.com",
+               auth: :oauth2
+             })
+
+    {:ok, %{accounts: %{"mara" => account}}} = Settings.load(root)
+    assert account.oauth_client_id == nil
+  end
+
+  test "an unusable oauth_client_id DEGRADES to no override, unlike auth:", %{root: root} do
+    for value <- ["", "   ", "~", "1234"] do
+      write_yaml!(root, """
+      version: 5
+      accounts:
+        mara:
+          auth: oauth2
+          oauth_client_id: #{value}
+          imap:
+            host: "imap.gmail.com"
+            port: 993
+            username: "mara@gmail.com"
+      safety:
+        never_expunge: true
+        outbound: human_send_and_push
+      """)
+
+      # The account still LOADS — a wrong public client id cannot misroute a
+      # secret, it only makes the sign-in visibly refuse. (`auth:` is the one
+      # key in this file that invalidates instead; see its own tests above.)
+      assert {:ok, %{accounts: %{"mara" => account}, invalid: invalid}} = Settings.load(root),
+             "expected #{inspect(value)} to load"
+
+      assert invalid == %{}
+      assert account.auth == :oauth2
+      assert account.oauth_client_id == nil
+    end
+  end
+
+  test "a hand-written oauth_client_id is trimmed, not taken verbatim", %{root: root} do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      mara:
+        auth: oauth2
+        oauth_client_id: "  padded-id  "
+        imap:
+          host: "imap.gmail.com"
+          port: 993
+          username: "mara@gmail.com"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    {:ok, %{accounts: %{"mara" => account}}} = Settings.load(root)
+    assert account.oauth_client_id == "padded-id"
+  end
+
+  test "an account written before oauth_client_id existed loads with none", %{root: root} do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      mara:
+        auth: oauth2
+        imap:
+          host: "imap.gmail.com"
+          port: 993
+          username: "mara@gmail.com"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    {:ok, %{accounts: %{"mara" => account}}} = Settings.load(root)
+    assert account.oauth_client_id == nil
+  end
+
+  test "an explicit provider: microsoft in the file is honored", %{root: root} do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      mara:
+        provider: microsoft
+        imap:
+          host: "mail.contoso.example"
+          port: 993
+          username: "mara@contoso.example"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    {:ok, %{accounts: %{"mara" => account}}} = Settings.load(root)
+    assert account.provider == :microsoft
+    assert account.folders.sent == "Sent Items"
+  end
 end

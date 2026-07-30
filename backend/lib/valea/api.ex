@@ -63,6 +63,7 @@ defmodule Valea.Api do
       rpc_action(:readopt_mail_account, :readopt_mail_account)
       rpc_action(:discard_held_folder, :discard_held_folder)
       rpc_action(:set_mail_credential, :set_mail_credential)
+      rpc_action(:start_mail_oauth, :start_mail_oauth)
       rpc_action(:mail_sync_now, :mail_sync_now)
       rpc_action(:mail_doctor, :mail_doctor)
       rpc_action(:create_mail_folders, :create_mail_folders)

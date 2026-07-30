@@ -84,6 +84,33 @@ config :phoenix, :json_library, Jason
 # zone all go through Elixir's DateTime API, which needs a real database.
 config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
 
+# The PUBLIC OAuth2 client ids mailbox sign-in authorizes with (mail
+# full-client plan, M6 — `Valea.Mail.OAuth`). Public clients, PKCE only: there
+# is deliberately no client SECRET key here, because a desktop app cannot keep
+# one. Both ship `nil` — whoever builds or runs Valea registers their own with
+# Google / Microsoft, either here or, without rebuilding, per account via
+# `oauth_client_id` in the workspace's `config/mail.yaml`. An unconfigured
+# provider refuses to start a flow rather than opening a consent screen that
+# cannot work.
+config :valea, :mail_oauth, gmail: [client_id: nil], microsoft: [client_id: nil]
+
+# `Phoenix.Logger`'s controller-dispatch line inspects the request params, so
+# every name an OAuth2 redirect or a token response can carry is filtered out
+# of it — belt to `ValeaWeb.OAuthCallbackController`'s route-level
+# `log: false` braces. The default is `["password"]`; these are added, not
+# replacing it.
+config :phoenix, :filter_parameters, [
+  "password",
+  "secret",
+  "code",
+  "state",
+  "token",
+  "access_token",
+  "refresh_token",
+  "id_token",
+  "code_verifier"
+]
+
 # codepagex ships every code page it knows about behind a compile flag —
 # without this, `mix compile` regenerates modules for all of them (slow,
 # and pulls in a bunch of legacy encodings Valea never needs). The mail

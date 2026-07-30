@@ -3822,11 +3822,11 @@ export type GetMailAccountSettingsInput = {
   account: string;
 };
 
-export type GetMailAccountSettingsFields = UnifiedFieldSelection<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth"}, __type: "TypedMap", __primitiveFields: "notifications"}>[];
+export type GetMailAccountSettingsFields = UnifiedFieldSelection<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, oauthClientId: string | null, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth" | "oauthClientId"}, __type: "TypedMap", __primitiveFields: "notifications"}>[];
 
 export type InferGetMailAccountSettingsResult<
   Fields extends GetMailAccountSettingsFields | undefined,
-> = InferResult<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth"}, __type: "TypedMap", __primitiveFields: "notifications"}, Fields>;
+> = InferResult<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, oauthClientId: string | null, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth" | "oauthClientId"}, __type: "TypedMap", __primitiveFields: "notifications"}, Fields>;
 
 export type GetMailAccountSettingsResult<Fields extends GetMailAccountSettingsFields | undefined = undefined> = | { success: true; data: InferGetMailAccountSettingsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -5673,6 +5673,7 @@ export type SetupMailAccountInput = {
   smtpFromName?: string | null;
   notifications?: boolean | null;
   auth?: string | null;
+  oauthClientId?: string | null;
 };
 
 export type SetupMailAccountFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];
@@ -5734,6 +5735,80 @@ export async function setupMailAccountChannel<Fields extends SetupMailAccountFie
     config.channel,
     {
     action: "setup_mail_account",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type StartMailOauthInput = {
+  account: string;
+  generation: number;
+};
+
+export type StartMailOauthFields = UnifiedFieldSelection<{url: string, __type: "TypedMap", __primitiveFields: "url"}>[];
+
+export type InferStartMailOauthResult<
+  Fields extends StartMailOauthFields | undefined,
+> = InferResult<{url: string, __type: "TypedMap", __primitiveFields: "url"}, Fields>;
+
+export type StartMailOauthResult<Fields extends StartMailOauthFields | undefined = undefined> = | { success: true; data: InferStartMailOauthResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function startMailOauth<Fields extends StartMailOauthFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: StartMailOauthInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<StartMailOauthResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "start_mail_oauth",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<StartMailOauthResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function startMailOauthChannel<Fields extends StartMailOauthFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: StartMailOauthInput;
+  fields: Fields;
+  resultHandler: (result: StartMailOauthResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<StartMailOauthResult<Fields>>(
+    config.channel,
+    {
+    action: "start_mail_oauth",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

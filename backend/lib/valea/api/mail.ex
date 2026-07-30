@@ -154,12 +154,32 @@ defmodule Valea.Api.Mail do
 
   ## `set_mail_credential`'s `kind`
 
-  `kind` selects which of the account's TWO credential slots the secret
+  `kind` selects which of the account's THREE credential slots the secret
   fills — `"imap"` (the default when the argument is omitted, i.e. what
-  every caller predating settings v5 means) or `"smtp"`. They are separate
-  secrets with separate keychain entries; the setup UI's "same as IMAP"
-  sends the same value twice, as a copy. An unknown value is rejected
-  (`"invalid_credential_kind"`) — never `String.to_atom/1`'d.
+  every caller predating settings v5 means), `"smtp"`, or `"oauth"`. The
+  first two are separate secrets with separate keychain entries; the setup
+  UI's "same as IMAP" sends the same value twice, as a copy. An unknown value
+  is rejected (`"invalid_credential_kind"`) — never `String.to_atom/1`'d.
+
+  `"oauth"` (M6 task 16) is the OAuth2 REFRESH token of an `auth: oauth2`
+  account — a third SLOT, not a third protocol: one authorization covers both
+  IMAP and SMTP, and `Valea.Mail.Engine` mints the short-lived access tokens
+  both use from it. This is the RESUPPLY direction only, the one every slot
+  shares: a restart drops the Engine's RAM, and the desktop client hands back
+  what it kept in the OS keychain under `<slug>:oauth`. A newly AUTHORIZED
+  token never comes through here — it is minted by the provider and stored by
+  `ValeaWeb.OAuthCallbackController`, which is also what pushes it to the
+  client to persist in the first place.
+
+  ## `start_mail_oauth`, and where the secrets go
+
+  Mailbox sign-in is two hops, deliberately: `start_mail_oauth` mints the
+  `state` + PKCE pair inside the account's Engine and returns only a consent
+  URL, and the provider then redirects the user's BROWSER to the token-exempt
+  `/oauth/callback` route, which spends the authorization code server-side
+  and hands the resulting refresh token to the Engine. So no secret ever
+  passes through this RPC surface in either direction — not the verifier, not
+  the code, not the token.
 
   ## `set_mail_credential`'s secret
 
@@ -296,6 +316,13 @@ defmodule Valea.Api.Mail do
       # re-send the smtp block.
       argument :auth, :string, allow_nil?: true
 
+      # The account's PUBLIC OAuth2 client id override (M6 task 16), or blank
+      # for "use whatever this build is configured with". Not a secret — PKCE
+      # public clients have none — and it rides the same whole-entry rule as
+      # `auth`: an EDIT that omits it DROPS a stored override, which is why
+      # `get_mail_account_settings` returns it and the setup form sends it back.
+      argument :oauth_client_id, :string, allow_nil?: true
+
       run fn input, _ctx ->
         %{
           account: slug,
@@ -316,6 +343,7 @@ defmodule Valea.Api.Mail do
                  port: port,
                  username: username,
                  auth: auth,
+                 oauth_client_id: blank_to_nil(input.arguments[:oauth_client_id]),
                  smtp: smtp_attrs(input.arguments),
                  notifications: input.arguments[:notifications] == true
                }) do
@@ -355,6 +383,12 @@ defmodule Valea.Api.Mail do
                           # never `false`, and a nested atom key is fine for
                           # a value that always has one.
                           auth: [type: :string, allow_nil?: false],
+                          # The public client id override, `null` for an
+                          # account that takes this build's configured one.
+                          # A string, so the falsy-map-field rule doesn't
+                          # apply; `allow_nil?: true` because "no override" is
+                          # the normal state.
+                          oauth_client_id: [type: :string, allow_nil?: true],
                           smtp: [
                             type: :map,
                             allow_nil?: true,
@@ -552,6 +586,38 @@ defmodule Valea.Api.Mail do
              {:ok, kind} <- credential_kind(input.arguments[:kind]),
              :ok <- Engine.set_credential(slug, secret, kind) do
           {:ok, %{"accepted" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :start_mail_oauth, :map do
+      # Mailbox sign-in, step one (mail full-client plan, M6 task 16): mints
+      # this account's `state` + PKCE pair inside its Engine and returns the
+      # provider's consent URL for the caller to open in the user's BROWSER.
+      # Step two is the browser's redirect to `/oauth/callback`
+      # (`ValeaWeb.OAuthCallbackController`), which is where the code is spent
+      # and the refresh token stored — nothing secret travels through this
+      # action's result.
+      #
+      # Mutating (it parks a pending flow, replacing any earlier one), so it
+      # takes `generation` and guards on it like every other mutating action.
+      #
+      # `url` is a string that is never `false`, so it takes an atom key —
+      # the string-key rule binds return fields that can be falsy.
+      constraints fields: [url: [type: :string, allow_nil?: false]]
+
+      argument :account, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{account: slug, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- validate_slug(slug),
+             {:ok, url} <- Engine.start_oauth(slug) do
+          {:ok, %{url: url}}
         else
           {:error, reason} -> {:error, error_for(reason)}
         end
@@ -1411,6 +1477,12 @@ defmodule Valea.Api.Mail do
   defp credential_kind(nil), do: {:ok, :imap}
   defp credential_kind("imap"), do: {:ok, :imap}
   defp credential_kind("smtp"), do: {:ok, :smtp}
+  # The OAuth2 REFRESH token (M6 task 16) — a third slot, not a third
+  # protocol: one authorization covers both IMAP and SMTP, and the Engine
+  # mints the short-lived access tokens both use from it. This is the resupply
+  # direction (a restart handing back what the OS keychain kept); a newly
+  # authorized token arrives through `/oauth/callback` instead.
+  defp credential_kind("oauth"), do: {:ok, :oauth}
   defp credential_kind(_other), do: {:error, :invalid_credential_kind}
 
   defp check_identity_for_setup(root, slug, host, username) do
@@ -1710,12 +1782,15 @@ defmodule Valea.Api.Mail do
   # The settings-form prefill payload: non-secret connection config only
   # (passwords live in the OS keychain / Engine memory, never in
   # `config/mail.yaml`, so there is nothing secret here to withhold).
-  defp account_settings_payload(%Settings{imap: imap, smtp: smtp, auth: auth}) do
+  defp account_settings_payload(%Settings{} = settings) do
+    %{imap: imap, smtp: smtp, auth: auth, oauth_client_id: oauth_client_id} = settings
+
     %{
       host: imap.host,
       port: imap.port,
       username: imap.username,
       auth: to_string(auth),
+      oauth_client_id: oauth_client_id,
       smtp: smtp_settings_payload(smtp)
     }
   end

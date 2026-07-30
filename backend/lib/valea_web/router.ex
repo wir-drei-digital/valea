@@ -64,6 +64,20 @@ defmodule ValeaWeb.Router do
     get "/feed.ics", CalendarFeedController, :feed
   end
 
+  # Deliberately token-EXEMPT for the same reason the calendar feed above is —
+  # an OAuth2 provider redirects a BROWSER here and cannot send headers. The
+  # `state` query parameter is this route's own credential (minted per flow,
+  # constant-time compared, single-use, TTL-bounded; see
+  # `ValeaWeb.OAuthCallbackController`), and the controller renders a page
+  # rather than redirecting anywhere.
+  #
+  # `log: false` is load-bearing, not tidiness: it suppresses
+  # `Phoenix.Logger`'s route-dispatch line, which inspects `conn.params` — and
+  # this route's params are an authorization code and a state token.
+  scope "/oauth", ValeaWeb do
+    get "/callback", OAuthCallbackController, :callback, log: false
+  end
+
   # SPA catch-all (static build baked into priv/static in `just build`).
   scope "/", ValeaWeb do
     get "/*path", SpaController, :index

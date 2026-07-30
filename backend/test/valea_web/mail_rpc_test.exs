@@ -675,6 +675,113 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
+  # -- start_mail_oauth ------------------------------------------------------------
+
+  describe "start_mail_oauth" do
+    defp setup_oauth_account!(generation, opts \\ []) do
+      account = Keyword.get(opts, :account, "zoe")
+
+      input =
+        %{
+          "account" => account,
+          "host" => Keyword.get(opts, :host, "imap.gmail.com"),
+          "port" => 993,
+          "username" => "#{account}@gmail.com",
+          "auth" => Keyword.get(opts, :auth, "oauth2"),
+          "generation" => generation
+        }
+        |> then(fn input ->
+          case Keyword.get(opts, :client_id, "valea-test.apps.googleusercontent.com") do
+            nil -> input
+            client_id -> Map.put(input, "oauth_client_id", client_id)
+          end
+        end)
+
+      assert %{"success" => true} = rpc("setup_mail_account", input, ["saved"])
+      await_engine_active!(account)
+      account
+    end
+
+    test "returns a consent URL and nothing secret", %{generation: generation} do
+      setup_oauth_account!(generation)
+
+      assert %{"success" => true, "data" => %{"url" => url}} =
+               rpc(
+                 "start_mail_oauth",
+                 %{"account" => "zoe", "generation" => generation},
+                 ["url"]
+               )
+
+      query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+      assert String.starts_with?(url, "https://accounts.google.com/o/oauth2/v2/auth?")
+      assert query["client_id"] == "valea-test.apps.googleusercontent.com"
+      assert query["redirect_uri"] == "http://127.0.0.1:4002/oauth/callback"
+      assert query["code_challenge_method"] == "S256"
+      assert query["login_hint"] == "zoe@gmail.com"
+      # Only the CHALLENGE travels; the verifier stays in the Engine.
+      assert byte_size(query["code_challenge"]) == 43
+    end
+
+    test "a password account is refused", %{generation: generation} do
+      setup_oauth_account!(generation, auth: "password", client_id: nil)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("start_mail_oauth", %{"account" => "zoe", "generation" => generation}, ["url"])
+
+      assert inspect(errors) =~ "not_oauth"
+    end
+
+    test "a host with no provider preset is refused", %{generation: generation} do
+      setup_oauth_account!(generation, host: "imap.fastmail.com", client_id: nil)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("start_mail_oauth", %{"account" => "zoe", "generation" => generation}, ["url"])
+
+      assert inspect(errors) =~ "oauth_unsupported"
+    end
+
+    test "no configured client id anywhere is refused", %{generation: generation} do
+      previous = Application.get_env(:valea, :mail_oauth)
+      Application.put_env(:valea, :mail_oauth, gmail: [client_id: nil])
+      on_exit(fn -> Application.put_env(:valea, :mail_oauth, previous) end)
+
+      setup_oauth_account!(generation, client_id: nil)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("start_mail_oauth", %{"account" => "zoe", "generation" => generation}, ["url"])
+
+      assert inspect(errors) =~ "oauth_not_configured"
+    end
+
+    test "an unknown account is not_found, bad grammar is invalid_slug", %{
+      generation: generation
+    } do
+      assert %{"success" => false, "errors" => not_found} =
+               rpc("start_mail_oauth", %{"account" => "ghost", "generation" => generation}, [
+                 "url"
+               ])
+
+      assert inspect(not_found) =~ "not_found"
+
+      assert %{"success" => false, "errors" => bad_slug} =
+               rpc("start_mail_oauth", %{"account" => "../x", "generation" => generation}, ["url"])
+
+      assert inspect(bad_slug) =~ "invalid_slug"
+    end
+
+    test "a stale generation surfaces workspace_changed", %{generation: generation} do
+      setup_oauth_account!(generation)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc("start_mail_oauth", %{"account" => "zoe", "generation" => generation + 1}, [
+                 "url"
+               ])
+
+      assert inspect(errors) =~ "workspace_changed"
+    end
+  end
+
   # -- set_mail_credential --------------------------------------------------------
 
   describe "set_mail_credential" do
@@ -745,6 +852,44 @@ defmodule ValeaWeb.MailRpcTest do
       status = await_engine_active!("mara")
       assert status["smtp_credential"] == "present"
       assert status["credential"] == "present"
+    end
+
+    test "the oauth kind fills the refresh-token slot of an oauth2 account", %{
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "zoe",
+                   "host" => "imap.gmail.com",
+                   "port" => 993,
+                   "username" => "zoe@gmail.com",
+                   "auth" => "oauth2",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      status = await_engine_active!("zoe")
+      assert status["auth"] == "oauth2"
+      # An oauth2 account's credential is its refresh token, so the password
+      # slot being empty is exactly what "missing" means here.
+      assert status["credential"] == "missing"
+
+      assert %{"success" => true, "data" => %{"accepted" => true}} =
+               rpc(
+                 "set_mail_credential",
+                 %{
+                   "account" => "zoe",
+                   "secret" => "1//the-refresh-token",
+                   "kind" => "oauth",
+                   "generation" => generation
+                 },
+                 ["accepted"]
+               )
+
+      assert %{"credential" => "present"} = await_engine_active!("zoe")
     end
 
     test "an unknown kind is rejected", %{generation: generation} do
@@ -1689,6 +1834,70 @@ defmodule ValeaWeb.MailRpcTest do
                ])
 
       assert zoe["auth"] == "oauth2"
+    end
+
+    test "oauth_client_id round-trips, and an edit that omits it drops the override", %{
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "zoe",
+                   "host" => "imap.gmail.com",
+                   "port" => 993,
+                   "username" => "zoe@gmail.com",
+                   "auth" => "oauth2",
+                   "oauth_client_id" => "123-abc.apps.googleusercontent.com",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert %{"success" => true, "data" => %{"account" => account}} =
+               rpc("get_mail_account_settings", %{"account" => "zoe"}, [
+                 %{"account" => ["host", "auth", "oauthClientId"]}
+               ])
+
+      assert account["auth"] == "oauth2"
+      assert account["oauthClientId"] == "123-abc.apps.googleusercontent.com"
+
+      # The whole-entry rule, spelled out: an edit that doesn't send the
+      # override back drops it. This is why the setup form reads it and returns
+      # it, exactly as it does for `auth`.
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "zoe",
+                   "host" => "imap.gmail.com",
+                   "port" => 993,
+                   "username" => "zoe@gmail.com",
+                   "auth" => "oauth2",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert %{"success" => true, "data" => %{"account" => after_edit}} =
+               rpc("get_mail_account_settings", %{"account" => "zoe"}, [
+                 %{"account" => ["auth", "oauthClientId"]}
+               ])
+
+      assert after_edit["oauthClientId"] == nil
+      assert after_edit["auth"] == "oauth2"
+    end
+
+    test "a password account reports no oauth_client_id at all", %{generation: generation} do
+      setup_account!(generation, account: "mara")
+
+      assert %{"success" => true, "data" => %{"account" => account}} =
+               rpc("get_mail_account_settings", %{"account" => "mara"}, [
+                 %{"account" => ["auth", "oauthClientId"]}
+               ])
+
+      assert account["auth"] == "password"
+      assert account["oauthClientId"] == nil
     end
 
     test "an auth mode this backend doesn't know is refused, not defaulted", %{

@@ -85,24 +85,69 @@ defmodule Valea.Mail.Engine do
   never silently moves the other, and a bad SMTP password can never pause
   the IMAP sync.
 
-  ### OAuth2 accounts, and where their token comes from (task 15 stopgap)
+  ### OAuth2 accounts, and where their token comes from
 
-  An account whose settings say `auth: :oauth2` (mail full-client plan, M6
-  task 15) changes only WHICH SASL verb the clients use — `XOAUTH2` instead
-  of `LOGIN`/`AUTH PLAIN`. It does NOT change where the secret comes from:
-  the two slots above hold a STATIC access token, supplied exactly like a
-  password (the `set_mail_credential` RPC, or the env fallback), and
-  `resolve_secret/1` at the `connect/3` boundary hands it over unchanged. The
-  auth mode picks the verb; the slot supplies the string.
+  An account whose settings say `auth: :oauth2` (mail full-client plan, M6)
+  changes both halves. The clients authenticate with `XOAUTH2` instead of
+  `LOGIN`/`AUTH PLAIN` (task 15), and the secret they are handed comes from
+  neither slot above but from a THIRD one plus a cache (task 16):
 
-  That is deliberately a stopgap. M6 task 16 replaces slot resolution for
-  oauth2 accounts with engine-minted, freshly-refreshed tokens BEHIND THE
-  SAME closure contract — every consumer (`SyncPass`, `OpsExecutor`,
-  `IdleWatcher`, `Doctor`) already takes a zero-arity closure it calls only
-  at that one boundary, so nothing on this side has to learn about refresh.
-  Until then a token expiring behaves like a password being rotated: the
-  next pass fails, the account goes sticky `reauth_required`, and a new
-  `set_credential(:imap)` clears it.
+    * `oauth_refresh` — the long-lived refresh token, the account's real
+      durable credential. Same RAM-only zero-arity closure as a password:
+      **it never touches disk on this side**. Its durable home is the OS
+      keychain, written by the frontend off the `mail_oauth` push
+      (`store_oauth_refresh_token/2`) and handed back after a restart through
+      `set_credential(slug, token, :oauth)` — the resupply path
+      `<slug>:imap`/`<slug>:smtp` already follow.
+    * `oauth_token` — the short-lived access token, `%{token: closure,
+      expires_at: ...}`, minted from the refresh token by
+      `mint_access_token/1` and reused until it comes within one minute of
+      expiry (`@token_skew_ms` — a connect starting just under the wire must
+      not be handed a token that expires during it).
+
+  Both protocols share ONE authorization (one scope grant covers IMAP and
+  SMTP), so both credential closures for an oauth2 account resolve to the
+  same token.
+
+  The closure CONTRACT is unchanged, which is the point: every consumer
+  (`SyncPass`, `OpsExecutor`, `IdleWatcher`, `Doctor`) still receives a
+  zero-arity function returning a binary, and still calls it exactly once at
+  its `connect/3` boundary. For an oauth2 account that function calls back
+  into this Engine (`mint_access_token/1` → the `:access_token` call), which
+  either answers from the cache or refreshes. It cannot deadlock: that
+  `handle_call` never waits on the worker — it replies from cache, or parks
+  the caller and starts its own monitored Task, exactly like `apply_ops`.
+
+  Refreshes are SINGLE-FLIGHT: N concurrent consumers (a pass, the IDLE
+  watcher, a send) produce one token request, and every parked caller is
+  answered from its one result. A mint that cannot be satisfied returns `""`
+  rather than raising or breaking the contract — see
+  `mint_access_token/1` for why, and §Credential epoch below for what keeps
+  that empty token from parking the account by mistake.
+
+  `invalid_grant` from a refresh is the one permanent answer: the refresh
+  token is dead, so the cache AND the slot are cleared and the account goes
+  sticky `reauth_required` immediately, without waiting for a round trip to
+  the mail server to tell us the same thing.
+
+  ## Credential epoch (why a stale pass cannot park a fresh credential)
+
+  `credential_epoch` counts every change to the credential MATERIAL this
+  Engine considers current: a `set_credential/3` of any kind, a rotated
+  refresh token, a refresh token thrown away as `invalid_grant`, and a mint
+  that failed (because the `""` it handed out is not a credential this Engine
+  holds). `start_pass/1` pins the current value into
+  `pass_credential_epoch`.
+
+  An auth failure reported by a pass whose pinned epoch no longer matches is
+  therefore NOT authoritative — the secret changed under it — and must not
+  make the account sticky: `stale_auth_failure/2` records the error, leaves
+  the status decision to whatever the Engine knows NOW, and lets polling
+  retry with the current credential. Without this, an ordinary token refresh
+  landing mid-pass (or a user re-signing-in during one) parks the account
+  `reauth_required` WITH a perfectly good secret already in the slot, and
+  nothing re-arms until another `set_credential/3` — the hazard is
+  pre-existing for passwords and would be routine once tokens auto-mint.
 
   ## IMAP IDLE
 
@@ -203,6 +248,7 @@ defmodule Valea.Mail.Engine do
   alias Valea.Mail.Doctor
   alias Valea.Mail.IdleWatcher
   alias Valea.Mail.Index
+  alias Valea.Mail.OAuth
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Redact
   alias Valea.Mail.Settings
@@ -211,6 +257,25 @@ defmodule Valea.Mail.Engine do
 
   @default_interval_minutes 5
   @max_poll_jitter_ms 60_000
+
+  # How long a minted-but-unused authorization may sit in `oauth_pending`
+  # before the callback can no longer redeem it. Generous because the user is
+  # in the middle of a provider consent screen (account chooser, 2FA, a
+  # policy prompt), and short enough that a state token is never a long-lived
+  # thing to guess at.
+  @oauth_flow_ttl_ms 10 * 60 * 1_000
+
+  # Refresh an access token this long before it actually expires, so a
+  # connect that starts just under the wire isn't handed one that dies during
+  # the session it is opening.
+  @token_skew_ms 60_000
+
+  # The `:access_token` call's timeout, as seen from a worker Task: long
+  # enough to cover one token-endpoint round trip (8s HTTP + 4s connect in
+  # `Valea.Mail.OAuth`) plus queueing behind another caller's refresh, with
+  # headroom. A timeout here is not a crash — `mint_access_token/1` degrades
+  # to `""`.
+  @token_call_timeout 30_000
 
   # The two AUTH failures a fresh IMAP credential clears (`set_credential/3`):
   # a rejected password and a rejected OAuth2 access token. Two states rather
@@ -237,6 +302,13 @@ defmodule Valea.Mail.Engine do
   re-typed password. It is sticky and pauses polling identically, and
   `set_credential/3` clears either one.
 
+  `auth` is the account's SASL mode as a string (`"password"` | `"oauth2"`,
+  M6 task 16) — the same value `config/mail.yaml` holds. It rides here because
+  `credential` alone cannot tell the frontend WHICH keychain slot an account's
+  secret lives in (`<slug>:imap` vs `<slug>:oauth`), nor whether "missing"
+  means "type a password" or "sign in". A string, never `false`, so the
+  falsy-map-field rule below does not apply to it.
+
   Three fields ride STRING keys — `"smtp_configured"` (boolean),
   `"smtp_credential"` (`"present"` | `"missing"` | `"n/a"`, the last when the
   account has no `smtp:` block at all), and `"notifications"` (boolean, the
@@ -252,6 +324,7 @@ defmodule Valea.Mail.Engine do
           :account => String.t(),
           :configured => boolean(),
           :credential => String.t(),
+          :auth => String.t(),
           :state => String.t(),
           :last_sync_at => String.t() | nil,
           :last_error => String.t() | nil,
@@ -309,15 +382,141 @@ defmodule Valea.Mail.Engine do
   this clears it and re-arms polling — the next poll tick runs a pass; this
   call never starts one itself. For `:smtp` it only fills the send-side slot: SMTP has no poll
   loop to re-arm, and an SMTP auth failure never pauses the IMAP sync.
+
+  `:oauth` is the OAuth2 REFRESH token (moduledoc §OAuth2 accounts): it takes
+  the same posture as `:imap` — the watcher is rebuilt, a sticky auth failure
+  is cleared, polling re-arms — and additionally drops any cached access
+  token, since one minted from a superseded refresh token is not this
+  account's credential any more. It is how a restart's keychain resupply
+  hands the token back; a NEWLY authorized one goes through
+  `store_oauth_refresh_token/2` instead, which also asks the frontend to
+  persist it.
+
+  Every kind bumps `credential_epoch` (moduledoc §Credential epoch).
   `{:error, :not_found}` when no Engine is running for `slug`.
   """
-  @spec set_credential(String.t(), String.t(), :imap | :smtp) :: :ok | {:error, :not_found}
+  @spec set_credential(String.t(), String.t(), :imap | :smtp | :oauth) ::
+          :ok | {:error, :not_found}
   def set_credential(slug, secret, kind \\ :imap)
-      when is_binary(slug) and is_binary(secret) and kind in [:imap, :smtp] do
+      when is_binary(slug) and is_binary(secret) and kind in [:imap, :smtp, :oauth] do
     case whereis(slug) do
       nil -> {:error, :not_found}
       pid -> GenServer.call(pid, {:set_credential, secret, kind})
     end
+  end
+
+  @doc """
+  Starts an OAuth2 authorization for `slug`: mints the `state` + PKCE pair,
+  parks them as this account's ONE pending flow (TTL-bounded, replacing any
+  earlier one), and returns the provider's consent URL for the caller to open
+  in the user's browser.
+
+  Refuses rather than guessing: `:not_oauth` for an account whose settings
+  don't say `auth: oauth2` (a refresh token it will never use is not worth
+  storing), `:oauth_unsupported` for a host with no provider preset, and
+  `:oauth_not_configured` when neither the account nor this build supplies a
+  public client id (see `Valea.Mail.OAuth`'s resolution order).
+
+  The verifier stays in this process until the matching callback claims it.
+  """
+  @spec start_oauth(String.t()) ::
+          {:ok, String.t()}
+          | {:error,
+             :not_found
+             | :not_configured
+             | :not_oauth
+             | :oauth_unsupported
+             | :oauth_not_configured}
+  def start_oauth(slug) when is_binary(slug) do
+    case whereis(slug) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, :start_oauth)
+    end
+  end
+
+  @doc """
+  Redeems the `state` token an OAuth2 redirect arrived with: finds the Engine
+  whose pending flow it belongs to and hands that flow over
+  (`Valea.Mail.OAuth.flow/0` — account, provider, client id, redirect URI and
+  PKCE verifier), CONSUMING it in the process.
+
+  Single-use and TTL-bounded by construction: a matched flow is removed from
+  its Engine whether or not it was still valid, so a replayed redirect finds
+  nothing. Comparison is constant-time (`Plug.Crypto.secure_compare/2`) and
+  the flow is inherently bound to the account that minted it — there is one
+  slot per Engine, so a state token cannot be redeemed against a different
+  account.
+
+  `{:error, :no_flow}` when nothing matches, `{:error, :expired}` when the
+  matching flow had aged out (still consumed).
+  """
+  @spec claim_oauth_flow(String.t()) :: {:ok, OAuth.flow()} | {:error, :no_flow | :expired}
+  def claim_oauth_flow(state) when is_binary(state) do
+    Enum.find_value(slugs_and_pids(), {:error, :no_flow}, fn {_slug, pid} ->
+      case safe_claim(pid, state) do
+        {:error, :no_flow} -> nil
+        found -> found
+      end
+    end)
+  end
+
+  # An Engine can exit between the registry read and this call (a workspace
+  # close, a crash): that is "no flow here", never a 500 on the callback.
+  defp safe_claim(pid, state) do
+    GenServer.call(pid, {:claim_oauth_flow, state})
+  catch
+    :exit, _reason -> {:error, :no_flow}
+  end
+
+  @doc """
+  Stores a freshly authorized refresh token: the RAM-only slot (via
+  `set_credential/3`'s `:oauth` kind) plus the `mail_oauth` push that asks
+  the frontend to persist it in the OS keychain — the only durable home a
+  refresh token has, since this side never writes one to disk.
+
+  Used by the callback controller on a successful code exchange, and by this
+  Engine itself when a provider ROTATES the token on refresh (Microsoft does
+  on every one). A push that no client is listening for is simply lost, which
+  costs exactly one re-sign-in after the next restart.
+  """
+  @spec store_oauth_refresh_token(String.t(), String.t()) :: :ok | {:error, :not_found}
+  def store_oauth_refresh_token(slug, token) when is_binary(slug) and is_binary(token) do
+    with :ok <- set_credential(slug, token, :oauth) do
+      broadcast_oauth_token(slug, token)
+      :ok
+    end
+  end
+
+  @doc """
+  The access token for an oauth2 account, minted or cached — what the
+  credential closures this Engine hands its workers actually call, from
+  INSIDE those workers, at their one `connect/3` boundary.
+
+  Always returns a binary, because that is the closure contract every
+  consumer was written against (`SyncPass`, `OpsExecutor`, `IdleWatcher`,
+  `Doctor`): a token that cannot be minted is `""`, which the server refuses
+  like any other bad credential. Raising instead would turn one transient
+  token-endpoint hiccup into a crashed pass Task, and returning `nil` would
+  make `Valea.Mail.Xoauth2.response/2`'s callers handle a shape they have no
+  clause for.
+
+  An empty answer is never left to be interpreted as "this account's sign-in
+  is broken" on its own: whatever made the mint fail has already recorded
+  itself in this Engine's state (a cleared slot and a sticky
+  `reauth_required` for `invalid_grant`, a bumped `credential_epoch` for a
+  transient failure), so the resulting auth failure is classified correctly —
+  see the moduledoc, §Credential epoch.
+  """
+  @spec mint_access_token(pid()) :: String.t()
+  def mint_access_token(engine) when is_pid(engine) do
+    case GenServer.call(engine, :access_token, @token_call_timeout) do
+      {:ok, token} -> token
+      {:error, _reason} -> ""
+    end
+  catch
+    # The Engine died, or the refresh outlived the call timeout. Either way
+    # there is no token to hand over, and the caller must not crash.
+    :exit, _reason -> ""
   end
 
   @doc """
@@ -614,6 +813,29 @@ defmodule Valea.Mail.Engine do
       # zero-arity-closure discipline as `credential`, never the same value
       # by construction.
       smtp_credential: nil,
+      # OAuth2 (moduledoc §OAuth2 accounts). All four are `nil`/empty for a
+      # password account and never consulted for one.
+      #   * `oauth_refresh` — the refresh token, RAM-only closure, this
+      #     account's durable credential (persisted only in the OS keychain,
+      #     frontend-side);
+      #   * `oauth_token` — `%{token: closure, expires_at: monotonic_ms}`, the
+      #     cached access token minted from it;
+      #   * `oauth_task`/`oauth_waiters` — the single in-flight refresh Task
+      #     and the callers parked on its one result (the `ops_queue`
+      #     deferred-reply shape);
+      #   * `oauth_pending` — the ONE in-flight authorization's `state` +
+      #     PKCE verifier + provider/client id/redirect URI, with a TTL.
+      oauth_refresh: nil,
+      oauth_token: nil,
+      oauth_task: nil,
+      oauth_waiters: [],
+      oauth_pending: nil,
+      # Moduledoc §Credential epoch: which generation of credential material
+      # this Engine considers current, and which one the in-flight pass was
+      # started under. An auth failure from a pass whose pin has gone stale
+      # cannot park the account.
+      credential_epoch: 0,
+      pass_credential_epoch: 0,
       # Pinned at activation from `.account` (moduledoc §Maildir separator).
       # `nil` until then — deliberately not `":"`, so a separator that ever
       # escaped into an encode would raise rather than write `:` names into a
@@ -671,6 +893,7 @@ defmodule Valea.Mail.Engine do
       # has to invalidate (moduledoc §IMAP IDLE).
       |> stop_idle_watcher()
       |> Map.put(:credential, fn -> secret end)
+      |> bump_credential_epoch()
       |> clear_auth_failure()
       |> sync_idle_watcher()
 
@@ -679,9 +902,79 @@ defmodule Valea.Mail.Engine do
   end
 
   def handle_call({:set_credential, secret, :smtp}, _from, state) do
-    new_state = Map.put(state, :smtp_credential, fn -> secret end)
+    new_state = state |> Map.put(:smtp_credential, fn -> secret end) |> bump_credential_epoch()
     broadcast_status(new_state)
     {:reply, :ok, new_state}
+  end
+
+  # The OAuth2 refresh token (moduledoc §OAuth2 accounts). Same posture as
+  # `:imap` — it IS this account's IMAP credential, one indirection removed —
+  # plus dropping the cached access token: one minted from a superseded
+  # refresh token is no longer this account's credential.
+  def handle_call({:set_credential, secret, :oauth}, _from, state) do
+    new_state =
+      state
+      |> stop_idle_watcher()
+      |> Map.merge(%{oauth_refresh: fn -> secret end, oauth_token: nil})
+      |> bump_credential_epoch()
+      |> clear_auth_failure()
+      |> sync_idle_watcher()
+
+    broadcast_status(new_state)
+    {:reply, :ok, new_state}
+  end
+
+  # Mints (or replaces) this account's ONE pending authorization. An earlier
+  # unfinished flow is dropped rather than kept alongside: the user just asked
+  # to sign in again, and two live state tokens for one account would only
+  # widen the window in which either is redeemable.
+  def handle_call(:start_oauth, _from, state) do
+    case build_oauth_flow(state) do
+      {:ok, pending, url} -> {:reply, {:ok, url}, %{state | oauth_pending: pending}}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # The redirect's `state` token, compared CONSTANT-TIME against this
+  # account's pending flow. A match consumes the flow either way (single use),
+  # so a replay — or a retry of a redemption that already spent it — finds
+  # nothing; an aged-out match is consumed and reported `:expired`.
+  def handle_call({:claim_oauth_flow, candidate}, _from, %{oauth_pending: pending} = state)
+      when pending != nil do
+    if Plug.Crypto.secure_compare(pending.state, candidate) do
+      consumed = %{state | oauth_pending: nil}
+
+      if pending.expires_at > now_ms() do
+        {:reply, {:ok, flow_context(state.account, pending)}, consumed}
+      else
+        {:reply, {:error, :expired}, consumed}
+      end
+    else
+      {:reply, {:error, :no_flow}, state}
+    end
+  end
+
+  def handle_call({:claim_oauth_flow, _candidate}, _from, state),
+    do: {:reply, {:error, :no_flow}, state}
+
+  # The access-token mint, called from inside a worker's credential closure
+  # (`mint_access_token/1`). NEVER blocks this loop: it answers from cache, or
+  # refuses outright, or parks the caller behind the ONE refresh Task —
+  # single-flight, so N concurrent consumers cost one token request.
+  def handle_call(:access_token, from, state) do
+    case {cached_access_token(state), state.oauth_task} do
+      {token, _task} when is_binary(token) ->
+        {:reply, {:ok, token}, state}
+
+      {nil, task} when task != nil ->
+        {:noreply, %{state | oauth_waiters: [from | state.oauth_waiters]}}
+
+      {nil, nil} ->
+        case oauth_refresh_args(state) do
+          {:ok, args} -> {:noreply, start_oauth_refresh(state, args, from)}
+          :error -> {:reply, {:error, :reauth_required}, state}
+        end
+    end
   end
 
   def handle_call(:sync_now, _from, state) do
@@ -932,6 +1225,25 @@ defmodule Valea.Mail.Engine do
     {:noreply, %{state | ops_current: nil} |> drain_ops()}
   end
 
+  # The single-flight token refresh reported (moduledoc §OAuth2 accounts).
+  def handle_info(
+        {:oauth_refresh_result, pid, result},
+        %{oauth_task: %{task: {pid, ref}, epoch: epoch}} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, apply_refresh_result(state, result, epoch)}
+  end
+
+  # The refresh Task died before reporting (an unexpected raise, or a teardown
+  # kill). `Valea.Mail.OAuth` answers its own failures as tuples, so this is
+  # transient by definition — never a reason to throw the refresh token away.
+  def handle_info(
+        {:DOWN, ref, :process, pid, _reason},
+        %{oauth_task: %{task: {pid, ref}, epoch: epoch}} = state
+      ) do
+    {:noreply, apply_refresh_result(state, {:error, :token_request_failed}, epoch)}
+  end
+
   # The IDLE watcher is gone. Either it stopped `:normal` on its own (the
   # server doesn't advertise IDLE — a permanent answer, never retried) or its
   # supervisor gave up on restarting it. Both mean "this account has no
@@ -955,6 +1267,221 @@ defmodule Valea.Mail.Engine do
   # and single-flight cleanup, so the `{:EXIT, _, _}` is intentionally a no-op.
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
+  # -- OAuth2: authorization flow + access-token minting --------------------
+  #
+  # Moduledoc §OAuth2 accounts. Everything in this section runs in the Engine
+  # loop EXCEPT the token request itself, which rides a monitored+linked Task
+  # exactly like a sync pass.
+
+  # `:start_oauth`'s decision. Refuses in three distinguishable ways rather
+  # than handing back a URL that cannot end in a working account.
+  defp build_oauth_flow(%{settings: nil}), do: {:error, :not_configured}
+
+  defp build_oauth_flow(%{settings: %Settings{auth: auth}}) when auth != :oauth2,
+    do: {:error, :not_oauth}
+
+  defp build_oauth_flow(%{settings: settings}) do
+    with {:ok, provider} <- oauth_provider(settings),
+         {:ok, client_id} <- oauth_client_id(settings) do
+      pkce = OAuth.new_pkce()
+      state_token = OAuth.new_state()
+      redirect_uri = OAuth.redirect_uri()
+
+      pending = %{
+        state: state_token,
+        verifier: pkce.verifier,
+        provider: provider,
+        client_id: client_id,
+        redirect_uri: redirect_uri,
+        expires_at: now_ms() + @oauth_flow_ttl_ms
+      }
+
+      url =
+        OAuth.authorize_url(provider, %{
+          client_id: client_id,
+          redirect_uri: redirect_uri,
+          state: state_token,
+          challenge: pkce.challenge,
+          # Only pre-fills the provider's account chooser. It is the mailbox
+          # address the user already typed into the setup form, so it reveals
+          # nothing to the provider it isn't about to learn anyway.
+          login_hint: settings.imap.username
+        })
+
+      {:ok, pending, url}
+    end
+  end
+
+  defp oauth_provider(settings) do
+    case OAuth.provider_for(settings) do
+      nil -> {:error, :oauth_unsupported}
+      provider -> {:ok, provider}
+    end
+  end
+
+  defp oauth_client_id(settings) do
+    case OAuth.client_id_for(settings) do
+      nil -> {:error, :oauth_not_configured}
+      client_id -> {:ok, client_id}
+    end
+  end
+
+  # What a claiming callback receives: the account this flow was minted for
+  # (so it can store the resulting token) plus everything the code exchange
+  # needs. The `state` token itself is deliberately left behind — it has
+  # already done its whole job.
+  defp flow_context(account, pending) do
+    %{
+      account: account,
+      provider: pending.provider,
+      client_id: pending.client_id,
+      redirect_uri: pending.redirect_uri,
+      verifier: pending.verifier
+    }
+  end
+
+  # The cached access token, or `nil` when there is none or it is close enough
+  # to expiry that a session opened with it could outlive it.
+  defp cached_access_token(%{oauth_token: %{token: fun, expires_at: expires_at}})
+       when is_function(fun, 0) do
+    if expires_at - now_ms() > @token_skew_ms, do: fun.(), else: nil
+  end
+
+  defp cached_access_token(_state), do: nil
+
+  # The refresh request's parameters, or `:error` when this account cannot
+  # mint at all (no refresh token, no provider preset, no client id) — each of
+  # which means "sign in again", not "retry later".
+  defp oauth_refresh_args(%{oauth_refresh: nil}), do: :error
+  defp oauth_refresh_args(%{settings: nil}), do: :error
+
+  defp oauth_refresh_args(%{settings: settings} = state) do
+    with {:ok, provider} <- oauth_provider(settings),
+         {:ok, client_id} <- oauth_client_id(settings) do
+      {:ok,
+       %{
+         provider: provider,
+         client_id: client_id,
+         refresh_token: resolve_secret(state.oauth_refresh)
+       }}
+    else
+      {:error, _reason} -> :error
+    end
+  end
+
+  # One refresh, one Task, every caller parked on its result. LINKED as well
+  # as monitored for the same reason a pass is: an in-flight HTTPS POST
+  # carrying this account's refresh token must die with the Engine rather than
+  # outlive a workspace teardown. The epoch is pinned so a result that lands
+  # after the credential was replaced underneath is discarded instead of
+  # overwriting the newer one.
+  defp start_oauth_refresh(state, args, from) do
+    parent = self()
+
+    task =
+      spawn_linked_task(fn ->
+        send(parent, {:oauth_refresh_result, self(), OAuth.refresh(args)})
+      end)
+
+    %{
+      state
+      | oauth_task: %{task: task, epoch: state.credential_epoch},
+        oauth_waiters: [from]
+    }
+  end
+
+  # A result for credential material this Engine no longer holds (a
+  # `set_credential/3` landed while the request was in flight). Caching it
+  # would serve a token minted from a superseded refresh token, and acting on
+  # its `invalid_grant` would throw away the NEWER token that replaced it —
+  # so it is dropped entirely and the parked callers retry against the current
+  # state.
+  defp apply_refresh_result(%{credential_epoch: current} = state, _result, pinned)
+       when current != pinned do
+    state |> Map.put(:oauth_task, nil) |> reply_oauth_waiters({:error, :superseded})
+  end
+
+  defp apply_refresh_result(state, {:ok, tokens}, _pinned) do
+    token = tokens.access_token
+
+    %{
+      state
+      | oauth_task: nil,
+        oauth_token: %{token: fn -> token end, expires_at: now_ms() + tokens.expires_in * 1_000}
+    }
+    |> reply_oauth_waiters({:ok, token})
+    |> rotate_refresh_token(tokens.refresh_token)
+  end
+
+  # The one PERMANENT failure: this refresh token will never mint again, so
+  # the cache and the slot both go, and the account is parked `reauth_required`
+  # right here rather than after a pointless round trip to the mail server
+  # with an empty token.
+  defp apply_refresh_result(state, {:error, :invalid_grant}, _pinned) do
+    %{state | oauth_task: nil, oauth_token: nil, oauth_refresh: nil}
+    |> bump_credential_epoch()
+    |> reply_oauth_waiters({:error, :reauth_required})
+    |> park_reauth_required()
+  end
+
+  # Transient (network, 5xx, a malformed response, the Task dying): the
+  # refresh token is KEPT. The epoch bump is what marks the `""` the parked
+  # callers are about to hand their servers as material this Engine does not
+  # stand behind — so the auth failure it produces cannot park the account
+  # (moduledoc §Credential epoch).
+  defp apply_refresh_result(state, {:error, _transient}, _pinned) do
+    %{state | oauth_task: nil}
+    |> bump_credential_epoch()
+    |> reply_oauth_waiters({:error, :token_request_failed})
+  end
+
+  defp reply_oauth_waiters(state, reply) do
+    Enum.each(state.oauth_waiters, &GenServer.reply(&1, reply))
+    %{state | oauth_waiters: []}
+  end
+
+  # A provider that rotated the refresh token (Microsoft does on every
+  # refresh) has just invalidated the one in the keychain: store the new one
+  # and push it so the frontend replaces it, or the next restart resupplies a
+  # dead token. A provider that didn't (Google) sends `nil` and nothing moves.
+  defp rotate_refresh_token(state, nil), do: state
+
+  defp rotate_refresh_token(state, token) do
+    if resolve_secret(state.oauth_refresh) == token do
+      state
+    else
+      broadcast_oauth_token(state.account, token)
+      %{state | oauth_refresh: fn -> token end} |> bump_credential_epoch()
+    end
+  end
+
+  # The sticky park for "this account needs a new authorization", reachable
+  # WITHOUT a pass having failed (an `invalid_grant` at refresh time). It
+  # deliberately touches only the status/poll/watcher triple — never
+  # `sync_task` — because a pass may well still be in flight, and
+  # `finish_pass/2` owns that slot.
+  defp park_reauth_required(state) do
+    cancel_timer(state.poll_timer)
+
+    %{state | status: "reauth_required", poll_timer: nil, last_error: "sign-in expired"}
+    |> sync_idle_watcher()
+    |> tap_broadcast_status()
+  end
+
+  # The `mail_oauth` push (moduledoc §OAuth2 accounts): the ONE place a secret
+  # travels outward from this process, and it exists because the frontend's OS
+  # keychain is the refresh token's only durable home. Broadcast, never
+  # logged; `ValeaWeb.WorkspaceEventsChannel` relays it to the desktop client
+  # over the loopback socket.
+  defp broadcast_oauth_token(slug, token) do
+    Phoenix.PubSub.broadcast(Valea.PubSub, "mail", {:mail_oauth_token, slug, token})
+  end
+
+  defp bump_credential_epoch(state),
+    do: %{state | credential_epoch: state.credential_epoch + 1}
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
   # -- RPC ops execution --------------------------------------------------
 
   # True whenever ANY background work is in flight (a sync pass OR an ops
@@ -975,7 +1502,7 @@ defmodule Valea.Mail.Engine do
       settings: state.settings,
       transport: state.transport,
       connect_opts: state.connect_opts,
-      credential: state.credential,
+      credential: imap_credential(state),
       separator: state.separator
     }
 
@@ -1012,7 +1539,7 @@ defmodule Valea.Mail.Engine do
       settings: state.settings,
       transport: state.transport,
       connect_opts: state.connect_opts,
-      credential: state.credential,
+      credential: imap_credential(state),
       separator: state.separator
     }
 
@@ -1093,9 +1620,9 @@ defmodule Valea.Mail.Engine do
       settings: state.settings,
       transport: state.transport,
       connect_opts: state.connect_opts,
-      credential: state.credential,
+      credential: imap_credential(state),
       smtp_transport: state.smtp_transport,
-      smtp_credential: state.smtp_credential
+      smtp_credential: smtp_credential(state)
     }
 
     task =
@@ -1106,15 +1633,29 @@ defmodule Valea.Mail.Engine do
     %{state | ops_current: %{task: task, from: from, send_work: work}}
   end
 
-  # Runs INSIDE the send Task. The IMAP connection is opened up front and is
-  # OPTIONAL: it exists only for the Sent copy, so an unreachable mailbox must
-  # never stop a transmit — it only leaves the op `transmitted` for the next
-  # connected pass to file.
+  # Runs INSIDE the send Task. Both credential closures are resolved ONCE,
+  # here, before any work: for an oauth2 account calling one MINTS a token
+  # (moduledoc §OAuth2 accounts), so the resolved values are threaded down as
+  # arguments rather than re-resolved — a `resolve_secret/1` in the rescue
+  # below would fire a token request in the middle of handling a failure, and
+  # `rescue` cannot see bindings made in the body it guards.
   defp run_send_work(args, work) do
-    conn = connect_for_send(args)
+    run_send_work(
+      args,
+      work,
+      resolve_secret(args.credential),
+      resolve_secret(args.smtp_credential)
+    )
+  end
+
+  # The IMAP connection is opened up front and is OPTIONAL: it exists only for
+  # the Sent copy, so an unreachable mailbox must never stop a transmit — it
+  # only leaves the op `transmitted` for the next connected pass to file.
+  defp run_send_work(args, work, imap_secret, smtp_secret) do
+    conn = connect_for_send(args, imap_secret)
 
     try do
-      apply_send_work(send_ctx(args, conn), work)
+      apply_send_work(send_ctx(args, conn, smtp_secret), work)
     after
       if conn, do: safe_logout(args.transport, conn)
     end
@@ -1128,9 +1669,9 @@ defmodule Valea.Mail.Engine do
           Redact.text(
             "mail send failed (account #{args.account}, work #{inspect(work)}): " <>
               Exception.format(:error, e, __STACKTRACE__),
-            resolve_secret(args.smtp_credential)
+            smtp_secret
           ),
-          resolve_secret(args.credential)
+          imap_secret
         )
       )
 
@@ -1139,7 +1680,7 @@ defmodule Valea.Mail.Engine do
     :exit, _ -> send_work_fallback(work)
   end
 
-  defp send_ctx(args, conn) do
+  defp send_ctx(args, conn, smtp_secret) do
     %{
       root: args.root,
       account: args.account,
@@ -1147,7 +1688,7 @@ defmodule Valea.Mail.Engine do
       transport: args.transport,
       conn: conn,
       smtp_transport: args.smtp_transport,
-      smtp_credential: resolve_secret(args.smtp_credential)
+      smtp_credential: smtp_secret
     }
   end
 
@@ -1206,12 +1747,10 @@ defmodule Valea.Mail.Engine do
   end
 
   # A connection is a bonus here, never a precondition (see `run_send_work/2`).
-  defp connect_for_send(args) do
-    case args.transport.connect(
-           Settings.imap_config(args.settings),
-           resolve_secret(args.credential),
-           args.connect_opts
-         ) do
+  # `secret` arrives already resolved — a parameter, so the rescue can see it,
+  # and so an oauth2 account mints its token once per Task, not once per use.
+  defp connect_for_send(args, secret) do
+    case args.transport.connect(Settings.imap_config(args.settings), secret, args.connect_opts) do
       {:ok, conn} -> conn
       {:error, _reason} -> nil
     end
@@ -1221,7 +1760,7 @@ defmodule Valea.Mail.Engine do
         Redact.text(
           "mail send: IMAP connect raised (account #{args.account}, Sent copy deferred): " <>
             Exception.format(:error, e, __STACKTRACE__),
-          resolve_secret(args.credential)
+          secret
         )
       )
 
@@ -1300,12 +1839,14 @@ defmodule Valea.Mail.Engine do
   # returning its final display state. A connect failure leaves the durable
   # `pending` op for the next pass — reply `"pushing"`. Runs INSIDE the push
   # Task, never in the Engine loop.
-  defp run_push(args, op_id) do
-    case args.transport.connect(
-           Settings.imap_config(args.settings),
-           resolve_secret(args.credential),
-           args.connect_opts
-         ) do
+  # `secret` is resolved once in the 2-arity head below and threaded in as a
+  # parameter for the same two reasons `run_send_work/4` does it (a `rescue`
+  # sees parameters but not body bindings, and resolving an oauth2 closure
+  # MINTS).
+  defp run_push(args, op_id), do: run_push(args, op_id, resolve_secret(args.credential))
+
+  defp run_push(args, op_id, secret) do
+    case args.transport.connect(Settings.imap_config(args.settings), secret, args.connect_opts) do
       {:ok, conn} ->
         try do
           ctx = %{
@@ -1339,7 +1880,7 @@ defmodule Valea.Mail.Engine do
         Redact.text(
           "mail push failed (account #{args.account}, op #{op_id}): " <>
             Exception.format(:error, e, __STACKTRACE__),
-          resolve_secret(args.credential)
+          secret
         )
       )
 
@@ -1394,6 +1935,49 @@ defmodule Valea.Mail.Engine do
 
   defp resolve_secret(fun) when is_function(fun, 0), do: fun.()
   defp resolve_secret(_credential), do: nil
+
+  # -- credential resolution (the one place the auth mode picks a slot) ------
+  #
+  # Every worker/probe this Engine hands a credential to goes through these
+  # two, so a password account and an oauth2 one cannot diverge on one path
+  # and agree on another. Both return the SAME zero-arity-closure shape (or
+  # `nil` for "this account has no credential"), which is why nothing
+  # downstream had to learn about tokens.
+
+  defp imap_credential(state) do
+    case account_auth(state) do
+      :password -> state.credential
+      :oauth2 -> oauth_credential(state)
+    end
+  end
+
+  # One authorization covers both protocols, so an oauth2 account's send-side
+  # credential is the same minted token — never a second secret.
+  defp smtp_credential(state) do
+    case account_auth(state) do
+      :password -> state.smtp_credential
+      :oauth2 -> oauth_credential(state)
+    end
+  end
+
+  # `nil` until the account has a refresh token, so every `credential == nil`
+  # gate (`validate_sync/1`, `validate_send/1`, the status field, the doctor's
+  # `credential_present` check) keeps meaning exactly what it meant.
+  defp oauth_credential(%{oauth_refresh: nil}), do: nil
+
+  defp oauth_credential(_state) do
+    # `self()` is the Engine: every caller of this function is an Engine
+    # callback (a `handle_call`, a `handle_info`, or `activate/1`). The pid is
+    # captured HERE rather than resolved inside the closure because the closure
+    # runs in a worker Task, where `self()` would be that Task.
+    engine = self()
+    fn -> mint_access_token(engine) end
+  end
+
+  defp account_auth(%{settings: %Settings{auth: auth}}), do: auth
+  defp account_auth(_state), do: :password
+
+  defp credential_present?(state), do: imap_credential(state) != nil
 
   defp reject_all_ops(ops, reason) do
     ops
@@ -1531,7 +2115,7 @@ defmodule Valea.Mail.Engine do
       root: state.root,
       account: state.account,
       settings: state.settings,
-      credential: state.credential,
+      credential: imap_credential(state),
       transport: state.transport,
       # The send-side pair (spec G). The doctor only reaches these for a
       # sending account, and `check_auth/3` never issues MAIL FROM — running
@@ -1539,7 +2123,7 @@ defmodule Valea.Mail.Engine do
       # pinned into state at init: the doctor is an on-demand probe, so there
       # is nothing to keep stable across a run for it.
       smtp_transport: Application.get_env(:valea, :mail_smtp_transport, Valea.Mail.SmtpClient),
-      smtp_credential: state.smtp_credential
+      smtp_credential: smtp_credential(state)
     }
   end
 
@@ -1568,8 +2152,13 @@ defmodule Valea.Mail.Engine do
   defp validate_sync(%{active: false}), do: {:error, :inactive}
   defp validate_sync(%{settings: nil}), do: {:error, :not_configured}
   defp validate_sync(%{status: "mailbox_replaced"}), do: {:error, :blocked}
-  defp validate_sync(%{credential: nil}), do: {:error, :no_credential}
-  defp validate_sync(_state), do: :ok
+
+  # `credential_present?/1`, not `state.credential`: for an oauth2 account the
+  # credential is the refresh token in its own slot, and reading the password
+  # slot here would report every signed-in oauth2 account as uncredentialed.
+  defp validate_sync(state) do
+    if credential_present?(state), do: :ok, else: {:error, :no_credential}
+  end
 
   # The gate every SEND-side action shares. Deliberately weaker than
   # `validate_sync/1` in one respect: it does NOT require the IMAP
@@ -1588,7 +2177,7 @@ defmodule Valea.Mail.Engine do
         not Settings.smtp_configured?(state.settings) ->
           {:error, :smtp_not_configured}
 
-        state.smtp_credential == nil ->
+        smtp_credential(state) == nil ->
           {:error, :no_smtp_credential}
 
         true ->
@@ -1634,7 +2223,7 @@ defmodule Valea.Mail.Engine do
       settings: state.settings,
       transport: state.transport,
       connect_opts: state.connect_opts,
-      credential: state.credential
+      credential: imap_credential(state)
     }
 
     case safe_start_child(state.idle_sup, {IdleWatcher, args}) do
@@ -1718,7 +2307,7 @@ defmodule Valea.Mail.Engine do
       root: state.root,
       account: state.account,
       settings: state.settings,
-      credential: state.credential,
+      credential: imap_credential(state),
       transport: state.transport,
       connect_opts: state.connect_opts,
       separator: state.separator,
@@ -1731,7 +2320,11 @@ defmodule Valea.Mail.Engine do
       state
       | sync_task: task,
         status: "syncing",
-        pass_readopt_authorized: readopt_authorized
+        pass_readopt_authorized: readopt_authorized,
+        # Pinned so `on_auth_failure/3` can tell an authoritative auth failure
+        # from one reported by a pass whose credential has since been replaced
+        # (moduledoc §Credential epoch).
+        pass_credential_epoch: state.credential_epoch
     }
 
     broadcast_status(new_state)
@@ -1780,14 +2373,14 @@ defmodule Valea.Mail.Engine do
   end
 
   defp finish_pass(state, {:error, :auth_failed}),
-    do: pause_on_auth_failure(state, "auth_failed", "authentication failed")
+    do: on_auth_failure(state, "auth_failed", "authentication failed")
 
   # The OAuth2 twin (M6 task 15): the token was refused, so this pauses exactly
   # like `auth_failed` — and is cleared by the same `set_credential/3` — but
   # says so in its own words, because "authentication failed" would send the
   # user looking for a password to re-type.
   defp finish_pass(state, {:error, :reauth_required}),
-    do: pause_on_auth_failure(state, "reauth_required", "sign-in expired")
+    do: on_auth_failure(state, "reauth_required", "sign-in expired")
 
   defp finish_pass(state, {:error, :mailbox_replaced}) do
     cancel_timer(state.poll_timer)
@@ -1819,7 +2412,7 @@ defmodule Valea.Mail.Engine do
   # it. `Redact.text/2` scrubs the secret (and its inspect-escaped form) out of
   # the built string as defense-in-depth behind the literal-LOGIN fix.
   defp finish_pass(state, {:error, reason}) do
-    message = Redact.text("sync failed: #{inspect(reason)}", current_secret(state))
+    message = scrub_secrets(state, "sync failed: #{inspect(reason)}")
 
     broadcast_event(
       {:mail_sync_finished, state.account, %{new_messages: 0, new_unread: 0, errors: [message]}}
@@ -1834,6 +2427,48 @@ defmodule Valea.Mail.Engine do
     }
     |> tap_broadcast_status()
   end
+
+  # Is this pass's auth verdict about the credential the Engine currently
+  # holds? Only then may it make the account sticky (moduledoc §Credential
+  # epoch). A mismatch means the secret was replaced, rotated, discarded or
+  # unmintable while the pass ran, so its refusal says nothing about what is
+  # in the slots NOW.
+  defp on_auth_failure(
+         %{credential_epoch: epoch, pass_credential_epoch: epoch} = state,
+         status,
+         message
+       ),
+       do: pause_on_auth_failure(state, status, message)
+
+  defp on_auth_failure(state, _status, message), do: stale_auth_failure(state, message)
+
+  # A pass that failed auth under superseded credential material. The error is
+  # reported (it happened, and the user may want to see it), but the STATUS
+  # decision is left to what the Engine knows now: back to `"idle"` with
+  # polling re-armed if nothing else has parked the account, or the existing
+  # park kept intact if something has — `invalid_grant` at refresh time parks
+  # `reauth_required` directly, and this must not undo it.
+  defp stale_auth_failure(state, message) do
+    broadcast_event(
+      {:mail_sync_finished, state.account, %{new_messages: 0, new_unread: 0, errors: [message]}}
+    )
+
+    status = if state.status in @paused_statuses, do: state.status, else: "idle"
+
+    %{
+      state
+      | sync_task: nil,
+        status: status,
+        last_error: message,
+        pass_readopt_authorized: false
+    }
+    |> rearm_unless_paused()
+    |> sync_idle_watcher()
+    |> tap_broadcast_status()
+  end
+
+  defp rearm_unless_paused(%{status: status} = state) when status in @paused_statuses, do: state
+  defp rearm_unless_paused(state), do: schedule_poll(state)
 
   # The shared body of the two AUTH-failure outcomes above: pause polling, drop
   # the watcher, remember why. Both are STICKY — nothing re-arms until
@@ -1859,11 +2494,22 @@ defmodule Valea.Mail.Engine do
     |> tap_broadcast_status()
   end
 
-  # The raw secret, materialized only here (it already lives in this process's
-  # state) and only to scrub it back out of an error string — never stored,
-  # never returned.
-  defp current_secret(%{credential: fun}) when is_function(fun, 0), do: fun.()
-  defp current_secret(_state), do: nil
+  # Scrubs EVERY secret this Engine currently holds out of an already-built
+  # display string: the two password slots, the OAuth2 refresh token, and the
+  # cached access token. Materialized only here (all four already live in this
+  # process's state) and only to remove them — never stored, never returned.
+  #
+  # Deliberately reads the CACHED access token rather than resolving the
+  # credential closures: for an oauth2 account those closures MINT, and
+  # minting from inside an error path would fire a token request over a failed
+  # sync.
+  defp scrub_secrets(state, text) do
+    [state.credential, state.smtp_credential, state.oauth_refresh, cached_token_closure(state)]
+    |> Enum.reduce(text, fn slot, acc -> Redact.text(acc, resolve_secret(slot)) end)
+  end
+
+  defp cached_token_closure(%{oauth_token: %{token: fun}}), do: fun
+  defp cached_token_closure(_state), do: nil
 
   defp tap_broadcast_status(state) do
     broadcast_status(state)
@@ -1932,7 +2578,8 @@ defmodule Valea.Mail.Engine do
     %{
       account: state.account,
       configured: false,
-      credential: if(state.credential, do: "present", else: "missing"),
+      credential: if(credential_present?(state), do: "present", else: "missing"),
+      auth: to_string(account_auth(state)),
       state: state.status,
       last_sync_at: state.last_sync_at,
       last_error: state.last_error,
@@ -1955,7 +2602,8 @@ defmodule Valea.Mail.Engine do
     %{
       account: state.account,
       configured: true,
-      credential: if(state.credential, do: "present", else: "missing"),
+      credential: if(credential_present?(state), do: "present", else: "missing"),
+      auth: to_string(account_auth(state)),
       state: state.status,
       last_sync_at: state.last_sync_at,
       last_error: state.last_error,
@@ -1996,7 +2644,7 @@ defmodule Valea.Mail.Engine do
 
     %{
       "smtp_configured" => configured,
-      "smtp_credential" => smtp_credential_status(configured, state.smtp_credential)
+      "smtp_credential" => smtp_credential_status(configured, smtp_credential(state))
     }
   end
 

@@ -81,6 +81,10 @@ defmodule Valea.Mail.Doctor do
 
   @config_remedy "Set up your mail account (host, port, username) in Mail settings."
   @credential_remedy "Enter your mailbox password to connect."
+  # The oauth2 counterpart (M6 task 16): there is no password to type for one
+  # of these accounts, and telling the user to enter one sends them looking
+  # for a field the setup form deliberately hides.
+  @signin_remedy "Sign in to this mailbox from Mail settings to connect."
   @maildir_remedy "Check filesystem permissions for this workspace's sources/mail/ directory."
   @tcp_remedy "Check the host and port, and your network connection."
   @tls_remedy "Confirm the host/port support implicit TLS (IMAPS, usually port 993)."
@@ -171,21 +175,46 @@ defmodule Valea.Mail.Doctor do
 
   # -- 2. credential_present ----------------------------------------------------
 
-  defp credential_present(_ctx, false) do
-    {unknown("credential_present", "Password available", @gate_detail), false}
+  # The label and remedy follow the account's AUTH MODE: an `auth: oauth2`
+  # account has no password anywhere in the picture — its credential is a
+  # sign-in — so reporting "Password available" for it, with a remedy naming a
+  # field the setup form hides for oauth accounts, is simply untrue.
+  defp credential_present(ctx, false) do
+    {unknown("credential_present", credential_label(ctx), @gate_detail), false}
   end
 
-  defp credential_present(%{credential: nil}, true) do
+  defp credential_present(%{credential: nil} = ctx, true) do
     {failed(
        "credential_present",
-       "Password available",
-       "No mailbox password has been provided yet.",
-       @credential_remedy
+       credential_label(ctx),
+       credential_missing_detail(ctx),
+       credential_missing_remedy(ctx)
      ), false}
   end
 
-  defp credential_present(%{credential: _present}, true) do
-    {ok("credential_present", "Password available", "A mailbox password is available."), true}
+  defp credential_present(ctx, true) do
+    {ok("credential_present", credential_label(ctx), credential_present_detail(ctx)), true}
+  end
+
+  defp oauth_account?(%{settings: %{auth: :oauth2}}), do: true
+  defp oauth_account?(_ctx), do: false
+
+  defp credential_label(ctx),
+    do: if(oauth_account?(ctx), do: "Sign-in available", else: "Password available")
+
+  defp credential_missing_detail(ctx) do
+    if oauth_account?(ctx),
+      do: "This account has not been signed in yet.",
+      else: "No mailbox password has been provided yet."
+  end
+
+  defp credential_missing_remedy(ctx),
+    do: if(oauth_account?(ctx), do: @signin_remedy, else: @credential_remedy)
+
+  defp credential_present_detail(ctx) do
+    if oauth_account?(ctx),
+      do: "A sign-in is available; access tokens are renewed automatically.",
+      else: "A mailbox password is available."
   end
 
   # -- 3. maildir_writable --------------------------------------------------
@@ -493,12 +522,12 @@ defmodule Valea.Mail.Doctor do
     # doomed session would spend one of the provider's AUTH attempts.
     case resolve_credential(ctx[:smtp_credential]) do
       nil ->
-        {unknown("smtp_tls", "Sending TLS", "not checked — no SMTP password available."),
+        {unknown("smtp_tls", "Sending TLS", "not checked — no sending credential available."),
          failed(
            "smtp_auth",
            "Sending login",
-           "No SMTP password has been provided yet.",
-           @smtp_credential_remedy
+           smtp_credential_missing_detail(ctx),
+           smtp_credential_missing_remedy(ctx)
          )}
 
       secret ->
@@ -543,6 +572,17 @@ defmodule Valea.Mail.Doctor do
          ), unknown("smtp_auth", "Sending login", @gate_detail)}
     end
   end
+
+  # Same mode-awareness as `credential_present/2`: an oauth2 account has no
+  # separate SMTP password — the single sign-in covers sending too.
+  defp smtp_credential_missing_detail(ctx) do
+    if oauth_account?(ctx),
+      do: "This account has not been signed in yet.",
+      else: "No SMTP password has been provided yet."
+  end
+
+  defp smtp_credential_missing_remedy(ctx),
+    do: if(oauth_account?(ctx), do: @signin_remedy, else: @smtp_credential_remedy)
 
   defp do_check_auth(transport, smtp_config, secret) do
     transport.check_auth(smtp_config, secret, [])

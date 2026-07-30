@@ -46,6 +46,26 @@ defmodule Valea.Mail.Settings do
   offering its access token as a LOGIN password: a secret sent in the wrong
   field, to a server that never asked for one, over a typo.
 
+  ## The per-account `oauth_client_id` override
+
+  One optional per-account string (mail full-client plan, M6 task 16): the
+  PUBLIC OAuth2 client id this account authorizes with, overriding whatever
+  `config :valea, :mail_oauth` ships for its provider. It exists because a
+  public client id is per-INSTALLATION — the person running a packaged build
+  registers their own with Google/Microsoft — and editing one line of
+  `config/mail.yaml` must not require a rebuild.
+
+  Not a secret (PKCE public clients have no secret at all — see
+  `Valea.Mail.OAuth`), so it lives in this non-secret file like every other
+  connection detail. Rendered only when set, so a file for an account that
+  doesn't override keeps its exact previous bytes.
+
+  An unusable value (present but not a non-empty string) DEGRADES to "no
+  override" rather than invalidating the account — the `folders:`/`sync:`
+  posture, not `auth:`'s. The distinction is real: a wrong client id cannot
+  put a secret anywhere it doesn't belong, it just makes the sign-in flow
+  refuse or the provider reject it, both of which are visible and harmless.
+
   ## The per-account `notifications:` flag
 
   One optional boolean per account (mail full-client plan, M5 task 13),
@@ -67,13 +87,28 @@ defmodule Valea.Mail.Settings do
 
   ## Provider detection
 
-  `upsert_account!/3` detects Gmail by host (`detect_provider/1`) and — when
-  no caller-supplied override says otherwise — seeds the Gmail-specific
-  folder names (`gmail_folders/0`) and excludes Gmail's virtual "All
-  Mail"/"Important"/"Starred" folders from sync (`gmail_excludes/0`).
-  Without this, a plain `imap.gmail.com` setup would sync Gmail's `[Gmail]/*`
-  duplicates and never resolve `folders.archive` to `"[Gmail]/All Mail"` —
-  the executor's Gmail archive contract never composes.
+  `upsert_account!/3` detects the provider by host (`detect_provider/1`) and
+  — when no caller-supplied override says otherwise — seeds that provider's
+  folder names and sync exclusions.
+
+  **Gmail** (`imap.gmail.com`/`imap.googlemail.com`) gets `gmail_folders/0`
+  and excludes Gmail's virtual "All Mail"/"Important"/"Starred" folders from
+  sync (`gmail_excludes/0`). Without this, a plain `imap.gmail.com` setup
+  would sync Gmail's `[Gmail]/*` duplicates and never resolve
+  `folders.archive` to `"[Gmail]/All Mail"` — the executor's Gmail archive
+  contract never composes.
+
+  **Microsoft 365 / Outlook.com** (`outlook.office365.com` and friends, M6
+  task 16) gets `microsoft_folders/0`: Exchange names its special folders
+  `"Sent Items"` and `"Deleted Items"`, so the generic `"Sent"`/`"Trash"`
+  defaults would have the doctor offer to CREATE two folders that already
+  exist under other names, and every archive/trash op would file into the
+  duplicates. Nothing is excluded from sync — Exchange has no virtual
+  mirror folders.
+
+  Detection is also what routes the setup UI to "Sign in with
+  Google/Microsoft" (`Valea.Mail.OAuth.provider_for/1` maps these same
+  atoms onto its presets), so the host table has one home.
 
   ## Safety block
 
@@ -107,6 +142,19 @@ defmodule Valea.Mail.Settings do
     trash: "[Gmail]/Trash"
   }
 
+  # Microsoft 365 / Outlook.com over IMAP (M6 task 16). `outlook.office365.com`
+  # is the current endpoint for both business and consumer mailboxes;
+  # `imap-mail.outlook.com` is the older consumer name, and `outlook.office.com`
+  # appears in some tenant documentation. All three are the same service and
+  # the same OAuth2 endpoints.
+  @microsoft_hosts ~w(outlook.office365.com outlook.office.com imap-mail.outlook.com)
+  @microsoft_folders %{
+    drafts: "Drafts",
+    sent: "Sent Items",
+    archive: "Archive",
+    trash: "Deleted Items"
+  }
+
   # `^[a-z0-9][a-z0-9-]{0,31}$` — lowercase, digits, and internal dashes
   # only; 1-32 chars total. Used both as a directory-safe identifier (the
   # OS keychain entry keys on it, per the spec's §Credentials) and as a
@@ -117,6 +165,7 @@ defmodule Valea.Mail.Settings do
   defstruct slug: nil,
             provider: :generic,
             auth: :password,
+            oauth_client_id: nil,
             imap: %{host: nil, port: @default_port, username: nil},
             smtp: nil,
             notifications: false,
@@ -135,6 +184,12 @@ defmodule Valea.Mail.Settings do
   `imap_config/1` and `smtp_config/1` are what stamp it onto the maps the
   transports actually receive.
 
+  `oauth_client_id` is the per-account PUBLIC client id override (M6 task 16),
+  `nil` for every account that takes whatever `config :valea, :mail_oauth`
+  ships — see the moduledoc's §The per-account `oauth_client_id` override. It
+  is deliberately NOT in `imap`/`smtp`: one authorization covers both
+  protocols, exactly like `auth`.
+
   `notifications` is the per-account OS-notification opt-in (mail full-client
   plan, M5 task 13) — DEFAULT OFF, and off for every file written before it
   existed (a missing or non-boolean `notifications:` key loads as `false`).
@@ -144,8 +199,9 @@ defmodule Valea.Mail.Settings do
   """
   @type t :: %__MODULE__{
           slug: String.t() | nil,
-          provider: :generic | :gmail,
+          provider: provider(),
           auth: auth(),
+          oauth_client_id: String.t() | nil,
           imap: %{host: String.t() | nil, port: pos_integer(), username: String.t() | nil},
           smtp: smtp() | nil,
           notifications: boolean(),
@@ -163,6 +219,13 @@ defmodule Valea.Mail.Settings do
   (`LOGIN` / `AUTH PLAIN`|`LOGIN`) or `:oauth2` (`XOAUTH2`, both protocols).
   """
   @type auth :: :password | :oauth2
+
+  @typedoc """
+  The recognized mailbox providers (`detect_provider/1`). Each one picks its
+  own folder/sync defaults, and the two non-generic ones are also the keys
+  `Valea.Mail.OAuth`'s presets are stored under.
+  """
+  @type provider :: :generic | :gmail | :microsoft
 
   @type smtp :: %{
           host: String.t(),
@@ -201,13 +264,24 @@ defmodule Valea.Mail.Settings do
   def valid_slug?(_slug), do: false
 
   @doc """
-  Detects the mailbox provider from its IMAP host. Only Gmail is special-
-  cased today (`imap.gmail.com` / `imap.googlemail.com`, case-insensitive);
-  every other host is `:generic`.
+  Detects the mailbox provider from its IMAP host, case-insensitively: Gmail
+  (`imap.gmail.com` / `imap.googlemail.com`), Microsoft 365 / Outlook.com
+  (`outlook.office365.com` and its two aliases — M6 task 16), `:generic` for
+  everything else.
+
+  THE host table for the whole codebase: it decides both the folder/sync
+  defaults (see the moduledoc's §Provider detection) and which OAuth2 preset
+  an account can sign in with (`Valea.Mail.OAuth.provider_for/1`).
   """
-  @spec detect_provider(String.t()) :: :gmail | :generic
+  @spec detect_provider(String.t()) :: provider()
   def detect_provider(host) when is_binary(host) do
-    if String.downcase(host) in @gmail_hosts, do: :gmail, else: :generic
+    host = String.downcase(host)
+
+    cond do
+      host in @gmail_hosts -> :gmail
+      host in @microsoft_hosts -> :microsoft
+      true -> :generic
+    end
   end
 
   def detect_provider(_host), do: :generic
@@ -306,6 +380,15 @@ defmodule Valea.Mail.Settings do
         }
   def gmail_folders, do: @gmail_folders
 
+  @doc "The Microsoft 365 / Outlook.com folder names — Exchange spells them `\"Sent Items\"` and `\"Deleted Items\"`."
+  @spec microsoft_folders() :: %{
+          drafts: String.t(),
+          sent: String.t(),
+          archive: String.t(),
+          trash: String.t()
+        }
+  def microsoft_folders, do: @microsoft_folders
+
   @doc """
   Adds or replaces the account at `slug`, then atomically rewrites the full
   `config/mail.yaml`. Validates `slug` against `valid_slug?/1` and against
@@ -329,6 +412,7 @@ defmodule Valea.Mail.Settings do
           required(:port) => pos_integer(),
           required(:username) => String.t(),
           optional(:auth) => auth() | nil,
+          optional(:oauth_client_id) => String.t() | nil,
           optional(:smtp) => map() | nil,
           optional(:notifications) => boolean() | nil,
           optional(:folders) => map() | nil,
@@ -346,6 +430,11 @@ defmodule Valea.Mail.Settings do
         slug: slug,
         provider: provider,
         auth: auth,
+        # Absent means "no override", i.e. the app-config client id — the same
+        # whole-entry rule as `notifications:`/`folders:`/`sync:`. A caller
+        # EDITING an account that carries one must send it back (the RPC layer
+        # does, via `get_mail_account_settings`).
+        oauth_client_id: string_override(Map.get(attrs, :oauth_client_id)),
         imap: %{host: host, port: port, username: username},
         smtp: smtp,
         # Absent means OFF, exactly like `folders:`/`sync:` absent means the
@@ -566,6 +655,7 @@ defmodule Valea.Mail.Settings do
            slug: slug,
            provider: provider,
            auth: auth,
+           oauth_client_id: string_override(Map.get(attrs, "oauth_client_id")),
            imap: %{host: host, port: port, username: username},
            smtp: smtp,
            notifications: Map.get(attrs, "notifications") == true,
@@ -582,6 +672,7 @@ defmodule Valea.Mail.Settings do
   defp build_account(slug, _attrs), do: {:error, "account #{inspect(slug)} must be a mapping"}
 
   defp provider_from_string("gmail"), do: :gmail
+  defp provider_from_string("microsoft"), do: :microsoft
   defp provider_from_string(_other), do: :generic
 
   defp fetch_map(attrs, key) do
@@ -625,6 +716,22 @@ defmodule Valea.Mail.Settings do
       :error -> {:ok, :password}
     end
   end
+
+  # The `oauth_client_id` override (M6 task 16), from either side: a YAML
+  # value or an `upsert_account!/3` attr. A non-empty string is the override;
+  # EVERYTHING else — absent, `nil`, blank, a number a hand-edit left unquoted
+  # — is "no override", so the app-config client id applies. Deliberately not
+  # an invalidating parse (see the moduledoc): a client id is public and a
+  # wrong one only makes the sign-in visibly refuse, so degrading here cannot
+  # misroute a secret the way an `auth:` fallback could.
+  defp string_override(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp string_override(_value), do: nil
 
   # -- smtp block (v5) ------------------------------------------------------
 
@@ -745,9 +852,12 @@ defmodule Valea.Mail.Settings do
   # -- defaults by provider -------------------------------------------------
 
   defp default_folders_for(:gmail), do: @gmail_folders
+  defp default_folders_for(:microsoft), do: @microsoft_folders
   defp default_folders_for(:generic), do: @default_folders
 
   defp default_sync_for(:gmail), do: %{@default_sync | exclude_folders: @gmail_excludes}
+  # Exchange has no virtual mirror folders, so nothing to exclude.
+  defp default_sync_for(:microsoft), do: @default_sync
   defp default_sync_for(:generic), do: @default_sync
 
   # -- typed merges (v3's merge_typed/merge_key style, kept for both the
@@ -817,7 +927,7 @@ defmodule Valea.Mail.Settings do
         provider: #{a.provider}
         auth: #{a.auth}
         notifications: #{a.notifications == true}
-        imap:
+    #{render_oauth_client_id(a.oauth_client_id)}    imap:
           host: #{yaml_string(a.imap.host)}
           port: #{a.imap.port}
           username: #{yaml_string(a.imap.username)}
@@ -833,6 +943,14 @@ defmodule Valea.Mail.Settings do
           exclude_folders: #{render_string_list(a.sync.exclude_folders)}
     """
   end
+
+  # Emitted only for an account that actually overrides it, so a file for an
+  # account taking the app-config client id keeps its exact previous bytes.
+  # Carries its own final indentation for the same reason `render_smtp/1` does.
+  defp render_oauth_client_id(nil), do: ""
+
+  defp render_oauth_client_id(client_id),
+    do: "    oauth_client_id: #{yaml_string(client_id)}\n"
 
   # Emitted only for a sending account — a push-only one keeps the v4 shape
   # exactly (no empty `smtp:` key). Every line carries its own final

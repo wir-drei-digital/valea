@@ -71,6 +71,19 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
     {:noreply, socket}
   end
 
+  # A freshly authorized (or provider-ROTATED) OAuth2 refresh token, on its way
+  # to the desktop client's OS keychain — the token's only durable home, since
+  # `Valea.Mail.Engine` deliberately never writes one to disk (see its
+  # §OAuth2 accounts). This is the one push in this channel that carries a
+  # SECRET: it goes over the loopback socket the control token already gates,
+  # it is never logged (`push/3` logs nothing, and no handler here inspects a
+  # payload), and in a browser-dev session the frontend's keychain write is a
+  # documented no-op so the token simply stays in Engine RAM.
+  def handle_info({:mail_oauth_token, slug, token}, socket) do
+    push(socket, "mail_oauth", %{"account" => slug, "refreshToken" => token})
+    {:noreply, socket}
+  end
+
   def handle_info({:mail_message_upserted, slug, %{path: path}}, socket) do
     push(socket, "mail_message", %{"path" => path, "account" => slug})
     {:noreply, socket}
