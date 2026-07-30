@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AcpItemLike } from './item-shapes';
-import { ClosedRailMemory, deriveFileActivity, shouldAutoOpen, splitPathName } from './file-activity';
+import type { FileActivity } from './file-activity';
+import {
+  ClosedRailMemory,
+  checkExistence,
+  deriveFileActivity,
+  shouldAutoOpen,
+  splitPathName
+} from './file-activity';
 
 let nextId = 0;
 function tool(over: Partial<AcpItemLike> & { [k: string]: unknown } = {}): AcpItemLike {
@@ -198,5 +205,50 @@ describe('splitPathName', () => {
   });
   it('no separator: whole string is the name', () => {
     expect(splitPathName('a.md')).toEqual({ name: 'a.md', dir: '' });
+  });
+});
+
+function activityRow(over: Partial<FileActivity>): FileActivity {
+  return {
+    key: 'a.md',
+    relPath: 'a.md',
+    path: '/ws/a.md',
+    name: 'a.md',
+    dir: '',
+    kindBadge: 'edited',
+    read: false,
+    edited: true,
+    edits: [],
+    lastIndex: 0,
+    ...over
+  };
+}
+
+describe('checkExistence', () => {
+  it('flags only definitive missing on changed rows with relPath', async () => {
+    const calls: string[] = [];
+    const missing = await checkExistence(
+      [
+        activityRow({ key: 'gone.md', relPath: 'gone.md' }),
+        activityRow({ key: 'still.md', relPath: 'still.md' }),
+        activityRow({ key: 'err.md', relPath: 'err.md' }),
+        activityRow({
+          key: 'read.md',
+          relPath: 'read.md',
+          kindBadge: 'read',
+          edited: false,
+          read: true
+        }),
+        activityRow({ key: '/abs/out.md', relPath: undefined })
+      ],
+      async (relPath) => {
+        calls.push(relPath);
+        if (relPath === 'gone.md') return 'missing';
+        if (relPath === 'err.md') return 'unavailable';
+        return 'found';
+      }
+    );
+    expect(missing).toEqual(new Set(['gone.md']));
+    expect(calls.sort()).toEqual(['err.md', 'gone.md', 'still.md']);
   });
 });

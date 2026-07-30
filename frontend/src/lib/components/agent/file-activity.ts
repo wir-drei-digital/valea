@@ -225,3 +225,23 @@ export class ClosedRailMemory {
 }
 
 export const closedRailMemory = new ClosedRailMemory();
+
+/**
+ * Existence cross-check (spec): reality-checks changed rows against the
+ * mount tree. Caller injects `icmStore.ensurePathLoaded` (partially applied
+ * with the mount key); ONLY a definitive `'missing'` marks a row —
+ * `'unavailable'` (a listing failed) claims nothing, per the store's
+ * issue-#2 contract. Sequential on purpose: `ensurePathLoaded` de-dupes
+ * in-flight dir loads internally, and rail row counts are small.
+ */
+export async function checkExistence(
+  rows: FileActivity[],
+  ensure: (relPath: string) => Promise<'found' | 'missing' | 'unavailable'>
+): Promise<Set<string>> {
+  const missing = new Set<string>();
+  for (const r of rows) {
+    if (r.kindBadge === 'read' || r.relPath === undefined) continue;
+    if ((await ensure(r.relPath)) === 'missing') missing.add(r.key);
+  }
+  return missing;
+}
