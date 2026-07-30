@@ -12,8 +12,10 @@ should be actionable, not dead text:
 1. **Clickable codespans.** An inline codespan that looks like an in-mount
    relative file path renders as a button opening that file in the side
    pane, with the same backend-validated open path the tool-card chips use.
-2. **Clickable backticked URLs.** A codespan that is exactly an http(s) URL
-   renders as an external link (bare URLs in plain prose are already
+2. **Clickable backticked URLs.** A codespan whose text passes the existing
+   `safeLinkHref` vetting renders as an external link — that check admits
+   http(s) AND `mailto:`, and reusing it verbatim is deliberate: one shared
+   definition of "linkable" (bare URLs in plain prose are already
    autolinked by marked's GFM rules and need no work).
 3. **Single-hit auto-open.** When a live turn ends and the agent's final
    message mentions exactly one distinct openable path, that file opens in
@@ -36,7 +38,10 @@ codespanFilePath(text: string): string | undefined
 ```
 
 Returns the openable relPath when the codespan text is path-shaped, else
-undefined. Rules:
+undefined. Input is the DECODED codespan text: marked pre-escapes codespan
+token text (`&amp;` for `&`, …), and the renderer already displays it
+through `unescapeMarked` — detection and the opened path must run on that
+same decoded string, so what opens is exactly what the user sees. Rules:
 
 - Strip one optional trailing `:NN` line suffix (`CONTEXT.md:22`) — the
   returned relPath drops it (pane opens have no line targeting today).
@@ -89,23 +94,35 @@ retroactively.
 
 ### 3. Auto-open — ChatView effect
 
-State per attached store (reset on store swap, same pattern as the
-file-activity rail's baseline):
+State per attached store. The reset-on-store-swap bookkeeping mirrors the
+file-activity rail's, but the baseline is the OPPOSITE of the rail's: the
+rail deliberately fires on a populated attach snapshot (its baseline is 0),
+while auto-open must never fire from history — its baseline is the count of
+`turn` items already present at attach.
 
 - Baseline = count of `turn` items at attach. History never fires.
-- When the count increments live and the new turn's stop reason is
-  `end_turn`: take the final assistant `message` item preceding that turn
-  item, compute `messageFilePaths(text)`.
+- When the count increments live and the new turn item's `stop_reason` is
+  `end_turn` (error/cancel turns carry other values and never fire): take
+  the final assistant `message` item preceding that turn item, compute
+  `messageFilePaths(text)`.
 - Fire only when ALL hold:
   - exactly one distinct candidate path;
   - ChatView is the primary view (a pane-hosted ChatView never spawns
     panes) and `openToolFile` is available (mount known);
   - no side pane is currently open (never replace what the user is
-    viewing);
+    viewing). `PaneContext` exposes no pane state today, so it gains an
+    optional `hasOpenPane?: () => boolean` callback that the `/chat` route
+    wires from its own `paneDescriptor`; per the context contract views
+    tolerate absent callbacks — an absent one means "unknown", and
+    auto-open conservatively does not fire;
   - `icmPathsExist(["<mountKey>/<relPath>"])` returns `exists: true`
-    (server-side containment; non-mount paths are simply `false`);
-  - the store hasn't started a new turn while the check was in flight
-    (stale guard — drop the result).
+    (server-side containment; non-mount paths are simply `false` — the
+    mount-prefixed single-string format is the same one
+    `MarkdownPageView`'s dangling-link check already sends);
+  - stale guard: capture the store reference and turn-item count before the
+    `await`, re-check both after it resolves, drop the result on any change
+    (same captured-before-await shape as `MarkdownPageView.refreshDangling`
+    — this covers a queued prompt starting the next turn mid-flight).
 - Then `openToolFile(relPath)`. At most one auto-open per turn end. If the
   user closes the pane, a later turn may open one again — each turn end is
   a fresh signal.
@@ -137,8 +154,10 @@ without a component harness; the effect just wires it to the RPC and
   `messageFilePaths` distinctness + fenced-block exclusion; the turn-gating
   helper (baseline, non-`end_turn` stops, multi-path messages, no-message
   turns).
-- Browser rig: extend the fake adapter's `slow` final message to mention
-  exactly one backticked in-mount path (e.g. `CONTEXT.md`) and one
-  backticked URL — one run then proves the file chip, the URL link, and the
-  live auto-open; reopening the same session proves history never fires.
+- Browser verification is a MANUAL pass via the fake-adapter rig (the repo
+  has no automated browser framework): extend the `slow` scenario's final
+  message to mention exactly one backticked in-mount path (e.g.
+  `CONTEXT.md`) and one backticked URL — one run then proves the file chip,
+  the URL link, and the live auto-open; reopening the same session proves
+  history never fires.
 - `svelte-check` and the full vitest suite stay green.
