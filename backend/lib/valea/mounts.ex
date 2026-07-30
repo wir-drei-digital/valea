@@ -573,6 +573,49 @@ defmodule Valea.Mounts do
   end
 
   @doc """
+  The workspace-level scheduler kill switch (tasks+schedules spec §Run
+  lifecycle → Global kill switch) — a TOP-LEVEL `scheduler_paused:` key in
+  `config/workspace.yaml`, not a per-mount flag: it stops every schedule in
+  the workspace at once.
+
+  Only a real YAML `true` engages it. Anything else — absent, `"true"` the
+  string, a missing or unparseable config — reads as *not paused*, the same
+  posture every other read in this module takes (`read_workspace_config/1`
+  degrades to `%{}`). The alternative, "an unreadable config pauses the
+  scheduler", would let a transient YAML fault silently stop every schedule;
+  the file's own contents are the pause the user asked for, and a broken
+  config surfaces through workspace doctoring, not through schedules quietly
+  not running.
+  """
+  @spec scheduler_paused?(workspace :: String.t()) :: boolean()
+  def scheduler_paused?(workspace) when is_binary(workspace) do
+    case read_workspace_config(workspace) do
+      {:ok, %{"scheduler_paused" => true}} -> true
+      {:ok, _absent_or_other} -> false
+    end
+  end
+
+  @doc """
+  Engages (`true`) or lifts (`false`) the workspace scheduler kill switch,
+  preserving every other top-level key and every `icms:` entry — the same
+  read-doc/rewrite-atomically path `set_enabled/3` uses, so a hand-written
+  `version`/`id`/`name` (or any unknown key) survives.
+
+  No audit here: engaging/disengaging is audited by the RPC that offers the
+  toggle, which is where the human intent is (spec §Audit — "pause/resume
+  incl. Pause-all").
+  """
+  @spec set_scheduler_paused(workspace :: String.t(), paused :: boolean()) ::
+          :ok | {:error, term()}
+  def set_scheduler_paused(workspace, paused)
+      when is_binary(workspace) and is_boolean(paused) do
+    with {:ok, doc} <- read_workspace_config_for_write(workspace) do
+      doc = Map.put(doc, "scheduler_paused", paused)
+      write_workspace_config(workspace, render_icms_doc(doc, normalize_mounts(doc["icms"])))
+    end
+  end
+
+  @doc """
   The skill ids whose one-time offer card the user dismissed for this
   mount (ICM skills design spec, §Frontend/Offer card) — operational
   state, so it lives on the `icms:` entry in `config/workspace.yaml`,

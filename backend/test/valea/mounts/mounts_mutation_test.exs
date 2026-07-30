@@ -382,6 +382,43 @@ defmodule Valea.Mounts.MutationTest do
     end
   end
 
+  # The workspace-wide scheduler kill switch (tasks+schedules spec §Run
+  # lifecycle → Global kill switch) — a top-level key, so it has to survive
+  # `icms:` mutations and vice versa.
+  describe "set_scheduler_paused/2" do
+    test "engages, lifts, and reads back", %{ws: ws} do
+      refute Mounts.scheduler_paused?(ws)
+
+      assert :ok = Mounts.set_scheduler_paused(ws, true)
+      assert Mounts.scheduler_paused?(ws)
+
+      assert :ok = Mounts.set_scheduler_paused(ws, false)
+      refute Mounts.scheduler_paused?(ws)
+    end
+
+    test "only a real boolean true engages it", %{ws: ws} do
+      path = Path.join(ws, "config/workspace.yaml")
+      File.write!(path, File.read!(path) <> "scheduler_paused: \"true\"\n")
+
+      refute Mounts.scheduler_paused?(ws)
+    end
+
+    test "survives an icms: mutation, and preserves icms: itself", %{ws: ws, home: home} do
+      root = icm!(home, "Ops", "1c0a5f2c-6d3a-4a4b-8f2e-6b6f1a2c3d4e")
+      assert {:ok, _} = Mounts.mount(ws, root)
+      assert :ok = Mounts.set_scheduler_paused(ws, true)
+
+      # An unrelated mutation must not lift the switch...
+      assert :ok = Mounts.set_enabled(ws, "ops", false)
+      assert Mounts.scheduler_paused?(ws)
+
+      # ...and the switch must not lose the mounts.
+      assert :ok = Mounts.set_scheduler_paused(ws, false)
+      assert %{name: "ops"} = Mounts.mount_by_key(ws, "ops")
+      assert File.read!(Path.join(ws, "config/workspace.yaml")) =~ ~r/^version: 5$/m
+    end
+  end
+
   # -- mail mounts are never mutation targets (Task 14, spec §"Mount &
   # containment") — synthetic `mail-<slug>` mounts exist only in `list/1`,
   # never in the `icms:` config, and `sources/mail` roots live INSIDE the
