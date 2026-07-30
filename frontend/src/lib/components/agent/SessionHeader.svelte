@@ -25,6 +25,7 @@
   // affordance — it never competes with a rail already on screen, and never
   // offers to open one that can't appear. `filesCount > 0` keeps it off a
   // session that touched nothing.
+  import type { Snippet } from 'svelte';
   import Folder from '@lucide/svelte/icons/folder';
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -45,7 +46,8 @@
     onDelete,
     onOpenFile,
     filesCount = 0,
-    onShowFiles
+    onShowFiles,
+    filesPanel
   }: {
     icmName: string | null;
     mountKey: string | null;
@@ -57,6 +59,14 @@
     onOpenFile?: (sel: { mountKey: string; path: string }) => void;
     filesCount?: number;
     onShowFiles?: () => void;
+    /**
+     * Mutually exclusive with `onShowFiles` (the host picks per layout):
+     * when the inline rail cannot fit — narrow view, side-pane placement —
+     * the pill becomes a popover trigger and this snippet is its content
+     * (the host renders the rail's popover variant). The file-activity
+     * affordance never disappears with the layout; it defers.
+     */
+    filesPanel?: Snippet;
   } = $props();
 
   let treeOpen = $state(false);
@@ -112,18 +122,34 @@
       {/if}
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
-    {#if onShowFiles && filesCount > 0}
-      <!-- id: the rail's close button hands keyboard focus here after it
-           unmounts itself (ChatView.closeRail). min-h-8/-my-1: ≥32px hit
-           target without growing the header bar. -->
-      <button
-        id="session-files-pill"
-        type="button"
-        onclick={onShowFiles}
-        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
-      >
-        Files · {filesCount}
-      </button>
+    {#if filesCount > 0 && (onShowFiles || filesPanel)}
+      {#if filesPanel}
+        <!-- Popover mode: the inline rail can't fit here, so the same pill
+             opens the file list as a popover instead of vanishing with the
+             layout. No id — the inline pill elsewhere on the page owns it. -->
+        <Popover.Root>
+          <Popover.Trigger
+            class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 data-[state=open]:bg-paper-pill -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
+          >
+            Files · {filesCount}
+          </Popover.Trigger>
+          <Popover.Content align="end" class="w-[316px] p-2">
+            {@render filesPanel()}
+          </Popover.Content>
+        </Popover.Root>
+      {:else}
+        <!-- id: the rail's close button hands keyboard focus here after it
+             unmounts itself (ChatView.closeRail). min-h-8/-my-1: ≥32px hit
+             target without growing the header bar. -->
+        <button
+          id="session-files-pill"
+          type="button"
+          onclick={onShowFiles}
+          class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
+        >
+          Files · {filesCount}
+        </button>
+      {/if}
     {/if}
     {#if onArchive || onDelete}
       <Popover.Root bind:open={menuOpen}>

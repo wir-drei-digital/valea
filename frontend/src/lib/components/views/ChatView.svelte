@@ -475,9 +475,11 @@
   }
 
   let viewWidth = $state(0);
-  const showRail = $derived(
-    railOpen && context.placement === 'primary' && viewWidth >= 860 && fileActivities.length > 0
-  );
+  // Where the INLINE rail can exist at all; when false, the header pill
+  // switches to popover mode (`filesPanel` below) instead of vanishing —
+  // the file-activity affordance defers with the layout, never deletes.
+  const railCanShow = $derived(context.placement === 'primary' && viewWidth >= 860);
+  const showRail = $derived(railOpen && railCanShow && fileActivities.length > 0);
 
   // Read once: a live preference switch mid-session is rare enough that the
   // next mount picking it up is fine, and a static read keeps the transition
@@ -517,7 +519,11 @@
     void icmStore.groups;
     const key = openMountKey;
     const token = ++existenceRun;
-    if (!showRail || !key) {
+    // Applicable when the file list is REACHABLE: the inline rail is shown,
+    // or the popover pill is the affordance (`!railCanShow`) — the popover
+    // must not silently omit "no longer exists" notes the rail would show.
+    const applicable = showRail || (!railCanShow && fileActivities.length > 0);
+    if (!applicable || !key) {
       missingKeys = new Set();
       return;
     }
@@ -540,6 +546,18 @@
     })();
   });
 </script>
+
+{#snippet filesPopover()}
+  <!-- The header pill's popover content where the inline rail can't fit —
+       same component, popover variant (no panel chrome, no ✕, popover
+       dismissal). -->
+  <FileActivityRail
+    variant="popover"
+    activities={fileActivities}
+    {missingKeys}
+    onOpenFile={openToolFile}
+  />
+{/snippet}
 
 {#if descriptor.kind === 'chat-new'}
   <!-- Same column geometry as a live session, so promoting the created
@@ -591,9 +609,8 @@
         onDelete={() => void deleteOpenSession()}
         onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
         filesCount={fileActivities.length}
-        onShowFiles={!railOpen && context.placement === 'primary' && viewWidth >= 860
-          ? reopenRail
-          : undefined}
+        onShowFiles={railCanShow && !railOpen ? reopenRail : undefined}
+        filesPanel={!railCanShow ? filesPopover : undefined}
       />
       {#if archiveError}
         <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>

@@ -29,12 +29,22 @@
     activities,
     missingKeys,
     onOpenFile,
-    onClose
+    onClose,
+    variant = 'rail'
   }: {
     activities: FileActivity[];
     missingKeys: ReadonlySet<string>;
     onOpenFile?: (relPath: string) => void;
-    onClose: () => void;
+    /** Rail variant only — the popover variant dismisses via its own primitive. */
+    onClose?: () => void;
+    /**
+     * 'rail' is the inline right column. 'popover' hosts the same list
+     * inside the header pill's popover when the inline rail cannot fit
+     * (narrow view, side-pane placement) — no border/panel chrome (the
+     * popover card provides it), no ✕, no focus-target id (ids must stay
+     * unique: an inline rail elsewhere on the page may hold them).
+     */
+    variant?: 'rail' | 'popover';
   } = $props();
 
   const BADGE_LABEL: Record<FileActivity['kindBadge'], string> = {
@@ -70,28 +80,36 @@
   }
 </script>
 
-<!-- tabindex="-1": the host moves focus here when the header pill reopens the
-     rail, so keyboard users land where they asked to go instead of <body>.
-     bg-paper-panel is the design system's dedicated rail surface. -->
+<!-- tabindex="-1" (rail variant): the host moves focus here when the header
+     pill reopens the rail, so keyboard users land where they asked to go
+     instead of <body>. bg-paper-panel is the design system's dedicated rail
+     surface; the popover variant sits on the popover card instead. -->
 <aside
-  id="file-activity-rail"
+  id={variant === 'rail' ? 'file-activity-rail' : undefined}
   tabindex="-1"
-  class="border-paper-hairline bg-paper-panel flex w-[300px] shrink-0 flex-col border-l outline-none"
+  class={[
+    'flex flex-col outline-none',
+    variant === 'rail'
+      ? 'border-paper-hairline bg-paper-panel w-[300px] shrink-0 border-l'
+      : 'max-h-96 w-[300px]'
+  ]}
   aria-label="Files this session touched"
 >
   <div class="border-paper-hairline flex items-center gap-2 border-b px-3 py-2">
     <span class="text-ink-heading text-[12.5px] font-medium">Files</span>
     <span class="text-ink-meta text-[11.5px]">{activities.length}</span>
-    <!-- size-8 with negative margin: a ≥32px hit target (product floor)
-         without growing the header bar. -->
-    <button
-      type="button"
-      onclick={onClose}
-      aria-label="Close files panel"
-      class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1.5 ml-auto flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
-    >
-      <X class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-    </button>
+    {#if variant === 'rail' && onClose}
+      <!-- size-8 with negative margin: a ≥32px hit target (product floor)
+           without growing the header bar. -->
+      <button
+        type="button"
+        onclick={onClose}
+        aria-label="Close files panel"
+        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1.5 ml-auto flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
+      >
+        <X class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
+      </button>
+    {/if}
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto py-1">
