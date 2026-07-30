@@ -113,10 +113,14 @@
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
     {#if onShowFiles && filesCount > 0}
+      <!-- id: the rail's close button hands keyboard focus here after it
+           unmounts itself (ChatView.closeRail). min-h-8/-my-1: ≥32px hit
+           target without growing the header bar. -->
       <button
+        id="session-files-pill"
         type="button"
         onclick={onShowFiles}
-        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading shrink-0 rounded-md px-1.5 py-0.5 text-[11.5px] whitespace-nowrap transition-colors"
+        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
       >
         Files · {filesCount}
       </button>

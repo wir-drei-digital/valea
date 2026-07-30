@@ -17,7 +17,9 @@
   // The store effect below is keyed on the SESSION ID alone for the same
   // family of reasons — an unrelated URL change (e.g. opening a side pane,
   // `?pane=`) must not tear down and rejoin a live session's channel.
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { quartOut } from 'svelte/easing';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -455,20 +457,33 @@
     previousFileCount = count;
   });
 
+  // Close/reopen each unmount the control that had focus (the rail's ✕, the
+  // header pill) — without a hand-off, keyboard focus falls to <body> and the
+  // user re-tabs from the top. So each side passes focus to its counterpart
+  // after the DOM settles. The ids are unique per page: rail and pill only
+  // render in the one primary-placement ChatView.
   function closeRail(): void {
     railOpen = false;
     if (sessionId !== null) closedRailMemory.close(sessionId);
+    void tick().then(() => document.getElementById('session-files-pill')?.focus());
   }
 
   function reopenRail(): void {
     railOpen = true;
     if (sessionId !== null) closedRailMemory.reopen(sessionId);
+    void tick().then(() => document.getElementById('file-activity-rail')?.focus());
   }
 
   let viewWidth = $state(0);
   const showRail = $derived(
     railOpen && context.placement === 'primary' && viewWidth >= 860 && fileActivities.length > 0
   );
+
+  // Read once: a live preference switch mid-session is rare enough that the
+  // next mount picking it up is fine, and a static read keeps the transition
+  // params out of the reactive graph.
+  const reduceMotion =
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Existence notes: reality-check changed rows against the mount tree via
   // `ensurePathLoaded` — ONLY its definitive 'missing' marks a row (store
@@ -617,12 +632,21 @@
       {/if}
     </div>
     {#if showRail}
-      <FileActivityRail
-        activities={fileActivities}
-        {missingKeys}
-        onOpenFile={openToolFile}
-        onClose={closeRail}
-      />
+      <!-- The slide softens the ~150px transcript shift the rail's mount used
+           to cause mid-read (critique P2). Width IS the point here, so the
+           layout-property animation is deliberate; reduced-motion collapses
+           it to an instant swap. -->
+      <div
+        transition:slide={{ axis: 'x', duration: reduceMotion ? 0 : 200, easing: quartOut }}
+        class="flex min-h-0 shrink-0"
+      >
+        <FileActivityRail
+          activities={fileActivities}
+          {missingKeys}
+          onOpenFile={openToolFile}
+          onClose={closeRail}
+        />
+      </div>
     {/if}
   </div>
 {:else}

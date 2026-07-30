@@ -45,6 +45,21 @@
     renamed: 'Renamed'
   };
 
+  // Quiet-receipt palette (2026-07-30 critique ruling): the rail is a RECORD
+  // of what the session touched, not an approval surface — so approval-green
+  // never appears on badges. Read is a ghost label (no fill); changed kinds
+  // share one neutral paper pill; only Deleted wears terracotta, because
+  // "color = consequence" reserves warn for alarm. The green +rows inside
+  // the expanded DiffBlock are deliberate and stay (added-line semantics,
+  // per the same ruling).
+  const BADGE_CLASS: Record<FileActivity['kindBadge'], string> = {
+    read: 'text-ink-subtitle',
+    edited: 'bg-paper-track text-ink-secondary',
+    created: 'bg-paper-track text-ink-secondary',
+    renamed: 'bg-paper-track text-ink-secondary',
+    deleted: 'bg-warn-tint text-warn-ink'
+  };
+
   let expandedKeys = $state(new Set<string>());
 
   function toggle(key: string): void {
@@ -55,15 +70,25 @@
   }
 </script>
 
-<aside class="border-paper-hairline flex w-[300px] shrink-0 flex-col border-l" aria-label="Files this session touched">
+<!-- tabindex="-1": the host moves focus here when the header pill reopens the
+     rail, so keyboard users land where they asked to go instead of <body>.
+     bg-paper-panel is the design system's dedicated rail surface. -->
+<aside
+  id="file-activity-rail"
+  tabindex="-1"
+  class="border-paper-hairline bg-paper-panel flex w-[300px] shrink-0 flex-col border-l outline-none"
+  aria-label="Files this session touched"
+>
   <div class="border-paper-hairline flex items-center gap-2 border-b px-3 py-2">
     <span class="text-ink-heading text-[12.5px] font-medium">Files</span>
     <span class="text-ink-meta text-[11.5px]">{activities.length}</span>
+    <!-- size-8 with negative margin: a ≥32px hit target (product floor)
+         without growing the header bar. -->
     <button
       type="button"
       onclick={onClose}
       aria-label="Close files panel"
-      class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading ml-auto flex size-5 shrink-0 items-center justify-center rounded-md transition-colors"
+      class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1.5 ml-auto flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
     >
       <X class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
     </button>
@@ -74,20 +99,20 @@
       {@const expandable = row.edits.length > 0}
       {@const expanded = expandedKeys.has(row.key)}
       <div class="border-paper-hairline border-b last:border-b-0">
-        <div class="flex items-start gap-1.5 px-2 py-1.5">
+        <div class="flex items-start gap-1 px-2 py-1">
           <button
             type="button"
             onclick={() => toggle(row.key)}
             disabled={!expandable}
             aria-expanded={expandable ? expanded : undefined}
             class={[
-              'flex min-w-0 flex-1 items-start gap-1.5 rounded-md px-1 py-0.5 text-left',
+              'focus-visible:ring-ring/50 flex min-h-8 min-w-0 flex-1 items-start gap-1.5 rounded-md px-1 py-1 text-left outline-none focus-visible:ring-2',
               expandable ? 'hover:bg-paper-pill cursor-pointer' : 'cursor-default'
             ]}
           >
             <ChevronRight
               class={[
-                'mt-0.5 size-3 shrink-0 text-ink-meta transition-transform',
+                'mt-0.5 size-3 shrink-0 text-ink-meta transition-transform motion-reduce:transition-none',
                 expanded ? 'rotate-90' : '',
                 expandable ? '' : 'invisible'
               ]}
@@ -102,14 +127,16 @@
               {#if row.edits.length > 1 || missingKeys.has(row.key)}
                 <span class="text-ink-meta flex flex-wrap gap-x-2 text-[10.5px]">
                   {#if row.edits.length > 1}<span>{row.edits.length} edits</span>{/if}
-                  {#if missingKeys.has(row.key)}<span class="italic">no longer exists</span>{/if}
+                  <!-- warn-ink, not italic meta: a gone file is the one alarming
+                       state this rail can report, so it speaks in terracotta. -->
+                  {#if missingKeys.has(row.key)}<span class="text-warn-ink">no longer exists</span>{/if}
                 </span>
               {/if}
             </span>
             <span
               class={[
-                'mt-0.5 shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-bold tracking-[0.04em] uppercase',
-                row.kindBadge === 'read' ? 'bg-paper-pill text-ink-meta' : 'bg-act-tint text-act'
+                'mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-[0.04em] uppercase',
+                BADGE_CLASS[row.kindBadge]
               ]}
             >
               {BADGE_LABEL[row.kindBadge]}
@@ -122,7 +149,7 @@
               onclick={() => onOpenFile?.(relPath)}
               aria-label={`Open ${row.name}`}
               title={`Open ${row.name}`}
-              class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md transition-colors"
+              class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
             >
               <ArrowUpRight class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
             </button>
