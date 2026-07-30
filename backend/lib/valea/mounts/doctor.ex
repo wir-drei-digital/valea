@@ -13,7 +13,7 @@ defmodule Valea.Mounts.Doctor do
   every mount — see `check_id/2`).
 
   Config truth is EXTERNAL-ONLY — there is no embedded/external duality,
-  so every mount runs the SAME six checks, in a single two-level gate:
+  so every mount runs the SAME seven checks, in a single two-level gate:
 
     1. `path_resolves` — does the `icms:` entry's `path:` expand (`~`,
        symlinks) and resolve to a real, boundary-safe, permission-glob-safe
@@ -24,9 +24,9 @@ defmodule Valea.Mounts.Doctor do
        duplicate ids are NOT path-level, they surface under
        `manifest_format2`/`unique_id` instead).
     2. `manifest_format2`, `unique_id`, `related_icms`, `secrets_hygiene`,
-       `watcher_live` — only run when `path_resolves` is `"ok"` (mirroring
-       `Valea.Mail.Doctor`'s `tls_ok` gating `login_ok`/`folders`/
-       `move_capability`); when `path_resolves` fails, all five are
+       `watcher_live`, `git_sync` — only run when `path_resolves` is `"ok"`
+       (mirroring `Valea.Mail.Doctor`'s `tls_ok` gating `login_ok`/`folders`/
+       `move_capability`); when `path_resolves` fails, all six are
        `"unknown"` rather than probing a root that may not exist, may not
        be a folder, or may be an unsafe glob target.
        * `manifest_format2` — ok iff `Valea.Mounts.list/1` already loaded a
@@ -91,6 +91,25 @@ defmodule Valea.Mounts.Doctor do
   root up yet, or none running at all, which reads the same optimistic way)
   — reports `"failed"` (a stale/transient miss; reopen the workspace).
 
+  `git_sync` (ICM git sync design spec, §Doctor) reports whether this
+  mount's own root can be synced, and how. `Valea.Git.Repo.detect/1`
+  answers the first half WITHOUT shelling out, so a workspace of ordinary
+  folders costs nothing: a mount that is not a repository is `"ok"` ("not
+  applicable" — most ICMs are plain folders, and nothing here nudges the
+  user to make one a repo), and one that is a repo but not AT its root (a
+  `.git` file — linked worktree or submodule — or a folder nested inside
+  someone else's repo) is `"failed"` with `detect/1`'s own reason: Valea
+  would otherwise be committing files it was never pointed at.
+
+  Only a real repo root reads state (one `Valea.Git.Repo.read_state/2`
+  through the `:git_cli` seam), and only when the mount's mode isn't
+  `off` — an intentionally-off mount is `"ok"`, not a nag. A detached
+  HEAD and a branch with no upstream are both `"failed"`: the engine
+  follows the checked-out branch, so neither one syncs, and each gets the
+  command that fixes it. An unreadable repo is `"unknown"` rather than
+  `"failed"` — the same posture as `watcher_live`'s unavailable branch:
+  not a defect the user can act on from here.
+
   Never reads or leaks file CONTENTS — `secrets_hygiene` only lists
   directory ENTRY NAMES at the mount root (`File.ls/1`), never opens a
   file, and `related_icms` only reads `CONTEXT.md`'s own frontmatter
@@ -135,6 +154,9 @@ defmodule Valea.Mounts.Doctor do
   @watcher_unavailable_detail "File watching is unavailable on this system — the tree refreshes on navigation instead."
   @watcher_stale_remedy "If this mount was just enabled, give the watcher a moment to catch " <>
                           "up; otherwise reopen the workspace."
+  @git_unsupported_remedy "Mount the repository root directly, or leave git sync off."
+  @git_missing_binary_remedy "Install git or launch Valea from an environment where git is on PATH."
+  @git_detached_remedy "Check out a branch in this repository."
 
   @doc "Runs the mounts doctor against the currently open workspace (every mount)."
   @spec run() :: {:ok, %{checks: [check], ok: boolean}} | {:error, :no_workspace}
@@ -200,7 +222,8 @@ defmodule Valea.Mounts.Doctor do
       related_icms = related_icms_check(workspace, mount)
       secrets = secrets_hygiene_check(mount)
       watcher = watcher_live_check(mount)
-      [path, manifest, unique_id, related_icms, secrets, watcher]
+      git = git_sync_check(workspace, mount)
+      [path, manifest, unique_id, related_icms, secrets, watcher, git]
     else
       [
         path,
@@ -220,7 +243,12 @@ defmodule Valea.Mounts.Doctor do
           "#{mount.name}: secrets hygiene",
           @gate_detail_path
         ),
-        unknown(check_id(mount, "watcher_live"), "#{mount.name}: watcher live", @gate_detail_path)
+        unknown(
+          check_id(mount, "watcher_live"),
+          "#{mount.name}: watcher live",
+          @gate_detail_path
+        ),
+        unknown(check_id(mount, "git_sync"), "#{mount.name}: git sync", @gate_detail_path)
       ]
     end
   end
@@ -451,6 +479,74 @@ defmodule Valea.Mounts.Doctor do
   # and a device path, are no longer called network shares. A watcher backend
   # can only promise best-effort coverage over a real one.
   defp network_share?(root), do: Valea.Paths.unc?(root, :windows)
+
+  # -- 2f. git_sync ---------------------------------------------------------------
+
+  defp git_sync_check(workspace, mount) do
+    id = check_id(mount, "git_sync")
+    label = "#{mount.name}: git sync"
+
+    case Valea.Git.Repo.detect(mount.root) do
+      :none ->
+        ok(id, label, "not a git repository — git sync not applicable.")
+
+      {:unsupported, reason} ->
+        failed(id, label, reason <> ".", @git_unsupported_remedy)
+
+      :repo ->
+        git_repo_check(id, label, mount, Mounts.git_config(workspace, mount.name))
+    end
+  end
+
+  # Reached only for a real repo root. `find_executable` first: without the
+  # binary there is no state to read, and "install git" is the only useful
+  # thing to say. `off` short-circuits before any spawn — an ICM the user
+  # deliberately excluded should cost nothing and say nothing.
+  defp git_repo_check(id, label, mount, cfg) do
+    cond do
+      System.find_executable("git") == nil ->
+        failed(id, label, "git binary not found on PATH.", @git_missing_binary_remedy)
+
+      cfg.sync == :off ->
+        ok(id, label, "git repository detected — sync is off.")
+
+      true ->
+        git_state_check(id, label, mount, cfg)
+    end
+  end
+
+  # `branch: nil` (detached HEAD) is matched BEFORE the upstream clause: a
+  # detached HEAD has no upstream either, and "check out a branch" is the
+  # move that fixes both.
+  defp git_state_check(id, label, mount, cfg) do
+    case Valea.Git.Repo.read_state(mount.root, git_cli()) do
+      {:ok, %{branch: nil}} ->
+        failed(
+          id,
+          label,
+          "detached HEAD — sync follows the checked-out branch.",
+          @git_detached_remedy
+        )
+
+      {:ok, %{upstream: nil, branch: branch}} ->
+        failed(
+          id,
+          label,
+          "branch #{branch} has no upstream — observe-only.",
+          "git branch --set-upstream-to=origin/#{branch} #{branch}"
+        )
+
+      {:ok, %{branch: branch, upstream: upstream}} ->
+        ok(id, label, "#{branch} ↔ #{upstream} · mode #{cfg.sync}.")
+
+      {:error, _reason} ->
+        unknown(id, label, "could not read repository state.")
+    end
+  end
+
+  # The one seam the engine and this check share (Task 1) — a stub Cli in
+  # tests, the real one in production.
+  defp git_cli, do: Application.get_env(:valea, :git_cli, Valea.Git.Cli)
 
   # -- check builders (same shape as Valea.Mail.Doctor / Valea.Agents.Doctor) -
 

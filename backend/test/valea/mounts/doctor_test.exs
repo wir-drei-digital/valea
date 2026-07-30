@@ -1,3 +1,11 @@
+defmodule Valea.Mounts.DoctorTest.UnreadableGitCli do
+  @moduledoc false
+  @behaviour Valea.Git.Cli
+
+  @impl true
+  def run(_root, _args, _opts), do: {:error, :timeout}
+end
+
 defmodule Valea.Mounts.DoctorTest do
   use ExUnit.Case, async: false
 
@@ -91,7 +99,8 @@ defmodule Valea.Mounts.DoctorTest do
             "unique_id:outside",
             "related_icms:outside",
             "secrets_hygiene:outside",
-            "watcher_live:outside"
+            "watcher_live:outside",
+            "git_sync:outside"
           ] do
         check = find(checks, id)
         assert check["status"] == "unknown"
@@ -626,7 +635,7 @@ defmodule Valea.Mounts.DoctorTest do
       assert Doctor.run(root, "does-not-exist") == {:error, :mount_not_found}
     end
 
-    test "scopes checks to just the requested mount_key — six checks, none for the other mount" do
+    test "scopes checks to just the requested mount_key — seven checks, none for the other mount" do
       root = tmp_dir!("vmounts-doctor")
       a = tmp_dir!("vmounts-doctor-a")
       b = tmp_dir!("vmounts-doctor-b")
@@ -639,7 +648,7 @@ defmodule Valea.Mounts.DoctorTest do
 
       {:ok, %{mount_key: "mount-a", checks: checks}} = Doctor.run(root, "mount-a")
 
-      assert length(checks) == 6
+      assert length(checks) == 7
       assert Enum.all?(checks, &String.ends_with?(&1["id"], ":mount-a"))
       refute Enum.any?(checks, &String.ends_with?(&1["id"], ":mount-b"))
     end
@@ -736,7 +745,8 @@ defmodule Valea.Mounts.DoctorTest do
             "unique_id:outside",
             "related_icms:outside",
             "secrets_hygiene:outside",
-            "watcher_live:outside"
+            "watcher_live:outside",
+            "git_sync:outside"
           ] do
         check = find(checks, id)
         assert check["status"] == "ok", "expected #{id} to be ok, got #{inspect(check)}"
@@ -756,7 +766,7 @@ defmodule Valea.Mounts.DoctorTest do
       poll_until_mounts_changed(fn _i -> declare_external!(ws.path, "outside", ext) end)
 
       {:ok, %{mount_key: "outside", checks: checks, ok: true}} = Doctor.run(ws.path, "outside")
-      assert length(checks) == 6
+      assert length(checks) == 7
       assert Enum.all?(checks, &(&1["status"] == "ok"))
     end
 
@@ -781,6 +791,141 @@ defmodule Valea.Mounts.DoctorTest do
       check = find(checks, "watcher_live:outside")
       assert check["status"] == "unknown"
       assert check["detail"] =~ "disabled"
+    end
+  end
+
+  # -- git_sync -------------------------------------------------------------------
+
+  # `Valea.Git.Repo.detect/1` is filesystem-only, so the "not a repository"
+  # and "unsupported layout" verdicts need no git binary at all — only the
+  # state-reading branches below do.
+  describe "run/1 — git_sync (no git binary needed)" do
+    test "a mount that is not a git repository is ok — not applicable" do
+      root = tmp_dir!("vmounts-doctor")
+      ext = tmp_dir!("vmounts-doctor-ext")
+
+      write_icms!(root, [{"outside", ext, []}])
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:outside")
+      assert check["status"] == "ok"
+      assert check["detail"] =~ "not a git repository"
+      assert check["remedy"] == nil
+    end
+
+    test "a .git FILE at the mount root fails with the worktree/submodule reason" do
+      root = tmp_dir!("vmounts-doctor")
+      ext = tmp_dir!("vmounts-doctor-ext")
+      File.write!(Path.join(ext, ".git"), "gitdir: /elsewhere\n")
+
+      write_icms!(root, [{"outside", ext, []}])
+
+      {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:outside")
+      assert check["status"] == "failed"
+      assert check["detail"] =~ "worktree or submodule"
+      assert check["remedy"] =~ "Mount the repository root directly"
+    end
+  end
+
+  describe "run/1 — git_sync over real git" do
+    # Skips itself (rather than failing) on a machine with no git, the same
+    # posture as `Valea.Git.RepoTest`'s module-level tag — but per-describe
+    # here, since the rest of this file needs no git at all.
+    @describetag if GitFixtures.git_available?(), do: :git, else: :skip
+
+    setup do
+      dir = tmp_dir!("vmounts-doctor-git")
+      %{git_dir: dir, fx: GitFixtures.remote_and_clones!(dir)}
+    end
+
+    test "a repo with an upstream reports branch, upstream and the configured mode", %{fx: fx} do
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"repo", fx.work, []}])
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "ok"
+      assert check["detail"] =~ "main"
+      assert check["detail"] =~ "origin/main"
+      # The default mode for a detected repo, with no `git:` block written.
+      assert check["detail"] =~ "mode pull"
+      assert check["remedy"] == nil
+
+      assert :ok = Valea.Mounts.set_git_sync(root, "repo", "full")
+      {:ok, %{checks: checks}} = Doctor.run(root)
+      assert find(checks, "git_sync:repo")["detail"] =~ "mode full"
+    end
+
+    test "sync off short-circuits to ok without reading state", %{fx: fx} do
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"repo", fx.work, []}])
+      assert :ok = Valea.Mounts.set_git_sync(root, "repo", "off")
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "ok"
+      assert check["detail"] =~ "sync is off"
+    end
+
+    test "a branch with no upstream fails with a copyable --set-upstream-to remedy", %{
+      git_dir: dir
+    } do
+      lone = Path.join(dir, "lone")
+      File.mkdir_p!(lone)
+      GitFixtures.git!(lone, ["init", "--initial-branch=main", "."])
+      GitFixtures.identity!(lone)
+      GitFixtures.write_commit!(lone, "a.md", "a", "a")
+
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"lone", lone, []}])
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:lone")
+      assert check["status"] == "failed"
+      assert check["detail"] =~ "no upstream"
+      assert check["remedy"] == "git branch --set-upstream-to=origin/main main"
+    end
+
+    # Drives the `:git_cli` seam directly (no fixture repo needed beyond a
+    # `.git` directory for `detect/1`): a repo whose state cannot be read is
+    # "unknown", not "failed" — there is no action the user can take from
+    # the doctor panel.
+    test "a repo whose state cannot be read is unknown, not failed" do
+      Application.put_env(:valea, :git_cli, Valea.Mounts.DoctorTest.UnreadableGitCli)
+      on_exit(fn -> Application.delete_env(:valea, :git_cli) end)
+
+      root = tmp_dir!("vmounts-doctor")
+      ext = tmp_dir!("vmounts-doctor-ext")
+      File.mkdir_p!(Path.join(ext, ".git"))
+
+      write_icms!(root, [{"repo", ext, []}])
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "unknown"
+      assert check["detail"] =~ "could not read repository state"
+      assert check["remedy"] == nil
+    end
+
+    test "a detached HEAD fails with the check-out-a-branch remedy", %{fx: fx} do
+      GitFixtures.git!(fx.work, ["checkout", "--detach", "HEAD"])
+
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"repo", fx.work, []}])
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "failed"
+      assert check["detail"] =~ "detached HEAD"
+      assert check["remedy"] =~ "Check out a branch"
     end
   end
 

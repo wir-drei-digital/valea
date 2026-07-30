@@ -125,6 +125,12 @@ defmodule Valea.Mounts do
           kind: :icm | :mail | :calendar
         }
 
+  # Git sync policy vocabulary (`git_config/2`, `set_git_sync/3`). `pull` is
+  # the default for a NEW or unreadable block: a detected repo is only ever
+  # fast-forwarded until someone deliberately widens it to `full`.
+  @git_sync_modes ~w(full pull off)
+  @git_sync_default %{sync: :pull, instructions: nil}
+
   @doc """
   Every mount declared in the current workspace's `icms:` config (enabled +
   disabled + degraded) — sorted by mount key. See the moduledoc for
@@ -673,6 +679,91 @@ defmodule Valea.Mounts do
       write_icms(workspace, new_icms)
     end
   end
+
+  @doc """
+  This mount's git sync policy (ICM git sync design spec, §Modes) —
+  operational state, so like `skills_offers_dismissed/2` it lives on the
+  `icms:` entry in `config/workspace.yaml`, never inside the user-owned
+  ICM.
+
+  Never raises and never surfaces a config problem to the caller: an
+  absent `git:` block, a non-map one, an unknown `sync:` word, and an
+  unreadable config all degrade to the same safe default,
+  `%{sync: :pull, instructions: nil}` — a detected repo is only ever
+  pulled until someone deliberately widens it, so the degraded reading is
+  also the least destructive one.
+
+  `instructions` is the user's free-text merge/branch guidance handed to a
+  resolution session; trailing whitespace is trimmed (a YAML block scalar
+  always carries a trailing newline), and a blank or non-string value
+  reads as `nil`.
+  """
+  @spec git_config(String.t(), String.t()) ::
+          %{sync: :full | :pull | :off, instructions: String.t() | nil}
+  def git_config(workspace, mount_key) when is_binary(workspace) and is_binary(mount_key) do
+    case workspace |> read_icms_config() |> Map.get(mount_key) do
+      %{"git" => %{} = git} ->
+        %{
+          sync: parse_git_sync(Map.get(git, "sync")),
+          instructions: parse_git_instructions(Map.get(git, "instructions"))
+        }
+
+      _absent_or_malformed ->
+        @git_sync_default
+    end
+  end
+
+  defp parse_git_sync("full"), do: :full
+  defp parse_git_sync("off"), do: :off
+  defp parse_git_sync(_pull_or_invalid), do: :pull
+
+  defp parse_git_instructions(text) when is_binary(text) do
+    case String.trim(text) do
+      "" -> nil
+      _present -> String.trim_trailing(text)
+    end
+  end
+
+  defp parse_git_instructions(_absent_or_invalid), do: nil
+
+  @doc """
+  Sets this mount's git sync mode, preserving the block's sibling
+  `instructions` (and every other key on the `icms:` entry) — the same
+  read-config/rewrite-atomically path `dismiss_skills_offer/3` uses.
+
+  `mode` must be one of `full`, `pull`, `off` (`{:error,
+  :invalid_git_sync}` otherwise — a bad mode never reaches disk).
+  Rejects a `mount_key` the way every other mutation does
+  (`:invalid_mount_name`, `:mount_not_found`).
+
+  No audit event: a sync mode is operational state the user flips in ICM
+  settings, not a boundary change like mounting or enabling.
+  """
+  @spec set_git_sync(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def set_git_sync(workspace, mount_key, mode)
+      when is_binary(workspace) and is_binary(mount_key) and mode in @git_sync_modes do
+    with :ok <- validate_mount_name(mount_key),
+         icms = read_icms_config(workspace),
+         :ok <- ensure_icm_present(icms, mount_key) do
+      new_icms = Map.update!(icms, mount_key, &put_git_sync(&1, mode))
+      write_icms(workspace, new_icms)
+    end
+  end
+
+  def set_git_sync(_workspace, _mount_key, _mode), do: {:error, :invalid_git_sync}
+
+  # A hand-edited entry (or `git:`) that isn't a map is REPLACED rather than
+  # merged into — same degrade-tolerance as the reader: there is nothing
+  # structured to preserve, and raising `BadMapError` out of a settings
+  # toggle would be worse than losing a malformed scalar.
+  defp put_git_sync(%{} = entry, mode) do
+    Map.update(entry, "git", %{"sync" => mode}, fn
+      %{} = git -> Map.put(git, "sync", mode)
+      _malformed -> %{"sync" => mode}
+    end)
+  end
+
+  defp put_git_sync(_malformed_entry, mode), do: %{"git" => %{"sync" => mode}}
 
   @doc """
   Removes the `icms.<mount_key>` config entry from `workspace`'s
@@ -1295,8 +1386,57 @@ defmodule Valea.Mounts do
     end
   end
 
+  # A multiline string renders as a LITERAL BLOCK SCALAR (`key: |`), the one
+  # shape that survives the round trip: `render_scalar/1` delegates to
+  # `Yaml.escape/1`, which flattens every control character to a space —
+  # correct for injection-hardening a single-line value, but it would
+  # silently destroy the line structure of free text the user typed
+  # (`git.instructions`). Empty lines render as truly empty (never as bare
+  # indentation, which a block scalar would read back as content).
+  defp render_yaml_entry(key, value, indent) when is_binary(value) do
+    if block_scalar?(value) do
+      lines = value |> String.trim_trailing("\n") |> String.split("\n")
+
+      body =
+        Enum.map(lines, fn
+          "" -> ""
+          line -> indent <> "  " <> line
+        end)
+
+      ["#{indent}#{yaml_key(key)}: #{block_header(lines)}" | body]
+    else
+      ["#{indent}#{yaml_key(key)}: #{render_scalar(value)}"]
+    end
+  end
+
   defp render_yaml_entry(key, value, indent) do
     ["#{indent}#{yaml_key(key)}: #{render_scalar(value)}"]
+  end
+
+  # A bare `|` lets the parser DETECT the block's indentation from its first
+  # non-empty line — which silently breaks when a content line of the user's
+  # own text starts with whitespace: the detected indentation swallows it,
+  # and a first line indented deeper than its followers makes the whole
+  # document unparseable ("invalid block scalar indentation"). That is not a
+  # cosmetic bug here: `read_workspace_config/1` degrades an unreadable
+  # config to `%{}`, so one indented line of merge instructions would make
+  # every mount vanish from `list/1`. The explicit indentation indicator
+  # (`|2` — two columns past the parent node, exactly what `body` emits)
+  # removes the detection step entirely. Only paid when needed, so the
+  # common case stays the plain `|` a human would have written.
+  defp block_header(lines) do
+    # A leading TAB can't occur — `block_scalar?/1` already sent any
+    # tab-bearing value down the escaped path.
+    if Enum.any?(lines, &String.starts_with?(&1, " ")), do: "|2", else: "|"
+  end
+
+  # Only a value whose sole control character is `\n` (and which has real
+  # content) is safe to emit unescaped inside a block scalar. Anything else —
+  # a stray `\r`, a tab, a NUL — stays on the quoted `Yaml.escape/1` path,
+  # where flattening is the intended, injection-safe behaviour.
+  defp block_scalar?(value) do
+    String.contains?(value, "\n") and String.trim(value) != "" and
+      not Regex.match?(~r/[\x00-\x09\x0B-\x1F\x7F]/, value)
   end
 
   defp render_yaml_map(map, indent) do
