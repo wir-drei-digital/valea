@@ -1,7 +1,12 @@
 # ICM Git Sync — State, Auto-Sync, Conflict → Agent Handoff
 
 **Date:** 2026-07-30
-**Status:** Approved (design). Pending implementation plan.
+**Status:** **Shipped** 2026-07-30. The body below is the approved design as
+written and is kept unedited. Where the implementation deliberately
+diverged — all of it review-driven — the differences are recorded in
+[Implementation amendments (2026-07-30)](#implementation-amendments-2026-07-30)
+at the end; **that section, not this body, describes what runs.** Live
+acceptance: `docs/superpowers/acceptance/2026-07-30-icm-git-sync.md`.
 
 ## Goal
 
@@ -220,3 +225,157 @@ No new routes.
 - Git for the managed workspace dir itself (this is ICM mounts only).
 - Conflict resolution UI in Valea (diff viewer etc.) — the agent session
   is the resolution surface.
+
+## Implementation amendments (2026-07-30)
+
+Written after the fact, against the shipped code (`Valea.Git.Engine`,
+`Valea.Git.Repo`, `Valea.Mounts.Doctor`, `Valea.Api.Git`, `stores/git.svelte.ts`).
+Everything above stands as the approved design; the five items here are
+where implementation review moved it, and each one is a behavior change a
+reader of the body would otherwise get wrong. Nothing here weakens the two
+invariants the design exists for: **Valea never merges (non-ff), rebases,
+force-pushes or discards**, and **held means held**.
+
+### 1. Pass order
+
+The body's "Pass order per repo" listed refresh → auto-commit → fetch →
+ff → push → diverged. The shipped order derives *everything holdable from
+one local read first*, and only a repo that reads `ok` is allowed to touch
+the network (`Engine.classify/8` → `local_class/4` → `converge/8`):
+
+1. **One local state read**, then classify, in this order:
+   `merge_in_progress` (an in-progress merge/rebase **or** a conflicted
+   index) → `detached` → `no_upstream` → `diverged` → `blocked_local` →
+   `ok`.
+   - **`merge_in_progress` is checked first, before the branch check.** A
+     conflicted *rebase* has a detached HEAD; classifying on `branch` first
+     would label every rebase-in-progress `detached` — observe-only, not
+     conflict-class — and the resolution session could never be handed off
+     for exactly the repo that needs it most.
+   - **`diverged` is derived from the last-known remote refs, BEFORE any
+     fetch.** This is what makes "held means held" literal: a held repo
+     performs no network call at all, so its hold cannot be re-derived from
+     a fresh fetch. The cost is that a divergence created purely on the
+     remote is noticed one pass late; the benefit is that a status row
+     cannot keep changing under a user (or an agent) mid-resolution.
+2. **Auto-commit** (`full` only, dirty tree) — reached only on `ok`.
+3. **Fetch** — skipped while a backoff window is open (the row then repeats
+   the previous error over freshly-read local facts).
+4. **Re-read, then**: both moved → hold `diverged`; behind only →
+   `merge --ff-only`; ahead only in `full` → push; otherwise converged.
+
+The consequence worth stating plainly: **in `full` mode a dirty repo that
+is also behind still commits.** Commit → fetch → the repo is now genuinely
+diverged → held, with the user's work preserved *as a commit*. The
+alternative (hold before committing) would suspend full mode's entire
+contract behind uncommitted edits and leave the work sitting in the working
+tree with no record.
+
+### 2. `blocked_local` is pull-mode only, learned, and fingerprint-held
+
+The body describes `blocked_local` as what happens when "git itself refuses
+a checkout that would clobber local edits". Shipped, that is tightened
+three ways:
+
+- **Entered ONLY from a real refusal.** The single site is a
+  `git merge --ff-only` that git actually rejected (`Engine.fast_forward/5`).
+  It is never inferred from "behind and dirty": most dirt blocks nothing
+  (an untracked editor file, an edit to a file the incoming commit never
+  touches) and git fast-forwards straight past it. A repo held on that
+  guess would be held **forever** — held repos never fetch, so `behind`
+  could never fall and the remote's work would never arrive.
+- **Held for exactly as long as the tree git judged.** A refused
+  fast-forward leaves the working tree byte-identical, so the refusal
+  records a fingerprint of it — the sorted set of changed paths (capped at
+  200) plus both shas, all local reads. While the fingerprint matches, the
+  repo stays held with no network: git already answered this question. The
+  moment it changes — the blocking file reverted, another added or removed,
+  a commit made — the verdict has expired and the repo converges, where
+  **git, not Valea, decides again**: a tree that still clobbers is refused
+  again and re-learns the hold (one fetch, one refused ff, both data-safe),
+  and resolved dirt fast-forwards. This is what makes "the user cleaned up
+  the file that was in the way" a real exit rather than a claim.
+- **`pull` mode only.** In `full` mode the answer to a dirty tree is to
+  commit it (see amendment 1), so a refusal there is *not* "the user has
+  uncommitted work" — it is something `git add -A` could not take (an
+  ignored file the merge would clobber, a permissions problem) and is
+  reported as `error` in git's own words, rather than borrowing a state
+  whose remedy ("commit or revert your edits") does not apply.
+
+**This is a justified exception to the body's "no resolution state machine;
+derived truth only."** `blocked_local` is the one state git exposes no
+marker for — nothing in `.git` records "a fast-forward was refused" — so
+holding it requires the pass to read its own previous row. The exception is
+deliberately minimal: one boolean verdict plus one fingerprint, carried on
+the in-memory status row only (never written to disk), self-expiring on any
+tree change, and re-decidable only by git. No other state reads the past.
+
+**Reconciling the body's wording.** Step 4's "→ `blocked_local` notice;
+nothing is lost" is accurate about the *data* — the refused fast-forward
+leaves the working tree untouched, which is precisely why the fingerprint
+taken at that moment describes the tree git ruled on — but it should not be
+read as "the notice is a momentary observation". It is a **hold**: while it
+stands the repo does no fetch, no commit and no push, and it lifts on a
+tree change or a successful convergence, not on a timer.
+
+### 3. Conflict sessions: derived state + an engine-side claim, not a stored notice
+
+The body specifies notices with a dedup key `(mount_key, local_sha,
+remote_sha)` and "record `session_id` on the notice". Shipped, there are no
+notice records at all — the surfaces render **derived state**:
+
+- Every status row carries `local_sha` / `remote_sha` (`nil` wherever git
+  could not answer) and `conflict_session_id`. The identity triple is
+  therefore *on the row*, available to any consumer that wants to tell "the
+  same conflict, still there" from "a new one", with nothing stored.
+- The button's "no accidental second resolver" property comes from an
+  **atomic claim protocol in the Engine**, not from reading a notice:
+  `claim_conflict_session/2` (a call) reserves the repo's single resolution
+  slot **before** the caller resolves a scope and handshakes an agent
+  subprocess, and `record_conflict_session/2` (a cast) confirms it
+  afterwards. Two clicks — a double-click, two tabs, two windows —
+  serialize on the Engine loop: exactly one starts an agent, the other is
+  routed to the existing session. Claim-after-start would let both callers
+  read an empty slot and point two agents with write scope at the same
+  conflicted working tree.
+- A slot is held against something observable: a pending claim against its
+  **caller** (monitored — a caller that dies mid-start releases it), a
+  confirmed one against the **session** (`SessionServer.running?/1`). An id
+  that is neither is a dead reference the next caller takes over, so a
+  killed session can never make a repo permanently unresolvable.
+- The RPC is `start_git_conflict_session` and still re-verifies live git
+  state first; a conflict that is gone returns that, and the UI clears.
+
+### 4. Doctor
+
+- The per-mount check's **label is `"<mount key>: git sync"`** (the sibling
+  mount checks' convention); the stable id remains `git_sync:<mount_key>`.
+- **Disabled and degraded mounts short-circuit to `unknown`** before any
+  probe — `not checked — this mount is disabled.` /
+  `not checked — this mount is degraded, so nothing is syncing it.` The
+  engine skips those mounts entirely, so a real verdict for one would be a
+  finding the user cannot act on (and would flip `ok: false` for an ICM
+  that is off by intent). Same posture as `watcher_live`.
+- The spec's "last fetch/push outcome" is read from the **live engine row**:
+  a `state: "error"` row makes the check `failed` with git's own words. A
+  held or converged row does not — a hold is a situation with its own
+  surface, not a doctor failure.
+- When the error text looks auth-shaped (`/auth|permission|denied|publickey/i`)
+  the remedy names the packaged-app caveat: *the packaged app may lack your
+  ssh-agent environment — try launching from a terminal, or check the
+  remote's credentials.*
+
+### 5. Statuses
+
+- The `state` enum keeps **`syncing`**, but the v1 engine **never emits
+  it**: a pass runs to completion in one task and publishes one row.
+  Consequently the sidebar badge is **attention-only** (the three
+  agent-actionable holds), not the body's synced/syncing/attention triple —
+  "quiet unless something needs you" is the shipped rule, and a per-repo
+  status line lives in the ICM's *Git sync…* panel for anyone who wants
+  detail.
+- Shipped `state` values: `ok`, `syncing` (unused), `diverged`,
+  `blocked_local`, `merge_in_progress`, `error`, `off`, `detached`,
+  `no_upstream`, `unsupported`.
+- `error` remains **doctor/status material and never an agent notice**, as
+  specced — fetch/push/auth failures do not raise a Today row.

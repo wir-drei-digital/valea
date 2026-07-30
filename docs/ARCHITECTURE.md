@@ -1085,6 +1085,71 @@ block. Cockpit `today()` gains a lenient calendar line. Doctor
 → `parse_ok` → `freshness`, plus `feed_endpoint` — through the engine's
 credential-safe `with_credentials` seam; no URL ever appears in output.
 
+## ICM git sync
+
+Some ICMs are git repositories. `Valea.Git.Engine` — one GenServer per open
+workspace, under the workspace runtime supervisor, `Mail.Engine`'s shape and
+generation gating — keeps them in step with their remote and, more
+importantly, knows when to STOP. Every git invocation goes through
+`Valea.Git.Cli` (system `git`, explicit `-C`, per-command timeout, capped
+output, `LC_ALL=C`) on the same `ProcessRuntime` seam the agent runtime
+uses, so it is injectable in tests; the four sanctioned mutations live in
+`Valea.Git.Repo` and are the only ones reachable — `commit_all`, `fetch`,
+`ff_merge`, `push`. There is no non-ff merge, no rebase, no force-push, no
+`reset --hard`: Valea never invents or rewrites history and never discards a
+change it did not make. Scope is fail-closed: an **external ICM mount whose
+mount root is the repo root**; a mount inside a repo, a `.git` *file*
+(linked worktree/submodule), or a bare repo is `unsupported` with a doctor
+remedy. Full spec + the shipped-behavior amendments:
+`docs/superpowers/specs/2026-07-30-icm-git-sync-design.md`; live checklist:
+[docs/superpowers/acceptance/2026-07-30-icm-git-sync.md](superpowers/acceptance/2026-07-30-icm-git-sync.md).
+
+**Modes** — one per-mount knob in `workspace.yaml`'s mount entry
+(`git: {sync:, instructions:}`), written by the ICM row's *Git sync…* panel
+or by hand: `full` (auto-commit + auto-push), `pull` (fetch +
+fast-forward only — the **default** for a detected repo), `off`. Auto-push
+follows auto-commit; there are no independent flags. Operational note:
+Valea materializes `.valea/` into ICM roots (see [Tasks &
+schedules](#tasks--schedules)), so a git ICM reads dirty until `.valea/` is
+gitignored — and `full` mode's `git add -A` respects `.gitignore` and
+nothing else, so an un-ignored `.valea/` gets committed.
+
+**Derived state, no durable files.** Nothing is written outside the repo:
+branch/dirty/ahead/behind/held is re-derived from git every pass into an
+in-memory row (pushed on the workspace events channel, summarized as
+cockpit `today.json`'s `"git"` list), so a restart loses nothing and there
+is no sync ledger to corrupt. Triggers: a 5-minute jittered interval, `Sync
+now`, mount changes, and — `full` only — an ICM-watcher debounce (~2 min
+quiet) gated behind a *local* committable-work probe, because a fetch writes
+`.git/FETCH_HEAD` and would otherwise retrigger the engine forever. A pass
+derives every holdable state from ONE local read first (unfinished
+merge/rebase before the detached-HEAD check — a conflicted rebase is
+detached; divergence from last-known remote refs *before* any fetch), and
+only a repo reading `ok` earns network. **Held means held**: a `diverged`,
+`blocked_local` or `merge_in_progress` repo gets local reads only — no
+fetch, no commit, no push — until it converges, so the engine can never race
+a resolving agent's index or refs. Network failures back off per repo (60 s
+doubling to 30 min, cleared by `Sync now`) and surface as `error`: doctor
+material (`<mount key>: git sync`, with an ssh-agent hint on auth-shaped
+failures), never an agent notice. The one exception to derived-only truth is
+`blocked_local`, which git has no marker for: it is entered **only** from a
+fast-forward git actually refused, then held while a fingerprint of the tree
+git judged (sorted changed-path set + both shas) is unchanged — any tree
+change expires the verdict and lets git re-arbitrate.
+
+**Conflict → agent handoff.** The three held states raise Today attention
+rows (and a quiet dot on the ICM's sidebar row) whose button starts a normal
+visible chat session in that ICM — `create_agent_session` +
+`initial_prompt`, title `Git sync conflict — <name>` — with a deterministic
+briefing (`Valea.Git.Briefing`: counts, capped local/remote subject lists,
+files, the never-force-push/never-discard contract, then the mount's own
+`instructions:` prose) as the first user message. The agent, not Valea,
+resolves. One resolution session per repo is guaranteed by an Engine-side
+claim taken *before* the session is started (a monitored pending claim, then
+`SessionServer.running?/1`), so a double-click routes to the same session
+instead of pointing a second agent at the same working tree; the row and the
+hold clear on their own the first pass after convergence.
+
 ## ICM project workspaces
 
 *(shipped on `feat/workspace-profiles`; spec: [Workspace Profiles, Mounted
@@ -2348,3 +2413,4 @@ App-version truth for the updater: `desktop/src-tauri/tauri.conf.json`.
 - [2026-07-26-mail-smtp-send-design.md](superpowers/specs/2026-07-26-mail-smtp-send-design.md) — **Shipped** (Spec G — see [Mail](#mail-spec-e--mail-as-maildir-spec-g--human-only-send) and [Send](#send-spec-g) above): human-only SMTP send — Spec E's "there is no SMTP" invariant rewritten to *Valea transmits mail only on an explicit human action, hash-bound to the exact draft, sending identity, and threading the human reviewed; agents have no path to send; no code path retransmits*. Settings v5 (optional per-account `smtp` block, separate SMTP keychain entry, `outbound: human_send_and_push`), a hand-written tri-state `SmtpClient` on `:ssl`/`:gen_tcp` (the `354` boundary; `:unknown` never retried), the `send` ledger op kind with settings-pinned claim/snapshot/compose, wire/record dual compose, `send_review` + human resolution, network-free send classification at Engine activation, the kind-aware ordered display projection, the draft iteration loop (live `mail_draft` events + Request-changes routing into a session via `initial_prompt`), and the multi-account hardening pass (account-qualified selection, WAL + `busy_timeout`, per-account poll jitter). Live-acceptance checklist: `docs/superpowers/acceptance/2026-07-26-mail-smtp-send.md`.
 - [2026-07-28-side-panes-design.md](superpowers/specs/2026-07-28-side-panes-design.md) — **Shipped** (see [Side panes](#side-panes) above): one side pane beside a route's primary view, addressed entirely by a `?pane=` URL param (linkable, reload-surviving, Back-closable) — a `paneforge` split with a persisted ratio (`PaneHost`), a kind→component registry over placement-agnostic views (`ChatView`, `FileView`), and a `PaneContext` callback seam that makes `/chat` and `/knowledge` mirror images of the same click. Adds file viewers for the non-`.md` formats (text/PDF/image), clickable file leaves in `IcmTree` plus a session-header file popover, ACP `toolCall.locations` relayed as clickable chips with a containment-checked `relPath`, rename/delete for non-`.md` files, and the `/files/raw` credential split (image extensions token-exempt for `<img>`; everything else needs the control token, served from a fixed type map with `nosniff`).
 - [2026-07-29-tasks-schedules-design.md](superpowers/specs/2026-07-29-tasks-schedules-design.md) — **Shipped** (see [Tasks & schedules](#tasks--schedules) above): a native task concept and a native scheduling concept as two plain JSON files per ICM root (`tasks.json`, `schedules.json`) plus Valea's own `.valea/` namespace (materialized `briefing.md`, append-only `task-archive.jsonl`). Lenient display / strict execution with a per-entry disposition; one-writer optimistic-concurrency ledger writes with snapshot-hash-identified, append-first archival; a per-workspace 30 s scheduler over `schedule_state`/`schedule_runs` (fingerprints, monotonic anchors, tombstones, coalescing, catch-up, one-run-at-a-time, launch-time re-validation, tri-state kill switch) with a hand-rolled Vixie-semantics cron; prompt fires as `kind: "scheduled"` sessions at unchanged posture and command fires as timeout-bounded, output-capped exec spawns with no sandbox; consent as a `PermissionPolicy` always-ask on the root `schedules.json` plus a `.valea/**` write-deny (managed-settings mirror best-effort, very likely inert — the ACP callback enforces); the `/tasks` route's two tabs, the cockpit tasks line replacing `open_loops`, schedule notices, and backend-side scheduled-session filtering. Live-acceptance checklist: [docs/superpowers/acceptance/2026-07-29-tasks-schedules.md](superpowers/acceptance/2026-07-29-tasks-schedules.md).
+- [2026-07-30-icm-git-sync-design.md](superpowers/specs/2026-07-30-icm-git-sync-design.md) — **Shipped** (see [ICM git sync](#icm-git-sync) above): per-workspace `Valea.Git.Engine` over a `Valea.Git.Cli`/`Repo` seam that auto-syncs git-backed ICM mounts where it is safe and holds where it is not — fail-closed scope (repo root == mount root), one per-mount `git: {sync:, instructions:}` mode (`full`/`pull`/`off`, default `pull`), derived-state-only rows with no durable sync files, a local-read-first pass order, per-repo backoff, `merge_in_progress`/`diverged`/`blocked_local` holds that do no network at all, the doctor's `<mount key>: git sync` check with its ssh-agent hint, and the one-click conflict → agent handoff (deterministic briefing as `initial_prompt`, Engine-side claim protocol so a repo can only ever have one resolution session). **Its pass-order, `blocked_local`, notice-storage, doctor and status-enum sections are amended** by the spec's own "Implementation amendments (2026-07-30)" appendix — read that for what actually runs. Live-acceptance checklist: [docs/superpowers/acceptance/2026-07-30-icm-git-sync.md](superpowers/acceptance/2026-07-30-icm-git-sync.md).
