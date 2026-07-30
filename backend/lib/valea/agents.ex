@@ -76,6 +76,36 @@ defmodule Valea.Agents do
   end
 
   @doc """
+  Validates a `:context_doc` locator for a session about to start: `{:ok,
+  locator}` when it resolves (containment included — `Valea.Icm.Locator.
+  resolve/2`) to a regular file that exists right now, `{:error,
+  :context_doc_unavailable}` otherwise. `nil` passes through as `{:ok, nil}`.
+
+  The locator itself is what comes back, not the resolved absolute path: the
+  session persists and re-resolves the locator (that is the point of a
+  locator), so resolution here is a PRE-FLIGHT — "this context doc is real
+  and reachable" — not a rewrite.
+
+  Lives here rather than in `Valea.Api.Agents` because two callers now need
+  the identical check before `start_session/1`: the `create_session` RPC and
+  `Valea.Schedules.Runner.Live` (a scheduled prompt fire, whose failure mode
+  is a `failed` run record instead of an RPC error).
+  """
+  @spec resolve_context_doc(map() | nil, String.t()) ::
+          {:ok, map() | nil} | {:error, :context_doc_unavailable}
+  def resolve_context_doc(nil, _workspace), do: {:ok, nil}
+
+  def resolve_context_doc(locator, workspace) when is_map(locator) and is_binary(workspace) do
+    case Valea.Icm.Locator.resolve(workspace, locator) do
+      {:ok, abs} ->
+        if File.regular?(abs), do: {:ok, locator}, else: {:error, :context_doc_unavailable}
+
+      {:error, _reason} ->
+        {:error, :context_doc_unavailable}
+    end
+  end
+
+  @doc """
   Every LIVE session paired with the input locator it was started with —
   `{session_id, input}`, `input` being the raw string-keyed locator map (or
   `nil` for a session started without one).

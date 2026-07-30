@@ -465,17 +465,10 @@ defmodule Valea.Api.Agents do
     end
   end
 
-  defp resolve_context_doc(nil, _workspace), do: {:ok, nil}
-
-  defp resolve_context_doc(locator, workspace) do
-    case Valea.Icm.Locator.resolve(workspace, locator) do
-      {:ok, abs} ->
-        if File.regular?(abs), do: {:ok, locator}, else: {:error, :context_doc_unavailable}
-
-      {:error, _reason} ->
-        {:error, :context_doc_unavailable}
-    end
-  end
+  # Same pre-flight, shared with the scheduler's prompt fires — see
+  # `Valea.Agents.resolve_context_doc/2`.
+  defp resolve_context_doc(locator, workspace),
+    do: Valea.Agents.resolve_context_doc(locator, workspace)
 
   # `Valea.Agents.list_sessions/0` returns string-keyed maps (built for JSON
   # transcript metadata); typed action returns need atom keys matching the
