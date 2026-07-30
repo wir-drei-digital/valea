@@ -17,6 +17,13 @@ defmodule Valea.Workspace.Runtime do
       {Valea.Audit, %{root: root, generation: gen}},
       {Valea.Mail.Supervisor, %{root: root, generation: gen}},
       {Valea.Calendar.Supervisor, %{root: root, generation: gen}},
+      # Listed BEFORE the session supervisor a scheduled prompt fire needs,
+      # which is safe because the scheduler's first tick cannot outrun the
+      # open: it runs from `handle_continue` (after `init/1` returns), and its
+      # first two acts — the generation check and the mount listing — are
+      # `Valea.Workspace.Manager` calls that queue behind the in-flight
+      # `open` and therefore only answer once every Runtime child is up.
+      {Valea.Schedules.Supervisor, %{root: root, generation: gen}},
       {DynamicSupervisor, name: Valea.Agents.SessionSupervisor, strategy: :one_for_one}
     ]
 
