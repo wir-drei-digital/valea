@@ -38,6 +38,8 @@
     {/if}
   {/each}
   {#if truncated}
-    <div class="px-3 py-1 text-[10.5px] text-ink-meta italic">diff truncated</div>
+    <!-- Plain language, no "diff": this renders for non-technical users too
+         (file-activity rail), and "truncated" answers nothing. -->
+    <div class="px-3 py-1 text-[10.5px] text-ink-meta italic">long change — not every line shown</div>
   {/if}
 </div>

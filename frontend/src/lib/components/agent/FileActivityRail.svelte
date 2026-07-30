@@ -22,7 +22,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
   import DiffBlock from '$lib/components/diff/DiffBlock.svelte';
-  import { lineDiff } from '$lib/diff/line-diff';
+  import { lineDiff, type DiffRow } from '$lib/diff/line-diff';
   import type { FileActivity } from './file-activity';
 
   let {
@@ -78,6 +78,20 @@
     else next.add(key);
     expandedKeys = next;
   }
+
+  // Plain-language first (product principle: technical detail one toggle
+  // away — and the mono +/- grammar IS technical detail): each expanded
+  // change leads with a human sentence derived from the same rows the
+  // DiffBlock renders, so the counts can never disagree with the diff.
+  function changeSummary(rows: DiffRow[]): string {
+    const added = rows.filter((r) => r.type === 'add').length;
+    const removed = rows.filter((r) => r.type === 'del').length;
+    const lines = (n: number) => `${n} line${n === 1 ? '' : 's'}`;
+    if (added > 0 && removed > 0) return `Replaced ${lines(removed)} with ${lines(added)}`;
+    if (added > 0) return `Added ${lines(added)}`;
+    if (removed > 0) return `Removed ${lines(removed)}`;
+    return 'No lines changed';
+  }
 </script>
 
 <!-- tabindex="-1" (rail variant): the host moves focus here when the header
@@ -96,8 +110,11 @@
   aria-label="Files this session touched"
 >
   <div class="border-paper-hairline flex items-center gap-2 border-b px-3 py-2">
-    <span class="text-ink-heading text-[12.5px] font-medium">Files</span>
-    <span class="text-ink-meta text-[11.5px]">{activities.length}</span>
+    <!-- h2: gives screen-reader rotor users a landmark inside the aside.
+         One string, matching the header pill's "Files · N" exactly. -->
+    <h2 class="text-ink-heading text-[12.5px] font-medium">
+      Files · <span class="text-ink-meta font-normal">{activities.length}</span>
+    </h2>
     {#if variant === 'rail' && onClose}
       <!-- size-8 with negative margin: a ≥32px hit target (product floor)
            without growing the header bar. -->
@@ -146,8 +163,11 @@
                 <span class="text-ink-meta flex flex-wrap gap-x-2 text-[10.5px]">
                   {#if row.edits.length > 1}<span>{row.edits.length} edits</span>{/if}
                   <!-- warn-ink, not italic meta: a gone file is the one alarming
-                       state this rail can report, so it speaks in terracotta. -->
-                  {#if missingKeys.has(row.key)}<span class="text-warn-ink">no longer exists</span>{/if}
+                       state this rail can report, so it speaks in terracotta —
+                       with a cause, so it raises a question it also answers. -->
+                  {#if missingKeys.has(row.key)}<span class="text-warn-ink"
+                      >no longer exists — it may have been moved or removed since</span
+                    >{/if}
                 </span>
               {/if}
             </span>
@@ -186,9 +206,10 @@
                    `hasDiff`. -->
               {#if edit.diff && (edit.diff.oldText || edit.diff.newText)}
                 {@const d = lineDiff(edit.diff.oldText ?? '', edit.diff.newText ?? '')}
+                <p class="text-ink-secondary px-3 text-[11.5px]">{changeSummary(d.rows)}</p>
                 <DiffBlock rows={d.rows} truncated={d.truncated} />
               {:else}
-                <p class="text-ink-meta px-3 text-[11px] italic">no change details available</p>
+                <p class="text-ink-meta px-3 text-[11px] italic">no details recorded for this change</p>
               {/if}
             {/each}
           </div>
