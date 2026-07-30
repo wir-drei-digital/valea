@@ -17,6 +17,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { mostRecentMountKey } from '$lib/today/quick-session';
+  import { localDateIso } from '$lib/tasks/filters';
   import { tasksStore } from '$lib/tasks/store.svelte';
   import TasksTab from '$lib/components/tasks/TasksTab.svelte';
   import SchedulesTab from '$lib/components/tasks/SchedulesTab.svelte';
@@ -28,12 +29,14 @@
   // Local calendar date — "due today" is a wall-clock question, and the backend
   // asks it in the host zone (`Valea.Cockpit.tasks_line/2`); the browser's own
   // local date is the same answer on the same machine.
-  const todayIso = $derived.by(() => {
-    const now = new Date();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    return `${now.getFullYear()}-${month}-${day}`;
-  });
+  //
+  // Held as STATE and re-read on a timer (review round 1, L6): this app stays
+  // open for days, and a `$derived` with no dependencies computes once — at
+  // 00:01 the Today filter would still be measuring against yesterday, quietly
+  // hiding what is now due. The tick is cheap and only ever assigns a string,
+  // so the re-render happens on the day boundary and nowhere else.
+  let now = $state(new Date());
+  const todayIso = $derived(localDateIso(now));
 
   // Quick-add's default project: the ICM the user last worked in (Today's
   // quick-composer precedent), falling back to the first mounted one.
@@ -61,9 +64,41 @@
     // since a live switch never remounts the route.
     void tasksStore.refresh();
     const unsubIcm = icmStore.onIcmChanged(() => void tasksStore.refresh());
-    return () => unsubIcm();
+
+    // Midnight watch (L6). A minute's granularity is plenty for a date, and the
+    // `visibilitychange` read catches the machine that was asleep at 00:00 and
+    // is looked at again at 09:00 — timers do not reliably fire while suspended.
+    const tick = setInterval(() => (now = new Date()), 60_000);
+    const onVisible = () => {
+      if (!document.hidden) now = new Date();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      unsubIcm();
+      clearInterval(tick);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   });
 </script>
+
+{#snippet loading()}
+  <div class="flex flex-col gap-3" aria-hidden="true">
+    <Skeleton class="h-8 w-full max-w-[380px] rounded-lg" />
+    <Skeleton class="h-3 w-28" />
+    <Skeleton class="h-16 w-full rounded-xl" />
+    <Skeleton class="h-16 w-full rounded-xl" />
+  </div>
+{/snippet}
+
+<!-- Calm, and scoped to the ONE list that failed: the other tab is unaffected
+     and still renders its rows. -->
+{#snippet unreachable(what: string, retry: () => void)}
+  <div class="flex flex-col items-start gap-3 py-6">
+    <p class="text-ink-body text-[13.5px]">Couldn't read {what}. The backend may still be starting.</p>
+    <Button variant="outline" size="sm" onclick={retry}>Retry</Button>
+  </div>
+{/snippet}
 
 <AppFrame>
   {#snippet main()}
@@ -86,22 +121,23 @@
           </div>
         </PageHeader>
 
-        {#if !tasksStore.loaded && !tasksStore.failed}
-          <div class="flex flex-col gap-3" aria-hidden="true">
-            <Skeleton class="h-8 w-full max-w-[380px] rounded-lg" />
-            <Skeleton class="h-3 w-28" />
-            <Skeleton class="h-16 w-full rounded-xl" />
-            <Skeleton class="h-16 w-full rounded-xl" />
-          </div>
-        {:else if tasksStore.failed}
-          <div class="flex flex-col items-start gap-3 py-6">
-            <p class="text-ink-body text-[13.5px]">
-              Couldn't read the ledgers. The backend may still be starting.
-            </p>
-            <Button variant="outline" size="sm" onclick={() => void tasksStore.refresh()}>Retry</Button>
-          </div>
-        {:else if tab === 'schedules'}
-          <SchedulesTab />
+        <!-- Load state is read PER TAB (review round 1, M2): the two list RPCs
+             fail independently, and a tab whose own list never arrived must say
+             so. Shared flags let the other list's success flip this tab into its
+             "No projects yet" empty state — an unreachable ledger rendered as an
+             empty one, which is exactly the lie the leniency contract forbids. -->
+        {#if tab === 'schedules'}
+          {#if !tasksStore.schedulesLoaded && !tasksStore.schedulesFailed}
+            {@render loading()}
+          {:else if tasksStore.schedulesFailed}
+            {@render unreachable('the schedules', () => void tasksStore.refreshSchedules())}
+          {:else}
+            <SchedulesTab />
+          {/if}
+        {:else if !tasksStore.tasksLoaded && !tasksStore.tasksFailed}
+          {@render loading()}
+        {:else if tasksStore.tasksFailed}
+          {@render unreachable('the task ledgers', () => void tasksStore.refreshTasks())}
         {:else}
           <TasksTab {todayIso} {defaultMountKey} />
         {/if}

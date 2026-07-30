@@ -270,14 +270,21 @@
            schedule would otherwise own this list. The toggle also re-fetches
            the NAV feed with `include_scheduled: true`, which is filtered
            backend-side before its per-group limit; this flat list is filtered
-           client-side on purpose (see `SessionsListStore.visibleSessions`). -->
+           client-side on purpose (see `SessionsListStore.visibleSessions`).
+
+           Both stores hold the flag as STATE (review round 1, M1) — the nav
+           feed is refreshed by a dozen callers that know nothing about this
+           checkbox, so passing it as a one-shot argument let the very next
+           refresh drop scheduled runs while the box stayed ticked. -->
       <label class="text-ink-meta flex items-center gap-2 px-3.5 py-2 text-[11.5px]">
         <input
           type="checkbox"
           checked={sessionsListStore.includeScheduled}
           onchange={(event) => {
-            sessionsListStore.includeScheduled = event.currentTarget.checked;
-            void recentSessionsStore.refresh(sessionsListStore.includeScheduled);
+            const next = event.currentTarget.checked;
+            sessionsListStore.includeScheduled = next;
+            recentSessionsStore.includeScheduled = next;
+            void recentSessionsStore.refresh();
           }}
         />
         Include scheduled runs{sessionsListStore.scheduledCount > 0

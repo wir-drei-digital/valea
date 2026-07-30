@@ -14,20 +14,21 @@
   import { humanizeCron } from '$lib/tasks/cadence';
   import ScheduleRow from './ScheduleRow.svelte';
   import {
+    composerTargetAfterSave,
     editOutcomeNotice,
     killSwitchCopy,
     scheduleErrorMessage,
+    scheduleRowKey,
     schedulesLedgerNote
   } from './schedule-shapes';
 
   const icms = $derived(tasksStore.scheduleIcms);
   const killSwitch = $derived(killSwitchCopy(tasksStore.schedulerPaused));
 
-  /** `${mountKey}/${scheduleId}` — the row addressing, used for every per-row bit of local state. */
-  function rowKey(mountKey: string, scheduleId: string | null): string {
-    return `${mountKey}/${scheduleId ?? ''}`;
-  }
-
+  // The row key (`scheduleRowKey`, tested) is computed ONCE per row in the
+  // markup below and handed to every handler, rather than each handler
+  // recomputing it — it now depends on the row's index too, which the handlers
+  // have no business knowing.
   let expanded = $state<Record<string, boolean>>({});
   let runs = $state<Record<string, ScheduleRun[]>>({});
   let runsLoading = $state<Record<string, boolean>>({});
@@ -38,16 +39,14 @@
   let pauseAllBusy = $state(false);
   let pauseAllError = $state<string | null>(null);
 
-  async function toggleExpand(mountKey: string, scheduleId: string | null): Promise<void> {
-    const key = rowKey(mountKey, scheduleId);
+  async function toggleExpand(key: string, mountKey: string, scheduleId: string | null): Promise<void> {
     const next = !expanded[key];
     expanded = { ...expanded, [key]: next };
     if (!next || scheduleId === null) return;
-    await loadRuns(mountKey, scheduleId);
+    await loadRuns(key, mountKey, scheduleId);
   }
 
-  async function loadRuns(mountKey: string, scheduleId: string): Promise<void> {
-    const key = rowKey(mountKey, scheduleId);
+  async function loadRuns(key: string, mountKey: string, scheduleId: string): Promise<void> {
     runsLoading = { ...runsLoading, [key]: true };
     runsError = { ...runsError, [key]: null };
     const result = await tasksStore.runHistory(mountKey, scheduleId);
@@ -64,9 +63,13 @@
    * "saved, and it will not fire: `paused` is not a boolean" lands on the row
    * immediately — no waiting for the watcher-driven re-list.
    */
-  async function togglePause(mountKey: string, scheduleId: string | null, next: boolean): Promise<void> {
+  async function togglePause(
+    key: string,
+    mountKey: string,
+    scheduleId: string | null,
+    next: boolean
+  ): Promise<void> {
     if (scheduleId === null) return;
-    const key = rowKey(mountKey, scheduleId);
     busyRow = key;
     try {
       const outcome = await tasksStore.setSchedulePaused(mountKey, scheduleId, next);
@@ -79,9 +82,8 @@
     }
   }
 
-  async function runNow(mountKey: string, scheduleId: string | null): Promise<void> {
+  async function runNow(key: string, mountKey: string, scheduleId: string | null): Promise<void> {
     if (scheduleId === null) return;
-    const key = rowKey(mountKey, scheduleId);
     busyRow = key;
     try {
       const outcome = await tasksStore.runNow(mountKey, scheduleId);
@@ -89,15 +91,14 @@
         ...notices,
         [key]: outcome.ok ? 'Fired now — this run does not shift the schedule.' : scheduleErrorMessage(outcome.error)
       };
-      if (outcome.ok && expanded[key]) await loadRuns(mountKey, scheduleId);
+      if (outcome.ok && expanded[key]) await loadRuns(key, mountKey, scheduleId);
     } finally {
       busyRow = null;
     }
   }
 
-  async function confirmDelete(mountKey: string, scheduleId: string | null): Promise<void> {
+  async function confirmDelete(key: string, mountKey: string, scheduleId: string | null): Promise<void> {
     if (scheduleId === null) return;
-    const key = rowKey(mountKey, scheduleId);
     busyRow = key;
     try {
       const outcome = await tasksStore.deleteSchedule(mountKey, scheduleId);
@@ -138,6 +139,14 @@
   let composerBusy = $state(false);
   let composerNotice = $state<string | null>(null);
   let composerError = $state<string | null>(null);
+  /**
+   * Set once a create has LANDED (review round 1, L4). The composer stays open
+   * after a lenient write that came back non-executable, and every
+   * `create_schedule` stamps a fresh id — so from that moment on, Save must
+   * MUTATE the entry it just wrote rather than write a twin. `null` = the
+   * composer has not created anything yet.
+   */
+  let composerEditingId = $state<string | null>(null);
 
   $effect(() => {
     const keys = icms.map((icm) => icm.mountKey);
@@ -174,28 +183,48 @@
     };
   }
 
+  /** Back to a blank composer — also the "Cancel" path, so a half-corrected entry never leaks into the next one. */
+  function closeComposer(): void {
+    composerOpen = false;
+    composerEditingId = null;
+    composerTitle = '';
+    composerPrompt = '';
+    composerCommand = '';
+    composerArgs = '';
+    composerContextDoc = '';
+    composerNotice = null;
+    composerError = null;
+  }
+
   async function saveComposer(): Promise<void> {
     composerBusy = true;
     composerNotice = null;
     composerError = null;
     try {
-      const outcome = await tasksStore.createSchedule(composerMountKey, composerFields());
-      if (!outcome.ok) {
-        composerError = scheduleErrorMessage(outcome.error);
-        return;
-      }
-      // The write is LENIENT — an invalid entry lands and shows up
+      // The write is LENIENT either way — an invalid entry lands and shows up
       // non-executable — so the composer reports the verdict it just got back
-      // rather than pretending the save was clean.
-      composerNotice = editOutcomeNotice(outcome);
-      if (composerNotice === null) {
-        composerOpen = false;
-        composerTitle = '';
-        composerPrompt = '';
-        composerCommand = '';
-        composerArgs = '';
-        composerContextDoc = '';
+      // rather than pretending the save was clean, and stays open on it.
+      if (composerEditingId === null) {
+        const outcome = await tasksStore.createSchedule(composerMountKey, composerFields());
+        if (!outcome.ok) {
+          composerError = scheduleErrorMessage(outcome.error);
+          return;
+        }
+        // The create LANDED, flagged or not — re-point the composer at the
+        // entry it just wrote, so a second Save fixes that one instead of
+        // writing a twin (L4).
+        composerEditingId = composerTargetAfterSave(null, outcome);
+        composerNotice = editOutcomeNotice(outcome);
+      } else {
+        const outcome = await tasksStore.patchSchedule(composerMountKey, composerEditingId, composerFields());
+        if (!outcome.ok) {
+          composerError = scheduleErrorMessage(outcome.error);
+          return;
+        }
+        composerNotice = editOutcomeNotice(outcome);
       }
+
+      if (composerNotice === null) closeComposer();
     } finally {
       composerBusy = false;
     }
@@ -252,8 +281,19 @@
     {/if}
 
     <div>
-      <Button type="button" variant="outline" size="sm" onclick={() => (composerOpen = !composerOpen)}>
-        {composerOpen ? 'Cancel new schedule' : 'New schedule'}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onclick={() => (composerOpen ? closeComposer() : (composerOpen = true))}
+      >
+        {#if !composerOpen}
+          New schedule
+        {:else if composerEditingId === null}
+          Cancel new schedule
+        {:else}
+          Done editing
+        {/if}
       </Button>
     </div>
 
@@ -262,11 +302,13 @@
         {#if icms.length > 1}
           <div class="flex flex-col gap-1">
             <Label for="sched-new-icm">Project</Label>
+            <!-- Locked once the entry exists: it lives in THAT project's
+                 schedules.json, and a later Save patches it there. -->
             <select
               id="sched-new-icm"
               class="border-paper-hairline bg-paper-surface text-ink-body rounded-[7px] border px-2 py-1.5 text-[12.5px]"
               bind:value={composerMountKey}
-              disabled={composerBusy}
+              disabled={composerBusy || composerEditingId !== null}
             >
               {#each icms as icm (icm.mountKey)}
                 <option value={icm.mountKey}>{icm.icmName || icm.mountKey}</option>
@@ -366,9 +408,14 @@
           <p class="text-warn-ink text-[12px]" role="alert">{composerError}</p>
         {/if}
 
-        <div class="flex justify-end">
+        <div class="flex items-center justify-end gap-3">
+          {#if composerEditingId !== null}
+            <!-- The entry is on disk already (it is in the list below, flagged).
+                 Saying so is what makes the second Save legible as a fix. -->
+            <p class="text-ink-meta text-[11.5px]">Already saved — Save updates it.</p>
+          {/if}
           <Button type="button" size="sm" disabled={!canSave} onclick={() => void saveComposer()}>
-            Save schedule
+            {composerEditingId === null ? 'Save schedule' : 'Save changes'}
           </Button>
         </div>
       </div>
@@ -393,7 +440,7 @@
           {:else}
             <ul class="mt-1.5 flex flex-col">
               {#each icm.schedules as entry, index (entry.id ?? `no-id-${index}`)}
-                {@const key = rowKey(icm.mountKey, entry.id)}
+                {@const key = scheduleRowKey(icm.mountKey, entry.id, index)}
                 <ScheduleRow
                   {entry}
                   expanded={expanded[key] === true}
@@ -403,11 +450,11 @@
                   runsLoading={runsLoading[key] === true}
                   runsError={runsError[key] ?? null}
                   confirmingDelete={confirmingDelete === key}
-                  onToggleExpand={() => void toggleExpand(icm.mountKey, entry.id)}
-                  onTogglePause={(next) => void togglePause(icm.mountKey, entry.id, next)}
-                  onRunNow={() => void runNow(icm.mountKey, entry.id)}
+                  onToggleExpand={() => void toggleExpand(key, icm.mountKey, entry.id)}
+                  onTogglePause={(next) => void togglePause(key, icm.mountKey, entry.id, next)}
+                  onRunNow={() => void runNow(key, icm.mountKey, entry.id)}
                   onAskDelete={() => (confirmingDelete = key)}
-                  onConfirmDelete={() => void confirmDelete(icm.mountKey, entry.id)}
+                  onConfirmDelete={() => void confirmDelete(key, icm.mountKey, entry.id)}
                   onCancelDelete={() => (confirmingDelete = null)}
                 />
               {/each}

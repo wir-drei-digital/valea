@@ -11,9 +11,11 @@ import {
   showsAgentBadge,
   statusLabel,
   statusOptions,
+  taskEditPatch,
   taskErrorMessage,
   taskSourceRender,
-  unknownStatusHint
+  unknownStatusHint,
+  type TaskEditForm
 } from './task-shapes';
 import { normalizeTask } from '$lib/tasks/filters';
 
@@ -225,6 +227,67 @@ describe('taskErrorMessage', () => {
     }
     // An unknown code never leaks an atom name into the UI.
     expect(taskErrorMessage('some_new_atom')).toBe('That didn’t work. Please try again.');
+  });
+});
+
+describe('taskEditPatch', () => {
+  const entry = task({
+    title: 'Send the offer',
+    notes: 'draft in clients/lea.md',
+    due: '2026-08-01',
+    today: true,
+    priority: 'high',
+    assignee: 'agent',
+    status: 'in_progress'
+  });
+
+  /** The editor's fields as they are SEEDED from an entry — the untouched form. */
+  function seed(overrides: Partial<TaskEditForm> = {}): TaskEditForm {
+    return {
+      title: entry.title ?? '',
+      notes: entry.notes ?? '',
+      due: entry.due ?? '',
+      today: entry.today,
+      priority: entry.priority ?? '',
+      assignee: entry.assignee ?? 'user',
+      status: entry.status,
+      ...overrides
+    };
+  }
+
+  it('sends nothing at all when nothing changed — a Save must not rewrite untouched fields', () => {
+    expect(taskEditPatch(entry, seed())).toEqual({});
+  });
+
+  it('sends ONLY the changed fields, so mutate_task round-trips every key Valea does not know', () => {
+    expect(taskEditPatch(entry, seed({ priority: 'low' }))).toEqual({ priority: 'low' });
+    expect(taskEditPatch(entry, seed({ today: false }))).toEqual({ today: false });
+    expect(taskEditPatch(entry, seed({ status: 'done' }))).toEqual({ status: 'done' });
+  });
+
+  // Review round 1, L8: title used to be the one field that cleared to `""`.
+  it('clears EVERY optional text field to null, title included', () => {
+    expect(taskEditPatch(entry, seed({ title: '' }))).toEqual({ title: null });
+    expect(taskEditPatch(entry, seed({ title: '   ' }))).toEqual({ title: null });
+    expect(taskEditPatch(entry, seed({ notes: '' }))).toEqual({ notes: null });
+    expect(taskEditPatch(entry, seed({ due: '' }))).toEqual({ due: null });
+    expect(taskEditPatch(entry, seed({ priority: '' }))).toEqual({ priority: null });
+  });
+
+  it('trims the title, and treats a whitespace-only edit of an unchanged title as no edit', () => {
+    expect(taskEditPatch(entry, seed({ title: '  Send the offer  ' }))).toEqual({});
+    expect(taskEditPatch(entry, seed({ title: '  Send it today  ' }))).toEqual({ title: 'Send it today' });
+  });
+
+  it('compares assignee against the same default the select shows, so opening and saving is a no-op', () => {
+    const unassigned = task({ assignee: undefined });
+    expect(taskEditPatch(unassigned, { ...seed(), assignee: 'user' }).assignee).toBeUndefined();
+    expect(taskEditPatch(unassigned, { ...seed(), assignee: 'agent' })).toMatchObject({ assignee: 'agent' });
+  });
+
+  it('normalizes an unknown status on save — the spec’s repair affordance', () => {
+    const odd = task({ status: 'waiting_on_bank' });
+    expect(taskEditPatch(odd, { ...seed(), status: 'open' })).toMatchObject({ status: 'open' });
   });
 });
 

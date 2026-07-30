@@ -16,7 +16,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import type { TaskEntry } from '$lib/tasks/filters';
-  import { statusOptions, unknownStatusHint } from './task-shapes';
+  import { statusOptions, taskEditPatch, unknownStatusHint } from './task-shapes';
 
   let {
     task,
@@ -59,21 +59,10 @@
   const statusHint = $derived(unknownStatusHint(task.status));
   const options = $derived(statusOptions(task.status));
 
-  /** Only what changed. `''` on an optional text field means "clear it" → `null`. */
-  function patch(): Record<string, unknown> {
-    const next: Record<string, unknown> = {};
-    const trimmedTitle = title.trim();
-    if (trimmedTitle !== (task.title ?? '')) next.title = trimmedTitle;
-    if (notes !== (task.notes ?? '')) next.notes = notes === '' ? null : notes;
-    if (due !== (task.due ?? '')) next.due = due === '' ? null : due;
-    if (today !== task.today) next.today = today;
-    if (priority !== (task.priority ?? '')) next.priority = priority === '' ? null : priority;
-    if (assignee !== (task.assignee ?? 'user')) next.assignee = assignee;
-    if (status !== task.status) next.status = status;
-    return next;
-  }
+  /** Only what changed; `''` on an optional text field clears it to `null`. Decided (and tested) in `task-shapes.ts`. */
+  const patch = $derived(taskEditPatch(task, { title, notes, due, today, priority, assignee, status }));
 
-  const dirty = $derived.by(() => Object.keys(patch()).length > 0);
+  const dirty = $derived(Object.keys(patch).length > 0);
 </script>
 
 <div class="flex w-full flex-col gap-3" aria-label="Edit task">
@@ -166,6 +155,6 @@
 
   <div class="flex items-center justify-end gap-2">
     <Button type="button" variant="ghost" size="sm" onclick={onClose} disabled={saving}>Cancel</Button>
-    <Button type="button" size="sm" disabled={saving || !dirty} onclick={() => onSave(patch())}>Save</Button>
+    <Button type="button" size="sm" disabled={saving || !dirty} onclick={() => onSave(patch)}>Save</Button>
   </div>
 </div>

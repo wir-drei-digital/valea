@@ -40,6 +40,26 @@ export type RecentSessionGroup = {
 export class RecentSessionsStore {
   groups: RecentSessionGroup[] = $state([]);
   loaded = $state(false);
+  /**
+   * "Include scheduled runs" (tasks+schedules spec §Scheduled-session
+   * visibility) — STATE, not a `refresh()` argument (review round 1, M1).
+   *
+   * The nav feed excludes `kind: "scheduled"` runs by default, filtered
+   * backend-side BEFORE the per-group limit so `limit` keeps meaning "limit
+   * real chat sessions" and the store never fetch-then-hides. A dozen callers
+   * refresh this store (the `mounts_changed` handler, `handleWorkspaceEvent`,
+   * `IcmProjects`, `ChatView`, both chat routes, `DraftsPanel`, `EntryMenu`),
+   * and none of them knows what the all-sessions pane's checkbox says — when
+   * the flag rode in as a parameter, any one of those bare calls silently
+   * dropped scheduled runs out of the nav while the box stayed ticked. Holding
+   * it here makes every refresh honour the toggle: the checkbox sets this
+   * field, then refreshes.
+   *
+   * Deliberately NOT cleared by `reset()`: it is a view preference of the
+   * person looking, not workspace data (`SessionsListStore.includeScheduled`,
+   * its client-side twin for the flat list, takes the same stance).
+   */
+  includeScheduled = $state(false);
 
   #api: RecentSessionsApi;
 
@@ -59,14 +79,12 @@ export class RecentSessionsStore {
    * own default) so this store's contract doesn't silently drift if that
    * wrapper's default ever changes.
    */
-  async refresh(includeScheduled = false): Promise<void> {
-    // `includeScheduled` (tasks+schedules spec §Scheduled-session visibility) —
-    // the nav feed EXCLUDES `kind: "scheduled"` runs by default, filtered
-    // backend-side BEFORE the per-group limit so `limit` keeps meaning "limit
-    // real chat sessions" and the store never fetch-then-hides. The
-    // all-sessions pane's toggle is what passes `true`; every other caller
-    // (`wireIcmEvents`, `wireRecentSessionsEvents`, `IcmProjects`) leaves it off.
-    const result = await this.#api.listRecentSessionsByIcm(NAV_SESSIONS_TOTAL + 1, includeScheduled);
+  async refresh(): Promise<void> {
+    // Takes NO `includeScheduled` argument on purpose (review round 1, M1): the
+    // stored flag is the single answer to "does this feed show scheduled runs",
+    // so a bare refresh from any of this store's many callers can no longer
+    // contradict the checkbox. See `includeScheduled` above.
+    const result = await this.#api.listRecentSessionsByIcm(NAV_SESSIONS_TOTAL + 1, this.includeScheduled);
     if (!result.ok) return;
 
     const data = result.data as { groups?: RecentSessionGroup[] };
@@ -86,6 +104,9 @@ export class RecentSessionsStore {
    * event (close, open, or switch), so the previous workspace's session
    * groups are never mistaken for the new one's. Mirrors `IcmStore.reset()`
    * in `icm.svelte.ts` exactly.
+   *
+   * `includeScheduled` survives — it is what the reader asked to SEE, not
+   * anything the closed workspace owned (see its own note above).
    */
   reset(): void {
     this.groups = [];

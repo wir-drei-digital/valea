@@ -93,20 +93,11 @@
     report(await tasksStore.setTaskStatus(mountKey, task.id, 'dropped'));
   }
 
-  /**
-   * Row "Archive": completes the entry (as `dropped` when it is still open) and
-   * then runs the archive sweep for THAT ICM. `archive_done` is per-ICM by
-   * design — Valea owns archival, and there is no per-entry archive RPC — so
-   * this also archives any other already-completed entries in the same ICM.
-   * That is the same sweep "Clear done" performs, scoped by where the user
-   * clicked; nothing open is ever touched (the sweep only takes
-   * `done`/`dropped`).
-   */
-  async function archive(mountKey: string, task: TaskEntry): Promise<void> {
-    if (task.id === null) return;
-    if (!isCompleted(task) && !report(await tasksStore.setTaskStatus(mountKey, task.id, 'dropped'))) return;
-    report(await tasksStore.clearDone(mountKey));
-  }
+  // NOTE (review round 1, M3): there is no per-row archive. `archive_done`
+  // takes a mount key and sweeps every done/dropped entry in the ICM — the only
+  // archival Valea has — so a row-level "Archive" moved far more than the line
+  // the user clicked. Archiving lives on the two "Clear done" buttons below,
+  // whose labels say what they do.
 
   /** The id-less repair affordance: copy the entry's fields into a properly stamped task. */
   async function repair(mountKey: string, task: TaskEntry): Promise<void> {
@@ -281,7 +272,6 @@
                     editing = { mountKey: icm.mountKey, taskId: task.id };
                   }}
                   onDrop={() => void drop(icm.mountKey, task)}
-                  onArchive={() => void archive(icm.mountKey, task)}
                   onRepair={() => void repair(icm.mountKey, task)}
                 />
               {/each}

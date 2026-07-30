@@ -5,6 +5,7 @@ import {
   dueDate,
   isCompleted,
   isKnownStatus,
+  localDateIso,
   normalizeTask,
   orderTaskRows,
   sortTasks,
@@ -88,6 +89,27 @@ describe('dueDate', () => {
     expect(dueDate(task({ due: '2026-13-01' }))).toBeNull();
     expect(dueDate(task({ due: '2026-02-30' }))).toBeNull();
     expect(dueDate(task({}))).toBeNull();
+  });
+});
+
+// Review round 1, L6: the route re-reads this on a timer, so an app left open
+// across midnight stops filtering against yesterday.
+describe('localDateIso', () => {
+  it('reports the LOCAL calendar date, not the UTC one', () => {
+    // Local midnight and one minute before it are the same local day, whatever
+    // the host zone — the UTC reading of at least one of them is not.
+    const midnight = new Date(2026, 6, 30, 0, 0, 0);
+    const lateEvening = new Date(2026, 6, 30, 23, 59, 0);
+
+    expect(localDateIso(midnight)).toBe('2026-07-30');
+    expect(localDateIso(lateEvening)).toBe('2026-07-30');
+    // One minute later is a new day, which is the whole point of re-reading it.
+    expect(localDateIso(new Date(2026, 6, 31, 0, 0, 0))).toBe('2026-07-31');
+  });
+
+  it('zero-pads month and day, so the string compares lexically against a due date', () => {
+    expect(localDateIso(new Date(2026, 0, 5, 12, 0, 0))).toBe('2026-01-05');
+    expect(dueDate(task({ due: localDateIso(new Date(2026, 0, 5, 12, 0, 0)) }))).toBe('2026-01-05');
   });
 });
 

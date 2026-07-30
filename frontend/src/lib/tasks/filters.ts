@@ -87,6 +87,22 @@ export function dueDate(task: TaskEntry): string | null {
   return parsed.toISOString().slice(0, 10) === due ? due : null;
 }
 
+/**
+ * Local-timezone `YYYY-MM-DD` for a Date — what "today" means to everything
+ * above. NOT `toISOString().slice(0, 10)`: that is UTC, and west of Greenwich
+ * it reports tomorrow's date all evening (the calendar grid's `dayKey` in
+ * `components/calendar/calendar-shapes.ts` mirrors this, for the same reason).
+ *
+ * The host zone is the right zone here — the backend asks the same question of
+ * the same machine (`Valea.Cockpit.tasks_line/2`), so the cockpit line and the
+ * tab agree about what is due.
+ */
+export function localDateIso(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
 export function isOverdue(task: TaskEntry, todayIso: string): boolean {
   const due = dueDate(task);
   return due !== null && due < todayIso;

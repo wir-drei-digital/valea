@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MALFORMED_SCHEDULES_NOTE,
   coalescedLabel,
+  composerTargetAfterSave,
   dispositionLine,
   durationLabel,
   editOutcomeNotice,
@@ -13,6 +14,7 @@ import {
   runNowDisabledReason,
   runTranscriptHref,
   scheduleErrorMessage,
+  scheduleRowKey,
   schedulesLedgerNote,
   showsAgentBadge,
   stateChip,
@@ -256,6 +258,45 @@ describe('editOutcomeNotice', () => {
     expect(editOutcomeNotice({ disposition: 'executable', reason: null })).toBeNull();
     // A vanished entry answers null/null — nothing honest to say about it.
     expect(editOutcomeNotice({ disposition: null, reason: null })).toBeNull();
+  });
+});
+
+// Review round 1, L7: every bit of the tab's per-row state (expanded, busy,
+// notice, run history, delete confirmation) hangs off this key.
+describe('scheduleRowKey', () => {
+  it('addresses a row by its id, scoped to the ICM — two ICMs may hold the same id', () => {
+    expect(scheduleRowKey('primary', 's-1', 0)).toBe('primary/s-1');
+    expect(scheduleRowKey('primary', 's-1', 0)).not.toBe(scheduleRowKey('clients', 's-1', 0));
+    // The index never enters the key of an addressable row: re-ordering the
+    // file must not drop the expansion the user opened.
+    expect(scheduleRowKey('primary', 's-1', 4)).toBe(scheduleRowKey('primary', 's-1', 0));
+  });
+
+  it('keeps two id-less entries in one ICM apart — they used to share one key, and one expansion', () => {
+    expect(scheduleRowKey('primary', null, 0)).not.toBe(scheduleRowKey('primary', null, 1));
+    // …and neither can collide with a real id (`Valea.Schedules` trims ids and
+    // none of them contains a `#`).
+    expect(scheduleRowKey('primary', null, 0)).toBe('primary/#0');
+  });
+});
+
+// Review round 1, L4: a create that LANDS but reads back non-executable leaves
+// the composer open on its notice. Every create stamps a fresh id, so the next
+// Save has to mutate what was just written rather than write a twin.
+describe('composerTargetAfterSave', () => {
+  it('adopts the id a landed create handed back', () => {
+    expect(composerTargetAfterSave(null, { id: 's-9' })).toBe('s-9');
+  });
+
+  it('keeps the entry it is already editing — a mutate answers with no id of its own', () => {
+    expect(composerTargetAfterSave('s-9', {})).toBe('s-9');
+    expect(composerTargetAfterSave('s-9', { id: 's-other' })).toBe('s-9');
+  });
+
+  it('stays in create mode when there is no usable id, rather than addressing a blank', () => {
+    expect(composerTargetAfterSave(null, {})).toBeNull();
+    expect(composerTargetAfterSave(null, { id: null })).toBeNull();
+    expect(composerTargetAfterSave(null, { id: '   ' })).toBeNull();
   });
 });
 

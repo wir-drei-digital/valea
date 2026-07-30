@@ -109,6 +109,17 @@ export type EditOutcome =
   | { ok: true; disposition: string | null; reason: string | null }
   | { ok: false; error: string };
 
+/**
+ * A create answers with the id it just stamped, beside the same verdict a
+ * mutate carries. The composer needs it (review round 1, L4): a create that
+ * LANDS but reads back `not_executable` leaves the form open with the notice,
+ * and without the id a second Save would create a twin entry rather than fix
+ * the one that exists.
+ */
+export type CreateOutcome =
+  | { ok: true; id: string | null; disposition: string | null; reason: string | null }
+  | { ok: false; error: string };
+
 export type SimpleOutcome = { ok: true } | { ok: false; error: string };
 export type RunNowOutcome = { ok: true; runId: string } | { ok: false; error: string };
 
@@ -198,10 +209,26 @@ export class TasksStore {
   taskIcms: TaskIcm[] = $state([]);
   scheduleIcms: ScheduleIcm[] = $state([]);
   schedulerPaused: SchedulerPause = $state('off');
-  /** True once a first successful load of EITHER list landed — drives the skeleton. */
-  loaded = $state(false);
-  /** Set only when the FIRST load failed; a failed background refresh keeps the last good payload. */
-  failed = $state(false);
+
+  /**
+   * Load state is PER LIST (review round 1, M2), not shared across both.
+   *
+   * `refresh()` fires the two list RPCs together, and they fail independently —
+   * a `schedules.json` the backend can't reach while `list_tasks` answers fine
+   * is an ordinary outcome. With one shared pair of flags, the successful list
+   * flipped `loaded` and cleared `failed`, so the FAILING tab rendered its
+   * "No projects yet" empty state: a load error dressed up as an empty ledger,
+   * which is the one thing the leniency contract must never do (an empty
+   * ledger is a fact about the user's files; an unreachable one is not).
+   *
+   * `*Failed` is set only when that list has never loaded — a failed BACKGROUND
+   * refresh keeps the last good payload on screen rather than replacing rows
+   * the user is reading with an error.
+   */
+  tasksLoaded = $state(false);
+  tasksFailed = $state(false);
+  schedulesLoaded = $state(false);
+  schedulesFailed = $state(false);
 
   #api: TasksApi;
 
@@ -223,29 +250,29 @@ export class TasksStore {
   async refreshTasks(generation?: number): Promise<SimpleOutcome> {
     const result = await this.#api.listTasks({ generation: this.#generation(generation) });
     if (!result.ok) {
-      if (!this.loaded) this.failed = true;
+      if (!this.tasksLoaded) this.tasksFailed = true;
       return { ok: false, error: result.error };
     }
 
     const data = result.data as { icms?: unknown };
     this.taskIcms = maps(data.icms).map(normalizeTaskIcm);
-    this.loaded = true;
-    this.failed = false;
+    this.tasksLoaded = true;
+    this.tasksFailed = false;
     return { ok: true };
   }
 
   async refreshSchedules(generation?: number): Promise<SimpleOutcome> {
     const result = await this.#api.listSchedules({ generation: this.#generation(generation) });
     if (!result.ok) {
-      if (!this.loaded) this.failed = true;
+      if (!this.schedulesLoaded) this.schedulesFailed = true;
       return { ok: false, error: result.error };
     }
 
     const data = result.data as { icms?: unknown; schedulerPaused?: unknown; scheduler_paused?: unknown };
     this.scheduleIcms = maps(data.icms).map(normalizeScheduleIcm);
     this.schedulerPaused = pauseState(pick(data as Record<string, unknown>, 'scheduler_paused', 'schedulerPaused'));
-    this.loaded = true;
-    this.failed = false;
+    this.schedulesLoaded = true;
+    this.schedulesFailed = false;
     return { ok: true };
   }
 
@@ -263,8 +290,10 @@ export class TasksStore {
     this.taskIcms = [];
     this.scheduleIcms = [];
     this.schedulerPaused = 'off';
-    this.loaded = false;
-    this.failed = false;
+    this.tasksLoaded = false;
+    this.tasksFailed = false;
+    this.schedulesLoaded = false;
+    this.schedulesFailed = false;
   }
 
   // -- tasks -----------------------------------------------------------------
@@ -333,12 +362,24 @@ export class TasksStore {
    * patched with that verdict immediately — the row must not keep advertising a
    * stale disposition while the re-list is in flight.
    */
-  async createSchedule(mountKey: string, fields: Record<string, unknown>): Promise<EditOutcome> {
+  async createSchedule(mountKey: string, fields: Record<string, unknown>): Promise<CreateOutcome> {
     const result = await this.#api.createSchedule({ mountKey, fields, generation: this.#generation() });
     if (!result.ok) return { ok: false, error: result.error };
-    const data = result.data as { disposition?: unknown; reason?: unknown };
+    const data = result.data as { schedule?: unknown; disposition?: unknown; reason?: unknown };
     await this.refreshSchedules();
-    return { ok: true, disposition: str(data.disposition), reason: str(data.reason) };
+    // `schedule` is the entry as written, `id` included — `Valea.Schedules.Edit.
+    // create/2` stamps one before the file is written, so a landed create always
+    // has an address even when the entry itself is not executable.
+    const created =
+      typeof data.schedule === 'object' && data.schedule !== null
+        ? (data.schedule as Record<string, unknown>)
+        : {};
+    return {
+      ok: true,
+      id: str(created.id),
+      disposition: str(data.disposition),
+      reason: str(data.reason)
+    };
   }
 
   async patchSchedule(

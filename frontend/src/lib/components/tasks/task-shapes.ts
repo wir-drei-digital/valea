@@ -215,6 +215,49 @@ export function statusOptions(current: string): { value: string; label: string }
   return [{ value: current, label: `${current} (unknown)` }, ...known];
 }
 
+/** What `TaskEditor.svelte`'s form holds — every field a string or boolean, exactly as an `<input>` gives it. */
+export type TaskEditForm = {
+  title: string;
+  notes: string;
+  due: string;
+  today: boolean;
+  priority: string;
+  assignee: string;
+  status: string;
+};
+
+/**
+ * The editor's PATCH: only the fields the user actually changed, so
+ * `mutate_task`'s entry-level read-patch-write keeps round-tripping every key
+ * Valea doesn't understand (spec §Leniency contract).
+ *
+ * Every optional text field clears to `null`, TITLE INCLUDED (review round 1,
+ * L8 — it used to send `""`). `null` is a real edit meaning "no value", and it
+ * is what `normalizeTask` reads back for an absent field; `""` would have made
+ * an emptied title a different shape on disk from a title that was never there,
+ * and would have left `"title": ""` in the file for every other reader to
+ * puzzle over.
+ *
+ * Pure and tested here rather than living in the component, per this module's
+ * contract: what a Save actually writes is a decision, not markup.
+ */
+export function taskEditPatch(task: TaskEntry, form: TaskEditForm): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  const title = form.title.trim();
+
+  if (title !== (task.title ?? '')) patch.title = title === '' ? null : title;
+  if (form.notes !== (task.notes ?? '')) patch.notes = form.notes === '' ? null : form.notes;
+  if (form.due !== (task.due ?? '')) patch.due = form.due === '' ? null : form.due;
+  if (form.today !== task.today) patch.today = form.today;
+  if (form.priority !== (task.priority ?? '')) patch.priority = form.priority === '' ? null : form.priority;
+  // `assignee` has a DEFAULT rather than an empty state (the select offers no
+  // blank option), so it compares against the same `'user'` the seed uses.
+  if (form.assignee !== (task.assignee ?? 'user')) patch.assignee = form.assignee;
+  if (form.status !== task.status) patch.status = form.status;
+
+  return patch;
+}
+
 /** Shown in the editor when the entry carries a status Valea doesn't know — the spec's other repair affordance. */
 export function unknownStatusHint(status: string): string | null {
   return status !== '' && !isKnownStatus(status)

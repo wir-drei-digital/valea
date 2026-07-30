@@ -152,8 +152,69 @@ describe('refresh', () => {
     expect(store.taskIcms).toHaveLength(2);
     expect(store.scheduleIcms[0].schedules[0].cadence).toBe('30 7 * * 1-5');
     expect(store.schedulerPaused).toBe('on');
-    expect(store.loaded).toBe(true);
-    expect(store.failed).toBe(false);
+    expect(store.tasksLoaded).toBe(true);
+    expect(store.tasksFailed).toBe(false);
+    expect(store.schedulesLoaded).toBe(true);
+    expect(store.schedulesFailed).toBe(false);
+  });
+
+  // Review round 1, M2. The two list RPCs fail independently; with a SHARED
+  // loaded/failed pair, the surviving list flipped `loaded` and cleared
+  // `failed`, so the tab whose list never arrived rendered its "No projects
+  // yet" empty state — an unreachable ledger dressed up as an empty one.
+  it('keeps one list’s failure off the other: the failing tab reads failed, the other loads', async () => {
+    const { api } = fakeApi({
+      listTasks: async () => ({ ok: true as const, data: { icms: TASK_ROWS } }),
+      listSchedules: async () => ({ ok: false as const, error: 'internal_error' })
+    });
+    const store = new TasksStore(api);
+
+    await store.refresh();
+
+    expect(store.tasksLoaded).toBe(true);
+    expect(store.tasksFailed).toBe(false);
+    expect(store.taskIcms).toHaveLength(2);
+
+    expect(store.schedulesLoaded).toBe(false);
+    expect(store.schedulesFailed).toBe(true);
+    // …and NOT an empty registry the tab could mistake for "no projects".
+    expect(store.scheduleIcms).toEqual([]);
+  });
+
+  it('and the same the other way round — a task-list failure leaves the schedules tab intact', async () => {
+    const { api } = fakeApi({
+      listTasks: async () => ({ ok: false as const, error: 'workspace_not_open' }),
+      listSchedules: async () => ({ ok: true as const, data: { icms: SCHEDULE_ROWS, schedulerPaused: 'off' } })
+    });
+    const store = new TasksStore(api);
+
+    await store.refresh();
+
+    expect(store.tasksFailed).toBe(true);
+    expect(store.tasksLoaded).toBe(false);
+    expect(store.schedulesFailed).toBe(false);
+    expect(store.schedulesLoaded).toBe(true);
+    expect(store.scheduleIcms).toHaveLength(1);
+  });
+
+  it('lets the failing list recover on its own retry, without re-reading the other', async () => {
+    let fail = true;
+    const { api, calls } = fakeApi({
+      listTasks: async () => ({ ok: true as const, data: { icms: TASK_ROWS } }),
+      listSchedules: async () =>
+        fail
+          ? { ok: false as const, error: 'internal_error' }
+          : { ok: true as const, data: { icms: SCHEDULE_ROWS, schedulerPaused: 'off' } }
+    });
+    const store = new TasksStore(api);
+    await store.refresh();
+
+    fail = false;
+    await store.refreshSchedules(); // what the failing tab's Retry button calls
+
+    expect(store.schedulesFailed).toBe(false);
+    expect(store.schedulesLoaded).toBe(true);
+    expect(calls.filter((c) => c.fn === 'listTasks')).toHaveLength(1);
   });
 
   it('reads the TRI-state kill switch, defaulting an unexpected value to off', async () => {
@@ -190,18 +251,18 @@ describe('refresh', () => {
     const store = new TasksStore(api);
 
     await store.refreshTasks();
-    expect(store.failed).toBe(true);
-    expect(store.loaded).toBe(false);
+    expect(store.tasksFailed).toBe(true);
+    expect(store.tasksLoaded).toBe(false);
 
     fail = false;
     await store.refreshTasks();
-    expect(store.failed).toBe(false);
-    expect(store.loaded).toBe(true);
+    expect(store.tasksFailed).toBe(false);
+    expect(store.tasksLoaded).toBe(true);
 
     fail = true;
     await store.refreshTasks();
     // A failed BACKGROUND refresh keeps the rows on screen.
-    expect(store.failed).toBe(false);
+    expect(store.tasksFailed).toBe(false);
     expect(store.taskIcms).toHaveLength(2);
   });
 
@@ -218,7 +279,10 @@ describe('refresh', () => {
     expect(store.taskIcms).toEqual([]);
     expect(store.scheduleIcms).toEqual([]);
     expect(store.schedulerPaused).toBe('off');
-    expect(store.loaded).toBe(false);
+    expect(store.tasksLoaded).toBe(false);
+    expect(store.tasksFailed).toBe(false);
+    expect(store.schedulesLoaded).toBe(false);
+    expect(store.schedulesFailed).toBe(false);
   });
 });
 
@@ -369,8 +433,12 @@ describe('schedule mutations', () => {
     });
     const store = new TasksStore(api);
 
+    // The id of what was just written rides along (review round 1, L4): the
+    // composer stays open on a flagged create, and without an address its next
+    // Save would create a SECOND entry instead of fixing this one.
     expect(await store.createSchedule('primary', { title: 'Nightly', cron: '30 25 * * *' })).toEqual({
       ok: true,
+      id: 's-9',
       disposition: 'not_executable',
       reason: 'invalid cron'
     });
@@ -378,6 +446,21 @@ describe('schedule mutations', () => {
       mountKey: 'primary',
       fields: { title: 'Nightly', cron: '30 25 * * *' },
       generation: 7
+    });
+  });
+
+  it('reports a null id rather than inventing one when the create answer carries no entry', async () => {
+    const { api } = fakeApi({
+      createSchedule: async () => ({
+        ok: true as const,
+        data: { schedule: null, disposition: 'executable', reason: null }
+      })
+    });
+    expect(await new TasksStore(api).createSchedule('primary', { title: 'x' })).toEqual({
+      ok: true,
+      id: null,
+      disposition: 'executable',
+      reason: null
     });
   });
 

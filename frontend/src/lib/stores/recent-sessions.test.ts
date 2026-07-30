@@ -80,14 +80,48 @@ describe('RecentSessionsStore.refresh', () => {
   // tasks+schedules spec §Scheduled-session visibility: the nav feed excludes
   // `kind: "scheduled"` runs by default, and the filter runs BACKEND-side before
   // the per-group limit — so the flag has to reach the RPC, not a local filter.
-  it('asks the RPC to exclude scheduled runs by default, and to include them when told', async () => {
+  it('asks the RPC to exclude scheduled runs by default, and to include them when the flag is set', async () => {
     const listRecentSessionsByIcm = vi.fn(async () => ({ ok: true, data: { groups: [] } }) as RecentResult);
     const store = new RecentSessionsStore(fakeApi({ listRecentSessionsByIcm }));
 
     await store.refresh();
     expect(listRecentSessionsByIcm).toHaveBeenLastCalledWith(NAV_SESSIONS_TOTAL + 1, false);
 
-    await store.refresh(true);
+    store.includeScheduled = true;
+    await store.refresh();
+    expect(listRecentSessionsByIcm).toHaveBeenLastCalledWith(NAV_SESSIONS_TOTAL + 1, true);
+  });
+
+  // Review round 1, M1: the flag is STATE, not a `refresh()` argument. A dozen
+  // callers (the `mounts_changed` handler, `handleWorkspaceEvent`,
+  // `IcmProjects`, `ChatView`, both chat routes, `DraftsPanel`, `EntryMenu`)
+  // refresh this store bare, knowing nothing about the all-sessions pane's
+  // checkbox — every one of them used to silently un-tick it.
+  it('keeps including scheduled runs across the bare refreshes every other caller makes', async () => {
+    const listRecentSessionsByIcm = vi.fn(async () => ({ ok: true, data: { groups: [] } }) as RecentResult);
+    const store = new RecentSessionsStore(fakeApi({ listRecentSessionsByIcm }));
+
+    store.includeScheduled = true;
+    await store.refresh(); // the toggle's own refresh
+    await store.refresh(); // a `mounts_changed` push, say
+    await store.refresh(); // …and a session archive
+
+    expect(listRecentSessionsByIcm.mock.calls).toEqual([
+      [NAV_SESSIONS_TOTAL + 1, true],
+      [NAV_SESSIONS_TOTAL + 1, true],
+      [NAV_SESSIONS_TOTAL + 1, true]
+    ]);
+  });
+
+  it('survives a workspace reset — what the reader asked to SEE is not the closed workspace’s data', async () => {
+    const listRecentSessionsByIcm = vi.fn(async () => ({ ok: true, data: { groups: [] } }) as RecentResult);
+    const store = new RecentSessionsStore(fakeApi({ listRecentSessionsByIcm }));
+
+    store.includeScheduled = true;
+    store.reset();
+    await store.refresh();
+
+    expect(store.includeScheduled).toBe(true);
     expect(listRecentSessionsByIcm).toHaveBeenLastCalledWith(NAV_SESSIONS_TOTAL + 1, true);
   });
 });

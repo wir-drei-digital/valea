@@ -1,7 +1,13 @@
 <script lang="ts">
-  // One task row: checkbox → complete, row click → editor, overflow → drop /
-  // archive. Every render decision it makes lives in `task-shapes.ts` (tested
-  // there), so this file is markup plus event wiring.
+  // One task row: checkbox → complete, row click → editor, overflow → drop.
+  // Every render decision it makes lives in `task-shapes.ts` (tested there), so
+  // this file is markup plus event wiring.
+  //
+  // There is deliberately NO per-row "Archive" (review round 1, M3): archival
+  // is `archive_done`, which takes a MOUNT KEY and sweeps every done/dropped
+  // entry in that ICM — a row-level item would have swept the whole ledger while
+  // pointing at one line. The tab header's "Clear done" is the archive surface,
+  // and its label already scopes itself honestly.
   //
   // The checkbox and the overflow menu are SIBLINGS of the row's own button,
   // never nested inside it — an interactive control inside another one is
@@ -10,7 +16,6 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import Check from '@lucide/svelte/icons/check';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
-  import Archive from '@lucide/svelte/icons/archive';
   import CircleSlash from '@lucide/svelte/icons/circle-slash';
   import CopyPlus from '@lucide/svelte/icons/copy-plus';
   import type { TaskEntry } from '$lib/tasks/filters';
@@ -34,7 +39,6 @@
     onToggleDone,
     onOpen,
     onDrop,
-    onArchive,
     onRepair
   }: {
     task: TaskEntry;
@@ -45,7 +49,6 @@
     onToggleDone: () => void;
     onOpen: () => void;
     onDrop: () => void;
-    onArchive: () => void;
     /** Copy an id-less entry into a properly stamped task (see `ID_LESS_TASK_NOTE`). */
     onRepair: () => void;
   } = $props();
@@ -165,10 +168,6 @@
         <DropdownMenu.Item onSelect={onDrop}>
           <CircleSlash class="size-3.5" strokeWidth={1.5} />
           Drop
-        </DropdownMenu.Item>
-        <DropdownMenu.Item onSelect={onArchive}>
-          <Archive class="size-3.5" strokeWidth={1.5} />
-          Archive
         </DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Root>

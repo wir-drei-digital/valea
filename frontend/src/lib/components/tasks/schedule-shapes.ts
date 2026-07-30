@@ -224,3 +224,33 @@ export function editOutcomeNotice(outcome: {
 export function isExecutable(disposition: Disposition): boolean {
   return disposition === 'executable';
 }
+
+/**
+ * The per-row key every bit of the tab's local state hangs off (expanded, busy,
+ * notices, run history, delete confirmation).
+ *
+ * An entry with no `id` is not addressable, but it is still a ROW, and two of
+ * them in the same ICM must not share state (review round 1, L7 — they used to
+ * collapse onto `"<mount>/"`, so expanding one expanded the other). Its file
+ * position is the only thing that distinguishes it, so that is what the key
+ * uses; `#` cannot collide with a real id, which `Valea.Schedules` trims and
+ * never lets contain one.
+ */
+export function scheduleRowKey(mountKey: string, scheduleId: string | null, index: number): string {
+  return `${mountKey}/${scheduleId ?? `#${index}`}`;
+}
+
+/**
+ * Which entry the composer's NEXT save must target, after a save came back ok.
+ *
+ * A create is LENIENT: an invalid entry still lands, and the composer stays
+ * open showing "saved — but it will not fire: …" so the user can correct it.
+ * Every `create_schedule` stamps a FRESH id, so pressing Save again in that
+ * state used to write a SECOND entry (review round 1, L4). Taking the created
+ * id here switches the composer to mutating what it just wrote; once set, it
+ * stays set (a composer already editing an entry keeps editing that one).
+ */
+export function composerTargetAfterSave(current: string | null, outcome: { id?: string | null }): string | null {
+  if (current !== null) return current;
+  return typeof outcome.id === 'string' && outcome.id.trim() !== '' ? outcome.id : null;
+}
