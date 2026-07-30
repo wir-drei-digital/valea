@@ -10,6 +10,7 @@ import {
   accountMeta,
   mailAccessErrorMessage,
   replaceDanglingInlineImages,
+  linkifyText,
   folderBadge,
   messageSeen,
   filterMessagesByRead,
@@ -156,6 +157,51 @@ describe('accountMeta', () => {
 
   it('names an invalid config instead of a transport', () => {
     expect(accountMeta({ valid: false }, 109)).toBe('Invalid configuration');
+  });
+});
+
+describe('linkifyText', () => {
+  it('splits a URL out of the surrounding text', () => {
+    expect(linkifyText('See https://example.com/a?b=c now')).toEqual([
+      { text: 'See ' },
+      { text: 'https://example.com/a?b=c', href: 'https://example.com/a?b=c' },
+      { text: ' now' }
+    ]);
+  });
+
+  it('gives a bare www. address an https href', () => {
+    expect(linkifyText('www.example.com')).toEqual([
+      { text: 'www.example.com', href: 'https://www.example.com' }
+    ]);
+  });
+
+  it('leaves sentence punctuation out of the link', () => {
+    expect(linkifyText('at https://example.com/page.')).toEqual([
+      { text: 'at ' },
+      { text: 'https://example.com/page', href: 'https://example.com/page' },
+      { text: '.' }
+    ]);
+    expect(linkifyText('(see https://example.com)')).toEqual([
+      { text: '(see ' },
+      { text: 'https://example.com', href: 'https://example.com' },
+      { text: ')' }
+    ]);
+  });
+
+  it('keeps a closing bracket the URL itself opened', () => {
+    const wiki = 'https://en.wikipedia.org/wiki/Foo_(bar)';
+    expect(linkifyText(wiki)).toEqual([{ text: wiki, href: wiki }]);
+  });
+
+  it('finds every link, and returns text with no links unchanged', () => {
+    expect(linkifyText('a http://one.test b http://two.test').filter((s) => s.href)).toHaveLength(2);
+    expect(linkifyText('no links here')).toEqual([{ text: 'no links here' }]);
+    expect(linkifyText('')).toEqual([]);
+  });
+
+  it('does not link a bare scheme or a non-http scheme', () => {
+    expect(linkifyText('https:// is a scheme')).toEqual([{ text: 'https:// is a scheme' }]);
+    expect(linkifyText('ftp://files.test/x')).toEqual([{ text: 'ftp://files.test/x' }]);
   });
 });
 

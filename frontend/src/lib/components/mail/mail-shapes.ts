@@ -919,6 +919,60 @@ export function formatBytes(bytes: number): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
+// -- plain-text bodies (MessageView) ------------------------------------------
+
+export type TextSegment = { text: string; href?: string };
+
+/**
+ * A plain-text mail body split into plain runs and LINK runs, so the reader
+ * can click a URL that arrived in a `text/plain` message. The HTML rendering
+ * has real anchors (`HtmlMailView` intercepts them); a text body had none at
+ * all, so its links were dead text on screen.
+ *
+ * Segments, not markup: the caller renders each `text` through plain
+ * interpolation exactly as before — mail content never reaches the DOM as
+ * `{@html}`, and this function produces no markup to be tempted by.
+ *
+ * `http(s)` and bare `www.` only (the latter gets an `https://` href). A
+ * trailing `.`/`,`/`)`… belongs to the sentence, not the address, unless the
+ * bracket it closes was opened inside the URL itself.
+ */
+export function linkifyText(text: string): TextSegment[] {
+  const segments: TextSegment[] = [];
+  let plainFrom = 0;
+
+  for (const match of text.matchAll(/(?:https?:\/\/|www\.)[^\s<>"'`]+/gi)) {
+    const start = match.index ?? 0;
+    const url = trimUrlTail(match[0]);
+    // Scheme with nothing after it — not an address, just text.
+    if (/^(?:https?:\/\/|www\.)$/i.test(url)) continue;
+
+    if (start > plainFrom) segments.push({ text: text.slice(plainFrom, start) });
+    segments.push({
+      text: url,
+      href: /^www\./i.test(url) ? `https://${url}` : url
+    });
+    plainFrom = start + url.length;
+  }
+  if (plainFrom < text.length) segments.push({ text: text.slice(plainFrom) });
+
+  return segments;
+}
+
+/** Drops sentence punctuation the URL pattern swept up, closing brackets included when unopened. */
+function trimUrlTail(url: string): string {
+  let end = url.length;
+  while (end > 0) {
+    const ch = url[end - 1];
+    const head = url.slice(0, end - 1);
+    if ('.,;:!?"\''.includes(ch)) end -= 1;
+    else if (ch === ')' && !head.includes('(')) end -= 1;
+    else if (ch === ']' && !head.includes('[')) end -= 1;
+    else break;
+  }
+  return url.slice(0, end);
+}
+
 // -- inline images (HtmlMailView) ---------------------------------------------
 
 /**

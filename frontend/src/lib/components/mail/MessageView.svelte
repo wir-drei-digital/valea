@@ -42,7 +42,8 @@
   import HtmlMailView from './HtmlMailView.svelte';
   import { api } from '$lib/api/client';
   import { rawFileOpenUrl } from '$lib/components/files/raw-url';
-  import { prepareExternalOpen } from '$lib/shell/external-link';
+  import { inDesktop } from '$lib/keychain';
+  import { openExternal, prepareExternalOpen } from '$lib/shell/external-link';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -55,6 +56,7 @@
     formatBytes,
     formatDateTime,
     fromLabel,
+    linkifyText,
     mailAttachmentTarget,
     markReadOp,
     markUnreadOp,
@@ -140,6 +142,22 @@
   const trusted = $derived(trustOverride ?? message.senderTrusted);
   const allowRemote = $derived(trusted || allowOnce);
   const showHtml = $derived(message.html !== null && viewMode === 'html');
+
+  // A text/plain body carries URLs as bare text, so they were dead on screen
+  // while the HTML rendering's anchors worked — same message, two answers.
+  // `linkifyText` finds them; each run below still reaches the DOM through
+  // plain interpolation, so the body stays inert content, not markup.
+  const bodySegments = $derived(linkifyText(message.body));
+
+  // Desktop: the Tauri webview has no window factory, so `target="_blank"`
+  // silently does nothing — route the click through the desktop-aware
+  // opener (external-link.ts). Browser: default anchor behavior.
+  // Same handler shape as the agent transcript's markdown links.
+  function onLinkClick(event: MouseEvent, href: string): void {
+    if (!inDesktop()) return;
+    event.preventDefault();
+    openExternal(href);
+  }
 
   async function setTrust(trust: boolean): Promise<void> {
     if (!fromEmail || trustBusy) return;
@@ -758,9 +776,20 @@
     <HtmlMailView html={message.html} {allowRemote} />
   {:else}
     <!-- The same white reading card the HTML view's iframe provides, so the
-         two views of one message share a surface. -->
+         two views of one message share a surface.
+         The `{#each}` sits tight against the text on purpose: inside
+         `whitespace-pre-wrap` any newline or indent between these tags would
+         render as literal whitespace in the message. -->
     <div class="border-paper-border bg-paper-card rounded-xl border px-5 py-4">
-      <p class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap">{message.body}</p>
+      <p
+        class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap"
+      >{#each bodySegments as segment, i (i)}{#if segment.href}{@const href = segment.href}<a
+            {href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onclick={(event) => onLinkClick(event, href)}
+            class="text-ink-heading decoration-paper-button-border underline underline-offset-2 hover:decoration-ink-secondary"
+          >{segment.text}</a>{:else}{segment.text}{/if}{/each}</p>
     </div>
   {/if}
 
