@@ -302,7 +302,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `frontend/src/lib/components/views/ChatView.svelte` (new effect after the file-activity rail block, ~line 458)
 
 **Interfaces:**
-- Consumes: `AcpItemLike`, `asString` from `./item-shapes`; `messageFilePaths` from `$lib/markdown/agent-markdown` (Task 1); existing `api.icmPathsExist`, `openToolFile`, `openMountKey`, `context`, `store` in ChatView.
+- Consumes: `AcpItemLike`, `asString` from `./item-shapes`; `messageFilePaths` from `$lib/markdown/agent-markdown` (Task 1); existing `api.icmPathsExist`, `openToolFile`, `openMountKey`, `context`, `store` in ChatView, plus a new `openMountRoot` derived that reads the open mount's `MountSummary.root` off `mountsStore` (the existence RPC needs the ABSOLUTE root, not the key).
 - Produces: `turnCount(items: AcpItemLike[]): number` and `latestTurnAutoOpenPath(items: AcpItemLike[]): string | undefined` from `$lib/components/agent/auto-open`; `hasOpenPane?: () => boolean` on `PaneContext` (optional; absent = unknown = auto-open disabled).
 
 - [ ] **Step 1: Write the failing module tests**
@@ -484,6 +484,16 @@ Insert after the file-activity rail effect block (after `closeRail`/`reopenRail`
 // before the await and re-checks after (MarkdownPageView.refreshDangling's
 // staleness shape) so a queued prompt starting the next turn mid-flight
 // drops the result.
+//
+// The existence check needs the mount's ABSOLUTE root, not its key —
+// see the shipped comment in ChatView.svelte for the `find_mount/2`
+// mechanism. `MountSummary.root` is that resolved path.
+const openMountRoot = $derived.by(() => {
+  const key = openMountKey;
+  if (!key) return null;
+  return mountsStore.mounts.find((m) => m.mountKey === key)?.root ?? null;
+});
+
 let autoOpenStore: AgentSessionStore | null = null;
 let autoOpenBaseline = 0;
 let autoOpenInFlight = false;
@@ -503,21 +513,21 @@ $effect(() => {
   if (context.hasOpenPane === undefined || context.hasOpenPane()) return;
   if (autoOpenInFlight) return;
   const relPath = latestTurnAutoOpenPath(current.items);
-  const mount = openMountKey;
-  if (!relPath || !mount) return;
+  const mountRoot = openMountRoot;
+  if (!relPath || !mountRoot) return;
   autoOpenInFlight = true;
-  void verifyAndAutoOpen(current, count, mount, relPath, open);
+  void verifyAndAutoOpen(current, count, mountRoot, relPath, open);
 });
 
 async function verifyAndAutoOpen(
   captured: AgentSessionStore,
   capturedTurnCount: number,
-  mount: string,
+  mountRoot: string,
   relPath: string,
   open: (relPath: string) => void
 ): Promise<void> {
   try {
-    const result = await api.icmPathsExist([`${mount}/${relPath}`]);
+    const result = await api.icmPathsExist([`${mountRoot}/${relPath}`]);
     if (!result.ok) return;
     const data = result.data as { results: { path: string; exists: boolean }[] };
     if (!data.results[0]?.exists) return;
@@ -530,7 +540,7 @@ async function verifyAndAutoOpen(
 }
 ```
 
-(`api` is already imported in ChatView; `openToolFile` and `openMountKey` already exist. The `seq` gate inside `latestTurnAutoOpenPath` is the second history guard — a reopened session's snapshot turns carry no `seq`.)
+(`api` and `mountsStore` are already imported in ChatView; `openToolFile` and `openMountKey` already exist. The `seq` gate inside `latestTurnAutoOpenPath` is the second history guard — a reopened session's snapshot turns carry no `seq`.)
 
 - [ ] **Step 5: Gates and commit**
 

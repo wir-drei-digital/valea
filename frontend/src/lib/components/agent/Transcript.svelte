@@ -46,8 +46,10 @@
     /**
      * Opens a file the agent touched, by its ICM-relative path — forwarded to
      * every `ToolCallCard`, which turns the call's locations into clickable
-     * chips. Absent when the host has nowhere to put a file (the chips then
-     * render as plain text), so this component stays URL- and route-free.
+     * chips, AND to assistant messages, whose backticked path codespans
+     * become the same kind of click target. Absent when the host has nowhere
+     * to put a file (both then render as plain text), so this component stays
+     * URL- and route-free.
      */
     onOpenFile?: (relPath: string) => void;
   } = $props();
@@ -58,7 +60,7 @@
     {#if item.type === 'message' && item.role === 'user'}
       <MessageItem role="user" text={asString(item.text)} />
     {:else if item.type === 'message'}
-      <MessageItem role="assistant" text={asString(item.text)} />
+      <MessageItem role="assistant" text={asString(item.text)} {onOpenFile} />
     {:else if item.type === 'thought'}
       <ThoughtItem text={asString(item.text)} />
     {:else if item.type === 'tool'}

@@ -180,8 +180,9 @@ defmodule FakeAdapter do
           "content" => %{
             "type" => "text",
             "text" =>
-              "done.\n\nHere is a longer reply with a paragraph of running prose so the " <>
-                "full-width, bubble-less assistant layout is visible at a glance, plus a list:\n\n" <>
+              "done.\n\nThe note you asked about is `CONTEXT.md` — reference docs at " <>
+                "`https://valea.example.com/docs`.\n\nStill a longer reply with running " <>
+                "prose so the full-width assistant layout stays visible, plus a list:\n\n" <>
                 "- first point\n- second point\n\nAnd a closing line."
           }
         })

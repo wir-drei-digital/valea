@@ -394,7 +394,12 @@
           {:else}
             <ChatView
               descriptor={{ kind: 'chat', sessionId: selectedId }}
-              context={{ placement: 'primary', openFile: openFilePane, onArchived: afterArchive }}
+              context={{
+                placement: 'primary',
+                openFile: openFilePane,
+                onArchived: afterArchive,
+                hasOpenPane: () => paneDescriptor !== null
+              }}
             />
           {/if}
         {/snippet}
