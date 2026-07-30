@@ -56,9 +56,9 @@ defmodule Valea.Git.Gitignore do
   anything.
 
   In `pull` mode the staged deletion sits there until the user commits it,
-  which is theirs to decide; in `full` mode the next pass commits it (the
-  `:(exclude).valea` pathspec deliberately does not un-stage what is already
-  staged).
+  which is theirs to decide; in `full` mode the next pass commits it —
+  neither `add` form `Valea.Git.Repo.commit_all/3` chooses puts the entry
+  back, so the user's consented untracking survives to a commit.
   """
   @spec untrack_valea(String.t(), module()) :: {:ok, boolean()} | {:error, :untrack_failed}
   def untrack_valea(root, cli) do
