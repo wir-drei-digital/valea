@@ -179,6 +179,50 @@ defmodule Valea.Git.Repo do
   end
 
   @doc """
+  Is `.valea` ignored by this repo's ignore rules? `nil` when git could not
+  answer at all (`check-ignore` exits 128 on a broken repo, and "I don't
+  know" must not read as "no" — the UI offers to write a `.gitignore` line
+  on a `false`).
+
+  A pathname question, not a filesystem one: `check-ignore` answers for a
+  path whether or not it exists, which is what makes this safe to ask on
+  every pass regardless of whether Valea has materialized `.valea/` yet.
+
+  It DOES consult the index, though, and that is the reading the offer
+  wants: a `.valea` git already tracks reads `false` even when the ignore
+  line is already there, because the rule does nothing for a tracked path.
+  The card therefore keeps offering until the untracking half is done too,
+  instead of going quiet over a repo that is still committing Valea's
+  working data every pass.
+  """
+  @spec valea_ignored?(String.t(), module()) :: boolean() | nil
+  def valea_ignored?(root, cli) do
+    case cli.run(root, ["check-ignore", "-q", ".valea"], []) do
+      {:ok, %{exit: 0}} -> true
+      {:ok, %{exit: 1}} -> false
+      _unknown -> nil
+    end
+  end
+
+  @doc """
+  Is anything under `.valea` currently TRACKED? An ignore rule does nothing
+  for a file git already has in its index, so this is the other half of the
+  question the offer asks — a `true` is what turns "add a line" into "add a
+  line and untrack".
+
+  A failed read answers `false`: the caller reaches this only to decide
+  whether to ALSO run `rm --cached`, and not running it is the conservative
+  half (the next pass asks again).
+  """
+  @spec valea_tracked?(String.t(), module()) :: boolean()
+  def valea_tracked?(root, cli) do
+    case cli.run(root, ["ls-files", "--", ".valea"], []) do
+      {:ok, %{exit: 0, output: out}} -> String.trim(out) != ""
+      _error -> false
+    end
+  end
+
+  @doc """
   Stages everything and commits. "Nothing to commit" is `:ok`, not an error:
   a sync pass over an unchanged ICM is a success with no commit in it.
 
@@ -190,14 +234,53 @@ defmodule Valea.Git.Repo do
   permanent bogus error. `Valea.Git.Cli.git_env/0` now also pins `LC_ALL=C`,
   so the substring check below survives as a belt-and-braces fallback rather
   than as the mechanism.
+
+  `.valea/` is EXCLUDED from what this stages (`:(exclude)` pathspec, not a
+  `.gitignore` write — Valea does not edit a user's repo without being
+  asked). Valea materializes that folder into every ICM root (briefing,
+  task archive), so a `full`-mode ICM would otherwise carry Valea's own
+  working data into the user's history on the first auto-commit, forever.
+  The exclusion is about what gets ADDED: a deletion of `.valea` that is
+  already STAGED — which is exactly what the "keep it out of git" offer
+  leaves behind (`git rm -r --cached`) — is still seen by the staged-diff
+  check below and still committed, so the user's consented untracking is
+  never silently dropped.
   """
   @spec commit_all(String.t(), String.t(), module()) ::
           :ok | {:error, {:commit_failed, String.t()}}
   def commit_all(root, message, cli) do
-    case cli.run(root, ["add", "-A"], []) do
+    case cli.run(root, add_argv(root, cli), []) do
       {:ok, %{exit: 0}} -> commit_staged(root, message, cli)
       {:ok, %{output: out}} -> {:error, {:commit_failed, out}}
       {:error, reason} -> {:error, {:commit_failed, inspect(reason)}}
+    end
+  end
+
+  # Which `add` to run — a BRANCH rather than one fixed argv, because git
+  # makes the excluded form conditional on the very thing the offer changes:
+  # `git add` reports (and exits non-zero over) any IGNORED path an exclude
+  # pathspec touches — "the following paths are ignored by one of your
+  # .gitignore files" — so on a repo that HAS taken the offer, the excluded
+  # form would fail every pass forever, with nothing actually wrong. (An
+  # unrelated ignored path, `node_modules/` and friends, does not provoke it:
+  # only a path the exclusion itself names.)
+  #
+  # And there the exclusion buys nothing: a plain `add -A` does not stage an
+  # ignored, untracked folder either. It is needed for the repo that has NOT
+  # taken the offer, where `.valea/` is ordinary untracked content `add -A`
+  # would otherwise sweep into the user's history.
+  #
+  # The probe is `--no-index`, i.e. the RULES question, deliberately NOT
+  # `valea_ignored?/2`'s index-aware one: it is git's ignore rules that decide
+  # whether the excluded form errors, and a `.valea` that is both tracked and
+  # ignored would answer "not ignored" there and pick the form that fails.
+  # A repo git cannot answer for takes the excluded form — the conservative
+  # half, since the failure it risks is "no commit this pass", while a plain
+  # `add -A` would risk committing `.valea/` for good.
+  defp add_argv(root, cli) do
+    case cli.run(root, ["check-ignore", "-q", "--no-index", ".valea"], []) do
+      {:ok, %{exit: 0}} -> ["add", "-A"]
+      _not_ignored_or_unknown -> ["add", "-A", "--", ".", ":(exclude).valea"]
     end
   end
 

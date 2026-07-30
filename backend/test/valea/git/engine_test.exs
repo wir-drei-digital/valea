@@ -298,6 +298,69 @@ defmodule Valea.Git.EngineTest do
     assert String.starts_with?(subject(fx.bare, "main"), "valea sync: ")
   end
 
+  # The two facts the ".valea/ → .gitignore" card keys on. They ride the
+  # status row (rather than an RPC of their own) because the row is already
+  # pushed on every pass, and the card must retire the moment the fix lands.
+  test "rows carry the .valea ignore/track facts", %{ws: ws, fx: fx, key: key} do
+    File.mkdir_p!(Path.join(fx.work, ".valea"))
+    File.write!(Path.join(fx.work, ".valea/briefing.md"), "valea's own")
+
+    start_engine!(ws)
+    assert %{valea_ignored: false, valea_tracked: false} = await_pass!()[key]
+
+    GitFixtures.git!(fx.work, ["add", "-f", ".valea"])
+    assert :ok = Engine.sync_now(key)
+    assert %{valea_tracked: true} = await_pass!()[key]
+
+    GitFixtures.git!(fx.work, ["rm", "-r", "-q", "--cached", ".valea"])
+    File.write!(Path.join(fx.work, ".gitignore"), ".valea/\n")
+    assert :ok = Engine.sync_now(key)
+    assert %{valea_ignored: true, valea_tracked: false} = await_pass!()[key]
+  end
+
+  # `off` means Valea leaves the repository alone — including asking git two
+  # questions about it. `nil` is "not asked", and the card only ever appears
+  # for a `false`.
+  test "an off-mode repo is asked nothing about .valea", %{ws: ws, fx: fx, key: key} do
+    File.mkdir_p!(Path.join(fx.work, ".valea"))
+    File.write!(Path.join(fx.work, ".valea/briefing.md"), "valea's own")
+    assert :ok = Mounts.set_git_sync(ws, key, "off")
+
+    start_engine!(ws)
+
+    assert %{state: "off", valea_ignored: nil, valea_tracked: nil} = await_pass!()[key]
+  end
+
+  # The other half of `Repo.commit_all/3`'s pathspec: the offer's staged
+  # `rm --cached` is the user's consented untracking, and a full-mode pass
+  # has to carry it into a commit rather than leaving it staged forever.
+  test "a full-mode pass commits the offer's staged removal of .valea", %{
+    ws: ws,
+    fx: fx,
+    key: key
+  } do
+    File.mkdir_p!(Path.join(fx.work, ".valea"))
+    File.write!(Path.join(fx.work, ".valea/briefing.md"), "valea's own")
+    GitFixtures.git!(fx.work, ["add", "-f", ".valea"])
+    GitFixtures.git!(fx.work, ["commit", "-m", "user committed .valea"])
+    GitFixtures.git!(fx.work, ["push", "origin", "main"])
+
+    assert :ok = Mounts.set_git_sync(ws, key, "full")
+
+    # Exactly what `add_valea_gitignore` leaves behind.
+    File.write!(Path.join(fx.work, ".gitignore"), ".valea/\n")
+    GitFixtures.git!(fx.work, ["rm", "-r", "-q", "--cached", ".valea"])
+
+    start_engine!(ws)
+    assert %{state: "ok", dirty: false} = await_pass!()[key]
+
+    assert GitFixtures.git!(fx.work, ["ls-files", "--", ".valea"]) |> String.trim() == ""
+    # Untracked, never deleted.
+    assert File.exists?(Path.join(fx.work, ".valea/briefing.md"))
+    # And the ignore line the same pass committed is in the tree it pushed.
+    assert GitFixtures.git!(fx.bare, ["show", "main:.gitignore"]) =~ ".valea/"
+  end
+
   test "a diverged repo is HELD — no fetch, no merge, no push", %{ws: ws, fx: fx, key: key} do
     start_engine!(ws)
     await_pass!()

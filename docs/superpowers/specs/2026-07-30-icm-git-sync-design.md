@@ -390,3 +390,24 @@ notice records at all — the surfaces render **derived state**:
   `no_upstream`, `unsupported`.
 - `error` remains **doctor/status material and never an agent notice**, as
   specced — fetch/push/auth failures do not raise a Today row.
+
+### 6. `.valea/` stays out of git (2026-07-31, Daniel-approved, no separate spec)
+
+- Valea materializes `.valea/` (briefing, task archive) into every ICM root,
+  so a git ICM sits permanently "uncommitted" and a `full`-mode pass would
+  commit Valea's own working data forever. Three changes, all shipped
+  together: **`full`-mode auto-commit never ADDS `.valea/`**
+  (`Repo.commit_all/3` stages through a `:(exclude).valea` pathspec — and
+  falls back to a plain `add -A` once the folder is genuinely ignored, since
+  git exits non-zero over an exclude pathspec naming an ignored path; a
+  STAGED deletion of `.valea` is still committed either way); **status rows
+  carry `valea_ignored` / `valea_tracked`** (`nil` = not asked — a non-repo
+  row, or an `off`-mode one, which Valea leaves alone entirely; `check-ignore`
+  is index-aware, so a tracked `.valea` reads *not* ignored even with the rule
+  present, which is what keeps the offer up until the untracking is done);
+  and a **consent-gated offer** — an ICM-row card ("Add to .gitignore" /
+  "Not now") over two RPCs, `add_valea_gitignore` (idempotent append, atomic
+  write, plus `rm -r --cached` when tracked) and `dismiss_git_offer`
+  (durable per-mount, on the `icms:` entry beside `skills_offers_dismissed`).
+  Valea never edits a user's `.gitignore` unasked; the same row also gained a
+  `GitBranch` icon showing ahead/behind/dirty and syncing on click.

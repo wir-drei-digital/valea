@@ -128,6 +128,8 @@ defmodule Valea.Api do
       rpc_action(:git_status, :git_status)
       rpc_action(:git_sync_now, :git_sync_now)
       rpc_action(:set_icm_git_sync, :set_icm_git_sync)
+      rpc_action(:add_valea_gitignore, :add_valea_gitignore)
+      rpc_action(:dismiss_git_offer, :dismiss_git_offer)
       rpc_action(:start_git_conflict_session, :start_git_conflict_session)
     end
 

@@ -147,7 +147,11 @@ defmodule Valea.Api.Icms do
                             description: [type: :string, allow_nil?: false],
                             root: [type: :string, allow_nil?: false],
                             enabled: [type: :boolean, allow_nil?: false],
-                            degraded: [type: :string, allow_nil?: true]
+                            degraded: [type: :string, allow_nil?: true],
+                            git_offers_dismissed: [
+                              type: {:array, :string},
+                              allow_nil?: false
+                            ]
                           ]
                         ]
                       ]
@@ -165,7 +169,7 @@ defmodule Valea.Api.Icms do
             root
             |> Mounts.list()
             |> Enum.filter(&(&1.kind == :icm))
-            |> Enum.map(&to_rpc_icm/1)
+            |> Enum.map(&to_rpc_icm(root, &1))
 
           {:ok, %{icms: icms}}
         else
@@ -432,7 +436,13 @@ defmodule Valea.Api.Icms do
     end
   end
 
-  defp to_rpc_icm(mount) do
+  # `git_offers_dismissed` rides here rather than on the git surface: it is
+  # per-MOUNT config state (the `icms:` entry), the frontend's mounts store
+  # is where the offer card reads it, and adding it to this payload costs
+  # one config read the action already pays for elsewhere — a second RPC
+  # just to learn "did the user wave this away" would be a round trip per
+  # ICM.
+  defp to_rpc_icm(workspace, mount) do
     %{
       mount_key: mount.name,
       id: id_for(mount),
@@ -440,7 +450,8 @@ defmodule Valea.Api.Icms do
       description: description_for(mount),
       root: mount.root,
       enabled: mount.enabled,
-      degraded: mount.degraded
+      degraded: mount.degraded,
+      git_offers_dismissed: Mounts.git_offers_dismissed(workspace, mount.name)
     }
   end
 

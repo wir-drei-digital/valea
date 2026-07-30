@@ -144,4 +144,46 @@ defmodule Valea.MountsTest do
       assert Mounts.skills_offers_dismissed(ws, "ghost") == []
     end
   end
+
+  describe "git offer dismissal" do
+    test "absent -> [], dismiss appends idempotently and survives re-read", %{ws: ws, home: home} do
+      root = icm!(home, "Coaching", "6f9f0c9e-3ccd-4fa5-a219-113a70618b55")
+      {:ok, %{mount_key: key}} = Mounts.mount(ws, root)
+
+      assert Mounts.git_offers_dismissed(ws, key) == []
+
+      assert :ok = Mounts.dismiss_git_offer(ws, key, "valea_gitignore")
+      assert :ok = Mounts.dismiss_git_offer(ws, key, "valea_gitignore")
+
+      assert Mounts.git_offers_dismissed(ws, key) == ["valea_gitignore"]
+    end
+
+    # The dismissal rewrites the whole `icms:` section, and the entry it
+    # touches is the same one the `git:` block lives on — losing a sync mode
+    # (or the enabled flag, or the path) because someone clicked "Not now"
+    # would be a silent config edit nobody asked for.
+    test "every sibling key on the entry survives the rewrite", %{ws: ws, home: home} do
+      root = icm!(home, "Coaching", "6f9f0c9e-3ccd-4fa5-a219-113a70618b55")
+      {:ok, %{mount_key: key}} = Mounts.mount(ws, root)
+      assert :ok = Mounts.set_git_sync(ws, key, "full")
+      assert :ok = Mounts.dismiss_skills_offer(ws, key, "icm-architect")
+
+      assert :ok = Mounts.dismiss_git_offer(ws, key, "valea_gitignore")
+
+      assert %{sync: :full} = Mounts.git_config(ws, key)
+      assert Mounts.skills_offers_dismissed(ws, key) == ["icm-architect"]
+      assert Mounts.git_offers_dismissed(ws, key) == ["valea_gitignore"]
+
+      mount = Mounts.mount_by_key(ws, key)
+      assert mount.enabled and mount.degraded == nil
+      assert mount.root == real!(root)
+    end
+
+    test "unknown mount key refuses", %{ws: ws} do
+      assert {:error, :mount_not_found} =
+               Mounts.dismiss_git_offer(ws, "ghost", "valea_gitignore")
+
+      assert Mounts.git_offers_dismissed(ws, "ghost") == []
+    end
+  end
 end

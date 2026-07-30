@@ -167,6 +167,14 @@ defmodule Valea.Git.Engine do
           last_sync_at: String.t() | nil,
           last_error: String.t() | nil,
           conflict_session_id: String.t() | nil,
+          # Is Valea's own `.valea/` folder ignored / tracked in this repo?
+          # Read once per pass for a repo the engine actually reads, so the
+          # UI can offer the one-click "keep it out of git" fix without an
+          # RPC of its own. `nil` means "not asked" — a non-repo row, or one
+          # whose mode is `off` (Valea leaves those alone entirely), or a
+          # repo git could not answer for.
+          valea_ignored: boolean() | nil,
+          valea_tracked: boolean() | nil,
           # INTERNAL bookkeeping, not part of what a UI should render: the
           # working tree git refused to fast-forward over, so `local_class/4`
           # can tell "the same obstruction" from "a different one". Travels on
@@ -199,7 +207,7 @@ defmodule Valea.Git.Engine do
   # on purpose.
   @public_keys ~w(mount_key icm_name mode state reason branch ahead behind
                   dirty local_sha remote_sha last_sync_at last_error
-                  conflict_session_id)a
+                  conflict_session_id valea_ignored valea_tracked)a
 
   @doc """
   The externally visible form of a `statuses/0` map: one string-keyed row per
@@ -815,6 +823,10 @@ defmodule Valea.Git.Engine do
       last_sync_at: previous && previous.last_sync_at,
       last_error: nil,
       conflict_session_id: previous && previous.conflict_session_id,
+      # Filled in by `repo_pass/7` for a repo this pass actually reads (see
+      # the `@type status` note): nil is "not asked", never "no".
+      valea_ignored: nil,
+      valea_tracked: nil,
       # Deliberately NOT carried: a verdict about a working tree is only worth
       # keeping where it is re-affirmed (`classify/8`'s `blocked_local` branch,
       # `fast_forward/5`'s refusal). Any other outcome drops it, so a repo that
@@ -829,7 +841,18 @@ defmodule Valea.Git.Engine do
   defp repo_pass(_root, base, _previous, %{sync: :off}, _cli, _retry, _now),
     do: {finalize(%{base | state: "off"}), nil}
 
+  # Two local reads before the state read, and deliberately NOT in the `:off`
+  # clause above: `off` means Valea leaves the repository alone, so it does
+  # not get git subprocesses spent on it and its row keeps the honest `nil`
+  # ("not asked"). The UI's offer keys on `false`, so an off-mode ICM is
+  # never nagged about a folder Valea is not committing anywhere.
   defp repo_pass(root, base, previous, cfg, cli, retry_entry, now) do
+    base = %{
+      base
+      | valea_ignored: Repo.valea_ignored?(root, cli),
+        valea_tracked: Repo.valea_tracked?(root, cli)
+    }
+
     case Repo.read_state(root, cli) do
       {:ok, st} -> classify(root, base, previous, cfg, cli, retry_entry, now, st)
       {:error, reason} -> {error_row(base, reason), retry_entry}

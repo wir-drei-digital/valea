@@ -80,6 +80,13 @@ defmodule ValeaWeb.GitRpcTest do
     dir
   end
 
+  # What Valea itself puts into every ICM root — the folder the offer is
+  # about.
+  defp materialize_valea!(root) do
+    File.mkdir_p!(Path.join(root, ".valea"))
+    File.write!(Path.join(root, ".valea/briefing.md"), "valea's own working data\n")
+  end
+
   # Triggers a pass and waits for one whose row for `key` reads `want`. Passes
   # this suite did not ask for (the Engine's own activation pass) are simply
   # skipped rather than asserted against.
@@ -387,6 +394,194 @@ defmodule ValeaWeb.GitRpcTest do
                )
 
       assert inspect(errors) =~ "workspace_changed"
+    end
+  end
+
+  # -- add_valea_gitignore / dismiss_git_offer -----------------------------------
+
+  describe "add_valea_gitignore" do
+    test "writes the line, and the row it refreshes retires the offer", %{
+      generation: generation,
+      key: key,
+      fx: fx
+    } do
+      materialize_valea!(fx.work)
+      assert %{valea_ignored: false, valea_tracked: false} = sync!(key, "ok")
+
+      assert %{"success" => true, "data" => %{"saved" => true, "untracked" => false}} =
+               rpc("add_valea_gitignore", %{"mountKey" => key, "generation" => generation}, [
+                 "saved",
+                 "untracked"
+               ])
+
+      assert File.read!(Path.join(fx.work, ".gitignore")) == ".valea/\n"
+
+      # The action asks for a pass of its own, so the card goes away without
+      # waiting five minutes for the poll.
+      assert %{valea_ignored: true} = await_row!(key, "ok")
+    end
+
+    test "appends to an existing .gitignore, and is idempotent", %{
+      generation: generation,
+      key: key,
+      fx: fx
+    } do
+      materialize_valea!(fx.work)
+      # No trailing newline: a naive append would produce `node_modules/.valea/`.
+      File.write!(Path.join(fx.work, ".gitignore"), "node_modules/")
+      sync!(key, "ok")
+
+      assert %{"success" => true} =
+               rpc("add_valea_gitignore", %{"mountKey" => key, "generation" => generation}, [
+                 "saved",
+                 "untracked"
+               ])
+
+      assert File.read!(Path.join(fx.work, ".gitignore")) == "node_modules/\n.valea/\n"
+
+      assert %{"success" => true} =
+               rpc("add_valea_gitignore", %{"mountKey" => key, "generation" => generation}, [
+                 "saved",
+                 "untracked"
+               ])
+
+      # A second click writes nothing — one line, not two.
+      assert File.read!(Path.join(fx.work, ".gitignore")) == "node_modules/\n.valea/\n"
+    end
+
+    test "the bare `.valea` spelling also counts as already ignored", %{
+      generation: generation,
+      key: key,
+      fx: fx
+    } do
+      materialize_valea!(fx.work)
+      File.write!(Path.join(fx.work, ".gitignore"), "  .valea  \n")
+      sync!(key, "ok")
+
+      assert %{"success" => true} =
+               rpc("add_valea_gitignore", %{"mountKey" => key, "generation" => generation}, [
+                 "saved",
+                 "untracked"
+               ])
+
+      assert File.read!(Path.join(fx.work, ".gitignore")) == "  .valea  \n"
+    end
+
+    test "a tracked .valea is untracked too — staged, never deleted from disk", %{
+      generation: generation,
+      key: key,
+      fx: fx
+    } do
+      materialize_valea!(fx.work)
+      GitFixtures.git!(fx.work, ["add", "-f", ".valea"])
+      GitFixtures.git!(fx.work, ["commit", "-m", "user committed .valea"])
+      assert %{valea_tracked: true} = sync!(key, "ok")
+
+      assert %{"success" => true, "data" => %{"saved" => true, "untracked" => true}} =
+               rpc("add_valea_gitignore", %{"mountKey" => key, "generation" => generation}, [
+                 "saved",
+                 "untracked"
+               ])
+
+      assert GitFixtures.git!(fx.work, ["ls-files", "--", ".valea"]) |> String.trim() == ""
+      assert File.exists?(Path.join(fx.work, ".valea/briefing.md"))
+      # In pull mode the staged removal waits for the user to commit it.
+      assert GitFixtures.git!(fx.work, ["status", "--porcelain"]) =~ "D  .valea/briefing.md"
+    end
+
+    test "an ICM that is not a git repository is refused", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      plain = AgentCase.mount_test_icm!(workspace, name: "Plain")
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "add_valea_gitignore",
+                 %{"mountKey" => plain.mount_key, "generation" => generation},
+                 ["saved", "untracked"]
+               )
+
+      assert inspect(errors) =~ "not a git repository"
+      refute File.exists?(Path.join(plain.root, ".gitignore"))
+    end
+
+    test "an unknown mount and a stale generation are both refused", %{
+      generation: generation,
+      key: key,
+      fx: fx
+    } do
+      assert %{"success" => false, "errors" => errors} =
+               rpc("add_valea_gitignore", %{"mountKey" => "ghost", "generation" => generation}, [
+                 "saved",
+                 "untracked"
+               ])
+
+      assert inspect(errors) =~ "icm_unavailable"
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "add_valea_gitignore",
+                 %{"mountKey" => key, "generation" => generation + 1},
+                 ["saved", "untracked"]
+               )
+
+      assert inspect(errors) =~ "workspace_changed"
+      refute File.exists?(Path.join(fx.work, ".gitignore"))
+    end
+  end
+
+  describe "dismiss_git_offer" do
+    test "persists on the mount's config entry", %{
+      workspace: workspace,
+      generation: generation,
+      key: key
+    } do
+      assert %{"success" => true, "data" => %{"saved" => true}} =
+               rpc(
+                 "dismiss_git_offer",
+                 %{"mountKey" => key, "offerId" => "valea_gitignore", "generation" => generation},
+                 ["saved"]
+               )
+
+      assert Mounts.git_offers_dismissed(workspace, key) == ["valea_gitignore"]
+      assert Mounts.git_config(workspace, key).sync == :pull
+    end
+
+    test "an unknown offer id is refused and writes nothing", %{
+      workspace: workspace,
+      generation: generation,
+      key: key
+    } do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "dismiss_git_offer",
+                 %{"mountKey" => key, "offerId" => "whatever", "generation" => generation},
+                 ["saved"]
+               )
+
+      assert inspect(errors) =~ "Unknown git offer"
+      assert Mounts.git_offers_dismissed(workspace, key) == []
+    end
+
+    test "a stale generation is refused", %{
+      workspace: workspace,
+      generation: generation,
+      key: key
+    } do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "dismiss_git_offer",
+                 %{
+                   "mountKey" => key,
+                   "offerId" => "valea_gitignore",
+                   "generation" => generation + 1
+                 },
+                 ["saved"]
+               )
+
+      assert inspect(errors) =~ "workspace_changed"
+      assert Mounts.git_offers_dismissed(workspace, key) == []
     end
   end
 end

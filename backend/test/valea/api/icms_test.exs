@@ -67,6 +67,20 @@ defmodule Valea.Api.IcmsTest do
     assert {:ok, %{icms: []}} = run(:list_icms, %{generation: generation})
   end
 
+  # The offer cards read their "already waved away" state off THIS payload
+  # (the frontend's mounts store), not a second per-ICM RPC.
+  test "list_icms carries the mount's dismissed git offers", %{ws: ws, generation: generation} do
+    icm = AgentCase.mount_test_icm!(ws, name: "Repo")
+
+    assert {:ok, %{icms: [%{git_offers_dismissed: []}]}} =
+             run(:list_icms, %{generation: generation})
+
+    assert :ok = Valea.Mounts.dismiss_git_offer(ws, icm.mount_key, "valea_gitignore")
+
+    assert {:ok, %{icms: [%{git_offers_dismissed: ["valea_gitignore"]}]}} =
+             run(:list_icms, %{generation: generation})
+  end
+
   test "mount_icm registers an already-existing healthy ICM folder", %{
     ws: ws,
     generation: generation

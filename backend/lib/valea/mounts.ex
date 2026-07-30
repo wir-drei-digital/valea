@@ -681,6 +681,45 @@ defmodule Valea.Mounts do
   end
 
   @doc """
+  The git offer ids the user waved away for this mount ("Not now" on the
+  `.valea/` gitignore card). Same shape, same home and same reasoning as
+  `skills_offers_dismissed/2`: operational state on the `icms:` entry in
+  `config/workspace.yaml`, never inside the user-owned ICM. `[]` when
+  absent or malformed.
+  """
+  @spec git_offers_dismissed(String.t(), String.t()) :: [String.t()]
+  def git_offers_dismissed(workspace, mount_key) do
+    case workspace |> read_icms_config() |> Map.get(mount_key) do
+      %{"git_offers_dismissed" => list} when is_list(list) ->
+        Enum.filter(list, &is_binary/1)
+
+      _absent_or_malformed ->
+        []
+    end
+  end
+
+  @doc """
+  Appends `offer_id` to the mount's dismissed git-offers list (idempotent),
+  preserving the entry's `git:` block and every other key — the same
+  read-config/rewrite-atomically path `dismiss_skills_offer/3` uses. A list
+  rather than a boolean so a future git offer gets its own one-time card.
+  No audit event: a dismissed suggestion is minor operational state.
+  """
+  @spec dismiss_git_offer(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def dismiss_git_offer(workspace, mount_key, offer_id) when is_binary(offer_id) do
+    with :ok <- validate_mount_name(mount_key),
+         icms = read_icms_config(workspace),
+         :ok <- ensure_icm_present(icms, mount_key) do
+      dismissed = (git_offers_dismissed(workspace, mount_key) ++ [offer_id]) |> Enum.uniq()
+
+      new_icms =
+        Map.update!(icms, mount_key, &Map.put(&1, "git_offers_dismissed", dismissed))
+
+      write_icms(workspace, new_icms)
+    end
+  end
+
+  @doc """
   This mount's git sync policy (ICM git sync design spec, §Modes) —
   operational state, so like `skills_offers_dismissed/2` it lives on the
   `icms:` entry in `config/workspace.yaml`, never inside the user-owned

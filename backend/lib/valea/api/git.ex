@@ -41,6 +41,8 @@ defmodule Valea.Api.Git do
 
   alias Valea.Api.Error
   alias Valea.Git.Engine
+  alias Valea.Git.Gitignore
+  alias Valea.Git.Repo
   alias Valea.Workspace.Manager
 
   actions do
@@ -96,6 +98,72 @@ defmodule Valea.Api.Git do
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- Valea.Mounts.set_git_sync(root, key, sync) do
+          Phoenix.PubSub.broadcast(Valea.PubSub, "mounts", {:mounts_changed})
+          {:ok, %{"saved" => true}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    # -- the ".valea/ → .gitignore" offer ------------------------------------
+    #
+    # Valea materializes `.valea/` (briefing, task archive) into every ICM
+    # root, so a git-backed ICM sits permanently "uncommitted" and a `full`
+    # ICM would carry Valea's own working data into the user's history. The
+    # engine no longer STAGES it (`Valea.Git.Repo.commit_all/3`), but the
+    # repo's own `.gitignore` is the user's file: this action is the consent
+    # step that writes one line into it, and it exists only because a human
+    # clicked the card that asked.
+    action :add_valea_gitignore, :map do
+      constraints fields: [
+                    saved: [type: :boolean, allow_nil?: false],
+                    untracked: [type: :boolean, allow_nil?: false]
+                  ]
+
+      argument :mount_key, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # `root` is the RESOLVED mount root — no user-supplied path segment
+      # reaches the filesystem here, so containment holds by construction
+      # and there is nothing to sanitize.
+      run fn input, _ctx ->
+        %{mount_key: key, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: workspace}} <- Manager.current(),
+             {:ok, mount} <- healthy_icm(workspace, key),
+             :ok <- git_repo(mount.root),
+             :ok <- Gitignore.ensure_valea_line(mount.root),
+             {:ok, untracked} <- Gitignore.untrack_valea(mount.root, cli()) do
+          # Best effort, result ignored: the write already landed, and this
+          # only refreshes the row so the card retires without waiting for
+          # the poll. A workspace closing under the click must not turn a
+          # successful write into an error.
+          engine_call(fn -> Engine.sync_now(key) end)
+          {:ok, %{"saved" => true, "untracked" => untracked}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :dismiss_git_offer, :map do
+      constraints fields: [saved: [type: :boolean, allow_nil?: false]]
+      argument :mount_key, :string, allow_nil?: false
+      argument :offer_id, :string, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      # "Not now". Durable (the `icms:` entry), and broadcast so the
+      # frontend's mounts store refetches and the card goes away everywhere
+      # at once rather than only in the tab that clicked.
+      run fn input, _ctx ->
+        %{mount_key: key, offer_id: offer_id, generation: generation} = input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             :ok <- known_offer(offer_id),
+             {:ok, %{path: workspace}} <- Manager.current(),
+             :ok <- Valea.Mounts.dismiss_git_offer(workspace, key, offer_id) do
           Phoenix.PubSub.broadcast(Valea.PubSub, "mounts", {:mounts_changed})
           {:ok, %{"saved" => true}}
         else
@@ -240,6 +308,34 @@ defmodule Valea.Api.Git do
 
   # -- guards ---------------------------------------------------------------------
 
+  # Only a healthy, enabled ICM may be written to — the same gate (and the
+  # same `:icm_unavailable` word) `Valea.Api.Icms`'s mail-access toggle
+  # uses, for the same reason: a degraded or disabled mount has no business
+  # gaining a file edit through a settings click.
+  defp healthy_icm(workspace, mount_key) do
+    case Valea.Mounts.mount_by_key(workspace, mount_key) do
+      %{kind: :icm, enabled: true, degraded: nil} = mount -> {:ok, mount}
+      _other -> {:error, :icm_unavailable}
+    end
+  end
+
+  # Re-derived LIVE rather than read off a status row: the row can be a pass
+  # old, and writing a `.gitignore` into a folder that stopped being a repo
+  # would be a file the user never asked for in a place it means nothing.
+  defp git_repo(root) do
+    if Repo.detect(root) == :repo, do: :ok, else: {:error, :not_a_git_repo}
+  end
+
+  # One offer today. An id this surface does not know is REFUSED rather than
+  # written: the dismissal list is durable config, and a typo (or a caller
+  # inventing ids) would accumulate entries nothing ever reads.
+  defp known_offer("valea_gitignore"), do: :ok
+  defp known_offer(_unknown), do: {:error, :unknown_offer}
+
+  # The same seam the Engine pins at `init/1`, read here rather than
+  # hardcoded so a test stub applies to this surface too.
+  defp cli, do: Application.get_env(:valea, :git_cli, Valea.Git.Cli)
+
   # See the moduledoc: neither engine call catches its own exits, and an RPC
   # must answer rather than die. A `:timeout` is told apart from everything
   # else because it means the opposite thing — the engine is there and busy,
@@ -266,6 +362,20 @@ defmodule Valea.Api.Git do
     do: Error.new("Git is still working on this repository — try again in a moment.")
 
   defp error_for(:invalid_git_sync), do: Error.new("sync must be one of: full, pull, off.")
+  defp error_for(:not_a_git_repo), do: Error.new("This ICM is not a git repository.")
+  defp error_for(:unknown_offer), do: Error.new("Unknown git offer.")
+
+  # The gitignore line DID land — saying only "it failed" would leave the
+  # user re-clicking a button that has already done half its job.
+  defp error_for(:untrack_failed),
+    do:
+      Error.new(
+        ".valea/ was added to .gitignore, but git could not untrack the folder — untrack it yourself with: git rm -r --cached .valea"
+      )
+
+  defp error_for({:gitignore_failed, reason}),
+    do: Error.new("Could not write .gitignore: #{inspect(reason)}")
+
   defp error_for(:no_workspace), do: Error.new("workspace_not_open")
   defp error_for(:mount_not_found), do: Error.new("icm_unavailable")
   defp error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))

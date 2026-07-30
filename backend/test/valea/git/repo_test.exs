@@ -106,6 +106,86 @@ defmodule Valea.Git.RepoTest do
     assert {:ok, %{ahead: 0, behind: 0}} = Repo.read_state(fx.work, Cli)
   end
 
+  # Valea materializes `.valea/` into every ICM root. Both halves of the
+  # pathspec matter: an auto-commit must never ADD Valea's own working data
+  # to the user's history, and it must still commit the STAGED DELETION the
+  # ".valea/ → .gitignore" offer leaves behind (`git rm -r --cached`) — the
+  # user consented to that untracking, so a pass must not quietly drop it.
+  test "commit_all never adds .valea, but does commit a staged deletion of it", %{fx: fx} do
+    File.mkdir_p!(Path.join(fx.work, ".valea"))
+    File.write!(Path.join(fx.work, ".valea/briefing.md"), "valea's own working data")
+    File.write!(Path.join(fx.work, "note.md"), "the user's page")
+
+    assert :ok = Repo.commit_all(fx.work, "valea sync: user work only", Cli)
+
+    assert tracked?(fx.work, "note.md")
+    refute tracked?(fx.work, ".valea/briefing.md")
+    # Still on disk — excluded from the index, never deleted.
+    assert File.exists?(Path.join(fx.work, ".valea/briefing.md"))
+
+    # A repo that already committed `.valea` before Valea ever saw it: the
+    # offer untracks it, and the next full-mode pass has to commit that.
+    GitFixtures.git!(fx.work, ["add", "-f", ".valea"])
+    GitFixtures.git!(fx.work, ["commit", "-m", "user committed .valea"])
+    assert tracked?(fx.work, ".valea/briefing.md")
+
+    GitFixtures.git!(fx.work, ["rm", "-r", "-q", "--cached", ".valea"])
+    assert :ok = Repo.commit_all(fx.work, "valea sync: staged removal", Cli)
+
+    refute tracked?(fx.work, ".valea/briefing.md")
+    assert File.exists?(Path.join(fx.work, ".valea/briefing.md"))
+  end
+
+  # The steady state AFTER the offer is taken, and the reason `commit_all/3`
+  # picks its `add` argv rather than hardcoding one: an exclude pathspec makes
+  # git exit non-zero over any IGNORED path it names, so a repo carrying
+  # `.valea/` in its `.gitignore` would fail every single pass with nothing
+  # wrong. It still must not stage `.valea` — an ignored folder is not swept
+  # up by a plain `add -A` either.
+  test "commit_all keeps working once .valea is ignored, and still leaves it out", %{fx: fx} do
+    File.write!(Path.join(fx.work, ".gitignore"), ".valea/\n")
+    File.mkdir_p!(Path.join(fx.work, ".valea"))
+    File.write!(Path.join(fx.work, ".valea/briefing.md"), "valea's own working data")
+    File.write!(Path.join(fx.work, "note.md"), "the user's page")
+
+    assert :ok = Repo.commit_all(fx.work, "valea sync: ignored already", Cli)
+
+    assert tracked?(fx.work, "note.md")
+    assert tracked?(fx.work, ".gitignore")
+    refute tracked?(fx.work, ".valea/briefing.md")
+    assert {:ok, %{dirty: false}} = Repo.read_state(fx.work, Cli)
+  end
+
+  test "valea_ignored? / valea_tracked? answer the offer's two questions", %{dir: dir, fx: fx} do
+    File.mkdir_p!(Path.join(fx.work, ".valea"))
+    File.write!(Path.join(fx.work, ".valea/briefing.md"), "x")
+
+    assert Repo.valea_ignored?(fx.work, Cli) == false
+    assert Repo.valea_tracked?(fx.work, Cli) == false
+
+    File.write!(Path.join(fx.work, ".gitignore"), "node_modules/\n.valea/\n")
+    assert Repo.valea_ignored?(fx.work, Cli) == true
+
+    # A TRACKED path reads NOT ignored even with the rule present — git's
+    # `check-ignore` consults the index, because an ignore rule does nothing
+    # for a file git already has. That is the answer the offer wants: the
+    # card keeps appearing until the untracking half is done too.
+    GitFixtures.git!(fx.work, ["add", "-f", ".valea"])
+    assert Repo.valea_tracked?(fx.work, Cli) == true
+    assert Repo.valea_ignored?(fx.work, Cli) == false
+
+    GitFixtures.git!(fx.work, ["rm", "-r", "-q", "--cached", ".valea"])
+    assert Repo.valea_tracked?(fx.work, Cli) == false
+    assert Repo.valea_ignored?(fx.work, Cli) == true
+
+    # Not a repo: git cannot answer, and "don't know" must not read as "no"
+    # — a `false` is what makes the UI offer to write the line.
+    plain = Path.join(dir, "plain-for-ignore")
+    File.mkdir_p!(plain)
+    assert Repo.valea_ignored?(plain, Cli) == nil
+    assert Repo.valea_tracked?(plain, Cli) == false
+  end
+
   test "ff_merge fails cleanly when a dirty file would be clobbered", %{fx: fx} do
     GitFixtures.advance_remote!(fx, "seed.md", "remote edit")
     assert :ok = Repo.fetch(fx.work, Cli)
@@ -179,4 +259,7 @@ defmodule Valea.Git.RepoTest do
     assert conflicted =~ ".md"
     assert Enum.all?([conflicted, "plain.md"], &String.valid?/1)
   end
+
+  defp tracked?(repo, rel),
+    do: GitFixtures.git!(repo, ["ls-files", "--", rel]) |> String.trim() != ""
 end

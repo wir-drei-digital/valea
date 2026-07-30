@@ -2039,6 +2039,155 @@ export async function cockpitTodayChannel<Fields extends CockpitTodayFields | un
 }
 
 
+export type AddValeaGitignoreInput = {
+  mountKey: string;
+  generation: number;
+};
+
+export type AddValeaGitignoreFields = UnifiedFieldSelection<{saved: boolean, untracked: boolean, __type: "TypedMap", __primitiveFields: "saved" | "untracked"}>[];
+
+export type InferAddValeaGitignoreResult<
+  Fields extends AddValeaGitignoreFields | undefined,
+> = InferResult<{saved: boolean, untracked: boolean, __type: "TypedMap", __primitiveFields: "saved" | "untracked"}, Fields>;
+
+export type AddValeaGitignoreResult<Fields extends AddValeaGitignoreFields | undefined = undefined> = | { success: true; data: InferAddValeaGitignoreResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function addValeaGitignore<Fields extends AddValeaGitignoreFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: AddValeaGitignoreInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<AddValeaGitignoreResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "add_valea_gitignore",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<AddValeaGitignoreResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function addValeaGitignoreChannel<Fields extends AddValeaGitignoreFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: AddValeaGitignoreInput;
+  fields: Fields;
+  resultHandler: (result: AddValeaGitignoreResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<AddValeaGitignoreResult<Fields>>(
+    config.channel,
+    {
+    action: "add_valea_gitignore",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type DismissGitOfferInput = {
+  mountKey: string;
+  offerId: string;
+  generation: number;
+};
+
+export type DismissGitOfferFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];
+
+export type InferDismissGitOfferResult<
+  Fields extends DismissGitOfferFields | undefined,
+> = InferResult<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}, Fields>;
+
+export type DismissGitOfferResult<Fields extends DismissGitOfferFields | undefined = undefined> = | { success: true; data: InferDismissGitOfferResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function dismissGitOffer<Fields extends DismissGitOfferFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DismissGitOfferInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DismissGitOfferResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "dismiss_git_offer",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DismissGitOfferResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function dismissGitOfferChannel<Fields extends DismissGitOfferFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DismissGitOfferInput;
+  fields: Fields;
+  resultHandler: (result: DismissGitOfferResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DismissGitOfferResult<Fields>>(
+    config.channel,
+    {
+    action: "dismiss_git_offer",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type GitStatusInput = {
   generation: number;
 };
@@ -3598,11 +3747,11 @@ export type ListIcmsInput = {
   generation: number;
 };
 
-export type ListIcmsFields = UnifiedFieldSelection<{icms: Array<{mountKey: string, id: string | null, name: string, description: string, root: string, enabled: boolean, degraded: string | null, __type: "TypedMap", __primitiveFields: "mountKey" | "id" | "name" | "description" | "root" | "enabled" | "degraded"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type ListIcmsFields = UnifiedFieldSelection<{icms: Array<{mountKey: string, id: string | null, name: string, description: string, root: string, enabled: boolean, degraded: string | null, gitOffersDismissed: Array<string>, __type: "TypedMap", __primitiveFields: "mountKey" | "id" | "name" | "description" | "root" | "enabled" | "degraded" | "gitOffersDismissed"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferListIcmsResult<
   Fields extends ListIcmsFields | undefined,
-> = InferResult<{icms: Array<{mountKey: string, id: string | null, name: string, description: string, root: string, enabled: boolean, degraded: string | null, __type: "TypedMap", __primitiveFields: "mountKey" | "id" | "name" | "description" | "root" | "enabled" | "degraded"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{icms: Array<{mountKey: string, id: string | null, name: string, description: string, root: string, enabled: boolean, degraded: string | null, gitOffersDismissed: Array<string>, __type: "TypedMap", __primitiveFields: "mountKey" | "id" | "name" | "description" | "root" | "enabled" | "degraded" | "gitOffersDismissed"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type ListIcmsResult<Fields extends ListIcmsFields | undefined = undefined> = | { success: true; data: InferListIcmsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
