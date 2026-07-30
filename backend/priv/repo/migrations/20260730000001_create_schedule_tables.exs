@@ -51,7 +51,13 @@ defmodule Valea.Repo.Migrations.CreateScheduleTables do
       add :schedule_id, :string, null: false
       add :fingerprint, :string
       add :slot, :utc_datetime
-      add :fired_at, :utc_datetime
+      # NOT NULL, unlike `slot`: `fired_at` is the ordering key for `runs/3`
+      # AND the window bound for `notices_since/1`, and a NULL fails
+      # `fired_at >= ?` silently — a failed run with a null `fired_at` would
+      # sit in the history list while being permanently invisible to the
+      # cockpit notices. `slot` may legitimately be absent (a manual fire
+      # consumed no slot); `fired_at` never can.
+      add :fired_at, :utc_datetime, null: false
       add :trigger, :string
       add :kind, :string
       add :outcome, :string

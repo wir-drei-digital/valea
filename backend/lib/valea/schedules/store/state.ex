@@ -34,10 +34,25 @@ defmodule Valea.Schedules.Store.State do
   `first_seen_at`, and it drops it *downward*, which can never conjure a slot
   the entry did not already exist for.
 
-  No attribute carries a `default:`, on purpose: the facade's `put_state/3`
-  merges over the stored row so an omitted key preserves its value, and an
-  attribute default would fight that (see `Valea.Mail.Store.put_sync_state/3`
-  for the bug that shape causes when defaults are present).
+  ## Why no attribute carries a `default:` — and why `put_state/3` merges anyway
+
+  Nothing here has a `default:`, and that alone is what would make a bare
+  upsert safe today: an attribute the changeset never sets, and that has no
+  default, does not enter the INSERT column list at all, so
+  `ON CONFLICT ... DO UPDATE SET` only touches the columns the caller actually
+  passed. Verified against the emitted SQL, not assumed.
+
+  `Valea.Schedules.Store.put_state/3` merges `attrs` over the stored row
+  regardless. That is **forward-insurance, not a fix for a bug present today**:
+  the moment any of these four columns grows a `default:`, an omitted key
+  starts arriving as that default, enters the SET list, and silently overwrites
+  what the row held — which is exactly the live bug
+  `Valea.Mail.Store.put_sync_state/3` documents, where `backfill_complete` and
+  `held` do carry `default: false` and a partial write resets whichever flag it
+  did not mention. Adding a default here should be harmless; the merge is what
+  makes it so. A test asserts the emitted SET list names all four mutable
+  columns, so removing the merge as "dead code" fails loudly rather than
+  quietly re-arming that bug.
   """
   use Ash.Resource,
     domain: Valea.Schedules.Store,
@@ -57,7 +72,10 @@ defmodule Valea.Schedules.Store.State do
   end
 
   actions do
-    defaults [:read, :destroy]
+    # No `:destroy`: deletion is the `deleted_at` tombstone, and the
+    # reconciler needs the tombstoned row to tell a reappearance from a first
+    # registration. Nothing in this domain hard-deletes a state row.
+    defaults [:read]
 
     create :upsert do
       primary? true

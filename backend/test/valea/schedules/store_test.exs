@@ -62,6 +62,37 @@ defmodule Valea.Schedules.StoreTest do
     )
   end
 
+  # Every SQL statement Ecto emits while `fun` runs. Used to assert the shape
+  # of the upsert itself, which no read-back can distinguish (see the
+  # `SET`-list test).
+  defp capture_sql(fun) do
+    test = self()
+    handler = "schedules-store-test-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:valea, :repo, :query],
+      fn _event, _measurements, %{query: query}, _config -> send(test, {:sql, query}) end,
+      nil
+    )
+
+    try do
+      fun.()
+    after
+      :telemetry.detach(handler)
+    end
+
+    drain_sql([])
+  end
+
+  defp drain_sql(acc) do
+    receive do
+      {:sql, query} -> drain_sql([query | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   defp state_row_count do
     Ecto.Adapters.SQL.query!(Valea.Repo, "SELECT count(*) FROM schedule_state", []).rows
     |> hd()
@@ -169,6 +200,33 @@ defmodule Valea.Schedules.StoreTest do
       assert %{fingerprint: "fp-work"} = Store.get_state(@icm, "s-morning")
       assert %{fingerprint: "fp-life"} = Store.get_state(@other_icm, "s-morning")
       assert state_row_count() == 2
+    end
+
+    # Pins `put_state/3`'s read-modify-write, which is forward-insurance and so
+    # cannot be caught by any read-back: `State` declares no attribute
+    # defaults, so a bare upsert preserves omitted columns just as well TODAY.
+    # What the merge changes is the emitted statement — every mutable column
+    # enters the `SET` list, carrying its stored value, instead of only the
+    # keys this call passed. Give any of those columns a `default:` later and
+    # the bare form would start writing that default over stored data (the live
+    # `Valea.Mail.Store.put_sync_state/3` bug); this assertion is what makes
+    # deleting the merge fail loudly instead of quietly re-arming it.
+    test "a partial put_state/3 still names every mutable column in the upsert's SET list" do
+      :ok = Store.put_state(@icm, "s-morning", %{fingerprint: "fp1"})
+
+      sql =
+        capture_sql(fn ->
+          Store.put_state(@icm, "s-morning", %{last_attempted_slot: at("2026-07-30T08:30:00Z")})
+        end)
+
+      upsert = Enum.find(sql, &String.contains?(&1, ~s(INSERT INTO "schedule_state")))
+      assert upsert, "no INSERT INTO schedule_state was emitted"
+
+      for column <- ["fingerprint", "first_seen_at", "last_attempted_slot", "deleted_at"] do
+        assert String.contains?(upsert, ~s("#{column}" = EXCLUDED."#{column}")),
+               "#{column} missing from the upsert SET list — put_state/3 stopped " <>
+                 "merging over the stored row:\n#{upsert}"
+      end
     end
 
     test "sub-second precision is truncated (anchors are second-granular)" do
@@ -284,6 +342,18 @@ defmodule Valea.Schedules.StoreTest do
       end
     end
 
+    # `default:` fills an ABSENT key only. Without `allow_nil? false` this
+    # stored a NULL, and a NULL fails `fired_at >= ?` — the failed run would
+    # show in runs/3 while never reaching the cockpit notices.
+    test "an explicit fired_at: nil raises — a NULL would hide the run from notices_since/1" do
+      assert_raise Ash.Error.Invalid, ~r/fired_at/, fn ->
+        Store.record_run(run_attrs(%{outcome: "failed", fired_at: nil}))
+      end
+
+      assert Store.runs(@icm, "s-morning", 10) == []
+      assert Store.notices_since(at("2000-01-01T00:00:00Z")).failed == []
+    end
+
     test "output is stored verbatim — the store never re-caps what the caller capped" do
       output = String.duplicate("x", 50_000)
 
@@ -384,6 +454,39 @@ defmodule Valea.Schedules.StoreTest do
     test "an unknown run id is a silent no-op, not an error" do
       assert :ok = Store.update_run(Ash.UUID.generate(), %{outcome: "completed"})
     end
+
+    # The lifecycle Task 4 gets: record BEFORE the spawn (so a crash in the
+    # window still leaves evidence the fire happened), attach the session the
+    # moment the spawn returns, settle the outcome at completion.
+    test "session_id is a post-create write — record, attach the session, then settle" do
+      {:ok, run_id} = Store.record_run(run_attrs(%{outcome: "running", session_id: nil}))
+
+      assert [%{session_id: nil, outcome: "running"}] = Store.runs(@icm, "s-morning", 10)
+
+      assert :ok = Store.update_run(run_id, %{session_id: "sess-42"})
+      assert [%{session_id: "sess-42", outcome: "running"}] = Store.runs(@icm, "s-morning", 10)
+
+      assert :ok = Store.update_run(run_id, %{outcome: "completed", duration_ms: 10})
+
+      assert [%{session_id: "sess-42", outcome: "completed", duration_ms: 10}] =
+               Store.runs(@icm, "s-morning", 10)
+    end
+
+    test "an unrecognised or immutable key raises rather than being silently dropped" do
+      {:ok, run_id} = Store.record_run(run_attrs())
+
+      assert_raise Ash.Error.Invalid, ~r/No such input `outcom`/, fn ->
+        Store.update_run(run_id, %{outcom: "completed"})
+      end
+
+      # The launch columns are history: `:progress` does not accept them.
+      assert_raise Ash.Error.Invalid, ~r/No such input `slot`/, fn ->
+        Store.update_run(run_id, %{slot: at("2026-07-30T09:30:00Z")})
+      end
+
+      assert [%{outcome: "running", slot: ~U[2026-07-30 07:30:00Z]}] =
+               Store.runs(@icm, "s-morning", 10)
+    end
   end
 
   # -- notices -----------------------------------------------------------------
@@ -420,6 +523,21 @@ defmodule Valea.Schedules.StoreTest do
       # `fired_at >= cutoff` is inclusive: the run at exactly the cutoff counts.
       assert Enum.map(waiting, & &1.fired_at) == [~U[2026-07-30 08:00:00Z]]
       assert Enum.map(failed, & &1.fired_at) == [~U[2026-07-30 09:00:00Z]]
+    end
+
+    test "a fractional-second cutoff is truncated down, so it includes its own second" do
+      # Stored `fired_at` is second-truncated, so an 08:00:00.9 event lands on
+      # 08:00:00. A cutoff of 08:00:00.4 must still see it: comparing against
+      # the untruncated cutoff would half-exclude events that were themselves
+      # truncated down into that second.
+      {:ok, _} =
+        Store.record_run(run_attrs(%{outcome: "failed", fired_at: ~U[2026-07-30 08:00:00.900Z]}))
+
+      assert %{failed: [%{fired_at: ~U[2026-07-30 08:00:00Z]}]} =
+               Store.notices_since(~U[2026-07-30 08:00:00.400Z])
+
+      # ... and the second AFTER is genuinely outside the window.
+      assert %{failed: []} = Store.notices_since(~U[2026-07-30 08:00:01.400Z])
     end
 
     test "notice runs are newest-first and span every ICM and schedule" do

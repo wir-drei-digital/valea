@@ -31,8 +31,12 @@ defmodule Valea.Schedules.Store.Run do
       `"waiting"` and `"failed"` by **exact equality** — a writer that
       elaborates the outcome (`"failed: spawn error"`) silently drops out of
       the cockpit notices. Failure detail belongs in `output`.
-    * `duration_ms`, `session_id` — filled in at completion; a prompt run's
-      session is the ordinary session it ran as.
+    * `session_id` — the session a prompt run ran as. Not knowable at create:
+      the record is written BEFORE the spawn (so a crash in between still
+      leaves evidence the fire happened), and the id is attached by
+      `Valea.Schedules.Store.update_run/2` the moment the spawn returns. That
+      is why `:progress` accepts it — see the action's own comment.
+    * `duration_ms` — filled in at completion.
     * `output` — captured text for a command run. **Capped by the caller**
       (spec §Command payloads: exec-style spawn, allowlisted env, ICM-root cwd,
       timeout, output cap). The store re-caps nothing and stores what it is
@@ -42,9 +46,17 @@ defmodule Valea.Schedules.Store.Run do
       while the previous run is still live consumes them all with a single
       record). Defaults to `1`, the ordinary single-slot fire.
 
-  `fired_at` defaults to now so history ordering can never contain a `nil`
-  `fired_at` hole; the scheduler passes it explicitly. Both instants are
-  `:utc_datetime` — UTC, second precision.
+  `fired_at` is **required** and defaults to now — the scheduler passes it
+  explicitly, and the default only covers an omitted key. `allow_nil? false`
+  is what closes the gap the default alone leaves open: a `default:` applies
+  when a key is ABSENT, never when it is present and `nil`, so
+  `record_run(%{fired_at: nil, outcome: "failed"})` would otherwise store a
+  NULL — and a NULL fails `fired_at >= ?`, leaving that failed run in the
+  history list but permanently invisible to
+  `Valea.Schedules.Store.notices_since/1`. A dropped failure notice is the one
+  outcome the spec's scheduled-session visibility rule exists to prevent, so
+  the nil raises instead. `slot` stays nullable — a manual fire consumes no
+  slot. Both instants are `:utc_datetime`, UTC, second precision.
   """
   use Ash.Resource,
     domain: Valea.Schedules.Store,
@@ -58,7 +70,10 @@ defmodule Valea.Schedules.Store.Run do
   end
 
   actions do
-    defaults [:read, :destroy]
+    # No `:destroy`: nothing in this domain deletes a run record — history
+    # outlives the schedule by design, and a retention sweep, if one ever
+    # lands, can add the action then.
+    defaults [:read]
 
     create :create do
       primary? true
@@ -81,11 +96,15 @@ defmodule Valea.Schedules.Store.Run do
       ]
     end
 
-    # The completion write, and the only mutation a run record ever takes: the
-    # launch columns (`slot`, `trigger`, `fingerprint`, ...) are history and
-    # stay immutable.
-    update :finish do
-      accept [:outcome, :duration_ms, :output]
+    # The only mutation a run record ever takes: filling in what was not
+    # knowable at launch. `session_id` lands right after the spawn returns,
+    # `outcome`/`duration_ms`/`output` at completion — one action rather than
+    # two, because both writes are the same "this run progressed" fact and
+    # neither may touch the launch columns (`slot`, `trigger`, `fingerprint`,
+    # `kind`, `coalesced_count`, `mount_key`), which are history and stay
+    # immutable.
+    update :progress do
+      accept [:outcome, :duration_ms, :output, :session_id]
     end
   end
 
@@ -103,7 +122,14 @@ defmodule Valea.Schedules.Store.Run do
     attribute :schedule_id, :string, allow_nil?: false, public?: true
     attribute :fingerprint, :string, public?: true
     attribute :slot, :utc_datetime, public?: true
-    attribute :fired_at, :utc_datetime, public?: true, default: &DateTime.utc_now/0
+    # `allow_nil? false` AND a default — see the moduledoc: the default covers
+    # an omitted key, `allow_nil? false` covers an explicit `nil`, and only
+    # both together keep a NULL out of the notices' window bound.
+    attribute :fired_at, :utc_datetime,
+      allow_nil?: false,
+      public?: true,
+      default: &DateTime.utc_now/0
+
     attribute :trigger, :string, public?: true
     attribute :kind, :string, public?: true
     attribute :outcome, :string, public?: true

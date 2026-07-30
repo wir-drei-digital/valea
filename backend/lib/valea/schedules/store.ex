@@ -44,6 +44,15 @@ defmodule Valea.Schedules.Store do
       `Valea.Schedules.Store.Run`. `notices_since/1` matches `"waiting"` and
       `"failed"` by exact equality, so detail belongs in `output`, never
       appended to the outcome.
+    * **`fired_at` can never be NULL** (`allow_nil? false` *and* a default): it
+      is both the history ordering key and the notices' window bound, and a
+      NULL fails `fired_at >= ?` silently — a failed run would show in
+      `runs/3` while being permanently invisible to `notices_since/1`.
+    * **`put_state/3`'s merge-over-stored is forward-insurance, not a fix for a
+      live bug.** `State` has no attribute defaults today, so a bare upsert
+      would behave identically; the merge is what keeps that true if a
+      `default:` is ever added. Full reasoning on `put_state/3` and on
+      `Valea.Schedules.Store.State`; a test pins the emitted `SET` list.
   """
   use Ash.Domain
 
@@ -70,8 +79,6 @@ defmodule Valea.Schedules.Store do
     :deleted_at
   ]
 
-  @run_update_keys [:outcome, :duration_ms, :output]
-
   # -- schedule state ----------------------------------------------------------
 
   @doc """
@@ -94,17 +101,26 @@ defmodule Valea.Schedules.Store do
   Upserts `(icm_id, schedule_id)`'s state. Only the keys present in `attrs`
   change; every other column keeps its stored value.
 
-  Read-modify-write, not a bare `ON CONFLICT ... DO UPDATE`: the upsert action
-  lists all four mutable columns in `upsert_fields`, so handing the changeset
-  `attrs` alone would write `nil` over whichever ones THIS call did not
-  mention. The scheduler advances the anchor with `%{last_attempted_slot:
-  slot}` on most ticks — that must not erase the fingerprint the due test just
-  matched on.
+  Read-modify-write, not a bare `ON CONFLICT ... DO UPDATE`. As the schema
+  stands today a bare upsert would behave identically — `State` declares no
+  attribute defaults, and an omitted attribute with no default never reaches
+  the INSERT column list, so the `SET` clause only touches columns the caller
+  passed. The merge is deliberate **forward-insurance**: give any of those four
+  columns a `default:` and an omitted key would start arriving as that default
+  and overwrite the stored value, which is the live bug
+  `Valea.Mail.Store.put_sync_state/3` documents (`backfill_complete`/`held`
+  carry `default: false` there, and a partial write resets whichever flag it
+  did not mention). The scheduler advances the anchor with
+  `%{last_attempted_slot: slot}` on most ticks; that write must never be able
+  to erase the fingerprint the due test just matched on, whatever the schema
+  grows later. `Valea.Schedules.Store.State`'s moduledoc carries the same note,
+  and a test pins the emitted `SET` list so the merge cannot be dropped as
+  dead code.
 
-  An explicit `nil` in `attrs` therefore means *clear this column*, which is
-  how the reappearance reset lifts a tombstone (`%{fingerprint: fp,
-  first_seen_at: now, last_attempted_slot: now, deleted_at: nil}` in one
-  write). Omitting `deleted_at` preserves it.
+  Independently of that, the merge is what gives `attrs` its **explicit-`nil`
+  clears** semantics — which is how the reappearance reset lifts a tombstone
+  (`%{fingerprint: fp, first_seen_at: now, last_attempted_slot: now,
+  deleted_at: nil}` in one write) while omitting `deleted_at` preserves it.
 
   Unknown keys are dropped rather than raising, so a caller may hand back a map
   it got from `get_state/2`.
@@ -166,15 +182,19 @@ defmodule Valea.Schedules.Store do
   Writes a run record and returns its id — the handle `update_run/2` needs when
   the run finishes.
 
-  `icm_id` and `schedule_id` are required; `id` is generated unless `attrs`
-  carries one, `fired_at` defaults to now, and `coalesced_count` to `1`. See
-  `Valea.Schedules.Store.Run` for what each field means, which outcome tokens
-  the notices depend on, and why `output` arrives pre-capped.
+  `icm_id`, `schedule_id` and `fired_at` are required; `id` is generated unless
+  `attrs` carries one, `fired_at` defaults to now when the key is **absent**
+  (an explicit `nil` raises — see `Valea.Schedules.Store.Run`), and
+  `coalesced_count` to `1`. That resource's moduledoc also has what each field
+  means, which outcome tokens the notices depend on, and why `output` arrives
+  pre-capped.
 
-  Strict about its input, unlike `put_state/3`: a missing `icm_id`/`schedule_id`
-  or an unrecognised key raises (`attribute icm_id is required`, `No such input
+  Strict about its input, unlike `put_state/3`: a missing required attribute or
+  an unrecognised key raises (`attribute icm_id is required`, `No such input
   \`...\``). A run record is the only evidence a scheduled run happened — a
-  misspelled field silently dropped would leave a history row that lies.
+  misspelled field silently dropped would leave a history row that lies. Call
+  it BEFORE the spawn and attach the session with `update_run/2`; see there for
+  the full lifecycle.
   """
   @spec record_run(map()) :: {:ok, String.t()}
   def record_run(attrs) when is_map(attrs) do
@@ -187,10 +207,26 @@ defmodule Valea.Schedules.Store do
   end
 
   @doc """
-  Applies a run's completion: any of `outcome`, `duration_ms` and `output`
-  present in `attrs`. Omitted keys are left untouched (a bare
+  Advances a run record: any of `session_id`, `outcome`, `duration_ms` and
+  `output` present in `attrs`. Omitted keys are left untouched (a bare
   `%{outcome: "timed out"}` keeps the partial output already captured), and the
-  launch columns are immutable.
+  launch columns (`slot`, `trigger`, `fingerprint`, `kind`, `coalesced_count`,
+  `mount_key`) are immutable — they are history.
+
+  Strict about its input, like `record_run/1`: an unrecognised or immutable key
+  raises rather than being silently dropped, so a typo cannot leave a run
+  record that quietly never recorded its outcome.
+
+  The lifecycle this supports, for the scheduler:
+
+      {:ok, run_id} = record_run(%{..., outcome: "running"})   # BEFORE the spawn
+      update_run(run_id, %{session_id: sid})                    # spawn returned
+      update_run(run_id, %{outcome: "completed", duration_ms: ms, output: text})
+
+  Recording before the spawn is the point: a crash in the window between the
+  two still leaves evidence that the fire happened. `session_id` is therefore a
+  post-create write, not a create field — though `record_run/1` accepts it too,
+  for a caller that already has the id.
 
   A silent no-op — not an error — when `run_id` is unknown: the workspace
   database can be replaced under a long-running run, and a completion with
@@ -201,7 +237,7 @@ defmodule Valea.Schedules.Store do
     case Ash.get(Run, run_id) do
       {:ok, run} ->
         run
-        |> Ash.Changeset.for_update(:finish, Map.take(attrs, @run_update_keys))
+        |> Ash.Changeset.for_update(:progress, attrs)
         |> Ash.update!()
 
         :ok
