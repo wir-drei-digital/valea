@@ -8,7 +8,14 @@
   import MarkdownInline from './MarkdownInline.svelte';
   import { unescapeMarked, type Token } from '$lib/markdown/agent-markdown';
 
-  let { tokens }: { tokens: Token[] } = $props();
+  let {
+    tokens,
+    onOpenFile
+  }: {
+    tokens: Token[];
+    /** Forwarded to every MarkdownInline (and recursive MarkdownBlocks) — see MarkdownInline. */
+    onOpenFile?: (relPath: string) => void;
+  } = $props();
 
   type Cell = { tokens?: Token[] };
   type T = Token & {
@@ -33,10 +40,10 @@
 <div class="flex min-w-0 flex-col gap-2">
   {#each items as token, i (i)}
     {#if token.type === 'paragraph'}
-      <p class="break-words"><MarkdownInline tokens={token.tokens ?? []} /></p>
+      <p class="break-words"><MarkdownInline tokens={token.tokens ?? []} {onOpenFile} /></p>
     {:else if token.type === 'heading'}
       <p class={headingClass[token.depth ?? 3] ?? headingClass[3]}>
-        <MarkdownInline tokens={token.tokens ?? []} />
+        <MarkdownInline tokens={token.tokens ?? []} {onOpenFile} />
       </p>
     {:else if token.type === 'list'}
       {#if token.ordered}
@@ -44,7 +51,7 @@
           {#each token.items ?? [] as item, j (j)}
             <li>
               {#if item.task}<span aria-hidden="true">{item.checked ? '☑' : '☐'} </span>{/if}
-              <MarkdownBlocks tokens={item.tokens ?? []} />
+              <MarkdownBlocks tokens={item.tokens ?? []} {onOpenFile} />
             </li>
           {/each}
         </ol>
@@ -53,7 +60,7 @@
           {#each token.items ?? [] as item, j (j)}
             <li>
               {#if item.task}<span aria-hidden="true">{item.checked ? '☑' : '☐'} </span>{/if}
-              <MarkdownBlocks tokens={item.tokens ?? []} />
+              <MarkdownBlocks tokens={item.tokens ?? []} {onOpenFile} />
             </li>
           {/each}
         </ul>
@@ -65,7 +72,7 @@
         )}</pre>
     {:else if token.type === 'blockquote'}
       <blockquote class="border-paper-border text-ink-secondary border-l-2 pl-3">
-        <MarkdownBlocks tokens={token.tokens ?? []} />
+        <MarkdownBlocks tokens={token.tokens ?? []} {onOpenFile} />
       </blockquote>
     {:else if token.type === 'table'}
       <div class="overflow-x-auto">
@@ -74,7 +81,7 @@
             <tr>
               {#each token.header ?? [] as cell, j (j)}
                 <th class="border-paper-hairline text-ink-heading border-b px-2.5 py-1.5 text-left font-medium">
-                  <MarkdownInline tokens={cell.tokens ?? []} />
+                  <MarkdownInline tokens={cell.tokens ?? []} {onOpenFile} />
                 </th>
               {/each}
             </tr>
@@ -84,7 +91,7 @@
               <tr>
                 {#each row as cell, k (k)}
                   <td class="border-paper-hairline border-b px-2.5 py-1.5 align-top">
-                    <MarkdownInline tokens={cell.tokens ?? []} />
+                    <MarkdownInline tokens={cell.tokens ?? []} {onOpenFile} />
                   </td>
                 {/each}
               </tr>
@@ -98,7 +105,7 @@
       <!-- Loose block-level text (list-item bodies land here). -->
       <p class="break-words">
         {#if token.tokens?.length}
-          <MarkdownInline tokens={token.tokens} />
+          <MarkdownInline tokens={token.tokens} {onOpenFile} />
         {:else}
           {token.escaped ? unescapeMarked(token.text ?? '') : (token.text ?? '')}
         {/if}

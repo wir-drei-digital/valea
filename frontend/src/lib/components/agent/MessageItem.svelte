@@ -14,7 +14,16 @@
   import MarkdownBlocks from './markdown/MarkdownBlocks.svelte';
   import { lexAgentMarkdown } from '$lib/markdown/agent-markdown';
 
-  let { role, text }: { role: 'user' | 'assistant'; text: string } = $props();
+  let {
+    role,
+    text,
+    onOpenFile
+  }: {
+    role: 'user' | 'assistant';
+    text: string;
+    /** Forwarded to the markdown renderer so assistant prose can open files (assistant only). */
+    onOpenFile?: (relPath: string) => void;
+  } = $props();
 
   const tokens = $derived(role === 'assistant' && text ? lexAgentMarkdown(text) : []);
 </script>
@@ -30,7 +39,7 @@
     <!-- Assistant replies read as the page's own prose — full container
          width, no bubble chrome; only USER messages keep the bubble. -->
     <div class="w-full min-w-0 self-stretch text-[13.5px] leading-[1.55] text-ink-body">
-      <MarkdownBlocks {tokens} />
+      <MarkdownBlocks {tokens} {onOpenFile} />
     </div>
   {/if}
 {/if}

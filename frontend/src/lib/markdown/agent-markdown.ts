@@ -48,3 +48,73 @@ export function unescapeMarked(text: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
 }
+
+// Basename must END in a letter-led extension, and the match must not start
+// at index 0 (bare ".md" or ".gitignore" is not a stem + extension —
+// documented accepted miss).
+const EXTENSION_RE = /\.[A-Za-z][A-Za-z0-9]{0,7}$/;
+
+/**
+ * The openable ICM-relative path of a codespan, or undefined. Input is the
+ * DECODED codespan text (marked pre-escapes codespans — callers pass it
+ * through `unescapeMarked` first, so what opens is exactly what displays).
+ * One trailing `:NN` line suffix is stripped (`CONTEXT.md:22`). Anything
+ * absolute, traversal-y, directory-like, scheme-ish, or not ending in a
+ * letter-led extension is rejected; spaces are allowed only when a `/` is
+ * present (`clients/Mara Lindt/notes.md`), so a backticked sentence never
+ * qualifies. The returned string is untrusted agent output — callers hand
+ * it ONLY to the `?pane=` codec / backend-validated APIs.
+ */
+export function codespanFilePath(text: string): string | undefined {
+  if (!text || text.length > 256) return undefined;
+  const stripped = text.replace(/:\d+$/, '');
+  if (!stripped || stripped.includes(':')) return undefined; // scheme, drive, second :NN
+  if (stripped.startsWith('/') || stripped.startsWith('~')) return undefined;
+  if (stripped.endsWith('/')) return undefined;
+  if (/[`()\\]/.test(stripped)) return undefined;
+  for (let i = 0; i < stripped.length; i++) {
+    const code = stripped.charCodeAt(i);
+    if (code < 32 || code === 127) return undefined; // control chars incl. tab/newline
+  }
+  if (stripped.includes(' ') && !stripped.includes('/')) return undefined;
+  const segments = stripped.split('/');
+  if (segments.some((seg) => seg === '' || seg === '.' || seg === '..')) return undefined;
+  const basename = segments[segments.length - 1];
+  const ext = EXTENSION_RE.exec(basename);
+  if (!ext || ext.index === 0) return undefined;
+  return stripped;
+}
+
+/**
+ * Distinct `codespanFilePath` hits across a whole agent message — the
+ * auto-open candidate set. Walks the lexed token tree through every inline
+ * container (emphasis, links, list items, table cells) but never descends
+ * into fenced `code` blocks; codespan text is decoded before detection.
+ */
+export function messageFilePaths(text: string): string[] {
+  if (!text) return [];
+  const seen = new Set<string>();
+  type Walkable = Token & {
+    text?: string;
+    tokens?: Token[];
+    items?: Array<{ tokens?: Token[] }>;
+    header?: Array<{ tokens?: Token[] }>;
+    rows?: Array<Array<{ tokens?: Token[] }>>;
+  };
+  const walk = (tokens: Token[]): void => {
+    for (const token of tokens as Walkable[]) {
+      if (token.type === 'codespan') {
+        const path = codespanFilePath(unescapeMarked(token.text ?? ''));
+        if (path) seen.add(path);
+        continue;
+      }
+      if (token.type === 'code') continue;
+      if (token.tokens) walk(token.tokens);
+      if (token.items) for (const item of token.items) walk(item.tokens ?? []);
+      if (token.header) for (const cell of token.header) walk(cell.tokens ?? []);
+      if (token.rows) for (const row of token.rows) for (const cell of row) walk(cell.tokens ?? []);
+    }
+  };
+  walk(lexAgentMarkdown(text));
+  return [...seen];
+}
