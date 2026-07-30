@@ -3,10 +3,12 @@
 # permission_read_policy | crash_mid_turn | stderr_noise | hang | slow
 #
 # "slow" doubles as the manual browser-testing scenario: a multi-second
-# streaming turn, config options on session/new (echoed refreshed from
-# session/set_config_option, like claude-agent-acp), and a usage_update at
-# turn end — enough surface to drive the composer's working indicator,
-# prompt queue, config chips, and context donut without a real agent.
+# streaming turn, scripted tool calls (read/edit with locations + diff,
+# execute with output — both ToolCallCard header layouts), config options on
+# session/new (echoed refreshed from session/set_config_option, like
+# claude-agent-acp), and a usage_update at turn end — enough surface to
+# drive the composer's working indicator, prompt queue, config chips,
+# tool cards, and context donut without a real agent.
 #
 # Speaks NDJSON JSON-RPC on stdio. Dependency-free apart from Jason, which the
 # test harness puts on the code path via `elixir -pa _build/test/lib/jason/ebin`.
@@ -92,7 +94,86 @@ defmodule FakeAdapter do
           "content" => %{"type" => "text", "text" => "Thinking this through… "}
         })
 
-        Process.sleep(6_000)
+        # Three scripted tool calls covering ToolCallCard's two header
+        # layouts: read/edit titles that merely restate their location (the
+        # compact verb+chip row) and an execute command title that doesn't
+        # (full title + separate chip row). Paths are cwd-relative so
+        # Connection.put_tool_locations derives a relPath and the chips
+        # render clickable.
+        cwd = File.cwd!()
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call",
+          "toolCallId" => "tool-read-1",
+          "title" => "Read CONTEXT.md",
+          "kind" => "read",
+          "status" => "in_progress",
+          "locations" => [%{"path" => Path.join(cwd, "CONTEXT.md"), "line" => 1}]
+        })
+
+        Process.sleep(1_500)
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call_update",
+          "toolCallId" => "tool-read-1",
+          "status" => "completed",
+          "content" => [
+            %{
+              "type" => "content",
+              "content" => %{"type" => "text", "text" => "# Context\n\nSeed file contents.\n"}
+            }
+          ]
+        })
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call",
+          "toolCallId" => "tool-edit-1",
+          "title" => "Edit CONTEXT.md",
+          "kind" => "edit",
+          "status" => "in_progress",
+          "locations" => [%{"path" => Path.join(cwd, "CONTEXT.md"), "line" => 22}],
+          "content" => [
+            %{
+              "type" => "diff",
+              "path" => Path.join(cwd, "CONTEXT.md"),
+              "oldText" => "- an old bullet\n",
+              "newText" => "- a fresh bullet\n"
+            }
+          ]
+        })
+
+        Process.sleep(1_500)
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call_update",
+          "toolCallId" => "tool-edit-1",
+          "status" => "completed"
+        })
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call",
+          "toolCallId" => "tool-exec-1",
+          "title" => ~s[grep -ril "related" ./notes],
+          "kind" => "execute",
+          "status" => "in_progress",
+          "locations" => [%{"path" => Path.join(cwd, "notes")}]
+        })
+
+        Process.sleep(1_000)
+
+        update(ctx, %{
+          "sessionUpdate" => "tool_call_update",
+          "toolCallId" => "tool-exec-1",
+          "status" => "completed",
+          "content" => [
+            %{
+              "type" => "content",
+              "content" => %{"type" => "text", "text" => "notes/a.md\nnotes/b.md\n"}
+            }
+          ]
+        })
+
+        Process.sleep(2_000)
 
         update(ctx, %{
           "sessionUpdate" => "agent_message_chunk",

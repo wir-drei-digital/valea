@@ -7,6 +7,7 @@ import {
   toolDiff,
   diffLines,
   toolLocations,
+  compactToolAction,
   planEntries,
   planProgress,
   configOptions,
@@ -111,6 +112,37 @@ describe('toolLocations', () => {
   it('returns [] when locations is absent or not an array', () => {
     expect(toolLocations({ id: 't', type: 'tool' })).toEqual([]);
     expect(toolLocations({ id: 't', type: 'tool', locations: 'x' })).toEqual([]);
+  });
+});
+
+describe('compactToolAction', () => {
+  const locs = [{ path: '/ws/CONTEXT.md', relPath: 'CONTEXT.md', line: 1 }];
+
+  it('returns the verb when a read/edit title restates a location', () => {
+    expect(compactToolAction('read', 'Read CONTEXT.md', locs)).toBe('Read');
+    expect(compactToolAction('edit', 'Edit CONTEXT.md', locs)).toBe('Edit');
+    // Write maps to kind "edit" but keeps its own verb
+    expect(compactToolAction('edit', 'Write CONTEXT.md', locs)).toBe('Write');
+  });
+
+  it('matches absolute-path titles and basename-of-nested-relPath titles', () => {
+    expect(compactToolAction('read', 'Read /ws/CONTEXT.md', locs)).toBe('Read');
+    expect(
+      compactToolAction('read', 'Read a.md', [{ path: '/ws/notes/a.md', relPath: 'notes/a.md' }])
+    ).toBe('Read');
+  });
+
+  it('never compacts non-file kinds, even when a path matches', () => {
+    expect(compactToolAction('execute', 'cat CONTEXT.md', locs)).toBeUndefined();
+    expect(compactToolAction('search', 'Grep CONTEXT.md', locs)).toBeUndefined();
+  });
+
+  it('keeps titles that carry more than kind + location', () => {
+    expect(compactToolAction('read', 'Read OTHER.md', locs)).toBeUndefined();
+    expect(compactToolAction('read', 'Read CONTEXT.md and more', locs)).toBeUndefined();
+    expect(compactToolAction('read', 'CONTEXT.md', locs)).toBeUndefined();
+    expect(compactToolAction('read', 'Read CONTEXT.md', [])).toBeUndefined();
+    expect(compactToolAction('read', '', locs)).toBeUndefined();
   });
 });
 

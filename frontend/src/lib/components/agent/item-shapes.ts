@@ -115,6 +115,36 @@ export function toolLocations(item: AcpItemLike): ToolLocation[] {
   });
 }
 
+/**
+ * The action verb of a redundant file-tool title, or undefined. "Read
+ * CONTEXT.md" next to a `CONTEXT.md` location chip says everything twice, so
+ * `ToolCallCard` collapses to a compact header (verb + chips, no title) when
+ * the title is exactly one word followed by a path some location already
+ * shows — equal to, or basename-suffix of, the location's path/relPath.
+ * Only `read`/`edit` kinds qualify: their titles are adapter-derived
+ * "<Verb> <path>" strings (the verb survives, so Write — which ACP files
+ * under kind "edit" — still reads WRITE, not EDIT). Execute/search titles
+ * are commands or patterns, never redundant with a chip.
+ */
+export function compactToolAction(
+  kind: string,
+  title: string,
+  locations: ToolLocation[]
+): string | undefined {
+  if (kind !== 'read' && kind !== 'edit') return undefined;
+  const match = /^([A-Za-z]+) (\S+)$/.exec(title);
+  if (!match) return undefined;
+  const [, verb, rest] = match;
+  const covered = locations.some(
+    (loc) =>
+      rest === loc.path ||
+      rest === loc.relPath ||
+      loc.path.endsWith(`/${rest}`) ||
+      (loc.relPath !== undefined && loc.relPath.endsWith(`/${rest}`))
+  );
+  return covered ? verb : undefined;
+}
+
 export type PlanEntry = { text: string; status: string };
 
 /** `item.entries`, as built by `Connection.plan_entries/1`: `[{text, status}]`. */
