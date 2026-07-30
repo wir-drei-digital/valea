@@ -7,6 +7,7 @@ import {
   toolDiff,
   diffLines,
   toolLocations,
+  locationLabel,
   compactToolAction,
   planEntries,
   planProgress,
@@ -115,21 +116,82 @@ describe('toolLocations', () => {
   });
 });
 
+describe('locationLabel', () => {
+  it('keeps the basename (and :line) out of the truncatable head', () => {
+    expect(locationLabel({ path: '/ws/notes/a.md', relPath: 'notes/a.md', line: 12 })).toEqual({
+      full: 'notes/a.md:12',
+      head: 'notes/',
+      tail: 'a.md:12'
+    });
+  });
+
+  it('falls back to the absolute path when the file is outside the ICM', () => {
+    expect(locationLabel({ path: '/etc/hosts' })).toEqual({
+      full: '/etc/hosts',
+      head: '/etc/',
+      tail: 'hosts'
+    });
+  });
+
+  it('folds a title line span into the chip instead of repeating the start line', () => {
+    const loc = { path: '/ws/notes/a.md', relPath: 'notes/a.md', line: 88 };
+    expect(locationLabel(loc, { from: 88, to: 93 })).toEqual({
+      full: 'notes/a.md:88-93',
+      head: 'notes/',
+      tail: 'a.md:88-93'
+    });
+    // A location with no line of its own still takes the span.
+    expect(locationLabel({ path: '/ws/a.md', relPath: 'a.md' }, { from: 1, to: 40 }).full).toBe(
+      'a.md:1-40'
+    );
+    // A span that disagrees with the location loses: the location is what
+    // the chip actually opens.
+    expect(locationLabel(loc, { from: 5, to: 9 }).full).toBe('notes/a.md:88');
+  });
+
+  it('leaves the head empty when there is nothing to truncate away', () => {
+    expect(locationLabel({ path: '/ws/a.md', relPath: 'a.md' })).toEqual({
+      full: 'a.md',
+      head: '',
+      tail: 'a.md'
+    });
+    // Trailing slash: no basename to protect, so the whole label is the tail.
+    expect(locationLabel({ path: '/ws/notes/', relPath: 'notes/' })).toEqual({
+      full: 'notes/',
+      head: '',
+      tail: 'notes/'
+    });
+  });
+});
+
 describe('compactToolAction', () => {
   const locs = [{ path: '/ws/CONTEXT.md', relPath: 'CONTEXT.md', line: 1 }];
 
   it('returns the verb when a read/edit title restates a location', () => {
-    expect(compactToolAction('read', 'Read CONTEXT.md', locs)).toBe('Read');
-    expect(compactToolAction('edit', 'Edit CONTEXT.md', locs)).toBe('Edit');
+    expect(compactToolAction('read', 'Read CONTEXT.md', locs)).toEqual({ verb: 'Read' });
+    expect(compactToolAction('edit', 'Edit CONTEXT.md', locs)).toEqual({ verb: 'Edit' });
     // Write maps to kind "edit" but keeps its own verb
-    expect(compactToolAction('edit', 'Write CONTEXT.md', locs)).toBe('Write');
+    expect(compactToolAction('edit', 'Write CONTEXT.md', locs)).toEqual({ verb: 'Write' });
   });
 
   it('matches absolute-path titles and basename-of-nested-relPath titles', () => {
-    expect(compactToolAction('read', 'Read /ws/CONTEXT.md', locs)).toBe('Read');
+    expect(compactToolAction('read', 'Read /ws/CONTEXT.md', locs)).toEqual({ verb: 'Read' });
     expect(
       compactToolAction('read', 'Read a.md', [{ path: '/ws/notes/a.md', relPath: 'notes/a.md' }])
-    ).toBe('Read');
+    ).toEqual({ verb: 'Read' });
+  });
+
+  // The adapter's partial-read title. It used to fall through to the full
+  // layout, which then showed the filename twice (title AND chip).
+  it('parses the line span a partial read appends to the path', () => {
+    expect(compactToolAction('read', 'Read CONTEXT.md (88 - 93)', locs)).toEqual({
+      verb: 'Read',
+      range: { from: 88, to: 93 }
+    });
+    expect(compactToolAction('read', 'Read CONTEXT.md (1-40)', locs)).toEqual({
+      verb: 'Read',
+      range: { from: 1, to: 40 }
+    });
   });
 
   it('never compacts non-file kinds, even when a path matches', () => {
