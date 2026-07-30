@@ -149,8 +149,26 @@ defmodule Valea.Api.Mail do
       and re-adding the account re-activates its Engine, whose `do_activate`
       runs `Valea.Mail.Index.rebuild/2` and re-feeds every row.
 
-  Neither clears `mail_messages`/`mail_uid_map`/`mail_sync_state`; that
-  metadata-cache gap predates the search index and is tracked separately.
+  Both actions also clear the pure-cache metadata slice —
+  `mail_messages`/`mail_uid_map`/`mail_sync_state`, via
+  `Store.clear_account/1` — under one invariant: after teardown the store
+  holds exactly what `Index.rebuild/2` over the surviving files would
+  produce (nothing, once the files are purged). Clearing `mail_sync_state`
+  is load-bearing, not just hygiene: a purged-then-re-added account keeping
+  its old high-water mark over an empty maildir would silently skip its own
+  history, and a purged `mailbox_replaced` account keeping its old
+  `UIDVALIDITY` would re-detect the replacement after every restart.
+  `readopt_mail_account` — the KEEP-the-mirror path — never runs after
+  these actions' file/config state, so it loses nothing.
+
+  The ops ledger (`mail_pending_ops`) splits deliberately, because it is
+  NOT cache (see `Valea.Mail.Store`'s moduledoc): `purge_mail_account_files`
+  erases it (`Store.clear_pending_ops/1` — `envelope_rcpt` is recipient
+  personal data, and the spool bytes its hashes bind to were just deleted;
+  an unverifiable send record surviving an explicit purge breaks the
+  promise the confirmation gate makes the user type out), while
+  `remove_mail_account` keeps it — removal keeps the files, spool included,
+  and the audit record rides with the mirror it describes.
 
   ## `set_mail_credential`'s `kind`
 
@@ -485,6 +503,7 @@ defmodule Valea.Api.Mail do
              :ok <- Settings.remove_account!(root, slug) do
           :ok = MailSupervisor.reload_settings_all(root)
           :ok = Store.clear_search_rows(slug)
+          :ok = Store.clear_account(slug)
           {:ok, %{"removed" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}
@@ -510,6 +529,8 @@ defmodule Valea.Api.Mail do
              {:ok, target} <- Paths.resolve_real(slug, Path.join([root, "sources", "mail"])) do
           File.rm_rf!(target)
           :ok = Store.clear_search_rows(slug)
+          :ok = Store.clear_account(slug)
+          :ok = Store.clear_pending_ops(slug)
           {:ok, %{"purged" => true}}
         else
           {:error, reason} -> {:error, error_for(reason)}

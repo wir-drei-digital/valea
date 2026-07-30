@@ -453,6 +453,72 @@ defmodule Valea.Mail.Store do
     :ok
   end
 
+  # -- account teardown --------------------------------------------------------
+
+  @doc """
+  Deletes every pure-cache row this store holds for `account` — the whole
+  `mail_sync_state` / `mail_uid_map` / `mail_messages` slice, the
+  account-wide sibling of `clear_folder/2`. Other accounts are untouched.
+
+  For the account-teardown actions (`remove_mail_account`,
+  `purge_mail_account_files`) the invariant is: after the action, this
+  store holds exactly what `Valea.Mail.Index.rebuild/2` over the surviving
+  files would produce — nothing, when the files are purged too. The FTS
+  rows ride separately (`clear_search_rows/1`, raw SQL against the virtual
+  table); the ops ledger is NOT touched here — it is not cache
+  (`clear_pending_ops/1` exists for the one caller that has decided to
+  erase it).
+
+  Deliberately includes `mail_sync_state`: its `UIDVALIDITY`/high-water
+  memory describes a mirror that no longer exists (purge) or an account
+  that no longer exists (remove). Keeping it was actively harmful — a
+  purged-then-re-added account would inherit a stale high-water mark over
+  an empty maildir and silently skip its own history, and a purged
+  `mailbox_replaced` account would re-detect the replacement after every
+  backend restart. `readopt_mail_account` is unaffected: re-adopt is the
+  KEEP-the-local-mirror path, and its authorized pass reads these rows only
+  while the mirror they describe is still on disk.
+  """
+  @spec clear_account(String.t()) :: :ok
+  def clear_account(account) when is_binary(account) do
+    SyncState
+    |> Ash.Query.filter(account == ^account)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    UidMap
+    |> Ash.Query.filter(account == ^account)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    MessageIndex
+    |> Ash.Query.filter(account == ^account)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    :ok
+  end
+
+  @doc """
+  Deletes `account`'s rows from the durable ops ledger (`mail_pending_ops`)
+  — every state, terminal or not. The ledger is deliberate NON-cache (see
+  the moduledoc), so this is separate from `clear_account/1` and each
+  caller owns the product decision:
+
+    * `purge_mail_account_files` calls it — "purge my mail files" read
+      literally: `envelope_rcpt` is recipient personal data, and the purge
+      just deleted the spool bytes the ledger's hashes bind to, so what
+      remained would be an unverifiable record the user asked to erase.
+    * `remove_mail_account` does NOT — removal leaves the files (spool
+      included) in place, and the ledger rides with them, exactly as the
+      audit record of sends/moves against a mirror that still exists.
+  """
+  @spec clear_pending_ops(String.t()) :: :ok
+  def clear_pending_ops(account) when is_binary(account) do
+    PendingOp
+    |> Ash.Query.filter(account == ^account)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    :ok
+  end
+
   # -- search index (mail_search, FTS5) ----------------------------------------
 
   # Column ordinals of the `mail_search` virtual table, in declaration order

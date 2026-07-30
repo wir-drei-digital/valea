@@ -338,6 +338,70 @@ defmodule Valea.Mail.StoreTest do
     end
   end
 
+  describe "clear_account/1 + clear_pending_ops/1" do
+    test "clear_account/1 wipes the whole pure-cache slice for that account only" do
+      for folder <- ["INBOX", "Sorted"] do
+        Store.put_sync_state("mara@example.com", folder, %{uidvalidity: 1, high_water_uid: 10})
+
+        Store.put_occurrence("mara@example.com", folder, %{
+          uid: 1,
+          uidvalidity: 1,
+          msg_id: "m1",
+          flags: MapSet.new()
+        })
+
+        Store.upsert_index_row(base_row(%{folder: folder}))
+      end
+
+      Store.put_sync_state("priya@example.com", "INBOX", %{uidvalidity: 3, high_water_uid: 30})
+
+      Store.put_occurrence("priya@example.com", "INBOX", %{
+        uid: 7,
+        uidvalidity: 3,
+        msg_id: "p1",
+        flags: MapSet.new()
+      })
+
+      Store.upsert_index_row(base_row(%{account: "priya@example.com", uid: 7, msg_id: "p1"}))
+
+      {:ok, _} = Store.create_pending_op(op_attrs(%{}))
+
+      assert :ok = Store.clear_account("mara@example.com")
+
+      for folder <- ["INBOX", "Sorted"] do
+        assert {:error, :not_found} = Store.get_sync_state("mara@example.com", folder)
+        assert Store.occurrences("mara@example.com", folder) == []
+        assert Store.list_messages("mara@example.com", folder) == []
+      end
+
+      # The bystander account keeps every row...
+      assert {:ok, %{uidvalidity: 3}} = Store.get_sync_state("priya@example.com", "INBOX")
+      assert [%{msg_id: "p1"}] = Store.occurrences("priya@example.com", "INBOX")
+      assert [%{msg_id: "p1"}] = Store.list_messages("priya@example.com", "INBOX")
+
+      # ...and the ops ledger is deliberately NOT part of the cache slice.
+      assert [%{kind: "append"}] = Store.pending_ops("mara@example.com")
+    end
+
+    test "clear_pending_ops/1 erases that account's ledger rows only, terminal states included" do
+      {:ok, _} = Store.create_pending_op(op_attrs(%{origin: "ops:a:0", state: "pending"}))
+      {:ok, done} = Store.create_pending_op(op_attrs(%{origin: "ops:a:1", state: "pending"}))
+      :ok = Store.transition_op(done.id, "complete")
+
+      {:ok, _} =
+        Store.create_pending_op(op_attrs(%{account: "priya@example.com", origin: "ops:b:0"}))
+
+      assert :ok = Store.clear_pending_ops("mara@example.com")
+
+      # `ops_by_origin/2` sees ANY state, so it proves the terminal row went too.
+      assert Store.pending_ops("mara@example.com") == []
+      assert Store.ops_by_origin("mara@example.com", "ops:a:0") == []
+      assert Store.ops_by_origin("mara@example.com", "ops:a:1") == []
+
+      assert [%{account: "priya@example.com"}] = Store.pending_ops("priya@example.com")
+    end
+  end
+
   describe "pending ops ledger" do
     defp op_attrs(overrides) do
       Map.merge(

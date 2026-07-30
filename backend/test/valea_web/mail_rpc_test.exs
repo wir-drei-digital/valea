@@ -1603,12 +1603,16 @@ defmodule ValeaWeb.MailRpcTest do
     end
   end
 
-  # `mail_search` is the one table that persists message BODY TEXT, so the
-  # two teardown actions have to take its rows with them — a purged account
-  # whose files are gone must not still answer `search_mail` with body
-  # snippets. (Its own describe rather than a case inside `search_mail`
-  # above: both actions need a fully-activated-then-removed engine.)
-  describe "account teardown clears the search index" do
+  # `mail_search` persists message BODY TEXT and the metadata tables persist
+  # subjects/senders/dates, so the two teardown actions have to take the
+  # whole store slice with them — a purged account whose files are gone must
+  # not still answer `search_mail` with body snippets or hold readable
+  # headers in `mail_messages`. The ops ledger deliberately SPLITS between
+  # the two actions (see `Valea.Api.Mail`'s moduledoc): purge erases it,
+  # removal keeps it with the files. (Its own describe rather than a case
+  # inside `search_mail` above: both actions need a
+  # fully-activated-then-removed engine.)
+  describe "account teardown clears the store" do
     setup %{workspace: workspace, generation: generation} do
       setup_account!(generation, account: "mara")
       await_engine_active!("mara")
@@ -1627,12 +1631,41 @@ defmodule ValeaWeb.MailRpcTest do
 
       {:ok, 1} = Index.rebuild(workspace, "mara")
 
+      # Baseline: the rebuild populated every table the teardowns must clear.
       assert [_hit] = Store.search("mara", "roadmap")
+      assert [%{subject: "Roadmap"}] = Store.list_messages("mara", "INBOX")
+      assert [%{uid: 1}] = Store.occurrences("mara", "INBOX")
+      assert {:ok, _} = Store.get_sync_state("mara", "INBOX")
+
+      # A ledger row for mara, plus a full bystander-account slice — the
+      # teardowns are slug-scoped and must prove it.
+      assert {:ok, _} =
+               Store.create_pending_op(%{
+                 kind: "append",
+                 account: "mara",
+                 origin: "ops:teardown:0",
+                 state: "pending",
+                 msg_id: "2026-07-01-roadmap"
+               })
+
+      Store.put_sync_state("kira", "INBOX", %{uidvalidity: 9, high_water_uid: 3})
+
+      Store.put_occurrence("kira", "INBOX", %{
+        uid: 3,
+        uidvalidity: 9,
+        msg_id: "k1",
+        flags: MapSet.new()
+      })
 
       :ok
     end
 
-    test "remove_mail_account drops the rows even though the files stay", %{
+    defp assert_bystander_untouched do
+      assert {:ok, %{uidvalidity: 9}} = Store.get_sync_state("kira", "INBOX")
+      assert [%{msg_id: "k1"}] = Store.occurrences("kira", "INBOX")
+    end
+
+    test "remove_mail_account drops the cache rows; files and ops ledger stay", %{
       workspace: workspace,
       generation: generation
     } do
@@ -1646,12 +1679,23 @@ defmodule ValeaWeb.MailRpcTest do
       assert %{"success" => true, "data" => %{"messages" => []}} =
                rpc("search_mail", %{"account" => "mara", "query" => "roadmap"}, @search_fields)
 
+      # The metadata slice (subjects/senders/dates, uid map, watermarks) goes
+      # with the config entry — the DB holds exactly what a rebuild over the
+      # files would re-feed, and re-adding the account runs that rebuild.
+      assert Store.list_messages("mara", "INBOX") == []
+      assert Store.occurrences("mara", "INBOX") == []
+      assert {:error, :not_found} = Store.get_sync_state("mara", "INBOX")
+
       # Removal is not a purge: the view files — the source of truth a
-      # re-added account rebuilds its index from — are untouched.
+      # re-added account rebuilds its index from — are untouched, and the
+      # ops ledger (audit record, not cache) rides with them.
       assert File.exists?(Path.join([workspace, "sources", "mail", "mara", "views"]))
+      assert [%{origin: "ops:teardown:0"}] = Store.pending_ops("mara")
+
+      assert_bystander_untouched()
     end
 
-    test "purge_mail_account_files drops the rows with the files", %{
+    test "purge_mail_account_files drops the rows with the files, ops ledger included", %{
       workspace: workspace,
       generation: generation
     } do
@@ -1661,11 +1705,12 @@ defmodule ValeaWeb.MailRpcTest do
                ])
 
       # Re-feed from the surviving view files, so this test exercises PURGE
-      # clearing the index rather than inheriting an index the removal
-      # already emptied. (This is also the real state a straggler engine
-      # activation would leave behind between the two actions.)
+      # clearing the store rather than inheriting tables the removal already
+      # emptied. (This is also the real state a straggler engine activation
+      # would leave behind between the two actions.)
       {:ok, 1} = Index.rebuild(workspace, "mara")
       assert [_hit] = Store.search("mara", "roadmap")
+      assert [%{subject: "Roadmap"}] = Store.list_messages("mara", "INBOX")
 
       assert %{"success" => true, "data" => %{"purged" => true}} =
                rpc(
@@ -1677,11 +1722,22 @@ defmodule ValeaWeb.MailRpcTest do
       refute File.exists?(Path.join([workspace, "sources", "mail", "mara"]))
 
       # The body text is gone from app.sqlite too — the files were the last
-      # other copy.
+      # other copy — and so is every readable metadata row for the slug.
       assert Store.search("mara", "roadmap") == []
 
       assert %{"success" => true, "data" => %{"messages" => []}} =
                rpc("search_mail", %{"account" => "mara", "query" => "roadmap"}, @search_fields)
+
+      assert Store.list_messages("mara", "INBOX") == []
+      assert Store.occurrences("mara", "INBOX") == []
+      assert {:error, :not_found} = Store.get_sync_state("mara", "INBOX")
+
+      # Purge erases the ops ledger too: envelope_rcpt is recipient personal
+      # data, and the spool bytes its hashes bound to went with the files.
+      assert Store.pending_ops("mara") == []
+      assert Store.ops_by_origin("mara", "ops:teardown:0") == []
+
+      assert_bystander_untouched()
     end
   end
 
