@@ -36,10 +36,12 @@ code has ever been compiled or run on Windows.
 > step otherwise) — and the full desktop crate compiled (CI1b's three
 > firsts, green; only a deprecation warning in `links.rs`). The run then
 > failed in WiX `light.exe` building an MSI nobody ships — fixed by
-> pinning `bundle.targets` to `["nsis"]` in `tauri.windows.conf.json` —
-> so the NSIS bundle itself is still unproven. The **test-suite gates
-> (CI2–CI4) have still never run**; the boxes below stay unchecked until
-> the bring-up dispatch itself is read step by step.
+> pinning `bundle.targets` to `["nsis"]` in `tauri.windows.conf.json`.
+> The follow-up tag run (30506274800, 2026-07-30) then built and uploaded
+> the NSIS `.exe` + `.sig` successfully, so the Windows release lane is
+> green end to end. The **test-suite gates (CI2–CI4) have still never
+> run**; the boxes below stay unchecked until the bring-up dispatch
+> itself is read step by step.
 
 - [ ] **CI1 · T1 survey harvest.** From the "Build SPA + Burrito sidecar
       (+ spawn shim)" step's log, confirm three things the packaging path
