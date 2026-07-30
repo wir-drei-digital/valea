@@ -8,6 +8,7 @@ import {
   accountColorIndex,
   inboxCount,
   accountMeta,
+  mailAccessErrorMessage,
   replaceDanglingInlineImages,
   folderBadge,
   messageSeen,
@@ -186,6 +187,21 @@ describe('replaceDanglingInlineImages', () => {
 
   it('falls back to a generic label when neither alt nor id carries text', () => {
     expect(replaceDanglingInlineImages('<img src="cid:">')).toContain('inline image — image unavailable');
+  });
+});
+
+describe('mailAccessErrorMessage', () => {
+  it('names the manual escape hatch for an unsupported CONTEXT.md', () => {
+    const msg = mailAccessErrorMessage('context_unsupported', 'mara');
+    expect(msg).toContain('- mail-mara');
+    expect(msg).toContain('by hand');
+  });
+
+  it('covers the known refusals and falls back with the code', () => {
+    expect(mailAccessErrorMessage('icm_unavailable', 'mara')).toContain('Re-enable');
+    expect(mailAccessErrorMessage('account_unknown', 'mara')).toContain('not configured');
+    expect(mailAccessErrorMessage('workspace_changed', 'mara')).toContain('workspace changed');
+    expect(mailAccessErrorMessage('surprise', 'mara')).toContain('surprise');
   });
 });
 

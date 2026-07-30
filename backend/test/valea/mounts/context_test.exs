@@ -585,4 +585,160 @@ defmodule Valea.Mounts.ContextTest do
       assert result.issues == []
     end
   end
+
+  # The settings UI's mail-access toggles: line surgery over the user-owned
+  # CONTEXT.md — everything the editor doesn't understand must pass through
+  # byte-identical.
+  describe "mail_optins/1 + set_mail_optin/3" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "valea-optin-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      %{root: root}
+    end
+
+    defp context!(root, content), do: File.write!(Path.join(root, "CONTEXT.md"), content)
+    defp context(root), do: File.read!(Path.join(root, "CONTEXT.md"))
+
+    test "adds an entry under an existing related_icms list, preserving everything else", %{
+      root: root
+    } do
+      context!(root, """
+      ---
+      format: 1
+      # my own comment
+      related_icms:
+        - id: abc-123
+          name: "Legal"
+      ---
+
+      # Router
+
+      | task | place |
+      """)
+
+      assert :ok = Context.set_mail_optin(root, "mara", true)
+
+      assert context(root) == """
+             ---
+             format: 1
+             # my own comment
+             related_icms:
+               - mail-mara
+               - id: abc-123
+                 name: "Legal"
+             ---
+
+             # Router
+
+             | task | place |
+             """
+
+      assert Context.mail_optins(root) == ["mara"]
+    end
+
+    test "creates the key when the frontmatter lacks it, inside the fence", %{root: root} do
+      context!(root, "---\nformat: 1\n---\nBody stays.\n")
+      assert :ok = Context.set_mail_optin(root, "work", true)
+
+      assert context(root) ==
+               "---\nformat: 1\nrelated_icms:\n  - mail-work\n---\nBody stays.\n"
+    end
+
+    test "prepends a minimal block when the file has no frontmatter; mints the file when absent",
+         %{root: root} do
+      context!(root, "# Just prose\n")
+      assert :ok = Context.set_mail_optin(root, "mara", true)
+      assert context(root) == "---\nrelated_icms:\n  - mail-mara\n---\n# Just prose\n"
+
+      other = Path.join(root, "fresh")
+      File.mkdir_p!(other)
+      assert :ok = Context.set_mail_optin(other, "mara", true)
+      assert Context.mail_optins(other) == ["mara"]
+    end
+
+    test "is idempotent in both directions", %{root: root} do
+      context!(root, "---\nrelated_icms:\n  - mail-mara\n---\nBody.\n")
+      before = context(root)
+
+      assert :ok = Context.set_mail_optin(root, "mara", true)
+      assert context(root) == before
+
+      assert :ok = Context.set_mail_optin(root, "other", false)
+      assert context(root) == before
+    end
+
+    test "removes an entry and drops the key (and block) when they empty out", %{root: root} do
+      context!(root, """
+      ---
+      format: 1
+      related_icms:
+        - mail-mara
+        - id: abc
+          name: "Legal"
+      ---
+      Body.
+      """)
+
+      assert :ok = Context.set_mail_optin(root, "mara", false)
+      refute context(root) =~ "mail-mara"
+      assert context(root) =~ "name: \"Legal\""
+
+      # Key with only the mail entry: key line goes too.
+      context!(root, "---\nformat: 1\nrelated_icms:\n  - mail-mara\n---\nBody.\n")
+      assert :ok = Context.set_mail_optin(root, "mara", false)
+      assert context(root) == "---\nformat: 1\n---\nBody.\n"
+
+      # Block with only that key: the whole block goes.
+      context!(root, "---\nrelated_icms:\n  - mail-mara\n---\nBody.\n")
+      assert :ok = Context.set_mail_optin(root, "mara", false)
+      assert context(root) == "Body.\n"
+
+      # No file at all: disable is a no-op, not a minted file.
+      other = Path.join(root, "none")
+      File.mkdir_p!(other)
+      assert :ok = Context.set_mail_optin(other, "mara", false)
+      refute File.exists?(Path.join(other, "CONTEXT.md"))
+    end
+
+    test "matches quoted entries and respects existing indentation", %{root: root} do
+      context!(root, "---\nrelated_icms:\n    - \"mail-mara\"\n    - calendar\n---\n")
+      assert :ok = Context.set_mail_optin(root, "mara", false)
+      assert context(root) == "---\nrelated_icms:\n    - calendar\n---\n"
+
+      assert :ok = Context.set_mail_optin(root, "work", true)
+      assert context(root) == "---\nrelated_icms:\n    - mail-work\n    - calendar\n---\n"
+    end
+
+    test "refuses a flow-style list instead of mangling it", %{root: root} do
+      context!(root, "---\nrelated_icms: [calendar]\n---\n")
+      before = context(root)
+
+      assert {:error, :context_unsupported} = Context.set_mail_optin(root, "mara", true)
+      assert context(root) == before
+    end
+
+    test "a slug is never a regex: metacharacters match literally", %{root: root} do
+      context!(root, "---\nrelated_icms:\n  - mail-a.b\n---\n")
+      # ".": a regex dot would also match "a-b" — the escape keeps it literal.
+      assert :ok = Context.set_mail_optin(root, "a-b", false)
+      assert context(root) =~ "mail-a.b"
+    end
+
+    test "mail_optins reads slugs off the same grammar resolve/2 uses", %{root: root} do
+      context!(root, """
+      ---
+      related_icms:
+        - mail-mara
+        - calendar
+        - id: abc
+          name: "Legal"
+        - mail-work
+      ---
+      """)
+
+      assert Context.mail_optins(root) == ["mara", "work"]
+      assert Context.mail_optins(Path.join(root, "missing")) == []
+    end
+  end
 end

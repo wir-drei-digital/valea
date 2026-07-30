@@ -106,6 +106,7 @@ defmodule Valea.Api.Icms do
 
   alias Valea.Api.Error
   alias Valea.Mounts
+  alias Valea.Mounts.Context
   alias Valea.Mounts.Doctor
   alias Valea.Mounts.Manifest
   alias Valea.Paths
@@ -270,6 +271,82 @@ defmodule Valea.Api.Icms do
       end
     end
 
+    # -- mail access (Mail settings UI) ------------------------------------
+    #
+    # The per-ICM mail opt-in is the CONTEXT.md `related_icms:` bare-string
+    # grammar (`mail-<slug>` — `Valea.Mounts.Context`'s moduledoc), and that
+    # FILE stays the one truth: `list` reads it, `set` edits it in place
+    # (line surgery, user formatting preserved). No shadow registry.
+    action :list_icm_mail_access, :map do
+      constraints fields: [
+                    access: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            mount_key: [type: :string, allow_nil?: false],
+                            name: [type: :string, allow_nil?: false],
+                            accounts: [type: {:array, :string}, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        with :ok <- Manager.check_generation(input.arguments.generation),
+             {:ok, %{path: root}} <- Manager.current() do
+          # Only a healthy, enabled ICM can host sessions, so only those
+          # earn a toggle row.
+          access =
+            root
+            |> Mounts.list()
+            |> Enum.filter(&(&1.kind == :icm and &1.enabled and is_nil(&1.degraded)))
+            |> Enum.map(fn mount ->
+              %{
+                mount_key: mount.name,
+                name: name_for(mount),
+                accounts: Context.mail_optins(mount.root)
+              }
+            end)
+
+          {:ok, %{access: access}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :set_icm_mail_access, :map do
+      constraints fields: [
+                    saved: [type: :boolean, allow_nil?: false],
+                    accounts: [type: {:array, :string}, allow_nil?: false]
+                  ]
+
+      argument :mount_key, :string, allow_nil?: false
+      argument :account, :string, allow_nil?: false
+      argument :enabled, :boolean, allow_nil?: false
+      argument :generation, :integer, allow_nil?: false
+
+      run fn input, _ctx ->
+        %{mount_key: mount_key, account: account, enabled: enabled, generation: generation} =
+          input.arguments
+
+        with :ok <- Manager.check_generation(generation),
+             {:ok, %{path: root}} <- Manager.current(),
+             {:ok, mount} <- healthy_icm(root, mount_key),
+             :ok <- known_account(root, account, enabled),
+             :ok <- Context.set_mail_optin(mount.root, account, enabled) do
+          {:ok, %{saved: true, accounts: Context.mail_optins(mount.root)}}
+        else
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
     action :unmount_icm, :map do
       constraints fields: [unmounted: [type: :boolean, allow_nil?: false]]
 
@@ -333,6 +410,27 @@ defmodule Valea.Api.Icms do
   def error_for({:mint_failed, reason}), do: Error.new("mint_failed: #{inspect(reason)}")
   def error_for(reason) when is_atom(reason), do: Error.new(to_string(reason))
   def error_for(reason), do: Error.new(inspect(reason))
+
+  # Only a healthy, enabled ICM can host sessions — anything else has no
+  # business gaining a mail grant through the settings UI.
+  defp healthy_icm(root, mount_key) do
+    case Mounts.mount_by_key(root, mount_key) do
+      %{kind: :icm, enabled: true, degraded: nil} = mount -> {:ok, mount}
+      _other -> {:error, :icm_unavailable}
+    end
+  end
+
+  # ENABLING requires the account to exist as a mail mount (a typo must not
+  # land in the user's CONTEXT.md); DISABLING may clean up an entry whose
+  # account is already gone, so it checks nothing.
+  defp known_account(_root, _account, false), do: :ok
+
+  defp known_account(root, account, true) do
+    case Mounts.mount_by_key(root, "mail-" <> account) do
+      %{kind: :mail} -> :ok
+      _other -> {:error, :account_unknown}
+    end
+  end
 
   defp to_rpc_icm(mount) do
     %{

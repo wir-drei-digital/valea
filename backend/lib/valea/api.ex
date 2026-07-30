@@ -110,6 +110,8 @@ defmodule Valea.Api do
       rpc_action(:set_icm_enabled, :set_icm_enabled)
       rpc_action(:unmount_icm, :unmount_icm)
       rpc_action(:icm_doctor, :icm_doctor)
+      rpc_action(:list_icm_mail_access, :list_icm_mail_access)
+      rpc_action(:set_icm_mail_access, :set_icm_mail_access)
     end
 
     resource Valea.Api.Skills do

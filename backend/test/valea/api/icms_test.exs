@@ -255,5 +255,127 @@ defmodule Valea.Api.IcmsTest do
 
     assert {:error, _} = run(:unmount_icm, %{mount_key: "nope", generation: stale})
     assert {:error, _} = run(:icm_doctor, %{mount_key: "nope", generation: stale})
+
+    assert {:error, _} = run(:list_icm_mail_access, %{generation: stale})
+
+    assert {:error, _} =
+             run(:set_icm_mail_access, %{
+               mount_key: "nope",
+               account: "mara",
+               enabled: true,
+               generation: stale
+             })
+  end
+
+  # The Mail settings UI's per-project access toggles — over the CONTEXT.md
+  # `related_icms:` grammar, which stays the single source of truth.
+  describe "icm mail access" do
+    defp write_mail_yaml!(ws, slug) do
+      path = Path.join(ws, "config/mail.yaml")
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(path, """
+      version: 4
+      accounts:
+        #{slug}:
+          imap:
+            host: imap.example.com
+            port: 993
+            username: #{slug}@example.com
+      """)
+    end
+
+    test "set adds/removes the CONTEXT.md entry and list reflects it", %{
+      ws: ws,
+      generation: generation
+    } do
+      icm = AgentCase.mount_test_icm!(ws, name: "Primary")
+      write_mail_yaml!(ws, "mara")
+
+      assert {:ok, %{access: [%{mount_key: mount_key, accounts: []}]}} =
+               run(:list_icm_mail_access, %{generation: generation})
+
+      assert mount_key == icm.mount_key
+
+      assert {:ok, %{saved: true, accounts: ["mara"]}} =
+               run(:set_icm_mail_access, %{
+                 mount_key: icm.mount_key,
+                 account: "mara",
+                 enabled: true,
+                 generation: generation
+               })
+
+      assert File.read!(Path.join(icm.root, "CONTEXT.md")) =~ "- mail-mara"
+
+      assert {:ok, %{access: [%{accounts: ["mara"]}]}} =
+               run(:list_icm_mail_access, %{generation: generation})
+
+      assert {:ok, %{saved: true, accounts: []}} =
+               run(:set_icm_mail_access, %{
+                 mount_key: icm.mount_key,
+                 account: "mara",
+                 enabled: false,
+                 generation: generation
+               })
+
+      refute File.read!(Path.join(icm.root, "CONTEXT.md")) =~ "mail-mara"
+    end
+
+    test "enabling requires a configured account; disabling a stale entry does not", %{
+      ws: ws,
+      generation: generation
+    } do
+      icm = AgentCase.mount_test_icm!(ws, name: "Primary")
+
+      assert {:error, error} =
+               run(:set_icm_mail_access, %{
+                 mount_key: icm.mount_key,
+                 account: "ghost",
+                 enabled: true,
+                 generation: generation
+               })
+
+      assert %Valea.Api.Error{code: "account_unknown"} = error.errors |> hd()
+
+      # A stale entry whose account is gone may still be cleaned up.
+      File.write!(
+        Path.join(icm.root, "CONTEXT.md"),
+        "---\nrelated_icms:\n  - mail-ghost\n---\n"
+      )
+
+      assert {:ok, %{saved: true, accounts: []}} =
+               run(:set_icm_mail_access, %{
+                 mount_key: icm.mount_key,
+                 account: "ghost",
+                 enabled: false,
+                 generation: generation
+               })
+    end
+
+    test "an unknown or disabled ICM earns no toggle", %{ws: ws, generation: generation} do
+      icm = AgentCase.mount_test_icm!(ws, name: "Primary")
+      write_mail_yaml!(ws, "mara")
+
+      assert {:ok, %{"saved" => true}} =
+               run(:set_icm_enabled, %{
+                 mount_key: icm.mount_key,
+                 enabled: false,
+                 generation: generation
+               })
+
+      assert {:ok, %{access: []}} = run(:list_icm_mail_access, %{generation: generation})
+
+      for key <- [icm.mount_key, "nope"] do
+        assert {:error, error} =
+                 run(:set_icm_mail_access, %{
+                   mount_key: key,
+                   account: "mara",
+                   enabled: true,
+                   generation: generation
+                 })
+
+        assert %Valea.Api.Error{code: "icm_unavailable"} = error.errors |> hd()
+      end
+    end
   end
 end

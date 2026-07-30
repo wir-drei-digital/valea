@@ -112,6 +112,171 @@ defmodule Valea.Mounts.Context do
 
   # -- CONTEXT.md frontmatter -----------------------------------------------
 
+  @doc """
+  The `mail-<slug>` opt-ins an ICM's own `CONTEXT.md` declares, as bare
+  slugs — the read half of the settings UI's per-project mail-access
+  toggles. Same parse as `resolve/2`, minus the mount resolution: this
+  reports what the FILE says, whether or not the account behind a slug is
+  currently mountable.
+  """
+  @spec mail_optins(icm_root :: String.t()) :: [String.t()]
+  def mail_optins(icm_root) when is_binary(icm_root) do
+    icm_root
+    |> read_related_icms()
+    |> Enum.flat_map(fn
+      "mail-" <> slug -> [slug]
+      _other -> []
+    end)
+  end
+
+  @doc """
+  Adds or removes ONE `mail-<slug>` bare-string entry in the ICM root's
+  `CONTEXT.md` `related_icms:` list — the write half of the settings UI's
+  mail-access toggles, editing the same file-first grammar an owner edits
+  by hand (the file stays the single source of truth; no shadow registry).
+
+  LINE surgery, not parse-and-rerender: the file is the user's document, so
+  everything this doesn't understand — prose body, comments, other
+  frontmatter keys, entry order and indentation — passes through
+  byte-identical. The only edits ever made are inserting or deleting the
+  one entry line (plus the `related_icms:` key line when the toggle creates
+  the list or empties it, and a minimal frontmatter block when the file has
+  none or doesn't exist).
+
+  Idempotent in both directions. Fails closed on a `related_icms:` written
+  in flow style (`[...]`) — `{:error, :context_unsupported}` rather than
+  risk mangling a hand-formatted list this line editor can't safely touch.
+  Writes are tmp + `File.rename!/2`, like every other Valea file write.
+  """
+  @spec set_mail_optin(icm_root :: String.t(), slug :: String.t(), enabled? :: boolean()) ::
+          :ok | {:error, :context_unsupported | File.posix()}
+  def set_mail_optin(icm_root, slug, enabled?) when is_binary(icm_root) and is_binary(slug) do
+    path = Path.join(icm_root, "CONTEXT.md")
+    content = File.read(path)
+
+    case edit_mail_optin(content, slug, enabled?) do
+      :unchanged -> :ok
+      {:ok, next} -> write_via_rename(path, next)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # No file: enabling mints a minimal frontmatter-only CONTEXT.md (the
+  # template normally seeds one, but adopted folders may lack it);
+  # disabling an entry that can't exist is a no-op.
+  defp edit_mail_optin({:error, :enoent}, slug, true),
+    do: {:ok, "---\nrelated_icms:\n  - mail-#{slug}\n---\n"}
+
+  defp edit_mail_optin({:error, :enoent}, _slug, false), do: :unchanged
+  defp edit_mail_optin({:error, reason}, _slug, _enabled?), do: {:error, reason}
+
+  defp edit_mail_optin({:ok, content}, slug, enabled?) do
+    case ICM.split_frontmatter(content) do
+      # No frontmatter block: enabling prepends a minimal one above the
+      # user's prose; disabling is a no-op.
+      {"", _body} ->
+        if enabled? do
+          {:ok, "---\nrelated_icms:\n  - mail-#{slug}\n---\n" <> content}
+        else
+          :unchanged
+        end
+
+      {block, body} ->
+        with {:ok, next_block} <- edit_block(block, slug, enabled?) do
+          cond do
+            next_block == block -> :unchanged
+            # Removing the only key left bare fences — drop the block whole.
+            next_block == "---\n---\n" -> {:ok, body}
+            true -> {:ok, next_block <> body}
+          end
+        end
+    end
+  end
+
+  # The block arrives fenced (`---\n...\n---\n`, per `ICM.split_frontmatter/1`)
+  # and leaves the same way.
+  defp edit_block(block, slug, enabled?) do
+    lines = block |> String.trim_trailing("\n") |> String.split("\n")
+    entry_re = ~r/^\s*-\s+["']?mail-#{Regex.escape(slug)}["']?\s*$/
+    has_entry? = Enum.any?(lines, &Regex.match?(entry_re, &1))
+
+    cond do
+      enabled? == has_entry? ->
+        {:ok, block}
+
+      enabled? ->
+        insert_entry(lines, slug)
+
+      true ->
+        {:ok, remove_entry(lines, entry_re)}
+    end
+  end
+
+  defp insert_entry(lines, slug) do
+    cond do
+      # Block-style key: insert directly under it, matching the indentation
+      # of an existing first entry when there is one.
+      index = Enum.find_index(lines, &Regex.match?(~r/^related_icms:\s*(#.*)?$/, &1)) ->
+        indent =
+          case Enum.at(lines, index + 1) do
+            line when is_binary(line) ->
+              case Regex.run(~r/^(\s*)-\s+/, line) do
+                [_, ws] -> ws
+                nil -> "  "
+              end
+
+            nil ->
+              "  "
+          end
+
+        {:ok, lines |> List.insert_at(index + 1, "#{indent}- mail-#{slug}") |> to_block()}
+
+      # Flow style (`related_icms: [...]`) — refuse rather than mangle.
+      Enum.any?(lines, &Regex.match?(~r/^related_icms:\s*\[/, &1)) ->
+        {:error, :context_unsupported}
+
+      # No key at all: append it at the end of the block, INSIDE the
+      # closing fence (`lines` carries both `---` fences).
+      true ->
+        {front, [fence]} = Enum.split(lines, -1)
+        {:ok, (front ++ ["related_icms:", "  - mail-#{slug}", fence]) |> to_block()}
+    end
+  end
+
+  # Removing the last entry under `related_icms:` also removes the now-empty
+  # key line — `related_icms:` over nothing parses as nil and reads as [],
+  # but leaving it behind is clutter in a user-owned file.
+  defp remove_entry(lines, entry_re) do
+    lines = Enum.reject(lines, &Regex.match?(entry_re, &1))
+
+    key_index = Enum.find_index(lines, &Regex.match?(~r/^related_icms:\s*(#.*)?$/, &1))
+
+    lines =
+      if key_index && !entry_line?(Enum.at(lines, key_index + 1)) do
+        List.delete_at(lines, key_index)
+      else
+        lines
+      end
+
+    to_block(lines)
+  end
+
+  defp entry_line?(line) when is_binary(line), do: Regex.match?(~r/^\s*-\s+/, line)
+  defp entry_line?(_end_of_block), do: false
+
+  # `lines` still carries the `---` fences at both ends (they were part of
+  # the split block); re-joining restores the trailing newline the trim took.
+  defp to_block(lines), do: Enum.join(lines, "\n") <> "\n"
+
+  defp write_via_rename(path, content) do
+    tmp = path <> ".tmp"
+
+    with :ok <- File.write(tmp, content) do
+      File.rename!(tmp, path)
+      :ok
+    end
+  end
+
   defp read_related_icms(primary_root) do
     case File.read(Path.join(primary_root, "CONTEXT.md")) do
       {:ok, content} -> parse_related_icms(content)

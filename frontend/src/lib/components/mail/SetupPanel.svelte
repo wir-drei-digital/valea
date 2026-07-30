@@ -2,6 +2,8 @@
   // Mail account management (mail design spec E §Account setup + doctor /
   // §Credentials): the configured-account list with per-account maintenance
   // (edit, doctor, held-folder discard, re-adopt/purge recovery, remove),
+  // per-project session access toggles (the CONTEXT.md `mail-<slug>`
+  // opt-in grammar, edited in place — see `Valea.Mounts.Context`),
   // plus the add-account form. Rendered from `routes/mail/+page.svelte`
   // inside the settings DIALOG (the calendar route's Sources pattern;
   // `?setup=1` deep-links it open) — this component owns its own
@@ -44,6 +46,7 @@
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import {
     submitMailSetup,
+    mailAccessErrorMessage,
     mailSetupErrorMessage,
     mailMaintenanceErrorMessage,
     mailStateLabel,
@@ -413,6 +416,63 @@
     await runAction(() => api.removeMailAccount(slug, generation));
   }
 
+  // -- per-project mail access (the CONTEXT.md opt-in grammar) ---------------
+  //
+  // Which projects' sessions may read each mailbox — the settings UI over
+  // the `related_icms: - mail-<slug>` bare-string grammar. The FILE stays
+  // the source of truth: `list_icm_mail_access` reads every enabled ICM's
+  // CONTEXT.md, `set_icm_mail_access` edits the one entry line in place.
+  // Loaded once when this panel opens, like the trusted senders below.
+  type MailAccessRow = { mountKey: string; name: string; accounts: string[] };
+  let mailAccess = $state<MailAccessRow[]>([]);
+  let accessBusy = $state(false);
+  let accessError = $state<string | null>(null);
+  /** Which account's row shows `accessError` — errors render where the click happened. */
+  let accessErrorAccount = $state<string | null>(null);
+
+  $effect(() => {
+    void (async () => {
+      const result = await api.listIcmMailAccess(generation);
+      if (result.ok) mailAccess = (result.data as { access: MailAccessRow[] }).access;
+    })();
+  });
+
+  /**
+   * One toggle at a time, optimistic with a revert: the checkbox is one-way
+   * bound (`checked={...}`), so the DOM has already flipped when this runs —
+   * state follows it immediately and is put back on a refusal, the same
+   * follow-the-DOM-then-correct dance `toggleNotifications` documents.
+   */
+  async function toggleAccess(mountKey: string, account: string, enabled: boolean): Promise<void> {
+    const before = mailAccess;
+    accessBusy = true;
+    accessError = null;
+    accessErrorAccount = null;
+    mailAccess = mailAccess.map((row) =>
+      row.mountKey === mountKey
+        ? {
+            ...row,
+            accounts: enabled
+              ? [...row.accounts, account]
+              : row.accounts.filter((a) => a !== account)
+          }
+        : row
+    );
+
+    const result = await api.setIcmMailAccess(mountKey, account, enabled, generation);
+    accessBusy = false;
+
+    if (!result.ok) {
+      mailAccess = before;
+      accessError = mailAccessErrorMessage(result.error, account);
+      accessErrorAccount = account;
+      return;
+    }
+
+    const data = result.data as { accounts: string[] };
+    mailAccess = mailAccess.map((row) => (row.mountKey === mountKey ? { ...row, accounts: data.accounts } : row));
+  }
+
   // -- trusted senders (HTML mail's remote-content gate) ----------------------
   //
   // The workspace-wide list behind "Always trust <sender>" in the read pane
@@ -490,6 +550,33 @@
 
           {#if status.username}
             <p class="text-ink-meta mt-0.5 text-[12px]">{status.username}</p>
+          {/if}
+
+          {#if status.valid && mailAccess.length > 0}
+            <!-- Which projects' sessions may read this mailbox — each
+                 checkbox edits the ONE `mail-<slug>` line in that project's
+                 CONTEXT.md (the file stays the source of truth). Sessions
+                 started from Mail itself always get access, regardless. -->
+            <div class="border-paper-hairline mt-2.5 border-t pt-2">
+              <p class="text-ink-meta text-[11.5px]">Let sessions in these projects read this mailbox:</p>
+              <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+                {#each mailAccess as row (row.mountKey)}
+                  <label class="text-ink-body flex items-center gap-1.5 text-[12.5px]">
+                    <input
+                      type="checkbox"
+                      checked={row.accounts.includes(status.account)}
+                      disabled={accessBusy}
+                      onchange={(event) =>
+                        void toggleAccess(row.mountKey, status.account, event.currentTarget.checked)}
+                    />
+                    {row.name}
+                  </label>
+                {/each}
+              </div>
+              {#if accessError && accessErrorAccount === status.account}
+                <p class="text-warn-ink mt-1.5 text-[12px]" role="alert">{accessError}</p>
+              {/if}
+            </div>
           {/if}
 
           {#if !status.valid}

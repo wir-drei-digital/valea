@@ -129,6 +129,10 @@ import {
   createIcmChannel,
   setIcmEnabled as httpSetIcmEnabled,
   setIcmEnabledChannel,
+  listIcmMailAccess as httpListIcmMailAccess,
+  listIcmMailAccessChannel,
+  setIcmMailAccess as httpSetIcmMailAccess,
+  setIcmMailAccessChannel,
   unmountIcm as httpUnmountIcm,
   unmountIcmChannel,
   icmDoctor as httpIcmDoctor,
@@ -233,6 +237,8 @@ import type {
   SetIcmEnabledFields,
   UnmountIcmFields,
   IcmDoctorFields,
+  ListIcmMailAccessFields,
+  SetIcmMailAccessFields,
   CalendarStatusFields,
   SetupCalendarSourceFields,
   SetCalendarSourceUrlFields,
@@ -637,6 +643,12 @@ const createIcmFields: CreateIcmFields = ['mountKey', 'id'];
 const setIcmEnabledFields: SetIcmEnabledFields = ['saved'];
 const unmountIcmFields: UnmountIcmFields = ['unmounted'];
 const icmDoctorFields: IcmDoctorFields = ['ok', 'checks'];
+// Mail-access toggles (Mail settings) over the CONTEXT.md opt-in grammar —
+// `access` is the same `Array<TypedMap>` codegen gap as `listIcmsFields`.
+const listIcmMailAccessFields = [
+  { access: ['mountKey', 'name', 'accounts'] }
+] as unknown as ListIcmMailAccessFields;
+const setIcmMailAccessFields: SetIcmMailAccessFields = ['saved', 'accounts'];
 
 // `inspect_icm` (Task 10.1) — onboarding's mount-preview primitive, no
 // `generation`/open-workspace requirement (see `Valea.Api.Icms`'s
@@ -1371,6 +1383,24 @@ function callUnmountIcmChannel(
 ) {
   return wrapChannelCall((handlers) =>
     unmountIcmChannel({ channel, input, fields: unmountIcmFields, ...handlers })
+  );
+}
+
+function callListIcmMailAccessChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    listIcmMailAccessChannel({ channel, input, fields: listIcmMailAccessFields, ...handlers })
+  );
+}
+
+function callSetIcmMailAccessChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { mountKey: string; account: string; enabled: boolean; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    setIcmMailAccessChannel({ channel, input, fields: setIcmMailAccessFields, ...handlers })
   );
 }
 
@@ -2533,6 +2563,27 @@ export const api = {
     runRpc(
       (channel) => callUnmountIcmChannel(channel, { mountKey, generation }),
       () => httpUnmountIcm(withAuth({ input: { mountKey, generation }, fields: unmountIcmFields }))
+    ),
+
+  // Mail-access toggles (Mail settings): which projects' sessions may read
+  // a mailbox — the CONTEXT.md `mail-<slug>` opt-in grammar, read + edited
+  // in place backend-side (`Valea.Mounts.Context`).
+  listIcmMailAccess: (generation: number) =>
+    runRpc(
+      (channel) => callListIcmMailAccessChannel(channel, { generation }),
+      () =>
+        httpListIcmMailAccess(
+          withAuth({ input: { generation }, fields: listIcmMailAccessFields })
+        )
+    ),
+
+  setIcmMailAccess: (mountKey: string, account: string, enabled: boolean, generation: number) =>
+    runRpc(
+      (channel) => callSetIcmMailAccessChannel(channel, { mountKey, account, enabled, generation }),
+      () =>
+        httpSetIcmMailAccess(
+          withAuth({ input: { mountKey, account, enabled, generation }, fields: setIcmMailAccessFields })
+        )
     ),
 
   icmDoctor: (mountKey: string, generation: number) =>

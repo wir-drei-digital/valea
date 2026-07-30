@@ -3223,6 +3223,79 @@ export async function inspectIcmChannel<Fields extends InspectIcmFields | undefi
 }
 
 
+export type ListIcmMailAccessInput = {
+  generation: number;
+};
+
+export type ListIcmMailAccessFields = UnifiedFieldSelection<{access: Array<{mountKey: string, name: string, accounts: Array<string>, __type: "TypedMap", __primitiveFields: "mountKey" | "name" | "accounts"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListIcmMailAccessResult<
+  Fields extends ListIcmMailAccessFields | undefined,
+> = InferResult<{access: Array<{mountKey: string, name: string, accounts: Array<string>, __type: "TypedMap", __primitiveFields: "mountKey" | "name" | "accounts"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListIcmMailAccessResult<Fields extends ListIcmMailAccessFields | undefined = undefined> = | { success: true; data: InferListIcmMailAccessResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function listIcmMailAccess<Fields extends ListIcmMailAccessFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListIcmMailAccessInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListIcmMailAccessResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_icm_mail_access",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListIcmMailAccessResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function listIcmMailAccessChannel<Fields extends ListIcmMailAccessFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListIcmMailAccessInput;
+  fields: Fields;
+  resultHandler: (result: ListIcmMailAccessResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListIcmMailAccessResult<Fields>>(
+    config.channel,
+    {
+    action: "list_icm_mail_access",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type ListIcmsInput = {
   generation: number;
 };
@@ -3435,6 +3508,82 @@ export async function setIcmEnabledChannel<Fields extends SetIcmEnabledFields | 
     config.channel,
     {
     action: "set_icm_enabled",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetIcmMailAccessInput = {
+  mountKey: string;
+  account: string;
+  enabled: boolean;
+  generation: number;
+};
+
+export type SetIcmMailAccessFields = UnifiedFieldSelection<{saved: boolean, accounts: Array<string>, __type: "TypedMap", __primitiveFields: "saved" | "accounts"}>[];
+
+export type InferSetIcmMailAccessResult<
+  Fields extends SetIcmMailAccessFields | undefined,
+> = InferResult<{saved: boolean, accounts: Array<string>, __type: "TypedMap", __primitiveFields: "saved" | "accounts"}, Fields>;
+
+export type SetIcmMailAccessResult<Fields extends SetIcmMailAccessFields | undefined = undefined> = | { success: true; data: InferSetIcmMailAccessResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function setIcmMailAccess<Fields extends SetIcmMailAccessFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetIcmMailAccessInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetIcmMailAccessResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_icm_mail_access",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetIcmMailAccessResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Icms
+ *
+ * @ashActionType :action
+ */
+export async function setIcmMailAccessChannel<Fields extends SetIcmMailAccessFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetIcmMailAccessInput;
+  fields: Fields;
+  resultHandler: (result: SetIcmMailAccessResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetIcmMailAccessResult<Fields>>(
+    config.channel,
+    {
+    action: "set_icm_mail_access",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

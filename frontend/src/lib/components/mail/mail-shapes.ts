@@ -106,6 +106,27 @@ export async function sha256Hex(content: string): Promise<string> {
     .join('');
 }
 
+/**
+ * Failure copy for a mail-access toggle (`set_icm_mail_access` — SetupPanel's
+ * per-project checkboxes over the CONTEXT.md `mail-<slug>` opt-in grammar).
+ * `context_unsupported` is the one refusal with a manual way out, so it
+ * names the exact line to add by hand.
+ */
+export function mailAccessErrorMessage(code: string, account: string): string {
+  switch (code) {
+    case 'context_unsupported':
+      return `This project's CONTEXT.md keeps its related list in a style Valea won't rewrite. Add "- mail-${account}" under related_icms by hand.`;
+    case 'icm_unavailable':
+      return 'This project is not available right now. Re-enable it in the sidebar, then try again.';
+    case 'account_unknown':
+      return 'This account is not configured on this workspace.';
+    case 'workspace_changed':
+      return 'The workspace changed underneath this dialog. Close it and try again.';
+    default:
+      return `Could not update project access (${code}).`;
+  }
+}
+
 /** Badge text for a folder row (`FolderPicker`): `"held"` for a held folder (spec E §folder lifecycle), nothing otherwise. */
 export function folderBadge(folder: Pick<MailFolder, 'held'>): string | null {
   return folder.held ? 'held' : null;
