@@ -173,16 +173,42 @@
 
 ---
 
-## M6 — Modern auth: OAuth2 (elaborate task detail at milestone start)
+## M6 — Modern auth: OAuth2
+
+**Spec:** design doc §M6 — `docs/superpowers/specs/2026-07-29-mail-full-client-design.md` ("M6 — Modern auth: OAuth2 (XOAUTH2)"). Task detail below elaborated at milestone start (2026-07-30) per the original plan note, against HEAD `e7c679c`.
+
+**Planning facts verified against the code (2026-07-30):**
+- Credentials are RAM-only zero-arity closures in Engine state (`engine.ex:639`), resolved only at the `transport.connect/3` boundary via `resolve_secret/1` (`engine.ex:1362`) — the designated seam for "password or fresh access token".
+- `set_mail_credential`'s `kind` is a closed clause map (`credential_kind/1`, `api/mail.ex:530-537`); frontend restart-resupply (`resupplySlot`, `stores/mail.svelte.ts:1384-1442`) already re-pushes keychain slots — a third `"oauth"` kind rides all of it.
+- `SmtpClient` is a custom module on raw `:ssl` (gen_smtp is MIME-only); AUTH mechanism selection lives at `smtp_client.ex:220-260`, TLS-gated.
+- IMAP `login/3` sits at `imap_client.ex:490-505` inside the `connect/3` `with` chain; `drive_segments/5` does NOT yet model XOAUTH2's failure round (server `+ <base64 error>` continuation → client answers with an empty line → tagged `NO`).
+- Engine status vocabulary at `engine.ex:200-207`; `@paused_statuses` at `engine.ex:197`; sticky `auth_failed` classification at `engine.ex:1759`.
+- `Settings.detect_provider/1` recognizes Gmail only (`settings.ex:85,179`); no outlook/M365 detection exists anywhere.
+- Outbound HTTP is `:httpc` with an injectable seam (`Autoconfig.default_http_get/1`, `autoconfig.ex:279-309`); the token endpoint needs a POST/form-encoded sibling of that exact shape.
+- The Phoenix endpoint IS the loopback listener; the token-EXEMPT `/calendar/feed.ics` scope (`router.ex:63-64`, own query credential, constant-time compare) is the precedent for an unauthenticated `/oauth/callback` route (providers cannot send the control token). Ports are dynamic (dev 4200, packaged 4817) — the redirect URI must be built at runtime from endpoint config; Google/Microsoft native-client rules allow any loopback port.
+- Single-flight precedent: the Engine's deferred-reply `ops_queue` shape (`engine.ex:669-678, 819-898`) — monitored Task + parked callers, `handle_call` never blocks.
 
 ### Task 15: XOAUTH2 in the clients
 
-- [ ] `auth: password | oauth2` per-account config (Settings; default password); credential closure abstracted to yield either a password or a fresh access token.
-- [ ] `ImapClient` `AUTHENTICATE XOAUTH2` + SMTP `AUTH XOAUTH2` (base64 SASL string), auth-failure mapping to a distinct `reauth_required` engine state.
-- [ ] Fake-server tests for both SASL exchanges.
+**Files:** `backend/lib/valea/mail/settings.ex` (+ test), `backend/lib/valea/api/mail.ex`, `backend/lib/valea/mail/imap_client.ex` (+ test), `backend/lib/valea/mail/smtp_client.ex` (+ test), `backend/lib/valea/mail/smtp_transport.ex`, `backend/lib/valea/mail/engine.ex` (+ test), `frontend/src/lib/components/mail/mail-shapes.ts` (+ test), regenerated `ash_rpc.ts`.
+
+- [ ] `auth: :password | :oauth2` on the `Settings` account struct (default `:password`); per-account validation in `load/1` — an invalid `auth` value invalidates ONLY that account, never silently falls back to `password` (a downgrade would send an access token as a LOGIN password); `render/1` round-trips it; flat `auth` arg on `setup_mail_account` + field on `get_mail_account_settings`; codegen.
+- [ ] One shared pure SASL-string builder: `Base.encode64("user=" <> user <> "\x01auth=Bearer " <> token <> "\x01\x01")` — must never raise on 8-bit input (test it).
+- [ ] `ImapClient.connect/3` branches on the account's auth mode: oauth2 → `AUTHENTICATE XOAUTH2 <b64>` (single literal-free segment) instead of `LOGIN`; the FAILURE path answers the server's `+ <base64 error>` continuation with an empty line and reads the tagged `NO`, mapping to `{:error, :reauth_required}` (distinct from `:auth_failed`); add `AUTH=XOAUTH2` to capability detection (`capability_wire_name/1`).
+- [ ] `SmtpClient.authenticate/3`: oauth2 accounts use ONLY `AUTH XOAUTH2` — never fall back to PLAIN/LOGIN with a token; handle the 334-continuation error round (empty line → 535 rejection) → `:reauth_required`; password accounts keep byte-identical behavior. Thread the auth mode through the `SmtpTransport` behaviour contract.
+- [ ] Engine: `"reauth_required"` joins the status vocabulary, `@type status` doc, and `@paused_statuses`; sticky like `auth_failed`; cleared by `set_credential`; surfaced through `mail_status` (respect the string-key falsy-map rule); `mailStateLabel` in `mail-shapes.ts` gains the state→copy clause (e.g. "Sign-in expired").
+- [ ] Task-15 stopgap credential source (documented in the Engine moduledoc): an oauth2 account's existing IMAP/SMTP slots hold a static access token — the auth mode picks the SASL verb, the slot supplies the string. Task 16 replaces slot resolution for oauth2 accounts with engine-minted fresh tokens behind the same closure contract.
+- [ ] Fake-server tests, BOTH clients: successful XOAUTH2 exchange asserting the exact base64 line; failure exchange including the continuation/empty-line round; fake SMTP advertises `AUTH XOAUTH2` only in the post-STARTTLS EHLO; every existing password-path script stays untouched (AUTHENTICATE replaces LOGIN's single tag, so tag numbering must not shift).
 
 ### Task 16: Authorization flow + setup UI
 
-- [ ] PKCE authorization-code flow with loopback redirect: backend-minted state/verifier, localhost listener, provider consent in the system browser, code exchange, refresh token → `<slug>:oauth` keychain slot (RAM-only in browser dev); single-flight access-token refresh in the engine; `invalid_grant` → `reauth_required` + "Sign in again" in settings.
-- [ ] Gmail + Microsoft 365 presets (endpoints/scopes per spec); client ids in app config, overridable per account; autodiscovery/provider detect routes gmail/outlook hosts to "Sign in with …" in the setup form (password fields hidden for oauth2 accounts).
-- [ ] Manual acceptance against one real Gmail and one real M365 mailbox (the only non-local verification in this plan).
+**Files:** new `backend/lib/valea/mail/oauth.ex` (+ test), new `backend/lib/valea_web/controllers/oauth_callback_controller.ex` (+ test) + router scope, `backend/lib/valea/mail/engine.ex` (+ test), `backend/lib/valea/api/mail.ex`, `backend/lib/valea/mail/settings.ex` (+ test), `frontend/src/lib/components/mail/SetupPanel.svelte`, `frontend/src/lib/components/mail/mail-shapes.ts` (+ test), `frontend/src/lib/stores/mail.svelte.ts` (+ test), regenerated `ash_rpc.ts`.
+
+- [ ] Provider presets in `Valea.Mail.OAuth`: Gmail (`accounts.google.com/o/oauth2/v2/auth` + `oauth2.googleapis.com/token`, scope `https://mail.google.com/`) and Microsoft 365 (`login.microsoftonline.com/common/oauth2/v2.0/authorize` + `/token`, scopes `offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send`); public client ids in app config (`config :valea, :mail_oauth, ...`), overridable per account via `oauth_client_id` in `mail.yaml` (PKCE public clients — no secret anywhere).
+- [ ] `start_mail_oauth {account, generation}` RPC: mints state + PKCE verifier/challenge (S256, `:crypto.strong_rand_bytes`), keeps ONE pending flow per account with a TTL, returns the consent URL; redirect URI built at runtime from endpoint config as `http://127.0.0.1:<port>/oauth/callback`.
+- [ ] Token-exempt `/oauth/callback` route (the `/calendar/feed.ics` precedent): constant-time state validation; backend-side code exchange (`:httpc` POST, injectable HTTP seam per the autoconfig convention); on success store the refresh token in the engine's new oauth slot and respond with a minimal "Signed in — you can return to Valea" page; error paths (state mismatch, provider `error` param, exchange failure) render an honest failure page and clear the pending flow.
+- [ ] Third credential kind `"oauth"` in `credential_kind/1` / `set_mail_credential` (refresh-token resupply after restart, engine slot + rebuild semantics like `:imap`); frontend: oauth completion push → keychain write to `<slug>:oauth` (desktop; RAM-only in browser dev) + boot-time `resupplySlot` reads it back.
+- [ ] Engine access-token machinery: per-account cache `{access_token, expires_at}`; single-flight refresh via monitored Task + deferred replies (the `ops_queue` precedent — `status/1`/`sync_now/1` stay instant); oauth2 accounts' worker credential closures call into the engine for a fresh token; `invalid_grant` at refresh → clear cache + refresh token → `reauth_required`.
+- [ ] Setup UI: `detect_provider` gains M365 hosts (e.g. `outlook.office365.com`); gmail/outlook detection routes the add form to "Sign in with Google/Microsoft" (password fields hidden for oauth2; an explicit "use a password instead" escape stays — app passwords remain valid); consent URL opened via `openExternal`'s popup-blocker-safe deferred variant; `reauth_required` account cards get a "Sign in again" action reusing the same flow; connected state lands via the existing status push.
+- [ ] Tests: OAuth module (consent-URL construction, PKCE pair properties, token exchange success/failure with injected HTTP); callback controller (happy path, state mismatch, provider error, exchange failure); engine single-flight (N concurrent token requests → exactly one refresh, all callers served); `invalid_grant` → `reauth_required`; settings round-trip incl. `oauth_client_id` override; mail-shapes helpers under Vitest; codegen fresh.
+- [ ] Manual acceptance against one real Gmail and one real M365 mailbox (the only non-local verification in this plan) — PENDING USER; requires the user registering the public client ids with Google/Microsoft first.
