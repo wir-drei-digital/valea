@@ -886,6 +886,42 @@ defmodule Valea.Mounts.DoctorTest do
       assert check["detail"] =~ "worktree or submodule"
       assert check["remedy"] =~ "Mount the repository root directly"
     end
+
+    # The regression: the SHAPE was judged before the config was read, so
+    # `sync: off` — the setting whose entire job is "leave this ICM alone" —
+    # could not clear the failure, and half the remedy it offered ("or leave
+    # git sync off") was a lie. The reachable case is a dotfiles HOME that is
+    # itself a repo: every ICM under it is nested inside someone else's
+    # repository, permanently failed, with a remedy nobody can take.
+    test "an unsupported layout with sync OFF is ok — off says nothing, whatever the layout" do
+      root = tmp_dir!("vmounts-doctor")
+      ext = git_icm!(tmp_dir!("vmounts-doctor-ext"))
+      File.write!(Path.join(ext, ".git"), "gitdir: /elsewhere\n")
+
+      write_icms!(root, [{"outside", ext, []}])
+      assert :ok = Valea.Mounts.set_git_sync(root, "outside", "off")
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:outside")
+      assert check["status"] == "ok"
+      assert check["detail"] == "git sync is off."
+      assert check["remedy"] == nil
+    end
+
+    test "a non-repository with sync OFF is ok too" do
+      root = tmp_dir!("vmounts-doctor")
+      ext = git_icm!(tmp_dir!("vmounts-doctor-ext"))
+
+      write_icms!(root, [{"outside", ext, []}])
+      assert :ok = Valea.Mounts.set_git_sync(root, "outside", "off")
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:outside")
+      assert check["status"] == "ok"
+      assert check["detail"] == "git sync is off."
+    end
   end
 
   describe "run/1 — git_sync over real git" do
@@ -930,9 +966,10 @@ defmodule Valea.Mounts.DoctorTest do
       assert check["detail"] =~ "sync is off"
     end
 
-    test "a branch with no upstream fails with a copyable --set-upstream-to remedy", %{
-      git_dir: dir
-    } do
+    # The spec's observe-only class (§Scope) reports **ok**: a repo that never
+    # had a remote is an intended setup, not a defect, and a mounts doctor
+    # that goes red for one teaches its user to ignore it.
+    test "a repo with no remotes at all is ok — local-only, nothing to sync", %{git_dir: dir} do
       lone = Path.join(dir, "lone")
       File.mkdir_p!(lone)
       GitFixtures.git!(lone, ["init", "--initial-branch=main", "."])
@@ -945,9 +982,29 @@ defmodule Valea.Mounts.DoctorTest do
       {:ok, %{checks: checks}} = Doctor.run(root)
 
       check = find(checks, "git_sync:lone")
-      assert check["status"] == "failed"
-      assert check["detail"] =~ "no upstream"
-      assert check["remedy"] == "git branch --set-upstream-to=origin/main main"
+      assert check["status"] == "ok"
+      assert check["detail"] == "local-only repository — nothing to sync."
+      assert check["remedy"] == nil
+    end
+
+    # WITH remotes the situation is different — an upstream is one command
+    # away — but it is still observe-only rather than a failure, so the
+    # command is offered as information inside the detail.
+    test "a branch with no upstream but real remotes is ok, and still names the command", %{
+      fx: fx
+    } do
+      GitFixtures.git!(fx.work, ["checkout", "-b", "feature"])
+
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"repo", git_icm!(fx.work), []}])
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "ok"
+      assert check["detail"] =~ "branch feature has no upstream — observe-only"
+      assert check["detail"] =~ "git branch --set-upstream-to=origin/feature feature"
+      assert check["remedy"] == nil
     end
 
     # Drives the `:git_cli` seam directly (no fixture repo needed beyond a
@@ -972,7 +1029,10 @@ defmodule Valea.Mounts.DoctorTest do
       assert check["remedy"] == nil
     end
 
-    test "a detached HEAD fails with the check-out-a-branch remedy", %{fx: fx} do
+    # "Branch switching is the user's/agent's business; Valea follows whatever
+    # is checked out" (spec §Scope) — so a bisect, or a deliberate `--detach`,
+    # is observed rather than failed.
+    test "a detached HEAD is ok with an observe-only detail", %{fx: fx} do
       GitFixtures.git!(fx.work, ["checkout", "--detach", "HEAD"])
 
       root = tmp_dir!("vmounts-doctor")
@@ -981,9 +1041,12 @@ defmodule Valea.Mounts.DoctorTest do
       {:ok, %{checks: checks}} = Doctor.run(root)
 
       check = find(checks, "git_sync:repo")
-      assert check["status"] == "failed"
-      assert check["detail"] =~ "detached HEAD"
-      assert check["remedy"] =~ "Check out a branch"
+      assert check["status"] == "ok"
+
+      assert check["detail"] ==
+               "detached HEAD — observe-only; sync follows the checked-out branch."
+
+      assert check["remedy"] == nil
     end
   end
 

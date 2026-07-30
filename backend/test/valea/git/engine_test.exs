@@ -21,6 +21,52 @@ defmodule Valea.Git.EngineTest.RecordingCli do
   end
 end
 
+# Every network verb fails, with the argv still reported to the probe — the
+# rig for asserting that a failed PUSH paces itself the way a failed fetch
+# does. `push.output` carries the latin-1 bytes a real server's error message
+# can contain.
+defmodule Valea.Git.EngineTest.FailingPushCli do
+  @behaviour Valea.Git.Cli
+
+  @impl true
+  def run(root, args, opts) do
+    case Application.get_env(:valea, :git_cli_probe) do
+      pid when is_pid(pid) -> send(pid, {:git_run, args})
+      _absent -> :ok
+    end
+
+    case args do
+      ["push" | _] ->
+        {:ok,
+         %{output: <<"fatal: Authentication failed for 'origin' ", 0xFF, 0xFE, "\n">>, exit: 128}}
+
+      _local_or_fetch ->
+        Valea.Git.Cli.run(root, args, opts)
+    end
+  end
+end
+
+# git output is BYTES. This one puts non-UTF-8 into the two places that reach
+# the JSON wire: a fetch error (the status row's `last_error`) and a commit
+# subject (the conflict briefing's `initial_prompt`).
+defmodule Valea.Git.EngineTest.RawBytesCli do
+  @behaviour Valea.Git.Cli
+
+  @impl true
+  def run(root, args, opts) do
+    if Application.get_env(:valea, :git_raw_fetch_fails, false) and match?(["fetch" | _], args) do
+      {:ok, %{output: <<"fatal: could not read from remote ", 0xFF, 0xFE, "\n">>, exit: 128}}
+    else
+      corrupt(args, Valea.Git.Cli.run(root, args, opts))
+    end
+  end
+
+  defp corrupt(["log" | _], {:ok, %{exit: 0, output: out}}),
+    do: {:ok, %{exit: 0, output: <<"caf", 0xE9, " ">> <> out}}
+
+  defp corrupt(_other, result), do: result
+end
+
 # A process sitting exactly where a real agent session would, so
 # `Valea.Agents.SessionServer.attach/1` — the Engine's liveness question about
 # a recorded conflict session — answers "running" without a whole ACP session.
@@ -47,7 +93,9 @@ defmodule Valea.Git.EngineTest do
   use ExUnit.Case, async: false
 
   alias Valea.Git.Engine
+  alias Valea.Git.EngineTest.FailingPushCli
   alias Valea.Git.EngineTest.FakeSession
+  alias Valea.Git.EngineTest.RawBytesCli
   alias Valea.Git.EngineTest.RecordingCli
   alias Valea.Mounts
   alias Valea.Mounts.Manifest
@@ -786,6 +834,127 @@ defmodule Valea.Git.EngineTest do
 
     assert_received {:git_run, ["fetch" | _]}
     assert retried[key].state == "error"
+  end
+
+  # A push is the other network verb, and the spec paces network failures. A
+  # `nil` retry entry here CLEARED the ladder instead, so a repo that can
+  # never push — no credentials in the packaged app's environment, a protected
+  # branch — retried at full rate on every poll forever.
+  test "a failed push errors and backs off, exactly as a failed fetch does", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    Application.put_env(:valea, :git_cli, FailingPushCli)
+    Application.put_env(:valea, :git_cli_probe, self())
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :git_cli)
+      Application.delete_env(:valea, :git_cli_probe)
+    end)
+
+    assert :ok = Mounts.set_git_sync(ws, key, "full")
+    start_engine!(ws)
+    await_pass!()
+
+    GitFixtures.advance_local!(fx)
+    assert :ok = Engine.sync_now(key)
+    errored = await_pass!()
+
+    assert errored[key].state == "error"
+    assert errored[key].last_error =~ "Authentication failed"
+    assert %{ahead: 1, behind: 0, branch: "main"} = errored[key]
+
+    # The backoff is armed: a POLL-driven pass reports the same error over
+    # freshly-read local facts and never reaches the network.
+    flush_git_runs()
+    send(Process.whereis(Engine), :poll)
+    backed_off = await_pass!()
+
+    refute_received {:git_run, ["fetch" | _]}
+    refute_received {:git_run, ["push" | _]}
+    assert backed_off[key].state == "error"
+    assert backed_off[key].last_error == errored[key].last_error
+
+    # And `Sync now` is still the way past it.
+    flush_git_runs()
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "error"
+    assert_received {:git_run, ["push" | _]}
+  end
+
+  # git emits the BYTES it was given. A latin-1 error message on a status row
+  # used to make `Jason` raise inside the channel's socket process — which the
+  # client then rejoins, hitting the same row again: a rejoin loop lasting as
+  # long as the error does.
+  test "a non-UTF-8 git error round-trips as valid UTF-8 on the status row", ctx do
+    %{ws: ws, key: key} = ctx
+    Application.put_env(:valea, :git_cli, RawBytesCli)
+    Application.put_env(:valea, :git_raw_fetch_fails, true)
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :git_cli)
+      Application.delete_env(:valea, :git_raw_fetch_fails)
+    end)
+
+    start_engine!(ws)
+    statuses = await_pass!()
+
+    assert statuses[key].state == "error"
+    assert String.valid?(statuses[key].last_error)
+    assert statuses[key].last_error =~ "could not read from remote"
+    assert statuses[key].last_error =~ <<0xFFFD::utf8>>
+
+    # The property that actually matters: every published row encodes.
+    assert is_binary(Jason.encode!(Engine.public_rows(statuses)))
+  end
+
+  test "a briefing composed from non-UTF-8 commit subjects is valid UTF-8", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    Application.put_env(:valea, :git_cli, RawBytesCli)
+    on_exit(fn -> Application.delete_env(:valea, :git_cli) end)
+
+    start_engine!(ws)
+    await_pass!()
+
+    GitFixtures.diverge!(fx)
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+
+    assert {:ok, %{briefing: briefing}} = Engine.conflict_handoff(key)
+    assert String.valid?(briefing)
+    assert briefing =~ <<0xFFFD::utf8>>
+    assert briefing =~ "local: local.md"
+    # It is the whole handoff payload that gets JSON-encoded on the RPC reply.
+    assert is_binary(Jason.encode!(%{"initial_prompt" => briefing}))
+  end
+
+  # `deactivate/1` forgets every row, and a pass still in flight when the
+  # workspace closed describes repos this Engine no longer speaks for.
+  test "a workspace close clears the rows and discards a pass that lands after it", ctx do
+    %{ws: ws, key: key} = ctx
+    Application.put_env(:valea, :git_cli, RecordingCli)
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :git_cli)
+      Application.delete_env(:valea, :git_cli_delay_ms)
+    end)
+
+    Phoenix.PubSub.subscribe(Valea.PubSub, "git")
+    start_engine!(ws)
+    assert await_pass!()[key].state == "ok"
+    assert_receive {:git_status_changed, %{^key => _}}, 5_000
+
+    # Every state read now takes ~400 ms, so the close below lands while the
+    # pass task is still running.
+    Application.put_env(:valea, :git_cli_delay_ms, 400)
+    assert :ok = Engine.sync_now(key)
+    Phoenix.PubSub.broadcast(Valea.PubSub, "workspace", {:workspace_closed})
+
+    assert eventually(fn -> Engine.statuses() == %{} end)
+
+    # The in-flight pass finishes into a closed Engine: no probe, no
+    # broadcast, and above all no re-installed rows from the old workspace.
+    refute_receive {:git_pass_finished, _}, 3_000
+    refute_receive {:git_status_changed, _}, 100
+    assert Engine.statuses() == %{}
   end
 
   test "a sync_now queued behind a running pass still overrides the backoff", ctx do

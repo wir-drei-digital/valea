@@ -971,13 +971,13 @@ defmodule Valea.Git.Engine do
       {%{observed(base, st, "error") | last_error: previous && previous.last_error}, retry_entry}
     else
       case Repo.fetch(root, cli) do
-        :ok -> after_fetch(root, base, cfg, cli, st)
+        :ok -> after_fetch(root, base, cfg, cli, st, retry_entry, now)
         {:error, {:fetch_failed, out}} -> {errored(base, st, out), bump(retry_entry, now)}
       end
     end
   end
 
-  defp after_fetch(root, base, cfg, cli, before) do
+  defp after_fetch(root, base, cfg, cli, before, retry_entry, now) do
     case Repo.read_state(root, cli) do
       {:error, reason} ->
         {errored(base, before, reason), nil}
@@ -986,14 +986,14 @@ defmodule Valea.Git.Engine do
         cond do
           st.ahead > 0 and st.behind > 0 -> {observed(base, st, "diverged"), nil}
           st.behind > 0 and st.ahead == 0 -> fast_forward(root, base, cli, st, cfg.sync)
-          st.ahead > 0 and cfg.sync == :full -> push(root, base, cli, st)
+          st.ahead > 0 and cfg.sync == :full -> push(root, base, cli, st, retry_entry, now)
           true -> {succeeded(base, st), nil}
         end
     end
   end
 
   # The ONLY place `blocked_local` is entered: git looked at this exact working
-  # tree and refused to fast-forward over it. Everything else is `local_class/3`
+  # tree and refused to fast-forward over it. Everything else is `local_class/4`
   # holding that verdict until the tree stops blocking.
   defp fast_forward(root, base, cli, st, mode) do
     case Repo.ff_merge(root, cli) do
@@ -1032,8 +1032,22 @@ defmodule Valea.Git.Engine do
     end
   end
 
-  defp push(root, base, cli, st) do
-    case Repo.push(root, cli) do
+  # A push that did not land BACKS OFF, exactly as a failed fetch does — the
+  # spec's rule is about network failures, and a push is the other network
+  # verb. Returning `nil` here CLEARED the ledger instead: a repo whose push
+  # fails for a durable reason (no credentials in the packaged app's
+  # environment, a protected branch, a server that is down) would retry at
+  # full rate forever, every poll, with a fresh subprocess and a fresh
+  # connection each time — the one shape the ladder exists to prevent. The
+  # entry is bumped from whatever the fetch phase left standing, so a repo
+  # that fetches fine and can never push still climbs.
+  #
+  # The one non-bumping outcome is the rejection that turns out to be an
+  # ordinary divergence: nothing failed there, the remote simply moved, and
+  # the repo is now HELD — a held repo touches no network, so there is
+  # nothing to pace.
+  defp push(root, base, cli, st, retry_entry, now) do
+    case Repo.push(root, st.upstream, cli) do
       :ok ->
         {succeeded(base, refresh(root, cli, st)), nil}
 
@@ -1047,10 +1061,11 @@ defmodule Valea.Git.Engine do
 
         if st.ahead > 0 and st.behind > 0,
           do: {observed(base, st, "diverged"), nil},
-          else: {%{observed(base, st, "error") | last_error: describe(out)}, nil}
+          else:
+            {%{observed(base, st, "error") | last_error: describe(out)}, bump(retry_entry, now)}
 
       {:error, {:push_failed, out}} ->
-        {errored(base, st, out), nil}
+        {errored(base, st, out), bump(retry_entry, now)}
     end
   end
 
@@ -1104,14 +1119,35 @@ defmodule Valea.Git.Engine do
   # server should not put that on the wire (or in a tooltip) every five
   # minutes. `String.slice/3` counts graphemes, so it cannot sever a
   # multi-byte character the way a `binary_part/3` would.
+  #
+  # SCRUBBED FIRST, because this is where raw git BYTES meet the JSON wire.
+  # `last_error` is git's own words, and git emits the bytes it was given: a
+  # remote whose error message is latin-1, a path in an unknown encoding. The
+  # row carrying it is pushed on the workspace events channel, returned by the
+  # `git_status` RPC and summarized in the cockpit — and invalid UTF-8 makes
+  # `Jason` RAISE inside the channel's socket process, which the client then
+  # rejoins, hitting the same row again: a rejoin loop that only ends when the
+  # error does. One scrub (each bad sequence → U+FFFD, the
+  # `Valea.Mail.Normalizer` semantic) makes every row serializable by
+  # construction. Ahead of `String.trim/1` and the slice as well, so neither
+  # has to reason about invalid bytes.
   defp describe(message) when is_binary(message) do
-    case String.trim(message) do
+    message
+    |> scrub_utf8()
+    |> String.trim()
+    |> case do
       "" -> nil
       trimmed -> String.slice(trimmed, 0, @error_cap)
     end
   end
 
+  # A non-binary reason is `inspect`ed, which escapes anything unprintable and
+  # is therefore already valid UTF-8 by construction.
   defp describe(reason), do: inspect(reason)
+
+  defp scrub_utf8(text) do
+    if String.valid?(text), do: text, else: Valea.Mail.Normalizer.scrub_utf8(text)
+  end
 
   defp now_iso, do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 

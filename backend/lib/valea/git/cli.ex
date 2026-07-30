@@ -160,8 +160,17 @@ defmodule Valea.Git.Cli do
   defp exit_code(code) when is_integer(code) and code >= 0, do: code
   defp exit_code(_unknown), do: 1
 
+  # `binary_part/3` cuts at a BYTE offset, which lands mid-codepoint whenever
+  # the 262_144th byte is inside a multi-byte character — a truncated git
+  # message ending in half a `—` is invalid UTF-8, and invalid UTF-8 makes
+  # `Jason` raise in whatever process is serializing the status row it ends up
+  # on. Scrubbing the capped prefix (each bad sequence → U+FFFD, the
+  # `Valea.Mail.Normalizer` semantic used across the app) makes the cut safe
+  # without paying to scan output that was never truncated; callers that put
+  # git text on the wire scrub in their own right (`Valea.Git.Engine.describe/1`,
+  # `Valea.Git.Repo`'s two list readers).
   defp cap(out) when byte_size(out) > @output_cap,
-    do: binary_part(out, 0, @output_cap) <> "\n[output capped]"
+    do: Valea.Mail.Normalizer.scrub_utf8(binary_part(out, 0, @output_cap)) <> "\n[output capped]"
 
   defp cap(out), do: out
 

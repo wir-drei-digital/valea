@@ -170,7 +170,6 @@ defmodule Valea.Mounts.Doctor do
   @git_degraded_detail "not checked — this mount is degraded, so nothing is syncing it."
   @git_unsupported_remedy "Mount the repository root directly, or leave git sync off."
   @git_missing_binary_remedy "Install git or launch Valea from an environment where git is on PATH."
-  @git_detached_remedy "Check out a branch in this repository."
   # Deliberately loose: git's failure prose varies by transport and server
   # (`Permission denied (publickey)`, `Authentication failed`, `403
   # Forbidden`, `remote: access denied`), and the cost of matching one
@@ -518,13 +517,38 @@ defmodule Valea.Mounts.Doctor do
     label = "#{mount.name}: git sync"
 
     cond do
-      not mount.enabled -> unknown(id, label, @git_disabled_detail)
-      mount.degraded != nil -> unknown(id, label, @git_degraded_detail)
-      true -> git_detect_check(id, label, workspace, mount)
+      not mount.enabled ->
+        unknown(id, label, @git_disabled_detail)
+
+      mount.degraded != nil ->
+        unknown(id, label, @git_degraded_detail)
+
+      true ->
+        git_shape_check(id, label, mount, Mounts.git_config(workspace, mount.name))
     end
   end
 
-  defp git_detect_check(id, label, workspace, mount) do
+  # `sync: off` is answered BEFORE the repository's SHAPE is judged, and that
+  # order is the whole point. Judged first, an `unsupported` shape failed the
+  # check no matter what the config said — so `sync: off`, the setting whose
+  # entire job is "leave this ICM alone", could not clear it, and the remedy
+  # offered ("mount the repository root directly, or leave git sync off") was
+  # a lie in its second half. The reachable case is ordinary: a dotfiles HOME
+  # that is itself a git repo makes EVERY ICM under it "nested inside someone
+  # else's repository" and permanently failed, with a remedy nobody can take
+  # — no one is going to mount their home directory.
+  #
+  # Off says nothing, whatever the layout. It still names a detected repo, so
+  # a user who set it deliberately sees that Valea knows what it is leaving
+  # alone.
+  defp git_shape_check(id, label, mount, %{sync: :off}) do
+    case Valea.Git.Repo.detect(mount.root) do
+      :repo -> ok(id, label, "git repository detected — sync is off.")
+      _no_repo_to_sync -> ok(id, label, "git sync is off.")
+    end
+  end
+
+  defp git_shape_check(id, label, mount, cfg) do
     case Valea.Git.Repo.detect(mount.root) do
       :none ->
         ok(id, label, "not a git repository — git sync not applicable.")
@@ -533,53 +557,63 @@ defmodule Valea.Mounts.Doctor do
         failed(id, label, reason <> ".", @git_unsupported_remedy)
 
       :repo ->
-        git_repo_check(id, label, mount, Mounts.git_config(workspace, mount.name))
+        git_repo_check(id, label, mount, cfg)
     end
   end
 
-  # Reached only for a real repo root. `find_executable` first: without the
-  # binary there is no state to read, and "install git" is the only useful
-  # thing to say. `off` short-circuits before any spawn — an ICM the user
-  # deliberately excluded should cost nothing and say nothing.
+  # Reached only for a real repo root the user has NOT switched off. Without
+  # the binary there is no state to read, and "install git" is the only useful
+  # thing to say.
   defp git_repo_check(id, label, mount, cfg) do
-    cond do
-      System.find_executable("git") == nil ->
-        failed(id, label, "git binary not found on PATH.", @git_missing_binary_remedy)
-
-      cfg.sync == :off ->
-        ok(id, label, "git repository detected — sync is off.")
-
-      true ->
-        git_state_check(id, label, mount, cfg)
+    if System.find_executable("git") == nil do
+      failed(id, label, "git binary not found on PATH.", @git_missing_binary_remedy)
+    else
+      git_state_check(id, label, mount, cfg)
     end
   end
 
-  # `branch: nil` (detached HEAD) is matched BEFORE the upstream clause: a
-  # detached HEAD has no upstream either, and "check out a branch" is the
-  # move that fixes both.
+  # `upstream: nil` covers BOTH observe-only shapes — a detached HEAD has no
+  # upstream either — so it is matched first and told apart inside.
   defp git_state_check(id, label, mount, cfg) do
     case Valea.Git.Repo.read_state(mount.root, git_cli()) do
-      {:ok, %{branch: nil}} ->
-        failed(
-          id,
-          label,
-          "detached HEAD — sync follows the checked-out branch.",
-          @git_detached_remedy
-        )
-
-      {:ok, %{upstream: nil, branch: branch}} ->
-        failed(
-          id,
-          label,
-          "branch #{branch} has no upstream — observe-only.",
-          "git branch --set-upstream-to=origin/#{branch} #{branch}"
-        )
+      {:ok, %{upstream: nil} = st} ->
+        git_observe_only(id, label, mount, st)
 
       {:ok, %{branch: branch, upstream: upstream}} ->
         git_outcome_check(id, label, mount, cfg, branch, upstream)
 
       {:error, _reason} ->
         unknown(id, label, "could not read repository state.")
+    end
+  end
+
+  # The spec's OBSERVE-ONLY class (§Scope): "detached HEAD / no upstream on
+  # the current branch → observe-only: status is shown, no sync. Branch
+  # switching is the user's/agent's business; Valea follows whatever is
+  # checked out." Every one of these therefore reports **ok** — they are
+  # intended setups, not defects: a scratch repo that never had a remote, a
+  # branch not yet published, a bisect or a `--detach` mid-investigation. A
+  # mounts doctor that goes red for an intended setup teaches its user to
+  # ignore it, which costs more than it ever catches.
+  #
+  # The `--set-upstream-to` line survives as INFORMATION inside the detail
+  # (it is still exactly what a user who wanted sync would run) rather than as
+  # the remedy for a failure that is not one.
+  defp git_observe_only(id, label, _mount, %{branch: nil}),
+    do: ok(id, label, "detached HEAD — observe-only; sync follows the checked-out branch.")
+
+  defp git_observe_only(id, label, mount, %{branch: branch}) do
+    case Valea.Git.Repo.remotes(mount.root, git_cli()) do
+      [] ->
+        ok(id, label, "local-only repository — nothing to sync.")
+
+      _remotes ->
+        ok(
+          id,
+          label,
+          "branch #{branch} has no upstream — observe-only; " <>
+            "`git branch --set-upstream-to=origin/#{branch} #{branch}` would enable sync."
+        )
     end
   end
 

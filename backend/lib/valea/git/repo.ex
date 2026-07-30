@@ -95,16 +95,19 @@ defmodule Valea.Git.Repo do
     end
   end
 
+  # Scrubbed for the same reason the two list readers below are: a git REF is
+  # a byte string, not text, and both of these land on a status row that is
+  # JSON-encoded on three surfaces.
   defp read_branch(root, cli) do
     case cli.run(root, ["symbolic-ref", "--short", "-q", "HEAD"], []) do
-      {:ok, %{exit: 0, output: out}} -> String.trim(out)
+      {:ok, %{exit: 0, output: out}} -> out |> scrub() |> String.trim()
       _detached_or_error -> nil
     end
   end
 
   defp read_upstream(root, cli) do
     case cli.run(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], []) do
-      {:ok, %{exit: 0, output: out}} -> String.trim(out)
+      {:ok, %{exit: 0, output: out}} -> out |> scrub() |> String.trim()
       _no_upstream -> nil
     end
   end
@@ -142,6 +145,25 @@ defmodule Valea.Git.Repo do
       File.dir?(Path.join(git, "rebase-apply")) -> :rebase
       File.exists?(Path.join(git, "CHERRY_PICK_HEAD")) -> :cherry_pick
       true -> nil
+    end
+  end
+
+  @doc """
+  The repository's configured remote names, newline-split. `[]` means a
+  LOCAL-ONLY repository — one that was `git init`ed and never given a remote,
+  which is a deliberate shape rather than a misconfiguration, and the one
+  thing that tells "nothing to sync against" from "a branch whose upstream
+  was never set" (`Valea.Mounts.Doctor` is the only caller, and the
+  distinction is the difference between two different sentences it says).
+
+  A failure also reads `[]`: the caller reaches this only after a successful
+  state read, and both answers put it on the same observe-only branch.
+  """
+  @spec remotes(String.t(), module()) :: [String.t()]
+  def remotes(root, cli) do
+    case cli.run(root, ["remote"], []) do
+      {:ok, %{exit: 0, output: out}} -> String.split(out, "\n", trim: true)
+      _error -> []
     end
   end
 
@@ -220,13 +242,28 @@ defmodule Valea.Git.Repo do
   end
 
   @doc """
-  Pushes the current branch to its upstream. A rejection is distinguished
-  from a failure because they need different words from the UI: rejected
-  means "fetch and try again", failed means "something is wrong".
+  Pushes the checked-out branch to `upstream` (the `remote/branch` string
+  `read_state/2` reports), and to nothing else.
+
+  The argv is SPELLED OUT rather than left to a bare `git push`, because a
+  bare push is configuration-driven and the configuration is the user's:
+  `push.default = matching` pushes every local branch whose name exists on
+  the remote, `remote.pushDefault` redirects which remote it goes to, and a
+  `remote.<name>.push` refspec can widen it further. The spec's scope is
+  "only the checked-out branch and its configured upstream" (§Scope), so that
+  is what the command says — `<remote> HEAD:<branch>` — and no config can
+  broaden it. `HEAD:` on the left keeps it the CHECKED-OUT branch even if
+  that is not the branch the upstream is named after.
+
+  A rejection is distinguished from a failure because they need different
+  words from the UI: rejected means "fetch and try again", failed means
+  "something is wrong".
   """
-  @spec push(String.t(), module()) :: :ok | {:error, term()}
-  def push(root, cli) do
-    case cli.run(root, ["push", "--quiet"], timeout_ms: @network_timeout_ms) do
+  @spec push(String.t(), String.t() | nil, module()) :: :ok | {:error, term()}
+  def push(root, upstream, cli) do
+    case cli.run(root, ["push", "--quiet" | push_target(upstream)],
+           timeout_ms: @network_timeout_ms
+         ) do
       {:ok, %{exit: 0}} ->
         :ok
 
@@ -240,11 +277,30 @@ defmodule Valea.Git.Repo do
     end
   end
 
+  # `"origin/main"` → `["origin", "HEAD:main"]`. A REMOTE name cannot contain
+  # a slash and a branch name can, so the first segment is the remote and
+  # everything after it is the branch — which is also why the remote is
+  # derived rather than hardcoded to `origin`: a clone whose upstream is
+  # `fork/main` must push to `fork`, not to whatever happens to be called
+  # `origin`.
+  #
+  # The no-upstream fallback is a totality guard, not a path in use: a repo
+  # without an upstream reads `ahead: 0` (`read_counts/3`), and only `ahead >
+  # 0` ever reaches a push.
+  defp push_target(upstream) when is_binary(upstream) do
+    case String.split(upstream, "/", parts: 2) do
+      [remote, branch] when remote != "" and branch != "" -> [remote, "HEAD:" <> branch]
+      _unparseable -> ["origin", "HEAD"]
+    end
+  end
+
+  defp push_target(_absent), do: ["origin", "HEAD"]
+
   @doc "Commit subjects in `range` (e.g. `\"@{u}..HEAD\"`), newest first, at most `cap`."
   @spec log_subjects(String.t(), String.t(), pos_integer(), module()) :: [String.t()]
   def log_subjects(root, range, cap, cli) do
     case cli.run(root, ["log", "--format=%s", "--max-count=#{cap}", range], []) do
-      {:ok, %{exit: 0, output: out}} -> String.split(out, "\n", trim: true)
+      {:ok, %{exit: 0, output: out}} -> out |> scrub() |> String.split("\n", trim: true)
       _error -> []
     end
   end
@@ -255,6 +311,7 @@ defmodule Valea.Git.Repo do
     case cli.run(root, ["status", "--porcelain"], []) do
       {:ok, %{exit: 0, output: out}} ->
         out
+        |> scrub()
         |> String.split("\n", trim: true)
         |> Enum.sort_by(&(status_code(&1) in @conflict_codes), :desc)
         |> Enum.map(&String.slice(&1, 3..-1//1))
@@ -263,6 +320,23 @@ defmodule Valea.Git.Repo do
       _error ->
         []
     end
+  end
+
+  # THE one place git text that travels as DATA rather than as an error string
+  # is made valid UTF-8. Git stores commit messages, ref names and path names
+  # as raw BYTES: a latin-1 commit subject, or a filename written by a tool
+  # with another encoding, comes back as-is — and these two lists are what
+  # `Valea.Git.Briefing` composes into a conflict session's `initial_prompt`,
+  # which is JSON-encoded on the RPC reply. Invalid UTF-8 makes `Jason` RAISE
+  # there, so an ICM with one oddly-encoded commit could never be handed off.
+  #
+  # Scrubbed BEFORE the split and the grapheme `String.slice/2` below, so
+  # neither has to reason about invalid bytes. Same U+FFFD semantic, and the
+  # same `String.valid?/1` fast path, as `Valea.Mail.Account` /
+  # `Valea.Mail.HtmlSanitizer` (error strings are scrubbed by
+  # `Valea.Git.Engine.describe/1` instead — the other end of the same class).
+  defp scrub(out) do
+    if String.valid?(out), do: out, else: Valea.Mail.Normalizer.scrub_utf8(out)
   end
 
   # The two-letter XY status of a `--porcelain` line. Guarded rather than a
