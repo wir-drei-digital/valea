@@ -213,7 +213,6 @@
 
 <div class="flex flex-col items-start gap-4 py-10">
   <div class="flex flex-col gap-1.5">
-    <p class="text-overline">Mail</p>
     <h1 class="font-display text-ink-heading text-[21px]">Drafts</h1>
     <p class="text-ink-body max-w-[520px] text-[13.5px]">
       Files your agent proposed under each account's drafts/ folder. Your agent can never send one — pushing places a

@@ -504,7 +504,6 @@
 
 <div class="flex flex-col gap-5 py-8">
   <div class="flex flex-col gap-1.5">
-    <p class="text-overline">Mail</p>
     <div class="flex flex-wrap items-center gap-2.5">
       <h1 class="font-display text-ink-heading text-[21px]">
         {draftName === null ? 'New message' : 'Draft'}
@@ -530,10 +529,15 @@
     <p class="text-warn-ink text-[13px]" role="alert">{loadError}</p>
   {:else}
     {#if lockedBadge}
+      <!-- The sent case gets its own plain sentence: "draft"/"reviewed"
+           vocabulary read as if the message might not have gone out. -->
       <p class="border-paper-border bg-paper-card text-ink-body rounded-lg border px-3.5 py-2.5 text-[12.5px]">
-        This draft can't be edited here — it is “{lockedBadge.label}”. A draft that has been sent stays exactly as it
-        was reviewed; one that is mid-push or mid-send becomes editable again once that finishes. The Drafts panel
-        keeps whatever actions it still has.
+        {#if row?.statusDisplay === 'sent'}
+          This message was sent. It's kept here exactly as it went out, so it can't be edited.
+        {:else}
+          This draft can't be edited while it is “{lockedBadge.label}”. The Drafts panel keeps whatever actions it
+          still has.
+        {/if}
       </p>
     {:else if unsupportedRaw !== null}
       <p class="border-paper-border bg-paper-card text-ink-body rounded-lg border px-3.5 py-2.5 text-[12.5px]">

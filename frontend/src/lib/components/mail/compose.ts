@@ -432,6 +432,23 @@ function asScalar(value: string | string[] | null | undefined): string | null {
 }
 
 /**
+ * The BODY of a draft file, for display — the frontmatter block dropped,
+ * with the same split rule as `parseDraftFields` below. The send-confirm
+ * preview already names the recipients, subject and sending identity as
+ * summary lines, so the raw YAML above the body only repeats them in a
+ * shape that confuses. Display-only: the review's `contentHash` still binds
+ * the FULL file bytes. Content without a parseable leading block comes back
+ * whole — showing everything beats hiding bytes that will be transmitted.
+ */
+export function draftBodyPreview(content: string): string {
+  if (!content.startsWith('---\n')) return content;
+  const rest = content.slice(4);
+  const end = rest.indexOf('\n---\n');
+  if (end === -1) return content;
+  return rest.slice(end + 5);
+}
+
+/**
  * Loads a draft FILE into composer fields, or refuses (see
  * `DraftParseRefusal`). Conservative by construction — the composer rewrites
  * the whole file on save, so any frontmatter this cannot reproduce faithfully

@@ -5,9 +5,13 @@
   // plus the add-account form. Rendered from `routes/mail/+page.svelte`
   // inside the settings DIALOG (the calendar route's Sources pattern;
   // `?setup=1` deep-links it open) — this component owns its own
-  // heading/copy, the dialog only supplies the modal chrome.
+  // heading/copy, rendered through `Dialog.Header`/`Dialog.Title` so the
+  // title sits on the close button's row like every other modal (which is
+  // also why this component is only ever mounted inside that dialog).
   //
-  // The connection form has three modes:
+  // The connection form has three modes, and each non-closed mode REPLACES
+  // the modal's content as its own view (a Cancel next to the submit returns
+  // to the account list) rather than stacking the form under the list:
   //  - CLOSED (the default once any account exists) — just the list and an
   //    "Add account" button; the form only appears on demand.
   //  - ADD — the empty form. The username field drives best-effort
@@ -30,6 +34,7 @@
   // re-verifies the confirmation, this UI just collects it
   // (`purge_mail_account_files`'s `require_confirmation`).
   import { Button } from '$lib/components/ui/button/index.js';
+  import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
@@ -438,11 +443,24 @@
   // C1) — so both arms stay unit-tested without a render harness.
 </script>
 
-<div class="flex flex-col items-start gap-3 py-10">
-  <p class="text-overline">Mail</p>
-
-  {#if mailStore.accounts.length > 0}
-    <h1 class="font-display text-ink-heading text-[21px]">Mail accounts</h1>
+<div class="flex flex-col items-start gap-3">
+  {#if submitted}
+    <Dialog.Header>
+      <Dialog.Title class="font-display text-ink-heading text-[19px]">Mailbox connected</Dialog.Title>
+    </Dialog.Header>
+    {#if devModeNote}
+      <p class="text-suggest-ink text-[12.5px]">
+        Dev mode: the password is held in memory only and never persisted.
+      </p>
+    {/if}
+    <div class="mt-1 flex items-center gap-2">
+      <Button type="button" variant="outline" size="sm" onclick={() => openAdd()}>Add another</Button>
+      <Button type="button" variant="ghost" size="sm" onclick={() => closeForm()}>Done</Button>
+    </div>
+  {:else if !formVisible}
+    <Dialog.Header>
+      <Dialog.Title class="font-display text-ink-heading text-[19px]">Mail accounts</Dialog.Title>
+    </Dialog.Header>
 
     <ul class="flex w-full max-w-xl flex-col gap-3">
       {#each mailStore.accounts as status (status.account)}
@@ -570,33 +588,45 @@
       {/each}
     </ul>
 
-    {#if !formVisible}
-      <div class="mt-3">
-        <Button type="button" variant="outline" size="sm" onclick={() => openAdd()}>Add account</Button>
-      </div>
-    {:else}
-      <div class="mt-6 flex items-center gap-2">
-        <h2 class="font-display text-ink-heading text-[17px]">
-          {editing ? `Edit ${editingSlug}` : 'Add another account'}
-        </h2>
-        <Button type="button" variant="ghost" size="sm" onclick={() => closeForm()}>Cancel</Button>
+    <div class="mt-3">
+      <Button type="button" variant="outline" size="sm" onclick={() => openAdd()}>Add account</Button>
+    </div>
+
+    {#if trustedSenders.length > 0}
+      <div class="border-paper-hairline mt-6 w-full max-w-xl border-t pt-4">
+        <h2 class="font-display text-ink-heading text-[17px]">Trusted senders</h2>
+        <p class="text-ink-meta mt-1 max-w-[480px] text-[12px]">
+          Messages from these addresses load remote images automatically.
+        </p>
+        <ul class="mt-2 flex flex-col">
+          {#each trustedSenders as sender (sender)}
+            <li class="flex items-center justify-between gap-2 py-0.5">
+              <span class="text-ink-secondary min-w-0 truncate text-[12.5px]">{sender}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={trustBusy === sender}
+                onclick={() => void untrust(sender)}
+              >
+                Remove
+              </Button>
+            </li>
+          {/each}
+        </ul>
       </div>
     {/if}
   {:else}
-    <h1 class="font-display text-ink-heading text-[21px]">Connect your mailbox</h1>
-  {/if}
+    <!-- The form as its own modal view (add / edit / first-run connect): it
+         replaces the account list wholesale, and Cancel next to the submit
+         returns to it. The first run has no list to go back to, so no
+         Cancel is offered there. -->
+    <Dialog.Header>
+      <Dialog.Title class="font-display text-ink-heading text-[19px]">
+        {mailStore.accounts.length === 0 ? 'Connect your mailbox' : editing ? `Edit ${editingSlug}` : 'Add account'}
+      </Dialog.Title>
+    </Dialog.Header>
 
-  {#if submitted}
-    <div class="flex flex-col gap-3">
-      <p class="text-ink-body text-[13.5px]">Mailbox connected.</p>
-      {#if devModeNote}
-        <p class="text-suggest-ink text-[12.5px]">
-          Dev mode: the password is held in memory only and never persisted.
-        </p>
-      {/if}
-      <Button type="button" variant="outline" size="sm" onclick={() => openAdd()}>Add another</Button>
-    </div>
-  {:else if formVisible}
     {#if editing}
       {#if editLoadError}
         <p class="text-warn-ink text-[12.5px]" role="alert">
@@ -790,36 +820,14 @@
         <p role="alert" class="text-warn-ink text-[12.5px]">{error}</p>
       {/if}
 
-      <div>
+      <div class="flex items-center gap-2">
         <Button type="button" onclick={() => void handleSubmit()} disabled={submitting}>
           {submitting ? (editing ? 'Saving…' : 'Connecting…') : editing ? 'Save changes' : 'Connect mailbox'}
         </Button>
+        {#if mailStore.accounts.length > 0}
+          <Button type="button" variant="ghost" disabled={submitting} onclick={() => closeForm()}>Cancel</Button>
+        {/if}
       </div>
-    </div>
-  {/if}
-
-  {#if trustedSenders.length > 0}
-    <div class="border-paper-hairline mt-6 w-full max-w-xl border-t pt-4">
-      <h2 class="font-display text-ink-heading text-[17px]">Trusted senders</h2>
-      <p class="text-ink-meta mt-1 max-w-[480px] text-[12px]">
-        Messages from these addresses load remote images automatically.
-      </p>
-      <ul class="mt-2 flex flex-col">
-        {#each trustedSenders as sender (sender)}
-          <li class="flex items-center justify-between gap-2 py-0.5">
-            <span class="text-ink-secondary min-w-0 truncate text-[12.5px]">{sender}</span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={trustBusy === sender}
-              onclick={() => void untrust(sender)}
-            >
-              Remove
-            </Button>
-          </li>
-        {/each}
-      </ul>
     </div>
   {/if}
 </div>

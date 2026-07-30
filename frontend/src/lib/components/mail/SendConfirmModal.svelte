@@ -19,6 +19,7 @@
   // Reload review.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
+  import { draftBodyPreview } from './compose';
   import { mailStore, type MailDraftReview } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import {
@@ -134,10 +135,13 @@
         </div>
       {/if}
 
+      <!-- The BODY of the snapshot's content — the frontmatter is dropped
+           for display only (the summary above already names recipients,
+           subject and identity); `contentHash` still binds the full bytes. -->
       <div class="flex flex-col gap-1">
         <p class="text-overline">Message</p>
         <pre
-          class="border-paper-hairline bg-paper-surface text-ink-body max-h-[220px] overflow-auto rounded-lg border px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap">{current.content}</pre>
+          class="border-paper-hairline bg-paper-surface text-ink-body max-h-[220px] overflow-auto rounded-lg border px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap">{draftBodyPreview(current.content)}</pre>
       </div>
 
       {#if gate.error}

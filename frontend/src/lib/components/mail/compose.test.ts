@@ -3,6 +3,7 @@ import {
   attachmentName,
   composeHref,
   composeValidationError,
+  draftBodyPreview,
   draftContent,
   draftDirty,
   emptyDraftFields,
@@ -136,6 +137,24 @@ describe('draftContent — frontmatter injection safety', () => {
     expect(content).toContain('subject: "a b c"');
     expect(content).not.toContain('\\r');
     expect(/[\r\u0000]/.test(content)).toBe(false);
+  });
+});
+
+describe('draftBodyPreview', () => {
+  it('drops the leading frontmatter block, keeping the body', () => {
+    const content = '---\nto:\n  - a@x.com\nsubject: Hi\n---\nHello there.\n';
+    expect(draftBodyPreview(content)).toBe('Hello there.\n');
+  });
+
+  it('keeps a body containing --- intact (same split rule as parseDraftFields)', () => {
+    const content = '---\nsubject: Hi\n---\nabove\n---\nbelow\n';
+    expect(draftBodyPreview(content)).toBe('above\n---\nbelow\n');
+  });
+
+  it('returns content without a parseable block whole', () => {
+    expect(draftBodyPreview('no frontmatter here')).toBe('no frontmatter here');
+    expect(draftBodyPreview('---\nnever terminated')).toBe('---\nnever terminated');
+    expect(draftBodyPreview('')).toBe('');
   });
 });
 
