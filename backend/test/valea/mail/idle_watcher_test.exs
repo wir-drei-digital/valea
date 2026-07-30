@@ -1,6 +1,8 @@
 defmodule Valea.Mail.IdleWatcherTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Valea.Mail.IdleWatcher
   alias Valea.Mail.ImapClient
   alias Valea.Mail.Settings
@@ -52,7 +54,7 @@ defmodule Valea.Mail.IdleWatcherTest do
         imap: %{host: "localhost", port: server.port, username: "user"}
       },
       transport: ImapClient,
-      credential: fn -> "pass" end,
+      credential: Keyword.get(opts, :credential, fn -> "pass" end),
       connect_opts: [tls_opts: [cacertfile: @cacertfile]],
       reissue_ms: Keyword.get(opts, :reissue_ms, 5_000),
       debounce_ms: Keyword.get(opts, :debounce_ms, 60),
@@ -280,6 +282,70 @@ defmodule Valea.Mail.IdleWatcherTest do
     # supervisor's restart budget.
     assert Process.alive?(watcher)
     assert :ok = FakeImapServer.await(server)
+  end
+
+  test "the retry/log path never resolves the credential closure a second time" do
+    # Dev runs the logger at `:debug`, which is what makes `log/3` evaluate its
+    # message closure at all — and for an `auth: :oauth2` account resolving the
+    # credential inside it is a call into the Engine plus, on a cache miss, a
+    # live HTTPS POST to the token endpoint. On a failure path that means firing
+    # a token request from inside a log statement, blocking this process for a
+    # round trip, over a line a non-`:debug` build discards. So the resolution
+    # count is COUNTED here rather than reasoned about.
+    previous = Logger.level()
+    Logger.configure(level: :debug)
+    on_exit(fn -> Logger.configure(level: previous) end)
+
+    probe = self()
+
+    counting_credential = fn ->
+      send(probe, :credential_resolved)
+      "pass"
+    end
+
+    # The "IDLE refused" retry — one of the four paths that reach `log/3` —
+    # followed by a connection that works.
+    first =
+      handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["A4 NO cannot idle right now"]},
+          {:expect, "A5 LOGOUT", then: ["* BYE later", "A5 OK done"]},
+          :close
+        ]
+
+    second =
+      handshake_steps() ++
+        [
+          {:expect, "A4 IDLE", then: ["+ idling"]},
+          {:sleep, 40},
+          {:send, "* 9 EXISTS"},
+          {:expect, "DONE", then: ["A4 OK IDLE terminated"]},
+          {:expect, "A5 IDLE", then: ["+ idling"]}
+        ]
+
+    server = FakeImapServer.start_sequence([first, second], tls: true)
+
+    # Captured only to keep the two expected debug lines out of the suite's
+    # output — the point of the test is that they FIRE (a `:debug` build's
+    # condition) without resolving the closure again.
+    log =
+      capture_log(fn ->
+        start_watcher!(server, backoff_ms: 20, reissue_ms: 400, credential: counting_credential)
+        assert_receive @trigger, 3_000
+
+        # Exactly ONE resolution per connect attempt: two connects, two calls. A
+        # third would be the log statement on the retry between them. Checked
+        # HERE, before the script ends and the watcher reconnects a third time.
+        assert_receive :credential_resolved
+        assert_receive :credential_resolved
+        refute_received :credential_resolved
+
+        assert :ok = FakeImapServer.await(server)
+      end)
+
+    # The log line really did fire — otherwise this test would pass for the
+    # wrong reason (a `:debug` level that never reached the statement).
+    assert log =~ "IDLE refused"
   end
 
   test "a server without the IDLE capability: LOGOUT, then a clean :normal exit" do

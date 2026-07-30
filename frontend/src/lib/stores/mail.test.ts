@@ -1878,6 +1878,54 @@ describe('resupplyCredentials', () => {
     expect(setMailCredential).toHaveBeenCalledWith('mara', '1//refresh-token', expect.any(Number), 'oauth');
   });
 
+  // The loop the exclusion exists to break: `invalid_grant` makes the engine
+  // CLEAR its refresh-token slot, so a revoked account reports `credential:
+  // 'missing'` — the same shape as a restart — while nothing has deleted the
+  // dead token from the keychain. Resupplying it would hand back the very bytes
+  // the provider just rejected, clear the sticky state, re-arm polling, and mint
+  // again on the next tick, forever; and the account would read "Up to date" for
+  // almost all of that, leaving the one button that fixes it unclickable.
+  it('never resupplies a reauth_required oauth2 account — the token was just REJECTED', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockResolvedValue('1//revoked-token');
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const count = await resupplyCredentials(
+      [
+        normalizeMailAccountStatus({
+          ...rawMara,
+          auth: 'oauth2',
+          credential: 'missing',
+          state: 'reauth_required'
+        })
+      ],
+      { setMailCredential } as never
+    );
+
+    expect(count).toBe(0);
+    expect(keychainGet).not.toHaveBeenCalled();
+    expect(setMailCredential).not.toHaveBeenCalled();
+  });
+
+  it('still resupplies an oauth2 account whose engine merely RESTARTED', async () => {
+    // The distinction the guard turns on: same `credential: 'missing'`, but no
+    // sticky state, so the stored token has never been rejected.
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockResolvedValue('1//good-token');
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    for (const state of ['inactive', 'idle']) {
+      vi.mocked(keychainGet).mockClear();
+      const count = await resupplyCredentials(
+        [normalizeMailAccountStatus({ ...rawMara, auth: 'oauth2', credential: 'missing', state })],
+        { setMailCredential } as never
+      );
+
+      expect(count).toBe(1);
+      expect(keychainGet).toHaveBeenCalledWith('ws-1', 'mara:oauth');
+    }
+  });
+
   it('leaves a signed-in oauth2 account alone (self-terminating, same as a password one)', async () => {
     vi.mocked(inDesktop).mockReturnValue(true);
     vi.mocked(keychainGet).mockResolvedValue('1//refresh-token');

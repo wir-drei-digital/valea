@@ -106,16 +106,28 @@ defmodule Valea.Mail.IdleWatcher do
   end`) — never asked for later. The reason is the second half of the
   invariant: a rotated credential has to invalidate the connection this
   process is *holding*, which a watcher REBUILD does and a re-read would not.
-  The secret is materialized only at the `connect/3` boundary and, redacted,
-  inside a `:debug` log's own closure — never stored as a string, never
-  written anywhere.
+  The secret is never stored as a string and never written anywhere.
+
+  The closure is resolved in EXACTLY ONE place, `open/1`, once per connect
+  attempt, and the resulting value is threaded down as a parameter to whatever
+  needs it — the `connect/3` call itself, and the redaction of a connect error.
+  Nothing downstream resolves it a second time, and every post-connect failure
+  path passes `nil` because the calls on it (`idle_start`, `idle_await`,
+  `idle_done`, `logout`) are never handed a credential to begin with.
 
   For an `auth: :oauth2` account (M6 task 16) that closure calls BACK into the
   Engine to mint an access token (`Valea.Mail.Engine.mint_access_token/1`),
   which is what keeps a long-lived watcher able to reconnect after its token
-  expires — a token resolved once at start would strand it. That is safe here
-  for exactly the reason stated above: this process does not trap exits, so
-  the `Process.exit(:shutdown)` the Engine's `terminate_child` sends ends it
+  expires — a token resolved once at start would strand it. That is ALSO why
+  the one-resolution rule above is load-bearing rather than tidiness: minting
+  is a call into the Engine plus, on a cache miss, a live HTTPS POST, and
+  resolving it a second time to redact a `:debug` line would fire a token
+  request from inside a log statement — on the very path an expired token makes
+  the most likely one, and for a line a non-`:debug` build discards.
+
+  Calling back into the Engine at all is safe here for the reason §Lifecycle's
+  no-trapping note gives: this process does not trap exits, so the
+  `Process.exit(:shutdown)` the Engine's `terminate_child` sends ends it
   instantly even while it is blocked in that call, and the Engine's own
   `handle_call` is never left waiting on a child that is waiting on it. The
   Engine answers the orphaned request into the void (a `GenServer.reply` to a
@@ -230,7 +242,17 @@ defmodule Valea.Mail.IdleWatcher do
   # -- connect / capability gate ---------------------------------------------
 
   defp open(state) do
-    case connect_and_examine(state) do
+    # THE one place this process resolves its credential closure, and it is
+    # resolved to a VALUE that is then threaded down rather than re-resolved.
+    # For an `auth: :oauth2` account that closure MINTS (a call into the Engine,
+    # and on a cache miss a live token-endpoint POST — see `Valea.Mail.Engine`'s
+    # `mint_access_token/1`), so a second resolution on the failure path below
+    # would fire a token request from inside a log statement, blocking this
+    # process for the length of an HTTPS round trip over a line that a
+    # non-`:debug` build discards outright.
+    secret = secret(state)
+
+    case connect_and_examine(state, secret) do
       {:ok, conn} ->
         start_idle(%{state | conn: conn, backoff_ms: state.backoff_initial_ms})
 
@@ -239,22 +261,23 @@ defmodule Valea.Mail.IdleWatcher do
         # cannot grow one under this connection, so retrying would be a
         # pointless reconnect loop. `restart: :transient` makes this stop
         # final; the account keeps its poll interval. `terminate/2` logs out.
-        log(state, "server does not advertise IDLE — watcher stopping")
+        # Nothing to scrub: the message is a fixed literal.
+        log(state, nil, "server does not advertise IDLE — watcher stopping")
         {:stop, :normal, %{state | conn: conn}}
 
       {:error, reason} ->
-        {:noreply, retry(%{state | conn: nil, idle: nil}, "connect failed", reason)}
+        {:noreply, retry(%{state | conn: nil, idle: nil}, secret, "connect failed", reason)}
     end
   end
 
-  defp connect_and_examine(state) do
+  defp connect_and_examine(state, secret) do
     # `imap_config/1` carries the account's SASL mode alongside host/port/
     # username, exactly as the sync pass's own connect does — this connection
     # authenticates with the same credential and must authenticate the same WAY
     # (M6 task 15).
     imap_config = Settings.imap_config(state.settings)
 
-    case call(state, :connect, [imap_config, secret(state), state.connect_opts]) do
+    case call(state, :connect, [imap_config, secret, state.connect_opts]) do
       {:ok, conn} -> examine_inbox(state, conn)
       {:error, reason} -> {:error, reason}
     end
@@ -350,13 +373,18 @@ defmodule Valea.Mail.IdleWatcher do
 
   # -- reconnect / backoff ---------------------------------------------------
 
+  # Every caller of this is a POST-connect transport failure — `idle_start`,
+  # `idle_await`, `idle_done`, `logout`, none of which is ever handed a
+  # credential. So there is nothing in their reasons to scrub, and `nil` here is
+  # a statement of that rather than a shortcut: it is also what keeps an oauth2
+  # account's minting closure out of the failure path entirely (see `open/1`).
   defp disconnect_and_retry(state, what, reason) do
     logout(state)
-    retry(%{state | conn: nil, idle: nil}, what, reason)
+    retry(%{state | conn: nil, idle: nil}, nil, what, reason)
   end
 
-  defp retry(state, what, reason) do
-    log(state, what, reason)
+  defp retry(state, secret, what, reason) do
+    log(state, secret, what, reason)
     Process.send_after(self(), :reconnect, state.backoff_ms)
     %{state | backoff_ms: min(state.backoff_ms * 2, @backoff_max_ms)}
   end
@@ -393,16 +421,18 @@ defmodule Valea.Mail.IdleWatcher do
 
   # Debug, not warn: see the moduledoc's §What it is FOR — a failure here
   # costs latency, not correctness, and a flapping connection must not fill an
-  # operator's log with noise about an optimization. The message is built
-  # inside the closure so the secret is materialized ONLY when a debug log is
-  # actually emitted, and scrubbed even then (a connect error can quote what
-  # it was handed).
-  defp log(state, what, reason), do: log(state, "#{what}: #{inspect(reason)}")
+  # operator's log with noise about an optimization. The message is built inside
+  # the closure so a non-`:debug` build pays for none of it.
+  #
+  # `secret` is passed IN, already resolved (`open/1`), and is `nil` on every
+  # path that never handed a credential to the transport. It is never resolved
+  # here: for an oauth2 account that would mint a token from inside a log
+  # statement. `Redact.text/2` scrubs it when there is one — a connect error can
+  # quote what it was handed.
+  defp log(state, secret, what, reason), do: log(state, secret, "#{what}: #{inspect(reason)}")
 
-  defp log(state, what) do
-    Logger.debug(fn ->
-      Redact.text("mail IDLE (account #{state.account}): #{what}", secret(state))
-    end)
+  defp log(state, secret, what) do
+    Logger.debug(fn -> Redact.text("mail IDLE (account #{state.account}): #{what}", secret) end)
   end
 
   defp secret(%{credential: fun}) when is_function(fun, 0), do: fun.()

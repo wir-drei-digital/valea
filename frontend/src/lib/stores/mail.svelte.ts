@@ -1424,6 +1424,12 @@ export function wireMailEvents(channel: Channel): void {
  * still be missing its SMTP one, and a push-only account (`smtpCredential:
  * 'n/a'`) is never asked for one at all.
  *
+ * An `auth: 'oauth2'` account takes a THIRD entry instead of those two
+ * (`<slug>:oauth`, the refresh token), and is the one case where a `missing`
+ * slot is not sufficient reason to resupply — see the `reauth_required`
+ * exclusion in the loop below, which is what keeps a REVOKED token out of an
+ * endless resupply/reject cycle.
+ *
  * Per-slot and self-terminating: only valid, configured accounts with a
  * `missing` slot and a known `workspaceId` are attempted, a missing keychain
  * entry just skips that slot, and a successful resupply flips that Engine's
@@ -1446,8 +1452,24 @@ export async function resupplyCredentials(
     // both protocols use from it. So there is no `<slug>:imap` to read and no
     // separate SMTP secret to resupply, and asking for either would hand a
     // password-shaped secret to an account that authenticates with XOAUTH2.
+    //
+    // `reauth_required` is EXCLUDED, and that exclusion is load-bearing rather
+    // than an optimization. Unlike a password account — where `auth_failed`
+    // leaves `credential: 'present'`, so this loop never looks at it — a
+    // revoked refresh token makes the engine CLEAR its slot, which reports as
+    // `credential: 'missing'`: the same shape as "the engine restarted and
+    // forgot it". Nothing deletes the dead token from the keychain, so
+    // resupplying on `missing` alone hands the very bytes the provider just
+    // rejected straight back, `set_credential` clears the sticky state, polling
+    // re-arms, the next poll mints, `invalid_grant` again — forever, once per
+    // poll interval, against the provider's token endpoint. Worse for the user
+    // than the hammering: the account reads "Up to date" for almost the whole
+    // cycle and `needsMailSignIn` is false for almost all of it, so the one
+    // button that could fix it is effectively unclickable. `reauth_required`
+    // means the stored token was just rejected; handing the same bytes back
+    // cannot help, and only a new sign-in can.
     if (status.auth === 'oauth2') {
-      if (status.credential === 'missing') {
+      if (status.credential === 'missing' && status.state !== 'reauth_required') {
         if (await resupplySlot(status.workspaceId, status.account, 'oauth', apiOverride)) resupplied += 1;
       }
       continue;
