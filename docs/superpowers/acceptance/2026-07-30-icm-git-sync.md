@@ -221,15 +221,31 @@ is shared with people who do not use Valea):
       say what supplies it (keychain-backed agent, credential helper,
       https remote).
   - Observed:
-- [ ] **D3 · Off and out-of-scope ICMs say so, cheaply.** Check the three
-      short-circuits: switch the ICM off (disabled) → the git check reads
-      **unknown**, `not checked — this mount is disabled.`; a degraded
-      mount → **unknown**, `not checked — this mount is degraded, so
-      nothing is syncing it.`; set the mode to **Off** in the panel → **ok**,
-      `git repository detected — sync is off.` and no passes touch it.
-      Also confirm a folder mounted *inside* a repo but not at its root, or
-      a linked worktree / submodule (`.git` as a file), reports
+- [ ] **D3 · Off and out-of-scope ICMs say so, cheaply.** Three
+      short-circuits, each on a different surface — note *where* to look,
+      it is not the same place for all three:
+      1. **Disabled.** Disable the ICM (kebab → *Disable*). Its sidebar row
+         disappears entirely, so Diagnose is no longer reachable for it —
+         look instead in **Files → "Check your mounts"** (the *Checking your
+         mounts* panel, which fans the doctor over every mount, disabled
+         ones included). Expect `<mount key>: git sync` = **unknown**,
+         `not checked — this mount is disabled.` Re-enable afterwards.
+      2. **Degraded.** Degrade one on purpose: rename the ICM's manifest
+         (`mv <ICM>/icm.yaml <ICM>/icm.yaml.bak`), which fails the manifest
+         load. The row *stays* in the sidebar with a warning triangle, so
+         its kebab → **Diagnose** still works. Expect the git check =
+         **unknown**, `not checked — this mount is degraded, so nothing is
+         syncing it.` Restore the file and confirm the ICM recovers.
+      3. **Mode off.** Set the mode to **Off** in the panel. Expect the
+         check = **ok**, `git repository detected — sync is off.`, no
+         passes touching the repo, and the Today/sidebar surfaces quiet.
+      Also confirm the two genuinely *unsupported* shapes — a folder
+      mounted **inside** a repo whose root is outside the mount, and a
+      `.git` **file** (linked worktree or submodule) — report
       `Not a syncable repository` with the remedy to mount the repo root.
+      A **bare** repo is not one of these: it has no `.git` at all, so it
+      reads as `not a git repository — git sync not applicable.` — out of
+      scope, not a diagnosed failure.
   - Observed:
 - [ ] **D4 · No upstream / detached is observe-only.** On a branch with no
       upstream, expect the doctor failure `branch <b> has no upstream —

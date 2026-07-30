@@ -1098,9 +1098,14 @@ uses, so it is injectable in tests; the four sanctioned mutations live in
 `ff_merge`, `push`. There is no non-ff merge, no rebase, no force-push, no
 `reset --hard`: Valea never invents or rewrites history and never discards a
 change it did not make. Scope is fail-closed: an **external ICM mount whose
-mount root is the repo root**; a mount inside a repo, a `.git` *file*
-(linked worktree/submodule), or a bare repo is `unsupported` with a doctor
-remedy. Full spec + the shipped-behavior amendments:
+mount root is the repo root**. `Repo.detect/1` names exactly two
+`unsupported` shapes — a `.git` *file* (linked worktree or submodule, whose
+gitdir lives outside the ICM) and a mount nested inside someone else's
+repo — each with a doctor remedy. Everything else without a `.git`
+directory, **bare repos included**, is simply not a git ICM: no engine row,
+and the doctor says `not a git repository — git sync not applicable.` (bare
+repos are out of scope, not a diagnosed failure). Full spec + the
+shipped-behavior amendments:
 `docs/superpowers/specs/2026-07-30-icm-git-sync-design.md`; live checklist:
 [docs/superpowers/acceptance/2026-07-30-icm-git-sync.md](superpowers/acceptance/2026-07-30-icm-git-sync.md).
 
