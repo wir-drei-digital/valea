@@ -10,11 +10,15 @@ defmodule Valea.Schedules.Scheduler do
   The tick is a pure function of `schedules.json` (re-read every time, never
   cached) and the persisted state in `Valea.Schedules.Store` (fingerprints,
   anchors, tombstones, run records). Process state holds only the injected
-  clock/runner/mount seams, which mounts have had their first pass, the last
-  unreadable-file hash per ICM (notice dedupe), and the last sweep date — all of
-  it reconstructible, none of it load-bearing. A crash or a restart therefore
-  cannot lose a slot, double-fire one, or resurrect one that was already
-  consumed.
+  clock/runner/mount seams plus five memos: which mounts have had their first
+  pass (`booted`), each ICM root's briefing status (`briefed`), the last
+  unreadable-file hash per ICM (`notices`), whether the workspace config is
+  currently unreadable (`config_notice`), and the last sweep date — all of it
+  reconstructible, none of it load-bearing. The three dedupe memos are what
+  make the "audit once per transition, not once per tick" rules hold; losing
+  them on a restart costs at most one repeated audit entry. A crash or a
+  restart therefore cannot lose a slot, double-fire one, or resurrect one that
+  was already consumed.
 
   ## The firing rule, in the order it runs (spec §Firing rule steps 1–7)
 

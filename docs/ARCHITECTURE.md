@@ -1666,8 +1666,14 @@ engines.
 
 **Nothing that matters lives in the process.** A tick is a pure function of
 `schedules.json` (re-read every time, never cached) and the persisted state
-below; process state holds only the injected seams, which mounts have had a
-first pass, the last unreadable-file hash per ICM, and the last sweep date.
+below. Process state holds only the injected seams plus five reconstructible
+memos: which mounts have had a first pass (`booted`), each ICM root's
+briefing status (`briefed` — `:ok`/`:failed`), the last unreadable-file hash
+per ICM (`notices`), whether the workspace config is currently unreadable
+(`config_notice`), and the last sweep date. The middle three exist so the
+"once per transition, not once per tick" audit rules have something to
+compare against; losing them on a restart costs at most one repeated audit
+entry, which is the harmless direction.
 
 **Persisted state — two tables in the workspace SQLite**
 (`backend/priv/repo/migrations/20260730000001_create_schedule_tables.exs`,
@@ -1856,15 +1862,25 @@ puts one pointer line in every session's Valea-authored `context.md`.
 
 ### Scheduled-session visibility
 
-Session kind `"scheduled"` beside Spec D's `"chat"`.
-`Valea.Agents.list_recent_sessions_by_icm/2` (the nav feed) and
-`list_sessions_for/3` (a group's "Show all…" paging) both take
-`include_scheduled:` (default `false`) and filter **backend-side, before the
-per-group limit and before the cursor split** — so the nav store never
-fetches-then-hides, `limit` keeps meaning "limit chat sessions", and an
-excluded run never consumes a page slot. A summary with no `kind` at all is
-not scheduled; the filter names the one kind it excludes. (The workspace-wide
-`list_sessions/0` identity listing is deliberately untouched.)
+Session kind `"scheduled"` beside Spec D's `"chat"`. Filtering is split, and
+the split is deliberate:
+
+- **`Valea.Agents.list_recent_sessions_by_icm/2` — the nav feed — filters
+  backend-side**, before its per-group `limit`, so the nav store never
+  fetches-then-hides and `limit` keeps meaning "limit chat sessions".
+  `list_sessions_for/3` is the paged history primitive and filters before the
+  cursor split for the same reason (no UI calls it today).
+- **The `/chat?all=1` pane filters client-side** off the flat, workspace-wide
+  `list_agent_sessions`, **because that listing is also the transcript title
+  index** — `ChatView` looks the open session up in it, and a scheduled run
+  reached from its schedule's run history is exactly such a transcript, so
+  filtering at the source would blank its title. That list carries no
+  `limit`, so hiding a row costs nothing (`sessions-list.svelte.ts`'s
+  `visibleSessions`).
+
+A summary with no `kind` at all is not scheduled — both sides name the one
+kind they exclude and leave every other transcript visible. (The
+workspace-wide `list_sessions/0` identity listing is deliberately untouched.)
 The primary access path is the **run history** under each schedule row —
 prompt runs link to `/chat?session=<id>`, command runs show their captured
 output inline. Cockpit notices keep parked and failed runs from being
@@ -1897,10 +1913,12 @@ because the two files are independent; a malformed `tasks.json` yields
 `"tasks" => nil` (the calm note) without touching the section's `"ok"`. It
 replaced `open_loops`, which is gone from the section entirely. Top-level
 `"schedule_notices"` carries the last 24 h of `waiting`/`failed`/`registered`
-events across every enabled ICM (capped at 20, newest first, no captured
-output); tombstoned registrations are filtered out, and a notice for a
-schedule that has since vanished still resolves a mount key so the link
-works.
+events **workspace-wide** — the store query has no mount filter; only the
+title/mount-key lookup is built from enabled mounts (capped at 20, newest
+first, no captured output). Tombstoned registrations are filtered out, and a
+notice for a schedule that has since vanished from a still-mounted ICM
+resolves its mount key by `icm_id` so the link works. See the limitation
+below for what happens when the ICM is not mounted at all.
 
 Audited: every fire/skip/completion/failure (fingerprint, trigger, session
 id, and for commands the full command line); every schedule
@@ -1929,9 +1947,11 @@ that is transcript territory.
   pure shape modules. Repair affordances are real: an id-less entry offers
   "Copy into a proper task", and the editor normalizes an unknown status.
 - Nav (`frontend/src/lib/shell/nav.ts`) carries a **Tasks** item again;
-  the sessions "Show all" pane carries an "Include scheduled runs" checkbox
-  whose state lives in the two session stores (survives navigation and a
-  workspace switch, not a reload — there is no persisted key).
+  the `/chat?all=1` pane carries an "Include scheduled runs" checkbox that
+  drives BOTH the client-side filter of that flat list and the nav feed's
+  backend-side one. Its state lives in the two session stores (survives
+  navigation and a workspace switch, not a reload — there is no persisted
+  key).
 - Honest limitation copy is in the UI, not only in the docs: *"Schedules
   fire only while Valea is running — nothing happens while the app is
   closed."*
@@ -1949,7 +1969,11 @@ that is transcript territory.
   `Store.notices_since/1` queries every state and run row in the workspace,
   with no mount filter; only the *label* lookup is built from enabled mounts.
   A schedule in a mount that was disabled inside the 24 h window can still
-  produce a notice (attributed via the run row's own recorded `mount_key`).
+  produce a notice, and the two kinds degrade differently: a `waiting`/
+  `failed` notice comes from a **run** row, which carries its own recorded
+  `mount_key`, so it still names a project; a `registered` notice comes from
+  a **`schedule_state`** row, which has no mount-key column at all, so once
+  the ICM is no longer mounted its `mount_key` is `nil`.
 - **The same ICM mounted in two workspaces double-fires.** Anchors are
   per-workspace, so one cron slot can fire once per workspace — around a
   switch, or with two app instances. Accepted; there is no cross-workspace

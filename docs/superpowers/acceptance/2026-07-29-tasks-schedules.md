@@ -130,6 +130,11 @@ measures it.
   `Write(<path>)`-accepted-but-never-consulted behavior), and silence with
   B2 showing the callback caught it confirms the "inert mirror, callback
   enforces" reading. What must NOT happen is B1's dialog failing to appear.
+- **Caveat on that search string:** "is not matched by file permission
+  checks" is a **search hint taken from external harness docs, not a
+  documented behavior of this adapter**. Its absence proves nothing about
+  the mirror — record "none" and let B2 carry the verdict. Only its
+  *presence* is evidence.
 - Observed (warnings verbatim, or "none"):
 
 ### B4. `.valea/` is denied, not asked
@@ -389,9 +394,13 @@ measures it.
   months.
 - **Cockpit notices span disabled mounts.** The notice query has no mount
   filter; only the *label* lookup is built from enabled mounts. A schedule
-  in a mount you disabled within the last 24 h can still produce a notice
-  (attributed via the run row's own recorded mount key). Not wrong, but it
-  can look surprising right after disabling a project.
+  in a mount you disabled within the last 24 h can still produce a notice.
+  The two kinds degrade differently: a `waiting`/`failed` notice comes from
+  a run row, which carries its own recorded mount key, so it still names a
+  project; a `registered` notice comes from a `schedule_state` row, which
+  has no mount-key column, so once the ICM is unmounted its mount key is
+  empty. Not wrong, but it can look surprising right after disabling a
+  project.
 - **The same ICM mounted in two workspaces can double-fire.** Anchors are
   per-workspace, so one cron slot can fire once per workspace — around a
   switch, or with two app instances. Accepted; there is no cross-workspace

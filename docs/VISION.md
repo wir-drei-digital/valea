@@ -175,8 +175,8 @@ equally normal way to reach step 1 — this is a registry Valea runs, not a
 No full email client replacement (rules engines, full search), no
 unattended email sending (every transmission is a human click on a
 reviewed draft — no agent send path, no send queues, no *send*
-scheduling, no automated retry; the schedule registry has no path to the
-wire), no CalDAV writes, no browser automation, no
+scheduling, no automated retry; no schedule payload can reach Valea's send
+path), no CalDAV writes, no browser automation, no
 bookkeeping integration, no visual workflow builder, no multi-agent
 orchestration UI, no cloud sync, no mobile app, no team collaboration, no
 plugin marketplace, no external booking links.
