@@ -168,4 +168,32 @@ defmodule Valea.Mail.Imap.WireTest do
     assert IO.iodata_to_binary(seg1) == "user {5}\r\n"
     assert IO.iodata_to_binary(seg2) == "pä55\r\n"
   end
+
+  # -- response_code: the machine-readable part of a status response ----------
+
+  # `Valea.Mail.ImapClient` discriminates a DEFINITELY-nonexistent mailbox on
+  # this (`Valea.Mail.Transport.select/2`), so the parser's edges are the
+  # vocabulary's edges: only a LEADING, CLOSED bracket counts, and only its
+  # first atom.
+
+  test "response_code returns the leading code name, dropping its arguments" do
+    assert Wire.response_code("[APPENDUID 42 1] done") == "APPENDUID"
+    assert Wire.response_code("[NONEXISTENT] Mailbox doesn't exist: Sent") == "NONEXISTENT"
+  end
+
+  test "response_code ignores a code that is not at the start of the text" do
+    # Prose that merely MENTIONS a code is not the server answering with one —
+    # a `contains?`-shaped reading would say NONEXISTENT here.
+    assert Wire.response_code("Mailbox [NONEXISTENT] is a thing I might say") == nil
+    assert Wire.response_code("Mailbox doesn't exist") == nil
+  end
+
+  test "response_code refuses an unterminated bracket rather than guessing" do
+    assert Wire.response_code("[NONEXISTENT Mailbox doesn't exist") == nil
+  end
+
+  test "response_code upcases the code — IMAP atoms are case-insensitive" do
+    assert Wire.response_code("[Nonexistent] gone") == "NONEXISTENT"
+    assert Wire.response_code("[trycreate] no such mailbox") == "TRYCREATE"
+  end
 end

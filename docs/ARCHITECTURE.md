@@ -826,6 +826,14 @@ duplicate). A Sent-copy failure cannot un-send the mail: the op completes
 carrying a `sent_copy_failed` notice and a `retry_sent_copy` affordance
 that re-runs only the idempotent append. With no IMAP connection yet the
 op simply waits in `transmitted` and the next connected pass finishes it.
+A Sent folder the server says DEFINITIVELY does not exist (a tagged `NO`
+carrying `[NONEXISTENT]` or `[TRYCREATE]` — see `Valea.Mail.Transport`'s
+`select/2`) is an answer, not an unanswerable question, so the copy is
+CREATEd and then filed rather than waiting forever; a refused create
+completes with the same `sent_copy_failed` notice and retry affordance.
+Every looser refusal (bare `NO`, `BAD`, timeout, dropped socket) stays
+ambiguous and keeps waiting, because reading it as "not present" could
+duplicate the copy.
 
 **`send_review` and human resolution.** A parked op keeps its spool and
 renders an explanation. On the gmail profile, reconciliation searches Sent

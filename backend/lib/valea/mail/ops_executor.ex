@@ -1855,6 +1855,15 @@ defmodule Valea.Mail.OpsExecutor do
   # only ever filed after this send's own Message-ID was proven absent from
   # the target folder (or the folder proven absent outright), and a retry
   # re-proves it from the top.
+  #
+  # That covers the ALREADYEXISTS race deliberately, rather than by accident:
+  # a CREATE refused because the folder appeared between our EXAMINE and our
+  # CREATE completes with the notice too — it does NOT fall through to the
+  # APPEND. An `[ALREADYEXISTS]` following an `[NONEXISTENT]` means the
+  # transport contradicted itself, so we no longer hold proof that our copy
+  # isn't already sitting in that folder, and appending on a lost proof is
+  # exactly the duplicate this path exists to prevent. The retry re-proves
+  # from the top and files it then.
   defp file_sent_copy(ctx, op_row, sent, mailbox) do
     with {:ok, record} <- load_verified_send_payload(ctx, op_row, :record),
          :ok <- ensure_sent_mailbox(ctx, sent, mailbox) do
