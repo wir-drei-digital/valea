@@ -21,9 +21,9 @@ defmodule Valea.Schedules.Runner do
   state the scheduler keeps**. The scheduler holds no run table: after a
   restart, a workspace switch, or a crashed session, an in-memory flag would
   be a lie that suppresses every future fire of that schedule. `Live` derives
-  it from the `Valea.Schedules.RunRegistry` (commands) and
-  `Valea.Agents.list_sessions/0` (prompts, via the last run record's
-  `session_id`), so the answer is always a fresh observation of the world.
+  it from the `Valea.Schedules.RunRegistry` (commands) and the session Registry
+  (prompts, via the last run record's `session_id`), so the answer is always a
+  fresh observation of the world.
 
   `meta` carries everything a launch needs that isn't in the entry:
 
@@ -172,12 +172,18 @@ defmodule Valea.Schedules.Runner.Live do
     :exit, _reason -> false
   end
 
+  # Off the session Registry (`Valea.Agents.list_running_session_inputs/0`),
+  # liveness-filtered, NOT `list_sessions/0`: the latter asks
+  # `Valea.Workspace.Manager` which workspace is current, and a Runtime child
+  # calling into the Manager can meet its own shutdown coming the other way
+  # (see `Valea.Workspace.Manager.check_generation/2`). The Registry answers the
+  # sharper question anyway — "is that session's process alive right now" — and a
+  # session parked on a permission ask IS alive, which is exactly right: the
+  # schedule must not fire over it.
   @impl true
   def live?(_icm_id, _schedule_id, :prompt, %{outcome: "running", session_id: session_id})
       when is_binary(session_id) do
-    case Valea.Agents.list_sessions() do
-      {:ok, sessions} -> Enum.any?(sessions, &(&1["id"] == session_id and &1["live"]))
-    end
+    Enum.any?(Valea.Agents.list_running_session_inputs(), fn {id, _input} -> id == session_id end)
   rescue
     _error -> false
   catch

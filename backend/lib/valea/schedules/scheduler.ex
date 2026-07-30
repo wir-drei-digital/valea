@@ -200,26 +200,7 @@ defmodule Valea.Schedules.Scheduler do
 
   @impl true
   def handle_info({:run_finished, run_id, outcome, duration_ms, output}, state) do
-    clear_stale()
-
-    written =
-      bound_write(state, fn ->
-        Store.update_run(run_id, %{outcome: outcome, duration_ms: duration_ms, output: output})
-      end)
-
-    # Audited only when the write landed: a completion arriving after a
-    # workspace switch must not leave a trace in the NEW workspace's log
-    # either. Identified by `run_id` alone — the run record carries the rest,
-    # and enriching this would mean keeping a run table in process state.
-    if written != :refused do
-      audit("schedule_run_finished", %{
-        "run_id" => run_id,
-        "outcome" => outcome,
-        "duration_ms" => duration_ms
-      })
-    end
-
-    {:noreply, state}
+    {:noreply, record_completion(state, run_id, outcome, duration_ms, output)}
   end
 
   @impl true
@@ -253,6 +234,41 @@ defmodule Valea.Schedules.Scheduler do
   defp schedule_tick(state) do
     Process.send_after(self(), :tick, state.tick_ms)
     state
+  end
+
+  # A command run reporting its outcome. Degrades the same way a tick does: a
+  # completion landing while the workspace closes finds a Repo on its way out,
+  # and the honest outcome is a run row left `running` (the next boot pass marks
+  # it `interrupted`), never a crashed scheduler.
+  defp record_completion(state, run_id, outcome, duration_ms, output) do
+    clear_stale()
+
+    written =
+      bound_write(state, fn ->
+        Store.update_run(run_id, %{outcome: outcome, duration_ms: duration_ms, output: output})
+      end)
+
+    # Audited only when the write landed: a completion arriving after a
+    # workspace switch must not leave a trace in the NEW workspace's log
+    # either. Identified by `run_id` alone — the run record carries the rest,
+    # and enriching this would mean keeping a run table in process state.
+    if written != :refused do
+      audit("schedule_run_finished", %{
+        "run_id" => run_id,
+        "outcome" => outcome,
+        "duration_ms" => duration_ms
+      })
+    end
+
+    state
+  rescue
+    error ->
+      Logger.warning("scheduler completion degraded: #{Exception.message(error)}")
+      state
+  catch
+    :exit, reason ->
+      Logger.warning("scheduler completion degraded: #{inspect(reason)}")
+      state
   end
 
   # Broad rescue/catch on purpose, mirroring `Valea.Cockpit.mail_summary/0`: a

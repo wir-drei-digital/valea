@@ -133,6 +133,45 @@ defmodule Valea.Schedules.CommandRunTest do
     assert_receive {:run_finished, "run-1", _outcome, _duration, _output}, 5_000
   end
 
+  # Prompt liveness is read off the SESSION registry (never the Manager, never a
+  # flag the scheduler keeps): a live registration means the run is still going.
+  describe "live?/4 for prompt runs" do
+    test "false with no run record, and with a run that carries no session" do
+      refute Runner.Live.live?(@icm_id, "s1", :prompt, nil)
+      refute Runner.Live.live?(@icm_id, "s1", :prompt, %{outcome: "running", session_id: nil})
+      refute Runner.Live.live?(@icm_id, "s1", :prompt, %{outcome: "running", session_id: "ghost"})
+    end
+
+    test "true while the session process is registered, false once it is gone" do
+      id = "sess-#{System.unique_integer([:positive])}"
+      test = self()
+
+      session =
+        spawn(fn ->
+          {:ok, _} = Registry.register(Valea.Agents.SessionRegistry, id, %{input: nil})
+          send(test, :registered)
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      assert_receive :registered, 1_000
+      last_run = %{outcome: "running", session_id: id}
+      assert Runner.Live.live?(@icm_id, "s1", :prompt, last_run)
+
+      send(session, :stop)
+      ref = Process.monitor(session)
+      assert_receive {:DOWN, ^ref, :process, ^session, _reason}, 1_000
+
+      refute Runner.Live.live?(@icm_id, "s1", :prompt, last_run)
+    end
+
+    test "a finished run never reads as live" do
+      refute Runner.Live.live?(@icm_id, "s1", :prompt, %{outcome: "completed", session_id: "x"})
+    end
+  end
+
   # -- helpers -----------------------------------------------------------------
 
   defp start_run(ctx, command, opts \\ []) do
