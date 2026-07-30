@@ -37,6 +37,7 @@
     FileActivityRail
   } from '$lib/components/agent';
   import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
+  import { turnCount, latestTurnAutoOpenPath } from '$lib/components/agent/auto-open';
   import {
     checkExistence,
     closedRailMemory,
@@ -472,6 +473,74 @@
     railOpen = true;
     if (sessionId !== null) closedRailMemory.reopen(sessionId);
     void tick().then(() => document.getElementById('file-activity-rail')?.focus());
+  }
+
+  // --- Auto-open a reply's single named file (message-file-links spec §3) ---
+  //
+  // Baseline is the turn count seen when THIS store attached — the OPPOSITE
+  // of the rail's fire-on-attach baseline: history must never open a pane.
+  // Each live increment is consumed exactly once (baseline advances even
+  // when a guard fails). The RPC verification captures store + turn count
+  // before the await and re-checks after (MarkdownPageView.refreshDangling's
+  // staleness shape) so a queued prompt starting the next turn mid-flight
+  // drops the result.
+  //
+  // The existence check needs the mount's ABSOLUTE root, not its key:
+  // `icm_paths_exist` attributes each path by prefix against the mount roots
+  // (`Valea.Api.ICM`'s `find_mount/2`), and post-A2 every ICM root lives
+  // OUTSIDE the workspace — so a `<mountKey>/<relPath>` join attributes to
+  // nothing and reports `exists: false` for even a real file (verified
+  // against the RPC). `MountSummary.root` is that resolved path; the catalog
+  // not being loaded yet simply means no auto-open for that turn.
+  const openMountRoot = $derived.by(() => {
+    const key = openMountKey;
+    if (!key) return null;
+    return mountsStore.mounts.find((m) => m.mountKey === key)?.root ?? null;
+  });
+
+  let autoOpenStore: AgentSessionStore | null = null;
+  let autoOpenBaseline = 0;
+  let autoOpenInFlight = false;
+
+  $effect(() => {
+    const current = store;
+    const count = current ? turnCount(current.items) : 0;
+    if (current !== autoOpenStore) {
+      autoOpenStore = current;
+      autoOpenBaseline = count;
+      return;
+    }
+    if (!current || count <= autoOpenBaseline) return;
+    autoOpenBaseline = count;
+    const open = openToolFile;
+    if (!open || context.placement !== 'primary') return;
+    if (context.hasOpenPane === undefined || context.hasOpenPane()) return;
+    if (autoOpenInFlight) return;
+    const relPath = latestTurnAutoOpenPath(current.items);
+    const mountRoot = openMountRoot;
+    if (!relPath || !mountRoot) return;
+    autoOpenInFlight = true;
+    void verifyAndAutoOpen(current, count, mountRoot, relPath, open);
+  });
+
+  async function verifyAndAutoOpen(
+    captured: AgentSessionStore,
+    capturedTurnCount: number,
+    mountRoot: string,
+    relPath: string,
+    open: (relPath: string) => void
+  ): Promise<void> {
+    try {
+      const result = await api.icmPathsExist([`${mountRoot}/${relPath}`]);
+      if (!result.ok) return;
+      const data = result.data as { results: { path: string; exists: boolean }[] };
+      if (!data.results[0]?.exists) return;
+      if (store !== captured || turnCount(captured.items) !== capturedTurnCount) return;
+      if (context.hasOpenPane?.() !== false) return;
+      open(relPath);
+    } finally {
+      autoOpenInFlight = false;
+    }
   }
 
   let viewWidth = $state(0);
