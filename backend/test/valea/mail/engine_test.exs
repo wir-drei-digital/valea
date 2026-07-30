@@ -2552,18 +2552,18 @@ defmodule Valea.Mail.EngineTest do
     assert %{poll_timer: nil, sync_task: nil} = :sys.get_state(engine)
   end
 
-  test "a sign-in re-arms polling after a park was un-parked by a pass that finished OK", %{
+  test "a park un-parked by a pass that finished OK comes back with polling armed", %{
     root: root
   } do
-    # The dead-backstop sequence (M6 task 16 review). `park_reauth_required/1`
-    # cancels the poll timer without touching `sync_task` — a pass may be in
-    # flight — and that pass can then SUCCEED, because it authenticated before
-    # the refresh token was revoked and its connection is still good.
-    # `finish_pass/2`'s ok-clause puts the status back to "idle" and re-arms
-    # nothing, so the account ends up un-parked AND timerless, with
-    # `set_credential/3`'s `clear_auth_failure/1` finding nothing to clear.
-    # Before `rearm_stopped_poll/1` that account never polled again until the
-    # app restarted.
+    # The dead-backstop sequence (M6 task 16 review), entrance one.
+    # `park_reauth_required/1` cancels the poll timer without touching
+    # `sync_task` — a pass may be in flight — and that pass can then SUCCEED,
+    # because it authenticated before the refresh token was revoked and its
+    # connection is still good. `finish_pass/2`'s ok clause puts the status
+    # back to "idle", which un-parks the account, and before
+    # `rearm_stopped_poll/1` it handed back an account that was un-parked,
+    # credentialed and TIMERLESS: nothing automatic ever ran again until the
+    # app restarted, and the UI said "Up to date" throughout.
     Application.put_env(:valea, :engine_sync_probe, self())
     Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
     on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
@@ -2590,21 +2590,119 @@ defmodule Valea.Mail.EngineTest do
     assert Engine.status(slug).state == "reauth_required"
     assert :sys.get_state(engine).poll_timer == nil
 
-    # The in-flight pass finishes fine on its already-authenticated connection,
-    # which un-parks the account — and leaves it with no timer at all.
+    # The in-flight pass finishes fine on its already-authenticated connection.
     send(task_pid, {:release, {:ok, :conn}})
     # `errors: []` is the point: this is `finish_pass/2`'s OK clause, not one
     # of the failure clauses that pause or re-arm on their own.
     assert_receive {:mail_sync_finished, ^slug, %{errors: []}}, 2_000
-    assert Engine.status(slug).state == "idle"
-    assert :sys.get_state(engine).poll_timer == nil
 
-    # The user signs in again. THIS is where the backstop has to come back:
-    # the account is "idle", so nothing else in `set_credential/3` would.
+    # Un-parked AND polling again: the clause that un-parks is the clause that
+    # owes the account its backstop.
+    assert Engine.status(slug).state == "idle"
+    assert :sys.get_state(engine).poll_timer != nil
+
+    # A later sign-in changes nothing about that (`schedule_poll/1` cancels
+    # before arming, so the fresh credential re-times the tick rather than
+    # stacking a second one).
     stub_token_endpoint!(token_reply(%{}))
     assert :ok = Engine.set_credential(slug, "refresh-2", :oauth)
     assert Engine.status(slug).state == "idle"
     assert :sys.get_state(engine).poll_timer != nil
+  end
+
+  # Entrance two (M6 task 16 review, second pass): no OAuth2 involved, and no
+  # race — `validate_sync/1` deliberately does not gate on `@paused_statuses`,
+  # because "an explicit `sync_now` past an `auth_failed` is how a caller
+  # retries". So the ordinary recovery gesture — type nothing, just hit Sync
+  # now — runs a pass out of a park, and whichever way that pass ENDS the
+  # status lands back at "idle" with the timer still cancelled. The account is
+  # then un-parked with a live credential and no backstop; the error variant
+  # even renders "Last sync failed, will retry" for an account that has nothing
+  # left to retry with.
+  test "a Sync now retry out of an auth_failed park re-arms polling when the pass SUCCEEDS", %{
+    root: root
+  } do
+    engine = park_auth_failed!(root, 325, "mara")
+
+    # The retry `validate_sync/1` lets through, and this time the server is
+    # happy (the password was fixed elsewhere, or the failure was the server's).
+    assert :ok = Engine.sync_now("mara")
+    assert_receive {:connect_called, retry_pid}, 2_000
+    send(retry_pid, {:release, {:ok, :conn}})
+    assert_receive {:mail_sync_finished, "mara", %{errors: []}}, 2_000
+
+    assert Engine.status("mara").state == "idle"
+    assert :sys.get_state(engine).poll_timer != nil
+  end
+
+  test "a Sync now retry out of an auth_failed park re-arms polling when the pass FAILS", %{
+    root: root
+  } do
+    engine = park_auth_failed!(root, 326, "mara")
+
+    # Same retry, ending in `finish_pass/2`'s generic error clause instead: a
+    # connect failure says nothing about the credential, so the account goes
+    # back to "idle" — and has to keep polling, or "will retry" is a lie.
+    assert :ok = Engine.sync_now("mara")
+    assert_receive {:connect_called, retry_pid}, 2_000
+    send(retry_pid, {:release, {:error, :econnrefused}})
+    assert_receive {:mail_sync_finished, "mara", %{errors: [error]}}, 2_000
+    assert error =~ "econnrefused"
+
+    status = Engine.status("mara")
+    assert status.state == "idle"
+    assert status.credential == "present"
+    assert :sys.get_state(engine).poll_timer != nil
+  end
+
+  test "a secret typed DURING a retry pass re-arms polling without waiting for it", %{root: root} do
+    engine = park_auth_failed!(root, 327, "mara")
+
+    # The retry is still in flight, so the account is "syncing" — not a paused
+    # status, and not one `clear_auth_failure/1` clears either.
+    assert :ok = Engine.sync_now("mara")
+    assert_receive {:connect_called, retry_pid}, 2_000
+    assert %{status: "syncing", poll_timer: nil} = :sys.get_state(engine)
+
+    # The user re-types their password while it runs. `set_credential/3` is the
+    # third `rearm_stopped_poll/1` call site precisely for this window: the
+    # account is already un-parked, so nothing else in the call would arm it.
+    assert :ok = Engine.set_credential("mara", "fresh-password")
+    assert :sys.get_state(engine).poll_timer != nil
+
+    # And the doomed pass landing afterwards neither un-arms it nor goes sticky
+    # (its verdict is about the password that was just replaced).
+    send(retry_pid, {:release, {:error, :auth_failed}})
+    assert_receive {:mail_sync_finished, "mara", %{errors: ["authentication failed"]}}, 2_000
+    assert Engine.status("mara").state == "idle"
+    assert :sys.get_state(engine).poll_timer != nil
+  end
+
+  # Drives a password account into the sticky `auth_failed` park the three
+  # tests above start from — an authoritative refusal (nothing touched the
+  # credential mid-pass), which cancels the poll timer and keeps it cancelled.
+  # Returns the Engine pid, with the caller subscribed to "mail".
+  defp park_auth_failed!(root, generation, slug) do
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, generation, slug)
+    open(root, generation)
+    :ok = Engine.set_credential(slug, "rejected-password")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now(slug)
+    assert_receive {:connect_called, task_pid}, 2_000
+    send(task_pid, {:release, {:error, :auth_failed}})
+    assert_receive {:mail_sync_finished, ^slug, %{errors: ["authentication failed"]}}, 2_000
+
+    engine = GenServer.whereis(Engine.via(slug))
+    assert Engine.status(slug).state == "auth_failed"
+    assert %{poll_timer: nil} = :sys.get_state(engine)
+
+    engine
   end
 
   test "an authoritative auth failure is STILL sticky (the guard is not a blanket pardon)", %{

@@ -2375,6 +2375,15 @@ defmodule Valea.Mail.Engine do
         pass_readopt_authorized: false,
         notices: notices
     }
+    # This clause UN-PARKS: whatever paused this account, a pass just succeeded
+    # and the status above says "idle". An account that was parked when the
+    # pass started (an `invalid_grant` mid-flight, or the explicit `sync_now/1`
+    # retry `validate_sync/1` deliberately allows past an `auth_failed`) has no
+    # poll timer to go back to, and nothing else here would give it one.
+    # `rearm_stopped_poll/1`'s guard is what makes this safe on the ordinary
+    # completion: a poll-tick pass re-scheduled its timer at tick time, so it
+    # falls straight through.
+    |> rearm_stopped_poll()
     |> tap_broadcast_status()
   end
 
@@ -2431,6 +2440,12 @@ defmodule Valea.Mail.Engine do
         last_error: message,
         pass_readopt_authorized: false
     }
+    # Un-parks exactly like the ok clause above, and for the same reason: a
+    # retry past an `auth_failed` that fails on the NETWORK still lands here
+    # with the status back at "idle", and an account with a live credential,
+    # nothing parked, and no timer would never retry on its own again — while
+    # the UI reads "Last sync failed, will retry".
+    |> rearm_stopped_poll()
     |> tap_broadcast_status()
   end
 
@@ -2533,24 +2548,34 @@ defmodule Valea.Mail.Engine do
 
   defp clear_auth_failure(state), do: state
 
-  # The poll backstop's SECOND re-arm, for the account that is already "idle"
-  # by the time the fresh credential lands and so has nothing for
-  # `clear_auth_failure/1` above to clear.
+  # The poll backstop's catch-all re-arm: the account that reaches "idle"
+  # WITHOUT going through `clear_auth_failure/1` above, and so has no timer and
+  # nothing left to clear.
   #
-  # `park_reauth_required/1` cancels the timer WITHOUT touching `sync_task` (a
-  # pass may still be in flight), and that pass can then finish `:ok` — it
-  # authenticated before the refresh token was revoked, so its connection is
-  # still good — which puts the status back to "idle" and leaves the account
-  # timerless: un-parked, running, and never polling again until a restart.
-  # This closes that hole from the one side that always follows it, the new
-  # sign-in.
+  # A park cancels the timer and keeps it cancelled — that is the point — but
+  # neither park owns `sync_task`, and a pass can outlive or follow one:
+  #
+  #   * `park_reauth_required/1` (an `invalid_grant` at refresh time) fires
+  #     mid-pass, and that pass can still finish `:ok` on the connection it
+  #     authenticated before the token was revoked;
+  #   * `validate_sync/1` deliberately does NOT gate on `@paused_statuses` — an
+  #     explicit `sync_now/1` past an `auth_failed` is how a caller retries —
+  #     so a parked account can run a pass at any time.
+  #
+  # Either way `finish_pass/2` puts the status back to "idle" and the account
+  # is left un-parked, credentialed and TIMERLESS: nothing automatic ever runs
+  # again until the app restarts, while the UI reports a healthy (or merely
+  # "will retry") account. Hence where this is called: both `finish_pass/2`
+  # completions that reach "idle", plus `set_credential/3` for a secret that
+  # lands while such a pass is still in flight.
   #
   # Deliberately narrow: only an ACTIVE, un-paused, timerless account arms
   # here. `active` keeps an inert or not-yet-activated Engine (which
   # `activate/1` arms on its own) from starting a clock it has no use for, and
   # `@paused_statuses` keeps a sticky park sticky. `schedule_poll/1` cancels
-  # before arming in any case, so the ordinary path — a timer already ticking,
-  # or the one `clear_auth_failure/1` just armed — cannot double-arm.
+  # before arming in any case, so every ordinary path — a poll-tick pass, whose
+  # timer was re-scheduled at tick time, or the one `clear_auth_failure/1` just
+  # armed — falls through the guard rather than double-arming.
   defp rearm_stopped_poll(%{active: true, poll_timer: nil, status: status} = state)
        when status not in @paused_statuses,
        do: schedule_poll(state)
