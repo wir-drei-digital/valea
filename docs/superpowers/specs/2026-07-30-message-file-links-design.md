@@ -1,0 +1,144 @@
+# Message File Links — Clickable Paths in Agent Prose + Single-Hit Auto-Open
+
+**Date:** 2026-07-30
+**Status:** Approved (design), pending implementation plan
+
+## Goal
+
+When the agent answers with a file path in prose — the common "I searched,
+here is the file" reply that never triggers a read tool call — the path
+should be actionable, not dead text:
+
+1. **Clickable codespans.** An inline codespan that looks like an in-mount
+   relative file path renders as a button opening that file in the side
+   pane, with the same backend-validated open path the tool-card chips use.
+2. **Clickable backticked URLs.** A codespan that is exactly an http(s) URL
+   renders as an external link (bare URLs in plain prose are already
+   autolinked by marked's GFM rules and need no work).
+3. **Single-hit auto-open.** When a live turn ends and the agent's final
+   message mentions exactly one distinct openable path, that file opens in
+   the pane automatically — but only after a backend existence check, only
+   when no pane is already open, and never when reopening an old session.
+
+Explicitly **not** in scope: linkifying bare paths outside backticks,
+client-side relativization of absolute paths, thought items, fenced code
+blocks, and any backend changes (`icm_paths_exist` already exists).
+
+## Architecture
+
+### 1. Path/URL detection — pure helpers in `agent-markdown.ts`
+
+New functions beside `safeLinkHref` (same "which tokens earn an affordance"
+family), unit-tested in `agent-markdown.test.ts`:
+
+```
+codespanFilePath(text: string): string | undefined
+```
+
+Returns the openable relPath when the codespan text is path-shaped, else
+undefined. Rules:
+
+- Strip one optional trailing `:NN` line suffix (`CONTEXT.md:22`) — the
+  returned relPath drops it (pane opens have no line targeting today).
+- Reject: absolute paths (leading `/` or `~`), scheme-ish strings
+  (`[a-z]+://`), any `..` segment, trailing `/` (directories), backticks,
+  parentheses, control characters, length > 256.
+- Require the basename to end in an extension: `\.[A-Za-z][A-Za-z0-9]{0,7}$`
+  (`today.json` yes, `v1.2` no, bare `.md` no, extensionless `README` no —
+  accepted miss).
+- Whitespace is rejected unless the string contains a `/` — so
+  `clients/Mara Lindt/notes.md` qualifies but a backticked sentence never
+  does.
+
+```
+messageFilePaths(text: string): string[]
+```
+
+Lexes the message (`lexAgentMarkdown`) and walks the full token tree,
+returning the **distinct** `codespanFilePath` hits across all inline
+codespans. Fenced `code` blocks are not descended into. Used only by
+auto-open.
+
+URL codespans need no new helper: the render branch calls the existing
+`safeLinkHref` on the codespan text.
+
+### 2. Rendering — `MarkdownInline.svelte` codespan branch
+
+`onOpenFile?: (relPath: string) => void` threads Transcript → MessageItem →
+MarkdownBlocks → MarkdownInline (both recursive components pass it through
+all self-recursions: lists, blockquotes, tables, nested inline tokens).
+It is the same handler the tool-card chips receive (`openToolFile` in
+ChatView), so a click only feeds the `?pane=` codec and the backend keeps
+owning containment. `{@html}` stays forbidden; all text still reaches the
+DOM through plain interpolation.
+
+Codespan branch, in order:
+
+1. `safeLinkHref(text)` passes → render an `<a>` with codespan styling
+   (mono, `bg-paper-track`) plus the link affordance (underline, hover),
+   routed through the existing desktop-aware `onLinkClick`/`openExternal`.
+2. `codespanFilePath(text)` hits AND `onOpenFile` present → render a
+   `<button>` keeping the codespan look with a hover affordance consistent
+   with the chips (`hover:bg-paper-pill`), `aria-label` "Open <relPath>",
+   clicking calls `onOpenFile(relPath)` (the `:NN`-stripped path).
+3. Otherwise → today's plain `<code>`.
+
+User messages, thought items, and code blocks are untouched. Because this
+is the shared renderer, reopened transcripts gain the affordance
+retroactively.
+
+### 3. Auto-open — ChatView effect
+
+State per attached store (reset on store swap, same pattern as the
+file-activity rail's baseline):
+
+- Baseline = count of `turn` items at attach. History never fires.
+- When the count increments live and the new turn's stop reason is
+  `end_turn`: take the final assistant `message` item preceding that turn
+  item, compute `messageFilePaths(text)`.
+- Fire only when ALL hold:
+  - exactly one distinct candidate path;
+  - ChatView is the primary view (a pane-hosted ChatView never spawns
+    panes) and `openToolFile` is available (mount known);
+  - no side pane is currently open (never replace what the user is
+    viewing);
+  - `icmPathsExist(["<mountKey>/<relPath>"])` returns `exists: true`
+    (server-side containment; non-mount paths are simply `false`);
+  - the store hasn't started a new turn while the check was in flight
+    (stale guard — drop the result).
+- Then `openToolFile(relPath)`. At most one auto-open per turn end. If the
+  user closes the pane, a later turn may open one again — each turn end is
+  a fresh signal.
+
+Auto-open considers file paths only. URLs (bare or backticked) are never
+opened automatically — external navigation stays a deliberate click.
+
+The turn-gating + candidate selection logic lives in a pure helper over
+`AcpItemLike[]` (item-shapes or a sibling module) so it is unit-testable
+without a component harness; the effect just wires it to the RPC and
+`openToolFile`.
+
+## Security
+
+- Every new affordance hands an untrusted agent-authored string to an
+  existing backend-validated codec: `?pane=` file opens (containment) or
+  `safeLinkHref`-vetted external links. No new trust is granted.
+- Auto-open lets the agent cause at most one visible, reversible pane open
+  per turn, of an in-mount file only, gated on real existence. It cannot
+  navigate outside mounts, cannot fire from history replay, and cannot
+  displace an open pane.
+- `icm_paths_exist` calls are batched (one per qualifying turn end, one
+  path) — no per-message chatter, nothing on transcript attach.
+
+## Testing
+
+- Unit: `codespanFilePath` accept/reject table (line suffixes, spaces with
+  and without slash, traversal, absolute, URL-ish, extension rules);
+  `messageFilePaths` distinctness + fenced-block exclusion; the turn-gating
+  helper (baseline, non-`end_turn` stops, multi-path messages, no-message
+  turns).
+- Browser rig: extend the fake adapter's `slow` final message to mention
+  exactly one backticked in-mount path (e.g. `CONTEXT.md`) and one
+  backticked URL — one run then proves the file chip, the URL link, and the
+  live auto-open; reopening the same session proves history never fires.
+- `svelte-check` and the full vitest suite stay green.
