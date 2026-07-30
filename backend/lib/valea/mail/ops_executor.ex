@@ -822,6 +822,18 @@ defmodule Valea.Mail.OpsExecutor do
   # definitively our draft; no re-APPEND). Three-way: a failed EXAMINE or
   # SEARCH is `{:error, reason}`, DISTINCT from a successful empty search —
   # the caller that decides to APPEND must never conflate the two.
+  #
+  # One error reason is not opaque: `{:error, {:no_such_mailbox, folder}}`,
+  # which the transport reports ONLY on a server answer that definitely names
+  # the mailbox as nonexistent (`Valea.Mail.Transport.select/2` documents the
+  # vocabulary — `[NONEXISTENT]`/`[TRYCREATE]`, nothing looser). That is an
+  # ANSWER, not an unanswerable question: a folder that does not exist
+  # provably does not hold our message, so a caller may safely read it as
+  # "not present" — `generic_sent_copy/2` is the one that does, and it
+  # creates the folder before filing. Every OTHER caller here leaves it in
+  # the opaque `{:error, _}` branch on purpose: reading it as "not present"
+  # buys nothing on a confirm-only path, and the push's `fresh_append/2`
+  # wants a human to look at a Drafts folder that vanished mid-flight.
   defp check_append_present(ctx, folder, message_id) do
     with {:ok, _info} <- ctx.transport.examine(ctx.conn, folder),
          {:ok, uids} <- checked_search_message_id(ctx, message_id) do
@@ -1665,8 +1677,11 @@ defmodule Valea.Mail.OpsExecutor do
     * `:ok` — sent and filed (op `complete`, draft `sent`). A `complete` op
       carrying `sent_copy_failed` is also `:ok`: the mail IS sent, only its
       Sent copy is outstanding (`retry_sent_copy/2`).
-    * `{:sending, notice}` — transmitted, Sent copy deferred (no IMAP
-      connection yet); the next connected recover finishes it.
+    * `{:sending, notice}` — transmitted, Sent copy deferred because the
+      server could not be ASKED whether the copy is already filed (no IMAP
+      connection yet, or a search that couldn't be answered); the next
+      connected recover re-proves it and finishes. A server that ANSWERS —
+      including "no such mailbox" — never lands here.
     * `{:send_review, reason}` — the outcome is not knowable; parked for the
       human, spool kept, NEVER retried.
     * `{:rejected, reason}` — provably unsent (op `rejected`, draft reverted
@@ -1804,31 +1819,65 @@ defmodule Valea.Mail.OpsExecutor do
     sent = sent_folder(ctx, op_row)
 
     case check_append_present(ctx, sent, op_row.message_id) do
-      {:ok, true} -> complete_send(ctx, op_row, nil)
-      {:ok, false} -> file_sent_copy(ctx, op_row, sent)
-      # An unanswerable search is never "not present" (it would duplicate the
-      # copy). Leave the op `transmitted` for the next pass to re-prove.
-      {:error, _reason} -> {:sending, "sent_copy_pending"}
+      {:ok, true} ->
+        complete_send(ctx, op_row, nil)
+
+      {:ok, false} ->
+        file_sent_copy(ctx, op_row, sent, :exists)
+
+      # The mailbox DOES NOT EXIST, definitively (see `check_append_present/3`
+      # for how narrowly the transport is allowed to say so). That is an
+      # answer, not an unanswerable question: our copy cannot be sitting in a
+      # folder the server says isn't there, so filing it duplicates nothing.
+      # Create the folder, then file — a Sent-less server (a bare Dovecot, a
+      # brand-new account) must not strand a mail that genuinely went out in
+      # "Sending…" forever.
+      {:error, {:no_such_mailbox, _folder}} ->
+        file_sent_copy(ctx, op_row, sent, :create)
+
+      # Anything else is unanswerable and is never "not present" (it would
+      # duplicate the copy). Leave the op `transmitted` for the next pass to
+      # re-prove.
+      {:error, _reason} ->
+        {:sending, "sent_copy_pending"}
     end
   end
 
-  defp file_sent_copy(ctx, op_row, sent) do
-    case load_verified_send_payload(ctx, op_row, :record) do
-      {:ok, record} ->
-        case ctx.transport.append(ctx.conn, sent, @sent_flags, record) do
-          {:ok, _result} ->
-            complete_send(ctx, op_row, nil)
+  # `mailbox` is `:create` ONLY on the definitely-absent path above, where the
+  # CREATE is the thing that makes the APPEND possible; `:exists` skips it
+  # rather than firing a CREATE the server would answer `[ALREADYEXISTS]` to
+  # on every single send.
+  #
+  # Nothing here can park: by this point the mail is OUT, so every failure —
+  # an unusable record payload, a refused CREATE, a refused APPEND —
+  # completes the op with the `sent_copy_failed` notice and its
+  # `retry_sent_copy/2` affordance. Nor can any of them duplicate: the copy is
+  # only ever filed after this send's own Message-ID was proven absent from
+  # the target folder (or the folder proven absent outright), and a retry
+  # re-proves it from the top.
+  defp file_sent_copy(ctx, op_row, sent, mailbox) do
+    with {:ok, record} <- load_verified_send_payload(ctx, op_row, :record),
+         :ok <- ensure_sent_mailbox(ctx, sent, mailbox) do
+      append_sent_copy(ctx, op_row, sent, record)
+    else
+      {:error, _reason} -> complete_send(ctx, op_row, "sent_copy_failed")
+    end
+  end
 
-          {:error, _reason} ->
-            # A failed Sent copy CANNOT un-send the mail: complete either way,
-            # with a notice + retry affordance when the copy really is missing.
-            if append_present?(ctx, sent, op_row.message_id),
-              do: complete_send(ctx, op_row, nil),
-              else: complete_send(ctx, op_row, "sent_copy_failed")
-        end
+  defp ensure_sent_mailbox(_ctx, _sent, :exists), do: :ok
+  defp ensure_sent_mailbox(ctx, sent, :create), do: ctx.transport.create_folder(ctx.conn, sent)
+
+  defp append_sent_copy(ctx, op_row, sent, record) do
+    case ctx.transport.append(ctx.conn, sent, @sent_flags, record) do
+      {:ok, _result} ->
+        complete_send(ctx, op_row, nil)
 
       {:error, _reason} ->
-        complete_send(ctx, op_row, "sent_copy_failed")
+        # A failed Sent copy CANNOT un-send the mail: complete either way,
+        # with a notice + retry affordance when the copy really is missing.
+        if append_present?(ctx, sent, op_row.message_id),
+          do: complete_send(ctx, op_row, nil),
+          else: complete_send(ctx, op_row, "sent_copy_failed")
     end
   end
 

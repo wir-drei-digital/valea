@@ -6,6 +6,7 @@ defmodule Valea.Mail.OpsExecutorSendTest do
 
   alias Valea.Mail.DraftFile
   alias Valea.Mail.DraftMime
+  alias Valea.Mail.ImapClient
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Settings
   alias Valea.Mail.Store
@@ -1148,6 +1149,174 @@ defmodule Valea.Mail.OpsExecutorSendTest do
 
       assert length(ModelMailTransport.messages(name, "Sent")) == 1
       assert {:ok, %{state: "complete", error: nil}} = Store.op_by_id(op.id)
+    end
+  end
+
+  # ==========================================================================
+  # The Sent copy against a server that HAS NO Sent mailbox
+  #
+  # Driven by the REAL `ImapClient` over a scripted `FakeImapServer`, unlike
+  # every other test in this file: what is under test is precisely which WIRE
+  # answers count as a definite "that mailbox does not exist", and a model
+  # transport cannot express the difference between `NO [NONEXISTENT] ...`
+  # and a bare `NO ...`. Tags run A1 LOGIN, A2 CAPABILITY (the connect), then
+  # A3+ for the executor's own commands, in order.
+  # ==========================================================================
+
+  describe "execute_send — the Sent mailbox does not exist" do
+    @cacertfile Path.expand("../../fixtures/tls/ca.pem", __DIR__)
+
+    defp handshake do
+      [
+        {:send, "* OK ready"},
+        {:expect_command, ~r/^A1 LOGIN user pass$/, then: ["A1 OK LOGIN completed"]},
+        {:expect, "A2 CAPABILITY",
+         then: ["* CAPABILITY IMAP4rev1 UIDPLUS", "A2 OK CAPABILITY completed"]}
+      ]
+    end
+
+    # A prepared send whose IMAP half is a real client connected to `server`.
+    # `prepared!/3` runs with no connection at all (the local phase never
+    # needs one), so the socket only opens once the script is armed.
+    defp prepared_against!(root, server) do
+      {_local, op} = prepared!(root, "reply.md", [])
+
+      {:ok, conn} =
+        ImapClient.connect(
+          %{host: "localhost", port: server.port, username: "user"},
+          "pass",
+          tls_opts: [cacertfile: @cacertfile]
+        )
+
+      {%{ctx(nil, root) | transport: ImapClient, conn: conn}, op}
+    end
+
+    # THE defect this whole block exists for: a send whose SMTP transmission
+    # succeeded used to park in `transmitted` forever against a server with no
+    # Sent folder, because the failed EXAMINE was read as an unanswerable
+    # question. `[NONEXISTENT]` is an ANSWER — create the folder and file.
+    test "a NO [NONEXISTENT] EXAMINE creates the folder, files the copy, and completes", %{
+      root: root
+    } do
+      script =
+        handshake() ++
+          [
+            {:expect_command, ~r/^A3 EXAMINE "Sent"$/,
+             then: ["A3 NO [NONEXISTENT] Mailbox doesn't exist: Sent (0.001 + 0.000 secs)."]},
+            {:expect_command, ~r/^A4 CREATE "Sent"$/, then: ["A4 OK CREATE completed"]},
+            {:expect_command, ~r/^A5 APPEND "Sent" \(\\Seen\) /,
+             then: ["A5 OK [APPENDUID 42 1] APPEND completed"]}
+          ]
+
+      server = FakeImapServer.start(script, tls: true)
+      {c, op} = prepared_against!(root, server)
+      FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+      assert :ok = OpsExecutor.execute_send(c, op.id)
+
+      assert {:ok, %{state: "complete", error: nil}} = Store.op_by_id(op.id)
+      assert read_draft_status(root, "reply.md") == "sent"
+      # A clean completion drops the spool — there is nothing left to retry.
+      refute File.exists?(spool_record(root, op.id))
+      assert length(send_calls()) == 1
+      assert :ok = FakeImapServer.await(server)
+    end
+
+    # The create can itself be refused (an ACL, a name the server won't take).
+    # That is still not a reason to park a mail that went out: complete with
+    # the notice, keep the spool, and let `retry_sent_copy/2` file it once the
+    # folder exists.
+    test "a refused CREATE completes with sent_copy_failed and stays retryable", %{root: root} do
+      script =
+        handshake() ++
+          [
+            {:expect_command, ~r/^A3 EXAMINE "Sent"$/,
+             then: ["A3 NO [NONEXISTENT] Mailbox doesn't exist: Sent"]},
+            {:expect_command, ~r/^A4 CREATE "Sent"$/,
+             then: ["A4 NO [CANNOT] Mailbox can't be created"]},
+            # The retry, after someone created it: search-first, then file.
+            {:expect_command, ~r/^A5 EXAMINE "Sent"$/,
+             then: [
+               "* 0 EXISTS",
+               "* OK [UIDVALIDITY 42] UIDs valid",
+               "A5 OK [READ-ONLY] EXAMINE completed"
+             ]},
+            {:expect_command, ~r/^A6 UID SEARCH HEADER "Message-ID" "<valea\.send\./,
+             then: ["* SEARCH", "A6 OK SEARCH completed"]},
+            {:expect_command, ~r/^A7 APPEND "Sent" \(\\Seen\) /,
+             then: ["A7 OK [APPENDUID 42 1] APPEND completed"]}
+          ]
+
+      server = FakeImapServer.start(script, tls: true)
+      {c, op} = prepared_against!(root, server)
+      FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+      assert :ok = OpsExecutor.execute_send(c, op.id)
+
+      # COMPLETE with a notice — not `transmitted`, not `sending`.
+      assert {:ok, %{state: "complete", error: "sent_copy_failed"}} = Store.op_by_id(op.id)
+      assert read_draft_status(root, "reply.md") == "sent"
+      assert File.exists?(spool_record(root, op.id))
+
+      assert :ok = OpsExecutor.retry_sent_copy(c, op.id)
+
+      assert {:ok, %{state: "complete", error: nil}} = Store.op_by_id(op.id)
+      refute File.exists?(spool_record(root, op.id))
+      assert length(send_calls()) == 1
+      assert :ok = FakeImapServer.await(server)
+    end
+
+    # The conservative default, pinned: a question the server never answered
+    # is NEVER "not present" — that would risk a duplicate copy. The op keeps
+    # its `transmitted` state for the next connected pass to re-prove.
+    test "a connection dropped mid-SEARCH leaves the op transmitted + sent_copy_pending", %{
+      root: root
+    } do
+      script =
+        handshake() ++
+          [
+            {:expect_command, ~r/^A3 EXAMINE "Sent"$/,
+             then: ["* 0 EXISTS", "A3 OK [READ-ONLY] EXAMINE completed"]},
+            {:expect_command, ~r/^A4 UID SEARCH HEADER "Message-ID" /, then: []},
+            :close
+          ]
+
+      server = FakeImapServer.start(script, tls: true)
+      {c, op} = prepared_against!(root, server)
+      FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+      assert {:sending, "sent_copy_pending"} = OpsExecutor.execute_send(c, op.id)
+
+      assert {:ok, %{state: "transmitted", error: nil}} = Store.op_by_id(op.id)
+      assert read_draft_status(root, "reply.md") == "sending"
+      assert File.exists?(spool_record(root, op.id))
+      assert length(send_calls()) == 1
+      assert :ok = FakeImapServer.await(server)
+    end
+
+    # The vocabulary itself, pinned: prose alone is not a machine-readable
+    # answer. Dovecot happens to send `[NONEXISTENT]`, but a server that just
+    # says "NO Mailbox doesn't exist" could equally mean an ACL or a
+    # temporarily unavailable store — so it stays ambiguous, and nothing is
+    # created or appended.
+    test "a bare NO with no response code stays sent_copy_pending", %{root: root} do
+      script =
+        handshake() ++
+          [
+            {:expect_command, ~r/^A3 EXAMINE "Sent"$/,
+             then: ["A3 NO Mailbox doesn't exist: Sent"]}
+          ]
+
+      server = FakeImapServer.start(script, tls: true)
+      {c, op} = prepared_against!(root, server)
+      FakeSmtpTransport.script([{:send, :_, {:ok, :accepted}}])
+
+      assert {:sending, "sent_copy_pending"} = OpsExecutor.execute_send(c, op.id)
+
+      assert {:ok, %{state: "transmitted", error: nil}} = Store.op_by_id(op.id)
+      assert read_draft_status(root, "reply.md") == "sending"
+      assert length(send_calls()) == 1
+      assert :ok = FakeImapServer.await(server)
     end
   end
 
