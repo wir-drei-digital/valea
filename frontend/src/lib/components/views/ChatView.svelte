@@ -472,9 +472,12 @@
 
   // Existence notes: reality-check changed rows against the mount tree via
   // `ensurePathLoaded` — ONLY its definitive 'missing' marks a row (store
-  // issue-#2 contract). Re-runs when the changed-row set, mount, or rail
-  // visibility changes, and whenever `icmStore.groups` is REASSIGNED — which
-  // is how every `icm_changed` refetch lands. Deliberately NOT the
+  // issue-#2 contract). Re-runs are scoped to: changed-row-SET changes (the
+  // `changedRelPaths` key — the `fileActivities` read below happens AFTER an
+  // `await`, which Svelte does not track, so a mere diff/index mutation on an
+  // already-listed row doesn't re-trigger), a `groups` REASSIGNMENT (which is
+  // how every `icm_changed` refetch lands), the open mount, rail visibility,
+  // and the effect's own first run on mount. Deliberately NOT the
   // `onIcmChanged` listener: that fires BEFORE the refetch settles, so a
   // tick-based recheck would walk the stale tree through `loadDir`'s
   // loaded-dir cache and miss a deletion permanently (Codex review finding).
@@ -503,8 +506,17 @@
       missingKeys = new Set();
       return;
     }
-    const rows = fileActivities;
     void (async () => {
+      // Settle: a just-created file is invisible to the CACHED tree until the
+      // debounced icm_changed refetch (~200ms) reassigns `groups` and re-runs
+      // this effect. Checking immediately would flash a false "no longer
+      // exists" on every file the session creates. The run token discards
+      // this pass if anything re-triggered meanwhile.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      if (token !== existenceRun) return;
+      // Read AFTER the await (untracked, so it isn't an effect dependency) —
+      // still the CURRENT activities, since a `$derived` recomputes on read.
+      const rows = fileActivities;
       const missing = await checkExistence(rows, async (relPath) => {
         const result = await icmStore.ensurePathLoaded(key, relPath);
         return result.status;
@@ -550,6 +562,10 @@
        docked at the pane's bottom edge, per the cockpit chat screen. -->
   <div bind:clientWidth={viewWidth} class="flex min-h-0 w-full flex-1">
     <div class="mx-auto flex min-h-0 w-full max-w-[660px] flex-1 flex-col px-4 pt-3">
+      <!-- The "Files · N" pill renders only where the rail could actually
+           show (primary placement, >= 860px): elsewhere clicking it would set
+           railOpen, hide the pill, and surface no rail — an inert affordance
+           that deletes itself. -->
       <SessionHeader
         icmName={openIcmName}
         mountKey={openMountKey}
@@ -560,7 +576,9 @@
         onDelete={() => void deleteOpenSession()}
         onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
         filesCount={fileActivities.length}
-        onShowFiles={!railOpen ? reopenRail : undefined}
+        onShowFiles={!railOpen && context.placement === 'primary' && viewWidth >= 860
+          ? reopenRail
+          : undefined}
       />
       {#if archiveError}
         <p class="text-warn-ink px-4 pt-1 text-[11.5px]" role="alert">{archiveError}</p>

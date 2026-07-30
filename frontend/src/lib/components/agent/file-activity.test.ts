@@ -251,4 +251,57 @@ describe('checkExistence', () => {
     expect(missing).toEqual(new Set(['gone.md']));
     expect(calls.sort()).toEqual(['err.md', 'gone.md', 'still.md']);
   });
+
+  it('never checks unlistable paths: dot-prefixed segments and the root manifest', async () => {
+    const calls: string[] = [];
+    const missing = await checkExistence(
+      [
+        activityRow({ key: '.claude/settings.json', relPath: '.claude/settings.json' }),
+        activityRow({ key: 'notes/.hidden.md', relPath: 'notes/.hidden.md' }),
+        activityRow({ key: '.gitignore', relPath: '.gitignore' }),
+        activityRow({ key: 'icm.yaml', relPath: 'icm.yaml' }),
+        activityRow({ key: 'normal.md', relPath: 'normal.md' })
+      ],
+      async (relPath) => {
+        calls.push(relPath);
+        return 'missing';
+      }
+    );
+    expect(calls).toEqual(['normal.md']);
+    expect(missing).toEqual(new Set(['normal.md']));
+  });
+
+  it('a nested icm.yaml is listable, so it is still checked', async () => {
+    const calls: string[] = [];
+    const missing = await checkExistence(
+      [activityRow({ key: 'sub/icm.yaml', relPath: 'sub/icm.yaml' })],
+      async (relPath) => {
+        calls.push(relPath);
+        return 'missing';
+      }
+    );
+    expect(calls).toEqual(['sub/icm.yaml']);
+    expect(missing).toEqual(new Set(['sub/icm.yaml']));
+  });
+
+  it('never checks a deleted-badge row: the badge already says it is gone', async () => {
+    const calls: string[] = [];
+    const missing = await checkExistence(
+      [
+        activityRow({
+          key: 'dropped.md',
+          relPath: 'dropped.md',
+          kindBadge: 'deleted',
+          edited: false
+        }),
+        activityRow({ key: 'moved.md', relPath: 'moved.md', kindBadge: 'renamed' })
+      ],
+      async (relPath) => {
+        calls.push(relPath);
+        return 'missing';
+      }
+    );
+    expect(calls).toEqual(['moved.md']);
+    expect(missing).toEqual(new Set(['moved.md']));
+  });
 });

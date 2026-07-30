@@ -20,9 +20,11 @@
   // confirm row before `onDelete` ever fires.
   //
   // `onShowFiles` is the same shape of signal for the file-activity rail: the
-  // host passes it only while the rail is CLOSED, so the "Files · N" pill is
-  // purely a reopen affordance and never competes with a rail already on
-  // screen. `filesCount > 0` keeps it off a session that touched nothing.
+  // host passes it only while the rail is CLOSED **and could actually open**
+  // (its placement/width gate), so the "Files · N" pill is purely a reopen
+  // affordance — it never competes with a rail already on screen, and never
+  // offers to open one that can't appear. `filesCount > 0` keeps it off a
+  // session that touched nothing.
   import Folder from '@lucide/svelte/icons/folder';
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -114,7 +116,7 @@
       <button
         type="button"
         onclick={onShowFiles}
-        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading rounded-md px-1.5 py-0.5 text-[11.5px] transition-colors"
+        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading shrink-0 rounded-md px-1.5 py-0.5 text-[11.5px] whitespace-nowrap transition-colors"
       >
         Files · {filesCount}
       </button>

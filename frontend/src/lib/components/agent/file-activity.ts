@@ -227,12 +227,23 @@ export class ClosedRailMemory {
 export const closedRailMemory = new ClosedRailMemory();
 
 /**
+ * The ICM tree never lists dot-prefixed entries, nor the root manifest
+ * (`Valea.ICM.shallow_entries/3`) — `ensurePathLoaded` answers a DEFINITIVE
+ * 'missing' for those even when they exist on disk. Unlistable ⇒ unknowable.
+ */
+const unlistable = (rel: string) =>
+  rel === 'icm.yaml' || rel.split('/').some((s) => s.startsWith('.'));
+
+/**
  * Existence cross-check (spec): reality-checks changed rows against the
  * mount tree. Caller injects `icmStore.ensurePathLoaded` (partially applied
  * with the mount key); ONLY a definitive `'missing'` marks a row —
  * `'unavailable'` (a listing failed) claims nothing, per the store's
  * issue-#2 contract. Sequential on purpose: `ensurePathLoaded` de-dupes
  * in-flight dir loads internally, and rail row counts are small.
+ * Skipped rows: reads (nothing was changed), outside-mount rows (no relPath
+ * to look up), `deleted` badges (the badge already says it's gone — a "no
+ * longer exists" note on top reads as a glitch), and unlistable paths.
  */
 export async function checkExistence(
   rows: FileActivity[],
@@ -240,7 +251,8 @@ export async function checkExistence(
 ): Promise<Set<string>> {
   const missing = new Set<string>();
   for (const r of rows) {
-    if (r.kindBadge === 'read' || r.relPath === undefined) continue;
+    if (r.kindBadge === 'read' || r.kindBadge === 'deleted') continue;
+    if (r.relPath === undefined || unlistable(r.relPath)) continue;
     if ((await ensure(r.relPath)) === 'missing') missing.add(r.key);
   }
   return missing;
