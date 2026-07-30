@@ -1,6 +1,6 @@
 [package]
 name = "valea"
-version = "0.2.0"
+version = "0.2.1"
 description = "valea desktop"
 authors = ["you"]
 license = ""
