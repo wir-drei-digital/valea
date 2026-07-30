@@ -7,11 +7,12 @@ import {
   normalizeMailDraft,
   normalizeMailDraftReview,
   resupplyCredentials,
+  persistMailOauthToken,
   wireMailEvents,
   type MailAccountStatus
 } from './mail.svelte';
 import { sha256Hex } from '../components/mail/mail-shapes';
-import { inDesktop, keychainGet } from '../keychain';
+import { inDesktop, keychainGet, keychainSet } from '../keychain';
 import { notifyNewMail } from '../notify';
 import type { ApiResult } from '../api/client';
 import type { MailStatusPush } from '../socket';
@@ -25,7 +26,8 @@ import type { Channel } from 'phoenix';
 // override per-test.
 vi.mock('../keychain', () => ({
   inDesktop: vi.fn(() => false),
-  keychainGet: vi.fn(async () => null)
+  keychainGet: vi.fn(async () => null),
+  keychainSet: vi.fn(async () => true)
 }));
 
 // The OS-notification seam, mocked at the same boundary: `notify.ts` owns
@@ -37,6 +39,7 @@ vi.mock('../notify', () => ({ notifyNewMail: vi.fn(async () => false) }));
 beforeEach(() => {
   vi.mocked(inDesktop).mockReset().mockReturnValue(false);
   vi.mocked(keychainGet).mockReset().mockResolvedValue(null);
+  vi.mocked(keychainSet).mockReset().mockResolvedValue(true);
   vi.mocked(notifyNewMail).mockReset().mockResolvedValue(false);
 });
 
@@ -227,6 +230,7 @@ describe('normalizeMailAccountStatus', () => {
       reason: null,
       configured: true,
       credential: 'present',
+      auth: 'password',
       state: 'idle',
       lastSyncAt: '2026-07-10T12:00:00Z',
       lastError: null,
@@ -1840,6 +1844,110 @@ describe('resupplyCredentials', () => {
     expect(count).toBe(0);
     expect(keychainGet).not.toHaveBeenCalled();
   });
+
+  // M6 task 16: an oauth2 account's ONE durable secret is its refresh token, in
+  // its own `<slug>:oauth` entry. Reading `<slug>:imap` for it would hand a
+  // password-shaped secret to an account that authenticates with XOAUTH2, and
+  // there is no separate SMTP secret at all — the engine mints the access token
+  // both protocols use from the same sign-in.
+  it('resupplies an oauth2 account from <slug>:oauth with kind oauth, and nothing else', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockImplementation(async (_ws, key) =>
+      key === 'mara:oauth' ? '1//refresh-token' : 'WRONG-SLOT'
+    );
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const count = await resupplyCredentials(
+      [
+        normalizeMailAccountStatus({
+          ...rawMara,
+          auth: 'oauth2',
+          credential: 'missing',
+          smtp_configured: true,
+          smtp_credential: 'missing'
+        })
+      ],
+      { setMailCredential } as never
+    );
+
+    expect(count).toBe(1);
+    expect(keychainGet).toHaveBeenCalledWith('ws-1', 'mara:oauth');
+    expect(keychainGet).not.toHaveBeenCalledWith('ws-1', 'mara:imap');
+    expect(keychainGet).not.toHaveBeenCalledWith('ws-1', 'mara:smtp');
+    expect(setMailCredential).toHaveBeenCalledTimes(1);
+    expect(setMailCredential).toHaveBeenCalledWith('mara', '1//refresh-token', expect.any(Number), 'oauth');
+  });
+
+  it('leaves a signed-in oauth2 account alone (self-terminating, same as a password one)', async () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.mocked(keychainGet).mockResolvedValue('1//refresh-token');
+    const setMailCredential = vi.fn(async () => ({ ok: true, data: { accepted: true } }) as CredentialResult);
+
+    const count = await resupplyCredentials(
+      [normalizeMailAccountStatus({ ...rawMara, auth: 'oauth2', smtp_configured: true, smtp_credential: 'missing' })],
+      { setMailCredential } as never
+    );
+
+    expect(count).toBe(0);
+    expect(keychainGet).not.toHaveBeenCalled();
+  });
+});
+
+describe('persistMailOauthToken', () => {
+  function deps(overrides: Record<string, unknown> = {}) {
+    return {
+      inDesktop: vi.fn(() => true),
+      keychainSet: vi.fn(async () => true),
+      workspaceId: vi.fn(() => 'ws-1' as string | null),
+      refresh: vi.fn(async () => {}),
+      ...overrides
+    } as never;
+  }
+
+  it('writes the refresh token to <slug>:oauth — the read key resupply uses', async () => {
+    const d = deps();
+
+    expect(await persistMailOauthToken({ account: 'mara', refreshToken: '1//tok' }, d)).toBe(true);
+    expect((d as any).keychainSet).toHaveBeenCalledWith('ws-1', 'mara:oauth', '1//tok');
+    expect((d as any).refresh).not.toHaveBeenCalled();
+  });
+
+  it('re-fetches status once when the workspace id is not known yet (a first-ever account)', async () => {
+    let known: string | null = null;
+    const d = deps({
+      workspaceId: vi.fn(() => known),
+      refresh: vi.fn(async () => {
+        known = 'ws-late';
+      })
+    });
+
+    expect(await persistMailOauthToken({ account: 'mara', refreshToken: '1//tok' }, d)).toBe(true);
+    expect((d as any).refresh).toHaveBeenCalledTimes(1);
+    expect((d as any).keychainSet).toHaveBeenCalledWith('ws-late', 'mara:oauth', '1//tok');
+  });
+
+  it('does nothing in the browser — the token stays in engine RAM for the session', async () => {
+    const d = deps({ inDesktop: vi.fn(() => false) });
+
+    expect(await persistMailOauthToken({ account: 'mara', refreshToken: '1//tok' }, d)).toBe(false);
+    expect((d as any).keychainSet).not.toHaveBeenCalled();
+  });
+
+  it('never writes an empty or non-string token', async () => {
+    for (const refreshToken of ['', null, 42]) {
+      const d = deps();
+      expect(await persistMailOauthToken({ account: 'mara', refreshToken } as never, d)).toBe(false);
+      expect((d as any).keychainSet).not.toHaveBeenCalled();
+    }
+  });
+
+  it('gives up quietly when no workspace id ever resolves', async () => {
+    const d = deps({ workspaceId: vi.fn(() => null) });
+
+    expect(await persistMailOauthToken({ account: 'mara', refreshToken: '1//tok' }, d)).toBe(false);
+    expect((d as any).refresh).toHaveBeenCalledTimes(1);
+    expect((d as any).keychainSet).not.toHaveBeenCalled();
+  });
 });
 
 describe('MailStore.applyOps', () => {
@@ -2275,19 +2383,20 @@ describe('MailStore.resolveSendReview / retrySentCopy', () => {
 });
 
 describe('wireMailEvents', () => {
-  it('attaches the four handlers once and stays idempotent on repeat calls', () => {
+  it('attaches the five handlers once and stays idempotent on repeat calls', () => {
     const on = vi.fn();
     const channel = { on } as unknown as Channel;
 
     wireMailEvents(channel);
     wireMailEvents(channel);
 
-    expect(on).toHaveBeenCalledTimes(4);
+    expect(on).toHaveBeenCalledTimes(5);
     expect(on.mock.calls.map((c) => c[0])).toEqual([
       'mail_status',
       'mail_sync',
       'mail_message',
-      'mail_draft'
+      'mail_draft',
+      'mail_oauth'
     ]);
   });
 

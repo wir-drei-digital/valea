@@ -8,6 +8,12 @@ import {
   createFoldersAndRecheck,
   createFoldersErrorMessage,
   mailAuthMode,
+  mailOauthProvider,
+  mailOauthProviderLabel,
+  mailOauthSignInLabel,
+  mailSignInErrorMessage,
+  needsMailSignIn,
+  startMailSignIn,
   accountRecovery,
   isCorruptAccountMeta,
   CORRUPT_ACCOUNT_META_ERROR,
@@ -69,7 +75,8 @@ describe('submitMailSetup — browser (dev) path', () => {
     // push-only account, which is the v4 behaviour verbatim. The seventh is
     // the notifications opt-in, `false` unless the form says otherwise (the
     // action re-renders the account entry, so "not stated" IS "off"), and the
-    // eighth is the SASL mode, on the same rule.
+    // eighth is the SASL mode, and the ninth the public OAuth2 client-id
+    // override — both on the same rule.
     expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
       'work-inbox',
       'imap.example.com',
@@ -78,7 +85,8 @@ describe('submitMailSetup — browser (dev) path', () => {
       3,
       null,
       false,
-      'password'
+      'password',
+      null
     );
     expect(deps.refreshWorkspaceId).not.toHaveBeenCalled();
     expect(deps.keychainSet).not.toHaveBeenCalled();
@@ -99,7 +107,8 @@ describe('submitMailSetup — browser (dev) path', () => {
       3,
       null,
       true,
-      'password'
+      'password',
+      null
     );
   });
 
@@ -220,7 +229,8 @@ describe('the auth mode round trip', () => {
       3,
       null,
       true,
-      'oauth2'
+      'oauth2',
+      null
     );
     expect(outcome).toEqual({ ok: true, devMode: false });
   });
@@ -238,7 +248,33 @@ describe('the auth mode round trip', () => {
       expect.anything(),
       null,
       false,
-      'password'
+      'password',
+      null
+    );
+  });
+
+  it('an edit of an account with a client-id override sends it BACK, never dropping it', async () => {
+    // The same whole-entry hazard `auth` has, one field over: this action
+    // re-renders the account entry, so an omitted override is a DROPPED
+    // override — and an account authorizing under a different client id than
+    // it was registered with gets `invalid_grant`, i.e. dies silently.
+    const deps = makeDeps();
+
+    await submitMailSetup(
+      { ...input, secret: '', auth: 'oauth2', oauthClientId: '123-abc.apps.googleusercontent.com' },
+      deps
+    );
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+      false,
+      'oauth2',
+      '123-abc.apps.googleusercontent.com'
     );
   });
 });
@@ -375,7 +411,8 @@ describe('submitMailSetup — with an SMTP block', () => {
         fromName: 'Mara Vance'
       },
       false,
-      'password'
+      'password',
+      null
     );
     expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:imap', 'hunter2');
     expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:smtp', 'smtp-only-secret');
@@ -741,5 +778,118 @@ describe('isCorruptAccountMeta', () => {
     expect(isCorruptAccountMeta('authentication failed')).toBe(false);
     expect(isCorruptAccountMeta(null)).toBe(false);
     expect(isCorruptAccountMeta(undefined)).toBe(false);
+  });
+});
+
+
+// -- M6 task 16: mailbox sign-in ---------------------------------------------
+
+describe('mailOauthProvider', () => {
+  it('routes the Google and Microsoft IMAP hosts, case- and whitespace-insensitively', () => {
+    expect(mailOauthProvider('imap.gmail.com')).toBe('gmail');
+    expect(mailOauthProvider('imap.googlemail.com')).toBe('gmail');
+    expect(mailOauthProvider('  IMAP.Gmail.COM ')).toBe('gmail');
+
+    expect(mailOauthProvider('outlook.office365.com')).toBe('microsoft');
+    expect(mailOauthProvider('outlook.office.com')).toBe('microsoft');
+    expect(mailOauthProvider('imap-mail.outlook.com')).toBe('microsoft');
+    expect(mailOauthProvider('Outlook.Office365.com')).toBe('microsoft');
+  });
+
+  it('leaves every other host on the password route', () => {
+    for (const host of ['imap.fastmail.com', 'mail.example.com', 'outlook.example.com', '', '   ']) {
+      expect(mailOauthProvider(host)).toBeNull();
+    }
+    expect(mailOauthProvider(null)).toBeNull();
+    expect(mailOauthProvider(undefined)).toBeNull();
+  });
+
+  it('answers a MISS for inherited object keys (why the table is a Map)', () => {
+    expect(mailOauthProvider('constructor')).toBeNull();
+    expect(mailOauthProvider('toString')).toBeNull();
+    expect(mailOauthProvider('__proto__')).toBeNull();
+  });
+
+  it('labels the provider as a human reads it, not as its host is spelled', () => {
+    expect(mailOauthProviderLabel('gmail')).toBe('Google');
+    expect(mailOauthProviderLabel('microsoft')).toBe('Microsoft');
+    expect(mailOauthSignInLabel('imap.gmail.com')).toBe('Sign in with Google');
+    expect(mailOauthSignInLabel('outlook.office365.com')).toBe('Sign in with Microsoft');
+    expect(mailOauthSignInLabel('imap.fastmail.com')).toBeNull();
+  });
+});
+
+describe('needsMailSignIn', () => {
+  const oauth = { auth: 'oauth2' as const, state: 'idle', credential: 'present' as const, valid: true };
+
+  it('is true for an expired sign-in AND for a missing one', () => {
+    expect(needsMailSignIn({ ...oauth, state: 'reauth_required' })).toBe(true);
+    // The abandoned-consent case: the account was written, the browser tab was
+    // closed. Without this the row would sit there reading "Up to date".
+    expect(needsMailSignIn({ ...oauth, credential: 'missing' })).toBe(true);
+    // ...and after a restart with nothing in the keychain, the same shape.
+    expect(needsMailSignIn({ ...oauth, state: 'inactive', credential: 'missing' })).toBe(true);
+  });
+
+  it('is false for a working oauth2 account', () => {
+    expect(needsMailSignIn(oauth)).toBe(false);
+    expect(needsMailSignIn({ ...oauth, state: 'syncing' })).toBe(false);
+  });
+
+  it('never offers a sign-in for a password account, however broken', () => {
+    const password = { ...oauth, auth: 'password' as const };
+    expect(needsMailSignIn(password)).toBe(false);
+    expect(needsMailSignIn({ ...password, state: 'auth_failed', credential: 'missing' })).toBe(false);
+    // Not even for the impossible combination of a password account parked in
+    // the oauth state — a password is what fixes that one.
+    expect(needsMailSignIn({ ...password, state: 'reauth_required' })).toBe(false);
+  });
+
+  it('never offers one for an invalid-config entry (there is no engine to sign into)', () => {
+    expect(needsMailSignIn({ ...oauth, valid: false, state: 'invalid_config', credential: 'missing' })).toBe(
+      false
+    );
+  });
+});
+
+describe('startMailSignIn', () => {
+  function signInDeps(result: ApiResult<{ url?: unknown }>) {
+    return {
+      api: { startMailOauth: vi.fn(async (_account: string, _generation: number) => result) },
+      openUrl: vi.fn((_url: string | null) => {})
+    };
+  }
+
+  it('mints the consent URL and hands it to the reserved tab', async () => {
+    const deps = signInDeps(ok({ url: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' }));
+
+    expect(await startMailSignIn('mara', 7, deps)).toEqual({ ok: true });
+    expect(deps.api.startMailOauth).toHaveBeenCalledWith('mara', 7);
+    expect(deps.openUrl).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?x=1');
+  });
+
+  it('CLOSES the reserved tab on a refusal rather than leaving a blank one parked', async () => {
+    const deps = signInDeps(fail('oauth_not_configured'));
+
+    expect(await startMailSignIn('mara', 7, deps)).toEqual({ ok: false, error: 'oauth_not_configured' });
+    expect(deps.openUrl).toHaveBeenCalledWith(null);
+  });
+
+  it('treats a missing or non-string url as a failure, not as a tab to open', async () => {
+    for (const url of [undefined, null, '', 42]) {
+      const deps = signInDeps(ok({ url }));
+      expect(await startMailSignIn('mara', 7, deps)).toEqual({ ok: false, error: 'no_url' });
+      expect(deps.openUrl).toHaveBeenCalledWith(null);
+    }
+  });
+
+  it('names the refusals a user can act on', () => {
+    expect(mailSignInErrorMessage('oauth_unsupported')).toMatch(/password/i);
+    expect(mailSignInErrorMessage('oauth_not_configured')).toMatch(/oauth_client_id/);
+    expect(mailSignInErrorMessage('not_oauth')).toMatch(/password/i);
+    expect(mailSignInErrorMessage('workspace_changed')).toMatch(/Reopen/);
+    expect(mailSignInErrorMessage('not_found')).toBe('No such account.');
+    expect(mailSignInErrorMessage('no_url')).toMatch(/try again/i);
+    expect(mailSignInErrorMessage('something-new')).toMatch(/try again/i);
   });
 });

@@ -1089,6 +1089,8 @@ export function syncNowErrorMessage(code: string): string {
 
 export type MailSetupApi = Pick<Api, 'setupMailAccount' | 'setMailCredential'>;
 
+export type MailOauthApi = Pick<Api, 'startMailOauth'>;
+
 export type MailSetupFormInput = {
   /** The account SLUG — a real form field now (validated against `MAIL_SLUG_RE` before any RPC), not derived from a label. */
   account: string;
@@ -1116,6 +1118,16 @@ export type MailSetupFormInput = {
    * (`get_mail_account_settings`' `account.auth`) and pass it back here.
    */
   auth?: MailAuthMode;
+  /**
+   * The account's PUBLIC OAuth2 client id override (M6 task 16), or absent for
+   * "use whatever the build is configured with". Same whole-entry hazard as
+   * `auth`: an EDIT that omits it DROPS a stored override, and the account then
+   * authorizes under a different client id than the one it was registered with
+   * — which the provider answers with `invalid_grant`, i.e. a silently dead
+   * account. Any caller prefilling an existing account MUST read
+   * `get_mail_account_settings`' `account.oauthClientId` and pass it back.
+   */
+  oauthClientId?: string | null;
 };
 
 /**
@@ -1213,6 +1225,118 @@ export function mailAuthMode(value: string | null | undefined): MailAuthMode {
   return value === 'oauth2' ? 'oauth2' : 'password';
 }
 
+// -- SetupPanel: modern-auth routing (M6 task 16) ----------------------------
+
+/** The two providers Valea can sign into — the atoms `Valea.Mail.OAuth`'s presets are keyed by. */
+export type MailOauthProvider = 'gmail' | 'microsoft';
+
+/**
+ * IMAP hosts that sign in with OAuth2 rather than a password, mirrored from
+ * `Valea.Mail.Settings`' `@gmail_hosts`/`@microsoft_hosts` — THE host table
+ * lives there (it also picks folder defaults), and this copy exists only so the
+ * add form can route the user to "Sign in with …" as they type, with no round
+ * trip. If they ever disagree, the backend wins: it is what actually refuses
+ * (`oauth_unsupported`) or accepts a flow.
+ *
+ * A `Map`, not an object literal: the key is a host string the user typed, and
+ * an object would answer `"constructor"` with an inherited function instead of
+ * a miss.
+ */
+const MAIL_OAUTH_HOSTS = new Map<string, MailOauthProvider>([
+  ['imap.gmail.com', 'gmail'],
+  ['imap.googlemail.com', 'gmail'],
+  ['outlook.office365.com', 'microsoft'],
+  ['outlook.office.com', 'microsoft'],
+  ['imap-mail.outlook.com', 'microsoft']
+]);
+
+/** Which OAuth2 provider serves `host`, or `null` for a mailbox that signs in with a password. */
+export function mailOauthProvider(host: string | null | undefined): MailOauthProvider | null {
+  if (typeof host !== 'string') return null;
+  return MAIL_OAUTH_HOSTS.get(host.trim().toLowerCase()) ?? null;
+}
+
+/** The provider's name as a human reads it — `'gmail'` is Google's IMAP host, but the button says Google. */
+export function mailOauthProviderLabel(provider: MailOauthProvider): string {
+  return provider === 'gmail' ? 'Google' : 'Microsoft';
+}
+
+/** The sign-in button's label for `host`, or `null` when that host takes a password. */
+export function mailOauthSignInLabel(host: string | null | undefined): string | null {
+  const provider = mailOauthProvider(host);
+  return provider === null ? null : `Sign in with ${mailOauthProviderLabel(provider)}`;
+}
+
+/**
+ * Whether this account needs a sign-in before it can sync — the gate on the
+ * account row's "Sign in" / "Sign in again" action.
+ *
+ * TWO states, not one. `reauth_required` is the expected one (the stored
+ * sign-in stopped working), but `credential: 'missing'` on an oauth2 account
+ * matters just as much: it is what an ABANDONED sign-in leaves behind (the
+ * account was written, the consent screen was closed), and also what a restart
+ * leaves when the OS keychain had nothing to resupply. Both need the same one
+ * click, and without this the row would sit there reading "Up to date".
+ */
+export function needsMailSignIn(
+  status: Pick<MailAccountStatus, 'auth' | 'state' | 'credential' | 'valid'>
+): boolean {
+  if (!status.valid || status.auth !== 'oauth2') return false;
+  return status.state === 'reauth_required' || status.credential === 'missing';
+}
+
+/**
+ * Runs the sign-in hand-off: mint the consent URL, then hand it to `openUrl`.
+ *
+ * `openUrl` is `prepareExternalOpen()`'s return value, and the ORDER is the
+ * whole point (see `shell/external-link.ts`): the caller reserves the tab
+ * synchronously inside the click gesture and passes the resulting callback
+ * here, so the browser half survives a popup blocker. A failure calls it with
+ * `null`, which closes the reserved tab rather than leaving a blank one
+ * parked.
+ */
+export async function startMailSignIn(
+  account: string,
+  generation: number,
+  deps: { api: MailOauthApi; openUrl: (url: string | null) => void }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const result = await deps.api.startMailOauth(account, generation);
+
+  if (!result.ok) {
+    deps.openUrl(null);
+    return { ok: false, error: result.error };
+  }
+
+  const url = (result.data as { url?: unknown }).url;
+  if (typeof url !== 'string' || url === '') {
+    deps.openUrl(null);
+    return { ok: false, error: 'no_url' };
+  }
+
+  deps.openUrl(url);
+  return { ok: true };
+}
+
+/** Error copy for `start_mail_oauth` — `Valea.Api.Mail`'s vocabulary for that action. */
+export function mailSignInErrorMessage(code: string): string {
+  switch (code) {
+    case 'workspace_not_open':
+      return 'No workspace is open.';
+    case 'workspace_changed':
+      return 'Your workspace changed. Reopen it and try again.';
+    case 'not_oauth':
+      return 'This account is set up to use a password. Edit it to sign in with your provider instead.';
+    case 'oauth_unsupported':
+      return "Valea doesn't know how to sign in to this mail server. Use a password (or an app password) instead.";
+    case 'oauth_not_configured':
+      return 'This build has no sign-in app registered for that provider. Add an oauth_client_id for this account in config/mail.yaml.';
+    case 'not_found':
+      return 'No such account.';
+    default:
+      return 'Could not start the sign-in. Please try again.';
+  }
+}
+
 /** The wire shape of the optional smtp block — blank fields become `null` ("not supplied"), never `""`. */
 function smtpSetupArgs(smtp: MailSetupSmtpInput | null | undefined): MailSmtpSetup | null {
   if (!smtp) return null;
@@ -1290,7 +1414,10 @@ export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetup
     // Carried through verbatim, never defaulted here: the action rewrites the
     // whole account entry, so this is what keeps an edit from downgrading an
     // oauth2 account to a password one (M6 task 15).
-    input.auth ?? 'password'
+    input.auth ?? 'password',
+    // Same reasoning one field over (M6 task 16) — omitting it DROPS a stored
+    // override, not "leaves it alone".
+    input.oauthClientId ?? null
   );
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
 

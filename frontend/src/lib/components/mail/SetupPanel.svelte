@@ -31,6 +31,16 @@
   // submit time, cleared immediately after (success OR failure) — never
   // assigned into any store, never logged, `autocomplete="off"`.
   //
+  // Two ROUTES cut across those modes (M6 task 16, `useOauth` below): a
+  // mailbox whose host has an OAuth2 preset (Gmail, Microsoft 365) collects no
+  // password at all — the submit saves the account with `auth: oauth2` and then
+  // opens the provider's consent page, and the refresh token lands entirely
+  // backend-side via `/oauth/callback`. Everything else keeps the password
+  // fields. The routing is by DETECTED HOST in add mode and by the STORED mode
+  // in edit mode, with an explicit "use a password instead" escape on the add
+  // form: app passwords remain valid for both providers, and a tenant that
+  // hasn't approved this build's client id has no other way in.
+  //
   // Destructive/recovery actions (purge, re-adopt, held-folder discard)
   // each require the user to TYPE the slug/folder name — the backend
   // re-verifies the confirmation, this UI just collects it
@@ -42,6 +52,7 @@
   import { api, type MailAuthMode } from '$lib/api/client';
   import { inDesktop, keychainSet } from '$lib/keychain';
   import { requestNotifyPermission } from '$lib/notify';
+  import { prepareExternalOpen } from '$lib/shell/external-link';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import {
@@ -50,9 +61,15 @@
     mailSetupErrorMessage,
     mailMaintenanceErrorMessage,
     mailAuthMode,
+    mailOauthProvider,
+    mailOauthProviderLabel,
+    mailOauthSignInLabel,
+    mailSignInErrorMessage,
     mailStateLabel,
     mailSlugValid,
+    needsMailSignIn,
     smtpFormError,
+    startMailSignIn,
     type MailSetupSmtpInput,
     accountRecovery
   } from './mail-shapes';
@@ -84,13 +101,25 @@
   let smtpSecret = $state('');
   let smtpSameAsImap = $state(true);
 
-  // The account's SASL mode (M6 task 15). NOT an editable field — there is no
-  // control for it in this form yet (task 16 owns the sign-in flow); it exists
-  // purely to be READ in edit mode and handed straight back on save. Without
-  // that round trip, saving any other change to an oauth2 account would
-  // rewrite it as a password account and the engine would start offering its
-  // access token as a LOGIN password.
+  // The account's SASL mode. In EDIT mode it is read from the stored account and
+  // handed straight back on save — without that round trip, saving any other
+  // change to an oauth2 account would rewrite it as a password account and the
+  // engine would start offering its access token as a LOGIN password (M6 task
+  // 15). In ADD mode it follows `useOauth` below rather than any control of its
+  // own: the user picks a PROVIDER by typing their address, not a SASL mode.
   let authMode = $state<MailAuthMode>('password');
+
+  // The account's PUBLIC OAuth2 client-id override (M6 task 16). Read-only
+  // prefill, exactly like `authMode`: there is no control for it — a user who
+  // needs one hand-edits `config/mail.yaml` — but the save re-renders the whole
+  // entry, so a value never read back is a value silently dropped.
+  let oauthClientId = $state<string | null>(null);
+
+  // The "use a password instead" escape (add mode only). App passwords remain
+  // perfectly valid for Gmail/M365, and some accounts can only use one (a
+  // tenant that hasn't approved this build's client id, a legacy mailbox), so
+  // the OAuth route is never a dead end.
+  let passwordOverride = $state(false);
 
   // New-mail notifications, opt-in per account (M5 task 13), OFF by default.
   // The OS permission is requested LAZILY — here, on the first enable, never
@@ -132,6 +161,8 @@
   let submitting = $state(false);
   let error: string | null = $state(null);
   let submitted = $state(false);
+  /** Whether the confirmation panel should say "finish in your browser" rather than "connected". */
+  let awaitingSignIn = $state(false);
   let devModeNote = $state(false);
   let editLoadError = $state(false);
 
@@ -139,6 +170,25 @@
   // once accounts are listed it collapses behind the "Add account" button.
   const formVisible = $derived(formMode !== 'closed' || mailStore.accounts.length === 0);
   const editing = $derived(formMode === 'edit');
+
+  /**
+   * Which provider this HOST signs in with, if any. Driven by the host field —
+   * which autodiscovery fills from the address the user typed — so the form
+   * re-routes itself the moment `imap.gmail.com` lands in it.
+   */
+  const oauthProvider = $derived(mailOauthProvider(host));
+
+  /**
+   * Whether this form is a sign-in rather than a password entry. In EDIT mode
+   * the STORED mode decides (an existing app-password Gmail account keeps its
+   * password fields); in ADD mode the detected provider does, unless the user
+   * has taken the escape.
+   */
+  const useOauth = $derived(
+    editing ? authMode === 'oauth2' : !passwordOverride && oauthProvider !== null
+  );
+
+  const signInLabel = $derived(mailOauthSignInLabel(host) ?? 'Sign in');
 
   function resetForm(): void {
     account = '';
@@ -156,6 +206,8 @@
     smtpSecret = '';
     smtpSameAsImap = true;
     authMode = 'password';
+    oauthClientId = null;
+    passwordOverride = false;
     notificationsEnabled = false;
     notificationsDenied = false;
     error = null;
@@ -167,6 +219,7 @@
   function openAdd(): void {
     resetForm();
     submitted = false;
+    awaitingSignIn = false;
     editingSlug = null;
     formMode = 'add';
   }
@@ -174,6 +227,7 @@
   function closeForm(): void {
     resetForm();
     submitted = false;
+    awaitingSignIn = false;
     editingSlug = null;
     formMode = 'closed';
   }
@@ -181,6 +235,7 @@
   async function openEdit(slug: string): Promise<void> {
     resetForm();
     submitted = false;
+    awaitingSignIn = false;
     editingSlug = slug;
     formMode = 'edit';
     account = slug;
@@ -201,6 +256,7 @@
         port: number;
         username: string;
         auth: string;
+        oauthClientId: string | null;
         smtp: {
           host: string;
           port: number;
@@ -214,8 +270,9 @@
     host = data.account.host;
     portText = String(data.account.port);
     username = data.account.username;
-    // Read back so `handleSubmit` can return it unchanged — see `authMode`.
+    // Read back so `handleSubmit` can return them unchanged — see `authMode`.
     authMode = mailAuthMode(data.account.auth);
+    oauthClientId = data.account.oauthClientId ?? null;
     // Prefilled WITHOUT re-asking the OS: an account already opted in has a
     // permission from before, and re-prompting on every edit-form open is
     // exactly what "lazily, on the first enable" rules out.
@@ -319,8 +376,9 @@
     const port = Number(portText);
     if (!Number.isFinite(port) || port <= 0) return 'Enter a valid port.';
     if (!username.trim()) return 'Enter the mailbox username.';
-    // Edit mode: blank = keep the stored password.
-    if (!editing && !secret) return 'Enter the mailbox password.';
+    // Edit mode: blank = keep the stored password. On the OAuth route there is
+    // no password at all — the provider's consent screen is the credential.
+    if (!editing && !useOauth && !secret) return 'Enter the mailbox password.';
     // `setup_mail_account` answers a reason-free `invalid_smtp`, so
     // everything checkable is checked here first (see `smtpFormError`).
     if (smtpEnabled) return smtpFormError(smtpInput(), editing ? 'edit' : 'add');
@@ -337,26 +395,43 @@
     return mailSetupErrorMessage(code);
   }
 
-  async function handleSubmit(): Promise<void> {
+  /**
+   * The one submit path, for both routes. `openUrl` is present only on the
+   * OAuth route: it is `prepareExternalOpen()`'s callback, reserved by the
+   * click handler BEFORE this function's first await so the browser half
+   * survives a popup blocker (see `shell/external-link.ts`). On failure it is
+   * always called with `null`, which closes the reserved tab rather than
+   * leaving a blank one parked.
+   */
+  async function handleSubmit(openUrl?: (url: string | null) => void): Promise<void> {
     error = null;
     const validationError = validate();
     if (validationError) {
       error = validationError;
+      openUrl?.(null);
       return;
     }
+
+    const slug = editing ? (editingSlug ?? account.trim()) : account.trim();
+    // The mode is decided by the ROUTE, not by a control: an add form that
+    // detected a provider (and wasn't overridden) writes an oauth2 account.
+    const mode: MailAuthMode = useOauth ? 'oauth2' : 'password';
 
     submitting = true;
     const outcome = await submitMailSetup(
       {
-        account: editing ? (editingSlug ?? account.trim()) : account.trim(),
+        account: slug,
         host: host.trim(),
         port: Number(portText),
         username: username.trim(),
-        secret,
+        // Nothing to hand off on the OAuth route — the account's credential is
+        // a refresh token the callback route stores, never a typed secret.
+        secret: useOauth ? '' : secret,
         generation,
         smtp: smtpEnabled ? smtpInput() : null,
         notifications: notificationsEnabled,
-        auth: authMode
+        auth: mode,
+        oauthClientId
       },
       {
         api,
@@ -368,17 +443,37 @@
         keychainSet
       }
     );
-    submitting = false;
     // Cleared immediately after submit either way — never held longer than
     // the RPC call that needed it, never put in a store.
     secret = '';
     smtpSecret = '';
 
     if (!outcome.ok) {
+      submitting = false;
       error = submitErrorMessage(outcome.error);
+      openUrl?.(null);
       return;
     }
 
+    // The account entry exists now, which is what `start_mail_oauth` needs (it
+    // reads the host to pick a provider and parks the flow in that account's
+    // engine). Only then is the consent screen opened.
+    if (openUrl) {
+      const started = await startMailSignIn(slug, generation, { api, openUrl });
+      submitting = false;
+      void mailStore.refreshStatus();
+
+      if (!started.ok) {
+        error = mailSignInErrorMessage(started.error);
+        return;
+      }
+
+      awaitingSignIn = true;
+      submitted = true;
+      return;
+    }
+
+    submitting = false;
     void mailStore.refreshStatus();
     if (editing) {
       // Edits return to the list — the row itself is the confirmation.
@@ -387,6 +482,43 @@
     }
     devModeNote = outcome.devMode;
     submitted = true;
+  }
+
+  /**
+   * The OAuth submit. `prepareExternalOpen()` runs FIRST and synchronously —
+   * the click gesture is still on the stack here, and it is what lets the
+   * browser half navigate a tab it already owns after the awaits.
+   */
+  function submitSignIn(): void {
+    void handleSubmit(prepareExternalOpen());
+  }
+
+  // -- signing an existing account back in -------------------------------------
+
+  /**
+   * Which account's sign-in is in flight, and the last one that failed —
+   * per-account, not a shared string: several rows can want a sign-in at once,
+   * and a shared error would appear under all of them.
+   */
+  let signingIn = $state<string | null>(null);
+  let signInError = $state<{ account: string; message: string } | null>(null);
+
+  /**
+   * "Sign in again" on an account row (`needsMailSignIn`): the same flow as the
+   * add form's, minus the save — the account already exists, so this only mints
+   * a fresh authorization. Same synchronous `prepareExternalOpen()` first.
+   */
+  function signInAgain(slug: string): void {
+    const openUrl = prepareExternalOpen();
+    signingIn = slug;
+    signInError = null;
+
+    void (async () => {
+      const started = await startMailSignIn(slug, generation, { api, openUrl });
+      signingIn = null;
+      if (!started.ok) signInError = { account: slug, message: mailSignInErrorMessage(started.error) };
+      void mailStore.refreshStatus();
+    })();
   }
 
   function beginConfirm(pending: PendingConfirm): void {
@@ -520,9 +652,17 @@
 <div class="flex flex-col items-start gap-3">
   {#if submitted}
     <Dialog.Header>
-      <Dialog.Title class="font-display text-ink-heading text-[19px]">Mailbox connected</Dialog.Title>
+      <Dialog.Title class="font-display text-ink-heading text-[19px]">
+        {awaitingSignIn ? 'Finish signing in' : 'Mailbox connected'}
+      </Dialog.Title>
     </Dialog.Header>
-    {#if devModeNote}
+    {#if awaitingSignIn}
+      <p class="text-ink-body max-w-[420px] text-[13px]">
+        Your browser has opened your provider's sign-in page. Once you allow access, come back here — this
+        account starts syncing on its own.
+      </p>
+    {/if}
+    {#if devModeNote && !awaitingSignIn}
       <p class="text-suggest-ink text-[12.5px]">
         Dev mode: the password is held in memory only and never persisted.
       </p>
@@ -544,6 +684,20 @@
             <span class="text-ink-heading text-[13.5px] font-medium">{status.account}</span>
             <span class="text-ink-meta text-[12px]">{mailStateLabel(status.state)}</span>
             <span class="min-w-2 flex-1" aria-hidden="true"></span>
+            {#if needsMailSignIn(status)}
+              <!-- An oauth2 account whose sign-in expired, was never finished,
+                   or didn't survive a restart: one click re-runs the same flow
+                   the add form uses. -->
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={signingIn === status.account}
+                onclick={() => signInAgain(status.account)}
+              >
+                {status.state === 'reauth_required' ? 'Sign in again' : 'Sign in'}
+              </Button>
+            {/if}
             {#if status.valid && !recovery}
               <Button type="button" variant="ghost" size="sm" onclick={() => void openEdit(status.account)}>
                 Edit
@@ -564,6 +718,10 @@
 
           {#if status.username}
             <p class="text-ink-meta mt-0.5 text-[12px]">{status.username}</p>
+          {/if}
+
+          {#if signInError && signInError.account === status.account}
+            <p class="text-warn-ink mt-1.5 text-[12.5px]" role="alert">{signInError.message}</p>
           {/if}
 
           {#if status.valid && mailAccess.length > 0}
@@ -737,6 +895,12 @@
       <p class="text-ink-body max-w-[480px] text-[13.5px]">
         Change the server settings for this account. Leave the password fields blank to keep the stored ones.
       </p>
+    {:else if useOauth}
+      <p class="text-ink-body max-w-[480px] text-[13.5px]">
+        {signInLabel} to let Valea mirror this mailbox over IMAP. You sign in on your provider's own page —
+        Valea never sees your password, and the sign-in it keeps is stored in your system keychain, not in the
+        workspace.
+      </p>
     {:else}
       <p class="text-ink-body max-w-[480px] text-[13.5px]">
         Valea mirrors your mailbox over IMAP with TLS. Your password is handed off once and never written into the
@@ -780,17 +944,52 @@
         <p class="text-ink-meta text-[11.5px]">TLS, always on</p>
       </div>
 
-      <div class="flex flex-col gap-1.5">
-        <Label for="mail-setup-password">Password</Label>
-        <Input
-          id="mail-setup-password"
-          type="password"
-          autocomplete="off"
-          bind:value={secret}
-          disabled={submitting}
-          placeholder={editing ? 'Leave blank to keep the stored password' : ''}
-        />
-      </div>
+      {#if useOauth}
+        <!-- No password field at all on this route: the credential is the
+             provider's own sign-in. The escape below stays because app
+             passwords remain valid for Gmail and M365, and some accounts can
+             only use one (a tenant that hasn't approved this build's client
+             id, a legacy mailbox). -->
+        <div class="border-paper-hairline flex flex-col gap-2 border-t pt-4">
+          <p class="text-ink-meta max-w-[420px] text-[11.5px]">
+            {oauthProvider
+              ? `This mailbox signs in through ${mailOauthProviderLabel(oauthProvider)}. No password is stored.`
+              : 'This account signs in with your mail provider. No password is stored.'}
+          </p>
+          {#if !editing}
+            <button
+              type="button"
+              class="text-suggest-ink self-start text-[12px] underline underline-offset-2"
+              disabled={submitting}
+              onclick={() => (passwordOverride = true)}
+            >
+              Use a password instead
+            </button>
+          {/if}
+        </div>
+      {:else}
+        <div class="flex flex-col gap-1.5">
+          <Label for="mail-setup-password">Password</Label>
+          <Input
+            id="mail-setup-password"
+            type="password"
+            autocomplete="off"
+            bind:value={secret}
+            disabled={submitting}
+            placeholder={editing ? 'Leave blank to keep the stored password' : ''}
+          />
+          {#if !editing && oauthProvider !== null}
+            <button
+              type="button"
+              class="text-suggest-ink self-start text-[12px] underline underline-offset-2"
+              disabled={submitting}
+              onclick={() => (passwordOverride = false)}
+            >
+              {signInLabel} instead
+            </button>
+          {/if}
+        </div>
+      {/if}
 
       <!-- New-mail notifications, per account (M5 task 13). Off by default;
            the OS permission is asked for on the first enable, and a refusal
@@ -893,26 +1092,35 @@
             <Input id="mail-smtp-from-name" bind:value={smtpFromName} disabled={submitting} placeholder="Mara Vance" />
           </div>
 
-          <!-- The SMTP secret is a SEPARATE keychain entry from the IMAP one;
-               "same as IMAP" copies the typed password into it (a copy, not
-               an alias — rotation stays independent). -->
-          <label class="text-ink-body flex items-center gap-2 text-[13px]">
-            <input type="checkbox" bind:checked={smtpSameAsImap} disabled={submitting} />
-            Same password as IMAP
-          </label>
+          {#if useOauth}
+            <!-- One authorization covers both protocols, so there is no second
+                 secret to collect: the engine mints the access token the SMTP
+                 session uses from the same sign-in. -->
+            <p class="text-ink-meta max-w-[420px] text-[11.5px]">
+              Sending uses the same sign-in — there is no separate SMTP password.
+            </p>
+          {:else}
+            <!-- The SMTP secret is a SEPARATE keychain entry from the IMAP one;
+                 "same as IMAP" copies the typed password into it (a copy, not
+                 an alias — rotation stays independent). -->
+            <label class="text-ink-body flex items-center gap-2 text-[13px]">
+              <input type="checkbox" bind:checked={smtpSameAsImap} disabled={submitting} />
+              Same password as IMAP
+            </label>
 
-          {#if !smtpSameAsImap}
-            <div class="flex flex-col gap-1.5">
-              <Label for="mail-smtp-password">SMTP password</Label>
-              <Input
-                id="mail-smtp-password"
-                type="password"
-                autocomplete="off"
-                bind:value={smtpSecret}
-                disabled={submitting}
-                placeholder={editing ? 'Leave blank to keep the stored password' : ''}
-              />
-            </div>
+            {#if !smtpSameAsImap}
+              <div class="flex flex-col gap-1.5">
+                <Label for="mail-smtp-password">SMTP password</Label>
+                <Input
+                  id="mail-smtp-password"
+                  type="password"
+                  autocomplete="off"
+                  bind:value={smtpSecret}
+                  disabled={submitting}
+                  placeholder={editing ? 'Leave blank to keep the stored password' : ''}
+                />
+              </div>
+            {/if}
           {/if}
         {/if}
       </div>
@@ -922,9 +1130,26 @@
       {/if}
 
       <div class="flex items-center gap-2">
-        <Button type="button" onclick={() => void handleSubmit()} disabled={submitting}>
-          {submitting ? (editing ? 'Saving…' : 'Connecting…') : editing ? 'Save changes' : 'Connect mailbox'}
-        </Button>
+        {#if useOauth && !editing}
+          <!-- `prepareExternalOpen()` must run inside this click gesture, which
+               is why `submitSignIn` is synchronous and reserves the tab before
+               it awaits anything. -->
+          <Button type="button" onclick={() => submitSignIn()} disabled={submitting}>
+            {submitting ? 'Opening your browser…' : signInLabel}
+          </Button>
+        {:else}
+          <!-- Disabled on a failed edit prefill: the form holds defaults rather
+               than the stored account, and this action re-renders the entry
+               WHOLE — saving would downgrade `auth`, drop the smtp block and
+               turn notifications off. -->
+          <Button
+            type="button"
+            onclick={() => void handleSubmit()}
+            disabled={submitting || (editing && editLoadError)}
+          >
+            {submitting ? (editing ? 'Saving…' : 'Connecting…') : editing ? 'Save changes' : 'Connect mailbox'}
+          </Button>
+        {/if}
         {#if mailStore.accounts.length > 0}
           <Button type="button" variant="ghost" disabled={submitting} onclick={() => closeForm()}>Cancel</Button>
         {/if}

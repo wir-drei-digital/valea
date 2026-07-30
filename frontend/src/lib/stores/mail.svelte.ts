@@ -1,4 +1,4 @@
-import { api, type Api } from '../api/client';
+import { api, type Api, type MailCredentialKind } from '../api/client';
 import { workspaceStore } from './workspace.svelte';
 import {
   attachmentsFromFrontmatter,
@@ -6,9 +6,9 @@ import {
   sha256Hex,
   threadKeyForMessage
 } from '../components/mail/mail-shapes';
-import { inDesktop, keychainGet } from '../keychain';
+import { inDesktop, keychainGet, keychainSet } from '../keychain';
 import { notifyNewMail } from '../notify';
-import type { MailStatusPush, MailSyncPush, MailMessagePush, MailDraftPush } from '../socket';
+import type { MailStatusPush, MailSyncPush, MailMessagePush, MailDraftPush, MailOauthPush } from '../socket';
 import type { Channel } from 'phoenix';
 
 /**
@@ -82,6 +82,15 @@ export type MailAccountStatus = {
   reason: string | null;
   configured: boolean;
   credential: 'present' | 'missing';
+  /**
+   * The account's SASL mode (`Valea.Mail.Settings`' `auth:` — `'password'` or
+   * `'oauth2'`). It rides the status because `credential` alone cannot say
+   * WHICH keychain slot an account's secret lives in (`<slug>:imap` vs
+   * `<slug>:oauth`, see `resupplyCredentials`), nor whether "missing" means
+   * "type a password" or "sign in". Unrecognized values narrow to
+   * `'password'`, the conservative read.
+   */
+  auth: 'password' | 'oauth2';
   state: string;
   lastSyncAt: string | null;
   lastError: string | null;
@@ -226,6 +235,7 @@ export function normalizeMailAccountStatus(raw: Record<string, unknown>): MailAc
     reason: str(raw.reason),
     configured: raw.configured === true,
     credential: raw.credential === 'present' ? 'present' : 'missing',
+    auth: raw.auth === 'oauth2' ? 'oauth2' : 'password',
     state: str(raw.state) ?? 'inactive',
     lastSyncAt: str(raw.last_sync_at),
     lastError: str(raw.last_error),
@@ -1240,6 +1250,26 @@ export class MailStore {
   }
 
   /**
+   * A newly authorized (or provider-rotated) OAuth2 refresh token: write it to
+   * the OS keychain, which is its ONLY durable home (M6 task 16 — the backend
+   * holds it in RAM and never on disk). Delegates to
+   * `persistMailOauthToken` so the sequencing is testable without a store
+   * instance; a failed or skipped write is not an error the user can act on,
+   * it just means this account signs in again after the next restart.
+   */
+  async handleMailOauth(payload: MailOauthPush): Promise<void> {
+    await persistMailOauthToken(payload, {
+      inDesktop,
+      keychainSet,
+      workspaceId: () =>
+        this.accounts.find((a) => a.account === payload.account)?.workspaceId ??
+        this.accounts.find((a) => a.workspaceId)?.workspaceId ??
+        null,
+      refresh: () => this.refreshStatus()
+    });
+  }
+
+  /**
    * Subscribes to `mail_status` pushes — beyond this store's own refetch
    * reaction (see `handleMailStatus` above). The Today page
    * (`routes/+page.svelte`) hooks this to refetch `cockpit_today`: the
@@ -1369,6 +1399,7 @@ export function wireMailEvents(channel: Channel): void {
   channel.on('mail_sync', (payload: MailSyncPush) => mailStore.handleMailSync(payload));
   channel.on('mail_message', (payload: MailMessagePush) => mailStore.handleMailMessage(payload));
   channel.on('mail_draft', (payload: MailDraftPush) => mailStore.handleMailDraft(payload));
+  channel.on('mail_oauth', (payload: MailOauthPush) => void mailStore.handleMailOauth(payload));
 }
 
 /**
@@ -1410,6 +1441,18 @@ export async function resupplyCredentials(
   for (const status of accounts) {
     if (!status.valid || !status.configured || !status.workspaceId) continue;
 
+    // An oauth2 account has ONE durable secret, its refresh token, in its own
+    // `<slug>:oauth` entry — the engine mints the short-lived access tokens
+    // both protocols use from it. So there is no `<slug>:imap` to read and no
+    // separate SMTP secret to resupply, and asking for either would hand a
+    // password-shaped secret to an account that authenticates with XOAUTH2.
+    if (status.auth === 'oauth2') {
+      if (status.credential === 'missing') {
+        if (await resupplySlot(status.workspaceId, status.account, 'oauth', apiOverride)) resupplied += 1;
+      }
+      continue;
+    }
+
     if (status.credential === 'missing') {
       if (await resupplySlot(status.workspaceId, status.account, 'imap', apiOverride)) resupplied += 1;
     }
@@ -1425,7 +1468,7 @@ export async function resupplyCredentials(
 async function resupplySlot(
   workspaceId: string,
   account: string,
-  kind: 'imap' | 'smtp',
+  kind: MailCredentialKind,
   apiOverride: Pick<Api, 'setMailCredential'>
 ): Promise<boolean> {
   const secret = await keychainGet(workspaceId, `${account}:${kind}`);
@@ -1437,6 +1480,39 @@ async function resupplySlot(
   const result =
     kind === 'imap'
       ? await apiOverride.setMailCredential(account, secret, generation)
-      : await apiOverride.setMailCredential(account, secret, generation, 'smtp');
+      : await apiOverride.setMailCredential(account, secret, generation, kind);
   return result.ok;
+}
+
+/**
+ * A freshly authorized (or provider-ROTATED) OAuth2 refresh token, arriving on
+ * the `mail_oauth` push — the backend deliberately never writes one to disk, so
+ * the OS keychain is its only durable home and this is the write that puts it
+ * there.
+ *
+ * `<slug>:oauth`, matching `resupplySlot`'s read key. In the browser
+ * `keychainSet` is a documented no-op, which is exactly the intended
+ * browser-dev behaviour: the token stays in Engine RAM for this session and the
+ * user signs in again after a restart.
+ *
+ * The workspace id may not be in the store yet when this lands (this can be the
+ * workspace's very first mail account), so it is re-fetched once rather than
+ * assumed — the same reasoning `submitMailSetup`'s `refreshWorkspaceId` doc
+ * comment spells out.
+ */
+export async function persistMailOauthToken(
+  payload: MailOauthPush,
+  deps: { inDesktop: () => boolean; keychainSet: typeof keychainSet; workspaceId: () => string | null; refresh: () => Promise<void> }
+): Promise<boolean> {
+  if (!deps.inDesktop()) return false;
+  if (typeof payload.refreshToken !== 'string' || payload.refreshToken === '') return false;
+
+  let workspaceId = deps.workspaceId();
+  if (!workspaceId) {
+    await deps.refresh();
+    workspaceId = deps.workspaceId();
+  }
+  if (!workspaceId) return false;
+
+  return deps.keychainSet(workspaceId, `${payload.account}:oauth`, payload.refreshToken);
 }

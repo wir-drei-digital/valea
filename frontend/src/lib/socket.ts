@@ -113,6 +113,8 @@ export type MailStatusPush = {
   account: string;
   configured: boolean;
   credential: string;
+  /** The account's SASL mode (`'password'` | `'oauth2'`) — which keychain slot its secret lives in, and what "missing" means. */
+  auth: string;
   state: string;
   last_sync_at: string | null;
   last_error: string | null;
@@ -160,6 +162,24 @@ export type MailMessagePush = { account: string; path: string };
  * reconstructed from a path.
  */
 export type MailDraftPush = { account: string };
+
+/**
+ * `mail_oauth` push payload — a freshly authorized (or provider-ROTATED)
+ * OAuth2 refresh token for one account, on its way to the OS keychain
+ * (`stores/mail.svelte.ts`'s `persistMailOauthToken`).
+ *
+ * The one push in this channel that carries a SECRET, and it exists because
+ * `Valea.Mail.Engine` deliberately never writes a refresh token to disk (see
+ * its §OAuth2 accounts): the keychain is the token's only durable home, and
+ * only the desktop shell can reach it. It rides the loopback socket the control
+ * token already gates. Nothing logs it, and in the browser the keychain write
+ * is a documented no-op — the token simply stays in Engine RAM for the session.
+ *
+ * `refreshToken` is camelCase here where `MailStatusPush`'s fields are
+ * snake_case: this payload is built by hand in the channel (nothing relays a
+ * generated RPC result), so its two keys are spelled as they are read.
+ */
+export type MailOauthPush = { account: string; refreshToken: string };
 
 /**
  * `calendar_status` push payload — ONE source's `Valea.Calendar.Engine`

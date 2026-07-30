@@ -69,6 +69,8 @@ import {
   mailAutoconfigChannel,
   setMailCredential as httpSetMailCredential,
   setMailCredentialChannel,
+  startMailOauth as httpStartMailOauth,
+  startMailOauthChannel,
   mailSyncNow as httpMailSyncNow,
   mailSyncNowChannel,
   mailDoctor as httpMailDoctor,
@@ -203,6 +205,7 @@ import type {
   GetMailAccountSettingsFields,
   MailAutoconfigFields,
   SetMailCredentialFields,
+  StartMailOauthFields,
   MailSyncNowFields,
   MailDoctorFields,
   CreateMailFoldersFields,
@@ -603,9 +606,21 @@ const setupMailAccountFields: SetupMailAccountFields = ['saved'];
 // `auth` is selected for the same reason every other field here is: the edit
 // form has to send the account's WHOLE entry back on save (M6 task 15), and a
 // mode it never read is a mode it would silently rewrite to `password`.
+// `oauthClientId` is selected for exactly the same reason `auth` is: the edit
+// form has to send the account's WHOLE entry back on save (M6 task 16), and an
+// override it never read is an override it would silently drop.
 const getMailAccountSettingsFields: GetMailAccountSettingsFields = [
   'notifications',
-  { account: ['host', 'port', 'username', 'auth', { smtp: ['host', 'port', 'security', 'username', 'from', 'fromName'] }] }
+  {
+    account: [
+      'host',
+      'port',
+      'username',
+      'auth',
+      'oauthClientId',
+      { smtp: ['host', 'port', 'security', 'username', 'from', 'fromName'] }
+    ]
+  }
 ];
 const mailAutoconfigFields: MailAutoconfigFields = [
   { imap: ['host', 'port', 'security'] },
@@ -613,6 +628,7 @@ const mailAutoconfigFields: MailAutoconfigFields = [
   'source'
 ];
 const setMailCredentialFields: SetMailCredentialFields = ['accepted'];
+const startMailOauthFields: StartMailOauthFields = ['url'];
 const mailSyncNowFields: MailSyncNowFields = ['started'];
 const mailDoctorFields: MailDoctorFields = ['ok', 'checks'];
 const createMailFoldersFields: CreateMailFoldersFields = ['created'];
@@ -898,6 +914,16 @@ function callMailStatusChannel(channel: NonNullable<ReturnType<typeof channelAva
  */
 export type MailAuthMode = 'password' | 'oauth2';
 
+/**
+ * Which credential SLOT a `setMailCredential` call fills — `Valea.Api.Mail`'s
+ * `credential_kind/1` vocabulary. `'imap'`/`'smtp'` are the two password
+ * slots; `'oauth'` is an `auth: 'oauth2'` account's REFRESH token, and reaches
+ * this call only on the resupply path (a restart handing back what the OS
+ * keychain kept). A newly authorized token never travels through the RPC
+ * surface at all — the provider redirect delivers it to `/oauth/callback`.
+ */
+export type MailCredentialKind = 'imap' | 'smtp' | 'oauth';
+
 export type MailSmtpSetup = {
   host?: string | null;
   port?: number | null;
@@ -954,6 +980,7 @@ function callSetupMailAccountChannel(
     smtpFromName?: string | null;
     notifications?: boolean | null;
     auth?: MailAuthMode | null;
+    oauthClientId?: string | null;
   }
 ) {
   return wrapChannelCall((handlers) =>
@@ -963,10 +990,19 @@ function callSetupMailAccountChannel(
 
 function callSetMailCredentialChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { account: string; secret: string; generation: number; kind?: 'imap' | 'smtp' }
+  input: { account: string; secret: string; generation: number; kind?: MailCredentialKind }
 ) {
   return wrapChannelCall((handlers) =>
     setMailCredentialChannel({ channel, input, fields: setMailCredentialFields, ...handlers })
+  );
+}
+
+function callStartMailOauthChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { account: string; generation: number }
+) {
+  return wrapChannelCall((handlers) =>
+    startMailOauthChannel({ channel, input, fields: startMailOauthFields, ...handlers })
   );
 }
 
@@ -2110,7 +2146,8 @@ export const api = {
     generation: number,
     smtp: MailSmtpSetup | null = null,
     notifications = false,
-    auth: MailAuthMode = 'password'
+    auth: MailAuthMode = 'password',
+    oauthClientId: string | null = null
   ) =>
     runRpc(
       (channel) =>
@@ -2122,6 +2159,7 @@ export const api = {
           generation,
           notifications,
           auth,
+          oauthClientId,
           ...smtpSetupInput(smtp)
         }),
       () =>
@@ -2135,6 +2173,7 @@ export const api = {
               generation,
               notifications,
               auth,
+              oauthClientId,
               ...smtpSetupInput(smtp)
             },
             fields: setupMailAccountFields
@@ -2166,7 +2205,7 @@ export const api = {
   // `imap`, exactly what this call has always meant. The two are separate
   // keychain entries and separate RAM-only closures per Engine; an SMTP auth
   // failure never pauses the IMAP sync.
-  setMailCredential: (account: string, secret: string, generation: number, kind?: 'imap' | 'smtp') =>
+  setMailCredential: (account: string, secret: string, generation: number, kind?: MailCredentialKind) =>
     runRpc(
       (channel) => callSetMailCredentialChannel(channel, { account, secret, generation, ...(kind ? { kind } : {}) }),
       () =>
@@ -2176,6 +2215,18 @@ export const api = {
             fields: setMailCredentialFields
           })
         )
+    ),
+
+  // Mailbox sign-in, step one (M6 task 16): mints the account's state + PKCE
+  // pair backend-side and returns the provider's consent URL to open in the
+  // user's BROWSER. Nothing secret comes back — the authorization code and the
+  // refresh token are handled entirely by the backend's `/oauth/callback`
+  // route, which the provider redirects to. Mutating (it parks a pending
+  // flow), hence the `generation`.
+  startMailOauth: (account: string, generation: number) =>
+    runRpc(
+      (channel) => callStartMailOauthChannel(channel, { account, generation }),
+      () => httpStartMailOauth(withAuth({ input: { account, generation }, fields: startMailOauthFields }))
     ),
 
   mailSyncNow: (account: string, generation: number) =>

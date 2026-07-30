@@ -103,12 +103,24 @@ defmodule Valea.Mail.IdleWatcher do
   ## Credential
 
   Handed in at start as the Engine's own zero-arity closure (`fn -> secret
-  end`) — never asked for later. Two reasons: a watcher that called back into
-  the Engine could deadlock against the Engine terminating it, and a rotated
-  credential has to invalidate the connection this process is *holding*, which
-  a restart does and a re-read would not. The secret is materialized only at
-  the `connect/3` boundary and, redacted, inside a `:debug` log's own closure
-  — never stored as a string, never written anywhere.
+  end`) — never asked for later. The reason is the second half of the
+  invariant: a rotated credential has to invalidate the connection this
+  process is *holding*, which a watcher REBUILD does and a re-read would not.
+  The secret is materialized only at the `connect/3` boundary and, redacted,
+  inside a `:debug` log's own closure — never stored as a string, never
+  written anywhere.
+
+  For an `auth: :oauth2` account (M6 task 16) that closure calls BACK into the
+  Engine to mint an access token (`Valea.Mail.Engine.mint_access_token/1`),
+  which is what keeps a long-lived watcher able to reconnect after its token
+  expires — a token resolved once at start would strand it. That is safe here
+  for exactly the reason stated above: this process does not trap exits, so
+  the `Process.exit(:shutdown)` the Engine's `terminate_child` sends ends it
+  instantly even while it is blocked in that call, and the Engine's own
+  `handle_call` is never left waiting on a child that is waiting on it. The
+  Engine answers the orphaned request into the void (a `GenServer.reply` to a
+  dead pid is a no-op) and the token it minted stays cached for whoever asks
+  next.
   """
 
   use GenServer, restart: :transient
