@@ -114,6 +114,22 @@ is shared with people who do not use Valea):
 
 ## B — Full mode
 
+> **Two global git settings can make every auto-commit in this section fail
+> or time out, and they degrade honestly rather than silently** — the same
+> family as D2's ssh-agent note, and worth ruling out before blaming the
+> engine. `commit.gpgsign = true` with a passphrase-protected key: the
+> signing prompt has nowhere to appear (`GIT_TERMINAL_PROMPT=0`, stdin
+> closed), so `git commit` fails or hangs to the 15 s cap and the row goes
+> `error` with git's own words, visible in Diagnose. A slow global
+> `core.hooksPath` hook does the same by running out the clock. Both are the
+> user's configuration, and Valea deliberately does not override it — check
+> `git -C <ICM> config --get commit.gpgsign` and `--get core.hooksPath` if a
+> commit never lands, and note it here rather than filing it as a bug.
+>
+> **Back up `WS/config/workspace.yaml` before the drills below.** Every mode
+> click re-renders the whole file: comments and hand formatting are lost
+> (the `git:` block's own keys survive, which is what B1 checks).
+
 - [ ] **B1 · Auto-commit and auto-push round trip.** In the panel choose
       **Full sync**. Expect: `WS/config/workspace.yaml`'s `icms:` entry for
       this mount gains `git:` / `sync: full` (check the file — every other

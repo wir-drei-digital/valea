@@ -555,7 +555,7 @@ export function handleWorkspaceEvent(payload: WorkspaceEventPayload): void {
   // ledger read is generation-guarded.
   tasksStore.reset();
   // The git rows describe the OUTGOING workspace's repos. `GitStore` keeps
-  // its rows on an empty payload (the busy-engine caveat — see `applyRows`),
+  // its rows on an empty payload (the busy-engine caveat — see `#install`),
   // so this explicit reset is the one thing that can clear them when the new
   // workspace has no git ICMs at all.
   gitStore.reset();

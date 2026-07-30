@@ -1102,9 +1102,16 @@ mount root is the repo root**. `Repo.detect/1` names exactly two
 `unsupported` shapes — a `.git` *file* (linked worktree or submodule, whose
 gitdir lives outside the ICM) and a mount nested inside someone else's
 repo — each with a doctor remedy. Everything else without a `.git`
-directory, **bare repos included**, is simply not a git ICM: no engine row,
-and the doctor says `not a git repository — git sync not applicable.` (bare
-repos are out of scope, not a diagnosed failure). Full spec + the
+directory, **bare repos included**, is simply not a git ICM: no engine row
+(unless the mount was deliberately *configured* for git — a `git:` block
+saying anything other than the default — in which case it gets an
+`unsupported` row reading `no git repository`, so a setting the user wrote
+cannot silently do nothing forever), and the doctor says `not a git
+repository — git sync not applicable.` (bare repos are out of scope, not a
+diagnosed failure). The doctor reads `sync: off` **before** it judges the
+repository's shape, and reports the spec's observe-only states (detached
+HEAD, no upstream, no remotes at all) as `ok` — it goes red only for what a
+user can act on. Full spec + the
 shipped-behavior amendments:
 `docs/superpowers/specs/2026-07-30-icm-git-sync-design.md`; live checklist:
 [docs/superpowers/acceptance/2026-07-30-icm-git-sync.md](superpowers/acceptance/2026-07-30-icm-git-sync.md).
@@ -1144,7 +1151,8 @@ change expires the verdict and lets git re-arbitrate.
 
 **Conflict → agent handoff.** The three held states raise Today attention
 rows (and a quiet dot on the ICM's sidebar row) whose button starts a normal
-visible chat session in that ICM — `create_agent_session` +
+visible chat session in that ICM — the `start_git_conflict_session` RPC,
+which composes the briefing live and starts the session with it as
 `initial_prompt`, title `Git sync conflict — <name>` — with a deterministic
 briefing (`Valea.Git.Briefing`: counts, capped local/remote subject lists,
 files, the never-force-push/never-discard contract, then the mount's own

@@ -221,7 +221,7 @@ export type CalendarSyncedPush = { source: string; event_count: number };
  * BUSY-ENGINE CAVEAT (ledgered): `repos` can arrive EMPTY for a moment while
  * the engine is mid-pass, even though repos exist. `GitStore` therefore
  * treats an empty payload as "nothing new to say" rather than "no repos" —
- * see its `applyRows`.
+ * see its `#install`.
  */
 export type GitStatusPush = { repos: Record<string, unknown>[] };
 

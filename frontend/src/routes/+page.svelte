@@ -134,9 +134,11 @@
   // Git attention rows (ICM git sync spec §UI). Read straight off `gitStore`
   // — NOT off `today.git` — so an engine push updates this section without a
   // cockpit round trip, and so a momentarily empty payload can't blank it
-  // (the store's keep-on-empty policy). `refresh()` above keeps the store fed
-  // from the cockpit payload; `refreshSidebarProjectStores` and the
-  // `git_status` push are the other two feeds.
+  // (the store's keep-on-empty policy). The store has exactly TWO feeds, and
+  // this route's `refresh()` is neither: `gitStore.refresh()` (the
+  // `git_status` RPC — cold load, and workspace switch via
+  // `refreshSidebarProjectStores`) and the `git_status` push. The cockpit
+  // payload is deliberately not a third one — see `GitStore`'s own note.
   const gitAttention = $derived(gitStore.attentionRepos);
   /** The mount whose handoff is in flight — every Resolve button is disabled while one runs. */
   let resolving = $state<string | null>(null);

@@ -364,6 +364,17 @@ notice records at all — the surfaces render **derived state**:
   the remedy names the packaged-app caveat: *the packaged app may lack your
   ssh-agent environment — try launching from a terminal, or check the
   remote's credentials.*
+- **Tone: the observe-only states report `ok`, not `failed`.** §Scope calls
+  a detached HEAD and a branch with no upstream observe-only and the user's
+  own business, so the doctor observes them (and a repo with no remotes at
+  all — *local-only repository — nothing to sync.*) rather than going red for
+  an intended setup; the `--set-upstream-to` command survives as information
+  inside the detail. `sync: off` is likewise read **before** the repository's
+  shape is judged, so an `unsupported` layout with sync off is `ok` too —
+  otherwise a dotfiles HOME that is itself a repo permanently fails every ICM
+  under it with a remedy nobody can take. The doctor still fails for what a
+  user can actually fix: an unsupported layout with sync ON, a missing git
+  binary, and an `error` row from the live engine.
 
 ### 5. Statuses
 
