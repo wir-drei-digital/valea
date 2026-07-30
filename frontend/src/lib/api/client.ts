@@ -662,7 +662,11 @@ const setupMailAccountFields: SetupMailAccountFields = ['saved'];
 // `oauthClientId` is selected for exactly the same reason `auth` is: the edit
 // form has to send the account's WHOLE entry back on save (M6 task 16), and an
 // override it never read is an override it would silently drop.
-const getMailAccountSettingsFields: GetMailAccountSettingsFields = [
+// Exported for `client.test.ts`, which pins both selections: dropping either
+// keeps every other suite green (the setup tests supply `auth` directly, and
+// the component reads the prefill through an unchecked cast) while silently
+// restoring the oauth2→password downgrade this selection exists to prevent.
+export const getMailAccountSettingsFields: GetMailAccountSettingsFields = [
   'notifications',
   {
     account: [

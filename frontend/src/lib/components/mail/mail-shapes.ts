@@ -983,7 +983,26 @@ function escapeHtmlText(value: string): string {
 
 // -- SyncStatusLine ------------------------------------------------------------
 
-export function mailStateLabel(state: string | null | undefined): string {
+export function mailStateLabel(
+  state: string | null | undefined,
+  /**
+   * The rest of the account's status row, when the caller has it. Only one
+   * label reads it (see below); every other state answers from `state` alone,
+   * which is why it stays optional.
+   */
+  account?: Pick<MailAccountStatus, 'auth' | 'credential'> | null
+): string {
+  // An oauth2 account that has NEVER signed in — an abandoned consent screen,
+  // or a restart the keychain had nothing to resupply — is engine-side "idle":
+  // nothing is wrong, there is simply no credential to sync with. "Up to date"
+  // is a lie there, and the one the "Sign in" button beside it
+  // (`needsMailSignIn`) already contradicts. Scoped to `oauth2` on purpose: a
+  // password account with no credential keeps its pre-M6 copy, since its
+  // recovery is the settings form, not a button on this row.
+  if (state === 'idle' && account?.auth === 'oauth2' && account.credential === 'missing') {
+    return 'Needs sign-in';
+  }
+
   switch (state) {
     case 'idle':
       return 'Up to date';

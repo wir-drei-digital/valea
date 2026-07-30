@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeIcmPage } from './client';
+import { getMailAccountSettingsFields, normalizeIcmPage } from './client';
 
 describe('normalizeIcmPage', () => {
   it('passes frontmatter through untouched, including its own snake_case keys', () => {
@@ -71,5 +71,30 @@ describe('normalizeIcmPage', () => {
     const result = normalizeIcmPage(raw);
 
     expect(result).toEqual(raw);
+  });
+});
+
+// The field selection is the whole reason the edit form can round-trip an
+// oauth2 account. `setup_mail_account` re-renders the account entry WHOLE, so
+// a field the prefill never read is a field the save silently rewrites:
+// dropping `auth` downgrades the account to `password` (and the engine then
+// offers its OAuth2 access token as a LOGIN password), and dropping
+// `oauthClientId` discards the user's client-id override. Nothing else fails
+// when either goes — the setup suite hands `auth` in directly and the
+// component reads the prefill through an unchecked cast — so this is the pin.
+describe('getMailAccountSettingsFields', () => {
+  const accountBlock = (): unknown[] => {
+    const entries = getMailAccountSettingsFields as unknown as Array<string | Record<string, unknown[]>>;
+    const block = entries.find((entry): entry is Record<string, unknown[]> => typeof entry === 'object' && entry !== null);
+    expect(block, 'the selection has no nested `account:` block at all').toBeDefined();
+    return block?.account ?? [];
+  };
+
+  it('selects auth inside the account block', () => {
+    expect(accountBlock()).toContain('auth');
+  });
+
+  it('selects oauthClientId inside the account block', () => {
+    expect(accountBlock()).toContain('oauthClientId');
   });
 });

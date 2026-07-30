@@ -673,6 +673,38 @@ describe('mailStateLabel', () => {
     expect(mailStateLabel(null)).toBe('Unknown');
     expect(mailStateLabel(undefined)).toBe('Unknown');
   });
+
+  // The engine has no state for "this oauth2 account was never signed in": an
+  // abandoned consent screen (or a restart the keychain couldn't resupply)
+  // leaves a perfectly healthy "idle" account with no credential. The row's
+  // "Sign in" button already says so; before this the label beside it read
+  // "Up to date".
+  it('says an oauth2 account with no credential needs a sign-in, not "Up to date"', () => {
+    expect(mailStateLabel('idle', { auth: 'oauth2', credential: 'missing' })).toBe('Needs sign-in');
+  });
+
+  it('leaves a signed-in oauth2 account, and every non-idle state, exactly as it was', () => {
+    expect(mailStateLabel('idle', { auth: 'oauth2', credential: 'present' })).toBe('Up to date');
+    // Sticky states carry their own (correct) copy — the credential slot is
+    // beside the point once the engine has a verdict of its own.
+    expect(mailStateLabel('reauth_required', { auth: 'oauth2', credential: 'missing' })).toBe(
+      'Sign-in expired'
+    );
+    expect(mailStateLabel('inactive', { auth: 'oauth2', credential: 'missing' })).toBe(
+      'Not connected'
+    );
+    expect(mailStateLabel('syncing', { auth: 'oauth2', credential: 'missing' })).toBe('Syncing…');
+  });
+
+  // Scoped to oauth2 deliberately: a password account with no stored secret
+  // keeps its pre-M6 copy. Its recovery is the settings form, not a button on
+  // the row, and the review's finding was about oauth2 accounts only.
+  it('does NOT relabel a password account whose credential is missing', () => {
+    expect(mailStateLabel('idle', { auth: 'password', credential: 'missing' })).toBe('Up to date');
+    // ...nor a caller that has no status row to hand over at all.
+    expect(mailStateLabel('idle')).toBe('Up to date');
+    expect(mailStateLabel('idle', null)).toBe('Up to date');
+  });
 });
 
 describe('mailMaintenanceErrorMessage', () => {

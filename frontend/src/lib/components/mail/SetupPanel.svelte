@@ -686,7 +686,7 @@
         <li class="border-paper-border bg-paper-card rounded-xl border px-4 py-3">
           <div class="flex items-center gap-2.5">
             <span class="text-ink-heading text-[13.5px] font-medium">{status.account}</span>
-            <span class="text-ink-meta text-[12px]">{mailStateLabel(status.state)}</span>
+            <span class="text-ink-meta text-[12px]">{mailStateLabel(status.state, status)}</span>
             <span class="min-w-2 flex-1" aria-hidden="true"></span>
             {#if needsMailSignIn(status)}
               <!-- An oauth2 account whose sign-in expired, was never finished,
