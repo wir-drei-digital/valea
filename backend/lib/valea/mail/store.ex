@@ -456,40 +456,61 @@ defmodule Valea.Mail.Store do
   # -- account teardown --------------------------------------------------------
 
   @doc """
-  Deletes every pure-cache row this store holds for `account` — the whole
-  `mail_sync_state` / `mail_uid_map` / `mail_messages` slice, the
-  account-wide sibling of `clear_folder/2`. Other accounts are untouched.
+  Deletes every row this store holds for `account` that
+  `Valea.Mail.Index.rebuild/2` can re-derive from the files — the whole
+  `mail_uid_map` + `mail_messages` slice, the account-wide sibling of
+  `clear_folder/2`. Other accounts are untouched.
 
-  For the account-teardown actions (`remove_mail_account`,
-  `purge_mail_account_files`) the invariant is: after the action, this
-  store holds exactly what `Valea.Mail.Index.rebuild/2` over the surviving
-  files would produce — nothing, when the files are purged too. The FTS
-  rows ride separately (`clear_search_rows/1`, raw SQL against the virtual
-  table); the ops ledger is NOT touched here — it is not cache
+  The teardown invariant (`remove_mail_account`,
+  `purge_mail_account_files`): after the action the store holds nothing
+  for the slug that a rebuild over the surviving files could not re-feed.
+  The FTS rows ride separately (`clear_search_rows/1`, raw SQL against the
+  virtual table); the ops ledger is NOT touched here — it is not cache
   (`clear_pending_ops/1` exists for the one caller that has decided to
   erase it).
 
-  Deliberately includes `mail_sync_state`: its `UIDVALIDITY`/high-water
-  memory describes a mirror that no longer exists (purge) or an account
-  that no longer exists (remove). Keeping it was actively harmful — a
-  purged-then-re-added account would inherit a stale high-water mark over
-  an empty maildir and silently skip its own history, and a purged
-  `mailbox_replaced` account would re-detect the replacement after every
-  backend restart. `readopt_mail_account` is unaffected: re-adopt is the
-  KEEP-the-local-mirror path, and its authorized pass reads these rows only
-  while the mirror they describe is still on disk.
+  Deliberately EXCLUDES `mail_sync_state`: its `UIDVALIDITY`/high-water
+  memory is the one slice a rebuild leaves unset (`bind_sync_state!`
+  writes only `dir`/`backfill_complete`), and it is the guard
+  `SyncPass.reset?/2` needs to DETECT a mailbox replacement. Clearing it
+  on remove would let a remove → re-add across a `UIDVALIDITY` change run
+  ordinary reconciliation over old-UID rows rebuilt from the kept files —
+  `reconcile_deletions` would then delete the very mirror removal promises
+  to keep. `clear_sync_state/1` exists for purge, where the maildir is
+  gone and the memory describes nothing.
   """
   @spec clear_account(String.t()) :: :ok
   def clear_account(account) when is_binary(account) do
-    SyncState
-    |> Ash.Query.filter(account == ^account)
-    |> Ash.bulk_destroy!(:destroy, %{})
-
     UidMap
     |> Ash.Query.filter(account == ^account)
     |> Ash.bulk_destroy!(:destroy, %{})
 
     MessageIndex
+    |> Ash.Query.filter(account == ^account)
+    |> Ash.bulk_destroy!(:destroy, %{})
+
+    :ok
+  end
+
+  @doc """
+  Deletes `account`'s `mail_sync_state` rows — the non-rebuildable
+  watermark/lifecycle memory. ONLY correct when the account's maildir is
+  gone too (`purge_mail_account_files`): with no files there is no stale
+  UID mapping for a later pass to mis-reconcile, and keeping the memory
+  was actively harmful — a purged-then-re-added account would inherit a
+  stale high-water mark over an empty maildir and silently skip its own
+  history, and a purged `mailbox_replaced` account would re-detect the
+  replacement after every backend restart. After a purge the sticky
+  blocked status (if any engine is still running) clears through the
+  normal `readopt` call, whose authorized pass then finds no stored
+  `UIDVALIDITY` for a reset to be detected against and degrades to a
+  fresh adopt of the server's current state.
+
+  `remove_mail_account` must NOT call this — see `clear_account/1`.
+  """
+  @spec clear_sync_state(String.t()) :: :ok
+  def clear_sync_state(account) when is_binary(account) do
+    SyncState
     |> Ash.Query.filter(account == ^account)
     |> Ash.bulk_destroy!(:destroy, %{})
 

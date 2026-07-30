@@ -338,8 +338,8 @@ defmodule Valea.Mail.StoreTest do
     end
   end
 
-  describe "clear_account/1 + clear_pending_ops/1" do
-    test "clear_account/1 wipes the whole pure-cache slice for that account only" do
+  describe "clear_account/1 + clear_sync_state/1 + clear_pending_ops/1" do
+    test "clear_account/1 wipes the rebuildable slice only — sync_state survives" do
       for folder <- ["INBOX", "Sorted"] do
         Store.put_sync_state("mara@example.com", folder, %{uidvalidity: 1, high_water_uid: 10})
 
@@ -369,9 +369,13 @@ defmodule Valea.Mail.StoreTest do
       assert :ok = Store.clear_account("mara@example.com")
 
       for folder <- ["INBOX", "Sorted"] do
-        assert {:error, :not_found} = Store.get_sync_state("mara@example.com", folder)
         assert Store.occurrences("mara@example.com", folder) == []
         assert Store.list_messages("mara@example.com", folder) == []
+
+        # sync_state is deliberately NOT part of this slice: its UIDVALIDITY
+        # memory is the reset-detection guard a rebuild cannot restore
+        # (`clear_sync_state/1` is purge's separate, files-are-gone call).
+        assert {:ok, %{uidvalidity: 1}} = Store.get_sync_state("mara@example.com", folder)
       end
 
       # The bystander account keeps every row...
@@ -381,6 +385,18 @@ defmodule Valea.Mail.StoreTest do
 
       # ...and the ops ledger is deliberately NOT part of the cache slice.
       assert [%{kind: "append"}] = Store.pending_ops("mara@example.com")
+    end
+
+    test "clear_sync_state/1 wipes that account's watermark rows only" do
+      Store.put_sync_state("mara@example.com", "INBOX", %{uidvalidity: 1, high_water_uid: 10})
+      Store.put_sync_state("mara@example.com", "Sorted", %{uidvalidity: 2, high_water_uid: 20})
+      Store.put_sync_state("priya@example.com", "INBOX", %{uidvalidity: 3, high_water_uid: 30})
+
+      assert :ok = Store.clear_sync_state("mara@example.com")
+
+      assert {:error, :not_found} = Store.get_sync_state("mara@example.com", "INBOX")
+      assert {:error, :not_found} = Store.get_sync_state("mara@example.com", "Sorted")
+      assert {:ok, %{uidvalidity: 3}} = Store.get_sync_state("priya@example.com", "INBOX")
     end
 
     test "clear_pending_ops/1 erases that account's ledger rows only, terminal states included" do

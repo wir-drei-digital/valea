@@ -1679,12 +1679,17 @@ defmodule ValeaWeb.MailRpcTest do
       assert %{"success" => true, "data" => %{"messages" => []}} =
                rpc("search_mail", %{"account" => "mara", "query" => "roadmap"}, @search_fields)
 
-      # The metadata slice (subjects/senders/dates, uid map, watermarks) goes
-      # with the config entry — the DB holds exactly what a rebuild over the
-      # files would re-feed, and re-adding the account runs that rebuild.
+      # The rebuildable slice (subjects/senders/dates, uid map) goes with the
+      # config entry — re-adding the account runs Index.rebuild over the kept
+      # files and re-feeds it all.
       assert Store.list_messages("mara", "INBOX") == []
       assert Store.occurrences("mara", "INBOX") == []
-      assert {:error, :not_found} = Store.get_sync_state("mara", "INBOX")
+
+      # sync_state is deliberately RETAINED on remove: its UIDVALIDITY memory
+      # is what lets a re-add across a mailbox replacement DETECT the reset
+      # instead of mis-reconciling old-UID rows rebuilt from the kept files
+      # (which would delete them). Only purge — files gone — clears it.
+      assert {:ok, %{uidvalidity: _}} = Store.get_sync_state("mara", "INBOX")
 
       # Removal is not a purge: the view files — the source of truth a
       # re-added account rebuilds its index from — are untouched, and the

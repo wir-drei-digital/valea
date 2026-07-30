@@ -130,7 +130,7 @@ defmodule Valea.Api.Mail do
   listings share one TypeScript type; only the threaded branch ever
   populates them.
 
-  ## Why `remove_mail_account`/`purge_mail_account_files` clear `mail_search`
+  ## What the two teardown actions clear from the store
 
   `mail_search` is the first thing this app persists MESSAGE BODY TEXT into
   `app.sqlite`. That makes the account-teardown actions load-bearing in a way
@@ -149,26 +149,43 @@ defmodule Valea.Api.Mail do
       and re-adding the account re-activates its Engine, whose `do_activate`
       runs `Valea.Mail.Index.rebuild/2` and re-feeds every row.
 
-  Both actions also clear the pure-cache metadata slice —
-  `mail_messages`/`mail_uid_map`/`mail_sync_state`, via
-  `Store.clear_account/1` — under one invariant: after teardown the store
-  holds exactly what `Index.rebuild/2` over the surviving files would
-  produce (nothing, once the files are purged). Clearing `mail_sync_state`
-  is load-bearing, not just hygiene: a purged-then-re-added account keeping
-  its old high-water mark over an empty maildir would silently skip its own
-  history, and a purged `mailbox_replaced` account keeping its old
-  `UIDVALIDITY` would re-detect the replacement after every restart.
-  `readopt_mail_account` — the KEEP-the-mirror path — never runs after
-  these actions' file/config state, so it loses nothing.
+  Both actions also clear the rebuildable metadata slice —
+  `mail_messages` + `mail_uid_map`, via `Store.clear_account/1` — under one
+  invariant: after teardown the store holds nothing for the slug that
+  `Index.rebuild/2` over the surviving files could not re-feed.
 
-  The ops ledger (`mail_pending_ops`) splits deliberately, because it is
-  NOT cache (see `Valea.Mail.Store`'s moduledoc): `purge_mail_account_files`
-  erases it (`Store.clear_pending_ops/1` — `envelope_rcpt` is recipient
-  personal data, and the spool bytes its hashes bind to were just deleted;
-  an unverifiable send record surviving an explicit purge breaks the
-  promise the confirmation gate makes the user type out), while
-  `remove_mail_account` keeps it — removal keeps the files, spool included,
-  and the audit record rides with the mirror it describes.
+  `mail_sync_state` splits between the two actions, because it is the ONE
+  slice a rebuild leaves unset (watermarks and `UIDVALIDITY` come from the
+  server, not the files) and it is the guard `SyncPass.reset?/2` uses to
+  DETECT a mailbox replacement:
+
+    * `purge_mail_account_files` clears it (`Store.clear_sync_state/1`) —
+      the maildir is gone, so the memory describes nothing, and keeping it
+      was actively harmful (a purged-then-re-added account inheriting a
+      stale high-water mark over an empty maildir silently skips its own
+      history; a purged `mailbox_replaced` account re-detects the
+      replacement after every restart). A still-running blocked engine
+      continues through the normal `readopt` call, whose authorized pass
+      then finds no stored `UIDVALIDITY` for a reset to fire against and
+      degrades to a fresh adopt of the server's current state.
+    * `remove_mail_account` KEEPS it — removal keeps the files, and the
+      retained `UIDVALIDITY` memory is what lets a later re-add across a
+      mailbox replacement DETECT the reset (blocking safely) instead of
+      running ordinary reconciliation over old-UID rows rebuilt from the
+      kept files, which would delete the very mirror removal promises to
+      keep. The residue is a few watermark rows (folder names, counters —
+      no message content) for an account that may never return; a later
+      purge takes them too.
+
+  The ops ledger (`mail_pending_ops`) also splits deliberately, because it
+  is NOT cache (see `Valea.Mail.Store`'s moduledoc):
+  `purge_mail_account_files` erases it (`Store.clear_pending_ops/1` —
+  `envelope_rcpt` is recipient personal data, and the spool bytes its
+  hashes bind to were just deleted; an unverifiable send record surviving
+  an explicit purge breaks the promise the confirmation gate makes the
+  user type out), while `remove_mail_account` keeps it — removal keeps the
+  files, spool included, and the audit record rides with the mirror it
+  describes.
 
   ## `set_mail_credential`'s `kind`
 
@@ -530,6 +547,7 @@ defmodule Valea.Api.Mail do
           File.rm_rf!(target)
           :ok = Store.clear_search_rows(slug)
           :ok = Store.clear_account(slug)
+          :ok = Store.clear_sync_state(slug)
           :ok = Store.clear_pending_ops(slug)
           {:ok, %{"purged" => true}}
         else
