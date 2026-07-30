@@ -1518,6 +1518,85 @@ export function mailMaintenanceErrorMessage(code: string): string {
   }
 }
 
+// -- SetupPanel: removing an account, keychain included ----------------------
+
+/**
+ * Every keychain slot an account can own, as the `<kind>` half of the
+ * `<slug>:<kind>` key `submitMailSetup`, `persistMailOauthToken` and
+ * `resupplySlot` all agree on. ALL THREE are deleted on removal regardless
+ * of the account's current `auth` mode: an account edited from a password
+ * to a provider sign-in (or back) leaves the other mode's entries behind,
+ * and deleting an entry that was never written is a no-op anyway (see
+ * `keychain.ts`).
+ */
+const MAIL_KEYCHAIN_SLOTS = ['imap', 'smtp', 'oauth'] as const;
+
+export type MailRemovalDeps = {
+  api: Pick<Api, 'removeMailAccount'>;
+  inDesktop: () => boolean;
+  /**
+   * The workspace UUID the entries are keyed under — the same value
+   * `resupplyCredentials` reads off the account rows. Called BEFORE the RPC;
+   * see the ordering note below for why that is not an optimization.
+   */
+  workspaceId: () => string | null;
+  keychainDelete: (workspaceId: string, username: string) => Promise<void>;
+};
+
+/**
+ * `remove_mail_account`, plus the OS-keychain cleanup the backend cannot do
+ * for itself — those secrets never cross the IPC boundary in that direction
+ * (`keychain.ts` is the only module that touches them).
+ *
+ * Without this, a removed account's IMAP/SMTP passwords and its OAuth2
+ * refresh token outlive it in the keychain indefinitely, with nothing left
+ * in `config/mail.yaml` naming them: re-adding the same slug later would
+ * silently resupply the OLD secrets on the next restart
+ * (`resupplyCredentials`), and a refresh token the user revoked by removing
+ * the account survives as live bytes — inert here (the `reauth_required`
+ * resupply guard) but still real.
+ *
+ * TWO ordering rules, both load-bearing:
+ *  - The workspace id is read BEFORE the RPC. It comes from the account
+ *    rows, and removing the LAST account empties that list — read
+ *    afterwards it would be `null` exactly when there is cleanup to do.
+ *  - The deletes run only AFTER the backend confirms the removal. A refused
+ *    removal (stale generation, account still running) leaves the account
+ *    configured, and stripping the credentials from an account that still
+ *    exists would break it.
+ *
+ * Best-effort on `keychainSet`'s terms: the removal's outcome is the RPC's
+ * result verbatim, never the keychain's. `keychainDelete` already swallows
+ * its own failures; the `catch` here covers the rest (a rejecting injected
+ * dep, a bridge that throws before that guard) so a stale keychain entry can
+ * never turn a successful removal into a failed one.
+ *
+ * Browser (dev): skipped by the `inDesktop()` gate, matching
+ * `submitMailSetup` — there is no keychain there to clean up.
+ */
+export async function removeMailAccountAndForget(
+  slug: string,
+  generation: number,
+  deps: MailRemovalDeps
+): ReturnType<Api['removeMailAccount']> {
+  const workspaceId = deps.inDesktop() ? deps.workspaceId() : null;
+
+  const result = await deps.api.removeMailAccount(slug, generation);
+  if (!result.ok || !workspaceId) return result;
+
+  for (const kind of MAIL_KEYCHAIN_SLOTS) {
+    try {
+      await deps.keychainDelete(workspaceId, `${slug}:${kind}`);
+    } catch {
+      // Best-effort, exactly like the `keychainSet` writes: the account is
+      // already gone from the config, and a leftover entry is not something
+      // the user can act on from here.
+    }
+  }
+
+  return result;
+}
+
 // -- SetupPanel: recovery rows (spec E §safety invariants + windows C1) -----
 
 /** A fail-closed account state that replaces the row's normal affordances with copy + its own CTAs. */

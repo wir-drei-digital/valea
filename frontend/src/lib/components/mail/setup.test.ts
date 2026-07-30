@@ -16,7 +16,9 @@ import {
   startMailSignIn,
   accountRecovery,
   isCorruptAccountMeta,
+  removeMailAccountAndForget,
   CORRUPT_ACCOUNT_META_ERROR,
+  type MailRemovalDeps,
   type MailSetupDeps,
   type MailSetupFormInput,
   type MailSetupSmtpInput,
@@ -891,5 +893,132 @@ describe('startMailSignIn', () => {
     expect(mailSignInErrorMessage('not_found')).toBe('No such account.');
     expect(mailSignInErrorMessage('no_url')).toMatch(/try again/i);
     expect(mailSignInErrorMessage('something-new')).toMatch(/try again/i);
+  });
+});
+
+// The keychain half of removing an account: `remove_mail_account` deletes
+// the config entry, and the OS keychain entries are this side's to clean up
+// (the backend cannot reach them). Same injected-deps shape as
+// `submitMailSetup` above — no vi.mock needed.
+describe('removeMailAccountAndForget', () => {
+  function makeRemovalDeps(overrides: Partial<MailRemovalDeps> = {}): MailRemovalDeps {
+    return {
+      api: { removeMailAccount: vi.fn(async () => ok({ removed: true })) },
+      inDesktop: vi.fn(() => true),
+      workspaceId: vi.fn(() => 'ws-1'),
+      keychainDelete: vi.fn(async () => {}),
+      ...overrides
+    };
+  }
+
+  it('deletes all three keychain slots after the backend confirms the removal', async () => {
+    const deps = makeRemovalDeps();
+
+    const result = await removeMailAccountAndForget('work-inbox', 3, deps);
+
+    expect(deps.api.removeMailAccount).toHaveBeenCalledWith('work-inbox', 3);
+    // Keyed by SLUG, not by login, and under the workspace UUID — the exact
+    // keys `submitMailSetup`/`persistMailOauthToken` write and
+    // `resupplySlot` reads back.
+    expect(deps.keychainDelete).toHaveBeenCalledWith('ws-1', 'work-inbox:imap');
+    expect(deps.keychainDelete).toHaveBeenCalledWith('ws-1', 'work-inbox:smtp');
+    expect(deps.keychainDelete).toHaveBeenCalledWith('ws-1', 'work-inbox:oauth');
+    expect(deps.keychainDelete).toHaveBeenCalledTimes(3);
+    expect(result).toEqual({ ok: true, data: { removed: true } });
+  });
+
+  // All three slots regardless of the account's auth mode: an account that
+  // was edited between a password and a provider sign-in has entries from
+  // both, and this function is never told which mode it is removing.
+  it('deletes the slots strictly AFTER the removal RPC, never before', async () => {
+    const order: string[] = [];
+    const deps = makeRemovalDeps({
+      api: {
+        removeMailAccount: vi.fn(async () => {
+          order.push('removeMailAccount');
+          return ok({ removed: true });
+        })
+      },
+      keychainDelete: vi.fn(async (_ws: string, username: string) => {
+        order.push(`keychainDelete:${username}`);
+      })
+    });
+
+    await removeMailAccountAndForget('work-inbox', 3, deps);
+
+    expect(order).toEqual([
+      'removeMailAccount',
+      'keychainDelete:work-inbox:imap',
+      'keychainDelete:work-inbox:smtp',
+      'keychainDelete:work-inbox:oauth'
+    ]);
+  });
+
+  // The account is still configured after a refusal — stripping its
+  // credentials would break an account the user still has.
+  it('touches nothing when the backend REFUSES the removal', async () => {
+    const deps = makeRemovalDeps({
+      api: { removeMailAccount: vi.fn(async () => fail('account_active')) }
+    });
+
+    const result = await removeMailAccountAndForget('work-inbox', 3, deps);
+
+    expect(result).toEqual({ ok: false, error: 'account_active' });
+    expect(deps.keychainDelete).not.toHaveBeenCalled();
+  });
+
+  // Best-effort, exactly like the `keychainSet` writes: a keychain that
+  // refuses (locked, no backend, a bridge that throws) must not turn a
+  // removal that already happened into a failure the user sees.
+  it('still reports success when keychainDelete REJECTS, and tries every slot', async () => {
+    const deps = makeRemovalDeps({
+      keychainDelete: vi.fn(async () => {
+        throw new Error('keychain unavailable');
+      })
+    });
+
+    const result = await removeMailAccountAndForget('work-inbox', 3, deps);
+
+    expect(result).toEqual({ ok: true, data: { removed: true } });
+    expect(deps.keychainDelete).toHaveBeenCalledTimes(3);
+  });
+
+  it('reads the workspace id BEFORE the removal — the last account takes it with it', async () => {
+    let accountRows = ['work-inbox'];
+    const deps = makeRemovalDeps({
+      api: {
+        removeMailAccount: vi.fn(async () => {
+          // What the store looks like once the row is gone.
+          accountRows = [];
+          return ok({ removed: true });
+        })
+      },
+      workspaceId: vi.fn(() => (accountRows.length > 0 ? 'ws-1' : null))
+    });
+
+    await removeMailAccountAndForget('work-inbox', 3, deps);
+
+    expect(deps.keychainDelete).toHaveBeenCalledWith('ws-1', 'work-inbox:imap');
+    expect(deps.keychainDelete).toHaveBeenCalledTimes(3);
+  });
+
+  it('skips the keychain entirely in the browser (dev) — there is none to clean', async () => {
+    const deps = makeRemovalDeps({ inDesktop: vi.fn(() => false) });
+
+    const result = await removeMailAccountAndForget('work-inbox', 3, deps);
+
+    expect(result).toEqual({ ok: true, data: { removed: true } });
+    expect(deps.api.removeMailAccount).toHaveBeenCalledWith('work-inbox', 3);
+    expect(deps.workspaceId).not.toHaveBeenCalled();
+    expect(deps.keychainDelete).not.toHaveBeenCalled();
+  });
+
+  it('still removes the account when no workspace id is known', async () => {
+    const deps = makeRemovalDeps({ workspaceId: vi.fn(() => null) });
+
+    const result = await removeMailAccountAndForget('work-inbox', 3, deps);
+
+    expect(result).toEqual({ ok: true, data: { removed: true } });
+    expect(deps.keychainDelete).not.toHaveBeenCalled();
   });
 });

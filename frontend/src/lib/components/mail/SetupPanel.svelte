@@ -50,7 +50,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { api, type MailAuthMode } from '$lib/api/client';
-  import { inDesktop, keychainSet } from '$lib/keychain';
+  import { inDesktop, keychainDelete, keychainSet } from '$lib/keychain';
   import { requestNotifyPermission } from '$lib/notify';
   import { prepareExternalOpen } from '$lib/shell/external-link';
   import { mailStore } from '$lib/stores/mail.svelte';
@@ -70,6 +70,7 @@
     needsMailSignIn,
     smtpFormError,
     startMailSignIn,
+    removeMailAccountAndForget,
     type MailSetupSmtpInput,
     accountRecovery
   } from './mail-shapes';
@@ -558,8 +559,22 @@
     await runAction(() => api.discardHeldFolder(slug, folder, confirmText, generation));
   }
 
+  /**
+   * Removal also forgets the account's keychain entries — see
+   * `removeMailAccountAndForget`, which owns the ordering (workspace id read
+   * before the RPC, deletes only after it succeeds) and keeps the keychain
+   * best-effort. The `workspaceId` closure reads it the same way
+   * `submitMailSetup`'s does, off whichever account row carries it.
+   */
   async function remove(slug: string): Promise<void> {
-    await runAction(() => api.removeMailAccount(slug, generation));
+    await runAction(() =>
+      removeMailAccountAndForget(slug, generation, {
+        api,
+        inDesktop,
+        workspaceId: () => mailStore.accounts.find((a) => a.workspaceId)?.workspaceId ?? null,
+        keychainDelete
+      })
+    );
   }
 
   // -- per-project mail access (the CONTEXT.md opt-in grammar) ---------------
