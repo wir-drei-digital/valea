@@ -277,6 +277,7 @@ defmodule Valea.Api.Mail do
   alias Valea.Mail.MessageFile
   alias Valea.Mail.Normalizer
   alias Valea.Mail.Trust
+  alias Valea.Mail.CertProbe
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Reconcile
   alias Valea.Mail.Settings
@@ -313,6 +314,34 @@ defmodule Valea.Api.Mail do
       argument :port, :integer, allow_nil?: false, constraints: [min: 1]
       argument :username, :string, allow_nil?: false
       argument :generation, :integer, allow_nil?: false
+
+      # The IMAP security mode: `"tls"` (implicit, IMAPS) or `"starttls"`.
+      # Blank/absent means the port's convention (993 → tls, 143 → starttls,
+      # anything else → tls), mirroring `Settings.fetch_imap_security/2`.
+      # An unrecognized value is refused (`"invalid_security"`) — never
+      # guessed. Exists for STARTTLS-only servers like ProtonMail Bridge
+      # (IMAP on localhost:1143).
+      argument :security, :string, allow_nil?: true
+
+      # The account's pinned TLS trust root — an absolute path to a PEM
+      # certificate that REPLACES the system CA store for this account's IMAP
+      # and SMTP connections (`verify_peer` stays on either way). Blank/absent
+      # means the system store, the right answer for every real provider; a
+      # local bridge with a self-signed certificate (ProtonMail Bridge's
+      # exported cert.pem) is what this is for. Same whole-entry rule as
+      # `auth`/`oauth_client_id`: an EDIT that omits it DROPS a stored value,
+      # which is why `get_mail_account_settings` returns it.
+      argument :tls_cacert_file, :string, allow_nil?: true
+
+      # The fetch-and-pin alternative to `tls_cacert_file`: the PEM bytes a
+      # `fetch_mail_server_cert` probe retrieved and the user confirmed by
+      # fingerprint. When present (non-blank) it WINS over `tls_cacert_file`:
+      # the backend writes it to `config/mail-certs/<slug>.pem` and pins
+      # `tls_cacert_file` to that path — one save, both facts. Unparseable
+      # bytes are refused (`"invalid_cert"`) before anything is written: a
+      # garbage pin file would fail every future connect with an opaque
+      # handshake error instead of a fixable form error.
+      argument :tls_cacert_pem, :string, allow_nil?: true
 
       # The optional v5 SMTP block, flat (this resource's argument style is
       # flat throughout, never nested maps). ALL of them blank/absent = a
@@ -371,14 +400,23 @@ defmodule Valea.Api.Mail do
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- validate_slug(slug),
              {:ok, auth} <- auth_mode(input.arguments[:auth]),
+             {:ok, security} <- security_mode(input.arguments[:security]),
+             {:ok, cert_pem} <- validate_cert_pem(input.arguments[:tls_cacert_pem]),
              :ok <- check_identity_for_setup(root, slug, host, username),
              :ok <-
                Settings.upsert_account!(root, slug, %{
                  host: host,
                  port: port,
                  username: username,
+                 security: security,
                  auth: auth,
                  oauth_client_id: blank_to_nil(input.arguments[:oauth_client_id]),
+                 # A confirmed fetched cert is written first and pins the
+                 # path; a refused upsert after that leaves an orphan pem
+                 # file nothing references — overwritten by the next save,
+                 # never a dangling trust decision.
+                 tls_cacert_file:
+                   pinned_cert_path(root, slug, cert_pem, input.arguments[:tls_cacert_file]),
                  smtp: smtp_attrs(input.arguments),
                  notifications: input.arguments[:notifications] == true
                }) do
@@ -411,6 +449,10 @@ defmodule Valea.Api.Mail do
                         fields: [
                           host: [type: :string, allow_nil?: false],
                           port: [type: :integer, allow_nil?: false],
+                          # The IMAP security mode, stringified from the
+                          # settings atom (`"tls"` / `"starttls"`) — always
+                          # present (the load path resolves a port default).
+                          security: [type: :string, allow_nil?: false],
                           username: [type: :string, allow_nil?: false],
                           # The SASL mode, stringified from the settings atom
                           # (`"password"` / `"oauth2"`). A STRING, so the
@@ -418,6 +460,11 @@ defmodule Valea.Api.Mail do
                           # never `false`, and a nested atom key is fine for
                           # a value that always has one.
                           auth: [type: :string, allow_nil?: false],
+                          # The pinned trust root path, `null` for an account
+                          # trusting the system CA store (the normal state).
+                          # Returned so the edit form can send it back — an
+                          # EDIT that omits it drops it, like oauth_client_id.
+                          tls_cacert_file: [type: :string, allow_nil?: true],
                           # The public client id override, `null` for an
                           # account that takes this build's configured one.
                           # A string, so the falsy-map-field rule doesn't
@@ -459,6 +506,43 @@ defmodule Valea.Api.Mail do
            }}
         else
           {:error, {:invalid, _reason}} -> {:error, error_for(:not_found)}
+          {:error, reason} -> {:error, error_for(reason)}
+        end
+      end
+    end
+
+    action :fetch_mail_server_cert, :map do
+      # Trust-on-first-use probe (`Valea.Mail.CertProbe`): returns whatever
+      # certificate the server PRESENTS — deliberately unverified, because
+      # its output is what the user confirms by fingerprint BEFORE it becomes
+      # the account's pinned trust root (`setup_mail_account`'s
+      # `tls_cacert_pem`). No credential is involved and nothing from the
+      # probe connection is trusted or reused. No generation guard: this
+      # reads no workspace state and writes nothing.
+      constraints fields: [
+                    pem: [type: :string, allow_nil?: false],
+                    sha256: [type: :string, allow_nil?: false],
+                    subject: [type: :string, allow_nil?: false],
+                    not_after: [type: :string, allow_nil?: false]
+                  ]
+
+      argument :host, :string, allow_nil?: false
+      argument :port, :integer, allow_nil?: false, constraints: [min: 1]
+      # Required and concrete — there is no port convention to fall back on
+      # here; the setup form resolves a blank selector before asking.
+      argument :security, :string, allow_nil?: false
+
+      run fn input, _ctx ->
+        with {:ok, security} <- probe_security(input.arguments.security),
+             {:ok, cert} <- fetch_cert(input.arguments.host, input.arguments.port, security) do
+          {:ok,
+           %{
+             pem: cert.pem,
+             sha256: cert.sha256,
+             subject: cert.subject,
+             not_after: cert.not_after
+           }}
+        else
           {:error, reason} -> {:error, error_for(reason)}
         end
       end
@@ -1511,6 +1595,60 @@ defmodule Valea.Api.Mail do
   defp auth_mode("oauth2"), do: {:ok, :oauth2}
   defp auth_mode(_other), do: {:error, :invalid_auth}
 
+  # `setup_mail_account`'s `security` argument, same posture as `auth_mode/1`.
+  # `nil` here means "use the port's convention" — `Settings.upsert_account!/3`
+  # resolves it, so the two grammars can't drift.
+  defp security_mode(nil), do: {:ok, nil}
+  defp security_mode(""), do: {:ok, nil}
+  defp security_mode("tls"), do: {:ok, :tls}
+  defp security_mode("starttls"), do: {:ok, :starttls}
+  defp security_mode(_other), do: {:error, :invalid_security}
+
+  # `fetch_mail_server_cert`'s security argument: the probe needs a CONCRETE
+  # mode — blank is not a state here (see the argument comment).
+  defp probe_security("tls"), do: {:ok, :tls}
+  defp probe_security("starttls"), do: {:ok, :starttls}
+  defp probe_security(_other), do: {:error, :invalid_security}
+
+  # Any transport-level probe failure collapses to one code: the form can
+  # only ever say "check the host, port, and security mode" — the
+  # distinctions (refused STARTTLS, timeout, connection refused) don't
+  # change what the user does next, and the raw reason may embed noise.
+  defp fetch_cert(host, port, security) do
+    case CertProbe.fetch(host, port, security) do
+      {:ok, cert} -> {:ok, cert}
+      {:error, _reason} -> {:error, :cert_fetch_failed}
+    end
+  end
+
+  # `setup_mail_account`'s `tls_cacert_pem`, validated before ANY write: at
+  # least one PEM `Certificate` entry must parse (`:public_key.pem_decode/1`
+  # skips garbage rather than raising, so an empty result IS the failure).
+  # Normalized to end in exactly one newline — the string type's trimming
+  # (and `blank_to_nil/1`'s) strips the PEM's conventional trailing newline,
+  # and the written file should match what a hand-exported cert.pem looks
+  # like byte-for-byte.
+  defp validate_cert_pem(value) do
+    case blank_to_nil(value) do
+      nil ->
+        {:ok, nil}
+
+      pem ->
+        case for {:Certificate, _der, :not_encrypted} <- :public_key.pem_decode(pem), do: :ok do
+          [] -> {:error, :invalid_cert}
+          _certs -> {:ok, pem <> "\n"}
+        end
+    end
+  end
+
+  # The pinned trust root the account entry gets: a confirmed fetched cert
+  # is written under `config/mail-certs/` and WINS; otherwise the path
+  # argument (or nothing) applies verbatim.
+  defp pinned_cert_path(_root, _slug, nil, path_arg), do: blank_to_nil(path_arg)
+
+  defp pinned_cert_path(root, slug, pem, _path_arg),
+    do: Settings.write_account_cert!(root, slug, pem)
+
   # `nil` (the argument omitted) is `:imap` — what every caller predating the
   # SMTP slot means. Never `String.to_atom/1` on RPC input.
   defp credential_kind(nil), do: {:ok, :imap}
@@ -1827,9 +1965,11 @@ defmodule Valea.Api.Mail do
     %{
       host: imap.host,
       port: imap.port,
+      security: to_string(imap.security),
       username: imap.username,
       auth: to_string(auth),
       oauth_client_id: oauth_client_id,
+      tls_cacert_file: settings.tls_cacert_file,
       smtp: smtp_settings_payload(smtp)
     }
   end

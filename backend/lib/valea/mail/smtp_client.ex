@@ -15,12 +15,15 @@ defmodule Valea.Mail.SmtpClient do
       returns. There is no retry, no reconnect, no second `DATA`.
     * **TLS is mandatory and verified**, in both security modes:
       `verify: :verify_peer`, the system CA store, SNI, and hostname
-      verification. The only thing `opts[:tls_opts]` can override is which
-      trust root is used (tests substitute the fixture CA via `cacertfile:`);
-      it must never be used to weaken or disable `verify_peer`. This is the
-      same posture and the same merge convention as
-      `Valea.Mail.ImapClient` — the two constructions are intentionally
-      identical and must stay in lockstep.
+      verification. The only thing that can vary is WHICH trust root is
+      used — the account's pinned `config.cacertfile`
+      (`Settings.smtp_config/1` stamping `tls_cacert_file:`, e.g. ProtonMail
+      Bridge's exported certificate), or `opts[:tls_opts]` (tests substitute
+      the fixture CA, and keep the final say over the config value). Neither
+      may ever be used to weaken or disable `verify_peer`. This is the same
+      posture and the same merge convention as `Valea.Mail.ImapClient` — the
+      two constructions are intentionally identical and must stay in
+      lockstep.
     * **AUTH only over TLS.** On `:starttls` the credential is never even
       formatted before the upgrade succeeds, and the mechanism list is taken
       ONLY from the post-upgrade `EHLO` (RFC 3207 §4.2 — pre-TLS extensions
@@ -117,7 +120,7 @@ defmodule Valea.Mail.SmtpClient do
 
   defp connect(%{security: :tls} = config, opts) do
     host = to_string(config.host)
-    tls_opts = merge_tls_opts(default_tls_opts(host), Keyword.get(opts, :tls_opts, []))
+    tls_opts = merge_tls_opts(default_tls_opts(host), tls_override(config, opts))
     timeout = timeout(opts)
 
     case :ssl.connect(String.to_charlist(host), config.port, tls_opts ++ @socket_opts, timeout) do
@@ -179,7 +182,7 @@ defmodule Valea.Mail.SmtpClient do
 
   defp upgrade_tls(%Session{} = session, config, opts) do
     host = to_string(config.host)
-    tls_opts = merge_tls_opts(default_tls_opts(host), Keyword.get(opts, :tls_opts, []))
+    tls_opts = merge_tls_opts(default_tls_opts(host), tls_override(config, opts))
 
     case :ssl.connect(session.socket, tls_opts ++ @socket_opts, session.timeout) do
       {:ok, socket} ->
@@ -597,6 +600,50 @@ defmodule Valea.Mail.SmtpClient do
       depth: 3
     ]
   end
+
+  # The account's pinned trust root (`Settings.smtp_config/1`'s `cacertfile`,
+  # i.e. `tls_cacert_file:` in `config/mail.yaml` — e.g. ProtonMail Bridge's
+  # exported certificate), merged UNDER `opts[:tls_opts]` so a test's explicit
+  # override keeps the final say. Substitutes WHICH root is trusted and
+  # nothing else — `verify: :verify_peer` stays untouched. Same construction
+  # as `Valea.Mail.ImapClient.tls_override/2` (see the pinning comment there:
+  # OTP refuses a self-signed PEER cert even out of the trust store, so the
+  # pin carries a verify_fun accepting a byte-identical self-signed peer and
+  # nothing else).
+  defp tls_override(config, opts) do
+    config_override =
+      case Map.get(config, :cacertfile) do
+        nil -> []
+        path -> pinned_trust_opts(path)
+      end
+
+    Keyword.merge(config_override, Keyword.get(opts, :tls_opts, []))
+  end
+
+  defp pinned_trust_opts(path) do
+    [cacertfile: path, verify_fun: {&pinned_verify/3, pinned_ders(path)}]
+  end
+
+  defp pinned_ders(path) do
+    case File.read(path) do
+      {:ok, pem} ->
+        for {:Certificate, der, :not_encrypted} <- :public_key.pem_decode(pem), do: der
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp pinned_verify(peer_cert, {:bad_cert, :selfsigned_peer} = event, ders) do
+    if :public_key.pkix_encode(:OTPCertificate, peer_cert, :otp) in ders,
+      do: {:valid, ders},
+      else: {:fail, event}
+  end
+
+  defp pinned_verify(_peer, {:bad_cert, _} = event, _ders), do: {:fail, event}
+  defp pinned_verify(_peer, {:extension, _}, ders), do: {:unknown, ders}
+  defp pinned_verify(_peer, :valid, ders), do: {:valid, ders}
+  defp pinned_verify(_peer, :valid_peer, ders), do: {:valid, ders}
 
   # `:ssl` rejects specifying both `cacerts` and `cacertfile` at once, so if the
   # override touches either key the default `cacerts` is dropped rather than

@@ -58,6 +58,7 @@ defmodule Valea.Api do
       rpc_action(:setup_mail_account, :setup_mail_account)
       rpc_action(:get_mail_account_settings, :get_mail_account_settings)
       rpc_action(:mail_autoconfig, :mail_autoconfig)
+      rpc_action(:fetch_mail_server_cert, :fetch_mail_server_cert)
       rpc_action(:remove_mail_account, :remove_mail_account)
       rpc_action(:purge_mail_account_files, :purge_mail_account_files)
       rpc_action(:readopt_mail_account, :readopt_mail_account)

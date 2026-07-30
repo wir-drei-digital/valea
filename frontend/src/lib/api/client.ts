@@ -65,6 +65,8 @@ import {
   setupMailAccountChannel,
   getMailAccountSettings as httpGetMailAccountSettings,
   getMailAccountSettingsChannel,
+  fetchMailServerCert as httpFetchMailServerCert,
+  fetchMailServerCertChannel,
   mailAutoconfig as httpMailAutoconfig,
   mailAutoconfigChannel,
   setMailCredential as httpSetMailCredential,
@@ -225,6 +227,7 @@ import type {
   MailStatusFields,
   SetupMailAccountFields,
   GetMailAccountSettingsFields,
+  FetchMailServerCertFields,
   MailAutoconfigFields,
   SetMailCredentialFields,
   StartMailOauthFields,
@@ -672,9 +675,11 @@ export const getMailAccountSettingsFields: GetMailAccountSettingsFields = [
     account: [
       'host',
       'port',
+      'security',
       'username',
       'auth',
       'oauthClientId',
+      'tlsCacertFile',
       { smtp: ['host', 'port', 'security', 'username', 'from', 'fromName'] }
     ]
   }
@@ -683,6 +688,12 @@ const mailAutoconfigFields: MailAutoconfigFields = [
   { imap: ['host', 'port', 'security'] },
   { smtp: ['host', 'port', 'security'] },
   'source'
+];
+const fetchMailServerCertFields: FetchMailServerCertFields = [
+  'pem',
+  'sha256',
+  'subject',
+  'notAfter'
 ];
 const setMailCredentialFields: SetMailCredentialFields = ['accepted'];
 const startMailOauthFields: StartMailOauthFields = ['url'];
@@ -1058,6 +1069,15 @@ function callMailAutoconfigChannel(
   );
 }
 
+function callFetchMailServerCertChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: { host: string; port: number; security: string }
+) {
+  return wrapChannelCall((handlers) =>
+    fetchMailServerCertChannel({ channel, input, fields: fetchMailServerCertFields, ...handlers })
+  );
+}
+
 function callSetupMailAccountChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: {
@@ -1075,6 +1095,9 @@ function callSetupMailAccountChannel(
     notifications?: boolean | null;
     auth?: MailAuthMode | null;
     oauthClientId?: string | null;
+    security?: string | null;
+    tlsCacertFile?: string | null;
+    tlsCacertPem?: string | null;
   }
 ) {
   return wrapChannelCall((handlers) =>
@@ -2338,6 +2361,11 @@ export const api = {
   // connect would then put the access token in the LOGIN password field. Every
   // caller that saves an existing account must carry the mode through (see
   // `submitMailSetup`).
+  // `security`/`tlsCacertFile` trail the list (appended after the fact, so
+  // every older call site keeps meaning what it meant): the IMAP security
+  // mode (`"tls"` | `"starttls"`, `null` = the port's convention) and the
+  // pinned TLS trust-root path (`null` = the system CA store) — the
+  // ProtonMail Bridge pair.
   setupMailAccount: (
     account: string,
     host: string,
@@ -2347,7 +2375,10 @@ export const api = {
     smtp: MailSmtpSetup | null = null,
     notifications = false,
     auth: MailAuthMode = 'password',
-    oauthClientId: string | null = null
+    oauthClientId: string | null = null,
+    security: string | null = null,
+    tlsCacertFile: string | null = null,
+    tlsCacertPem: string | null = null
   ) =>
     runRpc(
       (channel) =>
@@ -2360,6 +2391,9 @@ export const api = {
           notifications,
           auth,
           oauthClientId,
+          security,
+          tlsCacertFile,
+          tlsCacertPem,
           ...smtpSetupInput(smtp)
         }),
       () =>
@@ -2374,6 +2408,9 @@ export const api = {
               notifications,
               auth,
               oauthClientId,
+              security,
+              tlsCacertFile,
+              tlsCacertPem,
               ...smtpSetupInput(smtp)
             },
             fields: setupMailAccountFields
@@ -2389,6 +2426,20 @@ export const api = {
       () =>
         httpGetMailAccountSettings(
           withAuth({ input: { account }, fields: getMailAccountSettingsFields })
+        )
+    ),
+
+  // Trust-on-first-use probe (`Valea.Mail.CertProbe`): the certificate the
+  // server PRESENTS — unverified by design, for the human to confirm by
+  // fingerprint before it becomes the account's pin (`tlsCacertPem` on save).
+  // `security` must be concrete ("tls" | "starttls"); the form resolves a
+  // blank selector by the port convention before calling.
+  fetchMailServerCert: (host: string, port: number, security: string) =>
+    runRpc(
+      (channel) => callFetchMailServerCertChannel(channel, { host, port, security }),
+      () =>
+        httpFetchMailServerCert(
+          withAuth({ input: { host, port, security }, fields: fetchMailServerCertFields })
         )
     ),
 

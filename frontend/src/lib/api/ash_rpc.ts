@@ -3820,15 +3820,90 @@ export async function discardHeldFolderChannel<Fields extends DiscardHeldFolderF
 }
 
 
+export type FetchMailServerCertInput = {
+  host: string;
+  port: number;
+  security: string;
+};
+
+export type FetchMailServerCertFields = UnifiedFieldSelection<{pem: string, sha256: string, subject: string, notAfter: string, __type: "TypedMap", __primitiveFields: "pem" | "sha256" | "subject" | "notAfter"}>[];
+
+export type InferFetchMailServerCertResult<
+  Fields extends FetchMailServerCertFields | undefined,
+> = InferResult<{pem: string, sha256: string, subject: string, notAfter: string, __type: "TypedMap", __primitiveFields: "pem" | "sha256" | "subject" | "notAfter"}, Fields>;
+
+export type FetchMailServerCertResult<Fields extends FetchMailServerCertFields | undefined = undefined> = | { success: true; data: InferFetchMailServerCertResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function fetchMailServerCert<Fields extends FetchMailServerCertFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: FetchMailServerCertInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<FetchMailServerCertResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "fetch_mail_server_cert",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<FetchMailServerCertResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Mail
+ *
+ * @ashActionType :action
+ */
+export async function fetchMailServerCertChannel<Fields extends FetchMailServerCertFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: FetchMailServerCertInput;
+  fields: Fields;
+  resultHandler: (result: FetchMailServerCertResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<FetchMailServerCertResult<Fields>>(
+    config.channel,
+    {
+    action: "fetch_mail_server_cert",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type GetMailAccountSettingsInput = {
   account: string;
 };
 
-export type GetMailAccountSettingsFields = UnifiedFieldSelection<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, oauthClientId: string | null, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth" | "oauthClientId"}, __type: "TypedMap", __primitiveFields: "notifications"}>[];
+export type GetMailAccountSettingsFields = UnifiedFieldSelection<{notifications: boolean, account: {host: string, port: number, security: string, username: string, auth: string, tlsCacertFile: string | null, oauthClientId: string | null, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "auth" | "tlsCacertFile" | "oauthClientId"}, __type: "TypedMap", __primitiveFields: "notifications"}>[];
 
 export type InferGetMailAccountSettingsResult<
   Fields extends GetMailAccountSettingsFields | undefined,
-> = InferResult<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, oauthClientId: string | null, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth" | "oauthClientId"}, __type: "TypedMap", __primitiveFields: "notifications"}, Fields>;
+> = InferResult<{notifications: boolean, account: {host: string, port: number, security: string, username: string, auth: string, tlsCacertFile: string | null, oauthClientId: string | null, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "auth" | "tlsCacertFile" | "oauthClientId"}, __type: "TypedMap", __primitiveFields: "notifications"}, Fields>;
 
 export type GetMailAccountSettingsResult<Fields extends GetMailAccountSettingsFields | undefined = undefined> = | { success: true; data: InferGetMailAccountSettingsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -5667,6 +5742,9 @@ export type SetupMailAccountInput = {
   port: number;
   username: string;
   generation: number;
+  security?: string | null;
+  tlsCacertFile?: string | null;
+  tlsCacertPem?: string | null;
   smtpHost?: string | null;
   smtpPort?: number | null;
   smtpSecurity?: string | null;

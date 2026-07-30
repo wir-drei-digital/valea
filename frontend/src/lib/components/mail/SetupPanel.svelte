@@ -69,6 +69,8 @@
     mailSlugValid,
     needsMailSignIn,
     smtpFormError,
+    imapSecurityError,
+    mailCertFetchErrorMessage,
     startMailSignIn,
     mailKeychainWorkspaceId,
     removeMailAccountAndForget,
@@ -87,6 +89,58 @@
   let portText = $state('993');
   let username = $state('');
   let secret = $state('');
+
+  // The IMAP security mode. Blank = the backend's port convention (993 → TLS,
+  // 143 → STARTTLS, anything else implicit TLS); the explicit choice exists
+  // for STARTTLS-only servers on nonstandard ports — ProtonMail Bridge's
+  // localhost:1143 being the case that motivated it.
+  let imapSecurity: '' | 'tls' | 'starttls' = $state('');
+
+  // The account's pinned TLS trust root (a PEM path), blank for the system
+  // CA store. Covers BOTH protocols — it is the account's bridge, not one
+  // socket's. Same whole-entry round trip as `oauthClientId`: edit prefills
+  // it and sends it back, or a save would silently drop it.
+  let tlsCacertFile = $state('');
+
+  // The fetch-and-pin alternative: the certificate the server PRESENTED
+  // (`fetchMailServerCert` — deliberately unverified; THIS display is the
+  // verification, a human reading the fingerprint before saving). When set
+  // it wins over the path field, which the fetch clears to keep the form
+  // stating one trust decision at a time.
+  type FetchedCert = { pem: string; sha256: string; subject: string; notAfter: string };
+  let fetchedCert = $state<FetchedCert | null>(null);
+  let certFetching = $state(false);
+  let certFetchError: string | null = $state(null);
+
+  async function fetchServerCert(): Promise<void> {
+    certFetchError = null;
+    if (!host.trim()) {
+      certFetchError = 'Enter the mail server host first.';
+      return;
+    }
+    const port = Number(portText);
+    if (!Number.isFinite(port) || port <= 0) {
+      certFetchError = 'Enter a valid port first.';
+      return;
+    }
+
+    // The probe needs a CONCRETE mode; a blank selector resolves by the same
+    // port convention the backend applies (143 → STARTTLS, else implicit).
+    const security = imapSecurity !== '' ? imapSecurity : port === 143 ? 'starttls' : 'tls';
+
+    certFetching = true;
+    try {
+      const result = await api.fetchMailServerCert(host.trim(), port, security);
+      if (!result.ok) {
+        certFetchError = mailCertFetchErrorMessage(result.error);
+        return;
+      }
+      fetchedCert = result.data as FetchedCert;
+      tlsCacertFile = '';
+    } finally {
+      certFetching = false;
+    }
+  }
 
   // The optional SMTP block (spec G). Off by default: an account with no
   // `smtp:` is a push-only account, which is what every account was before
@@ -198,6 +252,11 @@
     portText = '993';
     username = '';
     secret = '';
+    imapSecurity = '';
+    tlsCacertFile = '';
+    fetchedCert = null;
+    certFetching = false;
+    certFetchError = null;
     smtpEnabled = false;
     smtpHost = '';
     smtpPortText = '587';
@@ -256,9 +315,11 @@
       account: {
         host: string;
         port: number;
+        security: string;
         username: string;
         auth: string;
         oauthClientId: string | null;
+        tlsCacertFile: string | null;
         smtp: {
           host: string;
           port: number;
@@ -275,6 +336,11 @@
     // Read back so `handleSubmit` can return them unchanged — see `authMode`.
     authMode = mailAuthMode(data.account.auth);
     oauthClientId = data.account.oauthClientId ?? null;
+    // The stored mode is always resolved (`"tls"`/`"starttls"`), so prefill
+    // it concretely — a STARTTLS account whose edit sent blank would still
+    // resolve right on 143, but NOT on a bridge port like 1143.
+    imapSecurity = data.account.security === 'starttls' ? 'starttls' : 'tls';
+    tlsCacertFile = data.account.tlsCacertFile ?? '';
     // Prefilled WITHOUT re-asking the OS: an account already opted in has a
     // permission from before, and re-prompting on every edit-form open is
     // exactly what "lazily, on the first enable" rules out.
@@ -327,6 +393,9 @@
       if (host.trim() === '') {
         host = data.imap.host;
         portText = String(data.imap.port);
+        // Blank already means "the port's convention", so only a guessed
+        // STARTTLS server needs the mode stated.
+        imapSecurity = data.imap.security === 'starttls' ? 'starttls' : '';
       }
       applySmtpGuess();
       if (account.trim() === '') {
@@ -377,6 +446,10 @@
     if (!host.trim()) return 'Enter the mail server host.';
     const port = Number(portText);
     if (!Number.isFinite(port) || port <= 0) return 'Enter a valid port.';
+    // `setup_mail_account` answers a reason-free `invalid_security`, so the
+    // two checkable port-convention contradictions are caught here first.
+    const securityError = imapSecurityError(port, imapSecurity);
+    if (securityError) return securityError;
     if (!username.trim()) return 'Enter the mailbox username.';
     // Edit mode: blank = keep the stored password. On the OAuth route there is
     // no password at all — the provider's consent screen is the credential.
@@ -433,7 +506,10 @@
         smtp: smtpEnabled ? smtpInput() : null,
         notifications: notificationsEnabled,
         auth: mode,
-        oauthClientId
+        oauthClientId,
+        security: imapSecurity,
+        tlsCacertFile: tlsCacertFile.trim(),
+        tlsCacertPem: fetchedCert?.pem ?? ''
       },
       {
         api,
@@ -968,10 +1044,75 @@
         <Input id="mail-setup-host" bind:value={host} disabled={submitting} placeholder="imap.example.com" />
       </div>
 
+      <div class="flex items-end gap-2">
+        <div class="flex flex-1 flex-col gap-1.5">
+          <Label for="mail-setup-port">Port</Label>
+          <Input id="mail-setup-port" inputmode="numeric" bind:value={portText} disabled={submitting} />
+        </div>
+        <div class="flex flex-1 flex-col gap-1.5">
+          <Label for="mail-setup-security">Security</Label>
+          <select
+            id="mail-setup-security"
+            class="border-paper-hairline bg-paper-surface rounded-[7px] border px-2 py-1.5 text-[12.5px]"
+            bind:value={imapSecurity}
+            disabled={submitting}
+          >
+            <option value="">Match the port</option>
+            <option value="tls">TLS (993)</option>
+            <option value="starttls">STARTTLS (143)</option>
+          </select>
+        </div>
+      </div>
+      <p class="text-ink-meta max-w-[420px] text-[11.5px]">
+        TLS, always on. ProtonMail Bridge: host 127.0.0.1, port 1143, STARTTLS.
+      </p>
+
       <div class="flex flex-col gap-1.5">
-        <Label for="mail-setup-port">Port</Label>
-        <Input id="mail-setup-port" inputmode="numeric" bind:value={portText} disabled={submitting} />
-        <p class="text-ink-meta text-[11.5px]">TLS, always on</p>
+        <Label for="mail-setup-cacert">Trusted certificate (optional)</Label>
+        {#if fetchedCert}
+          <div class="border-paper-hairline bg-paper-surface flex flex-col gap-1 rounded-[7px] border px-2.5 py-2">
+            <p class="text-[12px]">{fetchedCert.subject}</p>
+            <p class="text-ink-meta font-mono text-[10.5px] break-all">SHA-256 {fetchedCert.sha256}</p>
+            <p class="text-ink-meta text-[11.5px]">
+              Valid until {fetchedCert.notAfter}. Saved with this account; only this exact certificate
+              will be trusted.
+            </p>
+            <button
+              type="button"
+              class="text-suggest-ink self-start text-[12px] underline underline-offset-2"
+              disabled={submitting}
+              onclick={() => (fetchedCert = null)}
+            >
+              Clear
+            </button>
+          </div>
+        {:else}
+          <div class="flex items-center gap-2">
+            <Input
+              id="mail-setup-cacert"
+              class="flex-1"
+              bind:value={tlsCacertFile}
+              disabled={submitting || certFetching}
+              placeholder="/path/to/cert.pem"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={submitting || certFetching}
+              onclick={() => void fetchServerCert()}
+            >
+              {certFetching ? 'Fetching…' : 'Fetch from server'}
+            </Button>
+          </div>
+          {#if certFetchError}
+            <p role="alert" class="text-warn-ink text-[11.5px]">{certFetchError}</p>
+          {/if}
+          <p class="text-ink-meta max-w-[420px] text-[11.5px]">
+            Only for a local bridge with its own certificate (like ProtonMail Bridge). Fetch it from
+            the server above, or point at an exported cert.pem. Applies to IMAP and SMTP.
+          </p>
+        {/if}
       </div>
 
       {#if useOauth}

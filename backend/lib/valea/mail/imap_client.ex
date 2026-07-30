@@ -30,13 +30,22 @@ defmodule Valea.Mail.ImapClient do
       one. The ONE long-lived exception is `Valea.Mail.IdleWatcher`, which
       holds a connection open for the sole purpose of IDLE (see the IDLE
       section below); it issues `EXAMINE` and `IDLE` and nothing else.
-    * **TLS is mandatory and verified.** `connect/3` always passes
+    * **TLS is mandatory and verified**, in both security modes
+      (`config.security`, stamped by `Valea.Mail.Settings.imap_config/1`):
+      implicit on connect (`:tls`, the default — IMAPS/993) or a STARTTLS
+      upgrade (`:starttls` — 143, and ProtonMail Bridge's 1143). On
+      `:starttls` the credential is never even formatted before the upgrade
+      succeeds, the plain phase accepts exactly one greeting and one tagged
+      STARTTLS reply, and any bytes buffered across the upgrade fail the
+      connect as an injection attempt (same posture as
+      `Valea.Mail.SmtpClient`). `connect/3` always passes
       `verify: :verify_peer` plus hostname verification and SNI; the only
-      thing a caller can override via `opts[:tls_opts]` is which trust
-      root is used (tests substitute a fixture CA via `cacertfile:`). This
-      override must never be used in production code to weaken or disable
-      `verify_peer` — its only sanctioned use is injecting a test fixture
-      CA.
+      things that can vary are WHICH trust root is used — the account's
+      pinned `config.cacertfile` (`tls_cacert_file:` in `config/mail.yaml`,
+      e.g. a local bridge's exported certificate), or `opts[:tls_opts]`
+      (tests substitute the fixture CA, and keep the final say over the
+      config value). Neither override may ever be used to weaken or disable
+      `verify_peer`.
 
   ## Conn shape
 
@@ -109,24 +118,30 @@ defmodule Valea.Mail.ImapClient do
     host = to_string(config.host)
     port = config.port
     username = config.username
-    # Resolved BEFORE the socket exists: an auth mode this client cannot honor
-    # must fail without a connection to leak (see `auth_mode/1`).
+    # Resolved BEFORE the socket exists: an auth mode (or security mode) this
+    # client cannot honor must fail without a connection to leak (see
+    # `auth_mode/1` / `security_mode/1`).
     auth = auth_mode(config)
+    security = security_mode(config)
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
-    tls_opts = merge_tls_opts(default_tls_opts(host), Keyword.get(opts, :tls_opts, []))
+    tls_opts = merge_tls_opts(default_tls_opts(host), tls_override(config, opts))
     connect_opts = tls_opts ++ [active: false, mode: :binary, packet: :raw]
+    tag = :counters.new(1, [])
 
-    case :ssl.connect(String.to_charlist(host), port, connect_opts) do
+    # `establish/6` hands back a VERIFIED TLS socket with the greeting already
+    # consumed, whichever security mode got it there — from here on the two
+    # modes are indistinguishable, and AUTH structurally cannot happen before
+    # the TLS layer is up.
+    case establish(security, host, port, connect_opts, tag, recv_timeout) do
       {:ok, socket} ->
         conn = %Conn{
           socket: socket,
           capabilities: MapSet.new(),
-          tag: :counters.new(1, []),
+          tag: tag,
           recv_timeout: recv_timeout
         }
 
-        with {:ok, conn} <- read_greeting(conn),
-             {:ok, conn} <- authenticate(conn, auth, username, credential),
+        with {:ok, conn} <- authenticate(conn, auth, username, credential),
              {:ok, conn} <- refresh_capabilities(conn) do
           {:ok, conn}
         else
@@ -502,13 +517,173 @@ defmodule Valea.Mail.ImapClient do
     Keyword.merge(defaults, override)
   end
 
-  defp read_greeting(conn) do
-    case read_until_response(conn.socket, conn.recv_timeout) do
-      {:ok, {:untagged, _line}, _rest} -> {:ok, conn}
+  # -- socket establishment (implicit TLS or STARTTLS, greeting included) ----
+
+  # `:tls` — TLS from the first byte (IMAPS). The greeting arrives over the
+  # already-verified layer.
+  defp establish(:tls, host, port, connect_opts, _tag, recv_timeout) do
+    case :ssl.connect(String.to_charlist(host), port, connect_opts) do
+      {:ok, socket} ->
+        case read_until_response(socket, recv_timeout) do
+          {:ok, {:untagged, _line}, _rest} ->
+            {:ok, socket}
+
+          {:ok, other, _rest} ->
+            :ssl.close(socket)
+            {:error, {:unexpected_greeting, other}}
+
+          {:error, reason} ->
+            :ssl.close(socket)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # `:starttls` (RFC 3501 §6.2.1, e.g. ProtonMail Bridge's 1143) — plaintext
+  # greeting, one STARTTLS command, then the SAME verified `:ssl.connect`
+  # upgrade the implicit path does. The plain phase carries no credential
+  # (AUTH happens strictly after `establish/6` returns) and accepts the
+  # minimum of protocol: one untagged greeting, one tagged STARTTLS reply,
+  # nothing else. Same posture as `Valea.Mail.SmtpClient.secure/3`.
+  defp establish(:starttls, host, port, connect_opts, tag, recv_timeout) do
+    plain_opts = [active: false, mode: :binary, packet: :raw]
+
+    case :gen_tcp.connect(String.to_charlist(host), port, plain_opts, recv_timeout) do
+      {:ok, plain} ->
+        with {:ok, buffer} <- plain_greeting(plain, recv_timeout),
+             :ok <- starttls_exchange(plain, next_tag(tag), recv_timeout, buffer),
+             {:ok, socket} <- :ssl.connect(plain, connect_opts, recv_timeout) do
+          {:ok, socket}
+        else
+          {:error, reason} ->
+            :gen_tcp.close(plain)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp plain_greeting(socket, timeout) do
+    case read_plain_response(socket, timeout, "") do
+      {:ok, {:untagged, _line}, rest} -> {:ok, rest}
       {:ok, other, _rest} -> {:error, {:unexpected_greeting, other}}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # A refusal keeps its status + text (the doctor surfaces both); any residual
+  # bytes behind the OK were written by whoever holds the plaintext socket
+  # BEFORE the TLS layer exists — an injector, not the authenticated server —
+  # so they fail the connect rather than being silently carried across the
+  # upgrade. Mirrors `Valea.Mail.SmtpClient.upgrade_tls/3`'s guard.
+  defp starttls_exchange(socket, tag, timeout, buffer) do
+    case :gen_tcp.send(socket, [tag, " STARTTLS\r\n"]) do
+      :ok ->
+        case read_plain_response(socket, timeout, buffer) do
+          {:ok, {:tagged, ^tag, :ok, _text}, ""} ->
+            :ok
+
+          {:ok, {:tagged, ^tag, :ok, _text}, _residual} ->
+            {:error, :pretls_data_injection}
+
+          {:ok, {:tagged, ^tag, status, text}, _rest} ->
+            {:error, {:starttls_refused, status, text}}
+
+          {:ok, other, _rest} ->
+            {:error, {:unexpected_response, other}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The pre-upgrade twin of `read_until_response/3`: same `Wire` codec, plain
+  # `:gen_tcp` reads. Exists ONLY for the two plaintext responses a STARTTLS
+  # connect consumes — nothing else may read a plaintext socket.
+  defp read_plain_response(socket, timeout, buffer) do
+    case Wire.pull(buffer) do
+      {:ok, response, rest} ->
+        {:ok, response, rest}
+
+      :incomplete ->
+        case :gen_tcp.recv(socket, 0, timeout) do
+          {:ok, data} -> read_plain_response(socket, timeout, buffer <> data)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  # The account's security mode, as `Valea.Mail.Settings.imap_config/1` stamps
+  # it onto the config map. A config map WITHOUT the key is `:tls` — the shape
+  # every caller predating STARTTLS support passes — but an unrecognized value
+  # deliberately has no clause: same posture as `auth_mode/1`.
+  defp security_mode(config) do
+    case Map.get(config, :security, :tls) do
+      :tls -> :tls
+      :starttls -> :starttls
+    end
+  end
+
+  # The account's pinned trust root (`Settings.imap_config/1`'s `cacertfile`,
+  # e.g. ProtonMail Bridge's exported certificate), merged UNDER `opts[:tls_opts]`
+  # so a test's explicit override keeps the final say. This substitutes which
+  # root is trusted and nothing else — `verify: :verify_peer` stays untouched.
+  defp tls_override(config, opts) do
+    config_override =
+      case Map.get(config, :cacertfile) do
+        nil -> []
+        path -> pinned_trust_opts(path)
+      end
+
+    Keyword.merge(config_override, Keyword.get(opts, :tls_opts, []))
+  end
+
+  # OTP refuses a SELF-SIGNED peer certificate outright (`selfsigned_peer`)
+  # even when that exact certificate sits in the trust store — a store entry
+  # anchors OTHER certs, never the peer itself. A local bridge (ProtonMail
+  # Bridge) presents exactly that shape, so a pinned trust root carries a
+  # verify_fun that overrides ONE event and one event only: a self-signed
+  # peer whose DER bytes equal one of the pinned certificates. That is true
+  # certificate pinning — stricter than CA verification — and every other
+  # event keeps OTP's default client behavior (bad_cert fails, extensions
+  # stay unknown), so a CA-signed chain rooted in the pinned file still
+  # validates the normal way. `verify: :verify_peer` stays on throughout.
+  defp pinned_trust_opts(path) do
+    [cacertfile: path, verify_fun: {&pinned_verify/3, pinned_ders(path)}]
+  end
+
+  # An unreadable pin file yields no DERs: the verify_fun then refuses every
+  # self-signed peer, and `:ssl` itself errors on the unloadable cacertfile —
+  # both directions fail closed.
+  defp pinned_ders(path) do
+    case File.read(path) do
+      {:ok, pem} ->
+        for {:Certificate, der, :not_encrypted} <- :public_key.pem_decode(pem), do: der
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp pinned_verify(peer_cert, {:bad_cert, :selfsigned_peer} = event, ders) do
+    if :public_key.pkix_encode(:OTPCertificate, peer_cert, :otp) in ders,
+      do: {:valid, ders},
+      else: {:fail, event}
+  end
+
+  defp pinned_verify(_peer, {:bad_cert, _} = event, _ders), do: {:fail, event}
+  defp pinned_verify(_peer, {:extension, _}, ders), do: {:unknown, ders}
+  defp pinned_verify(_peer, :valid, ders), do: {:valid, ders}
+  defp pinned_verify(_peer, :valid_peer, ders), do: {:valid, ders}
 
   # The account's SASL mode, as `Valea.Mail.Settings.imap_config/1` stamps it
   # onto the config map. A config map WITHOUT the key is `:password` — the
@@ -893,9 +1068,13 @@ defmodule Valea.Mail.ImapClient do
 
   # -- command/response plumbing -------------------------------------------
 
-  defp next_tag(conn) do
-    :counters.add(conn.tag, 1, 1)
-    "A" <> Integer.to_string(:counters.get(conn.tag, 1))
+  # Accepts the raw counter too: a STARTTLS connect burns its first tag
+  # before any `%Conn{}` exists (see `establish/6`).
+  defp next_tag(%Conn{tag: counter}), do: next_tag(counter)
+
+  defp next_tag(counter) do
+    :counters.add(counter, 1, 1)
+    "A" <> Integer.to_string(:counters.get(counter, 1))
   end
 
   # Sends a command as its ordered wire segments (`Wire.encode_command/2`),

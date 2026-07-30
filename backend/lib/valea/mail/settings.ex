@@ -31,6 +31,28 @@ defmodule Valea.Mail.Settings do
   rejected outright (header injection). A broken `smtp:` block invalidates
   only ITS account, exactly like a broken `imap:` one.
 
+  ## The `imap.security` mode and per-account `tls_cacert_file`
+
+  ProtonMail Bridge support, in two additive keys. `imap.security` (`tls` |
+  `starttls`) picks WHICH TLS the IMAP connection uses — implicit on connect
+  (IMAPS/993, the default) or a STARTTLS upgrade (143, Bridge's 1143). An
+  absent key means the port's convention: 143 → `starttls`, every other port
+  → `tls` — deliberately unlike `smtp.security`'s "nonstandard ports must
+  state a mode", because every file written before this key existed ran
+  implicit TLS on whatever port it had, and invalidating those accounts is
+  exactly what an additive key must not do. An explicit value contradicting
+  the 993/143 convention, or an unusable one, INVALIDATES the account like
+  `auth:` — there is no plaintext to fall back to, only the wrong TLS.
+
+  `tls_cacert_file` is an optional per-account absolute path to a PEM
+  certificate that REPLACES the system CA store for BOTH protocols
+  (`verify_peer` stays on; the clients additionally accept a byte-identical
+  self-signed peer — see `Valea.Mail.ImapClient`'s pinning comment). It
+  exists for a local bridge's self-signed certificate and rides `imap_config/1`
+  and `smtp_config/1` as `cacertfile`. An unusable value DEGRADES to "no
+  pin" (the `oauth_client_id` posture, not `auth:`'s): either way the
+  handshake against the bridge fails closed and visibly in the doctor.
+
   ## The per-account `auth:` mode
 
   One optional per-account key (mail full-client plan, M6 task 15),
@@ -166,7 +188,8 @@ defmodule Valea.Mail.Settings do
             provider: :generic,
             auth: :password,
             oauth_client_id: nil,
-            imap: %{host: nil, port: @default_port, username: nil},
+            tls_cacert_file: nil,
+            imap: %{host: nil, port: @default_port, security: :tls, username: nil},
             smtp: nil,
             notifications: false,
             folders: @default_folders,
@@ -202,7 +225,13 @@ defmodule Valea.Mail.Settings do
           provider: provider(),
           auth: auth(),
           oauth_client_id: String.t() | nil,
-          imap: %{host: String.t() | nil, port: pos_integer(), username: String.t() | nil},
+          tls_cacert_file: String.t() | nil,
+          imap: %{
+            host: String.t() | nil,
+            port: pos_integer(),
+            security: security(),
+            username: String.t() | nil
+          },
           smtp: smtp() | nil,
           notifications: boolean(),
           folders: %{drafts: String.t(), sent: String.t(), archive: String.t(), trash: String.t()},
@@ -219,6 +248,13 @@ defmodule Valea.Mail.Settings do
   (`LOGIN` / `AUTH PLAIN`|`LOGIN`) or `:oauth2` (`XOAUTH2`, both protocols).
   """
   @type auth :: :password | :oauth2
+
+  @typedoc """
+  Which TLS a connection uses — implicit on connect (`:tls`) or a STARTTLS
+  upgrade. There is no plaintext mode; TLS is mandatory and verified either
+  way. Shared by the `imap:` and `smtp:` blocks.
+  """
+  @type security :: :tls | :starttls
 
   @typedoc """
   The recognized mailbox providers (`detect_provider/1`). Each one picks its
@@ -299,10 +335,14 @@ defmodule Valea.Mail.Settings do
   @spec imap_config(t()) :: %{
           host: String.t() | nil,
           port: pos_integer(),
+          security: security(),
           username: String.t() | nil,
-          auth: auth()
+          auth: auth(),
+          cacertfile: String.t() | nil
         }
-  def imap_config(%Settings{imap: imap, auth: auth}), do: Map.put(imap, :auth, auth)
+  def imap_config(%Settings{imap: imap, auth: auth, tls_cacert_file: cacert}) do
+    imap |> Map.put(:auth, auth) |> Map.put(:cacertfile, cacert)
+  end
 
   @doc """
   The config map handed to `Valea.Mail.SmtpTransport`'s callbacks — this
@@ -313,15 +353,19 @@ defmodule Valea.Mail.Settings do
           %{
             host: String.t(),
             port: pos_integer(),
-            security: :starttls | :tls,
+            security: security(),
             username: String.t(),
             from: String.t(),
             from_name: String.t() | nil,
-            auth: auth()
+            auth: auth(),
+            cacertfile: String.t() | nil
           }
           | nil
   def smtp_config(%Settings{smtp: nil}), do: nil
-  def smtp_config(%Settings{smtp: smtp, auth: auth}), do: Map.put(smtp, :auth, auth)
+
+  def smtp_config(%Settings{smtp: smtp, auth: auth, tls_cacert_file: cacert}) do
+    smtp |> Map.put(:auth, auth) |> Map.put(:cacertfile, cacert)
+  end
 
   @doc "True when this account carries an `smtp:` block — i.e. it can send, not only push."
   @spec smtp_configured?(t()) :: boolean()
@@ -411,18 +455,21 @@ defmodule Valea.Mail.Settings do
           required(:host) => String.t(),
           required(:port) => pos_integer(),
           required(:username) => String.t(),
+          optional(:security) => security() | nil,
           optional(:auth) => auth() | nil,
           optional(:oauth_client_id) => String.t() | nil,
+          optional(:tls_cacert_file) => String.t() | nil,
           optional(:smtp) => map() | nil,
           optional(:notifications) => boolean() | nil,
           optional(:folders) => map() | nil,
           optional(:sync) => map() | nil
-        }) :: :ok | {:error, :invalid_slug | :invalid_smtp | :invalid_auth}
+        }) :: :ok | {:error, :invalid_slug | :invalid_smtp | :invalid_auth | :invalid_security}
   def upsert_account!(root, slug, %{host: host, port: port, username: username} = attrs)
       when is_binary(root) and is_binary(slug) and is_binary(host) and is_integer(port) and
              port > 0 and is_binary(username) do
     with :ok <- validate_new_slug(root, slug),
          {:ok, auth} <- validate_auth_attr(Map.get(attrs, :auth)),
+         {:ok, security} <- validate_security_attr(Map.get(attrs, :security), port),
          {:ok, smtp} <- validate_smtp_attrs(Map.get(attrs, :smtp)) do
       provider = detect_provider(host)
 
@@ -435,7 +482,11 @@ defmodule Valea.Mail.Settings do
         # EDITING an account that carries one must send it back (the RPC layer
         # does, via `get_mail_account_settings`).
         oauth_client_id: string_override(Map.get(attrs, :oauth_client_id)),
-        imap: %{host: host, port: port, username: username},
+        # Same whole-entry rule and the same degrade posture (see the load
+        # path's `string_override/1` use): a pinned trust root only ever
+        # narrows what a connect will accept, so a dropped one fails closed.
+        tls_cacert_file: string_override(Map.get(attrs, :tls_cacert_file)),
+        imap: %{host: host, port: port, security: security, username: username},
         smtp: smtp,
         # Absent means OFF, exactly like `folders:`/`sync:` absent means the
         # provider defaults: this call re-renders the account entry whole, so
@@ -463,6 +514,20 @@ defmodule Valea.Mail.Settings do
   defp validate_auth_attr(:oauth2), do: {:ok, :oauth2}
   defp validate_auth_attr(_other), do: {:error, :invalid_auth}
 
+  # The IMAP-side counterpart of `fetch_security/2`'s convention check, over
+  # the atoms the caller (the setup RPC) has already narrowed to. Absent means
+  # the port's default — never a guess a caller has to know about.
+  defp validate_security_attr(nil, port), do: {:ok, default_imap_security(port)}
+
+  defp validate_security_attr(security, port) when security in [:tls, :starttls] do
+    case check_imap_port_convention(security, port) do
+      {:ok, security} -> {:ok, security}
+      {:error, _reason} -> {:error, :invalid_security}
+    end
+  end
+
+  defp validate_security_attr(_other, _port), do: {:error, :invalid_security}
+
   # An `smtp:` the caller (i.e. the setup RPC, i.e. a human filling a form)
   # got wrong must NEVER be written: a rendered-but-unloadable block would
   # invalidate the whole account on the next load — killing its IMAP sync
@@ -483,6 +548,28 @@ defmodule Valea.Mail.Settings do
   end
 
   defp validate_smtp_attrs(_attrs), do: {:error, :invalid_smtp}
+
+  @doc """
+  Writes `pem` — the certificate a "Fetch certificate" probe retrieved and
+  the user confirmed (`Valea.Mail.CertProbe`) — to
+  `config/mail-certs/<slug>.pem` (atomic, same discipline as the yaml
+  itself) and returns the absolute path, i.e. the value the account's
+  `tls_cacert_file:` carries from then on. Overwrites in place: a re-fetch
+  replaces the pin. The file is deliberately plain PEM in `config/` —
+  file-first like everything else mail: visible, hand-editable, and exactly
+  what a user who exported the cert themselves would have pointed at.
+  """
+  @spec write_account_cert!(String.t(), String.t(), String.t()) :: String.t()
+  def write_account_cert!(root, slug, pem)
+      when is_binary(root) and is_binary(slug) and is_binary(pem) do
+    # The slug names a file: grammar-checked HERE too (not only in the RPC),
+    # since `../x` would otherwise write outside config/mail-certs/.
+    unless valid_slug?(slug), do: raise(ArgumentError, "invalid slug #{inspect(slug)}")
+
+    path = Path.join([root, "config", "mail-certs", "#{slug}.pem"])
+    atomic_write!(path, pem)
+    path
+  end
 
   @doc "Removes the account at `slug` (a no-op `:ok` if it was already absent) and rewrites the file."
   @spec remove_account!(String.t(), String.t()) :: :ok
@@ -641,6 +728,7 @@ defmodule Valea.Mail.Settings do
       with {:ok, host} <- fetch_required_string(imap, "imap", "host"),
            {:ok, username} <- fetch_required_string(imap, "imap", "username"),
            {:ok, port} <- fetch_port(imap),
+           {:ok, security} <- fetch_imap_security(imap, port),
            {:ok, auth} <- fetch_auth(attrs),
            {:ok, smtp} <- build_smtp(attrs) do
         # Resolve provider: explicit YAML value takes precedence, fallback to host detection
@@ -656,7 +744,8 @@ defmodule Valea.Mail.Settings do
            provider: provider,
            auth: auth,
            oauth_client_id: string_override(Map.get(attrs, "oauth_client_id")),
-           imap: %{host: host, port: port, username: username},
+           tls_cacert_file: string_override(Map.get(attrs, "tls_cacert_file")),
+           imap: %{host: host, port: port, security: security, username: username},
            smtp: smtp,
            notifications: Map.get(attrs, "notifications") == true,
            folders:
@@ -697,6 +786,37 @@ defmodule Valea.Mail.Settings do
       :error -> {:ok, @default_port}
     end
   end
+
+  # The IMAP counterpart of `fetch_security/2`, with ONE deliberate
+  # difference: an absent key on a non-convention port defaults to `:tls`
+  # rather than erroring. Every file written before this key existed ran
+  # implicit TLS on whatever port it had (the client knew no other mode), so
+  # "absent means implicit" is the back-compat truth, not a guess — except on
+  # 143, whose universal convention is STARTTLS and which structurally never
+  # worked before. An explicit value is still checked against the 993/143
+  # conventions, and an unusable one invalidates the account like `auth:`
+  # (there is no plaintext to fall back to, only the WRONG kind of TLS).
+  defp fetch_imap_security(imap, port) do
+    case Map.get(imap, "security") do
+      nil -> {:ok, default_imap_security(port)}
+      "starttls" -> check_imap_port_convention(:starttls, port)
+      "tls" -> check_imap_port_convention(:tls, port)
+      _other -> {:error, ~s(imap.security must be "starttls" or "tls")}
+    end
+  end
+
+  defp default_imap_security(143), do: :starttls
+  defp default_imap_security(_port), do: :tls
+
+  defp check_imap_port_convention(:starttls, 993) do
+    {:error, "imap.security starttls contradicts port 993 (993 is tls, 143 is starttls)"}
+  end
+
+  defp check_imap_port_convention(:tls, 143) do
+    {:error, "imap.security tls contradicts port 143 (143 is starttls, 993 is tls)"}
+  end
+
+  defp check_imap_port_convention(security, _port), do: {:ok, security}
 
   # The one override in this file that does NOT degrade to its default when
   # unusable (see the moduledoc, §The per-account `auth:` mode): a hand-edited
@@ -927,9 +1047,10 @@ defmodule Valea.Mail.Settings do
         provider: #{a.provider}
         auth: #{a.auth}
         notifications: #{a.notifications == true}
-    #{render_oauth_client_id(a.oauth_client_id)}    imap:
+    #{render_oauth_client_id(a.oauth_client_id)}#{render_tls_cacert_file(a.tls_cacert_file)}    imap:
           host: #{yaml_string(a.imap.host)}
           port: #{a.imap.port}
+          security: #{a.imap.security}
           username: #{yaml_string(a.imap.username)}
     #{render_smtp(a.smtp)}    folders:
           drafts: #{yaml_string(a.folders.drafts)}
@@ -951,6 +1072,13 @@ defmodule Valea.Mail.Settings do
 
   defp render_oauth_client_id(client_id),
     do: "    oauth_client_id: #{yaml_string(client_id)}\n"
+
+  # Emitted only when a trust root is pinned, so an ordinary account keeps its
+  # exact previous bytes — same posture as `render_oauth_client_id/1`.
+  defp render_tls_cacert_file(nil), do: ""
+
+  defp render_tls_cacert_file(path),
+    do: "    tls_cacert_file: #{yaml_string(path)}\n"
 
   # Emitted only for a sending account — a push-only one keeps the v4 shape
   # exactly (no empty `smtp:` key). Every line carries its own final

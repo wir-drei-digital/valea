@@ -479,6 +479,110 @@ defmodule ValeaWeb.MailRpcTest do
       assert File.read!(Path.join(workspace, "config/mail.yaml")) == before_bytes
     end
 
+    # The ProtonMail Bridge shape: STARTTLS on a nonstandard IMAP port plus a
+    # pinned trust root for the bridge's self-signed certificate.
+    test "the security and tls_cacert_file args write a STARTTLS bridge account", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "proton",
+                   "host" => "bridge.invalid",
+                   "port" => 1143,
+                   "security" => "starttls",
+                   "username" => "mara@proton.example",
+                   "tlsCacertFile" => "/certs/bridge.pem",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert {:ok, %{accounts: %{"proton" => account}}} = Settings.load(workspace)
+      assert account.imap.security == :starttls
+      assert account.tls_cacert_file == "/certs/bridge.pem"
+    end
+
+    test "tls_cacert_pem writes the cert file and pins tls_cacert_file to it", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      pem = File.read!(Path.expand("../fixtures/tls/selfsigned.pem", __DIR__))
+
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "proton",
+                   "host" => "bridge.invalid",
+                   "port" => 1143,
+                   "security" => "starttls",
+                   "username" => "mara@proton.example",
+                   "tlsCacertPem" => pem,
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      cert_path = Path.join(workspace, "config/mail-certs/proton.pem")
+      assert File.read!(cert_path) == pem
+
+      assert {:ok, %{accounts: %{"proton" => account}}} = Settings.load(workspace)
+      assert account.tls_cacert_file == cert_path
+    end
+
+    test "an unparseable tls_cacert_pem is refused without writing anything", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      before_bytes = File.read!(Path.join(workspace, "config/mail.yaml"))
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "proton",
+                   "host" => "bridge.invalid",
+                   "port" => 1143,
+                   "security" => "starttls",
+                   "username" => "mara@proton.example",
+                   "tlsCacertPem" => "this is not a certificate",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert inspect(errors) =~ "invalid_cert"
+      assert File.read!(Path.join(workspace, "config/mail.yaml")) == before_bytes
+      refute File.exists?(Path.join(workspace, "config/mail-certs/proton.pem"))
+    end
+
+    test "an unusable security value is refused without writing", %{
+      workspace: workspace,
+      generation: generation
+    } do
+      before_bytes = File.read!(Path.join(workspace, "config/mail.yaml"))
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "proton",
+                   "host" => "bridge.invalid",
+                   "port" => 1143,
+                   "security" => "plaintext",
+                   "username" => "mara@proton.example",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert inspect(errors) =~ "invalid_security"
+      assert File.read!(Path.join(workspace, "config/mail.yaml")) == before_bytes
+    end
+
     test "identity mismatch on an existing local subtree refuses without touching config", %{
       workspace: workspace,
       generation: generation
@@ -1774,6 +1878,65 @@ defmodule ValeaWeb.MailRpcTest do
 
   # -- get_mail_account_settings / mail_autoconfig ------------------------------
 
+  describe "fetch_mail_server_cert" do
+    # Trust-on-first-use: the RPC returns whatever certificate the server
+    # PRESENTS, for the human to confirm by fingerprint — so the fake server
+    # here presents the self-signed fixture, exactly the Bridge shape.
+    @selfsigned Path.expand("../fixtures/tls/selfsigned.pem", __DIR__)
+    @selfsigned_key Path.expand("../fixtures/tls/selfsigned.key", __DIR__)
+
+    test "returns the presented certificate's pem, fingerprint, and subject" do
+      server =
+        FakeImapServer.start([{:send, "* OK ready"}, :starttls],
+          tls: false,
+          certfile: @selfsigned,
+          keyfile: @selfsigned_key
+        )
+
+      assert %{"success" => true, "data" => data} =
+               rpc(
+                 "fetch_mail_server_cert",
+                 %{
+                   "host" => "localhost",
+                   "port" => server.port,
+                   "security" => "starttls"
+                 },
+                 ["pem", "sha256", "subject", "notAfter"]
+               )
+
+      assert data["pem"] == File.read!(@selfsigned)
+      assert data["sha256"] =~ ~r/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/
+      assert data["subject"] =~ "CN=localhost"
+      assert :ok = FakeImapServer.await(server)
+    end
+
+    test "an unreachable server surfaces cert_fetch_failed" do
+      {:ok, listen} = :gen_tcp.listen(0, [])
+      {:ok, port} = :inet.port(listen)
+      :ok = :gen_tcp.close(listen)
+
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "fetch_mail_server_cert",
+                 %{"host" => "localhost", "port" => port, "security" => "tls"},
+                 ["pem"]
+               )
+
+      assert inspect(errors) =~ "cert_fetch_failed"
+    end
+
+    test "an unknown security mode is refused" do
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "fetch_mail_server_cert",
+                 %{"host" => "localhost", "port" => 1143, "security" => "plaintext"},
+                 ["pem"]
+               )
+
+      assert inspect(errors) =~ "invalid_security"
+    end
+  end
+
   describe "get_mail_account_settings" do
     test "returns the non-secret config for the edit form; smtp null without a block", %{
       generation: generation
@@ -1802,6 +1965,31 @@ defmodule ValeaWeb.MailRpcTest do
       # assertion: a `false` under an atom key arrives as `null` (the
       # falsy-map-field bug), whether at the top level or nested in `account`.
       assert data["notifications"] == false
+    end
+
+    test "prefills security and tls_cacert_file for a bridge account", %{generation: generation} do
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "proton",
+                   "host" => "bridge.invalid",
+                   "port" => 1143,
+                   "security" => "starttls",
+                   "username" => "mara@proton.example",
+                   "tlsCacertFile" => "/certs/bridge.pem",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert %{"success" => true, "data" => %{"account" => account}} =
+               rpc("get_mail_account_settings", %{"account" => "proton"}, [
+                 %{"account" => ["host", "security", "tlsCacertFile"]}
+               ])
+
+      assert account["security"] == "starttls"
+      assert account["tlsCacertFile"] == "/certs/bridge.pem"
     end
 
     test "prefills notifications for an account that opted in", %{generation: generation} do

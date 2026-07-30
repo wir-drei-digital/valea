@@ -3,6 +3,8 @@ import {
   submitMailSetup,
   mailSetupErrorMessage,
   smtpFormError,
+  imapSecurityError,
+  mailCertFetchErrorMessage,
   normalizeMailDoctorChecks,
   foldersCheckFailed,
   createFoldersAndRecheck,
@@ -89,6 +91,9 @@ describe('submitMailSetup — browser (dev) path', () => {
       null,
       false,
       'password',
+      null,
+      null,
+      null,
       null
     );
     expect(deps.refreshWorkspaceId).not.toHaveBeenCalled();
@@ -111,6 +116,9 @@ describe('submitMailSetup — browser (dev) path', () => {
       null,
       true,
       'password',
+      null,
+      null,
+      null,
       null
     );
   });
@@ -233,6 +241,9 @@ describe('the auth mode round trip', () => {
       null,
       true,
       'oauth2',
+      null,
+      null,
+      null,
       null
     );
     expect(outcome).toEqual({ ok: true, devMode: false });
@@ -252,6 +263,9 @@ describe('the auth mode round trip', () => {
       null,
       false,
       'password',
+      null,
+      null,
+      null,
       null
     );
   });
@@ -277,8 +291,114 @@ describe('the auth mode round trip', () => {
       null,
       false,
       'oauth2',
-      '123-abc.apps.googleusercontent.com'
+      '123-abc.apps.googleusercontent.com',
+      null,
+      null,
+      null
     );
+  });
+});
+
+describe('the IMAP security mode + pinned trust root (ProtonMail Bridge)', () => {
+  it('forwards security and tlsCacertFile to setupMailAccount', async () => {
+    const deps = makeDeps();
+
+    await submitMailSetup(
+      {
+        ...input,
+        host: '127.0.0.1',
+        port: 1143,
+        security: 'starttls',
+        tlsCacertFile: '/certs/bridge.pem'
+      },
+      deps
+    );
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      'work-inbox',
+      '127.0.0.1',
+      1143,
+      'mara@example.com',
+      3,
+      null,
+      false,
+      'password',
+      null,
+      'starttls',
+      '/certs/bridge.pem',
+      null
+    );
+  });
+
+  it('a blank security and cert path travel as null — the backend port convention applies', async () => {
+    const deps = makeDeps();
+
+    await submitMailSetup({ ...input, security: '', tlsCacertFile: '' }, deps);
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+      false,
+      'password',
+      null,
+      null,
+      null,
+      null
+    );
+  });
+
+  it('imapSecurityError flags only the two port-convention contradictions', () => {
+    expect(imapSecurityError(993, 'starttls')).toMatch(/993/);
+    expect(imapSecurityError(143, 'tls')).toMatch(/143/);
+    // Blank always defers to the backend's port convention; explicit modes on
+    // non-convention ports (the bridge's 1143) are exactly the point.
+    expect(imapSecurityError(993, '')).toBeNull();
+    expect(imapSecurityError(1143, '')).toBeNull();
+    expect(imapSecurityError(1143, 'starttls')).toBeNull();
+    expect(imapSecurityError(993, 'tls')).toBeNull();
+    expect(imapSecurityError(143, 'starttls')).toBeNull();
+    expect(imapSecurityError(null, 'starttls')).toMatch(/993/);
+  });
+
+  it('mailSetupErrorMessage covers invalid_security', () => {
+    expect(mailSetupErrorMessage('invalid_security')).toMatch(/security/i);
+  });
+
+  it('forwards a fetched-and-confirmed certificate PEM as the 12th argument', async () => {
+    const deps = makeDeps();
+
+    await submitMailSetup(
+      { ...input, security: 'starttls', tlsCacertPem: '-----BEGIN CERTIFICATE-----…' },
+      deps
+    );
+
+    expect(deps.api.setupMailAccount).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      null,
+      false,
+      'password',
+      null,
+      'starttls',
+      null,
+      '-----BEGIN CERTIFICATE-----…'
+    );
+  });
+
+  it('mailSetupErrorMessage covers invalid_cert', () => {
+    expect(mailSetupErrorMessage('invalid_cert')).toMatch(/certificate/i);
+  });
+
+  it('mailCertFetchErrorMessage names the checkable fields on a failed probe', () => {
+    expect(mailCertFetchErrorMessage('cert_fetch_failed')).toMatch(/host, port/i);
+    expect(mailCertFetchErrorMessage('anything_else')).toMatch(/certificate/i);
   });
 });
 
@@ -415,6 +535,9 @@ describe('submitMailSetup — with an SMTP block', () => {
       },
       false,
       'password',
+      null,
+      null,
+      null,
       null
     );
     expect(deps.keychainSet).toHaveBeenCalledWith('ws-1', 'work-inbox:imap', 'hunter2');

@@ -842,9 +842,9 @@ defmodule Valea.Mail.EngineTest do
     assert Enum.map(checks, & &1["id"]) |> Enum.take(-3) == ["smtp_tcp", "smtp_tls", "smtp_auth"]
 
     # The smtp block PLUS the account's SASL mode (`Settings.smtp_config/1`,
-    # M6 task 15): what the transport authenticates WITH is what the doctor
-    # must probe with.
-    expected_config = Map.put(smtp, :auth, :password)
+    # M6 task 15) and pinned trust root: what the transport authenticates
+    # WITH is what the doctor must probe with.
+    expected_config = smtp |> Map.put(:auth, :password) |> Map.put(:cacertfile, nil)
     assert [{:check_auth, [^expected_config, "smtp-password", _opts]}] = FakeSmtpTransport.calls()
   end
 
