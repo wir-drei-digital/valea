@@ -64,7 +64,15 @@ package-backend:
     mkdir -p desktop/src-tauri/binaries
     exe=""
     case "$BURRITO_TARGET" in windows_*) exe=".exe" ;; esac
-    cp "backend/burrito_out/valea_desktop_${BURRITO_TARGET}${exe}" \
+    # `install -m755`, not `cp` (issue #1, bug 1): Burrito writes burrito_out/
+    # with mode 0744, and `cp` propagates the source mode onto a NEW dest file
+    # (umask only clears bits, never adds them — and a cp onto an EXISTING dest
+    # keeps the dest's mode, which is why a warm checkout can look fine while a
+    # fresh CI runner stages 0744). A 0744 sidecar survives into the .deb/.rpm
+    # payload as root-owned /usr/bin/valea-server that only root may execute,
+    # so the Tauri setup hook's spawn fails with EACCES ("Permission denied
+    # (os error 13)") for every non-root user before a window ever opens.
+    install -m755 "backend/burrito_out/valea_desktop_${BURRITO_TARGET}${exe}" \
        "desktop/src-tauri/binaries/valea-server-${triple}${exe}"
     # windows-support spec B2: the agent-spawn shim is a second externalBin,
     # listed only in tauri.windows.conf.json — build and stage it under the

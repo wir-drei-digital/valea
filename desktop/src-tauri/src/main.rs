@@ -39,6 +39,23 @@ enum Readiness {
 }
 
 fn main() {
+    // issue #1 (bug 3): on KDE Plasma Wayland, WebKitGTK's dmabuf renderer
+    // aborts the app before any window appears ("Error 71 (Protocol error)
+    // dispatching to Wayland display"). Disabling that one renderer path is
+    // the reporter-verified clean fix (native Wayland kept, empty journal),
+    // vs. GDK_BACKEND=x11 which works but spams GBM buffer errors. Gated to
+    // Wayland sessions, and only as a default — a user who sets the variable
+    // themselves (even to empty/0 to force dmabuf back on) wins. Must run
+    // before the builder below initialises GTK.
+    #[cfg(target_os = "linux")]
+    {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland");
+        if wayland && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -73,8 +90,20 @@ fn main() {
                 // dev token (matching config/runtime.exs) so the window works even
                 // if it ever loads a non-proxied origin.
                 build_main_window(app.handle(), "valea-dev-token")?;
-            } else {
-                start_sidecar(app.handle())?;
+            } else if let Err(e) = start_sidecar(app.handle()) {
+                // issue #1: propagating this through `?` panics tauri's run()
+                // with a bare status=101 and no user-visible text — the 0744
+                // sidecar bug surfaced exactly that way. Fail like the timeout/
+                // port-collision paths instead: a readable dialog, then exit.
+                eprintln!("failed to start sidecar: {e}");
+                app.dialog()
+                    .message(format!(
+                        "Valea could not start its backend: {e}"
+                    ))
+                    .kind(MessageDialogKind::Error)
+                    .title("Valea can't start")
+                    .blocking_show();
+                std::process::exit(1);
             }
             Ok(())
         });
@@ -124,6 +153,20 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
     let cmd = app
         .shell()
         .sidecar("valea-server")?
+        // REQUIRED, not cosmetic (issue #1, bug 2). The sidecar is a
+        // Burrito-wrapped release: burrito's launcher (erlang_launcher.zig)
+        // builds `erl ... -s elixir start_cli ... -extra` and appends OUR
+        // argv after `-extra`, so these args go to `elixir start_cli` — and
+        // burrito never supplies `--no-halt` itself. Without it, start_cli
+        // boots the app (endpoint bound, logs emitted) and then halts the VM
+        // with status 0 about a second later; the port dies with it,
+        // await_readiness() never sees a healthy response, and the user gets
+        // the "backend did not start in time" dialog instead of a window.
+        // Debug builds take the `mix phx.server` branch in setup() and never
+        // spawn this, so no dev run exercises it. Verified against the real
+        // staged sidecar on macOS: argless → exit 0 after ~1s; --no-halt →
+        // stays up, /api/health returns the launch nonce.
+        .args(["--no-halt"])
         .env("PHX_SERVER", "true")
         .env("PORT", BACKEND_PORT.to_string())
         .env("PHX_HOST", "localhost")
@@ -137,7 +180,7 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
         None => cmd,
     };
 
-    let (_rx, child) = cmd.spawn()?;
+    let (mut rx, child) = cmd.spawn()?;
 
     // Registered FIRST, before anything else that can fail: a spawned sidecar
     // that is not in `Backend` is one RunEvent::Exit will never kill, i.e. a
@@ -145,6 +188,30 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
     #[cfg(windows)]
     let pid = child.pid();
     app.state::<Backend>().0.lock().unwrap().replace(child);
+
+    // issue #1: the receiver used to be dropped (`_rx`), so the sidecar's
+    // output reached neither the journal nor a terminal — diagnosing the
+    // boot-then-halt bug required shimming beam.smp just to see anything.
+    // Forward everything to OUR stderr, where the OS log (journald /
+    // Console.app) already collects it.
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_shell::process::CommandEvent;
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                    eprintln!("[valea-server] {}", String::from_utf8_lossy(&line));
+                }
+                CommandEvent::Error(e) => eprintln!("[valea-server] io error: {e}"),
+                CommandEvent::Terminated(status) => {
+                    eprintln!(
+                        "[valea-server] exited: code={:?} signal={:?}",
+                        status.code, status.signal
+                    );
+                }
+                _ => {}
+            }
+        }
+    });
 
     // windows-support spec E1: the Burrito wrapper can't exec() on Windows, so
     // the `child.kill()` in main()'s RunEvent::Exit handler would orphan the
