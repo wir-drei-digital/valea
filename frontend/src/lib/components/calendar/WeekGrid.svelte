@@ -53,10 +53,33 @@
   const nowPct = $derived(nowOffsetPct(minutesOfDay(now), window));
 
   // Scroll 08:00 to the top of the visible pane on mount (and when the
-  // visible day set changes, which re-creates the anchor element).
+  // visible day set changes, which re-creates the anchor element). The
+  // snap can land while stylesheets/fonts are still settling (dev-mode
+  // CSS injection especially), which shifts content under the fixed
+  // scrollTop — so re-snap for a few frames until the anchor's viewport
+  // position holds still, then stop and never fight the user's scrolling.
   let morningAnchor = $state<HTMLElement | null>(null);
   $effect(() => {
-    morningAnchor?.scrollIntoView({ block: 'start' });
+    const el = morningAnchor;
+    if (!el) return;
+    let raf = 0;
+    let frames = 0;
+    let stable = 0;
+    let lastTop = Number.NaN;
+    const settle = (): void => {
+      const top = el.getBoundingClientRect().top;
+      if (Number.isNaN(lastTop) || Math.abs(top - lastTop) > 0.5) {
+        el.scrollIntoView({ block: 'start' });
+        lastTop = el.getBoundingClientRect().top;
+        stable = 0;
+      } else {
+        stable += 1;
+      }
+      frames += 1;
+      if (stable < 3 && frames < 40) raf = requestAnimationFrame(settle);
+    };
+    settle();
+    return () => cancelAnimationFrame(raf);
   });
 
   function slotClick(event: MouseEvent, day: Date): void {
@@ -101,15 +124,17 @@
   role="grid"
   aria-label="Calendar"
 >
-  <!-- header row -->
-  <div class="border-paper-hairline border-b" role="presentation"></div>
+  <!-- header row — sticky against the route's scroll pane so the day stays
+       readable while scrolling the hours; opaque backgrounds + z above the
+       event cards and now-line (z-10) so content slides underneath. -->
+  <div class="border-paper-hairline bg-paper-surface sticky top-0 z-20 border-b" role="presentation"></div>
   {#each days as day (dayKey(day))}
     {@const parts = dayHeaderParts(day)}
     {@const isToday = dayKey(day) === todayKey}
     <div
       class={[
-        'border-paper-hairline border-b border-l px-2.5 py-2 text-[12px]',
-        isToday && 'bg-paper-pill'
+        'border-paper-hairline sticky top-0 z-20 border-b border-l px-2.5 py-2 text-[12px]',
+        isToday ? 'bg-paper-pill' : 'bg-paper-surface'
       ]}
       role="columnheader"
     >
@@ -150,19 +175,27 @@
 
   <!-- hour gutter -->
   <div class="relative" style={`height:${bodyHeight}px`} role="presentation">
+    <!-- The 56px lift keeps 08:00 (line + centered label) clear of the
+         sticky header after scrollIntoView. Inline rather than scroll-mt:
+         the mount effect can fire before injected CSS applies, and an
+         inline offset is part of layout from the first frame. -->
     <span
       bind:this={morningAnchor}
       class="pointer-events-none absolute inset-x-0"
-      style={`top:${linePct(8)}%`}
+      style={`top:calc(${linePct(8)}% - 56px)`}
       aria-hidden="true"
     ></span>
     {#each hours as hour (hour)}
-      <span
-        class="text-ink-meta absolute right-2.5 -translate-y-1/2 text-[10.5px] tabular-nums"
-        style={`top:${linePct(hour)}%`}
-      >
-        {timeLabel(hour * 60)}
-      </span>
+      <!-- Skip the window's top edge (00:00): its centered label would poke
+           up under the sticky header — same guard as the columns' hour lines. -->
+      {#if hour * 60 > window.startMin}
+        <span
+          class="text-ink-meta absolute right-2.5 -translate-y-1/2 text-[10.5px] tabular-nums"
+          style={`top:${linePct(hour)}%`}
+        >
+          {timeLabel(hour * 60)}
+        </span>
+      {/if}
     {/each}
   </div>
 
