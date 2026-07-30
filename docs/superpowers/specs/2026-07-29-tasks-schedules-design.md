@@ -478,23 +478,43 @@ must be a policy rule, not a tier label:
     grant can never buy schedule registration". Matching is
     candidate-based and casefolded like the ICM secrets deny
     (`SCHEDULES.JSON` caught).
-  - *Managed-settings mirror:* the settings renderer emits
-    `Write(<icm_root>/**)`-style **allow** rules for write-root grants,
-    which the harness honors without ever consulting Valea's callback
-    (verified: `session_settings.ex` builds the allow list from
-    `scope.write_roots`) — so the policy rule alone would be
-    short-circuited. The renderer therefore also mirrors per-ICM
-    **ask** entries for `schedules.json` and **deny** entries for
-    `.valea/**`. Precedence is **verified against the official Claude
-    Code permissions docs** (code.claude.com/docs/en/permissions):
-    "Rules are evaluated in order: deny, then ask, then allow … rule
-    specificity doesn't change the order" and "a matching ask rule
-    prompts even when a more specific allow rule also matches the same
-    call"; managed settings follow the same order. The plan still adds a
-    runtime probe test pinning this against the shipped harness version
-    (drift defense); if a future harness ever refutes it, the fallback
-    is a settings-level **deny** on `schedules.json` with registration
-    moving to the UI/hand-edit path — fail closed, feature intact.
+  - *Managed-settings mirror — a best-effort SECOND layer, very likely
+    inert under the pinned adapter.* **AMENDED (Task 5 review round 2)**:
+    this bullet previously claimed the mirror was load-bearing because the
+    renderer's `Write(<icm_root>/**)` **allow** rules "the harness honors
+    without ever consulting Valea's callback" would short-circuit the
+    policy rule. Three checks refute that premise:
+    (a) `docs/notes/acp-launch-contract.md` — `managedSettings` is
+    filtered **restrictive-only**, so permissive arrays including
+    `permissions.allow` are *silently dropped* (`sdk.d.ts:1836-1858`), and
+    the adapter wires `canUseTool` such that **every** tool call routes to
+    Valea's callback (`acp-agent.js:2887`): the allow array never takes
+    effect through this channel, so there is no allow for an `ask` to
+    out-rank; (b) current harness docs — `Write(<path>)` rules are
+    accepted but never consulted, path-scoped file checks being
+    `Edit`/`Read` only (min version 2.1.210), hence the `Edit` twins; and
+    (c) pattern anchoring — a single-leading-slash pattern anchors at the
+    *settings source*, not the filesystem root, so the renderer also emits
+    the `//<abs>` filesystem-absolute spelling alongside the plain one
+    (strictly additive; a non-matching pattern is inert).
+    **The enforcing layer is therefore `PermissionPolicy` on the ACP
+    `request_permission` callback**, reached via the bare `Write`/`Edit`/
+    `Bash` asks the posture already carries; the mirror is
+    defense-in-depth for a harness that does honor it (and for the
+    `Valea.Harness` `settings_path` channel a future harness may use).
+    Documented precedence, for whichever entries do land
+    (code.claude.com/docs/en/permissions): "Rules are evaluated in order:
+    deny, then ask, then allow … rule specificity doesn't change the
+    order" and "a matching ask rule prompts even when a more specific
+    allow rule also matches the same call"; managed settings follow the
+    same order. The **runtime probe stays mandated** (Task 9 acceptance):
+    attempt an agent write to `schedules.json` in a granted-write ICM,
+    confirm the dialog appears, record **which layer caught it**, and
+    check the adapter's startup output for warnings about dropped or
+    unparsed settings entries. If the probe shows the mirror inert AND the
+    callback ever stops covering this, the fallback is a settings-level
+    **deny** on `schedules.json` with registration moving to the
+    UI/hand-edit path — fail closed, feature intact.
 - **Candidate extraction: the move-shape question is closed by
   enumeration.** The single supported harness (claude-code via
   claude-agent-acp; `mcpServers` always `[]` by invariant) has **no
