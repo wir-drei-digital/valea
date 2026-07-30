@@ -40,8 +40,18 @@ defmodule Valea.Workspace.Manager do
   Guard for RPC actions that must not act on a stale workspace: `:ok` when
   `g` matches the currently open workspace's generation, otherwise
   `{:error, :workspace_changed}` (including when no workspace is open).
+
+  `timeout` exists for callers that run INSIDE the workspace Runtime — the
+  scheduler, principally. A Runtime child asking this question while a
+  close/switch is in flight would otherwise wait the full default: the Manager
+  is blocked in `do_close/1`, `do_close/1` is blocked terminating the Runtime,
+  and the Runtime is blocked waiting for that child to stop. A short timeout
+  turns that standoff into a fast, fail-closed answer instead of a five-second
+  stall on every workspace switch. Callers OUTSIDE the Runtime (RPCs) have no
+  such cycle and keep the default.
   """
-  def check_generation(g), do: GenServer.call(__MODULE__, {:check_generation, g})
+  def check_generation(g, timeout \\ 5000),
+    do: GenServer.call(__MODULE__, {:check_generation, g}, timeout)
 
   @doc """
   Read-only preflight for a workspace switch: validates `id` names a known
