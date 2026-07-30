@@ -127,17 +127,19 @@ defmodule Valea.Agents.PermissionPolicy do
   ## Tasks & schedules rules (Task 5)
 
   Tasks/schedules spec §"Consent & containment posture" + §"`.valea/` —
-  Valea's namespace inside the ICM". Both tiers are keyed off `icm_roots` — the same ctx list the ICM-secrets
-  deny uses — and both are candidate-based and casefolded (the shared
-  `casefold/1`/`casefold_under_root?/2` helpers).
+  Valea's namespace inside the ICM". Both tiers are keyed off `icm_roots` —
+  the same ctx list the ICM-secrets deny uses — and both are candidate-based
+  and casefolded (the shared `casefold/1`/`casefold_under_root?/2` helpers).
 
     * **`.valea/` is write-denied** (deny, not ask): `<icm_root>/.valea` and
       everything beneath it. `.valea/briefing.md` is a materialized
       INSTRUCTION surface and `.valea/task-archive.jsonl` is Valea's own
       ledger, so an agent write there could rewrite its future instructions
       or forge history. Like every deny it precedes the write-allow tier, so
-      a broad `write_roots` grant over the ICM can never buy it back. Reads
-      stay ordinary — the briefing exists to be read.
+      a broad `write_roots` grant over the ICM can never buy it back. Only
+      READ kinds are exempt (the briefing exists to be read) — an
+      unrecognized or missing `kind` is denied, matching the mail/calendar
+      territory denies' fail-closed posture.
     * **`<icm_root>/schedules.json` always asks** on write kinds, even when
       `write_paths`/`write_roots` cover it. This tier sits AFTER every deny
       tier (a deny still wins) and deliberately BEFORE BOTH allow tiers:
@@ -147,6 +149,22 @@ defmodule Valea.Agents.PermissionPolicy do
       equality against the ROOT join (spec: "at an enabled ICM root"), so a
       nested `sub/schedules.json` is ordinary content, and `tasks.json` — the
       ledger agents are expected to maintain — is untouched by this tier.
+
+  **The ask tier's POSITION is the invariant** (review fix F1): it must stay
+  below every deny tier, because `icm_roots` deliberately keeps the in-scope
+  mail/calendar roots (`SessionServer.init/1`), so `<mail_root>/schedules.json`
+  is simultaneously an exact ask match AND a mail-tier deny. Deny has to win —
+  an ask would turn a deny-only territory into one generic approval away.
+  Pinned by the "a deny still wins over the schedules ask" tests.
+
+  **Both tiers test TWO spellings of every candidate** (review fix F3): the
+  symlink-resolved path AND the merely lexically-expanded one (`Path.expand/2`
+  against `cwd`). Otherwise replacing `<icm>/.valea` — or `schedules.json`
+  itself — with a symlink into already-granted territory resolves the
+  candidate away from the root join, slips the tier, and the write-allow tier
+  grants it. Strictly additive: the allow tiers still decide off the resolved
+  spelling alone. The pre-existing secrets/mail/calendar tiers do NOT yet do
+  this (out of scope here, recommended for a follow-up).
 
   Neither tier can be reached by a `Bash` redirection (no extractable
   candidate); those land on the ordinary empty-candidates `:ask` floor, and
@@ -208,6 +226,16 @@ defmodule Valea.Agents.PermissionPolicy do
     write_roots = Enum.map(ctx[:write_roots] || [], &split_real/1)
     icm_roots = Enum.map(ctx[:icm_roots] || [], &split_real/1)
 
+    # Review fix F3 (tasks/schedules tiers only): BOTH spellings of every ICM
+    # root — the symlink-resolved one every other tier uses, plus the raw
+    # ctx-supplied one. The raw spelling is what makes the lexical candidate
+    # check below actually bite: comparing an unresolved candidate against a
+    # resolved-only root desyncs on any ambient symlinked ancestor (macOS
+    # `/var` -> `/private/var`) and would silently match nothing. Extra
+    # spellings can only ADD matches, and both tiers that read this list are
+    # a deny and an ask — never an allow.
+    icm_root_spellings = Enum.uniq(icm_roots ++ (ctx[:icm_roots] || []))
+
     # Mail rules (Task 14) compare CASEFOLDED, symlink-resolved roots —
     # see the moduledoc's "Mail rules". The blanket `sources/mail` root is
     # derived from `workspace_root`, so the deny covers territory no
@@ -229,6 +257,17 @@ defmodule Valea.Agents.PermissionPolicy do
     paths = extract_paths(item)
     resolved = Enum.map(paths, &split_resolve_candidate(&1, cwd))
 
+    # Review fix F3 — symlink-shadowing defense for the two tasks/schedules
+    # tiers ONLY: the merely LEXICALLY-expanded spelling of each candidate,
+    # in the same `{:ok, path}` shape, so those tiers can match either
+    # spelling. A user (or an agent, once it has any write foothold) can
+    # replace `<icm>/.valea` — or `schedules.json` itself — with a symlink
+    # pointing at granted territory; the symlink-RESOLVED path then names the
+    # target, slips both tiers, and the write-allow tier grants it. Testing
+    # the unresolved spelling too can only ADD denies/asks: every ALLOW tier
+    # still decides off `resolved` alone, so nothing new is ever permitted.
+    lexical = Enum.map(paths, &{:ok, Path.expand(&1, cwd)})
+
     cond do
       tool in @denied_tools ->
         {:deny, "reject_once"}
@@ -239,7 +278,12 @@ defmodule Valea.Agents.PermissionPolicy do
       Enum.any?(resolved, &split_icm_secret?(&1, icm_roots)) ->
         {:deny, "reject_once"}
 
-      kind in @write_kinds and Enum.any?(resolved, &split_valea_dir?(&1, icm_roots)) ->
+      # Kind-gated the fail-CLOSED way (review fix F4), like the mail/calendar
+      # territory denies: only READ kinds are exempt. An unrecognized kind
+      # (a future tool shape, a missing `kind`) is denied here rather than
+      # falling through to a grant.
+      kind not in @read_kinds and
+          Enum.any?(resolved ++ lexical, &split_valea_dir?(&1, icm_root_spellings)) ->
         {:deny, "reject_once"}
 
       Enum.any?(resolved, &mail_denied?(&1, kind, mail_territory, mail_in_scope)) ->
@@ -259,7 +303,8 @@ defmodule Valea.Agents.PermissionPolicy do
       # after every deny tier (a deny still wins) but BEFORE BOTH allow
       # tiers — so a broad grant can never buy schedule registration. Reads
       # are untouched: only write kinds are gated.
-      kind in @write_kinds and Enum.any?(resolved, &split_schedules_file?(&1, icm_roots)) ->
+      kind in @write_kinds and
+          Enum.any?(resolved ++ lexical, &split_schedules_file?(&1, icm_root_spellings)) ->
         :ask
 
       paths == [] ->

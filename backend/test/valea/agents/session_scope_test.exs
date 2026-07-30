@@ -245,6 +245,12 @@ defmodule Valea.Agents.SessionScopeTest do
     end
 
     refute scheduled.managed_context == chat.managed_context
+
+    # Stronger than the field list above: WHOLE-MAP equality once the two
+    # legitimately-differing keys are dropped, so a future scope field that
+    # varies by kind can't slip in unnoticed (review fix F5).
+    assert Map.drop(scheduled, [:kind, :managed_context]) ==
+             Map.drop(chat, [:kind, :managed_context])
   end
 
   # -- Task 14: mail mounts in scope (spec §"Mount & containment") ----------

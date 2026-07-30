@@ -90,22 +90,22 @@ defmodule Valea.Agents.SessionSettingsTest do
 
   # Tasks/schedules spec §"Consent & containment posture" — the
   # managedSettings half of the Task 5 tiers, per ICM root (primary AND
-  # related). It exists because this same function emits
-  # `Write(<root>/**)` ALLOW rules for write-root grants, which the harness
-  # honors without ever consulting Valea's callback: the policy rule alone
-  # would be short-circuited. Precedence (verified against
-  # code.claude.com/docs/en/permissions): deny > ask > allow, specificity
-  # never reorders them — so an `ask` on schedules.json still prompts under
-  # a broader allow, and the `.valea/**` deny wins outright.
-  test "asks per-ICM-root for schedules.json and denies .valea writes" do
+  # related). Best-effort second layer only: per
+  # docs/notes/acp-launch-contract.md the pinned adapter filters
+  # managedSettings restrictive-only (the `allow` array is silently dropped)
+  # and routes every tool call to Valea's callback, so these entries are
+  # likely inert and `PermissionPolicy` is the enforcing layer. Both glob
+  # spellings are emitted — plain `/abs` and filesystem-anchored `//abs` —
+  # because a single leading slash anchors at the settings source.
+  test "asks per-ICM-root for schedules.json and denies .valea writes, in both glob spellings" do
     perms = SessionSettings.content(scope(%{}))["permissions"]
 
     for root <- ["/icms/coaching", "/icms/legal"] do
-      for op <- ["Write", "Edit"] do
-        ask = "#{op}(#{root}/schedules.json)"
+      for spelling <- [root, "/" <> root], op <- ["Write", "Edit"] do
+        ask = "#{op}(#{spelling}/schedules.json)"
         assert ask in perms["ask"], "expected ask to include #{ask}"
 
-        deny = "#{op}(#{root}/.valea/**)"
+        deny = "#{op}(#{spelling}/.valea/**)"
         assert deny in perms["deny"], "expected deny to include #{deny}"
       end
 

@@ -796,5 +796,111 @@ defmodule Valea.Agents.PermissionPolicySplitTest do
     test "the ICM-secrets deny still wins inside .valea", %{granted: granted, icm: icm} do
       assert {:deny, "reject_once"} = P.decide(read(Path.join(icm, ".valea/.env")), granted)
     end
+
+    # An unrecognized/missing `kind` is DENIED under `.valea`, not passed
+    # through to a grant — the tier is gated `kind not in @read_kinds`, the
+    # same fail-closed shape the mail/calendar territory denies use.
+    test "an unknown kind under .valea fails closed", %{granted: granted, icm: icm} do
+      target = Path.join(icm, ".valea/briefing.md")
+
+      assert {:deny, "reject_once"} = P.decide(write_kind("some_future_kind", target), granted)
+      assert {:deny, "reject_once"} = P.decide(write_kind(nil, target), granted)
+    end
+
+    # ORDERING INVARIANT (review fix F1). `icm_roots` deliberately keeps the
+    # in-scope mail/calendar roots (`SessionServer.init/1`), so
+    # `<mail_root>/schedules.json` is simultaneously an exact match for the
+    # schedules ASK tier and a violation of the mail tier's write surface.
+    # Deny must win: an ask there would turn a deny-only territory into one
+    # generic-looking approval away. These pins fail if the ask tier is ever
+    # hoisted above the deny tiers — the only thing that keeps the invariant
+    # true is its POSITION in the cond.
+    test "a deny still wins over the schedules ask inside a mail root", %{ctx: ctx, ws: ws} do
+      mara = Path.join(ws, "sources/mail/mara")
+      File.mkdir_p!(Path.join(mara, "drafts"))
+      File.write!(Path.join(mara, "schedules.json"), "{}")
+
+      ctx =
+        ctx
+        |> Map.put(:mail_roots_all, [mara])
+        |> Map.put(:mail_roots_in_scope, [mara])
+        # Exactly what SessionServer builds: the mail root is BOTH an
+        # icm_root (so the secrets deny reaches inside it) and a mail root.
+        |> Map.put(:icm_roots, [ctx.cwd, mara])
+        |> Map.update!(:read_roots, &(&1 ++ [mara]))
+
+      target = Path.join(mara, "schedules.json")
+      assert {:deny, "reject_once"} = P.decide(write(target), ctx)
+      assert {:deny, "reject_once"} = P.decide(write(target), %{ctx | write_roots: [mara]})
+    end
+
+    test "a deny still wins over the schedules ask inside the calendar territory", %{
+      ctx: ctx,
+      ws: ws
+    } do
+      cal = Path.join(ws, "sources/calendar")
+      File.mkdir_p!(Path.join(cal, "valea/events"))
+      File.write!(Path.join(cal, "schedules.json"), "{}")
+
+      ctx =
+        ctx
+        |> Map.put(:calendar_in_scope?, true)
+        |> Map.put(:icm_roots, [ctx.cwd, cal])
+        |> Map.update!(:read_roots, &(&1 ++ [cal]))
+
+      target = Path.join(cal, "schedules.json")
+      assert {:deny, "reject_once"} = P.decide(write(target), ctx)
+      assert {:deny, "reject_once"} = P.decide(write(target), %{ctx | write_roots: [cal]})
+    end
+
+    # The same collision one level in: `.valea/schedules.json` is inside the
+    # write-denied namespace. (It is not an EXACT root-join match, so the ask
+    # tier never claims it either way — this pins the deny outcome, not the
+    # ordering.)
+    test "a schedules.json inside .valea is denied", %{granted: granted, icm: icm} do
+      assert {:deny, "reject_once"} =
+               P.decide(write(Path.join(icm, ".valea/schedules.json")), granted)
+    end
+
+    # SYMLINK SHADOWING (review fix F3). Both tiers also test the merely
+    # lexically-expanded candidate, so swapping the real path for a symlink
+    # into already-granted territory can no longer turn the deny/ask into an
+    # allow. Before the fix each of these decided {:allow, "allow_once"}.
+    test "a symlinked .valea dir does not defeat the write deny", %{
+      granted: granted,
+      icm: icm,
+      rel: rel
+    } do
+      shadow = Path.join(rel, "shadow")
+      File.mkdir_p!(shadow)
+      File.rm_rf!(Path.join(icm, ".valea"))
+      File.ln_s!(shadow, Path.join(icm, ".valea"))
+
+      # The symlink target is inside a granted write_root, so the RESOLVED
+      # candidate alone would sail through the write-allow tier.
+      assert {:deny, "reject_once"} =
+               P.decide(write(Path.join(icm, ".valea/briefing.md")), granted)
+    end
+
+    test "a symlinked schedules.json does not defeat the ask", %{
+      granted: granted,
+      icm: icm,
+      rel: rel
+    } do
+      shadow = Path.join(rel, "shadow-schedules.json")
+      File.write!(shadow, "{}")
+      File.rm!(Path.join(icm, "schedules.json"))
+      File.ln_s!(shadow, Path.join(icm, "schedules.json"))
+
+      assert :ask = P.decide(write(Path.join(icm, "schedules.json")), granted)
+    end
+
+    # The lexical spelling is additive, not a replacement: a relative
+    # candidate that only NAMES the protected path after normalization is
+    # caught too (`cwd` is the ICM root).
+    test "a relative, dot-segment spelling is caught by both tiers", %{granted: granted} do
+      assert {:deny, "reject_once"} = P.decide(write("sub/../.valea/briefing.md"), granted)
+      assert :ask = P.decide(write("sub/../schedules.json"), granted)
+    end
   end
 end

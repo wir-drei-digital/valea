@@ -63,34 +63,58 @@ defmodule Valea.Agents.SessionSettings do
 
     # Tasks/schedules Task 5 (spec §"Consent & containment posture") — the
     # managedSettings mirror of PermissionPolicy's two tasks/schedules tiers,
-    # per ICM root. It is NOT optional defense-in-depth here: the allow list
-    # this same function emits from `scope.write_roots` is honored by the
-    # harness WITHOUT ever consulting Valea's `request_permission` callback,
-    # so the policy rule alone would be short-circuited for a write-granted
-    # session.
+    # per ICM root. HONEST STATUS (review fix F2): this mirror is best-effort
+    # defense-in-depth and is very likely INERT under the pinned adapter. The
+    # enforcing layer is `PermissionPolicy` on the ACP `request_permission`
+    # callback, reached via the bare `Write`/`Edit`/`Bash` asks above. Three
+    # things say so:
     #
-    # An `ask` entry can therefore override a broader `Write(<root>/**)`
-    # allow: precedence is VERIFIED against the official Claude Code
-    # permissions docs (code.claude.com/docs/en/permissions) — "Rules are
-    # evaluated in order: deny, then ask, then allow … rule specificity
-    # doesn't change the order", and "a matching ask rule prompts even when a
-    # more specific allow rule also matches the same call"; managed settings
-    # follow the same deny > ask > allow order. If a future harness version
-    # ever refutes that, the spec's fallback is a settings-level DENY on
-    # `schedules.json` with registration moving to the UI/hand-edit path —
-    # fail closed, feature intact.
+    #   1. docs/notes/acp-launch-contract.md — `managedSettings` is filtered
+    #      RESTRICTIVE-ONLY (permissive arrays, `permissions.allow` included,
+    #      are silently dropped: `sdk.d.ts:1836-1858`), and the adapter wires
+    #      `canUseTool` so EVERY tool call routes to Valea's callback
+    #      (`acp-agent.js:2887`). So the `allow` array this function emits
+    #      never takes effect through this channel — there is no allow for an
+    #      `ask` entry to have to out-rank, and no gap it has to close.
+    #   2. Current harness docs: `Write(<path>)` rules are accepted but never
+    #      consulted — path-scoped file checks are `Edit`/`Read` only (min
+    #      version 2.1.210). Hence the `Edit` twins.
+    #   3. Pattern anchoring: a single-leading-slash pattern anchors at the
+    #      SETTINGS SOURCE, not the filesystem root, so the entries as
+    #      emitted below may match nothing at all. The `//<abs>` double-slash
+    #      spelling is the filesystem-absolute form, so both spellings are
+    #      emitted — strictly additive, and if the anchoring rule holds, the
+    #      `//` form is the only one that could ever fire.
+    #
+    # Documented precedence, for whichever entries DO land
+    # (code.claude.com/docs/en/permissions): "Rules are evaluated in order:
+    # deny, then ask, then allow … rule specificity doesn't change the
+    # order", and "a matching ask rule prompts even when a more specific
+    # allow rule also matches the same call"; managed settings follow the
+    # same order. STILL MANDATED: the runtime probe (spec §"Consent &
+    # containment posture" + Task 9 acceptance) — attempt an agent write to
+    # `schedules.json` in a granted-write ICM, confirm the dialog appears,
+    # record which layer caught it, and check the adapter's startup output
+    # for a warning about dropped/unparsed settings entries. If the probe
+    # shows the mirror is inert AND the callback ever stops covering this,
+    # the spec's fallback is a settings-level DENY on `schedules.json` with
+    # registration moving to the UI/hand-edit path — fail closed.
     #
     # `.valea/**` is write-denied only (Read is deliberately absent — the
     # briefing exists to be read). Like the other mirrors these globs are
     # case-SENSITIVE; the authoritative, casefolded gate is the policy.
     schedule_asks =
       Enum.flat_map(icm_roots, fn root ->
-        ["Write(#{root}/schedules.json)", "Edit(#{root}/schedules.json)"]
+        for spelling <- glob_spellings(root), op <- ["Write", "Edit"] do
+          "#{op}(#{spelling}/schedules.json)"
+        end
       end)
 
     valea_denies =
       Enum.flat_map(icm_roots, fn root ->
-        for op <- ["Write", "Edit"], do: "#{op}(#{root}/.valea/**)"
+        for spelling <- glob_spellings(root), op <- ["Write", "Edit"] do
+          "#{op}(#{spelling}/.valea/**)"
+        end
       end)
 
     %{
@@ -103,6 +127,23 @@ defmodule Valea.Agents.SessionSettings do
       }
     }
   end
+
+  # Both glob spellings of one absolute root (review fix F2): the plain
+  # `/abs/path` form the other mirrors in this module use, and the
+  # filesystem-anchored `//abs/path` form — a single leading slash is
+  # documented to anchor a pattern at the SETTINGS SOURCE rather than at the
+  # filesystem root, which would make the plain spelling match nothing when
+  # the settings arrive in-memory. Emitting both is strictly additive: a
+  # non-matching pattern is inert, and every entry built from these is an
+  # `ask` or a `deny`, never an `allow`. A non-`/`-anchored root (a Windows
+  # `C:/…` path) yields a harmless `/C:/…` second spelling.
+  #
+  # This decides nothing about the path (it never asks whether `root` is
+  # absolute — `Valea.Paths.absolute?/1` owns that question, windows spec
+  # D4); it only prefixes one more GLOB spelling, written as interpolation
+  # rather than `"/" <> root` so it stays clear of the absoluteness-decision
+  # syntax `Valea.PathsBoundaryTest` gates.
+  defp glob_spellings(root), do: [root, "/#{root}"]
 
   # Task 14 (mail spec §"Mount & containment") — the managedSettings mirror
   # of PermissionPolicy's mail tier. For each IN-SCOPE mail root: `spool/**`
