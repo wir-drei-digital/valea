@@ -17,7 +17,7 @@
  * tag may fetch without the control token.
  */
 
-export type FileLeafKind = 'image' | 'pdf' | 'other';
+export type FileLeafKind = 'image' | 'pdf' | 'csv' | 'other';
 
 // Exactly the token-EXEMPT set of `@allowed_types` server-side, and that is
 // not a coincidence: `ImageView` renders a bare `<img>`, which cannot send
@@ -28,11 +28,15 @@ export type FileLeafKind = 'image' | 'pdf' | 'other';
 // renders as its own source.
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
-/** Viewer bucket for a file leaf's ext — image/pdf/other, which is what `FileView` dispatches on. */
+/** Viewer bucket for a file leaf's ext — image/pdf/csv/other, which is what `FileView` dispatches on. */
 export function fileLeafKind(ext: string | null | undefined): FileLeafKind {
   const normalized = ext?.toLowerCase() ?? '';
   if (IMAGE_EXTS.has(normalized)) return 'image';
   if (normalized === '.pdf') return 'pdf';
+  // `.csv` only: `.tsv` and friends stay plain text until a real file asks
+  // for them — `CsvView` sniffs the separator, but the VIEWER choice here
+  // is a promise about the format, not a guess.
+  if (normalized === '.csv') return 'csv';
   return 'other';
 }
 

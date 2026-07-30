@@ -14,10 +14,45 @@
   let container = $state<HTMLDivElement | null>(null);
   let error = $state<string | null>(null);
   let rendering = $state(true);
+  /** Layout width the pages are fitted to; a resize re-runs the render below. */
+  let fitWidth = $state(0);
+  /**
+   * `mountKey|path` of what is currently painted. It tells a REFIT (same
+   * document, new width — the old canvases stay up, CSS-scaled, until the
+   * crisp ones are ready) from a file switch (clear first: the pane must
+   * never show the previous file's pages while the new one decodes).
+   */
+  let paintedKey = '';
+
+  // A ResizeObserver, not a window listener: a pane splitter or the context
+  // rail resizes this container without the window changing size at all —
+  // and observing the element also covers the window case for free.
+  // Declared BEFORE the render effect so `fitWidth` is already measured on
+  // the first flush, and the initial render doesn't run twice.
+  $effect(() => {
+    const el = container;
+    if (!el) return;
+    fitWidth = Math.round(el.clientWidth);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver((entries) => {
+      const next = Math.round(entries[0]?.contentRect.width ?? 0);
+      // Debounced, and only on a REAL change: a drag fires this every frame
+      // and each re-render decodes every page of the document again.
+      if (next === 0 || next === fitWidth) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => (fitWidth = next), 200);
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      clearTimeout(timer);
+    };
+  });
 
   $effect(() => {
     const el = container;
     const url = rawFileUrl(mountKey, path);
+    const width = fitWidth;
     if (!el) return;
     // Every await below re-checks this: switching files (or unmounting)
     // mid-render must not keep appending canvases for the old document.
@@ -25,9 +60,17 @@
     // finish painting a canvas nobody will see.
     let cancelled = false;
     let inFlight: { cancel: () => void } | null = null;
-    rendering = true;
+    const key = `${mountKey}|${path}`;
+    const refit = key === paintedKey && el.childElementCount > 0;
+    // A refit paints into a DETACHED div and swaps the finished set in at
+    // once: the pages already on screen scale with the container (CSS width
+    // 100%), so they read correctly — just soft — instead of blanking out
+    // mid-drag. A first paint keeps appending straight into the container,
+    // so a long document shows page 1 without waiting for page N.
+    const target = refit ? document.createElement('div') : el;
+    rendering = !refit;
     error = null;
-    el.replaceChildren();
+    if (!refit) el.replaceChildren();
     void (async () => {
       try {
         const pdfjs = await import('pdfjs-dist');
@@ -42,17 +85,21 @@
           // the device pixel ratio (canvas pixels) while keeping the CSS
           // box at layout size — the same HiDPI shape pdf.js's own viewer
           // uses (an extra `transform`, applied before the viewport one).
+          // The CSS box is stated as 100%/auto rather than the pixel pair:
+          // same size at render time, but it also means a width change
+          // rescales what is on screen IMMEDIATELY (correct, just soft)
+          // while the debounced re-render catches up with crisp pixels.
           const base = page.getViewport({ scale: 1 });
-          const scale = (el.clientWidth || 640) / base.width;
+          const scale = (width || el.clientWidth || 640) / base.width;
           const viewport = page.getViewport({ scale });
           const ratio = window.devicePixelRatio || 1;
           const canvas = document.createElement('canvas');
           canvas.width = Math.floor(viewport.width * ratio);
           canvas.height = Math.floor(viewport.height * ratio);
-          canvas.style.width = `${viewport.width}px`;
-          canvas.style.height = `${viewport.height}px`;
+          canvas.style.width = '100%';
+          canvas.style.height = 'auto';
           canvas.className = 'mb-3 rounded-md border border-paper-hairline';
-          el.appendChild(canvas);
+          target.appendChild(canvas);
           const task = page.render({
             canvas,
             viewport,
@@ -63,9 +110,12 @@
           inFlight = null;
           if (cancelled) return;
         }
+        if (target !== el) el.replaceChildren(...target.childNodes);
+        paintedKey = key;
       } catch {
         if (cancelled) return;
         el.replaceChildren();
+        paintedKey = '';
         error = "This PDF can't be displayed. Open it in your file manager instead.";
       } finally {
         if (!cancelled) rendering = false;
