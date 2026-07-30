@@ -16,21 +16,30 @@ defmodule Valea.Git.Engine do
   reads only, until a human (or a resolution session, `conflict_handoff/1`)
   converges them.
 
-  Every held state is derived by `local_class/3` from ONE local read — the
+  Every held state is derived by `local_class/4` from ONE local read — the
   same function `conflict_handoff/1` re-derives with, fed the same inputs, so
   the pass and the handoff can never disagree about whether a repo is in
   conflict.
 
   `blocked_local` is the exception git has no marker for, and it is LEARNED
   rather than guessed: only a `merge --ff-only` that git actually refused
-  enters it, and `local_class/3` then holds that verdict while the repo is
-  still behind with a dirty tree. It is deliberately not inferred from "behind
-  and dirty", because most dirt blocks nothing — an untracked editor file, an
-  edit to a file the incoming commit never touches — and git fast-forwards
-  straight past it. A repo held on that guess would be held forever: held
-  repos never fetch, so `behind` could never fall and the remote's work would
-  never arrive. It self-heals — a clean tree (or dirt that turns out not to
-  clobber) classifies `ok`, and the next pass fast-forwards.
+  enters it. It is deliberately not inferred from "behind and dirty", because
+  most dirt blocks nothing — an untracked editor file, an edit to a file the
+  incoming commit never touches — and git fast-forwards straight past it. A
+  repo held on that guess would be held forever: held repos never fetch, so
+  `behind` could never fall and the remote's work would never arrive.
+
+  The hold then lasts exactly as long as the TREE GIT JUDGED. A refused
+  fast-forward leaves the working tree byte-identical, so the fingerprint taken
+  at refusal (the set of changed paths plus both shas — local reads only)
+  describes the very thing git ruled on, and `local_class/4` holds while it
+  matches: no network, no re-asking a question already answered. The moment the
+  tree changes — the blocking file reverted, another added or removed, a commit
+  made — the verdict has expired and the repo converges, where git decides
+  again: a tree that still clobbers is refused again and re-learns the hold
+  (one fetch, one refused fast-forward, both data-safe), and resolved dirt
+  fast-forwards. So "the user cleaned up the file that was in the way" is a
+  real exit even when unrelated dirt is left behind.
 
   `blocked_local` exists in `pull` mode only. In `full` mode the answer to a
   dirty tree is to commit it, which converts the situation into a divergence:
@@ -113,6 +122,10 @@ defmodule Valea.Git.Engine do
   @conflict_states ~w(diverged blocked_local merge_in_progress)
   @subject_cap 10
   @changed_file_cap 20
+  # Wider than the briefing's list: this one is a fingerprint, and a tree whose
+  # 21st changed path is the one that stopped clobbering must still register as
+  # a different tree.
+  @fingerprint_file_cap 200
   @error_cap 2_000
 
   @type status :: %{
@@ -134,7 +147,13 @@ defmodule Valea.Git.Engine do
           remote_sha: String.t() | nil,
           last_sync_at: String.t() | nil,
           last_error: String.t() | nil,
-          conflict_session_id: String.t() | nil
+          conflict_session_id: String.t() | nil,
+          # INTERNAL bookkeeping, not part of what a UI should render: the
+          # working tree git refused to fast-forward over, so `local_class/4`
+          # can tell "the same obstruction" from "a different one". Travels on
+          # the row because the row is what a pass hands the next pass as
+          # `previous`. Consumers ignore it.
+          block_fingerprint: integer() | nil
         }
 
   def start_link(cfg), do: GenServer.start_link(__MODULE__, cfg, name: __MODULE__)
@@ -540,7 +559,12 @@ defmodule Valea.Git.Engine do
       # which a failed or held pass does not change.
       last_sync_at: previous && previous.last_sync_at,
       last_error: nil,
-      conflict_session_id: previous && previous.conflict_session_id
+      conflict_session_id: previous && previous.conflict_session_id,
+      # Deliberately NOT carried: a verdict about a working tree is only worth
+      # keeping where it is re-affirmed (`classify/8`'s `blocked_local` branch,
+      # `fast_forward/5`'s refusal). Any other outcome drops it, so a repo that
+      # left the state re-learns it from git rather than from memory.
+      block_fingerprint: nil
     }
   end
 
@@ -557,14 +581,33 @@ defmodule Valea.Git.Engine do
     end
   end
 
-  # Everything `local_class/3` can name is HELD or observe-only, and every one
+  # Everything `local_class/4` can name is HELD or observe-only, and every one
   # of those carries `retry_entry` through untouched: only an actual network
   # attempt is allowed to move the backoff ledger, in either direction. `"ok"`
   # is the ONLY answer that earns a fetch.
   defp classify(root, base, previous, cfg, cli, retry_entry, now, st) do
-    case local_class(st, cfg.sync, previous && previous.state) do
-      "ok" -> converge(root, base, previous, cfg, cli, retry_entry, now, st)
-      held -> {observed(base, st, held), retry_entry}
+    # Only a repo already holding at `blocked_local` has a verdict to re-check,
+    # so that is the only one that pays for the extra local read.
+    fingerprint =
+      if previous && previous.state == "blocked_local", do: tree_fingerprint(root, st, cli)
+
+    case local_class(st, cfg.sync, previous, fingerprint) do
+      "ok" ->
+        converge(root, base, previous, cfg, cli, retry_entry, now, st)
+
+      "blocked_local" ->
+        # Still the same obstruction git refused: keep both the fingerprint that
+        # says so and the refusal text that explains it to the user.
+        row = %{
+          observed(base, st, "blocked_local")
+          | block_fingerprint: fingerprint,
+            last_error: previous.last_error
+        }
+
+        {row, retry_entry}
+
+      held ->
+        {observed(base, st, held), retry_entry}
     end
   end
 
@@ -578,13 +621,13 @@ defmodule Valea.Git.Engine do
   # a detached HEAD — classified on `branch` first, every rebase-in-progress
   # would read `detached`, which is not conflict-class, and the resolution
   # session could never be handed off.
-  defp local_class(st, mode, previous_state) do
+  defp local_class(st, mode, previous, fingerprint) do
     cond do
       st.in_progress != nil or st.conflicted -> "merge_in_progress"
       st.branch == nil -> "detached"
       st.upstream == nil -> "no_upstream"
       st.ahead > 0 and st.behind > 0 -> "diverged"
-      still_blocked?(st, mode, previous_state) -> "blocked_local"
+      still_blocked?(st, mode, previous, fingerprint) -> "blocked_local"
       true -> "ok"
     end
   end
@@ -596,20 +639,53 @@ defmodule Valea.Git.Engine do
   # the incoming commit never touches), git fast-forwards straight past it, and
   # a repo held on that guess would be held FOREVER — held repos do not fetch,
   # so `behind` could never fall back to zero and the remote's work would never
-  # arrive. This clause only keeps a repo that already hit a real refusal, for
-  # as long as it is still behind with a dirty tree; a clean tree (or dirt that
-  # turns out not to clobber) falls through to `"ok"` and the next pass
-  # fast-forwards.
+  # arrive.
+  #
+  # The hold therefore lasts exactly as long as the TREE GIT JUDGED. A refused
+  # fast-forward leaves the working tree byte-identical, so the fingerprint
+  # taken at refusal describes the very thing git ruled on; while it matches,
+  # re-asking would get the same answer and the repo stays held with no network
+  # at all. The moment it changes — the blocking file reverted, another added or
+  # removed, a commit made — the verdict has expired: the repo converges, and
+  # git, not this function, decides again. A tree that still clobbers is simply
+  # refused again and re-learns the hold (one fetch and one refused ff, both
+  # data-safe); resolved dirt fast-forwards. This is what makes "the dirt
+  # stopped clobbering" a real exit rather than a claim.
   #
   # Never in `full` mode: there the answer to a dirty tree is to COMMIT it (see
   # `maybe_commit/5`), which turns the situation into a divergence — held, and
   # with the user's work preserved as a commit rather than sitting uncommitted
   # behind a hold that suspends full mode's entire contract.
-  defp still_blocked?(_st, :full, _previous_state), do: false
+  defp still_blocked?(_st, :full, _previous, _fingerprint), do: false
 
-  defp still_blocked?(st, _mode, "blocked_local"), do: st.behind > 0 and st.dirty
+  # The head-match is the whole rule: the row must ALREADY be `blocked_local`
+  # (the verdict was learned, never guessed) and the tree must still fingerprint
+  # to what git refused (`fingerprint` appears twice, so it must be equal).
+  defp still_blocked?(
+         st,
+         _mode,
+         %{state: "blocked_local", block_fingerprint: fingerprint},
+         fingerprint
+       )
+       when fingerprint != nil,
+       do: st.behind > 0 and st.dirty
 
-  defp still_blocked?(_st, _mode, _previous_state), do: false
+  defp still_blocked?(_st, _mode, _previous, _fingerprint), do: false
+
+  # What the working tree looked like when git refused to fast-forward over it.
+  # Local reads only.
+  #
+  # Path-level, not content-level, and that is a decision rather than an
+  # economy: the question this answers is "is this a DIFFERENT obstruction?".
+  # Re-testing on every keystroke inside the blocking file would put a fetch and
+  # a merge back under the very editor (or resolution session) the hold exists
+  # to protect, and would ask git the same question it just answered. Reverting
+  # the file, adding or removing one, or committing (which moves `local_sha`)
+  # all change this; typing more into the same file does not.
+  defp tree_fingerprint(root, st, cli) do
+    paths = root |> Repo.changed_files(@fingerprint_file_cap, cli) |> Enum.sort()
+    :erlang.phash2({paths, st.local_sha, st.remote_sha})
+  end
 
   # Not held: commit what the user wrote (full mode only), then talk to the
   # remote — unless a backoff window says the remote is not answering.
@@ -687,8 +763,16 @@ defmodule Valea.Git.Engine do
 
           true ->
             # The remote moved and something local is in the way — the working
-            # tree is left EXACTLY as it was, which is the point.
-            {%{observed(base, st, "blocked_local") | last_error: describe(out)}, nil}
+            # tree is left EXACTLY as it was, which is the point, and which is
+            # also what makes the fingerprint taken here describe the very tree
+            # git just ruled on.
+            row = %{
+              observed(base, st, "blocked_local")
+              | last_error: describe(out),
+                block_fingerprint: tree_fingerprint(root, st, cli)
+            }
+
+            {row, nil}
         end
     end
   end
@@ -804,12 +888,16 @@ defmodule Valea.Git.Engine do
         {:reply, {:error, :no_conflict}, put_row(state, error_row(row, reason))}
 
       {:ok, st} ->
-        # The SAME classifier the pass uses, fed the SAME inputs — the row's
-        # own state is what a pass would have seen as `previous`, so a repo
-        # holding at `blocked_local` re-derives as `blocked_local` here rather
-        # than as `ok`, and a row that says `merge_in_progress` can never meet
-        # a handoff that disagrees.
-        live = local_class(st, cfg.sync, row.state)
+        # The SAME classifier the pass uses, fed the SAME inputs — the row is
+        # exactly what a pass would have seen as `previous`, so a repo holding
+        # at `blocked_local` re-derives as `blocked_local` here rather than as
+        # `ok`, and a row that says `merge_in_progress` can never meet a handoff
+        # that disagrees. A tree that has changed since the refusal re-derives
+        # as whatever it now IS, which is the point of asking live.
+        fingerprint =
+          if row.state == "blocked_local", do: tree_fingerprint(mount.root, st, state.cli)
+
+        live = local_class(st, cfg.sync, row, fingerprint)
 
         if live in @conflict_states do
           {:reply, {:ok, brief(mount, row, cfg, st, live, state.cli)}, state}
@@ -901,7 +989,7 @@ defmodule Valea.Git.Engine do
   # afterwards either way.
   defp dirty_and_free?(root, cli) do
     case Repo.read_state(root, cli) do
-      {:ok, %{dirty: true} = st} -> local_class(st, :full, nil) == "ok"
+      {:ok, %{dirty: true} = st} -> local_class(st, :full, nil, nil) == "ok"
       _clean_or_unreadable -> false
     end
   end

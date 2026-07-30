@@ -162,6 +162,15 @@ defmodule Valea.Git.EngineTest do
     end
   end
 
+  defp count_merges(seen \\ 0) do
+    receive do
+      {:git_run, ["merge" | _]} -> count_merges(seen + 1)
+      {:git_run, _other} -> count_merges(seen)
+    after
+      0 -> seen
+    end
+  end
+
   # -- tests -----------------------------------------------------------------
 
   test "no engine at all: statuses are empty and callers get :not_running" do
@@ -404,6 +413,9 @@ defmodule Valea.Git.EngineTest do
 
     GitFixtures.advance_remote!(fx, "seed.md", "remote seed")
     File.write!(Path.join(fx.work, "seed.md"), "local uncommitted")
+    # Unrelated dirt that blocks nothing, present throughout — the hold must be
+    # about the file git actually objected to, not about "the tree is dirty".
+    File.write!(Path.join(fx.work, "editor.tmp"), "junk")
 
     # Discovered the only way it can be: a fast-forward git refused.
     assert :ok = Engine.sync_now(key)
@@ -432,13 +444,70 @@ defmodule Valea.Git.EngineTest do
     assert briefing =~ "uncommitted local edits block the fast-forward"
     assert briefing =~ "seed.md"
 
-    # The user puts the file back the way it was; the hold clears itself.
+    # The user puts back ONLY the file git objected to. The unrelated untracked
+    # file stays — so the tree is still dirty, and a hold keyed on "dirty" would
+    # never let go, forever, because a held repo never fetches.
     File.write!(Path.join(fx.work, "seed.md"), "seed")
+
     assert :ok = Engine.sync_now(key)
     healed = await_pass!()
 
-    assert %{state: "ok", behind: 0, dirty: false} = healed[key]
+    assert %{state: "ok", behind: 0} = healed[key]
     assert head(fx.work) == bare_head(fx.bare)
+    # The remote's work arrived, and the harmless dirt is still sitting there.
+    assert File.read!(Path.join(fx.work, "seed.md")) == "remote seed"
+    assert File.read!(Path.join(fx.work, "editor.tmp")) == "junk"
+    assert healed[key].dirty == true
+  end
+
+  test "a DIFFERENT obstruction is re-tested and re-refused by git", ctx do
+    %{ws: ws, fx: fx, key: key} = ctx
+    Application.put_env(:valea, :git_cli, RecordingCli)
+    Application.put_env(:valea, :git_cli_probe, self())
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :git_cli)
+      Application.delete_env(:valea, :git_cli_probe)
+    end)
+
+    start_engine!(ws)
+    await_pass!()
+
+    # The incoming work touches TWO files, so there are two different ways for
+    # the local tree to be in its way.
+    GitFixtures.advance_remote!(fx, "seed.md", "remote seed")
+    GitFixtures.advance_remote!(fx, "other.md", "remote other")
+
+    File.write!(Path.join(fx.work, "seed.md"), "local uncommitted")
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "blocked_local"
+
+    work_before = head(fx.work)
+
+    # Swap which file is in the way: the old obstruction is gone, a new one
+    # (an untracked file the incoming commit would create) takes its place.
+    File.write!(Path.join(fx.work, "seed.md"), "seed")
+    File.write!(Path.join(fx.work, "other.md"), "mine, not the remote's")
+    flush_git_runs()
+
+    assert :ok = Engine.sync_now(key)
+    retested = await_pass!()
+
+    # The verdict expired with the tree it was about, so git was asked again —
+    # exactly once — and refused again.
+    assert count_merges() == 1
+    assert retested[key].state == "blocked_local"
+
+    # And a refused fast-forward changed nothing.
+    assert head(fx.work) == work_before
+    assert File.read!(Path.join(fx.work, "other.md")) == "mine, not the remote's"
+
+    # The new verdict is held in its own right: no further network.
+    flush_git_runs()
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "blocked_local"
+    refute_received {:git_run, ["fetch" | _]}
+    refute_received {:git_run, ["merge" | _]}
   end
 
   test "a flush with nothing to commit does not start a pass", %{ws: ws, key: key} do
