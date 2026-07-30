@@ -134,11 +134,17 @@ the muted "no longer exists" note; `'unavailable'` (any listing failed)
 renders nothing; `'found'` clears the note.
 
 Scope and timing: checked only for rows with a changed badge and a `relPath`,
-only while the rail is open, re-run on the existing `onIcmChanged` signal
-(notes update as the async loads resolve — `handleIcmChanged` notifies before
-its refetch settles, so a beat of staleness is possible and acceptable).
-Deliberately **not** a `Deleted` badge — we know the file is gone, we do not
-know this session removed it, so we don't claim it did.
+only while the rail is open, re-run whenever `icmStore.groups` is
+**reassigned** — which is how every `icm_changed` refetch lands.
+Deliberately **not** the `onIcmChanged` listener: that callback fires before
+its refetch settles, so a listener-driven recheck would walk the stale tree
+through `loadDir`'s loaded-dir cache and miss a deletion permanently
+(established during the plan's Codex review). Grafts from
+`ensurePathLoaded`'s own lazy loads mutate nodes without reassigning the
+array, so the dependency cannot loop. Pending async results are dropped by a
+run token whenever the check re-runs or stops applying (rail closed, mount
+changed). Deliberately **not** a `Deleted` badge — we know the file is gone,
+we do not know this session removed it, so we don't claim it did.
 
 ## UI
 

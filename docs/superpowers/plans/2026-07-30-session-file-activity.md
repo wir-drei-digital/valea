@@ -838,7 +838,7 @@ git commit -m "feat(chat): SessionHeader Files-count reopen toggle"
 - Modify: `frontend/src/lib/components/views/ChatView.svelte`
 
 **Interfaces:**
-- Consumes: `deriveFileActivity`, `shouldAutoOpen`, `closedRailMemory`, `checkExistence` (Tasks 1–3); `FileActivityRail` (Task 4); `SessionHeader` props (Task 5); existing `openMountKey`, `openToolFile`, `context.placement`; `icmStore.ensurePathLoaded` and `icmStore.onIcmChanged` from `$lib/stores/icm.svelte`.
+- Consumes: `deriveFileActivity`, `shouldAutoOpen`, `closedRailMemory`, `checkExistence` (Tasks 1–3); `FileActivityRail` (Task 4); `SessionHeader` props (Task 5); existing `openMountKey`, `openToolFile`, `context.placement`; `icmStore.ensurePathLoaded` and the `icmStore.groups` reassignment signal from `$lib/stores/icm.svelte` (NOT `onIcmChanged` — see Step 3's comment).
 - Produces: the complete feature, wired.
 
 - [ ] **Step 1: Imports**
@@ -855,7 +855,7 @@ Add to ChatView's script imports:
   } from '$lib/components/agent/file-activity';
 ```
 
-(`icmStore` is already imported; `onMount` is already imported.)
+(`icmStore` is already imported.)
 
 - [ ] **Step 2: Derivation + rail open/close state**
 
@@ -923,15 +923,19 @@ Add directly below Step 2's code:
   // Existence notes: reality-check changed rows against the mount tree via
   // `ensurePathLoaded` — ONLY its definitive 'missing' marks a row (store
   // issue-#2 contract). Re-runs when the changed-row set, mount, or rail
-  // visibility changes, and on icm_changed pushes (`icmChangedTick`). The
-  // effect deliberately reads NO icmStore state (ensurePathLoaded mutates
-  // the tree, which would otherwise loop it); a run token drops stale
-  // resolutions.
+  // visibility changes, and whenever `icmStore.groups` is REASSIGNED — which
+  // is how every `icm_changed` refetch lands. Deliberately NOT the
+  // `onIcmChanged` listener: that fires BEFORE the refetch settles, so a
+  // tick-based recheck would walk the stale tree through `loadDir`'s
+  // loaded-dir cache and miss a deletion permanently (Codex review finding).
+  // Reading `groups` cannot loop this effect: `ensurePathLoaded`'s own lazy
+  // loads GRAFT into existing nodes without reassigning the array, and the
+  // effect reads nothing deeper than the array reference.
+  // The run token invalidates pending resolutions on EVERY re-run —
+  // including the not-applicable branch, so a stale async result can never
+  // land after the rail closed or the mount changed.
   let missingKeys = $state<ReadonlySet<string>>(new Set());
-  let icmChangedTick = $state(0);
   let existenceRun = 0;
-
-  onMount(() => icmStore.onIcmChanged(() => (icmChangedTick += 1)));
 
   const changedRelPaths = $derived(
     fileActivities
@@ -942,11 +946,14 @@ Add directly below Step 2's code:
 
   $effect(() => {
     void changedRelPaths;
-    void icmChangedTick;
+    void icmStore.groups;
     const key = openMountKey;
-    if (!showRail || !key) return;
-    const rows = fileActivities;
     const token = ++existenceRun;
+    if (!showRail || !key) {
+      missingKeys = new Set();
+      return;
+    }
+    const rows = fileActivities;
     void (async () => {
       const missing = await checkExistence(rows, async (relPath) => {
         const result = await icmStore.ensurePathLoaded(key, relPath);
@@ -1022,7 +1029,7 @@ Expected: PASS. Fix anything that fails before proceeding.
 Follow the repo's browser-testing rig (see `.claude/launch.json` / project docs — dev server via the preview tooling, NOT a bare `npm run dev` in a terminal the harness can't see). Walk the spec's manual list:
 
 1. Start a session; ask the agent to read + edit files → rail auto-opens; rows show `Read`/`Edited`; edited row expands to a diff; `Read` rows have no chevron.
-2. Ask the agent to create a new file → row shows `Created`. **Also ask it to overwrite an existing file and confirm the row stays `Edited` (i.e. the adapter sent `oldText`). If it shows `Created`, flip `CREATED_INFERENCE_ENABLED` to `false` (file-activity.ts documents this) and re-run this step expecting `Edited`.**
+2. Ask the agent to create a new file → row shows `Created`. **Also ask it to overwrite an existing file and confirm the row stays `Edited` (i.e. the adapter sent `oldText`). If it shows `Created`, flip `CREATED_INFERENCE_ENABLED` to `false` (file-activity.ts documents this) and re-run this step expecting `Edited`. This sub-step is a MERGE GATE: the branch does not merge until it has been performed — the inference ships unverified until then (Codex review flag), and this is where it gets verified or disabled.**
 3. ✕ close the rail → later file touches do NOT reopen it; header shows "Files · N"; clicking reopens.
 4. ↗ on a row → file opens in the side pane; rail stays visible on a wide window; on a narrow window the rail yields (hides) while the pane is open.
 5. Reopen a past session with file activity → rail auto-opens with its record.
