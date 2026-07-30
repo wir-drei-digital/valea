@@ -56,6 +56,74 @@ defmodule Valea.Api.AgentsTest do
              run(:list_sessions_for, %{mount_key: icm.mount_key, cursor: nil})
   end
 
+  # Scheduled-session visibility (tasks+schedules spec §Scheduled-session
+  # visibility): the nav feed and the "Show all" pane EXCLUDE `kind:
+  # "scheduled"` sessions unless the debug toggle asks for them, and the
+  # filtering happens BACKEND-side (before the per-group take/page split), so
+  # the store never fetches-then-hides.
+  describe "include_scheduled" do
+    defp write_scheduled_transcript!(ws, icm, id, kind) do
+      dir = Path.join([ws, "logs", "sessions"])
+      File.mkdir_p!(dir)
+
+      meta = %{
+        "schema" => "session/v1",
+        "id" => id,
+        "kind" => kind,
+        "title" => "#{kind} session",
+        "started_at" => "2026-07-29T08:00:00Z",
+        "icm_mount" => icm.mount_key,
+        "icm_name" => "Primary"
+      }
+
+      File.write!(Path.join(dir, id <> ".jsonl"), Jason.encode!(meta) <> "\n")
+    end
+
+    test "list_recent_sessions_by_icm hides scheduled runs by default", %{ws: ws, icm: icm} do
+      write_scheduled_transcript!(ws, icm, "sess-chat", "chat")
+      write_scheduled_transcript!(ws, icm, "sess-sched", "scheduled")
+
+      assert {:ok, %{groups: [group]}} = run(:list_recent_sessions_by_icm, %{limit: 5})
+      assert Enum.map(group.sessions, & &1.id) == ["sess-chat"]
+
+      assert {:ok, %{groups: [group]}} =
+               run(:list_recent_sessions_by_icm, %{limit: 5, include_scheduled: true})
+
+      assert Enum.map(group.sessions, & &1.id) |> Enum.sort() == ["sess-chat", "sess-sched"]
+    end
+
+    test "an ICM whose only sessions are scheduled drops out of the grouped feed", %{
+      ws: ws,
+      icm: icm
+    } do
+      write_scheduled_transcript!(ws, icm, "sess-sched", "scheduled")
+
+      assert {:ok, %{groups: []}} = run(:list_recent_sessions_by_icm, %{limit: 5})
+
+      assert {:ok, %{groups: [_group]}} =
+               run(:list_recent_sessions_by_icm, %{limit: 5, include_scheduled: true})
+    end
+
+    test "list_sessions_for hides scheduled runs by default", %{ws: ws, icm: icm} do
+      write_scheduled_transcript!(ws, icm, "sess-chat", "chat")
+      write_scheduled_transcript!(ws, icm, "sess-sched", "scheduled")
+
+      assert {:ok, %{sessions: sessions}} =
+               run(:list_sessions_for, %{mount_key: icm.mount_key, cursor: nil})
+
+      assert Enum.map(sessions, & &1.id) == ["sess-chat"]
+
+      assert {:ok, %{sessions: sessions}} =
+               run(:list_sessions_for, %{
+                 mount_key: icm.mount_key,
+                 cursor: nil,
+                 include_scheduled: true
+               })
+
+      assert length(sessions) == 2
+    end
+  end
+
   test "resume_agent_session revives an ended session IN PLACE — same id, same transcript, line 1 untouched",
        %{
          ws: ws,

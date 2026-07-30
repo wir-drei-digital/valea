@@ -122,6 +122,23 @@ defmodule Valea.Api do
       rpc_action(:uninstall_skill, :uninstall_skill)
       rpc_action(:dismiss_skills_offer, :dismiss_skills_offer)
     end
+
+    resource Valea.Api.Tasks do
+      rpc_action(:list_tasks, :list_tasks)
+      rpc_action(:create_task, :create_task)
+      rpc_action(:mutate_task, :mutate_task)
+      rpc_action(:archive_done, :archive_done)
+    end
+
+    resource Valea.Api.Schedules do
+      rpc_action(:list_schedules, :list_schedules)
+      rpc_action(:create_schedule, :create_schedule)
+      rpc_action(:mutate_schedule, :mutate_schedule)
+      rpc_action(:delete_schedule, :delete_schedule)
+      rpc_action(:run_schedule_now, :run_schedule_now)
+      rpc_action(:schedule_run_history, :schedule_run_history)
+      rpc_action(:set_scheduler_paused, :set_scheduler_paused)
+    end
   end
 
   resources do
@@ -134,5 +151,7 @@ defmodule Valea.Api do
     resource Valea.Api.Calendar
     resource Valea.Api.Icms
     resource Valea.Api.Skills
+    resource Valea.Api.Tasks
+    resource Valea.Api.Schedules
   end
 end

@@ -213,9 +213,18 @@ defmodule Valea.Api.Agents do
                   ]
 
       argument :limit, :integer, allow_nil?: false
+      # tasks+schedules spec §Scheduled-session visibility: the nav feed
+      # EXCLUDES `kind: "scheduled"` runs by default; the "include scheduled
+      # runs" toggle passes `true`. Filtered inside `Valea.Agents`, before the
+      # per-group `limit` — the spec's own requirement that the nav store never
+      # fetch-then-hide (and the only way `limit` keeps meaning "limit chat
+      # sessions").
+      argument :include_scheduled, :boolean, allow_nil?: true
 
       run fn input, _ctx ->
-        {:ok, %{groups: Valea.Agents.list_recent_sessions_by_icm(input.arguments.limit)}}
+        opts = [include_scheduled: Map.get(input.arguments, :include_scheduled) == true]
+
+        {:ok, %{groups: Valea.Agents.list_recent_sessions_by_icm(input.arguments.limit, opts)}}
       end
     end
 
@@ -239,11 +248,15 @@ defmodule Valea.Api.Agents do
 
       argument :mount_key, :string, allow_nil?: false
       argument :cursor, :string, allow_nil?: true
+      # Same scheduled-run exclusion as `list_recent_sessions_by_icm` above,
+      # applied before the cursor/page split so paging stays consistent.
+      argument :include_scheduled, :boolean, allow_nil?: true
 
       run fn input, _ctx ->
         %{mount_key: mount_key} = input.arguments
         cursor = Map.get(input.arguments, :cursor)
-        {:ok, Valea.Agents.list_sessions_for(mount_key, cursor)}
+        opts = [include_scheduled: Map.get(input.arguments, :include_scheduled) == true]
+        {:ok, Valea.Agents.list_sessions_for(mount_key, cursor, opts)}
       end
     end
 

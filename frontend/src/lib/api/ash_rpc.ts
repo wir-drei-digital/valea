@@ -637,6 +637,7 @@ export async function listAgentSessionsChannel<Fields extends ListAgentSessionsF
 
 export type ListRecentSessionsByIcmInput = {
   limit: number;
+  includeScheduled?: boolean | null;
 };
 
 export type ListRecentSessionsByIcmFields = UnifiedFieldSelection<{groups: Array<{mountKey: string, icmName: string, sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName"}>, __type: "TypedMap", __primitiveFields: never}>[];
@@ -711,6 +712,7 @@ export async function listRecentSessionsByIcmChannel<Fields extends ListRecentSe
 export type ListSessionsInput = {
   mountKey: string;
   cursor?: string | null;
+  includeScheduled?: boolean | null;
 };
 
 export type ListSessionsFields = UnifiedFieldSelection<{sessions: Array<{id: string, kind: string, title: string, workflow: string | null, runId: string | null, startedAt: string, status: string, live: boolean, busy: boolean, icmMount: string | null, icmName: string | null, __type: "TypedMap", __primitiveFields: "id" | "kind" | "title" | "workflow" | "runId" | "startedAt" | "status" | "live" | "busy" | "icmMount" | "icmName"}>, nextCursor: string | null, __type: "TypedMap", __primitiveFields: "nextCursor"}>[];
@@ -1972,11 +1974,11 @@ export async function updateValeaEventChannel<Fields extends UpdateValeaEventFie
 }
 
 
-export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, tasks: {dueToday: number, overdue: number, inProgress: number, top: Array<{id: string | null, title: string | null, due: string | null, today: boolean, priority: string | null, __type: "TypedMap", __primitiveFields: "id" | "title" | "due" | "today" | "priority"}>, __type: "TypedMap", __primitiveFields: "dueToday" | "overdue" | "inProgress"} | null, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, scheduleNotices: Array<{kind: string, mountKey: string | null, scheduleId: string, title: string, at: string | null, __type: "TypedMap", __primitiveFields: "kind" | "mountKey" | "scheduleId" | "title" | "at"}>, __type: "TypedMap", __primitiveFields: never}>[];
 
 export type InferCockpitTodayResult<
   Fields extends CockpitTodayFields | undefined,
-> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, openLoops: Array<{title: string | null, source: string | null, __type: "TypedMap", __primitiveFields: "title" | "source"}>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, tasks: {dueToday: number, overdue: number, inProgress: number, top: Array<{id: string | null, title: string | null, due: string | null, today: boolean, priority: string | null, __type: "TypedMap", __primitiveFields: "id" | "title" | "due" | "today" | "priority"}>, __type: "TypedMap", __primitiveFields: "dueToday" | "overdue" | "inProgress"} | null, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, scheduleNotices: Array<{kind: string, mountKey: string | null, scheduleId: string, title: string, at: string | null, __type: "TypedMap", __primitiveFields: "kind" | "mountKey" | "scheduleId" | "title" | "at"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
 
 export type CockpitTodayResult<Fields extends CockpitTodayFields | undefined = undefined> = | { success: true; data: InferCockpitTodayResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -5896,6 +5898,530 @@ export async function writeMailDraftChannel<Fields extends WriteMailDraftFields 
 }
 
 
+export type CreateScheduleInput = {
+  mountKey: string;
+  fields: Record<string, any>;
+  generation: number;
+};
+
+export type CreateScheduleFields = UnifiedFieldSelection<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}>[];
+
+export type InferCreateScheduleResult<
+  Fields extends CreateScheduleFields | undefined,
+> = InferResult<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}, Fields>;
+
+export type CreateScheduleResult<Fields extends CreateScheduleFields | undefined = undefined> = | { success: true; data: InferCreateScheduleResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function createSchedule<Fields extends CreateScheduleFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateScheduleInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateScheduleResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_schedule",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateScheduleResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function createScheduleChannel<Fields extends CreateScheduleFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateScheduleInput;
+  fields: Fields;
+  resultHandler: (result: CreateScheduleResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateScheduleResult<Fields>>(
+    config.channel,
+    {
+    action: "create_schedule",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type DeleteScheduleInput = {
+  mountKey: string;
+  scheduleId: string;
+  generation: number;
+};
+
+export type DeleteScheduleFields = UnifiedFieldSelection<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}>[];
+
+export type InferDeleteScheduleResult<
+  Fields extends DeleteScheduleFields | undefined,
+> = InferResult<{deleted: boolean, __type: "TypedMap", __primitiveFields: "deleted"}, Fields>;
+
+export type DeleteScheduleResult<Fields extends DeleteScheduleFields | undefined = undefined> = | { success: true; data: InferDeleteScheduleResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function deleteSchedule<Fields extends DeleteScheduleFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: DeleteScheduleInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<DeleteScheduleResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "delete_schedule",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<DeleteScheduleResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function deleteScheduleChannel<Fields extends DeleteScheduleFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: DeleteScheduleInput;
+  fields: Fields;
+  resultHandler: (result: DeleteScheduleResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<DeleteScheduleResult<Fields>>(
+    config.channel,
+    {
+    action: "delete_schedule",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListSchedulesInput = {
+  generation: number;
+};
+
+export type ListSchedulesFields = UnifiedFieldSelection<{icms: Array<{mountKey: string, icmName: string, status: string, schedules: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "status" | "schedules"}>, schedulerPaused: string, __type: "TypedMap", __primitiveFields: "schedulerPaused"}>[];
+
+export type InferListSchedulesResult<
+  Fields extends ListSchedulesFields | undefined,
+> = InferResult<{icms: Array<{mountKey: string, icmName: string, status: string, schedules: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "status" | "schedules"}>, schedulerPaused: string, __type: "TypedMap", __primitiveFields: "schedulerPaused"}, Fields>;
+
+export type ListSchedulesResult<Fields extends ListSchedulesFields | undefined = undefined> = | { success: true; data: InferListSchedulesResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function listSchedules<Fields extends ListSchedulesFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListSchedulesInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListSchedulesResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_schedules",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListSchedulesResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function listSchedulesChannel<Fields extends ListSchedulesFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListSchedulesInput;
+  fields: Fields;
+  resultHandler: (result: ListSchedulesResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListSchedulesResult<Fields>>(
+    config.channel,
+    {
+    action: "list_schedules",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MutateScheduleInput = {
+  mountKey: string;
+  scheduleId: string;
+  patch: Record<string, any>;
+  generation: number;
+};
+
+export type MutateScheduleFields = UnifiedFieldSelection<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}>[];
+
+export type InferMutateScheduleResult<
+  Fields extends MutateScheduleFields | undefined,
+> = InferResult<{schedule: Record<string, any>, __type: "TypedMap", __primitiveFields: "schedule"}, Fields>;
+
+export type MutateScheduleResult<Fields extends MutateScheduleFields | undefined = undefined> = | { success: true; data: InferMutateScheduleResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function mutateSchedule<Fields extends MutateScheduleFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MutateScheduleInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MutateScheduleResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mutate_schedule",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MutateScheduleResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function mutateScheduleChannel<Fields extends MutateScheduleFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: MutateScheduleInput;
+  fields: Fields;
+  resultHandler: (result: MutateScheduleResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MutateScheduleResult<Fields>>(
+    config.channel,
+    {
+    action: "mutate_schedule",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type RunScheduleNowInput = {
+  mountKey: string;
+  scheduleId: string;
+  generation: number;
+};
+
+export type RunScheduleNowFields = UnifiedFieldSelection<{runId: string, __type: "TypedMap", __primitiveFields: "runId"}>[];
+
+export type InferRunScheduleNowResult<
+  Fields extends RunScheduleNowFields | undefined,
+> = InferResult<{runId: string, __type: "TypedMap", __primitiveFields: "runId"}, Fields>;
+
+export type RunScheduleNowResult<Fields extends RunScheduleNowFields | undefined = undefined> = | { success: true; data: InferRunScheduleNowResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function runScheduleNow<Fields extends RunScheduleNowFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: RunScheduleNowInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<RunScheduleNowResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "run_schedule_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<RunScheduleNowResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function runScheduleNowChannel<Fields extends RunScheduleNowFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: RunScheduleNowInput;
+  fields: Fields;
+  resultHandler: (result: RunScheduleNowResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<RunScheduleNowResult<Fields>>(
+    config.channel,
+    {
+    action: "run_schedule_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ScheduleRunHistoryInput = {
+  mountKey: string;
+  scheduleId: string;
+  limit?: number | null;
+  generation: number;
+};
+
+export type ScheduleRunHistoryFields = UnifiedFieldSelection<{runs: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "runs"}>[];
+
+export type InferScheduleRunHistoryResult<
+  Fields extends ScheduleRunHistoryFields | undefined,
+> = InferResult<{runs: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "runs"}, Fields>;
+
+export type ScheduleRunHistoryResult<Fields extends ScheduleRunHistoryFields | undefined = undefined> = | { success: true; data: InferScheduleRunHistoryResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function scheduleRunHistory<Fields extends ScheduleRunHistoryFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ScheduleRunHistoryInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ScheduleRunHistoryResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "schedule_run_history",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ScheduleRunHistoryResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function scheduleRunHistoryChannel<Fields extends ScheduleRunHistoryFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ScheduleRunHistoryInput;
+  fields: Fields;
+  resultHandler: (result: ScheduleRunHistoryResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ScheduleRunHistoryResult<Fields>>(
+    config.channel,
+    {
+    action: "schedule_run_history",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetSchedulerPausedInput = {
+  paused: boolean;
+  generation: number;
+};
+
+export type SetSchedulerPausedFields = UnifiedFieldSelection<{schedulerPaused: string, __type: "TypedMap", __primitiveFields: "schedulerPaused"}>[];
+
+export type InferSetSchedulerPausedResult<
+  Fields extends SetSchedulerPausedFields | undefined,
+> = InferResult<{schedulerPaused: string, __type: "TypedMap", __primitiveFields: "schedulerPaused"}, Fields>;
+
+export type SetSchedulerPausedResult<Fields extends SetSchedulerPausedFields | undefined = undefined> = | { success: true; data: InferSetSchedulerPausedResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function setSchedulerPaused<Fields extends SetSchedulerPausedFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetSchedulerPausedInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetSchedulerPausedResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_scheduler_paused",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetSchedulerPausedResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Schedules
+ *
+ * @ashActionType :action
+ */
+export async function setSchedulerPausedChannel<Fields extends SetSchedulerPausedFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetSchedulerPausedInput;
+  fields: Fields;
+  resultHandler: (result: SetSchedulerPausedResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetSchedulerPausedResult<Fields>>(
+    config.channel,
+    {
+    action: "set_scheduler_paused",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
 export type DismissSkillsOfferInput = {
   mountKey: string;
   skillId: string;
@@ -6261,6 +6787,304 @@ export async function updateSkillChannel<Fields extends UpdateSkillFields | unde
     config.channel,
     {
     action: "update_skill",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ArchiveDoneInput = {
+  mountKey?: string | null;
+  generation: number;
+};
+
+export type ArchiveDoneFields = UnifiedFieldSelection<{archived: number, pruned: number, icms: Array<{mountKey: string, status: string, archived: number, pruned: number, __type: "TypedMap", __primitiveFields: "mountKey" | "status" | "archived" | "pruned"}>, __type: "TypedMap", __primitiveFields: "archived" | "pruned"}>[];
+
+export type InferArchiveDoneResult<
+  Fields extends ArchiveDoneFields | undefined,
+> = InferResult<{archived: number, pruned: number, icms: Array<{mountKey: string, status: string, archived: number, pruned: number, __type: "TypedMap", __primitiveFields: "mountKey" | "status" | "archived" | "pruned"}>, __type: "TypedMap", __primitiveFields: "archived" | "pruned"}, Fields>;
+
+export type ArchiveDoneResult<Fields extends ArchiveDoneFields | undefined = undefined> = | { success: true; data: InferArchiveDoneResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function archiveDone<Fields extends ArchiveDoneFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ArchiveDoneInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ArchiveDoneResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "archive_done",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ArchiveDoneResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function archiveDoneChannel<Fields extends ArchiveDoneFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ArchiveDoneInput;
+  fields: Fields;
+  resultHandler: (result: ArchiveDoneResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ArchiveDoneResult<Fields>>(
+    config.channel,
+    {
+    action: "archive_done",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type CreateTaskInput = {
+  mountKey: string;
+  fields: Record<string, any>;
+  generation: number;
+};
+
+export type CreateTaskFields = UnifiedFieldSelection<{task: Record<string, any>, __type: "TypedMap", __primitiveFields: "task"}>[];
+
+export type InferCreateTaskResult<
+  Fields extends CreateTaskFields | undefined,
+> = InferResult<{task: Record<string, any>, __type: "TypedMap", __primitiveFields: "task"}, Fields>;
+
+export type CreateTaskResult<Fields extends CreateTaskFields | undefined = undefined> = | { success: true; data: InferCreateTaskResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function createTask<Fields extends CreateTaskFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: CreateTaskInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<CreateTaskResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "create_task",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<CreateTaskResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function createTaskChannel<Fields extends CreateTaskFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: CreateTaskInput;
+  fields: Fields;
+  resultHandler: (result: CreateTaskResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<CreateTaskResult<Fields>>(
+    config.channel,
+    {
+    action: "create_task",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type ListTasksInput = {
+  generation: number;
+};
+
+export type ListTasksFields = UnifiedFieldSelection<{icms: Array<{mountKey: string, icmName: string, status: string, tasks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "status" | "tasks"}>, __type: "TypedMap", __primitiveFields: never}>[];
+
+export type InferListTasksResult<
+  Fields extends ListTasksFields | undefined,
+> = InferResult<{icms: Array<{mountKey: string, icmName: string, status: string, tasks: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "status" | "tasks"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+
+export type ListTasksResult<Fields extends ListTasksFields | undefined = undefined> = | { success: true; data: InferListTasksResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function listTasks<Fields extends ListTasksFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: ListTasksInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<ListTasksResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "list_tasks",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<ListTasksResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function listTasksChannel<Fields extends ListTasksFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: ListTasksInput;
+  fields: Fields;
+  resultHandler: (result: ListTasksResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<ListTasksResult<Fields>>(
+    config.channel,
+    {
+    action: "list_tasks",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type MutateTaskInput = {
+  mountKey: string;
+  taskId: string;
+  patch: Record<string, any>;
+  generation: number;
+};
+
+export type MutateTaskFields = UnifiedFieldSelection<{task: Record<string, any>, __type: "TypedMap", __primitiveFields: "task"}>[];
+
+export type InferMutateTaskResult<
+  Fields extends MutateTaskFields | undefined,
+> = InferResult<{task: Record<string, any>, __type: "TypedMap", __primitiveFields: "task"}, Fields>;
+
+export type MutateTaskResult<Fields extends MutateTaskFields | undefined = undefined> = | { success: true; data: InferMutateTaskResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function mutateTask<Fields extends MutateTaskFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: MutateTaskInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<MutateTaskResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "mutate_task",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<MutateTaskResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Tasks
+ *
+ * @ashActionType :action
+ */
+export async function mutateTaskChannel<Fields extends MutateTaskFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: MutateTaskInput;
+  fields: Fields;
+  resultHandler: (result: MutateTaskResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<MutateTaskResult<Fields>>(
+    config.channel,
+    {
+    action: "mutate_task",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
     input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })

@@ -103,6 +103,20 @@ export type MailAttributesOnlySchema = {
 };
 
 
+// Schedules Schema
+export type SchedulesResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type SchedulesAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // Skills Schema
 export type SkillsResourceSchema = {
   __type: "Resource";
@@ -112,6 +126,20 @@ export type SkillsResourceSchema = {
 
 
 export type SkillsAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+// Tasks Schema
+export type TasksResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type TasksAttributesOnlySchema = {
   __type: "Resource";
   __primitiveFields: never;
 };
@@ -194,10 +222,28 @@ export type MailFilterInput = {
 
 
 };
+export type SchedulesFilterInput = {
+  and?: Array<SchedulesFilterInput>;
+  or?: Array<SchedulesFilterInput>;
+  not?: Array<SchedulesFilterInput>;
+
+
+
+
+};
 export type SkillsFilterInput = {
   and?: Array<SkillsFilterInput>;
   or?: Array<SkillsFilterInput>;
   not?: Array<SkillsFilterInput>;
+
+
+
+
+};
+export type TasksFilterInput = {
+  and?: Array<TasksFilterInput>;
+  or?: Array<TasksFilterInput>;
+  not?: Array<TasksFilterInput>;
 
 
 
@@ -212,6 +258,10 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
+
+
 
 
 

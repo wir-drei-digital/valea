@@ -157,4 +157,169 @@ defmodule ValeaWeb.RpcTest do
     assert is_boolean(session["live"])
     assert session["status"] == "ended"
   end
+
+  # The one layer the direct-Ash suites (`Valea.Api.TasksTest`,
+  # `Valea.Api.SchedulesTest`) cannot see: ash_typescript's own field
+  # extraction. Three things can only break HERE —
+  #
+  #   1. a typed row's snake_case source key resolving under its camelCase
+  #      declaration (`mount_key` -> `mountKey`);
+  #   2. an UNCONSTRAINED array passing its items through verbatim, so the
+  #      user's own file fields (and their legitimately-`false` values) reach
+  #      the frontend unrenamed and unnulled;
+  #   3. an unconstrained `:map` ARGUMENT surviving in the other direction —
+  #      the composer sends `tasks.json`'s own snake_case field names, and
+  #      nothing on the way in may camelCase them.
+  test "tasks + schedules RPC: typed rows camelCase, file entries pass through verbatim" do
+    {:ok, ws} = Manager.create("Wire")
+    icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+
+    File.write!(
+      Path.join(icm.root, "schedules.json"),
+      Jason.encode!(%{
+        "schedules" => [
+          %{
+            "id" => "s-brief",
+            "title" => "Morning brief",
+            "cron" => "30 7 * * 1-5",
+            "paused" => false,
+            "payload" => %{"kind" => "prompt", "prompt" => "go"},
+            "mystery" => %{"kept" => true}
+          }
+        ]
+      })
+    )
+
+    assert %{"success" => true, "data" => %{"generation" => generation}} =
+             rpc("get_workspace", %{})
+
+    # (3) `fields` goes over the wire with the FILE's key names.
+    assert %{"success" => true, "data" => %{"task" => created}} =
+             rpc(
+               "create_task",
+               %{
+                 "mountKey" => icm.mount_key,
+                 "generation" => generation,
+                 "fields" => %{"title" => "Wire task", "today" => false, "priority" => "high"}
+               },
+               ["task"]
+             )
+
+    assert created["title"] == "Wire task"
+    assert created["priority"] == "high"
+
+    assert %{"success" => true, "data" => %{"icms" => [tasks_row]}} =
+             rpc("list_tasks", %{"generation" => generation}, [
+               %{"icms" => ["mountKey", "icmName", "status", "tasks"]}
+             ])
+
+    # (1) typed keys camelCased...
+    assert tasks_row["mountKey"] == icm.mount_key
+    assert tasks_row["status"] == "ok"
+
+    # ...(2) and the entry itself verbatim, `false` intact.
+    assert [task] = tasks_row["tasks"]
+    assert task["title"] == "Wire task"
+    assert task["today"] == false
+    assert is_boolean(task["today"])
+    assert task["created_by"] == "user"
+
+    assert %{
+             "success" => true,
+             "data" => %{"icms" => [schedules_row], "schedulerPaused" => "off"}
+           } =
+             rpc("list_schedules", %{"generation" => generation}, [
+               %{"icms" => ["mountKey", "icmName", "status", "schedules"]},
+               "schedulerPaused"
+             ])
+
+    assert [schedule] = schedules_row["schedules"]
+    assert schedule["id"] == "s-brief"
+    assert schedule["disposition"] == "executable"
+    assert schedule["paused"] == false
+    assert is_boolean(schedule["paused"])
+    assert is_binary(schedule["next_fire"])
+
+    assert %{"success" => true, "data" => %{"runs" => []}} =
+             rpc(
+               "schedule_run_history",
+               %{
+                 "mountKey" => icm.mount_key,
+                 "scheduleId" => "s-brief",
+                 "generation" => generation
+               },
+               ["runs"]
+             )
+  end
+
+  test "cockpit_today RPC: the tasks line survives extraction, malformed ledger nulls it" do
+    {:ok, ws} = Manager.create("Cockpit")
+    icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
+    File.write!(Path.join(icm.root, "today.json"), ~s({"notes": "n"}))
+
+    File.write!(
+      Path.join(icm.root, "tasks.json"),
+      Jason.encode!(%{
+        "tasks" => [%{"id" => "t-1", "title" => "Ship", "status" => "in_progress"}]
+      })
+    )
+
+    fields = [
+      %{
+        "sections" => [
+          "mountKey",
+          "ok",
+          %{"tasks" => ["dueToday", "overdue", "inProgress", %{"top" => ["id", "today"]}]}
+        ]
+      },
+      %{"scheduleNotices" => ["kind", "scheduleId", "title", "at"]}
+    ]
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    {:ok, _run} =
+      Valea.Schedules.Store.record_run(%{
+        icm_id: icm.id,
+        schedule_id: "s-gone",
+        fingerprint: "fp",
+        slot: now,
+        fired_at: now,
+        trigger: "scheduled",
+        kind: "command",
+        outcome: "failed",
+        output: "SECRET OUTPUT",
+        mount_key: icm.mount_key
+      })
+
+    assert %{
+             "success" => true,
+             "data" => %{"sections" => [section], "scheduleNotices" => [notice]}
+           } =
+             rpc("cockpit_today", %{}, fields)
+
+    # A NESTED `:map` field (`tasks`, like the pre-existing `calendar` line)
+    # passes its inner keys through VERBATIM — ash_typescript camelCases the
+    # declared names in the emitted TS types, but the runtime extraction only
+    # renames fields of ARRAY items (`sections[]`, `scheduleNotices[]` below).
+    # `lib/today/cockpit.ts` already normalizes both spellings for exactly this
+    # reason; the assertion pins the wire truth rather than the type's promise.
+    assert section["tasks"]["in_progress"] == 1
+    assert section["tasks"]["due_today"] == 0
+    # The `today` flag is the falsy leaf inside the nested top items.
+    assert [%{"id" => "t-1", "today" => false}] = section["tasks"]["top"]
+
+    # Array items DO get camelCased — and a notice carries no output, ever.
+    assert notice["kind"] == "failed"
+    assert notice["scheduleId"] == "s-gone"
+    assert is_binary(notice["at"])
+    refute Jason.encode!(notice) =~ "SECRET OUTPUT"
+
+    File.write!(Path.join(icm.root, "tasks.json"), "{not json")
+
+    assert %{"success" => true, "data" => %{"sections" => [degraded]}} =
+             rpc("cockpit_today", %{}, fields)
+
+    assert degraded["ok"] == true
+    assert degraded["tasks"] == nil
+  end
 end

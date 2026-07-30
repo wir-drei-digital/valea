@@ -530,7 +530,10 @@ const cockpitTodayFields = [
       'updatedAt',
       'notes',
       { prepared: ['title', 'summary', 'page'] },
-      { openLoops: ['title', 'source'] }
+      // tasks+schedules spec §UI surfaces → Cockpit: the tasks line REPLACED
+      // `openLoops`. Nullable (a malformed `tasks.json` degrades to null while
+      // the section stays ok) — see `Valea.Cockpit`.
+      { tasks: ['dueToday', 'overdue', 'inProgress', { top: ['id', 'title', 'due', 'today', 'priority'] }] }
     ]
   },
   {
@@ -545,7 +548,10 @@ const cockpitTodayFields = [
     ]
   },
   { calendar: ['eventsToday', { next: ['time', 'title'] }] },
-  { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] }
+  { recentSessions: ['id', 'title', 'startedAt', 'status', 'live'] },
+  // Schedule notices ride the same payload (parked / failed / newly
+  // registered, last 24 h, no captured output).
+  { scheduleNotices: ['kind', 'mountKey', 'scheduleId', 'title', 'at'] }
 ] as unknown as CockpitTodayFields;
 
 // Mail (Task 10 rework — account-scoped RPC surface, mail-as-maildir design

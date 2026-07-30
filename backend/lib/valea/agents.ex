@@ -349,11 +349,20 @@ defmodule Valea.Agents do
   identity-snapshot map `list_sessions/0` returns (that stays untouched;
   `Valea.Workspace.Manager.switch_preflight/1` depends on its string-keyed
   shape). `[]` when no workspace is open or it has no sessions yet.
+
+  `opts[:include_scheduled]` (default `false`) — scheduled runs
+  (`kind: "scheduled"`, tasks+schedules spec §Scheduled-session visibility) are
+  EXCLUDED unless asked for. The filter runs BEFORE the per-group `limit`, so
+  the default view shows `limit` real chat sessions rather than `limit` minus
+  however many scheduled runs happened to be newest — and a group whose only
+  sessions are scheduled disappears entirely, which is what "the nav list
+  excludes them" has to mean. Filtering here rather than in the caller is the
+  spec's own requirement: the nav store must not fetch-then-hide.
   """
-  @spec list_recent_sessions_by_icm(pos_integer()) :: [
+  @spec list_recent_sessions_by_icm(pos_integer(), keyword()) :: [
           %{mount_key: String.t(), icm_name: String.t(), sessions: [map()]}
         ]
-  def list_recent_sessions_by_icm(limit \\ 5) do
+  def list_recent_sessions_by_icm(limit \\ 5, opts \\ []) do
     case Manager.current() do
       {:ok, %{path: workspace}} ->
         order_index =
@@ -361,6 +370,7 @@ defmodule Valea.Agents do
 
         workspace
         |> raw_sessions()
+        |> reject_scheduled(opts)
         |> Enum.group_by(& &1["icm_mount"])
         |> Enum.sort_by(fn {mount_key, _sessions} ->
           {Map.get(order_index, mount_key, :unmounted), mount_key}
@@ -402,21 +412,30 @@ defmodule Valea.Agents do
   `%{sessions: [], next_cursor: nil}` when no workspace is open or
   `mount_key` has no sessions.
 
-  `page_size` is a third, optional argument (default `@page_size`) purely
-  so tests can exercise multi-page traversal without creating dozens of
-  real sessions — no RPC caller ever passes it.
+  `opts`:
+
+    * `:include_scheduled` (default `false`) — see
+      `list_recent_sessions_by_icm/2`. Applied BEFORE the cursor and the page
+      split, so paging stays consistent: excluded runs never consume a page
+      slot and never become a `next_cursor` the next call cannot find.
+    * `:page_size` (default `@page_size`) — purely so tests can exercise
+      multi-page traversal without creating dozens of real sessions; no RPC
+      caller ever passes it.
   """
-  @spec list_sessions_for(String.t(), String.t() | nil, pos_integer()) :: %{
+  @spec list_sessions_for(String.t(), String.t() | nil, keyword()) :: %{
           sessions: [map()],
           next_cursor: String.t() | nil
         }
-  def list_sessions_for(mount_key, cursor, page_size \\ @page_size) do
+  def list_sessions_for(mount_key, cursor, opts \\ []) do
+    page_size = Keyword.get(opts, :page_size, @page_size)
+
     case Manager.current() do
       {:ok, %{path: workspace}} ->
         remaining =
           workspace
           |> raw_sessions()
           |> Enum.filter(&(&1["icm_mount"] == mount_key))
+          |> reject_scheduled(opts)
           |> Enum.sort_by(& &1["started_at"], :desc)
           |> skip_to_cursor(cursor)
 
@@ -427,6 +446,19 @@ defmodule Valea.Agents do
 
       {:error, :no_workspace} ->
         %{sessions: [], next_cursor: nil}
+    end
+  end
+
+  # Scheduled runs are reached through the run history under their schedule
+  # (spec §Scheduled-session visibility); the session lists hide them unless the
+  # debug toggle asks. A summary with no `kind` at all is NOT scheduled — the
+  # filter names the one kind it excludes and leaves every other transcript,
+  # present or future, visible.
+  defp reject_scheduled(sessions, opts) do
+    if Keyword.get(opts, :include_scheduled, false) do
+      sessions
+    else
+      Enum.reject(sessions, &(&1["kind"] == "scheduled"))
     end
   end
 

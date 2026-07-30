@@ -13,7 +13,36 @@ defmodule Valea.Cockpit do
   fields degrade to nil/[] rather than failing the parse. `today.json`
   changes ride the existing `icm_changed` watcher events — no new
   watcher wiring here.
+
+  ## The tasks line and schedule notices (tasks+schedules spec §UI surfaces)
+
+  `open_loops` is GONE from the section: the ICM's own `tasks.json` says what
+  is open, so a per-section `"tasks"` line (counts + top 3) replaces the array
+  agents used to hand-maintain in `today.json`. It reads a DIFFERENT file, so it
+  degrades on its own: a malformed task ledger yields `"tasks" => nil` with the
+  section's `"ok"` untouched (the `mail_summary/0` posture — one broken input
+  never kills a section), and an absent ledger yields a zeroed line. The section
+  itself still exists only where `today.json` does; the Tasks route is the
+  complete view.
+
+  `"schedule_notices"` is top-level, across every ICM: parked (`waiting`),
+  `failed`, and newly `registered` schedules from the last 24 h. Notices carry
+  NO captured output — the run-history RPC is where output lives (capped) —
+  and `waiting` is derived by joining live session state, never read from a
+  stored outcome (`Valea.Schedules.Runs`).
   """
+
+  # Completed statuses never count toward the tasks line (`Valea.Tasks`' own
+  # `done`/`dropped` pair).
+  @completed ~w(done dropped)
+
+  # Notices are a "what happened today" feed, not a log: the spec surfaces
+  # parked/failed/registered events "the day they happen".
+  @notice_window 86_400
+
+  # A payload bound, not a policy: a workspace that failed 200 command runs
+  # overnight has a broken schedule, not 200 things for the cockpit to say.
+  @notice_cap 20
 
   @doc """
   Returns the Today cockpit payload as a map with string keys, ready for JSON.
@@ -21,8 +50,15 @@ defmodule Valea.Cockpit do
   Returns `{:ok, map}` with keys:
     - "sections": one per enabled ICM that has a readable `today.json`, in
       `Valea.Mounts.enabled/0` order — `%{"mount_key", "icm_name", "ok",
-      "updated_at", "notes", "prepared", "open_loops"}` (see moduledoc for
-      the leniency contract)
+      "updated_at", "notes", "prepared", "tasks"}` (see moduledoc for
+      the leniency contract). `"tasks"` is the ICM's task line —
+      `%{"due_today", "overdue", "in_progress", "top" => [%{"id", "title",
+      "due", "today", "priority"}]}` — or `nil` when `tasks.json` cannot be
+      parsed
+    - "schedule_notices": across every enabled ICM, the last 24 h of schedule
+      notices, newest first — `%{"kind" => "waiting" | "failed" |
+      "registered", "mount_key", "schedule_id", "title", "at"}`; no captured
+      output rides here
     - "mail": a LIST, one entry per running `Valea.Mail.Engine` (i.e. one
       per valid account) — `%{"account", "configured" => true, "state",
       "pending_ops", "notices"}`, live off `Valea.Mail.Engine.statuses/0`
@@ -43,7 +79,8 @@ defmodule Valea.Cockpit do
        "sections" => icm_sections(),
        "mail" => mail_summary(),
        "calendar" => calendar_summary(),
-       "recent_sessions" => recent_sessions()
+       "recent_sessions" => recent_sessions(),
+       "schedule_notices" => schedule_notices()
      }}
   end
 
@@ -62,6 +99,9 @@ defmodule Valea.Cockpit do
     end
   end
 
+  # The tasks line is computed for EVERY section, `today.json`'s own fate
+  # included: the two files are independent, and an ICM whose `today.json` is
+  # broken still has real tasks to show.
   defp icm_section(mount) do
     base = %{"mount_key" => mount.name, "icm_name" => mount.manifest.name}
 
@@ -70,22 +110,25 @@ defmodule Valea.Cockpit do
         nil
 
       {:error, _reason} ->
-        unreadable_section(base)
+        unreadable_section(base, mount)
 
       {:ok, raw} ->
         case parse_today(raw) do
-          {:ok, fields} -> base |> Map.put("ok", true) |> Map.merge(fields)
-          :error -> unreadable_section(base)
+          {:ok, fields} ->
+            base |> Map.put("ok", true) |> Map.merge(fields) |> with_tasks(mount)
+
+          :error ->
+            unreadable_section(base, mount)
         end
     end
   end
 
-  defp unreadable_section(base) do
-    base |> Map.put("ok", false) |> Map.merge(empty_fields())
+  defp unreadable_section(base, mount) do
+    base |> Map.put("ok", false) |> Map.merge(empty_fields()) |> with_tasks(mount)
   end
 
   defp empty_fields do
-    %{"updated_at" => nil, "notes" => nil, "prepared" => [], "open_loops" => []}
+    %{"updated_at" => nil, "notes" => nil, "prepared" => []}
   end
 
   defp parse_today(raw) do
@@ -95,13 +138,173 @@ defmodule Valea.Cockpit do
          %{
            "updated_at" => str_or_nil(doc["updated_at"]),
            "notes" => str_or_nil(doc["notes"]),
-           "prepared" => items(doc["prepared"], ["title", "summary", "page"]),
-           "open_loops" => items(doc["open_loops"], ["title", "source"])
+           "prepared" => items(doc["prepared"], ["title", "summary", "page"])
          }}
 
       _ ->
         :error
     end
+  end
+
+  # -- the tasks line (tasks+schedules spec §UI surfaces → Cockpit) ------------
+
+  # Counts + the top 3 off the ICM's `tasks.json`. `nil` for an UNREADABLE
+  # ledger — the FE's calm "fix by hand" note — and a zeroed line for an absent
+  # or empty one, which is the difference between "nothing to do" and "I cannot
+  # read your file". Never raises: a task line is not worth a failed cockpit.
+  defp with_tasks(section, mount) do
+    Map.put(section, "tasks", tasks_line(mount))
+  end
+
+  defp tasks_line(mount) do
+    case Valea.Tasks.list(mount.root) do
+      %{status: :unreadable} ->
+        nil
+
+      %{tasks: tasks} ->
+        open = Enum.reject(tasks, &(&1["status"] in @completed))
+        today = host_today()
+
+        %{
+          "due_today" => Enum.count(open, &(due_date(&1) == today)),
+          "overdue" => Enum.count(open, &overdue?(&1, today)),
+          "in_progress" => Enum.count(open, &(&1["status"] == "in_progress")),
+          "top" => top_tasks(open)
+        }
+    end
+  rescue
+    _ -> nil
+  end
+
+  # Ordering, exactly as the spec words it: today-flag first, then due
+  # ascending (a task with no parseable due sorts after every dated one), then
+  # priority high > medium > low > anything else.
+  defp top_tasks(open) do
+    open
+    |> Enum.sort_by(fn task ->
+      {if(task["today"] == true, do: 0, else: 1), due_sort_key(task), priority_rank(task)}
+    end)
+    |> Enum.take(3)
+    |> Enum.map(fn task ->
+      %{
+        "id" => str_or_nil(task["id"]),
+        "title" => str_or_nil(task["title"]),
+        "due" => str_or_nil(task["due"]),
+        "today" => task["today"] == true,
+        "priority" => str_or_nil(task["priority"])
+      }
+    end)
+  end
+
+  defp due_sort_key(task) do
+    case due_date(task) do
+      nil -> {1, ""}
+      date -> {0, Date.to_iso8601(date)}
+    end
+  end
+
+  defp priority_rank(task) do
+    case task["priority"] do
+      "high" -> 0
+      "medium" -> 1
+      "low" -> 2
+      _absent_or_unknown -> 3
+    end
+  end
+
+  defp overdue?(task, today) do
+    case due_date(task) do
+      nil -> false
+      date -> Date.compare(date, today) == :lt
+    end
+  end
+
+  # `due` is a plain calendar date in the spec's shape ("2026-07-30"); anything
+  # else is simply not a date (lenient display).
+  defp due_date(task) do
+    case task["due"] do
+      value when is_binary(value) ->
+        case Date.from_iso8601(value) do
+          {:ok, date} -> date
+          {:error, _not_a_date} -> nil
+        end
+
+      _absent_or_wrong_typed ->
+        nil
+    end
+  end
+
+  # "Today" is a wall-clock question, so it resolves through the SAME zone
+  # source the calendar line uses. A zone the tz database cannot resolve
+  # degrades to the UTC date rather than dropping the whole line.
+  defp host_today do
+    case DateTime.now(Valea.Calendar.Engine.host_zone()) do
+      {:ok, local} -> DateTime.to_date(local)
+      {:error, _unknown_zone} -> Date.utc_today()
+    end
+  end
+
+  # -- schedule notices --------------------------------------------------------
+
+  # The last `@notice_window` seconds of schedule events, newest first: parked
+  # runs (`waiting`, JOINED off live session state — never a stored outcome),
+  # `failed` runs, and schedules newly seen in this workspace (`registered`).
+  #
+  # Lenient exactly like `mail_summary/0`, and for the same reason: these reads
+  # touch `Valea.Repo`, which goes down BEFORE the runtime on every
+  # close/switch — any surprise degrades to no notices, never a crashed
+  # `today/0`.
+  #
+  # Titles come from each ICM's `schedules.json` (run records carry ids, not
+  # labels); an entry that has since been deleted keeps its id as the label, so
+  # a notice about a schedule that is gone still says which one.
+  defp schedule_notices do
+    case Valea.Mounts.enabled() do
+      {:ok, mounts} -> notices_for(Enum.filter(mounts, &(&1.kind == :icm)))
+      {:error, :no_workspace} -> []
+    end
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
+  defp notices_for(mounts) do
+    since = DateTime.utc_now() |> DateTime.add(-@notice_window, :second)
+    %{failed: failed, registered: registered} = Valea.Schedules.Store.notices_since(since)
+    index = schedule_index(mounts)
+
+    (Enum.map(Valea.Schedules.Runs.waiting_since(since), &{"waiting", &1, &1.fired_at}) ++
+       Enum.map(failed, &{"failed", &1, &1.fired_at}) ++
+       Enum.map(registered, &{"registered", &1, &1.first_seen_at}))
+    |> Enum.map(fn {kind, row, at} -> notice(kind, row, at, index) end)
+    |> Enum.sort_by(& &1["at"], :desc)
+    |> Enum.take(@notice_cap)
+  end
+
+  # `(icm_id, schedule_id)` -> `%{mount_key, title}`. Run records carry their
+  # own `mount_key` as display metadata, but `schedule_state` rows do not — and
+  # the ICM id is the identity that survives a mount rename, so both kinds
+  # resolve their label through this index.
+  defp schedule_index(mounts) do
+    for mount <- mounts,
+        entry <- Valea.Schedules.File.load(mount.root).entries,
+        is_binary(entry.id),
+        into: %{} do
+      {{mount.manifest.id, entry.id}, %{mount_key: mount.name, title: entry.title}}
+    end
+  end
+
+  defp notice(kind, row, at, index) do
+    known = Map.get(index, {row.icm_id, row.schedule_id})
+
+    %{
+      "kind" => kind,
+      "mount_key" => (known && known.mount_key) || Map.get(row, :mount_key),
+      "schedule_id" => row.schedule_id,
+      "title" => (known && known.title) || row.schedule_id,
+      "at" => Valea.Schedules.Runs.iso(at)
+    }
   end
 
   defp items(list, keys) when is_list(list) do

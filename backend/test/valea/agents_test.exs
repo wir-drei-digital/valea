@@ -185,7 +185,7 @@ defmodule Valea.AgentsTest do
 
     defp fetch_page(mount_key, cursor) do
       %{sessions: sessions, next_cursor: next_cursor} =
-        Agents.list_sessions_for(mount_key, cursor, 10)
+        Agents.list_sessions_for(mount_key, cursor, page_size: 10)
 
       {Enum.map(sessions, & &1.id), next_cursor}
     end

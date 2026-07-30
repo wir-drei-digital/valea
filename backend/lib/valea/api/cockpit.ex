@@ -18,7 +18,21 @@ defmodule Valea.Api.Cockpit do
   those fields will be in the casted map") — so every top-level key
   `Valea.Cockpit.today/0` returns must be declared here.
 
-  `sections[].ok` and `recent_sessions[].live` are NESTED typed booleans
+  `sections[].tasks` and `calendar` are the two NULLABLE nested maps: each is
+  its own lenient read (`tasks.json`, the calendar query) whose failure
+  degrades to `nil` instead of failing the payload — see `Valea.Cockpit`.
+
+  One ash_typescript asymmetry the frontend has to know about (pinned by
+  `test/valea_web/rpc_test.exs`): the runtime extraction renames fields of
+  ARRAY items (`sections[].mount_key` → `mountKey`) but hands a nested plain
+  `:map` back with its SOURCE keys — so `calendar` arrives as `events_today`
+  and `tasks` as `due_today`/`in_progress`, even though the emitted TS types
+  camelCase both. `lib/today/cockpit.ts` normalizes either spelling for
+  exactly this reason; nothing here can fix it without giving up the typed
+  declaration.
+
+  `sections[].ok`, `sections[].tasks.top[].today` and
+  `recent_sessions[].live` are NESTED typed booleans
   (inside their own item's `constraints fields: [...]`), declared with a
   plain atom key like every other field here — the top-level generic-action
   boolean/falsy workaround documented in `Valea.Api.Mail`'s moduledoc
@@ -63,14 +77,34 @@ defmodule Valea.Api.Cockpit do
                                 ]
                               ]
                             ],
-                            open_loops: [
-                              type: {:array, :map},
-                              allow_nil?: false,
+                            # tasks+schedules spec §UI surfaces → Cockpit: the
+                            # tasks line that REPLACED `open_loops`. Nullable
+                            # BY DESIGN — a malformed `tasks.json` degrades to
+                            # nil (the FE's calm note) while the section itself
+                            # stays `ok`, exactly like the calendar line's own
+                            # leniency.
+                            tasks: [
+                              type: :map,
+                              allow_nil?: true,
                               constraints: [
-                                items: [
-                                  fields: [
-                                    title: [type: :string, allow_nil?: true],
-                                    source: [type: :string, allow_nil?: true]
+                                fields: [
+                                  due_today: [type: :integer, allow_nil?: false],
+                                  overdue: [type: :integer, allow_nil?: false],
+                                  in_progress: [type: :integer, allow_nil?: false],
+                                  top: [
+                                    type: {:array, :map},
+                                    allow_nil?: false,
+                                    constraints: [
+                                      items: [
+                                        fields: [
+                                          id: [type: :string, allow_nil?: true],
+                                          title: [type: :string, allow_nil?: true],
+                                          due: [type: :string, allow_nil?: true],
+                                          today: [type: :boolean, allow_nil?: false],
+                                          priority: [type: :string, allow_nil?: true]
+                                        ]
+                                      ]
+                                    ]
                                   ]
                                 ]
                               ]
@@ -148,6 +182,25 @@ defmodule Valea.Api.Cockpit do
                             started_at: [type: :string, allow_nil?: false],
                             status: [type: :string, allow_nil?: false],
                             live: [type: :boolean, allow_nil?: false]
+                          ]
+                        ]
+                      ]
+                    ],
+                    # tasks+schedules spec §UI surfaces → Cockpit: notices ONLY
+                    # for schedules (parked run, failed run, newly registered),
+                    # never a "next run" line. No captured output rides here —
+                    # `schedule_run_history` is the surface that carries it.
+                    schedule_notices: [
+                      type: {:array, :map},
+                      allow_nil?: false,
+                      constraints: [
+                        items: [
+                          fields: [
+                            kind: [type: :string, allow_nil?: false],
+                            mount_key: [type: :string, allow_nil?: true],
+                            schedule_id: [type: :string, allow_nil?: false],
+                            title: [type: :string, allow_nil?: false],
+                            at: [type: :string, allow_nil?: true]
                           ]
                         ]
                       ]
