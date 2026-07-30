@@ -110,6 +110,16 @@ defmodule Valea.Agents.SessionSettingsTest do
     assert md =~ "CONTEXT.md"
   end
 
+  # The tasks/schedules-contract pointer rides context.md because it is the
+  # one Valea-authored instruction surface EXISTING ICMs get — their
+  # AGENTS.md/CLAUDE.md is user prose Valea never rewrites.
+  test "context.md points at the per-root tasks/schedules contract" do
+    md = SessionSettings.context(scope(%{}))
+    assert md =~ ".valea/briefing.md"
+    assert md =~ "tasks.json"
+    assert md =~ "schedules.json"
+  end
+
   # Task 14 (mail-maildir spec §"Mount & containment"): the managedSettings
   # mirror of PermissionPolicy's mail deny tier. Globs are case-SENSITIVE
   # here — the authoritative, casefolded enforcement is PermissionPolicy's

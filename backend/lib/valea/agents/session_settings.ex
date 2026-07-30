@@ -179,6 +179,13 @@ defmodule Valea.Agents.SessionSettings do
     |> Enum.sort()
   end
 
+  # `context.md` also carries the ONE tasks/schedules-contract pointer that
+  # reaches EXISTING ICMs: their `AGENTS.md`/`CLAUDE.md` is user-owned prose
+  # Valea never rewrites (only the new-ICM template seeds a pointer there),
+  # while this file is Valea's own, regenerated per session — so it names
+  # `.valea/briefing.md` for every ICM, old or new, and always matches the
+  # running app. Phrased per-root on purpose: it covers related ICMs without
+  # per-entry noise.
   @spec context(map()) :: String.t()
   def context(scope) do
     related =
@@ -193,6 +200,9 @@ defmodule Valea.Agents.SessionSettings do
 
     Primary ICM: #{scope.primary_icm.mount_key} — #{scope.primary_icm.root}
     Your working directory IS this ICM's root. Relative paths resolve here.
+    Tasks & schedules: each enabled ICM keeps its task ledger (tasks.json) and
+    schedule registry (schedules.json) at its root — contract in that root's
+    .valea/briefing.md.
 
     Related ICMs available to this session (read their entrypoint only when your
     routing calls for it; they do not load automatically):

@@ -56,8 +56,12 @@ This fills two holes at once:
   schedules; every schedule is pausable; a global Pause-all switch exists.
 - **Agent teaching: one pattern for all — the mail briefing pattern.**
   A Valea-materialized briefing file (like `Valea.Mail.AgentsFile`), plus
-  self-describing `readme` fields in both JSON files. No skill, no MCP tool,
-  no RPC for agents: **the file is the API**.
+  self-describing `readme` fields in both JSON files, plus one pointer line
+  in every session's Valea-authored `context.md`. That last surface is what
+  reaches EXISTING ICMs: their `AGENTS.md`/`CLAUDE.md` is user-owned prose
+  Valea never rewrites, so the template pointer only seeds new ICMs —
+  `context.md` is regenerated per session and covers every ICM, old or new.
+  No skill, no MCP tool, no RPC for agents: **the file is the API**.
 - **Scheduled sessions stay out of the session list by default** (Daniel:
   clutter). They get their own `kind` and are reached through each
   schedule's run history; a debug toggle can reveal them in the lists.

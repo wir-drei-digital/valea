@@ -352,7 +352,9 @@ end
 - Create: `backend/lib/valea/icm/briefing.ex`
 - Modify: `backend/lib/valea/schedules/scheduler.ex` (materialize per enabled ICM on activation/first tick; also on reconciliation seeing a mount for the first time)
 - Modify: `backend/priv/icm_template/CLAUDE.md` (+ its `AGENTS.md` twin if not a symlink) — one pointer line
+- Modify: `backend/lib/valea/agents/session_settings.ex` — `context.md` pointer line (the existing-ICM path)
 - Test: `backend/test/valea/icm/briefing_test.exs`
+- Test: `backend/test/valea/agents/session_settings_test.exs` (context.md pointer)
 
 **Interfaces:**
 - Consumes: `Valea.Mail.AgentsFile` as the pattern (`template_dir/0`, `write_via_rename!/2` — copy the private helper, don't reach into mail).
@@ -366,7 +368,9 @@ end
 
 - [ ] **Step 4: Template pointers.** Append to `backend/priv/icm_template/CLAUDE.md` (and `AGENTS.md` if it's a separate file — check; mirror however the template keeps them in sync): `Valea tasks & schedules: this ICM's task ledger (tasks.json) and schedule registry (schedules.json) live in the root — contract in .valea/briefing.md.` Remove/adjust any `open_loops` guidance in the icm/workspace templates and mail templates if present (`grep -rn "open_loops" backend/priv/`).
 
-- [ ] **Step 5: Run suite; commit** — `git commit -m "feat(briefing): materialized .valea/briefing.md — the agent contract for tasks+schedules"`
+- [ ] **Step 5: Session-context pointer — the EXISTING-ICM path.** Step 4 only seeds NEW ICMs; an existing ICM's `AGENTS.md`/`CLAUDE.md` is user-owned prose Valea never rewrites, so those get the pointer through the one instruction surface Valea authors for every session: `SessionSettings.context/1`. Add one line to `context.md`'s primary-ICM block (after "Your working directory IS this ICM's root…"): `Tasks & schedules: each enabled ICM keeps its task ledger (tasks.json) and schedule registry (schedules.json) at its root — contract in that root's .valea/briefing.md.` Phrased per-root on purpose, so it also covers related ICMs without per-entry noise. Regenerated every session, so it reaches every ICM old or new and always matches the running app version. Test: `session_settings_test.exs` asserts `context/1`'s render contains `.valea/briefing.md`.
+
+- [ ] **Step 6: Run suite; commit** — `git commit -m "feat(briefing): materialized .valea/briefing.md — the agent contract for tasks+schedules"`
 
 ---
 
