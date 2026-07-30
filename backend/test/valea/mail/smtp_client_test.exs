@@ -516,6 +516,46 @@ defmodule Valea.Mail.SmtpClientTest do
     FakeSmtpServer.await(server)
   end
 
+  # -- config-pinned trust root (tls_cacert_file, e.g. ProtonMail Bridge) --------
+  #
+  # The production seam: `Settings.smtp_config/1` stamps the account's
+  # `tls_cacert_file:` onto the config map as `cacertfile`, and every real
+  # call site passes empty opts — so these tests do too.
+
+  test "check_auth takes its trust root from the config cacertfile (no tls_opts) — implicit TLS" do
+    server = FakeSmtpServer.start(implicit_prelude() ++ [:expect_quit])
+    config = config(server, :tls) |> Map.put(:cacertfile, @cacertfile)
+
+    assert :ok = SmtpClient.check_auth(config, "pass", [])
+    FakeSmtpServer.await(server)
+  end
+
+  test "check_auth takes its trust root from the config cacertfile — STARTTLS upgrade" do
+    server = FakeSmtpServer.start(starttls_prelude() ++ [:expect_quit])
+    config = config(server, :starttls) |> Map.put(:cacertfile, @cacertfile)
+
+    assert :ok = SmtpClient.check_auth(config, "pass", [])
+    FakeSmtpServer.await(server)
+  end
+
+  test "check_auth verifies a pinned SELF-SIGNED certificate (the ProtonMail Bridge shape)" do
+    # OTP refuses a self-signed PEER cert even when it sits in the trust
+    # store (`selfsigned_peer`) — the pin must accept its exact bytes.
+    selfsigned = Path.expand("../../fixtures/tls/selfsigned.pem", __DIR__)
+    selfsigned_key = Path.expand("../../fixtures/tls/selfsigned.key", __DIR__)
+
+    server =
+      FakeSmtpServer.start(starttls_prelude() ++ [:expect_quit],
+        certfile: selfsigned,
+        keyfile: selfsigned_key
+      )
+
+    config = config(server, :starttls) |> Map.put(:cacertfile, selfsigned)
+
+    assert :ok = SmtpClient.check_auth(config, "pass", [])
+    FakeSmtpServer.await(server)
+  end
+
   # -- TLS is mandatory and verified ---------------------------------------------
 
   test "verification is on by default: the fixture CA is NOT trusted without the override" do

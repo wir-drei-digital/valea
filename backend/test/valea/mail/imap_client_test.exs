@@ -1103,4 +1103,124 @@ defmodule Valea.Mail.ImapClientTest do
 
     assert {:error, :timeout} = ImapClient.select(conn, "INBOX")
   end
+
+  # -- STARTTLS (security: :starttls) + config-pinned trust root ----------------
+  #
+  # The ProtonMail Bridge shape: a STARTTLS-only IMAP port and a trust root
+  # that arrives via the CONFIG map (`Settings.imap_config/1`'s `cacertfile`)
+  # rather than a test's `tls_opts` — so these tests pass `opts: []`, exactly
+  # like every production call site.
+
+  defp starttls_config(server) do
+    %{
+      host: "localhost",
+      port: server.port,
+      security: :starttls,
+      username: "user",
+      cacertfile: @cacertfile
+    }
+  end
+
+  test "security: :starttls — plaintext greeting, upgrade, then LOGIN and CAPABILITY over TLS" do
+    script = [
+      {:send, "* OK ready"},
+      :starttls,
+      {:expect_command, ~r/^A2 LOGIN user pass$/, then: ["A2 OK LOGIN completed"]},
+      {:expect, "A3 CAPABILITY",
+       then: ["* CAPABILITY IMAP4rev1 MOVE", "A3 OK CAPABILITY completed"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: false)
+
+    assert {:ok, conn} = ImapClient.connect(starttls_config(server), "pass", [])
+    assert {:ok, caps} = ImapClient.capabilities(conn)
+    assert "MOVE" in caps
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "an implicit-TLS connect takes its trust root from the config cacertfile (no tls_opts)" do
+    server = FakeImapServer.start(handshake_steps(), tls: true)
+    config = config(server) |> Map.put(:cacertfile, @cacertfile)
+
+    assert {:ok, _conn} = ImapClient.connect(config, "pass", [])
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "a server refusing STARTTLS fails the connect — the credential is never offered" do
+    script = [
+      {:send, "* OK ready"},
+      {:expect, "A1 STARTTLS", then: ["A1 NO STARTTLS disabled"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: false)
+
+    assert {:error, {:starttls_refused, :no, _text}} =
+             ImapClient.connect(starttls_config(server), "pass", [])
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  # OTP refuses a self-signed PEER cert even when it sits in the trust store
+  # (`selfsigned_peer`), and ProtonMail Bridge presents exactly that shape —
+  # so the pinned trust root must also accept a byte-identical self-signed
+  # peer. These run against the self-signed fixture pair, not the CA-signed
+  # one, precisely because the CA-signed rig cannot catch a regression here.
+  @selfsigned Path.expand("../../fixtures/tls/selfsigned.pem", __DIR__)
+  @selfsigned_key Path.expand("../../fixtures/tls/selfsigned.key", __DIR__)
+
+  test "a pinned SELF-SIGNED certificate (the ProtonMail Bridge shape) verifies byte-for-byte" do
+    script = [
+      {:send, "* OK ready"},
+      :starttls,
+      {:expect_command, ~r/^A2 LOGIN user pass$/, then: ["A2 OK LOGIN completed"]},
+      {:expect, "A3 CAPABILITY", then: ["* CAPABILITY IMAP4rev1", "A3 OK CAPABILITY completed"]}
+    ]
+
+    server =
+      FakeImapServer.start(script, tls: false, certfile: @selfsigned, keyfile: @selfsigned_key)
+
+    config = %{
+      host: "localhost",
+      port: server.port,
+      security: :starttls,
+      username: "user",
+      cacertfile: @selfsigned
+    }
+
+    assert {:ok, _conn} = ImapClient.connect(config, "pass", [])
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "the pin accepts ONLY its own bytes: a different server cert is refused at the handshake" do
+    # The server presents the fixture CA-signed cert; the pin file holds the
+    # self-signed one, which signs nothing in the presented chain.
+    script = [{:send, "* OK ready"}, :starttls]
+    server = FakeImapServer.start(script, tls: false)
+
+    config = %{
+      host: "localhost",
+      port: server.port,
+      security: :starttls,
+      username: "user",
+      cacertfile: @selfsigned
+    }
+
+    assert {:error, {:tls_alert, _}} = ImapClient.connect(config, "pass", [])
+  end
+
+  test "bytes injected behind the STARTTLS OK fail the connect, never crossing the upgrade" do
+    script = [
+      {:send, "* OK ready"},
+      {:expect, "A1 STARTTLS", then: []},
+      {:send_raw, "A1 OK begin TLS\r\n* PREAUTH sneaky\r\n"}
+    ]
+
+    server = FakeImapServer.start(script, tls: false)
+
+    assert {:error, :pretls_data_injection} =
+             ImapClient.connect(starttls_config(server), "pass", [])
+
+    assert :ok = FakeImapServer.await(server)
+  end
 end

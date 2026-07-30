@@ -87,7 +87,10 @@ defmodule Valea.Mail.Doctor do
   @signin_remedy "Sign in to this mailbox from Mail settings to connect."
   @maildir_remedy "Check filesystem permissions for this workspace's sources/mail/ directory."
   @tcp_remedy "Check the host and port, and your network connection."
-  @tls_remedy "Confirm the host/port support implicit TLS (IMAPS, usually port 993)."
+  @tls_remedy "Confirm the host/port match the account's security mode — 993 is " <>
+                "implicit TLS (IMAPS); 143, and ProtonMail Bridge's 1143, are STARTTLS. " <>
+                "A local bridge with its own certificate also needs tls_cacert_file " <>
+                "pointed at its exported certificate."
   @login_remedy "Double-check the mailbox username and password."
   @reauth_remedy "This account signs in with OAuth, and its sign-in has expired — " <>
                    "reconnect the account to refresh it."
@@ -97,8 +100,10 @@ defmodule Valea.Mail.Doctor do
 
   @smtp_tcp_remedy "Check the SMTP host and port (587 for STARTTLS, 465 for TLS), " <>
                      "and your network connection."
-  @smtp_tls_remedy "Confirm the SMTP port and security mode — 587 is STARTTLS, " <>
-                     "465 is implicit TLS. Valea never sends without verified TLS."
+  @smtp_tls_remedy "Confirm the SMTP port and security mode — 587, and ProtonMail " <>
+                     "Bridge's 1025, are STARTTLS; 465 is implicit TLS. A local bridge " <>
+                     "with its own certificate also needs tls_cacert_file. " <>
+                     "Valea never sends without verified TLS."
   @smtp_auth_remedy "Double-check the SMTP username and password."
   @smtp_credential_remedy "Enter your SMTP password to send mail from this account."
 

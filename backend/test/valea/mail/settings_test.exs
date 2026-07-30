@@ -577,8 +577,10 @@ defmodule Valea.Mail.SettingsTest do
     assert Settings.imap_config(account) == %{
              host: "mail.example.com",
              port: 993,
+             security: :tls,
              username: "d@w.d",
-             auth: :oauth2
+             auth: :oauth2,
+             cacertfile: nil
            }
 
     assert Settings.smtp_config(account) == %{
@@ -588,7 +590,8 @@ defmodule Valea.Mail.SettingsTest do
              username: "d@w.d",
              from: "d@w.d",
              from_name: nil,
-             auth: :oauth2
+             auth: :oauth2,
+             cacertfile: nil
            }
   end
 
@@ -1123,5 +1126,186 @@ defmodule Valea.Mail.SettingsTest do
     {:ok, %{accounts: %{"mara" => account}}} = Settings.load(root)
     assert account.provider == :microsoft
     assert account.folders.sent == "Sent Items"
+  end
+
+  # -- imap security (STARTTLS / ProtonMail Bridge) -----------------------------
+
+  # Takes the imap block's inner lines UNINDENTED and places them under
+  # `imap:` itself — heredoc interpolation doesn't re-indent continuation
+  # lines, so a caller-side indent would silently land keys one level up.
+  defp write_imap_yaml!(root, imap_lines) do
+    indented =
+      imap_lines
+      |> String.split("\n", trim: true)
+      |> Enum.map_join("\n", &("      " <> String.trim(&1)))
+
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      wirdrei:
+        imap:
+    #{indented}
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+  end
+
+  test "imap security absent: 993 and any nonstandard port load as implicit tls, 143 as starttls",
+       %{root: root} do
+    for {port, expected} <- [{993, :tls}, {1993, :tls}, {143, :starttls}] do
+      write_imap_yaml!(root, """
+      host: "mail.example.com"
+      port: #{port}
+      username: "d@w.d"
+      """)
+
+      assert {:ok, %{accounts: %{"wirdrei" => account}, invalid: %{}}} = Settings.load(root)
+      assert account.imap.security == expected
+    end
+  end
+
+  test "an explicit imap security: starttls on a nonstandard port round-trips through upsert, render, and load",
+       %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "proton", %{
+               host: "127.0.0.1",
+               port: 1143,
+               username: "d@w.d",
+               security: :starttls
+             })
+
+    rendered = File.read!(Path.join(root, "config/mail.yaml"))
+    assert rendered =~ "security: starttls"
+
+    assert {:ok, %{accounts: %{"proton" => account}, invalid: %{}}} = Settings.load(root)
+    assert account.imap.security == :starttls
+    assert Settings.imap_config(account).security == :starttls
+  end
+
+  test "an explicit imap security contradicting the port convention marks the account invalid",
+       %{root: root} do
+    for {port, security} <- [{993, "starttls"}, {143, "tls"}] do
+      write_imap_yaml!(root, """
+      host: "mail.example.com"
+      port: #{port}
+      security: "#{security}"
+          username: "d@w.d"
+      """)
+
+      assert {:ok, %{accounts: accounts, invalid: invalid}} = Settings.load(root)
+      assert accounts == %{}
+      assert Map.has_key?(invalid, "wirdrei")
+    end
+  end
+
+  test "an unusable imap security: value invalidates the account rather than being guessed",
+       %{root: root} do
+    write_imap_yaml!(root, """
+        host: "mail.example.com"
+        port: 993
+        security: "plaintext"
+        username: "d@w.d"
+    """)
+
+    assert {:ok, %{accounts: %{}, invalid: invalid}} = Settings.load(root)
+    assert invalid["wirdrei"] =~ "imap.security"
+  end
+
+  test "upsert refuses a contradictory or unknown imap security rather than writing it",
+       %{root: root} do
+    base = %{host: "mail.example.com", port: 993, username: "d@w.d"}
+
+    assert {:error, :invalid_security} =
+             Settings.upsert_account!(root, "wirdrei", Map.put(base, :security, :starttls))
+
+    assert {:error, :invalid_security} =
+             Settings.upsert_account!(root, "wirdrei", Map.put(base, :security, :plaintext))
+
+    refute File.exists?(Path.join(root, "config/mail.yaml"))
+  end
+
+  # -- tls_cacert_file (pinned trust root, e.g. ProtonMail Bridge's cert) -------
+
+  test "tls_cacert_file round-trips and is rendered only when set", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "proton", %{
+               host: "127.0.0.1",
+               port: 1143,
+               username: "d@w.d",
+               security: :starttls,
+               tls_cacert_file: "/certs/bridge.pem",
+               smtp: %{
+                 host: "127.0.0.1",
+                 port: 1025,
+                 security: "starttls",
+                 username: "d@w.d",
+                 from: "d@w.d"
+               }
+             })
+
+    assert File.read!(Path.join(root, "config/mail.yaml")) =~
+             ~s(tls_cacert_file: "/certs/bridge.pem")
+
+    assert {:ok, %{accounts: %{"proton" => account}, invalid: %{}}} = Settings.load(root)
+    assert account.tls_cacert_file == "/certs/bridge.pem"
+    assert Settings.imap_config(account).cacertfile == "/certs/bridge.pem"
+    assert Settings.smtp_config(account).cacertfile == "/certs/bridge.pem"
+
+    assert :ok =
+             Settings.upsert_account!(root, "plain", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             })
+
+    {:ok, %{accounts: %{"plain" => plain}}} = Settings.load(root)
+    assert plain.tls_cacert_file == nil
+    assert Settings.imap_config(plain).cacertfile == nil
+  end
+
+  test "an account written before tls_cacert_file existed loads with none", %{root: root} do
+    write_imap_yaml!(root, """
+        host: "mail.example.com"
+        port: 993
+        username: "d@w.d"
+    """)
+
+    {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert account.tls_cacert_file == nil
+    assert Settings.imap_config(account).cacertfile == nil
+  end
+
+  test "write_account_cert!/3 writes the PEM under config/mail-certs and returns its path",
+       %{root: root} do
+    pem = File.read!(Path.expand("../../fixtures/tls/selfsigned.pem", __DIR__))
+
+    path = Settings.write_account_cert!(root, "proton", pem)
+
+    assert path == Path.join(root, "config/mail-certs/proton.pem")
+    assert File.read!(path) == pem
+
+    # Idempotent overwrite — a re-fetch replaces the pin in place.
+    assert Settings.write_account_cert!(root, "proton", pem <> "\n") == path
+    assert File.read!(path) == pem <> "\n"
+  end
+
+  test "an unusable tls_cacert_file DEGRADES to none, like oauth_client_id", %{root: root} do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      wirdrei:
+        tls_cacert_file: 42
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}, invalid: %{}}} = Settings.load(root)
+    assert account.tls_cacert_file == nil
   end
 end

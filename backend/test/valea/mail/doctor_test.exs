@@ -378,6 +378,13 @@ defmodule Valea.Mail.DoctorTest do
       assert by_id["login_ok"]["status"] == "unknown"
       assert by_id["folders"]["status"] == "unknown"
       assert by_id["move_capability"]["status"] == "unknown"
+
+      # The remedy must cover BOTH security modes (993 implicit, 143/1143
+      # STARTTLS — ProtonMail Bridge) and the pinned-trust-root escape hatch
+      # for a local bridge's self-signed certificate.
+      assert by_id["tls_ok"]["remedy"] =~ "security mode"
+      assert by_id["tls_ok"]["remedy"] =~ "STARTTLS"
+      assert by_id["tls_ok"]["remedy"] =~ "tls_cacert_file"
     end)
   end
 
@@ -604,9 +611,12 @@ defmodule Valea.Mail.DoctorTest do
       # rate-limit AUTH), and it must never issue anything transactional.
       assert [{:check_auth, [config, credential, _opts]}] = FakeSmtpTransport.calls()
       # The smtp block PLUS the account's SASL mode (`Settings.smtp_config/1`,
-      # M6 task 15) — the transport picks its AUTH mechanism from that mode, so
-      # the doctor must probe with the same one a real send would use.
-      assert config == Map.put(the_settings.smtp, :auth, :password)
+      # M6 task 15) and pinned trust root — the transport picks its AUTH
+      # mechanism from that mode, so the doctor must probe with the same one a
+      # real send would use.
+      assert config ==
+               the_settings.smtp |> Map.put(:auth, :password) |> Map.put(:cacertfile, nil)
+
       assert credential == "smtp-password"
     end)
   end

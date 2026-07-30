@@ -81,16 +81,22 @@ defmodule FakeSmtpServer do
 
   A leading `:implicit_tls` step makes the listener a TLS listener (465-style);
   without it the listener is plain TCP and TLS only arrives via `:starttls`.
+
+  `certfile:`/`keyfile:` in `opts` override the fixture CA-signed identity —
+  the self-signed `selfsigned.pem` pair plays a ProtonMail-Bridge-shaped
+  server for the cert-pinning tests.
   """
-  @spec start([step()]) :: server()
-  def start(script) when is_list(script) do
+  @spec start([step()], keyword()) :: server()
+  def start(script, opts \\ []) when is_list(script) do
     implicit_tls? = match?([:implicit_tls | _], script)
+    certfile = Keyword.get(opts, :certfile, @certfile)
+    keyfile = Keyword.get(opts, :keyfile, @keyfile)
     parent = self()
-    {listen_socket, port} = listen(implicit_tls?)
+    {listen_socket, port} = listen(implicit_tls?, certfile, keyfile)
 
     pid =
       spawn(fn ->
-        result = accept_and_run(listen_socket, implicit_tls?, script)
+        result = accept_and_run(listen_socket, implicit_tls?, script, certfile, keyfile)
         send(parent, {__MODULE__, self(), result})
       end)
 
@@ -122,14 +128,14 @@ defmodule FakeSmtpServer do
 
   # -- listen --------------------------------------------------------------
 
-  defp listen(true) do
+  defp listen(true, certfile, keyfile) do
     opts = [
       :binary,
       packet: :raw,
       active: false,
       reuseaddr: true,
-      certfile: @certfile,
-      keyfile: @keyfile
+      certfile: certfile,
+      keyfile: keyfile
     ]
 
     {:ok, socket} = :ssl.listen(0, opts)
@@ -137,7 +143,7 @@ defmodule FakeSmtpServer do
     {socket, port}
   end
 
-  defp listen(false) do
+  defp listen(false, _certfile, _keyfile) do
     opts = [:binary, packet: :raw, active: false, reuseaddr: true]
     {:ok, socket} = :gen_tcp.listen(0, opts)
     {:ok, port} = :inet.port(socket)
@@ -146,7 +152,7 @@ defmodule FakeSmtpServer do
 
   # -- connection lifecycle -------------------------------------------------
 
-  defp accept_and_run(listen_socket, implicit_tls?, script) do
+  defp accept_and_run(listen_socket, implicit_tls?, script, certfile, keyfile) do
     case accept(listen_socket, implicit_tls?) do
       {:ok, socket} ->
         ctx = %{
@@ -155,6 +161,8 @@ defmodule FakeSmtpServer do
           buffer: "",
           closed?: false,
           ehlo_after_tls?: false,
+          certfile: certfile,
+          keyfile: keyfile,
           log: if(implicit_tls?, do: [{:tls, :implicit}], else: [])
         }
 
@@ -288,7 +296,7 @@ defmodule FakeSmtpServer do
   end
 
   defp upgrade(ctx) do
-    opts = [:binary, packet: :raw, active: false, certfile: @certfile, keyfile: @keyfile]
+    opts = [:binary, packet: :raw, active: false, certfile: ctx.certfile, keyfile: ctx.keyfile]
 
     case :ssl.handshake(ctx.socket, opts, @default_timeout) do
       {:ok, tls_socket} ->

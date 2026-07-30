@@ -43,6 +43,7 @@ defmodule FakeImapServer do
           | {:expect_command, Regex.t() | binary(), then: [binary()]}
           | {:expect_literal, non_neg_integer(), then: [binary()]}
           | {:sleep, non_neg_integer()}
+          | :starttls
           | :close
 
   @type server :: %{port: :inet.port_number(), task: pid()}
@@ -73,12 +74,17 @@ defmodule FakeImapServer do
   @spec start_sequence([[step()]], keyword()) :: server()
   def start_sequence([_ | _] = scripts, opts \\ []) do
     tls? = Keyword.get(opts, :tls, true)
+    # `certfile:`/`keyfile:` override the fixture CA-signed identity — the
+    # self-signed `selfsigned.pem` pair plays a ProtonMail-Bridge-shaped
+    # server for the cert-pinning tests.
+    certfile = Keyword.get(opts, :certfile, @certfile)
+    keyfile = Keyword.get(opts, :keyfile, @keyfile)
     parent = self()
-    {listen_socket, port} = listen(tls?)
+    {listen_socket, port} = listen(tls?, certfile, keyfile)
 
     pid =
       spawn(fn ->
-        result = accept_and_run_all(listen_socket, tls?, scripts)
+        result = accept_and_run_all(listen_socket, tls?, scripts, certfile, keyfile)
         close(listen_socket, tls?)
         send(parent, {__MODULE__, self(), result})
       end)
@@ -110,14 +116,14 @@ defmodule FakeImapServer do
 
   # -- listen --------------------------------------------------------------
 
-  defp listen(true) do
+  defp listen(true, certfile, keyfile) do
     opts = [
       :binary,
       packet: :raw,
       active: false,
       reuseaddr: true,
-      certfile: @certfile,
-      keyfile: @keyfile
+      certfile: certfile,
+      keyfile: keyfile
     ]
 
     {:ok, socket} = :ssl.listen(0, opts)
@@ -125,7 +131,7 @@ defmodule FakeImapServer do
     {socket, port}
   end
 
-  defp listen(false) do
+  defp listen(false, _certfile, _keyfile) do
     opts = [:binary, packet: :raw, active: false, reuseaddr: true]
     {:ok, socket} = :gen_tcp.listen(0, opts)
     {:ok, port} = :inet.port(socket)
@@ -137,20 +143,22 @@ defmodule FakeImapServer do
   # Stops at the FIRST failing connection: a later script's accept would
   # otherwise block for the full timeout against a client that already gave up,
   # burying the real error behind a timeout message.
-  defp accept_and_run_all(listen_socket, tls?, scripts) do
+  defp accept_and_run_all(listen_socket, tls?, scripts, certfile, keyfile) do
     Enum.reduce_while(scripts, :ok, fn script, :ok ->
-      case accept_and_run(listen_socket, tls?, script) do
+      case accept_and_run(listen_socket, tls?, script, certfile, keyfile) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp accept_and_run(listen_socket, tls?, script) do
+  defp accept_and_run(listen_socket, tls?, script, certfile, keyfile) do
     case accept(listen_socket, tls?) do
       {:ok, socket} ->
+        ctx = %{socket: socket, tls?: tls?, buffer: "", certfile: certfile, keyfile: keyfile}
+
         try do
-          run_script(script, %{socket: socket, tls?: tls?, buffer: ""})
+          run_script(script, ctx)
           :ok
         rescue
           e -> {:error, Exception.message(e)}
@@ -214,9 +222,45 @@ defmodule FakeImapServer do
     run_script(rest, ctx)
   end
 
+  # Expects the client's `<tag> STARTTLS`, answers `<tag> OK`, and upgrades
+  # the plain socket to TLS with the fixture certificate — start the server
+  # with `tls: false` to use it (same shape as `FakeSmtpServer`'s step).
+  # Any bytes the client wrote after STARTTLS but before the handshake are
+  # an injection, not protocol — the raise mirrors what the client under
+  # test must ALSO refuse in the other direction.
+  defp run_script([:starttls | rest], ctx) do
+    {line, ctx} = read_line(ctx)
+
+    tag =
+      case String.split(line, " ", parts: 2) do
+        [tag, "STARTTLS"] -> tag
+        _other -> raise "expected client line <tag> STARTTLS, got: #{inspect(line)}"
+      end
+
+    send_line(ctx, tag <> " OK begin TLS")
+    run_script(rest, upgrade(ctx))
+  end
+
   defp run_script([:close | rest], ctx) do
     close(ctx.socket, ctx.tls?)
     run_script(rest, ctx)
+  end
+
+  defp upgrade(%{tls?: true}) do
+    raise "STARTTLS issued on a connection that is already TLS"
+  end
+
+  defp upgrade(%{buffer: buffer}) when buffer != "" do
+    raise "client bytes buffered across the STARTTLS upgrade: #{inspect(buffer)}"
+  end
+
+  defp upgrade(ctx) do
+    opts = [:binary, packet: :raw, active: false, certfile: ctx.certfile, keyfile: ctx.keyfile]
+
+    case :ssl.handshake(ctx.socket, opts, @default_timeout) do
+      {:ok, tls_socket} -> %{ctx | socket: tls_socket, tls?: true}
+      {:error, reason} -> raise "TLS upgrade failed: #{inspect(reason)}"
+    end
   end
 
   defp assert_match!(%Regex{} = re, line) do

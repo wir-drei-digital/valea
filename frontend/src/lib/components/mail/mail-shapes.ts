@@ -1147,6 +1147,33 @@ export type MailSetupFormInput = {
    * `get_mail_account_settings`' `account.oauthClientId` and pass it back.
    */
   oauthClientId?: string | null;
+  /**
+   * The IMAP security mode: implicit TLS (`'tls'`, IMAPS/993) or a STARTTLS
+   * upgrade (`'starttls'` — 143, and ProtonMail Bridge's localhost:1143).
+   * Blank/absent = the backend's port convention (993 → tls, 143 → starttls,
+   * anything else → tls). Whole-entry rule: an edit prefills the stored mode
+   * from `get_mail_account_settings`' `account.security` and sends it back —
+   * though unlike `auth`, an omitted mode resolves to the same implicit-TLS
+   * default the account already had unless it was a STARTTLS one.
+   */
+  security?: '' | 'tls' | 'starttls';
+  /**
+   * The account's pinned TLS trust root — an absolute path to a PEM
+   * certificate that replaces the system CA store for this account's IMAP
+   * and SMTP connections (`verify_peer` stays on either way). Blank/absent =
+   * the system store; a local bridge with a self-signed certificate
+   * (ProtonMail Bridge's exported cert.pem) is what this exists for. Same
+   * whole-entry hazard as `oauthClientId`: an EDIT that omits it DROPS a
+   * stored path, so prefill from `account.tlsCacertFile` and send it back.
+   */
+  tlsCacertFile?: string;
+  /**
+   * The fetch-and-pin alternative to `tlsCacertFile`: the PEM a
+   * `fetchMailServerCert` probe retrieved and the user confirmed by
+   * fingerprint. When non-blank it WINS — the backend writes it to
+   * `config/mail-certs/<slug>.pem` and pins `tlsCacertFile` to that path.
+   */
+  tlsCacertPem?: string;
 };
 
 /**
@@ -1226,6 +1253,43 @@ export function smtpFormError(smtp: MailSetupSmtpInput, mode: 'add' | 'edit' = '
   // account requires it typed here.
   if (mode === 'add' && !smtp.sameAsImap && !smtp.secret) return 'Enter the SMTP password.';
 
+  return null;
+}
+
+/**
+ * Error copy for `fetchMailServerCert` (the trust-on-first-use probe). One
+ * real code — the backend collapses every transport-level failure to
+ * `cert_fetch_failed`, since the fix is the same either way — plus a generic
+ * fallback for anything unexpected.
+ */
+export function mailCertFetchErrorMessage(code: string): string {
+  switch (code) {
+    case 'cert_fetch_failed':
+      return 'Could not fetch the certificate. Check the host, port, and security mode.';
+    default:
+      return 'Could not fetch the certificate. Please try again.';
+  }
+}
+
+/**
+ * The IMAP-side counterpart of `smtpFormError`'s port-convention checks,
+ * mirroring `Valea.Mail.Settings`' `check_imap_port_convention/2`: only the
+ * two contradictions (STARTTLS on 993, TLS on 143) are errors. Blank is
+ * always valid — the backend defaults ANY port to implicit TLS except 143
+ * (unlike SMTP, where a nonstandard port must state a mode), so a form that
+ * says nothing can't be wrong. Explicit modes on nonstandard ports are the
+ * point: ProtonMail Bridge is STARTTLS on 1143. Returns the message to show,
+ * or `null`; a pre-emption of the backend's reason-free `invalid_security`,
+ * not a substitute for it.
+ */
+export function imapSecurityError(port: number | null, security: '' | 'tls' | 'starttls'): string | null {
+  const resolved = port ?? 993;
+  if (security === 'starttls' && resolved === 993) {
+    return 'Port 993 uses implicit TLS. Pick TLS, or use port 143 for STARTTLS.';
+  }
+  if (security === 'tls' && resolved === 143) {
+    return 'Port 143 uses STARTTLS. Pick STARTTLS, or use port 993 for TLS.';
+  }
   return null;
 }
 
@@ -1436,7 +1500,12 @@ export async function submitMailSetup(input: MailSetupFormInput, deps: MailSetup
     input.auth ?? 'password',
     // Same reasoning one field over (M6 task 16) — omitting it DROPS a stored
     // override, not "leaves it alone".
-    input.oauthClientId ?? null
+    input.oauthClientId ?? null,
+    // Blank means "the port's convention" / "the system trust store" — the
+    // backend resolves both, so nothing is guessed client-side.
+    input.security || null,
+    input.tlsCacertFile || null,
+    input.tlsCacertPem || null
   );
   if (!setupResult.ok) return { ok: false, error: setupResult.error };
 
@@ -1486,6 +1555,12 @@ export function mailSetupErrorMessage(code: string): string {
       // through the RPC), so this names the fields rather than the fault —
       // `smtpFormError` catches everything checkable before we get here.
       return 'The SMTP details were rejected. Check the host, port, security, and From address.';
+    case 'invalid_security':
+      // Same posture one block over — `imapSecurityError` pre-empts the two
+      // checkable contradictions, so reaching this means an unrecognized mode.
+      return 'The IMAP security mode was rejected. Pick TLS or STARTTLS to match the port.';
+    case 'invalid_cert':
+      return 'The fetched certificate could not be read. Fetch it again, or point at an exported cert.pem instead.';
     default:
       return 'Could not save your mail account. Check the details and try again.';
   }

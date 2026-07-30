@@ -232,4 +232,52 @@ defmodule Valea.Mail.FakeImapServerTest do
       {:error, :closed} -> acc
     end
   end
+
+  test ":starttls step: plaintext greeting, tagged OK, TLS upgrade, then TLS-only steps" do
+    script = [
+      {:send, "* OK ready"},
+      :starttls,
+      {:expect, ~r/^A2 LOGIN "u" "p"$/, then: ["A2 OK done"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: false)
+
+    {:ok, plain} =
+      :gen_tcp.connect(~c"localhost", server.port, [:binary, packet: :raw, active: false])
+
+    assert {:ok, "* OK ready\r\n"} = recv(plain, false)
+    :ok = send_line(plain, false, "A1 STARTTLS")
+    assert {:ok, "A1 OK begin TLS\r\n"} = recv(plain, false)
+
+    {:ok, socket} =
+      :ssl.connect(plain, [verify: :verify_peer, cacertfile: @cacertfile], 5_000)
+
+    :ok = send_line(socket, true, "A2 LOGIN \"u\" \"p\"")
+    assert {:ok, "A2 OK done\r\n"} = recv(socket, true)
+
+    close(socket, true)
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test ":starttls step echoes the client's tag on the OK" do
+    script = [
+      {:send, "* OK ready"},
+      :starttls
+    ]
+
+    server = FakeImapServer.start(script, tls: false)
+
+    {:ok, plain} =
+      :gen_tcp.connect(~c"localhost", server.port, [:binary, packet: :raw, active: false])
+
+    assert {:ok, "* OK ready\r\n"} = recv(plain, false)
+    :ok = send_line(plain, false, "V9 STARTTLS")
+    assert {:ok, "V9 OK begin TLS\r\n"} = recv(plain, false)
+
+    {:ok, socket} =
+      :ssl.connect(plain, [verify: :verify_peer, cacertfile: @cacertfile], 5_000)
+
+    close(socket, true)
+    assert :ok = FakeImapServer.await(server)
+  end
 end
