@@ -109,9 +109,13 @@ export function deriveFileActivity(items: AcpItemLike[]): FileActivity[] {
   const touch = (key: string, path: string, relPath: string | undefined, index: number): Accum => {
     const existing = byKey.get(key);
     if (existing) {
-      // Key is `relPath ?? path`, so a re-touch always carries the same
-      // relPath as the first — only chronology can change.
       existing.lastIndex = index;
+      // Reachable via the synthesized row below: a diff-only edit is keyed by
+      // `diff.path` with no relPath, so a later LOCATED call whose relPath
+      // equals that key lands here carrying the backend-proven relPath. Take
+      // it — without the upgrade the row stays "outside-mount", i.e. not
+      // openable, for a file we now know sits in the mount.
+      if (existing.relPath === undefined && relPath !== undefined) existing.relPath = relPath;
       return existing;
     }
     const created: Accum = {
@@ -195,7 +199,9 @@ const MAX_CLOSED_REMEMBERED = 50;
 /**
  * Per-session "the user closed the rail" memory — in-memory only (a fresh
  * app launch starts over, deliberately), capped so an arbitrarily long run
- * can't grow it unboundedly. Insertion-ordered Set gives FIFO eviction.
+ * can't grow it unboundedly. `close()` re-inserts at the end of the
+ * insertion-ordered Set, so eviction drops the LEAST-RECENTLY-CLOSED id —
+ * re-closing a session keeps it from aging out.
  */
 export class ClosedRailMemory {
   #ids = new Set<string>();

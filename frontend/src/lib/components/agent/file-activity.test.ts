@@ -127,6 +127,15 @@ describe('deriveFileActivity', () => {
     expect(rows[0]).toMatchObject({ key: 'C:\\other\\doc.md', relPath: undefined, name: 'doc.md', dir: 'C:\\other' });
   });
 
+  it('synthesized row upgrades to the backend-proven relPath when a located call follows', () => {
+    const rows = deriveFileActivity([
+      tool({ kind: 'edit', locations: [], diff: { path: 'a.md', oldText: '', newText: 'y' } }),
+      tool({ kind: 'read', locations: [{ path: '/ws/a.md', relPath: 'a.md' }] })
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'a.md', relPath: 'a.md', read: true, edited: true });
+  });
+
   it('repeated location within one call counts once', () => {
     const rows = deriveFileActivity([
       tool({
@@ -166,7 +175,17 @@ describe('ClosedRailMemory', () => {
     const m = new ClosedRailMemory();
     for (let i = 0; i < 51; i++) m.close(`s${i}`);
     expect(m.isClosed('s0')).toBe(false);
+    expect(m.isClosed('s1')).toBe(true);
     expect(m.isClosed('s50')).toBe(true);
+  });
+  it('re-closing refreshes recency, so the stale entry is evicted instead', () => {
+    const m = new ClosedRailMemory();
+    m.close('a');
+    m.close('b');
+    m.close('a');
+    for (let i = 0; i < 49; i++) m.close(`s${i}`);
+    expect(m.isClosed('a')).toBe(true);
+    expect(m.isClosed('b')).toBe(false);
   });
 });
 
