@@ -97,10 +97,15 @@ export type CockpitToday = {
    * Every git-capable ICM's sync row (ICM git sync spec §UI) — the SAME
    * `Valea.Git.Engine.public_rows/1` rows the `git_status` RPC and push
    * carry, so `stores/git.svelte.ts` owns both the type and the normalizer
-   * and this block is just a third delivery of them. Today feeds these into
-   * `gitStore` rather than rendering them directly: the store is what applies
-   * the busy-engine keep-on-empty policy, and one source of truth is what
-   * stops the Today rows and the sidebar badge from disagreeing.
+   * and this block is just a third delivery of them.
+   *
+   * Normalized here because the payload carries it and the shape is worth
+   * pinning, but NOTHING renders it: `gitStore` is the single source of truth
+   * for git rows, fed only by its own RPC and the `git_status` push. This
+   * block is read from the same last-completed-pass cache the RPC reads, so
+   * it is never fresher — and a cockpit reply that lands after a push would
+   * re-install rows that push had already superseded. See `GitStore`'s
+   * ordering note and `routes/+page.svelte`'s `refresh`.
    */
   git: GitRepoStatus[];
 };

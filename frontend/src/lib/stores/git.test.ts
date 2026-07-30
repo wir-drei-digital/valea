@@ -205,16 +205,113 @@ describe('GitStore.refresh', () => {
   });
 
   it('keeps the last good rows when the RPC fails', async () => {
-    const { api } = fakeApi({ gitStatus: async () => ({ ok: true, data: { repos: [repoRow()] } }) });
+    const { api } = fakeApi({ gitStatus: async () => ({ ok: false, error: 'workspace_changed' }) });
     const store = new GitStore(api);
+    store.handleGitStatus({ repos: [repoRow()] });
+
     await store.refresh(3);
 
-    const failing = fakeApi({ gitStatus: async () => ({ ok: false, error: 'workspace_changed' }) });
-    const store2 = new GitStore(failing.api);
-    store2.applyRows(store.repos);
-    await store2.refresh(3);
+    expect(store.repos.map((r) => r.mountKey)).toEqual(['workspace']);
+  });
 
-    expect(store2.repos.map((r) => r.mountKey)).toEqual(['workspace']);
+  it('keeps the previous rows when the RPC answers empty (busy engine)', async () => {
+    const { api } = fakeApi();
+    const store = new GitStore(api);
+    store.handleGitStatus({ repos: [repoRow()] });
+
+    await store.refresh(3);
+
+    expect(store.repos.map((r) => r.mountKey)).toEqual(['workspace']);
+  });
+});
+
+// The three feeds are async and unordered. A read answers from
+// `Engine.statuses()` — the LAST COMPLETED pass's cached map — so a reply that
+// lands after a push is, by construction, the older truth: re-installing it
+// would resurrect a conflict the newest pass had already cleared (Today row +
+// sidebar dot back until the next poll).
+describe('GitStore ordering', () => {
+  it('a read that started before a push cannot overwrite it', async () => {
+    let release: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => (release = resolve));
+    const { api } = fakeApi({
+      gitStatus: async () => {
+        await pending;
+        // The stale snapshot: still diverged.
+        return { ok: true, data: { repos: [repoRow({ state: 'diverged', ahead: 1, behind: 2 })] } };
+      }
+    });
+    const store = new GitStore(api);
+
+    const inFlight = store.refresh(3);
+    // The pass finishes and pushes the resolved state while the read is out.
+    store.handleGitStatus({ repos: [repoRow({ state: 'ok' })] });
+    release(null);
+    await inFlight;
+
+    expect(store.byMountKey('workspace')?.state).toBe('ok');
+  });
+
+  it('an EMPTY push does not supersede a read in flight — it said nothing', async () => {
+    let release: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => (release = resolve));
+    const { api } = fakeApi({
+      gitStatus: async () => {
+        await pending;
+        return { ok: true, data: { repos: [repoRow({ state: 'diverged' })] } };
+      }
+    });
+    const store = new GitStore(api);
+
+    const inFlight = store.refresh(3);
+    store.handleGitStatus({ repos: [] });
+    release(null);
+    await inFlight;
+
+    expect(store.byMountKey('workspace')?.state).toBe('diverged');
+  });
+
+  it('only the most recently STARTED read may install (CalendarStore.#fetchToken pattern)', async () => {
+    let releaseSlow: (value: unknown) => void = () => {};
+    const slow = new Promise((resolve) => (releaseSlow = resolve));
+    let call = 0;
+    const { api } = fakeApi({
+      gitStatus: async () => {
+        call += 1;
+        if (call === 1) {
+          await slow;
+          return { ok: true, data: { repos: [repoRow({ branch: 'stale' })] } };
+        }
+        return { ok: true, data: { repos: [repoRow({ branch: 'fresh' })] } };
+      }
+    });
+    const store = new GitStore(api);
+
+    const first = store.refresh(3);
+    await store.refresh(3);
+    releaseSlow(null);
+    await first;
+
+    expect(store.byMountKey('workspace')?.branch).toBe('fresh');
+  });
+
+  it('a read still in flight when the workspace resets cannot land after it', async () => {
+    let release: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => (release = resolve));
+    const { api } = fakeApi({
+      gitStatus: async () => {
+        await pending;
+        return { ok: true, data: { repos: [repoRow()] } };
+      }
+    });
+    const store = new GitStore(api);
+
+    const inFlight = store.refresh(3);
+    store.reset();
+    release(null);
+    await inFlight;
+
+    expect(store.repos).toEqual([]);
   });
 });
 
@@ -312,13 +409,13 @@ describe('GitStore actions', () => {
     );
   });
 
-  it('setMode passes the mode through and refreshes the rows on success', async () => {
+  it('setMode passes the mode through and does NOT re-read (the cache still holds the old mode)', async () => {
     const { api, calls } = fakeApi();
     const store = new GitStore(api);
 
     expect(await store.setMode('workspace', 'pull', 7)).toBeNull();
 
-    expect(calls.map((c) => c.fn)).toEqual(['setIcmGitSync', 'gitStatus']);
+    expect(calls.map((c) => c.fn)).toEqual(['setIcmGitSync']);
     expect(calls[0].args).toEqual(['workspace', 'pull', 7]);
   });
 
@@ -368,6 +465,81 @@ describe('GitStore actions', () => {
   });
 });
 
+// `set_icm_git_sync` writes the ICM's config and broadcasts
+// `{:mounts_changed}` — it does NOT touch `Engine.statuses()`, and a row's
+// `mode` is re-derived only inside a pass. So the saved choice is shown
+// optimistically until a wire row catches up, or the picker visibly snaps back
+// to the old option for as long as a pass (network fetch included) takes.
+describe('GitStore.setMode — the optimistic mode overlay', () => {
+  async function storeWithMode(mode: string) {
+    const { api, calls } = fakeApi();
+    const store = new GitStore(api);
+    store.handleGitStatus({ repos: [repoRow({ mode })] });
+    return { store, calls };
+  }
+
+  it('shows the saved mode immediately', async () => {
+    const { store } = await storeWithMode('off');
+
+    await store.setMode('workspace', 'full', 7);
+
+    expect(store.byMountKey('workspace')?.mode).toBe('full');
+  });
+
+  it('a later push still carrying the OLD mode does not clobber it', async () => {
+    const { store } = await storeWithMode('off');
+    await store.setMode('workspace', 'full', 7);
+
+    // The pass that pushed this one started before the config write landed.
+    store.handleGitStatus({ repos: [repoRow({ mode: 'off', state: 'diverged' })] });
+
+    expect(store.byMountKey('workspace')?.mode).toBe('full');
+    // Everything else on the row is the wire's, not frozen.
+    expect(store.byMountKey('workspace')?.state).toBe('diverged');
+  });
+
+  it('a push carrying the NEW mode clears the overlay cleanly', async () => {
+    const { store } = await storeWithMode('off');
+    await store.setMode('workspace', 'full', 7);
+
+    store.handleGitStatus({ repos: [repoRow({ mode: 'full' })] });
+    // With the overlay retired, the wire is authoritative again — including a
+    // later change made outside this UI.
+    store.handleGitStatus({ repos: [repoRow({ mode: 'pull' })] });
+
+    expect(store.byMountKey('workspace')?.mode).toBe('pull');
+  });
+
+  it('self-heals when the wire moves to some THIRD mode (edited underneath us)', async () => {
+    const { store } = await storeWithMode('off');
+    await store.setMode('workspace', 'full', 7);
+
+    store.handleGitStatus({ repos: [repoRow({ mode: 'pull' })] });
+
+    expect(store.byMountKey('workspace')?.mode).toBe('pull');
+  });
+
+  it('records the WIRE mode as the value being replaced, so a second click survives a stale push', async () => {
+    const { store } = await storeWithMode('off');
+    await store.setMode('workspace', 'full', 7);
+    await store.setMode('workspace', 'pull', 7);
+
+    store.handleGitStatus({ repos: [repoRow({ mode: 'off' })] });
+
+    expect(store.byMountKey('workspace')?.mode).toBe('pull');
+  });
+
+  it('a failed save leaves no overlay behind', async () => {
+    const { api } = fakeApi({ setIcmGitSync: async () => ({ ok: false, error: 'workspace_not_open' }) });
+    const store = new GitStore(api);
+    store.handleGitStatus({ repos: [repoRow({ mode: 'off' })] });
+
+    await store.setMode('workspace', 'full', 7);
+
+    expect(store.byMountKey('workspace')?.mode).toBe('off');
+  });
+});
+
 describe('GitStore.reset', () => {
   it('drops every row — the workspace it described is gone', () => {
     const store = new GitStore(fakeApi().api);
@@ -377,18 +549,17 @@ describe('GitStore.reset', () => {
 
     expect(store.repos).toEqual([]);
   });
-});
 
-describe('GitStore.applyRows', () => {
-  it('is the cockpit payload’s door into the store, with the SAME keep-on-empty policy', () => {
-    const store = new GitStore(fakeApi().api);
-    const rows = normalizeGitRepoRows([repoRow()]);
+  it('drops a pending mode too — it described the outgoing workspace', async () => {
+    const { api } = fakeApi();
+    const store = new GitStore(api);
+    store.handleGitStatus({ repos: [repoRow({ mode: 'off' })] });
+    await store.setMode('workspace', 'full', 7);
 
-    store.applyRows(rows);
-    expect(store.repos).toHaveLength(1);
+    store.reset();
+    store.handleGitStatus({ repos: [repoRow({ mode: 'off' })] });
 
-    store.applyRows([]);
-    expect(store.repos).toHaveLength(1);
+    expect(store.byMountKey('workspace')?.mode).toBe('off');
   });
 });
 

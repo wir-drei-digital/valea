@@ -61,15 +61,13 @@
     const result = await api.cockpitToday();
     if (result.ok) {
       today = normalizeCockpitToday(result.data as Record<string, any>);
-      // The cockpit's git rows are the same rows `gitStore` holds, and this
-      // page fetches them anyway — hand them over rather than render a second
-      // copy. The store applies the busy-engine keep-on-empty policy, and it
-      // is what the sidebar badge reads too, so the two can never disagree.
-      //
-      // `$state.snapshot`: PLAIN rows, not this page's `$state` proxies — two
-      // stores holding the same proxied objects is the identity-comparison
-      // trap `CalendarStore.#fetchToken` documents.
-      gitStore.applyRows($state.snapshot(today.git) as GitRepoStatus[]);
+      // `today.git` is deliberately NOT fed into `gitStore` here. It is read
+      // from the same `Engine.statuses()` cache the `git_status` RPC reads, so
+      // it is never fresher — but this reply can LAND later than a push, and
+      // seeding from it would re-install a conflict the newest pass had
+      // already cleared (the row and the sidebar dot would come back until the
+      // next poll). The store's own `refresh()` covers cold load; the push
+      // covers everything after.
     } else if (loading) {
       // Only the initial mount-time load surfaces a failure state; a failed
       // background refresh keeps showing the last good payload instead of

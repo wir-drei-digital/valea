@@ -199,19 +199,65 @@ export function gitErrorMessage(error: string): string {
  * Today attention rows and the per-ICM modal all read THIS, never their own
  * copy, so the three can never disagree about a repo.
  *
- * Three feeds, one policy (`applyRows`):
+ * TWO feeds, one install path (`#install`):
  *  - `refresh()` — the `git_status` RPC, on cold load and on workspace switch
  *    (`refreshSidebarProjectStores`, icm.svelte.ts);
- *  - `handleGitStatus()` — the `git_status` push, every engine pass after that;
- *  - `applyRows()` — the cockpit payload's `git` block, whenever Today refetches.
+ *  - `handleGitStatus()` — the `git_status` push, every engine pass after that.
+ *
+ * The cockpit payload's `git` block is deliberately NOT a third feed: it is
+ * read from the same `Engine.statuses()` cache the RPC reads, so it can only
+ * ever be as fresh or staler than these two, and a late cockpit reply
+ * re-installing a conflict the newest pass had already cleared is exactly the
+ * race the tokens below exist to stop. Cold load is covered by `refresh()`.
+ *
+ * ORDERING (both directions):
+ *  - `#readToken` — identity of the LATEST STARTED read; an older read's reply
+ *    can never install over a newer read's (the `CalendarStore.#fetchToken`
+ *    pattern, and the reason it is a plain field: a `$state` object read back
+ *    through the proxy fails identity comparison).
+ *  - `#pushInstalls` — count of pushes that actually installed rows; a read
+ *    that started before one of them is dropped, because the push is derived
+ *    from a pass that finished LATER than the cache the read saw.
  */
 export class GitStore {
-  repos: GitRepoStatus[] = $state([]);
+  #rows: GitRepoStatus[] = $state([]);
+
+  /**
+   * Optimistic sync-mode overlay, per mount: what the user just chose, and
+   * what the wire said before they chose it.
+   *
+   * Necessary because `set_icm_git_sync` writes the ICM's config and
+   * broadcasts `{:mounts_changed}` — it does NOT update `Engine.statuses()`.
+   * A row's `mode` is re-derived only inside a pass, and `git_status` reads
+   * the LAST COMPLETED pass's cached map, so re-reading straight after a save
+   * returns the OLD mode: the picker would visibly snap back to the previous
+   * option (with "Sync now" still disabled) until a pass — including a
+   * network fetch — finished.
+   *
+   * Held until the wire MOVES OFF `replaced`, not merely until it matches
+   * `mode`: that clears on agreement (the normal case) and also self-heals if
+   * the config was changed underneath us to some third value, instead of
+   * pinning a lie on screen forever.
+   */
+  #pendingModes: Record<string, { mode: string; replaced: string }> = $state({});
 
   #api: GitApi;
+  #readToken: object = {};
+  #pushInstalls = 0;
 
   constructor(api: GitApi) {
     this.#api = api;
+  }
+
+  /** The installed rows with any optimistic mode choice laid over them. */
+  get repos(): GitRepoStatus[] {
+    const pending = this.#pendingModes;
+    // Identity-stable in the overwhelmingly common case (no pending write),
+    // so consumers deriving from this don't churn.
+    if (Object.keys(pending).length === 0) return this.#rows;
+    return this.#rows.map((row) =>
+      pending[row.mountKey] ? { ...row, mode: pending[row.mountKey].mode } : row
+    );
   }
 
   /** The rows that earn an attention row / badge, in mount-key order. */
@@ -231,41 +277,82 @@ export class GitStore {
   }
 
   /**
-   * Replaces the rows — EXCEPT when the payload is empty.
-   *
-   * BUSY-ENGINE CAVEAT (ledgered): while `Valea.Git.Engine` is mid-pass, the
-   * status read can briefly answer with no rows at all, on the RPC, the push
-   * and the cockpit block alike. Blanking the sidebar and Today for that
-   * window — and then flickering them back a second later — is worse than
-   * being one pass stale, so an empty payload is read as "nothing new to
-   * say". The cost is bounded and named: the LAST git repo leaving a
-   * workspace (unmounted, or its `sync:` set to something with no rows) keeps
-   * its stale row until the next non-empty payload or a `reset()`. A
-   * workspace close/switch calls `reset()` (`handleWorkspaceEvent`), which is
-   * the case that actually matters.
+   * Drops every row and every pending mode — the workspace they described is
+   * closing or being switched away from — and invalidates any read still in
+   * flight, so the outgoing workspace's reply cannot land after the reset.
    */
-  applyRows(rows: GitRepoStatus[]): void {
-    if (rows.length === 0) return;
-    this.repos = [...rows].sort((a, b) => a.mountKey.localeCompare(b.mountKey));
-  }
-
-  /** Drops every row — the workspace they described is closing or being switched away from. */
   reset(): void {
-    this.repos = [];
+    this.#rows = [];
+    this.#pendingModes = {};
+    this.#readToken = {};
   }
 
   async refresh(generation?: number): Promise<void> {
     const gen = generation ?? workspaceStore.generation ?? 0;
+
+    const token = {};
+    this.#readToken = token;
+    const pushesAtStart = this.#pushInstalls;
+
     const result = await this.#api.gitStatus(gen);
     // A failed read (stale generation, no workspace, engine down) keeps the
     // last good rows — same posture as every other push-backed store here.
     if (!result.ok) return;
-    this.applyRows(normalizeGitRepoRows((result.data as { repos?: unknown }).repos));
+    // Superseded: either a newer read started, or a push installed rows this
+    // reply cannot know about (its `Engine.statuses()` snapshot predates the
+    // pass that pushed). Both mean this answer is the older truth.
+    if (this.#readToken !== token || this.#pushInstalls !== pushesAtStart) return;
+
+    this.#install(normalizeGitRepoRows((result.data as { repos?: unknown }).repos));
   }
 
-  /** `git_status` push — the engine finished a pass over the whole workspace. */
+  /**
+   * `git_status` push — the engine finished a pass over the whole workspace.
+   * Always wins over any read already in flight (see `#pushInstalls`).
+   */
   handleGitStatus(payload: GitStatusPush): void {
-    this.applyRows(normalizeGitRepoRows(payload?.repos));
+    const installed = this.#install(normalizeGitRepoRows(payload?.repos));
+    if (installed) this.#pushInstalls += 1;
+  }
+
+  /**
+   * Replaces the rows — EXCEPT when the payload is empty. Answers whether it
+   * actually installed anything.
+   *
+   * BUSY-ENGINE CAVEAT (ledgered): while `Valea.Git.Engine` is mid-pass, the
+   * status read can briefly answer with no rows at all, on the RPC and the
+   * push alike. Blanking the sidebar and Today for that window — and then
+   * flickering them back a second later — is worse than being one pass stale,
+   * so an empty payload is read as "nothing new to say", and (since nothing
+   * was learned) it does not supersede a read in flight either. The cost is
+   * bounded and named: the LAST git repo leaving a workspace keeps its stale
+   * row until the next non-empty payload or a `reset()`. A workspace
+   * close/switch calls `reset()` (`handleWorkspaceEvent`), which is the case
+   * that actually matters.
+   */
+  #install(rows: GitRepoStatus[]): boolean {
+    if (rows.length === 0) return false;
+    const sorted = [...rows].sort((a, b) => a.mountKey.localeCompare(b.mountKey));
+    this.#rows = sorted;
+    this.#reconcilePendingModes(sorted);
+    return true;
+  }
+
+  /** Retires an optimistic mode once the wire has moved off the value it replaced (or the mount is gone). */
+  #reconcilePendingModes(rows: GitRepoStatus[]): void {
+    const keys = Object.keys(this.#pendingModes);
+    if (keys.length === 0) return;
+
+    const next = { ...this.#pendingModes };
+    let changed = false;
+    for (const key of keys) {
+      const row = rows.find((r) => r.mountKey === key);
+      if (!row || row.mode !== next[key].replaced) {
+        delete next[key];
+        changed = true;
+      }
+    }
+    if (changed) this.#pendingModes = next;
   }
 
   /**
@@ -278,14 +365,24 @@ export class GitStore {
     return result.ok ? null : gitErrorMessage(result.error);
   }
 
-  /** Writes the ICM's `sync:` mode (`full` | `pull` | `off`) and re-reads the rows. */
+  /**
+   * Writes the ICM's `sync:` mode (`full` | `pull` | `off`).
+   *
+   * Deliberately does NOT re-read afterwards: `git_status` answers from the
+   * last completed pass's cache, which still holds the OLD mode, so a re-read
+   * here would make the picker snap back to the previous option. The saved
+   * choice is shown immediately as an optimistic overlay (`#pendingModes`)
+   * and retired by the push from the pass `{:mounts_changed}` triggers.
+   */
   async setMode(mountKey: string, mode: string, generation: number): Promise<string | null> {
+    // The WIRE's mode, not `byMountKey`'s overlaid one: after a second click
+    // the overlay already reads as the user's previous choice, and recording
+    // that as `replaced` would retire the new overlay on the very next stale
+    // push.
+    const replaced = this.#rows.find((row) => row.mountKey === mountKey)?.mode ?? '';
     const result = await this.#api.setIcmGitSync(mountKey, mode, generation);
     if (!result.ok) return gitErrorMessage(result.error);
-    // The backend broadcasts `{:mounts_changed}`, which triggers a pass — but
-    // the mode itself is already true, and waiting a whole pass to show it
-    // would read as the toggle not having worked.
-    await this.refresh(generation);
+    this.#pendingModes = { ...this.#pendingModes, [mountKey]: { mode, replaced } };
     return null;
   }
 
