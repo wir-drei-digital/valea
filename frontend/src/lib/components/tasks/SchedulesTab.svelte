@@ -186,9 +186,10 @@
   /**
    * Back to a blank composer — also the "Cancel" path. It clears the per-entry
    * text (title, prompt, command, args, context doc) and the save notices, so
-   * nothing entry-specific leaks into the next one. `cron`, `timezone` and
-   * `kind` deliberately survive: they are the shape the user just picked, and
-   * `cron` starts from a working default rather than empty.
+   * nothing entry-specific leaks into the next one. `cron`, `timezone`, `kind`
+   * and the target ICM (`composerMountKey`) deliberately survive: they are the
+   * shape and destination the user just picked, and `cron` starts from a
+   * working default rather than empty.
    */
   function closeComposer(): void {
     composerOpen = false;

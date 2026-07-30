@@ -156,10 +156,12 @@ non-executable with a visible reason — it never quietly fires at the wrong
 time.
 
 Also refused, at validation: a day-of-month/month pair **no year has** —
-`0 0 31 4 *` (April has 30 days), 30 or 31 February. Such an entry would
-never match anything, so it is rejected out loud instead of sitting there
-looking scheduled. `0 0 29 2 *` is fine: 29 February is legal cron and
-fires in leap years.
+`0 0 31 4 *` (April has 30 days), 30 or 31 February — when day-of-month is
+the only restricted day field. Such an entry can never match, so it is
+rejected out loud instead of sitting there looking scheduled. Still legal:
+`0 0 29 2 *` (29 February fires in leap years), and an impossible date once
+the weekday field is restricted too — `0 0 30 2 5` is an OR under the day
+rule below, so it fires on February Fridays.
 
 **The Vixie day rule.** Day-of-month and day-of-week are **OR'd when both
 are restricted**, AND'd otherwise:

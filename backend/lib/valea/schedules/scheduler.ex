@@ -403,8 +403,10 @@ defmodule Valea.Schedules.Scheduler do
 
   # `Valea.ICM.Briefing` materialization, hung off each mount's appearance in a
   # tick: workspace activation for a mount that was already enabled, the
-  # enabling tick for one enabled later. Write-if-different, so the steady state
-  # is one read and a compare per mount per tick.
+  # enabling tick for one enabled later. Attempted ONCE per root: the `:ok`
+  # clause below returns before any file access, so a steady-state tick costs
+  # one `Map.get` and no I/O at all. The write itself, when there is one, is
+  # write-if-different.
   #
   # Deliberately NOT keyed off `state.booted`: that set is only stamped once a
   # mount's `schedules.json` has been READ, and the ordinary state of a fresh
