@@ -221,6 +221,14 @@ defmodule Valea.Mounts.MutationTest do
       refute agents =~ "{{name}}"
       assert length(String.split(agents, "\n")) < 100
 
+      # Tasks+schedules Task 7: the seed points at the materialized contract,
+      # and `today.json`'s brief no longer mentions `open_loops` (tasks absorbed
+      # it — spec §Decisions).
+      assert agents =~ "tasks.json"
+      assert agents =~ "schedules.json"
+      assert agents =~ ".valea/briefing.md"
+      refute agents =~ "open_loops"
+
       context = File.read!(Path.join(root, "CONTEXT.md"))
       assert context =~ "| Task |"
       assert context =~ "related_icms"

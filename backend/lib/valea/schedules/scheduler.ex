@@ -72,6 +72,19 @@ defmodule Valea.Schedules.Scheduler do
   happen before any `tick_now/0`/`run_now/2` call this process might receive,
   and a `Process.send_after(self(), :tick, 0)` is only *probably* first.
 
+  ## The briefing, materialized alongside the tick
+
+  Each enabled ICM mount that appears in a tick also gets
+  `Valea.ICM.Briefing.materialize!/1` — `.valea/briefing.md`, the contract the
+  agent reads (spec §"Materialized briefing"). Write-if-different, so the steady
+  state costs one read and a compare per mount per tick, and the file always
+  matches the app version enforcing the grammar it describes. It is keyed off
+  the mount's ROOT rather than `state.booted`: that set is only stamped once a
+  `schedules.json` has been read, and a fresh ICM has no such file — exactly the
+  ICM that most needs the contract. Failures degrade (log + one audit per root)
+  and never touch a fire; a root that is not currently a directory is skipped
+  rather than resurrected as a bare `.valea/`.
+
   ## Generation binding
 
   Every store write goes through `bound_write/2`, which re-checks the workspace
@@ -215,6 +228,12 @@ defmodule Valea.Schedules.Scheduler do
       # becomes readable, or the repair back-fires a coalesced run for every slot
       # that passed meanwhile.
       booted: MapSet.new(),
+      # `.valea/briefing.md` materialization, per ICM ROOT (the write target,
+      # which is what a re-added mount changes) rather than per manifest id:
+      # `:ok` once the file is current, `:failed` while it cannot be written.
+      # A `:failed` root is retried every tick — the retry is one read and a
+      # compare — and audited only on the way in.
+      briefed: %{},
       notices: %{},
       config_notice: false,
       last_sweep_date: nil
@@ -347,6 +366,7 @@ defmodule Valea.Schedules.Scheduler do
   defp tick_mount(state, mount, now) do
     icm_id = mount.manifest.id
     first? = not MapSet.member?(state.booted, icm_id)
+    state = brief_mount(state, mount)
 
     case SchedulesFile.load(mount.root) do
       %{status: :ok, entries: entries} ->
@@ -370,6 +390,63 @@ defmodule Valea.Schedules.Scheduler do
   end
 
   defp mark_booted(state, icm_id), do: %{state | booted: MapSet.put(state.booted, icm_id)}
+
+  # -- the briefing (spec §"Materialized briefing") -----------------------------
+
+  # `Valea.ICM.Briefing` materialization, hung off each mount's appearance in a
+  # tick: workspace activation for a mount that was already enabled, the
+  # enabling tick for one enabled later. Write-if-different, so the steady state
+  # is one read and a compare per mount per tick.
+  #
+  # Deliberately NOT keyed off `state.booted`: that set is only stamped once a
+  # mount's `schedules.json` has been READ, and the ordinary state of a fresh
+  # ICM is to have no such file at all — exactly the ICM that most needs to be
+  # told the contract.
+  #
+  # Never on the fire path, and never able to break one: the briefing is an
+  # instruction surface, and a root that cannot take the write (a `.valea` that
+  # is a regular file, a read-only volume) must cost a log line and one audit
+  # entry, not a tick.
+  defp brief_mount(state, mount) do
+    case Map.get(state.briefed, mount.root) do
+      :ok -> state
+      previous -> write_briefing(state, mount, previous)
+    end
+  end
+
+  defp write_briefing(state, mount, previous) do
+    # A root that is not there is an unmounted volume or a moved folder (the
+    # mount lister degrades those, but it read the config a tick ago). Writing
+    # would RESURRECT it as a bare `.valea/` — so skip, unmarked: the briefing
+    # is still owed when the volume comes back.
+    if File.dir?(mount.root) do
+      Valea.ICM.Briefing.materialize!(mount.root)
+      %{state | briefed: Map.put(state.briefed, mount.root, :ok)}
+    else
+      state
+    end
+  rescue
+    error -> briefing_failed(state, mount, previous, Exception.message(error))
+  catch
+    :exit, reason -> briefing_failed(state, mount, previous, inspect(reason))
+  end
+
+  # Audited once per transition into the failed state, like the unreadable-file
+  # notice: a root that stays unwritable stays quiet, and the retry keeps
+  # happening in case it stops being unwritable.
+  defp briefing_failed(state, mount, previous, detail) do
+    unless previous == :failed do
+      Logger.warning("briefing materialization degraded (#{mount.root}): #{detail}")
+
+      audit("briefing_unwritable", %{
+        "mount_key" => mount.name,
+        "root" => mount.root,
+        "detail" => detail
+      })
+    end
+
+    %{state | briefed: Map.put(state.briefed, mount.root, :failed)}
+  end
 
   # Entries with no id are not addressable — nothing can name them in an RPC,
   # nothing can key their state — so they are excluded from every pass; they

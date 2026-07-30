@@ -10,6 +10,8 @@ Find your task, go where the row points. Keep this table current.
 | Task | Go here | You'll also need |
 | ---- | ------- | ---------------- |
 | Anything about a client | `clients/CONTEXT.md` | — |
+| Add, complete or pull a task | `tasks.json` at this root | the contract in `.valea/briefing.md` |
+| Set up something recurring | `schedules.json` at this root | the contract in `.valea/briefing.md` |
 | Update what Today shows | `today.json` at this root | the shape in `AGENTS.md` |
 | Add a new domain of work | create `<domain>/CONTEXT.md`, add a row here | `AGENTS.md` |
 

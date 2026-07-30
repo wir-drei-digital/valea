@@ -15,16 +15,25 @@ name is magic. Start at `CONTEXT.md`, the router, before any task.
 
 ## Conventions you maintain
 
+### Tasks & schedules
+
+Valea tasks & schedules: this ICM's task ledger (`tasks.json`) and schedule
+registry (`schedules.json`) live in the root — contract in
+`.valea/briefing.md`. Read that file before you touch either one; it is
+Valea-managed, regenerated on activation, and the only place the field
+grammar, the invariants and the consent rules are stated. Open work belongs
+in `tasks.json`, not in prose and not in `today.json`.
+
 ### today.json
 
 `today.json` at this ICM's root is what Valea's Today page renders. Valea
-never writes it — you do, whenever you prepare work or notice open loops.
+never writes it — you do, whenever you prepare work worth surfacing. It
+carries `notes` and `prepared` only; anything that needs doing is a task.
 All fields optional; unknown fields are ignored:
 
     {
       "updated_at": "2026-07-16T08:00:00Z",
       "prepared": [{ "title": "…", "summary": "…", "page": "relative/path.md" }],
-      "open_loops": [{ "title": "…", "source": "…" }],
       "notes": ""
     }
 

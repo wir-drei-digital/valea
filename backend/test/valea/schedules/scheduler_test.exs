@@ -888,6 +888,73 @@ defmodule Valea.Schedules.SchedulerTest do
     assert audit("schedule_run_finished") == nil
   end
 
+  # -- 13. briefing materialization --------------------------------------------
+
+  # Spec §"Materialized briefing": the contract file is materialized per enabled
+  # ICM on activation, which for the scheduler is each mount's first tick.
+  test "the first tick materializes `.valea/briefing.md` per enabled ICM", ctx do
+    write_schedules(ctx, [entry_raw()])
+    start_scheduler(ctx)
+
+    assert File.read!(Valea.ICM.Briefing.path(ctx.icm)) =~ "Managed by Valea"
+  end
+
+  # The common case for a fresh ICM: no `schedules.json` at all. That mount is
+  # deliberately NOT marked booted (its first pass is still owed), so
+  # materialization must not hang off the booted set — an ICM with no schedules
+  # is exactly the one that most needs to be told the contract.
+  test "an ICM with no schedules.json still gets the briefing", ctx do
+    refute File.exists?(schedules_path(ctx))
+    start_scheduler(ctx)
+
+    assert File.exists?(Valea.ICM.Briefing.path(ctx.icm))
+  end
+
+  test "a hand-edited briefing is regenerated, and an unchanged one is not rewritten", ctx do
+    path = Valea.ICM.Briefing.path(ctx.icm)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "# stale\n")
+
+    write_schedules(ctx, [entry_raw()])
+    start_scheduler(ctx)
+    assert File.read!(path) =~ "Managed by Valea"
+
+    old = 1_577_836_800
+    File.touch!(path, old)
+    tick(ctx, "2026-07-30T08:16:00Z")
+
+    assert File.stat!(path, time: :posix).mtime == old
+  end
+
+  # A vanished ICM root (an unmounted volume) must never be RESURRECTED as a
+  # bare `.valea/` — and the briefing is still owed if the volume comes back.
+  test "a missing ICM root is not recreated by the briefing hook", ctx do
+    File.rm_rf!(ctx.icm)
+    start_scheduler(ctx)
+
+    refute File.exists?(ctx.icm)
+  end
+
+  # Materialization is off the fire path and must stay off it: a `.valea` that
+  # is a regular file makes the write raise, and the tick has to carry on.
+  test "a briefing that cannot be written degrades: the tick still fires, audited once", ctx do
+    File.write!(Path.join(ctx.icm, ".valea"), "not a directory")
+    write_schedules(ctx, [entry_raw()])
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        start_scheduler(ctx)
+        tick(ctx, "2026-07-30T09:00:00Z")
+        tick(ctx, "2026-07-30T10:00:00Z")
+      end)
+
+    assert log =~ "briefing"
+    assert_received {:fired, "s1", _meta}
+    # Once per root, not once per tick.
+    assert count_audits("briefing_unwritable") == 1
+    assert %{"mount_key" => "work"} = audit("briefing_unwritable")
+  end
+
   # -- helpers -----------------------------------------------------------------
 
   defp tmp(kind) do
