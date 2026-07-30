@@ -174,7 +174,29 @@ import {
   uninstallSkill as httpUninstallSkill,
   uninstallSkillChannel,
   dismissSkillsOffer as httpDismissSkillsOffer,
-  dismissSkillsOfferChannel
+  dismissSkillsOfferChannel,
+  listTasks as httpListTasks,
+  listTasksChannel,
+  createTask as httpCreateTask,
+  createTaskChannel,
+  mutateTask as httpMutateTask,
+  mutateTaskChannel,
+  archiveDone as httpArchiveDone,
+  archiveDoneChannel,
+  listSchedules as httpListSchedules,
+  listSchedulesChannel,
+  createSchedule as httpCreateSchedule,
+  createScheduleChannel,
+  mutateSchedule as httpMutateSchedule,
+  mutateScheduleChannel,
+  deleteSchedule as httpDeleteSchedule,
+  deleteScheduleChannel,
+  runScheduleNow as httpRunScheduleNow,
+  runScheduleNowChannel,
+  scheduleRunHistory as httpScheduleRunHistory,
+  scheduleRunHistoryChannel,
+  setSchedulerPaused as httpSetSchedulerPaused,
+  setSchedulerPausedChannel
 } from './ash_rpc';
 import type { AshRpcError } from './ash_types';
 import type {
@@ -264,7 +286,29 @@ import type {
   UninstallSkillFields,
   UninstallSkillInput,
   DismissSkillsOfferFields,
-  DismissSkillsOfferInput
+  DismissSkillsOfferInput,
+  ListTasksFields,
+  ListTasksInput,
+  CreateTaskFields,
+  CreateTaskInput,
+  MutateTaskFields,
+  MutateTaskInput,
+  ArchiveDoneFields,
+  ArchiveDoneInput,
+  ListSchedulesFields,
+  ListSchedulesInput,
+  CreateScheduleFields,
+  CreateScheduleInput,
+  MutateScheduleFields,
+  MutateScheduleInput,
+  DeleteScheduleFields,
+  DeleteScheduleInput,
+  RunScheduleNowFields,
+  RunScheduleNowInput,
+  ScheduleRunHistoryFields,
+  ScheduleRunHistoryInput,
+  SetSchedulerPausedFields,
+  SetSchedulerPausedInput
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
 
@@ -698,6 +742,43 @@ const listSkillsFields = [
   { skills: ['skillId', 'name', 'description', 'sourceUrl', 'license', 'pinned', 'state', 'installedVersion'] },
   'dismissed'
 ] as unknown as ListSkillsFields;
+// Tasks & schedules (tasks+schedules spec §RPC surface — `Valea.Api.Tasks`,
+// `Valea.Api.Schedules`). `icms` is a constrained `Array<TypedMap>` on both
+// list actions, the same anonymous-embedded-map-array codegen gap
+// `listSkillsFields` above documents, so those two literals are cast.
+//
+// The `tasks`/`schedules`/`runs`/`schedule` leaves are UNCONSTRAINED maps by
+// design (see `Valea.Api.Tasks`' moduledoc: a `constraints fields:` list would
+// drop exactly the unknown keys the leniency contract promises to preserve) —
+// they ride as bare field names with no nested selection, like `icmTreeFields`'
+// `tree`, and arrive with the FILE's own snake_case keys.
+const listTasksFields = [
+  { icms: ['mountKey', 'icmName', 'status', 'tasks'] }
+] as unknown as ListTasksFields;
+const createTaskFields: CreateTaskFields = ['task'];
+const mutateTaskFields: MutateTaskFields = ['task'];
+const archiveDoneFields = [
+  'archived',
+  'pruned',
+  { icms: ['mountKey', 'status', 'archived', 'pruned'] }
+] as unknown as ArchiveDoneFields;
+const listSchedulesFields = [
+  { icms: ['mountKey', 'icmName', 'status', 'schedules'] },
+  // TRI-state ("on" | "off" | "unreadable"), never a boolean — see
+  // `Valea.Api.Schedules`' moduledoc for why folding `unreadable` into `true`
+  // would tell the user they paused something they did not.
+  'schedulerPaused'
+] as unknown as ListSchedulesFields;
+// The write actions answer with the entry AS WRITTEN plus its freshly read-back
+// disposition, so a composer can say "saved, and it will not fire: invalid
+// cron" without a second round trip.
+const createScheduleFields: CreateScheduleFields = ['schedule', 'disposition', 'reason'];
+const mutateScheduleFields: MutateScheduleFields = ['schedule', 'disposition', 'reason'];
+const deleteScheduleFields: DeleteScheduleFields = ['deleted'];
+const runScheduleNowFields: RunScheduleNowFields = ['runId'];
+const scheduleRunHistoryFields: ScheduleRunHistoryFields = ['runs'];
+const setSchedulerPausedFields: SetSchedulerPausedFields = ['schedulerPaused'];
+
 const installSkillFields: InstallSkillFields = ['ok'];
 const updateSkillFields: UpdateSkillFields = ['ok'];
 const uninstallSkillFields: UninstallSkillFields = ['ok'];
@@ -824,7 +905,7 @@ function callListAgentSessionsChannel(channel: NonNullable<ReturnType<typeof cha
 
 function callListRecentSessionsByIcmChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { limit: number }
+  input: { limit: number; includeScheduled: boolean }
 ) {
   return wrapChannelCall((handlers) =>
     listRecentSessionsByIcmChannel({ channel, input, fields: listRecentSessionsByIcmFields, ...handlers })
@@ -833,7 +914,7 @@ function callListRecentSessionsByIcmChannel(
 
 function callListSessionsForChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
-  input: { mountKey: string; cursor: string | null }
+  input: { mountKey: string; cursor: string | null; includeScheduled: boolean }
 ) {
   return wrapChannelCall((handlers) =>
     listSessionsForChannel({ channel, input, fields: listSessionsForFields, ...handlers })
@@ -1515,6 +1596,97 @@ function callDismissSkillsOfferChannel(
   );
 }
 
+function callListTasksChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: ListTasksInput
+) {
+  return wrapChannelCall((handlers) => listTasksChannel({ channel, input, fields: listTasksFields, ...handlers }));
+}
+
+function callCreateTaskChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: CreateTaskInput
+) {
+  return wrapChannelCall((handlers) => createTaskChannel({ channel, input, fields: createTaskFields, ...handlers }));
+}
+
+function callMutateTaskChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: MutateTaskInput
+) {
+  return wrapChannelCall((handlers) => mutateTaskChannel({ channel, input, fields: mutateTaskFields, ...handlers }));
+}
+
+function callArchiveDoneChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: ArchiveDoneInput
+) {
+  return wrapChannelCall((handlers) => archiveDoneChannel({ channel, input, fields: archiveDoneFields, ...handlers }));
+}
+
+function callListSchedulesChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: ListSchedulesInput
+) {
+  return wrapChannelCall((handlers) =>
+    listSchedulesChannel({ channel, input, fields: listSchedulesFields, ...handlers })
+  );
+}
+
+function callCreateScheduleChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: CreateScheduleInput
+) {
+  return wrapChannelCall((handlers) =>
+    createScheduleChannel({ channel, input, fields: createScheduleFields, ...handlers })
+  );
+}
+
+function callMutateScheduleChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: MutateScheduleInput
+) {
+  return wrapChannelCall((handlers) =>
+    mutateScheduleChannel({ channel, input, fields: mutateScheduleFields, ...handlers })
+  );
+}
+
+function callDeleteScheduleChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: DeleteScheduleInput
+) {
+  return wrapChannelCall((handlers) =>
+    deleteScheduleChannel({ channel, input, fields: deleteScheduleFields, ...handlers })
+  );
+}
+
+function callRunScheduleNowChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: RunScheduleNowInput
+) {
+  return wrapChannelCall((handlers) =>
+    runScheduleNowChannel({ channel, input, fields: runScheduleNowFields, ...handlers })
+  );
+}
+
+function callScheduleRunHistoryChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: ScheduleRunHistoryInput
+) {
+  return wrapChannelCall((handlers) =>
+    scheduleRunHistoryChannel({ channel, input, fields: scheduleRunHistoryFields, ...handlers })
+  );
+}
+
+function callSetSchedulerPausedChannel(
+  channel: NonNullable<ReturnType<typeof channelAvailable>>,
+  input: SetSchedulerPausedInput
+) {
+  return wrapChannelCall((handlers) =>
+    setSchedulerPausedChannel({ channel, input, fields: setSchedulerPausedFields, ...handlers })
+  );
+}
+
 function callSaveIcmPageChannel(
   channel: NonNullable<ReturnType<typeof channelAvailable>>,
   input: {
@@ -2042,10 +2214,19 @@ export const api = {
   // groups (Phase 9 consumes this; this task only wires the wrapper).
   // `limit` defaults to 5 (spec §"ICM group behavior": up to five sessions
   // per ICM row) so a Phase 9 caller can omit it entirely.
-  listRecentSessionsByIcm: (limit = 5) =>
+  // `includeScheduled` (tasks+schedules spec §Scheduled-session visibility) —
+  // scheduled runs are EXCLUDED unless asked for, and the filter runs
+  // backend-side BEFORE the per-group `limit`, so the nav feed never
+  // fetch-then-hides (the spec's own requirement) and `limit` keeps meaning
+  // "limit real chat sessions". Default `false` leaves every existing caller
+  // unchanged.
+  listRecentSessionsByIcm: (limit = 5, includeScheduled = false) =>
     runRpc(
-      (channel) => callListRecentSessionsByIcmChannel(channel, { limit }),
-      () => httpListRecentSessionsByIcm(withAuth({ input: { limit }, fields: listRecentSessionsByIcmFields }))
+      (channel) => callListRecentSessionsByIcmChannel(channel, { limit, includeScheduled }),
+      () =>
+        httpListRecentSessionsByIcm(
+          withAuth({ input: { limit, includeScheduled }, fields: listRecentSessionsByIcmFields })
+        )
     ),
 
   // Task 6.2 — full filtered history for one ICM ("Show all…"), paged via
@@ -2054,10 +2235,16 @@ export const api = {
   // stay distinct from `listAgentSessions` above — the underlying RPC
   // action's external name IS `list_sessions` (see `Valea.Api`), just
   // imported under a `httpListSessionsFor`/`listSessionsForChannel` alias.
-  listSessionsFor: (mountKey: string, cursor: string | null = null) =>
+  // `includeScheduled` — same default-off scheduled-run exclusion as
+  // `listRecentSessionsByIcm` above, applied before the cursor/page split so
+  // paging stays consistent.
+  listSessionsFor: (mountKey: string, cursor: string | null = null, includeScheduled = false) =>
     runRpc(
-      (channel) => callListSessionsForChannel(channel, { mountKey, cursor }),
-      () => httpListSessionsFor(withAuth({ input: { mountKey, cursor }, fields: listSessionsForFields }))
+      (channel) => callListSessionsForChannel(channel, { mountKey, cursor, includeScheduled }),
+      () =>
+        httpListSessionsFor(
+          withAuth({ input: { mountKey, cursor, includeScheduled }, fields: listSessionsForFields })
+        )
     ),
 
   // Same-transcript resume (replaced the deleted create_follow_up): the
@@ -2713,6 +2900,88 @@ export const api = {
     runRpc(
       (channel) => callDismissSkillsOfferChannel(channel, input),
       () => httpDismissSkillsOffer(withAuth({ input, fields: dismissSkillsOfferFields }))
+    ),
+
+  // Tasks & schedules (tasks+schedules spec §RPC surface). UI-plane only —
+  // agents have no RPC path at all; an agent registering a schedule writes
+  // `schedules.json` with ordinary file tools, which is always-ask by policy.
+  // Every wrapper takes the generated `*Input` object verbatim, so `generation`
+  // stays caller-supplied from `workspaceStore` (the store-free-api convention
+  // the icms/mail/skills wrappers keep).
+  //
+  // `fields`/`patch` are unconstrained maps whose keys are the FILE's own
+  // snake_case names (`created_by`, `done_at`, `payload`) — passed through with
+  // no camelCase translation, and answered the same way.
+  listTasks: (input: ListTasksInput) =>
+    runRpc(
+      (channel) => callListTasksChannel(channel, input),
+      () => httpListTasks(withAuth({ input, fields: listTasksFields }))
+    ),
+
+  createTask: (input: CreateTaskInput) =>
+    runRpc(
+      (channel) => callCreateTaskChannel(channel, input),
+      () => httpCreateTask(withAuth({ input, fields: createTaskFields }))
+    ),
+
+  mutateTask: (input: MutateTaskInput) =>
+    runRpc(
+      (channel) => callMutateTaskChannel(channel, input),
+      () => httpMutateTask(withAuth({ input, fields: mutateTaskFields }))
+    ),
+
+  // "Clear done" — one ICM (`mountKey`) or every enabled one (omitted).
+  archiveDone: (input: ArchiveDoneInput) =>
+    runRpc(
+      (channel) => callArchiveDoneChannel(channel, input),
+      () => httpArchiveDone(withAuth({ input, fields: archiveDoneFields }))
+    ),
+
+  listSchedules: (input: ListSchedulesInput) =>
+    runRpc(
+      (channel) => callListSchedulesChannel(channel, input),
+      () => httpListSchedules(withAuth({ input, fields: listSchedulesFields }))
+    ),
+
+  createSchedule: (input: CreateScheduleInput) =>
+    runRpc(
+      (channel) => callCreateScheduleChannel(channel, input),
+      () => httpCreateSchedule(withAuth({ input, fields: createScheduleFields }))
+    ),
+
+  mutateSchedule: (input: MutateScheduleInput) =>
+    runRpc(
+      (channel) => callMutateScheduleChannel(channel, input),
+      () => httpMutateSchedule(withAuth({ input, fields: mutateScheduleFields }))
+    ),
+
+  deleteSchedule: (input: DeleteScheduleInput) =>
+    runRpc(
+      (channel) => callDeleteScheduleChannel(channel, input),
+      () => httpDeleteSchedule(withAuth({ input, fields: deleteScheduleFields }))
+    ),
+
+  // The debug affordance: fire NOW, out of band, without advancing the anchor.
+  // Refused with the entry's own disposition reason for a non-executable or
+  // duplicate id — the strict-execution guarantee has no manual bypass.
+  runScheduleNow: (input: RunScheduleNowInput) =>
+    runRpc(
+      (channel) => callRunScheduleNowChannel(channel, input),
+      () => httpRunScheduleNow(withAuth({ input, fields: runScheduleNowFields }))
+    ),
+
+  scheduleRunHistory: (input: ScheduleRunHistoryInput) =>
+    runRpc(
+      (channel) => callScheduleRunHistoryChannel(channel, input),
+      () => httpScheduleRunHistory(withAuth({ input, fields: scheduleRunHistoryFields }))
+    ),
+
+  // Pause-all. Answers with the state READ BACK from the file, so a config that
+  // turned unreadable under the write reports `"unreadable"`, not a clean pause.
+  setSchedulerPaused: (input: SetSchedulerPausedInput) =>
+    runRpc(
+      (channel) => callSetSchedulerPausedChannel(channel, input),
+      () => httpSetSchedulerPaused(withAuth({ input, fields: setSchedulerPausedFields }))
     ),
 
   // Images (Task C7). Plain HTTP, not Ash RPC — see `uploadImage`'s own doc
