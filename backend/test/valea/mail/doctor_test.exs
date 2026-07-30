@@ -751,4 +751,69 @@ defmodule Valea.Mail.DoctorTest do
       refute dump =~ secret
     end)
   end
+
+  # -- credential rows for an oauth2 account (M6 task 16) ----------------------
+
+  test "an oauth2 account's credential row talks about a SIGN-IN, never a password" do
+    # The ledgered minor this closes: telling the user to "enter your mailbox
+    # password" for an account whose setup form deliberately hides that field
+    # sends them looking for something that isn't there.
+    {:ok, %{checks: checks}} =
+      Doctor.run(ctx(%{settings: settings(%{auth: :oauth2}), credential: nil}))
+
+    by_id = Map.new(checks, &{&1["id"], &1})
+
+    assert by_id["credential_present"]["label"] == "Sign-in available"
+    assert by_id["credential_present"]["status"] == "failed"
+    assert by_id["credential_present"]["detail"] =~ "not been signed in"
+    assert by_id["credential_present"]["remedy"] =~ "Sign in to this mailbox"
+    refute by_id["credential_present"]["remedy"] =~ "password"
+  end
+
+  test "and so does its SENDING row (the same predicate, one check over)" do
+    # A listener is needed because `smtp_auth` is gated on `smtp_tcp` — the
+    # missing-credential branch is only reachable once the port answers.
+    with_listener(fn port ->
+      the_settings = settings(%{auth: :oauth2, imap: imap(port), smtp: smtp(port)})
+
+      {:ok, %{checks: checks}} = Doctor.run(ctx(%{settings: the_settings, smtp_credential: nil}))
+      by_id = Map.new(checks, &{&1["id"], &1})
+
+      assert by_id["smtp_auth"]["status"] == "failed"
+      assert by_id["smtp_auth"]["detail"] =~ "not been signed in"
+      assert by_id["smtp_auth"]["remedy"] =~ "Sign in to this mailbox"
+      refute by_id["smtp_auth"]["remedy"] =~ "SMTP password"
+    end)
+  end
+
+  test "a signed-in oauth2 account's credential row says its tokens renew themselves" do
+    {:ok, %{checks: checks}} =
+      Doctor.run(ctx(%{settings: settings(%{auth: :oauth2}), credential: fn -> "ya29.token" end}))
+
+    by_id = Map.new(checks, &{&1["id"], &1})
+
+    assert by_id["credential_present"]["status"] == "ok"
+    assert by_id["credential_present"]["label"] == "Sign-in available"
+    assert by_id["credential_present"]["detail"] =~ "renewed automatically"
+  end
+
+  test "a password account's credential rows are unchanged, word for word" do
+    {:ok, %{checks: checks}} = Doctor.run(ctx(%{credential: nil}))
+    by_id = Map.new(checks, &{&1["id"], &1})
+
+    assert by_id["credential_present"]["label"] == "Password available"
+    assert by_id["credential_present"]["detail"] == "No mailbox password has been provided yet."
+    assert by_id["credential_present"]["remedy"] == "Enter your mailbox password to connect."
+
+    with_listener(fn port ->
+      {:ok, %{checks: sending}} =
+        Doctor.run(
+          ctx(%{settings: settings(%{imap: imap(port), smtp: smtp(port)}), smtp_credential: nil})
+        )
+
+      smtp_auth = sending |> Map.new(&{&1["id"], &1}) |> Map.fetch!("smtp_auth")
+      assert smtp_auth["detail"] == "No SMTP password has been provided yet."
+      assert smtp_auth["remedy"] == "Enter your SMTP password to send mail from this account."
+    end)
+  end
 end

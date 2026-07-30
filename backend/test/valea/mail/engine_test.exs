@@ -130,8 +130,13 @@ defmodule Valea.Mail.EngineTest.IdleTransport do
   @behaviour Valea.Mail.Transport
 
   @impl true
-  def connect(_config, _credential, _opts) do
-    send(Application.get_env(:valea, :engine_sync_probe), {:connect_called, self()})
+  def connect(_config, credential, _opts) do
+    probe = Application.get_env(:valea, :engine_sync_probe)
+    # Additively reported (nothing else matches this shape) so a test can also
+    # see WHAT the watcher's credential closure resolved to — for an oauth2
+    # account, an engine-minted access token.
+    send(probe, {:connect_credential, credential})
+    send(probe, {:connect_called, self()})
 
     receive do
       {:release, result} -> result
@@ -2689,5 +2694,57 @@ defmodule Valea.Mail.EngineTest do
     # The other account's flow is untouched by its sibling's redemption.
     assert :sys.get_state(other).oauth_pending != nil
     assert {:ok, %{account: "other"}} = Engine.claim_oauth_flow(other_state)
+  end
+
+  # -- the other two consumers of the minting closure --------------------------
+
+  test "the IDLE watcher's credential closure MINTS, so an expiring token is recoverable", %{
+    root: root
+  } do
+    # A watcher holds one long-lived connection; its token WILL expire during
+    # that session. What makes that survivable is that the closure it was handed
+    # mints on every call, so its own reconnect gets a fresh token — a token
+    # resolved once at start would strand it (see `IdleWatcher`'s §Credential).
+    enable_idle!()
+    probe!()
+    use_transports!(Valea.Mail.EngineTest.IdleTransport)
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.WATCHER"}))
+
+    slug = "mara"
+    start_engine!(root, 322, slug, settings: oauth_settings(slug))
+    open(root, 322)
+
+    # No refresh token yet, so no watcher: `validate_sync/1` is the whole gate.
+    assert idle_watcher(slug) == nil
+
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+    assert {watcher, _ref} = idle_watcher(slug)
+
+    assert_receive {:connect_credential, "ya29.WATCHER"}, 2_000
+    connect_watcher!(watcher)
+  end
+
+  test "the doctor's ctx carries the minting closure, callable from a FOREIGN process", %{
+    root: root
+  } do
+    # `Engine.doctor/1` runs the probing in the CALLER's process, so the closure
+    # built in `doctor_ctx/1` is resolved outside the Engine — the one consumer
+    # that isn't a Task the Engine spawned. Exercised through `:doctor_ctx`
+    # rather than `Engine.doctor/1` so the assertion needs no network.
+    stub_token_endpoint!(token_reply(%{"access_token" => "ya29.DOCTOR"}))
+
+    slug = "mara"
+    engine = start_oauth_engine!(root, 323, slug, %{smtp: smtp_settings()})
+    assert :ok = Engine.set_credential(slug, "refresh-1", :oauth)
+
+    ctx = GenServer.call(engine, :doctor_ctx)
+
+    assert is_function(ctx.credential, 0)
+    assert ctx.credential.() == "ya29.DOCTOR"
+    # ONE authorization covers both protocols: the send side resolves to the
+    # very same token, from the cache the first call filled.
+    assert ctx.smtp_credential.() == "ya29.DOCTOR"
+    assert_receive {:token_post, _pid, _body}
+    refute_receive {:token_post, _pid, _body}, 100
   end
 end
