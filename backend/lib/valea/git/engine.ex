@@ -395,21 +395,15 @@ defmodule Valea.Git.Engine do
   # about the slot — a pending claim, a live session — is decided here in a
   # single message.
   def handle_call({:claim_conflict_session, key, session_id}, {caller, _tag}, state) do
-    case Map.get(state.repos, key) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
-
-      %{conflict_session_id: ^session_id} ->
-        # Idempotent: the same caller re-claiming what it already holds.
-        {:reply, :ok, claim(state, key, session_id, caller)}
-
-      %{conflict_session_id: held} when is_binary(held) ->
-        if taken?(state, key, held),
-          do: {:reply, {:error, {:already_claimed, held}}, state},
-          else: {:reply, :ok, claim(state, key, session_id, caller)}
-
-      _unclaimed ->
-        {:reply, :ok, claim(state, key, session_id, caller)}
+    if Map.has_key?(state.repos, key) do
+      case holder(state, key) do
+        # Free, or the same caller re-claiming what it already holds.
+        nil -> {:reply, :ok, claim(state, key, session_id, caller)}
+        ^session_id -> {:reply, :ok, claim(state, key, session_id, caller)}
+        held -> {:reply, {:error, {:already_claimed, held}}, state}
+      end
+    else
+      {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -539,15 +533,32 @@ defmodule Valea.Git.Engine do
 
   # -- conflict slots ----------------------------------------------------------
 
-  # Is `id` still somebody's? Either a claim whose caller is still alive and
-  # still starting the session, or a session that actually is running. A
-  # recorded id that is neither is a DEAD REFERENCE — the caller asking is
-  # allowed to take it over, which is what keeps a crashed or killed
-  # resolution session from making the repo unresolvable forever.
-  defp taken?(state, key, id) do
+  # WHO holds this repo's conflict slot right now — the id, or `nil` if it is
+  # free. The one question `claim_conflict_session/2` asks, and it is answered
+  # from the claims map FIRST, independently of what the row says: a pending
+  # claim is honoured even if the row's id has been blanked for any reason,
+  # because granting a second claim there would both hand out a rival slot and
+  # (via `claim/4`'s replace) silently revoke the live claimant's monitor.
+  #
+  # Failing that it is the row's recorded id, and only while that session is
+  # actually RUNNING: an id that is neither a live claim nor a live session is
+  # a DEAD REFERENCE, and the caller asking is allowed to take it over — which
+  # is what keeps a crashed or killed resolution session from making a repo
+  # unresolvable forever.
+  defp holder(state, key) do
     case Map.get(state.claims, key) do
-      %{session_id: ^id, pid: pid} -> Process.alive?(pid)
-      _not_a_pending_claim -> SessionServer.running?(id)
+      %{session_id: id, pid: pid} ->
+        if Process.alive?(pid), do: id, else: recorded_holder(state, key)
+
+      nil ->
+        recorded_holder(state, key)
+    end
+  end
+
+  defp recorded_holder(state, key) do
+    case Map.get(state.repos, key) do
+      %{conflict_session_id: id} when is_binary(id) -> if SessionServer.running?(id), do: id
+      _blank_or_absent -> nil
     end
   end
 
@@ -652,7 +663,7 @@ defmodule Valea.Git.Engine do
   defp finish_pass(state, {statuses, retry}) do
     statuses =
       statuses
-      |> restore_recorded_sessions(state.repos)
+      |> restore_conflict_slots(state.repos)
       |> forget_dead_sessions(state.claims)
 
     broadcast(statuses)
@@ -665,21 +676,30 @@ defmodule Valea.Git.Engine do
   defp drain_pending(%{pending_sync: true} = state), do: start_pass(state)
   defp drain_pending(state), do: state
 
-  # A `record_conflict_session/2` cast can land WHILE a pass is running, and
-  # the pass's snapshot was taken before it — storing that snapshot verbatim
-  # would drop the id, the row's button would revert to "resolve", and the next
-  # click would start a RIVAL session against the same working tree. For a row
-  # that is still conflict-class, the server's own view therefore wins over the
-  # task's.
-  defp restore_recorded_sessions(statuses, previous) do
+  # A `claim_conflict_session/2` call or a `record_conflict_session/2` cast can
+  # land WHILE a pass is running, and the pass's snapshot was taken before it.
+  # For a row that is still conflict-class the LOOP's value therefore wins
+  # UNCONDITIONALLY — it is never the staler of the two: the pass derives its
+  # own value from the snapshot it was handed (`base_row/3`) and never changes
+  # it for a conflict-class row, so anything different in the loop happened
+  # LATER, by definition.
+  #
+  # Filling in only a NIL id is not enough, and the gap was reachable from
+  # ordinary preconditions — a row whose recorded session had died but had not
+  # been swept yet (the sweep only runs at the end of a pass), plus a
+  # "resolve" click during a pass (which spans the whole multi-repo network
+  # loop). The task's snapshot would carry the STALE id, a nil-only clause
+  # would leave it standing, and `forget_dead_sessions/2` would then blank it
+  # for being dead — discarding the newer claim, or the freshly recorded LIVE
+  # session, that the loop had accepted meanwhile. The row would go back to
+  # offering "resolve" while an agent was already working on the conflict, and
+  # the next click would start a rival one over the same working tree.
+  defp restore_conflict_slots(statuses, previous) do
     Map.new(statuses, fn
-      {key, %{state: state, conflict_session_id: nil} = row} when state in @conflict_states ->
+      {key, %{state: state} = row} when state in @conflict_states ->
         case previous do
-          %{^key => %{conflict_session_id: id}} when is_binary(id) ->
-            {key, %{row | conflict_session_id: id}}
-
-          _none_recorded ->
-            {key, row}
+          %{^key => %{conflict_session_id: id}} -> {key, %{row | conflict_session_id: id}}
+          _no_row_in_the_loop -> {key, row}
         end
 
       {key, row} ->

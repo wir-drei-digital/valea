@@ -639,6 +639,68 @@ defmodule Valea.Git.EngineTest do
     assert Engine.statuses()[key].conflict_session_id == "sess-fresh"
   end
 
+  # The regression these two pin: a pass's snapshot carrying a STALE recorded
+  # id (a session that died and has not been swept yet — the sweep only runs
+  # at the end of a pass) used to survive the pass landing, because the
+  # restore step only filled in a NIL. The stale id was then blanked for being
+  # dead, throwing away the newer slot the loop had accepted meanwhile — and
+  # the next click started a rival agent over the same conflicted tree while
+  # the first one was alive.
+  #
+  # Both preconditions are ordinary: a pass spans the whole multi-repo network
+  # loop, so "the user clicked resolve during one" is the common case, not the
+  # rare one.
+  defp diverged_with_stale_recorded_id!(ctx) do
+    %{ws: ws, fx: fx, key: key} = ctx
+    Application.put_env(:valea, :git_cli, RecordingCli)
+
+    on_exit(fn ->
+      Application.delete_env(:valea, :git_cli)
+      Application.delete_env(:valea, :git_cli_delay_ms)
+    end)
+
+    start_engine!(ws)
+    await_pass!()
+    GitFixtures.diverge!(fx)
+    assert :ok = Engine.sync_now(key)
+    assert await_pass!()[key].state == "diverged"
+
+    :ok = Engine.record_conflict_session(key, "sess-dead")
+    assert Engine.statuses()[key].conflict_session_id == "sess-dead"
+
+    # Every state read now takes ~400 ms, so what follows lands while the pass
+    # task is still running — with "sess-dead" in the snapshot it took.
+    Application.put_env(:valea, :git_cli_delay_ms, 400)
+    assert :ok = Engine.sync_now(key)
+    key
+  end
+
+  test "a CLAIM landing mid-pass survives a snapshot that carried a stale recorded id", ctx do
+    key = diverged_with_stale_recorded_id!(ctx)
+
+    assert :ok = Engine.claim_conflict_session(key, "sess-claimed")
+
+    assert await_pass!()[key].conflict_session_id == "sess-claimed"
+    assert Engine.statuses()[key].conflict_session_id == "sess-claimed"
+
+    # The whole point: the slot is still this claimant's after the pass.
+    assert Engine.claim_conflict_session(key, "sess-rival") ==
+             {:error, {:already_claimed, "sess-claimed"}}
+  end
+
+  test "a SESSION recorded mid-pass survives a snapshot that carried a stale recorded id", ctx do
+    key = diverged_with_stale_recorded_id!(ctx)
+
+    start_supervised!({FakeSession, "sess-live"})
+    :ok = Engine.record_conflict_session(key, "sess-live")
+
+    assert await_pass!()[key].conflict_session_id == "sess-live"
+    assert Engine.statuses()[key].conflict_session_id == "sess-live"
+
+    assert Engine.claim_conflict_session(key, "sess-rival") ==
+             {:error, {:already_claimed, "sess-live"}}
+  end
+
   test "a pass keeps a PENDING claim, and drops a recorded session that is gone", ctx do
     %{ws: ws, fx: fx, key: key} = ctx
 
