@@ -66,10 +66,31 @@ export function killSwitchCopy(state: SchedulerPause): KillSwitchCopy {
   }
 }
 
-/** The disposition line under a row — only a non-executable entry has something to explain. */
-export function dispositionLine(entry: Pick<ScheduleEntry, 'disposition' | 'reason'>): string | null {
+/**
+ * The disposition line under a row — only a non-executable entry has something
+ * to explain, and it explains in the user's language, not the validator's
+ * ("Not executable: invalid cron: expected 5 fields, got 3" named the fault in
+ * parser dialect and offered no way out — critique P-issue). Every line ends
+ * with the recovery, because the row now HAS one: Edit.
+ */
+export function dispositionLine(
+  entry: Pick<ScheduleEntry, 'disposition' | 'reason' | 'cadence'>
+): string | null {
   if (entry.disposition !== 'not_executable') return null;
-  return entry.reason === null ? 'Not executable — it will not fire.' : `Not executable: ${entry.reason}`;
+  const reason = entry.reason ?? '';
+  if (reason.startsWith('invalid cron')) {
+    return entry.cadence === null
+      ? 'Valea can’t read this schedule’s timing. Edit it and pick a day and time.'
+      : `Valea can’t read “${entry.cadence}” as a schedule. Edit it and pick a day and time.`;
+  }
+  if (reason.startsWith('unknown timezone')) {
+    return 'Valea doesn’t know this schedule’s timezone. Edit it — leaving the timezone empty uses this computer’s.';
+  }
+  if (reason === 'duplicate id') {
+    return 'Two schedules share this id, so neither one fires. Edit one of them to use a different id.';
+  }
+  if (reason === '') return 'This schedule won’t fire. Edit it to fix what’s missing.';
+  return `This schedule won’t fire — ${reason}. Edit it to fix that.`;
 }
 
 /**
@@ -79,7 +100,33 @@ export function dispositionLine(entry: Pick<ScheduleEntry, 'disposition' | 'reas
 export function runNowDisabledReason(entry: Pick<ScheduleEntry, 'disposition' | 'reason' | 'id'>): string | null {
   if (entry.id === null) return 'This entry has no id, so Valea can’t address it.';
   if (entry.disposition !== 'not_executable') return null;
-  return entry.reason === null ? 'This entry is not executable.' : `Not executable: ${entry.reason}`;
+  return 'This schedule can’t run until it’s fixed — see the note on its row.';
+}
+
+/**
+ * The inline confirmation a Run-now click must pass for a COMMAND schedule —
+ * it starts a program with the user's full authority, so §4's rule applies (the
+ * label names the consequence, a confirmation always follows). `null` for a
+ * prompt schedule: the session it starts still asks before anything risky, so
+ * an extra gate here would be ceremony.
+ */
+export function runNowConfirm(
+  entry: Pick<ScheduleEntry, 'payloadKind' | 'payloadRaw'>
+): string | null {
+  if (entry.payloadKind !== 'command') return null;
+  const line = commandLine(entry.payloadRaw);
+  return line === null
+    ? 'Run this program now? It runs with your full access to this project’s folder.'
+    : `Run ${line} now? It runs with your full access to this project’s folder.`;
+}
+
+/** `"./backup.sh --quiet"` from the raw payload, or `null` when there is none to show. */
+export function commandLine(payloadRaw: Record<string, unknown> | null): string | null {
+  if (payloadRaw === null || typeof payloadRaw.command !== 'string' || payloadRaw.command.trim() === '') return null;
+  const args = Array.isArray(payloadRaw.args)
+    ? payloadRaw.args.filter((arg): arg is string => typeof arg === 'string')
+    : [];
+  return [payloadRaw.command, ...args].join(' ');
 }
 
 /** The pause toggle's label and the value a click writes — `paused` is a FILE field, so this is a real edit. */
@@ -90,14 +137,99 @@ export function pauseToggle(entry: Pick<ScheduleEntry, 'paused'>): { label: stri
 export function payloadChipLabel(kind: string | null): string {
   switch (kind) {
     case 'prompt':
-      return 'Prompt';
+      return 'Chat task';
     case 'command':
-      return 'Command';
+      return 'Program';
     case null:
-      return 'Unknown payload';
+      return 'Unknown';
     default:
       return kind;
   }
+}
+
+/**
+ * §5 tint-follows-consequence for the kind badge: a `command` runs on the
+ * user's machine with full authority — terracotta territory, and the one place
+ * on the row the palette must do the safety talking. Everything else is
+ * informational neutral.
+ */
+export function payloadChipTone(kind: string | null): 'warn' | 'neutral' {
+  return kind === 'command' ? 'warn' : 'neutral';
+}
+
+// -- cadence presets ----------------------------------------------------------
+//
+// The composer's default is a DAY + TIME question ("Every weekday at 07:30"),
+// with raw cron one toggle away — §1's "technical detail is one toggle away,
+// never the default", applied literally (critique P-issue: the composer opened
+// on a cron expression).
+
+export type CadencePreset = 'weekdays' | 'daily' | 'weekly' | 'monthly' | 'custom';
+
+export const CADENCE_PRESETS: { value: CadencePreset; label: string }[] = [
+  { value: 'weekdays', label: 'Every weekday' },
+  { value: 'daily', label: 'Every day' },
+  { value: 'weekly', label: 'Every week' },
+  { value: 'monthly', label: 'Monthly, on the 1st' },
+  { value: 'custom', label: 'Custom (cron)' }
+];
+
+export const WEEKDAY_OPTIONS: { value: string; label: string }[] = [
+  { value: '1', label: 'Monday' },
+  { value: '2', label: 'Tuesday' },
+  { value: '3', label: 'Wednesday' },
+  { value: '4', label: 'Thursday' },
+  { value: '5', label: 'Friday' },
+  { value: '6', label: 'Saturday' },
+  { value: '0', label: 'Sunday' }
+];
+
+/**
+ * The cron a preset + `HH:MM` time (+ weekday for `weekly`) writes. `null` for
+ * `custom` (the raw field owns it) or an unparseable time — the composer treats
+ * `null` as "not saveable yet", never guesses.
+ */
+export function cronFromCadence(preset: CadencePreset, time: string, weekday: string): string | null {
+  if (preset === 'custom') return null;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(time.trim());
+  if (match === null) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  switch (preset) {
+    case 'weekdays':
+      return `${minutes} ${hours} * * 1-5`;
+    case 'daily':
+      return `${minutes} ${hours} * * *`;
+    case 'weekly':
+      return /^[0-6]$/.test(weekday) ? `${minutes} ${hours} * * ${weekday}` : null;
+    case 'monthly':
+      return `${minutes} ${hours} 1 * *`;
+  }
+}
+
+/**
+ * The reverse map, for seeding the composer from an existing entry: a cron
+ * matching one of the preset shapes exactly comes back as that preset; anything
+ * else — including every expression this module wouldn't have written — is
+ * `null`, and the composer opens on Custom with the raw string shown. Honest
+ * both ways: presets never mis-describe a cron they can't round-trip.
+ */
+export function cadenceFromCron(
+  cron: string
+): { preset: Exclude<CadencePreset, 'custom'>; time: string; weekday: string } | null {
+  const match = /^(\d{1,2}) (\d{1,2}) (\*|1) \* (\*|1-5|[0-6])$/.exec(cron.trim());
+  if (match === null) return null;
+  const minutes = Number(match[1]);
+  const hours = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  const [, , , dom, dow] = match;
+  if (dom === '1' && dow === '*') return { preset: 'monthly', time, weekday: '1' };
+  if (dom !== '*') return null;
+  if (dow === '1-5') return { preset: 'weekdays', time, weekday: '1' };
+  if (dow === '*') return { preset: 'daily', time, weekday: '1' };
+  return { preset: 'weekly', time, weekday: dow };
 }
 
 /** `created_by: "agent"` earns the badge — an agent registered this schedule. */

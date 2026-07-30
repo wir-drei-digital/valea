@@ -13,6 +13,10 @@
   // never nested inside it — an interactive control inside another one is
   // invalid HTML and steals the row's click target (`EntryMenu.svelte`'s own
   // note makes the same point about `<a>`).
+  //
+  // Hit targets: the checkbox VISUAL stays the system's 15px r4 box, but the
+  // button around it is 32px — §4's floor for dense lists ("the primary action
+  // of the whole feature had a 15px target", critique).
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import Check from '@lucide/svelte/icons/check';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -63,7 +67,7 @@
   const addressable = $derived(task.id !== null);
 </script>
 
-<li class="group/row border-paper-hairline flex items-start gap-2.5 border-b py-2.5 last:border-b-0">
+<li class="group/row border-paper-hairline flex items-start gap-1.5 border-b py-1.5 last:border-b-0">
   <button
     type="button"
     role="checkbox"
@@ -71,18 +75,24 @@
     aria-label={done ? `Reopen ${task.title ?? 'task'}` : `Complete ${task.title ?? 'task'}`}
     disabled={busy || !addressable}
     onclick={onToggleDone}
-    class={[
-      'border-paper-button-border mt-0.5 flex size-[15px] shrink-0 items-center justify-center rounded-[4px] border transition-colors',
-      done ? 'bg-act text-paper-card border-transparent' : 'bg-paper-card hover:border-ink-meta',
-      busy || !addressable ? 'cursor-not-allowed opacity-50' : ''
-    ]}
+    class="group/check flex size-8 shrink-0 items-center justify-center"
   >
-    {#if done}
-      <Check class="size-3" strokeWidth={2.5} />
-    {/if}
+    <span
+      class={[
+        'border-paper-button-border flex size-[15px] items-center justify-center rounded-[4px] border transition-colors',
+        done ? 'bg-act text-paper-card border-transparent' : 'bg-paper-card group-hover/check:border-ink-meta',
+        busy || !addressable ? 'cursor-not-allowed opacity-50' : ''
+      ]}
+    >
+      {#if done}
+        <Check class="size-3" strokeWidth={2.5} />
+      {/if}
+    </span>
   </button>
 
-  <div class="min-w-0 flex-1">
+  <!-- Done rows read as receipts (§8): dimmed, struck through, the green check
+       standing in for the timestamp line an audit row would carry. -->
+  <div class={['min-w-0 flex-1 py-1', done ? 'opacity-75' : '']}>
     <button
       type="button"
       disabled={!addressable}
@@ -112,7 +122,7 @@
             due.tone === 'unparsed' ? 'text-ink-meta italic' : ''
           ]}
         >
-          {due.tone === 'unparsed' ? `due ${due.text} (not a date)` : `due ${due.text}`}
+          {due.text}
         </span>
       {/if}
       {#if statusChip}
@@ -125,13 +135,30 @@
         <span class="text-ink-meta text-[11.5px]">{assigneeLabel(task.assignee)}</span>
       {/if}
       {#if showsAgentBadge(task)}
-        <span class="bg-paper-pill text-ink-secondary rounded-full px-1.5 py-0.5 text-[10.5px]">from agent</span>
+        <!-- §5 kind badge: 10.5px, 700, uppercase, +0.04em, informational neutral. -->
+        <span
+          class="bg-paper-pill text-ink-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold tracking-[0.04em] uppercase"
+        >
+          from assistant
+        </span>
       {/if}
       {#if source}
+        <!-- §5 source chip: dot color names the source type (terracotta =
+             email, amber = document). Unrecognized locators stay plain text —
+             a confidently wrong link is worse. -->
         {#if source.kind === 'text'}
-          <span class="text-ink-meta truncate text-[11.5px]">{source.label}</span>
+          <span class="text-ink-meta max-w-[32ch] truncate text-[11.5px]">{source.label}</span>
         {:else}
-          <a href={source.href} class="text-ink-meta truncate text-[11.5px] hover:underline">{source.label}</a>
+          <a
+            href={source.href}
+            class="border-paper-chip-border text-ink-secondary hover:text-ink-heading inline-flex max-w-[32ch] items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] hover:underline"
+          >
+            <span
+              class={['size-1.5 shrink-0 rounded-full', source.kind === 'mail' ? 'bg-warn-dot' : 'bg-suggest-dash']}
+              aria-hidden="true"
+            ></span>
+            <span class="truncate">{source.label}</span>
+          </a>
         {/if}
       {/if}
     </div>
@@ -158,7 +185,7 @@
             type="button"
             {...props}
             aria-label={`Actions for ${task.title ?? 'task'}`}
-            class="text-ink-meta hover:bg-paper-card hover:text-ink-heading data-[state=open]:bg-paper-card flex size-7 shrink-0 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+            class="text-ink-meta hover:bg-paper-card hover:text-ink-heading data-[state=open]:bg-paper-card mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
           >
             <Ellipsis class="size-4" strokeWidth={1.5} />
           </button>

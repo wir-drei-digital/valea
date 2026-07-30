@@ -1,7 +1,13 @@
 <script lang="ts">
   // The small editor a row click opens (spec §UI surfaces: title, notes, due,
   // today, priority, assignee, status). Layout-neutral — the tab hosts it in a
-  // Dialog, which provides the modal chrome.
+  // Dialog, which provides the modal chrome and the accessible title.
+  //
+  // Every control wears the app's clothes: `NativeSelect` for the three
+  // dropdowns and a hand-drawn checkbox matching the task rows' 15px r4 box —
+  // the earlier build mixed OS-chrome selects and a platform-blue checkbox into
+  // a paper dialog, thirty pixels from the app's own checkbox design
+  // (critique: "it looks like a different app than the list behind it").
   //
   // It sends a PATCH, not a whole entry: only the fields the user actually
   // changed ride along, so `mutate_task`'s entry-level read-patch-write keeps
@@ -12,9 +18,11 @@
   // Also the spec's repair affordance for an unknown status: the value stays
   // selectable and the hint explains that saving normalizes it.
   import { untrack } from 'svelte';
+  import Check from '@lucide/svelte/icons/check';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
+  import { NativeSelect } from '$lib/components/ui/native-select/index.js';
   import type { TaskEntry } from '$lib/tasks/filters';
   import { statusOptions, taskEditPatch, unknownStatusHint } from './task-shapes';
 
@@ -65,9 +73,7 @@
   const dirty = $derived(Object.keys(patch).length > 0);
 </script>
 
-<div class="flex w-full flex-col gap-3" aria-label="Edit task">
-  <p class="text-ink-heading text-[14px] font-semibold">Edit task</p>
-
+<div class="flex w-full flex-col gap-3">
   <div class="flex flex-col gap-1">
     <Label for="task-edit-title">Title</Label>
     <Input id="task-edit-title" type="text" bind:value={title} disabled={saving} />
@@ -77,7 +83,7 @@
     <Label for="task-edit-notes">Notes</Label>
     <textarea
       id="task-edit-notes"
-      class="border-paper-hairline bg-paper-surface text-ink-body min-h-16 rounded-[7px] border px-2 py-1.5 text-[12.5px]"
+      class="border-input focus-visible:border-ring focus-visible:ring-ring/50 text-ink-body min-h-16 rounded-lg border bg-transparent px-2.5 py-1.5 text-sm transition-colors outline-none focus-visible:ring-3 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
       bind:value={notes}
       disabled={saving}
     ></textarea>
@@ -86,11 +92,23 @@
   <div class="flex flex-wrap items-end gap-3">
     <div class="flex flex-col gap-1">
       <Label for="task-edit-due">Due</Label>
-      <Input id="task-edit-due" type="date" bind:value={due} disabled={saving} />
+      <Input id="task-edit-due" type="date" bind:value={due} disabled={saving} class="w-auto" />
     </div>
 
-    <label class="text-ink-body flex items-center gap-2 pb-1.5 text-[12.5px]">
-      <input type="checkbox" bind:checked={today} disabled={saving} />
+    <!-- The rows' own checkbox design, not the platform's: sr-only input +
+         drawn 15px r4 box, inside a comfortably tall label. -->
+    <label class="text-ink-body flex h-8 cursor-pointer items-center gap-2 text-[12.5px] select-none">
+      <input type="checkbox" class="peer sr-only" bind:checked={today} disabled={saving} />
+      <span
+        class={[
+          'border-paper-button-border peer-focus-visible:ring-ring/50 flex size-[15px] items-center justify-center rounded-[4px] border transition-colors peer-focus-visible:ring-3',
+          today ? 'bg-act text-paper-card border-transparent' : 'bg-paper-card'
+        ]}
+      >
+        {#if today}
+          <Check class="size-3" strokeWidth={2.5} />
+        {/if}
+      </span>
       Focus today
     </label>
   </div>
@@ -98,12 +116,7 @@
   <div class="flex flex-wrap gap-3">
     <div class="flex flex-col gap-1">
       <Label for="task-edit-priority">Priority</Label>
-      <select
-        id="task-edit-priority"
-        class="border-paper-hairline bg-paper-surface text-ink-body rounded-[7px] border px-2 py-1.5 text-[12.5px]"
-        bind:value={priority}
-        disabled={saving}
-      >
+      <NativeSelect id="task-edit-priority" bind:value={priority} disabled={saving}>
         <option value="">None</option>
         <option value="high">High</option>
         <option value="medium">Medium</option>
@@ -111,37 +124,27 @@
         {#if task.priority !== null && !['high', 'medium', 'low'].includes(task.priority)}
           <option value={task.priority}>{task.priority} (unknown)</option>
         {/if}
-      </select>
+      </NativeSelect>
     </div>
 
     <div class="flex flex-col gap-1">
-      <Label for="task-edit-assignee">Assignee</Label>
-      <select
-        id="task-edit-assignee"
-        class="border-paper-hairline bg-paper-surface text-ink-body rounded-[7px] border px-2 py-1.5 text-[12.5px]"
-        bind:value={assignee}
-        disabled={saving}
-      >
+      <Label for="task-edit-assignee">Who works it</Label>
+      <NativeSelect id="task-edit-assignee" bind:value={assignee} disabled={saving}>
         <option value="user">Me</option>
-        <option value="agent">Agent</option>
+        <option value="agent">The assistant</option>
         {#if task.assignee !== null && !['user', 'agent'].includes(task.assignee)}
           <option value={task.assignee}>{task.assignee} (unknown)</option>
         {/if}
-      </select>
+      </NativeSelect>
     </div>
 
     <div class="flex flex-col gap-1">
       <Label for="task-edit-status">Status</Label>
-      <select
-        id="task-edit-status"
-        class="border-paper-hairline bg-paper-surface text-ink-body rounded-[7px] border px-2 py-1.5 text-[12.5px]"
-        bind:value={status}
-        disabled={saving}
-      >
+      <NativeSelect id="task-edit-status" bind:value={status} disabled={saving}>
         {#each options as option (option.value)}
           <option value={option.value}>{option.label}</option>
         {/each}
-      </select>
+      </NativeSelect>
     </div>
   </div>
 

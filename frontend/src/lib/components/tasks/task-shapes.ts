@@ -84,8 +84,10 @@ export function priorityLabel(priority: string | null): string | null {
 
 export function assigneeLabel(assignee: string | null): string {
   switch (assignee) {
+    // The product's own noun (Chat's empty state, the cockpit): the ASSISTANT
+    // works the task. "Agent" is harness vocabulary and stays behind the hood.
     case 'agent':
-      return 'Agent';
+      return 'Assistant';
     case 'user':
     case null:
       return 'Me';
@@ -100,9 +102,11 @@ export function showsAgentBadge(task: TaskEntry): boolean {
 }
 
 /**
- * The row's due chip: `null` when there is no parseable due, otherwise the raw
- * date plus a tone the row styles. A `due` string that isn't a date still shows
- * — as `tone: 'unparsed'` — because hiding it would make a typo invisible.
+ * The row's due chip, as the FINAL rendered label: nobody should do date
+ * arithmetic against an ISO string in a task list ("due 2026-07-28" told the
+ * persona nothing — critique P-issue). `null` when there is no due at all; a
+ * `due` string that isn't a date still shows — as `tone: 'unparsed'` — because
+ * hiding it would make a typo invisible.
  */
 export function dueChip(
   task: TaskEntry,
@@ -110,10 +114,35 @@ export function dueChip(
 ): { text: string; tone: 'overdue' | 'today' | 'later' | 'unparsed' } | null {
   if (task.due === null) return null;
   const parsed = parsedDue(task.due);
-  if (parsed === null) return { text: task.due, tone: 'unparsed' };
-  if (parsed < todayIso) return { text: parsed, tone: 'overdue' };
-  if (parsed === todayIso) return { text: 'Today', tone: 'today' };
-  return { text: parsed, tone: 'later' };
+  if (parsed === null) return { text: `due ${task.due} (not a date)`, tone: 'unparsed' };
+  if (parsed < todayIso) {
+    const days = daysBetween(parsed, todayIso);
+    return { text: days === 1 ? '1 day overdue' : `${days} days overdue`, tone: 'overdue' };
+  }
+  if (parsed === todayIso) return { text: 'due today', tone: 'today' };
+  if (parsed === nextDayIso(todayIso)) return { text: 'due tomorrow', tone: 'later' };
+  return { text: `due ${shortDate(parsed, todayIso)}`, tone: 'later' };
+}
+
+/** Whole calendar days between two valid `YYYY-MM-DD` strings (`a` < `b`). */
+function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
+}
+
+function nextDayIso(iso: string): string {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+}
+
+/** `"Aug 15"`, gaining the year only when it differs from today's. */
+function shortDate(iso: string, todayIso: string): string {
+  const date = new Date(`${iso}T00:00:00Z`);
+  const sameYear = iso.slice(0, 4) === todayIso.slice(0, 4);
+  return date.toLocaleDateString('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' })
+  });
 }
 
 function parsedDue(due: string): string | null {

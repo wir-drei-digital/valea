@@ -301,6 +301,11 @@ defmodule Valea.Api.Schedules do
       "cadence" => entry.cron_raw,
       "timezone" => entry.timezone || raw_string(entry.raw["timezone"]),
       "payload_kind" => payload_kind(entry),
+      # The raw payload map as written in the file — the composer's Edit flow
+      # seeds its fields from this (a row click must show what the schedule
+      # DOES, not just its kind). Display data of the user's own file; `nil`
+      # when the file carries none or a non-map.
+      "payload" => raw_payload(entry),
       "paused" => entry.paused,
       "catchup" => entry.catchup,
       "created_by" => entry.created_by,
@@ -334,6 +339,11 @@ defmodule Valea.Api.Schedules do
       "reason" => found && found.reason
     }
   end
+
+  # The file's own payload map, verbatim (string keys) — display/edit seeding
+  # only, never re-validated here. `nil` for absent or wrong-typed.
+  defp raw_payload(%{raw: %{"payload" => %{} = payload}}), do: payload
+  defp raw_payload(_entry), do: nil
 
   defp payload_kind(%{payload: %{kind: kind}}), do: to_string(kind)
 

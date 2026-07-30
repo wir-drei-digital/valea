@@ -10,6 +10,7 @@
   // quick. `assignee` defaults to `"user"` backend-side.
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import { NativeSelect } from '$lib/components/ui/native-select/index.js';
 
   let {
     icms,
@@ -56,16 +57,11 @@
 
   {#if icms.length > 1}
     <label class="sr-only" for="task-quick-add-icm">Project</label>
-    <select
-      id="task-quick-add-icm"
-      class="border-paper-hairline bg-paper-surface text-ink-body rounded-[7px] border px-2 py-1.5 text-[12.5px]"
-      bind:value={mountKey}
-      disabled={busy}
-    >
+    <NativeSelect id="task-quick-add-icm" bind:value={mountKey} disabled={busy} class="w-auto">
       {#each icms as icm (icm.mountKey)}
         <option value={icm.mountKey}>{icm.icmName || icm.mountKey}</option>
       {/each}
-    </select>
+    </NativeSelect>
   {/if}
 
   <Button type="submit" size="sm" disabled={!canAdd}>Add</Button>

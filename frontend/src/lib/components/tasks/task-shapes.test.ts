@@ -92,7 +92,7 @@ describe('priorityLabel / assigneeLabel', () => {
     expect(priorityLabel('high')).toBe('High');
     expect(priorityLabel('urgent')).toBe('urgent');
     expect(priorityLabel(null)).toBeNull();
-    expect(assigneeLabel('agent')).toBe('Agent');
+    expect(assigneeLabel('agent')).toBe('Assistant');
     expect(assigneeLabel('user')).toBe('Me');
     expect(assigneeLabel(null)).toBe('Me');
     expect(assigneeLabel('team')).toBe('team');
@@ -108,12 +108,19 @@ describe('showsAgentBadge', () => {
 });
 
 describe('dueChip', () => {
-  it('distinguishes overdue, today, later, and an unparseable due', () => {
-    expect(dueChip(task({ due: '2026-07-01' }), TODAY)).toEqual({ text: '2026-07-01', tone: 'overdue' });
-    expect(dueChip(task({ due: TODAY }), TODAY)).toEqual({ text: 'Today', tone: 'today' });
-    expect(dueChip(task({ due: '2026-08-30' }), TODAY)).toEqual({ text: '2026-08-30', tone: 'later' });
+  it('speaks in days, not ISO strings — nobody does date arithmetic in a task list', () => {
+    expect(dueChip(task({ due: '2026-07-29' }), TODAY)).toEqual({ text: '1 day overdue', tone: 'overdue' });
+    expect(dueChip(task({ due: '2026-07-01' }), TODAY)).toEqual({ text: '29 days overdue', tone: 'overdue' });
+    expect(dueChip(task({ due: TODAY }), TODAY)).toEqual({ text: 'due today', tone: 'today' });
+    expect(dueChip(task({ due: '2026-07-31' }), TODAY)).toEqual({ text: 'due tomorrow', tone: 'later' });
+    expect(dueChip(task({ due: '2026-08-30' }), TODAY)).toEqual({ text: 'due Aug 30', tone: 'later' });
+    // The year appears only when it isn't this year's.
+    expect(dueChip(task({ due: '2027-01-05' }), TODAY)).toEqual({ text: 'due Jan 5, 2027', tone: 'later' });
     // A typo stays VISIBLE — hiding it would make the mistake invisible.
-    expect(dueChip(task({ due: '2026-13-99' }), TODAY)).toEqual({ text: '2026-13-99', tone: 'unparsed' });
+    expect(dueChip(task({ due: '2026-13-99' }), TODAY)).toEqual({
+      text: 'due 2026-13-99 (not a date)',
+      tone: 'unparsed'
+    });
     expect(dueChip(task({}), TODAY)).toBeNull();
   });
 });
@@ -308,7 +315,7 @@ describe('the fixture payload, end to end', () => {
 
     const first = FIXTURE.tasks[0];
     expect(showsAgentBadge(first)).toBe(true);
-    expect(dueChip(first, TODAY)).toEqual({ text: 'Today', tone: 'today' });
+    expect(dueChip(first, TODAY)).toEqual({ text: 'due today', tone: 'today' });
     expect(taskSourceRender(first.source!, FIXTURE.mountKey)).toMatchObject({ kind: 'mail' });
   });
 });

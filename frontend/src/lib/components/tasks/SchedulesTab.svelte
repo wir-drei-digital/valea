@@ -1,25 +1,38 @@
 <script lang="ts">
   // The Schedules tab: every enabled ICM's registry, the tri-state Pause-all
-  // header, and per-row pause / run-now / delete plus expandable run history.
+  // header, and per-row pause / edit / run-now / delete plus expandable run
+  // history.
   //
   // The honest limitation is stated on the page, not buried: nothing fires while
   // Valea is closed (spec §Decisions — "Limitation stated honestly in the UI").
+  //
+  // The composer asks WHAT first and WHEN second, and "when" is a day-and-time
+  // question by default — raw cron sits behind the "Custom (cron)" preset,
+  // which is §1's "technical detail is one toggle away" applied literally
+  // (critique P-issue: the composer opened on a cron expression, and a broken
+  // schedule could not be edited at all).
+  import { tick } from 'svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
+  import { NativeSelect } from '$lib/components/ui/native-select/index.js';
   import { EmptyState } from '$lib/components/shell';
-  import { mountProvenanceLabel } from '$lib/shell/provenance';
   import CalendarClock from '@lucide/svelte/icons/calendar-clock';
-  import { tasksStore, type ScheduleRun } from '$lib/tasks/store.svelte';
+  import { tasksStore, type ScheduleEntry, type ScheduleRun } from '$lib/tasks/store.svelte';
   import { humanizeCron } from '$lib/tasks/cadence';
   import ScheduleRow from './ScheduleRow.svelte';
   import {
+    CADENCE_PRESETS,
+    WEEKDAY_OPTIONS,
+    cadenceFromCron,
     composerTargetAfterSave,
+    cronFromCadence,
     editOutcomeNotice,
     killSwitchCopy,
     scheduleErrorMessage,
     scheduleRowKey,
-    schedulesLedgerNote
+    schedulesLedgerNote,
+    type CadencePreset
   } from './schedule-shapes';
 
   const icms = $derived(tasksStore.scheduleIcms);
@@ -27,7 +40,7 @@
 
   // The row key (`scheduleRowKey`, tested) is computed ONCE per row in the
   // markup below and handed to every handler, rather than each handler
-  // recomputing it — it now depends on the row's index too, which the handlers
+  // recomputing it — it depends on the row's index too, which the handlers
   // have no business knowing.
   let expanded = $state<Record<string, boolean>>({});
   let runs = $state<Record<string, ScheduleRun[]>>({});
@@ -36,6 +49,8 @@
   let notices = $state<Record<string, string | null>>({});
   let busyRow = $state<string | null>(null);
   let confirmingDelete = $state<string | null>(null);
+  /** The row whose COMMAND Run-now is awaiting its inline confirmation (prompt runs need none — their session still asks). */
+  let confirmingRun = $state<string | null>(null);
   let pauseAllBusy = $state(false);
   let pauseAllError = $state<string | null>(null);
 
@@ -91,6 +106,7 @@
         ...notices,
         [key]: outcome.ok ? 'Fired now — this run does not shift the schedule.' : scheduleErrorMessage(outcome.error)
       };
+      if (outcome.ok) confirmingRun = null;
       if (outcome.ok && expanded[key]) await loadRuns(key, mountKey, scheduleId);
     } finally {
       busyRow = null;
@@ -126,9 +142,13 @@
 
   // -- composer ---------------------------------------------------------------
 
+  let composerEl = $state<HTMLElement | null>(null);
   let composerOpen = $state(false);
   let composerMountKey = $state('');
   let composerTitle = $state('');
+  let composerPreset = $state<CadencePreset>('weekdays');
+  let composerTime = $state('09:00');
+  let composerWeekday = $state('1');
   let composerCron = $state('0 9 * * 1-5');
   let composerTimezone = $state('');
   let composerKind = $state<'prompt' | 'command'>('prompt');
@@ -140,11 +160,9 @@
   let composerNotice = $state<string | null>(null);
   let composerError = $state<string | null>(null);
   /**
-   * Set once a create has LANDED (review round 1, L4). The composer stays open
-   * after a lenient write that came back non-executable, and every
-   * `create_schedule` stamps a fresh id — so from that moment on, Save must
-   * MUTATE the entry it just wrote rather than write a twin. `null` = the
-   * composer has not created anything yet.
+   * Set once a create has LANDED (review round 1, L4) or a row's Edit opened
+   * the composer. From that moment on, Save MUTATES that entry rather than
+   * writing a twin. `null` = the composer has not created anything yet.
    */
   let composerEditingId = $state<string | null>(null);
 
@@ -153,7 +171,16 @@
     if (keys.length > 0 && !keys.includes(composerMountKey)) composerMountKey = keys[0];
   });
 
-  const composerCadence = $derived(composerCron.trim() === '' ? null : humanizeCron(composerCron.trim()));
+  /** The cron a save writes: the preset's, or the raw field's on Custom. `null` = not saveable yet. */
+  const effectiveCron = $derived(
+    composerPreset === 'custom'
+      ? composerCron.trim() === ''
+        ? null
+        : composerCron.trim()
+      : cronFromCadence(composerPreset, composerTime, composerWeekday)
+  );
+
+  const composerCadence = $derived(effectiveCron === null ? null : humanizeCron(effectiveCron));
 
   /** The file's own field names, verbatim — `create_schedule`'s `fields` is unconstrained on purpose. */
   function composerFields(): Record<string, unknown> {
@@ -176,7 +203,7 @@
 
     return {
       title: composerTitle.trim(),
-      cron: composerCron.trim(),
+      cron: effectiveCron ?? '',
       ...(composerTimezone.trim() === '' ? {} : { timezone: composerTimezone.trim() }),
       payload,
       paused: false
@@ -184,11 +211,12 @@
   }
 
   /**
-   * Back to a blank composer — also the "Cancel" path. It clears the per-entry
+   * Back to a blank composer — also the "Close" path. It clears the per-entry
    * text (title, prompt, command, args, context doc) and the save notices, so
-   * nothing entry-specific leaks into the next one. `cron`, `timezone`, `kind`
+   * nothing entry-specific leaks into the next one. The cadence controls
+   * (`composerPreset`/`composerTime`/`composerWeekday`/`composerCron`), `kind`
    * and the target ICM (`composerMountKey`) deliberately survive: they are the
-   * shape and destination the user just picked, and `cron` starts from a
+   * shape and destination the user just picked, and the cadence starts from a
    * working default rather than empty.
    */
   function closeComposer(): void {
@@ -201,6 +229,45 @@
     composerContextDoc = '';
     composerNotice = null;
     composerError = null;
+  }
+
+  /**
+   * A row's Edit: seed the composer from the entry and point Save at it. The
+   * cadence seeds as a preset when the cron round-trips through
+   * `cadenceFromCron`, and as Custom (raw string shown) when it doesn't —
+   * presets never mis-describe a cron they can't reproduce.
+   */
+  async function editEntry(mountKey: string, entry: ScheduleEntry): Promise<void> {
+    if (entry.id === null) return;
+    composerOpen = true;
+    composerEditingId = entry.id;
+    composerMountKey = mountKey;
+    composerTitle = entry.title ?? '';
+    composerTimezone = entry.timezone ?? '';
+    composerNotice = null;
+    composerError = null;
+
+    const cadence = entry.cadence === null ? null : cadenceFromCron(entry.cadence);
+    if (cadence === null) {
+      composerPreset = 'custom';
+      composerCron = entry.cadence ?? '';
+    } else {
+      composerPreset = cadence.preset;
+      composerTime = cadence.time;
+      composerWeekday = cadence.weekday;
+    }
+
+    const payload = entry.payloadRaw ?? {};
+    composerKind = entry.payloadKind === 'command' ? 'command' : 'prompt';
+    composerPrompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+    composerContextDoc = typeof payload.context_doc === 'string' ? payload.context_doc : '';
+    composerCommand = typeof payload.command === 'string' ? payload.command : '';
+    composerArgs = Array.isArray(payload.args)
+      ? payload.args.filter((arg): arg is string => typeof arg === 'string').join('\n')
+      : '';
+
+    await tick();
+    composerEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   async function saveComposer(): Promise<void> {
@@ -240,7 +307,7 @@
   const canSave = $derived(
     composerMountKey !== '' &&
       composerTitle.trim() !== '' &&
-      composerCron.trim() !== '' &&
+      effectiveCron !== null &&
       (composerKind === 'prompt' ? composerPrompt.trim() !== '' : composerCommand.trim() !== '') &&
       !composerBusy
   );
@@ -250,11 +317,13 @@
   <EmptyState
     icon={CalendarClock}
     title="No projects yet"
-    body="Schedules live in a schedules.json file at the root of each project. Mount or create a project first and the registry appears here."
+    body="Each project keeps its own schedule of recurring work, in a plain file you can always open yourself. Add a project from the sidebar and the schedules appear here."
   />
 {:else}
   <div class="flex flex-col gap-4">
-    <div class="border-paper-hairline flex flex-wrap items-center justify-between gap-3 rounded-[9px] border p-3">
+    <!-- Unboxed (§11: never boxed section headers) — the kill switch is a
+         quiet header row, separated by the same hairline the lists use. -->
+    <div class="border-paper-hairline flex flex-wrap items-center justify-between gap-3 border-b pb-3">
       <div class="min-w-0">
         <p class="text-ink-heading text-[13px] font-semibold">{killSwitch.label}</p>
         <p class="text-ink-meta mt-0.5 text-[12px]">
@@ -294,33 +363,31 @@
         size="sm"
         onclick={() => (composerOpen ? closeComposer() : (composerOpen = true))}
       >
-        {#if !composerOpen}
-          New schedule
-        {:else if composerEditingId === null}
-          Cancel new schedule
-        {:else}
-          Done editing
-        {/if}
+        {composerOpen ? 'Close' : 'New schedule'}
       </Button>
     </div>
 
     {#if composerOpen}
-      <div class="border-paper-hairline flex flex-col gap-3 rounded-[9px] border p-3">
+      <!-- The system's card, not a third box style: §6 anatomy, card border,
+           radius 12, card paper. -->
+      <div
+        bind:this={composerEl}
+        class="border-paper-border bg-paper-card shadow-card flex flex-col gap-3 rounded-[12px] border p-4"
+      >
         {#if icms.length > 1}
           <div class="flex flex-col gap-1">
             <Label for="sched-new-icm">Project</Label>
             <!-- Locked once the entry exists: it lives in THAT project's
-                 schedules.json, and a later Save patches it there. -->
-            <select
+                 schedule file, and a later Save patches it there. -->
+            <NativeSelect
               id="sched-new-icm"
-              class="border-paper-hairline bg-paper-surface text-ink-body rounded-[7px] border px-2 py-1.5 text-[12.5px]"
               bind:value={composerMountKey}
               disabled={composerBusy || composerEditingId !== null}
             >
               {#each icms as icm (icm.mountKey)}
                 <option value={icm.mountKey}>{icm.icmName || icm.mountKey}</option>
               {/each}
-            </select>
+            </NativeSelect>
           </div>
         {/if}
 
@@ -329,51 +396,30 @@
           <Input id="sched-new-title" type="text" bind:value={composerTitle} disabled={composerBusy} />
         </div>
 
-        <div class="flex flex-wrap gap-3">
-          <div class="flex flex-1 flex-col gap-1">
-            <Label for="sched-new-cron">Cadence (cron)</Label>
-            <Input id="sched-new-cron" type="text" bind:value={composerCron} disabled={composerBusy} />
-            {#if composerCadence}
-              <p class="text-ink-meta text-[11.5px]">{composerCadence}</p>
-            {/if}
-          </div>
-          <div class="flex flex-col gap-1">
-            <Label for="sched-new-tz">Timezone (optional)</Label>
-            <Input
-              id="sched-new-tz"
-              type="text"
-              placeholder="host zone"
-              bind:value={composerTimezone}
-              disabled={composerBusy}
-            />
-          </div>
-        </div>
-
         <div class="flex flex-col gap-1">
-          <Label for="sched-new-kind">Payload</Label>
-          <select
-            id="sched-new-kind"
-            class="border-paper-hairline bg-paper-surface text-ink-body rounded-[7px] border px-2 py-1.5 text-[12.5px]"
-            bind:value={composerKind}
-            disabled={composerBusy}
-          >
-            <option value="prompt">Prompt (starts an agent session)</option>
-            <option value="command">Command (runs a program)</option>
-          </select>
+          <Label for="sched-new-kind">What it does</Label>
+          <NativeSelect id="sched-new-kind" bind:value={composerKind} disabled={composerBusy}>
+            <option value="prompt">Chat task — the assistant works on it</option>
+            <option value="command">Program — runs on this computer</option>
+          </NativeSelect>
         </div>
 
         {#if composerKind === 'prompt'}
           <div class="flex flex-col gap-1">
-            <Label for="sched-new-prompt">Prompt</Label>
+            <Label for="sched-new-prompt">What should it do?</Label>
             <textarea
               id="sched-new-prompt"
-              class="border-paper-hairline bg-paper-surface text-ink-body min-h-16 rounded-[7px] border px-2 py-1.5 text-[12.5px]"
+              class="border-input focus-visible:border-ring focus-visible:ring-ring/50 text-ink-body min-h-16 rounded-lg border bg-transparent px-2.5 py-1.5 text-sm transition-colors outline-none focus-visible:ring-3 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+              placeholder="Go through the inbox and add anything that needs my attention to the task list."
               bind:value={composerPrompt}
               disabled={composerBusy}
             ></textarea>
+            <p class="text-ink-meta text-[11.5px]">
+              The assistant still asks before doing anything risky, same as in a chat you start yourself.
+            </p>
           </div>
           <div class="flex flex-col gap-1">
-            <Label for="sched-new-context">Context doc (optional, project-relative)</Label>
+            <Label for="sched-new-context">Give it a page to read first (optional)</Label>
             <Input
               id="sched-new-context"
               type="text"
@@ -384,28 +430,79 @@
           </div>
         {:else}
           <div class="flex flex-col gap-1">
-            <Label for="sched-new-command">Command</Label>
+            <Label for="sched-new-command">Program</Label>
             <Input
               id="sched-new-command"
               type="text"
-              placeholder="python3"
+              placeholder="./scripts/backup.sh"
               bind:value={composerCommand}
               disabled={composerBusy}
             />
+            <p class="text-ink-meta text-[11.5px]">
+              A path in this project's folder (write <span class="font-mono">./name</span> for a script here) or a
+              program on this computer.
+            </p>
           </div>
           <div class="flex flex-col gap-1">
             <Label for="sched-new-args">Arguments (one per line)</Label>
             <textarea
               id="sched-new-args"
-              class="border-paper-hairline bg-paper-surface text-ink-body min-h-16 rounded-[7px] border px-2 py-1.5 font-mono text-[11.5px]"
+              class="border-input focus-visible:border-ring focus-visible:ring-ring/50 text-ink-body min-h-16 rounded-lg border bg-transparent px-2.5 py-1.5 font-mono text-[11.5px] transition-colors outline-none focus-visible:ring-3 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
               bind:value={composerArgs}
               disabled={composerBusy}
             ></textarea>
-            <p class="text-ink-meta text-[11.5px]">
-              Run with your full authority in the project folder — there is no sandbox, and no shell (arguments are
-              passed through as written).
+            <!-- Terracotta, not meta-grey: this is the most consequential
+                 sentence on the form (critique: it was the smallest, lightest
+                 text on the page). -->
+            <p class="text-warn-ink text-[12px]">
+              It runs with your full access to this folder — no sandbox, and it does not ask first.
             </p>
           </div>
+        {/if}
+
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="flex flex-col gap-1">
+            <Label for="sched-new-preset">When</Label>
+            <NativeSelect id="sched-new-preset" bind:value={composerPreset} disabled={composerBusy}>
+              {#each CADENCE_PRESETS as preset (preset.value)}
+                <option value={preset.value}>{preset.label}</option>
+              {/each}
+            </NativeSelect>
+          </div>
+          {#if composerPreset === 'weekly'}
+            <div class="flex flex-col gap-1">
+              <Label for="sched-new-weekday">On</Label>
+              <NativeSelect id="sched-new-weekday" bind:value={composerWeekday} disabled={composerBusy}>
+                {#each WEEKDAY_OPTIONS as day (day.value)}
+                  <option value={day.value}>{day.label}</option>
+                {/each}
+              </NativeSelect>
+            </div>
+          {/if}
+          {#if composerPreset !== 'custom'}
+            <div class="flex flex-col gap-1">
+              <Label for="sched-new-time">At</Label>
+              <Input id="sched-new-time" type="time" bind:value={composerTime} disabled={composerBusy} class="w-auto" />
+            </div>
+          {:else}
+            <div class="flex min-w-[180px] flex-1 flex-col gap-1">
+              <Label for="sched-new-cron">Cron expression</Label>
+              <Input id="sched-new-cron" type="text" bind:value={composerCron} disabled={composerBusy} />
+            </div>
+          {/if}
+          <div class="flex flex-col gap-1">
+            <Label for="sched-new-tz">Timezone (optional)</Label>
+            <Input
+              id="sched-new-tz"
+              type="text"
+              placeholder="this computer's"
+              bind:value={composerTimezone}
+              disabled={composerBusy}
+            />
+          </div>
+        </div>
+        {#if composerCadence}
+          <p class="text-ink-meta text-[11.5px]">{composerCadence}</p>
         {/if}
 
         {#if composerNotice}
@@ -417,8 +514,8 @@
 
         <div class="flex items-center justify-end gap-3">
           {#if composerEditingId !== null}
-            <!-- The entry is on disk already (it is in the list below, flagged).
-                 Saying so is what makes the second Save legible as a fix. -->
+            <!-- The entry is on disk already (it is in the list below).
+                 Saying so is what makes Save legible as a fix. -->
             <p class="text-ink-meta text-[11.5px]">Already saved — Save updates it.</p>
           {/if}
           <Button type="button" size="sm" disabled={!canSave} onclick={() => void saveComposer()}>
@@ -432,9 +529,7 @@
       {#each icms as icm (icm.mountKey)}
         {@const note = schedulesLedgerNote(icm.status)}
         <section>
-          <span class="text-ink-meta text-[12px]">
-            {mountProvenanceLabel(icm.icmName) ?? `· ${icm.mountKey}`}
-          </span>
+          <h2 class="text-overline">{icm.icmName || icm.mountKey}</h2>
 
           {#if note}
             <p class="text-ink-meta mt-1.5 text-[12.5px]">{note}</p>
@@ -442,7 +537,7 @@
 
           {#if icm.schedules.length === 0}
             {#if icm.status !== 'unreadable'}
-              <p class="text-ink-meta mt-1.5 text-[12.5px]">No schedules here.</p>
+              <p class="text-ink-meta mt-1.5 text-[12.5px]">No schedules here yet.</p>
             {/if}
           {:else}
             <ul class="mt-1.5 flex flex-col">
@@ -457,9 +552,13 @@
                   runsLoading={runsLoading[key] === true}
                   runsError={runsError[key] ?? null}
                   confirmingDelete={confirmingDelete === key}
+                  confirmingRun={confirmingRun === key}
                   onToggleExpand={() => void toggleExpand(key, icm.mountKey, entry.id)}
                   onTogglePause={(next) => void togglePause(key, icm.mountKey, entry.id, next)}
+                  onEdit={() => void editEntry(icm.mountKey, entry)}
                   onRunNow={() => void runNow(key, icm.mountKey, entry.id)}
+                  onAskRun={() => (confirmingRun = key)}
+                  onCancelRun={() => (confirmingRun = null)}
                   onAskDelete={() => (confirmingDelete = key)}
                   onConfirmDelete={() => void confirmDelete(key, icm.mountKey, entry.id)}
                   onCancelDelete={() => (confirmingDelete = null)}

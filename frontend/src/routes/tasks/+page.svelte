@@ -10,7 +10,7 @@
   // second racing `channel.on`) is how this page learns they moved.
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { replaceState } from '$app/navigation';
+  import { goto } from '$app/navigation';
   import { AppFrame, MainColumn, PageHeader, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -51,9 +51,13 @@
     } else {
       url.searchParams.delete('tab');
     }
-    // `replaceState`, not `goto`: switching tabs is not a navigation worth a
-    // history entry, but the URL must stay shareable.
-    replaceState(url, page.state);
+    // A REAL navigation, collapsed onto the current history entry: `tab` is
+    // derived from `page.url`, and shallow routing (`replaceState` from
+    // `$app/navigation`) deliberately does NOT update `page.url` — the first
+    // build used it, and clicking the segment changed the address bar while
+    // the view stayed put. `goto` with `replaceState` keeps the URL shareable
+    // without a history entry per click.
+    void goto(url, { replaceState: true, noScroll: true, keepFocus: true });
   }
 
   onMount(() => {
@@ -106,7 +110,7 @@
       <div class="flex flex-col gap-5 px-7 pt-6 pb-7">
         <PageHeader
           title="Tasks"
-          subtitle="One shared work ledger per project, plus the schedules Valea fires while it runs. Both are plain JSON files in the project folder — yours to edit by hand or hand to an agent."
+          subtitle="Your work for the day, and what runs on a schedule — you and the assistant share the same list. Everything lives in plain files in your project folders."
         >
           <div class="flex items-center gap-3">
             <SegmentedControl

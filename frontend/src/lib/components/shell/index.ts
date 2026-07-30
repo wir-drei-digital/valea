@@ -6,7 +6,6 @@ export { default as SidebarItem } from './SidebarItem.svelte';
 export { default as IcmTree } from './IcmTree.svelte';
 export { default as IcmProjects } from './IcmProjects.svelte';
 export { default as ListPane } from './ListPane.svelte';
-export { default as FilterPill } from './FilterPill.svelte';
 export { default as SegmentedControl } from './SegmentedControl.svelte';
 export { default as PageHeader } from './PageHeader.svelte';
 export { default as RailCard } from './RailCard.svelte';

@@ -62,6 +62,13 @@ export type ScheduleEntry = {
   timezone: string | null;
   /** `"prompt" | "command"`, or `null` when validation stopped before the payload. */
   payloadKind: string | null;
+  /**
+   * The file's raw payload map, verbatim (string keys: `prompt`, `command`,
+   * `args`, `context_doc`, …) — what the composer's Edit flow seeds from, so a
+   * row click shows what the schedule DOES, not just its kind. `null` when the
+   * file carries none.
+   */
+  payloadRaw: Record<string, unknown> | null;
   paused: boolean;
   catchup: boolean;
   createdBy: string | null;
@@ -144,6 +151,12 @@ function disposition(value: unknown): Disposition {
   return value === 'executable' || value === 'paused' ? value : 'not_executable';
 }
 
+function rawMap(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function maps(value: unknown): Record<string, unknown>[] {
   return (Array.isArray(value) ? value : []).filter(
     (item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item)
@@ -168,6 +181,7 @@ export function normalizeSchedule(raw: Record<string, unknown>): ScheduleEntry {
     cadence: str(raw.cadence),
     timezone: str(raw.timezone),
     payloadKind: str(pick(raw, 'payload_kind', 'payloadKind')),
+    payloadRaw: rawMap(raw.payload),
     paused: raw.paused === true,
     catchup: raw.catchup === true,
     createdBy: str(pick(raw, 'created_by', 'createdBy')),

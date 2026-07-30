@@ -3,6 +3,10 @@ import {
   MALFORMED_SCHEDULES_NOTE,
   coalescedLabel,
   composerTargetAfterSave,
+  CADENCE_PRESETS,
+  cadenceFromCron,
+  commandLine,
+  cronFromCadence,
   dispositionLine,
   durationLabel,
   editOutcomeNotice,
@@ -11,6 +15,8 @@ import {
   outcomeLabel,
   pauseToggle,
   payloadChipLabel,
+  payloadChipTone,
+  runNowConfirm,
   runNowDisabledReason,
   runTranscriptHref,
   scheduleErrorMessage,
@@ -114,16 +120,47 @@ describe('the tri-state kill switch', () => {
 });
 
 describe('dispositionLine', () => {
-  it('explains only a non-executable entry, using the entry’s own reason', () => {
-    expect(dispositionLine(BROKEN)).toBe('Not executable: invalid cron: minute out of range');
+  it('translates an invalid cron into plain language, quoting the raw expression, ending in the recovery', () => {
+    expect(dispositionLine(BROKEN)).toBe(
+      'Valea can’t read “30 25 * * *” as a schedule. Edit it and pick a day and time.'
+    );
     expect(dispositionLine(EXECUTABLE)).toBeNull();
     expect(dispositionLine(PAUSED)).toBeNull();
   });
 
-  it('still says something when the backend sent no reason', () => {
-    expect(dispositionLine({ disposition: 'not_executable', reason: null })).toBe(
-      'Not executable — it will not fire.'
+  it('never leaks the validator’s vocabulary', () => {
+    expect(dispositionLine(BROKEN)).not.toContain('Not executable');
+    expect(dispositionLine(BROKEN)).not.toContain('invalid cron');
+  });
+
+  it('handles an invalid cron with no raw expression to quote', () => {
+    expect(dispositionLine({ disposition: 'not_executable', reason: 'invalid cron: expected 5 fields', cadence: null })).toBe(
+      'Valea can’t read this schedule’s timing. Edit it and pick a day and time.'
     );
+  });
+
+  it('explains a duplicate id with its own recovery', () => {
+    expect(
+      dispositionLine({ disposition: 'not_executable', reason: 'duplicate id', cadence: '0 9 * * *' })
+    ).toContain('Two schedules share this id');
+  });
+
+  it('explains an unknown timezone and names the empty-means-this-computer default', () => {
+    expect(
+      dispositionLine({ disposition: 'not_executable', reason: 'unknown timezone', cadence: '0 9 * * *' })
+    ).toContain('timezone');
+  });
+
+  it('still says something when the backend sent no reason', () => {
+    expect(dispositionLine({ disposition: 'not_executable', reason: null, cadence: null })).toBe(
+      'This schedule won’t fire. Edit it to fix what’s missing.'
+    );
+  });
+
+  it('carries an unrecognized reason verbatim rather than hiding it', () => {
+    expect(
+      dispositionLine({ disposition: 'not_executable', reason: 'context_doc escapes the ICM', cadence: '0 9 * * *' })
+    ).toBe('This schedule won’t fire — context_doc escapes the ICM. Edit it to fix that.');
   });
 });
 
@@ -136,8 +173,8 @@ describe('runNowDisabledReason', () => {
     expect(runNowDisabledReason(PAUSED)).toBeNull();
   });
 
-  it('disables a non-executable entry with its displayed reason — no manual bypass', () => {
-    expect(runNowDisabledReason(BROKEN)).toBe('Not executable: invalid cron: minute out of range');
+  it('disables a non-executable entry, pointing at the row’s own explanation — no manual bypass', () => {
+    expect(runNowDisabledReason(BROKEN)).toBe('This schedule can’t run until it’s fixed — see the note on its row.');
   });
 
   it('disables an entry Valea cannot address at all', () => {
@@ -165,12 +202,18 @@ describe('stateChip', () => {
   });
 });
 
-describe('payloadChipLabel / showsAgentBadge / highlightsAsNew', () => {
-  it('labels the two payload kinds and degrades a missing one honestly', () => {
-    expect(payloadChipLabel('prompt')).toBe('Prompt');
-    expect(payloadChipLabel('command')).toBe('Command');
-    expect(payloadChipLabel(null)).toBe('Unknown payload');
+describe('payloadChipLabel / payloadChipTone / showsAgentBadge / highlightsAsNew', () => {
+  it('labels the two payload kinds in the user’s language and degrades a missing one honestly', () => {
+    expect(payloadChipLabel('prompt')).toBe('Chat task');
+    expect(payloadChipLabel('command')).toBe('Program');
+    expect(payloadChipLabel(null)).toBe('Unknown');
     expect(payloadChipLabel('webhook')).toBe('webhook');
+  });
+
+  it('tints only the command badge terracotta — the one kind that runs with full authority', () => {
+    expect(payloadChipTone('command')).toBe('warn');
+    expect(payloadChipTone('prompt')).toBe('neutral');
+    expect(payloadChipTone(null)).toBe('neutral');
   });
 
   it('badges agent-registered schedules and highlights recent registrations', () => {
@@ -178,6 +221,77 @@ describe('payloadChipLabel / showsAgentBadge / highlightsAsNew', () => {
     expect(showsAgentBadge(PAUSED)).toBe(false);
     expect(highlightsAsNew(EXECUTABLE)).toBe(true);
     expect(highlightsAsNew(PAUSED)).toBe(false);
+  });
+});
+
+describe('runNowConfirm / commandLine', () => {
+  it('demands a confirmation naming the program for a COMMAND schedule', () => {
+    const entry = normalizeSchedule({
+      id: 's-backup',
+      disposition: 'executable',
+      payload_kind: 'command',
+      payload: { kind: 'command', command: './scripts/backup.sh', args: ['--quiet'] }
+    });
+    expect(runNowConfirm(entry)).toBe(
+      'Run ./scripts/backup.sh --quiet now? It runs with your full access to this project’s folder.'
+    );
+  });
+
+  it('asks generically when the command itself is unreadable', () => {
+    expect(runNowConfirm({ payloadKind: 'command', payloadRaw: null })).toBe(
+      'Run this program now? It runs with your full access to this project’s folder.'
+    );
+  });
+
+  it('needs NO confirmation for a prompt schedule — its session still asks before anything risky', () => {
+    expect(runNowConfirm(EXECUTABLE)).toBeNull();
+  });
+
+  it('renders the command line from the raw payload, dropping non-string args', () => {
+    expect(commandLine({ command: 'python3', args: ['sync.py', 7, '--dry'] })).toBe('python3 sync.py --dry');
+    expect(commandLine({ command: '   ' })).toBeNull();
+    expect(commandLine(null)).toBeNull();
+  });
+});
+
+describe('cadence presets', () => {
+  it('writes the four preset shapes', () => {
+    expect(cronFromCadence('weekdays', '07:30', '1')).toBe('30 7 * * 1-5');
+    expect(cronFromCadence('daily', '02:00', '1')).toBe('0 2 * * *');
+    expect(cronFromCadence('weekly', '09:00', '5')).toBe('0 9 * * 5');
+    expect(cronFromCadence('monthly', '08:15', '1')).toBe('15 8 1 * *');
+  });
+
+  it('refuses rather than guesses: custom, bad time, bad weekday', () => {
+    expect(cronFromCadence('custom', '09:00', '1')).toBeNull();
+    expect(cronFromCadence('daily', '25:00', '1')).toBeNull();
+    expect(cronFromCadence('daily', 'morning', '1')).toBeNull();
+    expect(cronFromCadence('weekly', '09:00', '9')).toBeNull();
+  });
+
+  it('round-trips every preset it writes', () => {
+    for (const [preset, time, weekday] of [
+      ['weekdays', '07:30', '1'],
+      ['daily', '02:00', '1'],
+      ['weekly', '09:00', '5'],
+      ['monthly', '08:15', '1']
+    ] as const) {
+      const cron = cronFromCadence(preset, time, weekday);
+      expect(cron).not.toBeNull();
+      const back = cadenceFromCron(cron!);
+      expect(back).not.toBeNull();
+      expect(back!.preset).toBe(preset);
+      expect(back!.time).toBe(time);
+      if (preset === 'weekly') expect(back!.weekday).toBe(weekday);
+    }
+  });
+
+  it('answers null — Custom — for any cron it would not have written', () => {
+    expect(cadenceFromCron('*/15 * * * *')).toBeNull();
+    expect(cadenceFromCron('0 9 13 * 5')).toBeNull();
+    expect(cadenceFromCron('0 9 2 * *')).toBeNull();
+    expect(cadenceFromCron('@daily')).toBeNull();
+    expect(cadenceFromCron('not a cron')).toBeNull();
   });
 });
 
