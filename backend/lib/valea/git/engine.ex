@@ -173,6 +173,35 @@ defmodule Valea.Git.Engine do
     :exit, _reason -> %{}
   end
 
+  # The wire contract for a status row, in the order a reader wants it. An
+  # ALLOWLIST rather than a `Map.delete(:block_fingerprint)`, because the
+  # thing being defended against is a FUTURE internal key: bookkeeping the
+  # row picks up later cannot leak by omission, it has to be published here
+  # on purpose.
+  @public_keys ~w(mount_key icm_name mode state reason branch ahead behind
+                  dirty local_sha remote_sha last_sync_at last_error
+                  conflict_session_id)a
+
+  @doc """
+  The externally visible form of a `statuses/0` map: one string-keyed row per
+  repo, sorted by mount key, with this module's internal bookkeeping
+  (`block_fingerprint`) dropped.
+
+  One function because THREE surfaces publish these rows — the `git_status`
+  RPC, the `"git_status"` channel push, and the cockpit's `"git"` block
+  (`Valea.Api.Git`, `ValeaWeb.WorkspaceEventsChannel`, `Valea.Cockpit`) — and
+  a key that leaks from one of them leaks. Takes the MAP (not the process
+  state) so the channel can hand it the payload of a `{:git_status_changed,
+  statuses}` broadcast directly.
+  """
+  @spec public_rows(%{String.t() => status()}) :: [map()]
+  def public_rows(statuses) when is_map(statuses) do
+    statuses
+    |> Map.values()
+    |> Enum.map(fn row -> Map.new(@public_keys, &{Atom.to_string(&1), Map.get(row, &1)}) end)
+    |> Enum.sort_by(& &1["mount_key"])
+  end
+
   @doc """
   Runs a pass now for `mount_key`'s workspace, clearing that repo's backoff
   first — the one way past a retry window. Returns as soon as the pass is

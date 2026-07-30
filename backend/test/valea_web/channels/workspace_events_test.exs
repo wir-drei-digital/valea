@@ -293,4 +293,92 @@ defmodule ValeaWeb.WorkspaceEventsTest do
     assert_push "calendar_local_changed", payload
     assert payload == %{}
   end
+
+  # The git pass broadcasts its WHOLE status map after every pass; the channel
+  # publishes it as one sorted list of string-keyed rows. Asserted as a whole
+  # payload (the `mail_oauth` precedent) because the row IS the wire contract
+  # here — and because that is the only assertion shape that catches the
+  # Engine's internal `block_fingerprint` leaking onto the socket.
+  test "a git pass pushes git_status with sorted, string-keyed rows and no internal keys" do
+    Phoenix.PubSub.broadcast(
+      Valea.PubSub,
+      "git",
+      {:git_status_changed,
+       %{
+         "zeta" => %{
+           mount_key: "zeta",
+           icm_name: "Zeta",
+           mode: "pull",
+           state: "ok",
+           reason: nil,
+           branch: "main",
+           ahead: 0,
+           behind: 0,
+           dirty: false,
+           local_sha: "aaa",
+           remote_sha: "aaa",
+           last_sync_at: "2026-07-30T09:00:00Z",
+           last_error: nil,
+           conflict_session_id: nil,
+           block_fingerprint: nil
+         },
+         "alpha" => %{
+           mount_key: "alpha",
+           icm_name: "Alpha",
+           mode: "pull",
+           state: "diverged",
+           reason: nil,
+           branch: "main",
+           ahead: 1,
+           behind: 2,
+           dirty: false,
+           local_sha: "bbb",
+           remote_sha: "ccc",
+           last_sync_at: nil,
+           last_error: nil,
+           conflict_session_id: nil,
+           block_fingerprint: 12_345
+         }
+       }}
+    )
+
+    assert_push "git_status", payload
+
+    assert payload == %{
+             "repos" => [
+               %{
+                 "mount_key" => "alpha",
+                 "icm_name" => "Alpha",
+                 "mode" => "pull",
+                 "state" => "diverged",
+                 "reason" => nil,
+                 "branch" => "main",
+                 "ahead" => 1,
+                 "behind" => 2,
+                 "dirty" => false,
+                 "local_sha" => "bbb",
+                 "remote_sha" => "ccc",
+                 "last_sync_at" => nil,
+                 "last_error" => nil,
+                 "conflict_session_id" => nil
+               },
+               %{
+                 "mount_key" => "zeta",
+                 "icm_name" => "Zeta",
+                 "mode" => "pull",
+                 "state" => "ok",
+                 "reason" => nil,
+                 "branch" => "main",
+                 "ahead" => 0,
+                 "behind" => 0,
+                 "dirty" => false,
+                 "local_sha" => "aaa",
+                 "remote_sha" => "aaa",
+                 "last_sync_at" => "2026-07-30T09:00:00Z",
+                 "last_error" => nil,
+                 "conflict_session_id" => nil
+               }
+             ]
+           }
+  end
 end

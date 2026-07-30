@@ -62,6 +62,11 @@ defmodule Valea.Cockpit do
       still surfaced, attributed via the row's own recorded `mount_key`; the
       enabled mounts only supply the live title/mount-key index. No captured
       output rides here
+    - "git": a LIST, one row per git-backed ICM the sync engine is tracking,
+      sorted by mount key — `Valea.Git.Engine.public_rows/1`'s shape, the
+      SAME rows the `git_status` RPC and the `"git_status"` channel push
+      carry. Lenient like "mail": no Engine (no workspace, mid-switch) means
+      no rows, never a failure
     - "mail": a LIST, one entry per running `Valea.Mail.Engine` (i.e. one
       per valid account) — `%{"account", "configured" => true, "state",
       "pending_ops", "notices"}`, live off `Valea.Mail.Engine.statuses/0`
@@ -80,11 +85,32 @@ defmodule Valea.Cockpit do
     {:ok,
      %{
        "sections" => icm_sections(),
+       "git" => git_summary(),
        "mail" => mail_summary(),
        "calendar" => calendar_summary(),
        "recent_sessions" => recent_sessions(),
        "schedule_notices" => schedule_notices()
      }}
+  end
+
+  # The git line: every git-backed ICM's current row, in the SAME shape the
+  # `git_status` RPC and the `"git_status"` channel push carry
+  # (`Valea.Git.Engine.public_rows/1` — string keys, no internal
+  # bookkeeping), so a Today card and the git panel can never disagree about
+  # what a row means.
+  #
+  # Lenient exactly like `mail_summary/0`: the Engine is a Runtime child and
+  # goes down on every close/switch, so an absent (or mid-teardown) Engine
+  # yields no rows rather than a crashed `today/0`. `statuses/0` already
+  # catches its own `:exit`; this keeps the belt-and-braces posture the other
+  # live-state readers here have, because a lost cockpit is never worth one
+  # unavailable input.
+  defp git_summary do
+    Valea.Git.Engine.statuses() |> Valea.Git.Engine.public_rows()
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
   end
 
   defp icm_sections do

@@ -64,6 +64,20 @@ defmodule Valea.Agents.SessionServerTest do
     assert File.dir?(Path.dirname(spec.stderr_path))
   end
 
+  # The liveness question without `attach/1`'s cost: `attach/1` answers it by
+  # copying the session's entire timeline back to the caller, which a caller
+  # that only wants a yes/no should never pay for (`Valea.Api.Git`'s conflict
+  # routing asks it on every "resolve" click).
+  test "running?/1 answers liveness without attaching", %{root: root} do
+    refute Valea.Agents.SessionServer.running?("no-such-session")
+
+    {:ok, %{id: id}} = start_session(root, "happy")
+    assert Valea.Agents.SessionServer.running?(id)
+
+    Valea.AgentCase.kill_session(id)
+    refute Valea.Agents.SessionServer.running?(id)
+  end
+
   test "happy path: handshake, prompt, transcript file, turn end", %{root: root} do
     {:ok, %{id: id}} = start_session(root, "happy")
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)

@@ -124,6 +124,13 @@ defmodule Valea.Api do
       rpc_action(:dismiss_skills_offer, :dismiss_skills_offer)
     end
 
+    resource Valea.Api.Git do
+      rpc_action(:git_status, :git_status)
+      rpc_action(:git_sync_now, :git_sync_now)
+      rpc_action(:set_icm_git_sync, :set_icm_git_sync)
+      rpc_action(:start_git_conflict_session, :start_git_conflict_session)
+    end
+
     resource Valea.Api.Tasks do
       rpc_action(:list_tasks, :list_tasks)
       rpc_action(:create_task, :create_task)
@@ -152,6 +159,7 @@ defmodule Valea.Api do
     resource Valea.Api.Calendar
     resource Valea.Api.Icms
     resource Valea.Api.Skills
+    resource Valea.Api.Git
     resource Valea.Api.Tasks
     resource Valea.Api.Schedules
   end

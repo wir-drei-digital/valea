@@ -6,6 +6,19 @@ defmodule Valea.Mounts.DoctorTest.UnreadableGitCli do
   def run(_root, _args, _opts), do: {:error, :timeout}
 end
 
+defmodule Valea.Mounts.DoctorTest.FailingFetchCli do
+  @moduledoc false
+  @behaviour Valea.Git.Cli
+
+  # Everything local runs for real; only the network verb fails, with
+  # whatever git text the test wants the engine to record.
+  @impl true
+  def run(_root, ["fetch" | _rest], _opts),
+    do: {:ok, %{output: Application.fetch_env!(:valea, :doctor_fetch_output), exit: 128}}
+
+  def run(root, args, opts), do: Valea.Git.Cli.run(root, args, opts)
+end
+
 defmodule Valea.Mounts.DoctorTest do
   use ExUnit.Case, async: false
 
@@ -971,6 +984,92 @@ defmodule Valea.Mounts.DoctorTest do
       assert check["status"] == "failed"
       assert check["detail"] =~ "detached HEAD"
       assert check["remedy"] =~ "Check out a branch"
+    end
+  end
+
+  # The static probe answers "could this repo sync?"; the live engine answers
+  # "did it?". A repo whose last pass failed is not healthy just because its
+  # branch has an upstream — so the engine's own row wins over the plain ok.
+  describe "run/1 — git_sync reports the live engine's last outcome" do
+    @describetag if GitFixtures.git_available?(), do: :git, else: :skip
+
+    setup do
+      %{fx: GitFixtures.remote_and_clones!(tmp_dir!("vmounts-doctor-git"))}
+    end
+
+    # Runs one real pass against `root` with the network verb rigged to fail,
+    # so the engine holds a genuine `state: "error"` row for `key` — never a
+    # hand-planted map, which could not catch the row shape drifting.
+    defp engine_error!(root, key, output) do
+      Application.put_env(:valea, :doctor_fetch_output, output)
+      Application.put_env(:valea, :git_cli, Valea.Mounts.DoctorTest.FailingFetchCli)
+      Application.put_env(:valea, :git_sync_probe, self())
+      Application.put_env(:valea, :git_poll_interval_ms, 3_600_000)
+      Application.put_env(:valea, :git_poll_jitter, 0)
+
+      on_exit(fn ->
+        Application.delete_env(:valea, :doctor_fetch_output)
+        Application.delete_env(:valea, :git_cli)
+        Application.delete_env(:valea, :git_sync_probe)
+        Application.delete_env(:valea, :git_poll_interval_ms)
+        Application.delete_env(:valea, :git_poll_jitter)
+      end)
+
+      start_supervised!({Valea.Git.Engine, %{root: root, generation: 1, activate: true}})
+      assert_receive {:git_pass_finished, %{^key => %{state: "error"}}}, 20_000
+    end
+
+    test "an auth-shaped failure fails the check and hints at the missing ssh-agent env", %{
+      fx: fx
+    } do
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"repo", git_icm!(fx.work), []}])
+      engine_error!(root, "repo", "fatal: Permission denied (publickey).")
+
+      {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "failed"
+      assert check["detail"] =~ "last sync failed: fatal: Permission denied (publickey)."
+      assert check["remedy"] =~ "ssh-agent"
+    end
+
+    test "a failure that is not about credentials fails with no hint to give", %{fx: fx} do
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"repo", git_icm!(fx.work), []}])
+      engine_error!(root, "repo", "error: RPC failed; HTTP 500 curl 22")
+
+      {:ok, %{checks: checks, ok: false}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "failed"
+      assert check["detail"] =~ "last sync failed: error: RPC failed; HTTP 500"
+      assert check["remedy"] == nil
+    end
+
+    test "a converged repo keeps the plain ok — the engine only overrides failures", %{fx: fx} do
+      root = tmp_dir!("vmounts-doctor")
+      write_icms!(root, [{"repo", git_icm!(fx.work), []}])
+
+      Application.put_env(:valea, :git_sync_probe, self())
+      Application.put_env(:valea, :git_poll_interval_ms, 3_600_000)
+      Application.put_env(:valea, :git_poll_jitter, 0)
+
+      on_exit(fn ->
+        Application.delete_env(:valea, :git_sync_probe)
+        Application.delete_env(:valea, :git_poll_interval_ms)
+        Application.delete_env(:valea, :git_poll_jitter)
+      end)
+
+      start_supervised!({Valea.Git.Engine, %{root: root, generation: 1, activate: true}})
+      assert_receive {:git_pass_finished, %{"repo" => %{state: "ok"}}}, 20_000
+
+      {:ok, %{checks: checks}} = Doctor.run(root)
+
+      check = find(checks, "git_sync:repo")
+      assert check["status"] == "ok"
+      assert check["detail"] =~ "main"
+      assert check["remedy"] == nil
     end
   end
 

@@ -1974,11 +1974,11 @@ export async function updateValeaEventChannel<Fields extends UpdateValeaEventFie
 }
 
 
-export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, tasks: {dueToday: number, overdue: number, inProgress: number, top: Array<{id: string | null, title: string | null, due: string | null, today: boolean, priority: string | null, __type: "TypedMap", __primitiveFields: "id" | "title" | "due" | "today" | "priority"}>, __type: "TypedMap", __primitiveFields: "dueToday" | "overdue" | "inProgress"} | null, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, scheduleNotices: Array<{kind: string, mountKey: string | null, scheduleId: string, title: string, at: string | null, __type: "TypedMap", __primitiveFields: "kind" | "mountKey" | "scheduleId" | "title" | "at"}>, __type: "TypedMap", __primitiveFields: never}>[];
+export type CockpitTodayFields = UnifiedFieldSelection<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, tasks: {dueToday: number, overdue: number, inProgress: number, top: Array<{id: string | null, title: string | null, due: string | null, today: boolean, priority: string | null, __type: "TypedMap", __primitiveFields: "id" | "title" | "due" | "today" | "priority"}>, __type: "TypedMap", __primitiveFields: "dueToday" | "overdue" | "inProgress"} | null, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, git: Array<Record<string, any>>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, scheduleNotices: Array<{kind: string, mountKey: string | null, scheduleId: string, title: string, at: string | null, __type: "TypedMap", __primitiveFields: "kind" | "mountKey" | "scheduleId" | "title" | "at"}>, __type: "TypedMap", __primitiveFields: "git"}>[];
 
 export type InferCockpitTodayResult<
   Fields extends CockpitTodayFields | undefined,
-> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, tasks: {dueToday: number, overdue: number, inProgress: number, top: Array<{id: string | null, title: string | null, due: string | null, today: boolean, priority: string | null, __type: "TypedMap", __primitiveFields: "id" | "title" | "due" | "today" | "priority"}>, __type: "TypedMap", __primitiveFields: "dueToday" | "overdue" | "inProgress"} | null, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, scheduleNotices: Array<{kind: string, mountKey: string | null, scheduleId: string, title: string, at: string | null, __type: "TypedMap", __primitiveFields: "kind" | "mountKey" | "scheduleId" | "title" | "at"}>, __type: "TypedMap", __primitiveFields: never}, Fields>;
+> = InferResult<{sections: Array<{mountKey: string, icmName: string, ok: boolean, updatedAt: string | null, notes: string | null, prepared: Array<{title: string | null, summary: string | null, page: string | null, __type: "TypedMap", __primitiveFields: "title" | "summary" | "page"}>, tasks: {dueToday: number, overdue: number, inProgress: number, top: Array<{id: string | null, title: string | null, due: string | null, today: boolean, priority: string | null, __type: "TypedMap", __primitiveFields: "id" | "title" | "due" | "today" | "priority"}>, __type: "TypedMap", __primitiveFields: "dueToday" | "overdue" | "inProgress"} | null, __type: "TypedMap", __primitiveFields: "mountKey" | "icmName" | "ok" | "updatedAt" | "notes"}>, git: Array<Record<string, any>>, mail: Array<{account: string, configured: boolean, state: string, pendingOps: number, notices: Array<string>, unreadCount: number, unread: Array<{msgId: string, fromName: string | null, fromEmail: string | null, subject: string | null, date: string | null, __type: "TypedMap", __primitiveFields: "msgId" | "fromName" | "fromEmail" | "subject" | "date"}>, __type: "TypedMap", __primitiveFields: "account" | "configured" | "state" | "pendingOps" | "notices" | "unreadCount"}>, calendar: {eventsToday: number, next: {time: string, title: string, __type: "TypedMap", __primitiveFields: "time" | "title"} | null, __type: "TypedMap", __primitiveFields: "eventsToday"} | null, recentSessions: Array<{id: string, title: string, startedAt: string, status: string, live: boolean, __type: "TypedMap", __primitiveFields: "id" | "title" | "startedAt" | "status" | "live"}>, scheduleNotices: Array<{kind: string, mountKey: string | null, scheduleId: string, title: string, at: string | null, __type: "TypedMap", __primitiveFields: "kind" | "mountKey" | "scheduleId" | "title" | "at"}>, __type: "TypedMap", __primitiveFields: "git"}, Fields>;
 
 export type CockpitTodayResult<Fields extends CockpitTodayFields | undefined = undefined> = | { success: true; data: InferCockpitTodayResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -2031,6 +2031,302 @@ export async function cockpitTodayChannel<Fields extends CockpitTodayFields | un
     {
     action: "cockpit_today",
     ...(config.tenant !== undefined && { tenant: config.tenant }),
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type GitStatusInput = {
+  generation: number;
+};
+
+export type GitStatusFields = UnifiedFieldSelection<{repos: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "repos"}>[];
+
+export type InferGitStatusResult<
+  Fields extends GitStatusFields | undefined,
+> = InferResult<{repos: Array<Record<string, any>>, __type: "TypedMap", __primitiveFields: "repos"}, Fields>;
+
+export type GitStatusResult<Fields extends GitStatusFields | undefined = undefined> = | { success: true; data: InferGitStatusResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function gitStatus<Fields extends GitStatusFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GitStatusInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GitStatusResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "git_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GitStatusResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function gitStatusChannel<Fields extends GitStatusFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GitStatusInput;
+  fields: Fields;
+  resultHandler: (result: GitStatusResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GitStatusResult<Fields>>(
+    config.channel,
+    {
+    action: "git_status",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type GitSyncNowInput = {
+  mountKey: string;
+  generation: number;
+};
+
+export type GitSyncNowFields = UnifiedFieldSelection<{started: boolean, __type: "TypedMap", __primitiveFields: "started"}>[];
+
+export type InferGitSyncNowResult<
+  Fields extends GitSyncNowFields | undefined,
+> = InferResult<{started: boolean, __type: "TypedMap", __primitiveFields: "started"}, Fields>;
+
+export type GitSyncNowResult<Fields extends GitSyncNowFields | undefined = undefined> = | { success: true; data: InferGitSyncNowResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function gitSyncNow<Fields extends GitSyncNowFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: GitSyncNowInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<GitSyncNowResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "git_sync_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<GitSyncNowResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function gitSyncNowChannel<Fields extends GitSyncNowFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: GitSyncNowInput;
+  fields: Fields;
+  resultHandler: (result: GitSyncNowResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<GitSyncNowResult<Fields>>(
+    config.channel,
+    {
+    action: "git_sync_now",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type SetIcmGitSyncInput = {
+  mountKey: string;
+  sync: string;
+  generation: number;
+};
+
+export type SetIcmGitSyncFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];
+
+export type InferSetIcmGitSyncResult<
+  Fields extends SetIcmGitSyncFields | undefined,
+> = InferResult<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}, Fields>;
+
+export type SetIcmGitSyncResult<Fields extends SetIcmGitSyncFields | undefined = undefined> = | { success: true; data: InferSetIcmGitSyncResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function setIcmGitSync<Fields extends SetIcmGitSyncFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: SetIcmGitSyncInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<SetIcmGitSyncResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "set_icm_git_sync",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<SetIcmGitSyncResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function setIcmGitSyncChannel<Fields extends SetIcmGitSyncFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: SetIcmGitSyncInput;
+  fields: Fields;
+  resultHandler: (result: SetIcmGitSyncResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<SetIcmGitSyncResult<Fields>>(
+    config.channel,
+    {
+    action: "set_icm_git_sync",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  },
+    config.timeout,
+    config
+  );
+}
+
+
+export type StartGitConflictSessionInput = {
+  mountKey: string;
+  generation: number;
+};
+
+export type StartGitConflictSessionFields = UnifiedFieldSelection<{sessionId: string, routed: string, __type: "TypedMap", __primitiveFields: "sessionId" | "routed"}>[];
+
+export type InferStartGitConflictSessionResult<
+  Fields extends StartGitConflictSessionFields | undefined,
+> = InferResult<{sessionId: string, routed: string, __type: "TypedMap", __primitiveFields: "sessionId" | "routed"}, Fields>;
+
+export type StartGitConflictSessionResult<Fields extends StartGitConflictSessionFields | undefined = undefined> = | { success: true; data: InferStartGitConflictSessionResult<Fields>; }
+| { success: false; errors: AshRpcError[]; }
+
+;
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function startGitConflictSession<Fields extends StartGitConflictSessionFields | undefined = undefined>(
+  config: {
+  tenant?: string;
+  input: StartGitConflictSessionInput;
+  fields: Fields;
+  headers?: Record<string, string>;
+  fetchOptions?: RequestInit;
+  customFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+): Promise<StartGitConflictSessionResult<Fields extends undefined ? [] : Fields>> {
+  const payload = {
+    action: "start_git_conflict_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
+    ...(config.fields !== undefined && { fields: config.fields })
+  };
+
+  return executeActionRpcRequest<StartGitConflictSessionResult<Fields extends undefined ? [] : Fields>>(
+    payload,
+    config
+  );
+}
+
+
+/**
+ * Execute generic action on Git
+ *
+ * @ashActionType :action
+ */
+export async function startGitConflictSessionChannel<Fields extends StartGitConflictSessionFields | undefined = undefined>(config: {
+  channel: Channel;
+  tenant?: string;
+  input: StartGitConflictSessionInput;
+  fields: Fields;
+  resultHandler: (result: StartGitConflictSessionResult<Fields>) => void;
+  errorHandler?: (error: any) => void;
+  timeoutHandler?: () => void;
+  timeout?: number;
+}) {
+  executeActionChannelPush<StartGitConflictSessionResult<Fields>>(
+    config.channel,
+    {
+    action: "start_git_conflict_session",
+    ...(config.tenant !== undefined && { tenant: config.tenant }),
+    input: config.input,
     ...(config.fields !== undefined && { fields: config.fields })
   },
     config.timeout,

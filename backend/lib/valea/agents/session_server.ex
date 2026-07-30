@@ -41,6 +41,32 @@ defmodule Valea.Agents.SessionServer do
   @doc "Timeline snapshot: `%{items, cursor, busy, status}`."
   def attach(id), do: call(id, :attach)
 
+  @doc """
+  Is a live server registered for `id`? The plain liveness question, through
+  the same Registry lookup every other client function uses — no GenServer
+  round-trip, and no timeline.
+
+  `attach/1` answers it too, but at the cost of copying the session's ENTIRE
+  render-item timeline back to the caller; a caller that only wants a
+  yes/no (`Valea.Api.Git`'s conflict-session routing asks on every "resolve"
+  click, for a session that may have been running for an hour) should not
+  pay that. Cannot exit: nothing is called.
+
+  The liveness re-check on the looked-up pid is the same one
+  `Valea.Agents.list_running_session_inputs/0` does, and for the same
+  reason: the Registry unregisters in its OWN process, so a session that has
+  just died is still a lookup hit for a moment — and answering "running" for
+  it would route a user into a dead session instead of starting the one they
+  asked for.
+  """
+  @spec running?(String.t()) :: boolean()
+  def running?(id) when is_binary(id) do
+    case whereis(id) do
+      nil -> false
+      pid -> Process.alive?(pid)
+    end
+  end
+
   def prompt(id, content), do: cast(id, {:prompt, content})
   def cancel(id), do: cast(id, :cancel)
   def answer_permission(id, item_id, kind), do: cast(id, {:answer_permission, item_id, kind})

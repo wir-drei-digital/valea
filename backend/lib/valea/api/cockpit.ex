@@ -113,6 +113,15 @@ defmodule Valea.Api.Cockpit do
                         ]
                       ]
                     ],
+                    # ICM git sync spec §UI (Today): the sync rows, UNTYPED
+                    # on purpose. Their shape belongs to
+                    # `Valea.Git.Engine.public_rows/1` — the same rows the
+                    # `git_status` RPC and the `"git_status"` channel push
+                    # carry — and restating fifteen fields here would give
+                    # this layer a second, drifting copy of that contract for
+                    # no gain: array items keep their source (snake_case)
+                    # keys and their `false`s either way.
+                    git: [type: {:array, :map}, allow_nil?: false],
                     mail: [
                       type: {:array, :map},
                       allow_nil?: false,

@@ -61,6 +61,20 @@ export type CockpitAttributesOnlySchema = {
 };
 
 
+// Git Schema
+export type GitResourceSchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
+
+export type GitAttributesOnlySchema = {
+  __type: "Resource";
+  __primitiveFields: never;
+};
+
+
 // ICM Schema
 export type ICMResourceSchema = {
   __type: "Resource";
@@ -195,6 +209,15 @@ export type CockpitFilterInput = {
 
 
 };
+export type GitFilterInput = {
+  and?: Array<GitFilterInput>;
+  or?: Array<GitFilterInput>;
+  not?: Array<GitFilterInput>;
+
+
+
+
+};
 export type ICMFilterInput = {
   and?: Array<ICMFilterInput>;
   or?: Array<ICMFilterInput>;
@@ -258,6 +281,8 @@ export type WorkspaceFilterInput = {
 
 
 };
+
+
 
 
 

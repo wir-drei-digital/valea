@@ -8,6 +8,7 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
     Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
     Phoenix.PubSub.subscribe(Valea.PubSub, "mounts")
     Phoenix.PubSub.subscribe(Valea.PubSub, "calendar")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "git")
     {:ok, socket}
   end
 
@@ -113,6 +114,17 @@ defmodule ValeaWeb.WorkspaceEventsChannel do
 
   def handle_info({:calendar_local_changed}, socket) do
     push(socket, "calendar_local_changed", %{})
+    {:noreply, socket}
+  end
+
+  # Every git pass broadcasts its WHOLE status map, so the push is the whole
+  # list too — the frontend replaces its rows rather than patching one, which
+  # is what makes a repo that stopped being git-backed disappear. The row
+  # shape (string keys, no internal bookkeeping) is
+  # `Valea.Git.Engine.public_rows/1`'s to decide, shared verbatim with the
+  # `git_status` RPC and the cockpit's own block.
+  def handle_info({:git_status_changed, statuses}, socket) do
+    push(socket, "git_status", %{"repos" => Valea.Git.Engine.public_rows(statuses)})
     {:noreply, socket}
   end
 

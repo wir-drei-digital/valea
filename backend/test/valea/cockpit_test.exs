@@ -705,4 +705,69 @@ defmodule Valea.CockpitTest do
       assert {:ok, %{"mail" => [%{"account" => "mara"}]}} = Valea.Cockpit.today()
     end
   end
+
+  describe "today/0 git block" do
+    test "is present and empty with no engine running" do
+      # Not merely absent-tolerated: the key must EXIST, because
+      # `Valea.Api.Cockpit`'s `fields:` constraint is all-or-nothing and a
+      # missing top-level key would drop out of the typed payload entirely.
+      {:ok, today} = Valea.Cockpit.today()
+      assert today["git"] == []
+    end
+  end
+
+  describe "today/0 git block over real git" do
+    # Skips itself (rather than failing) on a machine with no git — the
+    # per-describe posture `Valea.Mounts.DoctorTest` uses for the same reason.
+    @describetag if GitFixtures.git_available?(), do: :git, else: :skip
+
+    test "carries the engine's rows, string-keyed, sorted by mount key, internals stripped" do
+      Application.put_env(:valea, :git_sync_probe, self())
+      Application.put_env(:valea, :git_poll_interval_ms, 3_600_000)
+      Application.put_env(:valea, :git_poll_jitter, 0)
+
+      on_exit(fn ->
+        Application.delete_env(:valea, :git_sync_probe)
+        Application.delete_env(:valea, :git_poll_interval_ms)
+        Application.delete_env(:valea, :git_poll_jitter)
+      end)
+
+      ws = AgentCase.open_workspace!()
+
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "vgit-cockpit-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      fx = GitFixtures.remote_and_clones!(dir)
+
+      Valea.Mounts.Manifest.write!(fx.work, %{
+        id: Ecto.UUID.generate(),
+        name: "Work ICM",
+        description: ""
+      })
+
+      GitFixtures.git!(fx.work, ["add", "-A"])
+      GitFixtures.git!(fx.work, ["commit", "-m", "icm manifest"])
+      GitFixtures.git!(fx.work, ["push", "origin", "main"])
+
+      {:ok, %{mount_key: key}} = Mounts.mount(ws.path, fx.work)
+
+      :ok = Valea.Git.Engine.sync_now(key)
+      assert_receive {:git_pass_finished, %{^key => %{state: "ok"}}}, 20_000
+
+      {:ok, today} = Valea.Cockpit.today()
+
+      assert [row] = today["git"]
+      assert row["mount_key"] == key
+      assert row["icm_name"] == "Work ICM"
+      assert row["state"] == "ok"
+      assert row["dirty"] == false
+      refute Map.has_key?(row, "block_fingerprint")
+    end
+  end
 end

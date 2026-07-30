@@ -115,6 +115,13 @@ defmodule Valea.Mounts.Doctor do
   `"failed"` — the same posture as `watcher_live`'s unavailable branch:
   not a defect the user can act on from here.
 
+  A repo that passes every static probe then gets ONE live question, off
+  `Valea.Git.Engine.statuses/0`: did the last pass work? An `error` row is
+  `"failed"` carrying git's own words, and an auth-shaped one carries the
+  hint the user cannot discover from inside the app — a packaged .app is
+  launched without the ssh-agent environment a terminal would have given it.
+  A missing Engine (no workspace open, mid-switch) simply asks nothing.
+
   Never reads or leaks file CONTENTS — `secrets_hygiene` only lists
   directory ENTRY NAMES at the mount root (`File.ls/1`), never opens a
   file, and `related_icms` only reads `CONTEXT.md`'s own frontmatter
@@ -164,6 +171,14 @@ defmodule Valea.Mounts.Doctor do
   @git_unsupported_remedy "Mount the repository root directly, or leave git sync off."
   @git_missing_binary_remedy "Install git or launch Valea from an environment where git is on PATH."
   @git_detached_remedy "Check out a branch in this repository."
+  # Deliberately loose: git's failure prose varies by transport and server
+  # (`Permission denied (publickey)`, `Authentication failed`, `403
+  # Forbidden`, `remote: access denied`), and the cost of matching one
+  # non-auth error is one extra sentence of advice — while missing a real one
+  # leaves the user staring at a failure whose cause is invisible from
+  # inside the app.
+  @git_auth_pattern ~r/auth|permission|denied|publickey/i
+  @git_auth_remedy "If this is an auth failure: the packaged app may lack your ssh-agent environment — try launching from a terminal, or check the remote's credentials."
 
   @doc "Runs the mounts doctor against the currently open workspace (every mount)."
   @spec run() :: {:ok, %{checks: [check], ok: boolean}} | {:error, :no_workspace}
@@ -561,12 +576,57 @@ defmodule Valea.Mounts.Doctor do
         )
 
       {:ok, %{branch: branch, upstream: upstream}} ->
-        ok(id, label, "#{branch} ↔ #{upstream} · mode #{cfg.sync}.")
+        git_outcome_check(id, label, mount, cfg, branch, upstream)
 
       {:error, _reason} ->
         unknown(id, label, "could not read repository state.")
     end
   end
+
+  # Everything above answers "COULD this repo sync?" from a local read. This
+  # answers "did it?" — the spec's "last fetch/push outcome" — from the live
+  # engine's own row, which is the only place that knows whether the last
+  # network call worked. A repo is not healthy just because its branch has an
+  # upstream, so an `error` row wins over the plain ok; every other state
+  # (held, off, converged) is a situation with its own surface and not a
+  # doctor failure.
+  #
+  # The remedy is the one thing a user can act on when git says "no": a
+  # packaged .app is launched by the OS with no ssh-agent in its environment,
+  # so a repo that pushes fine from a terminal fails here — the single most
+  # likely cause of an auth-shaped error, and invisible without being told.
+  defp git_outcome_check(id, label, mount, cfg, branch, upstream) do
+    case engine_row(mount.name) do
+      %{state: "error"} = row ->
+        failed(
+          id,
+          label,
+          "last sync failed: " <> (row.last_error || "unknown"),
+          auth_remedy(row.last_error)
+        )
+
+      _converged_held_or_unknown ->
+        ok(id, label, "#{branch} ↔ #{upstream} · mode #{cfg.sync}.")
+    end
+  end
+
+  # The same degrade-to-nothing posture `Valea.Cockpit` uses for its own live
+  # reads: the Engine is a Runtime child and dies on every workspace
+  # close/switch, and a doctor that crashed because the engine was mid-teardown
+  # would be worse than one that simply has nothing extra to say.
+  defp engine_row(mount_key) do
+    Map.get(Valea.Git.Engine.statuses(), mount_key)
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
+
+  defp auth_remedy(error) when is_binary(error) do
+    if Regex.match?(@git_auth_pattern, error), do: @git_auth_remedy
+  end
+
+  defp auth_remedy(_absent), do: nil
 
   # The one seam the engine and this check share (Task 1) — a stub Cli in
   # tests, the real one in production.
