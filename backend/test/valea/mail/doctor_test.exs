@@ -310,6 +310,57 @@ defmodule Valea.Mail.DoctorTest do
     end)
   end
 
+  test "an oauth2 account: the mode reaches the transport, and a refused token splits the pair" do
+    with_listener(fn port ->
+      root = workspace_root()
+      write_triage!(root, @good_triage)
+
+      FakeMailTransport.script([{:connect, :_, {:error, :reauth_required}}])
+
+      the_settings = settings(%{imap: imap(port), auth: :oauth2})
+
+      assert {:ok, %{checks: checks, ok: false}} =
+               Doctor.run(ctx(%{root: root, settings: the_settings}))
+
+      # The doctor probes the way a real pass authenticates: the config it hands
+      # `connect/3` carries the account's SASL mode (`Settings.imap_config/1`,
+      # M6 task 15). Probing with `:password` would report a login failure the
+      # engine would never see.
+      assert [{:connect, [config, _credential, _opts]}] = FakeMailTransport.calls()
+      assert config.auth == :oauth2
+
+      by_id = Map.new(checks, &{&1["id"], &1})
+      # Reaching a rejection PROVES the TLS layer came up, same as :auth_failed.
+      assert by_id["tls_ok"]["status"] == "ok"
+      assert by_id["login_ok"]["status"] == "failed"
+      assert by_id["login_ok"]["remedy"] =~ "reconnect"
+      refute by_id["login_ok"]["remedy"] =~ "password"
+      assert by_id["folders"]["status"] == "unknown"
+      assert by_id["move_capability"]["status"] == "unknown"
+    end)
+  end
+
+  test "an oauth2 sending account: a refused SMTP token keeps smtp_tls ok, smtp_auth failed" do
+    with_listener(fn port ->
+      root = workspace_root()
+      FakeMailTransport.script(full_script())
+      FakeSmtpTransport.script([{:check_auth, :_, {:error, {:reauth_required, "535 expired"}}}])
+
+      the_settings = settings(%{imap: imap(port), smtp: smtp(port), auth: :oauth2})
+
+      assert {:ok, %{checks: checks, ok: false}} =
+               Doctor.run(ctx(%{root: root, settings: the_settings}))
+
+      assert [{:check_auth, [config, _credential, _opts]}] = FakeSmtpTransport.calls()
+      assert config.auth == :oauth2
+
+      by_id = Map.new(checks, &{&1["id"], &1})
+      assert by_id["smtp_tls"]["status"] == "ok"
+      assert by_id["smtp_auth"]["status"] == "failed"
+      assert by_id["smtp_auth"]["remedy"] =~ "reconnect"
+    end)
+  end
+
   # -- connect failure below TLS -------------------------------------------------
 
   test "connect error other than auth_failed: tls_ok fails, login/folders/move unknown" do
@@ -552,7 +603,10 @@ defmodule Valea.Mail.DoctorTest do
       # ONE call — the doctor must never open two SMTP sessions (providers
       # rate-limit AUTH), and it must never issue anything transactional.
       assert [{:check_auth, [config, credential, _opts]}] = FakeSmtpTransport.calls()
-      assert config == the_settings.smtp
+      # The smtp block PLUS the account's SASL mode (`Settings.smtp_config/1`,
+      # M6 task 15) — the transport picks its AUTH mechanism from that mode, so
+      # the doctor must probe with the same one a real send would use.
+      assert config == Map.put(the_settings.smtp, :auth, :password)
       assert credential == "smtp-password"
     end)
   end

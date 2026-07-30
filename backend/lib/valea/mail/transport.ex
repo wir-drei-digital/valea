@@ -38,7 +38,20 @@ defmodule Valea.Mail.Transport do
   """
 
   @type conn :: term()
-  @type config :: %{host: String.t(), port: pos_integer(), username: String.t()}
+
+  @typedoc """
+  The connection-shaped settings `connect/3` reads — built by
+  `Valea.Mail.Settings.imap_config/1`, which is what stamps `auth` (the
+  account's SASL mode, M6 task 15) onto the `imap:` block. Optional in the
+  type because every caller predating that mode passes the three-key map, and
+  an implementation must read its absence as `:password`.
+  """
+  @type config :: %{
+          :host => String.t(),
+          :port => pos_integer(),
+          :username => String.t(),
+          optional(:auth) => Valea.Mail.Settings.auth()
+        }
 
   @type select_info :: %{
           uidvalidity: integer(),
@@ -53,7 +66,7 @@ defmodule Valea.Mail.Transport do
           gm_msgid: String.t() | nil
         }
 
-  @type capability :: :condstore | :qresync | :move | :uidplus | :gmail | :idle
+  @type capability :: :condstore | :qresync | :move | :uidplus | :gmail | :idle | :xoauth2
 
   @typedoc """
   One in-progress IDLE, opaque to callers — created by `idle_start/1`,
@@ -84,8 +97,19 @@ defmodule Valea.Mail.Transport do
           | {:fetch, pos_integer()}
           | {:other, String.t()}
 
+  @doc """
+  Opens an authenticated connection. `credential` is the account's password or
+  — when `config.auth` is `:oauth2` — its OAuth2 access token; the
+  implementation picks the SASL mechanism from that mode alone.
+
+  Two error reasons are part of the contract because callers discriminate on
+  them (`Valea.Mail.SyncPass`, `Valea.Mail.Engine`, `Valea.Mail.Doctor`):
+  `{:error, :auth_failed}` for a rejected password and
+  `{:error, :reauth_required}` for a rejected token. Both mean "the server
+  spoke, and said no" — every other reason is a transport failure.
+  """
   @callback connect(config, credential :: String.t(), opts :: keyword()) ::
-              {:ok, conn} | {:error, term()}
+              {:ok, conn} | {:error, :auth_failed} | {:error, :reauth_required} | {:error, term()}
   @callback capabilities(conn) :: {:ok, [String.t()]}
   @callback list_folders(conn) :: {:ok, [String.t()]} | {:error, term()}
   @callback create_folder(conn, String.t()) :: :ok | {:error, term()}

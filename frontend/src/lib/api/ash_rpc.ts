@@ -3822,11 +3822,11 @@ export type GetMailAccountSettingsInput = {
   account: string;
 };
 
-export type GetMailAccountSettingsFields = UnifiedFieldSelection<{notifications: boolean, account: {host: string, port: number, username: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username"}, __type: "TypedMap", __primitiveFields: "notifications"}>[];
+export type GetMailAccountSettingsFields = UnifiedFieldSelection<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth"}, __type: "TypedMap", __primitiveFields: "notifications"}>[];
 
 export type InferGetMailAccountSettingsResult<
   Fields extends GetMailAccountSettingsFields | undefined,
-> = InferResult<{notifications: boolean, account: {host: string, port: number, username: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username"}, __type: "TypedMap", __primitiveFields: "notifications"}, Fields>;
+> = InferResult<{notifications: boolean, account: {host: string, port: number, username: string, auth: string, smtp: {host: string, port: number, security: string, username: string, from: string | null, fromName: string | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "security" | "username" | "from" | "fromName"} | null, __type: "TypedMap", __primitiveFields: "host" | "port" | "username" | "auth"}, __type: "TypedMap", __primitiveFields: "notifications"}, Fields>;
 
 export type GetMailAccountSettingsResult<Fields extends GetMailAccountSettingsFields | undefined = undefined> = | { success: true; data: InferGetMailAccountSettingsResult<Fields>; }
 | { success: false; errors: AshRpcError[]; }
@@ -5672,6 +5672,7 @@ export type SetupMailAccountInput = {
   smtpFrom?: string | null;
   smtpFromName?: string | null;
   notifications?: boolean | null;
+  auth?: string | null;
 };
 
 export type SetupMailAccountFields = UnifiedFieldSelection<{saved: boolean, __type: "TypedMap", __primitiveFields: "saved"}>[];

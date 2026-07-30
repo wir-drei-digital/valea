@@ -648,6 +648,7 @@ describe('mailStateLabel', () => {
     ['idle', 'Up to date'],
     ['syncing', 'Syncing…'],
     ['auth_failed', 'Sign-in failed'],
+    ['reauth_required', 'Sign-in expired'],
     ['inactive', 'Not connected'],
     ['identity_mismatch', 'Folder belongs to a different account'],
     ['mailbox_replaced', 'Mailbox replaced, needs re-adopt'],

@@ -1712,7 +1712,11 @@ defmodule Valea.Mail.OpsExecutor do
         manifest = transition(ctx, op_row.id, manifest, "transmitting")
 
         ctx.smtp_transport.send(
-          ctx.settings.smtp,
+          # `smtp_config/1`, not `ctx.settings.smtp` — the account's SASL mode
+          # rides with the connection settings, so an oauth2 account
+          # authenticates with `AUTH XOAUTH2` instead of offering its access
+          # token as a password (M6 task 15).
+          Settings.smtp_config(ctx.settings),
           ctx.smtp_credential,
           send_envelope(ctx, op_row, manifest),
           wire,

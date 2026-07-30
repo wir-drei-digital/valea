@@ -58,8 +58,8 @@ defmodule Valea.Mail.SyncPass do
   ## Result
 
   `{:ok, %{new_messages:, new_unread:, errors:, notices:}}` on a completed
-  pass; `{:error, :auth_failed}` / `{:error, :mailbox_replaced}` /
-  `{:error, term}` otherwise. `errors` collects per-message/per-folder failures
+  pass; `{:error, :auth_failed}` / `{:error, :reauth_required}` /
+  `{:error, :mailbox_replaced}` / `{:error, term}` otherwise. `errors` collects per-message/per-folder failures
   that did not abort the pass (oversized, a fetch that failed); `notices`
   carries reset-deferral, restore, and quarantine strings for status.
 
@@ -91,6 +91,7 @@ defmodule Valea.Mail.SyncPass do
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.OpsFile
   alias Valea.Mail.Reconcile
+  alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.Views
 
@@ -125,12 +126,18 @@ defmodule Valea.Mail.SyncPass do
   @spec run(args()) ::
           {:ok, result()}
           | {:error, :auth_failed}
+          | {:error, :reauth_required}
           | {:error, :mailbox_replaced}
           | {:error, term()}
   def run(%{settings: settings, credential: credential, transport: transport} = args) do
     connect_opts = Map.get(args, :connect_opts, [])
 
-    case transport.connect(settings.imap, resolve_credential(credential), connect_opts) do
+    # `imap_config/1`, not `settings.imap` — the account's SASL mode has to
+    # reach the client, or an oauth2 account would log in by password with its
+    # access token (M6 task 15).
+    imap_config = Settings.imap_config(settings)
+
+    case transport.connect(imap_config, resolve_credential(credential), connect_opts) do
       {:ok, conn} ->
         try do
           do_run(args, conn)
@@ -138,8 +145,14 @@ defmodule Valea.Mail.SyncPass do
           safe_logout(transport, conn)
         end
 
+      # The two "the server said no" reasons pass through by name; the Engine
+      # keeps them as two sticky states, since a password and a token are
+      # resupplied differently.
       {:error, :auth_failed} ->
         {:error, :auth_failed}
+
+      {:error, :reauth_required} ->
+        {:error, :reauth_required}
 
       {:error, reason} ->
         {:error, reason}

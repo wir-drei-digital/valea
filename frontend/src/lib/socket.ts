@@ -100,7 +100,8 @@ export type WorkspaceEventPayload = { open: boolean; name?: string; path?: strin
  * per-account entries of `mail_status`'s RPC `accounts` return — see
  * `MailStatusFields` in `api/ash_rpc.ts`). `credential` is `'present' |
  * 'missing'`; `state` is `'idle' | 'inactive' | 'syncing' | 'auth_failed' |
- * 'identity_mismatch' | 'mailbox_replaced'` — both left as plain `string`
+ * 'reauth_required' | 'identity_mismatch' | 'mailbox_replaced'` — both left
+ * as plain `string`
  * here, same as the Elixir `@type status` moduledoc note (no
  * singleton-string literal type in Dialyzer, so the backend doesn't promise
  * a closed set at the type level either). `stores/mail.svelte.ts`'s

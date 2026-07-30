@@ -85,6 +85,25 @@ defmodule Valea.Mail.Engine do
   never silently moves the other, and a bad SMTP password can never pause
   the IMAP sync.
 
+  ### OAuth2 accounts, and where their token comes from (task 15 stopgap)
+
+  An account whose settings say `auth: :oauth2` (mail full-client plan, M6
+  task 15) changes only WHICH SASL verb the clients use — `XOAUTH2` instead
+  of `LOGIN`/`AUTH PLAIN`. It does NOT change where the secret comes from:
+  the two slots above hold a STATIC access token, supplied exactly like a
+  password (the `set_mail_credential` RPC, or the env fallback), and
+  `resolve_secret/1` at the `connect/3` boundary hands it over unchanged. The
+  auth mode picks the verb; the slot supplies the string.
+
+  That is deliberately a stopgap. M6 task 16 replaces slot resolution for
+  oauth2 accounts with engine-minted, freshly-refreshed tokens BEHIND THE
+  SAME closure contract — every consumer (`SyncPass`, `OpsExecutor`,
+  `IdleWatcher`, `Doctor`) already takes a zero-arity closure it calls only
+  at that one boundary, so nothing on this side has to learn about refresh.
+  Until then a token expiring behaves like a password being rotated: the
+  next pass fails, the account goes sticky `reauth_required`, and a new
+  `set_credential(:imap)` clears it.
+
   ## IMAP IDLE
 
   Each Engine owns an anonymous `DynamicSupervisor` (started in `init/1`, so
@@ -95,8 +114,8 @@ defmodule Valea.Mail.Engine do
   the same gate a pass runs under (`validate_sync/1`): it exists while the
   account is active, configured, credentialed and not sticky-blocked, and not
   otherwise. A new IMAP credential rebuilds it (the connection it holds
-  authenticated with the old secret); `auth_failed` and `mailbox_replaced`
-  stop it, and `readopt/1` brings it back.
+  authenticated with the old secret); `auth_failed`/`reauth_required` and
+  `mailbox_replaced` stop it, and `readopt/1` brings it back.
 
   The supervisor in between is not ceremony — it is what keeps a dying IDLE
   connection away from this process, whose in-RAM credential nothing else
@@ -122,7 +141,8 @@ defmodule Valea.Mail.Engine do
   `state.sync_task`, so a second `sync_now` (or a poll tick) while syncing is
   a no-op that leaves the running pass untouched. Status shows `"syncing"`
   for the duration; the task's result flips it back to `"idle"` (or
-  `"auth_failed"`/`"mailbox_replaced"`) and broadcasts `mail_sync_finished`.
+  `"auth_failed"`/`"reauth_required"`/`"mailbox_replaced"`) and broadcasts
+  `mail_sync_finished`.
   The credential closure is handed to the task and only ever called inside
   `SyncPass` at the `transport.connect/3` boundary.
 
@@ -170,7 +190,9 @@ defmodule Valea.Mail.Engine do
   storm against a bad password) until `set_credential/2` supplies a new one,
   which clears the failure and re-arms polling. `set_credential/2` itself
   never starts a pass directly — it only re-arms the timer, and the next
-  tick runs one.
+  tick runs one. `{:error, :reauth_required}` — an OAuth2 account's token
+  refused rather than a password (M6 task 15) — is the same posture under its
+  own status, cleared by the same call.
   """
   use GenServer
 
@@ -183,25 +205,37 @@ defmodule Valea.Mail.Engine do
   alias Valea.Mail.Index
   alias Valea.Mail.OpsExecutor
   alias Valea.Mail.Redact
+  alias Valea.Mail.Settings
   alias Valea.Mail.Store
   alias Valea.Mail.SyncPass
 
   @default_interval_minutes 5
   @max_poll_jitter_ms 60_000
 
-  # The two sticky statuses that PAUSE this account's background work until
-  # `set_credential/2` or `readopt/1` clears them: the poll timer is not
+  # The two AUTH failures a fresh IMAP credential clears (`set_credential/3`):
+  # a rejected password and a rejected OAuth2 access token. Two states rather
+  # than one because the resupply differs — a human re-types a password, an
+  # OAuth flow mints a token — and the UI's copy has to say which.
+  @auth_failure_statuses ["auth_failed", "reauth_required"]
+
+  # The sticky statuses that PAUSE this account's background work until
+  # `set_credential/3` or `readopt/1` clears them: the poll timer is not
   # re-armed, and no IDLE watcher is kept. Deliberately NOT part of
   # `validate_sync/1` — an explicit `sync_now/1` past an `auth_failed` is how a
   # caller retries, and only the automatic triggers back off.
-  @paused_statuses ["auth_failed", "mailbox_replaced"]
+  @paused_statuses @auth_failure_statuses ++ ["mailbox_replaced"]
 
   @typedoc """
   `credential` is `"present"` or `"missing"`; `state` is one of `"inactive"`,
-  `"idle"`, `"syncing"`, `"auth_failed"`, `"identity_mismatch"`,
-  `"mailbox_replaced"` — plain `String.t()` below because Elixir/Dialyzer
-  typespecs don't support singleton-string (as opposed to singleton-atom)
-  literal types.
+  `"idle"`, `"syncing"`, `"auth_failed"`, `"reauth_required"`,
+  `"identity_mismatch"`, `"mailbox_replaced"` — plain `String.t()` below
+  because Elixir/Dialyzer typespecs don't support singleton-string (as opposed
+  to singleton-atom) literal types.
+
+  `"reauth_required"` is `"auth_failed"`'s OAuth2 twin (M6 task 15): the server
+  refused the access token, so the account needs a fresh SIGN-IN rather than a
+  re-typed password. It is sticky and pauses polling identically, and
+  `set_credential/3` clears either one.
 
   Three fields ride STRING keys — `"smtp_configured"` (boolean),
   `"smtp_credential"` (`"present"` | `"missing"` | `"n/a"`, the last when the
@@ -271,9 +305,9 @@ defmodule Valea.Mail.Engine do
   and broadcasts the updated status. `kind` defaults to `:imap`, so the
   2-arity call means exactly what it always meant.
 
-  For `:imap`: if the Engine had paused on `auth_failed`, this clears it and
-  re-arms polling — the next poll tick runs a pass; this call never starts
-  one itself. For `:smtp` it only fills the send-side slot: SMTP has no poll
+  For `:imap`: if the Engine had paused on `auth_failed`/`reauth_required`,
+  this clears it and re-arms polling — the next poll tick runs a pass; this
+  call never starts one itself. For `:smtp` it only fills the send-side slot: SMTP has no poll
   loop to re-arm, and an SMTP auth failure never pauses the IMAP sync.
   `{:error, :not_found}` when no Engine is running for `slug`.
   """
@@ -637,7 +671,7 @@ defmodule Valea.Mail.Engine do
       # has to invalidate (moduledoc §IMAP IDLE).
       |> stop_idle_watcher()
       |> Map.put(:credential, fn -> secret end)
-      |> clear_auth_failed()
+      |> clear_auth_failure()
       |> sync_idle_watcher()
 
     broadcast_status(new_state)
@@ -804,7 +838,7 @@ defmodule Valea.Mail.Engine do
 
   def handle_info({:workspace_opened, _info, _other_generation}, state), do: {:noreply, state}
 
-  # `auth_failed`/`mailbox_replaced` pause polling: no re-arm until
+  # `auth_failed`/`reauth_required`/`mailbox_replaced` pause polling: no re-arm until
   # `set_credential/2`/`readopt/1` clears them (see moduledoc §Errors /
   # §mailbox_replaced stickiness).
   def handle_info(:poll, %{status: status} = state)
@@ -1174,7 +1208,7 @@ defmodule Valea.Mail.Engine do
   # A connection is a bonus here, never a precondition (see `run_send_work/2`).
   defp connect_for_send(args) do
     case args.transport.connect(
-           args.settings.imap,
+           Settings.imap_config(args.settings),
            resolve_secret(args.credential),
            args.connect_opts
          ) do
@@ -1268,7 +1302,7 @@ defmodule Valea.Mail.Engine do
   # Task, never in the Engine loop.
   defp run_push(args, op_id) do
     case args.transport.connect(
-           args.settings.imap,
+           Settings.imap_config(args.settings),
            resolve_secret(args.credential),
            args.connect_opts
          ) do
@@ -1325,7 +1359,7 @@ defmodule Valea.Mail.Engine do
   # never in the Engine loop.
   defp run_rpc_ops(args, ops) do
     case args.transport.connect(
-           args.settings.imap,
+           Settings.imap_config(args.settings),
            resolve_secret(args.credential),
            args.connect_opts
          ) do
@@ -1381,7 +1415,7 @@ defmodule Valea.Mail.Engine do
   # -- activation ---------------------------------------------------------
 
   # Defensive: an Engine started with no settings at all (never constructed
-  # by `Valea.Mail.Supervisor`, which only ever hands a real `Settings.t()`
+  # by `Valea.Mail.Supervisor`, which only ever hands a real `Valea.Mail.Settings.t()`
   # to a valid account's child) still activates — poll timer armed, status
   # "idle" — since there's no identity to verify and no maildir to index;
   # it just has nothing to sync against, which `validate_sync/1`'s
@@ -1521,10 +1555,10 @@ defmodule Valea.Mail.Engine do
     end
   end
 
-  defp env_credential(slug), do: wrap_secret(Valea.Mail.Settings.env_credential(slug))
+  defp env_credential(slug), do: wrap_secret(Settings.env_credential(slug))
 
   defp smtp_env_credential(slug),
-    do: wrap_secret(Valea.Mail.Settings.smtp_env_credential(slug))
+    do: wrap_secret(Settings.smtp_env_credential(slug))
 
   defp wrap_secret(nil), do: nil
   defp wrap_secret(secret), do: fn -> secret end
@@ -1551,7 +1585,7 @@ defmodule Valea.Mail.Engine do
   defp validate_send(state) do
     with :ok <- validate_active(state) do
       cond do
-        not Valea.Mail.Settings.smtp_configured?(state.settings) ->
+        not Settings.smtp_configured?(state.settings) ->
           {:error, :smtp_not_configured}
 
         state.smtp_credential == nil ->
@@ -1745,27 +1779,15 @@ defmodule Valea.Mail.Engine do
     |> tap_broadcast_status()
   end
 
-  defp finish_pass(state, {:error, :auth_failed}) do
-    cancel_timer(state.poll_timer)
+  defp finish_pass(state, {:error, :auth_failed}),
+    do: pause_on_auth_failure(state, "auth_failed", "authentication failed")
 
-    broadcast_event(
-      {:mail_sync_finished, state.account,
-       %{new_messages: 0, new_unread: 0, errors: ["authentication failed"]}}
-    )
-
-    %{
-      state
-      | sync_task: nil,
-        status: "auth_failed",
-        poll_timer: nil,
-        last_error: "authentication failed",
-        pass_readopt_authorized: false
-    }
-    # The credential the watcher is holding is the one that just failed: its
-    # own reconnects would hammer the server with the same bad password.
-    |> sync_idle_watcher()
-    |> tap_broadcast_status()
-  end
+  # The OAuth2 twin (M6 task 15): the token was refused, so this pauses exactly
+  # like `auth_failed` — and is cleared by the same `set_credential/3` — but
+  # says so in its own words, because "authentication failed" would send the
+  # user looking for a password to re-type.
+  defp finish_pass(state, {:error, :reauth_required}),
+    do: pause_on_auth_failure(state, "reauth_required", "sign-in expired")
 
   defp finish_pass(state, {:error, :mailbox_replaced}) do
     cancel_timer(state.poll_timer)
@@ -1813,6 +1835,30 @@ defmodule Valea.Mail.Engine do
     |> tap_broadcast_status()
   end
 
+  # The shared body of the two AUTH-failure outcomes above: pause polling, drop
+  # the watcher, remember why. Both are STICKY — nothing re-arms until
+  # `set_credential/3` supplies the secret they are waiting for.
+  defp pause_on_auth_failure(state, status, message) do
+    cancel_timer(state.poll_timer)
+
+    broadcast_event(
+      {:mail_sync_finished, state.account, %{new_messages: 0, new_unread: 0, errors: [message]}}
+    )
+
+    %{
+      state
+      | sync_task: nil,
+        status: status,
+        poll_timer: nil,
+        last_error: message,
+        pass_readopt_authorized: false
+    }
+    # The credential the watcher is holding is the one that just failed: its
+    # own reconnects would hammer the server with the same bad secret.
+    |> sync_idle_watcher()
+    |> tap_broadcast_status()
+  end
+
   # The raw secret, materialized only here (it already lives in this process's
   # state) and only to scrub it back out of an error string — never stored,
   # never returned.
@@ -1826,11 +1872,14 @@ defmodule Valea.Mail.Engine do
 
   defp now_iso, do: DateTime.utc_now() |> DateTime.to_iso8601()
 
-  defp clear_auth_failed(%{status: "auth_failed"} = state) do
+  # Either AUTH failure state (a rejected password OR a rejected token) is
+  # cleared by a fresh IMAP credential — the new secret is exactly what both
+  # were waiting for.
+  defp clear_auth_failure(%{status: status} = state) when status in @auth_failure_statuses do
     state |> Map.put(:status, "idle") |> schedule_poll()
   end
 
-  defp clear_auth_failed(state), do: state
+  defp clear_auth_failure(state), do: state
 
   # -- poll timer -----------------------------------------------------------
 
@@ -1943,7 +1992,7 @@ defmodule Valea.Mail.Engine do
   # push-only account, and an atom-keyed `false` is nulled by ash_typescript.
   defp smtp_status(state) do
     configured =
-      state.settings != nil and Valea.Mail.Settings.smtp_configured?(state.settings)
+      state.settings != nil and Settings.smtp_configured?(state.settings)
 
     %{
       "smtp_configured" => configured,

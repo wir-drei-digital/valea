@@ -1657,6 +1657,67 @@ defmodule ValeaWeb.MailRpcTest do
       assert account["smtp"]["username"] == "zoe@example.com"
     end
 
+    test "auth round-trips: omitted is password, oauth2 comes back as oauth2", %{
+      generation: generation
+    } do
+      setup_account!(generation, account: "mara", host: "imap.fastmail.com", port: 993)
+
+      assert %{"success" => true, "data" => %{"account" => account}} =
+               rpc("get_mail_account_settings", %{"account" => "mara"}, [
+                 %{"account" => ["host", "auth"]}
+               ])
+
+      assert account["auth"] == "password"
+
+      assert %{"success" => true} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "zoe",
+                   "host" => "imap.example.com",
+                   "port" => 993,
+                   "username" => "zoe@example.com",
+                   "auth" => "oauth2",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert %{"success" => true, "data" => %{"account" => zoe}} =
+               rpc("get_mail_account_settings", %{"account" => "zoe"}, [
+                 %{"account" => ["host", "auth"]}
+               ])
+
+      assert zoe["auth"] == "oauth2"
+    end
+
+    test "an auth mode this backend doesn't know is refused, not defaulted", %{
+      generation: generation
+    } do
+      # A downgrade to `password` would have the engine offer an access token as
+      # a LOGIN password, so the whole setup call fails instead.
+      assert %{"success" => false, "errors" => errors} =
+               rpc(
+                 "setup_mail_account",
+                 %{
+                   "account" => "zoe",
+                   "host" => "imap.example.com",
+                   "port" => 993,
+                   "username" => "zoe@example.com",
+                   "auth" => "kerberos",
+                   "generation" => generation
+                 },
+                 ["saved"]
+               )
+
+      assert inspect(errors) =~ "invalid_auth"
+
+      assert %{"success" => false, "errors" => not_found} =
+               rpc("get_mail_account_settings", %{"account" => "zoe"}, [%{"account" => ["host"]}])
+
+      assert inspect(not_found) =~ "not_found"
+    end
+
     test "unknown slug is not_found; bad grammar is invalid_slug" do
       assert %{"success" => false, "errors" => errors} =
                rpc("get_mail_account_settings", %{"account" => "ghost"}, [

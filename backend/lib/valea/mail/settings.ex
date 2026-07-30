@@ -31,6 +31,21 @@ defmodule Valea.Mail.Settings do
   rejected outright (header injection). A broken `smtp:` block invalidates
   only ITS account, exactly like a broken `imap:` one.
 
+  ## The per-account `auth:` mode
+
+  One optional per-account key (mail full-client plan, M6 task 15),
+  `password` (the default) or `oauth2` — which SASL verb the two clients
+  authenticate with, NOT where the secret comes from. Additive on top of
+  v5: a file written before it existed loads every account as `password`,
+  and is normalized on the next write (`render/1` always emits the key).
+
+  Unlike `folders:`/`sync:`/`notifications:`, an unusable value here does
+  NOT fall back to the default — it INVALIDATES the account, exactly like a
+  broken `imap:` block. The fallback the others take would be a silent
+  auth-mode DOWNGRADE, and for an OAuth2 account that means the engine
+  offering its access token as a LOGIN password: a secret sent in the wrong
+  field, to a server that never asked for one, over a typo.
+
   ## The per-account `notifications:` flag
 
   One optional boolean per account (mail full-client plan, M5 task 13),
@@ -101,6 +116,7 @@ defmodule Valea.Mail.Settings do
 
   defstruct slug: nil,
             provider: :generic,
+            auth: :password,
             imap: %{host: nil, port: @default_port, username: nil},
             smtp: nil,
             notifications: false,
@@ -112,6 +128,13 @@ defmodule Valea.Mail.Settings do
   (v4 files, and any v5 account that simply has no `smtp:` block); when
   present, `from` is ALWAYS populated (defaulted to `username` at load).
 
+  `auth` is the account's SASL mode (M6 task 15) — `:password` (the default,
+  and every account written before the key existed) or `:oauth2`. It is
+  per-ACCOUNT, not per-protocol: one mode governs both the IMAP and the SMTP
+  session, which is why it sits here rather than inside `imap`/`smtp`.
+  `imap_config/1` and `smtp_config/1` are what stamp it onto the maps the
+  transports actually receive.
+
   `notifications` is the per-account OS-notification opt-in (mail full-client
   plan, M5 task 13) — DEFAULT OFF, and off for every file written before it
   existed (a missing or non-boolean `notifications:` key loads as `false`).
@@ -122,6 +145,7 @@ defmodule Valea.Mail.Settings do
   @type t :: %__MODULE__{
           slug: String.t() | nil,
           provider: :generic | :gmail,
+          auth: auth(),
           imap: %{host: String.t() | nil, port: pos_integer(), username: String.t() | nil},
           smtp: smtp() | nil,
           notifications: boolean(),
@@ -133,6 +157,12 @@ defmodule Valea.Mail.Settings do
             exclude_folders: [String.t()]
           }
         }
+
+  @typedoc """
+  Which SASL mechanism this account authenticates with — `:password`
+  (`LOGIN` / `AUTH PLAIN`|`LOGIN`) or `:oauth2` (`XOAUTH2`, both protocols).
+  """
+  @type auth :: :password | :oauth2
 
   @type smtp :: %{
           host: String.t(),
@@ -181,6 +211,43 @@ defmodule Valea.Mail.Settings do
   end
 
   def detect_provider(_host), do: :generic
+
+  @doc """
+  The config map handed to `Valea.Mail.Transport.connect/3` — this account's
+  `imap:` block plus its `auth:` mode.
+
+  THE seam that carries the auth mode to the IMAP client (M6 task 15). Every
+  production `connect/3` call site goes through here rather than passing
+  `settings.imap` directly, so the mode cannot be dropped on one path and
+  honored on another: a caller that forgot it would have the client fall back
+  to `LOGIN` and send an access token as a password.
+  """
+  @spec imap_config(t()) :: %{
+          host: String.t() | nil,
+          port: pos_integer(),
+          username: String.t() | nil,
+          auth: auth()
+        }
+  def imap_config(%Settings{imap: imap, auth: auth}), do: Map.put(imap, :auth, auth)
+
+  @doc """
+  The config map handed to `Valea.Mail.SmtpTransport`'s callbacks — this
+  account's `smtp:` block plus its `auth:` mode, or `nil` for a push-only
+  account. The send-side counterpart of `imap_config/1`, for the same reason.
+  """
+  @spec smtp_config(t()) ::
+          %{
+            host: String.t(),
+            port: pos_integer(),
+            security: :starttls | :tls,
+            username: String.t(),
+            from: String.t(),
+            from_name: String.t() | nil,
+            auth: auth()
+          }
+          | nil
+  def smtp_config(%Settings{smtp: nil}), do: nil
+  def smtp_config(%Settings{smtp: smtp, auth: auth}), do: Map.put(smtp, :auth, auth)
 
   @doc "True when this account carries an `smtp:` block — i.e. it can send, not only push."
   @spec smtp_configured?(t()) :: boolean()
@@ -261,21 +328,24 @@ defmodule Valea.Mail.Settings do
           required(:host) => String.t(),
           required(:port) => pos_integer(),
           required(:username) => String.t(),
+          optional(:auth) => auth() | nil,
           optional(:smtp) => map() | nil,
           optional(:notifications) => boolean() | nil,
           optional(:folders) => map() | nil,
           optional(:sync) => map() | nil
-        }) :: :ok | {:error, :invalid_slug | :invalid_smtp}
+        }) :: :ok | {:error, :invalid_slug | :invalid_smtp | :invalid_auth}
   def upsert_account!(root, slug, %{host: host, port: port, username: username} = attrs)
       when is_binary(root) and is_binary(slug) and is_binary(host) and is_integer(port) and
              port > 0 and is_binary(username) do
     with :ok <- validate_new_slug(root, slug),
+         {:ok, auth} <- validate_auth_attr(Map.get(attrs, :auth)),
          {:ok, smtp} <- validate_smtp_attrs(Map.get(attrs, :smtp)) do
       provider = detect_provider(host)
 
       account = %Settings{
         slug: slug,
         provider: provider,
+        auth: auth,
         imap: %{host: host, port: port, username: username},
         smtp: smtp,
         # Absent means OFF, exactly like `folders:`/`sync:` absent means the
@@ -292,6 +362,17 @@ defmodule Valea.Mail.Settings do
       :ok
     end
   end
+
+  # The caller (the setup RPC) has already narrowed its string argument to one
+  # of these two atoms; this is the last gate before an unusable mode is
+  # RENDERED into the file, where it would invalidate the whole account on the
+  # next load. Absent means `:password` — this call re-renders the account
+  # entry whole, so a caller that doesn't state the mode is stating the
+  # default, exactly as it already is for `notifications:`/`folders:`/`sync:`.
+  defp validate_auth_attr(nil), do: {:ok, :password}
+  defp validate_auth_attr(:password), do: {:ok, :password}
+  defp validate_auth_attr(:oauth2), do: {:ok, :oauth2}
+  defp validate_auth_attr(_other), do: {:error, :invalid_auth}
 
   # An `smtp:` the caller (i.e. the setup RPC, i.e. a human filling a form)
   # got wrong must NEVER be written: a rendered-but-unloadable block would
@@ -471,6 +552,7 @@ defmodule Valea.Mail.Settings do
       with {:ok, host} <- fetch_required_string(imap, "imap", "host"),
            {:ok, username} <- fetch_required_string(imap, "imap", "username"),
            {:ok, port} <- fetch_port(imap),
+           {:ok, auth} <- fetch_auth(attrs),
            {:ok, smtp} <- build_smtp(attrs) do
         # Resolve provider: explicit YAML value takes precedence, fallback to host detection
         provider =
@@ -483,6 +565,7 @@ defmodule Valea.Mail.Settings do
          %Settings{
            slug: slug,
            provider: provider,
+           auth: auth,
            imap: %{host: host, port: port, username: username},
            smtp: smtp,
            notifications: Map.get(attrs, "notifications") == true,
@@ -521,6 +604,20 @@ defmodule Valea.Mail.Settings do
       {:ok, v} when is_integer(v) and v > 0 -> {:ok, v}
       {:ok, _other} -> {:error, "imap.port must be a positive integer"}
       :error -> {:ok, @default_port}
+    end
+  end
+
+  # The one override in this file that does NOT degrade to its default when
+  # unusable (see the moduledoc, §The per-account `auth:` mode): a hand-edited
+  # `auth: oath2` typo invalidates the account instead of quietly authenticating
+  # with a password — which, for an account whose credential slots hold an
+  # access token, would put that token in the LOGIN command.
+  defp fetch_auth(attrs) do
+    case Map.get(attrs, "auth") do
+      nil -> {:ok, :password}
+      "password" -> {:ok, :password}
+      "oauth2" -> {:ok, :oauth2}
+      other -> {:error, ~s[auth must be "password" or "oauth2", got #{inspect(other)}]}
     end
   end
 
@@ -713,6 +810,7 @@ defmodule Valea.Mail.Settings do
     """
       #{slug}:
         provider: #{a.provider}
+        auth: #{a.auth}
         notifications: #{a.notifications == true}
         imap:
           host: #{yaml_string(a.imap.host)}

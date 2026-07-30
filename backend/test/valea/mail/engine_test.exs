@@ -823,7 +823,11 @@ defmodule Valea.Mail.EngineTest do
     assert {:ok, %{ok: true, checks: checks}} = Engine.doctor("mara")
     assert Enum.map(checks, & &1["id"]) |> Enum.take(-3) == ["smtp_tcp", "smtp_tls", "smtp_auth"]
 
-    assert [{:check_auth, [^smtp, "smtp-password", _opts]}] = FakeSmtpTransport.calls()
+    # The smtp block PLUS the account's SASL mode (`Settings.smtp_config/1`,
+    # M6 task 15): what the transport authenticates WITH is what the doctor
+    # must probe with.
+    expected_config = Map.put(smtp, :auth, :password)
+    assert [{:check_auth, [^expected_config, "smtp-password", _opts]}] = FakeSmtpTransport.calls()
   end
 
   # -- poll timer / auth_failed -------------------------------------------------
@@ -918,6 +922,50 @@ defmodule Valea.Mail.EngineTest do
 
     assert %{poll_timer: nil, sync_task: nil} =
              :sys.get_state(GenServer.whereis(Engine.via("mara")))
+  end
+
+  test "a pass reporting :reauth_required goes sticky under its OWN state, and pauses polling",
+       %{root: root} do
+    # The OAuth2 twin of the test above (M6 task 15): same sticky, poll-paused
+    # posture, but its own status and its own error sentence — "authentication
+    # failed" would send the user hunting for a password to re-type.
+    Application.put_env(:valea, :engine_sync_probe, self())
+    Application.put_env(:valea, :mail_transport, Valea.Mail.EngineTest.HangingTransport)
+    on_exit(fn -> Application.delete_env(:valea, :mail_transport) end)
+    on_exit(fn -> Application.delete_env(:valea, :engine_sync_probe) end)
+
+    start_engine!(root, 25, "mara")
+    open(root, 25)
+
+    :ok = Engine.set_credential("mara", "ya29.TOKEN")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "mail")
+
+    assert :ok = Engine.sync_now("mara")
+    assert_receive {:connect_called, task_pid}
+
+    send(task_pid, {:release, {:error, :reauth_required}})
+
+    assert_receive {:mail_sync_finished, "mara", %{new_messages: 0, errors: ["sign-in expired"]}}
+
+    status = Engine.status("mara")
+    assert status.state == "reauth_required"
+    assert status.last_error == "sign-in expired"
+
+    pid = GenServer.whereis(Engine.via("mara"))
+    assert %{poll_timer: nil, sync_task: nil} = :sys.get_state(pid)
+
+    # Sticky: the automatic triggers stay backed off...
+    send(pid, :poll)
+    assert %{poll_timer: nil} = :sys.get_state(pid)
+    assert Engine.status("mara").state == "reauth_required"
+
+    # ...and a fresh token clears it and re-arms polling, exactly like a fresh
+    # password clears `auth_failed`.
+    assert :ok = Engine.set_credential("mara", "ya29.FRESH")
+    state_after = :sys.get_state(pid)
+    assert state_after.status == "idle"
+    assert state_after.poll_timer != nil
+    assert Engine.status("mara").state == "idle"
   end
 
   test "a pass task killed mid-flight is a failed pass: status recovers, never stuck syncing",

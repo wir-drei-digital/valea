@@ -56,6 +56,7 @@ defmodule Valea.Mail.Doctor do
   """
 
   alias Valea.Mail.Redact
+  alias Valea.Mail.Settings
 
   @type check :: %{String.t() => String.t() | nil}
 
@@ -79,6 +80,8 @@ defmodule Valea.Mail.Doctor do
   @tcp_remedy "Check the host and port, and your network connection."
   @tls_remedy "Confirm the host/port support implicit TLS (IMAPS, usually port 993)."
   @login_remedy "Double-check the mailbox username and password."
+  @reauth_remedy "This account signs in with OAuth, and its sign-in has expired — " <>
+                   "reconnect the account to refresh it."
   @folders_transport_remedy "Check server connectivity and try again."
   @move_remedy "Your server supports neither MOVE nor UIDPLUS — " <>
                  "move ops will be rejected; flags and draft pushes still work."
@@ -131,7 +134,7 @@ defmodule Valea.Mail.Doctor do
     # this function to callers outside this module.
     secret = resolve_credential(ctx[:credential])
 
-    case do_connect(transport, settings.imap, secret) do
+    case do_connect(transport, Settings.imap_config(settings), secret) do
       {:ok, conn} ->
         created = create_missing_special_folders(transport, conn, settings.folders)
         safe_logout(transport, conn)
@@ -266,7 +269,7 @@ defmodule Valea.Mail.Doctor do
      unknown("move_capability", "Move capability", @gate_detail)}
   end
 
-  defp transport_group(%{settings: %{imap: imap}} = ctx, true) do
+  defp transport_group(%{settings: %{imap: imap} = settings} = ctx, true) do
     # Resolved exactly once, right at this connect boundary (never earlier,
     # never logged) — and reused below to scrub the raw secret out of a
     # connect error's `inspect/1`'d reason before it ever reaches a check's
@@ -275,7 +278,7 @@ defmodule Valea.Mail.Doctor do
     # so this is a belt-and-suspenders egress filter, not a load-bearing one.
     secret = resolve_credential(ctx[:credential])
 
-    case do_connect(ctx.transport, imap, secret) do
+    case do_connect(ctx.transport, Settings.imap_config(settings), secret) do
       {:ok, conn} ->
         tls = ok("tls_ok", "TLS", "TLS handshake succeeded.")
         login = ok("login_ok", "Login", "Logged in as #{imap.username}.")
@@ -293,6 +296,24 @@ defmodule Valea.Mail.Doctor do
             "Login",
             "The server rejected the username or password.",
             @login_remedy
+          )
+
+        {tls, login, unknown("folders", "Folders", "not checked — login failed."),
+         unknown("move_capability", "Move capability", "not checked — login failed.")}
+
+      # An OAuth2 account whose token the server refused (M6 task 15). Splits
+      # the pair exactly like `:auth_failed` — the credential is only ever
+      # offered over the TLS layer, so reaching a rejection PROVES TLS came up —
+      # but the remedy is a new sign-in, not a re-typed password.
+      {:error, :reauth_required} ->
+        tls = ok("tls_ok", "TLS", "TLS handshake succeeded.")
+
+        login =
+          failed(
+            "login_ok",
+            "Login",
+            "The server rejected this account's sign-in token.",
+            @reauth_remedy
           )
 
         {tls, login, unknown("folders", "Folders", "not checked — login failed."),
@@ -481,7 +502,7 @@ defmodule Valea.Mail.Doctor do
   end
 
   defp smtp_auth_group(ctx, smtp, secret) when is_binary(secret) do
-    case do_check_auth(ctx[:smtp_transport], smtp, secret) do
+    case do_check_auth(ctx[:smtp_transport], Settings.smtp_config(ctx.settings), secret) do
       :ok ->
         {ok("smtp_tls", "Sending TLS", "TLS handshake succeeded."),
          ok("smtp_auth", "Sending login", "Authenticated as #{smtp.username}.")}
@@ -496,6 +517,16 @@ defmodule Valea.Mail.Doctor do
            "Sending login",
            "The sending server rejected the username or password.",
            @smtp_auth_remedy
+         )}
+
+      # The XOAUTH2 counterpart (M6 task 15) — same split, different remedy.
+      {:error, {:reauth_required, _detail}} ->
+        {ok("smtp_tls", "Sending TLS", "TLS handshake succeeded."),
+         failed(
+           "smtp_auth",
+           "Sending login",
+           "The sending server rejected this account's sign-in token.",
+           @reauth_remedy
          )}
 
       {:error, reason} ->

@@ -48,6 +48,7 @@ defmodule Valea.Mail.IdleWatcherTest do
       engine: self(),
       settings: %Settings{
         slug: "mara",
+        auth: Keyword.get(opts, :auth, :password),
         imap: %{host: "localhost", port: server.port, username: "user"}
       },
       transport: ImapClient,
@@ -59,6 +60,36 @@ defmodule Valea.Mail.IdleWatcherTest do
     }
 
     start_supervised!({IdleWatcher, args})
+  end
+
+  test "an oauth2 account's watcher authenticates with XOAUTH2, never LOGIN" do
+    # The watcher holds its own connection with the SAME credential a sync pass
+    # uses, so it has to authenticate the same WAY: its settings reach the
+    # client through `Settings.imap_config/1` (M6 task 15). The script below
+    # would fail outright on a `LOGIN` line — which is exactly the regression
+    # worth catching, since a LOGIN here would put an access token in the
+    # password field on every reconnect.
+    script =
+      [
+        {:send, "* OK ready"},
+        {:expect, "A1 AUTHENTICATE XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIHBhc3MBAQ==",
+         then: ["A1 OK AUTHENTICATE completed"]},
+        {:expect, "A2 CAPABILITY",
+         then: ["* CAPABILITY IMAP4rev1 IDLE AUTH=XOAUTH2", "A2 OK CAPABILITY completed"]},
+        {:expect, ~r/^A3 EXAMINE INBOX$/,
+         then: ["* OK [UIDVALIDITY 1] UIDs valid", "A3 OK [READ-ONLY] EXAMINE completed"]},
+        {:expect, "A4 IDLE", then: ["+ idling"]},
+        {:sleep, 50},
+        {:send, "* 4 EXISTS"},
+        {:expect, "DONE", then: ["A4 OK IDLE terminated"]},
+        {:expect, "A5 IDLE", then: ["+ idling"]}
+      ]
+
+    server = FakeImapServer.start(script, tls: true)
+    start_watcher!(server, auth: :oauth2, reissue_ms: 500)
+
+    assert_receive @trigger, 2_000
+    assert :ok = FakeImapServer.await(server)
   end
 
   test "an untagged EXISTS while idling triggers exactly one sync pass" do

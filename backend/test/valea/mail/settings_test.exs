@@ -406,6 +406,178 @@ defmodule Valea.Mail.SettingsTest do
     assert accounts["bbb"].notifications == false
   end
 
+  # -- the per-account auth mode (M6 task 15) -----------------------------------
+
+  test "auth defaults to :password: an upsert that doesn't state it round-trips password", %{
+    root: root
+  } do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             })
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert account.auth == :password
+    assert File.read!(Path.join(root, "config/mail.yaml")) =~ "auth: password"
+  end
+
+  test "auth: :oauth2 round-trips through upsert, render, and load", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d",
+               auth: :oauth2
+             })
+
+    assert File.read!(Path.join(root, "config/mail.yaml")) =~ "auth: oauth2"
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert account.auth == :oauth2
+
+    # And back to password again — the mode is not sticky across edits, exactly
+    # like every other whole-entry field this call re-renders.
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             })
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert account.auth == :password
+  end
+
+  test "upsert refuses an auth mode it cannot render, rather than writing it", %{root: root} do
+    assert {:error, :invalid_auth} =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d",
+               auth: :kerberos
+             })
+
+    refute File.exists?(Path.join(root, "config/mail.yaml"))
+  end
+
+  test "a file written before the key existed loads every account as :password", %{root: root} do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      wirdrei:
+        provider: generic
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}, invalid: %{}}} = Settings.load(root)
+    assert account.auth == :password
+  end
+
+  test "an unusable auth: value INVALIDATES its account — it never falls back to password", %{
+    root: root
+  } do
+    # The one override in this file that must not degrade to its default: a
+    # silent fall back to `password` would have the engine send an access token
+    # as a LOGIN password. Its SIBLING must still load.
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      broken:
+        provider: generic
+        auth: oath2
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "typo@w.d"
+      healthy:
+        provider: generic
+        auth: oauth2
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "ok@w.d"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    assert {:ok, %{accounts: accounts, invalid: invalid}} = Settings.load(root)
+
+    refute Map.has_key?(accounts, "broken")
+    assert invalid["broken"] =~ "auth"
+    assert accounts["healthy"].auth == :oauth2
+  end
+
+  test "a non-string auth: value is equally invalidating", %{root: root} do
+    write_yaml!(root, """
+    version: 5
+    accounts:
+      broken:
+        provider: generic
+        auth: true
+        imap:
+          host: "mail.example.com"
+          port: 993
+          username: "d@w.d"
+    safety:
+      never_expunge: true
+      outbound: human_send_and_push
+    """)
+
+    assert {:ok, %{accounts: %{}, invalid: invalid}} = Settings.load(root)
+    assert invalid["broken"] =~ "auth"
+  end
+
+  test "imap_config/1 and smtp_config/1 carry the mode to the transports", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d",
+               auth: :oauth2,
+               smtp: %{host: "smtp.example.com", port: 587, username: "d@w.d"}
+             })
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+
+    assert Settings.imap_config(account) == %{
+             host: "mail.example.com",
+             port: 993,
+             username: "d@w.d",
+             auth: :oauth2
+           }
+
+    assert Settings.smtp_config(account) == %{
+             host: "smtp.example.com",
+             port: 587,
+             security: :starttls,
+             username: "d@w.d",
+             from: "d@w.d",
+             from_name: nil,
+             auth: :oauth2
+           }
+  end
+
+  test "smtp_config/1 is nil for a push-only account", %{root: root} do
+    assert :ok =
+             Settings.upsert_account!(root, "wirdrei", %{
+               host: "mail.example.com",
+               port: 993,
+               username: "d@w.d"
+             })
+
+    assert {:ok, %{accounts: %{"wirdrei" => account}}} = Settings.load(root)
+    assert Settings.smtp_config(account) == nil
+    assert Settings.imap_config(account).auth == :password
+  end
+
   # -- v5: the optional smtp block ---------------------------------------------
 
   defp write_smtp_yaml!(root, smtp_block) do

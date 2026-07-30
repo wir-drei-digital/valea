@@ -53,18 +53,43 @@ defmodule Valea.Mail.SmtpTransport do
 
   TLS is mandatory and verified in both modes. There is no plaintext mode,
   and AUTH is only ever issued over an established TLS layer.
+
+  ## AUTH mechanism selection (`smtp_config.auth`)
+
+  The account's mode decides, never the advertisement: a `:password` account
+  picks `PLAIN` or `LOGIN` from the post-TLS `EHLO`, an `:oauth2` account uses
+  `XOAUTH2` and NOTHING else. There is no fallback between the two families —
+  a server that does not advertise `XOAUTH2` to an `:oauth2` account is
+  `{:error, {:auth_unsupported, mechs}}`, because the alternative is putting
+  an access token in a password field.
+
+  `XOAUTH2`'s rejection is `{:error, {:reauth_required, text}}` — the
+  send-side counterpart of `Valea.Mail.Transport`'s `:reauth_required`, and
+  deliberately distinct from `{:auth_failed, text}`: a token needs minting,
+  not re-typing. Both are pre-354, so both stay `{:error, _}` (provably
+  unsent).
   """
 
   @typedoc """
   The connection-shaped subset of `Valea.Mail.Settings.smtp()` an
-  implementation reads. The caller passes the settings map whole; the extra
-  identity keys (`from`/`from_name`) belong to composition, not transport.
+  implementation reads, plus the account's `auth` mode. The caller passes the
+  map `Valea.Mail.Settings.smtp_config/1` builds; the extra identity keys
+  (`from`/`from_name`) ride along but belong to composition, not transport.
+
+  `auth` is what selects the SASL mechanism (M6 task 15) — `:password` means
+  `AUTH PLAIN`/`AUTH LOGIN` with a password, `:oauth2` means `AUTH XOAUTH2`
+  with the `credential` being an access token. It is optional in the type
+  because every caller predating that mode passes the settings block alone,
+  and an implementation must read its absence as `:password`; it must NEVER
+  read an unrecognized value as `:password`, which would offer a bearer token
+  in a password field.
   """
   @type smtp_config :: %{
           :host => String.t(),
           :port => pos_integer(),
           :security => :starttls | :tls,
           :username => String.t(),
+          optional(:auth) => Valea.Mail.Settings.auth(),
           optional(atom()) => term()
         }
 

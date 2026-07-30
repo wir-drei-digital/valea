@@ -26,6 +26,10 @@ defmodule Valea.Mail.SmtpClient do
       ONLY from the post-upgrade `EHLO` (RFC 3207 §4.2 — pre-TLS extensions
       are discarded, and any bytes buffered across the upgrade are treated
       as an injection attempt, not as protocol).
+    * **The account's `auth` mode picks the mechanism family**, not the
+      advertisement: `:password` → `PLAIN`/`LOGIN`, `:oauth2` → `XOAUTH2` and
+      nothing else (M6 task 15). No fallback crosses that line — see
+      `Valea.Mail.SmtpTransport`'s §AUTH mechanism selection.
     * **All-or-nothing recipients.** Every `RCPT TO` must be accepted; one
       rejection aborts with `RSET` + `QUIT` before `DATA`.
     * **Credentials never leak.** They are never logged, never interpolated
@@ -41,6 +45,7 @@ defmodule Valea.Mail.SmtpClient do
   @behaviour Valea.Mail.SmtpTransport
 
   alias Valea.Mail.Redact
+  alias Valea.Mail.Xoauth2
 
   @default_timeout 30_000
 
@@ -91,10 +96,14 @@ defmodule Valea.Mail.SmtpClient do
   # Connect → greeting → (EHLO [→ STARTTLS → EHLO]) → AUTH. Every failure here
   # is before the 354 and therefore provably unsent.
   defp open_session(config, credential, opts) do
+    # Resolved BEFORE the socket exists: an auth mode this client cannot honor
+    # must fail without a session to leak (see `auth_mode/1`).
+    auth = auth_mode(config)
+
     with {:ok, session} <- connect(config, opts),
          {:ok, session} <- greeting(session),
          {:ok, session} <- secure(session, config, opts),
-         {:ok, session} <- authenticate(session, config.username, credential) do
+         {:ok, session} <- authenticate(session, auth, config.username, credential) do
       {:ok, session}
     else
       {:error, session, reason} ->
@@ -217,7 +226,25 @@ defmodule Valea.Mail.SmtpClient do
 
   # -- AUTH ----------------------------------------------------------------------
 
-  defp authenticate(session, username, credential) do
+  # The account's `auth` mode picks the mechanism FAMILY; the server's
+  # advertisement only picks within it. A config map without the key is
+  # `:password` (every caller predating M6 task 15), but an unrecognized value
+  # deliberately has no clause — a mode this client cannot honor must fail the
+  # session rather than degrade to offering the credential as a password.
+  defp auth_mode(config) do
+    case Map.get(config, :auth, :password) do
+      :password -> :password
+      :oauth2 -> :oauth2
+    end
+  end
+
+  defp authenticate(session, :password, username, credential),
+    do: auth_password(session, username, credential)
+
+  defp authenticate(session, :oauth2, username, access_token),
+    do: auth_xoauth2(session, username, access_token)
+
+  defp auth_password(session, username, credential) do
     case auth_mechanisms(session) do
       [] ->
         {:error, session, :auth_not_offered}
@@ -228,6 +255,61 @@ defmodule Valea.Mail.SmtpClient do
           "LOGIN" in mechs -> auth_login(session, username, credential)
           true -> {:error, session, {:auth_unsupported, mechs}}
         end
+    end
+  end
+
+  # `XOAUTH2` or nothing: there is no PLAIN/LOGIN fallback on this path, ever.
+  # Falling back would offer the ACCESS TOKEN as a password — to a server that
+  # by definition never asked for one, and (on a misconfigured host) is not the
+  # provider the token was minted for.
+  defp auth_xoauth2(session, username, access_token) do
+    case auth_mechanisms(session) do
+      [] ->
+        {:error, session, :auth_not_offered}
+
+      mechs ->
+        if "XOAUTH2" in mechs do
+          offer_xoauth2(session, username, access_token)
+        else
+          {:error, session, {:auth_unsupported, mechs}}
+        end
+    end
+  end
+
+  defp offer_xoauth2(session, username, access_token) do
+    case command(session, "AUTH XOAUTH2 " <> Xoauth2.response(username, access_token)) do
+      {:ok, %{code: code}, session} when code in 200..299 ->
+        {:ok, session}
+
+      # THE failure round. A server rejecting XOAUTH2 answers the initial
+      # response with `334 <base64 error>` and waits for a (mandatory, empty)
+      # client line before it will send its 535 — so this is not "an
+      # unexpected continuation", it is how the rejection is spelled, and a
+      # client that returns here leaves the session mid-exchange.
+      {:ok, %{code: 334}, session} ->
+        finish_failed_xoauth2(session, access_token)
+
+      {:ok, reply, session} ->
+        {:error, session, reauth_required(reply, access_token)}
+
+      {:error, session, reason} ->
+        {:error, session, reason}
+    end
+  end
+
+  # `command(session, "")` writes exactly the empty line the mechanism asks
+  # for. A 2xx here cannot happen against a conforming server (the 334 above
+  # only ever precedes a rejection) but is honored rather than second-guessed.
+  defp finish_failed_xoauth2(session, access_token) do
+    case command(session, "") do
+      {:ok, %{code: code}, session} when code in 200..299 ->
+        {:ok, session}
+
+      {:ok, reply, session} ->
+        {:error, session, reauth_required(reply, access_token)}
+
+      {:error, session, reason} ->
+        {:error, session, reason}
     end
   end
 
@@ -273,6 +355,14 @@ defmodule Valea.Mail.SmtpClient do
   # term to a string).
   defp auth_failed(reply, credential) do
     {:auth_failed, Redact.text(full_text(reply), credential)}
+  end
+
+  # The XOAUTH2 counterpart, scrubbed the same way and kept a DISTINCT shape:
+  # the doctor and the send pipeline both want to say "this sign-in expired,
+  # reconnect the account" rather than "check your password", and an expired
+  # token is the overwhelmingly common case here.
+  defp reauth_required(reply, access_token) do
+    {:reauth_required, Redact.text(full_text(reply), access_token)}
   end
 
   # -- transmit -------------------------------------------------------------------

@@ -17,7 +17,8 @@
  *    keys, `from`/`reply_to` are `{name, email} | null`, `to` is
  *    `[{name, email}]`, `attachments` is `[{filename, path, bytes}]`.
  *  - engine state: `"idle" | "inactive" | "syncing" | "auth_failed" |
- *    "identity_mismatch" | "mailbox_replaced"` (`MailStatusPush`'s doc
+ *    "reauth_required" | "identity_mismatch" | "mailbox_replaced"`
+ *    (`MailStatusPush`'s doc
  *    comment in `socket.ts`), plus the RPC-only `"invalid_config"`.
  */
 
@@ -990,6 +991,12 @@ export function mailStateLabel(state: string | null | undefined): string {
       return 'Syncing…';
     case 'auth_failed':
       return 'Sign-in failed';
+    // An OAuth2 account whose access token the server refused (mail
+    // full-client plan, M6 task 15). Sticky and polling-paused exactly like
+    // `auth_failed`, but a different sentence on purpose: nothing was typed
+    // wrong, the sign-in simply ran out and has to be renewed.
+    case 'reauth_required':
+      return 'Sign-in expired';
     case 'inactive':
       return 'Not connected';
     case 'identity_mismatch':

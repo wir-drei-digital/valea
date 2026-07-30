@@ -283,6 +283,19 @@ defmodule Valea.Api.Mail do
       # is for `folders:`/`sync:`.
       argument :notifications, :boolean, allow_nil?: true
 
+      # The account's SASL mode (mail full-client plan, M6 task 15):
+      # `"password"` (the default) or `"oauth2"`. Anything else is refused
+      # (`"invalid_auth"`) — never `String.to_atom/1`'d, and never quietly
+      # treated as `password`, which for an OAuth2 account would have the
+      # engine offer its access token as a LOGIN password.
+      #
+      # Omitted means `"password"`, on the same "this action re-renders the
+      # account entry whole, so not stating a flag IS stating the default"
+      # rule `notifications:`/`folders:`/`sync:` follow. A caller EDITING an
+      # oauth2 account must therefore send the mode back, exactly as it must
+      # re-send the smtp block.
+      argument :auth, :string, allow_nil?: true
+
       run fn input, _ctx ->
         %{
           account: slug,
@@ -292,19 +305,20 @@ defmodule Valea.Api.Mail do
           generation: generation
         } = input.arguments
 
-        attrs = %{
-          host: host,
-          port: port,
-          username: username,
-          smtp: smtp_attrs(input.arguments),
-          notifications: input.arguments[:notifications] == true
-        }
-
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: root}} <- Manager.current(),
              :ok <- validate_slug(slug),
+             {:ok, auth} <- auth_mode(input.arguments[:auth]),
              :ok <- check_identity_for_setup(root, slug, host, username),
-             :ok <- Settings.upsert_account!(root, slug, attrs) do
+             :ok <-
+               Settings.upsert_account!(root, slug, %{
+                 host: host,
+                 port: port,
+                 username: username,
+                 auth: auth,
+                 smtp: smtp_attrs(input.arguments),
+                 notifications: input.arguments[:notifications] == true
+               }) do
           :ok = MailSupervisor.reload_settings_all(root)
           {:ok, %{"saved" => true}}
         else
@@ -335,6 +349,12 @@ defmodule Valea.Api.Mail do
                           host: [type: :string, allow_nil?: false],
                           port: [type: :integer, allow_nil?: false],
                           username: [type: :string, allow_nil?: false],
+                          # The SASL mode, stringified from the settings atom
+                          # (`"password"` / `"oauth2"`). A STRING, so the
+                          # falsy-map-field rule above doesn't apply — it is
+                          # never `false`, and a nested atom key is fine for
+                          # a value that always has one.
+                          auth: [type: :string, allow_nil?: false],
                           smtp: [
                             type: :map,
                             allow_nil?: true,
@@ -1374,6 +1394,18 @@ defmodule Valea.Api.Mail do
   defp send_resolution("not_sent"), do: {:ok, :not_sent}
   defp send_resolution(_other), do: {:error, :invalid_resolution}
 
+  # `setup_mail_account`'s `auth` argument. Closed clauses over the two modes
+  # `Valea.Mail.Settings` knows, same posture as `credential_kind/1`: never
+  # `String.to_atom/1` on RPC input, and an unrecognized mode is REFUSED rather
+  # than defaulted (see the argument's own comment for why a default would be a
+  # security downgrade). A blank string is the setup form's "untouched field",
+  # i.e. absent.
+  defp auth_mode(nil), do: {:ok, :password}
+  defp auth_mode(""), do: {:ok, :password}
+  defp auth_mode("password"), do: {:ok, :password}
+  defp auth_mode("oauth2"), do: {:ok, :oauth2}
+  defp auth_mode(_other), do: {:error, :invalid_auth}
+
   # `nil` (the argument omitted) is `:imap` — what every caller predating the
   # SMTP slot means. Never `String.to_atom/1` on RPC input.
   defp credential_kind(nil), do: {:ok, :imap}
@@ -1678,11 +1710,12 @@ defmodule Valea.Api.Mail do
   # The settings-form prefill payload: non-secret connection config only
   # (passwords live in the OS keychain / Engine memory, never in
   # `config/mail.yaml`, so there is nothing secret here to withhold).
-  defp account_settings_payload(%Settings{imap: imap, smtp: smtp}) do
+  defp account_settings_payload(%Settings{imap: imap, smtp: smtp, auth: auth}) do
     %{
       host: imap.host,
       port: imap.port,
       username: imap.username,
+      auth: to_string(auth),
       smtp: smtp_settings_payload(smtp)
     }
   end

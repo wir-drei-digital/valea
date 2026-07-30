@@ -144,6 +144,14 @@ defmodule Valea.Mail.SyncPassTest do
       assert {:error, :auth_failed} = run(name, root)
     end
 
+    test "a refused OAuth2 token propagates as :reauth_required, not :auth_failed", %{root: root} do
+      # The Engine keys two distinct sticky states off these two reasons, so a
+      # pass must not collapse them (M6 task 15).
+      name = start_model!()
+      ModelMailTransport.inject(name, {:fail, :connect, :reauth_required})
+      assert {:error, :reauth_required} = run(name, root)
+    end
+
     test "any other connect failure propagates verbatim", %{root: root} do
       name = start_model!()
       ModelMailTransport.inject(name, {:fail, :connect, :some_other_reason})

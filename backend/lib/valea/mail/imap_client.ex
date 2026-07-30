@@ -69,11 +69,31 @@ defmodule Valea.Mail.ImapClient do
 
   Nothing here mutates the mailbox: the watcher's connection reaches only
   `examine/2`, this trio, and `logout/1`.
+
+  ## Authentication (`auth: :password | :oauth2`)
+
+  `connect/3` branches on the account's SASL mode, which rides in the config
+  map (`Valea.Mail.Settings.imap_config/1`) — never on anything sniffed off
+  the server:
+
+    * `:password` (the default) — `LOGIN` with both arguments as
+      synchronizing literals.
+    * `:oauth2` — `AUTHENTICATE XOAUTH2 <response>` (mail full-client plan,
+      M6 task 15), the `credential` being an OAuth2 access token rather than
+      a password.
+
+  The two never mix and neither falls back to the other: a server that
+  refuses XOAUTH2 is an error, not a reason to retry `LOGIN` with a bearer
+  token in the password field. An XOAUTH2 rejection is
+  `{:error, :reauth_required}`, deliberately distinct from `LOGIN`'s
+  `{:error, :auth_failed}` — the remedy differs (a fresh token, not a
+  re-typed password), and `Valea.Mail.Engine` keeps them as two states.
   """
 
   @behaviour Valea.Mail.Transport
 
   alias Valea.Mail.Imap.Wire
+  alias Valea.Mail.Xoauth2
 
   @default_recv_timeout 30_000
 
@@ -89,6 +109,9 @@ defmodule Valea.Mail.ImapClient do
     host = to_string(config.host)
     port = config.port
     username = config.username
+    # Resolved BEFORE the socket exists: an auth mode this client cannot honor
+    # must fail without a connection to leak (see `auth_mode/1`).
+    auth = auth_mode(config)
     recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
     tls_opts = merge_tls_opts(default_tls_opts(host), Keyword.get(opts, :tls_opts, []))
     connect_opts = tls_opts ++ [active: false, mode: :binary, packet: :raw]
@@ -103,7 +126,7 @@ defmodule Valea.Mail.ImapClient do
         }
 
         with {:ok, conn} <- read_greeting(conn),
-             {:ok, conn} <- login(conn, username, credential),
+             {:ok, conn} <- authenticate(conn, auth, username, credential),
              {:ok, conn} <- refresh_capabilities(conn) do
           {:ok, conn}
         else
@@ -487,6 +510,24 @@ defmodule Valea.Mail.ImapClient do
     end
   end
 
+  # The account's SASL mode, as `Valea.Mail.Settings.imap_config/1` stamps it
+  # onto the config map. A config map WITHOUT the key is `:password` — the
+  # shape every caller predating M6 task 15 passes — but an unrecognized value
+  # deliberately has no clause: a mode this client cannot honor must fail the
+  # connect, never silently degrade to sending an access token as a password.
+  defp auth_mode(config) do
+    case Map.get(config, :auth, :password) do
+      :password -> :password
+      :oauth2 -> :oauth2
+    end
+  end
+
+  defp authenticate(conn, :password, username, password),
+    do: login(conn, username, password)
+
+  defp authenticate(conn, :oauth2, username, access_token),
+    do: xoauth2(conn, username, access_token)
+
   # Username AND password go as IMAP synchronizing literals (`{:literal, _}`),
   # never as bare/quoted args. A literal carries raw bytes verbatim, so a
   # value containing 8-bit bytes (non-ASCII passwords), spaces, or quotes logs
@@ -499,6 +540,76 @@ defmodule Valea.Mail.ImapClient do
       {:ok, :no, _text, _untagged} -> {:error, :auth_failed}
       {:ok, status, text, _untagged} -> {:error, {status, text}}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # `AUTHENTICATE XOAUTH2 <response>` — the SASL initial-response form, sent as
+  # ONE literal-free line so it burns exactly the tag `LOGIN` would have (a
+  # command that consumed two would shift every subsequent tag and silently
+  # invalidate every script this client is tested against).
+  #
+  # Written straight to the socket rather than through `Wire.encode_command/2`
+  # on purpose: `encode_arg/1`'s astring rules would QUOTE a base64 blob (its
+  # alphabet is not in the unquoted-safe set), and `AUTHENTICATE`'s argument is
+  # a bare base64 token — a quoted one is a protocol error. Nothing is smuggled
+  # by doing so: `Base.encode64/1` output is `[A-Za-z0-9+/=]` only, so the
+  # response structurally cannot carry the CR/LF that guard exists to stop.
+  # Same posture as `idle_start/1`, which writes its own tagged line too.
+  defp xoauth2(conn, username, access_token) do
+    tag = next_tag(conn)
+    line = [tag, " AUTHENTICATE XOAUTH2 ", Xoauth2.response(username, access_token), "\r\n"]
+
+    case :ssl.send(conn.socket, line) do
+      :ok -> drive_xoauth2(conn, tag, "", false)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The XOAUTH2 exchange has TWO shapes. On success the server answers the
+  # initial response with the tagged completion directly. On failure it first
+  # sends a `+ <base64 error>` continuation carrying the provider's error JSON,
+  # and the mechanism REQUIRES the client to acknowledge it with an empty line
+  # before the tagged `NO` is sent — a client that just waits for the tag
+  # instead hangs until its recv timeout on every expired token.
+  #
+  # `answered` makes that acknowledgement single-shot: a second continuation is
+  # a server this client cannot converse with, not an invitation to trade blank
+  # lines with it forever.
+  defp drive_xoauth2(conn, tag, buffer, answered) do
+    case read_until_response(conn.socket, conn.recv_timeout, buffer) do
+      {:ok, {:tagged, ^tag, :ok, _text}, _rest} ->
+        {:ok, conn}
+
+      # A `NO` is the token being refused (expired, revoked, wrong scope): the
+      # remedy is a fresh token, never a re-typed password, which is why this
+      # is not `:auth_failed`. The error text is DROPPED rather than carried —
+      # it is the base64 payload's decoded twin, and this reason reaches
+      # `last_error`, i.e. the UI.
+      {:ok, {:tagged, ^tag, :no, _text}, _rest} ->
+        {:error, :reauth_required}
+
+      # A `BAD` is the server rejecting the COMMAND (no XOAUTH2 support, no
+      # SASL-IR) — re-authenticating cannot fix it, so it stays a plain
+      # protocol error.
+      {:ok, {:tagged, ^tag, status, text}, _rest} ->
+        {:error, {status, text}}
+
+      {:ok, {:continuation, _base64_error}, rest} when not answered ->
+        case :ssl.send(conn.socket, "\r\n") do
+          :ok -> drive_xoauth2(conn, tag, rest, true)
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, {:continuation, _base64_error}, _rest} ->
+        {:error, :unexpected_sasl_continuation}
+
+      # Untagged chatter (a server flushing `* OK` or a capability line into
+      # the exchange) is read past, exactly as every other command does.
+      {:ok, _other, rest} ->
+        drive_xoauth2(conn, tag, rest, answered)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -526,6 +637,9 @@ defmodule Valea.Mail.ImapClient do
   defp capability_wire_name(:uidplus), do: "UIDPLUS"
   defp capability_wire_name(:gmail), do: "X-GM-EXT-1"
   defp capability_wire_name(:idle), do: "IDLE"
+  # SASL mechanisms are advertised as `AUTH=<mech>` capabilities (RFC 3501
+  # §6.1.1), not as bare keywords.
+  defp capability_wire_name(:xoauth2), do: "AUTH=XOAUTH2"
 
   # -- COPYUID / APPENDUID response-code parsing -------------------------
   #

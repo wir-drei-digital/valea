@@ -117,6 +117,7 @@ defmodule Valea.Mail.IdleWatcher do
 
   alias Valea.Mail.Engine
   alias Valea.Mail.Redact
+  alias Valea.Mail.Settings
 
   @inbox "INBOX"
 
@@ -235,7 +236,13 @@ defmodule Valea.Mail.IdleWatcher do
   end
 
   defp connect_and_examine(state) do
-    case call(state, :connect, [state.settings.imap, secret(state), state.connect_opts]) do
+    # `imap_config/1` carries the account's SASL mode alongside host/port/
+    # username, exactly as the sync pass's own connect does — this connection
+    # authenticates with the same credential and must authenticate the same WAY
+    # (M6 task 15).
+    imap_config = Settings.imap_config(state.settings)
+
+    case call(state, :connect, [imap_config, secret(state), state.connect_opts]) do
       {:ok, conn} -> examine_inbox(state, conn)
       {:error, reason} -> {:error, reason}
     end

@@ -92,6 +92,123 @@ defmodule Valea.Mail.ImapClientTest do
     assert :ok = FakeImapServer.await(server)
   end
 
+  # -- XOAUTH2 (`auth: :oauth2`, M6 task 15) ----------------------------------
+
+  # The exact line the client must put on the wire, as a golden: `user=user`,
+  # SOH, `auth=Bearer ya29.TOKEN`, SOH, SOH — base64'd. Spelled out rather than
+  # built with `Xoauth2.response/2` so the encoder and its test can never agree
+  # on a wrong answer.
+  @xoauth2_line "A1 AUTHENTICATE XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIHlhMjkuVE9LRU4BAQ=="
+
+  # The provider's failure payload: `{"status":"401",...}` base64'd. Its
+  # CONTENT is never read by the client — only the fact of the continuation is.
+  @xoauth2_error "eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiQmVhcmVyIn0="
+
+  defp oauth2_config(server), do: Map.put(config(server), :auth, :oauth2)
+
+  test "oauth2: AUTHENTICATE XOAUTH2 replaces LOGIN, on the same tag, and AUTH=XOAUTH2 is detected" do
+    # The AUTHENTICATE burns exactly ONE tag, so the post-login CAPABILITY
+    # refresh is still A2 — a mechanism that consumed two would shift every
+    # subsequent tag in every script this client is driven by.
+    script = [
+      {:send, "* OK ready"},
+      {:expect, @xoauth2_line, then: ["A1 OK AUTHENTICATE completed"]},
+      {:expect, "A2 CAPABILITY",
+       then: ["* CAPABILITY IMAP4rev1 AUTH=XOAUTH2 MOVE", "A2 OK CAPABILITY completed"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:ok, conn} = ImapClient.connect(oauth2_config(server), "ya29.TOKEN", connect_opts())
+    assert ImapClient.supports?(conn, :xoauth2)
+    refute ImapClient.supports?(conn, :uidplus)
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "oauth2: the failure round — server continuation, empty client line, tagged NO" do
+    # A rejected token is NOT answered with a bare tagged NO: the mechanism
+    # requires the client to acknowledge the `+ <base64 error>` continuation
+    # with an empty line first. A client that skipped it would hang here until
+    # its recv timeout on every expired token.
+    script = [
+      {:send, "* OK ready"},
+      {:expect, @xoauth2_line, then: ["+ " <> @xoauth2_error]},
+      {:expect, "", then: ["A1 NO SASL authentication failed"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:error, :reauth_required} =
+             ImapClient.connect(oauth2_config(server), "ya29.TOKEN", connect_opts())
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "oauth2: a bare tagged NO (no continuation) is also :reauth_required" do
+    script = [
+      {:send, "* OK ready"},
+      {:expect, @xoauth2_line, then: ["A1 NO [AUTHENTICATIONFAILED] Invalid credentials"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:error, :reauth_required} =
+             ImapClient.connect(oauth2_config(server), "ya29.TOKEN", connect_opts())
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "oauth2: a tagged BAD is NOT :reauth_required — a new token cannot fix a refused command" do
+    script = [
+      {:send, "* OK ready"},
+      {:expect, @xoauth2_line, then: ["A1 BAD Unrecognized authentication type"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:error, {:bad, "Unrecognized authentication type"}} =
+             ImapClient.connect(oauth2_config(server), "ya29.TOKEN", connect_opts())
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "oauth2: untagged chatter inside the exchange is read past, not mistaken for a result" do
+    script = [
+      {:send, "* OK ready"},
+      {:expect, @xoauth2_line,
+       then: ["* CAPABILITY IMAP4rev1 AUTH=XOAUTH2", "A1 OK AUTHENTICATE completed"]},
+      {:expect, "A2 CAPABILITY", then: ["* CAPABILITY IMAP4rev1", "A2 OK CAPABILITY completed"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:ok, conn} = ImapClient.connect(oauth2_config(server), "ya29.TOKEN", connect_opts())
+    # The post-login refresh wins over the line flushed into the exchange —
+    # same rule as the password path's greeting-vs-refresh test.
+    refute ImapClient.supports?(conn, :xoauth2)
+
+    assert :ok = FakeImapServer.await(server)
+  end
+
+  test "an 8-bit access token reaches the server inside the base64 response, never raising" do
+    # `Wire.encode_arg`'s CR/LF/8-bit guard would raise on this value as a bare
+    # argument — the SASL response is base64, so the bytes ride safely.
+    token = <<0xFF, "tok">>
+    expected = "A1 AUTHENTICATE XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIP90b2sBAQ=="
+
+    script = [
+      {:send, "* OK ready"},
+      {:expect, expected, then: ["A1 OK AUTHENTICATE completed"]},
+      {:expect, "A2 CAPABILITY", then: ["* CAPABILITY IMAP4rev1", "A2 OK CAPABILITY completed"]}
+    ]
+
+    server = FakeImapServer.start(script, tls: true)
+
+    assert {:ok, _conn} = ImapClient.connect(oauth2_config(server), token, connect_opts())
+    assert :ok = FakeImapServer.await(server)
+  end
+
   test "select parses UIDVALIDITY and UIDNEXT from untagged OK lines" do
     script =
       handshake_steps() ++

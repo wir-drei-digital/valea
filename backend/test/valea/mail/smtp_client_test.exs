@@ -149,6 +149,149 @@ defmodule Valea.Mail.SmtpClientTest do
     refute Enum.any?(log, &match?("MAIL FROM" <> _, &1))
   end
 
+  # -- XOAUTH2 (`auth: :oauth2`, M6 task 15) ------------------------------------
+
+  # The exact line the client must put on the wire, as a golden: `user=user`,
+  # SOH, `auth=Bearer ya29.TOKEN`, SOH, SOH — base64'd. Spelled out rather than
+  # built with `Xoauth2.response/2`, so an encoding bug can't agree with itself.
+  @auth_xoauth2 "AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIHlhMjkuVE9LRU4BAQ=="
+
+  # The provider's failure payload, base64'd — the client never reads its
+  # CONTENT, only the fact that a 334 arrived.
+  @xoauth2_error "eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiQmVhcmVyIn0="
+
+  defp oauth2_config(server, security) do
+    Map.put(config(server, security), :auth, :oauth2)
+  end
+
+  test "587 STARTTLS oauth2: XOAUTH2 only, advertised only by the post-upgrade EHLO" do
+    server =
+      FakeSmtpServer.start(
+        [
+          {:greet, "220 smtp.test ESMTP"},
+          # Pre-TLS: no AUTH advertised at all, so a client that read
+          # mechanisms from this EHLO would have nothing to pick (RFC 3207).
+          {:expect, "EHLO", "250-smtp.test\r\n250 STARTTLS"},
+          :starttls,
+          {:expect, "EHLO", "250-smtp.test\r\n250 AUTH XOAUTH2"},
+          {:expect, @auth_xoauth2, "235 2.7.0 accepted"}
+        ] ++
+          envelope_steps() ++
+          [
+            {:expect, "DATA", "354 go ahead"},
+            {:data_reply, "250 2.0.0 queued"},
+            :expect_quit
+          ]
+      )
+
+    assert {:ok, :accepted} =
+             SmtpClient.send(
+               oauth2_config(server, :starttls),
+               "ya29.TOKEN",
+               envelope(),
+               @message,
+               opts()
+             )
+
+    log = FakeSmtpServer.await(server)
+
+    assert [
+             "EHLO" <> _,
+             "STARTTLS",
+             {:tls, :starttls},
+             "EHLO" <> _,
+             @auth_xoauth2,
+             "MAIL FROM:<mara@x.co>" | _
+           ] = log
+
+    # The token was never offered any other way.
+    refute Enum.any?(log, &match?("AUTH PLAIN" <> _, &1))
+    refute Enum.any?(log, &match?("AUTH LOGIN" <> _, &1))
+  end
+
+  test "465 oauth2: check_auth authenticates with XOAUTH2 and quits" do
+    server =
+      FakeSmtpServer.start([
+        :implicit_tls,
+        {:greet, "220 smtp.test ESMTP"},
+        # PLAIN and LOGIN are on offer and must be ignored: the ACCOUNT's mode
+        # decides the mechanism, not the advertisement.
+        {:expect, "EHLO", "250-smtp.test\r\n250 AUTH PLAIN LOGIN XOAUTH2"},
+        {:expect, @auth_xoauth2, "235 2.7.0 accepted"},
+        :expect_quit
+      ])
+
+    assert :ok = SmtpClient.check_auth(oauth2_config(server, :tls), "ya29.TOKEN", opts())
+
+    log = FakeSmtpServer.await(server)
+    refute Enum.any?(log, &match?("AUTH PLAIN" <> _, &1))
+    refute Enum.any?(log, &match?("AUTH LOGIN" <> _, &1))
+  end
+
+  test "oauth2 failure round: 334 continuation, empty client line, 535 → :reauth_required" do
+    # A rejected token is not answered with a bare 535: the mechanism requires
+    # the client to acknowledge the `334 <base64 error>` with an empty line
+    # first, and only then does the rejection arrive.
+    server =
+      FakeSmtpServer.start([
+        :implicit_tls,
+        {:greet, "220 smtp.test ESMTP"},
+        {:expect, "EHLO", "250-smtp.test\r\n250 AUTH XOAUTH2"},
+        {:expect, @auth_xoauth2, "334 " <> @xoauth2_error},
+        {:expect, "", "535 5.7.8 Username and Password not accepted"}
+      ])
+
+    assert {:error, {:reauth_required, detail}} =
+             SmtpClient.send(
+               oauth2_config(server, :tls),
+               "ya29.TOKEN",
+               envelope(),
+               @message,
+               opts()
+             )
+
+    assert detail =~ "535"
+
+    log = FakeSmtpServer.await(server)
+    # The empty acknowledgement line IS on the wire, and nothing after it.
+    assert [{:tls, :implicit}, "EHLO" <> _, @auth_xoauth2, ""] = log
+    refute Enum.any?(log, &match?("MAIL FROM" <> _, &1))
+  end
+
+  test "oauth2 never falls back: a server without XOAUTH2 gets no AUTH at all" do
+    # The one failure this exists to prevent: offering the ACCESS TOKEN as an
+    # AUTH PLAIN password because the server happened to advertise PLAIN.
+    server =
+      FakeSmtpServer.start([
+        {:greet, "220 smtp.test ESMTP"},
+        {:expect, "EHLO", "250-smtp.test\r\n250 STARTTLS"},
+        :starttls,
+        {:expect, "EHLO", "250-smtp.test\r\n250 AUTH PLAIN LOGIN"}
+      ])
+
+    assert {:error, {:auth_unsupported, ["PLAIN", "LOGIN"]}} =
+             SmtpClient.check_auth(oauth2_config(server, :starttls), "ya29.TOKEN", opts())
+
+    log = FakeSmtpServer.await(server)
+    refute Enum.any?(log, &match?("AUTH" <> _, &1))
+  end
+
+  test "an 8-bit access token rides inside the base64 response, never raising" do
+    token = <<0xFF, "tok">>
+
+    server =
+      FakeSmtpServer.start([
+        :implicit_tls,
+        {:greet, "220 smtp.test ESMTP"},
+        {:expect, "EHLO", "250-smtp.test\r\n250 AUTH XOAUTH2"},
+        {:expect, "AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIP90b2sBAQ==", "235 2.7.0 accepted"},
+        :expect_quit
+      ])
+
+    assert :ok = SmtpClient.check_auth(oauth2_config(server, :tls), token, opts())
+    FakeSmtpServer.await(server)
+  end
+
   # -- recipients (all-or-nothing) ----------------------------------------------
 
   test "one rejected RCPT: aborts with RSET before DATA, reports only the rejected address" do
