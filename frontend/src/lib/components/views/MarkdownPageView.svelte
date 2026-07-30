@@ -21,6 +21,8 @@
   import ConflictBanner from '$lib/components/editor/ConflictBanner.svelte';
   import { PageEditorStore } from '$lib/stores/page-editor.svelte';
   import BacklinksPanel from '$lib/components/knowledge/BacklinksPanel.svelte';
+  import { pageViewState } from './page-view-state';
+  import { Button } from '$lib/components/ui/button/index.js';
 
   let {
     mountKey,
@@ -41,7 +43,10 @@
   type PageContent = IcmPageData;
 
   let content: PageContent | null = $state(null);
-  let loadFailed = $state(false);
+  // The failed `icm_page` fetch's error string, `null` while healthy. Kept
+  // as the ERROR (not a boolean) because the template must tell `not_found`
+  // apart from a transient failure — see `pageViewState` (issue #2 §4).
+  let loadError = $state<string | null>(null);
   let loading = $state(false);
   // Keyed by mount AND path: a bare path is not unique across mounts (task
   // 4.2 re-key), and a pane can be re-pointed from one mount's `README.md`
@@ -106,7 +111,7 @@
     }
 
     loading = true;
-    loadFailed = false;
+    loadError = null;
     content = null;
     store = null;
     viewMode = 'friendly';
@@ -125,10 +130,17 @@
       // on the silent reloads/raw-toggle refetches elsewhere in this file.
       recordVisit(mount, target);
     } else {
-      loadFailed = true;
+      loadError = result.error;
     }
     loading = false;
     loadedKey = `${mount}/${target}`;
+  }
+
+  const viewState = $derived(pageViewState({ loading, loadError, hasContent: content !== null }));
+
+  /** [Retry] on a transient load failure — same fetch, same key, fresh attempt. */
+  function retryLoad(): void {
+    void loadPage(mountKey, path);
   }
 
   $effect(() => {
@@ -324,9 +336,21 @@
   }
 </script>
 
-{#if loading || (!content && !loadFailed)}
+{#if viewState === 'loading'}
   <p class="mx-auto w-full max-w-[596px] text-ink-body text-[13.5px]">Loading…</p>
-{:else if loadFailed || !content || !store}
+{:else if viewState === 'load-failed'}
+  <!-- Transient failure (timeout, connection, workspace churn) — the file's
+       existence is UNKNOWN, so never claim it's gone (issue #2 §4). -->
+  <div
+    class="mx-auto flex w-full max-w-[596px] flex-col items-start gap-3"
+    data-testid="page-load-error"
+  >
+    <p class="text-ink-body text-[13.5px]">
+      Couldn't load this page. It hasn't been deleted — loading it just failed.
+    </p>
+    <Button type="button" variant="outline" size="sm" onclick={retryLoad}>Retry</Button>
+  </div>
+{:else if viewState === 'gone' || !content || !store}
   <p class="mx-auto w-full max-w-[596px] text-ink-body text-[13.5px]">This page doesn't exist anymore.</p>
 {:else}
   <article class="flex flex-col gap-4">

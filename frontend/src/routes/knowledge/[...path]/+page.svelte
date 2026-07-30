@@ -11,7 +11,9 @@
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
   import { findIcmNode, icmToNav, knowledgeHref, type IcmNode } from '$lib/shell/nav';
   import { parentPath } from './parent-path';
+  import { treeFallback } from './tree-fallback';
   import { Skeleton } from '$lib/components/ui/skeleton';
+  import { Button } from '$lib/components/ui/button/index.js';
   import FileView from '$lib/components/views/FileView.svelte';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
@@ -52,25 +54,51 @@
 
   // Lazy tree (file-browser performance pass): the store only holds levels
   // that have been fetched, so a deep link must ask for its ancestors
-  // explicitly. `ensuredFor` records which (mount, path) has a COMPLETED
-  // ensure — until then, a missing node means "still loading", not "doesn't
-  // exist" (see the main-pane branches below). Re-runs whenever the groups
-  // reference changes (any icm_changed refetch) so a graft the refetch
-  // dropped (see IcmStore.refetch's reconcile step) heals itself; in the
-  // steady state every `loadDir` inside no-ops, so this settles immediately.
-  let ensuredFor = $state<string | null>(null);
+  // explicitly. `ensured` records which (mount, path) has a COMPLETED ensure
+  // AND what it concluded — until then, a missing node means "still
+  // loading", not "doesn't exist"; and only a `'missing'` conclusion may
+  // ever render as non-existence (issue #2 — a failed listing concludes
+  // `'unavailable'` instead, see `treeFallback`). Re-runs whenever the
+  // groups reference changes (any icm_changed refetch) so a graft the
+  // refetch dropped (see IcmStore.refetch's reconcile step) heals itself; in
+  // the steady state every `loadDir` inside no-ops, so this settles
+  // immediately.
+  let ensured = $state<{ key: string; status: 'found' | 'missing' | 'unavailable' } | null>(null);
 
   $effect(() => {
     void icmStore.groups;
     const mount = mountKey;
     const path = decodedPath;
     if (!mount || !path) return;
-    void icmStore.ensurePathLoaded(mount, path).then(() => {
-      if (mount === mountKey && path === decodedPath) ensuredFor = `${mount}\0${path}`;
+    void icmStore.ensurePathLoaded(mount, path).then((result) => {
+      if (mount === mountKey && path === decodedPath) {
+        ensured = { key: `${mount}\0${path}`, status: result.status };
+      }
     });
   });
 
-  const ensureSettled = $derived(ensuredFor === `${mountKey}\0${decodedPath}`);
+  const ensureStatus = $derived(ensured?.key === `${mountKey}\0${decodedPath}` ? ensured.status : null);
+
+  // The one decision issue #2 is about: what the main pane claims when there
+  // is no node to render. `'missing'` (→ "doesn't exist anymore") only on a
+  // definitive miss; every failure path lands on `'unavailable'` (→ error +
+  // retry) — including a failed mount list, which previously left the
+  // skeleton up forever.
+  const fallback = $derived(
+    treeFallback({
+      ensureStatus,
+      listError: icmStore.listError,
+      mountError: icmStore.mountErrors[mountKey]
+    })
+  );
+
+  // Retry re-runs the whole chain: `refetch` re-lists the mounts and every
+  // loaded level, and its groups reassignment re-fires the ensure effect
+  // above (a failed dir was left unmarked, so the ensure genuinely
+  // re-fetches it).
+  function retryTree(): void {
+    void icmStore.refetch();
+  }
 
   // Keep the active path's ancestors expanded in the tree — a deep link (or
   // the index route's last-opened restore) should land with its location
@@ -223,6 +251,15 @@
         </div>
       {/snippet}
       {#snippet children()}
+        {#if fallback === 'unavailable'}
+          <!-- The tree here is empty or stale because a fetch FAILED — without
+               this line the pane silently renders as "no files" (issue #2's
+               screenshot: an empty list pane beside a false "doesn't exist"). -->
+          <p class="text-warn-ink px-3 pt-2 text-[12px]" role="alert" data-testid="knowledge-list-error">
+            Couldn't load files.
+            <button type="button" class="underline underline-offset-2" onclick={retryTree}>Retry</button>
+          </p>
+        {/if}
         <div class="px-1 pt-1">
           <IcmTree
             nodes={treeNav}
@@ -278,7 +315,21 @@
               path={decodedPath}
               onVanished={() => void goto(hrefWithPane('/knowledge', page.url))}
             />
-          {:else if !icmStore.loaded || !ensureSettled}
+          {:else if fallback === 'unavailable'}
+            <!-- A listing failed somewhere (tree walk, mount list, or this
+                 mount's root) — nothing is known about this page's existence,
+                 so say the LOAD failed and offer a retry (issue #2). -->
+            <div
+              class="mx-auto flex w-full max-w-[596px] flex-col items-start gap-3"
+              data-testid="knowledge-tree-error"
+            >
+              <p class="text-ink-body text-[13.5px]">
+                Couldn't load the file list, so this page can't be shown right now. It hasn't been
+                deleted — loading it just failed.
+              </p>
+              <Button type="button" variant="outline" size="sm" onclick={retryTree}>Retry</Button>
+            </div>
+          {:else if fallback === 'loading'}
             <!-- Lazy tree still ensuring this path's ancestors — a missing node
                  is "still loading" here, NOT "doesn't exist". -->
             <div
@@ -290,6 +341,9 @@
               <Skeleton class="h-4 w-1/2" />
             </div>
           {:else}
+            <!-- `fallback === 'missing'` — the ensure walk COMPLETED and every
+                 listing succeeded, so this is a definitive answer, the only
+                 state allowed to claim non-existence. -->
             <p class="mx-auto w-full max-w-[596px] text-ink-body text-[13.5px]">
               This page doesn't exist anymore.
             </p>

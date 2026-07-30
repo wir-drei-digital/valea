@@ -311,6 +311,7 @@ import type {
   SetSchedulerPausedInput
 } from './ash_rpc';
 import { connectSocket, getRpcChannel, controlToken } from '../socket';
+import { settleApiResult } from './transport-safety';
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -385,7 +386,9 @@ function runRpc<T>(
       })
     : runHttp();
 
-  return promise.then(toApiResult);
+  // `settleApiResult` (see its doc): a rejected fetch must surface as a
+  // non-ok result, not reject every awaiting store's refetch.
+  return settleApiResult(promise.then(toApiResult));
 }
 
 // The generated `*Channel` functions are push-and-callback style (they call

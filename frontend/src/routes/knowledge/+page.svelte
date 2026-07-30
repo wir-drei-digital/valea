@@ -65,6 +65,17 @@
 
   const classification = $derived(classifyMounts(mountsStore.mounts));
 
+  // Issue #2: a failed mount list or a failed root listing for the selected
+  // mount used to render as a silently empty tree — indistinguishable from a
+  // mount with no files. Surfaced as an inline error + retry instead.
+  const treeUnavailable = $derived(
+    Boolean(icmStore.listError) || Boolean(selectedMountKey && icmStore.mountErrors[selectedMountKey])
+  );
+
+  function retryTree(): void {
+    void icmStore.refetch();
+  }
+
   // --- Side pane (`?pane=`) — the reverse combo ---
   //
   // Same contract as the page route next door (see its comment): the URL owns
@@ -155,8 +166,11 @@
     const last = recentPages().find((p) => p.mountKey === mount);
     if (!last) return;
 
-    void icmStore.ensurePathLoaded(mount, last.path).then((found) => {
-      if (!found || found.type !== 'page') return; // deleted/renamed since — stay on the index
+    void icmStore.ensurePathLoaded(mount, last.path).then((result) => {
+      // Only a DEFINITIVE 'found' redirects; 'missing' (deleted/renamed
+      // since) and 'unavailable' (a listing failed — issue #2) both stay on
+      // the index rather than gambling on a page we know nothing about.
+      if (result.status !== 'found' || result.node.type !== 'page') return;
       // Still sitting on this index with the same mount selected? A user
       // who already navigated away must not be yanked back.
       if (page.url.pathname !== '/knowledge') return;
@@ -269,6 +283,14 @@
               {/if}
             </div>
           </div>
+          {#if treeUnavailable}
+            <!-- Empty tree because a fetch FAILED, not because the mount has
+                 no files (issue #2) — say so and offer a retry. -->
+            <p class="text-warn-ink px-3 pt-2 text-[12px]" role="alert" data-testid="knowledge-list-error">
+              Couldn't load files.
+              <button type="button" class="underline underline-offset-2" onclick={retryTree}>Retry</button>
+            </p>
+          {/if}
           <!-- Side-panes pass: the tree carries file leaves itself now
                (`icmToNav`), so the separate non-clickable rows that used to
                sit below it are gone — a PDF or image row opens in

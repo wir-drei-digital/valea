@@ -33,6 +33,29 @@ export type MountGroup = {
 };
 
 /**
+ * One `loadDir` fetch's outcome. `'not_found'` is DEFINITIVE (the backend
+ * confirmed nothing exists at that path — the dir is marked loaded-and-empty);
+ * `'error'` is NOT (timeout, workspace_changed, transport failure — the dir
+ * stays unmarked so the next expand retries). Callers that render existence
+ * claims must not collapse the two — see issue #2.
+ */
+export type LoadDirResult = 'ok' | 'not_found' | 'error';
+
+/**
+ * `ensurePathLoaded`'s outcome. `'missing'` is a definitive answer — every
+ * ancestor listing succeeded and the node genuinely isn't there — and is the
+ * ONLY status a "doesn't exist anymore" UI may render from. `'unavailable'`
+ * means some listing along the walk failed, so nothing is known about the
+ * path's existence; the UI must say the load failed and offer a retry
+ * (issue #2: a failed tree fetch used to be indistinguishable from a deleted
+ * page).
+ */
+export type EnsurePathResult =
+  | { status: 'found'; node: IcmNode }
+  | { status: 'missing' }
+  | { status: 'unavailable' };
+
+/**
  * Normalizes a raw RPC tree node into `IcmNode`, stamping `mountKey` onto
  * every node (including nested children) — the backend returns plain :map
  * objects that bypass ash_typescript's camelCase formatter, so fields
@@ -109,6 +132,21 @@ export class IcmStore {
    * not-found while the tree is still loading.
    */
   loaded = $state(false);
+  /**
+   * The last `refetch()`'s `list_icms` failure, `null` while healthy. While
+   * set, `loaded` may still be `false` from cold start — routes must branch
+   * on this BEFORE treating `!loaded` as "still loading", or a failed mount
+   * list leaves them on a skeleton forever (issue #2).
+   */
+  listError = $state<string | null>(null);
+  /**
+   * Per-mount root-listing failures, keyed by mount key — set when a mount's
+   * root can't be listed (so the mount is absent from `groups`), cleared the
+   * moment a root listing for it succeeds. The observable replacement for
+   * silently dropping the mount (issue #2): an empty tree with an entry here
+   * means "unavailable, retry", never "everything was deleted".
+   */
+  mountErrors: Record<string, string> = $state({});
 
   #api: IcmApi;
 
@@ -146,17 +184,27 @@ export class IcmStore {
   #loadedDirs = new Map<string, Set<string>>();
 
   /** In-flight `loadDir` de-dupe — `ensurePathLoaded` awaits these instead of double-fetching. */
-  #inFlight = new Map<string, Promise<void>>();
+  #inFlight = new Map<string, Promise<LoadDirResult>>();
 
   async refetch(generation?: number): Promise<void> {
     const gen = generation ?? workspaceStore.generation ?? 0;
 
     const listResult = await this.#api.listIcms(gen);
-    if (!listResult.ok) return;
+    if (!listResult.ok) {
+      this.listError = listResult.error;
+      return;
+    }
+    this.listError = null;
 
     const icms = ((listResult.data as { icms?: IcmListRow[] }).icms ?? []).filter(
       (m) => m.enabled && !m.degraded
     );
+
+    // A mount that left the enabled set takes its stale error with it.
+    const enabledKeys = new Set(icms.map((m) => m.mountKey));
+    for (const key of Object.keys(this.mountErrors)) {
+      if (!enabledKeys.has(key)) delete this.mountErrors[key];
+    }
 
     const groups = await Promise.all(icms.map((m) => this.#rebuildMountGroup(m.mountKey, gen)));
 
@@ -186,8 +234,9 @@ export class IcmStore {
    * always finds its (just-grafted) parent node. A dir that fails to list
    * (deleted since it was loaded, transient error) falls out of
    * `#loadedDirs`, so it isn't re-fetched forever. Returns `null` when the
-   * ROOT listing fails — the mount drops out of `groups` entirely, same as
-   * a failed `icm_tree` fetch always did.
+   * ROOT listing fails — the mount drops out of `groups`, but the failure is
+   * recorded in `mountErrors` (issue #2) so the UI can tell "unavailable"
+   * apart from "this mount has no pages".
    */
   async #rebuildMountGroup(mountKey: string, gen: number): Promise<MountGroup | null> {
     const dirs = [...(this.#loadedDirs.get(mountKey) ?? [])]
@@ -199,7 +248,15 @@ export class IcmStore {
       ...dirs.map((d) => this.#api.icmListDir(mountKey, d, gen))
     ]);
 
-    if (!rootResult.ok) return null;
+    if (!rootResult.ok) {
+      this.mountErrors[mountKey] = rootResult.error;
+      // The group these marks grafted into is being dropped — keeping them
+      // would let a later `ensurePathLoaded` trust a "loaded" level that no
+      // longer exists in any tree and report a false definitive miss.
+      this.#loadedDirs.delete(mountKey);
+      return null;
+    }
+    delete this.mountErrors[mountKey];
     const rootData = rootResult.data as { title: string; entries?: Record<string, any>[] };
     const tree = (rootData.entries ?? []).map((n) => normalizeIcmNode(n, mountKey));
 
@@ -225,10 +282,12 @@ export class IcmStore {
    * loaded; concurrent calls for the same dir share one fetch. A dir the
    * backend reports `not_found` for is marked loaded-and-empty rather than
    * left spinning — the `icm_changed` push that follows an external delete
-   * prunes the node itself.
+   * prunes the node itself. The returned `LoadDirResult` (see its type doc)
+   * is what lets `ensurePathLoaded` keep "fetch failed" apart from "not
+   * there"; the tree-expand callers ignore it, unchanged.
    */
-  loadDir(mountKey: string, path: string): Promise<void> {
-    if (this.#loadedDirs.get(mountKey)?.has(path)) return Promise.resolve();
+  loadDir(mountKey: string, path: string): Promise<LoadDirResult> {
+    if (this.#loadedDirs.get(mountKey)?.has(path)) return Promise.resolve('ok');
 
     const key = `${mountKey}\0${path}`;
     const inFlight = this.#inFlight.get(key);
@@ -241,22 +300,30 @@ export class IcmStore {
     return promise;
   }
 
-  async #fetchAndGraft(mountKey: string, path: string): Promise<void> {
+  async #fetchAndGraft(mountKey: string, path: string): Promise<LoadDirResult> {
     const result = await this.#api.icmListDir(mountKey, path, workspaceStore.generation ?? 0);
     if (!result.ok) {
       // A deleted-underneath folder is marked loaded-and-empty (the
       // `icm_changed` push that follows prunes the node itself); any other
       // failure is transient — leave it unmarked so the next expand retries.
-      if (result.error !== 'not_found' || path === '') return;
+      // A failed ROOT listing additionally records the mount as unavailable
+      // (issue #2) — this is the deep-link path's counterpart to
+      // `#rebuildMountGroup`'s recording.
+      if (path === '') {
+        this.mountErrors[mountKey] = result.error;
+        return 'error';
+      }
+      if (result.error !== 'not_found') return 'error';
       this.#graft(mountKey, path, []);
       this.#markLoaded(mountKey, path);
-      return;
+      return 'not_found';
     }
 
     const data = result.data as { title: string; entries?: Record<string, any>[] };
     const children = (data.entries ?? []).map((n) => normalizeIcmNode(n, mountKey));
 
     if (path === '') {
+      delete this.mountErrors[mountKey];
       // A deep link's `ensurePathLoaded` can win the race against the
       // cold-load `refetch()` — create the group rather than dropping the
       // graft; `refetch` replaces the whole array in `list_icms` order when
@@ -272,6 +339,7 @@ export class IcmStore {
       this.#graft(mountKey, path, children);
     }
     this.#markLoaded(mountKey, path);
+    return 'ok';
   }
 
   #graft(mountKey: string, path: string, children: IcmNode[]): void {
@@ -292,25 +360,28 @@ export class IcmStore {
    * `path` exists in the tree — the deep-link entry point for
    * `/knowledge/<mountKey>/<rel...>`. If the node is itself a folder, its
    * own listing is loaded too (the route's list pane shows its children).
-   * Returns the node, or `undefined` when some segment doesn't exist —
-   * which, unlike the pre-lazy full tree, is now a definitive answer only
-   * AFTER this resolves (callers keep their loading state until then).
+   * Returns an `EnsurePathResult` (see its type doc): `'missing'` is
+   * definitive only because every listing on the walk succeeded; the moment
+   * one fails, the answer is `'unavailable'` instead — never a false
+   * "doesn't exist" (issue #2).
    */
-  async ensurePathLoaded(mountKey: string, path: string): Promise<IcmNode | undefined> {
-    await this.loadDir(mountKey, '');
+  async ensurePathLoaded(mountKey: string, path: string): Promise<EnsurePathResult> {
+    if ((await this.loadDir(mountKey, '')) === 'error') return { status: 'unavailable' };
 
-    if (path === '') return undefined;
+    if (path === '') return { status: 'missing' };
 
     const segments = path.split('/');
     let node: IcmNode | undefined;
     for (let i = 0; i < segments.length; i++) {
       const ancestor = segments.slice(0, i + 1).join('/');
       node = this.#findNode(mountKey, ancestor);
-      if (!node) return undefined;
-      if (node.type !== 'folder') return i === segments.length - 1 ? node : undefined;
-      await this.loadDir(mountKey, node.path);
+      if (!node) return { status: 'missing' };
+      if (node.type !== 'folder') {
+        return i === segments.length - 1 ? { status: 'found', node } : { status: 'missing' };
+      }
+      if ((await this.loadDir(mountKey, node.path)) === 'error') return { status: 'unavailable' };
     }
-    return node;
+    return node ? { status: 'found', node } : { status: 'missing' };
   }
 
   /**
@@ -359,6 +430,8 @@ export class IcmStore {
   reset(): void {
     this.groups = [];
     this.loaded = false;
+    this.listError = null;
+    this.mountErrors = {};
     this.#loadedDirs = new Map();
     this.#inFlight = new Map();
   }

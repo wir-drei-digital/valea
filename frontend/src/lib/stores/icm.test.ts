@@ -429,8 +429,10 @@ describe('IcmStore.loadDir / ensurePathLoaded (lazy folder loading)', () => {
     const store = new IcmStore(lazyApi());
     await store.refetch();
 
-    const node = await store.ensurePathLoaded('primary', 'Offers/Archive/Old.md');
+    const result = await store.ensurePathLoaded('primary', 'Offers/Archive/Old.md');
 
+    expect(result.status).toBe('found');
+    const node = result.status === 'found' ? result.node : undefined;
     expect(node?.type).toBe('page');
     expect(node?.path).toBe('Offers/Archive/Old.md');
     // Both ancestor levels are now genuinely loaded.
@@ -439,24 +441,26 @@ describe('IcmStore.loadDir / ensurePathLoaded (lazy folder loading)', () => {
     expect(offers.children?.[0].childrenLoaded).toBe(true);
   });
 
-  it("ensurePathLoaded loads a folder path's OWN listing too, and returns undefined for a missing path", async () => {
+  it("ensurePathLoaded loads a folder path's OWN listing too, and reports a definitive miss as missing", async () => {
     const store = new IcmStore(lazyApi());
     await store.refetch();
 
-    const folder = await store.ensurePathLoaded('primary', 'Offers');
+    const result = await store.ensurePathLoaded('primary', 'Offers');
+    expect(result.status).toBe('found');
+    const folder = result.status === 'found' ? result.node : undefined;
     expect(folder?.type).toBe('folder');
     expect(folder?.childrenLoaded).toBe(true);
 
-    expect(await store.ensurePathLoaded('primary', 'Nope/missing.md')).toBeUndefined();
+    expect(await store.ensurePathLoaded('primary', 'Nope/missing.md')).toEqual({ status: 'missing' });
   });
 
   it('ensurePathLoaded creates the group when it wins the race against the cold-load refetch', async () => {
     const store = new IcmStore(lazyApi());
     // no refetch first — a deep link's route effect can run before AppFrame's onMount fetch lands
 
-    const node = await store.ensurePathLoaded('primary', 'Offers/Coaching.md');
+    const result = await store.ensurePathLoaded('primary', 'Offers/Coaching.md');
 
-    expect(node?.type).toBe('page');
+    expect(result.status === 'found' && result.node.type).toBe('page');
     expect(store.groups.map((g) => g.mount)).toEqual(['primary']);
   });
 
@@ -482,6 +486,140 @@ describe('IcmStore.loadDir / ensurePathLoaded (lazy folder loading)', () => {
     expect(nested?.childrenLoaded).toBe(true);
     // Non-template folders stay untouched.
     expect(store.groups[0].tree[1].childrenLoaded).toBe(false);
+  });
+});
+
+// Issue #2 (github): a failed tree fetch was indistinguishable from a deleted
+// page — a non-ok mount-list left the loading skeleton up forever, and a
+// non-ok root listing silently dropped the whole mount, so every page in it
+// rendered "This page doesn't exist anymore." with an empty list pane. These
+// tests pin the store-side error states that make those failures observable
+// (and retryable) instead.
+describe('IcmStore error states (issue #2 — failed fetches must be observable)', () => {
+  /** One-mount api whose per-dir listings can be made to fail on demand. */
+  function flakyApi(dirs: Record<string, any[]>, failing: Set<string>) {
+    return {
+      listIcms: async () =>
+        ({ ok: true, data: { icms: [{ mountKey: 'primary', enabled: true, degraded: null }] } }) as ApiResult<any>,
+      icmListDir: async (mountKey: string, path: string) => {
+        if (failing.has(path)) return { ok: false, error: 'channel_timeout' } as ApiResult<any>;
+        const entries = dirs[path];
+        if (!entries) return { ok: false, error: 'not_found' } as ApiResult<any>;
+        return { ok: true, data: { mountKey, title: 'Primary', entries } } as ApiResult<any>;
+      }
+    };
+  }
+
+  const dirs = () => ({
+    '': [rawFolder('Offers', 'Offers', 1)],
+    Offers: [rawPage('Coaching', 'Offers/Coaching.md')]
+  });
+
+  it('records listError when the mount list fails, and clears it on the next successful refetch', async () => {
+    let fail = true;
+    const store = new IcmStore({
+      listIcms: async () =>
+        fail
+          ? ({ ok: false, error: 'channel_timeout' } as ApiResult<any>)
+          : ({ ok: true, data: { icms: [] } } as ApiResult<any>),
+      icmListDir: async () => ({ ok: true, data: { title: 'X', entries: [] } }) as ApiResult<any>
+    });
+
+    await store.refetch();
+    expect(store.listError).toBe('channel_timeout');
+    expect(store.loaded).toBe(false);
+
+    fail = false;
+    await store.refetch();
+    expect(store.listError).toBeNull();
+    expect(store.loaded).toBe(true);
+  });
+
+  it('records a per-mount error when a root listing fails, alongside dropping the mount from groups', async () => {
+    const failing = new Set(['']);
+    const store = new IcmStore(flakyApi(dirs(), failing));
+
+    await store.refetch();
+
+    expect(store.groups).toEqual([]);
+    expect(store.mountErrors).toEqual({ primary: 'channel_timeout' });
+    expect(store.listError).toBeNull();
+  });
+
+  it('clears a mount error once its root listing succeeds again', async () => {
+    const failing = new Set(['']);
+    const store = new IcmStore(flakyApi(dirs(), failing));
+    await store.refetch();
+    expect(store.mountErrors.primary).toBe('channel_timeout');
+
+    failing.clear();
+    await store.refetch();
+
+    expect(store.mountErrors).toEqual({});
+    expect(store.groups.map((g) => g.mount)).toEqual(['primary']);
+  });
+
+  it('reset clears listError and mountErrors with the rest of the state', async () => {
+    const store = new IcmStore(flakyApi(dirs(), new Set([''])));
+    await store.refetch();
+    expect(store.mountErrors.primary).toBeDefined();
+
+    store.reset();
+
+    expect(store.mountErrors).toEqual({});
+    expect(store.listError).toBeNull();
+  });
+
+  it('loadDir on the mount root records/clears the mount error too (deep-link race path)', async () => {
+    const failing = new Set(['']);
+    const store = new IcmStore(flakyApi(dirs(), failing));
+
+    await store.loadDir('primary', '');
+    expect(store.mountErrors.primary).toBe('channel_timeout');
+
+    failing.clear();
+    await store.loadDir('primary', '');
+    expect(store.mountErrors).toEqual({});
+  });
+
+  it('ensurePathLoaded reports unavailable (not missing) when an ancestor listing fails transiently, then recovers', async () => {
+    const failing = new Set(['Offers']);
+    const store = new IcmStore(flakyApi(dirs(), failing));
+    await store.refetch();
+
+    expect(await store.ensurePathLoaded('primary', 'Offers/Coaching.md')).toEqual({ status: 'unavailable' });
+
+    failing.clear();
+    const recovered = await store.ensurePathLoaded('primary', 'Offers/Coaching.md');
+    expect(recovered.status).toBe('found');
+    expect(recovered.status === 'found' && recovered.node.path).toBe('Offers/Coaching.md');
+  });
+
+  it('ensurePathLoaded reports unavailable when the mount root cannot be listed', async () => {
+    const store = new IcmStore(flakyApi(dirs(), new Set([''])));
+
+    expect(await store.ensurePathLoaded('primary', 'Offers/Coaching.md')).toEqual({ status: 'unavailable' });
+  });
+
+  it('a refetch whose root listing fails does not leave stale loaded-marks behind — the next ensure re-fetches and reports unavailable, not missing', async () => {
+    const failing = new Set<string>();
+    const store = new IcmStore(flakyApi(dirs(), failing));
+    await store.refetch(); // healthy first load — root marked loaded
+
+    failing.add('');
+    await store.refetch(); // mount drops out, error recorded
+
+    // Without clearing the mount's loaded-marks, this would trust the stale
+    // root mark, skip the fetch, find nothing, and lie "missing".
+    expect(await store.ensurePathLoaded('primary', 'Offers/Coaching.md')).toEqual({ status: 'unavailable' });
+  });
+
+  it('ensurePathLoaded reports missing only when the parent listing succeeded without the node', async () => {
+    const store = new IcmStore(flakyApi(dirs(), new Set()));
+    await store.refetch();
+
+    expect(await store.ensurePathLoaded('primary', 'Offers/Nope.md')).toEqual({ status: 'missing' });
+    expect(await store.ensurePathLoaded('primary', 'Ghost/deep.md')).toEqual({ status: 'missing' });
   });
 });
 
