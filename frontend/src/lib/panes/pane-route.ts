@@ -1,23 +1,41 @@
 /**
- * Pure codec for the `?pane=` query param (side-panes pass) — which view is
- * open in the side pane next to the route's primary view. Same
- * "extract the logic, no component render harness" convention as
- * `icm-route.ts`. Wire forms:
+ * Pure codec for the `?pane=` query params (composable views) — which views sit
+ * beside the route's primary view. The param REPEATS: one `?pane=` per side
+ * pane, in left-to-right order, capped at `PANE_CAP`. A single `?pane=` is the
+ * degenerate one-pane case, so old links keep working. Same "extract the logic,
+ * no component render harness" convention as `icm-route.ts`. Wire forms, with
+ * the mount key and each path segment independently `encodeURIComponent`-encoded
+ * (mirroring `knowledgeHref`):
  *
- *   file:<mountKey>/<relPath>   (mountKey and each path segment URL-encoded,
- *                                mirroring `knowledgeHref`)
+ *   files:<mountKey>                  (mount index, no file open)
+ *   files:<mountKey>/<p1>             (one file)
+ *   files:<mountKey>/<p1>|<p2>        (a split pair inside the pane)
  *   chat:<sessionId>
- *   chat:new:<mountKey>         (new-session composer scoped to that ICM;
- *                                rewritten to chat:<id> once the session starts)
+ *   chat:new:<mountKey>               (new-session composer scoped to that ICM;
+ *                                      rewritten to chat:<id> once it starts)
+ *   mail:<account>                    (mailbox list)
+ *   mail:<account>/<msgId>            (one message)
  *
- * Invalid input parses to null — the caller renders the primary alone.
+ * `|` is safe as the split separator because `encodeURIComponent('|') === '%7C'`,
+ * so a literal pipe in a filename never collides with it.
+ *
+ * Invalid input parses to null — the caller renders what is left, never an error.
  */
 import { encodePath, knowledgeHref } from '$lib/shell/nav';
 
-export type FilePaneDescriptor = { kind: 'file'; mountKey: string; path: string };
+/** How many side panes may sit beside the primary view. */
+export const PANE_CAP = 2;
+const SPLIT_SEP = '|';
+
+export type FilesPaneDescriptor = { kind: 'files'; mountKey: string; paths: string[] };
 export type ChatPaneDescriptor = { kind: 'chat'; sessionId: string };
 export type ChatNewPaneDescriptor = { kind: 'chat-new'; mountKey: string };
-export type PaneDescriptor = FilePaneDescriptor | ChatPaneDescriptor | ChatNewPaneDescriptor;
+export type MailPaneDescriptor = { kind: 'mail'; account: string; msgId: string | null };
+export type PaneDescriptor =
+  | FilesPaneDescriptor
+  | ChatPaneDescriptor
+  | ChatNewPaneDescriptor
+  | MailPaneDescriptor;
 
 function tryDecode(segment: string): string | null {
   try {
@@ -27,6 +45,14 @@ function tryDecode(segment: string): string | null {
   }
 }
 
+/** Decodes one `/`-joined, per-segment-encoded path. `null` if any segment is empty or malformed. */
+function decodePath(raw: string): string | null {
+  if (raw === '') return null;
+  const segments = raw.split('/').map(tryDecode);
+  if (segments.some((s) => s === null || s === '')) return null;
+  return (segments as string[]).join('/');
+}
+
 export function parsePaneParam(raw: string | null): PaneDescriptor | null {
   if (!raw) return null;
   const colon = raw.indexOf(':');
@@ -34,14 +60,20 @@ export function parsePaneParam(raw: string | null): PaneDescriptor | null {
   const kind = raw.slice(0, colon);
   const rest = raw.slice(colon + 1);
 
-  if (kind === 'file') {
+  if (kind === 'files') {
     const slash = rest.indexOf('/');
-    if (slash <= 0 || slash === rest.length - 1) return null;
-    const mountKey = tryDecode(rest.slice(0, slash));
+    const mountRaw = slash === -1 ? rest : rest.slice(0, slash);
+    const mountKey = mountRaw ? tryDecode(mountRaw) : null;
     if (!mountKey) return null;
-    const segments = rest.slice(slash + 1).split('/').map(tryDecode);
-    if (segments.some((s) => s === null || s === '')) return null;
-    return { kind: 'file', mountKey, path: (segments as string[]).join('/') };
+    if (slash === -1) return { kind: 'files', mountKey, paths: [] };
+
+    const tail = rest.slice(slash + 1);
+    if (tail === '') return null;
+    const rawPaths = tail.split(SPLIT_SEP);
+    if (rawPaths.length > 2) return null;
+    const paths = rawPaths.map(decodePath);
+    if (paths.some((p) => p === null)) return null;
+    return { kind: 'files', mountKey, paths: paths as string[] };
   }
 
   if (kind === 'chat') {
@@ -53,39 +85,90 @@ export function parsePaneParam(raw: string | null): PaneDescriptor | null {
     return sessionId ? { kind: 'chat', sessionId } : null;
   }
 
+  if (kind === 'mail') {
+    const slash = rest.indexOf('/');
+    const accountRaw = slash === -1 ? rest : rest.slice(0, slash);
+    const account = accountRaw ? tryDecode(accountRaw) : null;
+    if (!account) return null;
+    if (slash === -1) return { kind: 'mail', account, msgId: null };
+    const msgId = tryDecode(rest.slice(slash + 1));
+    return msgId ? { kind: 'mail', account, msgId } : null;
+  }
+
   return null;
 }
 
 export function serializePaneParam(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'file':
-      return `file:${encodeURIComponent(d.mountKey)}/${encodePath(d.path)}`;
+    case 'files': {
+      const mount = encodeURIComponent(d.mountKey);
+      if (d.paths.length === 0) return `files:${mount}`;
+      return `files:${mount}/${d.paths.map(encodePath).join(SPLIT_SEP)}`;
+    }
     case 'chat':
       return `chat:${encodeURIComponent(d.sessionId)}`;
     case 'chat-new':
       return `chat:new:${encodeURIComponent(d.mountKey)}`;
+    case 'mail':
+      return d.msgId === null
+        ? `mail:${encodeURIComponent(d.account)}`
+        : `mail:${encodeURIComponent(d.account)}/${encodeURIComponent(d.msgId)}`;
   }
 }
 
-/** Identity comparison — used to reject a side pane duplicating the primary view. Null never equals anything (including null). */
+/** Identity comparison. Null never equals anything, including null. */
 export function panesEqual(a: PaneDescriptor | null, b: PaneDescriptor | null): boolean {
   if (!a || !b || a.kind !== b.kind) return false;
-  switch (a.kind) {
-    case 'file':
-      return b.kind === 'file' && a.mountKey === b.mountKey && a.path === b.path;
-    case 'chat':
-      return b.kind === 'chat' && a.sessionId === b.sessionId;
-    case 'chat-new':
-      return b.kind === 'chat-new' && a.mountKey === b.mountKey;
+  return serializePaneParam(a) === serializePaneParam(b);
+}
+
+/**
+ * One surface per descriptor kind across `[primary, ...panes]`, regardless of
+ * subject. Coarser than `panesEqual` and wins where they disagree: `/knowledge`
+ * has a null primary descriptor, so identity alone would let a redundant Files
+ * pane through.
+ */
+export function dedupeSurfaces(
+  primary: PaneDescriptor | null,
+  panes: PaneDescriptor[]
+): PaneDescriptor[] {
+  const seen = new Set<string>(primary ? [primary.kind] : []);
+  const out: PaneDescriptor[] = [];
+  for (const pane of panes) {
+    if (seen.has(pane.kind)) continue;
+    seen.add(pane.kind);
+    out.push(pane);
   }
+  return out;
+}
+
+/** Every valid `pane` param, in document order, deduped and capped. Fails closed per entry. */
+export function parsePanes(searchParams: URLSearchParams): PaneDescriptor[] {
+  const parsed = searchParams
+    .getAll('pane')
+    .map(parsePaneParam)
+    .filter((d): d is PaneDescriptor => d !== null);
+  return dedupeSurfaces(null, parsed).slice(0, PANE_CAP);
+}
+
+/** `goto` target for `url` with its pane params replaced. Every other param survives. */
+export function withPanes(url: URL, panes: PaneDescriptor[]): string {
+  const next = new URL(url);
+  next.searchParams.delete('pane');
+  for (const pane of panes.slice(0, PANE_CAP)) {
+    next.searchParams.append('pane', serializePaneParam(pane));
+  }
+  return next.pathname + next.search;
+}
+
+/** Legacy `?all=1`: the chat primary's sessions navigator. */
+export function chatNavigatorFromUrl(url: URL): boolean {
+  return url.searchParams.get('all') === '1';
 }
 
 /** The `goto` target for the current URL with the pane param set (or removed when `d` is null). Preserves every other param. */
 export function withPaneParam(url: URL, d: PaneDescriptor | null): string {
-  const next = new URL(url);
-  if (d) next.searchParams.set('pane', serializePaneParam(d));
-  else next.searchParams.delete('pane');
-  return next.pathname + next.search;
+  return withPanes(url, d ? [d] : []);
 }
 
 /**
@@ -113,30 +196,37 @@ export function paneLinkSearch(url: URL): string {
 export function hrefWithPane(href: string, url: URL): string {
   const next = new URL(href, url.origin);
   const d = parsePaneParam(url.searchParams.get('pane'));
-  if (d) next.searchParams.set('pane', serializePaneParam(d));
-  return next.pathname + next.search;
+  return withPanes(next, d ? [d] : []);
 }
 
 /** Pane-chrome title. Kept static/pure (no store lookups) — the view inside the pane carries its own richer header. */
 export function paneTitle(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'file':
-      return d.path.split('/').pop() ?? d.path;
+    case 'files':
+      return d.paths.length ? (d.paths[0].split('/').pop() ?? 'Files') : 'Files';
     case 'chat':
       return 'Chat';
     case 'chat-new':
       return 'New session';
+    case 'mail':
+      return 'Mail';
   }
 }
 
 /** Where the pane-chrome "open as full view" button navigates. */
 export function promoteHref(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'file':
-      return knowledgeHref(d.mountKey, d.path);
+    case 'files':
+      return d.paths.length
+        ? knowledgeHref(d.mountKey, d.paths[0])
+        : `/knowledge?icm=${encodeURIComponent(d.mountKey)}`;
     case 'chat':
       return `/chat?session=${encodeURIComponent(d.sessionId)}`;
     case 'chat-new':
       return `/chat?icm=${encodeURIComponent(d.mountKey)}`;
+    case 'mail':
+      return d.msgId === null
+        ? `/mail?account=${encodeURIComponent(d.account)}`
+        : `/mail?account=${encodeURIComponent(d.account)}&message=${encodeURIComponent(d.msgId)}`;
   }
 }
