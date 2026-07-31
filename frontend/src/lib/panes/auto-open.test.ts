@@ -28,8 +28,14 @@ describe('autoOpen', () => {
     });
   });
 
-  it('does nothing when the width allows no split at all', () => {
-    expect(autoOpen([], null, 'A.md', 0)).toEqual({ paths: [], autoIndex: null });
+  // Reversed deliberately (this previously asserted `paths: []`). Rule 3's "do
+  // nothing" protects a file the USER placed, and an empty pane has none — so
+  // the first file lands whatever the width says, exactly as it does in
+  // `openInFirst`. A split needs 540px of pane, which most laptops never
+  // reach, so the old behaviour left every tool-chip open into an empty Files
+  // pane inert.
+  it('opens the first file even when the width allows no split at all', () => {
+    expect(autoOpen([], null, 'A.md', 0)).toEqual({ paths: ['A.md'], autoIndex: 0 });
   });
 
   it('is a no-op when the file is already open, without stealing the claim', () => {
@@ -71,6 +77,9 @@ describe('autoOpen', () => {
     });
   });
 
+  // The other half of rule 0: the first-file floor is for an EMPTY pane only.
+  // Once the user has placed a file, a width that holds no second split means
+  // the assistant does not get one — it must never evict what is there.
   it('leaves an occupied pane untouched when the width allows no split', () => {
     expect(autoOpen(['USER.md'], 0, 'A.md', 0)).toEqual({
       paths: ['USER.md'],

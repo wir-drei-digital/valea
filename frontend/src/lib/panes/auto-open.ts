@@ -8,7 +8,12 @@
  *
  * Like the Files pane rules it shares `SPLIT_CAP` with, this decides how many
  * paths a Files descriptor ends up carrying, so it clamps to the hard cap
- * rather than trusting the width figure it is handed.
+ * rather than trusting the width figure it is handed — and, like them, it
+ * exempts the FIRST file from that cap (rule 0). A split needs
+ * `TREE_W + SPLIT_MIN` = 540px of pane, which a two-pane row does not reach
+ * until roughly a 1590px window, so on any normal laptop the width figure is
+ * 0; treating that as "open nothing" would leave an assistant read or a tool
+ * chip inert in an empty pane at exactly the widths people work at.
  *
  * CALLERS MUST MAINTAIN THE CLAIM. It is an INDEX into `paths`, so it stops
  * meaning what it meant the moment the list is renumbered:
@@ -43,6 +48,15 @@ export function autoOpen(
   maxSplits: number
 ): AutoOpen {
   const cap = Math.min(SPLIT_CAP, maxSplits);
+
+  // 0. The FIRST file always lands, whatever the width says — the same floor
+  //    `openInFirst`/`openAsSecond` take, and safe here for the same reason:
+  //    rule 3 below exists to protect a file the USER placed, and an empty
+  //    pane has none to protect. Without it, a tool chip or an assistant read
+  //    landing in an EMPTY Files pane does nothing at all below roughly a
+  //    1590px window, which is most laptops.
+  if (paths.length === 0) return { paths: [path], autoIndex: 0 };
+
   if (cap < 1) return { paths, autoIndex: null };
   if (paths.includes(path)) return { paths, autoIndex };
 
