@@ -44,7 +44,7 @@
 | File | Responsible for |
 |---|---|
 | `frontend/src/lib/components/panes/FilesPane.svelte` | tree + splits + the split→`FileView` ref map |
-| `frontend/src/lib/components/panes/FilesPaneControls.svelte` | tree toggle + `＋ Split`, rendered in `PaneHost`'s header |
+| `frontend/src/lib/components/panes/FilesPaneControls.svelte` | tree toggle, rendered in `PaneHost`'s header (the `＋ Split` control was removed — see the spec's 2026-08-01 amendment) |
 | `frontend/src/lib/components/panes/MailPane.svelte` | message list + reader, used by pane *and* `/mail` |
 | `frontend/src/lib/components/panes/ChatPane.svelte` | sessions navigator + `ChatView` |
 | `frontend/src/lib/components/panes/ChatPaneControls.svelte` | sessions-list toggle |
@@ -2528,6 +2528,22 @@ export function receiveAutoFile(path: string): void {
 ```
 
 In the tree-click and open-beside handlers, call `state.autoIndex = clearAuto(state.autoIndex, targetIndex)` before `setPaths`.
+
+**And — this is load-bearing, not optional —** every call site that *removes* a
+split must re-map the claim through `shiftAuto`:
+
+```ts
+// closeSplit and dropVanished RENUMBER the list. A claim held as an index
+// would then point at whatever slid into that slot, and the next auto-open
+// would overwrite a file the user placed — the exact thing the rule exists to
+// prevent. clearAuto covers user OPENS only; it does not cover removals.
+state.autoIndex = shiftAuto(state.autoIndex, removedIndex);
+setPaths(closeSplit(descriptor.paths, removedIndex));
+```
+
+This applies in `FilesPane`'s split close button and in the route's
+`onVanished` handler alike. A review caught this as a live eviction bug in G3;
+`shiftAuto` was added to `auto-open.ts` specifically for these call sites.
 
 Also publish `state.addSplit` so the header's `＋ Split` works:
 

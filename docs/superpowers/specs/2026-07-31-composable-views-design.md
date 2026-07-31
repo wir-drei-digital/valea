@@ -228,6 +228,17 @@ composes the same `MailPane` component plus its own modes, so list-and-reader
 has one implementation used by both. Promoting a Mail pane lands on `/mail`
 with the full route and its modes available again.
 
+**AMENDMENT (2026-08-01, Daniel).** The "one implementation used by both"
+claim above proved false and is retired. `/mail`'s list carries an account
+switcher, debounced search, a folder picker, a read filter, pagination and a
+sync footer — none of which belong in a pane, and swapping `MailPane` into the
+route would have deleted all of them. What is genuinely shared is
+`MessageList` + `MessageView`; `MailPane` is a third composition of them. The
+real cost is the ~40-line race-suppressed selection effect, now duplicated
+near-verbatim in `MailPane` and the route — and its own comments record that
+the race was caught live once already. It is extracted into one
+`mail-selection` helper used by both.
+
 **Reuse needs a navigation adapter, not just extraction.** `MessageList`
 renders each row as an anchor to `messageHref(account, msgId)`
 (`lib/components/mail/MessageList.svelte:69`), which a pane must not follow —
@@ -362,7 +373,7 @@ display-hidden leaves a zero-width pane a drag can resurrect.
 
 Rather than build machinery to make continuous auto-hide safe, the rule
 narrows: **`pane-fit.ts` is consulted only at the moments a pane would be
-added** — `＋ Pane`, `＋ Split`, a tool chip opening a file, and restore from
+added** — `＋ Pane`, a tool chip opening a file, and restore from
 memory. Panes that do not fit are not opened, and on restore the composition
 is truncated from the right while memory keeps the full list, so the pane
 returns on a wider window the next time you enter the route. Resizing the
@@ -374,8 +385,16 @@ appear and disappear only in response to something the user did, component
 identity is never in question, and "layout keyed by pane count" is
 unambiguous because mounted, visible and requested counts are always equal.
 
-`＋ Pane` and `＋ Split` disable themselves when the next one would not fit,
-with the reason on hover rather than a silent no-op.
+`＋ Pane` disables itself when another pane would not fit, with the reason on
+hover rather than a silent no-op.
+
+**AMENDMENT (2026-08-01, Daniel): there is no `＋ Split` control.** It was
+specced, built, then removed. Any such button must *guess* which file to open —
+the plan's "first file in the tree" finds nothing in a real ICM, since
+top-level entries are folders — and a guess whose cost is opening the wrong
+file, possibly replacing something you were reading, is worse than no control.
+The tree's per-row "Open beside" affordance names the file you actually want
+and is the only way to open a second split.
 
 `ChatView`'s existing `viewWidth >= 860` rail gate is untouched and needs no
 coordination: it measures `ChatView`'s own container, so opening a pane
