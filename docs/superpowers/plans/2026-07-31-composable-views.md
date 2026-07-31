@@ -54,6 +54,27 @@
 
 **Deleted:** `lib/components/panes/FilePaneAdapter.svelte` (absorbed by `FilesPane`).
 
+## Consolidated execution groups
+
+The ten task sections below are dispatched as **six** units. Tasks are grouped
+where they edit the same file, share a review gate, or cannot compile
+separately. A group is one subagent, one review, one commit sequence.
+
+| Group | Task sections | Why grouped |
+|---|---|---|
+| **G1 — Codec** | 1 + 5 | Both rewrite `pane-route.ts` and `pane-route.test.ts`. Splitting them means editing one file in two dispatches for no reviewer benefit. |
+| **G2 — Layout math** | 2 | `pane-fit.ts` + `pane-split.ts`. Independent of G3, reviewed on "is the width arithmetic right". |
+| **G3 — Pane rules** | 3 + 4 | `files-pane-state`, `reveal-path`, `auto-open`, `pane-memory`. Four pure modules, one gate: "are the behavioural rules right". |
+| **G4 — Host contract** | 6 | `PaneHost` N panes + `PaneEntry` registry + `PaneContext`. The contract every component task consumes. |
+| **G5 — Pane components** | 7 + 8 | `FilesPane`, `MailPane`, `ChatPane`, their controls, and `IcmTree`. All implement the G4 contract; typecheck only settles once they exist together. |
+| **G6 — Shell, bar, routes, wiring** | 9 + 10 | `AppShell`/`ContentBar`/route conversions plus memory restore and auto-open. The `list` prop cannot be removed before the routes stop using it, and the wiring has no meaning until the routes exist. |
+
+G1–G3 are pure logic and fully test-driven. G4–G6 are verified by
+`bun run check` plus the browser steps written into each section.
+
+Groups run in order; each is dispatched only after the previous one is reviewed
+and its commits are on the branch.
+
 ---
 
 ### Task 1: Multi-pane URL codec
@@ -2573,12 +2594,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-## Execution Handoff
+## Execution
 
-**Plan complete and saved to `docs/superpowers/plans/2026-07-31-composable-views.md`. Two execution options:**
-
-**1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration
-
-**2. Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints
-
-**Which approach?**
+**Subagent-driven**, one Opus subagent per consolidated group (see *Consolidated
+execution groups* above), reviewed between groups. A group's subagent is given
+the group's task sections verbatim and works only within them.
