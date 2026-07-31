@@ -22,7 +22,26 @@ const VERSION = 1;
 export type RouteKey = 'chat' | 'mail' | 'knowledge';
 export type PaneChrome = { files: { tree: boolean }; chat: { sessions: boolean } };
 
-const CHROME_DEFAULT: PaneChrome = { files: { tree: true }, chat: { sessions: false } };
+/**
+ * Deep-frozen, and never handed out directly — `defaultChrome()` builds a
+ * fresh literal for every caller. `let chrome = $state(loadChrome())` followed
+ * by a toggle is the obvious call site, and returning this object would let
+ * that toggle rewrite the shipped default for the life of the process: a fresh
+ * profile, an SSR render or a cleared storage would then load the wrong one,
+ * and a long-lived Tauri process never restarts to heal it. The freeze makes a
+ * future regression throw instead of quietly corrupting.
+ */
+const CHROME_DEFAULT: PaneChrome = Object.freeze({
+  files: Object.freeze({ tree: true }),
+  chat: Object.freeze({ sessions: false })
+});
+
+function defaultChrome(): PaneChrome {
+  return {
+    files: { tree: CHROME_DEFAULT.files.tree },
+    chat: { sessions: CHROME_DEFAULT.chat.sessions }
+  };
+}
 
 export function routeKeyFor(pathname: string): RouteKey | null {
   if (pathname === '/chat' || pathname.startsWith('/chat/')) return 'chat';
@@ -61,10 +80,10 @@ export function savePanes(key: RouteKey, panes: PaneDescriptor[]): void {
 export function loadChrome(): PaneChrome {
   try {
     const raw = localStorage.getItem(CHROME_KEY);
-    if (raw === null) return CHROME_DEFAULT;
+    if (raw === null) return defaultChrome();
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return CHROME_DEFAULT;
+      return defaultChrome();
     }
     const entry = parsed as Partial<PaneChrome>;
     return {
@@ -72,7 +91,7 @@ export function loadChrome(): PaneChrome {
       chat: { sessions: entry.chat?.sessions ?? CHROME_DEFAULT.chat.sessions }
     };
   } catch {
-    return CHROME_DEFAULT;
+    return defaultChrome();
   }
 }
 

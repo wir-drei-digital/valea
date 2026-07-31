@@ -150,6 +150,34 @@ describe('chrome preferences', () => {
     expect(loadChrome()).toEqual({ files: { tree: true }, chat: { sessions: false } });
   });
 
+  // `let chrome = $state(loadChrome())` followed by a toggle is the obvious
+  // Svelte 5 call site. If any path hands out the module-level constant, that
+  // toggle rewrites the shipped default for the life of the process — so an
+  // empty profile, an SSR render or a cleared storage would load the wrong one,
+  // and in a long-lived Tauri process it never heals.
+  it('never hands out the shared default object', () => {
+    const first = loadChrome();
+    const second = loadChrome();
+    expect(first).not.toBe(second);
+    expect(first.files).not.toBe(second.files);
+    expect(first.chat).not.toBe(second.chat);
+  });
+
+  it('is unaffected by a caller mutating what it returned', () => {
+    const first = loadChrome();
+    first.files.tree = false;
+    first.chat.sessions = true;
+    expect(loadChrome()).toEqual({ files: { tree: true }, chat: { sessions: false } });
+  });
+
+  it('is unaffected by a caller mutating a partially-stored result', () => {
+    localStorage.setItem('valea.pane-chrome', JSON.stringify({ files: { tree: false } }));
+    const partial = loadChrome();
+    partial.chat.sessions = true;
+    localStorage.clear();
+    expect(loadChrome()).toEqual({ files: { tree: true }, chat: { sessions: false } });
+  });
+
   // A preference added in a later version must not drag the older one back to
   // its default when an old entry is read.
   it('fills only the missing half of a partial entry', () => {
