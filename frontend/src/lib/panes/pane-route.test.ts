@@ -151,6 +151,25 @@ describe('panesEqual', () => {
     expect(panesEqual(filesOne, filesTwo)).toBe(false);
     expect(panesEqual(null, null)).toBe(false);
   });
+
+  // `promoteTarget` filters a descriptor parsed from one place against a list
+  // parsed from another, so same-content/different-object MUST compare equal.
+  it('is structural, not reference identity', () => {
+    expect(panesEqual(filesOne, { ...filesOne, paths: [...filesOne.paths] })).toBe(true);
+    expect(panesEqual(chat, { kind: 'chat', sessionId: 'sess-123' })).toBe(true);
+    expect(panesEqual(chat, { kind: 'chat', sessionId: 'other' })).toBe(false);
+    expect(panesEqual(mailList, { kind: 'mail', account: 'mara@example.com', msgId: null })).toBe(
+      true
+    );
+    expect(panesEqual(mailList, mailMsg)).toBe(false);
+    expect(panesEqual(filesOne, chat)).toBe(false);
+  });
+
+  it('is false when either side is null', () => {
+    expect(panesEqual(null, chat)).toBe(false);
+    expect(panesEqual(chat, null)).toBe(false);
+    expect(panesEqual(null, null)).toBe(false);
+  });
 });
 
 describe('chatNavigatorFromUrl', () => {
