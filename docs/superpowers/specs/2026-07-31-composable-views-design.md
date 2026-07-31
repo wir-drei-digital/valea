@@ -117,7 +117,14 @@ Knowledge all still compose through it until then; see *Build order*.
 | files | `files:<mount>[/<path>[\|<path2>]]` | ICM tree | **new** |
 | chat | `chat:<sessionId>` | sessions list | exists |
 | chat-new | `chat:new:<mountKey>` | — | exists |
-| mail | `mail[:<messageId>]` | message list | **new** |
+| mail | `mail:<account>[/<messageId>]` | message list | **new** |
+
+The mail descriptor carries the **account**, not a bare message id. A message
+id is only unique within an account — `/mail` selects on `?message=` qualified
+by `?account=`, and `MessageList` puts the account in every row href
+(`lib/components/mail/MessageList.svelte:69`) for exactly this reason. A
+`mail:<messageId>` form would silently resolve to the wrong message when two
+accounts are configured.
 
 The standalone `file:` kind from the side-panes spec is absorbed by `files:`.
 A Files pane with its tree hidden *is* a plain file view, which is what you
@@ -126,24 +133,39 @@ want when a mail message opens a file and you did not ask for a browser.
 ### The Files pane
 
 Internals: an optional ICM tree at a fixed 240px, and one or two file views
-sharing the remainder. Its header carries the pane chrome (title · promote ·
-close) plus two controls of its own — a tree toggle and `＋ Split`. Pane-level
-controls live in the pane header, never in a second bottom bar; the shell's
-bar is the only bar.
+sharing the remainder.
 
-**At most one Files surface exists at a time**, counting the primary. On
-`/knowledge` the primary *is* the Files surface, so a Files side pane there is
-rejected by the same `panesEqual` guard that already rejects a pane
-duplicating the primary. This is not merely tidiness: `treeOpenState` is a
-persisted global singleton keyed by href
-(`lib/stores/tree-state.svelte.ts`), so two Files surfaces would silently
-share expansion state. One surface makes that sharing correct by
-construction rather than accidental, and it is why tree visibility can be a
-single global preference without ambiguity.
+**Pane chrome stays owned by `PaneHost`.** It already renders title, promote
+and close around every side view (`PaneHost.svelte:96-120`), and duplicating
+that inside `FilesPane` would give the Files pane two headers or divergent
+behaviour from Chat and Mail. Instead a pane component may contribute its own
+controls *into* that header through an optional `controls` snippet on the
+registry contract — the tree toggle and `＋ Split` for Files, the sessions
+toggle for Chat. One header, one close button, per-kind extras.
 
-A `files:` path may be a **folder** as well as a file — `/knowledge`'s route
-already renders folder listings — in which case the split shows the folder
-view. `files:<mount>` with no path is the tree with an empty content area.
+**At most one Files surface exists at a time**, counting the primary. This
+needs a **new rule**, not the existing guard: `panesEqual`
+(`lib/panes/pane-route.ts:70-80`) compares descriptor *identity* — same kind
+and same path — and `/knowledge`'s index deliberately has
+`primaryDescriptor = null` (`routes/knowledge/+page.svelte:79-85`), so a Files
+pane there is not caught by it. `dedupeSurfaces` is a separate pass over
+`[primary, ...panes]` that collapses same-kind surfaces regardless of subject.
+
+The single-surface rule is not tidiness. `treeOpenState` is a persisted global
+singleton keyed by href (`lib/stores/tree-state.svelte.ts:45-64`), so two
+Files surfaces would silently share expansion state. One surface makes that
+sharing correct by construction, and is why tree visibility can be one global
+preference without ambiguity.
+
+**Folders expand, they do not open.** Only files are valid split subjects.
+Clicking a folder in the tree expands it exactly as it does today; it never
+takes a split. This is a deliberate simplification over the route's current
+behaviour, which renders a folder path as a bare "Pick a page from the list"
+header with no listing (`routes/knowledge/[...path]/+page.svelte:305-308`) —
+there is no folder-content component to reuse, and inventing one would mean
+designing selection, create, rename and delete inside a split. `files:<mount>`
+with no path is the tree with an empty content area, which is what a folder
+navigation now produces.
 
 The Knowledge **index** (mount selection, degraded and deactivated mounts,
 create, unmount, doctor actions) stays route-only. It is workspace
@@ -183,6 +205,23 @@ things you glance at beside a transcript, and they stay route-only. The route
 composes the same `MailPane` component plus its own modes, so list-and-reader
 has one implementation used by both. Promoting a Mail pane lands on `/mail`
 with the full route and its modes available again.
+
+**Reuse needs a navigation adapter, not just extraction.** `MessageList`
+renders each row as an anchor to `messageHref(account, msgId)`
+(`lib/components/mail/MessageList.svelte:69`), which a pane must not follow —
+clicking a row inside a pane has to rewrite that pane's descriptor, not
+navigate the whole app to `/mail`. `MailPane` therefore takes selection as
+callbacks rather than hardcoding hrefs:
+
+- `onSelect(account, msgId)` — the route passes a `goto`; the pane passes a
+  descriptor rewrite
+- `onAccountChange(account)` — same split
+- selection state, loading and the route's existing race suppression
+  (`routes/mail/+page.svelte:118-163`) stay with whoever owns the URL
+
+Without this the "one implementation" forks on first contact. It is the same
+shape `PaneContext.openFile` already uses to let one view behave differently
+per host.
 
 ### The Chat pane
 
@@ -262,40 +301,59 @@ gone after a resync. **The host, not the view, decides what that means.**
 `FileView` raises `onVanished` and `FilePaneAdapter` merely forwards it to
 `context.onArchived` (`FilePaneAdapter.svelte:16`); nothing in the adapter
 closes anything. So `PaneHost` must supply a concrete handler to every mounted
-pane, and the rule is uniform: **a pane whose subject no longer exists closes
-itself and is removed from memory.** Mail follows the same rule rather than
-holding an error state — a layout that quietly shrinks is less alarming than
-one carrying a tombstone, and the message list beside it already explains
-where things went.
+pane.
+
+The rule is **per subject, not per pane**: a vanished subject is removed, and
+the pane closes only when it has nothing left. This matters because a Files
+descriptor can name two files — closing the whole pane because one of them was
+deleted would discard the other file and any pending edit in it. So a deleted
+split is dropped and its sibling stays; a Files pane with no files left
+survives as tree-only; a Chat or Mail pane, having one subject, closes
+outright. Mail closes rather than holding a tombstone — a layout that quietly
+shrinks is less alarming than one carrying a dead panel, and the message list
+beside it already explains where things went.
+
+Self-closing uses `replaceState`, so Back never steps through a pane that
+immediately removes itself. Chat's existing `replacePaneWithSession` sets the
+same precedent (`routes/chat/+page.svelte:241-247`).
 
 ## Width behaviour
 
 Chat plus a Files pane with a tree and two splits needs
-236 + 380 + 240 + 300 + 300 = 1456px. Pressure is relieved from the outside
-in, at two levels:
+236 + 380 + 240 + 300 + 300 = 1456px. When less is available, what gets
+dropped is decided from the outside in — side panes right to left, so the
+primary is last to give up space, and within a Files pane the second split
+before the tree.
 
-1. **Shell.** Side panes auto-hide right to left, so content disappears from
-   the outer edge and the primary is last to give up space.
-2. **Inside a pane.** The Files pane drops its second split, then its tree.
+**But that decision is made when a pane opens or is restored — never on
+resize.**
 
-Auto-hidden things keep their toggle state and return when the window grows —
-the user never re-opens something the window took away. `＋ Pane` and
-`＋ Split` disable themselves when the next one would not fit, with the reason
-on hover rather than a silent no-op.
+An earlier draft had panes auto-hide as the window narrowed and return when it
+grew. That is not implementable without a parking or portal strategy, and the
+reason is instructive: a mounted side view lives directly inside a registered
+`paneforge` `Pane` (`PaneHost.svelte:71-122`). Removing it destroys its
+subtree, and a `ChatView` disposes its `AgentSessionStore` on teardown — so
+a narrowing window would leave the session channel, discard the composer's
+unsent draft and replay the transcript, which is the exact failure `PaneHost`'s
+header comment forbids for the primary. Keeping it registered but
+display-hidden leaves a zero-width pane a drag can resurrect.
 
-**Auto-hide means hidden, never unmounted.** This is load-bearing and easy to
-get wrong. A `ChatView` owns an `AgentSessionStore` that it disposes on
-teardown, so unmounting a hidden chat pane would leave the session channel,
-discard the composer's unsent draft, and replay the transcript on return —
-the exact failure `PaneHost`'s existing header comment forbids for the
-primary. Hidden panes therefore stay mounted with their subtree display-hidden
-and are excluded from the resize group's layout.
+Rather than build machinery to make continuous auto-hide safe, the rule
+narrows: **`pane-fit.ts` is consulted only at the moments a pane would be
+added** — `＋ Pane`, `＋ Split`, a tool chip opening a file, and restore from
+memory. Panes that do not fit are not opened, and on restore the composition
+is truncated from the right while memory keeps the full list, so the pane
+returns on a wider window the next time you enter the route. Resizing the
+window never mounts or unmounts anything.
 
-Two consequences to honour: a hidden pane's `clientWidth` binding reads 0, so
-views that gate on their own width must fail closed rather than throw
-(`ChatView`'s `viewWidth >= 860` already does — at 0 the rail simply hides);
-and hidden panes must not be rendered by the resizer as zero-width panes,
-which would let a drag resurrect them at an unusable size.
+The cost is honest and small: shrink the window with three columns already
+open and they get cramped until you close one yourself. In exchange, panes
+appear and disappear only in response to something the user did, component
+identity is never in question, and "layout keyed by pane count" is
+unambiguous because mounted, visible and requested counts are always equal.
+
+`＋ Pane` and `＋ Split` disable themselves when the next one would not fit,
+with the reason on hover rather than a silent no-op.
 
 `ChatView`'s existing `viewWidth >= 860` rail gate is untouched and needs no
 coordination: it measures `ChatView`'s own container, so opening a pane
@@ -308,6 +366,21 @@ A ~28px band across the content area only. `＋ Pane` on the right, opening a
 short menu (Files / Chat / Mail), with kinds already open shown as checked and
 inert. Nav collapse sits at the far left if that open item is confirmed.
 
+**Every menu item must name a concrete subject**, since no descriptor kind
+accepts "empty":
+
+| Item | Opens | When unavailable |
+|---|---|---|
+| Files | `files:<activeMount>` — tree, no file open | no ICM mounted |
+| Chat | `chat:new:<activeMount>` — the new-session composer, which is what the existing `chat-new` kind is for; pick an existing session from the pane's own navigator | no ICM mounted |
+| Mail | `mail:<selectedAccount>` — list, nothing selected | no account configured |
+
+`activeMount` is the one `resolveActiveMountKey` already derives per route
+(`lib/shell/icm-route.ts`); `selectedAccount` is `mailStore.selectedAccount`,
+falling back to the first configured account. Unavailable items are shown
+disabled with the reason, not hidden — "No mail account yet" teaches something;
+a missing row does not.
+
 Styling is deliberately furniture, not feature: `bg-paper-sidebar`,
 `border-t border-paper-hairline`, inactive `text-ink-meta`, active
 `text-ink-heading`. **No accent colour** — in this design system colour means
@@ -317,6 +390,13 @@ Routes that are not pane hosts (Today, Tasks, Calendar, Audit, Sources) render
 the bar without `＋`. It stays present as stable furniture rather than
 appearing and disappearing as you navigate, and each route populates it as it
 is converted.
+
+Structurally there is **one path, not two**: every route renders through
+`PaneHost` with a primary, and a non-pane-host route simply never has side
+panes. `PaneHost` already handles this — a lone pane lays out at `[100]`,
+which its own header comment calls out — so those routes keep passing a plain
+`main` snippet and gain the bar without any per-route work. No route bypasses
+the shell to render content directly.
 
 The bar carries fewer controls than it did in the middle draft, because the
 per-pane toggles moved into pane headers where they belong. It is still worth
@@ -349,13 +429,15 @@ Any user-initiated open into a split clears `autoSplit` for it. Rule 3 is the
 conservative floor `hasOpenPane()` provides today: auto-open never evicts a
 file the user placed.
 
-**Duplicate suppression.** `panesEqual` already drops a pane duplicating the
-primary. It extends to **one surface per kind** across the primary and both
-panes: a second Files or Mail or Chat surface is collapsed into the existing
-one, so opening a file always routes into the Files surface that exists rather
-than making a second browser. The one exception is `chat-new` beside a
-`chat`, which is a distinct kind and is how you start a session while reading
-an old one — a path Knowledge already offers.
+**Duplicate suppression** happens at two levels. `panesEqual` keeps its job —
+identity, dropping a pane whose subject matches the primary's. A new
+`dedupeSurfaces` pass adds the coarser rule: **one surface per descriptor
+kind** across the primary and both panes, regardless of subject, so opening a
+file routes into the Files surface that already exists rather than making a
+second browser. `chat-new` is a distinct kind from `chat` and so may sit
+beside one — that is how you start a session while reading an old one, a path
+Knowledge already offers. Where the two rules disagree, `dedupeSurfaces` is
+the stricter and wins.
 
 **Promote (⤢).** The pane's subject becomes the route you are on; remaining
 panes stay. For a Files pane with two splits, promoting carries both (the
@@ -363,15 +445,18 @@ route's `?split=` param).
 
 **Resizing.** `pane-split.ts` currently persists one percentage. It becomes a
 layout array keyed by pane count (`valea.pane-split.<n>`), with the Files
-pane's internal split ratio persisted separately under its own key.
+pane's internal split ratio persisted separately under its own key. The count
+is unambiguous because nothing is ever hidden-but-mounted: requested, mounted
+and visible panes are always the same set.
 
 ## Modules
 
 Extended:
 
-- `lib/panes/pane-route.ts` — repeated `pane` params; `files:` and `mail:`
-  descriptors including the `|` split form; cap enforcement; dedup; `?all=1`
-  alias
+- `lib/panes/pane-route.ts` — repeated `pane` params; `files:` and
+  account-qualified `mail:` descriptors including the `|` split form; cap
+  enforcement; `dedupeSurfaces` alongside `panesEqual`; promotion merge rules;
+  `?all=1` alias
 - `lib/panes/pane-split.ts` — per-count outer layouts
 - `lib/panes/registry.ts` — `files` → `FilesPane`, `mail` → `MailPane`
 - `lib/panes/context.ts` — `openFile` routes to a Files pane
@@ -396,7 +481,8 @@ New:
 - `lib/panes/pane-memory.ts` — per-route persistence and the apply rule
 - `lib/shell/reveal-path.ts` — ancestor hrefs for `treeOpenState`, lifted out
   of `routes/knowledge/[...path]/+page.svelte`
-- `lib/shell/pane-fit.ts` — width → how many panes and splits fit
+- `lib/shell/pane-fit.ts` — width → how many panes and splits fit; consulted
+  only when something is added or restored, never on resize
 - `lib/components/shell/ContentBar.svelte`
 
 Retired: `SessionHeader`'s popover file tree and `ChatView`'s
@@ -426,8 +512,12 @@ no component render harness (`pane-route.test.ts`, `pane-split.test.ts`,
   `account`, `split`) are carried and the old primary's are not
 - `reveal-path.test.ts` — ancestor href derivation, mount roots, encoded
   segments
-- `pane-fit.test.ts` — thresholds at both levels; outside-in hide order;
-  toggle state survives an auto-hide
+- `pane-fit.test.ts` — thresholds at both levels; a restore too wide for the
+  window truncates from the right while memory keeps the full list; resize
+  alone changes nothing
+- `dedupeSurfaces` cases in `pane-route.test.ts` — one surface per kind across
+  primary and panes; `chat-new` allowed beside `chat`; a Files pane on
+  `/knowledge` collapsed even though `primaryDescriptor` is null there
 
 ## Build order
 
