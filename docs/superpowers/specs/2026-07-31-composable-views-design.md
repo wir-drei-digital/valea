@@ -138,10 +138,32 @@ sharing the remainder.
 **Pane chrome stays owned by `PaneHost`.** It already renders title, promote
 and close around every side view (`PaneHost.svelte:96-120`), and duplicating
 that inside `FilesPane` would give the Files pane two headers or divergent
-behaviour from Chat and Mail. Instead a pane component may contribute its own
-controls *into* that header through an optional `controls` snippet on the
-registry contract — the tree toggle and `＋ Split` for Files, the sessions
-toggle for Chat. One header, one close button, per-kind extras.
+behaviour from Chat and Mail.
+
+Per-kind controls therefore cannot be a snippet handed *upward* from the pane
+component: `PaneHost` renders the header before mounting the view, and the
+registry is a flat kind → component map taking only `{descriptor, context}`
+(`lib/panes/registry.ts:13-24`). A child cannot pass stateful chrome back to a
+parent that has already rendered.
+
+Instead the **host owns the state and renders both sides of it.** A registry
+entry grows from a bare component to:
+
+```ts
+type PaneEntry = {
+  view: Component<{ descriptor; context; state? }>;
+  controls?: Component<{ state }>;   // rendered inside PaneHost's header
+  createState?: (descriptor) => PaneState;
+};
+```
+
+`PaneHost` calls `createState(descriptor)` once per pane, passes the result to
+the header's `controls` component and to the body's `view` component, and
+disposes it with the pane. So `FilesPaneState` (tree visibility, open splits,
+whether another split fits) is written by the header's toggle and read by the
+body, with neither component parenting the other. Kinds needing no extras —
+`file`, `chat-new` — simply omit `controls` and `createState`, and the entry
+degrades to today's shape.
 
 **At most one Files surface exists at a time**, counting the primary. This
 needs a **new rule**, not the existing guard: `panesEqual`
@@ -299,7 +321,7 @@ between two people is never rewritten by the recipient's habits.
 Restored panes can be stale — a file deleted, a session archived, a message
 gone after a resync. **The host, not the view, decides what that means.**
 `FileView` raises `onVanished` and `FilePaneAdapter` merely forwards it to
-`context.onArchived` (`FilePaneAdapter.svelte:16`); nothing in the adapter
+`context.onArchived` (`FilePaneAdapter.svelte:15`); nothing in the adapter
 closes anything. So `PaneHost` must supply a concrete handler to every mounted
 pane.
 
@@ -371,15 +393,31 @@ accepts "empty":
 
 | Item | Opens | When unavailable |
 |---|---|---|
-| Files | `files:<activeMount>` — tree, no file open | no ICM mounted |
-| Chat | `chat:new:<activeMount>` — the new-session composer, which is what the existing `chat-new` kind is for; pick an existing session from the pane's own navigator | no ICM mounted |
-| Mail | `mail:<selectedAccount>` — list, nothing selected | no account configured |
+| Files | `files:<mount>` — tree, no file open | no enabled ICM |
+| Chat | `chat:new:<mount>` — the new-session composer, which is what the existing `chat-new` kind is for; pick an existing session from the pane's own navigator | no enabled ICM |
+| Mail | `mail:<account>` — list, nothing selected | no account configured *and* status is known |
 
-`activeMount` is the one `resolveActiveMountKey` already derives per route
-(`lib/shell/icm-route.ts`); `selectedAccount` is `mailStore.selectedAccount`,
-falling back to the first configured account. Unavailable items are shown
-disabled with the reason, not hidden — "No mail account yet" teaches something;
-a missing row does not.
+`<mount>` is resolved by **`resolveIcmSelection(?icm, enabledMountKeys)`**, not
+by `resolveActiveMountKey`. The latter bottoms out at `?icm=`
+(`lib/shell/icm-route.ts:73`) and so returns `null` on Today or Tasks, which
+would disable both items despite a perfectly good workspace.
+`resolveIcmSelection` is the helper `/chat`'s own `primaryMountKey()` already
+uses for exactly this "pick a sensible mount" job, falling back to the first
+enabled, non-degraded mount in config order.
+
+`<account>` is `mailStore.selectedAccount`, falling back to the first
+configured account. **Unknown is not the same as absent:** `mailStore.accounts`
+starts empty and only fills on `refreshStatus()`, which today only `/mail`
+calls on mount (`lib/stores/mail.svelte.ts:448-449`,
+`routes/mail/+page.svelte:54-56`). Opening the menu beside a chat would
+otherwise report "No mail account yet" before anything had been fetched. So
+`AppShell` kicks a one-time `refreshStatus()`, and until status is known the
+item stays **enabled** — the Mail pane renders its own no-account empty state,
+which is both truthful and recoverable. Availability is only ever asserted
+from loaded data.
+
+Genuinely unavailable items are shown disabled with the reason rather than
+hidden — "No mail account yet" teaches something; a missing row does not.
 
 Styling is deliberately furniture, not feature: `bg-paper-sidebar`,
 `border-t border-paper-hairline`, inactive `text-ink-meta`, active
@@ -458,7 +496,9 @@ Extended:
   enforcement; `dedupeSurfaces` alongside `panesEqual`; promotion merge rules;
   `?all=1` alias
 - `lib/panes/pane-split.ts` — per-count outer layouts
-- `lib/panes/registry.ts` — `files` → `FilesPane`, `mail` → `MailPane`
+- `lib/panes/registry.ts` — entries become `PaneEntry`
+  (`view` / `controls` / `createState`) instead of bare components;
+  `files` → `FilesPane`, `mail` → `MailPane`, `chat` → `ChatPane`
 - `lib/panes/context.ts` — `openFile` routes to a Files pane
 - `lib/components/panes/PaneHost.svelte` — N panes. Its unconditional-primary
   rule is load-bearing and must survive: tearing the primary down on a pane
@@ -518,6 +558,10 @@ no component render harness (`pane-route.test.ts`, `pane-split.test.ts`,
 - `dedupeSurfaces` cases in `pane-route.test.ts` — one surface per kind across
   primary and panes; `chat-new` allowed beside `chat`; a Files pane on
   `/knowledge` collapsed even though `primaryDescriptor` is null there
+- `content-bar.test.ts` — menu subject resolution: a mount is found on Today
+  with no `?icm=`; degraded and disabled mounts are skipped; Mail stays
+  enabled while account status is unknown and disables only once a *loaded*
+  status shows none
 
 ## Build order
 
@@ -525,8 +569,9 @@ One pass, internally ordered so each step is separately reviewable:
 
 1. `pane-route.ts` — repeated params, `files:`/`mail:` descriptors, promotion
    merge rules + tests (no UI change)
-2. `PaneHost` renders N panes, hidden-not-unmounted; `pane-split.ts`
-   per-count layouts
+2. `PaneHost` renders N panes and gains the `PaneEntry` contract
+   (`view` / `controls` / `createState`); `pane-split.ts` per-count layouts.
+   Panes are only ever mounted or unmounted — there is no hidden state.
 3. `FilesPane` — tree + splits + `files-pane-state.ts` + `reveal-path.ts`;
    `IcmTree` multi-mark and `onBeforeMutate(href)` over a split→ref map
 4. `MailPane` — the read surface extracted from `/mail`, still consumed by
