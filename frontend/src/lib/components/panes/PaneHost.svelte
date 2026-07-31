@@ -13,7 +13,7 @@
   import { paneTitle, serializePaneParam, type PaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
   import { paneEntries, type PaneState } from '$lib/panes/registry';
-  import { defaultPaneLayout, loadPaneLayout, savePaneLayout } from '$lib/panes/pane-split';
+  import { paneRowLayout, savePaneLayout } from '$lib/panes/pane-split';
   import X from '@lucide/svelte/icons/x';
   import Maximize2 from '@lucide/svelte/icons/maximize-2';
 
@@ -38,10 +38,12 @@
   } = $props();
 
   const count = $derived(panes.length + 1);
-  // `loadPaneLayout` returns null for a count never dragged, never a default —
-  // the arithmetic belongs to the caller, so supply it here rather than
-  // letting paneforge divide the row into equal columns.
-  const layout = $derived(loadPaneLayout(count) ?? defaultPaneLayout(count));
+  // Deliberately derived from `panes`, NOT from `count`: a count-only derived
+  // memoizes at the pre-drag layout and paneforge then writes it back over the
+  // ratio the user just dragged. `paneRowLayout`'s doc comment has the full
+  // chain. It also owns the "never dragged" default, since `loadPaneLayout`
+  // returns null rather than inventing one.
+  const layout = $derived(paneRowLayout(panes));
 
   // Per-pane chrome state (a Files tree toggle, a Chat sessions toggle) is
   // created HERE because the header renders before the body mounts: a pane

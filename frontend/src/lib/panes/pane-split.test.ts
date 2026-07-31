@@ -3,9 +3,11 @@ import {
   defaultPaneLayout,
   loadFilesSplit,
   loadPaneLayout,
+  paneRowLayout,
   saveFilesSplit,
   savePaneLayout
 } from './pane-split';
+import type { PaneDescriptor } from './pane-route';
 
 // This vitest setup runs on the default (node) environment, where the
 // `localStorage` global is `null` rather than a Web Storage object — so the
@@ -132,11 +134,53 @@ describe('default pane layouts', () => {
   });
 });
 
+describe('the layout a pane row opens at', () => {
+  const files: PaneDescriptor = { kind: 'files', mountKey: 'work', paths: ['notes.md'] };
+  const chat: PaneDescriptor = { kind: 'chat', sessionId: 's1' };
+
+  beforeEach(() => {
+    installFakeLocalStorage();
+    localStorage.clear();
+  });
+  afterEach(() => removeLocalStorage());
+
+  it('prefers the arrangement the user dragged for this pane count', () => {
+    savePaneLayout(2, [80, 20]);
+    expect(paneRowLayout([files])).toEqual([80, 20]);
+  });
+
+  // The row is sized by how many panes there are, not by which — two
+  // different files side by side is still a two-column row.
+  it('reads the same stored arrangement whatever the panes contain', () => {
+    savePaneLayout(2, [80, 20]);
+    expect(paneRowLayout([chat])).toEqual([80, 20]);
+    expect(paneRowLayout([{ kind: 'files', mountKey: 'work', paths: ['other.md'] }])).toEqual([
+      80, 20
+    ]);
+  });
+
+  it('falls back to the count default when this count was never dragged', () => {
+    savePaneLayout(2, [80, 20]);
+    expect(paneRowLayout([files, chat])).toEqual(defaultPaneLayout(3));
+    expect(paneRowLayout([])).toEqual([100]);
+  });
+
+  // `loadPaneLayout` rejects a stored value whose length no longer matches;
+  // the row still has to open at something usable.
+  it('falls back to the count default when the stored arrangement is unusable', () => {
+    localStorage.setItem('valea.pane-split.2', JSON.stringify([50, 25, 25]));
+    expect(paneRowLayout([files])).toEqual([60, 40]);
+    localStorage.setItem('valea.pane-split.2', 'junk');
+    expect(paneRowLayout([files])).toEqual([60, 40]);
+  });
+});
+
 describe('pane layouts — no localStorage (SSR/guard)', () => {
   beforeEach(() => removeLocalStorage());
 
   it('degrades to defaults and swallows the failed writes', () => {
     expect(loadPaneLayout(2)).toBeNull();
+    expect(paneRowLayout([{ kind: 'chat', sessionId: 's1' }])).toEqual([60, 40]);
     expect(loadFilesSplit()).toBe(40);
     expect(() => savePaneLayout(2, [60, 40])).not.toThrow();
     expect(() => saveFilesSplit(45)).not.toThrow();

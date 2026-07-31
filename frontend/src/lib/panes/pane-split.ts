@@ -7,6 +7,8 @@
  * lose either arrangement. The count is unambiguous — nothing is ever
  * hidden-but-mounted, so requested, mounted and visible panes are one set.
  */
+import type { PaneDescriptor } from './pane-route';
+
 const LAYOUT_PREFIX = 'valea.pane-split.';
 const FILES_KEY = 'valea.files-split';
 const FILES_DEFAULT = 40;
@@ -51,6 +53,32 @@ export function defaultPaneLayout(count: number): number[] {
   const sides = Math.trunc(count) - 1;
   const side = Math.round(100 / (PRIMARY_WEIGHT + sides));
   return [100 - side * sides, ...Array<number>(sides).fill(side)];
+}
+
+/**
+ * The layout a row of `panes` (plus the primary) should open at: the
+ * arrangement the user dragged for this pane COUNT if there is one, else the
+ * count's default.
+ *
+ * It takes the pane LIST rather than a count, and that is load-bearing rather
+ * than a convenience. Only `panes.length` is read, but in `PaneHost` this is a
+ * `$derived`, and a derived over the COUNT alone goes stale: dragging the
+ * divider persists a new layout WITHOUT changing the count, so the count's
+ * value never changes, Svelte never propagates it (a derived's default
+ * `equals` is `===`, and `2 === 2`), and the memoized layout keeps serving the
+ * pre-drag numbers.
+ *
+ * That staleness is not cosmetic, because paneforge recomputes the whole row
+ * from every pane's CURRENT `defaultSize` whenever a pane registers or
+ * unregisters — and a descriptor change does exactly that, since side panes
+ * are keyed by their serialized descriptor. It then fires `onLayout`, so the
+ * stale numbers are written straight back over the drag. Reading the LIST
+ * makes the layout re-read storage on every reassignment of the prop, which
+ * strictly includes every remount, and a fresh array always propagates.
+ */
+export function paneRowLayout(panes: PaneDescriptor[]): number[] {
+  const count = panes.length + 1;
+  return loadPaneLayout(count) ?? defaultPaneLayout(count);
 }
 
 export function savePaneLayout(count: number, layout: number[]): void {
