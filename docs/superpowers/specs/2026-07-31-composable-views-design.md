@@ -236,8 +236,9 @@ route would have deleted all of them. What is genuinely shared is
 `MessageList` + `MessageView`; `MailPane` is a third composition of them. The
 real cost is the ~40-line race-suppressed selection effect, now duplicated
 near-verbatim in `MailPane` and the route — and its own comments record that
-the race was caught live once already. It is extracted into one
-`mail-selection` helper used by both.
+the race was caught live once already. It **must be** extracted into one
+`mail-selection` helper used by both — an obligation on the implementation,
+not a completed fact.
 
 **Reuse needs a navigation adapter, not just extraction.** `MessageList`
 renders each row as an anchor to `messageHref(account, msgId)`

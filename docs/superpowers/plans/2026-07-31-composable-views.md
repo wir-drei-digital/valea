@@ -27,6 +27,33 @@
   Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
   ```
 
+## ⚠️ Amendments — these supersede the task text below
+
+Task sections are kept as written for the historical record. Where they
+disagree with this list, **this list governs.**
+
+1. **There is no `＋ Split` control** (Daniel, 2026-08-01). It was specced,
+   built, then deleted: any such button must *guess* which file to open, and
+   the plan's `treeNav.find(n => n.isFile)` finds nothing in a real ICM because
+   top-level entries are folders. Deleted with it: `state.addSplit`,
+   `state.maxSplits`, `canAddSplit`, `firstUnopenedLeaf`. The tree's per-row
+   "Open beside" is the only way to open a second split. Stale mentions survive
+   in Task 3's interface block, Task 7's Consumes list, and the
+   `FilesPaneState` / `FilesPaneControls` snippets — ignore them.
+
+2. **Mail's "one implementation used by both" is retired** (Daniel,
+   2026-08-01). `/mail`'s list carries an account switcher, debounced search, a
+   folder picker, a read filter, pagination and a sync footer; none belong in a
+   pane. What is shared is `MessageList` + `MessageView`. **G6 must still
+   extract** the ~40-line race-suppressed selection effect, currently duplicated
+   near-verbatim in `MailPane.svelte` and `routes/mail/+page.svelte`, into one
+   `mail-selection` helper used by both. This is an obligation, not a
+   completed fact.
+
+3. **The first file always opens**, regardless of width. `openInFirst` and
+   `openAsSecond` floor `paths.length === 0`. Without this the Files pane's
+   tree was inert below roughly a 1590px window.
+
 ## File Structure
 
 **New pure-logic modules** (each one file, one responsibility, each with a `.test.ts` sibling):
@@ -2545,17 +2572,12 @@ This applies in `FilesPane`'s split close button and in the route's
 `onVanished` handler alike. A review caught this as a live eviction bug in G3;
 `shiftAuto` was added to `auto-open.ts` specifically for these call sites.
 
-Also publish `state.addSplit` so the header's `＋ Split` works:
-
-```ts
-$effect(() => {
-  state.addSplit = () => {
-    const first = treeNav.find((n) => n.isFile);
-    if (first) setPaths(openAsSecond(descriptor.paths, first.path, maxSplits));
-  };
-  return () => { state.addSplit = null; };
-});
-```
+**Do NOT publish `state.addSplit`.** Earlier revisions of this plan asked for
+it here, to drive a `＋ Split` control in the pane header. That control was
+built and then **deleted** (see the banner at the top of this plan), along with
+`addSplit`, `state.maxSplits`, `canAddSplit` and `firstUnopenedLeaf`. There is
+nothing to publish; the tree's per-row "Open beside" is the only way to open a
+second split.
 
 - [ ] **Step 3: Typecheck and test**
 
