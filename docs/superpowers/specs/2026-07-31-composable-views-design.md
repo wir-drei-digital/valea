@@ -43,6 +43,11 @@ you can open things beside it"* — extended, not replaced.
   is a full-height fixed anchor; the bar sits *beside* it, not under it.
 - **Panes are remembered per route.** Leaving chat and coming back restores
   what you had beside it. A URL that names panes always wins over memory.
+- **The tree and the file panes stay in sync**, both directions: every open
+  file is revealed and highlighted in the tree, and a tree click drives the
+  pane.
+- **Chat with two files open is a first-class layout**, which is what forces
+  auto-open to track its own pane rather than replacing any file pane it finds.
 
 ## Layout
 
@@ -99,6 +104,39 @@ This retires the popover file tree in `SessionHeader.svelte` (its
 `Popover.Root` wrapping `IcmTree`, and the `treeRequestedFor` root-load effect
 in `ChatView` that feeds it). The tree becomes one component in one place,
 rendered from `IcmTree` exactly as Knowledge renders it today.
+
+### Tree ↔ pane sync
+
+The tree and the file panes are two views of one thing and must agree. Today
+they cannot: `IcmTree` takes a single `activePath`, both Knowledge routes pass
+`page.url.pathname`, and the ancestor-reveal loop is inlined in
+`routes/knowledge/[...path]/+page.svelte` where no other route can reach it. A
+file open in a pane is therefore invisible in the tree.
+
+**Pane → tree.** Whenever the open file panes change — a tree click, a chat
+tool chip, a promote, a close — the tree reveals and marks them:
+
+- `IcmTree`'s `activePath: string` becomes `activePaths: string[]`. Every open
+  file pane's href is marked, so with two files open **both** rows highlight.
+  The route's own path stays in the list, so Knowledge's current behaviour is
+  the one-element case and nothing regresses.
+- Ancestors of each open file are expanded via `treeOpenState.open()`, which
+  is already idempotent and already exists for exactly this purpose. The loop
+  moves out of the Knowledge route into `lib/shell/reveal-path.ts` so any
+  pane host can call it.
+- The newest-revealed row is scrolled into view. Only the newest: scrolling
+  for every pane would fight itself when two files are open.
+
+**Tree → pane.** A tree row click opens that file in the **first file pane**,
+or opens a new one if there is none — browsing replaces, it does not
+accumulate. Each row also gets a hover affordance that opens the file as an
+*additional* pane instead, which is how you get two files side by side
+deliberately rather than by accident.
+
+`onBeforeMutate` (the flush-pending-edit guard before a rename or delete)
+currently keys off `activePath === node.href`, i.e. "the one open page". With
+two editable panes it must become per-href, so renaming either file flushes
+the right pane's pending edit and not the other's.
 
 The **file-activity rail** is untouched. It is a separate shipped feature
 (`2026-07-30-session-file-activity-design.md`), it lives inside `ChatView`
@@ -213,16 +251,31 @@ squeezed into the sidebar (`StatusPill`, `UpdateNotice`).
 
 ## Interaction details
 
-**Chat opening a file.** Today `ChatView` auto-opens a file into the single
-pane, guarded by `hasOpenPane()` so it never replaces what you are reading.
-The generalised rule needs no provenance tracking: *replace an existing `file`
-pane if there is one, otherwise fill a free slot, otherwise do nothing.* You
-never accumulate file panes, and a chat or mail pane you opened yourself is
-never taken.
+**Two files beside a chat is a supported layout.** Chat as primary with two
+`file` panes is within the cap, and `panesEqual` only rejects panes that are
+*identical*, so two different files coexist without any special case. This
+does, however, kill the naive auto-open rule: "replace an existing file pane"
+would let the assistant evict a file you deliberately put there.
+
+**Chat opening a file.** Auto-open therefore tracks the one pane it created.
+`autoOpenedKey` is a serialized descriptor held per host, reset when the
+session changes, and the rule reads:
+
+1. if `autoOpenedKey` is still among the open panes → replace **that** pane
+2. else if a slot is free → open there
+3. else → do nothing
+
+So the assistant recycles its own pane while a file you opened stays put — you
+can pin your file on the right and let chat cycle references on the left. Any
+user-initiated open (a tree click, the ＋ menu) clears `autoOpenedKey` for the
+pane it targets, so a pane stops being the assistant's the moment you put
+something in it yourself. Rule 3 is the conservative floor `hasOpenPane()`
+provides today: auto-open never evicts a user's pane.
 
 **Duplicate suppression.** `panesEqual` already drops a pane that duplicates
 the primary. It extends to deduplicating panes against each other, so opening
-the same file twice is a no-op rather than two identical columns.
+the same file twice targets the pane already showing it rather than making a
+second identical column.
 
 **Promote (⤢).** Unchanged. The pane's subject becomes the route you are on;
 the remaining panes stay.
@@ -255,6 +308,10 @@ New:
   disabled
 - `lib/shell/pane-fit.ts` — available width → how many panes and whether the
   column fits
+- `lib/shell/reveal-path.ts` — ancestor hrefs of a file, for `treeOpenState`;
+  lifted out of `routes/knowledge/[...path]/+page.svelte`
+- `lib/panes/auto-open.ts` — the three-step auto-open rule over the current
+  pane list and `autoOpenedKey`
 - `lib/components/shell/ContentBar.svelte`
 - `lib/components/panes/MailPaneAdapter.svelte`
 
@@ -278,6 +335,10 @@ no component render harness (`pane-route.test.ts`, `pane-split.test.ts`,
   disabled reasons
 - `pane-fit.test.ts` — width thresholds; right-to-left hide order; toggle
   state survives an auto-hide
+- `reveal-path.test.ts` — ancestor href derivation, including mount roots and
+  paths with encoded segments
+- `auto-open.test.ts` — recycles its own pane; never evicts a user pane; falls
+  back to a free slot; no-ops when full; a user open clears the mark
 
 ## Build order
 
@@ -289,7 +350,9 @@ One pass, but internally ordered so each step is separately reviewable:
 3. `AppShell` restructure — nav anchor, content column, narrow column slot
 4. `ContentBar` + `content-bar.ts` + `pane-fit.ts`
 5. `pane-memory.ts` and the restore-on-entry rule
-6. Route conversions: Chat (tree column replaces the popover), Knowledge, Mail
+6. `reveal-path.ts` + `IcmTree`'s `activePaths`, per-href `onBeforeMutate`,
+   and `auto-open.ts`
+7. Route conversions: Chat (tree column replaces the popover), Knowledge, Mail
    (`PaneHost` + `MailPaneAdapter`)
 
 ## Open items for review
