@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { closeSplit, dropVanished, openAsSecond, openInFirst } from './files-pane-state';
+import {
+  canOpenBeside,
+  closeSplit,
+  dropVanished,
+  openAsSecond,
+  openInFirst
+} from './files-pane-state';
 
 describe('openInFirst', () => {
   it('opens into an empty pane', () => {
@@ -85,6 +91,40 @@ describe('openAsSecond', () => {
 
   it('still refuses to add a second split at that width, replacing instead', () => {
     expect(openAsSecond(['A.md'], 'B.md', 0)).toEqual(['B.md']);
+  });
+});
+
+describe('canOpenBeside', () => {
+  // THE laptop case. Below roughly a 1590px window the cap is 0, and
+  // `openAsSecond(['A'], 'B', 0)` returns ['B'] — the control named "Open
+  // beside" would destroy the split it was meant to sit beside. The row
+  // disables itself and says why instead.
+  it('is false when the pane shows a file and is too narrow for a second', () => {
+    expect(canOpenBeside(['A.md'], 0)).toBe(false);
+    expect(canOpenBeside(['A.md'], 1)).toBe(false);
+    expect(canOpenBeside(['A.md', 'B.md'], 1)).toBe(false);
+  });
+
+  // Nothing to sit beside yet, so the click is simply an open — under the same
+  // first-file floor `openInFirst` takes. Disabling here would leave a narrow
+  // pane with no way to open anything from this control at all.
+  it('is true on an empty pane at any width', () => {
+    expect(canOpenBeside([], 0)).toBe(true);
+    expect(canOpenBeside([], 2)).toBe(true);
+  });
+
+  // Replacing the SECOND split when both are occupied is deliberate — it is
+  // how you retarget it — so a full pane at a width that holds two stays live.
+  it('is true when a second split genuinely fits, full pane or not', () => {
+    expect(canOpenBeside(['A.md'], 2)).toBe(true);
+    expect(canOpenBeside(['A.md', 'B.md'], 2)).toBe(true);
+  });
+
+  // The width figure is a suggestion; `SPLIT_CAP` is the law. It cannot be
+  // talked into believing a third split fits.
+  it('is governed by the hard cap, not by an inflated width figure', () => {
+    expect(canOpenBeside(['A.md', 'B.md'], 5)).toBe(true);
+    expect(canOpenBeside(['A.md'], 5)).toBe(true);
   });
 });
 

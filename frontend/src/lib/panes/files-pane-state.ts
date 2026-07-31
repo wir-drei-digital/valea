@@ -56,6 +56,27 @@ export function openAsSecond(paths: string[], path: string, maxSplits: number): 
   return [...paths.slice(0, Math.max(0, cap - 1)), path];
 }
 
+/**
+ * Whether the tree row's "Open beside" can do what its name says.
+ *
+ * False in exactly one case: the pane already shows a file and is too narrow
+ * to hold a second, where `openAsSecond` REPLACES the split the control was
+ * meant to sit beside. That is the whole width range below roughly a 1590px
+ * window, so without this the only remaining way to open a second split is a
+ * control that silently destroys what you were reading — the precise cost the
+ * ＋ Split button was deleted for. The row disables itself and says why
+ * instead, matching the rule the spec already sets for `＋ Pane`.
+ *
+ * Two cases that look similar are deliberately TRUE:
+ *   - an empty pane — there is nothing to sit beside yet, so the click is
+ *     simply an open, under the same first-file floor `openInFirst` takes;
+ *   - a full pane at a width that genuinely holds two — replacing the SECOND
+ *     split is `openAsSecond`'s designed behaviour, not a surprise.
+ */
+export function canOpenBeside(paths: string[], maxSplits: number): boolean {
+  return paths.length === 0 || effectiveCap(maxSplits) >= 2;
+}
+
 export function closeSplit(paths: string[], index: number): string[] {
   if (index < 0 || index >= paths.length) return paths;
   return paths.filter((_, i) => i !== index);

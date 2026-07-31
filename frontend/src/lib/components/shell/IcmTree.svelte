@@ -15,7 +15,8 @@
     entryMenus,
     onBeforeMutate,
     onSelect,
-    onOpenBeside
+    onOpenBeside,
+    openBesideDisabled = null
   }: {
     nodes: NavTreeItem[];
     /**
@@ -73,6 +74,16 @@
      * takes a split, so there is nothing to place beside anything.
      */
     onOpenBeside?: (sel: { mountKey: string; path: string }) => void;
+    /**
+     * Why "Open beside" cannot act, or null when it can. The tree has no idea
+     * how wide its host is, so the host computes this and hands it down.
+     *
+     * When set, the control still RENDERS — disabled, carrying this string as
+     * its tooltip. A disabled control with a reason teaches; a missing one
+     * just leaves the user wondering where it went. Same rule the spec sets
+     * for the shell's own `＋ Pane`.
+     */
+    openBesideDisabled?: string | null;
   } = $props();
 
   const showMenus = $derived(entryMenus ?? onSelect === undefined);
@@ -175,6 +186,7 @@
                 {onBeforeMutate}
                 {onSelect}
                 {onOpenBeside}
+                {openBesideDisabled}
               />
             {:else}
               <p class="text-ink-meta px-2 py-[3px] text-[12px] italic">Empty</p>
@@ -239,17 +251,37 @@
           {#if gutterControls > 0}
             <div class="absolute top-1/2 right-0.5 flex -translate-y-1/2 items-center">
               {#if onOpenBeside}
+                <!-- `aria-disabled`, not the `disabled` attribute: a truly
+                     disabled button takes no pointer events, so its `title`
+                     never appears — which would turn "disabled with the reason
+                     on hover" back into the silent no-op this exists to
+                     replace. Keyboard users can still focus it and hear the
+                     reason, which is strictly better. -->
                 <button
                   type="button"
-                  title="Open beside"
+                  title={openBesideDisabled ?? 'Open beside'}
                   aria-label={`Open ${node.label} beside`}
+                  aria-disabled={openBesideDisabled ? 'true' : undefined}
                   onclick={(event) => {
                     event.stopPropagation();
+                    if (openBesideDisabled) return;
                     onOpenBeside?.({ mountKey: node.mountKey, path: node.path });
                   }}
-                  class="text-ink-meta hover:bg-paper-card hover:text-ink-heading flex size-8 shrink-0 items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+                  class={[
+                    'text-ink-meta flex size-8 shrink-0 items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100',
+                    openBesideDisabled ? 'cursor-default' : 'hover:bg-paper-card hover:text-ink-heading'
+                  ]}
                 >
-                  <Columns2 class="size-3.5" strokeWidth={1.5} />
+                  <!-- The unavailable state dims the ICON, never the button:
+                       the button's opacity is the row's hover reveal, and a
+                       second `group-hover:opacity-*` on the same element would
+                       be a same-specificity fight decided by stylesheet order.
+                       Nothing here reaches for accent colour — being too narrow
+                       is not a consequence, it is a fact. -->
+                  <Columns2
+                    class={['size-3.5', openBesideDisabled ? 'opacity-40' : '']}
+                    strokeWidth={1.5}
+                  />
                 </button>
               {/if}
               {#if showMenus}

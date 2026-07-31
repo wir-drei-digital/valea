@@ -25,7 +25,12 @@
   import { ancestorHrefs } from '$lib/shell/reveal-path';
   import { splitsThatFit } from '$lib/shell/pane-fit';
   import { loadFilesSplit, saveFilesSplit } from '$lib/panes/pane-split';
-  import { closeSplit, openAsSecond, openInFirst } from '$lib/panes/files-pane-state';
+  import {
+    canOpenBeside,
+    closeSplit,
+    openAsSecond,
+    openInFirst
+  } from '$lib/panes/files-pane-state';
   import { clearAuto, shiftAuto } from '$lib/panes/auto-open';
   import type { FilesPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
@@ -52,6 +57,13 @@
     icmToNav(icmStore.groups.find((g) => g.mount === descriptor.mountKey)?.tree ?? [])
   );
   const activePaths = $derived(descriptor.paths.map((p) => knowledgeHref(descriptor.mountKey, p)));
+
+  // The tree cannot know how wide its host is, so the reason travels down. A
+  // pane too narrow for two files would REPLACE the split it was told to open
+  // beside, which is a control lying about what it does.
+  const besideDisabled = $derived(
+    canOpenBeside(descriptor.paths, maxSplits) ? null : 'Not enough width for a second file'
+  );
 
   // Reveal the newest split's ancestors and scroll it into view. Only the
   // newest: scrolling for both open files would fight itself.
@@ -138,6 +150,7 @@
         onBeforeMutate={beforeMutate}
         onSelect={(sel) => openFirst(sel.path)}
         onOpenBeside={(sel) => openBeside(sel.path)}
+        openBesideDisabled={besideDisabled}
       />
     </div>
   {/if}
