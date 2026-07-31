@@ -25,13 +25,7 @@
   import { ancestorHrefs } from '$lib/shell/reveal-path';
   import { splitsThatFit } from '$lib/shell/pane-fit';
   import { loadFilesSplit, saveFilesSplit } from '$lib/panes/pane-split';
-  import {
-    canAddSplit,
-    closeSplit,
-    firstUnopenedLeaf,
-    openAsSecond,
-    openInFirst
-  } from '$lib/panes/files-pane-state';
+  import { closeSplit, openAsSecond, openInFirst } from '$lib/panes/files-pane-state';
   import { clearAuto, shiftAuto } from '$lib/panes/auto-open';
   import type { FilesPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
@@ -48,34 +42,16 @@
   }: { descriptor: FilesPaneDescriptor; context: PaneContext; state: FilesPaneState } = $props();
 
   let paneWidth = $state(0);
+  // How many files may sit BESIDE each other here, from this pane's own width.
+  // Stays local: the header has no control that needs it any more, and the only
+  // things that consult it are the two openers below. The first file is never
+  // subject to it — see `files-pane-state.ts`.
   const maxSplits = $derived(splitsThatFit(paneWidth, pane.treeVisible));
-
-  // Publish the width-derived cap and the add-split action so the header's
-  // controls (rendered by PaneHost, not by this component) can drive them.
-  $effect(() => {
-    pane.maxSplits = maxSplits;
-  });
 
   const treeNav = $derived(
     icmToNav(icmStore.groups.find((g) => g.mount === descriptor.mountKey)?.tree ?? [])
   );
   const activePaths = $derived(descriptor.paths.map((p) => knowledgeHref(descriptor.mountKey, p)));
-
-  // The header's ＋ has no file to name, so the pane names one for it and
-  // publishes the action; `null` whenever there is no room or nothing left to
-  // open, which is what disables the button.
-  const nextLeaf = $derived(
-    canAddSplit(descriptor.paths, maxSplits)
-      ? firstUnopenedLeaf(treeNav, descriptor.paths)
-      : null
-  );
-  $effect(() => {
-    const path = nextLeaf;
-    pane.addSplit = path === null ? null : () => openBeside(path);
-    return () => {
-      pane.addSplit = null;
-    };
-  });
 
   // Reveal the newest split's ancestors and scroll it into view. Only the
   // newest: scrolling for both open files would fight itself.

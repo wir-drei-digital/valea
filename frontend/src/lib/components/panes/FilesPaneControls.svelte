@@ -5,12 +5,17 @@
    * per-kind extras. State is created by the host and shared with the body;
    * neither component parents the other.
    *
-   * No accent colour on either button: in this design system colour means
-   * consequence, and showing or hiding a navigator has none. The pressed
-   * state reads as ink weight instead.
+   * No accent colour: in this design system colour means consequence, and
+   * showing or hiding a navigator has none. The pressed state reads as ink
+   * weight instead.
+   *
+   * There is deliberately no "open a second file" control here. A header
+   * button has no file to name, so it could only guess one — and a guess whose
+   * cost is the wrong file opening, possibly over something the user was
+   * reading in the second split, is not worth shipping. The tree row's "Open
+   * beside" already names the file the user actually wants.
    */
   import PanelLeft from '@lucide/svelte/icons/panel-left';
-  import Columns2 from '@lucide/svelte/icons/columns-2';
   import type { FilesPaneState } from '$lib/panes/files-pane-runtime.svelte';
 
   let { state }: { state: FilesPaneState } = $props();
@@ -27,14 +32,4 @@
     : 'text-ink-meta hover:text-ink-heading'}"
 >
   <PanelLeft class="size-3.5" strokeWidth={1.5} />
-</button>
-<button
-  type="button"
-  title={state.maxSplits < 2 ? 'Not enough width for a second file' : 'Open a second file'}
-  aria-label="Open a second file"
-  disabled={state.maxSplits < 2 || !state.addSplit}
-  onclick={() => state.addSplit?.()}
-  class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2 disabled:opacity-40 disabled:hover:bg-transparent"
->
-  <Columns2 class="size-3.5" strokeWidth={1.5} />
 </button>
