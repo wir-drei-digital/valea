@@ -166,39 +166,6 @@ export function chatNavigatorFromUrl(url: URL): boolean {
   return url.searchParams.get('all') === '1';
 }
 
-/** The `goto` target for the current URL with the pane param set (or removed when `d` is null). Preserves every other param. */
-export function withPaneParam(url: URL, d: PaneDescriptor | null): string {
-  return withPanes(url, d ? [d] : []);
-}
-
-/**
- * The `?pane=…` query string to append to a SIBLING link's href — the
- * knowledge tree's file rows (`IcmTree`'s `linkSearch`), so browsing files
- * with a chat pane open keeps the pane instead of silently closing it.
- * `''` when nothing valid is open.
- *
- * Rebuilt from the PARSED descriptor rather than copied raw: a garbage
- * `?pane=` in the current URL is dropped instead of propagated onto every
- * row. Safe to concatenate — `knowledgeHref` never carries a query of its own.
- */
-export function paneLinkSearch(url: URL): string {
-  const d = parsePaneParam(url.searchParams.get('pane'));
-  return d ? `?pane=${encodeURIComponent(serializePaneParam(d))}` : '';
-}
-
-/**
- * `href` carrying the pane `url` currently has open — for a route-level
- * navigation that must KEEP the side pane: a chat pane opening a file in the
- * primary, or the knowledge index's last-opened restore. `href`'s own query
- * (e.g. `?icm=`) survives; an invalid `?pane=` is dropped, same as
- * `paneLinkSearch`.
- */
-export function hrefWithPane(href: string, url: URL): string {
-  const next = new URL(href, url.origin);
-  const d = parsePaneParam(url.searchParams.get('pane'));
-  return withPanes(next, d ? [d] : []);
-}
-
 /** Pane-chrome title. Kept static/pure (no store lookups) — the view inside the pane carries its own richer header. */
 export function paneTitle(d: PaneDescriptor): string {
   switch (d.kind) {
@@ -213,13 +180,38 @@ export function paneTitle(d: PaneDescriptor): string {
   }
 }
 
-/** Where the pane-chrome "open as full view" button navigates. */
-export function promoteHref(d: PaneDescriptor): string {
+/**
+ * Where "open as full view" (⤢) navigates.
+ *
+ * Builds the target route with the promoted kind's OWN params, re-attaches the
+ * panes that survive, and re-runs surface dedup so the promoted kind cannot
+ * appear both as the new primary and beside it. The old primary's params are
+ * deliberately dropped — `?session=` means nothing on `/mail`.
+ */
+export function promoteTarget(
+  promoted: PaneDescriptor,
+  url: URL,
+  panes: PaneDescriptor[]
+): string {
+  const remaining = dedupeSurfaces(
+    promoted,
+    panes.filter((p) => !panesEqual(p, promoted))
+  );
+
+  const target = new URL(routeFor(promoted), url.origin);
+  for (const pane of remaining.slice(0, PANE_CAP)) {
+    target.searchParams.append('pane', serializePaneParam(pane));
+  }
+  return target.pathname + target.search;
+}
+
+function routeFor(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'files':
-      return d.paths.length
-        ? knowledgeHref(d.mountKey, d.paths[0])
-        : `/knowledge?icm=${encodeURIComponent(d.mountKey)}`;
+    case 'files': {
+      if (d.paths.length === 0) return `/knowledge?icm=${encodeURIComponent(d.mountKey)}`;
+      const base = knowledgeHref(d.mountKey, d.paths[0]);
+      return d.paths.length > 1 ? `${base}?split=${encodePath(d.paths[1])}` : base;
+    }
     case 'chat':
       return `/chat?session=${encodeURIComponent(d.sessionId)}`;
     case 'chat-new':

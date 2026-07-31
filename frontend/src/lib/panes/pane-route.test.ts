@@ -3,15 +3,12 @@ import {
   PANE_CAP,
   chatNavigatorFromUrl,
   dedupeSurfaces,
-  hrefWithPane,
-  paneLinkSearch,
   panesEqual,
   paneTitle,
   parsePaneParam,
   parsePanes,
-  promoteHref,
+  promoteTarget,
   serializePaneParam,
-  withPaneParam,
   withPanes,
   type PaneDescriptor
 } from './pane-route';
@@ -163,59 +160,7 @@ describe('chatNavigatorFromUrl', () => {
   });
 });
 
-describe('withPaneParam', () => {
-  it('sets and removes the pane param, preserving other params', () => {
-    const url = new URL('http://localhost/chat?session=abc');
-    const withPane = withPaneParam(url, chat);
-    expect(withPane.startsWith('/chat?')).toBe(true);
-    expect(new URLSearchParams(withPane.split('?')[1]).get('session')).toBe('abc');
-    expect(parsePaneParam(new URLSearchParams(withPane.split('?')[1]).get('pane'))).toEqual(chat);
-
-    const url2 = new URL(`http://localhost${withPane}`);
-    const cleared = withPaneParam(url2, null);
-    expect(new URLSearchParams(cleared.split('?')[1] ?? '').get('pane')).toBeNull();
-    expect(new URLSearchParams(cleared.split('?')[1] ?? '').get('session')).toBe('abc');
-  });
-});
-
-describe('paneLinkSearch', () => {
-  it('round-trips through a link href, encoding included', () => {
-    const url = new URL(
-      `http://localhost/knowledge/life/a.md?${new URLSearchParams({ pane: serializePaneParam(filesTwo) })}`
-    );
-    const search = paneLinkSearch(url);
-    const linked = new URL(`http://localhost/knowledge/life/b.md${search}`);
-    expect(parsePaneParam(linked.searchParams.get('pane'))).toEqual(filesTwo);
-  });
-
-  it('is empty for an absent or invalid pane param', () => {
-    expect(paneLinkSearch(new URL('http://localhost/knowledge/notes/a.md'))).toBe('');
-    expect(paneLinkSearch(new URL('http://localhost/knowledge/notes/a.md?pane=bogus:x'))).toBe('');
-  });
-});
-
-describe('hrefWithPane', () => {
-  it("carries the open pane onto another route's href, keeping that href's own query", () => {
-    const url = new URL(
-      `http://localhost/knowledge?icm=notes&${new URLSearchParams({ pane: serializePaneParam(chat) })}`
-    );
-    const next = new URL(`http://localhost${hrefWithPane('/knowledge/notes/a.md?raw=1', url)}`);
-    expect(next.pathname).toBe('/knowledge/notes/a.md');
-    expect(next.searchParams.get('raw')).toBe('1');
-    expect(parsePaneParam(next.searchParams.get('pane'))).toEqual(chat);
-  });
-
-  it('adds nothing when no valid pane is open', () => {
-    expect(hrefWithPane('/knowledge', new URL('http://localhost/knowledge/notes/a.md'))).toBe(
-      '/knowledge'
-    );
-    expect(hrefWithPane('/knowledge', new URL('http://localhost/k?pane=bogus:x'))).toBe(
-      '/knowledge'
-    );
-  });
-});
-
-describe('paneTitle / promoteHref', () => {
+describe('paneTitle', () => {
   it('titles', () => {
     expect(paneTitle(filesEmpty)).toBe('Files');
     expect(paneTitle(filesTwo)).toBe('CONTEXT.md');
@@ -223,12 +168,59 @@ describe('paneTitle / promoteHref', () => {
     expect(paneTitle(chatNew)).toBe('New session');
     expect(paneTitle(mailList)).toBe('Mail');
   });
+});
 
-  it('promote targets', () => {
-    expect(promoteHref(filesTwo)).toBe('/knowledge/life/planning/CONTEXT.md');
-    expect(promoteHref(filesEmpty)).toBe('/knowledge?icm=life');
-    expect(promoteHref(chat)).toBe('/chat?session=sess-123');
-    expect(promoteHref(chatNew)).toBe('/chat?icm=life');
-    expect(promoteHref(mailMsg)).toBe('/mail?account=mara%40example.com&message=8842');
+describe('promoteTarget', () => {
+  it('promotes a chat pane and keeps the other pane', () => {
+    const url = new URL('https://x/knowledge/life/AGENTS.md?pane=chat:s1&pane=mail:a%40b.com');
+    const href = promoteTarget(chat, url, [chat, mailList]);
+    const out = new URL(href, 'https://x');
+    expect(out.pathname).toBe('/chat');
+    expect(out.searchParams.get('session')).toBe('sess-123');
+    expect(out.searchParams.getAll('pane')).toEqual([serializePaneParam(mailList)]);
+  });
+
+  it('drops the promoted pane from the surviving list', () => {
+    const url = new URL('https://x/chat?session=a91f');
+    const out = new URL(promoteTarget(filesOne, url, [filesOne]), 'https://x');
+    expect(out.searchParams.getAll('pane')).toEqual([]);
+  });
+
+  it('suppresses a surviving pane whose kind matches the new primary', () => {
+    const otherFiles: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['B.md'] };
+    const url = new URL('https://x/chat?session=a91f');
+    const out = new URL(promoteTarget(filesOne, url, [filesOne, otherFiles]), 'https://x');
+    expect(out.searchParams.getAll('pane')).toEqual([]);
+  });
+
+  it('carries both Files splits onto the route via ?split=', () => {
+    const url = new URL('https://x/chat?session=a91f');
+    const out = new URL(promoteTarget(filesTwo, url, [filesTwo]), 'https://x');
+    expect(out.pathname).toBe('/knowledge/life/planning/CONTEXT.md');
+    expect(out.searchParams.get('split')).toBe('AGENTS.md');
+  });
+
+  it('promotes a Files pane with no file to the mount index', () => {
+    const url = new URL('https://x/chat?session=a91f');
+    const out = new URL(promoteTarget(filesEmpty, url, [filesEmpty]), 'https://x');
+    expect(out.pathname).toBe('/knowledge');
+    expect(out.searchParams.get('icm')).toBe('life');
+  });
+
+  it('carries account and message for mail', () => {
+    const url = new URL('https://x/chat?session=a91f');
+    const out = new URL(promoteTarget(mailMsg, url, [mailMsg]), 'https://x');
+    expect(out.pathname).toBe('/mail');
+    expect(out.searchParams.get('account')).toBe('mara@example.com');
+    expect(out.searchParams.get('message')).toBe('8842');
+  });
+
+  it('does not carry the old primary’s params across a kind change', () => {
+    const url = new URL('https://x/chat?session=a91f&all=1&icm=life&drafts=1');
+    const out = new URL(promoteTarget(mailList, url, [mailList]), 'https://x');
+    expect(out.searchParams.get('session')).toBeNull();
+    expect(out.searchParams.get('all')).toBeNull();
+    expect(out.searchParams.get('icm')).toBeNull();
+    expect(out.searchParams.get('drafts')).toBeNull();
   });
 });
