@@ -12,6 +12,16 @@
  * `parsePaneParam` rejects outright. The pane would not render narrow; it
  * would vanish from the URL. So every path-producing branch clamps to
  * `min(SPLIT_CAP, maxSplits)` rather than trusting its caller's number.
+ *
+ * THE FIRST FILE IS NOT SUBJECT TO THAT CAP. `maxSplits` answers "how many
+ * files fit side by side", and a pane with none open is not asking that
+ * question. Treating a 0 there as "open nothing" made the pane's own tree
+ * inert on every laptop: a split needs `TREE_W + SPLIT_MIN` = 540px of PANE,
+ * which a two-pane row does not reach until roughly a 1590px window — so at
+ * 1280x800, 1440x900 and the 1512px MacBook Pro 14", every click in the tree
+ * silently did nothing and the pane sat on "Pick a file to read it." forever.
+ * The one escape (hiding the tree) removed the thing you would click. A
+ * cramped first split is a real reading surface; an inert navigator is not.
  */
 import type { NavTreeItem } from '$lib/shell/nav';
 
@@ -26,17 +36,24 @@ function effectiveCap(maxSplits: number): number {
 export function openInFirst(paths: string[], path: string, maxSplits: number): string[] {
   if (paths.includes(path)) return paths;
   const cap = effectiveCap(maxSplits);
-  if (paths.length === 0) return cap >= 1 ? [path] : [];
+  // The first file always lands — see the module header. The width cap governs
+  // how many files sit BESIDE each other, never whether the pane may show one.
+  if (paths.length === 0) return [path];
   // A pane that already shows a file keeps showing one even at cap 0 — the
   // click has to land somewhere. It just never gains a split.
   return [path, ...paths.slice(1)].slice(0, Math.max(1, cap));
 }
 
-/** The row's "open beside" affordance. Adds a second split, or replaces it when full. */
+/**
+ * The row's "open beside" affordance. Adds a second split, or replaces it when
+ * full — and on an empty pane it is simply an open, under the same floor
+ * `openInFirst` applies: it is the same click on the same row, and it must not
+ * be the one that silently does nothing.
+ */
 export function openAsSecond(paths: string[], path: string, maxSplits: number): string[] {
   if (paths.includes(path)) return paths;
   const cap = effectiveCap(maxSplits);
-  if (paths.length === 0) return cap >= 1 ? [path] : [];
+  if (paths.length === 0) return [path];
   if (paths.length < cap) return [...paths, path];
   return [...paths.slice(0, Math.max(0, cap - 1)), path];
 }

@@ -22,6 +22,15 @@
  * path alike. Skip one and the claim points at whatever slid into that slot,
  * and the next auto-open silently overwrites a file the USER placed, which is
  * the exact invariant this module exists to hold.
+ *
+ * ONE removal deliberately needs no `shiftAuto`, and it is worth recording so
+ * nobody "fixes" it: `openInFirst`/`openAsSecond` can SHRINK the list when the
+ * width cap has dropped to one. That is safe because the only index they can
+ * strand is the one they truncate away, so the stale claim is always
+ * `>= paths.length` — rule 1's `autoIndex < paths.length` guard rejects it and
+ * the next auto-open falls through to rule 2 or 3. Nothing the user placed is
+ * reachable through it. (The slot those two DO overwrite is index 0, and that
+ * is a user open, which `clearAuto` covers.)
  */
 import { SPLIT_CAP } from './files-pane-state';
 

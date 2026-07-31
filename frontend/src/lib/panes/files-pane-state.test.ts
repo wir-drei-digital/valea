@@ -40,6 +40,20 @@ describe('openInFirst', () => {
     expect(openInFirst(['A.md', 'B.md'], 'C.md', 3)).toEqual(['C.md', 'B.md']);
     expect(openInFirst(['A.md', 'B.md', 'C.md'], 'D.md', 3)).toEqual(['D.md', 'B.md']);
   });
+
+  // THE laptop bug. `splitsThatFit` needs TREE_W + SPLIT_MIN = 540px of pane
+  // before ONE split fits, which a two-pane row does not reach until roughly a
+  // 1590px window — so on a 1440x900 or a MacBook Pro 14" the cap is 0 and
+  // every click in the pane's own tree used to do nothing at all.
+  it('opens the first file even when the width allows no split at all', () => {
+    expect(openInFirst([], 'A.md', 0)).toEqual(['A.md']);
+  });
+
+  // The floor is for the FIRST file only: it must not become a back door that
+  // grows a second split the width cannot hold.
+  it('still refuses a second split at that width, replacing instead', () => {
+    expect(openInFirst(['A.md'], 'B.md', 0)).toEqual(['B.md']);
+  });
 });
 
 describe('openAsSecond', () => {
@@ -69,8 +83,16 @@ describe('openAsSecond', () => {
     expect(openAsSecond(['A.md', 'B.md'], 'C.md', 3)).toEqual(['A.md', 'C.md']);
   });
 
-  it('opens nothing when the width allows no split at all', () => {
-    expect(openAsSecond([], 'A.md', 0)).toEqual([]);
+  // Reversed deliberately (this test previously asserted `[]`). "Open beside"
+  // on a row of an EMPTY pane is the same click as the row itself, and the
+  // width cap governs how many files sit side by side — not whether the pane
+  // may show one. See the module header for the widths this stranded.
+  it('opens the first file even when the width allows no split at all', () => {
+    expect(openAsSecond([], 'A.md', 0)).toEqual(['A.md']);
+  });
+
+  it('still refuses to add a second split at that width, replacing instead', () => {
+    expect(openAsSecond(['A.md'], 'B.md', 0)).toEqual(['B.md']);
   });
 });
 
