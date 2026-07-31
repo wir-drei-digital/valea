@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { NavTreeItem } from '$lib/shell/nav';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Columns2 from '@lucide/svelte/icons/columns-2';
   import IcmTree from './IcmTree.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
   import { fileLeafLabel } from '$lib/components/knowledge/file-leaf';
@@ -9,39 +10,93 @@
 
   let {
     nodes,
-    activePath = '',
+    activePaths = [],
     linkSearch = '',
+    entryMenus,
     onBeforeMutate,
-    onSelect
+    onSelect,
+    onOpenBeside
   }: {
     nodes: NavTreeItem[];
-    activePath?: string;
+    /**
+     * EVERY open href, not "the one open page" (composable views): a Files
+     * pane can hold two splits at once, and both of their rows have to read
+     * as open. A single active path stopped being expressible the moment a
+     * pane could show a pair, so this replaces the old `activePath` string
+     * rather than sitting beside it.
+     */
+    activePaths?: string[];
     /**
      * Query string appended to every leaf link's `href` (side-panes pass —
      * e.g. `?pane=chat:<id>`): browsing the tree with a chat pane open keeps
      * the pane, instead of every file click silently closing it. Appended to
      * the RENDERED href only — `node.href` itself stays the bare path, so
-     * `activePath` comparisons and `treeOpenState`'s per-href keys are
+     * `activePaths` comparisons and `treeOpenState`'s per-href keys are
      * unaffected (a pane opening/closing must not collapse the tree).
      * `knowledgeHref` never carries a query of its own, so a plain `?…`
      * suffix is safe.
      */
     linkSearch?: string;
     /**
-     * Flushes the currently open page's pending edit before a rename/delete
-     * mutate call fires (see route + before-mutate.ts). Only ever wired to
-     * the EntryMenu for the row whose `href` matches `activePath` — every
-     * other row passes nothing through.
+     * Whether rows carry their rename/delete overflow menu. Defaults to
+     * "yes, unless this is a picker" — i.e. `onSelect === undefined`.
+     *
+     * The default alone used to be the whole rule, and it stopped being
+     * enough when `FilesPane` arrived: it is a full file BROWSER that
+     * nonetheless drives selection through `onSelect`, because a click
+     * inside a pane rewrites that pane's descriptor instead of navigating.
+     * Popover pickers (compose's attach, the session header's file picker)
+     * still leave this unset and still get no menus — picking a file is not
+     * the place to rename or delete one.
      */
-    onBeforeMutate?: () => Promise<void>;
+    entryMenus?: boolean;
+    /**
+     * Flushes the pending edit of the split holding `href` before a
+     * rename/delete mutate call fires (see route + before-mutate.ts). Wired
+     * to EVERY row's EntryMenu, not just the open one, and it takes the
+     * row's href: with two editable splits there is no "the one open page"
+     * to flush — the caller has to be told WHICH file is about to be
+     * mutated so it can flush the split that holds it and leave its sibling
+     * alone. Rows holding nothing unsaved resolve to a no-op.
+     */
+    onBeforeMutate?: (href: string) => Promise<void>;
     /**
      * Selection mode (side-panes pass): when set, leaf rows call this
-     * instead of navigating (used by popover pickers); EntryMenu is hidden
-     * on every row, since picking a file is not the place to rename or
-     * delete one. Folder expand/collapse behaves identically in both modes.
+     * instead of navigating (pickers, and any host whose click means
+     * "rewrite my descriptor" rather than "navigate the app"). Folder
+     * expand/collapse behaves identically in both modes.
      */
     onSelect?: (sel: { mountKey: string; path: string }) => void;
+    /**
+     * "Open beside" — a leaf row's hover-revealed second split affordance.
+     * Only leaf rows offer it: a folder click expands the folder and never
+     * takes a split, so there is nothing to place beside anything.
+     */
+    onOpenBeside?: (sel: { mountKey: string; path: string }) => void;
   } = $props();
+
+  const showMenus = $derived(entryMenus ?? onSelect === undefined);
+
+  // The leaf row's right gutter holds 0, 1 or 2 size-8 controls; its padding
+  // has to clear them or a long filename runs underneath.
+  const gutterControls = $derived((onOpenBeside ? 1 : 0) + (showMenus ? 1 : 0));
+  const leafPad = $derived(
+    gutterControls === 0 ? 'pr-2' : gutterControls === 1 ? 'pr-9' : 'pr-[68px]'
+  );
+
+  function isActive(href: string): boolean {
+    return activePaths.includes(href);
+  }
+
+  /**
+   * Binds this row's href into the flush hook. Captured into a local first so
+   * the closure keeps a non-optional reference — the prop itself is a
+   * reassignable binding, which TypeScript will not narrow across a callback.
+   */
+  function beforeMutateFor(href: string): (() => Promise<void>) | undefined {
+    const flush = onBeforeMutate;
+    return flush ? () => flush(href) : undefined;
+  }
 
   // Folders default CLOSED (file-browser performance pass): the lazy tree
   // only fetches a folder's listing when it's opened. Expansion state lives
@@ -77,11 +132,11 @@
           <button
             type="button"
             onclick={() => toggle(node)}
-            aria-current={activePath === node.href ? 'page' : undefined}
+            aria-current={isActive(node.href) ? 'page' : undefined}
             aria-expanded={treeOpenState.isOpen(node.href)}
             class={[
               'flex w-full items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-left text-[12.5px] transition-colors hover:bg-paper-pill',
-              activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
+              isActive(node.href) ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
             ]}
           >
             <ChevronRight
@@ -96,14 +151,14 @@
               <span class="text-ink-meta text-[11px] tabular-nums">{node.count}</span>
             {/if}
           </button>
-          {#if !onSelect}
+          {#if showMenus}
             <EntryMenu
               mountKey={node.mountKey}
               path={node.path}
               name={node.label}
               kind="folder"
               class="absolute top-1/2 right-0.5 -translate-y-1/2"
-              onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
+              onBeforeMutate={beforeMutateFor(node.href)}
             />
           {/if}
         </div>
@@ -112,19 +167,37 @@
             {#if node.loaded === false}
               <p class="text-ink-meta px-2 py-[3px] text-[12px]">Loading…</p>
             {:else if node.children.length}
-              <IcmTree nodes={node.children} {activePath} {linkSearch} {onBeforeMutate} {onSelect} />
+              <IcmTree
+                nodes={node.children}
+                {activePaths}
+                {linkSearch}
+                {entryMenus}
+                {onBeforeMutate}
+                {onSelect}
+                {onOpenBeside}
+              />
             {:else}
               <p class="text-ink-meta px-2 py-[3px] text-[12px] italic">Empty</p>
             {/if}
           </div>
         {/if}
       {:else}
+        <!-- `data-tree-href` rides on BOTH leaf forms, not just the anchor:
+             a host that reveals a file scrolls to it by this attribute, and
+             the Files pane — the one host that does — is in selection mode,
+             so the button carries it or the reveal silently finds nothing. -->
         <div class="group relative">
           {#if onSelect}
             <button
               type="button"
+              data-tree-href={node.href}
               onclick={() => onSelect?.({ mountKey: node.mountKey, path: node.path })}
-              class="hover:bg-paper-pill text-ink-secondary flex w-full items-center gap-1 rounded-md py-[3px] pr-2 pl-2 text-left text-[12.5px] transition-colors"
+              aria-current={isActive(node.href) ? 'page' : undefined}
+              class={[
+                'flex w-full items-center gap-1 rounded-md py-[3px] pl-2 text-left text-[12.5px] transition-colors hover:bg-paper-pill',
+                leafPad,
+                isActive(node.href) ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
+              ]}
             >
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
               {#if node.isFile}
@@ -140,10 +213,12 @@
           {:else}
             <a
               href={node.href + linkSearch}
-              aria-current={activePath === node.href ? 'page' : undefined}
+              data-tree-href={node.href}
+              aria-current={isActive(node.href) ? 'page' : undefined}
               class={[
-                'flex items-center gap-1 rounded-md py-[3px] pl-2 pr-9 text-[12.5px] transition-colors hover:bg-paper-pill',
-                activePath === node.href ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
+                'flex items-center gap-1 rounded-md py-[3px] pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
+                leafPad,
+                isActive(node.href) ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
               ]}
             >
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
@@ -157,22 +232,44 @@
                 </span>
               {/if}
             </a>
-            <!-- Both leaf kinds get the menu (Task 10): the backend rename
-                 now preserves a non-.md file's own extension instead of
-                 coercing `.md`, and delete never had a `.md` assumption to
-                 begin with. `isFile` — never `ext` — is the file/page test:
-                 an extension-less file (LICENSE, Makefile) has `ext: ''`.
-                 `node.label` is what the dialogs pre-fill, and it is
-                 already kind-correct (the backend's tree sends a file's
-                 FULL basename, a page's title without `.md`). -->
-            <EntryMenu
-              mountKey={node.mountKey}
-              path={node.path}
-              name={node.label}
-              kind={node.isFile ? 'file' : 'page'}
-              class="absolute top-1/2 right-0.5 -translate-y-1/2"
-              onBeforeMutate={activePath === node.href ? onBeforeMutate : undefined}
-            />
+          {/if}
+          <!-- The row's right gutter. Siblings of the row control, never
+               nested inside it: an interactive control inside an <a> is
+               invalid HTML and swallows the row's own click target. -->
+          {#if gutterControls > 0}
+            <div class="absolute top-1/2 right-0.5 flex -translate-y-1/2 items-center">
+              {#if onOpenBeside}
+                <button
+                  type="button"
+                  title="Open beside"
+                  aria-label={`Open ${node.label} beside`}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    onOpenBeside?.({ mountKey: node.mountKey, path: node.path });
+                  }}
+                  class="text-ink-meta hover:bg-paper-card hover:text-ink-heading flex size-8 shrink-0 items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+                >
+                  <Columns2 class="size-3.5" strokeWidth={1.5} />
+                </button>
+              {/if}
+              {#if showMenus}
+                <!-- Both leaf kinds get the menu (Task 10): the backend rename
+                     now preserves a non-.md file's own extension instead of
+                     coercing `.md`, and delete never had a `.md` assumption to
+                     begin with. `isFile` — never `ext` — is the file/page test:
+                     an extension-less file (LICENSE, Makefile) has `ext: ''`.
+                     `node.label` is what the dialogs pre-fill, and it is
+                     already kind-correct (the backend's tree sends a file's
+                     FULL basename, a page's title without `.md`). -->
+                <EntryMenu
+                  mountKey={node.mountKey}
+                  path={node.path}
+                  name={node.label}
+                  kind={node.isFile ? 'file' : 'page'}
+                  onBeforeMutate={beforeMutateFor(node.href)}
+                />
+              {/if}
+            </div>
           {/if}
         </div>
       {/if}

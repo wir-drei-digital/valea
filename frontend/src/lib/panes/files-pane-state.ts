@@ -13,6 +13,8 @@
  * would vanish from the URL. So every path-producing branch clamps to
  * `min(SPLIT_CAP, maxSplits)` rather than trusting its caller's number.
  */
+import type { NavTreeItem } from '$lib/shell/nav';
+
 export const SPLIT_CAP = 2;
 
 /** How many splits may actually exist: the width allowance, never above the hard cap. */
@@ -51,4 +53,29 @@ export function canAddSplit(paths: string[], maxSplits: number): boolean {
 /** A split whose file was deleted. Its sibling survives — see the spec's per-subject rule. */
 export function dropVanished(paths: string[], vanished: string): string[] {
   return paths.filter((p) => p !== vanished);
+}
+
+/**
+ * What the header's "Open a second file" button opens: the first leaf in the
+ * pane's own tree that is not already in a split, depth-first in display
+ * order. `null` when the tree offers nothing new — the button is then
+ * disabled rather than dead, because a control that looks available and does
+ * nothing is worse than one that says it cannot act.
+ *
+ * The button has no file to name (the tree row's "Open beside" is the
+ * affordance that does), so the pane picks one and the user re-targets that
+ * split from the tree. Unloaded folders are simply not descended into: this
+ * reads the tree that is on screen and never triggers a fetch, so what the
+ * button opens is always something the user can already see.
+ */
+export function firstUnopenedLeaf(nodes: NavTreeItem[], openPaths: string[]): string | null {
+  for (const node of nodes) {
+    if (node.children) {
+      const found = firstUnopenedLeaf(node.children, openPaths);
+      if (found !== null) return found;
+      continue;
+    }
+    if (!openPaths.includes(node.path)) return node.path;
+  }
+  return null;
 }
