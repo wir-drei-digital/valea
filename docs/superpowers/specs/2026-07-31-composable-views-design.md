@@ -587,10 +587,10 @@ One pass, internally ordered so each step is separately reviewable:
 
 ## Open items for review
 
-- **Nav collapse.** Agreed early, then the nav was described as "the fixed
-  anchor" — which governs its *position* (full height, bar beside it) and does
-  not obviously settle whether it also hides. Proposal: keep it, default on,
-  toggled from the bar's far left. Confirm or cut.
+*(Nav collapse was the last open item and is now settled: **kept**, default on,
+toggled from the bar's far left. "Fixed anchor" governs the nav's position —
+full height, with the bar beside it rather than under it — not whether it can
+be hidden.)*
 *(Stale mail panes were an open item and are now settled under Memory: any
 pane whose subject vanishes closes and is dropped from storage, mail
 included.)*
