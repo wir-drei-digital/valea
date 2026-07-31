@@ -1,4 +1,4 @@
-# Composable Views — Multi-Pane Content Area
+# Composable Views — Self-Contained Panes
 
 **Date:** 2026-07-31
 **Status:** Design. Supersedes the single-pane half of
@@ -14,311 +14,290 @@ the single side-pane slot, so you can never have the file browser, the
 transcript and the file itself on screen together.
 
 This spec makes the content area composable **without introducing a layout
-system**. It extends the mechanism already shipped — the route's primary view
-plus a side pane — from one pane to two, gives Mail and Knowledge the same
-`PaneHost` Chat already has, and puts the two controls that drive it on a
-quiet bar along the bottom of the content area.
+system**. The shell learns exactly one new thing — that it holds a *row* of
+panes rather than a primary plus one — and everything else is pushed inside
+the panes, where it is private.
 
 The explicit non-goal is a tiling window manager. Valea's user is a
 non-technical solopreneur; the feature has to be legible on first sight and
-impossible to get lost in. One concept — *"there is the view you are on, and
-you can open things beside it"* — extended, not replaced.
+impossible to get lost in.
+
+## The organising principle
+
+**Every pane is a navigator plus its content, and owns both.**
+
+| Pane | Navigator | Content |
+|---|---|---|
+| Files | ICM tree | one or two file views |
+| Mail | message list | the open message |
+| Chat | sessions list | the transcript |
+
+The navigator is optional in each and defaults per kind. This is what makes
+the shell simple: it never learns that a tree relates to a file view, because
+nothing outside the Files pane can observe that relationship.
 
 ## Decisions settled with Daniel (2026-07-31)
 
 - **Build on the split pane, not on docks.** An earlier draft proposed
-  Zed-style slots (left/right/center), a panel registry addressable per slot,
-  per-center layout memory and a six-chip toggle bar. Rejected as *"almost too
-  composable, which will confuse regular users"* — it invents a vocabulary the
-  user must learn before it pays off. The vocabulary here is the one that
-  already exists.
-- **Two panes beside the primary, hard cap.** Three content columns at most.
-  The cap is the thing that keeps this from becoming a tiling manager.
-- **The file tree is not a pane.** It stays a narrow, fixed-width column at
-  the existing list-column width, toggleable on any pane-host route. It must
-  never widen to pane proportions.
-- **Mail is a pane host too**, so a message can have a chat beside it — the
-  case that made this app-level rather than a chat feature.
+  Zed-style slots, a panel registry addressable per slot, per-center layout
+  memory and a six-chip toggle bar. Rejected as *"almost too composable, which
+  will confuse regular users"* — it invents a vocabulary the user must learn
+  before it pays off.
+- **Two panes beside the primary, hard cap.** The cap is what keeps this from
+  becoming a tiling manager.
+- **Panes are self-contained.** A middle draft gave the shell a narrow column
+  whose occupant was chosen per route (tree / sessions / mail list), which
+  meant the tree and the file panes had to be kept in sync *through the shell*
+  — a shared `activePaths` prop, a shared reveal-path module, and a
+  coordination rule for which pane a tree click targets. Replaced by putting
+  the tree **inside** the Files pane: *"from the outside it is only one file
+  pane, but the file pane itself is powerful. This way we don't need to sync
+  separate panes with each other."* The sync problem is not solved, it stops
+  existing.
+- **The narrow column and `?col=` are therefore dropped entirely.** The shell
+  knows nav plus a row of panes, nothing else. This reverses the earlier "the
+  tree is a narrow column, not a pane" decision — the constraint behind it
+  (the tree must never widen to pane proportions) now holds by construction,
+  because the pane owns its own internal widths.
+- **Mail follows the same principle**, so its list moves inside the Mail view
+  and mail becomes usable as a pane — the "mail beside chat" case that made
+  this app-level rather than a chat feature.
+- **Only Files splits.** Comparing two files is a real need; comparing two
+  transcripts or two mailboxes is not. Chat and Mail hold one subject each.
 - **Controls go on a bottom bar inside the content container.** The left nav
   is a full-height fixed anchor; the bar sits *beside* it, not under it.
-- **Panes are remembered per route.** Leaving chat and coming back restores
-  what you had beside it. A URL that names panes always wins over memory.
-- **The tree and the file panes stay in sync**, both directions: every open
-  file is revealed and highlighted in the tree, and a tree click drives the
-  pane.
-- **Chat with two files open is a first-class layout**, which is what forces
-  auto-open to track its own pane rather than replacing any file pane it finds.
+- **Panes are remembered per route.** A URL that names panes always wins.
 
 ## Layout
 
 ```
 ┌────────┬──────────────────────────────────────────────────┐
-│        │ ┌────────┬──────────────┬──────────┬───────────┐ │
-│        │ │ Files  │  Chat        │ AGENTS.md│  Mail     │ │
-│  Nav   │ │        │  (primary)   │ (pane 1) │ (pane 2)  │ │
-│  236   │ │  300   │              │          │           │ │
-│ (full  │ │ fixed  │  flexible    │ flexible │ flexible  │ │
-│ height)│ └────────┴──────────────┴──────────┴───────────┘ │
-│        │ ▣ Files  ▢ Sessions                    ＋ Pane   │
+│        │ ┌──────────────┬─────────────────────────────┐   │
+│        │ │  Chat        │ Files — life          ▣ ⤢ ✕ │   │
+│  Nav   │ │  (primary)   ├──────┬──────────┬───────────┤   │
+│  236   │ │              │ tree │ AGENTS.md│ CONTEXT.md│   │
+│ (full  │ │              │ 240  │  split 1 │  split 2  │   │
+│ height)│ └──────────────┴──────┴──────────┴───────────┘   │
+│        │                                        ＋ Pane   │
 └────────┴──────────────────────────────────────────────────┘
+             └── shell sees 2 panes; 4 visible columns ──┘
 ```
 
-`AppShell` restructures to make the nav a genuine anchor and the bar a
-property of the content area:
+`AppShell` becomes nav, a row of panes, and the bar:
 
 ```svelte
 <div class="flex h-screen">
   <aside class="w-[236px] shrink-0 …">{@render nav()}</aside>
   <div class="flex min-w-0 flex-1 flex-col">
-    <div class="flex min-h-0 flex-1">
-      {#if column}<section class="w-[300px] shrink-0 …">…</section>{/if}
-      <PaneHost … />
-    </div>
-    <ContentBar … />
+    <PaneRow panes={[primary, ...sidePanes]} />
+    <ContentBar />
   </div>
 </div>
 ```
 
-Widths follow `DESIGN_SYSTEM.md` §11 unchanged: nav 236 · narrow column fixed
-at 300 (the band is 250–340) · primary and panes flexible. The column is not
-resizable — that is what keeps the tree from ever reaching pane proportions.
-Minimum widths are primary 380px and 300px per pane; `PaneResizer` divides the
-flexible remainder, as today.
+Outer widths: nav 236 · panes flexible, minimum 380px for the primary and
+300px for each side pane, divided by `PaneResizer` as today. `AppShell`'s
+`list` and `rail` snippet props are removed — `rail` is already dead code
+(`AppFrame` forwards it and no route passes it) and `list` is replaced by each
+pane's own navigator.
 
-### The narrow column
+## Pane kinds
 
-One column, one occupant, chosen per route. The occupants are the route's
-existing list panes plus the ICM tree:
+| Kind | Wire form | Navigator | Status |
+|---|---|---|---|
+| files | `files:<mount>[/<path>[\|<path2>]]` | ICM tree | **new** |
+| chat | `chat:<sessionId>` | sessions list | exists |
+| chat-new | `chat:new:<mountKey>` | — | exists |
+| mail | `mail[:<messageId>]` | message list | **new** |
 
-| Route | Offers | Default |
-|---|---|---|
-| `/chat` | Files · Sessions | none |
-| `/mail` | Mail list · Files | Mail list |
-| `/knowledge`, `/knowledge/[...path]` | Files | Files |
+The standalone `file:` kind from the side-panes spec is absorbed by `files:`.
+A Files pane with its tree hidden *is* a plain file view, which is what you
+want when a mail message opens a file and you did not ask for a browser.
 
-Behaviour is radio, not checkbox: turning one on turns the other off, and
-clicking the active one closes the column. Explaining it takes one sentence —
-*"one narrow column; pick what goes in it."*
+### The Files pane
 
-This retires the popover file tree in `SessionHeader.svelte` (its
-`Popover.Root` wrapping `IcmTree`, and the `treeRequestedFor` root-load effect
-in `ChatView` that feeds it). The tree becomes one component in one place,
-rendered from `IcmTree` exactly as Knowledge renders it today.
+Internals: an optional ICM tree at a fixed 240px, and one or two file views
+sharing the remainder. Its header carries the pane chrome (title · promote ·
+close) plus two controls of its own — a tree toggle and `＋ Split`. Pane-level
+controls live in the pane header, never in a second bottom bar; the shell's
+bar is the only bar.
 
-### Tree ↔ pane sync
+Everything the middle draft needed shell-level machinery for is now local
+state in this one component:
 
-The tree and the file panes are two views of one thing and must agree. Today
-they cannot: `IcmTree` takes a single `activePath`, both Knowledge routes pass
-`page.url.pathname`, and the ancestor-reveal loop is inlined in
-`routes/knowledge/[...path]/+page.svelte` where no other route can reach it. A
-file open in a pane is therefore invisible in the tree.
+- The tree marks **every** open split, so with two files both rows highlight.
+- Opening a file expands its ancestors via `treeOpenState.open()` — already
+  idempotent, already built for this — and scrolls the newest one into view.
+  Only the newest: scrolling for both would fight itself.
+- A tree click opens into the **first** split; a hover affordance on the row
+  opens it as a second split instead. Deterministic, no focus concept — and
+  because it is now private to one component, changing the rule later costs
+  nothing outside it.
+- `onBeforeMutate` (flush a pending edit before rename or delete) keys per
+  href rather than off a single active path, so renaming either open file
+  flushes the right split.
 
-**Pane → tree.** Whenever the open file panes change — a tree click, a chat
-tool chip, a promote, a close — the tree reveals and marks them:
+### The Mail pane
 
-- `IcmTree`'s `activePath: string` becomes `activePaths: string[]`. Every open
-  file pane's href is marked, so with two files open **both** rows highlight.
-  The route's own path stays in the list, so Knowledge's current behaviour is
-  the one-element case and nothing regresses.
-- Ancestors of each open file are expanded via `treeOpenState.open()`, which
-  is already idempotent and already exists for exactly this purpose. The loop
-  moves out of the Knowledge route into `lib/shell/reveal-path.ts` so any
-  pane host can call it.
-- The newest-revealed row is scrolled into view. Only the newest: scrolling
-  for every pane would fight itself when two files are open.
+Message list plus reader, lifted out of `/mail`'s current `AppFrame` + `list`
+snippet composition into one component. `mail` with no id is the list with
+nothing selected.
 
-**Tree → pane.** A tree row click opens that file in the **first file pane**,
-or opens a new one if there is none — browsing replaces, it does not
-accumulate. Each row also gets a hover affordance that opens the file as an
-*additional* pane instead, which is how you get two files side by side
-deliberately rather than by accident.
+### The Chat pane
 
-`onBeforeMutate` (the flush-pending-edit guard before a rename or delete)
-currently keys off `activePath === node.href`, i.e. "the one open page". With
-two editable panes it must become per-href, so renaming either file flushes
-the right pane's pending edit and not the other's.
-
-The **file-activity rail** is untouched. It is a separate shipped feature
-(`2026-07-30-session-file-activity-design.md`), it lives inside `ChatView`
-rather than in a shell slot, and its `railCanShow` gate already measures
-`ChatView`'s own container — so opening panes shrinks the chat and the rail
-falls back to its header pill on its own, with no new rule. `filesPopover` is
-that fallback, not a file browser, and stays.
-
-### Panes
-
-Unchanged from `2026-07-28-side-panes-design.md` except for count. Each pane
-keeps its chrome — title · promote (⤢) · close (✕) — its registry-driven
-component, and `promoteHref`. Pane kinds:
-
-| Kind | Wire form | Status |
-|---|---|---|
-| file | `file:<mountKey>/<relPath>` | exists |
-| chat | `chat:<sessionId>` | exists |
-| chat-new | `chat:new:<mountKey>` | exists |
-| mail | `mail:<messageId>` | **new** |
+Unchanged apart from its navigator: chat's existing `?all=1` all-sessions
+column becomes the Chat pane's own optional sessions list, toggled from the
+pane header like the Files tree. `?all=1` is kept as a parse-time alias.
 
 ## URL scheme
 
-**Panes repeat the existing `pane` param** rather than introducing a new
-delimited one:
+**Panes repeat the existing `pane` param** rather than introducing a delimited
+one:
 
 ```
-/chat?session=a91f&pane=file:life/AGENTS.md&pane=mail:8842
+/chat?session=a91f&pane=files:life/AGENTS.md|CONTEXT.md
 ```
 
-This is deliberate and buys back-compatibility for free: a single `?pane=` —
-every link, bookmark and restored session in the wild today — parses as a
-one-element list with no special case. Document order is left-to-right pane
-order. A third `pane` param is dropped on parse, so a hand-written URL cannot
-exceed the cap.
+This buys back-compatibility for free: a single `?pane=` — every link and
+bookmark in the wild today — parses as a one-element list with no special
+case. Document order is left-to-right pane order, and a third `pane` param is
+dropped on parse so a hand-written URL cannot exceed the cap.
 
-**The narrow column is `?col=`:** `files`, `sessions`, `mail-list`, or `none`
-(`mail-list`, not `mail`, so a column value is never confusable with the
-`mail:` pane kind).
-Absent means the route's default, so `/mail` still opens with its list and
-`/chat` still opens bare. `none` is what lets you express "mail with its list
-closed" in a URL. Chat's existing `?all=1` maps to `?col=sessions` and is
-kept as a parse-time alias.
+The **primary** pane is addressed by the route as it is today
+(`/chat?session=`, `/knowledge/<mount>/<path>`, `/mail?id=`); only a second
+Files split needs a new param there (`?split=<path>`).
 
-The URL remains the single source of truth for what is on screen, which is
-what keeps a composition linkable, reload-proof, and closable with the back
-button — the property `pane-route.ts` was built around and the reason none of
-this lives in component state.
+**Content is in the URL; chrome is a preference.** Which files a Files pane
+has open is content and travels in the descriptor. Whether its tree is showing
+is a per-kind preference in `localStorage`, shared by every Files pane. This
+keeps the codec small and means a shared link reproduces what the sender was
+looking at without also imposing their chrome habits.
 
 ## Memory
 
 `localStorage`, one entry per route key:
 
 ```
-valea.content.<routeKey> → { panes: string[], col: string | null }
+valea.content.<routeKey> → string[]   // serialized side-pane descriptors
+valea.pane-chrome        → { files: { tree: bool }, chat: { sessions: bool } }
 ```
 
-Written on every pane/column change. Applied **only when the URL names
-neither** — entering `/chat` bare restores your last composition via
-`goto(…, { replaceState: true })`, so the URL immediately becomes explicit and
-the back button behaves. A URL that carries `pane` or `col` always wins, so a
-link shared between two people never gets rewritten by the recipient's habits.
+Written on every change. Applied **only when the URL names no panes** —
+entering `/chat` bare restores your last composition via
+`goto(…, { replaceState: true })`, so the URL becomes explicit immediately and
+the back button behaves. A URL carrying `pane` always wins, so a link shared
+between two people is never rewritten by the recipient's habits.
 
-Restored panes can be stale — a file deleted, a session archived. Both are
-already handled: `FilePaneAdapter` has `onVanished` and `ChatView` has
-`onArchived`, and both resolve to closing that pane.
-
-Knowledge's existing last-opened restore is the precedent for this pattern and
-folds into it.
+Restored panes can be stale — a file deleted, a session archived, a message
+gone after a resync. `FilePaneAdapter`'s `onVanished` and `ChatView`'s
+`onArchived` already handle the first two by closing; mail follows whichever
+of the two options in *Open items* is chosen.
 
 ## Width behaviour
 
-Everything open needs 236 + 300 + 380 + 300 + 300 = 1516px. Below that,
-elements auto-hide **right to left** — pane 2, then pane 1, then the narrow
-column — so things disappear from the outer edge inward and the primary view
-is always last to give up space.
+Chat plus a Files pane with a tree and two splits needs
+236 + 380 + 240 + 300 + 300 = 1456px. Pressure is relieved from the outside
+in, at two levels:
 
-Auto-hidden elements keep their toggle state and reappear when the window
-grows: the user never has to re-open something the window shrank away. The
-`＋ Pane` control disables itself when the next pane would not fit, with the
-reason on hover rather than a silent no-op.
+1. **Shell.** Side panes auto-hide right to left, so content disappears from
+   the outer edge and the primary is last to give up space.
+2. **Inside a pane.** The Files pane drops its second split, then its tree.
 
-`ChatView`'s `viewWidth >= 860` rail gate is the precedent for this rule but
-is **not** replaced by it: the two operate at different levels. `pane-fit.ts`
-decides which shell elements fit in the window; the rail gate decides what
-fits inside whatever width `ChatView` ends up with. They compose without
-knowing about each other, which is why opening a second pane makes the rail
-retreat to its header pill with no coordination code.
+Auto-hidden things keep their toggle state and return when the window grows —
+the user never re-opens something the window took away. `＋ Pane` and
+`＋ Split` disable themselves when the next one would not fit, with the reason
+on hover rather than a silent no-op.
+
+`ChatView`'s existing `viewWidth >= 860` rail gate is untouched and needs no
+coordination: it measures `ChatView`'s own container, so opening a pane
+shrinks the chat and the file-activity rail retreats to its header pill on its
+own. `filesPopover` is that rail's fallback, not a file browser, and stays.
 
 ## The bottom bar
 
-A ~28px band across the content area only. Left: the narrow-column toggles for
-this route. Right: `＋ Pane`, opening a short menu (Files… / Chat / Mail… /
-A file…), with items already open shown as checked and inert.
+A ~28px band across the content area only. `＋ Pane` on the right, opening a
+short menu (Files / Chat / Mail), with kinds already open shown as checked and
+inert. Nav collapse sits at the far left if that open item is confirmed.
 
 Styling is deliberately furniture, not feature: `bg-paper-sidebar`,
 `border-t border-paper-hairline`, inactive `text-ink-meta`, active
 `text-ink-heading`. **No accent colour** — in this design system colour means
-consequence (`PRODUCT.md` principle 1) and toggling a view has none.
+consequence (`PRODUCT.md` principle 1) and opening a view has none.
 
 Routes that are not pane hosts (Today, Tasks, Calendar, Audit, Sources) render
-the bar with no toggles and no `＋`. It stays present as a stable piece of
-furniture rather than appearing and disappearing as you navigate, and each
-route populates it as it is converted.
+the bar without `＋`. It stays present as stable furniture rather than
+appearing and disappearing as you navigate, and each route populates it as it
+is converted.
 
-### Why a bar at all
-
-The feature only pays off if people find it, and the bar is the mechanism:
-visible by presence, fixed in position, two controls. It also gives git sync
-status and the workspace indicator an obvious future home, which today are
-squeezed into the sidebar (`StatusPill`, `UpdateNotice`).
+The bar carries fewer controls than it did in the middle draft, because the
+per-pane toggles moved into pane headers where they belong. It is still worth
+having: the feature only pays off if people find it, and a control nobody
+finds converts nobody. It also gives git sync status and the workspace
+indicator an obvious future home, which today are squeezed into the sidebar
+(`StatusPill`, `UpdateNotice`).
 
 ## Interaction details
 
-**Two files beside a chat is a supported layout.** Chat as primary with two
-`file` panes is within the cap, and `panesEqual` only rejects panes that are
-*identical*, so two different files coexist without any special case. This
-does, however, kill the naive auto-open rule: "replace an existing file pane"
-would let the assistant evict a file you deliberately put there.
+**Chat opening a file.** Targets a Files pane: if one is open, the file lands
+there; if not, one opens. Within the Files pane the rule tracks the split it
+created (`autoSplit`, reset when the session changes):
 
-**Chat opening a file.** Auto-open therefore tracks the one pane it created.
-`autoOpenedKey` is a serialized descriptor held per host, reset when the
-session changes, and the rule reads:
-
-1. if `autoOpenedKey` is still among the open panes → replace **that** pane
-2. else if a slot is free → open there
+1. if `autoSplit` still exists → replace **that** split
+2. else if a split slot is free → open there
 3. else → do nothing
 
-So the assistant recycles its own pane while a file you opened stays put — you
-can pin your file on the right and let chat cycle references on the left. Any
-user-initiated open (a tree click, the ＋ menu) clears `autoOpenedKey` for the
-pane it targets, so a pane stops being the assistant's the moment you put
-something in it yourself. Rule 3 is the conservative floor `hasOpenPane()`
-provides today: auto-open never evicts a user's pane.
+So the assistant recycles its own split while a file you opened stays put —
+you can pin your file on the right and let chat cycle references on the left.
+Any user-initiated open into a split clears `autoSplit` for it. Rule 3 is the
+conservative floor `hasOpenPane()` provides today: auto-open never evicts a
+file the user placed.
 
-**Duplicate suppression.** `panesEqual` already drops a pane that duplicates
-the primary. It extends to deduplicating panes against each other, so opening
-the same file twice targets the pane already showing it rather than making a
-second identical column.
+**Duplicate suppression.** `panesEqual` already drops a pane duplicating the
+primary. Two Files panes are likewise collapsed to one — opening a file when a
+Files pane exists always routes into it rather than making a second browser.
 
-**Promote (⤢).** Unchanged. The pane's subject becomes the route you are on;
-the remaining panes stay.
+**Promote (⤢).** The pane's subject becomes the route you are on; remaining
+panes stay. For a Files pane with two splits, promoting carries both (the
+route's `?split=` param).
 
 **Resizing.** `pane-split.ts` currently persists one percentage. It becomes a
-layout array keyed by pane count (`valea.pane-split.<n>`), so going from two
-columns to three and back does not lose either arrangement.
+layout array keyed by pane count (`valea.pane-split.<n>`), with the Files
+pane's internal split ratio persisted separately under its own key.
 
 ## Modules
 
 Extended:
 
-- `lib/panes/pane-route.ts` — `parsePanes(searchParams)`, `withPanes(url, list)`,
-  cap enforcement, dedup, `?all=1` alias, `mail:` kind
-- `lib/panes/pane-split.ts` — per-count layout arrays
-- `lib/panes/registry.ts` — `mail` → `MailPaneAdapter`
-- `lib/panes/context.ts` — `openPane(descriptor)` so a view can request a pane
-- `lib/components/panes/PaneHost.svelte` — N panes; the unconditional-primary
-  rule in its header comment is load-bearing and must survive (tearing the
-  primary down on every pane change would drop the composer's draft and rejoin
-  the session channel)
-- `lib/components/shell/AppShell.svelte` — nav anchor, content column, bar.
-  Its `rail` slot is dead code today — `AppFrame` forwards the prop and no
-  route passes it — so removing it costs nothing.
+- `lib/panes/pane-route.ts` — repeated `pane` params; `files:` and `mail:`
+  descriptors including the `|` split form; cap enforcement; dedup; `?all=1`
+  alias
+- `lib/panes/pane-split.ts` — per-count outer layouts
+- `lib/panes/registry.ts` — `files` → `FilesPane`, `mail` → `MailPane`
+- `lib/panes/context.ts` — `openFile` routes to a Files pane
+- `lib/components/panes/PaneHost.svelte` — N panes. Its unconditional-primary
+  rule is load-bearing and must survive: tearing the primary down on a pane
+  change would drop the composer's draft and rejoin the session channel.
+- `lib/components/shell/AppShell.svelte` — nav anchor, pane row, bar
+- `lib/components/shell/IcmTree.svelte` — multiple marked rows, per-href
+  `onBeforeMutate`
 
 New:
 
+- `lib/components/panes/FilesPane.svelte` — tree + splits; owns the sync
+- `lib/components/panes/MailPane.svelte` — list + reader
+- `lib/panes/files-pane-state.ts` — pure: open splits, cap, tree visibility,
+  the tree-click target rule
+- `lib/panes/auto-open.ts` — the three-step rule over splits and `autoSplit`
 - `lib/panes/pane-memory.ts` — per-route persistence and the apply rule
-- `lib/shell/content-bar.ts` — which toggles a route offers, and why `＋` is
-  disabled
-- `lib/shell/pane-fit.ts` — available width → how many panes and whether the
-  column fits
-- `lib/shell/reveal-path.ts` — ancestor hrefs of a file, for `treeOpenState`;
-  lifted out of `routes/knowledge/[...path]/+page.svelte`
-- `lib/panes/auto-open.ts` — the three-step auto-open rule over the current
-  pane list and `autoOpenedKey`
+- `lib/shell/reveal-path.ts` — ancestor hrefs for `treeOpenState`, lifted out
+  of `routes/knowledge/[...path]/+page.svelte`
+- `lib/shell/pane-fit.ts` — width → how many panes and splits fit
 - `lib/components/shell/ContentBar.svelte`
-- `lib/components/panes/MailPaneAdapter.svelte`
 
 Retired: `SessionHeader`'s popover file tree and `ChatView`'s
-`treeRequestedFor` effect that loads its root; `AppShell`/`AppFrame`'s `rail`
-snippet prop (unused); `AppFrame`'s `list` prop, replaced by the column
-occupant. The file-activity rail and `filesPopover` stay as they are.
+`treeRequestedFor` root-load effect; `AppShell`/`AppFrame`'s `list` and `rail`
+props; `/mail`'s `AppFrame` + `ListPane` composition; the standalone `file:`
+pane kind.
 
 ## Testing
 
@@ -326,43 +305,42 @@ The codebase convention is pure logic in `.ts` with a `.test.ts` sibling and
 no component render harness (`pane-route.test.ts`, `pane-split.test.ts`,
 `icm-route.test.ts`). Every decision above is placed to keep that possible:
 
-- `pane-route.test.ts` — multi-pane parse/serialize round-trips; cap
-  enforcement; dedup against primary and between panes; single-`?pane=`
-  back-compat; `?all=1` → `?col=sessions`; invalid input fails closed
-- `pane-memory.test.ts` — save/load; URL-wins-over-memory; storage failure
-  degrades silently (the pattern `pane-split.ts` already uses)
-- `content-bar.test.ts` — toggles offered per route; radio behaviour;
-  disabled reasons
-- `pane-fit.test.ts` — width thresholds; right-to-left hide order; toggle
-  state survives an auto-hide
-- `reveal-path.test.ts` — ancestor href derivation, including mount roots and
-  paths with encoded segments
-- `auto-open.test.ts` — recycles its own pane; never evicts a user pane; falls
+- `pane-route.test.ts` — multi-pane parse/serialize round-trips; the `|` split
+  form; cap enforcement; dedup against primary and between panes;
+  single-`?pane=` back-compat; `?all=1` alias; invalid input fails closed
+- `files-pane-state.test.ts` — split cap; tree-click targets the first split;
+  hover-open adds a second; closing the last split leaves a tree-only pane
+- `auto-open.test.ts` — recycles its own split; never evicts a user's; falls
   back to a free slot; no-ops when full; a user open clears the mark
+- `pane-memory.test.ts` — save/load; URL wins over memory; storage failure
+  degrades silently (the pattern `pane-split.ts` already uses)
+- `reveal-path.test.ts` — ancestor href derivation, mount roots, encoded
+  segments
+- `pane-fit.test.ts` — thresholds at both levels; outside-in hide order;
+  toggle state survives an auto-hide
 
 ## Build order
 
-One pass, but internally ordered so each step is separately reviewable:
+One pass, internally ordered so each step is separately reviewable:
 
-1. `pane-route.ts` multi-pane codec + tests (no UI change; `?pane=` still
-   single-valued in practice)
+1. `pane-route.ts` — repeated params, `files:`/`mail:` descriptors + tests
+   (no UI change)
 2. `PaneHost` renders N panes; `pane-split.ts` per-count layouts
-3. `AppShell` restructure — nav anchor, content column, narrow column slot
-4. `ContentBar` + `content-bar.ts` + `pane-fit.ts`
-5. `pane-memory.ts` and the restore-on-entry rule
-6. `reveal-path.ts` + `IcmTree`'s `activePaths`, per-href `onBeforeMutate`,
-   and `auto-open.ts`
-7. Route conversions: Chat (tree column replaces the popover), Knowledge, Mail
-   (`PaneHost` + `MailPaneAdapter`)
+3. `FilesPane` — tree + splits + `files-pane-state.ts` + `reveal-path.ts`;
+   `IcmTree` multi-mark and per-href `onBeforeMutate`
+4. `AppShell` restructure — nav anchor, pane row; `list`/`rail` removed
+5. `ContentBar` + `pane-fit.ts`
+6. `pane-memory.ts` and restore-on-entry
+7. `auto-open.ts` and the chat tool-chip path
+8. Route conversions: Knowledge → `FilesPane`, Chat → sessions navigator,
+   Mail → `MailPane`
 
 ## Open items for review
 
-- **Nav collapse.** Agreed earlier in the discussion, then the nav was
-  described as "the fixed anchor" — which governs its *position* (full height,
-  the bar beside it rather than under it) and does not obviously settle
-  whether it also hides. Proposal: keep the collapse, default on, toggled from
-  the bar's far left; it is the first 236px worth reclaiming on a 13" screen.
-  Confirm or cut.
-- **`mail:<messageId>` durability.** Whether a mail pane in a remembered
-  composition should survive a mailbox resync, or resolve to "message no
-  longer available" and close like a vanished file.
+- **Nav collapse.** Agreed early, then the nav was described as "the fixed
+  anchor" — which governs its *position* (full height, bar beside it) and does
+  not obviously settle whether it also hides. Proposal: keep it, default on,
+  toggled from the bar's far left. Confirm or cut.
+- **Stale mail panes.** Whether a remembered `mail:<id>` whose message is gone
+  after a resync closes quietly like a vanished file, or holds a "no longer
+  available" state until dismissed.
