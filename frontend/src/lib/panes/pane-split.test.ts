@@ -60,13 +60,18 @@ describe('per-count pane layouts', () => {
     expect(loadPaneLayout(2)).toBeNull();
   });
 
-  // The writer guards too — a mismatched layout must never reach storage, or a
-  // later load of the same count would have to reject its own written value.
-  it('refuses to write a layout that does not match its count', () => {
+  // The writer guards too, and these assert on RAW storage rather than reading
+  // back through `loadPaneLayout` — the reader's own guards would reject both
+  // values whether or not the writer ever guarded, making a round-trip
+  // assertion pass in both worlds. Nothing may reach the key at all.
+  it('refuses to write a layout whose length does not match its count', () => {
     savePaneLayout(2, [50, 25, 25]);
-    expect(loadPaneLayout(2)).toBeNull();
+    expect(localStorage.getItem('valea.pane-split.2')).toBeNull();
+  });
+
+  it('refuses to write a layout containing a non-finite entry', () => {
     savePaneLayout(2, [50, Number.NaN]);
-    expect(loadPaneLayout(2)).toBeNull();
+    expect(localStorage.getItem('valea.pane-split.2')).toBeNull();
   });
 
   it('persists the Files pane split ratio under its own key', () => {
