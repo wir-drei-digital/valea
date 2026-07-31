@@ -13,6 +13,14 @@ const FILES_DEFAULT = 40;
 const FILES_MIN = 20;
 const FILES_MAX = 70;
 
+/**
+ * How much wider the primary starts than one side pane. 1.5 is chosen so the
+ * two-pane row still opens at the 60/40 this app shipped with — the storage
+ * key changed shape (it is per-count now), so every user meets the default
+ * once more and should meet the familiar one.
+ */
+const PRIMARY_WEIGHT = 1.5;
+
 function clampFiles(pct: number): number {
   return Math.min(FILES_MAX, Math.max(FILES_MIN, Math.round(pct)));
 }
@@ -28,6 +36,21 @@ export function loadPaneLayout(count: number): number[] | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The layout a row of `count` panes opens at when nothing is stored for that
+ * count. `loadPaneLayout` returns null rather than a default because the
+ * arithmetic is the CALLER's: side panes share the row evenly and the primary
+ * takes `PRIMARY_WEIGHT` shares of it. Percentages, summing to exactly 100 —
+ * the remainder lands on the primary, which is the one pane wide enough to
+ * absorb a rounding point without approaching its minimum.
+ */
+export function defaultPaneLayout(count: number): number[] {
+  if (!Number.isFinite(count) || count <= 1) return [100];
+  const sides = Math.trunc(count) - 1;
+  const side = Math.round(100 / (PRIMARY_WEIGHT + sides));
+  return [100 - side * sides, ...Array<number>(sides).fill(side)];
 }
 
 export function savePaneLayout(count: number, layout: number[]): void {

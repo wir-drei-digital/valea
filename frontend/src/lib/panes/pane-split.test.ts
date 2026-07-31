@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadFilesSplit, loadPaneLayout, saveFilesSplit, savePaneLayout } from './pane-split';
+import {
+  defaultPaneLayout,
+  loadFilesSplit,
+  loadPaneLayout,
+  saveFilesSplit,
+  savePaneLayout
+} from './pane-split';
 
 // This vitest setup runs on the default (node) environment, where the
 // `localStorage` global is `null` rather than a Web Storage object — so the
@@ -39,7 +45,7 @@ describe('per-count pane layouts', () => {
     expect(loadPaneLayout(3)).toEqual([50, 25, 25]);
   });
 
-  it('returns null for a count never saved, so the group uses its defaults', () => {
+  it('returns null for a count never saved, so the caller applies its own default', () => {
     expect(loadPaneLayout(3)).toBeNull();
   });
 
@@ -92,6 +98,37 @@ describe('per-count pane layouts', () => {
   it('ignores a garbage Files split value', () => {
     localStorage.setItem('valea.files-split', 'junk');
     expect(loadFilesSplit()).toBe(40);
+  });
+});
+
+describe('default pane layouts', () => {
+  it('gives a lone primary the whole row', () => {
+    expect(defaultPaneLayout(1)).toEqual([100]);
+  });
+
+  it('opens a two-pane row at the 60/40 the app shipped with', () => {
+    expect(defaultPaneLayout(2)).toEqual([60, 40]);
+  });
+
+  it('splits the remainder evenly between equal side panes', () => {
+    expect(defaultPaneLayout(3)).toEqual([42, 29, 29]);
+  });
+
+  // paneforge normalises anything else, but a layout that does not sum to 100
+  // means the row it opens at is not the row this function described.
+  it('always sums to exactly 100', () => {
+    for (const count of [1, 2, 3, 4, 5]) {
+      const total = defaultPaneLayout(count).reduce((a, b) => a + b, 0);
+      expect(total).toBe(100);
+    }
+  });
+
+  // Reached only via a corrupt caller, but the return type promises a usable
+  // layout, and `Array(-1)` would throw rather than degrade.
+  it('degrades to a single full-width pane for a nonsense count', () => {
+    expect(defaultPaneLayout(0)).toEqual([100]);
+    expect(defaultPaneLayout(-3)).toEqual([100]);
+    expect(defaultPaneLayout(Number.NaN)).toEqual([100]);
   });
 });
 
