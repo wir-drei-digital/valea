@@ -379,6 +379,33 @@ describe('MailStore.refreshStatus', () => {
     expect(store.accounts).toEqual([]);
     expect(store.selectedAccount).toBeNull();
   });
+
+  // `statusLoaded` is what lets a surface tell "no mailbox is configured"
+  // apart from "nobody has asked yet" — `accounts` is empty in both.
+  it('has not loaded status before anything asks', () => {
+    expect(new MailStore(fakeApi({}) as never).statusLoaded).toBe(false);
+  });
+
+  it('marks status loaded even when the answer is zero accounts', async () => {
+    const store = new MailStore(
+      fakeApi({ mailStatus: async () => ({ ok: true, data: { accounts: [] } }) }) as never
+    );
+
+    await store.refreshStatus();
+
+    expect(store.accounts).toEqual([]);
+    expect(store.statusLoaded).toBe(true);
+  });
+
+  it('does not mark status loaded when the fetch failed', async () => {
+    const store = new MailStore(
+      fakeApi({ mailStatus: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
+    );
+
+    await store.refreshStatus();
+
+    expect(store.statusLoaded).toBe(false);
+  });
 });
 
 describe('MailStore.selectAccount', () => {

@@ -447,6 +447,16 @@ export function normalizeMailDraftReview(raw: Record<string, unknown>): MailDraf
  */
 export class MailStore {
   accounts: MailAccountStatus[] = $state([]);
+  /**
+   * Whether `accounts` has ever been ANSWERED — the difference between "no
+   * mailbox is configured" and "nobody has asked yet". `accounts` starts
+   * empty, so any surface that reads emptiness as an answer states something
+   * about the user's setup that the app has no basis for; a mail pane that
+   * mounts before the first `mail_status` returns would say "no mail account
+   * yet" over a perfectly good mailbox. Deliberately NOT set when the fetch
+   * fails: a failed request taught us nothing either.
+   */
+  statusLoaded = $state(false);
   selectedAccount: string | null = $state(null);
   folders: MailFolder[] = $state([]);
   selectedFolder: string | null = $state(INBOX_FOLDER);
@@ -615,6 +625,7 @@ export class MailStore {
     const data = result.data as { accounts?: unknown };
     const raw = Array.isArray(data.accounts) ? (data.accounts as Record<string, unknown>[]) : [];
     this.accounts = raw.map(normalizeMailAccountStatus);
+    this.statusLoaded = true;
     await this.#ensureSelection();
     void resupplyCredentials(this.accounts, this.#api);
   }
