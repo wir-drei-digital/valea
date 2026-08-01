@@ -85,8 +85,3 @@ export function closeSplit(paths: string[], index: number): string[] {
   if (index < 0 || index >= paths.length) return paths;
   return paths.filter((_, i) => i !== index);
 }
-
-/** A split whose file was deleted. Its sibling survives — see the spec's per-subject rule. */
-export function dropVanished(paths: string[], vanished: string): string[] {
-  return paths.filter((p) => p !== vanished);
-}

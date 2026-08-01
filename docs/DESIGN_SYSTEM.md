@@ -270,16 +270,18 @@ Chat:
   two-layer pattern).
 - **shadcn-svelte is the component basis** (https://www.shadcn-svelte.com).
   The §11 layout grid maps to a reusable `AppShell` family: shadcn Sidebar
-  (236px nav), an optional `ListPane` (250–340px — mail list, file browser,
-  chat sessions; shadcn Resizable + Scroll Area + Item), flexible main, and an
-  optional `Rail` (290–340px, `#F7F2E7`). Routes declare which columns they
-  use; the panes are shared components, never per-feature layouts.
+  (236px nav, collapsible) beside a content column holding the route's pane
+  row and the content bar. The rail column is gone and the `list` column with
+  it — composable views made each pane carry its own navigator, so `ListPane`
+  (250–340px; shadcn Resizable + Scroll Area + Item) is now a component a
+  ROUTE renders inside its own main slot rather than a column the shell owns.
+  The panes are shared components, never per-feature layouts.
 - The three consequence colors are first-class tokens (`--act`, `--suggest`,
   `--warn` families), not ad-hoc values in components.
 - Shared shell primitives — one implementation each, never re-rolled per
   view: `ListPane` (pane title + action + filter row), `PageHeader` (§11
   main-pane header), `SegmentedControl` (view toggles), `FilterPill` (list
-  filters), `RailCard` (§10 rail cards), `EmptyState`. Empty states grow a
+  filters), `EmptyState`. (§10's `RailCard` went with the rail column.) Empty states grow a
   small procedural garden (`PlantGrowth`) — decorative only, `aria-hidden`,
   fully static under `prefers-reduced-motion`.
 - Fonts are bundled with the app (e.g. fontsource packages) — a local-first

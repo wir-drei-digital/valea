@@ -35,7 +35,6 @@
 
   let {
     icmName,
-    mountKey,
     ended,
     archiving,
     deleting = false,
@@ -46,7 +45,6 @@
     filesPanel
   }: {
     icmName: string | null;
-    mountKey: string | null;
     ended: boolean;
     archiving: boolean;
     deleting?: boolean;

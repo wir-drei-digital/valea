@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  canOpenBeside,
-  closeSplit,
-  dropVanished,
-  openAsSecond,
-  openInFirst
-} from './files-pane-state';
+import { canOpenBeside, closeSplit, openAsSecond, openInFirst } from './files-pane-state';
 
 describe('openInFirst', () => {
   it('opens into an empty pane', () => {
@@ -144,19 +138,5 @@ describe('closeSplit', () => {
   it('ignores an out-of-range index', () => {
     expect(closeSplit(['A.md'], 3)).toEqual(['A.md']);
     expect(closeSplit(['A.md'], -1)).toEqual(['A.md']);
-  });
-});
-
-describe('dropVanished', () => {
-  it('removes only the vanished file, keeping its sibling', () => {
-    expect(dropVanished(['A.md', 'B.md'], 'A.md')).toEqual(['B.md']);
-  });
-
-  it('leaves the list untouched when nothing matches', () => {
-    expect(dropVanished(['A.md'], 'Z.md')).toEqual(['A.md']);
-  });
-
-  it('empties a single-split pane whose only file was deleted', () => {
-    expect(dropVanished(['A.md'], 'A.md')).toEqual([]);
   });
 });

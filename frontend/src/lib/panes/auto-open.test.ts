@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { autoOpen, clearAuto, shiftAuto, shiftAutoAll } from './auto-open';
-import { closeSplit, dropVanished, openAsSecond } from './files-pane-state';
+import { closeSplit, openAsSecond } from './files-pane-state';
+import { dropSubject } from './pane-edit';
+import type { PaneDescriptor } from './pane-route';
 
 describe('autoOpen', () => {
   it('opens into an empty pane and claims that split', () => {
@@ -128,9 +130,10 @@ describe('shiftAuto', () => {
     expect(shiftAuto(null, 0)).toBeNull();
   });
 
-  // `dropVanished` takes a path, so a call site naturally sources the index
-  // from `indexOf`, which is -1 when the file was not open at all. Nothing was
-  // removed, so nothing renumbered.
+  // The vanished-file path takes a PATH, so its call site
+  // (`FilesPane.fileVanished`) sources the index from `indexOf`, which is -1
+  // when the file was not open at all. Nothing was removed, so nothing
+  // renumbered.
   it('treats a removal that did not happen as no change', () => {
     expect(shiftAuto(1, -1)).toBe(1);
     expect(shiftAuto(0, -1)).toBe(0);
@@ -174,7 +177,8 @@ describe('shiftAutoAll', () => {
 });
 
 // The claim is an INDEX, and both removal paths renumber the list. These build
-// the sequence through the real `closeSplit` / `dropVanished` rather than
+// the sequence through the real `closeSplit` and the real `dropSubject` — the
+// two functions that actually renumber `paths` in production — rather than
 // hand-written indices, because the bug was precisely that the index the
 // caller still holds no longer means what it meant when it was issued.
 describe('claim survival across removals', () => {
@@ -199,12 +203,20 @@ describe('claim survival across removals', () => {
   });
 
   it('never evicts the user’s file after the assistant’s file vanishes', () => {
-    const paths = ['ASSIST.md', 'USER.md'];
+    // The real sequence: `FilesPane.fileVanished` re-maps the claim off
+    // `paths.indexOf(path)` and then hands the subject to the host, whose
+    // `PaneContext.onVanished` rewrites the descriptor through `dropSubject`.
+    const pane: PaneDescriptor = {
+      kind: 'files',
+      mountKey: 'life',
+      paths: ['ASSIST.md', 'USER.md']
+    };
     const claim = 0;
-    const dropped = dropVanished(paths, 'ASSIST.md');
-    expect(dropped).toEqual(['USER.md']);
+    const dropped = dropSubject(pane, 'ASSIST.md');
+    expect(dropped).toEqual({ kind: 'files', mountKey: 'life', paths: ['USER.md'] });
 
-    expect(autoOpen(dropped, shiftAuto(claim, paths.indexOf('ASSIST.md')), 'NEW.md', 2)).toEqual({
+    const paths = dropped?.kind === 'files' ? dropped.paths : [];
+    expect(autoOpen(paths, shiftAuto(claim, pane.paths.indexOf('ASSIST.md')), 'NEW.md', 2)).toEqual({
       paths: ['USER.md', 'NEW.md'],
       autoIndex: 1
     });

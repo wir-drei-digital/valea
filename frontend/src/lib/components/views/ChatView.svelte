@@ -618,7 +618,6 @@
   <div class="flex min-h-0 w-full flex-1 flex-col pt-3">
     <SessionHeader
       icmName={openIcmName}
-      mountKey={openMountKey}
       ended={false}
       archiving={false}
     />
@@ -659,7 +658,6 @@
            that deletes itself. -->
       <SessionHeader
         icmName={openIcmName}
-        mountKey={openMountKey}
         {ended}
         {archiving}
         {deleting}

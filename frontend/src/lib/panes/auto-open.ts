@@ -23,7 +23,14 @@
  *
  *   - user opens into split i  → `clearAuto(autoIndex, i)`
  *   - `closeSplit(paths, i)`   → `shiftAuto(autoIndex, i)`
- *   - `dropVanished(paths, p)` → `shiftAuto(autoIndex, paths.indexOf(p))`
+ *   - a split's file vanished  → `shiftAuto(autoIndex, paths.indexOf(p))`
+ *
+ * The second removal is a PATH rather than an index because that is how it
+ * arrives, and it does not happen here: `FilesPane.fileVanished` re-maps the
+ * claim and then hands the subject up, and the host rewrites the descriptor
+ * through `pane-edit.ts`'s `dropSubject` — per subject, so a deleted split's
+ * sibling survives. `dropSubject` is the only thing that removes a path there,
+ * and it never sees the claim, which is why the pane has to shift it first.
  *
  * EVERY call site that removes a split has to route the claim through
  * `shiftAuto` — the Files pane's own close button, the vanished-subject path,
@@ -97,7 +104,7 @@ export function clearAuto(autoIndex: number | null, userIndex: number): number |
 
 /**
  * Re-maps the assistant's claim when a split is removed. `closeSplit` and
- * `dropVanished` renumber the list, so a claim held as an index would
+ * `dropSubject` renumber the list, so a claim held as an index would
  * otherwise point at whatever slid into that slot — and the next auto-open
  * would overwrite a file the user placed.
  *
