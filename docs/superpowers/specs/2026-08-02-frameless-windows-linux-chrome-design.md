@@ -1,8 +1,7 @@
 # Frameless Window Chrome for Windows and Linux — Design
 
 **Date:** 2026-08-02
-**Status:** Approved (design), **one decision reopened** — see "Snap Layouts vs
-the 1080px minimum" before planning
+**Status:** Approved (design), pending implementation plan
 **Supersedes:** `2026-07-19-windows-support-design.md` §E2, which decided
 Windows "gets standard decorations"
 **Reviewed:** self-pass and Codex pass, 2026-08-02. The review log at the foot
@@ -24,8 +23,8 @@ The only cross-platform route is `decorations: false`, and it is **not the same
 trade**. macOS's overlay keeps the traffic lights; `decorations: false` removes
 the whole frame — minimise, maximise, close, and on Windows the Snap Layouts
 flyout. What it does *not* remove is resizing: Tauri reinstalls that itself on
-both platforms (see Resize edges). So the work is the controls, the drag
-surfaces, and — if it survives the decision below — Snap Layouts.
+both platforms (see Resize edges). So the work is the controls and the drag
+surfaces, and it is a smaller project than it first looked.
 
 Ships end to end:
 
@@ -35,10 +34,10 @@ Ships end to end:
 2. **Drag surfaces** that survive losing the native frame.
 3. **`platform.ts` gains a four-valued chrome answer**, replacing a boolean
    that never had a production caller.
-4. **Snap Layouts on Windows** — *conditional on the reopened decision*.
 
 Explicitly **not** in scope: changing anything about the macOS window; a custom
-menu bar (Valea has no menu bar); tabbed or multi-window support.
+menu bar (Valea has no menu bar); tabbed or multi-window support; and **Windows
+Snap Layouts**, which was considered, costed, and dropped — see below.
 
 ## Decisions taken (Daniel, 2026-08-02)
 
@@ -62,10 +61,13 @@ of the content area — the mirror of where the traffic lights sit. A
 conventional ~32px band was rejected for costing 32px of height on every screen
 plus a horizontal rule the layout does not have.
 
-**Snap Layouts are re-implemented, not conceded** — *taken before the sizing
-problem below was known, and now reopened.*
+**Snap Layouts are DROPPED.** Reversed on 2026-08-02, the same day it was
+taken: the original decision was "re-implement, not concede", made on the
+belief that the cost was Win32 complexity. The real blocker is sizing — see the
+next section — and the reversal deletes the single largest and riskiest piece
+of this project.
 
-## Snap Layouts vs the 1080px minimum — REOPENED
+## Snap Layouts: considered, costed, dropped
 
 `tauri.conf.json` sets `minWidth: 1080`. Windows honours a window's minimum
 size when snapping, so a zone narrower than 1080px cannot be filled:
@@ -84,21 +86,31 @@ work, which is worse than the honest absence of one. Microsoft's own guidance
 is that snap-friendly windows should work at ~500 effective pixels, and
 recommends 330.
 
-Three ways out, none free:
+Three ways out were costed. **Daniel took the first (2026-08-02):**
 
-1. **Drop Snap Layouts.** Costs nothing already built; the frameless window
-   still works and Win+arrow snapping is unaffected (it also respects the
-   minimum, but the user is not being offered a menu that lies).
-2. **Lower `minWidth` toward ~800.** Makes snapping real, and is a genuine
-   responsive-design project: `PRIMARY_MIN` (380) + `PANE_MIN` (300) + the
-   236px nav already wants 916px before a single side pane fits, so below
-   ~950px the app is nav-plus-one-pane and the nav collapse — currently
-   **parked** — would have to come back.
-3. **Ship it anyway** and accept that it is a large-monitor feature.
+1. **Drop it.** ✅ Costs nothing already built. The frameless window is
+   unaffected, and so is Win+arrow snapping — that hits the same minimum, but
+   nothing offered the user a menu and then failed to honour it.
+2. **Lower `minWidth` toward ~800.** Would make snapping real, and is a
+   different, much larger project: `PRIMARY_MIN` (380) + `PANE_MIN` (300) + the
+   236px nav already wants 916px before one side pane fits, so below ~950px the
+   app is nav-plus-one-pane and the **parked** nav collapse would have to come
+   back.
+3. **Ship it as a large-monitor feature.** Rejected: the OS decides when to
+   show the flyout, so there is no way to offer it on 1440p and hide it on
+   1080p. It would be dead on the majority of Windows machines.
 
-This is a product decision, not a technical one, and it must be made before the
-plan is written: option 2 is a different and much larger project than the one
-this spec describes.
+**What dropping it removes** — and this is most of the project's risk: the
+`windows` crate dependency, a `SetWindowSubclass` that had to coexist with
+Tauri's own subclass and its resize child HWND, a five-message non-client
+handler, `TrackMouseEvent` arming for `WM_NCMOUSELEAVE`, screen↔client
+coordinate mapping, a DPI-safe logical-rect channel from the webview, an async
+Rust→web hover path, and a full press/capture/release state machine. Every
+Critical-severity architectural risk raised in review was in that list.
+
+**If it is ever revisited**, the prerequisite is option 2, not the Win32 work:
+the subclass is only worth writing against a window that can actually fill a
+snap zone.
 
 ## Architecture
 
@@ -295,57 +307,12 @@ Three consequences survive:
 
 **Resizing stops while maximised** on both platforms, by design.
 
-### Snap Layouts (Windows) — if it survives the decision above
+### Snap Layouts — not built
 
-The OS opens the flyout when the window reports `HTMAXBUTTON` from
-`WM_NCHITTEST`. A frameless window reports `HTCLIENT` everywhere.
-
-**Coexistence first.** Tauri already subclasses the frameless window *and*
-overlays the resize child HWND. A new subclass must use a unique subclass ID,
-forward everything it does not handle through `DefSubclassProc`, remove itself
-and free its state at `WM_NCDESTROY`, and be tested for ordering against the
-existing handler.
-
-**Messages — five, not four:** `WM_NCHITTEST`, `WM_NCMOUSEMOVE`,
-`WM_NCMOUSELEAVE`, `WM_NCLBUTTONDOWN`, `WM_NCLBUTTONUP`.
-
-⚠️ **`WM_NCMOUSELEAVE` does not arrive on its own.** The handler must call
-`TrackMouseEvent` with `TME_LEAVE | TME_NONCLIENT` on entering the button
-region and re-arm after each leave, or hover sticks on permanently.
-
-⚠️ **Coordinates are screen-space, not client-space.** `WM_NCHITTEST`'s `lParam`
-carries *screen* coordinates while `getBoundingClientRect()` gives webview CSS
-pixels. Scaling alone cannot reconcile them — the point must go through
-`ScreenToClient`/`MapWindowPoints`, and `GET_X_LPARAM`/`GET_Y_LPARAM` must be
-used because monitors above or left of the primary give negative values.
-
-⚠️ **Store the rect in LOGICAL coordinates.** Storing physical pixels makes a
-DPI change unrecoverable: knowing the new scale factor does not reveal the
-original logical rect, so the hit target stays stale until the frontend happens
-to report again. Store logical, scale at hit-test time, and react to Tauri's
-`onScaleChanged` — `onResized` is not a substitute.
-
-⚠️ **The rect channel must not be `onResized` alone.** DOM geometry moves for
-reasons a window resize does not cover (CSS, zoom, font metrics, visibility),
-and a live resize fires many async invokes whose replies can land out of order
-and store an older rect. Observe the button itself with `ResizeObserver`,
-coalesce, and carry a monotonic generation number that the Rust side uses to
-drop stale writes. **Or avoid the channel entirely** — the cluster is a fixed
-size pinned to the top-right, so Rust can derive the rect from `GetClientRect`
-and the known button metrics, which removes an entire class of staleness. The
-plan should prefer this unless the metrics turn out to be dynamic.
-
-⚠️ **Hover has to travel Rust → web, and that channel is not designed yet.**
-Once the OS owns the hit-test the webview stops receiving mouse events over the
-button, so the visual hover state must be driven from the WndProc. Emitting or
-evaluating webview code synchronously from a window procedure is unsafe; the
-design is an async event with an explicit payload, a listener with cleanup, and
-a state machine that lives outside the WndProc.
-
-⚠️ **The click needs a real state machine**, not just "swallow down, toggle up":
-press capture, pressed visual state, release outside the button, cancellation,
-double-click, and destruction while captured. `DefWindowProc` normally supplies
-all of this for non-client buttons; taking it over means supplying it.
+Dropped; see "Snap Layouts: considered, costed, dropped" above for why and for
+what the removal takes with it. Nothing in the sections above depends on it:
+the controls, the drag surfaces and `windowChrome()` are the whole project now,
+and none of them touches Win32.
 
 ## Testing
 
@@ -377,7 +344,6 @@ gate.
 | Alt+Space system menu, Aero Shake, drag-to-top | ✓ | ✓ | n/a | n/a |
 | Controls clear of the pane header at 1080px | ✓ | ✓ | ✓ | ✓ |
 | High-DPI 150% / 200%, and a second monitor at another scale | ✓ | ✓ | ✓ | n/a |
-| Snap Layouts flyout *(if built)* | ✓ | n/a | n/a | n/a |
 | Keyboard focus order, accessible names, `aria-pressed` state | ✓ | ✓ | ✓ | ✓ |
 | Forced-colors / high-contrast mode | ✓ | ✓ | ✓ | ✓ |
 
@@ -387,13 +353,13 @@ plus touch resize, which goes down a different code path from mouse.
 
 ## Risks
 
-**The Snap Layouts subclass is the whole technical risk** — native Win32,
-per-message, failing as a dead rect or a crash. It is cleanly separable:
-everything else ships without it. Given the 1080px finding, the honest ordering
-is to ship the rest first and decide about the flyout with the frameless window
-already in hand.
+**With Snap Layouts dropped there is no native code in this project at all** —
+no `windows` crate, no window procedure, no FFI. That removes every
+Critical-severity risk the review raised, and it is worth stating plainly
+because the project's shape changed: what is left is a config file, a UA
+helper, a Svelte component and a CSS variable.
 
-**The config restatement is the slow-burn risk**: wrong at build time is loud
+**The config restatement is now the largest risk**: wrong at build time is loud
 (two windows, or a duplicate-label crash); *stale* in six months is silent and
 only visible on the platform nobody develops on. The CI guard is the mitigation.
 
@@ -414,14 +380,13 @@ Each step leaves the app working everywhere, macOS untouched throughout.
    cleanup, and the `--window-controls-inset` variable consumed by `PaneHost`'s
    header. Windows is usable frameless here.
 4. **Drag strip** — widened, ending before the controls; confirm the resize
-   edges arrive and the child HWND does not eat the buttons.
+   edges arrive and that Tauri's resize child HWND does not eat the top of the
+   buttons.
 5. **Linux** — `tauri.linux.conf.json` (restated, no `shadow`), the
    GNOME-inspired branch, and the environment matrix.
-6. **Config drift guard.**
-7. **Snap Layouts** — *only if the reopened decision keeps it*: coexistence,
-   the five messages, `TrackMouseEvent`, screen→client mapping, logical rect
-   via `GetClientRect` if possible, the async hover channel, the click state
-   machine.
+6. **Config drift guard** — a test reading all three Tauri config files and
+   asserting the restated window keys agree. Last because it needs all three
+   to exist.
 
 ## Review log
 
@@ -447,6 +412,14 @@ GNOME; and the acceptance matrix was missing startup states, Windows 10,
 `Alt+Space`, accessibility and listener cleanup. **It also produced the finding
 that reopened a settled decision**: `minWidth: 1080` makes every snap zone fail
 on a 1920×1080 display.
+
+**The Snap Layouts reversal** came out of that last finding and is the review's
+biggest single effect: a decision taken in the morning on the belief that the
+cost was Win32 complexity, reversed the same day once the sizing arithmetic was
+done. It deleted the largest task, the only native code, and every
+Critical-severity risk in one move. Recorded because the lesson generalises —
+the expensive question was not "can we build it" but "will it work on the
+machine most people have".
 
 **One Codex finding was rejected.** It reported as Critical that the capability
 changes "will not authorize Valea's actual SPA origins" because `default.json`
