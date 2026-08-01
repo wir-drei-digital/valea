@@ -11,7 +11,7 @@
   let {
     nodes,
     activePaths = [],
-    currentPath = null,
+    currentPath,
     linkSearch = '',
     entryMenus,
     onBeforeMutate,
@@ -34,6 +34,10 @@
      * the rest and the only row that carries `aria-current`, because "six
      * files are open" and "this is the one on screen" are different facts and
      * a tree that renders them identically answers neither.
+     *
+     * Deliberately UNDEFAULTED: `undefined` means the host has no opinion and
+     * every open row reads as current; an explicit `null` means nothing is on
+     * screen. See `isCurrent`.
      */
     currentPath?: string | null;
     /**
@@ -127,12 +131,17 @@
   }
 
   /**
-   * The row on screen right now. Hosts that pass no `currentPath` keep the
-   * behaviour they had — every open row reads as current — so the popover
-   * pickers and the route's own tree are untouched.
+   * The row on screen right now.
+   *
+   * `undefined` and `null` are DIFFERENT answers here, which is the whole
+   * reason the prop has no default. `undefined` is "this host has no opinion",
+   * and every open row reads as current, which is the behaviour every existing
+   * caller had. `null` is "NOTHING is on screen" — a Files pane showing a
+   * pending empty tab — and marking a row there would claim a file is open in
+   * front of an empty content area.
    */
   function isCurrent(href: string): boolean {
-    return currentPath === null ? isActive(href) : currentPath === href;
+    return currentPath === undefined ? isActive(href) : currentPath === href;
   }
 
   /**

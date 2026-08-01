@@ -155,8 +155,11 @@
   );
   /** Every open tab is marked in the tree; the active one more strongly. */
   const activePaths = $derived(descriptor.paths.map((p) => knowledgeHref(descriptor.mountKey, p)));
+  // Nothing is current while a pending tab is showing: the content area holds
+  // the empty state, and a tree row claiming to be on screen over it would be
+  // the same lie `treeBlocked` and `compareShown` exist to prevent.
   const currentPath = $derived(
-    descriptor.paths.length === 0
+    descriptor.paths.length === 0 || pendingTab
       ? null
       : knowledgeHref(descriptor.mountKey, descriptor.paths[descriptor.active])
   );
@@ -403,7 +406,11 @@
         aria-label="Open files"
       >
         {#each descriptor.paths as path, i (path)}
-          {@const showing = i === descriptor.active || (compareShown && i === descriptor.compare)}
+          <!-- "Showing" is what is ON SCREEN: the active tab, plus the compare
+               partner while two columns are rendered, and NEITHER while a
+               pending tab holds the content area. -->
+          {@const showing =
+            !pendingTab && (i === descriptor.active || (compareShown && i === descriptor.compare))}
           <div
             class={[
               'group/tab relative flex h-8 min-w-0 max-w-[180px] flex-1 items-center rounded-md transition-colors',
@@ -413,7 +420,7 @@
             <button
               type="button"
               title={path}
-              aria-current={i === descriptor.active ? 'true' : undefined}
+              aria-current={!pendingTab && i === descriptor.active ? 'true' : undefined}
               onclick={() => showTab(i)}
               class={[
                 'min-w-0 flex-1 truncate rounded-md py-1.5 pr-8 pl-2.5 text-left text-[12px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
