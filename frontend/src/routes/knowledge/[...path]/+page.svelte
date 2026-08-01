@@ -19,7 +19,6 @@
   import { ancestorHrefs } from '$lib/shell/reveal-path';
   import { parentPath } from './parent-path';
   import { treeFallback } from './tree-fallback';
-  import { Button } from '$lib/components/ui/button/index.js';
   import FilesPane from '$lib/components/panes/FilesPane.svelte';
   import FilesPaneControls from '$lib/components/panes/FilesPaneControls.svelte';
   import PaneHost from '$lib/components/panes/PaneHost.svelte';
@@ -272,7 +271,7 @@
               data-testid="knowledge-list-error"
             >
               Couldn't load files.
-              <Button type="button" variant="ghost" size="sm" onclick={retryTree}>Retry</Button>
+              <button type="button" class="underline underline-offset-2" onclick={retryTree}>Retry</button>
             </p>
           {/if}
 
