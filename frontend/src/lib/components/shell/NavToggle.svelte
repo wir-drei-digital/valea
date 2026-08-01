@@ -23,8 +23,11 @@
    * tab strip, a list-pane title, a session's folder line, a prose column), and
    * a control in the flow would have to be threaded through nine routes and two
    * shared components, each free to forget it. One control, one owner, one
-   * physical place. Routes whose first row would sit underneath it carry a left
-   * gutter instead — see the `gutter` props on `SessionHeader` and `ListPane`.
+   * physical place. Routes whose first row would sit underneath it once needed
+   * a left gutter to clear it; those `gutter` props on `SessionHeader` and
+   * `ListPane`, and `MainColumn`'s top padding, were REVERTED when this control
+   * was parked, and no longer exist. Re-add them only if this control is
+   * un-parked, and measure first — the routes have moved since.
    *
    * It moves with the content column, so it is against the nav's inner edge
    * when the nav is shown and against the window when it is hidden — the same
