@@ -38,17 +38,23 @@ describe('panesThatFit', () => {
   });
 });
 
+// The widths here are written out as `TREE_W + SPLIT_MIN + …` rather than
+// imported, deliberately: a test that computes its expectation from the same
+// constant it is testing cannot notice the constant moving. These literals are
+// the record of what the arithmetic is SUPPOSED to be, so a change to
+// `SPLIT_MIN` has to come here and be argued for. It did — 300 to 240, when
+// two files side by side turned out to be large-monitor-only.
 describe('splitsThatFit', () => {
   it('fits one split beside the tree', () => {
-    expect(splitsThatFit(240 + 300, true)).toBe(1);
+    expect(splitsThatFit(240 + 240, true)).toBe(1);
   });
 
   it('fits two splits beside the tree', () => {
-    expect(splitsThatFit(240 + 300 + 300, true)).toBe(2);
+    expect(splitsThatFit(240 + 240 + 240, true)).toBe(2);
   });
 
   it('reclaims the tree width when the tree is hidden', () => {
-    expect(splitsThatFit(300 + 300, false)).toBe(2);
+    expect(splitsThatFit(240 + 240, false)).toBe(2);
   });
 
   it('caps at two', () => {
@@ -60,8 +66,16 @@ describe('splitsThatFit', () => {
   });
 
   it('drops the split one pixel below each boundary', () => {
-    expect(splitsThatFit(240 + 300 - 1, true)).toBe(0);
-    expect(splitsThatFit(240 + 300 + 300 - 1, true)).toBe(1);
+    expect(splitsThatFit(240 + 240 - 1, true)).toBe(0);
+    expect(splitsThatFit(240 + 240 + 240 - 1, true)).toBe(1);
+  });
+
+  // A split is a reading column, a pane is a whole surface — so a split's
+  // minimum is deliberately BELOW `PANE_MIN`, and a pane width that fits one
+  // pane fits more than one split.
+  it('is narrower than a whole pane requires', () => {
+    expect(splitsThatFit(300, false)).toBe(1);
+    expect(splitsThatFit(300 + 300, false)).toBe(2);
   });
 
   it('is never negative on a pane narrower than the tree', () => {
