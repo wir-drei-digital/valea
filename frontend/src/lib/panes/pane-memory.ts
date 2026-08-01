@@ -13,7 +13,13 @@
  * Same guarded-storage posture as `pane-split.ts`: no `localStorage` (SSR,
  * tests) or a write failure just means state is session-local, never an error.
  */
-import { parsePaneParam, serializePaneParam, type PaneDescriptor } from './pane-route';
+import { truncateToFit } from '$lib/shell/pane-fit';
+import {
+  dedupeSurfaces,
+  parsePaneParam,
+  serializePaneParam,
+  type PaneDescriptor
+} from './pane-route';
 
 const CONTENT_PREFIX = 'valea.content.';
 const CHROME_KEY = 'valea.pane-chrome';
@@ -76,6 +82,48 @@ export function savePanes(key: RouteKey, panes: PaneDescriptor[]): void {
   } catch {
     // best-effort persistence only
   }
+}
+
+/**
+ * What a route entry should put beside its primary, given what the URL says
+ * and what this route remembers. `null` means "leave the URL alone".
+ *
+ * Memory applies ONLY when the URL names no panes. A URL carrying `pane`
+ * always wins, so a link shared between two people is never rewritten by the
+ * recipient's own habits — and, just as importantly, a composition someone
+ * navigated to on purpose is never quietly replaced by an older one.
+ *
+ * Deduped BEFORE it is truncated, not after. The other order loses panes for
+ * no reason: remembering `[chat, files]` on a route whose primary is already a
+ * chat, at a width with room for one pane, truncates to `[chat]` and then
+ * dedupes it away — restoring nothing, when the files pane both fitted and
+ * belonged.
+ *
+ * What is restored is truncated to what FITS while the stored row keeps every
+ * pane, so a composition too wide for today's window comes back on a wider one
+ * tomorrow. That is why the caller must not write the truncated row back.
+ *
+ * An unmeasured window restores nothing rather than guessing: `panesThatFit`
+ * returns NaN for a NaN width (`spare < 0` is false for NaN), and a NaN pane
+ * count is a silent "no room" at best.
+ */
+export function restoreTarget(input: {
+  /** Whether the URL carries at least one `pane` param. */
+  urlNamesPanes: boolean;
+  remembered: PaneDescriptor[];
+  /** The route's own primary surface, so a restore cannot duplicate it. */
+  primary: PaneDescriptor | null;
+  windowWidth: number | undefined;
+  navVisible: boolean;
+}): PaneDescriptor[] | null {
+  if (input.urlNamesPanes) return null;
+  if (typeof input.windowWidth !== 'number' || !Number.isFinite(input.windowWidth)) return null;
+  const fitted = truncateToFit(
+    dedupeSurfaces(input.primary, input.remembered),
+    input.windowWidth,
+    input.navVisible
+  );
+  return fitted.length > 0 ? fitted : null;
 }
 
 export function loadChrome(): PaneChrome {

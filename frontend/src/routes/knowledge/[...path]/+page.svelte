@@ -35,6 +35,7 @@
     type PaneDescriptor
   } from '$lib/panes/pane-route';
   import { paneWiring, type FileSelection } from '$lib/panes/pane-wiring';
+  import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import type { PaneContext } from '$lib/panes/context';
 
   let newEntryMode: 'page' | 'folder' = $state('page');
@@ -214,6 +215,14 @@
     panes: () => panes,
     primary: () => primaryDescriptor,
     openInPrimary: openFileInPrimary
+  });
+
+  // Reopen whatever was last beside the file browser, but only when the URL
+  // names nothing itself — see `pane-memory.svelte.ts` for the three rules.
+  watchPaneMemory({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor
   });
 
   const primaryFilesContext: PaneContext = {

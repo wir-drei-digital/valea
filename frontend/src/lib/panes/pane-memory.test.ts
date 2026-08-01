@@ -3,6 +3,7 @@ import {
   loadChrome,
   loadNavVisible,
   loadPanes,
+  restoreTarget,
   routeKeyFor,
   savePanes,
   saveChrome,
@@ -35,6 +36,75 @@ function removeLocalStorage(): void {
 
 const chat: PaneDescriptor = { kind: 'chat', sessionId: 's1' };
 const files: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['A.md'] };
+
+describe('restoreTarget', () => {
+  const mail: PaneDescriptor = { kind: 'mail', account: 'a@b.c', msgId: null };
+  // nav 236 + primary 380 = 616 before the first 300px pane, so 1600px has
+  // room for two, 1000px for one and 900px for none.
+  const base = {
+    urlNamesPanes: false,
+    remembered: [chat, mail],
+    primary: null as PaneDescriptor | null,
+    windowWidth: 1600 as number | undefined,
+    navVisible: true
+  };
+
+  it('restores the remembered row when the URL names no panes', () => {
+    expect(restoreTarget(base)).toEqual([chat, mail]);
+  });
+
+  it('refuses to restore anything when the URL names a pane', () => {
+    // The whole point: a link shared between two people is never rewritten by
+    // the recipient's habits.
+    expect(restoreTarget({ ...base, urlNamesPanes: true })).toBeNull();
+  });
+
+  it('truncates to what fits, and keeps the row it was given intact', () => {
+    const remembered = [chat, mail];
+    expect(restoreTarget({ ...base, remembered, windowWidth: 1000 })).toEqual([chat]);
+    expect(remembered).toEqual([chat, mail]);
+  });
+
+  it('restores nothing when not even one pane fits', () => {
+    expect(restoreTarget({ ...base, windowWidth: 900 })).toBeNull();
+  });
+
+  it('counts the width the hidden nav gives back', () => {
+    expect(restoreTarget({ ...base, windowWidth: 1000, navVisible: false })).toEqual([chat, mail]);
+  });
+
+  it('restores nothing when the window has not been measured', () => {
+    // Pins the OUTCOME, not the guard: `panesThatFit(NaN, …)` returns NaN and
+    // `slice(0, NaN)` happens to give an empty row, so removing the explicit
+    // `Number.isFinite` check leaves this green. The check is kept anyway —
+    // the same discipline `AppShell` applies at its own call site — because
+    // relying on `slice`'s leniency is not a thing to inherit.
+    expect(restoreTarget({ ...base, windowWidth: undefined })).toBeNull();
+    expect(restoreTarget({ ...base, windowWidth: Number.NaN })).toBeNull();
+  });
+
+  it('drops a remembered pane that duplicates the route primary', () => {
+    expect(restoreTarget({ ...base, primary: { kind: 'chat', sessionId: 'other' } })).toEqual([
+      mail
+    ]);
+  });
+
+  it('dedupes BEFORE truncating, so a surviving pane is not lost to the cut', () => {
+    // Truncating first gives [chat], which dedup then removes — restoring
+    // nothing, when the mail pane both fitted and belonged.
+    expect(
+      restoreTarget({
+        ...base,
+        primary: { kind: 'chat', sessionId: 'other' },
+        windowWidth: 1000
+      })
+    ).toEqual([mail]);
+  });
+
+  it('restores nothing when nothing is remembered', () => {
+    expect(restoreTarget({ ...base, remembered: [] })).toBeNull();
+  });
+});
 
 describe('routeKeyFor', () => {
   it.each([

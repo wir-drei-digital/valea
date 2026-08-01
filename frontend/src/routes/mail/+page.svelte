@@ -18,6 +18,7 @@
   import PaneHost from '$lib/components/panes/PaneHost.svelte';
   import { dedupeSurfaces, parsePanes, type PaneDescriptor } from '$lib/panes/pane-route';
   import { paneWiring } from '$lib/panes/pane-wiring';
+  import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -124,6 +125,14 @@
   // No `openInPrimary`: this route has no Files surface of its own, so a file
   // opened from a chat pane beside the reader lands in a Files pane.
   const wiring = paneWiring({ url: () => page.url, panes: () => panes });
+
+  // Reopen whatever was last beside the reader, but only when the URL names
+  // nothing itself — see `pane-memory.svelte.ts` for the three rules.
+  watchPaneMemory({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor
+  });
 
   // The drafts list is workspace-wide (every account's), the pane's count is
   // not — it belongs to the account being read.

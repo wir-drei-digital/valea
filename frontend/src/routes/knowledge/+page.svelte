@@ -22,6 +22,7 @@
   import { goto, replaceState } from '$app/navigation';
   import { AppFrame, ListPane, MainColumn, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
   import { paneWiring } from '$lib/panes/pane-wiring';
+  import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -113,6 +114,16 @@
         keepFocus: true,
         noScroll: true
       })
+  });
+
+  // Reopen whatever was last beside the file browser, but only when the URL
+  // names nothing itself — see `pane-memory.svelte.ts` for the three rules.
+  // The last-opened redirect below carries the restored panes with it
+  // (`hrefWithPanes`), so landing here and being bounced to a page keeps them.
+  watchPaneMemory({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor
   });
 
   // Suffix for the tree's links (`IcmTree`'s `linkSearch`) — opening a file

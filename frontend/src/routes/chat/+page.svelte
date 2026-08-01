@@ -32,6 +32,7 @@
     type PaneDescriptor
   } from '$lib/panes/pane-route';
   import { paneWiring } from '$lib/panes/pane-wiring';
+  import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import type { PaneContext } from '$lib/panes/context';
 
   onMount(() => {
@@ -154,6 +155,14 @@
   // No `openInPrimary`: the primary here is a transcript, so a file opened
   // from a tool chip lands in the Files pane — creating one if there is none.
   const wiring = paneWiring({ url: () => page.url, panes: () => panes });
+
+  // Reopen whatever was last beside a transcript, but only when the URL names
+  // nothing itself — see `pane-memory.svelte.ts` for the three rules.
+  watchPaneMemory({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor
+  });
 
   /**
    * A row in the sessions navigator. `ChatPane` calls `context.openPane` for
