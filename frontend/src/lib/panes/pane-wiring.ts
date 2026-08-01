@@ -112,7 +112,12 @@ export function paneWiring(read: {
       // than pushing a foreign path into a descriptor that still names the
       // old mount — `files:<old>/<path from new>` addresses a file that does
       // not exist. The pane's identity changes with its mount, so the host
-      // hands it a fresh state and the old claim goes with it.
+      // hands it a fresh state and the old claim goes with it — which is
+      // exactly why the new one has to be left behind here, the same as for a
+      // pane created from nothing above. Without it the file lands in a split
+      // no claim covers: never recycled, never released, and the pane spends
+      // the rest of its life with one dead half.
+      autoCreatedPath = sel.path;
       go(replaceAt(panes, at, { kind: 'files', mountKey: sel.mountKey, paths: [sel.path] }));
       return;
     }
