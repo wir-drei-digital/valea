@@ -786,6 +786,25 @@ One pass, internally ordered so each step is separately reviewable:
 7. `pane-memory.ts` and restore-on-entry
 8. `auto-open.ts` and the chat tool-chip path
 
+## Known limitation: a Mail pane cannot be created from the UI
+
+**Accepted by Daniel, 2026-08-01.** Retiring the bottom bar removed the generic
+`＋ Pane` menu, which was the only control that could create a Mail pane. The
+`mail:<account>[/<messageId>]` kind, `MailPane`, and `?pane=mail:…` all still
+work — a Mail pane is **linkable and restorable, just not creatable**.
+
+The three compositions that have entry points are the ones people actually
+reach for: mail's per-message start-session opens a chat beside the message,
+the session header opens files beside the transcript, and Knowledge's session
+picker opens a chat beside a file. The missing direction is the reverse of the
+first — being in a chat and wanting mail alongside it — which is one navigation
+away.
+
+If it is wanted later, the options considered were: a session-header affordance
+mirroring files-beside-chat, or making promote **demote** the current primary
+rather than replace it (the more general fix, since promoting a chat out of
+`/mail` currently closes the mail surface).
+
 ## Open items for review — all settled
 
 *(Nothing below is outstanding. The two notes are kept as the record of how
