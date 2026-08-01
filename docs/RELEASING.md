@@ -46,9 +46,23 @@ that release manually once. Annoying, not fatal — but avoidable.
 
 ## Cutting a release
 
-1. Bump `version` in `desktop/src-tauri/tauri.conf.json` (the app-version
-   source of truth the updater compares; `backend/mix.exs` and the
-   package.json versions are internal and don't matter here).
+1. Bump the version in **all four** files — CI refuses to build unless every
+   one of them matches the tag:
+
+   - `desktop/src-tauri/tauri.conf.json` — the app version the updater
+     compares to decide whether a release is newer.
+   - `backend/mix.exs` — **load-bearing, and silent when wrong.** Burrito
+     names its unpacked payload directory
+     `valea_desktop_erts-<erts>_<mix.exs version>` and skips extraction
+     whenever that directory already exists. Ship a bumped app version with a
+     stale `mix.exs` version and every *existing* install keeps running the
+     old backend — which, because the sidecar also serves the SPA, means the
+     old frontend too. The About box still reads the new version. Fresh
+     installs work fine, so this only ever breaks upgraders, and it does not
+     announce itself.
+   - `desktop/src-tauri/Cargo.toml` (+ `Cargo.lock`) and
+     `frontend/package.json` — cosmetic, but asserted so the four can't drift.
+
 2. Commit, then tag exactly `v<that version>` and push both:
 
    ```bash
@@ -56,7 +70,8 @@ that release manually once. Annoying, not fatal — but avoidable.
    git push origin main v0.2.0
    ```
 
-   The workflow fails fast if the tag and config version disagree.
+   The workflow fails fast, before any build work, if the tag and any of the
+   four version strings disagree.
 3. CI builds all three platforms onto one **draft** release (first macOS
    run compiles OTP via asdf, ~25 min; cached afterwards).
 4. Smoke-test an installer from the draft's assets if the change warrants

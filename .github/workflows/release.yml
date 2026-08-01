@@ -53,14 +53,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assert tag matches tauri.conf.json version
+      # Every version string in the tree has to agree with the tag. TWO of
+      # them are load-bearing, and both fail SILENTLY when they drift:
+      #
+      #   tauri.conf.json — what the updater compares to decide "newer".
+      #   backend/mix.exs — what Burrito keys its payload cache on
+      #     (<release>_erts-<erts>_<app_version>). Burrito skips extraction
+      #     whenever that directory already exists (deps/burrito/src/
+      #     wrapper.zig, "If the metadata file exists, don't install again"),
+      #     so shipping a bumped app version against a stale mix.exs version
+      #     leaves every EXISTING install running the old backend — and, since
+      #     the sidecar also serves the SPA, the old frontend with it. Fresh
+      #     installs are unaffected, which is what makes it nearly invisible:
+      #     only upgraders break, and they see a correct version number.
+      #
+      # Cargo.toml and frontend/package.json are cosmetic today, but they are
+      # asserted too — keeping all four in lockstep is cheaper than
+      # remembering which two matter.
+      #
+      # bash 3.2 compatible (no `declare -A`): the macOS runner's /bin/bash.
+      - name: Assert tag matches every version string
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          conf_version=$(jq -r .version desktop/src-tauri/tauri.conf.json)
+          set -euo pipefail
           tag_version="${GITHUB_REF_NAME#v}"
-          if [ "$conf_version" != "$tag_version" ]; then
-            echo "Tag ${GITHUB_REF_NAME} != tauri.conf.json version ${conf_version} — bump the config (and Cargo.toml if you keep them aligned) before tagging." >&2
+          failed=0
+
+          check() {
+            file="$1"
+            found="$2"
+            if [ -z "$found" ]; then
+              echo "::error file=${file}::could not parse a version out of ${file} — has its format changed?"
+              failed=1
+            elif [ "$found" != "$tag_version" ]; then
+              echo "::error file=${file}::${file} says ${found}, tag ${GITHUB_REF_NAME} wants ${tag_version}"
+              failed=1
+            else
+              echo "ok  ${file} = ${found}"
+            fi
+          }
+
+          check desktop/src-tauri/tauri.conf.json \
+            "$(jq -r .version desktop/src-tauri/tauri.conf.json)"
+          check frontend/package.json \
+            "$(jq -r .version frontend/package.json)"
+          check backend/mix.exs \
+            "$(sed -n 's/^[[:space:]]*version: "\([^"]*\)".*/\1/p' backend/mix.exs | head -1)"
+          check desktop/src-tauri/Cargo.toml \
+            "$(sed -n 's/^version = "\([^"]*\)".*/\1/p' desktop/src-tauri/Cargo.toml | head -1)"
+
+          if [ "$failed" -ne 0 ]; then
+            echo "Bump every version string to ${tag_version}, then move the tag. See docs/RELEASING.md." >&2
             exit 1
           fi
 
